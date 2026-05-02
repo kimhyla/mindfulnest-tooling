@@ -1,0 +1,127 @@
+# MindfulNest project — defensive .gitignore.
+#
+# This repo lives inside Dropbox (.git itself is xattr-tagged
+# com.dropbox.ignored=1 to prevent Dropbox from corrupting the index). Be
+# conservative about what's staged: working .docx files, secrets, generated
+# binaries, and Office lock files MUST NOT be tracked.
+
+# ============ OS / editor / Dropbox metadata ============
+.DS_Store
+Icon?
+._*
+.dropbox
+.dropbox.cache/
+.dropbox.attr
+*.icloud
+
+# ============ Office / Word lock files ============
+.~lock.*#
+~$*
+
+# ============ Node / build artifacts ============
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+playwright-report/
+test-results/
+
+# ============ Python ============
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# ============ Secrets / credentials ============
+# Anything mentioning keys, secrets, credentials must NEVER be tracked.
+API_KEYS_MASTER*
+*credentials*
+*secret*
+.env
+.env.*
+!.env.example
+
+# ============ Project-specific working state ============
+# Directus offline write queue — local-only fallback.
+pending_directus_writes.json
+pending_directus_writes.resolved_*.jsonl
+
+# Daily/post-cutover snapshots (M5).
+.backups/
+
+# Auto-memory + checkpoint state (kept out of git for now; .auto-memory/
+# tracks Claude's persistent memory, .mn-context tracks session checkpoints).
+.auto-memory/
+.mn-context/
+
+# Per-session shadow logs.
+~/.claude/mindfulnest-cache/
+
+# Claude Code session helper files (drafted then deleted).
+_session*.py
+_session*.json
+
+# Hook shadow logs / activity drafts.
+hook_shadow_log.jsonl
+
+# ============ Dropbox-staged artifacts that don't belong in git ============
+# Dropbox-style stage scripts at root.
+.drop_staging.py
+.lds_for_inventory.json
+.task_id_*.txt
+.task_module_exit_state.json
+.top_20_backfill_candidates.json
+.wave_*.py
+.wave_*.json
+
+# ============ Large binary working assets (defensive — surface to Kim if
+# needed in repo) ============
+# Audio working masters
+*.wav
+*.aif
+*.aiff
+*.flac
+*.m4a
+# Generated MP3s + MP4s in Event dirs (we'll selectively whitelist key deliverables)
+Production/Event_*/animation_clips/
+Production/Event_*/preserved_winners/
+Production/Event_*/clips_dir/
+Production/Event_*/sources/
+Production/Event_*/cropped/
+Production/Event_*/masters/
+Production/Event_*/_temp_*/
+Production/Event_*/_sandbox/
+Production/Event_*/.backups/
+*.mp3
+*.mp4
+*.mov
+
+# Image working assets
+*.png
+*.jpg
+*.jpeg
+*.webp
+
+# But DO allow the v58 golden + v59 single-file HTML deliverables.
+!Production/Event_*/storyboard_v*_prod.html
+!Production/Event_*/storyboard_v*_GOLDEN_BACKUP_*.html
+!Production/Event_*/storyboard_v*_prod.html.sha256
+!Production/Event_*/storyboard_v*_GOLDEN_BACKUP_*.html.sha256
+
+# ============ Working .docx / large doc binaries (Kim edits these in Word) ============
+# .docx files are NOT tracked by git per Rule 3 read-before-write semantics —
+# Dropbox is the source of truth for these. If we want to track a snapshot,
+# whitelist the specific file explicitly.
+*.docx
+*.xlsx
+*.pptx
+*.pages
+
+# ============ Backup files (Word, ad-hoc) ============
+*.bak
+*.bak_*
+*.backup
+*~

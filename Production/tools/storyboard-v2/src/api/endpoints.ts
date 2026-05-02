@@ -1,0 +1,46 @@
+// API endpoint catalog. Rule 32 — absolute http://localhost:5111 URLs only;
+// never relative paths. Every fetch in this app routes through one of these.
+
+export const SERVER_BASE = 'http://localhost:5111';
+
+// READ endpoints (Session 1 uses these for the placeholder render).
+export const READ_ENDPOINTS = {
+  cr_library: `${SERVER_BASE}/api/cr/library`,
+  cr_full: `${SERVER_BASE}/api/cr/full`,
+  v2_event_state: `${SERVER_BASE}/api/v2/event-state`,
+  v2_sidecar: `${SERVER_BASE}/api/v2/sidecar`,
+  bg_state: `${SERVER_BASE}/api/bg/state`,
+  patch_health: `${SERVER_BASE}/api/patch_health`,
+} as const;
+
+// MUTATION endpoints — Session 1 ships ZERO callers of these; they exist
+// only so Session 1.5 has a single place to wire scope guards. Per LD
+// SCOPE_VALIDATION_V1 every server handler in this list MUST validate the
+// request body's event_id against self.app.event_dir.name and return HTTP
+// 409 on mismatch.
+export const MUTATION_ENDPOINTS = {
+  bg_accept_beats: `${SERVER_BASE}/api/bg/accept-beats`,
+  bg_set_active_context: `${SERVER_BASE}/api/bg/set-active-context`,
+  bg_extract_beats: `${SERVER_BASE}/api/bg/extract-beats`,
+  bg_inject_beats: `${SERVER_BASE}/api/bg/inject-beats`,
+  bg_update_beat: `${SERVER_BASE}/api/bg/update-beat`,
+  bg_reorder_beats: `${SERVER_BASE}/api/bg/reorder-beats`,
+  assign_image: `${SERVER_BASE}/api/assign-image`,
+  beat_update_text: `${SERVER_BASE}/api/beat/update_text`,
+  inject_image: `${SERVER_BASE}/api/inject-image`,
+  cr_save_crop: `${SERVER_BASE}/api/cr/save-crop`,
+  cr_library_delete: `${SERVER_BASE}/api/cr/library/delete`,
+  v2_sidecar_write: `${SERVER_BASE}/api/v2/sidecar`,
+  // Session 1.5 NEW endpoint — state snapshot before every v59 write (M1)
+  state_snapshot: `${SERVER_BASE}/api/state/snapshot`,
+} as const;
+
+export type ReadEndpoint = keyof typeof READ_ENDPOINTS;
+export type MutationEndpoint = keyof typeof MUTATION_ENDPOINTS;
+
+// Convenience union — used by the client when it needs to accept either.
+export type Endpoint = ReadEndpoint | MutationEndpoint;
+
+export function isMutationEndpoint(e: Endpoint): e is MutationEndpoint {
+  return e in MUTATION_ENDPOINTS;
+}
