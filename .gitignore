@@ -125,3 +125,4 @@ Production/Event_*/.backups/
 *.bak_*
 *.backup
 *~
+*.bak.*
