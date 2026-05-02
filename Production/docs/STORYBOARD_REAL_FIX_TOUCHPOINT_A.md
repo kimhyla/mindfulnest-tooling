@@ -82,12 +82,18 @@ python3 Production/tools/production_server.py --event-dir Production/Event_1 --s
 
 ## 6) Proposed v59 must-pass flows (Claude draft 2026-05-02, Kim edits Session 2)
 
-Path C rewrite Session 1 shipped today. The 10 flows below are derived from
-`LESSONS_LEARNED_May02_2026_Storyboard_Wrap_Chain_Reckoning.md` Part 4 (real
-architecture), the cross-event Accept-All bug class, and the existing v58
-production workflow. Kim: please **edit / strike / add** in the first 30 min
-of Session 2. Your edits are the contract Session 2's 45 Playwright tests
-mirror.
+Split into two sub-sections per Kim 2026-05-02:
+
+- **§6A — Session 1 read-only verification flows** (testable now; smoke passes today)
+- **§6B — v59 production workflow contract** (testable after Session 1.5; this is the **cutover gate**)
+
+§6A is the sanity check that Session 1's preview shell works. §6B is the
+contract the rewrite must satisfy before v59 replaces v58. The Playwright
+suite Session 2 builds (~45 tests) covers §6A in full and stub-tests §6B
+where the server endpoint exists; the rest of §6B turns green as Session 1.5
+ships server-side scope guards + persistence + snapshot endpoint.
+
+### §6A — Session 1 read-only verification flows
 
 | # | Flow | Why it must pass | Kim's ✅ / edit |
 |---|------|------------------|----------------|
@@ -102,12 +108,33 @@ mirror.
 | 9 | Switch tabs Storyboard ↔ BG ↔ Stitcher ↔ Storyboard rapidly; the active-tab indicator stays in sync; no leak of one tab's state into another. | Catches the wrap-chain class of bugs (Rule 36 origin) at the structural level — components are independent. | |
 | 10 | Open DevTools network tab, do all of #1-#9; observe **ZERO POST/PATCH requests** to any `/api/...` endpoint. Only GETs (library, event-state, etc). | Session 1 done-state guarantee: ZERO state writes ship. Mutation channel `pathappPatch()` exists but has no callers until Session 1.5. | |
 
-**Optional / weekly-only (strike if Kim doesn't use):** export sequence,
-batch operations, restart server. These were in the v58 list and may not be
-relevant in v59 if the workflow shifts.
+### §6B — v59 production workflow contract (cutover gate, testable after Session 1.5)
 
-**Replace this proposal with §1 form once edited:** copy the rows you keep
-into §1, mark ✅, then this §6 can be deleted.
+Each row is a real-workflow flow that v59 must satisfy before v59 replaces
+v58 in production use. **This is the cutover gate** — until every row here
+passes, v58 stays available as the flag fallback (M2 parallel-run gate).
+
+| # | Flow | Why it must pass | Kim's ✅ / edit |
+|---|------|------------------|----------------|
+| 1 | Drag a library image onto a beat slot → lands on the correct beat → persists across page reload. | Core Storyboard workflow. Persistence verified across reload kills any "browser-memory only" regression class. | |
+| 2 | Open the Cropper from a beat row → save the crop → the crop becomes that beat's still. | The double-crop detour is gone (Cropper-as-modal); save round-trip works end-to-end. | |
+| 3 | Edit dialogue inline on a beat → save indicator goes green → reload page → the edit persists. | Fix-Q LD-447 invariant carried forward (visible save state) plus persistence. | |
+| 4 | Trim a beat (set start/end) → save → reload → trim persists. | Per-beat metadata round-trip. | |
+| 5 | Accept All from BG while on Event 1 succeeds. The same `/api/bg/accept-beats` POST with body `event_id=Event_2` returns **HTTP 409**. | Direct end-to-end test of LD-456 SCOPE_VALIDATION_V1. The cross-event Accept-All leak class is structurally impossible. | |
+| 6 | Run Kling generation on a beat → option appears in the beat's options array → select it. | Animation pipeline integration (WaveSpeed/Kling) still wires through v59's mutation channel. | |
+| 7 | Run lipsync on a beat → the lipsync output becomes the primary clip for that beat. | ByteDance LipSync round-trip still works through v59. | |
+| 8 | Add a beat / delete a beat → persists across reload. | Beat-list mutation endpoints round-trip correctly through pathappPatch. | |
+| 9 | v59 writes dialogue → flag-flip to v58 (`--storyboard storyboard_v58_prod.html`) → v58 reads back **the same dialogue**. | **Persistence contract verified across the v58↔v59 boundary.** This is M2's literal precondition — without it, parallel-run is unsafe. | |
+| 10 | The `/api/state/snapshot` endpoint fires before every mutation; verify a fresh JSON file appears in `Production/Event_1/.backups/state/YYYY-MM-DD_HHMMSSZ.json` for each mutation in #1-#8. | M1 mitigation verified end-to-end. Every v59 write is rollback-able. | |
+
+**Cutover gate logic:** v58 stays the live storyboard until ALL §6B rows
+pass. Promote v59 only after Kim has personally verified one complete
+module (M2 parallel-run gate) using the v59 app in real production work,
+with v58 still callable as the flag fallback for the same module.
+
+**Replace these proposals with §1 form once edited:** copy the rows you keep
+into §1, mark ✅, then this §6 can be deleted (or retained as the cutover-
+gate checklist).
 
 ---
 
