@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>MindfulNest — Magic Path Picker</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #1a1a2e;
+    color: #e0e0e0;
+    font-family: system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100vh;
+    padding: 16px;
+  }
+  h1 { font-size: 1.1rem; color: #a0c4ff; margin-bottom: 6px; letter-spacing: 0.04em; }
+  #scene-key-label {
+    font-size: 0.78rem;
+    color: #7ba7d8;
+    margin-bottom: 8px;
+    font-family: monospace;
+    display: none;
+  }
+  #instructions {
+    font-size: 0.82rem;
+    color: #aaa;
+    margin-bottom: 12px;
+    text-align: center;
+    max-width: 720px;
+    line-height: 1.5;
+  }
+  #instructions b { color: #e0e0e0; }
+  #toolbar {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  button {
+    padding: 7px 18px;
+    border-radius: 6px;
+    border: none;
+    font-size: 0.85rem;
+    cursor: pointer;
+    font-weight: 600;
+    transition: opacity 0.15s;
+  }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button:not(:disabled):hover { opacity: 0.85; }
+  #btn-submit { background: #1976d2; color: #fff; }
+  #btn-copy   { background: #4caf50; color: #fff; }
+  #btn-undo   { background: #ff9800; color: #fff; }
+  #btn-clear  { background: #e53935; color: #fff; }
+  #copy-flash { font-size: 0.8rem; color: #4caf50; min-width: 60px; }
+  #coord-display {
+    font-size: 0.78rem;
+    color: #888;
+    font-family: monospace;
+    min-width: 180px;
+    text-align: right;
+  }
+
+  /* Drop zone / canvas */
+  #drop-zone {
+    border: 2px dashed #555;
+    border-radius: 10px;
+    width: 100%;
+    max-width: 1200px;
+    min-height: 200px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #666;
+    font-size: 1rem;
+    transition: border-color 0.2s, background 0.2s;
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+  }
+  #drop-zone.drag-over { border-color: #a0c4ff; background: #1e2a44; }
+  #drop-zone canvas { display: block; cursor: crosshair; max-width: 100%; }
+  #drop-text { pointer-events: none; }
+  #point-count { font-size: 0.8rem; color: #aaa; margin-top: 8px; }
+
+  /* YAML output (shown in offline/copy mode) */
+  #yaml-section { width: 100%; max-width: 720px; }
+  #yaml-label { font-size: 0.78rem; color: #888; margin-top: 12px; margin-bottom: 4px; }
+  #yaml-output {
+    background: #111;
+    border: 1px solid #333;
+    border-radius: 8px;
+    padding: 12px 16px;
+    font-family: monospace;
+    font-size: 0.82rem;
+    color: #90ee90;
+    white-space: pre;
+    min-height: 60px;
+    overflow-x: auto;
+  }
+
+  /* Progress panel */
+  #progress-panel {
+    display: none;
+    width: 100%;
+    max-width: 720px;
+    margin-top: 20px;
+    background: #111a2e;
+    border: 1px solid #2a3a5e;
+    border-radius: 10px;
+    padding: 20px 24px;
+  }
+  #progress-title {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: #a0c4ff;
+    margin-bottom: 12px;
+  }
+  #progress-bar-track {
+    background: #222;
+    border-radius: 6px;
+    height: 10px;
+    overflow: hidden;
+    margin-bottom: 10px;
+  }
+  #progress-bar-fill {
+    height: 100%;
+    border-radius: 6px;
+    background: linear-gradient(90deg, #1976d2, #64b5f6);
+    width: 0%;
+    transition: width 0.4s ease;
+  }
+  #progress-bar-fill.done { background: linear-gradient(90deg, #388e3c, #66bb6a); }
+  #progress-bar-fill.error { background: #c62828; }
+  #progress-msg {
+    font-size: 0.82rem;
+    color: #aaa;
+    font-family: monospace;
+    min-height: 1.4em;
+  }
+  #progress-spinner { display: inline-block; margin-right: 6px; }
+
+  /* Result panel */
+  #result-panel {
+    display: none;
+    width: 100%;
+    max-width: 900px;
+    margin-top: 20px;
+    background: #0f1a10;
+    border: 1px solid #2e5e30;
+    border-radius: 10px;
+    padding: 20px 24px;
+    text-align: center;
+  }
+  #result-title {
+    font-size: 1rem;
+    font-weight: 700;
+    color: #66bb6a;
+    margin-bottom: 14px;
+  }
+  #result-preview {
+    max-width: 100%;
+    border-radius: 8px;
+    margin-bottom: 14px;
+    border: 1px solid #2e5e30;
+    display: none;
+  }
+  #result-video {
+    max-width: 100%;
+    border-radius: 8px;
+    margin-bottom: 16px;
+    display: none;
+  }
+  #result-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  #btn-new-path { background: #555; color: #fff; }
+  #btn-open-qt  { background: #37474f; color: #fff; }
+  #error-msg {
+    display: none;
+    color: #ef5350;
+    font-size: 0.85rem;
+    margin-top: 10px;
+    font-family: monospace;
+  }
+</style>
+</head>
+<body>
+
+<h1>MindfulNest — Magic Path Picker</h1>
+<div id="scene-key-label"></div>
+<p id="instructions">
+  <b>Step 1:</b> Background loads automatically from scene_key — or drag a PNG/JPEG below.<br>
+  <b>Step 2:</b> Click 3–9 points along the intended magic trail path (left to right).<br>
+  <b>Step 3:</b> Click <b>Submit Path</b> to render. Or click <b>Copy YAML</b> as backup.<br>
+  Right-click to undo last point. Coordinates are normalized 0–1 fractions of image size.
+</p>
+
+<div id="toolbar">
+  <button id="btn-submit" onclick="submitPath()" disabled>Submit Path</button>
+  <button id="btn-copy"   onclick="copyYAML()">Copy YAML</button>
+  <button id="btn-undo"   onclick="undoPoint()">↩ Undo</button>
+  <button id="btn-clear"  onclick="clearPoints()">✕ Clear All</button>
+  <span id="copy-flash"></span>
+  <span id="coord-display">hover over image to see coords</span>
+</div>
+
+<div id="drop-zone">
+  <span id="drop-text">Drop scene background image here<br><small style="color:#555">(PNG or JPEG) — or auto-loading from scene_key…</small></span>
+  <canvas id="canvas" style="display:none"></canvas>
+</div>
+
+<div id="point-count">0 points placed</div>
+
+<!-- YAML section (offline/backup mode) -->
+<div id="yaml-section">
+  <div id="yaml-label">YAML output (backup — paste into chat):</div>
+  <div id="yaml-output">— load image and click points to generate —</div>
+</div>
+
+<!-- Progress panel (shown after Submit) -->
+<div id="progress-panel">
+  <div id="progress-title">Rendering magic trail…</div>
+  <div id="progress-bar-track">
+    <div id="progress-bar-fill"></div>
+  </div>
+  <div id="progress-msg"><span id="progress-spinner">⏳</span><span id="progress-text">Starting…</span></div>
+  <div id="error-msg"></div>
+</div>
+
+<!-- Result panel (shown when done) -->
+<div id="result-panel">
+  <div id="result-title">✓ Magic render complete</div>
+  <img id="result-preview" alt="Preview frame">
+  <video id="result-video" controls autoplay loop></video>
+  <div id="result-actions">
+    <button id="btn-open-qt" onclick="openInQuickTime()">▶ Open in QuickTime</button>
+    <button id="btn-new-path" onclick="startOver()">↩ Pick new path</button>
+  </div>
+</div>
+
+<script>
+  // ── URL param parsing ──────────────────────────────────────────────────
+  const params    = new URLSearchParams(location.search);
+  const sceneKey  = params.get('scene_key') || '';
+  const bgParam   = params.get('bg') || '';
+  // S4 v3.1 — Animate-this bridge (LD-464 WATERCOLOR_ANIMATE_THIS_V1).
+  // When opened from v59 PhaseProducer's "Animate this" button:
+  //   ?source=<watercolor_key>&return_endpoint=/api/watercolor/animate&scope_event_id=Event_1
+  // We fetch the watercolor as background; submit posts to return_endpoint
+  // with body {source_key, manual_path, scope_event_id}.
+  const sourceKey      = params.get('source') || '';
+  const returnEndpoint = params.get('return_endpoint') || '';
+  const scopeEventId   = params.get('scope_event_id') || params.get('event_id') || '';
+  const animateMode    = !!(sourceKey && returnEndpoint);
+  let   videoPath = '';   // set when render completes
+
+  // ── Show scene key in header ───────────────────────────────────────────
+  if (animateMode) {
+    const lbl = document.getElementById('scene-key-label');
+    lbl.textContent = `Animate-this: ${sourceKey}`;
+    lbl.style.display = 'block';
+    document.getElementById('drop-text').innerHTML =
+      `Auto-loading watercolor <b>${sourceKey}</b>…<br><small style="color:#555">Draw a path on the watercolor below.</small>`;
+  } else if (sceneKey) {
+    const lbl = document.getElementById('scene-key-label');
+    lbl.textContent = `scene: ${sceneKey}`;
+    lbl.style.display = 'block';
+    document.getElementById('drop-text').innerHTML =
+      `Auto-loading background for <b>${sceneKey}</b>…<br><small style="color:#555">(or drag a PNG/JPEG to override)</small>`;
+  }
+
+  // ── DOM refs ───────────────────────────────────────────────────────────
+  const dropZone   = document.getElementById('drop-zone');
+  const canvas     = document.getElementById('canvas');
+  const ctx        = canvas.getContext('2d');
+  const coordEl    = document.getElementById('coord-display');
+  const countEl    = document.getElementById('point-count');
+  const yamlEl     = document.getElementById('yaml-output');
+  const btnSubmit  = document.getElementById('btn-submit');
+
+  let img    = null;
+  let points = [];   // [{px, py, fx, fy}]
+
+  // ── Auto-load background ───────────────────────────────────────────────
+  window.addEventListener('DOMContentLoaded', () => {
+    if (animateMode) {
+      // S4 — fetch watercolor source from /api/phase/watercolor_file
+      const url = `http://localhost:5111/api/phase/watercolor_file?key=${encodeURIComponent(sourceKey)}`;
+      loadImageFromURL(url);
+    } else if (sceneKey) {
+      fetch(`/api/magic/resolve_bg?scene_key=${encodeURIComponent(sceneKey)}`)
+        .then(r => r.json())
+        .then(data => {
+          if (data.ok && data.bg_url) {
+            loadImageFromURL(data.bg_url);
+          } else if (bgParam) {
+            loadImageFromURL(bgParam);
+          } else {
+            document.getElementById('drop-text').innerHTML =
+              `Could not auto-load bg for <b>${sceneKey}</b>.<br><small style="color:#555">Drag a PNG/JPEG instead.</small>`;
+          }
+        })
+        .catch(() => {
+          if (bgParam) { loadImageFromURL(bgParam); return; }
+          document.getElementById('drop-text').innerHTML =
+            `Server unreachable. Drag a PNG/JPEG below.`;
+        });
+    } else if (bgParam) {
+      loadImageFromURL(bgParam);
+    }
+  });
+
+  function loadImageFromURL(url) {
+    const image = new Image();
+    image.onload = () => { applyImage(image); };
+    image.onerror = () => {
+      document.getElementById('drop-text').innerHTML =
+        `Failed to load background image.<br><small style="color:#555">Drag a PNG/JPEG instead.</small>`;
+    };
+    image.src = url;
+  }
+
+  function loadImageFromFile(file) {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => { applyImage(image); URL.revokeObjectURL(url); };
+    image.src = url;
+  }
+
+  function applyImage(image) {
+    img = image;
+    canvas.width  = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    canvas.style.display = 'block';
+    document.getElementById('drop-text').style.display = 'none';
+    points = [];
+    redraw();
+    updateYAML();
+    updateCount();
+    updateSubmitBtn();
+  }
+
+  // ── Drag and drop ──────────────────────────────────────────────────────
+  dropZone.addEventListener('dragover', e => {
+    e.preventDefault();
+    dropZone.classList.add('drag-over');
+  });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    const file = e.dataTransfer.files[0];
+    if (file && file.type.startsWith('image/')) loadImageFromFile(file);
+  });
+  dropZone.addEventListener('click', e => {
+    if (e.target === canvas) return;
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = 'image/*';
+    inp.onchange = () => { if (inp.files[0]) loadImageFromFile(inp.files[0]); };
+    inp.click();
+  });
+
+  // ── Canvas interaction ─────────────────────────────────────────────────
+  canvas.addEventListener('mousemove', e => {
+    if (!img) return;
+    const {fx, fy} = canvasCoords(e);
+    coordEl.textContent = `x=${fx.toFixed(3)}, y=${fy.toFixed(3)}`;
+  });
+
+  canvas.addEventListener('click', e => {
+    if (!img) return;
+    const pt = canvasCoords(e);
+    points.push(pt);
+    redraw();
+    updateYAML();
+    updateCount();
+    updateSubmitBtn();
+  });
+
+  canvas.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    undoPoint();
+  });
+
+  function canvasCoords(e) {
+    const rect   = canvas.getBoundingClientRect();
+    const scaleX = canvas.width  / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const px = (e.clientX - rect.left) * scaleX;
+    const py = (e.clientY - rect.top)  * scaleY;
+    return { px, py, fx: px / canvas.width, fy: py / canvas.height };
+  }
+
+  // ── Drawing ────────────────────────────────────────────────────────────
+  function redraw() {
+    if (!img) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0);
+    if (points.length === 0) return;
+
+    ctx.beginPath();
+    ctx.moveTo(points[0].px, points[0].py);
+    for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].px, points[i].py);
+    ctx.strokeStyle = 'rgba(255,50,50,0.85)';
+    ctx.lineWidth = Math.max(2, canvas.width * 0.002);
+    ctx.stroke();
+
+    points.forEach((pt, i) => {
+      const r  = Math.max(8, canvas.width * 0.006);
+      ctx.beginPath();
+      ctx.arc(pt.px, pt.py, r + 2, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.7)';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(pt.px, pt.py, r, 0, Math.PI * 2);
+      ctx.fillStyle = '#ff3232';
+      ctx.fill();
+      const fs = Math.max(12, canvas.width * 0.012);
+      ctx.font = `bold ${fs}px system-ui`;
+      ctx.fillStyle = '#fff';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(i + 1, pt.px, pt.py);
+      if (i === 0 || i === points.length - 1) {
+        const label = `x=${pt.fx.toFixed(3)} y=${pt.fy.toFixed(3)}`;
+        const lfs   = Math.max(10, canvas.width * 0.009);
+        ctx.font = `${lfs}px monospace`;
+        ctx.fillStyle = '#ffee55';
+        ctx.textAlign = pt.px < canvas.width / 2 ? 'left' : 'right';
+        ctx.textBaseline = 'top';
+        const ox = pt.px < canvas.width / 2 ? r + 6 : -(r + 6);
+        ctx.fillText(label, pt.px + ox, pt.py + r + 4);
+      }
+    });
+  }
+
+  // ── Controls ───────────────────────────────────────────────────────────
+  function undoPoint() {
+    points.pop();
+    redraw();
+    updateYAML();
+    updateCount();
+    updateSubmitBtn();
+  }
+
+  function clearPoints() {
+    points = [];
+    redraw();
+    updateYAML();
+    updateCount();
+    updateSubmitBtn();
+  }
+
+  function updateCount() {
+    countEl.textContent = `${points.length} point${points.length !== 1 ? 's' : ''} placed`;
+  }
+
+  function updateSubmitBtn() {
+    btnSubmit.disabled = !(img && points.length >= 2 && sceneKey);
+  }
+
+  function updateYAML() {
+    if (points.length === 0) {
+      yamlEl.textContent = '— load image and click points to generate —';
+      return;
+    }
+    const lines = points.map(pt => `    - [${pt.fx.toFixed(3)}, ${pt.fy.toFixed(3)}]`);
+    yamlEl.textContent = `  manual_path:\n${lines.join('\n')}`;
+  }
+
+  function copyYAML() {
+    if (points.length < 2) { flashCopy('Need \u22652 points', '#e53935'); return; }
+    const lines = points.map(pt => `    - [${pt.fx.toFixed(3)}, ${pt.fy.toFixed(3)}]`);
+    const yaml  = `  manual_path:\n${lines.join('\n')}`;
+    navigator.clipboard.writeText(yaml).then(() => {
+      flashCopy('\u2713 Copied!', '#4caf50');
+    }).catch(() => {
+      const ta = document.createElement('textarea');
+      ta.value = yaml;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      flashCopy('\u2713 Copied!', '#4caf50');
+    });
+  }
+
+  function flashCopy(msg, color) {
+    const el = document.getElementById('copy-flash');
+    el.textContent = msg;
+    el.style.color = color;
+    setTimeout(() => { el.textContent = ''; }, 2000);
+  }
+
+  // ── Submit Path ────────────────────────────────────────────────────────
+  const STATUS_PROGRESS = {
+    pending:           { pct: 5,   label: 'Queued…' },
+    writing_registry:  { pct: 15,  label: 'Saving path to scene registry…' },
+    rendering_preview: { pct: 40,  label: 'Rendering preview still (final frame)…' },
+    rendering_video:   { pct: 70,  label: 'Rendering full video (84 frames)…' },
+    registering:       { pct: 90,  label: 'Registering in Directus…' },
+    done:              { pct: 100, label: 'Complete!' },
+    error:             { pct: 100, label: 'Error' },
+  };
+
+  let pollTimer = null;
+
+  async function submitPath() {
+    if (points.length < 2) return;
+    if (!animateMode && !sceneKey) {
+      alert('No scene_key or source in URL — cannot submit automatically.\nUse Copy YAML instead.');
+      return;
+    }
+
+    // Disable controls during render
+    btnSubmit.disabled = true;
+    document.getElementById('btn-undo').disabled  = true;
+    document.getElementById('btn-clear').disabled = true;
+
+    // Show progress panel, hide YAML section
+    document.getElementById('yaml-section').style.display = 'none';
+    document.getElementById('result-panel').style.display = 'none';
+    document.getElementById('progress-panel').style.display = 'block';
+    setProgress('pending', null);
+
+    const manual_path = points.map(pt => [
+      parseFloat(pt.fx.toFixed(3)),
+      parseFloat(pt.fy.toFixed(3))
+    ]);
+
+    if (animateMode) {
+      // S4 v3.1 — Animate-this bridge.
+      // POST /api/watercolor/animate with body {source_key, manual_path, scope_event_id}.
+      // Synchronous in S4 (returns final result immediately, no polling).
+      const body = {
+        source_key:     sourceKey,
+        manual_path:    manual_path,
+        scope_event_id: scopeEventId || 'Event_1',
+      };
+      try {
+        const resp = await fetch(`http://localhost:5111${returnEndpoint}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+
+        // Notify the v59 opener so the watercolor library auto-refreshes,
+        // then close this tab. If opened directly (not via window.open),
+        // show the result panel like legacy mode.
+        if (window.opener && !window.opener.closed) {
+          try {
+            window.opener.postMessage({
+              type: 'mn:watercolor-animated',
+              source_key: sourceKey,
+              result: data,
+            }, '*');
+          } catch (_) { /* cross-origin restriction — ignore */ }
+        }
+        videoPath = data.output_path || data.would_write || '';
+        document.getElementById('progress-panel').style.display = 'none';
+        document.getElementById('result-panel').style.display = 'block';
+        document.getElementById('result-panel').innerHTML =
+          `<div style="padding:16px;background:#1a3a1a;border:1px solid #4a8a4a;border-radius:6px;color:#a0e0a0">
+            ✅ Animation submitted for <b>${sourceKey}</b>.
+            ${data.output_path ? `<br>Output: <code>${data.output_path}</code>` : ''}
+            ${data.code === 'S4_DEFERRED' ? `<br><small>(stub: ${data.message})</small>` : ''}
+            <br><br>
+            <button onclick="window.close()" style="padding:8px 16px;background:#4a8a4a;color:#fff;border:0;border-radius:4px;cursor:pointer">Close tab + return to v59</button>
+          </div>`;
+      } catch(err) {
+        showError(err.message);
+      }
+      return;
+    }
+
+    // ── Legacy magic_compositor flow (scene_key) ────────────────────────
+    // Extract absolute file path from bgParam (e.g. "http://localhost:5111/files?path=/abs/path.png")
+    let bgFilePath = '';
+    if (bgParam) {
+      try { bgFilePath = new URL(bgParam).searchParams.get('path') || ''; } catch(_) {}
+    }
+
+    const body = {
+      scene_key:   sceneKey,
+      manual_path: manual_path,
+      style: 'tessa_ori',
+      ...(bgFilePath ? { bg_path: bgFilePath } : {}),
+    };
+
+    let jobId;
+    try {
+      const resp = await fetch('/api/magic/submit_path', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await resp.json();
+      if (!data.ok) throw new Error(data.error || 'submit failed');
+      jobId = data.job_id;
+    } catch(err) {
+      showError(err.message);
+      return;
+    }
+
+    // Start polling
+    pollTimer = setInterval(() => pollStatus(jobId), 2000);
+  }
+
+  async function pollStatus(jobId) {
+    try {
+      const resp = await fetch(`/api/magic/status?job_id=${encodeURIComponent(jobId)}`);
+      const data = await resp.json();
+      if (!data.ok) { showError(data.error || 'poll error'); return; }
+
+      setProgress(data.status, data.message);
+
+      if (data.status === 'done') {
+        clearInterval(pollTimer);
+        showResult(data);
+      } else if (data.status === 'error') {
+        clearInterval(pollTimer);
+        showError(data.error || data.message || 'Unknown error');
+      }
+    } catch(err) {
+      // Network hiccup — keep polling
+    }
+  }
+
+  function setProgress(status, msgOverride) {
+    const info = STATUS_PROGRESS[status] || { pct: 5, label: 'Working…' };
+    const fill = document.getElementById('progress-bar-fill');
+    fill.style.width = info.pct + '%';
+    fill.className = 'done' === status ? 'done' : (status === 'error' ? 'error' : '');
+    const spinner = status === 'done' ? '✓' : (status === 'error' ? '✕' : '⏳');
+    document.getElementById('progress-spinner').textContent = spinner + ' ';
+    document.getElementById('progress-text').textContent = msgOverride || info.label;
+  }
+
+  function showError(msg) {
+    document.getElementById('progress-bar-fill').className = 'error';
+    document.getElementById('progress-bar-fill').style.width = '100%';
+    document.getElementById('progress-spinner').textContent = '✕ ';
+    document.getElementById('progress-text').textContent = 'Error';
+    const errEl = document.getElementById('error-msg');
+    errEl.textContent = msg;
+    errEl.style.display = 'block';
+    document.getElementById('btn-undo').disabled  = false;
+    document.getElementById('btn-clear').disabled = false;
+    updateSubmitBtn();
+  }
+
+  function showResult(data) {
+    document.getElementById('progress-panel').style.display = 'none';
+    const panel = document.getElementById('result-panel');
+    panel.style.display = 'block';
+
+    if (data.preview_path_url) {
+      const img = document.getElementById('result-preview');
+      img.src = data.preview_path_url;
+      img.style.display = 'block';
+    }
+    if (data.video_path_url) {
+      const vid = document.getElementById('result-video');
+      vid.src = data.video_path_url;
+      vid.style.display = 'block';
+      videoPath = data.video_path_url;
+    }
+  }
+
+  function openInQuickTime() {
+    if (!videoPath) return;
+    // Resolve the path param from the URL and open via server
+    const url = videoPath.startsWith('/files?path=')
+      ? decodeURIComponent(videoPath.replace('/files?path=', ''))
+      : videoPath;
+    // Use a hidden link — browser will download/open in default app
+    const a = document.createElement('a');
+    a.href = videoPath;
+    a.download = '';
+    a.click();
+  }
+
+  function startOver() {
+    clearInterval(pollTimer);
+    document.getElementById('result-panel').style.display = 'none';
+    document.getElementById('yaml-section').style.display = 'block';
+    document.getElementById('progress-panel').style.display = 'none';
+    document.getElementById('error-msg').style.display = 'none';
+    document.getElementById('btn-undo').disabled  = false;
+    document.getElementById('btn-clear').disabled = false;
+    points = [];
+    redraw();
+    updateYAML();
+    updateCount();
+    updateSubmitBtn();
+    videoPath = '';
+  }
+</script>
+</body>
+</html>

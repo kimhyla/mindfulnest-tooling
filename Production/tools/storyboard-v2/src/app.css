@@ -375,6 +375,48 @@
 }
 .mn-btn-small { padding: 3px 8px; font-size: 11px; }
 
+.mn-phase-script-editor {
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  margin: 8px 0;
+}
+.mn-phase-script-editor:focus { border-color: var(--accent); outline: none; }
+.mn-phase-status-tag { font-size: 11px; font-style: italic; }
+.mn-phase-status-line {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: var(--code-bg);
+  border-left: 3px solid var(--accent);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.mn-phase-audio, .mn-phase-lipsync {
+  margin: 8px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.mn-phase-audio audio, .mn-phase-lipsync video {
+  background: var(--code-bg);
+  border-radius: 3px;
+}
+.mn-phase-watercolor-anim-tag {
+  font-size: 9px;
+  color: var(--accent);
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  padding: 0 4px;
+  border-radius: 2px;
+  align-self: flex-start;
+}
+
 /* Production Map tab (LD-465) */
 .mn-map-table-wrap {
   overflow: auto;
@@ -398,6 +440,9 @@
 .mn-map-cell { font-family: var(--mono); }
 .mn-map-glyph { font-size: 14px; margin-right: 4px; }
 .mn-map-count { color: var(--text-dim); font-size: 10px; }
+.mn-map-cell-clickable { cursor: pointer; transition: background 80ms; }
+.mn-map-cell-clickable:hover { background: var(--accent-bg); }
+.mn-map-cell-clickable:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 /* BG tab */
 .mn-bg-grid {
@@ -520,6 +565,13 @@
   color: var(--text-dim);
   text-align: center;
 }
+
+/* S4 polish — hide the legacy server-injected storyboard switcher.
+   Per Kim's hands-on findings: she'll never use this in normal flow; the
+   Event selector dropdown above is what she uses. The switcher is a v58
+   relic for storyboard rollback; we leave it accessible via direct DOM
+   manipulation but visually hide it on v59 to reduce confusion. */
+#sb-nav-bar { display: none !important; }
 
 /* Scope banner (LD-456 / LD-458 / LD-460 surfacing) */
 .mn-scope-banner {

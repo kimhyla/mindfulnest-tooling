@@ -47,6 +47,11 @@ export const MUTATION_ENDPOINTS = {
   phase_suggest_script: `${SERVER_BASE}/api/phase/suggest_script`,
   watercolor_animate: `${SERVER_BASE}/api/watercolor/animate`,
   stitch_loudnorm: `${SERVER_BASE}/api/stitch_editor/loudnorm`,
+  // S4 v3.1 — Phase A/B producer mutations.
+  phase_b_regen_audio: `${SERVER_BASE}/api/phase_b/regen_audio`,
+  phase_b_mix_audio: `${SERVER_BASE}/api/phase_b/mix_audio`,
+  phase_b_lipsync: `${SERVER_BASE}/api/phase_b/lipsync`,
+  stitch_save_job: `${SERVER_BASE}/api/stitch_editor/job`,
 } as const;
 
 export type ReadEndpoint = keyof typeof READ_ENDPOINTS;

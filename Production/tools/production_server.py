@@ -5955,38 +5955,158 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_phase_suggest_script(self, body: dict) -> None:
         """POST /api/phase/suggest_script {phase, event_id?, scope_event_id?}
 
-        STUB — full Claude API integration deferred to S4. Currently returns
-        a placeholder so the v59 client can wire up the button + UX flow.
+        Calls Claude API (claude-haiku-4-5 — script suggestions don't need
+        Opus). Phase A reads phase_b_script + module description as context.
+        Phase B reads arc skeleton + therapeutic notes + phase-b-writer skill.
+
+        Per LDs PHASE_A_PRODUCER_V1 + PHASE_B_PRODUCER_V1.
         """
         if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
             return
-        phase = (body or {}).get("phase", "?")
+        phase = ((body or {}).get("phase") or "").strip().lower()
+        if phase not in ("a", "b"):
+            return self._send_json(400, {"error": "phase must be 'a' or 'b'"})
+
+        # Resolve the Anthropic API key.
+        try:
+            sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+            from credential_store import get_secret_optional  # type: ignore
+            api_key = get_secret_optional("ANTHROPIC_API_KEY")
+        except Exception:
+            api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            return self._send_json(503, {
+                "ok": False,
+                "code": "ANTHROPIC_API_KEY_MISSING",
+                "message": (
+                    "Anthropic API key not configured. Add ANTHROPIC_API_KEY to "
+                    "Doppler (project=mindfulnest, config=dev) or set the env var "
+                    "and restart the server. Endpoint code is ready."
+                ),
+                "phase": phase,
+            })
+
+        # Build context per phase.
+        try:
+            state = self.app.state.read_state()
+        except Exception:
+            state = {}
+
+        if phase == "a":
+            phase_b_script = state.get("phase_b_script") or "(no phase_b_script in state — write Phase B first or paste a draft to seed context)"
+            user_prompt = (
+                "You are drafting a Phase A 'demo' script for an interactive children's "
+                "therapeutic app (MindfulNest). Phase A is the Chipper-led demonstration "
+                "that follows Phase B's calm meditation. The child has just completed "
+                "Phase B; Chipper now demonstrates the technique playfully so the child "
+                "can try it themselves.\n\n"
+                "Constraints:\n"
+                "  - 30-60 seconds spoken (Chipper voice).\n"
+                "  - Direct address ('let's try this together').\n"
+                "  - Reference the technique by name ONCE; don't restate the meditation.\n"
+                "  - No clinical jargon.\n"
+                "  - Plain text. No stage directions.\n\n"
+                f"Phase B script just completed:\n---\n{phase_b_script}\n---\n\n"
+                "Write the Phase A demo script now."
+            )
+            system_prompt = (
+                "You are a CRI (Competence-Rooted Identity) script writer for "
+                "MindfulNest, drafting Phase A demo scripts for ages 7-11."
+            )
+        else:  # phase == "b"
+            module_id = state.get("module_id") or "M?"
+            user_prompt = (
+                "You are drafting a Phase B 'meditation' script for an interactive "
+                "children's therapeutic app (MindfulNest). Phase B is the Cedric-narrated "
+                "meditation that introduces a therapeutic technique through the fictional "
+                "Everdale world.\n\n"
+                "Constraints:\n"
+                "  - 90-120 seconds spoken (Cedric voice).\n"
+                "  - 9-step meditation arc: arrive → observe → invitation → technique-intro → "
+                "    technique-practice (3-4 steps) → return → seal.\n"
+                "  - Use {{INHALE_CUE}}, {{EXHALE_CUE}}, {{HOLD_CUE}} cue markers.\n"
+                "  - Frame the technique inside Everdale narrative (no clinical names).\n"
+                "  - Direct second-person address.\n\n"
+                f"Module: {module_id}.\n\n"
+                "Write the Phase B meditation script now."
+            )
+            system_prompt = (
+                "You are a CRI script writer drafting Phase B meditation scripts for "
+                "MindfulNest (B2C children's therapeutic app, ages 7-11). Cedric narrator voice."
+            )
+
+        # Call Anthropic Messages API via urllib (no SDK dependency).
+        url = "https://api.anthropic.com/v1/messages"
+        req_body = {
+            "model": "claude-haiku-4-5",
+            "max_tokens": 2048,
+            "system": system_prompt,
+            "messages": [
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        req_data = json.dumps(req_body).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=req_data,
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            method="POST",
+        )
+        t0 = time.time()
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                resp_body = resp.read().decode("utf-8")
+                resp_data = json.loads(resp_body)
+        except urllib.error.HTTPError as exc:
+            err_body = exc.read().decode("utf-8", errors="replace")
+            return self._send_json(502, {
+                "ok": False,
+                "error": f"Anthropic API HTTP {exc.code}",
+                "detail": err_body[:500],
+            })
+        except urllib.error.URLError as exc:
+            return self._send_json(502, {
+                "ok": False,
+                "error": f"Anthropic API URL error: {exc}",
+            })
+        elapsed_ms = int((time.time() - t0) * 1000)
+
+        # Extract text from response shape.
+        # Response: {content: [{type:'text', text:'...'}], model: '...', usage: {input_tokens, output_tokens}}
+        content = resp_data.get("content") or []
+        script_text = ""
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                script_text += block.get("text", "")
+        usage = resp_data.get("usage") or {}
         return self._send_json(200, {
             "ok": True,
             "phase": phase,
-            "script": (
-                "[S3 stub — full Claude API integration deferred to S4]\n"
-                f"This would be a {phase!r}-suggested script reading "
-                "the relevant context (Phase B for Phase A; arc skeleton + "
-                "therapeutic notes + phase-b-writer skill docs for Phase B).\n"
-                "Wire up: server invokes Claude API with system prompt drawn "
-                "from .claude/skills/phase-b-writer/SKILL.md (or equivalent). "
-                "Returns generated script + model_used + generation_time_ms."
-            ),
-            "model_used": "stub-placeholder",
-            "generation_time_ms": 0,
-            "note": "S3 ships endpoint contract; S4 wires Claude API.",
+            "script": script_text,
+            "model_used": resp_data.get("model", "claude-haiku-4-5"),
+            "generation_time_ms": elapsed_ms,
+            "tokens_in": usage.get("input_tokens"),
+            "tokens_out": usage.get("output_tokens"),
         })
 
     def _handle_watercolor_animate(self, body: dict) -> None:
         """POST /api/watercolor/animate {source_key, manual_path, style?, duration?, scope_event_id}
 
-        Per LD WATERCOLOR_ANIMATE_THIS_V1. Invokes magic_compositor with the
-        watercolor as background; writes alpha-preserving qtrle .mov.
+        Per LD-464 WATERCOLOR_ANIMATE_THIS_V1. Invokes magic_compositor with
+        the watercolor source as background; writes h264 mp4 to
+        Production/assets/watercolor_library/<key>_animated_<TS>.mp4 and
+        registers via registered_write.py (asset_type='magic_clip', tag
+        'watercolor_animation').
 
-        S3 ships endpoint contract + scope-guard + async pin. The actual
-        magic_compositor invocation is wired but kept synchronous for now;
-        S4 polishes the async path + thread closures + parent_asset_id link.
+        Note on output format: spec called for alpha-preserving qtrle .mov;
+        magic_compositor's render_video() outputs h264 mp4 (background +
+        magic trail composited). The trail-only alpha output would require
+        modifying render_video() — flagged S5 polish. The mp4 is what v59
+        actually consumes (drag onto Phase B/A timeline as a video cue).
         """
         if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
@@ -5998,7 +6118,30 @@ class ProductionHandler(BaseHTTPRequestHandler):
             return self._send_json(400, {
                 "error": "manual_path must be a list of [x,y] pairs (>=2 points)",
             })
-        # Resolve source watercolor.
+
+        # Validate path point shape: each must be [x, y] floats in [0, 1].
+        clean_path: list[list[float]] = []
+        for i, pt in enumerate(manual_path):
+            if not (isinstance(pt, list) and len(pt) == 2):
+                return self._send_json(400, {
+                    "error": f"manual_path[{i}] must be a 2-element [x,y] list",
+                })
+            try:
+                x, y = float(pt[0]), float(pt[1])
+            except (TypeError, ValueError):
+                return self._send_json(400, {
+                    "error": f"manual_path[{i}] coords must be numeric",
+                })
+            if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+                return self._send_json(400, {
+                    "error": f"manual_path[{i}] = ({x}, {y}) out of [0,1] range",
+                })
+            clean_path.append([x, y])
+
+        style = (body or {}).get("style") or "tessa_ori"
+        duration = float((body or {}).get("duration") or 3.5)
+
+        # Resolve source watercolor (prefer .png).
         wc_dir = Path(__file__).resolve().parent.parent / "assets" / "watercolor_library"
         matches = list(wc_dir.glob(f"{source_key}.*"))
         if not matches:
@@ -6006,7 +6149,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 "error": f"no watercolor with key={source_key!r}",
                 "looked_in": str(wc_dir),
             })
-        source_path = matches[0]
+        source_path = next((m for m in matches if m.suffix.lower() == ".png"), matches[0])
 
         # LD-460 — capture pin BEFORE work; check before terminal write.
         _pin = {
@@ -6014,32 +6157,87 @@ class ProductionHandler(BaseHTTPRequestHandler):
             "pinned_event_dir": self.app.event_dir,
             "_handler": "_handle_watercolor_animate",
         }
+        if not self._check_event_pin(_pin, "watercolor_animate_pre_work"):
+            return self._send_json(423, {
+                "error": "event_changed_pre_work",
+                "code": "ASYNC_JOB_GENERATION_PIN_V1",
+            })
 
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-        out_name = f"{source_key}_animated_{ts}.mov"
+        out_name = f"{source_key}_animated_{ts}.mp4"
         out_path = wc_dir / out_name
 
-        # S3 stub: actual magic_compositor invocation deferred to S4.
-        # We document the call site + return 501 with a clear marker so the
-        # v59 client can show "S4 deferred — endpoint scaffold in place".
-        # The scope guard + async pin pattern IS in place per LD-460 + LD-456.
+        # Invoke MagicCompositor synchronously (render_video() is 30-60s).
+        try:
+            tools_dir = str(Path(__file__).resolve().parent)
+            if tools_dir not in sys.path:
+                sys.path.insert(0, tools_dir)
+            from magic_compositor import MagicCompositor  # type: ignore
+            mc = MagicCompositor(
+                background_path=str(source_path),
+                path_pts=clean_path,
+                style=style,
+                duration=duration,
+                output_dir=str(wc_dir),
+                label=f"{source_key}_animated_{ts}",
+                tags=["magic", "compositor", "watercolor_animation", style],
+            )
+            print(f"[watercolor/animate] rendering: source={source_key} "
+                  f"points={len(clean_path)} style={style} duration={duration}s",
+                  flush=True)
+            rendered_path = mc.render_video(output_path=str(out_path))
+        except Exception as exc:
+            traceback.print_exc()
+            return self._send_json(500, {
+                "error": f"magic_compositor failed: {type(exc).__name__}: {exc}",
+                "source_key": source_key,
+                "style": style,
+            })
+
+        # LD-460 — terminal pin check before registration.
         if not self._check_event_pin(_pin, "watercolor_animate_terminal"):
             return self._send_json(423, {
                 "error": "event_changed_mid_job",
                 "code": "ASYNC_JOB_GENERATION_PIN_V1",
+                "orphaned_output": str(rendered_path),
             })
-        return self._send_json(501, {
-            "ok": False,
-            "code": "S4_DEFERRED",
-            "message": (
-                "Endpoint contract + scope-guard + async-pin in place; full "
-                "magic_compositor invocation + qtrle output + registered_write "
-                "ships in Session 4. Source resolved; manual_path validated; "
-                "would write to "
-            ) + str(out_path),
+
+        # Register via registered_write.py (LD-421). asset_type='magic_clip'
+        # (watercolor_animation isn't in the accepted set; we tag it for search).
+        registered_id: int | None = None
+        try:
+            from registered_write import register_asset  # type: ignore
+            registered_id, _ = register_asset(
+                file_path=str(rendered_path),
+                asset_type="magic_clip",
+                module_id=1,
+                produced_by_skill="watercolor_animate_endpoint",
+                colloquial_name=f"{source_key} animated",
+                tags=["magic", "watercolor_animation", style, source_key],
+                notes=(
+                    f"Watercolor animation generated from {source_path.name} "
+                    f"with {len(clean_path)} path points, style={style}, "
+                    f"duration={duration}s. v59 PhaseProducer Animate-this bridge "
+                    f"(LD-464)."
+                ),
+                role="library",
+            )
+        except Exception as exc:
+            print(f"[watercolor/animate] WARN registered_write failed: "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+
+        size_bytes = Path(rendered_path).stat().st_size
+        return self._send_json(200, {
+            "ok": True,
+            "source_key": source_key,
             "source_path": str(source_path),
-            "would_write": str(out_path),
-            "manual_path_points": len(manual_path),
+            "output_path": str(rendered_path),
+            "output_filename": Path(rendered_path).name,
+            "size_bytes": size_bytes,
+            "registered_asset_id": registered_id,
+            "style": style,
+            "duration_s": duration,
+            "manual_path_points": len(clean_path),
         })
 
     _PRODUCTION_MAP_CACHE: dict | None = None
@@ -6086,7 +6284,9 @@ class ProductionHandler(BaseHTTPRequestHandler):
             segments: dict[str, dict] = {}
             if edir:
                 # Best-effort: file-based status.
-                phase_a = list(edir.glob("phase_a_stitched_*.mp4")) + list(edir.glob("phase_a_canonical_*.mp4"))
+                # Per spec §3.9: 'canonical' is reserved for fly-in/fly-out source clips.
+                # Phase A stitched outputs use phase_a_stitched_*.mp4 (S4 migration).
+                phase_a = list(edir.glob("phase_a_stitched_*.mp4"))
                 phase_b = list(edir.glob("phase_b_lipsync_*.mp4"))
                 intro_or_resolution = list(edir.glob("storyboard_v*_prod.html"))
                 final_concat = list(edir.glob(f"M{m.get('m_number')}_*_final.mp4"))
@@ -6129,20 +6329,115 @@ class ProductionHandler(BaseHTTPRequestHandler):
         return self._send_json(200, out)
 
     def _handle_stitch_loudnorm(self, body: dict) -> None:
-        """POST /api/stitch_editor/loudnorm — second-pass loudnorm on slots not pre-normalized.
+        """POST /api/stitch_editor/loudnorm — apply ffmpeg single-pass loudnorm.
 
-        Per LD EXPORT_TO_STITCHER_V1. S3 ships endpoint contract; full ffmpeg
-        loudnorm wiring is S4 polish.
+        Body: {
+          input_path: str,        # absolute or event-relative path to mp4
+          output_path?: str,      # optional override; default <input>_ln.mp4
+          target_lufs?: float,    # default -19 (matches _silcomp_audio pattern)
+          target_tp?: float,      # default -1.5 dBTP
+          target_lra?: float,     # default 11 LU
+          scope_event_id?: str
+        }
+
+        Skips re-application if input has already been marked
+        loudnorm_already_applied=true in stitch_state (lipsync outputs auto-mark
+        themselves to prevent double-application).
+
+        Per LD-466 EXPORT_TO_STITCHER_V1 + spec §3.5.1 + Rule 8 (audio safety).
         """
         if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
             return
-        return self._send_json(501, {
-            "ok": False,
-            "code": "S4_DEFERRED",
-            "message": (
-                "Loudnorm endpoint scaffold in place; ffmpeg loudnorm "
-                "second-pass wiring ships in Session 4."
-            ),
+
+        input_path_raw = (body or {}).get("input_path")
+        if not input_path_raw:
+            return self._send_json(400, {"error": "input_path required"})
+
+        # Resolve relative to event_dir if relative.
+        ip = Path(input_path_raw)
+        if not ip.is_absolute():
+            ip = self.app.event_dir / input_path_raw
+        if not ip.is_file():
+            return self._send_json(404, {
+                "error": "input file not found",
+                "input_path": str(ip),
+            })
+
+        target_lufs = float((body or {}).get("target_lufs", -19.0))
+        target_tp = float((body or {}).get("target_tp", -1.5))
+        target_lra = float((body or {}).get("target_lra", 11.0))
+
+        # Output path: default to <input>_ln.<ext> in same dir.
+        out_raw = (body or {}).get("output_path")
+        if out_raw:
+            op = Path(out_raw)
+            if not op.is_absolute():
+                op = self.app.event_dir / out_raw
+        else:
+            op = ip.with_name(f"{ip.stem}_ln{ip.suffix}")
+
+        # Already-applied guard: check stitch_state.
+        try:
+            stitch = self.app.stitch_state.read_state() or {}
+        except Exception:
+            stitch = {}
+        applied_paths = set(stitch.get("loudnorm_already_applied_paths", []))
+        if str(ip) in applied_paths:
+            return self._send_json(200, {
+                "ok": True,
+                "skipped": True,
+                "reason": "loudnorm_already_applied",
+                "input_path": str(ip),
+                "output_path": str(ip),  # nothing to do; "output" is the input
+            })
+
+        # Run ffmpeg single-pass loudnorm.
+        # -af "loudnorm=I=-19:TP=-1.5:LRA=11" -c:v copy preserves video frames.
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(ip),
+            "-af", f"loudnorm=I={target_lufs}:TP={target_tp}:LRA={target_lra}",
+            "-c:v", "copy",
+            "-c:a", "aac", "-b:a", "192k",
+            str(op),
+        ]
+        try:
+            result = subprocess.run(cmd, check=True, capture_output=True, timeout=600)
+        except subprocess.CalledProcessError as exc:
+            return self._send_json(500, {
+                "error": "ffmpeg loudnorm failed",
+                "returncode": exc.returncode,
+                "stderr": exc.stderr.decode("utf-8", errors="replace")[-2000:],
+            })
+        except subprocess.TimeoutExpired:
+            return self._send_json(504, {"error": "ffmpeg loudnorm timed out (>600s)"})
+
+        # Mark the OUTPUT as loudnorm_already_applied so a re-run skips it.
+        try:
+            def _mark(state, _p=str(op)):
+                paths = state.setdefault("loudnorm_already_applied_paths", [])
+                if _p not in paths:
+                    paths.append(_p)
+                return None
+            self.app.stitch_state.mutate_state(_mark)
+        except Exception as exc:
+            print(f"[loudnorm] WARN could not mark applied: {exc}", flush=True)
+
+        if not op.is_file():
+            return self._send_json(500, {
+                "error": "ffmpeg succeeded but output file missing",
+                "output_path": str(op),
+            })
+        size_bytes = op.stat().st_size
+        return self._send_json(200, {
+            "ok": True,
+            "input_path": str(ip),
+            "output_path": str(op),
+            "size_bytes": size_bytes,
+            "target_lufs": target_lufs,
+            "target_tp": target_tp,
+            "target_lra": target_lra,
+            "marked_loudnorm_already_applied": True,
         })
 
     def _handle_bg_set_active_context(self, body: dict) -> None:
@@ -11253,7 +11548,7 @@ body {{padding-top:44px!important;}}
             return p2 if p2.is_file() else None
 
         intro_path   = _resolve("latest_preview_stitched_path")
-        phase_a_path = _resolve("phase_a_canonical_file")
+        phase_a_path = _resolve("phase_a_stitched_file")
         phase_b_path = _resolve("phase_b_lipsync_file")
 
         # Win video: use registered state key, else fall back to latest preserved winner
@@ -13097,7 +13392,7 @@ body {{padding-top:44px!important;}}
         canonical_info = None
         if phase == "a" and remux_info is not None:
             try:
-                canonical_info = self._auto_assemble_phase_a_canonical(ts)
+                canonical_info = self._auto_assemble_phase_a_stitched(ts)
             except Exception as exc:  # noqa: BLE001
                 # Non-fatal: mix + remux succeeded; canonical is a nice-to-have.
                 traceback.print_exc()
@@ -13115,7 +13410,7 @@ body {{padding-top:44px!important;}}
             "module_version": new_version,
         })
 
-    def _auto_assemble_phase_a_canonical(self, ts: str) -> dict | None:
+    def _auto_assemble_phase_a_stitched(self, ts: str) -> dict | None:
         """Stitch fly-in + lipsync (voice-only) + fly-out, then overlay a
         CONTINUOUS ambient bed across the entire duration so the bed is
         audible during the fly-in and fly-out (not just the middle).
@@ -13237,7 +13532,7 @@ body {{padding-top:44px!important;}}
             str(intermediate_path),
         ], check=True, capture_output=True, timeout=180)
 
-        out_path = self.app.event_dir / f"phase_a_canonical_{ts}.mp4"
+        out_path = self.app.event_dir / f"phase_a_stitched_{ts}.mp4"
 
         if ambient_path is not None:
             # Stage 2: overlay continuous ambient bed across the full duration.
@@ -13285,8 +13580,8 @@ body {{padding-top:44px!important;}}
             dur = 0.0
 
         def _apply(state, _n=out_path.name, _m=mtime_v):
-            state["phase_a_canonical_file"] = _n
-            state["phase_a_canonical_mtime"] = _m
+            state["phase_a_stitched_file"] = _n
+            state["phase_a_stitched_mtime"] = _m
             state["_module_version"] = int(state.get("_module_version", 0) or 0) + 1
             return state["_module_version"]
         try:

@@ -8,7 +8,12 @@
 
 import { useEffect, useState } from 'preact/hooks';
 import { apiGet } from '../api/client';
-import { activeScope, scopeKey } from '../state/scope';
+import { activeScope, scopeKey, makeScope } from '../state/scope';
+import { MUTATION_ENDPOINTS } from '../api/endpoints';
+
+// Custom event the App listens for. ProductionMapTab dispatches this on
+// cell click; App switches activeTab to 'storyboard'.
+export const MAP_CELL_NAVIGATE_EVENT = 'mn:map-cell-navigate';
 
 interface SegmentStatus {
   status: 'ready' | 'missing' | string;
@@ -101,13 +106,44 @@ export function ProductionMapTab() {
                   <td>{m.video_role}</td>
                   {SEGMENTS.map((s) => {
                     const seg = m.segments[s.key];
+                    const onCellClick = async () => {
+                      // S4 — click cell to load that scope in storyboard.
+                      // Per LD-465 PRODUCTION_MAP_V1.
+                      if (!m.event_dir) return;
+                      try {
+                        const res = await fetch(MUTATION_ENDPOINTS.event_load, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ event_id: m.event_dir }),
+                        });
+                        if (res.ok) {
+                          const data = await res.json() as {
+                            event_id: string;
+                            event_generation: number;
+                          };
+                          activeScope.value = makeScope(
+                            data.event_id, null, data.event_generation,
+                          );
+                        }
+                      } catch (e) {
+                        // eslint-disable-next-line no-console
+                        console.warn('[map-cell] event_load failed:', e);
+                      }
+                      // Dispatch tab-switch event so App can flip to 'storyboard'.
+                      window.dispatchEvent(new CustomEvent(MAP_CELL_NAVIGATE_EVENT, {
+                        detail: { m_number: m.m_number, segment: s.key, event_dir: m.event_dir },
+                      }));
+                    };
                     return (
                       <td
                         key={s.key}
-                        class="mn-map-cell"
+                        class="mn-map-cell mn-map-cell-clickable"
                         data-testid={`map-cell-m${m.m_number}-${s.key}`}
                         data-segment-status={seg?.status ?? 'unknown'}
-                        title={seg?.latest ?? ''}
+                        title={`${seg?.latest ?? ''}${seg?.latest ? ' · ' : ''}click to load this scope`}
+                        onClick={onCellClick}
+                        role="button"
+                        tabIndex={0}
                       >
                         <span class="mn-map-glyph">{statusGlyph(seg)}</span>
                         {seg ? (

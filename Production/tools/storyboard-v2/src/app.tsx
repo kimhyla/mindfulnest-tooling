@@ -7,6 +7,7 @@
 // channel pathappPatch() exists in src/api/client.ts but has no callers.
 
 import { signal } from '@preact/signals';
+import { useEffect } from 'preact/hooks';
 import { ScopeBoundary } from './components/ScopeBoundary';
 import { ScopeBanner } from './components/ScopeBanner';
 import { TabBar, type TabKey } from './components/TabBar';
@@ -15,7 +16,7 @@ import { BgTab } from './components/BgTab';
 import { CropperModal, initialCropperModalState } from './components/CropperModal';
 import { StitcherTab } from './components/StitcherTab';
 import { LibraryPanel } from './components/LibraryPanel';
-import { ProductionMapTab } from './components/ProductionMapTab';
+import { ProductionMapTab, MAP_CELL_NAVIGATE_EVENT } from './components/ProductionMapTab';
 import { EventSelector } from './components/EventSelector';
 import { activeScope, scopeKey } from './state/scope';
 import './app.css';
@@ -59,6 +60,14 @@ function ActivePane() {
 }
 
 export function App() {
+  // S4 — Production Map cell click → switch to Storyboard tab.
+  useEffect(() => {
+    const onMapNavigate = () => {
+      activeTab.value = 'storyboard';
+    };
+    window.addEventListener(MAP_CELL_NAVIGATE_EVENT, onMapNavigate);
+    return () => window.removeEventListener(MAP_CELL_NAVIGATE_EVENT, onMapNavigate);
+  }, []);
   return (
     <ScopeBoundary>
       <div class="mn-app" data-testid="app-root">
@@ -66,7 +75,7 @@ export function App() {
         <header class="mn-app-header">
           <h1>Storyboard v2</h1>
           <span class="mn-app-subhead" data-testid="app-subhead">
-            Path C rewrite &middot; Session 3 v3.1 — full producers + animate + stitcher + production map
+            Path C rewrite &middot; Session 4 v3.1 — full producer wiring + animate + stitcher complete
           </span>
           <EventSelector />
         </header>

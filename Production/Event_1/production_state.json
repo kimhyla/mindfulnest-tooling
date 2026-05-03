@@ -2,7 +2,7 @@
   "event_id": "M1E1",
   "version": "v1",
   "created_at": "2026-04-16T02:07:53.286771+00:00",
-  "updated_at": "2026-05-03T01:36:03.090676+00:00",
+  "updated_at": "2026-05-03T02:42:34.041819+00:00",
   "beats": {
     "beat_03": {
       "phase_1": {
@@ -216,7 +216,7 @@
       },
       "end_frame_prompt": "Same character, same outfit, same cartoon 3D Pixar-style art, same lighting, same forest background. Tessa the turtle now has a softer, more internally reflective expression \u2014 eyes lowered slightly in gentle remorse, head tilted subtly downward. Beak still closed. Same 4:3 composition and framing.",
       "text": "You're right ... How do you know about the MindfulNest?",
-      "text_last_updated_at": "2026-05-03T01:35:57.130541+00:00",
+      "text_last_updated_at": "2026-05-03T02:42:28.103669+00:00",
       "text_modified_after_tts": true,
       "audio_file": "line_05_tessa.mp3",
       "audio_duration_s": 8.4,
@@ -318,7 +318,7 @@
         "pause_after_ms": 0
       },
       "text": "Oh my gosh!  I can't believe it!  I study the MindfulNest at school.  The old books say it brought Light-Magic into the world.  But that was like a thousand years ago, so I'm not sure- WHOAH!!",
-      "text_last_updated_at": "2026-05-03T01:36:02.160515+00:00",
+      "text_last_updated_at": "2026-05-03T02:42:33.168940+00:00",
       "lipsync": {
         "status": "completed",
         "task_id": "4f14682c043d49e1b478e6c85fbd02f8",
@@ -504,7 +504,7 @@
         "speaker_mismatch_cleared_at": "2026-04-25T20:21:39.909778+00:00"
       },
       "text": "(Sounds of something heavy falling through the branches and landing on the forest floor). Luna's disembodied voice: [pause] [pause]. \"I'm OK! I'm OK.\"",
-      "text_last_updated_at": "2026-05-03T01:35:23.183840+00:00",
+      "text_last_updated_at": "2026-05-03T02:41:53.128003+00:00",
       "_version": 11,
       "speaker": "Luna",
       "audio_file": "line_01_guide_bird.mp3",
@@ -665,7 +665,7 @@
       "_version": 20,
       "speaker": "Luna",
       "text": "WHAT is THAT.... Is that ... Is that IT...?  Did I find it??",
-      "text_last_updated_at": "2026-05-03T01:35:26.781440+00:00",
+      "text_last_updated_at": "2026-05-03T02:41:58.024196+00:00",
       "text_modified_after_tts": true
     },
     "beat_04": {
@@ -698,7 +698,7 @@
       "_version": 8,
       "speaker": "Tessa",
       "text": "[curious]  I'm Luna.  I'm a scientist.  [pause].  Well, a student scientist.. [pause]  And if my calculations are right... [pause] THAT is the MindfulNest! ",
-      "text_last_updated_at": "2026-05-03T01:35:32.705381+00:00",
+      "text_last_updated_at": "2026-05-03T02:42:03.708436+00:00",
       "text_modified_after_tts": true
     },
     "beat_07": {
@@ -812,7 +812,7 @@
       "_version": 4,
       "speaker": "Luna",
       "text": "IT'S AWAKE!!!  [pause] [pause] The Runestone [pause] How?! What did you DO?!?",
-      "text_last_updated_at": "2026-05-03T01:35:46.273803+00:00",
+      "text_last_updated_at": "2026-05-03T02:42:17.124058+00:00",
       "text_modified_after_tts": true
     },
     "beat_08": {
@@ -1080,8 +1080,6 @@
   "phase_a_mixed_audio_mtime": 1776830417,
   "phase_a_ambient_preset_id": "meditation_pretty_v1",
   "phase_a_watercolor_cues_json": "[]",
-  "phase_a_canonical_file": "phase_a_canonical_20260422-000017.mp4",
-  "phase_a_canonical_mtime": 1776830428,
   "latest_preview_stitched_path": "Production/Event_1/preview/preview_stitched_eb9853f4cdfceb7a350ab220fd326c3369ae482fac3c30b7c45eac4a83cf8a2a.mp4",
   "full_module_segment_boundaries": [
     {
@@ -1116,5 +1114,7 @@
       "fadein_ms": 300,
       "fadeout_ms": 1200
     }
-  ]
+  ],
+  "phase_a_stitched_file": "phase_a_stitched_20260422-000017.mp4",
+  "phase_a_stitched_mtime": 1776830428
 }
