@@ -11,6 +11,7 @@
 // (cross-event guard, snapshot endpoint, export buttons) ARE wired live.
 
 import { test, expect, request, type Page } from '@playwright/test';
+import { protectBeatText } from './helpers';
 
 async function gotoApp(page: Page) {
   await page.goto('/');
@@ -130,7 +131,8 @@ test.describe('§6B — production workflow contract', () => {
     // S3 polish — full canvas cropping + lib-to-cropper routing.
   });
 
-  test('§6B.3 — dialogue edit persists across reload', async ({ page }) => {
+  test('§6B.3 — dialogue edit persists across reload', async ({ page, request }) => {
+    await using _r = await protectBeatText(request, 'beat_05');
     await gotoApp(page);
     await expect(page.locator('[data-testid="beat-list"]')).toBeVisible({ timeout: 10000 });
     const text = page.locator('[data-testid="beat-text-4"]');
@@ -178,7 +180,8 @@ test.describe('§6B — production workflow contract', () => {
     // See rollback.spec.ts for the actual rollback E2E (closes spec verification probe #12).
   });
 
-  test('§6B.10 — snapshot endpoint fires before mutation; .backups/state/<UTC>.json appears', async ({ page }) => {
+  test('§6B.10 — snapshot endpoint fires before mutation; .backups/state/<UTC>.json appears', async ({ page, request }) => {
+    await using _r = await protectBeatText(request, 'beat_06');
     // Count current snapshot files. (Playwright runs as ESM; resolve via
     // import.meta.url instead of __dirname.)
     const fs = await import('node:fs');

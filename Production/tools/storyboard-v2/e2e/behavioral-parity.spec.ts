@@ -13,6 +13,7 @@
 //     workarounds in code).
 
 import { test, expect, request, type Page, type Request } from '@playwright/test';
+import { protectBeatText } from './helpers';
 
 // ----------------------------------------------------------------
 // Helpers
@@ -39,7 +40,8 @@ async function waitForBeats(page: Page) {
 // ----------------------------------------------------------------
 
 test.describe('parity / dialogue', () => {
-  test('row 1a — save indicator goes saving -> saved on blur', async ({ page }) => {
+  test('row 1a — save indicator goes saving -> saved on blur', async ({ page, request }) => {
+    await using _r = await protectBeatText(request, 'beat_01');
     await gotoApp(page);
     const beats = await waitForBeats(page);
     expect(await beats.count()).toBeGreaterThan(0);
@@ -65,7 +67,8 @@ test.describe('parity / dialogue', () => {
     await expect(indicator).not.toHaveAttribute('data-save-status', 'saving');
   });
 
-  test('row 4 — pathappPatch sends scope_version, not expected_version', async ({ page }) => {
+  test('row 4 — pathappPatch sends scope_version, not expected_version', async ({ page, request }) => {
+    await using _r = await protectBeatText(request, 'beat_02');
     await gotoApp(page);
     await waitForBeats(page);
     const requests: Request[] = [];
@@ -95,7 +98,8 @@ test.describe('parity / dialogue', () => {
     expect([400, 422]).toContain(res.status());
   });
 
-  test('row 25a — localStorage shadow on keystroke', async ({ page }) => {
+  test('row 25a — localStorage shadow on keystroke', async ({ page, request }) => {
+    await using _r = await protectBeatText(request, 'beat_03');
     await gotoApp(page);
     await waitForBeats(page);
     const text = page.locator('[data-testid="beat-text-2"]');
@@ -112,7 +116,8 @@ test.describe('parity / dialogue', () => {
     expect(parsed.text.includes('shadow-test')).toBe(true);
   });
 
-  test('row 25b — localStorage shadow cleared after successful save', async ({ page }) => {
+  test('row 25b — localStorage shadow cleared after successful save', async ({ page, request }) => {
+    await using _r = await protectBeatText(request, 'beat_04');
     await gotoApp(page);
     await waitForBeats(page);
     const text = page.locator('[data-testid="beat-text-3"]');

@@ -15,6 +15,7 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { activeScope, scopeKey } from '../state/scope';
 import { apiGet, pathappPatch } from '../api/client';
+import { PhaseProducer } from './phase/PhaseProducer';
 
 interface BeatState {
   speaker?: string;
@@ -337,6 +338,10 @@ export function StoryboardTab() {
           scope: {scopeKey(activeScope.value)}
         </span>
       </header>
+      <div class="mn-phase-producers" data-testid="phase-producers">
+        <PhaseProducer phase="b" />
+        <PhaseProducer phase="a" />
+      </div>
       {loading ? (
         <p class="mn-loading" data-testid="storyboard-loading">
           Loading event state&hellip;

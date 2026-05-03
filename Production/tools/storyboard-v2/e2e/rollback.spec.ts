@@ -18,6 +18,7 @@
 //   * Sidecar regeneration happening on every /api/beat/update_text
 
 import { test, expect, request, type Page } from '@playwright/test';
+import { protectBeatText } from './helpers';
 
 async function gotoApp(page: Page) {
   await page.goto('/');
@@ -36,8 +37,9 @@ test.describe('rollback E2E (closes spec verification probe #12)', () => {
     v58_present = fs.existsSync(v58);
   });
 
-  test('write via v59 → flip server to v58 → assert text visible via sidecar', async ({ page }) => {
+  test('write via v59 → flip server to v58 → assert text visible via sidecar', async ({ page, request }) => {
     test.skip(!v58_present, 'v58 fallback file not present at Production/Event_1/');
+    await using _r = await protectBeatText(request, 'beat_07');
 
     const stamp = `[rollback-${Date.now()}]`;
 
@@ -57,7 +59,7 @@ test.describe('rollback E2E (closes spec verification probe #12)', () => {
     await expect(indicator).toHaveAttribute('data-save-status', 'saved', { timeout: 10000 });
 
     // 2. State.json should now have the stamp under beats[beat_id].text.
-    const ctx = await request.newContext();
+    const ctx = request;
     const stateRes = await ctx.get(`http://localhost:5111/api/v2/event/Event_1/state`);
     const state = (await stateRes.json()) as {
       beats?: Record<string, { text?: string }>;

@@ -14,6 +14,11 @@ export const READ_ENDPOINTS = {
   v2_sidecar: `${SERVER_BASE}/api/v2/storyboard/L.json`,
   bg_state: `${SERVER_BASE}/api/bg/state`,
   patch_health: `${SERVER_BASE}/api/patch_health`,
+  // S3 v3.1
+  event_list: `${SERVER_BASE}/api/event/list`,
+  phase_watercolor_list: `${SERVER_BASE}/api/phase/watercolor_list`,
+  phase_base_clips_list: `${SERVER_BASE}/api/phase/base_clips_list`,
+  production_map: `${SERVER_BASE}/api/production/map`,
 } as const;
 
 // MUTATION endpoints — Session 1 ships ZERO callers of these; they exist
@@ -38,6 +43,10 @@ export const MUTATION_ENDPOINTS = {
   state_snapshot: `${SERVER_BASE}/api/state/snapshot`,
   // Session 1.5 v3.1 NEW endpoint — atomic event swap + generation bump (LD-458)
   event_load: `${SERVER_BASE}/api/event/load`,
+  // S3 v3.1 — phase + animate + stitcher mutations.
+  phase_suggest_script: `${SERVER_BASE}/api/phase/suggest_script`,
+  watercolor_animate: `${SERVER_BASE}/api/watercolor/animate`,
+  stitch_loudnorm: `${SERVER_BASE}/api/stitch_editor/loudnorm`,
 } as const;
 
 export type ReadEndpoint = keyof typeof READ_ENDPOINTS;

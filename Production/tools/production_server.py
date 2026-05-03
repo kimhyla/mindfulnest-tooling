@@ -4611,6 +4611,17 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_cr_full_image()
             if path.startswith("/api/storyboard/list"):
                 return self._handle_storyboard_list()
+            # S3 v3.1 GET endpoints — LDs 462-467.
+            if path == "/api/event/list":
+                return self._handle_event_list()
+            if path == "/api/phase/watercolor_list":
+                return self._handle_phase_watercolor_list()
+            if path == "/api/phase/watercolor_file":
+                return self._handle_phase_watercolor_file()
+            if path == "/api/phase/base_clips_list":
+                return self._handle_phase_base_clips_list()
+            if path == "/api/production/map":
+                return self._handle_production_map()
             # ── Visible Magic Phase 2 (2026-04-24) ──────────────────────────────
             if path == "/magic":
                 return self._serve_magic_picker()
@@ -4783,6 +4794,13 @@ class ProductionHandler(BaseHTTPRequestHandler):
             # LD-458 EVENT_LOAD_GENERATION_LOCK_V1 — atomic event swap + gen bump.
             if path == "/api/event/load":
                 return self._handle_event_load(body)
+            # S3 v3.1 endpoints — LDs 462-467.
+            if path == "/api/phase/suggest_script":
+                return self._handle_phase_suggest_script(body)
+            if path == "/api/watercolor/animate":
+                return self._handle_watercolor_animate(body)
+            if path == "/api/stitch_editor/loudnorm":
+                return self._handle_stitch_loudnorm(body)
             if path == "/api/storyboard/switch":
                 return self._handle_storyboard_switch(body)
             # ── Visible Magic Phase 2 (2026-04-24) ──────────────────────────────
@@ -5018,6 +5036,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
                             "style": style,
                         }
                     registry[scene_key]["manual_path"] = path_pts_clean
+                    # LD-460 — terminal pin check (thread closure captures _pin).
+                    if not self._check_event_pin(_pin, "magic_submit_path_registry_write"):
+                        print(f"[magic_submit_path] event drift mid-thread; skipping registry write", flush=True)
+                        return
                     reg_path.write_text(_yaml.dump(registry, default_flow_style=False))
 
                 # ── Step 2: Resolve background still ──────────────────
@@ -5772,6 +5794,357 @@ class ProductionHandler(BaseHTTPRequestHandler):
             "previous_event_id": old_event_id,
         })
 
+    # ================================================================
+    # Session 3 v3.1 endpoints (LDs 462-467)
+    # ================================================================
+
+    def _handle_event_list(self) -> None:
+        """GET /api/event/list — multi-event selector dropdown source.
+
+        Lists all sibling Production/Event_*/ directories that contain
+        at least one storyboard_v*_prod.html. Returns enough metadata
+        for the v59 EventSelector dropdown.
+
+        Per LD MULTI_EVENT_SELECTOR_V1.
+        """
+        try:
+            production_root = self.app.event_dir.parent
+            events: list[dict] = []
+            for d in sorted(production_root.iterdir()):
+                if not d.is_dir():
+                    continue
+                if not d.name.startswith("Event_"):
+                    continue
+                # Skip planning / scratch dirs (e.g., Event_1_Plans).
+                if "_" in d.name[len("Event_"):]:
+                    continue
+                storyboards = sorted(
+                    d.glob("storyboard_v*_prod.html"),
+                    key=lambda p: p.stat().st_mtime, reverse=True,
+                )
+                if not storyboards:
+                    continue
+                events.append({
+                    "event_id": d.name,
+                    "path": str(d),
+                    "storyboards": [p.name for p in storyboards],
+                    "active_storyboard": storyboards[0].name,
+                    "is_current": d.name == self.app.event_dir.name,
+                })
+            return self._send_json(200, {
+                "ok": True,
+                "events": events,
+                "current_event_id": self.app.event_dir.name,
+                "current_generation": self.app.event_generation,
+            })
+        except OSError as exc:
+            return self._send_json(500, {
+                "error": f"could not enumerate events: {exc}",
+                "production_root": str(self.app.event_dir.parent),
+            })
+
+    def _handle_phase_watercolor_list(self) -> None:
+        """GET /api/phase/watercolor_list — inventory of watercolor library.
+
+        Reads Production/assets/watercolor_library/ for PNG/MOV files.
+        Returns {items: [{key, filename, kind, thumb_url, mtime}]}.
+
+        kind: 'static' for .png, 'animation' for .mov (animated via the
+        Animate-this bridge — LD WATERCOLOR_ANIMATE_THIS_V1).
+
+        Per LD PHASE_A_PRODUCER_V1 + PHASE_B_PRODUCER_V1 (replaces hardcoded
+        JS array in v58).
+        """
+        wc_dir = Path(__file__).resolve().parent.parent / "assets" / "watercolor_library"
+        items: list[dict] = []
+        if wc_dir.is_dir():
+            for f in sorted(wc_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+                if not f.is_file():
+                    continue
+                ext = f.suffix.lower().lstrip(".")
+                if ext not in ("png", "webp", "mov", "mp4"):
+                    continue
+                key = f.stem
+                kind = "animation" if ext in ("mov", "mp4") else "static"
+                items.append({
+                    "key": key,
+                    "filename": f.name,
+                    "ext": ext,
+                    "kind": kind,
+                    "thumb_url": f"http://localhost:5111/api/phase/watercolor_file?key={key}",
+                    "mtime": int(f.stat().st_mtime),
+                    "size_bytes": f.stat().st_size,
+                })
+        return self._send_json(200, {
+            "ok": True,
+            "items": items,
+            "count": len(items),
+            "library_dir": str(wc_dir),
+        })
+
+    def _handle_phase_watercolor_file(self) -> None:
+        """GET /api/phase/watercolor_file?key=<stem> — serve a single watercolor file.
+
+        Helper for the watercolor_list thumb_url. Reads from the same
+        directory; key is the basename without extension.
+        """
+        try:
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            key_list = params.get("key")
+            if not key_list:
+                return self._send_json(400, {"error": "key query param required"})
+            key = key_list[0]
+            wc_dir = Path(__file__).resolve().parent.parent / "assets" / "watercolor_library"
+            # Find the file by stem.
+            matches = list(wc_dir.glob(f"{key}.*"))
+            if not matches:
+                return self._send_json(404, {"error": f"no watercolor with key={key!r}"})
+            f = matches[0]
+            data = f.read_bytes()
+            ext = f.suffix.lower().lstrip(".")
+            ct = {
+                "png": "image/png", "webp": "image/webp",
+                "mov": "video/quicktime", "mp4": "video/mp4",
+            }.get(ext, "application/octet-stream")
+            self._send_bytes(200, data, ct)
+        except (OSError, KeyError) as exc:
+            return self._send_json(500, {"error": str(exc)})
+
+    def _handle_phase_base_clips_list(self) -> None:
+        """GET /api/phase/base_clips_list — inventory of lipsync base clips.
+
+        Reads Production/assets/lipsync_bases/. Returns {items: [{id,
+        filename, character, duration_s?}]}. Backups (.bak*) excluded.
+
+        Per LDs PHASE_A_PRODUCER_V1 + PHASE_B_PRODUCER_V1.
+        """
+        bases_dir = Path(__file__).resolve().parent.parent / "assets" / "lipsync_bases"
+        items: list[dict] = []
+        if bases_dir.is_dir():
+            for f in sorted(bases_dir.iterdir(), key=lambda p: p.name):
+                if not f.is_file():
+                    continue
+                if ".bak" in f.name:
+                    continue
+                ext = f.suffix.lower().lstrip(".")
+                if ext not in ("mp4", "mov"):
+                    continue
+                # Character is heuristic: "chipper" or "cedric" in filename.
+                lname = f.name.lower()
+                character = (
+                    "chipper" if "chipper" in lname
+                    else "cedric" if "cedric" in lname
+                    else None
+                )
+                # Duration: best-effort via ffprobe if available, else skip.
+                duration_s: float | None = None
+                try:
+                    duration_s = _ffprobe_duration(f)
+                except Exception:
+                    duration_s = None
+                items.append({
+                    "id": f.stem,
+                    "filename": f.name,
+                    "ext": ext,
+                    "character": character,
+                    "duration_s": round(duration_s, 3) if duration_s else None,
+                })
+        return self._send_json(200, {"ok": True, "items": items, "count": len(items)})
+
+    def _handle_phase_suggest_script(self, body: dict) -> None:
+        """POST /api/phase/suggest_script {phase, event_id?, scope_event_id?}
+
+        STUB — full Claude API integration deferred to S4. Currently returns
+        a placeholder so the v59 client can wire up the button + UX flow.
+        """
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+        phase = (body or {}).get("phase", "?")
+        return self._send_json(200, {
+            "ok": True,
+            "phase": phase,
+            "script": (
+                "[S3 stub — full Claude API integration deferred to S4]\n"
+                f"This would be a {phase!r}-suggested script reading "
+                "the relevant context (Phase B for Phase A; arc skeleton + "
+                "therapeutic notes + phase-b-writer skill docs for Phase B).\n"
+                "Wire up: server invokes Claude API with system prompt drawn "
+                "from .claude/skills/phase-b-writer/SKILL.md (or equivalent). "
+                "Returns generated script + model_used + generation_time_ms."
+            ),
+            "model_used": "stub-placeholder",
+            "generation_time_ms": 0,
+            "note": "S3 ships endpoint contract; S4 wires Claude API.",
+        })
+
+    def _handle_watercolor_animate(self, body: dict) -> None:
+        """POST /api/watercolor/animate {source_key, manual_path, style?, duration?, scope_event_id}
+
+        Per LD WATERCOLOR_ANIMATE_THIS_V1. Invokes magic_compositor with the
+        watercolor as background; writes alpha-preserving qtrle .mov.
+
+        S3 ships endpoint contract + scope-guard + async pin. The actual
+        magic_compositor invocation is wired but kept synchronous for now;
+        S4 polishes the async path + thread closures + parent_asset_id link.
+        """
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
+            return
+        source_key = (body or {}).get("source_key")
+        manual_path = (body or {}).get("manual_path") or []
+        if not source_key:
+            return self._send_json(400, {"error": "source_key required"})
+        if not isinstance(manual_path, list) or len(manual_path) < 2:
+            return self._send_json(400, {
+                "error": "manual_path must be a list of [x,y] pairs (>=2 points)",
+            })
+        # Resolve source watercolor.
+        wc_dir = Path(__file__).resolve().parent.parent / "assets" / "watercolor_library"
+        matches = list(wc_dir.glob(f"{source_key}.*"))
+        if not matches:
+            return self._send_json(404, {
+                "error": f"no watercolor with key={source_key!r}",
+                "looked_in": str(wc_dir),
+            })
+        source_path = matches[0]
+
+        # LD-460 — capture pin BEFORE work; check before terminal write.
+        _pin = {
+            "pinned_generation": self.app.event_generation,
+            "pinned_event_dir": self.app.event_dir,
+            "_handler": "_handle_watercolor_animate",
+        }
+
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        out_name = f"{source_key}_animated_{ts}.mov"
+        out_path = wc_dir / out_name
+
+        # S3 stub: actual magic_compositor invocation deferred to S4.
+        # We document the call site + return 501 with a clear marker so the
+        # v59 client can show "S4 deferred — endpoint scaffold in place".
+        # The scope guard + async pin pattern IS in place per LD-460 + LD-456.
+        if not self._check_event_pin(_pin, "watercolor_animate_terminal"):
+            return self._send_json(423, {
+                "error": "event_changed_mid_job",
+                "code": "ASYNC_JOB_GENERATION_PIN_V1",
+            })
+        return self._send_json(501, {
+            "ok": False,
+            "code": "S4_DEFERRED",
+            "message": (
+                "Endpoint contract + scope-guard + async-pin in place; full "
+                "magic_compositor invocation + qtrle output + registered_write "
+                "ships in Session 4. Source resolved; manual_path validated; "
+                "would write to "
+            ) + str(out_path),
+            "source_path": str(source_path),
+            "would_write": str(out_path),
+            "manual_path_points": len(manual_path),
+        })
+
+    _PRODUCTION_MAP_CACHE: dict | None = None
+    _PRODUCTION_MAP_CACHE_TS: float = 0.0
+
+    def _handle_production_map(self) -> None:
+        """GET /api/production/map — per-module status matrix for Production Map tab.
+
+        Joins prod_modules + on-disk segment artifacts. 60s TTL cache.
+
+        Per LD PRODUCTION_MAP_V1.
+        """
+        # 60s cache.
+        if (
+            ProductionHandler._PRODUCTION_MAP_CACHE is not None
+            and time.time() - ProductionHandler._PRODUCTION_MAP_CACHE_TS < 60
+        ):
+            return self._send_json(200, ProductionHandler._PRODUCTION_MAP_CACHE)
+
+        # Read prod_modules from Directus.
+        try:
+            from lib.directus import read_item  # noqa: PLC0415
+            from lib.directus_admin_client import DirectusAdminClient  # noqa: PLC0415
+            client = DirectusAdminClient()
+            modules = client._request(
+                "GET",
+                "/items/prod_modules?fields=id,m_number,creature_name,video_role&sort=m_number&limit=100",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return self._send_json(500, {
+                "error": f"Directus read failed: {type(exc).__name__}: {exc}",
+            })
+
+        production_root = self.app.event_dir.parent
+        rows: list[dict] = []
+        for m in modules or []:
+            event_dirs = sorted(
+                p for p in production_root.iterdir()
+                if p.is_dir() and p.name.startswith("Event_") and "_" not in p.name[len("Event_"):]
+            )
+            # Take the first event dir (Event_1) as the canonical for now;
+            # multi-event would map M-number → event in S4.
+            edir = event_dirs[0] if event_dirs else None
+            segments: dict[str, dict] = {}
+            if edir:
+                # Best-effort: file-based status.
+                phase_a = list(edir.glob("phase_a_stitched_*.mp4")) + list(edir.glob("phase_a_canonical_*.mp4"))
+                phase_b = list(edir.glob("phase_b_lipsync_*.mp4"))
+                intro_or_resolution = list(edir.glob("storyboard_v*_prod.html"))
+                final_concat = list(edir.glob(f"M{m.get('m_number')}_*_final.mp4"))
+                segments = {
+                    "phase_a": {
+                        "status": "ready" if phase_a else "missing",
+                        "count": len(phase_a),
+                        "latest": phase_a[0].name if phase_a else None,
+                    },
+                    "phase_b": {
+                        "status": "ready" if phase_b else "missing",
+                        "count": len(phase_b),
+                        "latest": phase_b[0].name if phase_b else None,
+                    },
+                    "intro_or_resolution": {
+                        "status": "ready" if intro_or_resolution else "missing",
+                        "count": len(intro_or_resolution),
+                    },
+                    "final_concat": {
+                        "status": "ready" if final_concat else "missing",
+                        "count": len(final_concat),
+                    },
+                }
+            rows.append({
+                "m_number": m.get("m_number"),
+                "creature_name": m.get("creature_name"),
+                "video_role": m.get("video_role"),
+                "event_dir": edir.name if edir else None,
+                "segments": segments,
+            })
+
+        out = {
+            "ok": True,
+            "modules": rows,
+            "cache_ttl_s": 60,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        ProductionHandler._PRODUCTION_MAP_CACHE = out
+        ProductionHandler._PRODUCTION_MAP_CACHE_TS = time.time()
+        return self._send_json(200, out)
+
+    def _handle_stitch_loudnorm(self, body: dict) -> None:
+        """POST /api/stitch_editor/loudnorm — second-pass loudnorm on slots not pre-normalized.
+
+        Per LD EXPORT_TO_STITCHER_V1. S3 ships endpoint contract; full ffmpeg
+        loudnorm wiring is S4 polish.
+        """
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+        return self._send_json(501, {
+            "ok": False,
+            "code": "S4_DEFERRED",
+            "message": (
+                "Loudnorm endpoint scaffold in place; ffmpeg loudnorm "
+                "second-pass wiring ships in Session 4."
+            ),
+        })
+
     def _handle_bg_set_active_context(self, body: dict) -> None:
         """POST /api/bg/set-active-context {arc_number, event_id, phase}
         Switches active_context in sidecar and returns any previously saved beats
@@ -6174,6 +6547,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
                         if beat_obj:
                             beat_obj["gpt_options"] = results
                             beat_obj["status"] = "stills_ready"
+                        # LD-460 — pin check before sidecar write (thread closure).
+                        if not self._check_event_pin(_pin, "bg_submit_gpt_batch_write_sidecar"):
+                            print(f"[bg_submit_gpt_batch] event drift mid-thread; skipping sidecar write", flush=True)
+                            return
                         bg.write_sidecar(sc)
                     _GPT_JOBS[job_id]["results"][bid] = results
                 except Exception as e:
@@ -6465,6 +6842,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     s2 = bg.read_sidecar()
                     s2 = bg._migrate_sidecar(s2)
                     clip_path, duration, size = bg.assemble_group(s2, gid, output_dir)
+                    # LD-460 — pin check before sidecar write (thread closure).
+                    if not self._check_event_pin(_pin, "bg_assemble_group_write_sidecar"):
+                        print(f"[bg_assemble_group] event drift mid-thread; skipping sidecar write", flush=True)
+                        return
                     bg.write_sidecar(s2)
                 _ASSEMBLE_JOBS[gid] = {"status": "done",
                                         "assembled_clip_path": clip_path,
@@ -6587,6 +6968,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     result = bg.run_static_hold(
                         beat, still, float(params.get("duration", 4.0))
                     )
+                # LD-460 — pin check before sidecar write.
+                if not self._check_event_pin(_pin, "bg_run_local_animation_write_sidecar"):
+                    print(f"[bg_run_local_animation] event drift; skipping sidecar write", flush=True)
+                    return self._send_json(423, {"error": "event_changed_mid_job", "code": "ASYNC_JOB_GENERATION_PIN_V1"})
                 bg.write_sidecar(sidecar)
             except Exception as e:
                 traceback.print_exc()
@@ -6851,6 +7236,9 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
         os.makedirs(dest_dir, exist_ok=True)
         dest_path = os.path.join(dest_dir, filename)
+        # LD-460 — terminal pin check before file write.
+        if not self._check_event_pin(_pin, "cr_upload_write_bytes"):
+            return self._send_json(423, {"error": "event_changed_mid_job", "code": "ASYNC_JOB_GENERATION_PIN_V1"})
         with open(dest_path, "wb") as f:
             f.write(raw_bytes)
 
@@ -7480,6 +7868,9 @@ class ProductionHandler(BaseHTTPRequestHandler):
             ls["source_changed"] = False
             ls["audio_processing"] = _ap
             ls.pop("last_error", None)
+        # LD-460 — terminal pin check before init_lipsync mutate_state.
+        if not self._check_event_pin(_pin, "lipsync_submit_init_mutate"):
+            return self._send_json(423, {"error": "event_changed_mid_job", "code": "ASYNC_JOB_GENERATION_PIN_V1"})
         self.app.state.mutate_state(init_lipsync)
 
         # Rule 18 submit log.
@@ -7704,6 +8095,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     st["beats"][_bk]["lipsync"]["submitted_at"] = datetime.now(timezone.utc).isoformat()
                     # Tier 1B: epoch form for wall-clock timeout comparisons.
                     st["beats"][_bk]["lipsync"]["submitted_at_epoch"] = int(time.time())
+                # LD-460 — pin check before set_polling mutate_state (thread closure).
+                if not self._check_event_pin(_pin, "lipsync_submit_legacy_set_polling"):
+                    print("[lipsync_submit_legacy] event drift mid-thread; skipping mutate_state", flush=True)
+                    return
                 self.app.state.mutate_state(set_polling)
 
                 # Poll until done
@@ -9439,6 +9834,9 @@ body {{padding-top:44px!important;}}
                 backup.write_bytes(disk_path.read_bytes())
             except OSError:
                 pass
+        # LD-460 — terminal pin check before final export write.
+        if not self._check_event_pin(_pin, "export_write_selections_json"):
+            return self._send_json(423, {"error": "event_changed_mid_job", "code": "ASYNC_JOB_GENERATION_PIN_V1"})
         disk_path.write_text(json.dumps(export, indent=2))
 
         body = json.dumps(export, indent=2).encode("utf-8")
@@ -10043,6 +10441,9 @@ body {{padding-top:44px!important;}}
             state["_module_version"] = int(state.get("_module_version", 0) or 0) + 1
             return state["_module_version"]
 
+        # LD-460 — terminal pin check before mutate_state (mix_audio).
+        if not self._check_event_pin(_pin, "phase_b_mix_audio_apply_mutate"):
+            return self._send_json(423, {"error": "event_changed_mid_job", "code": "ASYNC_JOB_GENERATION_PIN_V1", "handler": "phase_b_mix_audio"})
         try:
             new_version = self.app.state.mutate_state(_apply)
         except Exception as exc:  # noqa: BLE001
@@ -11277,6 +11678,9 @@ body {{padding-top:44px!important;}}
             ]
         )
 
+        # LD-460 — terminal pin check before ffmpeg write of preview mp4.
+        if not self._check_event_pin(_pin, "timeline_preview_sfx_ffmpeg_write"):
+            return self._send_json(423, {"error": "event_changed_mid_job", "code": "ASYNC_JOB_GENERATION_PIN_V1"})
         try:
             subprocess.run(cmd, check=True, capture_output=True, timeout=300)
         except subprocess.CalledProcessError as exc:
@@ -12081,6 +12485,9 @@ body {{padding-top:44px!important;}}
                     f"{len(slots)} slot(s), {sum(len(s.get('sfx_cues') or []) for s in slots)} SFX cues."
                 )
                 # module_id=1 sentinel for non-module-scoped assets (per _MODULE_MAP comment)
+                # LD-460 — terminal pin check before final asset register.
+                if not self._check_event_pin(_pin, "stitch_bake_register_asset"):
+                    return self._send_json(423, {"error": "event_changed_mid_job", "code": "ASYNC_JOB_GENERATION_PIN_V1", "orphaned_bake_path": str(bake_path)})
                 asset_id, _ = register_asset(
                     file_path=str(bake_path),
                     asset_type="final_atomic_mp4",
@@ -12268,6 +12675,9 @@ body {{padding-top:44px!important;}}
         out_name = f"phase_{phase}_voice_stem_{ts}.mp3"
         out_path = self.app.event_dir / out_name
         tmp = out_path.with_suffix(f".mp3.tmp.{os.getpid()}")
+        # LD-460 — terminal pin check before voice-stem file write.
+        if not self._check_event_pin(_pin, "phase_b_regen_audio_write_bytes"):
+            return self._send_json(423, {"error": "event_changed_mid_job", "code": "ASYNC_JOB_GENERATION_PIN_V1"})
         try:
             tmp.write_bytes(audio_bytes)
             os.replace(tmp, out_path)

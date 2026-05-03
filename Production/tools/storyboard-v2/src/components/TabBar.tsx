@@ -7,13 +7,14 @@
 
 import type { Signal } from '@preact/signals';
 
-export type TabKey = 'storyboard' | 'bg' | 'cropper' | 'stitcher';
+export type TabKey = 'storyboard' | 'bg' | 'cropper' | 'stitcher' | 'map';
 
 export const TABS: Array<{ key: TabKey; label: string; testid: string }> = [
   { key: 'storyboard', label: 'Storyboard', testid: 'tab-storyboard' },
   { key: 'bg', label: 'Beat Generator', testid: 'tab-bg' },
   { key: 'cropper', label: 'Cropper', testid: 'tab-cropper' },
   { key: 'stitcher', label: 'Stitcher', testid: 'tab-stitcher' },
+  { key: 'map', label: 'Production Map', testid: 'tab-map' },
 ];
 
 export interface TabBarProps {

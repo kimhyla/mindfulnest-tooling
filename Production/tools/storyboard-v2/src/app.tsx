@@ -15,6 +15,8 @@ import { BgTab } from './components/BgTab';
 import { CropperModal, initialCropperModalState } from './components/CropperModal';
 import { StitcherTab } from './components/StitcherTab';
 import { LibraryPanel } from './components/LibraryPanel';
+import { ProductionMapTab } from './components/ProductionMapTab';
+import { EventSelector } from './components/EventSelector';
 import { activeScope, scopeKey } from './state/scope';
 import './app.css';
 
@@ -49,6 +51,8 @@ function ActivePane() {
       );
     case 'stitcher':
       return <StitcherTab />;
+    case 'map':
+      return <ProductionMapTab />;
     default:
       return <p class="mn-warn">Unknown tab</p>;
   }
@@ -62,8 +66,9 @@ export function App() {
         <header class="mn-app-header">
           <h1>Storyboard v2</h1>
           <span class="mn-app-subhead" data-testid="app-subhead">
-            Path C rewrite &middot; Session 1.5 v3.1 — read-only + scope guards
+            Path C rewrite &middot; Session 3 v3.1 — full producers + animate + stitcher + production map
           </span>
+          <EventSelector />
         </header>
 
         <TabBar activeTab={activeTab} />

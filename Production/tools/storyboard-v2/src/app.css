@@ -262,6 +262,143 @@
 .mn-export-ok { color: #5cd089; }
 .mn-export-error { color: var(--text-error); }
 
+/* Event selector (LD-467) */
+.mn-event-selector {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.mn-event-selector-label {
+  color: var(--text-dim);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+.mn-event-select {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-size: 12px;
+  font-family: inherit;
+}
+.mn-event-loading { font-size: 11px; color: var(--text-warn); }
+.mn-event-error { font-size: 11px; color: var(--text-error); }
+
+/* Phase producer (LDs 462, 463) */
+.mn-phase-producers {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.mn-phase-producer {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 12px;
+}
+.mn-phase-summary {
+  cursor: pointer;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mn-phase-stub-tag {
+  font-weight: normal;
+  font-size: 11px;
+  font-style: italic;
+}
+.mn-phase-body {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+.mn-phase-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0;
+  flex-wrap: wrap;
+}
+.mn-phase-suggestion {
+  background: var(--code-bg);
+  color: var(--text);
+  padding: 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  white-space: pre-wrap;
+  max-height: 200px;
+  overflow: auto;
+}
+.mn-phase-base-clip {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  background: var(--code-bg);
+  padding: 2px 6px;
+  border-radius: 2px;
+}
+.mn-phase-watercolor-list { margin-top: 12px; }
+.mn-phase-watercolor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+  margin-top: 6px;
+}
+.mn-phase-watercolor-tile {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: stretch;
+}
+.mn-phase-watercolor-thumb {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  background: var(--code-bg);
+  border-radius: 2px;
+}
+.mn-phase-watercolor-name {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mn-btn-small { padding: 3px 8px; font-size: 11px; }
+
+/* Production Map tab (LD-465) */
+.mn-map-table-wrap {
+  overflow: auto;
+  max-height: 70vh;
+}
+.mn-map-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.mn-map-table th, .mn-map-table td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: center;
+}
+.mn-map-table th {
+  background: var(--bg-elevated);
+  color: var(--text-strong);
+  font-weight: 600;
+}
+.mn-map-cell { font-family: var(--mono); }
+.mn-map-glyph { font-size: 14px; margin-right: 4px; }
+.mn-map-count { color: var(--text-dim); font-size: 10px; }
+
 /* BG tab */
 .mn-bg-grid {
   display: grid;

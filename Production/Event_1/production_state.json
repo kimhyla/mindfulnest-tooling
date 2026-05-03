@@ -1,0 +1,1120 @@
+{
+  "event_id": "M1E1",
+  "version": "v1",
+  "created_at": "2026-04-16T02:07:53.286771+00:00",
+  "updated_at": "2026-05-03T01:36:03.090676+00:00",
+  "beats": {
+    "beat_03": {
+      "phase_1": {
+        "status": "partial",
+        "options": [
+          {
+            "status": "completed",
+            "file": "beat_03_option_A.mp4",
+            "size_bytes": 2040630,
+            "retries": 0
+          },
+          {
+            "task_id": "a18253dfd29b41848a312403abd7efb3",
+            "status": "completed",
+            "file": "beat_03_option_2.mp4",
+            "submitted_at": "2026-04-19T17:28:43.458696+00:00",
+            "submitted_at_epoch": 1776619723,
+            "retries": 4,
+            "last_error": null,
+            "source": "kling_startend",
+            "end_frame_prompt": "Same character, same outfit, same lighting, same cartoon 3D Pixar-style art, same forest background. Tessa the turtle still tender and a little embarrassed, but her expression settles into quiet self-acceptance \u2014 eyes softening, tiny breath released. Beak/mouth closed. Same 4:3 composition.",
+            "cfg_scale": 0.5,
+            "negative_prompt": "lip sync, speaking, talking, mouth movement, beak movement, dialogue, speech, open mouth, Chinese, audio, voice, singing",
+            "duration": 10,
+            "size_bytes": 10325190
+          },
+          {
+            "task_id": "8e062ddd6ca24f6884d27b29dd6de452",
+            "status": "completed",
+            "file": "beat_03_option_3.mp4",
+            "submitted_at": "2026-04-19T17:28:57.387063+00:00",
+            "submitted_at_epoch": 1776619737,
+            "retries": 4,
+            "source": "kling_startend",
+            "end_frame_prompt": "Same character, same outfit, same lighting, same cartoon 3D Pixar-style art, same forest background. Tessa the turtle still tender and a little embarrassed, but her expression settles into quiet self-acceptance \u2014 eyes softening, tiny breath released. Beak/mouth closed. Same 4:3 composition.",
+            "cfg_scale": 0.5,
+            "negative_prompt": "lip sync, speaking, talking, mouth movement, beak movement, dialogue, speech, open mouth, Chinese, audio, voice, singing",
+            "duration": 10,
+            "resurrected_from": "failed",
+            "size_bytes": 9904986,
+            "last_error": null
+          }
+        ],
+        "selected_option": 3,
+        "trim_start": 1.0,
+        "trim_end": 10.8,
+        "pause_after_ms": 0
+      },
+      "text": "Hello ... who are you?",
+      "text_last_updated_at": "2026-04-26T15:38:57.539306+00:00",
+      "text_last_change": "Removed \"Its OK\" per Kim April 17 2026; TTS regen via Tessa/Jessica eleven_v3",
+      "lipsync": {
+        "status": "completed",
+        "task_id": "f8e63645e17542e58f6158c2f15e14d2",
+        "file": "beat_03_lipsync.mp4",
+        "size_bytes": 1073307,
+        "source_option": 3,
+        "audio_file": "_tmp_silcomp_beat_03_20260426-124317.mp3",
+        "submitted_at": "2026-04-26T16:43:26.312241+00:00",
+        "retries": 3,
+        "submitted_at_epoch": 1777221806,
+        "source_changed": false,
+        "audio_processing": {
+          "method": "silence_compression_auto_applied",
+          "source_audio": "line_03_tessa.mp3",
+          "source_duration_s": 7.52,
+          "compressed_duration_s": 7.52,
+          "silences_compressed": [],
+          "preroll_processing": {
+            "applied": false,
+            "reason": "ok_sufficient_lead_in",
+            "detected_leading_silence_s": 0.8,
+            "preroll_added_s": 0.0,
+            "preroll_target_s": 0.7,
+            "min_threshold_s": 0.5
+          },
+          "loudnorm_applied": true,
+          "loudnorm_target_i_lufs": -16.0,
+          "loudnorm_target_tp_dbtp": -1.5,
+          "loudnorm_target_lra_lu": 8.0,
+          "video_trimmed_to_s": 7.92,
+          "trim_start": 0.0,
+          "trim_end": 10.042,
+          "trim_window_s": 10.042,
+          "applied_by": "_handle_lipsync_submit_v4_loudnorm",
+          "rule_reference": "CLAUDE.md \u00a78.4 + LIPSYNC_TRIM_WINDOW_HONORED_20260419 + AUTO_PREROLL_V1 + LOUDNORM_V1"
+        },
+        "audio_changed": true,
+        "superseded_task_ids": [
+          "50543aaabf2040c3bec0ad5e96a92a04",
+          "678631a2852c491ab6f22aae1064fff1"
+        ],
+        "recovered_from_cdn_at": "2026-04-19T21:18:11.068182Z"
+      },
+      "end_frame_prompt": "Same character, same outfit, same lighting, same cartoon 3D Pixar-style art, same forest background. Tessa the turtle still tender and a little embarrassed, but her expression settles into quiet self-acceptance \u2014 eyes softening, tiny breath released. Beak/mouth closed. Same 4:3 composition.",
+      "end_frame_prompt_source": "auto_populated_universal_default_20260417",
+      "_version": 26,
+      "text_modified_after_tts": false,
+      "audio_file": "line_03_tessa.mp3",
+      "audio_duration_s": 7.52,
+      "audio_regenerated_at": "2026-04-26T15:39:03.722435+00:00",
+      "speaker": "Tessa"
+    },
+    "beat_05": {
+      "phase_1": {
+        "status": "completed",
+        "options": [
+          {
+            "file": "beat_05_option_startend_20260417-133323.mp4",
+            "status": "completed",
+            "task_id": "a8d66a7389ed48d9b3e557e13d7277d9",
+            "cost": 0.53,
+            "source": "kling_startend",
+            "start_image_key": "tessa_initial_4x3",
+            "end_image_mode": "flux_kontext",
+            "end_frame_file": "end_frame_beat_05_20260417-133323.png",
+            "end_prompt": "Same character, same outfit, same cartoon 3D Pixar-style art, same lighting, same forest background. Tessa the turtle now has a softer, more internally reflective expression \u2014 eyes lowered slightly in gentle remorse, head tilted subtly downward. Beak still closed. Same 4:3 composition and framing.",
+            "hand_picked_end": null,
+            "positive_prompt": "A small turtle (Tessa) in a soft forest clearing. Cinematic 4:3 composition, soft ambient light. Beak at rest, no dialogue in video. Natural interpolation between the two provided frames.",
+            "negative_prompt": "lip sync, speaking, talking, mouth movement, beak movement, dialogue, speech, open mouth, Chinese, audio, voice, singing",
+            "cfg_scale": 0.5,
+            "duration": 10,
+            "created_at": "2026-04-17T17:46:13.985330+00:00",
+            "lipsync": {
+              "file": "beat_05_lipsync_startend_20260417-133323.mp4",
+              "size_bytes": 957015,
+              "trimmed_from_s": 8.672993
+            }
+          },
+          {
+            "task_id": "91e74e7e5a904959b56ac6a27b15b51e",
+            "status": "completed",
+            "file": "beat_05_option_2.mp4",
+            "submitted_at": "2026-04-25T04:43:31.681568+00:00",
+            "submitted_at_epoch": 1777092211,
+            "retries": 1,
+            "last_error": "<urlopen error TimeoutError: [Errno 60] Operation timed out>",
+            "source": "kling_startend",
+            "end_frame_prompt": "Same character, same outfit, same cartoon 3D Pixar-style art, same lighting, same forest background. Tessa the turtle now has a softer, more internally reflective expression \u2014 eyes lowered slightly in gentle remorse, head tilted subtly downward. Beak still closed. Same 4:3 composition and framing.",
+            "cfg_scale": 0.5,
+            "negative_prompt": "lip sync, speaking, talking, mouth movement, beak movement, dialogue, speech, open mouth, Chinese, audio, voice, singing",
+            "duration": 10,
+            "element_id": "c2ed1d848921419fa739ca38f737c953",
+            "next_attempt_at_epoch": 1777092327.846411,
+            "next_attempt_at": "2026-04-25T04:45:22.846418+00:00",
+            "size_bytes": 11330174
+          }
+        ],
+        "selected_option": 2,
+        "trim_start": 0.0,
+        "trim_end": 10.0,
+        "pause_after_ms": 0
+      },
+      "lipsync": {
+        "status": "completed",
+        "task_id": "5f09aad5c4444a968de62afc9182a4b2",
+        "file": "beat_05_lipsync.mp4",
+        "audio_file": "_tmp_silcomp_beat_05_20260426-144923.mp3",
+        "submitted_at": "2026-04-26T18:49:33.379218+00:00",
+        "retries": 8,
+        "size_bytes": 1362908,
+        "source_option": 2,
+        "source_changed": false,
+        "audio_processing": {
+          "method": "silence_compression_auto_applied",
+          "source_audio": "line_05_tessa.mp3",
+          "source_duration_s": 8.4,
+          "compressed_duration_s": 8.032,
+          "silences_compressed": [
+            {
+              "range_s": [
+                2.26,
+                4.128
+              ],
+              "original_s": 1.868,
+              "new_s": 0.8
+            }
+          ],
+          "preroll_processing": {
+            "applied": true,
+            "reason": "below_min_threshold",
+            "detected_leading_silence_s": 0.0,
+            "preroll_added_s": 0.7,
+            "preroll_target_s": 0.7,
+            "min_threshold_s": 0.5
+          },
+          "loudnorm_applied": true,
+          "loudnorm_target_i_lufs": -16.0,
+          "loudnorm_target_tp_dbtp": -1.5,
+          "loudnorm_target_lra_lu": 8.0,
+          "video_trimmed_to_s": 8.432,
+          "trim_start": 0.0,
+          "trim_end": 10.0,
+          "trim_window_s": 10.0,
+          "applied_by": "_handle_lipsync_submit_v4_loudnorm",
+          "rule_reference": "CLAUDE.md \u00a78.4 + LIPSYNC_TRIM_WINDOW_HONORED_20260419 + AUTO_PREROLL_V1 + LOUDNORM_V1"
+        },
+        "promoted_to_live_at": "2026-04-17T17:54:04.627384+00:00",
+        "audio_changed": true,
+        "superseded_task_ids": [
+          "23208eb46236411a9ed2e5b17f82c124",
+          "916f986d67474112b703b94e9cca92ab",
+          "b31642335db041b1aade90b2b3566edc",
+          "bc9942d841184e6e94b3163d80be58ed",
+          "219f25f2dcbb4704aba5b315c3cbdc8b",
+          "a44194320cde442b8c87190b68fa145e"
+        ],
+        "submitted_at_epoch": 1777229373,
+        "recovered_by": "lipsync_poller_persistent",
+        "recovered_at": "2026-04-19T23:38:39.909060+00:00"
+      },
+      "end_frame_prompt": "Same character, same outfit, same cartoon 3D Pixar-style art, same lighting, same forest background. Tessa the turtle now has a softer, more internally reflective expression \u2014 eyes lowered slightly in gentle remorse, head tilted subtly downward. Beak still closed. Same 4:3 composition and framing.",
+      "text": "You're right ... How do you know about the MindfulNest?",
+      "text_last_updated_at": "2026-05-03T01:35:57.130541+00:00",
+      "text_modified_after_tts": true,
+      "audio_file": "line_05_tessa.mp3",
+      "audio_duration_s": 8.4,
+      "audio_regenerated_at": "2026-04-26T18:48:57.808672+00:00",
+      "_version": 27,
+      "speaker": "Guide Bird"
+    },
+    "beat_06": {
+      "phase_1": {
+        "status": "completed",
+        "options": [
+          {
+            "status": "completed",
+            "file": "beat_06_option_A.mp4",
+            "size_bytes": 2692437,
+            "retries": 0
+          },
+          {
+            "task_id": "998ffa3f8f6e408c902a8df00929e8bd",
+            "status": "completed",
+            "file": "beat_06_option_2.mp4",
+            "submitted_at": "2026-04-19T01:08:03.347081+00:00",
+            "submitted_at_epoch": 1776560883,
+            "retries": 3,
+            "last_error": "<urlopen error timeout: timed out>",
+            "source": "kling_startend",
+            "end_frame_prompt": "Same character, same outfit, same lighting, same cartoon 3D Pixar-style art, same forest background. Pip the Guide Bird now in a proud, encouraging stance \u2014 chest slightly puffed with friendly confidence, warm smile in his eyes, welcoming posture. Beak closed. Same 4:3 composition.",
+            "cfg_scale": 0.5,
+            "negative_prompt": "lip sync, speaking, talking, mouth movement, beak movement, dialogue, speech, open mouth, Chinese, audio, voice, singing",
+            "duration": 10,
+            "next_attempt_at_epoch": 1776561323.099963,
+            "next_attempt_at": "2026-04-19T01:14:38.099965+00:00",
+            "size_bytes": 12632941
+          },
+          {
+            "task_id": "9badd90dab994a08809d355c39512224",
+            "status": "completed",
+            "file": "beat_06_option_3.mp4",
+            "submitted_at": "2026-04-19T01:08:11.940471+00:00",
+            "submitted_at_epoch": 1776560891,
+            "retries": 2,
+            "last_error": "<urlopen error timeout: timed out>",
+            "source": "kling_startend",
+            "end_frame_prompt": "Same character, same outfit, same lighting, same cartoon 3D Pixar-style art, same forest background. Pip the Guide Bird now in a proud, encouraging stance \u2014 chest slightly puffed with friendly confidence, warm smile in his eyes, welcoming posture. Beak closed. Same 4:3 composition.",
+            "cfg_scale": 0.5,
+            "negative_prompt": "lip sync, speaking, talking, mouth movement, beak movement, dialogue, speech, open mouth, Chinese, audio, voice, singing",
+            "duration": 10,
+            "next_attempt_at_epoch": 1776561184.967061,
+            "next_attempt_at": "2026-04-19T01:12:49.967091+00:00",
+            "size_bytes": 12754985
+          },
+          {
+            "task_id": "988cfa5ef0344137a8a5036f1461e0d1",
+            "status": "completed",
+            "file": "beat_06_option_4.mp4",
+            "submitted_at": "2026-04-19T01:08:19.624540+00:00",
+            "submitted_at_epoch": 1776560899,
+            "retries": 2,
+            "last_error": "<urlopen error timeout: timed out>",
+            "source": "kling_startend",
+            "end_frame_prompt": "Same character, same outfit, same lighting, same cartoon 3D Pixar-style art, same forest background. Pip the Guide Bird now in a proud, encouraging stance \u2014 chest slightly puffed with friendly confidence, warm smile in his eyes, welcoming posture. Beak closed. Same 4:3 composition.",
+            "cfg_scale": 0.5,
+            "negative_prompt": "lip sync, speaking, talking, mouth movement, beak movement, dialogue, speech, open mouth, Chinese, audio, voice, singing",
+            "duration": 10,
+            "next_attempt_at_epoch": 1776561216.2897952,
+            "next_attempt_at": "2026-04-19T01:13:21.289797+00:00",
+            "size_bytes": 15082386
+          },
+          {
+            "task_id": "d9b1bbb9b98849e99a972c4023909969",
+            "status": "completed",
+            "file": "beat_06_option_5.mp4",
+            "submitted_at": "2026-04-19T01:08:27.605479+00:00",
+            "submitted_at_epoch": 1776560907,
+            "retries": 2,
+            "last_error": "<urlopen error timeout: timed out>",
+            "source": "kling_startend",
+            "end_frame_prompt": "Same character, same outfit, same lighting, same cartoon 3D Pixar-style art, same forest background. Pip the Guide Bird now in a proud, encouraging stance \u2014 chest slightly puffed with friendly confidence, warm smile in his eyes, welcoming posture. Beak closed. Same 4:3 composition.",
+            "cfg_scale": 0.5,
+            "negative_prompt": "lip sync, speaking, talking, mouth movement, beak movement, dialogue, speech, open mouth, Chinese, audio, voice, singing",
+            "duration": 10,
+            "next_attempt_at_epoch": 1776561248.842693,
+            "next_attempt_at": "2026-04-19T01:13:53.844375+00:00",
+            "size_bytes": 11047284
+          },
+          {
+            "status": "completed",
+            "file": "beat_06_option_A_looped.mp4",
+            "size_bytes": 2851463,
+            "retries": 0,
+            "source": "manual_loop_of_A",
+            "duration": 10,
+            "note": "Option A (5.04s legacy) looped twice to 10.00s; no audio track"
+          }
+        ],
+        "selected_option": 6,
+        "trim_start": 0.0,
+        "trim_end": 6.36,
+        "pause_after_ms": 0
+      },
+      "text": "Oh my gosh!  I can't believe it!  I study the MindfulNest at school.  The old books say it brought Light-Magic into the world.  But that was like a thousand years ago, so I'm not sure- WHOAH!!",
+      "text_last_updated_at": "2026-05-03T01:36:02.160515+00:00",
+      "lipsync": {
+        "status": "completed",
+        "task_id": "4f14682c043d49e1b478e6c85fbd02f8",
+        "file": "beat_06_lipsync.mp4",
+        "audio_file": "line_06_guide_bird.mp3",
+        "submitted_at": "2026-04-19T01:38:06.004754+00:00",
+        "retries": 3,
+        "source_option": 6,
+        "source_changed": false,
+        "audio_processing": {
+          "method": "silence_compression_auto_applied",
+          "source_audio": "line_06_guide_bird.mp3",
+          "source_duration_s": 5.36,
+          "compressed_duration_s": 5.36,
+          "silences_compressed": [],
+          "video_trimmed_to_s": 5.76,
+          "trim_start": 0.0,
+          "trim_end": 8.3,
+          "trim_window_s": 8.3,
+          "applied_by": "_handle_lipsync_submit_v2",
+          "rule_reference": "CLAUDE.md \u00a78.4 + LIPSYNC_TRIM_WINDOW_HONORED_20260419"
+        },
+        "size_bytes": 690457,
+        "audio_changed": true,
+        "submitted_at_epoch": 1776562686,
+        "superseded_task_ids": [
+          "2babccce3c9f45de9eabb182846ae654",
+          "05fa577b559c48efa85770b086a777ce"
+        ]
+      },
+      "end_frame_prompt": "Same character, same outfit, same lighting, same cartoon 3D Pixar-style art, same forest background. Pip the Guide Bird now in a proud, encouraging stance \u2014 chest slightly puffed with friendly confidence, warm smile in his eyes, welcoming posture. Beak closed. Same 4:3 composition.",
+      "end_frame_prompt_source": "auto_populated_universal_default_20260417",
+      "audio_file": "line_06_guide_bird.mp3",
+      "audio_duration_s": 5.36,
+      "audio_regenerated_at": "2026-04-19T00:50:29.281435+00:00",
+      "text_modified_after_tts": true,
+      "_version": 28,
+      "speaker": "Luna"
+    },
+    "beat_11": {
+      "phase_1": {
+        "status": "completed",
+        "options": [
+          {
+            "status": "completed",
+            "file": "beat_11_option_A.mp4",
+            "size_bytes": 2132880,
+            "retries": 0
+          },
+          {
+            "task_id": "57350703050e4d669de6ea5d37d6706f",
+            "status": "completed",
+            "file": "beat_11_option_2.mp4",
+            "submitted_at": "2026-04-18T21:32:31.983306+00:00",
+            "submitted_at_epoch": 1776547951,
+            "retries": 3,
+            "last_error": "<urlopen error timeout: timed out>",
+            "source": "kling_startend",
+            "end_frame_prompt": "Same character, same outfit, same lighting, same cartoon 3D Pixar-style art, same forest background. Pip the Guide Bird energetic and excited, eyes sparkling with anticipation, subtle lean-forward 'let's go' posture toward the camera. Beak closed. Same 4:3 composition.",
+            "cfg_scale": 0.5,
+            "negative_prompt": "lip sync, speaking, talking, mouth movement, beak movement, dialogue, speech, open mouth, Chinese, audio, voice, singing",
+            "duration": 10,
+            "next_attempt_at_epoch": 1776548393.178277,
+            "next_attempt_at": "2026-04-18T21:39:08.178280+00:00",
+            "size_bytes": 17969156
+          },
+          {
+            "task_id": "f780ed4dd64942d091dfb539c45ec3b1",
+            "status": "completed",
+            "file": "beat_11_option_3.mp4",
+            "submitted_at": "2026-04-18T21:32:41.612841+00:00",
+            "submitted_at_epoch": 1776547961,
+            "retries": 2,
+            "last_error": "<urlopen error timeout: timed out>",
+            "source": "kling_startend",
+            "end_frame_prompt": "Same character, same outfit, same lighting, same cartoon 3D Pixar-style art, same forest background. Pip the Guide Bird energetic and excited, eyes sparkling with anticipation, subtle lean-forward 'let's go' posture toward the camera. Beak closed. Same 4:3 composition.",
+            "cfg_scale": 0.5,
+            "negative_prompt": "lip sync, speaking, talking, mouth movement, beak movement, dialogue, speech, open mouth, Chinese, audio, voice, singing",
+            "duration": 10,
+            "next_attempt_at_epoch": 1776548254.810768,
+            "next_attempt_at": "2026-04-18T21:37:19.810774+00:00",
+            "size_bytes": 16371457
+          },
+          {
+            "task_id": "433f5aef13d24bad8f5eb822178e3f06",
+            "status": "completed",
+            "file": "beat_11_option_4.mp4",
+            "submitted_at": "2026-04-18T21:32:44.582554+00:00",
+            "submitted_at_epoch": 1776547964,
+            "retries": 2,
+            "last_error": "<urlopen error timeout: timed out>",
+            "source": "kling_startend",
+            "end_frame_prompt": "Same character, same outfit, same lighting, same cartoon 3D Pixar-style art, same forest background. Pip the Guide Bird energetic and excited, eyes sparkling with anticipation, subtle lean-forward 'let's go' posture toward the camera. Beak closed. Same 4:3 composition.",
+            "cfg_scale": 0.5,
+            "negative_prompt": "lip sync, speaking, talking, mouth movement, beak movement, dialogue, speech, open mouth, Chinese, audio, voice, singing",
+            "duration": 10,
+            "next_attempt_at_epoch": 1776548288.3891351,
+            "next_attempt_at": "2026-04-18T21:37:53.389181+00:00",
+            "size_bytes": 11176551
+          },
+          {
+            "task_id": "b962f63f057b462e9d32071fe1d04d0a",
+            "status": "completed",
+            "file": "beat_11_option_5.mp4",
+            "submitted_at": "2026-04-18T21:32:56.558646+00:00",
+            "submitted_at_epoch": 1776547976,
+            "retries": 2,
+            "last_error": "<urlopen error timeout: timed out>",
+            "source": "kling_startend",
+            "end_frame_prompt": "Same character, same outfit, same lighting, same cartoon 3D Pixar-style art, same forest background. Pip the Guide Bird energetic and excited, eyes sparkling with anticipation, subtle lean-forward 'let's go' posture toward the camera. Beak closed. Same 4:3 composition.",
+            "cfg_scale": 0.5,
+            "negative_prompt": "lip sync, speaking, talking, mouth movement, beak movement, dialogue, speech, open mouth, Chinese, audio, voice, singing",
+            "duration": 10,
+            "next_attempt_at_epoch": 1776548319.854282,
+            "next_attempt_at": "2026-04-18T21:38:24.854283+00:00",
+            "size_bytes": 14953147
+          }
+        ],
+        "selected_option": 5,
+        "trim_start": 0.0,
+        "trim_end": 6.2,
+        "pause_after_ms": 1500,
+        "fade_after_ms": 224
+      },
+      "lipsync": {
+        "status": "completed",
+        "task_id": "3628fb3e1d4c4effb653918f7e75ad95",
+        "file": "beat_11_lipsync.mp4",
+        "audio_file": "line_11_guide_bird.mp3",
+        "submitted_at": "2026-04-18T22:04:24.212358+00:00",
+        "retries": 1,
+        "source_option": 5,
+        "source_changed": false,
+        "audio_processing": {
+          "method": "silence_compression_auto_applied",
+          "source_audio": "line_11_guide_bird.mp3",
+          "source_duration_s": 5.2,
+          "compressed_duration_s": 5.2,
+          "silences_compressed": [],
+          "video_trimmed_to_s": 5.6,
+          "trim_start": 4.4,
+          "trim_end": 10.0,
+          "trim_window_s": 5.6,
+          "applied_by": "_handle_lipsync_submit_v2",
+          "rule_reference": "CLAUDE.md \u00a78.4 + LIPSYNC_TRIM_WINDOW_HONORED_20260419"
+        },
+        "size_bytes": 1160102,
+        "audio_changed": true,
+        "submitted_at_epoch": 1776549864,
+        "superseded_task_ids": [
+          "f5374c851788402c9c6090c54b3732d6"
+        ]
+      },
+      "end_frame_prompt": "Same character, same outfit, same lighting, same cartoon 3D Pixar-style art, same forest background. Pip the Guide Bird energetic and excited, eyes sparkling with anticipation, subtle lean-forward 'let's go' posture toward the camera. Beak closed. Same 4:3 composition.",
+      "end_frame_prompt_source": "auto_populated_universal_default_20260417",
+      "text": "Are you serious?? This is HUGE!! You WOKE UP A RUNESTONE WITH MAGIC!!! It's the biggest discovery in a hundred years!! The biggest discovery EVER!",
+      "text_last_updated_at": "2026-04-17T21:31:20.467457+00:00",
+      "audio_file": "line_11_guide_bird.mp3",
+      "audio_duration_s": 5.2,
+      "audio_regenerated_at": "2026-04-17T23:40:33.664076+00:00",
+      "text_modified_after_tts": false,
+      "_version": 18,
+      "speaker": "Luna"
+    },
+    "beat_01": {
+      "phase_1": {
+        "status": "polling",
+        "options": [
+          {
+            "status": "completed",
+            "file": "beat_01_option_A.mp4",
+            "size_bytes": 2276839,
+            "retries": 0
+          }
+        ],
+        "selected_option": 1,
+        "trim_start": 0.0,
+        "trim_end": 4.1,
+        "audio_delay": 2.0,
+        "speaker": "Guide Bird",
+        "speaker_mismatch": false,
+        "speaker_mismatch_set_at": "2026-04-25T19:58:26.165480+00:00",
+        "speaker_mismatch_cleared_at": "2026-04-25T20:21:39.909778+00:00"
+      },
+      "text": "(Sounds of something heavy falling through the branches and landing on the forest floor). Luna's disembodied voice: [pause] [pause]. \"I'm OK! I'm OK.\"",
+      "text_last_updated_at": "2026-05-03T01:35:23.183840+00:00",
+      "_version": 11,
+      "speaker": "Luna",
+      "audio_file": "line_01_guide_bird.mp3",
+      "audio_duration_s": 3.92,
+      "audio_regenerated_at": "2026-04-25T21:11:14.172210+00:00",
+      "text_modified_after_tts": true,
+      "force_legacy": true,
+      "image_path": "/Users/kimberlysmith/Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files/Production/beat_generator_stills/crops/crop_bg_arc1_event1_post_beat_02_1777141175.webp",
+      "lipsync": {
+        "status": "completed",
+        "task_id": "3bd036b9563b442996ddbff1ed37fb8b",
+        "file": "beat_01_lipsync.mp4",
+        "audio_file": "_tmp_silcomp_beat_01_20260425-183213.mp3",
+        "submitted_at": "2026-04-25T22:32:20.841839+00:00",
+        "retries": 1,
+        "source_option": 2,
+        "source_changed": false,
+        "audio_processing": {
+          "method": "silence_compression_auto_applied",
+          "source_audio": "line_01_guide_bird.mp3",
+          "source_duration_s": 3.92,
+          "compressed_duration_s": 3.406,
+          "silences_compressed": [
+            {
+              "range_s": [
+                0.623,
+                1.937
+              ],
+              "original_s": 1.314,
+              "new_s": 0.8
+            }
+          ],
+          "preroll_processing": {
+            "applied": false,
+            "reason": "ok_sufficient_lead_in",
+            "detected_leading_silence_s": 0.8,
+            "preroll_added_s": 0.0,
+            "preroll_target_s": 0.7,
+            "min_threshold_s": 0.5
+          },
+          "loudnorm_applied": true,
+          "loudnorm_target_i_lufs": -16.0,
+          "loudnorm_target_tp_dbtp": -1.5,
+          "loudnorm_target_lra_lu": 8.0,
+          "video_trimmed_to_s": 3.806,
+          "trim_start": 0.0,
+          "trim_end": 4.5,
+          "trim_window_s": 4.5,
+          "applied_by": "_handle_lipsync_submit_v4_loudnorm",
+          "rule_reference": "CLAUDE.md \u00a78.4 + LIPSYNC_TRIM_WINDOW_HONORED_20260419 + AUTO_PREROLL_V1 + LOUDNORM_V1"
+        },
+        "submitted_at_epoch": 1777156340,
+        "size_bytes": 590106,
+        "superseded_task_ids": [
+          "c8dfda9a4ee14ef5b715f09903186af9"
+        ]
+      },
+      "final": {
+        "source": "raw_option",
+        "source_option": 1,
+        "file": "beat_01_option_A.mp4",
+        "approved_at": "2026-04-26T07:17:34.930636+00:00"
+      }
+    },
+    "beat_02": {
+      "phase_1": {
+        "status": "completed",
+        "options": [
+          {
+            "task_id": "96f27bae5ad04dd1bc61f1790ff77571",
+            "status": "ghost_cleaned",
+            "submitted_at": "2026-04-16T22:53:01.026985+00:00",
+            "retries": 3,
+            "last_error": "file was overwritten by opt2 regen; needs recovery or regeneration",
+            "size_bytes": 3311226,
+            "recovered_from_cdn_at": "2026-04-16T23:04:59+00:00"
+          },
+          {
+            "task_id": "f60355c639564829a0c2644fc616f5ef",
+            "status": "completed",
+            "file": "beat_02_option_2_regen_20260419T213621Z.mp4",
+            "submitted_at": "2026-04-19T21:25:04.633842+00:00",
+            "submitted_at_epoch": 1776633904,
+            "retries": 2,
+            "last_error": null,
+            "source": "kling_startend",
+            "end_frame_prompt": "Same character, same outfit, same lighting, same cartoon 3D Pixar-style art, same forest background. Pip the Guide Bird (small blue bird) now has a softer concerned expression, head gently tilted with caring attention. Beak still closed, eyes warm and focused on Tessa. Same 4:3 composition.",
+            "cfg_scale": 0.5,
+            "negative_prompt": "lip sync, speaking, talking, mouth movement, beak movement, dialogue, speech, open mouth, Chinese, audio, voice, singing",
+            "duration": 5,
+            "next_attempt_at": "2026-04-19T21:30:31.835245+00:00",
+            "size_bytes": 6160350
+          },
+          {
+            "task_id": "db9b8496a9654c48960d3dd40daa0c72",
+            "status": "completed",
+            "file": "beat_02_option_3.mp4",
+            "submitted_at": "2026-04-19T21:25:19.233437+00:00",
+            "submitted_at_epoch": 1776633919,
+            "retries": 2,
+            "last_error": null,
+            "source": "kling_startend",
+            "end_frame_prompt": "Same character, same outfit, same lighting, same cartoon 3D Pixar-style art, same forest background. Pip the Guide Bird (small blue bird) now has a softer concerned expression, head gently tilted with caring attention. Beak still closed, eyes warm and focused on Tessa. Same 4:3 composition.",
+            "cfg_scale": 0.5,
+            "negative_prompt": "lip sync, speaking, talking, mouth movement, beak movement, dialogue, speech, open mouth, Chinese, audio, voice, singing",
+            "duration": 5,
+            "next_attempt_at": "2026-04-19T21:31:49.019981+00:00",
+            "size_bytes": 9101420
+          }
+        ],
+        "selected_option": 2,
+        "trim_end": 5.0,
+        "trim_start": 0.0,
+        "pause_after_ms": 100
+      },
+      "lipsync": {
+        "status": "completed",
+        "task_id": "88b1e55dc38340e9ba853e29e1037233",
+        "file": "beat_02_lipsync.mp4",
+        "audio_file": "_tmp_silcomp_beat_02_20260419-175034.mp3",
+        "submitted_at": "2026-04-19T21:50:57.411538+00:00",
+        "retries": 1,
+        "size_bytes": 1093634,
+        "source_option": 3,
+        "source_changed": true,
+        "superseded_task_ids": [
+          "fea4b30cb0b640509232f4ec6e056d82"
+        ],
+        "submitted_at_epoch": 1776635457,
+        "audio_processing": {
+          "method": "silence_compression_auto_applied",
+          "source_audio": "line_02_guide_bird.mp3",
+          "source_duration_s": 4.24,
+          "compressed_duration_s": 3.681,
+          "silences_compressed": [
+            {
+              "range_s": [
+                1.942,
+                3.301
+              ],
+              "original_s": 1.359,
+              "new_s": 0.8
+            }
+          ],
+          "video_trimmed_to_s": 4.081,
+          "trim_start": 0.3,
+          "trim_end": 5.042,
+          "trim_window_s": 4.742,
+          "applied_by": "_handle_lipsync_submit_v2",
+          "rule_reference": "CLAUDE.md \u00a78.4 + LIPSYNC_TRIM_WINDOW_HONORED_20260419"
+        },
+        "last_error": null,
+        "recovered_by": "manual_cdn_direct",
+        "recovered_at": "2026-04-19T21:59:00.261917Z"
+      },
+      "end_frame_prompt": "Same character, same outfit, same lighting, same cartoon 3D Pixar-style art, same forest background. Pip the Guide Bird (small blue bird) now has a softer concerned expression, head gently tilted with caring attention. Beak still closed, eyes warm and focused on Tessa. Same 4:3 composition.",
+      "end_frame_prompt_source": "auto_populated_universal_default_20260417",
+      "_version": 20,
+      "speaker": "Luna",
+      "text": "WHAT is THAT.... Is that ... Is that IT...?  Did I find it??",
+      "text_last_updated_at": "2026-05-03T01:35:26.781440+00:00",
+      "text_modified_after_tts": true
+    },
+    "beat_04": {
+      "phase_1": {
+        "status": "completed",
+        "options": [
+          {
+            "status": "completed",
+            "file": "beat_04_option_A.mp4",
+            "size_bytes": 2497967,
+            "retries": 0
+          }
+        ],
+        "selected_option": 1,
+        "trim_start": 0.0,
+        "trim_end": 3.0,
+        "pause_after_ms": 0
+      },
+      "lipsync": {
+        "status": "completed",
+        "task_id": "69dac5b3d0824ab99530852abdd392b2",
+        "file": "beat_04_lipsync.mp4",
+        "audio_file": "line_04_guide_bird.mp3",
+        "submitted_at": "2026-04-16T20:45:23.078795+00:00",
+        "retries": 0,
+        "size_bytes": 303242
+      },
+      "end_frame_prompt": "Same character, same outfit, same lighting, same cartoon 3D Pixar-style art, same forest background. Pip the Guide Bird leaning slightly forward in attentive listening, head tilted with gentle inquiry. Beak closed, eyes warm and focused. Same 4:3 composition.",
+      "end_frame_prompt_source": "auto_populated_universal_default_20260417",
+      "_version": 8,
+      "speaker": "Tessa",
+      "text": "[curious]  I'm Luna.  I'm a scientist.  [pause].  Well, a student scientist.. [pause]  And if my calculations are right... [pause] THAT is the MindfulNest! ",
+      "text_last_updated_at": "2026-05-03T01:35:32.705381+00:00",
+      "text_modified_after_tts": true
+    },
+    "beat_07": {
+      "phase_1": {
+        "status": "completed",
+        "options": [
+          {
+            "status": "completed",
+            "file": "beat_07_option_A.mp4",
+            "size_bytes": 2586984,
+            "retries": 0
+          },
+          {
+            "task_id": "4bfcc3f9e89f44c6a650a99c22162d58",
+            "status": "completed",
+            "file": "beat_07_option_2.mp4",
+            "submitted_at": "2026-04-25T04:42:41.401703+00:00",
+            "submitted_at_epoch": 1777092161,
+            "retries": 1,
+            "last_error": "<urlopen error TimeoutError: [Errno 60] Operation timed out>",
+            "source": "kling_startend",
+            "end_frame_prompt": "Same character, same outfit, same lighting, same cartoon 3D Pixar-style art, same forest background. Tessa the turtle's small smile blooming wider, eyes brightening with genuine impressed wonder, a hint of upward head tilt. Beak/mouth closed. Same 4:3 composition.",
+            "cfg_scale": 0.5,
+            "negative_prompt": "lip sync, speaking, talking, mouth movement, beak movement, dialogue, speech, open mouth, Chinese, audio, voice, singing",
+            "duration": 5,
+            "element_id": "c2ed1d848921419fa739ca38f737c953",
+            "next_attempt_at_epoch": 1777092404.9891589,
+            "next_attempt_at": "2026-04-25T04:46:39.989164+00:00",
+            "size_bytes": 6196476
+          },
+          {
+            "task_id": "544e65a505a14be18d817c3e4b43aa40",
+            "status": "completed",
+            "file": "beat_07_option_3.mp4",
+            "submitted_at": "2026-04-25T04:42:55.474889+00:00",
+            "submitted_at_epoch": 1777092175,
+            "retries": 1,
+            "last_error": "<urlopen error TimeoutError: [Errno 60] Operation timed out>",
+            "source": "kling_startend",
+            "end_frame_prompt": "Same character, same outfit, same lighting, same cartoon 3D Pixar-style art, same forest background. Tessa the turtle's small smile blooming wider, eyes brightening with genuine impressed wonder, a hint of upward head tilt. Beak/mouth closed. Same 4:3 composition.",
+            "cfg_scale": 0.5,
+            "negative_prompt": "lip sync, speaking, talking, mouth movement, beak movement, dialogue, speech, open mouth, Chinese, audio, voice, singing",
+            "duration": 5,
+            "element_id": "c2ed1d848921419fa739ca38f737c953",
+            "next_attempt_at_epoch": 1777092482.18275,
+            "next_attempt_at": "2026-04-25T04:47:57.182759+00:00",
+            "size_bytes": 5294392
+          },
+          {
+            "task_id": "ff78f906f7f844c18920758377fc2ee1",
+            "status": "completed",
+            "file": "beat_07_option_4.mp4",
+            "submitted_at": "2026-04-25T04:43:12.021542+00:00",
+            "submitted_at_epoch": 1777092192,
+            "retries": 1,
+            "last_error": "<urlopen error TimeoutError: [Errno 60] Operation timed out>",
+            "source": "kling_startend",
+            "end_frame_prompt": "Same character, same outfit, same lighting, same cartoon 3D Pixar-style art, same forest background. Tessa the turtle's small smile blooming wider, eyes brightening with genuine impressed wonder, a hint of upward head tilt. Beak/mouth closed. Same 4:3 composition.",
+            "cfg_scale": 0.5,
+            "negative_prompt": "lip sync, speaking, talking, mouth movement, beak movement, dialogue, speech, open mouth, Chinese, audio, voice, singing",
+            "duration": 5,
+            "element_id": "c2ed1d848921419fa739ca38f737c953",
+            "next_attempt_at_epoch": 1777092559.019419,
+            "next_attempt_at": "2026-04-25T04:49:14.019422+00:00",
+            "size_bytes": 6015176
+          },
+          {
+            "task_id": "ddb887e4a92a4a1292f030ccdc223817",
+            "status": "completed",
+            "file": "beat_07_option_5.mp4",
+            "submitted_at": "2026-04-25T04:43:29.978640+00:00",
+            "submitted_at_epoch": 1777092209,
+            "retries": 0,
+            "last_error": null,
+            "source": "kling_startend",
+            "end_frame_prompt": "Same character, same outfit, same lighting, same cartoon 3D Pixar-style art, same forest background. Tessa the turtle's small smile blooming wider, eyes brightening with genuine impressed wonder, a hint of upward head tilt. Beak/mouth closed. Same 4:3 composition.",
+            "cfg_scale": 0.5,
+            "negative_prompt": "lip sync, speaking, talking, mouth movement, beak movement, dialogue, speech, open mouth, Chinese, audio, voice, singing",
+            "duration": 5,
+            "element_id": "c2ed1d848921419fa739ca38f737c953",
+            "size_bytes": 5632516
+          }
+        ],
+        "selected_option": 1,
+        "trim_start": 0.0,
+        "trim_end": 2.2
+      },
+      "lipsync": {
+        "status": "completed",
+        "task_id": "70ea9a450285454baf1a46242ea57aba",
+        "file": "beat_07_lipsync.mp4",
+        "audio_file": "line_07_tessa.mp3",
+        "submitted_at": "2026-04-17T18:53:07.556458+00:00",
+        "retries": 0,
+        "source_option": 1,
+        "source_changed": false,
+        "audio_processing": {
+          "method": "silence_compression_auto_applied",
+          "source_audio": "line_07_tessa.mp3",
+          "source_duration_s": 1.44,
+          "compressed_duration_s": 1.44,
+          "silences_compressed": [],
+          "video_trimmed_to_s": 1.84,
+          "applied_by": "_handle_lipsync_submit_v2",
+          "rule_reference": "CLAUDE.md \u00a78.4"
+        },
+        "size_bytes": 233176
+      },
+      "end_frame_prompt": "Same character, same outfit, same lighting, same cartoon 3D Pixar-style art, same forest background. Tessa the turtle's small smile blooming wider, eyes brightening with genuine impressed wonder, a hint of upward head tilt. Beak/mouth closed. Same 4:3 composition.",
+      "end_frame_prompt_source": "auto_populated_universal_default_20260417",
+      "_version": 4,
+      "speaker": "Luna",
+      "text": "IT'S AWAKE!!!  [pause] [pause] The Runestone [pause] How?! What did you DO?!?",
+      "text_last_updated_at": "2026-05-03T01:35:46.273803+00:00",
+      "text_modified_after_tts": true
+    },
+    "beat_08": {
+      "phase_1": {
+        "status": "completed",
+        "options": [
+          {
+            "status": "completed",
+            "file": "beat_08_option_A.mp4",
+            "size_bytes": 2441594,
+            "retries": 0
+          },
+          {
+            "task_id": "c2a60dac34924833ac9fa70156e9348c",
+            "status": "completed",
+            "file": "beat_08_option_2.mp4",
+            "submitted_at": "2026-04-17T23:36:09.901229+00:00",
+            "retries": 2,
+            "last_error": "<urlopen error timeout: timed out>",
+            "source": "kling_startend",
+            "end_frame_prompt": "Same character, same outfit, same lighting, same cartoon 3D Pixar-style art, same forest background. Pip the Guide Bird's expression transitions from humble to warmly hopeful \u2014 slight warm smile in the eyes, gentle reassuring posture tilting toward Tessa. Beak closed. Same 4:3 composition.",
+            "cfg_scale": 0.5,
+            "negative_prompt": "lip sync, speaking, talking, mouth movement, beak movement, dialogue, speech, open mouth, Chinese, audio, voice, singing",
+            "duration": 5,
+            "next_attempt_at_epoch": 1776469241.0920792,
+            "next_attempt_at": "2026-04-17T23:40:26.092082+00:00",
+            "size_bytes": 3578061
+          },
+          {
+            "task_id": "25dd62cde5354feb983f896308a9a5b0",
+            "status": "completed",
+            "file": "beat_08_option_3.mp4",
+            "submitted_at": "2026-04-17T23:36:23.660031+00:00",
+            "retries": 2,
+            "last_error": "<urlopen error timeout: timed out>",
+            "source": "kling_startend",
+            "end_frame_prompt": "Same character, same outfit, same lighting, same cartoon 3D Pixar-style art, same forest background. Pip the Guide Bird's expression transitions from humble to warmly hopeful \u2014 slight warm smile in the eyes, gentle reassuring posture tilting toward Tessa. Beak closed. Same 4:3 composition.",
+            "cfg_scale": 0.5,
+            "negative_prompt": "lip sync, speaking, talking, mouth movement, beak movement, dialogue, speech, open mouth, Chinese, audio, voice, singing",
+            "duration": 5,
+            "next_attempt_at_epoch": 1776469272.569623,
+            "next_attempt_at": "2026-04-17T23:40:57.569628+00:00",
+            "size_bytes": 3560720
+          }
+        ],
+        "selected_option": 3,
+        "pause_after_ms": 0,
+        "trim_end": 4.1
+      },
+      "lipsync": {
+        "status": "completed",
+        "task_id": "9927d5a6257e413ba29f8f911a9834e0",
+        "file": "beat_08_lipsync.mp4",
+        "audio_file": "line_08_guide_bird.mp3",
+        "submitted_at": "2026-04-18T20:54:11.650624+00:00",
+        "retries": 0,
+        "source_option": 2,
+        "source_changed": true,
+        "audio_processing": {
+          "method": "silence_compression_auto_applied",
+          "source_audio": "line_08_guide_bird.mp3",
+          "source_duration_s": 3.2,
+          "compressed_duration_s": 3.2,
+          "silences_compressed": [],
+          "video_trimmed_to_s": 3.6,
+          "applied_by": "_handle_lipsync_submit_v2",
+          "rule_reference": "CLAUDE.md \u00a78.4"
+        },
+        "size_bytes": 467707,
+        "audio_changed": true,
+        "submitted_at_epoch": 1776545651
+      },
+      "end_frame_prompt": "Same character, same outfit, same lighting, same cartoon 3D Pixar-style art, same forest background. Pip the Guide Bird's expression transitions from humble to warmly hopeful \u2014 slight warm smile in the eyes, gentle reassuring posture tilting toward Tessa. Beak closed. Same 4:3 composition.",
+      "end_frame_prompt_source": "auto_populated_universal_default_20260417",
+      "_version": 27,
+      "text": "Well, I don't know!  I fell ... I got hurt.  This child is studying magic [pause] ... and ... cast a magic spell and [pause] .... fixed my shell.  Then ... the runestone just woke up.",
+      "text_last_updated_at": "2026-04-18T23:57:01.657586+00:00",
+      "text_modified_after_tts": false,
+      "audio_file": "line_08_guide_bird.mp3",
+      "audio_duration_s": 3.2,
+      "audio_regenerated_at": "2026-04-18T20:34:34.879865+00:00",
+      "speaker": "Tessa"
+    },
+    "beat_09": {
+      "phase_1": {
+        "status": "polling",
+        "options": [
+          {
+            "status": "completed",
+            "file": "beat_09_option_A.mp4",
+            "size_bytes": 2586984,
+            "retries": 0
+          }
+        ],
+        "selected_option": 1,
+        "trim_start": 0.0,
+        "trim_end": 5.51
+      },
+      "text": "(Looks directly at camera, shocked). You woke it up?? By YOURSELF??",
+      "text_last_updated_at": "2026-04-19T17:18:09.932880+00:00",
+      "end_frame_prompt": "Same character, same outfit, same lighting, same cartoon 3D Pixar-style art, same forest background. Tessa the turtle's cautious hope growing \u2014 eyes lifting slightly, small spark of possibility, head tilted in gentle wonder. Beak/mouth closed. Same 4:3 composition.",
+      "end_frame_prompt_source": "auto_populated_universal_default_20260417",
+      "lipsync": {
+        "status": "completed",
+        "task_id": "da0d92b3bec64a5288d8dec3b8325d21",
+        "file": "beat_09_lipsync.mp4",
+        "audio_file": "_tmp_silcomp_beat_09_20260418-182924.mp3",
+        "submitted_at": "2026-04-18T22:30:58.110401+00:00",
+        "retries": 1,
+        "source_option": 3,
+        "source_changed": false,
+        "audio_processing": {
+          "method": "silence_compression_auto_applied",
+          "source_audio": "line_09_tessa.mp3",
+          "source_duration_s": 5.04,
+          "compressed_duration_s": 4.514,
+          "silences_compressed": [
+            {
+              "range_s": [
+                2.299,
+                3.625
+              ],
+              "original_s": 1.326,
+              "new_s": 0.8
+            }
+          ],
+          "video_trimmed_to_s": 4.914,
+          "trim_start": 3.4,
+          "trim_end": 10.0,
+          "trim_window_s": 6.6,
+          "applied_by": "_handle_lipsync_submit_v2",
+          "rule_reference": "CLAUDE.md \u00a78.4 + LIPSYNC_TRIM_WINDOW_HONORED_20260419"
+        },
+        "size_bytes": 559560,
+        "audio_changed": true,
+        "superseded_task_ids": [
+          "2709ff01dab943859a28a4311c4c732b"
+        ],
+        "submitted_at_epoch": 1776551458
+      },
+      "audio_file": "line_09_tessa.mp3",
+      "audio_duration_s": 5.04,
+      "audio_regenerated_at": "2026-04-18T22:11:25.174017+00:00",
+      "text_modified_after_tts": false,
+      "_version": 11,
+      "speaker": "Luna"
+    },
+    "beat_10": {
+      "phase_1": {
+        "status": "completed",
+        "options": [
+          {
+            "status": "completed",
+            "file": "beat_10_option_A.mp4",
+            "size_bytes": 2709166,
+            "retries": 0
+          }
+        ],
+        "selected_option": 1,
+        "trim_start": 0.0,
+        "trim_end": 4.5,
+        "fade_after_ms": 949
+      },
+      "lipsync": {
+        "status": "completed",
+        "task_id": "715c93fa3791425fa3ee8e0b1b3e5561",
+        "file": "beat_10_lipsync.mp4",
+        "audio_file": "line_10_guide_bird.mp3",
+        "submitted_at": "2026-04-18T22:17:39.180334+00:00",
+        "retries": 3,
+        "source_option": 1,
+        "source_changed": false,
+        "audio_processing": {
+          "method": "silence_compression_auto_applied",
+          "source_audio": "line_10_guide_bird.mp3",
+          "source_duration_s": 3.52,
+          "compressed_duration_s": 3.52,
+          "silences_compressed": [],
+          "video_trimmed_to_s": 3.92,
+          "trim_start": 0.3,
+          "trim_end": 4.5,
+          "trim_window_s": 4.2,
+          "applied_by": "_handle_lipsync_submit_v2",
+          "rule_reference": "CLAUDE.md \u00a78.4 + LIPSYNC_TRIM_WINDOW_HONORED_20260419"
+        },
+        "size_bytes": 496162,
+        "audio_changed": true,
+        "submitted_at_epoch": 1776550659,
+        "superseded_task_ids": [
+          "65da1c1b46e94ec6870f11e236687c94",
+          "e375495c536d42d690e6bc305a026b56"
+        ]
+      },
+      "end_frame_prompt": "Same character, same outfit, same lighting, same cartoon 3D Pixar-style art, same forest background. Pip the Guide Bird with a warm knowing smile in his eyes, confident reassuring posture, subtle encouraging head tilt toward the viewer. Beak closed. Same 4:3 composition.",
+      "end_frame_prompt_source": "auto_populated_universal_default_20260417",
+      "text": "Isn't it great? We're training in magic",
+      "text_last_updated_at": "2026-04-18T22:08:13.342647+00:00",
+      "text_modified_after_tts": false,
+      "audio_file": "line_10_guide_bird.mp3",
+      "audio_duration_s": 3.6,
+      "audio_regenerated_at": "2026-04-18T17:34:40.079878+00:00",
+      "_version": 15,
+      "speaker": "Chipper"
+    },
+    "beat_12": {
+      "speaker": "Tessa",
+      "text": "\"Guys... look at this writing next to the runestone.  It says... [pause] .... Um ...Feel... whats... real.\""
+    },
+    "beat_13": {
+      "speaker": "Chipper",
+      "text": "(looks at camera) Interesting .... that's what the Magic Hands Spell does, remember? You felt real magic between your hands."
+    },
+    "beat_14": {
+      "speaker": "Luna",
+      "text": "Oh this is the most EXCITING THING IN THE WORLD!!! I'll publish a paper about this! I'll give a speech at the College!"
+    },
+    "beat_15": {
+      "speaker": "Tessa",
+      "text": "(diesmbodied voice) \"What's THAT one say?  [pause] [pause] (reading aloud):  'Stay loose and light'."
+    },
+    "beat_16": {
+      "speaker": "Luna",
+      "text": "(worked up in a frenzy) What does it mean, what does it mean!? Oh I just HAVE to solve this mystery!!  (falls over)"
+    },
+    "beat_17": {
+      "speaker": "Chipper",
+      "text": "OK, Kiddo.  (walking forward) Luna knows a lot about Everdale.  But she's so excited she can't think straight!  Let's try another Magic Spell.  Maybe we can help her calm down and focus."
+    }
+  },
+  "image_overrides": {
+    "beat_03": "tessa_initial_4x3",
+    "beat_05": "tessa_initial_4x3",
+    "beat_99_test": "guidebird_closeup_4x3",
+    "beat_02": "guidebird_closeup_4x3",
+    "beat_01": "crop_bg_arc1_event1_post_beat_02_1777141175"
+  },
+  "display_order": [
+    "beat_01",
+    "beat_02",
+    "beat_03",
+    "beat_04",
+    "beat_05",
+    "beat_06",
+    "beat_07",
+    "beat_08",
+    "beat_09",
+    "beat_10",
+    "beat_11"
+  ],
+  "phase_b_status": "draft",
+  "_module_version": 240,
+  "phase_b_watercolor_cues_json": "[{\"animation\":\"fade_in\",\"cue_type\":\"png\",\"duration_ms\":25000,\"key\":\"spell_title\",\"timestamp_ms\":13307},{\"animation\":\"fade_in\",\"cue_type\":\"png\",\"duration_ms\":40000,\"key\":\"hands_rubbing\",\"timestamp_ms\":29937},{\"animation\":\"fade_in\",\"cue_type\":\"png\",\"duration_ms\":50000,\"key\":\"hands_original\",\"timestamp_ms\":41420},{\"animation\":\"fade_in\",\"cue_type\":\"png\",\"duration_ms\":60000,\"key\":\"hands_far\",\"timestamp_ms\":81593}]",
+  "fade_between_beats_ms": 0,
+  "phase_b_lipsync_file": "phase_b_lipsync_m1_v1_20260420.mp4",
+  "phase_b_lipsync_mtime": 1776655922,
+  "phase_b_ambient_preset_id": "studio_warm_room_v1",
+  "phase_b_cedric_base_clip_id": "placeholder_cedric_base_v1",
+  "phase_a_script": "[warm, leaning in, conspiratorial] OK, so this is the Great Wizard's house.  He's gonna come and teach you how to feel the magic inside you. [pause 2s].  You're gonna use focus and breathing to make real magic, magic you can feel right between your hands.  [pause 2s] Pay attention, follow his instructions.  [pause 2s]. [warm] You can close your eyes anytime you like.  That helps. [pause 2s] [eyes widen] Oh, here he comes!  Good luck!\n",
+  "phase_a_voice_stem_file": "phase_a_voice_stem_20260421-105138.mp3",
+  "phase_a_voice_stem_mtime": 1776783098,
+  "phase_a_lipsync_file": "phase_a_lipsync_withbed_20260422-000017.mp4",
+  "phase_a_lipsync_mtime": 1776830420,
+  "phase_a_empty_desk_bg_id": "chipper_idle_on_empty_desk_v2",
+  "phase_a_mixed_audio_file": "phase_a_mixed_20260422-000017.mp3",
+  "phase_a_mixed_audio_mtime": 1776830417,
+  "phase_a_ambient_preset_id": "meditation_pretty_v1",
+  "phase_a_watercolor_cues_json": "[]",
+  "phase_a_canonical_file": "phase_a_canonical_20260422-000017.mp4",
+  "phase_a_canonical_mtime": 1776830428,
+  "latest_preview_stitched_path": "Production/Event_1/preview/preview_stitched_eb9853f4cdfceb7a350ab220fd326c3369ae482fac3c30b7c45eac4a83cf8a2a.mp4",
+  "full_module_segment_boundaries": [
+    {
+      "label": "Story Scene",
+      "start_ms": 0,
+      "end_ms": 56214
+    },
+    {
+      "label": "Phase A",
+      "start_ms": 56214,
+      "end_ms": 85922
+    },
+    {
+      "label": "Phase B",
+      "start_ms": 85922,
+      "end_ms": 234002
+    },
+    {
+      "label": "Win",
+      "start_ms": 234002,
+      "end_ms": 252002
+    }
+  ],
+  "module_sfx_cues": [
+    {
+      "id": "cue_1777189333275",
+      "cue_type": "sfx",
+      "source_path": "Production/Event_1/sfx/magic_long_needs_trimming.mp3",
+      "offset_ms": 87371,
+      "end_ms": null,
+      "volume": 0.45,
+      "fadein_ms": 300,
+      "fadeout_ms": 1200
+    }
+  ]
+}
