@@ -1,17 +1,20 @@
 // ScopeBanner — listens for scope-mismatch (HTTP 409) and event-changed
-// (HTTP 423) events from the mutation channel and renders a fixed-top
-// banner so Kim sees a clear failure mode rather than silent corruption.
+// (HTTP 423) events from the mutation channel.
 //
-// LD-456 (409) → red banner + "Reload page" CTA.
-// LD-458 / LD-460 (423) → amber toast that auto-clears after the retry path
-// finishes ("Event changed; re-syncing…" → success or red banner on retry fail).
+// LD-456 (409) → red persistent banner + "Reload page" CTA.
+//   Persistent intentional — Kim must see it until she reloads. Toast would
+//   auto-fade and risk silent corruption per Rule 19.
+// LD-458 / LD-460 (423) → Toast (info: "Re-syncing…", success: "Re-sync
+//   complete", error: red banner if retry fails). Migrated to the new Toast
+//   primitive per S5.5c Phase B7 (LD UI_PRIMITIVES_SHARED_V1).
 
 import { useEffect } from 'preact/hooks';
 import { signal } from '@preact/signals';
 import { SCOPE_EVENT_MISMATCH, SCOPE_EVENT_CHANGED } from '../api/client';
+import { pushToast } from './ui/Toast';
 
 interface BannerState {
-  kind: 'mismatch' | 'changed' | null;
+  kind: 'mismatch' | null;
   message: string;
   detail?: Record<string, unknown>;
 }
@@ -35,26 +38,22 @@ export function ScopeBanner() {
       const detail = ((e as CustomEvent).detail ?? {}) as Record<string, unknown>;
       const phase = String(detail['phase'] ?? '?');
       if (phase === 'before-retry') {
-        banner.value = {
-          kind: 'changed',
+        pushToast({
+          kind: 'info',
           message: 'Event changed mid-mutation. Re-syncing and retrying…',
-          detail,
-        };
+          source: 'scope-banner-423-before',
+        });
       } else if (phase === 'after-retry') {
         const ok = Boolean(detail['retried_ok']);
         if (ok) {
-          // Auto-clear the toast after a brief delay.
-          banner.value = {
-            kind: 'changed',
+          pushToast({
+            kind: 'success',
             message: 'Re-sync complete; mutation applied.',
-            detail,
-          };
-          setTimeout(() => {
-            if (banner.value.kind === 'changed') {
-              banner.value = { kind: null, message: '' };
-            }
-          }, 2000);
+            source: 'scope-banner-423-success',
+          });
         } else {
+          // Failed retry collapses into the persistent red banner so Kim
+          // sees it after the toast queue drains.
           banner.value = {
             kind: 'mismatch',
             message: 'Re-sync retry failed. Reload the tab and try again.',
@@ -73,26 +72,23 @@ export function ScopeBanner() {
 
   if (banner.value.kind === null) return null;
 
-  const isMismatch = banner.value.kind === 'mismatch';
   return (
     <div
-      class={`mn-scope-banner ${isMismatch ? 'mn-scope-banner-error' : 'mn-scope-banner-info'}`}
-      data-testid={isMismatch ? 'scope-banner-mismatch' : 'scope-banner-changed'}
-      role={isMismatch ? 'alert' : 'status'}
+      class="mn-scope-banner mn-scope-banner-error"
+      data-testid="scope-banner-mismatch"
+      role="alert"
     >
       <span class="mn-scope-banner-text">{banner.value.message}</span>
-      {isMismatch ? (
-        <button
-          type="button"
-          class="mn-scope-banner-action"
-          data-testid="scope-banner-reload"
-          onClick={() => {
-            window.location.reload();
-          }}
-        >
-          Reload page
-        </button>
-      ) : null}
+      <button
+        type="button"
+        class="mn-scope-banner-action"
+        data-testid="scope-banner-reload"
+        onClick={() => {
+          window.location.reload();
+        }}
+      >
+        Reload page
+      </button>
       <button
         type="button"
         class="mn-scope-banner-dismiss"

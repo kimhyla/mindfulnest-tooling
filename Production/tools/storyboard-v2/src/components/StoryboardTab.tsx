@@ -13,9 +13,15 @@
 // Note: beforeunload guard + 503 fallback are S3 polish (parity-audit out-of-scope here).
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { activeScope, scopeKey } from '../state/scope';
+import {
+  activeScope,
+  activeTargetVideo,
+  scopeKey,
+} from '../state/scope';
 import { apiGet, pathappPatch } from '../api/client';
-import { PhaseProducer } from './phase/PhaseProducer';
+import { Spinner } from './ui/Spinner';
+import { pushToast } from './ui/Toast';
+import { BeatAudioPreview } from './BeatAudioPreview';
 
 interface BeatState {
   speaker?: string;
@@ -29,11 +35,36 @@ interface BeatState {
   magic_still_path?: string;
   magic_video_path?: string;
   // S5 — preferred video source for magic_video (lipsync, then animation).
-  lipsync?: { file?: string };
+  lipsync?: { file?: string; status?: string };
   phase_1?: { selected_option?: number; options?: Array<{ file?: string }> };
+  // S5.5e — fields read by the beat-level state machine (LD BEAT_LIFECYCLE_STATE_MACHINE_V1).
+  // beat.final block is the "is final?" signal per Cursor v8 (NOT a use_as_final boolean).
+  // Server writes this at production_server.py:10733-10747 with shape:
+  //   { source: "raw_option" | "lipsync", source_option, file, approved_at }
+  final?: {
+    source?: string;
+    source_option?: number;
+    file?: string;
+    approved_at?: string;
+  };
+  // Trim/delay (LD-160). Optional — older beats may not carry these.
+  trim_in?: number;
+  trim_out?: number | string;
+  delay_seconds?: number;
+}
+
+interface VideoPartition {
+  video_role?: string;
+  video_label?: string | null;
+  beats?: Record<string, BeatState>;
+  display_order?: string[];
+  completed_mp4_path?: string | null;
 }
 
 interface EventState {
+  // S5.5d (v3): primary source — videos.<role>.beats
+  videos?: Record<string, VideoPartition>;
+  // Legacy fallback — top-level beats (pre-S5.5b state shape)
   beats?: Record<string, BeatState>;
   L?: Array<{ id?: string; beat_id?: string; speaker?: string; text?: string }>;
   _module_version?: number;
@@ -82,6 +113,317 @@ function clearShadow(eventId: string, beatId: string): void {
 }
 
 // ----------------------------------------------------------------
+// S5.5e — Beat lifecycle state machine + button row (LD BEAT_LIFECYCLE_STATE_MACHINE_V1)
+// ----------------------------------------------------------------
+
+type BeatLifecycle =
+  | 'draft'              // no audio yet
+  | 'audio_generated'    // TTS done, no animation
+  | 'animated'           // 3 options exist, no selection
+  | 'selected'           // option chosen, no lipsync
+  | 'lipsync_pending'    // in flight
+  | 'final';             // beat.final block present (lipsync done OR use-as-final)
+
+function deriveBeatLifecycle(b: BeatState): BeatLifecycle {
+  // Cursor v8: beat.final block presence IS the "final" signal.
+  if (b.final && b.final.file) return 'final';
+  if (b.lipsync?.status === 'pending' || b.lipsync?.status === 'submitted') {
+    return 'lipsync_pending';
+  }
+  const hasOptions = !!(b.phase_1?.options && b.phase_1.options.length > 0);
+  const hasSelected = b.phase_1?.selected_option !== undefined && hasOptions;
+  if (hasSelected) return 'selected';
+  if (hasOptions) return 'animated';
+  if (b.audio_file) return 'audio_generated';
+  return 'draft';
+}
+
+const POLL_ANIMATE_MS = 5000;
+const POLL_LIPSYNC_MS = 10000;
+
+interface BeatButtonRowProps {
+  index: number;
+  beatId: string;
+  beat: BeatState;
+  /** Bumps when beat fields change (parent's refreshTick). Used as cacheBust for audio preview. */
+  cacheBust?: string;
+  /** Triggered after any successful mutation so parent can refresh state. */
+  onMutated: () => void;
+}
+
+function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated }: BeatButtonRowProps) {
+  const lifecycle = deriveBeatLifecycle(beat);
+  const [busy, setBusy] = useState<string | null>(null); // which button is in-flight
+  const [trimIn, setTrimIn] = useState<string>(String(beat.trim_in ?? '0.0'));
+  const [trimOut, setTrimOut] = useState<string>(String(beat.trim_out ?? 'full'));
+  const [delaySec, setDelaySec] = useState<string>(String(beat.delay_seconds ?? '0.0'));
+
+  // ----------------------------------------------------------------
+  // Polling (animate + lipsync)
+  // ----------------------------------------------------------------
+
+  useEffect(() => {
+    // We can't know if a poll is needed without a job_id — the legacy server
+    // tracks jobs internally. We poll status periodically when in the
+    // 'lipsync_pending' state to refresh the lifecycle.
+    if (lifecycle !== 'lipsync_pending') return;
+    let cancelled = false;
+    let timer: number | null = null;
+    const tick = async () => {
+      if (cancelled) return;
+      const res = await apiGet('lipsync_status', { beat_id: beatId });
+      if (cancelled) return;
+      if (res.ok) onMutated();
+      timer = window.setTimeout(tick, POLL_LIPSYNC_MS);
+    };
+    timer = window.setTimeout(tick, POLL_LIPSYNC_MS);
+    return () => {
+      cancelled = true;
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, [lifecycle, beatId]);
+
+  const runMutation = async (label: string, endpoint: any, body: Record<string, unknown>) => {
+    setBusy(label);
+    const result = await pathappPatch(activeScope.value, endpoint, { beat_id: beatId, ...body });
+    setBusy(null);
+    if (result.ok) {
+      pushToast({ kind: 'success', message: `${label} ok`, source: `beat-${label}` });
+      onMutated();
+    } else {
+      pushToast({ kind: 'error', message: `${label} failed: ${result.error}`, source: `beat-${label}-error` });
+    }
+    return result.ok;
+  };
+
+  const onRegenAudio = () => runMutation('Regen Audio', 'beat_regenerate_audio', {});
+  const onAnimate = async () => {
+    setBusy('Animate');
+    const result = await pathappPatch(activeScope.value, 'animate', { beat_id: beatId });
+    setBusy(null);
+    if (result.ok) {
+      pushToast({ kind: 'info', message: 'Animation submitted (poll status)', source: 'beat-animate' });
+      // Spawn poll loop until status returns 3 options.
+      let polls = 0;
+      const pollAnim = async () => {
+        polls += 1;
+        const r = await apiGet('animate_status', { beat_id: beatId });
+        if (r.ok) onMutated();
+        if (polls < 60) window.setTimeout(pollAnim, POLL_ANIMATE_MS);
+      };
+      window.setTimeout(pollAnim, POLL_ANIMATE_MS);
+    } else {
+      pushToast({ kind: 'error', message: `Animate failed: ${result.error}`, source: 'beat-animate-error' });
+    }
+  };
+  const onSelectOption = (optionIndex: number) =>
+    runMutation('Select option', 'select', { option_index: optionIndex });
+  const onAddOptions = () => runMutation('Add options', 'beat_add_options', {});
+  const onLipsync = () => runMutation('Lipsync', 'lipsync', {});
+  const onUseAsFinal = () => runMutation('Use as Final', 'beat_use_as_final', {});
+  const onApplyTrim = () => {
+    const tIn = parseFloat(trimIn);
+    const tOut = trimOut === 'full' ? null : parseFloat(trimOut);
+    return runMutation('Trim', 'beat_trim', {
+      trim_in: isNaN(tIn) ? 0 : tIn,
+      trim_out: tOut,
+    });
+  };
+  const onApplyDelay = () => {
+    const d = parseFloat(delaySec);
+    return runMutation('Delay', 'beat_delay', { delay_seconds: isNaN(d) ? 0 : d });
+  };
+
+  // Visibility per state-machine table (S5.5e spec §3.1).
+  const showRegenAudio = ['draft', 'audio_generated', 'animated', 'selected', 'final'].includes(lifecycle);
+  const showAnimate = ['audio_generated'].includes(lifecycle);
+  const showAddOptions = ['animated'].includes(lifecycle);
+  const showSelectedOptionRadios = ['animated', 'selected'].includes(lifecycle);
+  const showLipsync = ['selected', 'lipsync_pending'].includes(lifecycle);
+  const showUseAsFinal = ['audio_generated', 'selected'].includes(lifecycle);
+  const showPreview = lifecycle !== 'draft';
+
+  const optionCount = beat.phase_1?.options?.length ?? 0;
+  const selectedOption = beat.phase_1?.selected_option ?? null;
+
+  return (
+    <div class="mn-beat-button-row" data-testid={`beat-button-row-${index}`} data-lifecycle={lifecycle}>
+      {/* Phase 1 — animation options (visible in animated/selected) */}
+      {showSelectedOptionRadios && optionCount > 0 ? (
+        <span class="mn-beat-button-group" data-testid={`beat-options-group-${index}`}>
+          <span class="mn-beat-button-group-label">Phase 1:</span>
+          {Array.from({ length: optionCount }).map((_, i) => {
+            const oi = i + 1;
+            return (
+              <button
+                key={oi}
+                type="button"
+                class={`mn-btn mn-btn-small${selectedOption === oi ? ' is-active' : ''}`}
+                data-testid={`beat-${index}-select-option-${oi}`}
+                onClick={() => onSelectOption(oi)}
+                disabled={busy !== null}
+              >
+                opt {oi}{selectedOption === oi ? ' ✓' : ''}
+              </button>
+            );
+          })}
+          {showAddOptions ? (
+            <button
+              type="button"
+              class="mn-btn mn-btn-small"
+              data-testid={`beat-${index}-add-options`}
+              onClick={onAddOptions}
+              disabled={busy !== null}
+            >
+              + Add options
+            </button>
+          ) : null}
+        </span>
+      ) : null}
+
+      {/* Audio group */}
+      {showPreview ? (
+        <span class="mn-beat-button-group" data-testid={`beat-audio-group-${index}`}>
+          <span class="mn-beat-button-group-label">Audio:</span>
+          <BeatAudioPreview
+            beatId={beatId}
+            {...(cacheBust !== undefined ? { cacheBust } : (beat.text_last_updated_at !== undefined ? { cacheBust: beat.text_last_updated_at } : {}))}
+            testId={`beat-${index}`}
+            disabled={!beat.audio_file}
+          />
+          {showRegenAudio ? (
+            <button
+              type="button"
+              class="mn-btn mn-btn-small"
+              data-testid={`beat-${index}-regen-audio`}
+              onClick={onRegenAudio}
+              disabled={busy !== null}
+              title="Re-generate TTS for this beat"
+            >
+              {busy === 'Regen Audio' ? <><Spinner size="sm" inline /> …</> : '🎙 Regen Audio'}
+            </button>
+          ) : null}
+        </span>
+      ) : showRegenAudio ? (
+        <span class="mn-beat-button-group">
+          <button
+            type="button"
+            class="mn-btn mn-btn-small"
+            data-testid={`beat-${index}-regen-audio`}
+            onClick={onRegenAudio}
+            disabled={busy !== null}
+          >
+            {busy === 'Regen Audio' ? <><Spinner size="sm" inline /> …</> : '🎙 Regen Audio'}
+          </button>
+        </span>
+      ) : null}
+
+      {/* Pipeline group */}
+      <span class="mn-beat-button-group" data-testid={`beat-pipeline-group-${index}`}>
+        <span class="mn-beat-button-group-label">Pipeline:</span>
+        {showAnimate ? (
+          <button
+            type="button"
+            class="mn-btn mn-btn-small"
+            data-testid={`beat-${index}-animate`}
+            onClick={onAnimate}
+            disabled={busy !== null}
+            title="Submit to Kling animation (3 options)"
+          >
+            {busy === 'Animate' ? <><Spinner size="sm" inline /> …</> : '🎬 Animate'}
+          </button>
+        ) : null}
+        {showLipsync ? (
+          <button
+            type="button"
+            class="mn-btn mn-btn-small"
+            data-testid={`beat-${index}-lipsync`}
+            onClick={onLipsync}
+            disabled={busy !== null || lifecycle === 'lipsync_pending'}
+            title="Send selected option for ByteDance lipsync"
+          >
+            {lifecycle === 'lipsync_pending' ? (
+              <><Spinner size="sm" inline /> in progress</>
+            ) : (
+              busy === 'Lipsync' ? <><Spinner size="sm" inline /> …</> : '👄 Lipsync'
+            )}
+          </button>
+        ) : null}
+        {showUseAsFinal ? (
+          <button
+            type="button"
+            class="mn-btn mn-btn-small mn-btn-primary"
+            data-testid={`beat-${index}-use-as-final`}
+            onClick={onUseAsFinal}
+            disabled={busy !== null}
+            title="Mark current selection as final without lipsync (Spec A)"
+          >
+            {busy === 'Use as Final' ? <><Spinner size="sm" inline /> …</> : '✓ Use as Final'}
+          </button>
+        ) : null}
+        {lifecycle === 'final' ? (
+          <span class="mn-dim" data-testid={`beat-${index}-final-marker`}>
+            ✓ final ({beat.final?.source ?? '?'})
+          </span>
+        ) : null}
+      </span>
+
+      {/* Trim / Delay group */}
+      <span class="mn-beat-button-group" data-testid={`beat-trim-group-${index}`}>
+        <span class="mn-beat-button-group-label">Trim:</span>
+        <input
+          type="text"
+          class="mn-beat-trim-input"
+          data-testid={`beat-${index}-trim-in`}
+          value={trimIn}
+          onInput={(e) => setTrimIn((e.target as HTMLInputElement).value)}
+          aria-label="Trim in seconds"
+          placeholder="0.0"
+        />
+        <span class="mn-dim">→</span>
+        <input
+          type="text"
+          class="mn-beat-trim-input"
+          data-testid={`beat-${index}-trim-out`}
+          value={trimOut}
+          onInput={(e) => setTrimOut((e.target as HTMLInputElement).value)}
+          aria-label="Trim out (number or 'full')"
+          placeholder="full"
+        />
+        <button
+          type="button"
+          class="mn-btn mn-btn-small"
+          data-testid={`beat-${index}-trim-apply`}
+          onClick={onApplyTrim}
+          disabled={busy !== null}
+        >
+          apply
+        </button>
+        <span class="mn-beat-button-group-label" style="margin-left:8px">Delay:</span>
+        <input
+          type="text"
+          class="mn-beat-trim-input"
+          data-testid={`beat-${index}-delay`}
+          value={delaySec}
+          onInput={(e) => setDelaySec((e.target as HTMLInputElement).value)}
+          aria-label="Delay seconds"
+          placeholder="0.0"
+        />
+        <button
+          type="button"
+          class="mn-btn mn-btn-small"
+          data-testid={`beat-${index}-delay-apply`}
+          onClick={onApplyDelay}
+          disabled={busy !== null}
+        >
+          apply
+        </button>
+      </span>
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------
 // Per-beat editable card
 // ----------------------------------------------------------------
 
@@ -90,9 +432,10 @@ interface BeatCardProps {
   beatId: string;
   beat: BeatState;
   eventId: string;
+  onMutated: () => void;
 }
 
-function BeatCard({ index, beatId, beat, eventId }: BeatCardProps) {
+function BeatCard({ index, beatId, beat, eventId, onMutated }: BeatCardProps) {
   const initialText = beat.text ?? '';
   // CRITICAL: contenteditable must be UNCONTROLLED. State-driven children on a
   // contenteditable trigger a re-render on every keystroke, which clobbers
@@ -198,6 +541,13 @@ function BeatCard({ index, beatId, beat, eventId }: BeatCardProps) {
         onInput={onInput}
         onBlur={onBlur}
       />
+      <BeatButtonRow
+        index={index}
+        beatId={beatId}
+        beat={beat}
+        {...(savedAt ? { cacheBust: savedAt } : {})}
+        onMutated={onMutated}
+      />
       <BeatMagicButtons index={index} beatId={beatId} beat={beat} eventId={eventId} />
     </li>
   );
@@ -283,84 +633,84 @@ function BeatMagicButtons({ index, beatId, beat, eventId }: BeatMagicProps) {
 }
 
 // ----------------------------------------------------------------
-// Export buttons (Storyboard footer) — intro / resolution / standalone
+// Send Out as MP4 (Storyboard footer) — S5.5d v3 pipeline.
+// Replaces legacy ExportButtons per Rule 27 + STORYBOARD_SEND_OUT_PROVENANCE_V1.
+// Calls POST /api/scene/assemble — Stage 1 finalizes each beat (cached);
+// Stage 2 mirrors _handle_preview_stitched orchestration to assemble the
+// scene + register scene_concat_mp4 asset.
 // ----------------------------------------------------------------
 
-type ExportRole = 'intro' | 'resolution' | 'standalone';
+interface SceneAssembleResponse {
+  ok?: boolean;
+  asset_id?: number;
+  completed_mp4_path?: string;
+  assemble_hash?: string;
+  beat_count?: number;
+  file_size_bytes?: number;
+  bitrate_bps?: number;
+  duration_s?: number;
+  size_warning?: string | null;
+  cache_stats?: Record<string, number>;
+  error?: string;
+}
 
-function ExportButtons() {
+function SendOutButton() {
   const [status, setStatus] = useState<'idle' | 'sending' | 'ok' | 'error'>('idle');
   const [detail, setDetail] = useState<string | null>(null);
 
-  const onExport = async (role: ExportRole) => {
+  const onSendOut = async () => {
     setStatus('sending');
-    setDetail(`role=${role}`);
-    // /api/export is a synchronous POST that writes animation_selections.json
-    // under event_dir. Pre-work pin already added in S2 (LD-460).
-    // Note: /api/export currently takes no body — server reads selections
-    // from state. We pass scope_event_id so the scope guard accepts our role
-    // routing intent in the audit trail.
-    const result = await pathappPatch(activeScope.value, 'state_snapshot', {
-      // Snapshot pre-export so a failed export is recoverable.
-      reason: `pre_export_${role}`,
-    }, { skipSnapshot: true });
-    // Then call /api/export directly via fetch (it's a no-body endpoint).
-    // pathappPatch isn't ideal here because /api/export ignores body.
-    try {
-      const res = await fetch(`http://localhost:5111/api/export?role=${role}&event_id=${activeScope.value.event_id}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ event_id: activeScope.value.event_id, role }),
-      });
-      if (res.ok) {
-        setStatus('ok');
-        setDetail(`role=${role} exported (snapshot ${result.ok ? 'ok' : 'failed (non-fatal)'})`);
-      } else {
-        setStatus('error');
-        const txt = await res.text().catch(() => '');
-        setDetail(`HTTP ${res.status}: ${txt.slice(0, 120)}`);
-      }
-    } catch (e) {
+    const role = activeTargetVideo.value;
+    setDetail(`role=${role} assembling…`);
+    // S5.5e §3.5 (Cursor v8): MIGRATED from raw fetch to pathappPatch — keeps
+    // the call inside the single mutation channel + auto-injects scope keys
+    // (scope_event_id OR scope_milestone_id, scope_target_video, scope_version)
+    // per LD-461. The endpoint is registered as 'scene_assemble' in
+    // MUTATION_ENDPOINTS.
+    const result = await pathappPatch<SceneAssembleResponse>(
+      activeScope.value, 'scene_assemble', {
+        scope_target_video: role,
+        fade_between_beats_ms: 0,
+      },
+    );
+    const data = result.data ?? {};
+    if (result.ok && data.ok) {
+      setStatus('ok');
+      const stats = data.cache_stats ?? {};
+      const statsStr = Object.entries(stats)
+        .filter(([_, v]) => v !== 0)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(' ');
+      setDetail(
+        `✓ asset_id=${data.asset_id} hash=${data.assemble_hash?.slice(0, 10)}` +
+        ` beats=${data.beat_count} size=${Math.round((data.file_size_bytes ?? 0) / 1024)}KB` +
+        (statsStr ? ` stats={${statsStr}}` : '') +
+        (data.size_warning ? ` ⚠ ${data.size_warning}` : ''),
+      );
+    } else {
       setStatus('error');
-      setDetail(`network: ${String(e)}`);
+      setDetail(`HTTP ${result.status}: ${data.error ?? result.error ?? 'unknown'}`);
     }
-    setTimeout(() => setStatus((s) => (s === 'ok' ? 'idle' : s)), 3000);
+    setTimeout(() => setStatus((s) => (s === 'ok' ? 'idle' : s)), 5000);
   };
 
   return (
-    <div class="mn-export-actions" data-testid="export-actions">
+    <div class="mn-export-actions" data-testid="send-out-actions">
       <button
         type="button"
         class="mn-btn"
-        data-testid="export-intro-btn"
-        onClick={() => onExport('intro')}
+        data-testid="send-out-mp4-btn"
+        onClick={onSendOut}
         disabled={status === 'sending'}
+        title="Finalize each beat + xfade-concat into a registered scene_concat_mp4 asset"
       >
-        Export Intro
-      </button>
-      <button
-        type="button"
-        class="mn-btn"
-        data-testid="export-resolution-btn"
-        onClick={() => onExport('resolution')}
-        disabled={status === 'sending'}
-      >
-        Export Resolution
-      </button>
-      <button
-        type="button"
-        class="mn-btn"
-        data-testid="export-standalone-btn"
-        onClick={() => onExport('standalone')}
-        disabled={status === 'sending'}
-      >
-        Export Standalone
+        {status === 'sending' ? 'Sending…' : 'Send Out as MP4'}
       </button>
       <span
         class={`mn-export-status mn-export-${status}`}
-        data-testid="export-status"
+        data-testid="send-out-status"
       >
-        {status === 'idle' ? '' : status === 'sending' ? 'sending…' : detail}
+        {status === 'idle' ? '' : detail}
       </span>
     </div>
   );
@@ -409,6 +759,22 @@ export function StoryboardTab() {
 
   const beatList = useMemo(() => {
     if (!state) return [];
+    // S5.5d (v3): primary source — state.videos[<role>].beats
+    const role = activeTargetVideo.value;
+    const partition = state.videos?.[role];
+    if (partition?.beats && Object.keys(partition.beats).length > 0) {
+      // Honor display_order if present, else sorted beat_id.
+      const order = partition.display_order ?? [];
+      if (order.length > 0) {
+        return order
+          .filter((bid) => partition.beats?.[bid])
+          .map((beat_id) => ({ beat_id, ...partition.beats![beat_id] }));
+      }
+      return Object.entries(partition.beats)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([beat_id, b]) => ({ beat_id, ...b }));
+    }
+    // Legacy fallback — top-level beats (pre-S5.5b state shape)
     if (state.beats && Object.keys(state.beats).length > 0) {
       return Object.entries(state.beats)
         .sort(([a], [b]) => a.localeCompare(b))
@@ -424,7 +790,7 @@ export function StoryboardTab() {
       });
     }
     return [];
-  }, [state]);
+  }, [state, activeTargetVideo.value]);
 
   const eventId = activeScope.value.event_id;
 
@@ -436,10 +802,10 @@ export function StoryboardTab() {
           scope: {scopeKey(activeScope.value)}
         </span>
       </header>
-      <div class="mn-phase-producers" data-testid="phase-producers">
-        <PhaseProducer phase="b" />
-        <PhaseProducer phase="a" />
-      </div>
+      {/* S5.5d (v3 architecture revision, 2026-05-03):
+          Phase A and Phase B are now top-level dedicated tabs (not siblings
+          inside Storyboard). The PhaseProducer component still exists and is
+          rendered by tabs/PhaseATab.tsx + tabs/PhaseBTab.tsx. */}
       {loading ? (
         <p class="mn-loading" data-testid="storyboard-loading">
           Loading event state&hellip;
@@ -462,12 +828,13 @@ export function StoryboardTab() {
               beatId={b.beat_id}
               beat={b}
               eventId={eventId}
+              onMutated={() => setRefreshTick((n) => n + 1)}
             />
           ))}
         </ol>
       )}
       <footer class="mn-pane-footer">
-        <ExportButtons />
+        <SendOutButton />
         <p class="mn-dim mn-readonly-banner" data-testid="storyboard-readonly">
           {beatList.length === 0
             ? 'Read-only — no beats to edit.'

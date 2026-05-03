@@ -1,32 +1,26 @@
 // LibraryPanel — Event-1 image library, mtime-sorted (LD-452 / Fix-V).
 // Renders real data from GET /api/cr/library for the active event.
 //
-// Session 1 ships read-only display. Drag-to-slot, delete, and crop-from-lib
-// are wired in Session 1.5+ via pathappPatch() through the single mutation
-// channel.
-//
-// Server response shape (verified 2026-05-02 against production_server.py
-// _handle_cr_library):
-//   { "images": [
-//       { key, filename, thumb_b64, gallery_b64, tier, abs_path }, ...
-//     ] }
-// Tier values currently in use: "source", "cropped".
+// S5.5c — migrated to AssetTile primitive (LD UI_PRIMITIVES_SHARED_V1) with
+// hover-delete wiring to /api/cr/library/delete via pathappPatch (single
+// mutation channel, no raw fetch). Tiles are also draggable so future drop
+// targets (Beat Generator slots, Stitcher SFX) can consume them via the
+// dragdrop helper.
 
 import { useEffect, useState } from 'preact/hooks';
 import { activeScope } from '../state/scope';
-import { apiGet } from '../api/client';
+import { apiGet, pathappPatch } from '../api/client';
+import { AssetTile } from './ui/AssetTile';
+import { pushToast } from './ui/Toast';
+import type { DragPayload } from '../utils/dragdrop';
 
 interface LibItem {
   key?: string;
   abs_path?: string;
   filename?: string;
-  /** Inlined base64 data URL — current production_server.py shape. */
   thumb_b64?: string;
-  /** Larger inlined preview (used when dragged/expanded). */
   gallery_b64?: string;
-  /** Legacy: separate-resource thumb URL (fallback if a future server returns this). */
   thumb_url?: string;
-  /** Legacy: pretty name (fallback). */
   display_name?: string;
   mtime?: number;
   tier?: string;
@@ -35,9 +29,7 @@ interface LibItem {
 }
 
 interface LibraryResponse {
-  /** Current shape: `{"images": [...]}`. */
   images?: LibItem[];
-  /** Hypothetical alternate shapes — kept for forward-compatibility but never branch on these alone. */
   items?: LibItem[];
   sources?: LibItem[];
   crops?: LibItem[];
@@ -47,12 +39,11 @@ interface LibraryResponse {
 export function flattenLibraryResponse(r: LibraryResponse): LibItem[] {
   if (Array.isArray(r.images)) return r.images;
   if (Array.isArray(r.items)) return r.items;
-  // Tiered fallback (never observed yet but cheap to support).
   return [...(r.sources ?? []), ...(r.crops ?? []), ...(r.masters ?? [])];
 }
 
-function thumbSrc(it: LibItem): string | null {
-  return it.thumb_b64 ?? it.thumb_url ?? null;
+function thumbSrc(it: LibItem): string | undefined {
+  return it.thumb_b64 ?? it.thumb_url ?? undefined;
 }
 
 function displayName(it: LibItem): string {
@@ -63,6 +54,7 @@ export function LibraryPanel() {
   const [items, setItems] = useState<LibItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshTick, setRefreshTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -82,7 +74,28 @@ export function LibraryPanel() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshTick]);
+
+  const onDelete = async (item: LibItem) => {
+    const k = item.key ?? item.abs_path;
+    if (!k) return;
+    const confirmed = window.confirm(`Delete "${displayName(item)}" from the library?`);
+    if (!confirmed) return;
+    const result = await pathappPatch(activeScope.value, 'cr_library_delete', {
+      key: k,
+      abs_path: item.abs_path ?? '',
+    });
+    if (result.ok) {
+      pushToast({ kind: 'success', message: `Deleted ${displayName(item)}`, source: 'library-delete' });
+      setRefreshTick((n) => n + 1);
+    } else {
+      pushToast({
+        kind: 'error',
+        message: `Delete failed: ${result.error ?? `HTTP ${result.status}`}`,
+        source: 'library-delete-error',
+      });
+    }
+  };
 
   return (
     <aside class="mn-library-panel" data-testid="library-panel">
@@ -110,28 +123,35 @@ export function LibraryPanel() {
         ) : (
           <ul class="mn-library-list" data-testid="library-list">
             {items.map((it, i) => {
-              const src = thumbSrc(it);
-              return (
-                <li
-                  key={it.key ?? it.abs_path ?? i}
-                  class={`mn-library-item${it.tier ? ` mn-library-tier-${it.tier}` : ''}`}
-                  data-testid={`library-item-${i}`}
-                  data-lib-key={it.key ?? it.abs_path ?? ''}
-                  data-lib-tier={it.tier ?? ''}
-                >
-                  {src ? (
-                    <img
-                      src={src}
-                      alt={displayName(it)}
-                      class="mn-library-thumb"
-                      loading="lazy"
-                    />
-                  ) : (
-                    <div class="mn-library-thumb mn-library-thumb-placeholder" />
-                  )}
-                  <span class="mn-library-name">{displayName(it)}</span>
-                </li>
-              );
+              const libKey = it.key ?? it.abs_path ?? `item-${i}`;
+              const dragPayload: DragPayload = {
+                kind: 'lib-image',
+                lib_key: libKey,
+                tier: it.tier ?? 'unknown',
+                ...(it.abs_path ? { abs_path: it.abs_path } : {}),
+              };
+              const dimsLabel = it.width && it.height ? `${it.width}×${it.height}` : undefined;
+              const tileProps: {
+                libKey: string;
+                name: string;
+                testIdSuffix: number;
+                dragPayload: DragPayload;
+                onDelete: () => Promise<void>;
+                thumbSrc?: string;
+                tier?: string;
+                dimsLabel?: string;
+              } = {
+                libKey,
+                name: displayName(it),
+                testIdSuffix: i,
+                dragPayload,
+                onDelete: () => onDelete(it),
+              };
+              const ts = thumbSrc(it);
+              if (ts !== undefined) tileProps.thumbSrc = ts;
+              if (it.tier !== undefined) tileProps.tier = it.tier;
+              if (dimsLabel !== undefined) tileProps.dimsLabel = dimsLabel;
+              return <AssetTile key={libKey} {...tileProps} />;
             })}
           </ul>
         )}

@@ -10,6 +10,7 @@ import { signal } from '@preact/signals';
 import { useEffect } from 'preact/hooks';
 import { ScopeBoundary } from './components/ScopeBoundary';
 import { ScopeBanner } from './components/ScopeBanner';
+import { ToastHost } from './components/ui/Toast';
 import { TabBar, type TabKey } from './components/TabBar';
 import { StoryboardTab } from './components/StoryboardTab';
 import { BgTab } from './components/BgTab';
@@ -17,7 +18,12 @@ import { CropperModal, initialCropperModalState } from './components/CropperModa
 import { StitcherTab } from './components/StitcherTab';
 import { LibraryPanel } from './components/LibraryPanel';
 import { ProductionMapTab, MAP_CELL_NAVIGATE_EVENT } from './components/ProductionMapTab';
-import { EventSelector } from './components/EventSelector';
+// S5.5e: EventSelector → ProjectSelector (LD PROJECT_SELECTOR_V1).
+// Adds milestone listing + grouped Events/Milestones with "+ New Milestone".
+import { ProjectSelector } from './components/ProjectSelector';
+import { VideoSelector } from './components/VideoSelector';
+import { PhaseATab } from './components/tabs/PhaseATab';
+import { PhaseBTab } from './components/tabs/PhaseBTab';
 import { activeScope, scopeKey } from './state/scope';
 import './app.css';
 
@@ -52,6 +58,10 @@ function ActivePane() {
       );
     case 'stitcher':
       return <StitcherTab />;
+    case 'phase_a':
+      return <PhaseATab />;
+    case 'phase_b':
+      return <PhaseBTab />;
     case 'map':
       return <ProductionMapTab />;
     default:
@@ -72,12 +82,14 @@ export function App() {
     <ScopeBoundary>
       <div class="mn-app" data-testid="app-root">
         <ScopeBanner />
+        <ToastHost />
         <header class="mn-app-header">
           <h1>Storyboard v2</h1>
           <span class="mn-app-subhead" data-testid="app-subhead">
             Path C rewrite &middot; Session 4 v3.1 — full producer wiring + animate + stitcher complete
           </span>
-          <EventSelector />
+          <ProjectSelector />
+          <VideoSelector />
         </header>
 
         <TabBar activeTab={activeTab} />

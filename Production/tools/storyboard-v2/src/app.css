@@ -695,3 +695,514 @@
 .mn-scope-banner-dismiss:hover {
   background: rgba(255, 255, 255, 0.1);
 }
+
+/* ---------------------------------------------------------------- */
+/* S5.5c Phase B — Shared UI primitives (LD UI_PRIMITIVES_SHARED_V1) */
+/* ---------------------------------------------------------------- */
+
+/* Modal */
+.mn-modal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.mn-modal-backdrop {
+  background: var(--ui-modal-backdrop);
+}
+.mn-modal-panel {
+  background: var(--ui-modal-panel-bg);
+  border: 1px solid var(--ui-modal-panel-border);
+  border-radius: 8px;
+  min-width: 480px;
+  max-width: 92vw;
+  max-height: 92vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+.mn-modal-wide { min-width: 720px; }
+.mn-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.mn-modal-title { font-size: 14px; }
+.mn-modal-close {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 20px;
+  line-height: 1;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.mn-modal-close:hover { background: var(--bg-elevated); color: var(--text-strong); }
+.mn-modal-body { flex: 1; overflow: auto; padding: 16px; }
+.mn-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+
+/* Toast */
+.mn-toast-host {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 1100;
+  max-width: 380px;
+}
+.mn-toast {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--ui-toast-bg-info);
+  border: 1px solid var(--ui-toast-border-info);
+  border-radius: 6px;
+  padding: 10px 12px;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.mn-toast-success {
+  background: var(--ui-toast-bg-success);
+  border-color: var(--ui-toast-border-success);
+}
+.mn-toast-error {
+  background: var(--ui-toast-bg-error);
+  border-color: var(--ui-toast-border-error);
+}
+.mn-toast-message {
+  flex: 1;
+  font-size: 13px;
+}
+.mn-toast-dismiss {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 16px;
+  line-height: 1;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  cursor: pointer;
+}
+.mn-toast-dismiss:hover { color: var(--text-strong); }
+
+/* Spinner */
+.mn-spinner {
+  display: inline-block;
+  vertical-align: middle;
+  line-height: 0;
+}
+.mn-spinner-inline { display: inline-flex; align-items: center; }
+.mn-spinner-ring {
+  display: inline-block;
+  border: 2px solid var(--border);
+  border-top-color: var(--ui-spinner-color);
+  border-radius: 50%;
+  animation: mn-spinner-rotate 0.9s linear infinite;
+}
+.mn-spinner-sm .mn-spinner-ring { width: 14px; height: 14px; }
+.mn-spinner-md .mn-spinner-ring { width: 22px; height: 22px; }
+.mn-spinner-lg .mn-spinner-ring { width: 38px; height: 38px; border-width: 3px; }
+@keyframes mn-spinner-rotate {
+  to { transform: rotate(360deg); }
+}
+
+/* Select */
+.mn-select-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.mn-select-label {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.mn-select {
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 13px;
+}
+.mn-select:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Tooltip */
+.mn-tooltip-wrap {
+  position: relative;
+  display: inline-block;
+}
+.mn-tooltip {
+  position: absolute;
+  background: var(--ui-tooltip-bg);
+  border: 1px solid var(--ui-tooltip-border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  z-index: 1200;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+.mn-tooltip-top { bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%); }
+.mn-tooltip-bottom { top: calc(100% + 6px); left: 50%; transform: translateX(-50%); }
+.mn-tooltip-left { right: calc(100% + 6px); top: 50%; transform: translateY(-50%); }
+.mn-tooltip-right { left: calc(100% + 6px); top: 50%; transform: translateY(-50%); }
+
+/* AssetTile (extends mn-library-item) */
+.mn-asset-tile { position: relative; }
+.mn-asset-tile-draggable { cursor: grab; }
+.mn-asset-tile-draggable:active { cursor: grabbing; }
+.mn-asset-tile-delete {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid var(--ui-toast-border-error);
+  color: var(--text-error);
+  border-radius: 50%;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 2;
+}
+.mn-asset-tile:hover .mn-asset-tile-delete { opacity: 1; }
+.mn-library-dims {
+  display: block;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+/* ---------------------------------------------------------------- */
+/* S5.5c Phase C — Cropper canvas + library delete (LD CROPPER_CANVAS_REAL_V1) */
+/* ---------------------------------------------------------------- */
+
+.mn-cropper-canvas-stage {
+  position: relative;
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  display: inline-block;
+  vertical-align: top;
+}
+.mn-cropper-canvas-stage canvas {
+  display: block;
+  max-width: 100%;
+  cursor: crosshair;
+}
+.mn-cropper-toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 0;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.mn-cropper-toolbar input[type="number"] {
+  width: 60px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 6px;
+}
+.mn-cropper-aspect-row {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.mn-cropper-aspect-pill {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.mn-cropper-aspect-pill.is-active {
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+/* ---------------------------------------------------------------- */
+/* S5.5c Phase D — Beat Generator full UI                          */
+/* ---------------------------------------------------------------- */
+
+.mn-bg-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.mn-bg-cost {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.mn-bg-cost-running {
+  color: var(--text-strong);
+  font-weight: 500;
+}
+.mn-bg-beat-list {
+  list-style: none;
+  margin: 12px 0 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.mn-bg-beat-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mn-bg-beat-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.mn-bg-beat-index {
+  font-weight: 600;
+  color: var(--text-strong);
+}
+.mn-bg-beat-anchor {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.mn-bg-beat-text {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+  resize: vertical;
+  min-height: 50px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.mn-bg-stage-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.mn-bg-stage-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  border-radius: 12px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--accent);
+}
+.mn-bg-stage-chip-x {
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0;
+  width: 14px;
+  height: 14px;
+  line-height: 1;
+}
+.mn-bg-refs-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.mn-bg-ref-slot {
+  width: 120px;
+  height: 120px;
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--text-dim);
+  position: relative;
+  overflow: hidden;
+}
+.mn-bg-ref-slot.has-image {
+  border-style: solid;
+  border-color: var(--border-strong);
+}
+.mn-bg-ref-slot img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.mn-bg-ref-slot-label {
+  position: absolute;
+  top: 2px;
+  left: 4px;
+  background: rgba(0, 0, 0, 0.6);
+  color: var(--text-strong);
+  padding: 1px 4px;
+  font-size: 10px;
+  border-radius: 2px;
+  z-index: 2;
+}
+.mn-bg-options-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 8px;
+}
+.mn-bg-option {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.mn-bg-option.is-selected {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+.mn-bg-option img {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 3px;
+}
+.mn-bg-option-empty {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: var(--code-bg);
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* ---------------------------------------------------------------- */
+/* S5.5e Phase C — Storyboard beat-level button row                */
+/* ---------------------------------------------------------------- */
+
+.mn-beat-button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 0;
+  font-size: 12px;
+}
+.mn-beat-button-row > .mn-btn {
+  font-size: 12px;
+  padding: 4px 10px;
+}
+.mn-beat-button-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px;
+  border-right: 1px solid var(--border);
+}
+.mn-beat-button-group:last-child { border-right: none; }
+.mn-beat-button-group-label {
+  color: var(--text-dim);
+  font-size: 11px;
+  margin-right: 4px;
+}
+.mn-beat-trim-input {
+  width: 56px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 4px;
+  font-size: 11px;
+}
+.mn-beat-audio-preview {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.mn-beat-audio-preview audio {
+  height: 24px;
+  vertical-align: middle;
+}
+
+/* ---------------------------------------------------------------- */
+/* S5.5e Phase B — ProjectSelector header zone                     */
+/* ---------------------------------------------------------------- */
+.mn-project-selector { display: inline-flex; align-items: center; gap: 6px; }
+.mn-project-selector-error {
+  color: var(--text-error);
+  font-size: 11px;
+}
+.mn-project-modal-input {
+  width: 100%;
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.mn-project-modal-error {
+  color: var(--text-error);
+  font-size: 12px;
+  margin-top: 4px;
+}
+.mn-project-modal-help {
+  color: var(--text-dim);
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+/* General small/primary button variants used in beat row + bg */
+.mn-btn-small {
+  font-size: 11px;
+  padding: 3px 8px;
+}

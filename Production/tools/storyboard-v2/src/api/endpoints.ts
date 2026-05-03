@@ -12,13 +12,33 @@ export const READ_ENDPOINTS = {
   cr_full: `${SERVER_BASE}/api/cr/full`,
   v2_event_state: `${SERVER_BASE}/api/v2/event/{event_id}/state`,
   v2_sidecar: `${SERVER_BASE}/api/v2/storyboard/L.json`,
-  bg_state: `${SERVER_BASE}/api/bg/state`,
+  // Note: bg_state pointer was historic; the actual handler is
+  // /api/bg/session-state. bg_state retained to avoid breaking any older
+  // dev tool that reads endpoints.ts; callers should use bg_session_state.
+  bg_state: `${SERVER_BASE}/api/bg/session-state`,
+  bg_session_state: `${SERVER_BASE}/api/bg/session-state`,
+  bg_segments: `${SERVER_BASE}/api/bg/segments`,
   patch_health: `${SERVER_BASE}/api/patch_health`,
   // S3 v3.1
   event_list: `${SERVER_BASE}/api/event/list`,
   phase_watercolor_list: `${SERVER_BASE}/api/phase/watercolor_list`,
   phase_base_clips_list: `${SERVER_BASE}/api/phase/base_clips_list`,
   production_map: `${SERVER_BASE}/api/production/map`,
+  // S5.5b new — Bug 4 fix + VideoSelector data source
+  event_current: `${SERVER_BASE}/api/event/current`,
+  video_list: `${SERVER_BASE}/api/video/list`,
+  // S5.5d (v3 architecture revision, 2026-05-03)
+  project_list: `${SERVER_BASE}/api/project/list`,
+  milestones_list: `${SERVER_BASE}/api/milestones/list`,
+  admin_inflight_count: `${SERVER_BASE}/api/admin/inflight_count`,
+  // S5.5c — Beat Generator GPT batch poll (read).
+  bg_poll_gpt_status: `${SERVER_BASE}/api/bg/poll-gpt-status`,
+  // S5.5e — Storyboard beat-level reads.
+  // beat_audio is a templated path: GET /api/beat/audio/<beat_id>?event_id=...
+  // apiGet() substitutes {beat_id} from the query dict before issuing.
+  beat_audio: `${SERVER_BASE}/api/beat/audio/{beat_id}`,
+  animate_status: `${SERVER_BASE}/api/animate/status`,
+  lipsync_status: `${SERVER_BASE}/api/lipsync/status`,
 } as const;
 
 // MUTATION endpoints — Session 1 ships ZERO callers of these; they exist
@@ -52,6 +72,33 @@ export const MUTATION_ENDPOINTS = {
   phase_b_mix_audio: `${SERVER_BASE}/api/phase_b/mix_audio`,
   phase_b_lipsync: `${SERVER_BASE}/api/phase_b/lipsync`,
   stitch_save_job: `${SERVER_BASE}/api/stitch_editor/job`,
+  // S5.5b new — VideoSelector + partition create
+  video_set_active: `${SERVER_BASE}/api/video/set_active`,
+  video_create: `${SERVER_BASE}/api/video/create`,
+  // S5.5d (v3 architecture revision, 2026-05-03)
+  milestones_create: `${SERVER_BASE}/api/milestones/create`,
+  milestone_load: `${SERVER_BASE}/api/milestones/load`,
+  beat_finalize: `${SERVER_BASE}/api/beat/finalize`,
+  scene_assemble: `${SERVER_BASE}/api/scene/assemble`,
+  admin_drain_start: `${SERVER_BASE}/api/admin/drain_start`,
+  admin_drain_end: `${SERVER_BASE}/api/admin/drain_end`,
+  // S5.5c — Beat Generator full UI wiring (Phase B0 catalog completeness).
+  bg_delete_beat: `${SERVER_BASE}/api/bg/delete-beat`,
+  bg_add_beat: `${SERVER_BASE}/api/bg/add-beat`,
+  bg_submit_gpt_batch: `${SERVER_BASE}/api/bg/submit-gpt-batch`,
+  bg_accept_option: `${SERVER_BASE}/api/bg/accept-option`,
+  bg_accept_lib_image: `${SERVER_BASE}/api/bg/accept-lib-image`,
+  cr_upload: `${SERVER_BASE}/api/cr/upload`,
+  // S5.5e — Storyboard beat-level production controls (Phase C wiring).
+  beat_regenerate_audio: `${SERVER_BASE}/api/beat/regenerate_audio`,
+  animate: `${SERVER_BASE}/api/animate`,
+  animate_redo: `${SERVER_BASE}/api/animate/redo`,
+  select: `${SERVER_BASE}/api/select`,
+  beat_add_options: `${SERVER_BASE}/api/beat/add_options`,
+  lipsync: `${SERVER_BASE}/api/lipsync`,
+  beat_use_as_final: `${SERVER_BASE}/api/beat/use_as_final`,
+  beat_delay: `${SERVER_BASE}/api/beat/delay`,
+  beat_trim: `${SERVER_BASE}/api/beat/trim`,
 } as const;
 
 export type ReadEndpoint = keyof typeof READ_ENDPOINTS;
@@ -76,6 +123,14 @@ export const BG_MUTATION_ENDPOINTS: ReadonlySet<MutationEndpoint> = new Set<Muta
   'bg_inject_beats',
   'bg_update_beat',
   'bg_reorder_beats',
+  // S5.5c Phase B0 — catalog completeness for Beat Generator full UI wiring.
+  // All bg_* handlers use _scope_body and read storyboard scope from
+  // scope_event_id (NOT event_id, which BG handlers reuse for segment number).
+  'bg_delete_beat',
+  'bg_add_beat',
+  'bg_submit_gpt_batch',
+  'bg_accept_option',
+  'bg_accept_lib_image',
 ]);
 
 export function scopeKeyFor(endpoint: MutationEndpoint): 'event_id' | 'scope_event_id' {
