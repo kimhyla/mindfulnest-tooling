@@ -134,12 +134,12 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     return () => { cancelled = true; };
   }, [collapsed]);
 
-  // Listen for "watercolor animated" postMessage from path_picker.html
-  // (LD-464 — Animate-this bridge → on success the picker postMessage's the
-  // opener so the library auto-refreshes).
+  // Listen for "magic or animate complete" postMessage from path_picker.html
+  // (S5 LD-468/469/470 — supersedes S4 mn:watercolor-animated).
   useEffect(() => {
     const onMsg = (e: MessageEvent) => {
-      if (e.data?.type === 'mn:watercolor-animated') {
+      const t = e.data?.type;
+      if (t === 'mn-magic-or-animate-complete' || t === 'mn:watercolor-animated') {
         refreshAll();
       }
     };
@@ -232,8 +232,10 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   };
 
   const onAnimateThis = (key: string) => {
+    // S5 v3.1 — explicit mode=watercolor_animate (LD-470).
     const url = new URL(`${SERVER_BASE}/magic`);
-    url.searchParams.set('source', key);
+    url.searchParams.set('mode', 'watercolor_animate');
+    url.searchParams.set('watercolor_key', key);
     url.searchParams.set('return_endpoint', '/api/watercolor/animate');
     url.searchParams.set('scope_event_id', activeScope.value.event_id);
     window.open(url.toString(), '_blank');

@@ -407,6 +407,77 @@
   background: var(--code-bg);
   border-radius: 3px;
 }
+.mn-beat-magic-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+/* Stitcher tab full UI (LD-471) */
+.mn-stitcher-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+.mn-stitcher-slot {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px;
+}
+.mn-stitcher-slot[data-has-video="false"] {
+  opacity: 0.6;
+  background: var(--bg-panel);
+}
+.mn-stitcher-slot-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.mn-stitcher-loudnorm-tag {
+  font-size: 9px;
+  color: #5cd089;
+  border: 1px solid #5cd089;
+  border-radius: 8px;
+  padding: 0 6px;
+}
+.mn-stitcher-slot-video {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  background: var(--code-bg);
+  padding: 4px 6px;
+  border-radius: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 6px;
+}
+.mn-stitcher-slot-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+.mn-stitcher-slot-row select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+.mn-stitcher-bake-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
 .mn-phase-watercolor-anim-tag {
   font-size: 9px;
   color: var(--accent);

@@ -206,6 +206,22 @@
   <span id="coord-display">hover over image to see coords</span>
 </div>
 
+<!-- Motion description (mode=watercolor_animate only — shown via JS) -->
+<div id="motion-desc-row" style="display:none;margin:12px 0;padding:10px;background:#1a2342;border:1px solid #3a4a72;border-radius:6px;color:#bcd">
+  <label for="motion-desc-input" style="display:block;margin-bottom:6px;font-weight:600">
+    Describe the motion
+  </label>
+  <textarea
+    id="motion-desc-input"
+    placeholder="e.g. 'hands rub up and down within frame', 'circle spins clockwise', 'energy radiates outward'"
+    style="width:100%;min-height:60px;padding:8px;background:#0f1729;border:1px solid #3a4a72;border-radius:4px;color:#e0e8f4;font-family:inherit;font-size:13px"
+    maxlength="500"
+  ></textarea>
+  <small style="color:#7a8aa0">
+    The drawing tool below captures WHERE the motion happens; this text captures WHAT KIND of motion. Used by Claude API to generate ffmpeg filter chain.
+  </small>
+</div>
+
 <div id="drop-zone">
   <span id="drop-text">Drop scene background image here<br><small style="color:#555">(PNG or JPEG) — or auto-loading from scene_key…</small></span>
   <canvas id="canvas" style="display:none"></canvas>
@@ -241,30 +257,56 @@
 </div>
 
 <script>
-  // ── URL param parsing ──────────────────────────────────────────────────
-  const params    = new URLSearchParams(location.search);
-  const sceneKey  = params.get('scene_key') || '';
-  const bgParam   = params.get('bg') || '';
-  // S4 v3.1 — Animate-this bridge (LD-464 WATERCOLOR_ANIMATE_THIS_V1).
-  // When opened from v59 PhaseProducer's "Animate this" button:
-  //   ?source=<watercolor_key>&return_endpoint=/api/watercolor/animate&scope_event_id=Event_1
-  // We fetch the watercolor as background; submit posts to return_endpoint
-  // with body {source_key, manual_path, scope_event_id}.
-  const sourceKey      = params.get('source') || '';
-  const returnEndpoint = params.get('return_endpoint') || '';
-  const scopeEventId   = params.get('scope_event_id') || params.get('event_id') || '';
-  const animateMode    = !!(sourceKey && returnEndpoint);
+  // ── URL param parsing — S5 v3.1 3-mode dispatch ──────────────────────
+  // Modes (LD-468 / 469 / 470):
+  //   ?mode=magic_still         + beat_id + source_image_path + return_endpoint=/api/storyboard/magic_still
+  //   ?mode=magic_video         + beat_id + source_video_path + source_image_path (drawing ref) + return_endpoint=/api/storyboard/magic_video
+  //   ?mode=watercolor_animate  + watercolor_key + return_endpoint=/api/watercolor/animate
+  // Legacy flows still supported for backward compat:
+  //   ?scene_key=…              → original visible-magic skill (no mode param)
+  //   ?source=…&return_endpoint=… → S4 watercolor animate (treated as watercolor_animate mode)
+  const params           = new URLSearchParams(location.search);
+  const explicitMode     = (params.get('mode') || '').trim();
+  const sceneKey         = params.get('scene_key') || '';
+  const bgParam          = params.get('bg') || '';
+  const beatId           = params.get('beat_id') || '';
+  const watercolorKey    = params.get('watercolor_key') || params.get('source') || '';
+  const sourceImagePath  = params.get('source_image_path') || '';
+  const sourceVideoPath  = params.get('source_video_path') || '';
+  const returnEndpoint   = params.get('return_endpoint') || '';
+  const scopeEventId     = params.get('scope_event_id') || params.get('event_id') || '';
+
+  // Resolve effective mode (explicit → inferred → legacy → manual).
+  let mode = explicitMode;
+  if (!mode) {
+    if (watercolorKey && returnEndpoint) mode = 'watercolor_animate';
+    else if (sceneKey) mode = 'magic_still_legacy';
+    else mode = 'manual';
+  }
+  // Convenience flag carried over from S4 (still used by legacy submit branch).
+  const sourceKey   = watercolorKey;  // alias for legacy code paths
+  const animateMode = (mode === 'watercolor_animate' || mode === 'watercolor_animate_legacy_alias');
   let   videoPath = '';   // set when render completes
 
-  // ── Show scene key in header ───────────────────────────────────────────
-  if (animateMode) {
-    const lbl = document.getElementById('scene-key-label');
-    lbl.textContent = `Animate-this: ${sourceKey}`;
+  // ── Show mode-specific header + motion-desc input ────────────────────
+  const lbl = document.getElementById('scene-key-label');
+  if (mode === 'magic_still') {
+    lbl.textContent = `Magic on still — beat ${beatId}`;
     lbl.style.display = 'block';
     document.getElementById('drop-text').innerHTML =
-      `Auto-loading watercolor <b>${sourceKey}</b>…<br><small style="color:#555">Draw a path on the watercolor below.</small>`;
-  } else if (sceneKey) {
-    const lbl = document.getElementById('scene-key-label');
+      `Auto-loading still for beat <b>${beatId}</b>…<br><small style="color:#555">Draw a 3-8 point path where the magic should travel.</small>`;
+  } else if (mode === 'magic_video') {
+    lbl.textContent = `Magic on video — beat ${beatId}`;
+    lbl.style.display = 'block';
+    document.getElementById('drop-text').innerHTML =
+      `Auto-loading video reference for beat <b>${beatId}</b>…<br><small style="color:#555">Draw a 3-8 point path on the still reference; magic will overlay onto the moving video.</small>`;
+  } else if (mode === 'watercolor_animate') {
+    lbl.textContent = `Animate watercolor: ${watercolorKey}`;
+    lbl.style.display = 'block';
+    document.getElementById('drop-text').innerHTML =
+      `Auto-loading watercolor <b>${watercolorKey}</b>…<br><small style="color:#555">Draw the WHERE; describe the WHAT-KIND in the box above.</small>`;
+    document.getElementById('motion-desc-row').style.display = 'block';
+  } else if (mode === 'magic_still_legacy' || sceneKey) {
     lbl.textContent = `scene: ${sceneKey}`;
     lbl.style.display = 'block';
     document.getElementById('drop-text').innerHTML =
@@ -285,10 +327,20 @@
 
   // ── Auto-load background ───────────────────────────────────────────────
   window.addEventListener('DOMContentLoaded', () => {
-    if (animateMode) {
-      // S4 — fetch watercolor source from /api/phase/watercolor_file
-      const url = `http://localhost:5111/api/phase/watercolor_file?key=${encodeURIComponent(sourceKey)}`;
+    if (mode === 'watercolor_animate') {
+      // S5 — fetch watercolor source from /api/phase/watercolor_file
+      const url = `http://localhost:5111/api/phase/watercolor_file?key=${encodeURIComponent(watercolorKey)}`;
       loadImageFromURL(url);
+    } else if (mode === 'magic_still' || mode === 'magic_video') {
+      // S5 — fetch the still reference image via /files endpoint.
+      // For magic_video, source_image_path is the visual reference (caller
+      // typically passes the beat's still / poster frame).
+      if (sourceImagePath) {
+        loadImageFromURL(`http://localhost:5111/files?path=${encodeURIComponent(sourceImagePath)}`);
+      } else {
+        document.getElementById('drop-text').innerHTML =
+          `No source_image_path provided.<br><small style="color:#555">Drag a PNG/JPEG instead.</small>`;
+      }
     } else if (sceneKey) {
       fetch(`/api/magic/resolve_bg?scene_key=${encodeURIComponent(sceneKey)}`)
         .then(r => r.json())
@@ -530,15 +582,38 @@
       parseFloat(pt.fy.toFixed(3))
     ]);
 
-    if (animateMode) {
-      // S4 v3.1 — Animate-this bridge.
-      // POST /api/watercolor/animate with body {source_key, manual_path, scope_event_id}.
-      // Synchronous in S4 (returns final result immediately, no polling).
-      const body = {
-        source_key:     sourceKey,
-        manual_path:    manual_path,
-        scope_event_id: scopeEventId || 'Event_1',
-      };
+    if (mode === 'magic_still' || mode === 'magic_video' || mode === 'watercolor_animate') {
+      // S5 v3.1 — 3-mode dispatch (LDs 468/469/470).
+      let body;
+      if (mode === 'magic_still') {
+        body = {
+          beat_id: beatId,
+          manual_path: manual_path,
+          source_image_path: sourceImagePath,
+          scope_event_id: scopeEventId || 'Event_1',
+        };
+      } else if (mode === 'magic_video') {
+        body = {
+          beat_id: beatId,
+          manual_path: manual_path,
+          source_video_path: sourceVideoPath,
+          source_image_path: sourceImagePath,  // drawing reference
+          scope_event_id: scopeEventId || 'Event_1',
+        };
+      } else {  // watercolor_animate
+        const motionDesc = (document.getElementById('motion-desc-input').value || '').trim();
+        if (!motionDesc) {
+          showError('Motion description is required for watercolor_animate. Describe what kind of motion (e.g. "hands rub up and down").');
+          return;
+        }
+        body = {
+          watercolor_key: watercolorKey,
+          manual_path: manual_path,
+          motion_description: motionDesc,
+          scope_event_id: scopeEventId || 'Event_1',
+        };
+      }
+
       try {
         const resp = await fetch(`http://localhost:5111${returnEndpoint}`, {
           method: 'POST',
@@ -546,28 +621,29 @@
           body: JSON.stringify(body),
         });
         const data = await resp.json();
-        if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+        if (!resp.ok) throw new Error(data.error || data.details || `HTTP ${resp.status}`);
 
-        // Notify the v59 opener so the watercolor library auto-refreshes,
-        // then close this tab. If opened directly (not via window.open),
-        // show the result panel like legacy mode.
+        // Notify the v59 opener so the relevant view auto-refreshes.
         if (window.opener && !window.opener.closed) {
           try {
             window.opener.postMessage({
-              type: 'mn:watercolor-animated',
-              source_key: sourceKey,
-              result: data,
+              type: 'mn-magic-or-animate-complete',
+              mode: mode,
+              payload: { ...body, result: data },
             }, '*');
-          } catch (_) { /* cross-origin restriction — ignore */ }
+          } catch (_) { /* cross-origin — ignore */ }
         }
-        videoPath = data.output_path || data.would_write || '';
+        videoPath = data.composite_path || data.animated_path || data.output_path || '';
         document.getElementById('progress-panel').style.display = 'none';
         document.getElementById('result-panel').style.display = 'block';
+        const explanationLine = data.explanation
+          ? `<br><small>Generated: ${data.explanation}</small>`
+          : '';
         document.getElementById('result-panel').innerHTML =
           `<div style="padding:16px;background:#1a3a1a;border:1px solid #4a8a4a;border-radius:6px;color:#a0e0a0">
-            ✅ Animation submitted for <b>${sourceKey}</b>.
-            ${data.output_path ? `<br>Output: <code>${data.output_path}</code>` : ''}
-            ${data.code === 'S4_DEFERRED' ? `<br><small>(stub: ${data.message})</small>` : ''}
+            ✅ ${mode.replace(/_/g,' ')} complete.
+            ${videoPath ? `<br>Output: <code>${videoPath}</code>` : ''}
+            ${explanationLine}
             <br><br>
             <button onclick="window.close()" style="padding:8px 16px;background:#4a8a4a;color:#fff;border:0;border-radius:4px;cursor:pointer">Close tab + return to v59</button>
           </div>`;

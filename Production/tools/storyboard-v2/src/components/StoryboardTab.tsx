@@ -25,6 +25,12 @@ interface BeatState {
   text_last_updated_at?: string;
   audio_file?: string;
   text_modified_after_tts?: boolean;
+  // S5 v3.1 — magic trail composite paths (per LD-468/469).
+  magic_still_path?: string;
+  magic_video_path?: string;
+  // S5 — preferred video source for magic_video (lipsync, then animation).
+  lipsync?: { file?: string };
+  phase_1?: { selected_option?: number; options?: Array<{ file?: string }> };
 }
 
 interface EventState {
@@ -192,7 +198,87 @@ function BeatCard({ index, beatId, beat, eventId }: BeatCardProps) {
         onInput={onInput}
         onBlur={onBlur}
       />
+      <BeatMagicButtons index={index} beatId={beatId} beat={beat} eventId={eventId} />
     </li>
+  );
+}
+
+// ----------------------------------------------------------------
+// BeatMagicButtons — S5 v3.1 magic trail triggers (LDs 468/469)
+// ----------------------------------------------------------------
+
+interface BeatMagicProps {
+  index: number;
+  beatId: string;
+  beat: BeatState;
+  eventId: string;
+}
+
+function BeatMagicButtons({ index, beatId, beat, eventId }: BeatMagicProps) {
+  const stillPath = beat.image_path;
+  // Pick primary video: lipsync preferred, else selected animation option.
+  let videoPath: string | undefined;
+  if (beat.lipsync?.file) videoPath = beat.lipsync.file;
+  else if (beat.phase_1?.options && beat.phase_1.selected_option !== undefined) {
+    const opt = beat.phase_1.options[beat.phase_1.selected_option - 1];
+    if (opt?.file) videoPath = opt.file;
+  }
+
+  const hasMagicStill = !!beat.magic_still_path;
+  const hasMagicVideo = !!beat.magic_video_path;
+
+  const openMagicStill = () => {
+    if (!stillPath) return;
+    const u = new URL('http://localhost:5111/magic');
+    u.searchParams.set('mode', 'magic_still');
+    u.searchParams.set('beat_id', beatId);
+    u.searchParams.set('source_image_path', `Production/${eventId}/${stillPath}`);
+    u.searchParams.set('return_endpoint', '/api/storyboard/magic_still');
+    u.searchParams.set('scope_event_id', eventId);
+    window.open(u.toString(), '_blank');
+  };
+
+  const openMagicVideo = () => {
+    if (!videoPath) return;
+    const u = new URL('http://localhost:5111/magic');
+    u.searchParams.set('mode', 'magic_video');
+    u.searchParams.set('beat_id', beatId);
+    u.searchParams.set('source_video_path', `Production/${eventId}/${videoPath}`);
+    if (stillPath) {
+      u.searchParams.set('source_image_path', `Production/${eventId}/${stillPath}`);
+    }
+    u.searchParams.set('return_endpoint', '/api/storyboard/magic_video');
+    u.searchParams.set('scope_event_id', eventId);
+    window.open(u.toString(), '_blank');
+  };
+
+  return (
+    <div class="mn-beat-magic-row" data-testid={`beat-magic-row-${index}`}>
+      {stillPath ? (
+        <button
+          type="button"
+          class="mn-btn mn-btn-small"
+          data-testid={`beat-magic-still-${index}`}
+          onClick={openMagicStill}
+          disabled={hasMagicStill}
+          title={hasMagicStill ? 'magic on still already exists' : 'Add magic trail on still (LD-468)'}
+        >
+          {hasMagicStill ? '✓ magic on still' : '🌟 Add magic on still'}
+        </button>
+      ) : null}
+      {videoPath ? (
+        <button
+          type="button"
+          class="mn-btn mn-btn-small"
+          data-testid={`beat-magic-video-${index}`}
+          onClick={openMagicVideo}
+          disabled={hasMagicVideo}
+          title={hasMagicVideo ? 'magic on video already exists' : 'Add magic trail on video (LD-469)'}
+        >
+          {hasMagicVideo ? '✓ magic on video' : '🎬 Add magic on video'}
+        </button>
+      ) : null}
+    </div>
   );
 }
 
@@ -288,6 +374,7 @@ export function StoryboardTab() {
   const [state, setState] = useState<EventState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshTick, setRefreshTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -307,6 +394,17 @@ export function StoryboardTab() {
     return () => {
       cancelled = true;
     };
+  }, [refreshTick]);
+
+  // S5 — refresh on path_picker submit success.
+  useEffect(() => {
+    const onMsg = (e: MessageEvent) => {
+      if (e.data?.type === 'mn-magic-or-animate-complete') {
+        setRefreshTick((n) => n + 1);
+      }
+    };
+    window.addEventListener('message', onMsg);
+    return () => window.removeEventListener('message', onMsg);
   }, []);
 
   const beatList = useMemo(() => {

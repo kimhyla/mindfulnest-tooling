@@ -4801,6 +4801,11 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_watercolor_animate(body)
             if path == "/api/stitch_editor/loudnorm":
                 return self._handle_stitch_loudnorm(body)
+            # S5 v3.1 endpoints — LDs 468 + 469.
+            if path == "/api/storyboard/magic_still":
+                return self._handle_magic_still(body)
+            if path == "/api/storyboard/magic_video":
+                return self._handle_magic_video(body)
             if path == "/api/storyboard/switch":
                 return self._handle_storyboard_switch(body)
             # ── Visible Magic Phase 2 (2026-04-24) ──────────────────────────────
@@ -5770,6 +5775,16 @@ class ProductionHandler(BaseHTTPRequestHandler):
             self.app.event_id = new_event_id
             self.app.storyboard_stem = new_storyboard_path.stem
             self.app.event_generation = old_gen + 1
+            # S5 v3.1 fix — StateManager caches state_path at construct time.
+            # On event swap we must re-point it so subsequent state reads/writes
+            # hit the NEW event's production_state.json (was reading Event_1's
+            # state regardless of swap).
+            try:
+                self.app.state.event_dir = new_event_dir
+                self.app.state.state_path = new_event_dir / "production_state.json"
+                self.app.state.event_id = new_event_id
+            except AttributeError:
+                pass
             # Invalidate caches that key on event_dir / storyboard_path.
             self.app.invalidate_beats_cache()
             self.app._storyboard_list_cache = None
@@ -6093,65 +6108,413 @@ class ProductionHandler(BaseHTTPRequestHandler):
             "tokens_out": usage.get("output_tokens"),
         })
 
-    def _handle_watercolor_animate(self, body: dict) -> None:
-        """POST /api/watercolor/animate {source_key, manual_path, style?, duration?, scope_event_id}
+    # ============================================================
+    # S5 v3.1 — 3 magic/animate workflows (LDs 468/469/470)
+    # ============================================================
+    # Allowlist for ffmpeg filter chain safety gate (LD-470).
+    # Anything else is rejected before ffmpeg runs.
+    _S5_FFMPEG_FILTER_ALLOWLIST = frozenset({
+        "split", "hflip", "vflip", "rotate", "scale", "overlay", "blend",
+        "fade", "crop", "pad", "drawbox", "hue", "eq", "zoompan", "fps",
+        "setpts", "geq", "displace",
+        # Ancillary helpers ffmpeg uses internally (input refs, format).
+        "format", "null", "copy",
+    })
+    _S5_FFMPEG_FORBIDDEN_SUBSTRINGS = (
+        "file://", "http://", "https://", "exec", "system", "run",
+        "\\", "|", "`", "$(", "${",
+    )
 
-        Per LD-464 WATERCOLOR_ANIMATE_THIS_V1. Invokes magic_compositor with
-        the watercolor source as background; writes h264 mp4 to
-        Production/assets/watercolor_library/<key>_animated_<TS>.mp4 and
-        registers via registered_write.py (asset_type='magic_clip', tag
-        'watercolor_animation').
-
-        Note on output format: spec called for alpha-preserving qtrle .mov;
-        magic_compositor's render_video() outputs h264 mp4 (background +
-        magic trail composited). The trail-only alpha output would require
-        modifying render_video() — flagged S5 polish. The mp4 is what v59
-        actually consumes (drag onto Phase B/A timeline as a video cue).
-        """
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
-            return
-        source_key = (body or {}).get("source_key")
-        manual_path = (body or {}).get("manual_path") or []
-        if not source_key:
-            return self._send_json(400, {"error": "source_key required"})
+    def _validate_manual_path(self, manual_path: list, max_pts: int = 20) -> tuple[bool, list, str]:
+        """Validate manual_path = [[x,y],...] in [0,1]. Returns (ok, clean_path, err)."""
         if not isinstance(manual_path, list) or len(manual_path) < 2:
-            return self._send_json(400, {
-                "error": "manual_path must be a list of [x,y] pairs (>=2 points)",
-            })
-
-        # Validate path point shape: each must be [x, y] floats in [0, 1].
-        clean_path: list[list[float]] = []
+            return False, [], "manual_path must be a list of [x,y] pairs (>=2 points)"
+        if len(manual_path) > max_pts:
+            return False, [], f"manual_path has {len(manual_path)} points (>{max_pts} max)"
+        clean: list[list[float]] = []
         for i, pt in enumerate(manual_path):
             if not (isinstance(pt, list) and len(pt) == 2):
-                return self._send_json(400, {
-                    "error": f"manual_path[{i}] must be a 2-element [x,y] list",
-                })
+                return False, [], f"manual_path[{i}] must be a 2-element [x,y] list"
             try:
                 x, y = float(pt[0]), float(pt[1])
             except (TypeError, ValueError):
-                return self._send_json(400, {
-                    "error": f"manual_path[{i}] coords must be numeric",
-                })
+                return False, [], f"manual_path[{i}] coords must be numeric"
             if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
-                return self._send_json(400, {
-                    "error": f"manual_path[{i}] = ({x}, {y}) out of [0,1] range",
-                })
-            clean_path.append([x, y])
+                return False, [], f"manual_path[{i}] = ({x}, {y}) out of [0,1] range"
+            clean.append([x, y])
+        return True, clean, ""
 
-        style = (body or {}).get("style") or "tessa_ori"
-        duration = float((body or {}).get("duration") or 3.5)
+    def _validate_ffmpeg_filter_chain(self, filter_complex: str) -> tuple[bool, str]:
+        """LD-470 safety gate. Returns (ok, error_message).
 
-        # Resolve source watercolor (prefer .png).
+        Rules:
+          1. Length cap (4096 chars) to prevent DoS.
+          2. No forbidden substrings (file://, exec, shell metas, …).
+          3. Each filter token (between ',' / ';' / ']') must have its name
+             (before '=' or end) in the allowlist.
+        """
+        if not filter_complex or not isinstance(filter_complex, str):
+            return False, "empty filter_complex"
+        if len(filter_complex) > 4096:
+            return False, f"filter_complex too long ({len(filter_complex)} > 4096)"
+        lower = filter_complex.lower()
+        for forbidden in self._S5_FFMPEG_FORBIDDEN_SUBSTRINGS:
+            if forbidden in lower:
+                return False, f"forbidden substring {forbidden!r} in filter_complex"
+        # Tokenize on , and ;. Strip [...] labels.
+        chain = re.sub(r"\[[^\]]*\]", "", filter_complex)
+        tokens = re.split(r"[,;]", chain)
+        for tok in tokens:
+            tok = tok.strip()
+            if not tok:
+                continue
+            # Filter name is before first '=' or end.
+            name = tok.split("=", 1)[0].strip()
+            if not name:
+                continue
+            if name not in self._S5_FFMPEG_FILTER_ALLOWLIST:
+                return False, f"filter {name!r} not in allowlist"
+        return True, ""
+
+    def _handle_magic_still(self, body: dict) -> None:
+        """POST /api/storyboard/magic_still {beat_id, manual_path, source_image_path, scope_event_id}
+
+        Per LD-468 MAGIC_TRAIL_ON_STILL_V1. Invokes magic_compositor with the
+        still as background; renders animated mp4 of magic forming on the
+        still.
+        """
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
+            return
+        beat_id = (body or {}).get("beat_id")
+        manual_path = (body or {}).get("manual_path") or []
+        source_image_path_raw = (body or {}).get("source_image_path") or ""
+        if not beat_id:
+            return self._send_json(400, {"error": "beat_id required"})
+        if not source_image_path_raw:
+            return self._send_json(400, {"error": "source_image_path required"})
+        ok, clean_path, err = self._validate_manual_path(manual_path)
+        if not ok:
+            return self._send_json(400, {"error": err})
+
+        # Resolve absolute path for source image; reject paths outside project.
+        sip = Path(source_image_path_raw)
+        if not sip.is_absolute():
+            sip = self.app.event_dir.parent.parent / source_image_path_raw
+        try:
+            project_root = Path(__file__).resolve().parent.parent.parent
+            sip_resolved = sip.resolve()
+            if not str(sip_resolved).startswith(str(project_root)):
+                return self._send_json(400, {"error": "source_image_path outside project root"})
+        except Exception:
+            pass
+        if not sip.is_file():
+            return self._send_json(404, {
+                "error": "source_image not found", "path": str(sip),
+            })
+
+        # LD-460 pin
+        _pin = {
+            "pinned_generation": self.app.event_generation,
+            "pinned_event_dir": self.app.event_dir,
+            "_handler": "_handle_magic_still",
+        }
+        if not self._check_event_pin(_pin, "magic_still_pre_work"):
+            return self._send_json(423, {
+                "error": "event_changed_pre_work",
+                "code": "ASYNC_JOB_GENERATION_PIN_V1",
+            })
+
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        out_dir = self.app.event_dir
+        out_path = out_dir / f"magic_still_{beat_id}_{ts}.mp4"
+
+        try:
+            tools_dir = str(Path(__file__).resolve().parent)
+            if tools_dir not in sys.path:
+                sys.path.insert(0, tools_dir)
+            from magic_compositor import MagicCompositor  # type: ignore
+            mc = MagicCompositor(
+                background_path=str(sip),
+                path_pts=clean_path,
+                style="tessa_ori",
+                duration=4.0,
+                fps=24,
+                output_dir=str(out_dir),
+                label=f"magic_still_{beat_id}_{ts}",
+                beat_id=beat_id,
+                tags=["magic", "magic_still", "tessa_ori"],
+            )
+            rendered = mc.render_video(output_path=str(out_path))
+        except Exception as exc:
+            traceback.print_exc()
+            return self._send_json(500, {
+                "error": f"magic_compositor failed: {type(exc).__name__}: {exc}",
+            })
+
+        if not self._check_event_pin(_pin, "magic_still_terminal"):
+            return self._send_json(423, {
+                "error": "event_changed_mid_job",
+                "code": "ASYNC_JOB_GENERATION_PIN_V1",
+                "orphaned_output": str(rendered),
+            })
+
+        registered_id: int | None = None
+        try:
+            from registered_write import register_asset  # type: ignore
+            registered_id, _ = register_asset(
+                file_path=str(rendered),
+                asset_type="magic_clip",
+                module_id=1,
+                beat_id=beat_id,
+                produced_by_skill="magic_still_endpoint",
+                colloquial_name=f"magic on still {beat_id}",
+                tags=["magic", "magic_still", "tessa_ori", beat_id],
+                notes=(
+                    f"Magic trail on still {sip.name} for beat {beat_id} via "
+                    f"S5 Workflow A (LD-468). {len(clean_path)} path points."
+                ),
+                role="library",
+            )
+        except Exception as exc:
+            print(f"[magic_still] WARN registered_write failed: {exc}", flush=True)
+
+        return self._send_json(200, {
+            "ok": True,
+            "beat_id": beat_id,
+            "composite_path": str(rendered),
+            "asset_id": registered_id,
+            "manual_path_points": len(clean_path),
+        })
+
+    def _handle_magic_video(self, body: dict) -> None:
+        """POST /api/storyboard/magic_video {beat_id, manual_path, source_video_path, scope_event_id}
+
+        Per LD-469 MAGIC_TRAIL_ON_VIDEO_V1. Generates magic-on-black via
+        magic_compositor.render_video(black_bg=True), then ffmpeg overlays
+        onto the source video via blend=mode=screen (black pixels become
+        transparent in screen blend; magic pixels shine through additively).
+        """
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
+            return
+        beat_id = (body or {}).get("beat_id")
+        manual_path = (body or {}).get("manual_path") or []
+        source_video_path_raw = (body or {}).get("source_video_path") or ""
+        if not beat_id:
+            return self._send_json(400, {"error": "beat_id required"})
+        if not source_video_path_raw:
+            return self._send_json(400, {"error": "source_video_path required"})
+        ok, clean_path, err = self._validate_manual_path(manual_path)
+        if not ok:
+            return self._send_json(400, {"error": err})
+
+        svp = Path(source_video_path_raw)
+        if not svp.is_absolute():
+            svp = self.app.event_dir.parent.parent / source_video_path_raw
+        if not svp.is_file():
+            return self._send_json(404, {
+                "error": "source_video not found", "path": str(svp),
+            })
+
+        # ffprobe for dimensions + duration.
+        try:
+            probe = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=width,height,duration",
+                 "-of", "json", str(svp)],
+                capture_output=True, check=True, timeout=30,
+            )
+            meta = json.loads(probe.stdout.decode("utf-8"))
+            stream = (meta.get("streams") or [{}])[0]
+            width = int(stream.get("width") or 1280)
+            height = int(stream.get("height") or 720)
+            try:
+                vid_duration = float(stream.get("duration") or 0)
+            except (TypeError, ValueError):
+                vid_duration = 0
+            if vid_duration <= 0:
+                vid_duration = float(_ffprobe_duration(svp) or 0)
+        except subprocess.CalledProcessError as exc:
+            return self._send_json(500, {
+                "error": "ffprobe failed",
+                "stderr": exc.stderr.decode("utf-8", errors="replace")[-500:],
+            })
+        if vid_duration <= 0:
+            return self._send_json(500, {"error": "could not determine source duration"})
+
+        # LD-460 pin
+        _pin = {
+            "pinned_generation": self.app.event_generation,
+            "pinned_event_dir": self.app.event_dir,
+            "_handler": "_handle_magic_video",
+        }
+        if not self._check_event_pin(_pin, "magic_video_pre_work"):
+            return self._send_json(423, {
+                "error": "event_changed_pre_work",
+                "code": "ASYNC_JOB_GENERATION_PIN_V1",
+            })
+
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        out_dir = self.app.event_dir
+        magic_only_path = out_dir / f"_tmp_magic_only_{beat_id}_{ts}.mp4"
+        out_path = out_dir / f"magic_video_{beat_id}_{ts}.mp4"
+
+        # Step 1: generate magic-on-black via magic_compositor.
+        # We need a reference image of the right dimensions; since
+        # MagicCompositor requires a background_path, write a tiny black PNG
+        # of (width, height) first.
+        try:
+            from PIL import Image as _PILImage
+            black_ref = out_dir / f"_tmp_black_ref_{beat_id}_{ts}.png"
+            _PILImage.new("RGB", (width, height), (0, 0, 0)).save(black_ref)
+        except Exception as exc:
+            return self._send_json(500, {"error": f"could not create black ref: {exc}"})
+
+        try:
+            tools_dir = str(Path(__file__).resolve().parent)
+            if tools_dir not in sys.path:
+                sys.path.insert(0, tools_dir)
+            from magic_compositor import MagicCompositor  # type: ignore
+            mc = MagicCompositor(
+                background_path=str(black_ref),
+                path_pts=clean_path,
+                style="tessa_ori",
+                duration=min(vid_duration, 10.0),
+                fps=24,
+                output_dir=str(out_dir),
+                label=f"magic_only_{beat_id}_{ts}",
+                beat_id=beat_id,
+                tags=["magic", "magic_video", "tessa_ori"],
+            )
+            mc.render_video(output_path=str(magic_only_path), black_bg=True)
+        except Exception as exc:
+            traceback.print_exc()
+            return self._send_json(500, {
+                "error": f"magic_compositor (black_bg) failed: {type(exc).__name__}: {exc}",
+            })
+        finally:
+            try:
+                black_ref.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        # Step 2: ffmpeg overlay via blend=screen.
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(svp),
+            "-i", str(magic_only_path),
+            "-filter_complex", "[0:v][1:v]blend=all_mode=screen[out]",
+            "-map", "[out]",
+            "-map", "0:a?",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-c:a", "copy",
+            "-t", str(min(vid_duration, 10.0)),
+            str(out_path),
+        ]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, timeout=300)
+        except subprocess.CalledProcessError as exc:
+            return self._send_json(500, {
+                "error": "ffmpeg blend failed",
+                "stderr": exc.stderr.decode("utf-8", errors="replace")[-1000:],
+            })
+        except subprocess.TimeoutExpired:
+            return self._send_json(504, {"error": "ffmpeg blend timed out (>300s)"})
+        finally:
+            try:
+                magic_only_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        if not self._check_event_pin(_pin, "magic_video_terminal"):
+            return self._send_json(423, {
+                "error": "event_changed_mid_job",
+                "code": "ASYNC_JOB_GENERATION_PIN_V1",
+                "orphaned_output": str(out_path),
+            })
+
+        registered_id: int | None = None
+        try:
+            from registered_write import register_asset  # type: ignore
+            registered_id, _ = register_asset(
+                file_path=str(out_path),
+                asset_type="magic_clip",
+                module_id=1,
+                beat_id=beat_id,
+                produced_by_skill="magic_video_endpoint",
+                colloquial_name=f"magic on video {beat_id}",
+                tags=["magic", "magic_video", "blend_screen", beat_id],
+                notes=(
+                    f"Magic trail on video {svp.name} for beat {beat_id} via "
+                    f"S5 Workflow B (LD-469). {len(clean_path)} path points; "
+                    f"black_bg=True + blend=screen overlay; "
+                    f"source dims {width}x{height}, duration {vid_duration:.2f}s."
+                ),
+                role="library",
+            )
+        except Exception as exc:
+            print(f"[magic_video] WARN registered_write failed: {exc}", flush=True)
+
+        return self._send_json(200, {
+            "ok": True,
+            "beat_id": beat_id,
+            "composite_path": str(out_path),
+            "asset_id": registered_id,
+            "source_dims": [width, height],
+            "duration_s": vid_duration,
+            "manual_path_points": len(clean_path),
+        })
+
+    def _handle_watercolor_animate(self, body: dict) -> None:
+        """POST /api/watercolor/animate {watercolor_key, manual_path, motion_description, scope_event_id}
+
+        Per LD-470 WATERCOLOR_ANIMATE_PROCEDURAL_V1. SUPERSEDES the S4 magic-
+        compositor-based implementation. Claude API generates an ffmpeg
+        filter_complex spec given watercolor + path geometry + motion intent.
+        Server validates against safe-filter allowlist BEFORE executing
+        ffmpeg.
+        """
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
+            return
+        # Accept both `watercolor_key` (S5 spec) and `source_key` (S4 alias).
+        watercolor_key = ((body or {}).get("watercolor_key")
+                          or (body or {}).get("source_key"))
+        manual_path = (body or {}).get("manual_path") or []
+        motion_desc = ((body or {}).get("motion_description") or "").strip()
+        if not watercolor_key:
+            return self._send_json(400, {"error": "watercolor_key required"})
+        if not motion_desc:
+            return self._send_json(400, {"error": "motion_description required (non-empty)"})
+        if len(motion_desc) > 500:
+            return self._send_json(400, {
+                "error": f"motion_description too long ({len(motion_desc)} > 500)",
+            })
+        # Reject obvious shell metacharacters in the description.
+        for bad in ("`", "$(", "${", "\\", "\n\n\n"):
+            if bad in motion_desc:
+                return self._send_json(400, {"error": f"forbidden substring in motion_description: {bad!r}"})
+
+        ok, clean_path, err = self._validate_manual_path(manual_path)
+        if not ok:
+            return self._send_json(400, {"error": err})
+
         wc_dir = Path(__file__).resolve().parent.parent / "assets" / "watercolor_library"
-        matches = list(wc_dir.glob(f"{source_key}.*"))
+        matches = list(wc_dir.glob(f"{watercolor_key}.*"))
         if not matches:
             return self._send_json(404, {
-                "error": f"no watercolor with key={source_key!r}",
+                "error": f"no watercolor with key={watercolor_key!r}",
                 "looked_in": str(wc_dir),
             })
         source_path = next((m for m in matches if m.suffix.lower() == ".png"), matches[0])
 
-        # LD-460 — capture pin BEFORE work; check before terminal write.
+        # Probe dimensions.
+        try:
+            from PIL import Image as _PILImage
+            with _PILImage.open(source_path) as im:
+                src_w, src_h = im.size
+        except Exception:
+            src_w, src_h = 1024, 1024  # safe default
+
+        # LD-460 pin
         _pin = {
             "pinned_generation": self.app.event_generation,
             "pinned_event_dir": self.app.event_dir,
@@ -6163,81 +6526,193 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 "code": "ASYNC_JOB_GENERATION_PIN_V1",
             })
 
-        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-        out_name = f"{source_key}_animated_{ts}.mp4"
-        out_path = wc_dir / out_name
-
-        # Invoke MagicCompositor synchronously (render_video() is 30-60s).
+        # Resolve Anthropic key.
         try:
-            tools_dir = str(Path(__file__).resolve().parent)
-            if tools_dir not in sys.path:
-                sys.path.insert(0, tools_dir)
-            from magic_compositor import MagicCompositor  # type: ignore
-            mc = MagicCompositor(
-                background_path=str(source_path),
-                path_pts=clean_path,
-                style=style,
-                duration=duration,
-                output_dir=str(wc_dir),
-                label=f"{source_key}_animated_{ts}",
-                tags=["magic", "compositor", "watercolor_animation", style],
-            )
-            print(f"[watercolor/animate] rendering: source={source_key} "
-                  f"points={len(clean_path)} style={style} duration={duration}s",
-                  flush=True)
-            rendered_path = mc.render_video(output_path=str(out_path))
-        except Exception as exc:
-            traceback.print_exc()
-            return self._send_json(500, {
-                "error": f"magic_compositor failed: {type(exc).__name__}: {exc}",
-                "source_key": source_key,
-                "style": style,
+            sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+            from credential_store import get_secret_optional  # type: ignore
+            api_key = get_secret_optional("ANTHROPIC_API_KEY")
+        except Exception:
+            api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            return self._send_json(503, {
+                "ok": False,
+                "code": "ANTHROPIC_API_KEY_MISSING",
+                "message": "Anthropic API key not configured.",
             })
 
-        # LD-460 — terminal pin check before registration.
+        # Build Claude prompt.
+        path_str = ", ".join(f"({p[0]:.3f},{p[1]:.3f})" for p in clean_path)
+        system_prompt = (
+            "You are an ffmpeg filter chain generator. Given a watercolor PNG, "
+            "a path geometry (normalized x,y points in [0,1]), and a motion "
+            "description, output a JSON object with a SAFE ffmpeg filter_complex "
+            "string that produces an animated MP4 from the still PNG.\n\n"
+            "Available filters (allowlist — use NO others): split, hflip, vflip, "
+            "rotate, scale, overlay, blend, fade, crop, pad, drawbox, hue, eq, "
+            "zoompan, fps, setpts, geq, displace, format.\n\n"
+            "Forbidden: any shell command, file://, http://, exec, system, run, "
+            "backslash, pipe, backticks, dollar-paren. duration_s must be in [0.5, 10].\n\n"
+            "Reference examples:\n"
+            "- 'hands rub up and down' + vertical line: split frame at line, "
+            "vflip lower half, oscillate y-translation sinusoidally with sin(2*PI*t).\n"
+            "- 'circle spins clockwise' + circle path: crop to bounding box of "
+            "circle, rotate filter with 'a=t*PI'.\n"
+            "- 'energy radiates outward' + center point: zoompan 'z=1.0+0.1*sin(t)'.\n\n"
+            "Output JSON ONLY, no markdown fences:\n"
+            "  {\"filter_complex\": \"<chain>\", \"duration_s\": <number>, "
+            "\"output_size\": [w,h], \"explanation\": \"<one sentence>\"}"
+        )
+        user_prompt = (
+            f"Input watercolor: {watercolor_key}.png at {src_w}x{src_h} pixels.\n"
+            f"Path geometry (normalized): [{path_str}]\n"
+            f"Motion intent: {motion_desc!r}\n\n"
+            "Generate the JSON now."
+        )
+
+        # Call Claude.
+        url = "https://api.anthropic.com/v1/messages"
+        req_data = json.dumps({
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 1024,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": user_prompt}],
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=req_data,
+            headers={"x-api-key": api_key,
+                     "anthropic-version": "2023-06-01",
+                     "content-type": "application/json"},
+            method="POST",
+        )
+        t0 = time.time()
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                resp_data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            err_body = exc.read().decode("utf-8", errors="replace")
+            return self._send_json(502, {
+                "error": f"Anthropic API HTTP {exc.code}",
+                "detail": err_body[:500],
+            })
+        except urllib.error.URLError as exc:
+            return self._send_json(502, {"error": f"Anthropic URL error: {exc}"})
+        elapsed_ms = int((time.time() - t0) * 1000)
+
+        # Extract JSON from response (model may wrap in code fence; be defensive).
+        text = ""
+        for block in resp_data.get("content", []) or []:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text += block.get("text", "")
+        # Strip ```json fences if present.
+        text = text.strip()
+        m = re.search(r'\{[\s\S]*\}', text)
+        if not m:
+            return self._send_json(502, {
+                "error": "Claude response had no JSON object",
+                "raw": text[:500],
+            })
+        try:
+            spec = json.loads(m.group(0))
+        except json.JSONDecodeError as exc:
+            return self._send_json(502, {
+                "error": f"Claude JSON parse failed: {exc}",
+                "raw": text[:500],
+            })
+
+        filter_complex = spec.get("filter_complex") or ""
+        duration_s = float(spec.get("duration_s") or 3.0)
+        explanation = (spec.get("explanation") or "")[:300]
+
+        if not (0.5 <= duration_s <= 10.0):
+            return self._send_json(400, {
+                "error": f"duration_s={duration_s} outside [0.5, 10]",
+            })
+
+        # SAFETY GATE.
+        ok_filter, gate_err = self._validate_ffmpeg_filter_chain(filter_complex)
+        if not ok_filter:
+            # Log to activity log for debugging.
+            try:
+                from lib.directus import try_post_or_queue  # type: ignore
+                try_post_or_queue("prod_activity_log", {
+                    "action": "watercolor_animate_unsafe_filter_rejected",
+                    "performed_by": "watercolor_animate_endpoint",
+                    "details": {
+                        "watercolor_key": watercolor_key,
+                        "motion_description": motion_desc,
+                        "rejected_filter_complex": filter_complex,
+                        "gate_error": gate_err,
+                        "claude_explanation": explanation,
+                    },
+                })
+            except Exception:
+                pass
+            return self._send_json(400, {
+                "error": "unsafe_filter_chain",
+                "details": gate_err,
+                "filter_complex_preview": filter_complex[:200],
+            })
+
+        # Execute ffmpeg.
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        out_path = wc_dir / f"{watercolor_key}_animated_{ts}.mp4"
+        cmd = [
+            "ffmpeg", "-y",
+            "-loop", "1", "-i", str(source_path),
+            "-filter_complex", filter_complex,
+            "-t", f"{duration_s:.3f}",
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            str(out_path),
+        ]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, timeout=60)
+        except subprocess.CalledProcessError as exc:
+            return self._send_json(500, {
+                "error": "ffmpeg failed",
+                "filter_complex": filter_complex,
+                "stderr": exc.stderr.decode("utf-8", errors="replace")[-1000:],
+            })
+        except subprocess.TimeoutExpired:
+            return self._send_json(504, {"error": "ffmpeg timed out (>60s)"})
+
         if not self._check_event_pin(_pin, "watercolor_animate_terminal"):
             return self._send_json(423, {
                 "error": "event_changed_mid_job",
                 "code": "ASYNC_JOB_GENERATION_PIN_V1",
-                "orphaned_output": str(rendered_path),
+                "orphaned_output": str(out_path),
             })
 
-        # Register via registered_write.py (LD-421). asset_type='magic_clip'
-        # (watercolor_animation isn't in the accepted set; we tag it for search).
         registered_id: int | None = None
         try:
             from registered_write import register_asset  # type: ignore
             registered_id, _ = register_asset(
-                file_path=str(rendered_path),
+                file_path=str(out_path),
                 asset_type="magic_clip",
                 module_id=1,
                 produced_by_skill="watercolor_animate_endpoint",
-                colloquial_name=f"{source_key} animated",
-                tags=["magic", "watercolor_animation", style, source_key],
+                colloquial_name=f"{watercolor_key} animated",
+                tags=["watercolor_animation", watercolor_key, "claude_filter_complex"],
                 notes=(
-                    f"Watercolor animation generated from {source_path.name} "
-                    f"with {len(clean_path)} path points, style={style}, "
-                    f"duration={duration}s. v59 PhaseProducer Animate-this bridge "
-                    f"(LD-464)."
+                    f"Watercolor animation via Claude+ffmpeg (LD-470). "
+                    f"motion={motion_desc!r}. {len(clean_path)} path points. "
+                    f"duration={duration_s}s. claude_ms={elapsed_ms}. "
+                    f"explanation={explanation!r}"
                 ),
                 role="library",
             )
         except Exception as exc:
-            print(f"[watercolor/animate] WARN registered_write failed: "
-                  f"{type(exc).__name__}: {exc}", flush=True)
+            print(f"[watercolor/animate] WARN registered_write failed: {exc}", flush=True)
 
-        size_bytes = Path(rendered_path).stat().st_size
         return self._send_json(200, {
             "ok": True,
-            "source_key": source_key,
-            "source_path": str(source_path),
-            "output_path": str(rendered_path),
-            "output_filename": Path(rendered_path).name,
-            "size_bytes": size_bytes,
-            "registered_asset_id": registered_id,
-            "style": style,
-            "duration_s": duration,
-            "manual_path_points": len(clean_path),
+            "watercolor_key": watercolor_key,
+            "animated_path": str(out_path),
+            "asset_id": registered_id,
+            "explanation": explanation,
+            "duration_s": duration_s,
+            "filter_complex": filter_complex,
+            "claude_ms": elapsed_ms,
         })
 
     _PRODUCTION_MAP_CACHE: dict | None = None
