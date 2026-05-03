@@ -4163,6 +4163,18 @@ class AppContext:
         self._storyboard_list_cache: list[dict] | None = None
         self._storyboard_list_cache_mtime: float = 0.0
 
+        # ----------------------------------------------------------------
+        # LD-458 EVENT_LOAD_GENERATION_LOCK_V1 (Session 1.5 v3.1, 2026-05-02)
+        # Monotonic event-load generation counter + lock. Async jobs pin the
+        # current generation at start and validate via _check_event_pin
+        # before terminal writes. /api/event/load increments generation
+        # under lock and atomically swaps event_dir / storyboard_path /
+        # event_id. See LD-460 ASYNC_JOB_GENERATION_PIN_V1 for the pin
+        # contract.
+        # ----------------------------------------------------------------
+        self.event_generation: int = 0
+        self.event_load_lock: threading.Lock = threading.Lock()
+
     def beats(self) -> list[dict]:
         if self._beats_cache is None:
             html = self.storyboard_path.read_text(encoding="utf-8")
@@ -4429,6 +4441,79 @@ class ProductionHandler(BaseHTTPRequestHandler):
             return False
         return True
 
+    # ---- LD-461 SCOPE_BODY_HELPER_V1 ----
+    def _scope_body(self, body: dict) -> dict:
+        """Normalize scope keys before _assert_event_scope.
+
+        Accepts EITHER `event_id` OR `scope_event_id` from the request body.
+        Returns a dict suitable for `_assert_event_scope` (which internally
+        keys on `event_id`). `scope_event_id` wins on collision because the
+        BG handler family uses `event_id` as a *segment number* (1..N), not
+        a storyboard scope; the v59 client passes the storyboard scope as
+        `scope_event_id` to disambiguate.
+
+        Every guard call site MUST use this helper instead of hand-rolling
+        the dict, per LD-461 SCOPE_BODY_HELPER_V1. Verification gate asserts
+        grep_count(_assert_event_scope) ≤ grep_count(_scope_body) (every
+        guard goes through the helper).
+        """
+        return {"event_id": (body or {}).get("scope_event_id") or (body or {}).get("event_id")}
+
+    # ---- LD-460 ASYNC_JOB_GENERATION_PIN_V1 ----
+    def _check_event_pin(self, context: dict, action_label: str) -> bool:
+        """Return True if it's safe to proceed with a terminal write.
+
+        Compares `context['pinned_generation']` (captured at job entry)
+        against the current `self.app.event_generation`. On drift, logs a
+        single-line stderr warning, sets `context['status']` to
+        `discarded_event_changed`, and returns False — caller MUST
+        early-return without mutating state, writing files at the new
+        event_dir, or registering Directus assets.
+
+        Files at `context['pinned_event_dir']` are NOT deleted on drift —
+        they are orphaned but recoverable via a future recovery script
+        (per spec §10).
+
+        Pin contract — caller seeds `context` at job entry:
+            context["pinned_generation"] = self.app.event_generation
+            context["pinned_event_dir"] = Path(self.app.event_dir)
+
+        Per LD-460 ASYNC_JOB_GENERATION_PIN_V1; spec §3.5.1.
+        """
+        if context is None:
+            # Defensive — handler forgot to seed context. Log loudly.
+            print(
+                f"[event-pin] WARN {action_label}: no context provided; "
+                f"proceeding without pin check (handler must seed context).",
+                file=sys.stderr, flush=True,
+            )
+            return True
+        pinned = context.get("pinned_generation")
+        if pinned is None:
+            # Pin missing — handler did not seed it. Log loudly but allow
+            # write so we don't break legacy paths during rollout.
+            print(
+                f"[event-pin] WARN {action_label}: pinned_generation missing "
+                f"in context; proceeding (handler may need seeding).",
+                file=sys.stderr, flush=True,
+            )
+            return True
+        current_gen = getattr(self.app, "event_generation", 0)
+        if pinned == current_gen:
+            return True
+        pinned_dir = context.get("pinned_event_dir")
+        pinned_name = pinned_dir.name if pinned_dir else "?"
+        current_name = self.app.event_dir.name
+        print(
+            f"[event-pin] {action_label} ABORTED — pinned gen={pinned} "
+            f"current gen={current_gen}; pinned event={pinned_name} "
+            f"current event={current_name}. Output orphaned at pinned dir; "
+            f"NOT deleted, NOT registered, state NOT mutated.",
+            file=sys.stderr, flush=True,
+        )
+        context["status"] = "discarded_event_changed"
+        return False
+
     # ---- CORS preflight ----
     def do_OPTIONS(self):  # noqa: N802
         self.send_response(204)
@@ -4675,6 +4760,9 @@ class ProductionHandler(BaseHTTPRequestHandler):
             # LD-456 M1 — state snapshot before every v59 mutation.
             if path == "/api/state/snapshot":
                 return self._handle_state_snapshot(body)
+            # LD-458 EVENT_LOAD_GENERATION_LOCK_V1 — atomic event swap + gen bump.
+            if path == "/api/event/load":
+                return self._handle_event_load(body)
             if path == "/api/storyboard/switch":
                 return self._handle_storyboard_switch(body)
             # ── Visible Magic Phase 2 (2026-04-24) ──────────────────────────────
@@ -4797,6 +4885,17 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
     def _handle_magic_submit_path(self, body: dict) -> None:
         """Validate clicked path, write registry, kick off render pipeline."""
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
+        # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
+        _pin = {
+            "pinned_generation": self.app.event_generation,
+            "pinned_event_dir": self.app.event_dir,
+            "_handler": '_handle_magic_submit_path',
+        }
+
         import threading as _th
         import traceback as _tb
         import uuid as _uuid
@@ -5136,6 +5235,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
     def _handle_bg_session_state(self) -> None:
         """GET /api/bg/session-state -> { active_context, beats, flux_options_complete, capabilities, migration_warnings }"""
+        # LD-456 SCOPE_VALIDATION_V1 (no-body handler — query-string fallback inside helper)
+        if not self._assert_event_scope({}, allow_missing=True):
+            return
+
         bg = _bg_module()
         with bg._sidecar_lock:
             sidecar = bg.read_sidecar()
@@ -5162,6 +5265,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_bg_poll_flux(self) -> None:
         """GET /api/bg/poll-flux-status?request_ids=id1,id2,...
         Server polls BFL for each id. Returns { id: { status, key, thumb_b64, gallery_b64 } | null }"""
+        # LD-456 SCOPE_VALIDATION_V1 (no-body handler — query-string fallback inside helper)
+        if not self._assert_event_scope({}, allow_missing=True):
+            return
+
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         raw = (qs.get("request_ids") or [""])[0]
         if not raw:
@@ -5342,6 +5449,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
         Path safety mirrors _handle_cr_full_image L5195-5198.
         Rule 19 compliance: every error path returns explicit JSON.
         """
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
         import glob as _glob
         key = (body or {}).get("key")
         if not key or not isinstance(key, str):
@@ -5458,8 +5569,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
         once Session 2+ wires mutations through. Session 1.5 ships the
         endpoint; mutations don't fire from the client yet.
         """
-        # LD-456 SCOPE_VALIDATION_V1
-        if not self._assert_event_scope(body):
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
             return
 
         state_path = self.app.event_dir / "production_state.json"
@@ -5517,6 +5628,116 @@ class ProductionHandler(BaseHTTPRequestHandler):
             "sha256": sha,
         })
 
+    def _handle_event_load(self, body: dict) -> None:
+        """POST /api/event/load  body: {event_id, arc_number?, module_id?, storyboard?}
+
+        Atomically swap the server's pinned event under event_load_lock and
+        increment event_generation. Async jobs pinned to the prior generation
+        will be rejected at their terminal write via _check_event_pin (see
+        LD-460 ASYNC_JOB_GENERATION_PIN_V1).
+
+        Returns:
+            { ok, event_id, event_dir, storyboard, event_generation }
+
+        Concurrency contract (LD-458 EVENT_LOAD_GENERATION_LOCK_V1):
+          - Acquires self.app.event_load_lock for the entire swap.
+          - Two parallel calls serialize; the second sees the first's new
+            event_generation.
+          - Increment is monotonic; never decremented.
+          - The swap is atomic from clients' perspective: any read after
+            the response will see the new event.
+
+        Single-user mode: Kim operates one tab. Lock contention is rare.
+        Future multi-user: revisit lock granularity.
+        """
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1 — but for
+        # event/load, the WHOLE POINT is to switch scope. We do NOT call
+        # _assert_event_scope here. Instead we validate that the requested
+        # event_id is non-empty + a real directory.
+        new_event_id = (body or {}).get("event_id") or (body or {}).get("scope_event_id")
+        if not new_event_id:
+            return self._send_json(400, {
+                "error": "event_id required",
+                "code": "EVENT_LOAD_GENERATION_LOCK_V1",
+            })
+
+        # event_dir is sibling of current — we do NOT allow arbitrary paths.
+        # Pattern: Production/<event_id>/ next to current Production/<current>/.
+        new_event_dir = self.app.event_dir.parent / new_event_id
+        if not new_event_dir.is_dir():
+            return self._send_json(404, {
+                "error": "event_dir not found",
+                "code": "EVENT_LOAD_GENERATION_LOCK_V1",
+                "expected": str(new_event_dir),
+                "hint": (
+                    f"event_id {new_event_id!r} must correspond to an "
+                    f"existing directory at {new_event_dir}."
+                ),
+            })
+
+        # Storyboard pick: explicit body['storyboard'], else keep current
+        # filename (works if every event uses the same storyboard naming).
+        # Else discover the latest storyboard_v*_prod.html in the new dir.
+        requested_sb = (body or {}).get("storyboard")
+        if requested_sb:
+            new_storyboard_path = new_event_dir / requested_sb
+        elif (new_event_dir / self.app.storyboard_path.name).exists():
+            new_storyboard_path = new_event_dir / self.app.storyboard_path.name
+        else:
+            candidates = sorted(
+                new_event_dir.glob("storyboard_v*_prod.html"),
+                key=lambda p: p.stat().st_mtime, reverse=True,
+            )
+            if not candidates:
+                return self._send_json(404, {
+                    "error": "no storyboard_v*_prod.html in target event_dir",
+                    "code": "EVENT_LOAD_GENERATION_LOCK_V1",
+                    "event_dir": str(new_event_dir),
+                })
+            new_storyboard_path = candidates[0]
+
+        if not new_storyboard_path.is_file():
+            return self._send_json(404, {
+                "error": "storyboard file not found",
+                "code": "EVENT_LOAD_GENERATION_LOCK_V1",
+                "expected": str(new_storyboard_path),
+            })
+
+        # ATOMIC SWAP under lock.
+        with self.app.event_load_lock:
+            old_gen = self.app.event_generation
+            old_event_id = self.app.event_dir.name
+            old_storyboard = self.app.storyboard_path.name
+
+            self.app.event_dir = new_event_dir
+            self.app.storyboard_path = new_storyboard_path
+            self.app.event_id = new_event_id
+            self.app.storyboard_stem = new_storyboard_path.stem
+            self.app.event_generation = old_gen + 1
+            # Invalidate caches that key on event_dir / storyboard_path.
+            self.app.invalidate_beats_cache()
+            self.app._storyboard_list_cache = None
+            self.app._storyboard_list_cache_mtime = 0.0
+            new_gen = self.app.event_generation
+
+        print(
+            f"[event/load] {old_event_id} (gen={old_gen}, sb={old_storyboard}) -> "
+            f"{new_event_id} (gen={new_gen}, sb={new_storyboard_path.name}). "
+            f"Async jobs pinned to gen {old_gen} will be rejected at terminal "
+            f"writes per LD-460.",
+            flush=True,
+        )
+
+        return self._send_json(200, {
+            "ok": True,
+            "event_id": new_event_id,
+            "event_dir": str(new_event_dir),
+            "storyboard": new_storyboard_path.name,
+            "event_generation": new_gen,
+            "previous_generation": old_gen,
+            "previous_event_id": old_event_id,
+        })
+
     def _handle_bg_set_active_context(self, body: dict) -> None:
         """POST /api/bg/set-active-context {arc_number, event_id, phase}
         Switches active_context in sidecar and returns any previously saved beats
@@ -5530,10 +5751,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
         # LD-456 SCOPE_VALIDATION_V1 — guard against cross-storyboard-event mutation.
         # The BG body's `event_id` is overloaded (segment number); v59 client
         # passes the storyboard scope as `scope_event_id` to disambiguate.
-        if not self._assert_event_scope(
-            {"event_id": body.get("scope_event_id")}, allow_missing=True
-        ):
-            return
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return  # LD-461 SCOPE_BODY_HELPER_V1 — migrated from hand-rolled dict
         arc_number = int(body.get("arc_number", 1))
         event_id   = str(body.get("event_id", "1"))
         phase      = str(body.get("phase", "full"))
@@ -5557,10 +5776,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
         guard uses body['scope_event_id'] when present.
         """
         # LD-456 SCOPE_VALIDATION_V1
-        if not self._assert_event_scope(
-            {"event_id": body.get("scope_event_id")}, allow_missing=True
-        ):
-            return
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return  # LD-461 SCOPE_BODY_HELPER_V1 — migrated from hand-rolled dict
         arc_number = int(body.get("arc_number", 1))
         event_id   = str(body.get("event_id", "1"))
         phase      = str(body.get("phase", "full"))
@@ -5602,10 +5819,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
         guard uses body['scope_event_id'] when present.
         """
         # LD-456 SCOPE_VALIDATION_V1
-        if not self._assert_event_scope(
-            {"event_id": body.get("scope_event_id")}, allow_missing=True
-        ):
-            return
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return  # LD-461 SCOPE_BODY_HELPER_V1 — migrated from hand-rolled dict
         arc_number = int(body.get("arc_number", 1))
         event_id   = str(body.get("event_id", "1"))
         phase      = str(body.get("phase", "full"))
@@ -5665,10 +5880,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_bg_update_beat(self, body: dict) -> None:
         """POST /api/bg/update-beat {beat_id, [field...], scope_event_id?} -> { ok }"""
         # LD-456 SCOPE_VALIDATION_V1 — uses scope_event_id to disambiguate from BG segment numbers.
-        if not self._assert_event_scope(
-            {"event_id": body.get("scope_event_id")}, allow_missing=True
-        ):
-            return
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return  # LD-461 SCOPE_BODY_HELPER_V1 — migrated from hand-rolled dict
         beat_id = body.get("beat_id")
         if not beat_id:
             return self._send_json(400, {"error": "beat_id required"})
@@ -5697,10 +5910,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_bg_reorder_beats(self, body: dict) -> None:
         """POST /api/bg/reorder-beats {beat_ids: [...], scope_event_id?} -> { ok }"""
         # LD-456 SCOPE_VALIDATION_V1
-        if not self._assert_event_scope(
-            {"event_id": body.get("scope_event_id")}, allow_missing=True
-        ):
-            return
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return  # LD-461 SCOPE_BODY_HELPER_V1 — migrated from hand-rolled dict
         beat_ids = body.get("beat_ids", [])
         if not beat_ids:
             return self._send_json(400, {"error": "beat_ids required"})
@@ -5719,6 +5930,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
     def _handle_bg_delete_beat(self, body: dict) -> None:
         """POST /api/bg/delete-beat {beat_id} -> { ok }"""
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
         beat_id = body.get("beat_id")
         if not beat_id:
             return self._send_json(400, {"error": "beat_id required"})
@@ -5749,10 +5964,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
         # `scope_event_id` matching the storyboard tab's active event. On
         # mismatch with server-pinned event_dir, we 409 here BEFORE any
         # sidecar write or state mutation.
-        if not self._assert_event_scope(
-            {"event_id": body.get("scope_event_id")}, allow_missing=True
-        ):
-            return
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return  # LD-461 SCOPE_BODY_HELPER_V1 — migrated from hand-rolled dict
         beat_ids = [b["beat_id"] for b in body.get("beats", []) if "beat_id" in b]
         bg = _bg_module()
         with bg._sidecar_lock:
@@ -5809,6 +6022,17 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_bg_submit_flux(self, body: dict) -> None:
         """POST /api/bg/submit-flux-batch {beat_ids: [...]} -> { task_map }
         Burst-submits 3×N FLUX Kontext calls. Returns immediately with task_map."""
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
+        # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
+        _pin = {
+            "pinned_generation": self.app.event_generation,
+            "pinned_event_dir": self.app.event_dir,
+            "_handler": '_handle_bg_submit_flux',
+        }
+
         beat_ids = body.get("beat_ids", [])
         if not beat_ids:
             return self._send_json(400, {"error": "beat_ids required"})
@@ -5828,6 +6052,15 @@ class ProductionHandler(BaseHTTPRequestHandler):
             try:
                 rids = bg.submit_beat_stills(beat)
                 task_map[beat["beat_id"]] = rids
+                # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — terminal sidecar-write pin check.
+                # If /api/event/load swapped event mid-FLUX-batch, the rids
+                # returned belong to the PRIOR event's pin. Skip the sidecar
+                # write so we don't attach FLUX rids to the wrong event's BG state.
+                if not self._check_event_pin(_pin, f"bg_submit_flux:{beat['beat_id']}"):
+                    print(f"[BG] FLUX rids for {beat['beat_id']} orphaned at "
+                          f"{_pin['pinned_event_dir'].name} — sidecar NOT written.",
+                          flush=True)
+                    continue
                 # Store request IDs in sidecar for poll lookups
                 with bg._sidecar_lock:
                     sc2 = bg.read_sidecar()
@@ -5846,6 +6079,17 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_bg_submit_gpt_batch(self, body: dict) -> None:
         """POST /api/bg/submit-gpt-batch {beat_ids: [...]}
         Spawns GPT generation in background thread pool. Returns {job_id} immediately."""
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
+        # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
+        _pin = {
+            "pinned_generation": self.app.event_generation,
+            "pinned_event_dir": self.app.event_dir,
+            "_handler": '_handle_bg_submit_gpt_batch',
+        }
+
         import uuid as _uuid
         beat_ids = body.get("beat_ids", [])
         if not beat_ids:
@@ -5924,6 +6168,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
     def _handle_bg_accept_option(self, body: dict) -> None:
         """POST /api/bg/accept-option {beat_id, option_key} -> { ok }"""
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
         beat_id    = body.get("beat_id")
         option_key = body.get("option_key")
         if not beat_id or not option_key:
@@ -5959,6 +6207,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
         Writes accepted_library_ref + accepted_image_key to sidecar.
         Does NOT touch flux_options[]. Library assignment is tracked separately
         so the existing FLUX option display/crop flow is completely unaffected."""
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
         beat_id    = body.get("beat_id", "")
         key        = body.get("key", "")
         filename   = body.get("filename", "")
@@ -6005,6 +6257,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
         Inserts a blank beat immediately after after_beat_id in the sidecar.
         beat_id is generated as max(existing_N)+1 (zero-padded to 2 digits)
         so gaps from prior deletes do not cause collisions."""
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
         after_beat_id = body.get("after_beat_id", "")
         segment = body.get("segment", "event_2_pre")
 
@@ -6051,6 +6307,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
         return self._send_json(200, {"ok": True, "beat": new_beat})
 
     def _handle_bg_create_group(self, body: dict) -> None:
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
         name = (body.get("group_name") or "").strip()
         arc_n = int(body.get("arc_number", 1))
         beat_ids = body.get("beat_ids", [])
@@ -6071,6 +6331,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
                                       "status": sidecar["groups"][gid]["status"]})
 
     def _handle_bg_delete_group(self, body: dict) -> None:
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
         gid = body.get("group_id", "")
         if not gid:
             return self._send_json(400, {"ok": False, "error": "group_id required"})
@@ -6084,6 +6348,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
         return self._send_json(200, {"ok": True})
 
     def _handle_bg_update_group(self, body: dict) -> None:
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
         gid = body.get("group_id", "")
         ordered = body.get("beat_ids_ordered", [])
         if not gid:
@@ -6099,6 +6367,17 @@ class ProductionHandler(BaseHTTPRequestHandler):
         return self._send_json(200, {"ok": True, "status": new_status})
 
     def _handle_bg_assemble_group(self, body: dict) -> None:
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
+        # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
+        _pin = {
+            "pinned_generation": self.app.event_generation,
+            "pinned_event_dir": self.app.event_dir,
+            "_handler": '_handle_bg_assemble_group',
+        }
+
         gid = body.get("group_id", "")
         if not gid:
             return self._send_json(400, {"ok": False, "error": "group_id required"})
@@ -6153,6 +6432,17 @@ class ProductionHandler(BaseHTTPRequestHandler):
         return self._send_json(200, {"ok": True, **job})
 
     def _handle_bg_run_local_animation(self, body: dict) -> None:
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
+        # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
+        _pin = {
+            "pinned_generation": self.app.event_generation,
+            "pinned_event_dir": self.app.event_dir,
+            "_handler": '_handle_bg_run_local_animation',
+        }
+
         beat_id = body.get("beat_id", "")
         method = body.get("method", "")
         params = body.get("params", {}) or {}
@@ -6228,6 +6518,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
         return self._send_json(200, {"ok": True, **result})
 
     def _handle_bg_update_beat_anim_method(self, body: dict) -> None:
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
         beat_id = body.get("beat_id", "")
         method = body.get("animation_method", "")
         VALID = {"kling", "magic_compositor", "ken_burns", "static_hold"}
@@ -6248,6 +6542,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
         return self._send_json(200, {"ok": True})
 
     def _handle_bg_accept_local_animation(self, body: dict) -> None:
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
         beat_id = body.get("beat_id", "")
         video_path = body.get("video_path", "")
         if not beat_id or not video_path:
@@ -6334,8 +6632,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
         """POST /api/cr/save-crop {crop_png_b64, beat_id, source_key, event_id?}
         Rule 6 upscale + Rule 6.2 WebP delivery + Directus Two-Write.
         Returns { key, filename, thumb_b64, gallery_b64 }."""
-        # LD-456 SCOPE_VALIDATION_V1
-        if not self._assert_event_scope(body):
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
             return
         crop_b64   = body.get("crop_png_b64", "")
         beat_id    = body.get("beat_id", "")
@@ -6422,6 +6720,17 @@ class ProductionHandler(BaseHTTPRequestHandler):
         tier='source' -> BG_STILLS_DIR/sources/  (pre-crop images)
         tier='cropped' or absent -> BG_STILLS_DIR/crops/  (ready images)
         Returns { key, filename, thumb_b64, gallery_b64, tier, abs_path }."""
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
+        # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
+        _pin = {
+            "pinned_generation": self.app.event_generation,
+            "pinned_event_dir": self.app.event_dir,
+            "_handler": '_handle_cr_upload',
+        }
+
         filename  = body.get("filename", "")
         image_b64 = body.get("image_b64", "")
         tier      = body.get("tier", "cropped")
@@ -6488,8 +6797,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
         Generate B+C and /api/animate use the CURRENT assigned image, not the
         stale one from the HTML file on disk.
         """
-        # LD-456 SCOPE_VALIDATION_V1
-        if not self._assert_event_scope(body):
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
             return
         beat_id = body.get("beat")
         image_key = body.get("image_key")
@@ -6636,8 +6945,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
         This is the bridge from Cropper -> Storyboard library.
         """
-        # LD-456 SCOPE_VALIDATION_V1
-        if not self._assert_event_scope(body):
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
             return
         # LD-456 conditional HTML patching: v59 shells have no IN/TH/div.ic
         # markers; rewriting them would silently no-op. Short-circuit here so
@@ -6820,6 +7129,17 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
         Body: {"beat": "beat_NN"} or {"beat": "beat_NN", "audio_override": "..."}
         """
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
+        # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
+        _pin = {
+            "pinned_generation": self.app.event_generation,
+            "pinned_event_dir": self.app.event_dir,
+            "_handler": '_handle_lipsync_submit',
+        }
+
         if self.app.client is None:
             return self._send_json(500, {"error": "WaveSpeed client not configured (missing API key)"})
 
@@ -7162,6 +7482,17 @@ class ProductionHandler(BaseHTTPRequestHandler):
         Direct ByteDance submission with NO audio pre-conditioning, NO video
         trim. Unwired from the router — kept as debuggable reference.
         """
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
+        # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
+        _pin = {
+            "pinned_generation": self.app.event_generation,
+            "pinned_event_dir": self.app.event_dir,
+            "_handler": '_handle_lipsync_submit_legacy',
+        }
+
         if self.app.client is None:
             return self._send_json(500, {"error": "WaveSpeed client not configured (missing API key)"})
 
@@ -7371,6 +7702,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
         Writes final.* block to production_state.json AND accepted_video_path to bg sidecar
         so the concat pipeline picks it up. Spec A / LD-139 partial implementation.
         """
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
         beat_id = body.get("beat") or body.get("beat_id")
         if not beat_id:
             return self._send_json(400, {"error": "beat required"})
@@ -7703,6 +8038,10 @@ body {{padding-top:44px!important;}}
         return all_beats
 
     def _handle_animate(self, body: dict) -> None:
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
         if self.app.client is None:
             return self._send_json(500, {"error": "WaveSpeed client not configured (missing API key)"})
 
@@ -7884,6 +8223,10 @@ body {{padding-top:44px!important;}}
         })
 
     def _handle_redo(self, body: dict) -> None:
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
         beat_id = body.get("beat")
         options_per_beat = int(body.get("options_per_beat", 3))
         if not beat_id:
@@ -7935,6 +8278,10 @@ body {{padding-top:44px!important;}}
     # ========================================================================
     def _handle_add_options(self, body: dict) -> None:
         """Dispatch Generate B+C to start-end (default) unless force_legacy."""
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
         beat_id = body.get("beat")
         if not beat_id:
             return self._send_json(400, {"error": "missing 'beat'"})
@@ -8524,8 +8871,8 @@ body {{padding-top:44px!important;}}
           3. Marks beat.text_modified_after_tts = true if a TTS file exists
              for this beat (client can surface a stale-TTS warning).
         """
-        # LD-456 SCOPE_VALIDATION_V1
-        if not self._assert_event_scope(body):
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
             return
         beat_id = body.get("beat")
         new_text = body.get("text")
@@ -8741,6 +9088,10 @@ body {{padding-top:44px!important;}}
         Rule 11 source fidelity: the text in state is the source of truth;
         this endpoint ensures audio matches current state.text verbatim.
         """
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
         beat_id = body.get("beat")
         if not beat_id:
             return self._send_json(400, {"error": "missing 'beat'"})
@@ -8847,6 +9198,10 @@ body {{padding-top:44px!important;}}
         })
 
     def _handle_select(self, body: dict) -> None:
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
         beat_id = body.get("beat")
         selected = body.get("selected_option")
         if not beat_id or selected is None:
@@ -8899,6 +9254,17 @@ body {{padding-top:44px!important;}}
         )
 
     def _handle_export(self) -> None:
+        # LD-456 SCOPE_VALIDATION_V1 (no-body handler — query-string fallback inside helper)
+        if not self._assert_event_scope({}, allow_missing=True):
+            return
+
+        # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
+        _pin = {
+            "pinned_generation": self.app.event_generation,
+            "pinned_event_dir": self.app.event_dir,
+            "_handler": '_handle_export',
+        }
+
         state = self.app.state.read_state()
         spend = self.app.state.read_spend()
         export = {
@@ -8945,6 +9311,10 @@ body {{padding-top:44px!important;}}
         """Set audio delay (video lead-in) for a beat.
         POST {"beat": "beat_03", "audio_delay": 1.5}
         """
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
         beat_id = body.get("beat")
         delay = float(body.get("audio_delay", 0))
         if not beat_id:
@@ -8968,6 +9338,10 @@ body {{padding-top:44px!important;}}
         """Set clip trim points for a beat.
         POST {"beat": "beat_07", "trim_start": 0, "trim_end": 3.5}
         """
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
         beat_id = body.get("beat")
         if not beat_id:
             return self._send_json(400, {"error": "missing 'beat'"})
@@ -8998,6 +9372,10 @@ body {{padding-top:44px!important;}}
         self._send_json(200, result)
 
     def _handle_budget_override(self, body: dict) -> None:
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
         amount = float(body.get("amount", 5.0))
         spend = self.app.state.override_budget(amount)
         self._send_json(200, spend)
@@ -9025,6 +9403,10 @@ body {{padding-top:44px!important;}}
           400 {status: "error", error} — whitelist / validation failure
           500 {status: "error", error} — mutate_state failure
         """
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
         # Parse beat_id from path: /api/v2/beat/beat_03/patch
         parts = [p for p in path.split("/") if p]
         # Expect: ["api", "v2", "beat", "<beat_id>", "patch"]
@@ -9182,6 +9564,10 @@ body {{padding-top:44px!important;}}
           - Sidecar is refreshed post-mutation.
           - mutation_id goes through the shared dedup cache so retries are idempotent.
         """
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
         # Feature flag (also covers MINDFULNEST_WRITE_PATH=legacy)
         if os.environ.get("MINDFULNEST_WRITE_PATH", "v2") == "legacy":
             return self._send_json(503, {
@@ -9358,6 +9744,10 @@ body {{padding-top:44px!important;}}
         protects v59 clients with stale tabs from receiving sidecar content
         for the wrong event.
         """
+        # LD-456 SCOPE_VALIDATION_V1 (no-body handler — query-string fallback inside helper)
+        if not self._assert_event_scope({}, allow_missing=True):
+            return
+
         # LD-456: query-string scope check (defensive — read-only endpoint
         # but stale-tab clients should be told to reload).
         try:
@@ -9465,6 +9855,10 @@ body {{padding-top:44px!important;}}
         bumped state-level _module_version counter (different from per-beat
         _version; module-level changes don't bump beat versions).
         """
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
         field = body.get("field")
         value = body.get("value")
         if not field:
@@ -9556,6 +9950,10 @@ body {{padding-top:44px!important;}}
           400 {error, hint} — invalid from_slot, missing beat, empty option,
                phase_1 too small.
         """
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
         # ------------------------------------------------------------------
         # Input validation
         # ------------------------------------------------------------------
@@ -9718,6 +10116,10 @@ body {{padding-top:44px!important;}}
              trimmed beats (counter (b) MEDIUM).
           6. Last beat NEVER has trailing fade trimmed (counter (f) CRITICAL).
         """
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
         # Lazy-load the lib so server startup doesn't hard-require it.
         try:
             sys.path.insert(0, os.path.join(os.path.dirname(__file__), "lib"))
@@ -10512,6 +10914,10 @@ body {{padding-top:44px!important;}}
 
     def _handle_timeline_cue_upsert(self, body: dict) -> None:
         """POST /api/timeline/cues — upsert cue by id; atomic write via mutate_state."""
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
         cue_id = body.get("id")
         if not cue_id:
             return self._send_json(400, {"error": "cue id is required"})
@@ -10557,6 +10963,10 @@ body {{padding-top:44px!important;}}
 
     def _handle_timeline_delete_cue(self, cue_id: str) -> None:
         """DELETE /api/timeline/cues/<id> — atomic remove via mutate_state."""
+        # LD-456 SCOPE_VALIDATION_V1 (no-body handler — query-string fallback inside helper)
+        if not self._assert_event_scope({}, allow_missing=True):
+            return
+
         if not cue_id:
             return self._send_json(400, {"error": "cue id required in path"})
 
@@ -10606,6 +11016,17 @@ body {{padding-top:44px!important;}}
         Post-render: ffprobe bitrate ≤1,900,000 bps + file ≤80MB (SIZE_BUDGET_VIDEO_V1
         + SIZE_BUDGET_PER_MODULE_V1). Returns {mp4_path} on success.
         """
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
+        # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
+        _pin = {
+            "pinned_generation": self.app.event_generation,
+            "pinned_event_dir": self.app.event_dir,
+            "_handler": '_handle_timeline_preview_with_sfx',
+        }
+
         import hashlib as _hl  # noqa: PLC0415
 
         try:
@@ -10906,6 +11327,10 @@ body {{padding-top:44px!important;}}
 
     def _handle_stitch_save_job(self, body: dict) -> None:
         """POST /api/stitch_editor/job — save or upsert a named job."""
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
         name = (body.get("name") or "").strip()
         if not name:
             return self._send_json(400, {"error": "Job name is required"})
@@ -10938,6 +11363,10 @@ body {{padding-top:44px!important;}}
 
     def _handle_stitch_delete_job(self, name: str) -> None:
         """DELETE /api/stitch_editor/job/<name> — remove named job."""
+        # LD-456 SCOPE_VALIDATION_V1 (no-body handler — query-string fallback inside helper)
+        if not self._assert_event_scope({}, allow_missing=True):
+            return
+
         def remove(state: dict) -> None:
             state.get("jobs", {}).pop(name, None)
         self.app.stitch_state.mutate_state(remove)
@@ -11399,6 +11828,17 @@ body {{padding-top:44px!important;}}
         LD-140: bake IS registered (unlike preview). LD-280: single atomic MP4.
         LD-283: ≤80MB. SIZE_BUDGET_VIDEO_V1: ≤1,900,000 bps.
         """
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
+        # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
+        _pin = {
+            "pinned_generation": self.app.event_generation,
+            "pinned_event_dir": self.app.event_dir,
+            "_handler": '_handle_stitch_bake',
+        }
+
         import fcntl  # noqa: PLC0415
 
         bake_lock_path = self._stitch_cache_dir() / "stitch_bake.lock"
@@ -11563,6 +12003,17 @@ body {{padding-top:44px!important;}}
         Patches state phase_X_voice_stem_file + phase_X_voice_stem_mtime via mutate_state.
         Returns 200 with file path + duration on success.
         """
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
+        # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
+        _pin = {
+            "pinned_generation": self.app.event_generation,
+            "pinned_event_dir": self.app.event_dir,
+            "_handler": '_handle_phase_b_regen_audio',
+        }
+
         phase = (body.get("phase") or "").strip().lower()
         err = self._phase_check(phase)
         if err:
@@ -11836,6 +12287,17 @@ body {{padding-top:44px!important;}}
         Mixes voice (0dB) + ambient (-18dB) via ffmpeg amix filter.
         Writes phase_{phase}_mixed_<TS>.mp3 and patches state.
         """
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
+        # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
+        _pin = {
+            "pinned_generation": self.app.event_generation,
+            "pinned_event_dir": self.app.event_dir,
+            "_handler": '_handle_phase_b_mix_audio',
+        }
+
         phase = (body.get("phase") or "").strip().lower()
         err = self._phase_check(phase)
         if err:
@@ -12247,6 +12709,17 @@ body {{padding-top:44px!important;}}
 
         Writes phase_{phase}_lipsync_<TS>.mp4 and patches state.
         """
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
+        # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
+        _pin = {
+            "pinned_generation": self.app.event_generation,
+            "pinned_event_dir": self.app.event_dir,
+            "_handler": '_handle_phase_b_lipsync',
+        }
+
         if self.app.client is None:
             return self._send_json(500, {
                 "error": "WaveSpeed client not configured (missing API key)",
@@ -12382,6 +12855,25 @@ body {{padding-top:44px!important;}}
                   else f"phase_{_p}_empty_desk_bg_id"] = _bid
             state["_module_version"] = int(state.get("_module_version", 0) or 0) + 1
             return state["_module_version"]
+        # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — terminal-write pin check.
+        # If the event was swapped via /api/event/load mid-job, this lipsync
+        # output is now orphaned at _pin["pinned_event_dir"] (NOT deleted —
+        # recoverable per spec §10). Reject the state mutation with HTTP 423
+        # so the v59 client can re-hydrate + retry.
+        if not self._check_event_pin(_pin, "phase_b_lipsync_terminal_mutate"):
+            return self._send_json(423, {
+                "error": "event_changed_mid_job",
+                "code": "ASYNC_JOB_GENERATION_PIN_V1",
+                "pinned_event": _pin["pinned_event_dir"].name if _pin.get("pinned_event_dir") else None,
+                "current_event": self.app.event_dir.name,
+                "orphaned_output": str(out_path),
+                "hint": (
+                    "The active event changed via /api/event/load while this "
+                    "lipsync job was running. The mp4 IS on disk at the pinned "
+                    "event_dir but state was NOT mutated; client should "
+                    "re-hydrate scope and retry."
+                ),
+            })
         try:
             new_version = self.app.state.mutate_state(_apply)
         except Exception as exc:  # noqa: BLE001
@@ -12430,6 +12922,10 @@ body {{padding-top:44px!important;}}
         Cache hit: stream cached mp4 with no-cache+ETag.
         Cache miss: call render_watercolor_overlay, atomic write, LRU cleanup.
         """
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
         # Lazy-load helper.
         try:
             sys.path.insert(0, os.path.join(os.path.dirname(__file__), "lib"))

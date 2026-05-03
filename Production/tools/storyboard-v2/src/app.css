@@ -268,3 +268,55 @@
   color: var(--text-dim);
   text-align: center;
 }
+
+/* Scope banner (LD-456 / LD-458 / LD-460 surfacing) */
+.mn-scope-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+  z-index: 50;
+}
+.mn-scope-banner-error {
+  background: rgba(255, 107, 107, 0.18);
+  color: var(--text-error);
+  border-bottom-color: var(--text-error);
+}
+.mn-scope-banner-info {
+  background: rgba(245, 176, 66, 0.15);
+  color: var(--text-warn);
+  border-bottom-color: var(--text-warn);
+}
+.mn-scope-banner-text {
+  flex: 1;
+  margin-right: 12px;
+}
+.mn-scope-banner-action {
+  background: transparent;
+  border: 1px solid currentColor;
+  color: inherit;
+  padding: 4px 10px;
+  border-radius: 3px;
+  font-weight: 600;
+  margin-right: 8px;
+}
+.mn-scope-banner-action:hover {
+  background: currentColor;
+  color: var(--bg);
+}
+.mn-scope-banner-dismiss {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-size: 18px;
+  line-height: 1;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  cursor: pointer;
+}
+.mn-scope-banner-dismiss:hover {
+  background: rgba(255, 255, 255, 0.1);
+}

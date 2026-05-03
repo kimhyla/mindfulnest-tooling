@@ -33,6 +33,8 @@ export const MUTATION_ENDPOINTS = {
   v2_sidecar_write: `${SERVER_BASE}/api/v2/sidecar`,
   // Session 1.5 NEW endpoint — state snapshot before every v59 write (M1)
   state_snapshot: `${SERVER_BASE}/api/state/snapshot`,
+  // Session 1.5 v3.1 NEW endpoint — atomic event swap + generation bump (LD-458)
+  event_load: `${SERVER_BASE}/api/event/load`,
 } as const;
 
 export type ReadEndpoint = keyof typeof READ_ENDPOINTS;
@@ -43,4 +45,22 @@ export type Endpoint = ReadEndpoint | MutationEndpoint;
 
 export function isMutationEndpoint(e: Endpoint): e is MutationEndpoint {
   return e in MUTATION_ENDPOINTS;
+}
+
+// LD-461 SCOPE_BODY_HELPER_V1 — handler convention.
+// BG endpoints have an `event_id` body field that means BG segment number,
+// NOT storyboard scope. The v59 client must send the storyboard scope as
+// `scope_event_id` for these endpoints. Non-BG endpoints accept either
+// `event_id` or `scope_event_id` (the server's _scope_body helper coalesces).
+export const BG_MUTATION_ENDPOINTS: ReadonlySet<MutationEndpoint> = new Set<MutationEndpoint>([
+  'bg_accept_beats',
+  'bg_set_active_context',
+  'bg_extract_beats',
+  'bg_inject_beats',
+  'bg_update_beat',
+  'bg_reorder_beats',
+]);
+
+export function scopeKeyFor(endpoint: MutationEndpoint): 'event_id' | 'scope_event_id' {
+  return BG_MUTATION_ENDPOINTS.has(endpoint) ? 'scope_event_id' : 'event_id';
 }

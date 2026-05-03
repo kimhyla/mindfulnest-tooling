@@ -8,6 +8,7 @@
 
 import { signal } from '@preact/signals';
 import { ScopeBoundary } from './components/ScopeBoundary';
+import { ScopeBanner } from './components/ScopeBanner';
 import { TabBar, type TabKey } from './components/TabBar';
 import { StoryboardTab } from './components/StoryboardTab';
 import { BgTab } from './components/BgTab';
@@ -57,10 +58,11 @@ export function App() {
   return (
     <ScopeBoundary>
       <div class="mn-app" data-testid="app-root">
+        <ScopeBanner />
         <header class="mn-app-header">
           <h1>Storyboard v2</h1>
           <span class="mn-app-subhead" data-testid="app-subhead">
-            Path C rewrite &middot; Session 1 read-only preview
+            Path C rewrite &middot; Session 1.5 v3.1 — read-only + scope guards
           </span>
         </header>
 
