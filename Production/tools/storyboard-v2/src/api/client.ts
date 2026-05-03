@@ -69,8 +69,22 @@ export async function apiGet<T = unknown>(
   endpoint: ReadEndpoint,
   query: Record<string, string> = {},
 ): Promise<ApiResult<T>> {
-  const url = new URL(READ_ENDPOINTS[endpoint]);
-  for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
+  // Substitute {placeholder} tokens in the URL template with values from
+  // the query dict. Substituted keys are CONSUMED so they don't ALSO end
+  // up in the query string. (Some endpoints, like v2_event_state, expect
+  // event_id in the path, not the query.)
+  let urlStr: string = READ_ENDPOINTS[endpoint];
+  const remaining: Record<string, string> = {};
+  for (const [k, v] of Object.entries(query)) {
+    const token = `{${k}}`;
+    if (urlStr.includes(token)) {
+      urlStr = urlStr.split(token).join(encodeURIComponent(v));
+    } else {
+      remaining[k] = v;
+    }
+  }
+  const url = new URL(urlStr);
+  for (const [k, v] of Object.entries(remaining)) url.searchParams.set(k, v);
 
   try {
     const res = await fetch(url.toString());

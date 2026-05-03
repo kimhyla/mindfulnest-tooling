@@ -4,11 +4,14 @@
 export const SERVER_BASE = 'http://localhost:5111';
 
 // READ endpoints (Session 1 uses these for the placeholder render).
+// Note: v2_event_state is intentionally a template; the server expects
+// event_id in the URL path, not the query string. apiGet() substitutes
+// {event_id} from the query dict into the URL before issuing the request.
 export const READ_ENDPOINTS = {
   cr_library: `${SERVER_BASE}/api/cr/library`,
   cr_full: `${SERVER_BASE}/api/cr/full`,
-  v2_event_state: `${SERVER_BASE}/api/v2/event-state`,
-  v2_sidecar: `${SERVER_BASE}/api/v2/sidecar`,
+  v2_event_state: `${SERVER_BASE}/api/v2/event/{event_id}/state`,
+  v2_sidecar: `${SERVER_BASE}/api/v2/storyboard/L.json`,
   bg_state: `${SERVER_BASE}/api/bg/state`,
   patch_health: `${SERVER_BASE}/api/patch_health`,
 } as const;

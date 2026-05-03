@@ -8,6 +8,9 @@ export default defineConfig({
   timeout: 30_000,
   expect: { timeout: 5_000 },
   fullyParallel: false,
+  // Single worker — rollback.spec.ts flips the served storyboard mid-test;
+  // parallel workers loading the page would see v58 mid-flip and fail.
+  workers: 1,
   reporter: [['list']],
   use: {
     baseURL: process.env.STORYBOARD_BASE_URL ?? 'http://localhost:5111',

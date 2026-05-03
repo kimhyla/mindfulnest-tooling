@@ -146,6 +146,121 @@
   font-size: 13px;
   color: var(--text-strong);
 }
+.mn-beat-editable {
+  outline: none;
+  padding: 4px 8px;
+  margin: 4px -8px 0;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.mn-beat-editable:focus {
+  border-color: var(--accent);
+  background: var(--bg);
+}
+.mn-beat-anchor {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  background: var(--code-bg);
+  padding: 0 4px;
+  border-radius: 2px;
+}
+.mn-beat-stale-tts {
+  font-size: 10px;
+  color: var(--text-warn);
+  border: 1px solid var(--text-warn);
+  border-radius: 8px;
+  padding: 0 6px;
+}
+
+.mn-save-indicator {
+  margin-left: auto;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--text-dim);
+  min-width: 80px;
+  text-align: right;
+}
+.mn-save-saving { color: var(--text-warn); }
+.mn-save-saved  { color: #5cd089; }
+.mn-save-error  { color: var(--text-error); font-weight: 600; }
+
+/* Buttons */
+.mn-btn {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 14px;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.mn-btn:hover:not(:disabled) {
+  background: var(--bg-panel);
+  border-color: var(--border-strong);
+}
+.mn-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.mn-btn-primary {
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* BG accept-all status */
+.mn-bg-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.mn-bg-accept-status {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.mn-bg-accept-idle { color: var(--text-dim); }
+.mn-bg-accept-sending { color: var(--text-warn); }
+.mn-bg-accept-ok { color: #5cd089; }
+.mn-bg-accept-error { color: var(--text-error); }
+
+/* Cropper modal save action */
+.mn-cropper-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0;
+}
+.mn-cropper-save-status {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.mn-cropper-save-idle, .mn-cropper-save-sending { color: var(--text-dim); }
+.mn-cropper-save-saved { color: #5cd089; }
+.mn-cropper-save-error { color: var(--text-error); font-weight: 600; }
+
+/* Storyboard export buttons */
+.mn-export-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.mn-export-status {
+  margin-left: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.mn-export-ok { color: #5cd089; }
+.mn-export-error { color: var(--text-error); }
 
 /* BG tab */
 .mn-bg-grid {

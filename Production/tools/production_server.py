@@ -3608,6 +3608,18 @@ def _write_sidecar_L_json(app: "AppContext", state: dict) -> str | None:
     """
     try:
         sidecar_path = app.event_dir / (app.storyboard_path.stem + ".L.json")
+        # LD-459 UNIVERSAL_AUTOSAVE_V1 — also mirror to sibling storyboards'
+        # sidecars so emergency rollback (v59 -> v58) sees the same fresh data.
+        # Pattern: storyboard_v<N>_prod.html → storyboard_v<N>_prod.L.json.
+        # We mirror to ALL storyboard_v*_prod.html files in the event dir.
+        sibling_sidecars: list[Path] = []
+        try:
+            for hp in app.event_dir.glob("storyboard_v*_prod.html"):
+                sibling = app.event_dir / (hp.stem + ".L.json")
+                if sibling != sidecar_path:
+                    sibling_sidecars.append(sibling)
+        except OSError:
+            sibling_sidecars = []
         # Projection: for each beat in state, expose the fields a hydrating
         # client needs. Keep small — just the authoritative L-relevant fields.
         projection: dict[str, dict] = {}
@@ -3645,6 +3657,14 @@ def _write_sidecar_L_json(app: "AppContext", state: dict) -> str | None:
         with app._storyboard_write_lock:
             # Shared atomic-JSON helper (Windows/Dropbox retry-safe per LD-368).
             atomic_json_write(str(sidecar_path), projection)
+            # LD-459 — mirror to sibling storyboards' sidecars (rollback safety).
+            for sibling in sibling_sidecars:
+                try:
+                    atomic_json_write(str(sibling), projection)
+                except Exception as exc2:  # noqa: BLE001
+                    print(f"[sidecar] WARN sibling write failed for "
+                          f"{sibling.name}: {type(exc2).__name__}: {exc2}",
+                          flush=True)
         return str(sidecar_path)
     except Exception as exc:  # noqa: BLE001
         print(f"[sidecar] write failed: {type(exc).__name__}: {exc}")
@@ -4895,6 +4915,20 @@ class ProductionHandler(BaseHTTPRequestHandler):
             "pinned_event_dir": self.app.event_dir,
             "_handler": '_handle_magic_submit_path',
         }
+        # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — pre-work pin check (S2).
+        # If the event was swapped via /api/event/load between scope-guard
+        # and work start, abort BEFORE any expensive work begins.
+        if not self._check_event_pin(_pin, '_handle_magic_submit_path_pre_work'):
+            return self._send_json(423, {
+                "error": "event_changed_pre_work",
+                "code": "ASYNC_JOB_GENERATION_PIN_V1",
+                "handler": '_handle_magic_submit_path',
+                "hint": (
+                    "Event changed between scope-guard and work start. "
+                    "No work was done; no orphan output. Client should "
+                    "re-hydrate scope and retry."
+                ),
+            })
 
         import threading as _th
         import traceback as _tb
@@ -6089,6 +6123,20 @@ class ProductionHandler(BaseHTTPRequestHandler):
             "pinned_event_dir": self.app.event_dir,
             "_handler": '_handle_bg_submit_gpt_batch',
         }
+        # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — pre-work pin check (S2).
+        # If the event was swapped via /api/event/load between scope-guard
+        # and work start, abort BEFORE any expensive work begins.
+        if not self._check_event_pin(_pin, '_handle_bg_submit_gpt_batch_pre_work'):
+            return self._send_json(423, {
+                "error": "event_changed_pre_work",
+                "code": "ASYNC_JOB_GENERATION_PIN_V1",
+                "handler": '_handle_bg_submit_gpt_batch',
+                "hint": (
+                    "Event changed between scope-guard and work start. "
+                    "No work was done; no orphan output. Client should "
+                    "re-hydrate scope and retry."
+                ),
+            })
 
         import uuid as _uuid
         beat_ids = body.get("beat_ids", [])
@@ -6377,6 +6425,20 @@ class ProductionHandler(BaseHTTPRequestHandler):
             "pinned_event_dir": self.app.event_dir,
             "_handler": '_handle_bg_assemble_group',
         }
+        # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — pre-work pin check (S2).
+        # If the event was swapped via /api/event/load between scope-guard
+        # and work start, abort BEFORE any expensive work begins.
+        if not self._check_event_pin(_pin, '_handle_bg_assemble_group_pre_work'):
+            return self._send_json(423, {
+                "error": "event_changed_pre_work",
+                "code": "ASYNC_JOB_GENERATION_PIN_V1",
+                "handler": '_handle_bg_assemble_group',
+                "hint": (
+                    "Event changed between scope-guard and work start. "
+                    "No work was done; no orphan output. Client should "
+                    "re-hydrate scope and retry."
+                ),
+            })
 
         gid = body.get("group_id", "")
         if not gid:
@@ -6442,6 +6504,20 @@ class ProductionHandler(BaseHTTPRequestHandler):
             "pinned_event_dir": self.app.event_dir,
             "_handler": '_handle_bg_run_local_animation',
         }
+        # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — pre-work pin check (S2).
+        # If the event was swapped via /api/event/load between scope-guard
+        # and work start, abort BEFORE any expensive work begins.
+        if not self._check_event_pin(_pin, '_handle_bg_run_local_animation_pre_work'):
+            return self._send_json(423, {
+                "error": "event_changed_pre_work",
+                "code": "ASYNC_JOB_GENERATION_PIN_V1",
+                "handler": '_handle_bg_run_local_animation',
+                "hint": (
+                    "Event changed between scope-guard and work start. "
+                    "No work was done; no orphan output. Client should "
+                    "re-hydrate scope and retry."
+                ),
+            })
 
         beat_id = body.get("beat_id", "")
         method = body.get("method", "")
@@ -6730,6 +6806,20 @@ class ProductionHandler(BaseHTTPRequestHandler):
             "pinned_event_dir": self.app.event_dir,
             "_handler": '_handle_cr_upload',
         }
+        # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — pre-work pin check (S2).
+        # If the event was swapped via /api/event/load between scope-guard
+        # and work start, abort BEFORE any expensive work begins.
+        if not self._check_event_pin(_pin, '_handle_cr_upload_pre_work'):
+            return self._send_json(423, {
+                "error": "event_changed_pre_work",
+                "code": "ASYNC_JOB_GENERATION_PIN_V1",
+                "handler": '_handle_cr_upload',
+                "hint": (
+                    "Event changed between scope-guard and work start. "
+                    "No work was done; no orphan output. Client should "
+                    "re-hydrate scope and retry."
+                ),
+            })
 
         filename  = body.get("filename", "")
         image_b64 = body.get("image_b64", "")
@@ -7139,6 +7229,20 @@ class ProductionHandler(BaseHTTPRequestHandler):
             "pinned_event_dir": self.app.event_dir,
             "_handler": '_handle_lipsync_submit',
         }
+        # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — pre-work pin check (S2).
+        # If the event was swapped via /api/event/load between scope-guard
+        # and work start, abort BEFORE any expensive work begins.
+        if not self._check_event_pin(_pin, '_handle_lipsync_submit_pre_work'):
+            return self._send_json(423, {
+                "error": "event_changed_pre_work",
+                "code": "ASYNC_JOB_GENERATION_PIN_V1",
+                "handler": '_handle_lipsync_submit',
+                "hint": (
+                    "Event changed between scope-guard and work start. "
+                    "No work was done; no orphan output. Client should "
+                    "re-hydrate scope and retry."
+                ),
+            })
 
         if self.app.client is None:
             return self._send_json(500, {"error": "WaveSpeed client not configured (missing API key)"})
@@ -7492,6 +7596,20 @@ class ProductionHandler(BaseHTTPRequestHandler):
             "pinned_event_dir": self.app.event_dir,
             "_handler": '_handle_lipsync_submit_legacy',
         }
+        # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — pre-work pin check (S2).
+        # If the event was swapped via /api/event/load between scope-guard
+        # and work start, abort BEFORE any expensive work begins.
+        if not self._check_event_pin(_pin, '_handle_lipsync_submit_legacy_pre_work'):
+            return self._send_json(423, {
+                "error": "event_changed_pre_work",
+                "code": "ASYNC_JOB_GENERATION_PIN_V1",
+                "handler": '_handle_lipsync_submit_legacy',
+                "hint": (
+                    "Event changed between scope-guard and work start. "
+                    "No work was done; no orphan output. Client should "
+                    "re-hydrate scope and retry."
+                ),
+            })
 
         if self.app.client is None:
             return self._send_json(500, {"error": "WaveSpeed client not configured (missing API key)"})
@@ -8904,6 +9022,16 @@ body {{padding-top:44px!important;}}
             return old
         old_text = self.app.state.mutate_state(update)
 
+        # LD-459 UNIVERSAL_AUTOSAVE_V1 — regen the sidecar(s) after every
+        # state mutation so v58 emergency rollback sees fresh dialogue via
+        # /api/v2/storyboard/L.json. _write_sidecar_L_json mirrors to all
+        # sibling storyboard_v*_prod.L.json so a server flag-flip remains safe.
+        try:
+            _write_sidecar_L_json(self.app, self.app.state.read_state())
+        except Exception as exc:  # noqa: BLE001
+            print(f"[update_text] WARN sidecar regen failed: "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+
         # Step 3: patch the storyboard HTML L[] entry via the shared helper
         # (Tier 5 refactor, April 17 2026 — decisions 151 + 154 now share one
         # code path, so `assign_image` gets the same hardened write semantics
@@ -9264,6 +9392,20 @@ body {{padding-top:44px!important;}}
             "pinned_event_dir": self.app.event_dir,
             "_handler": '_handle_export',
         }
+        # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — pre-work pin check (S2).
+        # If the event was swapped via /api/event/load between scope-guard
+        # and work start, abort BEFORE any expensive work begins.
+        if not self._check_event_pin(_pin, '_handle_export_pre_work'):
+            return self._send_json(423, {
+                "error": "event_changed_pre_work",
+                "code": "ASYNC_JOB_GENERATION_PIN_V1",
+                "handler": '_handle_export',
+                "hint": (
+                    "Event changed between scope-guard and work start. "
+                    "No work was done; no orphan output. Client should "
+                    "re-hydrate scope and retry."
+                ),
+            })
 
         state = self.app.state.read_state()
         spend = self.app.state.read_spend()
@@ -11026,6 +11168,20 @@ body {{padding-top:44px!important;}}
             "pinned_event_dir": self.app.event_dir,
             "_handler": '_handle_timeline_preview_with_sfx',
         }
+        # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — pre-work pin check (S2).
+        # If the event was swapped via /api/event/load between scope-guard
+        # and work start, abort BEFORE any expensive work begins.
+        if not self._check_event_pin(_pin, '_handle_timeline_preview_with_sfx_pre_work'):
+            return self._send_json(423, {
+                "error": "event_changed_pre_work",
+                "code": "ASYNC_JOB_GENERATION_PIN_V1",
+                "handler": '_handle_timeline_preview_with_sfx',
+                "hint": (
+                    "Event changed between scope-guard and work start. "
+                    "No work was done; no orphan output. Client should "
+                    "re-hydrate scope and retry."
+                ),
+            })
 
         import hashlib as _hl  # noqa: PLC0415
 
@@ -11838,6 +11994,20 @@ body {{padding-top:44px!important;}}
             "pinned_event_dir": self.app.event_dir,
             "_handler": '_handle_stitch_bake',
         }
+        # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — pre-work pin check (S2).
+        # If the event was swapped via /api/event/load between scope-guard
+        # and work start, abort BEFORE any expensive work begins.
+        if not self._check_event_pin(_pin, '_handle_stitch_bake_pre_work'):
+            return self._send_json(423, {
+                "error": "event_changed_pre_work",
+                "code": "ASYNC_JOB_GENERATION_PIN_V1",
+                "handler": '_handle_stitch_bake',
+                "hint": (
+                    "Event changed between scope-guard and work start. "
+                    "No work was done; no orphan output. Client should "
+                    "re-hydrate scope and retry."
+                ),
+            })
 
         import fcntl  # noqa: PLC0415
 
@@ -12013,6 +12183,20 @@ body {{padding-top:44px!important;}}
             "pinned_event_dir": self.app.event_dir,
             "_handler": '_handle_phase_b_regen_audio',
         }
+        # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — pre-work pin check (S2).
+        # If the event was swapped via /api/event/load between scope-guard
+        # and work start, abort BEFORE any expensive work begins.
+        if not self._check_event_pin(_pin, '_handle_phase_b_regen_audio_pre_work'):
+            return self._send_json(423, {
+                "error": "event_changed_pre_work",
+                "code": "ASYNC_JOB_GENERATION_PIN_V1",
+                "handler": '_handle_phase_b_regen_audio',
+                "hint": (
+                    "Event changed between scope-guard and work start. "
+                    "No work was done; no orphan output. Client should "
+                    "re-hydrate scope and retry."
+                ),
+            })
 
         phase = (body.get("phase") or "").strip().lower()
         err = self._phase_check(phase)
@@ -12297,6 +12481,20 @@ body {{padding-top:44px!important;}}
             "pinned_event_dir": self.app.event_dir,
             "_handler": '_handle_phase_b_mix_audio',
         }
+        # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — pre-work pin check (S2).
+        # If the event was swapped via /api/event/load between scope-guard
+        # and work start, abort BEFORE any expensive work begins.
+        if not self._check_event_pin(_pin, '_handle_phase_b_mix_audio_pre_work'):
+            return self._send_json(423, {
+                "error": "event_changed_pre_work",
+                "code": "ASYNC_JOB_GENERATION_PIN_V1",
+                "handler": '_handle_phase_b_mix_audio',
+                "hint": (
+                    "Event changed between scope-guard and work start. "
+                    "No work was done; no orphan output. Client should "
+                    "re-hydrate scope and retry."
+                ),
+            })
 
         phase = (body.get("phase") or "").strip().lower()
         err = self._phase_check(phase)
