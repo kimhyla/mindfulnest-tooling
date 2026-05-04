@@ -437,6 +437,10 @@
   bottom: 6px;
   top: 28px;
   pointer-events: none;
+  /* WaveSurfer v7 renders absolutely-positioned children inside its container
+     that visually overlap our cue markers. Force the overlay above its
+     stacking context so the markers receive clicks. */
+  z-index: 5;
 }
 .mn-waveform-cue-marker {
   position: absolute;
@@ -456,6 +460,55 @@
 .mn-waveform-error {
   margin-top: 4px;
   font-size: 11px;
+  color: #c33;
+}
+
+/* CuePopover — S5.5f / CUE_POPOVER_INSPECTOR_V1 */
+.mn-cue-popover {
+  width: 260px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  padding: 10px 12px;
+  font-size: 12px;
+}
+.mn-cue-popover-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.mn-cue-popover-close {
+  background: transparent;
+  border: 0;
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1;
+}
+.mn-cue-popover-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+}
+.mn-cue-popover-row > span:first-child {
+  flex: 0 0 80px;
+}
+.mn-cue-popover-row select,
+.mn-cue-popover-row input[type='number'] {
+  flex: 1;
+  min-width: 0;
+}
+.mn-cue-popover-row input[type='range'] {
+  flex: 1;
+}
+.mn-cue-popover-footer {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 10px;
+}
+.mn-btn-danger {
   color: #c33;
 }
 .mn-beat-magic-row {

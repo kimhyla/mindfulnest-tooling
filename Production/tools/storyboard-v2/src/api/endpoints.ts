@@ -74,6 +74,11 @@ export const MUTATION_ENDPOINTS = {
   phase_b_mix_audio: `${SERVER_BASE}/api/phase_b/mix_audio`,
   phase_b_lipsync: `${SERVER_BASE}/api/phase_b/lipsync`,
   stitch_save_job: `${SERVER_BASE}/api/stitch_editor/job`,
+  // S5.5f — top-level state writes via the v2 module-patch handler.
+  // Whitelisted fields: see _V2_MODULE_ALLOWED_FIELDS in production_server.py.
+  // Used for phase_X_watercolor_cues_json, phase_X_ambient_preset_id, the
+  // Phase A 3-clip slots, etc. Cursor v8 Beyond #2 — added to MUTATION_ENDPOINTS.
+  v2_module_patch: `${SERVER_BASE}/api/v2/module/patch`,
   // S5.5b new — VideoSelector + partition create
   video_set_active: `${SERVER_BASE}/api/video/set_active`,
   video_create: `${SERVER_BASE}/api/video/create`,

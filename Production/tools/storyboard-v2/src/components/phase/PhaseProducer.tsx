@@ -17,6 +17,8 @@ import { apiGet, pathappPatch } from '../../api/client';
 import { activeScope } from '../../state/scope';
 import { SERVER_BASE } from '../../api/endpoints';
 import { WaveformTimeline, type WatercolorCue } from './WaveformTimeline';
+import { CuePopover } from './CuePopover';
+import { setDragData, type DragPayload } from '../../utils/dragdrop';
 
 interface WatercolorItem {
   key: string;
@@ -115,6 +117,8 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [selectedBaseClip, setSelectedBaseClip] = useState<string>('');
+  const [activeCueId, setActiveCueId] = useState<string | null>(null);
+  const [popoverAnchor, setPopoverAnchor] = useState<{ x: number; y: number } | null>(null);
 
   const refreshAll = async () => {
     const [wc, bc, st] = await Promise.all([
@@ -251,8 +255,76 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     window.open(url.toString(), '_blank');
   };
 
+  // ── Watercolor cue authoring (Phase C) ──────────────────────────────────
+  // All cue mutations write the FULL phase_X_watercolor_cues_json array via
+  // v2_module_patch (whitelisted field; server-side _V2_MODULE_FIELD_VALIDATORS
+  // checks shape). Optimistic UI: setStateSlice locally then refresh on success.
+  const cueField = `phase_${phase}_watercolor_cues_json`;
+
+  const persistCues = async (next: WatercolorCue[]) => {
+    setStateSlice((s) => ({ ...s, watercolor_cues: next }));
+    const res = await pathappPatch(activeScope.value, 'v2_module_patch', {
+      field: cueField,
+      value: next,
+    });
+    if (!res.ok) {
+      setStatusMsg(`✗ cue patch HTTP ${res.status}: ${res.error ?? ''}`);
+    }
+  };
+
+  const onWatercolorDrop = (lib_key: string, offset_ms: number) => {
+    const newCue: WatercolorCue = {
+      id: `cue_${Math.random().toString(36).slice(2, 10)}`,
+      watercolor_key: lib_key,
+      offset_ms,
+      duration_ms: 3000,
+      animation_type: 'fade_in',
+      volume: 1.0,
+    };
+    const next = [...(stateSlice.watercolor_cues ?? []), newCue];
+    void persistCues(next);
+  };
+
+  const onCueClick = (cueId: string, anchor: { x: number; y: number }) => {
+    setActiveCueId(cueId);
+    setPopoverAnchor(anchor);
+  };
+
+  const onCuePatch = (updated: WatercolorCue) => {
+    const next = (stateSlice.watercolor_cues ?? []).map((c) =>
+      c.id === updated.id ? updated : c,
+    );
+    void persistCues(next);
+  };
+
+  const onCueDelete = () => {
+    if (!activeCueId) return;
+    const next = (stateSlice.watercolor_cues ?? []).filter((c) => c.id !== activeCueId);
+    setActiveCueId(null);
+    setPopoverAnchor(null);
+    void persistCues(next);
+  };
+
+  const onCuePopoverClose = () => {
+    setActiveCueId(null);
+    setPopoverAnchor(null);
+  };
+
+  const onWatercolorDragStart = (e: DragEvent, key: string) => {
+    const payload: DragPayload = {
+      kind: 'lib-watercolor',
+      lib_key: key,
+      animation_type: 'fade_in',
+    };
+    setDragData(e, payload);
+  };
+
   const audioFile = priorityAudioFile(stateSlice);
   const lipsyncFile = stateSlice.lipsync_file ?? null;
+  const activeCue =
+    activeCueId
+      ? (stateSlice.watercolor_cues ?? []).find((c) => c.id === activeCueId) ?? null
+      : null;
 
   return (
     <details
@@ -304,7 +376,18 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           sourceLabel={audioFile?.label ?? null}
           sourceFilename={audioFile?.name ?? null}
           cues={stateSlice.watercolor_cues ?? []}
+          onCueClick={onCueClick}
+          onWatercolorDrop={onWatercolorDrop}
         />
+        {activeCue && popoverAnchor ? (
+          <CuePopover
+            cue={activeCue}
+            anchor={popoverAnchor}
+            onPatch={onCuePatch}
+            onDelete={onCueDelete}
+            onClose={onCuePopoverClose}
+          />
+        ) : null}
 
         {/* Lipsync video player */}
         {lipsyncFile ? (
@@ -383,7 +466,13 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           <strong>Watercolors ({watercolors.length}):</strong>
           <div class="mn-phase-watercolor-grid">
             {watercolors.map((wc) => (
-              <div class="mn-phase-watercolor-tile" key={wc.key}>
+              <div
+                class="mn-phase-watercolor-tile"
+                key={wc.key}
+                data-testid={`phase-${phase}-watercolor-tile-${wc.key}`}
+                draggable
+                onDragStart={(e: DragEvent) => onWatercolorDragStart(e, wc.key)}
+              >
                 <img
                   src={wc.thumb_url}
                   alt={wc.filename}

@@ -16,6 +16,7 @@
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 import WaveSurfer from 'wavesurfer.js';
+import { makeDropTarget, type DragPayload } from '../../utils/dragdrop';
 
 export interface WatercolorCue {
   id: string;
@@ -31,9 +32,11 @@ export interface WaveformTimelineProps {
   sourceLabel: 'lipsync' | 'mixed' | 'stem' | null;
   sourceFilename?: string | null;
   cues: ReadonlyArray<WatercolorCue>;
-  onCueClick?: (cueId: string) => void;
+  onCueClick?: (cueId: string, anchor: { x: number; y: number }) => void;
   onWaveformClick?: (timeMs: number) => void;
   onReady?: (durationMs: number) => void;
+  /** Phase C — drop watercolor tile to create a cue at offset_ms = dropX/width × duration. */
+  onWatercolorDrop?: (lib_key: string, offset_ms: number) => void;
 }
 
 export function WaveformTimeline(props: WaveformTimelineProps) {
@@ -45,9 +48,11 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     onCueClick,
     onWaveformClick,
     onReady,
+    onWatercolorDrop,
   } = props;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
   const wsRef = useRef<WaveSurfer | null>(null);
   const [durationMs, setDurationMs] = useState<number | null>(null);
   const [currentMs, setCurrentMs] = useState<number>(0);
@@ -118,6 +123,23 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     return Math.max(0, Math.min(100, (cue.offset_ms / durationMs) * 100));
   };
 
+  // Drop target — `kind: 'lib-watercolor'` payloads land here and become cues.
+  // The drop X position relative to the wrapper element determines offset_ms.
+  const dropHandlers = makeDropTarget(
+    (payload: DragPayload, e: DragEvent) => {
+      if (payload.kind !== 'lib-watercolor') return;
+      if (!durationMs || durationMs <= 0) return;
+      const wrapper = wrapperRef.current;
+      if (!wrapper) return;
+      const box = wrapper.getBoundingClientRect();
+      const relativeX = (e.clientX - box.left) / box.width;
+      const clamped = Math.max(0, Math.min(1, relativeX));
+      const offsetMs = Math.round(clamped * durationMs);
+      onWatercolorDrop?.(payload.lib_key, offsetMs);
+    },
+    (payload) => payload.kind === 'lib-watercolor',
+  );
+
   if (!audioSrc) {
     return (
       <div
@@ -133,13 +155,17 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
 
   return (
     <div
-      class="mn-waveform-timeline"
+      ref={wrapperRef}
+      class="mn-waveform-timeline mn-drop-target"
       data-testid="waveform-timeline"
       data-audio-src={audioSrc}
       data-source-label={sourceLabel ?? ''}
       data-loaded-duration-ms={durationMs ?? ''}
       data-current-time-ms={Math.round(currentMs)}
       data-cue-count={cues.length}
+      onDragOver={dropHandlers.onDragOver}
+      onDragLeave={dropHandlers.onDragLeave}
+      onDrop={dropHandlers.onDrop}
     >
       <div class="mn-waveform-source-label">
         <strong>Audio ({sourceLabel ?? '—'}):</strong>{' '}
@@ -154,7 +180,9 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
             data-offset-ms={cue.offset_ms}
             class="mn-waveform-cue-marker"
             style={{ left: `${cuePctLeft(cue)}%` }}
-            onClick={() => onCueClick?.(cue.id)}
+            onClick={(e: MouseEvent) =>
+              onCueClick?.(cue.id, { x: e.clientX, y: e.clientY })
+            }
             title={`${cue.watercolor_key} @ ${(cue.offset_ms / 1000).toFixed(1)}s`}
           />
         ))}

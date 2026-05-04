@@ -15,7 +15,7 @@
 //   Phase E: F14, F15 — Voice stem + ambient preset
 //   Phase F: F1, F2, F16, F17, F18 — verification (F17 = grep gate; F18 = full suite green)
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page, type Request } from '@playwright/test';
 
 const FIXTURE_EVENT = 'Event_e2e_fixture';
 
@@ -242,5 +242,270 @@ test.describe('F6 — Cue marker render at correct horizontal position', () => {
     expect(Math.abs(markerLeftRelative - expectedLeft)).toBeLessThan(
       containerBox!.width * 0.1,
     );
+  });
+});
+
+// ----------------------------------------------------------------------------
+// Phase C — CuePopover + drag-drop (F7-F9)
+//
+// These tests cover the cue authoring loop:
+//   F7 — drag a watercolor tile onto the timeline → cue created with
+//        offset_ms derived from drop X / container width × duration
+//   F8 — click cue marker → CuePopover opens; change duration → fires
+//        pathappPatch v2_module_patch with the updated cues array
+//   F9 — Delete inside CuePopover with Modal-confirm (Cursor v8 Q8) removes
+//        the cue. Shift+click on Delete skips confirm (power-user path).
+// ----------------------------------------------------------------------------
+
+/**
+ * Mock the v2_module_patch endpoint to acknowledge writes without exercising
+ * the server-side _V2_MODULE_FIELD_VALIDATORS — keeps tests focused on the
+ * client request shape, not server validation (which is covered by Phase 6.5
+ * boundary probes in production).
+ */
+async function mockModulePatch(page: Page): Promise<void> {
+  await page.route('**/api/v2/module/patch', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ok: true }),
+    });
+  });
+  // Snapshot endpoint fires before every pathappPatch — mock so it doesn't 500.
+  await page.route('**/api/state/snapshot', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ok: true }),
+    });
+  });
+}
+
+/**
+ * Mock /api/phase/watercolor_list with one tile so PhaseProducer renders a
+ * draggable watercolor source. The keys / shape here mirror what the real
+ * server returns to satisfy WatercolorListResponse in PhaseProducer.tsx.
+ */
+async function mockWatercolorList(page: Page): Promise<void> {
+  await page.route('**/api/phase/watercolor_list**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        items: [
+          {
+            key: 'wc_test',
+            filename: 'wc_test.png',
+            ext: 'png',
+            kind: 'static',
+            thumb_url: '',
+            mtime: 1714800000,
+            size_bytes: 1024,
+          },
+        ],
+        count: 1,
+      }),
+    });
+  });
+}
+
+test.describe('F7 — Drag watercolor onto timeline → cue created', () => {
+  test('F7 — drop on waveform fires v2_module_patch with phase_b_watercolor_cues_json + new cue', async ({ page }) => {
+    await mockAudioFiles(page, 30);
+    await mockModulePatch(page);
+    await mockWatercolorList(page);
+    await mockPhaseState(page, {
+      phase_b_lipsync_file: 'fix_lipsync.mp4',
+      phase_b_watercolor_cues_json: [], // start empty
+    });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const waveform = page.locator('[data-testid="waveform-timeline"]');
+    await expect(waveform).toBeVisible();
+    await expect.poll(async () => {
+      const v = await waveform.getAttribute('data-loaded-duration-ms');
+      return v ? Number(v) : 0;
+    }, { timeout: 15_000 }).toBeGreaterThan(0);
+
+    const tile = page.locator('[data-testid="phase-b-watercolor-tile-wc_test"]');
+    await expect(tile).toBeVisible();
+
+    const patches: Request[] = [];
+    page.on('request', (req) => {
+      if (req.url().includes('/api/v2/module/patch')) patches.push(req);
+    });
+
+    // dragTo synthesizes drag start → drop. Position the drop at the
+    // 50% horizontal mark inside the waveform container.
+    const wfBox = await waveform.boundingBox();
+    expect(wfBox).not.toBeNull();
+    await tile.dragTo(waveform, {
+      targetPosition: { x: wfBox!.width / 2, y: wfBox!.height / 2 },
+    });
+
+    await expect.poll(() => patches.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
+    const body = patches[0]!.postDataJSON() as Record<string, unknown>;
+    expect(body['field']).toBe('phase_b_watercolor_cues_json');
+    const value = body['value'] as Array<Record<string, unknown>>;
+    expect(Array.isArray(value)).toBe(true);
+    expect(value.length).toBe(1);
+    const cue = value[0]!;
+    expect(cue['watercolor_key']).toBe('wc_test');
+    expect(cue['animation_type']).toBe('fade_in');
+    expect(cue['duration_ms']).toBe(3000);
+    // offset_ms ≈ 50% of 30s ≈ 15000 ms; allow ±20% slack for click coordinates.
+    const offsetMs = Number(cue['offset_ms']);
+    expect(offsetMs).toBeGreaterThan(10_000);
+    expect(offsetMs).toBeLessThan(20_000);
+  });
+});
+
+test.describe('F8 — Click cue marker → CuePopover edit', () => {
+  test('F8 — click marker opens popover; changing duration fires v2_module_patch with updated cue', async ({ page }) => {
+    await mockAudioFiles(page, 30);
+    await mockModulePatch(page);
+    await mockWatercolorList(page);
+    await mockPhaseState(page, {
+      phase_b_lipsync_file: 'fix_lipsync.mp4',
+      phase_b_watercolor_cues_json: [
+        {
+          id: 'cue_existing',
+          watercolor_key: 'wc_test',
+          offset_ms: 8000,
+          duration_ms: 3000,
+          animation_type: 'fade_in',
+          volume: 1.0,
+        },
+      ],
+    });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const waveform = page.locator('[data-testid="waveform-timeline"]');
+    await expect.poll(async () => {
+      const v = await waveform.getAttribute('data-loaded-duration-ms');
+      return v ? Number(v) : 0;
+    }, { timeout: 15_000 }).toBeGreaterThan(0);
+
+    await page.locator('[data-testid="cue-marker-cue_existing"]').click();
+    const popover = page.locator('[data-testid="cue-popover"]');
+    await expect(popover).toBeVisible();
+
+    const patches: Request[] = [];
+    page.on('request', (req) => {
+      if (req.url().includes('/api/v2/module/patch')) patches.push(req);
+    });
+
+    const durationInput = popover.locator('[data-testid="cue-popover-duration"]');
+    await durationInput.fill('5000');
+    await durationInput.blur();
+
+    await expect.poll(() => patches.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
+    const body = patches[0]!.postDataJSON() as Record<string, unknown>;
+    expect(body['field']).toBe('phase_b_watercolor_cues_json');
+    const value = body['value'] as Array<Record<string, unknown>>;
+    expect(value.length).toBe(1);
+    expect(value[0]!['id']).toBe('cue_existing');
+    expect(value[0]!['duration_ms']).toBe(5000);
+  });
+});
+
+test.describe('F9 — CuePopover Delete with Modal-confirm', () => {
+  test('F9.1 — Delete prompts modal-confirm; confirming removes cue', async ({ page }) => {
+    await mockAudioFiles(page, 30);
+    await mockModulePatch(page);
+    await mockWatercolorList(page);
+    await mockPhaseState(page, {
+      phase_b_lipsync_file: 'fix_lipsync.mp4',
+      phase_b_watercolor_cues_json: [
+        {
+          id: 'cue_doomed',
+          watercolor_key: 'wc_test',
+          offset_ms: 12000,
+          duration_ms: 3000,
+          animation_type: 'fade_in',
+          volume: 1.0,
+        },
+      ],
+    });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const waveform = page.locator('[data-testid="waveform-timeline"]');
+    await expect.poll(async () => {
+      const v = await waveform.getAttribute('data-loaded-duration-ms');
+      return v ? Number(v) : 0;
+    }, { timeout: 15_000 }).toBeGreaterThan(0);
+
+    await page.locator('[data-testid="cue-marker-cue_doomed"]').click();
+    const popover = page.locator('[data-testid="cue-popover"]');
+    await expect(popover).toBeVisible();
+
+    // Click Delete (no shift) → confirmation modal appears (Cursor v8 Q8).
+    await popover.locator('[data-testid="cue-popover-delete"]').click();
+    const confirmModal = page.locator('[data-testid="modal-cue-delete"]');
+    await expect(confirmModal).toBeVisible();
+
+    const patches: Request[] = [];
+    page.on('request', (req) => {
+      if (req.url().includes('/api/v2/module/patch')) patches.push(req);
+    });
+
+    await confirmModal.locator('[data-testid="cue-delete-confirm"]').click();
+
+    await expect.poll(() => patches.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
+    const body = patches[0]!.postDataJSON() as Record<string, unknown>;
+    expect(body['field']).toBe('phase_b_watercolor_cues_json');
+    const value = body['value'] as Array<Record<string, unknown>>;
+    // After delete, the cues array is empty.
+    expect(value.length).toBe(0);
+  });
+
+  test('F9.2 — Shift+click on Delete skips confirm (power-user path)', async ({ page }) => {
+    await mockAudioFiles(page, 30);
+    await mockModulePatch(page);
+    await mockWatercolorList(page);
+    await mockPhaseState(page, {
+      phase_b_lipsync_file: 'fix_lipsync.mp4',
+      phase_b_watercolor_cues_json: [
+        {
+          id: 'cue_skipconfirm',
+          watercolor_key: 'wc_test',
+          offset_ms: 12000,
+          duration_ms: 3000,
+          animation_type: 'fade_in',
+          volume: 1.0,
+        },
+      ],
+    });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const waveform = page.locator('[data-testid="waveform-timeline"]');
+    await expect.poll(async () => {
+      const v = await waveform.getAttribute('data-loaded-duration-ms');
+      return v ? Number(v) : 0;
+    }, { timeout: 15_000 }).toBeGreaterThan(0);
+
+    await page.locator('[data-testid="cue-marker-cue_skipconfirm"]').click();
+    const popover = page.locator('[data-testid="cue-popover"]');
+    await expect(popover).toBeVisible();
+
+    const patches: Request[] = [];
+    page.on('request', (req) => {
+      if (req.url().includes('/api/v2/module/patch')) patches.push(req);
+    });
+
+    // Shift+click → no modal, mutation fires immediately.
+    await popover.locator('[data-testid="cue-popover-delete"]').click({ modifiers: ['Shift'] });
+
+    await expect.poll(() => patches.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
+    const body = patches[0]!.postDataJSON() as Record<string, unknown>;
+    const value = body['value'] as Array<Record<string, unknown>>;
+    expect(value.length).toBe(0);
+    // Confirmation modal should NOT have appeared.
+    await expect(page.locator('[data-testid="modal-cue-delete"]')).toHaveCount(0);
   });
 });
