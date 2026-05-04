@@ -8535,13 +8535,17 @@ class ProductionHandler(BaseHTTPRequestHandler):
         production_root = self.app.event_dir.parent
         rows: list[dict] = []
         for m in modules or []:
-            event_dirs = sorted(
-                p for p in production_root.iterdir()
-                if p.is_dir() and p.name.startswith("Event_") and "_" not in p.name[len("Event_"):]
-            )
-            # Take the first event dir (Event_1) as the canonical for now;
-            # multi-event would map M-number → event in S4.
-            edir = event_dirs[0] if event_dirs else None
+            # S5.5g — PRODUCTION_MAP_MULTI_EVENT_MAPPING_V1 (SOFT) per spec
+            # §3.6 + audit doc §6. Convention-based mapping: m_number=N →
+            # Event_N. Falls back to None if the directory doesn't exist on
+            # disk (so the row still renders, just without segment artifacts).
+            # Avoids the prior bug where every module reported Event_1.
+            m_num = m.get("m_number")
+            edir: Path | None = None
+            if m_num is not None:
+                candidate = production_root / f"Event_{m_num}"
+                if candidate.is_dir():
+                    edir = candidate
             segments: dict[str, dict] = {}
             if edir:
                 # Best-effort: file-based status.
