@@ -128,7 +128,7 @@ test.describe('R2 — drag-drop wiring', () => {
     // Need a BG beat to have at least one option slot. globalSetup fixture has
     // empty BG sidecar; click "Add empty beat" to materialize one.
     await page.locator('[data-testid="bg-add-empty-btn"]').click();
-    const dropTarget = page.locator('[data-testid="bg-beat-option-slot-0-0"]');
+    const dropTarget = page.locator('[data-testid="bg-option-0-0"]');
     // Capture POST to bg_accept_lib_image.
     const apReqs: Request[] = [];
     page.on('request', (req) => {
@@ -153,7 +153,7 @@ test.describe('R2 — drag-drop wiring', () => {
     const firstLibItem = page.locator('[data-testid^="library-item-"]').first();
     await expect(firstLibItem).toBeVisible();
     await page.locator('[data-testid="bg-add-empty-btn"]').click();
-    const charRefDrop = page.locator('[data-testid="bg-beat-char-ref-0"]');
+    const charRefDrop = page.locator('[data-testid="bg-char-ref-0"]');
     const updateReqs: Request[] = [];
     page.on('request', (req) => {
       if (req.url().includes('bg_update_beat') || req.url().includes('bg_set_char_ref')) {
@@ -187,7 +187,7 @@ test.describe('R2 — drag-drop wiring', () => {
     await gotoApp(page);
     await page.click('[data-testid="tab-bg"]');
     await page.locator('[data-testid="bg-add-empty-btn"]').click();
-    const dropTarget = page.locator('[data-testid="bg-beat-option-slot-0-0"]');
+    const dropTarget = page.locator('[data-testid="bg-option-0-0"]');
     await expect(dropTarget).toBeVisible();
     // Synthesize dragenter / dragleave via DOM events (Playwright doesn't expose dragenter alone).
     const hasClassAfterEnter = await dropTarget.evaluate((el: Element) => {
@@ -251,7 +251,7 @@ test.describe('R3 — option_key gate', () => {
     await gotoApp(page);
     await page.click('[data-testid="tab-bg"]');
     // The radio for option index 0 of beat index 0 in BgTab.
-    const radio = page.locator('[data-testid="bg-beat-option-radio-0-0"]');
+    const radio = page.locator('[data-testid="bg-option-radio-0-0"]');
     await expect(radio).toBeVisible();
     await expect(radio).not.toBeDisabled();
     await radio.click();
@@ -296,7 +296,7 @@ test.describe('R3 — option_key gate', () => {
     });
     await gotoApp(page);
     await page.click('[data-testid="tab-bg"]');
-    const radio = page.locator('[data-testid="bg-beat-option-radio-0-0"]');
+    const radio = page.locator('[data-testid="bg-option-radio-0-0"]');
     await expect(radio).toBeVisible();
     // After fix: radio is disabled when option.key is falsy.
     await expect(radio).toBeDisabled();
