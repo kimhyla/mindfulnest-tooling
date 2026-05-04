@@ -429,3 +429,113 @@ test.describe('G6 — Module-level cue drop on timeline writes to module_sfx_cue
     expect(typeof body['offset_ms']).toBe('number');
   });
 });
+
+// ============================================================================
+// Phase C — Per-boundary transitions (G7-G8) — STITCHER_TRANSITIONS_V1 (HARD)
+//
+// Per spec §3.3 + Q1 LOCKED 2026-05-04:
+//   transition shape = { after_slot, kind: 'crossfade'|'cut'|'dissolve',
+//                        fade_ms, audio_xfade_ms, source_path? }
+//   Server defaults kind='crossfade' if absent; audio_xfade_ms = fade_ms if absent.
+//   audio_xfade_ms = 0 → pure visual fadeblack with hard audio cut.
+//   audio_xfade_ms > 0 → both visual + audio dissolve.
+// ============================================================================
+
+test.describe('G7 — Transition selectors render between adjacent slot pairs', () => {
+  test('G7 — 3 transition selectors render (after_slot=0, 1, 2) between 4 slots', async ({ page }) => {
+    await mockStitcherJob(page);
+    await mockSnapshot(page);
+    await mockStitchSaveJob(page);
+    await mockSfxLibrary(page);
+
+    await gotoApp(page);
+    await openStitcher(page);
+
+    // 3 boundaries between 4 slots: intro→phase_a (after_slot=0),
+    // phase_a→phase_b (1), phase_b→resolution (2).
+    await expect(page.locator('[data-testid="stitcher-transition-after-0"]')).toBeVisible();
+    await expect(page.locator('[data-testid="stitcher-transition-after-1"]')).toBeVisible();
+    await expect(page.locator('[data-testid="stitcher-transition-after-2"]')).toBeVisible();
+
+    // Each selector exposes kind dropdown.
+    await expect(page.locator('[data-testid="stitcher-transition-kind-after-0"]')).toBeVisible();
+    await expect(page.locator('[data-testid="stitcher-transition-kind-after-1"]')).toBeVisible();
+    await expect(page.locator('[data-testid="stitcher-transition-kind-after-2"]')).toBeVisible();
+  });
+});
+
+test.describe('G8 — Transition kind change saves via stitch_save_job', () => {
+  test('G8 — selecting dissolve at boundary 0 saves transitions[].kind=dissolve + audio_xfade_ms', async ({ page }) => {
+    await mockStitcherJob(page);
+    await mockSnapshot(page);
+    await mockStitchSaveJob(page);
+    await mockSfxLibrary(page);
+
+    const saveJobReqs: Request[] = [];
+    page.on('request', (req) => {
+      if (req.url().endsWith('/api/stitch_editor/job') && req.method() === 'POST') {
+        saveJobReqs.push(req);
+      }
+    });
+
+    await gotoApp(page);
+    await openStitcher(page);
+
+    // Boundary 0 (intro→phase_a): change kind to 'dissolve'.
+    const kindSelect = page.locator('[data-testid="stitcher-transition-kind-after-0"]');
+    await expect(kindSelect).toBeVisible();
+    await kindSelect.selectOption('dissolve');
+
+    await expect.poll(() => saveJobReqs.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
+    const body = saveJobReqs[saveJobReqs.length - 1]!.postDataJSON() as Record<string, unknown>;
+
+    // Auto-injected scope keys.
+    expect(body['event_id']).toBeDefined();
+    expect(body['scope_event_id']).toBeDefined();
+    expect(typeof body['scope_version']).toBe('number');
+
+    // transitions array contains a new entry for after_slot=0 with kind=dissolve.
+    const transitions = body['transitions'] as Array<Record<string, unknown>>;
+    expect(Array.isArray(transitions)).toBe(true);
+    const t0 = transitions.find((t) => Number(t['after_slot']) === 0);
+    expect(t0).toBeDefined();
+    expect(t0!['kind']).toBe('dissolve');
+    // fade_ms + audio_xfade_ms both numeric (server default audio_xfade_ms=fade_ms).
+    expect(typeof t0!['fade_ms']).toBe('number');
+    expect(typeof t0!['audio_xfade_ms']).toBe('number');
+  });
+
+  test('G8.2 — changing audio_xfade_ms input updates transitions[].audio_xfade_ms', async ({ page }) => {
+    // Pre-seed boundary 0 with kind=dissolve so the audio_xfade_ms field renders.
+    const seededTransitions: Array<Record<string, unknown>> = [
+      { after_slot: 0, kind: 'dissolve', fade_ms: 500, audio_xfade_ms: 500, source_path: '' },
+    ];
+    await mockStitcherJob(page, { transitions: seededTransitions });
+    await mockSnapshot(page);
+    await mockStitchSaveJob(page);
+    await mockSfxLibrary(page);
+
+    const saveJobReqs: Request[] = [];
+    page.on('request', (req) => {
+      if (req.url().endsWith('/api/stitch_editor/job') && req.method() === 'POST') {
+        saveJobReqs.push(req);
+      }
+    });
+
+    await gotoApp(page);
+    await openStitcher(page);
+
+    const audioInput = page.locator('[data-testid="stitcher-transition-audio-xfade-after-0"]');
+    await expect(audioInput).toBeVisible();
+    await audioInput.fill('0');
+    await audioInput.blur();
+
+    await expect.poll(() => saveJobReqs.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
+    const body = saveJobReqs[saveJobReqs.length - 1]!.postDataJSON() as Record<string, unknown>;
+    const transitions = body['transitions'] as Array<Record<string, unknown>>;
+    const t0 = transitions.find((t) => Number(t['after_slot']) === 0);
+    expect(t0).toBeDefined();
+    expect(Number(t0!['audio_xfade_ms'])).toBe(0);
+    expect(t0!['kind']).toBe('dissolve');
+  });
+});
