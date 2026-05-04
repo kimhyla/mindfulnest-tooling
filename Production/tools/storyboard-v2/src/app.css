@@ -348,15 +348,31 @@
   gap: 8px;
   margin-top: 6px;
 }
+/* LD-203 WATERCOLOR_TILE_FRAMING_V1: brown border + cream mat + white interior + centered art.
+   Applied to library tiles (PhaseProducer + future LibraryPanel parity).
+   Frame nesting: outer brown border → cream mat (padding) → white interior wrapping the centered art. */
 .mn-phase-watercolor-tile {
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
+  /* Brown border. */
+  border: 2px solid #6b4f2a;
+  /* Cream mat. */
+  background: #f5e9c8;
   border-radius: 3px;
+  /* The cream mat is the padding zone. */
   padding: 6px;
   display: flex;
   flex-direction: column;
   gap: 4px;
   align-items: stretch;
+}
+/* White interior — wraps the thumb so the cream mat shows around the white. */
+.mn-phase-watercolor-tile .mn-phase-watercolor-thumb-wrap {
+  background: #ffffff;
+  border-radius: 2px;
+  /* Centered art. */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px;
 }
 .mn-phase-watercolor-thumb {
   width: 100%;

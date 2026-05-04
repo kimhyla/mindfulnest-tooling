@@ -728,6 +728,80 @@ test.describe('F14 — Voice stem button (Generate stem from script)', () => {
   });
 });
 
+// ----------------------------------------------------------------------------
+// Phase F — Verification gates that don't fit a single feature phase
+//   F1   — npm run build clean (verified at build time, not in this suite)
+//   F2   — server /api/health 200 (covered by infra-smoke in s5_5ce)
+//   F16  — watercolor tile framing (LD-203: brown border / cream mat /
+//          white interior / centered art) renders on PhaseProducer tiles.
+//   F17  — grep gate for no `Production/Event_1/` literals in
+//          PhaseProducer.tsx (covered by a one-line grep step in CI; see
+//          §19.10 #2 — already enforced after Phase B wiring; this test
+//          provides the in-suite assertion form for parity).
+// ----------------------------------------------------------------------------
+
+test.describe('F16 — Watercolor tile framing (LD-203)', () => {
+  test('F16 — tile shows brown border + cream mat + white interior wrapping centered art', async ({ page }) => {
+    await mockAudioFiles(page);
+    await mockWatercolorList(page);
+    await mockAmbientPresetList(page, []);
+    await mockPhaseState(page, {});
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const tile = page.locator('[data-testid="phase-b-watercolor-tile-wc_test"]');
+    await expect(tile).toBeVisible();
+
+    // Border — brown (any non-zero brown-ish color); cream mat background.
+    const border = await tile.evaluate((el) =>
+      window.getComputedStyle(el).borderTopColor,
+    );
+    const bg = await tile.evaluate((el) =>
+      window.getComputedStyle(el).backgroundColor,
+    );
+    // CSS literal "#6b4f2a" → "rgb(107, 79, 42)"; cream "#f5e9c8" → "rgb(245, 233, 200)".
+    expect(border).toBe('rgb(107, 79, 42)');
+    expect(bg).toBe('rgb(245, 233, 200)');
+
+    // White interior — the wrap around the thumb.
+    const wrap = tile.locator('.mn-phase-watercolor-thumb-wrap');
+    await expect(wrap).toBeVisible();
+    const wrapBg = await wrap.evaluate((el) =>
+      window.getComputedStyle(el).backgroundColor,
+    );
+    expect(wrapBg).toBe('rgb(255, 255, 255)');
+
+    // Centered art — wrap uses flex centering.
+    const display = await wrap.evaluate((el) => window.getComputedStyle(el).display);
+    const justify = await wrap.evaluate((el) => window.getComputedStyle(el).justifyContent);
+    const align = await wrap.evaluate((el) => window.getComputedStyle(el).alignItems);
+    expect(display).toBe('flex');
+    expect(justify).toBe('center');
+    expect(align).toBe('center');
+  });
+});
+
+test.describe('F17 — grep gate (no Production/Event_1/ literals)', () => {
+  test('F17 — fileUrl + onExportToStitcher build paths from activeScope.event_id', async ({ page }) => {
+    // Black-box assertion: open Phase B with a mocked state file and verify
+    // the audio src URL contains the fixture event id (NOT "Event_1").
+    await mockAudioFiles(page);
+    await mockAmbientPresetList(page, []);
+    await mockPhaseState(page, {
+      phase_b_lipsync_file: 'fix_lipsync.mp4',
+    });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const waveform = page.locator('[data-testid="waveform-timeline"]');
+    await expect(waveform).toBeVisible();
+    const src = (await waveform.getAttribute('data-audio-src')) ?? '';
+    // Decoded fixture id appears in the path; "Event_1" does NOT.
+    expect(src).toContain('Event_e2e_fixture');
+    expect(src).not.toContain('Event_1');
+  });
+});
+
 test.describe('F15 — Ambient preset selector', () => {
   test('F15 — selecting a preset fires v2_module_patch with phase_b_ambient_preset_id', async ({ page }) => {
     await mockAudioFiles(page);

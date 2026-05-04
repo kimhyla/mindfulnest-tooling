@@ -3,13 +3,17 @@ name: Playwright e2e
 # Storyboard v59 client e2e gate — proper-fix Phase 1.3 (spec §19.2 single-location).
 # LDs: MANDATORY_E2E_GATE_V1 (CRITICAL), CI_PLAYWRIGHT_ON_COMMIT_V1 (HIGH).
 #
-# Per-session inclusion: this workflow currently runs ONLY
-# `Production/tools/storyboard-v2/e2e/s5_5ce_proper_fix.spec.ts`. Future sessions
-# that ship new e2e specs add their target file to the `npx playwright test ...`
-# step below. The existing scaffold (smoke / behavioral-parity / rollback /
-# touchpoint-a) requires fuller fixture data (Event_1-shape sidecars) and is
-# out of scope for this proper-fix session — they continue to run manually
-# against Kim's Dropbox tree.
+# Per-session inclusion: this workflow runs the proper-fix protection suite
+# AND each downstream session's smoke spec. Currently includes:
+#   - `Production/tools/storyboard-v2/e2e/s5_5ce_proper_fix.spec.ts` (13 tests
+#     — protects the 5 R-bugs from PR #1 + +NewEvent flow)
+#   - `Production/tools/storyboard-v2/e2e/s5_5f_smoke.spec.ts` (18 tests —
+#     S5.5f F3-F17 distributed across Phase B-F per spec §19.2/§19.6)
+# Future sessions APPEND their target file to the `npx playwright test ...`
+# step below — never replace, never glob (a glob would silently include the
+# deferred existing scaffold which requires fuller fixture data).
+# The existing scaffold (smoke / behavioral-parity / rollback / touchpoint-a)
+# continues to run manually against Kim's Dropbox tree.
 
 on:
   push:
@@ -82,11 +86,13 @@ jobs:
         working-directory: Production/tools/storyboard-v2
         run: npx playwright install --with-deps chromium
 
-      - name: Run Playwright e2e (proper-fix scope)
+      - name: Run Playwright e2e (proper-fix + S5.5f scope)
         working-directory: Production/tools/storyboard-v2
-        # Per spec §19 scope decision: only s5_5ce.spec.ts runs in CI.
-        # Convention §8.9 says future sessions add their files to this list.
-        run: npx playwright test e2e/s5_5ce_proper_fix.spec.ts --reporter=line
+        # Per spec §19.2 / §19.6 — APPEND, not replace, not glob. Each session
+        # adds its own smoke spec alongside existing files; a glob would
+        # silently include the deferred scaffold (smoke/behavioral/rollback/
+        # touchpoint-a) which requires fuller fixture data.
+        run: npx playwright test e2e/s5_5ce_proper_fix.spec.ts e2e/s5_5f_smoke.spec.ts --reporter=line
 
       - name: Upload test artifacts on failure
         if: failure()

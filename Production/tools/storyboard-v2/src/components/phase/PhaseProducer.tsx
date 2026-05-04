@@ -674,12 +674,15 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                 draggable
                 onDragStart={(e: DragEvent) => onWatercolorDragStart(e, wc.key)}
               >
-                <img
-                  src={wc.thumb_url}
-                  alt={wc.filename}
-                  class="mn-phase-watercolor-thumb"
-                  loading="lazy"
-                />
+                {/* LD-203 — white interior wraps the centered art. */}
+                <div class="mn-phase-watercolor-thumb-wrap">
+                  <img
+                    src={wc.thumb_url}
+                    alt={wc.filename}
+                    class="mn-phase-watercolor-thumb"
+                    loading="lazy"
+                  />
+                </div>
                 <span class="mn-phase-watercolor-name">{wc.key}</span>
                 {wc.kind === 'animation' ? (
                   <span class="mn-phase-watercolor-anim-tag">animated</span>
