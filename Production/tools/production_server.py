@@ -8535,13 +8535,17 @@ class ProductionHandler(BaseHTTPRequestHandler):
         production_root = self.app.event_dir.parent
         rows: list[dict] = []
         for m in modules or []:
-            event_dirs = sorted(
-                p for p in production_root.iterdir()
-                if p.is_dir() and p.name.startswith("Event_") and "_" not in p.name[len("Event_"):]
-            )
-            # Take the first event dir (Event_1) as the canonical for now;
-            # multi-event would map M-number → event in S4.
-            edir = event_dirs[0] if event_dirs else None
+            # S5.5g — PRODUCTION_MAP_MULTI_EVENT_MAPPING_V1 (SOFT) per spec
+            # §3.6 + audit doc §6. Convention-based mapping: m_number=N →
+            # Event_N. Falls back to None if the directory doesn't exist on
+            # disk (so the row still renders, just without segment artifacts).
+            # Avoids the prior bug where every module reported Event_1.
+            m_num = m.get("m_number")
+            edir: Path | None = None
+            if m_num is not None:
+                candidate = production_root / f"Event_{m_num}"
+                if candidate.is_dir():
+                    edir = candidate
             segments: dict[str, dict] = {}
             if edir:
                 # Best-effort: file-based status.
@@ -14691,8 +14695,21 @@ body {{padding-top:44px!important;}}
 
     # ---- Stitch Editor: core audio pipeline helpers ----
 
-    def _stitch_normalize_slot(self, video_path: str, cache_dir: Path) -> Path:
-        """Normalize a slot's video to LD-284 canonical spec. Cached by md5+mtime+sha256[:8]."""
+    def _stitch_normalize_slot(
+        self, video_path: str, cache_dir: Path,
+        trim_in_ms: int = 0, trim_out_ms: int | None = None,
+    ) -> Path:
+        """Normalize a slot's video to LD-284 canonical spec.
+
+        Cached by md5+mtime+sha256[:8] + trim fingerprint.
+
+        S5.5g — STITCHER_PER_SLOT_TRIMS_V1 (HARD). Per audit doc §5 LOCKED:
+          - trim_in_ms (default 0, inclusive)
+          - trim_out_ms (None = end of clip; else exclusive cutoff in ms)
+          - Cache key MUST include trim fingerprint or LRU collisions across
+            different trim windows of the same source
+          - Pre-trim via ffmpeg -ss / -to BEFORE normalize_for_concat
+        """
         import hashlib as _hl  # noqa: PLC0415
         from ffmpeg_stitch import normalize_for_concat  # noqa: PLC0415
 
@@ -14707,13 +14724,48 @@ body {{padding-top:44px!important;}}
         except Exception:
             pass
 
-        norm_name = f"se_norm_{path_md5}_{mtime_ms}_{sha_prefix}.mp4"
+        # Trim fingerprint (audit doc §5): "<in>-<out|end>" so different trim
+        # windows of the same source don't collide in the LRU cache.
+        trim_sig = f"{int(trim_in_ms)}-{trim_out_ms if trim_out_ms is not None else 'end'}"
+        norm_name = f"se_norm_{path_md5}_{mtime_ms}_{sha_prefix}_t{trim_sig}.mp4"
         norm_path = cache_dir / norm_name
-        if not norm_path.is_file():
-            try:
-                normalize_for_concat(Path(video_path), norm_path)
-            except Exception as exc:
-                raise RuntimeError(f"Normalize failed for {video_path}: {exc}") from exc
+        if norm_path.is_file():
+            return norm_path
+
+        # Source for normalization: pre-trimmed mp4 if trim is set, else original.
+        src_for_norm = Path(video_path)
+        if trim_in_ms > 0 or trim_out_ms is not None:
+            trim_in_s = max(0.0, trim_in_ms / 1000.0)
+            trim_path = cache_dir / f"se_pretrim_{path_md5}_{mtime_ms}_{sha_prefix}_t{trim_sig}.mp4"
+            if not trim_path.is_file():
+                cmd = [
+                    "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                    "-ss", f"{trim_in_s:.3f}",
+                    "-i", str(video_path),
+                ]
+                if trim_out_ms is not None and int(trim_out_ms) > int(trim_in_ms):
+                    trim_dur_s = (int(trim_out_ms) - int(trim_in_ms)) / 1000.0
+                    cmd += ["-t", f"{trim_dur_s:.3f}"]
+                cmd += [
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                    "-c:a", "aac", "-b:a", "128k",
+                    "-pix_fmt", "yuv420p",
+                    str(trim_path),
+                ]
+                try:
+                    subprocess.run(cmd, check=True, capture_output=True, timeout=180)
+                except subprocess.CalledProcessError as exc:
+                    stderr = (exc.stderr or b"")[:400].decode("utf-8", errors="replace")
+                    # Per LD-520 fail-loud — bubble out as RuntimeError.
+                    raise RuntimeError(
+                        f"slot pre-trim failed for {video_path}: {stderr}",
+                    ) from exc
+            src_for_norm = trim_path
+
+        try:
+            normalize_for_concat(src_for_norm, norm_path)
+        except Exception as exc:
+            raise RuntimeError(f"Normalize failed for {video_path}: {exc}") from exc
         return norm_path
 
     def _stitch_ensure_audio(self, norm_path: Path, cache_dir: Path) -> Path:
@@ -14750,6 +14802,109 @@ body {{padding-top:44px!important;}}
                 "-shortest", str(sil_path),
             ], check=True, capture_output=True, timeout=60)
         return sil_path
+
+    def _stitch_apply_dissolve_tail(
+        self, slot_path: Path, cache_dir: Path,
+        fade_ms: int, audio_xfade_ms: int,
+    ) -> Path:
+        """Apply video fade-to-black on the trailing fade_ms of slot_path.
+
+        Per spec §3.3 dissolve transition (Q1 LOCKED 2026-05-04):
+          - Visual: fade=t=out:st=(dur - fade_s):d=fade_s
+          - Audio:  if audio_xfade_ms > 0, afade=t=out at the matching window;
+                    if audio_xfade_ms == 0, audio left intact (concat will hard-cut)
+
+        Cache key includes fade_ms + audio_xfade_ms so re-bake produces
+        consistent output and different fade values don't collide.
+        """
+        import hashlib as _hl  # noqa: PLC0415
+        if fade_ms <= 0:
+            return slot_path
+        slot_dur_ms = self._ffprobe_duration_ms(slot_path)
+        if slot_dur_ms <= 0:
+            return slot_path
+        fade_s = min(fade_ms / 1000.0, slot_dur_ms / 1000.0)
+        afade_s = min(audio_xfade_ms / 1000.0, slot_dur_ms / 1000.0) if audio_xfade_ms > 0 else 0.0
+        start_v = max(0.0, slot_dur_ms / 1000.0 - fade_s)
+        start_a = max(0.0, slot_dur_ms / 1000.0 - afade_s) if afade_s > 0 else 0.0
+        sig_src = f"{slot_path.name}:tail:{fade_ms}:{audio_xfade_ms}"
+        sig = _hl.md5(sig_src.encode(), usedforsecurity=False).hexdigest()[:10]
+        out = cache_dir / f"se_diss_tail_{sig}.mp4"
+        if out.is_file():
+            return out
+
+        vf = f"fade=t=out:st={start_v:.3f}:d={fade_s:.3f}"
+        cmd = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-i", str(slot_path),
+            "-vf", vf,
+        ]
+        if afade_s > 0:
+            af = f"afade=t=out:st={start_a:.3f}:d={afade_s:.3f}"
+            cmd += ["-af", af]
+        cmd += [
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-c:a", "aac", "-b:a", "128k",
+            "-pix_fmt", "yuv420p",
+            str(out),
+        ]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, timeout=180)
+        except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or b"")[:400].decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"dissolve tail render failed for {slot_path.name}: {stderr}",
+            ) from exc
+        return out
+
+    def _stitch_apply_dissolve_head(
+        self, slot_path: Path, cache_dir: Path,
+        fade_ms: int, audio_xfade_ms: int,
+    ) -> Path:
+        """Apply video fade-from-black on the leading fade_ms of slot_path.
+
+        Per spec §3.3 dissolve transition (mirror of _stitch_apply_dissolve_tail
+        for the next slot's head). audio_xfade_ms=0 keeps audio intact (next
+        slot starts at full level — concat hard-joins). audio_xfade_ms>0
+        applies afade=t=in for the matching window.
+        """
+        import hashlib as _hl  # noqa: PLC0415
+        if fade_ms <= 0:
+            return slot_path
+        slot_dur_ms = self._ffprobe_duration_ms(slot_path)
+        if slot_dur_ms <= 0:
+            return slot_path
+        fade_s = min(fade_ms / 1000.0, slot_dur_ms / 1000.0)
+        afade_s = min(audio_xfade_ms / 1000.0, slot_dur_ms / 1000.0) if audio_xfade_ms > 0 else 0.0
+        sig_src = f"{slot_path.name}:head:{fade_ms}:{audio_xfade_ms}"
+        sig = _hl.md5(sig_src.encode(), usedforsecurity=False).hexdigest()[:10]
+        out = cache_dir / f"se_diss_head_{sig}.mp4"
+        if out.is_file():
+            return out
+
+        vf = f"fade=t=in:st=0:d={fade_s:.3f}"
+        cmd = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-i", str(slot_path),
+            "-vf", vf,
+        ]
+        if afade_s > 0:
+            af = f"afade=t=in:st=0:d={afade_s:.3f}"
+            cmd += ["-af", af]
+        cmd += [
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-c:a", "aac", "-b:a", "128k",
+            "-pix_fmt", "yuv420p",
+            str(out),
+        ]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, timeout=180)
+        except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or b"")[:400].decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"dissolve head render failed for {slot_path.name}: {stderr}",
+            ) from exc
+        return out
 
     def _stitch_mix_slot_audio(
         self, norm_path: Path, slot: dict, cache_dir: Path
@@ -14897,6 +15052,28 @@ body {{padding-top:44px!important;}}
             for cue in (slot.get("sfx_cues") or []):
                 if cue.get("source_path") and not os.path.isfile(cue["source_path"]):
                     raise FileNotFoundError(f"Slot {i} SFX not found: {cue['source_path']}")
+            # S5.5g trim validation (audit doc §5):
+            #   trim_in_ms >= 0
+            #   trim_out_ms is null OR trim_out_ms > trim_in_ms
+            t_in = slot.get("trim_in_ms")
+            t_out = slot.get("trim_out_ms")
+            if t_in is not None:
+                try:
+                    t_in_i = int(t_in)
+                except (TypeError, ValueError):
+                    raise ValueError(f"Slot {i} trim_in_ms must be an integer")
+                if t_in_i < 0:
+                    raise ValueError(f"Slot {i} trim_in_ms must be >= 0")
+            if t_out is not None and str(t_out) != "":
+                try:
+                    t_out_i = int(t_out)
+                except (TypeError, ValueError):
+                    raise ValueError(f"Slot {i} trim_out_ms must be integer or null")
+                t_in_i = int(t_in) if t_in is not None else 0
+                if t_out_i <= t_in_i:
+                    raise ValueError(
+                        f"Slot {i} trim_out_ms ({t_out_i}) must be > trim_in_ms ({t_in_i})",
+                    )
 
         # Per-slot pipeline
         slot_finals: list[Path] = []
@@ -14904,8 +15081,20 @@ body {{padding-top:44px!important;}}
         for i, slot in enumerate(slots):
             vp = self._stitch_resolve_path(slot["video_path"])
 
-            # Step 1: Normalize (LD-284)
-            norm = self._stitch_normalize_slot(vp, cache_dir)
+            # Step 1: Normalize (LD-284) + S5.5g per-slot trim
+            # (STITCHER_PER_SLOT_TRIMS_V1 per audit doc §5).
+            trim_in_ms = int(slot.get("trim_in_ms", 0) or 0)
+            trim_out_raw = slot.get("trim_out_ms", None)
+            trim_out_ms: int | None = (
+                int(trim_out_raw)
+                if trim_out_raw is not None and str(trim_out_raw) != ""
+                else None
+            )
+            norm = self._stitch_normalize_slot(
+                vp, cache_dir,
+                trim_in_ms=trim_in_ms,
+                trim_out_ms=trim_out_ms,
+            )
 
             # Step 2: Audio parity (CONCAT_AUDIO_PARITY_V1)
             norm = self._stitch_ensure_audio(norm, cache_dir)
@@ -14917,25 +15106,70 @@ body {{padding-top:44px!important;}}
             final = self._stitch_mix_slot_audio(norm, slot, cache_dir)
             slot_finals.append(final)
 
-        # Handle transition sounds: inject as SFX cues at slot boundary
-        # Transition i = sound played between slot i and slot i+1
-        # Placed at offset_ms = (slot_i_dur_ms - transition.fade_ms // 2) in slot i
+        # Handle transitions per spec §3.3 + Q1 LOCKED 2026-05-04 +
+        # STITCHER_TRANSITIONS_V1 (HARD).
+        #
+        # Transition shape:
+        #   {after_slot, kind: 'crossfade'|'cut'|'dissolve', fade_ms,
+        #    audio_xfade_ms, source_path?}
+        #
+        # Defaults (handoff §3.3):
+        #   kind absent → 'crossfade' (backward compat for legacy jobs)
+        #   audio_xfade_ms absent → fade_ms (audio matches visual)
+        #
+        # kind semantics:
+        #   'cut'       → skip transition synthesis (no SFX cue; no fadeblack)
+        #   'crossfade' → existing trans_<after_slot> SFX cue at slot tail;
+        #                 audio_xfade_ms controls the SFX fadein/fadeout
+        #   'dissolve'  → visual fadeblack at boundary via ffmpeg fade=t=out
+        #                 on slot[after_slot] tail + fade=t=in on slot[after_slot+1]
+        #                 head; audio_xfade_ms=0 → hard audio cut;
+        #                 audio_xfade_ms>0 → afade out/in across the boundary
         transitions = body.get("transitions") or []
         for t in transitions:
             after_slot = int(t.get("after_slot", 0))
-            t_path = t.get("source_path") or ""
-            if not t_path or not os.path.isfile(t_path) or after_slot >= len(slot_finals):
+            if after_slot >= len(slot_finals):
+                continue
+            kind = (t.get("kind") or "crossfade").lower()
+            if kind == "cut":
                 continue
             fade_ms = int(t.get("fade_ms", 500))
-            slot_dur = slot_durations[after_slot]
-            offset_ms = max(0, slot_dur - fade_ms)
-            trans_slot = {"sfx_cues": [{"id": f"trans_{after_slot}", "source_path": t_path,
-                          "offset_ms": offset_ms, "volume": 0.7,
-                          "fadein_ms": 300, "fadeout_ms": 300}],
-                          "ambient_bed_path": None}
-            # Re-mix slot[after_slot] with transition injected as SFX
-            rebaked = self._stitch_mix_slot_audio(slot_finals[after_slot], trans_slot, cache_dir)
-            slot_finals[after_slot] = rebaked
+            audio_xfade_ms = int(t.get("audio_xfade_ms", fade_ms))
+            t_path = t.get("source_path") or ""
+
+            if kind == "crossfade":
+                # Existing path: synthesize trans_<after_slot> SFX cue.
+                # Requires source_path (else nothing to inject; fall back to no-op
+                # equivalent to 'cut' for the audio side).
+                if not t_path or not os.path.isfile(t_path):
+                    continue
+                slot_dur = slot_durations[after_slot]
+                offset_ms = max(0, slot_dur - fade_ms)
+                # audio_xfade_ms controls the SFX cue fadein/fadeout duration.
+                # Default 300/300 preserved when audio_xfade_ms=fade_ms (the
+                # legacy implicit 300ms remains the floor for very short fades).
+                cue_fade_ms = max(50, audio_xfade_ms // 2) if audio_xfade_ms > 0 else 300
+                trans_slot = {"sfx_cues": [{"id": f"trans_{after_slot}", "source_path": t_path,
+                              "offset_ms": offset_ms, "volume": 0.7,
+                              "fadein_ms": cue_fade_ms, "fadeout_ms": cue_fade_ms}],
+                              "ambient_bed_path": None}
+                rebaked = self._stitch_mix_slot_audio(slot_finals[after_slot], trans_slot, cache_dir)
+                slot_finals[after_slot] = rebaked
+
+            elif kind == "dissolve":
+                # NEW S5.5g — visual fadeblack at boundary. Apply fade=t=out
+                # to slot[after_slot] tail + fade=t=in to slot[after_slot+1]
+                # head. Audio fade conditional on audio_xfade_ms (Q1 LOCKED).
+                # Reference: LD-376 fadeblack pattern from Phase A.
+                slot_finals[after_slot] = self._stitch_apply_dissolve_tail(
+                    slot_finals[after_slot], cache_dir,
+                    fade_ms=fade_ms, audio_xfade_ms=audio_xfade_ms,
+                )
+                if after_slot + 1 < len(slot_finals):
+                    slot_finals[after_slot + 1] = self._stitch_apply_dissolve_head(
+                        slot_finals[after_slot + 1], cache_dir,
+                        fade_ms=fade_ms, audio_xfade_ms=audio_xfade_ms,
+                    )
 
         # Concat all slot finals (LD-284: already normalized)
         job_sig = json.dumps(
