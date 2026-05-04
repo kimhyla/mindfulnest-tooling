@@ -119,22 +119,19 @@ export function StitcherTab() {
   const onPreviewSlot = async (slot: SlotKey) => {
     setBusySlot({ slot, action: 'preview' });
     setStatusMsg(null);
-    try {
-      const res = await fetch(`${SERVER_BASE}/api/stitch_editor/preview`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: job?.name,
-          slot,
-          event_id: activeScope.value.event_id,
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      setStatusMsg(res.ok ? `✓ Preview ${slot} ready` : `✗ Preview HTTP ${res.status}: ${(data as { error?: string }).error ?? ''}`);
-    } catch (e) {
-      setStatusMsg(`✗ Network: ${String(e)}`);
-    } finally {
-      setBusySlot(null);
+    // V59 architectural-fix (Wave 1, F-S2-001): mutation routes through
+    // pathappPatch so M1 snapshot fires + scope keys auto-inject + 409/423
+    // surface per LD-461 / LD-456 / LD-458/460. event_id is auto-injected.
+    const res = await pathappPatch(activeScope.value, 'stitch_preview', {
+      name: job?.name,
+      slot,
+    });
+    setBusySlot(null);
+    if (res.ok) {
+      setStatusMsg(`✓ Preview ${slot} ready`);
+    } else {
+      const data = res.data as { error?: string } | undefined;
+      setStatusMsg(`✗ Preview HTTP ${res.status}: ${data?.error ?? res.error ?? ''}`);
     }
   };
 
@@ -145,22 +142,16 @@ export function StitcherTab() {
     }
     setBusySlot({ slot: 'intro', action: 'bake' });
     setStatusMsg('Baking final MP4…');
-    try {
-      const res = await fetch(`${SERVER_BASE}/api/stitch_editor/bake`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: job.name,
-          event_id: activeScope.value.event_id,
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      setStatusMsg(res.ok ? `✓ Baked: ${(data as { bake_path?: string }).bake_path ?? job.name}` : `✗ Bake HTTP ${res.status}`);
+    // V59 architectural-fix (Wave 1, F-S2-001): mutation via pathappPatch.
+    const res = await pathappPatch<{ bake_path?: string }>(activeScope.value, 'stitch_bake', {
+      name: job.name,
+    });
+    setBusySlot(null);
+    if (res.ok) {
+      setStatusMsg(`✓ Baked: ${res.data?.bake_path ?? job.name}`);
       setRefreshTick((n) => n + 1);
-    } catch (e) {
-      setStatusMsg(`✗ Network: ${String(e)}`);
-    } finally {
-      setBusySlot(null);
+    } else {
+      setStatusMsg(`✗ Bake HTTP ${res.status}`);
     }
   };
 
@@ -188,15 +179,11 @@ export function StitcherTab() {
   const onAmbientBedChange = async (slot: SlotKey, value: string) => {
     if (!job?.name) return;
     setBusySlot({ slot, action: 'ambient' });
-    const res = await fetch(`${SERVER_BASE}/api/stitch_editor/job`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: job.name,
-        slot,
-        ambient_bed: value,
-        event_id: activeScope.value.event_id,
-      }),
+    // V59 architectural-fix (Wave 1, F-S2-001): mutation via pathappPatch.
+    const res = await pathappPatch(activeScope.value, 'stitch_save_job', {
+      name: job.name,
+      slot,
+      ambient_bed: value,
     });
     setBusySlot(null);
     if (res.ok) {

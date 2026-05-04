@@ -3881,8 +3881,22 @@ def _write_sidecar_L_json(app: "AppContext", state: dict) -> str | None:
         # Tier 3: top-level display_order — now nested under videos.intro.
         # Stored under a reserved key that cannot collide with a beat_id
         # (beat_ids use the beat_NN pattern).
+        # V59 architectural-fix (Wave 1, F-SVR-001 root cause): isinstance
+        # guard for malformed display_order. Pre-fix `list(int)` raised
+        # `TypeError: 'int' object is not iterable` which the catch-all
+        # below silently swallowed, leaving no sidecar on disk + no
+        # observable failure for callers. Per MUTATION_CHANNEL_INVARIANT_V1
+        # the sidecar must complete; a malformed source value should not
+        # corrupt the projection.
         if "display_order" in intro_partition:
-            projection["__meta__"] = {"display_order": list(intro_partition["display_order"])}
+            do_raw = intro_partition["display_order"]
+            if isinstance(do_raw, (list, tuple)):
+                projection["__meta__"] = {"display_order": list(do_raw)}
+            else:
+                # Defensive: malformed display_order shape. Emit empty list
+                # so a downstream consumer sees a well-typed but empty
+                # ordering rather than crashing the projection.
+                projection["__meta__"] = {"display_order": []}
         with app._storyboard_write_lock:
             # Shared atomic-JSON helper (Windows/Dropbox retry-safe per LD-368).
             atomic_json_write(str(sidecar_path), projection)
@@ -3896,7 +3910,20 @@ def _write_sidecar_L_json(app: "AppContext", state: dict) -> str | None:
                           flush=True)
         return str(sidecar_path)
     except Exception as exc:  # noqa: BLE001
-        print(f"[sidecar] write failed: {type(exc).__name__}: {exc}")
+        # SERVER_SILENT_FAILURE_FAIL_LOUD_V1 (V59 architectural-fix Wave 1,
+        # F-SVR-001): _write_sidecar_L_json is non-fatal by contract
+        # (callers do not handle this exception path); we cannot raise
+        # without breaking that contract. But silent print to stdout makes
+        # the failure invisible in CI / production logs. Tighten to stderr
+        # + traceback so any future unforeseen exception class is loud and
+        # debuggable.
+        import traceback
+        print(
+            f"[sidecar][ERROR] write failed: {type(exc).__name__}: {exc}\n"
+            f"{traceback.format_exc()}",
+            file=sys.stderr,
+            flush=True,
+        )
         return None
 
 
@@ -14935,7 +14962,13 @@ body {{padding-top:44px!important;}}
         """POST /api/stitch_editor/preview — build temp MP4, return URL for inline playback.
 
         LD-140: preview is unregistered. Rule 19: all error paths explicit.
+        V59 architectural-fix (Wave 1, 2026-05-04): scope-guarded for
+        consistency with _handle_stitch_bake / _handle_stitch_save_job per
+        MUTATION_CHANNEL_INVARIANT_V1 + LD-456 SCOPE_VALIDATION_V1.
         """
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
         try:
             out_path, slot_durations = self._stitch_build_pipeline(body)
         except (ValueError, PermissionError) as exc:

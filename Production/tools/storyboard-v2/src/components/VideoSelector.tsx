@@ -17,7 +17,8 @@
 
 import { useEffect, useState } from 'preact/hooks';
 import { activeScope, activeVideoRole } from '../state/scope';
-import { READ_ENDPOINTS, MUTATION_ENDPOINTS } from '../api/endpoints';
+import { READ_ENDPOINTS } from '../api/endpoints';
+import { pathappPatch } from '../api/client';
 
 interface VideoListItem {
   video_role: string;
@@ -77,39 +78,32 @@ export function VideoSelector() {
     if (newRole === current) return;
     setLoading(true);
     setErr(null);
-    try {
-      const res = await fetch(MUTATION_ENDPOINTS.video_set_active, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          scope_event_id: activeScope.value.event_id,
-          video_role: newRole,
-        }),
-      });
-      if (!res.ok) {
-        const txt = await res.text().catch(() => '');
-        setErr(`HTTP ${res.status}: ${txt.slice(0, 100)}`);
-        target.value = current;
-        return;
-      }
-      const data = (await res.json()) as { ok: boolean; active_video?: string };
-      if (data.ok && data.active_video) {
-        setCurrent(data.active_video);
-        activeVideoRole.value = data.active_video;
-        // Update URL with ?video=<role> for shareable links + cold-boot persistence.
-        try {
-          const url = new URL(window.location.href);
-          url.searchParams.set('video', data.active_video);
-          window.history.replaceState({}, '', url.toString());
-        } catch {
-          // window.history not available — no-op.
-        }
-      }
-    } catch (e) {
-      setErr(String(e));
+    // V59 architectural-fix (Wave 1, F-S2-002): mutation routes through
+    // pathappPatch so M1 snapshot fires + scope keys auto-inject + 409/423
+    // surface per LD-461 / LD-456 / LD-458/460.
+    const res = await pathappPatch<{ ok: boolean; active_video?: string }>(
+      activeScope.value,
+      'video_set_active',
+      { video_role: newRole },
+    );
+    setLoading(false);
+    if (!res.ok) {
+      setErr(`HTTP ${res.status}: ${res.error ?? ''}`);
       target.value = current;
-    } finally {
-      setLoading(false);
+      return;
+    }
+    const data = res.data;
+    if (data?.ok && data.active_video) {
+      setCurrent(data.active_video);
+      activeVideoRole.value = data.active_video;
+      // Update URL with ?video=<role> for shareable links + cold-boot persistence.
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.set('video', data.active_video);
+        window.history.replaceState({}, '', url.toString());
+      } catch {
+        // window.history not available — no-op.
+      }
     }
   };
 
@@ -124,22 +118,18 @@ export function VideoSelector() {
     }
     setCreatingNew(true);
     setErr(null);
+    // V59 architectural-fix (Wave 1, F-S2-002): mutation via pathappPatch.
+    const res = await pathappPatch(activeScope.value, 'video_create', {
+      video_role: candidate,
+      video_label: null,
+    });
+    if (!res.ok) {
+      setErr(`HTTP ${res.status}: ${res.error ?? ''}`);
+      setCreatingNew(false);
+      return;
+    }
+    // Refresh the list.
     try {
-      const res = await fetch(MUTATION_ENDPOINTS.video_create, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          scope_event_id: activeScope.value.event_id,
-          video_role: candidate,
-          video_label: null,
-        }),
-      });
-      if (!res.ok) {
-        const txt = await res.text().catch(() => '');
-        setErr(`HTTP ${res.status}: ${txt.slice(0, 100)}`);
-        return;
-      }
-      // Refresh the list.
       const listRes = await fetch(READ_ENDPOINTS.video_list);
       if (listRes.ok) {
         const data = (await listRes.json()) as VideoListResponse;

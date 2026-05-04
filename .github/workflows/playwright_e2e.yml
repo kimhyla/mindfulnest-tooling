@@ -68,15 +68,12 @@ jobs:
           echo "Secrets preflight OK"
 
       - name: Install Python deps
+        # V59 architectural-fix (Wave 1, F-CI-001 / LD PRODUCTION_TOOLING_REQUIREMENTS_TXT_V1):
+        # canonical dep list lives in Production/tools/requirements.txt. New
+        # runtime deps go into the file, never inline here.
         run: |
           python3 -m pip install --upgrade pip
-          # production_server.py imports PIL (image thumbs in /api/cr/library) +
-          # yaml (scene_registry parse in /api/magic/resolve_bg) + stdlib.
-          # No requirements.txt yet — install minimum needed by the test scope.
-          # Retroactive coverage v1 (2026-05-04) added pyyaml when S4 magic
-          # endpoint tests landed; previous proper-fix scope didn't exercise
-          # /api/magic/* so the missing import was invisible until now.
-          python3 -m pip install Pillow PyYAML
+          python3 -m pip install -r Production/tools/requirements.txt
 
       - name: Install client deps
         working-directory: Production/tools/storyboard-v2
