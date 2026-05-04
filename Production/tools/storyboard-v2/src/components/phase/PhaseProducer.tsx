@@ -16,6 +16,7 @@ import { useEffect, useState } from 'preact/hooks';
 import { apiGet, pathappPatch } from '../../api/client';
 import { activeScope } from '../../state/scope';
 import { SERVER_BASE } from '../../api/endpoints';
+import { WaveformTimeline, type WatercolorCue } from './WaveformTimeline';
 
 interface WatercolorItem {
   key: string;
@@ -55,6 +56,7 @@ interface PhaseStateSlice {
   stitched_file?: string;        // phase A only
   stitched_mtime?: number;
   script?: string;
+  watercolor_cues?: WatercolorCue[];
 }
 interface EventStateResponse {
   beats?: Record<string, unknown>;
@@ -78,10 +80,16 @@ function pickPhaseSlice(state: EventStateResponse, phase: 'a' | 'b'): PhaseState
   const st = get<string>('stitched_file');             if (st) slice.stitched_file = st;
   const stm = get<number>('stitched_mtime');           if (stm) slice.stitched_mtime = stm;
   const sc = get<string>('script');                    if (sc) slice.script = sc;
+  const cues = get<WatercolorCue[]>('watercolor_cues_json');
+  if (Array.isArray(cues)) slice.watercolor_cues = cues;
   return slice;
 }
 
-function priorityAudioFile(slice: PhaseStateSlice): { name: string; label: string } | null {
+type AudioSourceLabel = 'lipsync' | 'mixed' | 'stem';
+
+function priorityAudioFile(
+  slice: PhaseStateSlice,
+): { name: string; label: AudioSourceLabel } | null {
   if (slice.lipsync_file) return { name: slice.lipsync_file, label: 'lipsync' };
   if (slice.mixed_audio_file) return { name: slice.mixed_audio_file, label: 'mixed' };
   if (slice.voice_stem_file) return { name: slice.voice_stem_file, label: 'stem' };
@@ -89,10 +97,12 @@ function priorityAudioFile(slice: PhaseStateSlice): { name: string; label: strin
 }
 
 function fileUrl(name: string): string {
-  // Server's /files endpoint serves arbitrary event_dir files via ?path=
-  // For now we use a relative-to-event_dir convention since /api/v2/event-state
-  // already requires Event_1. The /files endpoint does the heavy lifting.
-  return `${SERVER_BASE}/files?path=${encodeURIComponent(`Production/Event_1/${name}`)}`;
+  // Server's /files endpoint serves arbitrary event_dir files via ?path=.
+  // Path is scope-bound: derived from activeScope.value.event_id so the same
+  // app works for Event_1, Event_e2e_fixture, or any other event without a
+  // hardcoded literal (F17 gate / spec §19.10 #2).
+  const eventId = activeScope.value.event_id;
+  return `${SERVER_BASE}/files?path=${encodeURIComponent(`Production/${eventId}/${name}`)}`;
 }
 
 export function PhaseProducer({ phase }: PhaseProducerProps) {
@@ -221,7 +231,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     const res = await pathappPatch(activeScope.value, 'stitch_save_job', {
       job_name: `phase_${phase}_${activeScope.value.event_id}`,
       slot: phase === 'a' ? 'phase_a' : 'phase_b',
-      video_path: `Production/Event_1/${srcFile}`,
+      video_path: `Production/${activeScope.value.event_id}/${srcFile}`,
     });
     setBusyAction(null);
     if (res.ok) {
@@ -287,14 +297,14 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           placeholder={`Phase ${phase.toUpperCase()} script…`}
         />
 
-        {/* Audio player — priority lipsync > mixed > stem */}
-        {audioFile ? (
-          <div class="mn-phase-audio" data-testid={`phase-${phase}-audio`}>
-            <strong>Audio ({audioFile.label}):</strong>
-            <audio controls src={fileUrl(audioFile.name)} />
-            <span class="mn-dim">{audioFile.name}</span>
-          </div>
-        ) : null}
+        {/* Audio waveform — WaveSurfer v7 timeline (LD-330 / LD-472).
+            Priority: lipsync > mixed > stem (resolved by priorityAudioFile). */}
+        <WaveformTimeline
+          audioSrc={audioFile ? fileUrl(audioFile.name) : null}
+          sourceLabel={audioFile?.label ?? null}
+          sourceFilename={audioFile?.name ?? null}
+          cues={stateSlice.watercolor_cues ?? []}
+        />
 
         {/* Lipsync video player */}
         {lipsyncFile ? (
