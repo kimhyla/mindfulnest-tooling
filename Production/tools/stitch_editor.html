@@ -1,0 +1,1633 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MindfulNest Stitch Editor</title>
+  <script>
+    const SERVER_BASE = "http://localhost:5111";
+  </script>
+  <!-- WaveSurfer 7.x via CDN with fallback detection -->
+  <script>
+    window.__mnWaveSurferCDNFailed = false;
+    window.__mnWaveSurferReady = false;
+  </script>
+  <script src="https://unpkg.com/wavesurfer.js@7/dist/wavesurfer.min.js"
+    onerror="window.__mnWaveSurferCDNFailed = true; console.warn('[SE] WaveSurfer CDN failed — waveform display disabled');"
+    onload="window.__mnWaveSurferReady = true;">
+  </script>
+  <style>
+    :root {
+      --bg: #1a1a2e;
+      --panel: #16213e;
+      --card: #0f3460;
+      --accent: #e94560;
+      --accent2: #533483;
+      --gold: #f5a623;
+      --green: #27ae60;
+      --text: #e0e0e0;
+      --muted: #8a8a9a;
+      --border: #2a2a4a;
+      --slot-bg: #12294a;
+      --drop-active: rgba(233,69,96,0.25);
+      --radius: 8px;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+           background: var(--bg); color: var(--text); height: 100vh;
+           display: flex; flex-direction: column; overflow: hidden; font-size: 13px; }
+
+    /* ── TOP BAR ── */
+    #topbar {
+      background: var(--panel); border-bottom: 1px solid var(--border);
+      padding: 8px 12px; display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+    }
+    #topbar .logo { font-weight: 700; font-size: 14px; color: var(--gold); white-space: nowrap; }
+    #jobName { flex: 1; max-width: 260px; background: var(--card); border: 1px solid var(--border);
+               color: var(--text); border-radius: var(--radius); padding: 5px 10px; font-size: 13px; }
+    #jobName::placeholder { color: var(--muted); }
+    .btn { padding: 5px 14px; border-radius: var(--radius); border: none; cursor: pointer;
+           font-size: 12px; font-weight: 600; transition: opacity .15s; }
+    .btn:hover { opacity: .85; }
+    .btn:disabled { opacity: .4; cursor: default; }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-secondary { background: var(--card); color: var(--text); border: 1px solid var(--border); }
+    .btn-danger  { background: #7f1d1d; color: #fca5a5; }
+    .btn-success { background: var(--green); color: #fff; }
+    .btn-gold    { background: var(--gold); color: #1a1a1e; }
+    #topbar .sep { width: 1px; height: 24px; background: var(--border); margin: 0 4px; }
+    #statusBar { margin-left: auto; font-size: 11px; color: var(--muted); }
+
+    /* ── MAIN LAYOUT ── */
+    #main { display: flex; flex: 1; overflow: hidden; }
+
+    /* ── TIMELINE PANEL ── */
+    #timeline {
+      flex: 1; overflow-y: auto; padding: 12px; display: flex;
+      flex-direction: column; gap: 0; min-width: 0;
+    }
+
+    /* ── SLOT ── */
+    .slot-wrapper { display: flex; flex-direction: column; }
+
+    .slot {
+      background: var(--slot-bg); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 12px; display: grid;
+      grid-template-columns: 1fr 1fr; grid-template-rows: auto auto auto;
+      gap: 10px; position: relative;
+    }
+    .slot.drag-over { border-color: var(--accent); background: var(--drop-active); }
+    .slot-header {
+      grid-column: 1 / -1; display: flex; align-items: center; gap: 8px;
+    }
+    .slot-number { background: var(--accent2); color: #fff; border-radius: 50%;
+                   width: 22px; height: 22px; display: flex; align-items: center;
+                   justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; }
+    .slot-label { flex: 1; background: transparent; border: none; border-bottom: 1px solid var(--border);
+                  color: var(--text); font-size: 12px; padding: 2px 4px; }
+    .slot-label:focus { outline: none; border-color: var(--accent); }
+    .slot-remove { background: none; border: none; color: var(--muted); cursor: pointer;
+                   font-size: 16px; padding: 2px 6px; margin-left: auto; }
+    .slot-remove:hover { color: var(--accent); }
+
+    /* Video drop zone */
+    .video-zone {
+      grid-column: 1; background: var(--card); border: 2px dashed var(--border);
+      border-radius: var(--radius); padding: 14px; text-align: center;
+      cursor: pointer; transition: border-color .15s, background .15s; min-height: 80px;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+    }
+    .video-zone:hover, .video-zone.drag-over { border-color: var(--accent); background: var(--drop-active); }
+    .video-zone .zone-icon { font-size: 22px; opacity: .7; }
+    .video-zone .zone-label { font-size: 11px; color: var(--muted); }
+    .video-zone .zone-name { font-size: 11px; color: var(--gold); word-break: break-all; }
+    .video-zone .zone-dur { font-size: 10px; color: var(--muted); }
+    .path-input-row { display: flex; gap: 6px; margin-top: 4px; width: 100%; }
+    .path-input-row input { flex: 1; background: #0a1628; border: 1px solid var(--border);
+                            color: var(--text); border-radius: 4px; padding: 3px 6px; font-size: 10px; }
+    .path-input-row button { padding: 3px 8px; font-size: 10px; }
+
+    /* Ambient zone */
+    .ambient-zone {
+      grid-column: 2; background: var(--card); border: 2px dashed var(--border);
+      border-radius: var(--radius); padding: 10px; cursor: pointer;
+      transition: border-color .15s, background .15s; min-height: 80px;
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    .ambient-zone:hover, .ambient-zone.drag-over { border-color: var(--gold); background: rgba(245,166,35,.15); }
+    .ambient-zone .zone-title { font-size: 10px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
+    .ambient-zone .ambient-name { font-size: 11px; color: var(--gold); word-break: break-all; }
+    .ambient-controls { display: flex; align-items: center; gap: 8px; margin-top: auto; }
+    .ambient-controls label { font-size: 10px; color: var(--muted); }
+    .ambient-controls input[type=range] { flex: 1; accent-color: var(--gold); }
+    .ambient-controls span { font-size: 10px; color: var(--gold); width: 28px; text-align: right; }
+
+    /* Waveform + SFX row */
+    .waveform-row {
+      grid-column: 1 / -1; background: #0a1628; border-radius: 6px;
+      position: relative; height: 72px; overflow: hidden;
+    }
+    .waveform-row .wavesurfer-host { width: 100%; height: 100%; }
+    .waveform-placeholder { position: absolute; inset: 0; display: flex; align-items: center;
+                            justify-content: center; font-size: 11px; color: var(--muted); }
+
+    /* SFX cue markers overlaid on waveform */
+    .sfx-overlay { position: absolute; inset: 0; pointer-events: none; }
+    .sfx-marker {
+      position: absolute; top: 0; height: 100%; width: 3px;
+      background: rgba(233,69,96,.85); cursor: ew-resize; pointer-events: all;
+      transition: background .1s;
+    }
+    .sfx-marker:hover { background: var(--accent); }
+    .sfx-marker-label {
+      position: absolute; top: 2px; left: 5px; font-size: 9px; color: var(--accent);
+      white-space: nowrap; max-width: 80px; overflow: hidden; text-overflow: ellipsis;
+      pointer-events: none;
+    }
+    .sfx-marker-del {
+      position: absolute; top: 2px; right: 2px; background: var(--accent); color: #fff;
+      border: none; border-radius: 50%; width: 12px; height: 12px; font-size: 9px;
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      pointer-events: all;
+    }
+
+    /* SFX drop target (invisible layer over waveform) */
+    .sfx-drop-target {
+      position: absolute; inset: 0; z-index: 2;
+    }
+    .sfx-drop-target.sfx-drag-over { background: rgba(233,69,96,.18); }
+
+    /* Slot footer */
+    .slot-footer {
+      grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    }
+    .sfx-list { flex: 1; display: flex; flex-wrap: wrap; gap: 4px; min-height: 20px; }
+    .sfx-tag {
+      background: rgba(233,69,96,.2); border: 1px solid var(--accent);
+      border-radius: 4px; padding: 2px 6px; font-size: 10px; color: var(--accent);
+      display: flex; align-items: center; gap: 4px; cursor: default;
+    }
+    .sfx-tag button { background: none; border: none; color: var(--accent); cursor: pointer;
+                      font-size: 10px; padding: 0 1px; line-height: 1; }
+
+    /* ── TRANSITION STRIP between slots ── */
+    .transition-strip {
+      display: flex; align-items: center; padding: 4px 8px; gap: 8px;
+      background: rgba(83,52,131,.15); border-left: 3px solid var(--accent2);
+      margin: 4px 0;
+    }
+    .transition-strip .t-label { font-size: 10px; color: var(--muted); white-space: nowrap; }
+    .transition-zone {
+      flex: 1; background: var(--card); border: 1px dashed var(--border);
+      border-radius: 4px; padding: 4px 8px; font-size: 10px; color: var(--muted);
+      cursor: pointer; min-height: 28px; display: flex; align-items: center; gap: 6px;
+    }
+    .transition-zone:hover, .transition-zone.drag-over { border-color: var(--accent2); color: var(--text); }
+    .transition-zone .t-name { color: var(--accent2); }
+    .transition-zone .t-remove { margin-left: auto; background: none; border: none;
+                                 color: var(--muted); cursor: pointer; font-size: 12px; }
+    .transition-zone .t-remove:hover { color: var(--accent); }
+    .transition-fade { display: flex; align-items: center; gap: 4px; }
+    .transition-fade label { font-size: 10px; color: var(--muted); }
+    .transition-fade input[type=number] { width: 52px; background: var(--card); border: 1px solid var(--border);
+                                          color: var(--text); border-radius: 4px; padding: 2px 4px; font-size: 10px; }
+
+    /* ── ADD SLOT ── */
+    #addSlotBtn {
+      margin: 8px 0; background: none; border: 2px dashed var(--border);
+      color: var(--muted); border-radius: var(--radius); padding: 10px;
+      width: 100%; cursor: pointer; font-size: 13px; transition: border-color .15s, color .15s;
+    }
+    #addSlotBtn:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* ── RIGHT PANEL — LIBRARY ── */
+    #library {
+      width: 240px; background: var(--panel); border-left: 1px solid var(--border);
+      display: flex; flex-direction: column; flex-shrink: 0;
+    }
+    #libTabs { display: flex; border-bottom: 1px solid var(--border); }
+    .lib-tab {
+      flex: 1; padding: 8px; text-align: center; cursor: pointer; font-size: 11px;
+      font-weight: 600; color: var(--muted); border-bottom: 2px solid transparent;
+      transition: color .15s, border-color .15s;
+    }
+    .lib-tab.active { color: var(--text); border-color: var(--accent); }
+    #libSearch { margin: 8px; background: var(--card); border: 1px solid var(--border);
+                 color: var(--text); border-radius: var(--radius); padding: 5px 10px;
+                 font-size: 12px; width: calc(100% - 16px); }
+    #libSearch::placeholder { color: var(--muted); }
+    #libList { flex: 1; overflow-y: auto; padding: 0 8px 8px; display: flex;
+               flex-direction: column; gap: 4px; }
+    .lib-item {
+      background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+      padding: 7px 10px; cursor: grab; display: flex; flex-direction: column; gap: 2px;
+      transition: border-color .15s;
+    }
+    .lib-item:hover { border-color: var(--accent); }
+    .lib-item:active { cursor: grabbing; }
+    .lib-item-name { font-size: 11px; color: var(--text); word-break: break-word; }
+    .lib-item-meta { font-size: 10px; color: var(--muted); }
+    #libEmpty { color: var(--muted); font-size: 11px; text-align: center; margin-top: 20px; }
+
+    /* ── BOTTOM PANEL — PREVIEW & BAKE ── */
+    #bottomPanel {
+      background: var(--panel); border-top: 1px solid var(--border);
+      padding: 10px 12px; display: flex; align-items: flex-start; gap: 12px;
+      flex-shrink: 0; flex-wrap: wrap;
+    }
+    #bottomActions { display: flex; gap: 8px; align-items: center; }
+    #previewVideo { width: 320px; max-height: 180px; border-radius: var(--radius);
+                    background: #000; display: none; }
+    #bakeResult { font-size: 11px; color: var(--green); max-width: 400px; word-break: break-all; }
+    #progressWrap { display: none; align-items: center; gap: 8px; }
+    #progressBar { width: 200px; height: 8px; background: var(--card); border-radius: 4px; overflow: hidden; }
+    #progressFill { height: 100%; background: var(--accent); width: 0%; transition: width .3s; }
+    #progressLabel { font-size: 11px; color: var(--muted); }
+
+    /* ── SCROLLBAR ── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    /* ── TOAST ── */
+    #toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: var(--card); color: var(--text); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 8px 18px; font-size: 12px;
+      opacity: 0; pointer-events: none; transition: opacity .25s; z-index: 1000;
+    }
+    #toast.show { opacity: 1; }
+    #toast.error { border-color: var(--accent); color: var(--accent); }
+    #toast.success { border-color: var(--green); color: var(--green); }
+
+    /* ── MODAL (job picker) ── */
+    #modal { position: fixed; inset: 0; background: rgba(0,0,0,.7); display: none;
+             align-items: center; justify-content: center; z-index: 900; }
+    #modal.open { display: flex; }
+    #modalBox { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+                padding: 20px; min-width: 320px; max-width: 480px; }
+    #modalTitle { font-size: 14px; font-weight: 700; margin-bottom: 12px; }
+    #modalList { display: flex; flex-direction: column; gap: 6px; max-height: 300px; overflow-y: auto; }
+    .modal-item { background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+                  padding: 8px 12px; cursor: pointer; display: flex; justify-content: space-between;
+                  align-items: center; }
+    .modal-item:hover { border-color: var(--accent); }
+    .modal-item-name { font-size: 12px; }
+    .modal-item-meta { font-size: 10px; color: var(--muted); }
+    #modalClose { margin-top: 12px; width: 100%; }
+
+    /* ── PER-SLOT PLAY/PAUSE ── */
+    .slot-play-btn {
+      position: absolute; top: 8px; right: 36px;
+      background: rgba(15, 52, 96, 0.92); border: 1px solid var(--accent2);
+      color: var(--text); border-radius: 50%; width: 32px; height: 32px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; font-size: 14px; z-index: 10;
+      transition: background .15s, border-color .15s;
+      line-height: 1;
+    }
+    .slot-play-btn:hover { background: var(--accent2); border-color: var(--accent); }
+    .slot-play-btn.playing { background: var(--accent); border-color: var(--accent); }
+
+    .slot-inline-video {
+      display: none; width: 100%; max-height: 160px; border-radius: 4px;
+      background: #000; margin-top: 6px; outline: none;
+    }
+    .slot-inline-video.visible { display: block; }
+
+    /* video-zone column grows when video is shown */
+    .video-zone.has-inline-video { flex-direction: column; align-items: stretch; }
+  
+    /* ── SLOT PREVIEW in bottom bar (Path B patch) ── */
+    #slotPreviewBtn {
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+    #slotPreviewBtn .spb-icon {
+      font-size: 14px;
+    }
+    #slotPreviewVideo {
+      max-width: 240px; max-height: 135px; border-radius: var(--radius);
+      background: #000; display: none; margin-left: 8px;
+    }
+    #slotPreviewVideo.visible { display: inline-block; }
+    #slotPreviewSpinner {
+      display: none; margin-left: 8px; font-size: 11px; color: var(--muted);
+    }
+    #slotPreviewSpinner.loading { display: inline-block; }
+
+    /* ── LIBRARY ITEM AUDIO PREVIEW ── */
+    .lib-item { position: relative; }
+    .lib-item.lib-preview-playing {
+      border-color: var(--gold);
+      background: rgba(245,166,35,.12);
+    }
+    .lib-item-play-dot {
+      position: absolute; top: 6px; right: 6px;
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--gold); display: none;
+      animation: libPulse 0.85s ease-in-out infinite;
+    }
+    .lib-item.lib-preview-playing .lib-item-play-dot { display: block; }
+    @keyframes libPulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%       { opacity: 0.35; transform: scale(0.65); }
+    }
+
+  </style>
+</head>
+<body>
+
+<!-- ── TOP BAR ── -->
+<div id="topbar">
+  <span class="logo">⚡ Stitch Editor</span>
+  <div class="sep"></div>
+  <input id="jobName" type="text" placeholder="Untitled job…" maxlength="80" />
+  <button class="btn btn-primary" onclick="saveJob()">Save</button>
+  <button class="btn btn-secondary" onclick="openLoadModal()">Load</button>
+  <button class="btn btn-secondary" onclick="newJob()">New</button>
+  <button class="btn btn-danger" id="deleteBtn" onclick="deleteJob()">Delete</button>
+  <div class="sep"></div>
+  <span id="statusBar">Ready</span>
+</div>
+
+<!-- ── MAIN ── -->
+<div id="main">
+
+  <!-- TIMELINE -->
+  <div id="timeline">
+    <!-- slots rendered here by JS -->
+    <button id="addSlotBtn" onclick="addSlot()">＋ Add Segment</button>
+  </div>
+
+  <!-- LIBRARY -->
+  <div id="library">
+    <div id="libTabs">
+      <div class="lib-tab active" data-cat="ambient" onclick="switchTab('ambient')">Ambient</div>
+      <div class="lib-tab" data-cat="sfx" onclick="switchTab('sfx')">SFX</div>
+      <div class="lib-tab" data-cat="transitions" onclick="switchTab('transitions')">Transitions</div>
+    </div>
+    <input id="libSearch" type="text" placeholder="Search…" oninput="renderLibrary()" />
+    <div id="libList"></div>
+  </div>
+
+</div>
+
+<!-- ── BOTTOM PANEL ── -->
+<div id="bottomPanel">
+  <div id="bottomActions">
+    <button class="btn btn-secondary" onclick="doPreview()">▶ Preview</button>
+    <button class="btn btn-gold" onclick="doBake()">⚡ Bake</button>
+  </div>
+  <div id="progressWrap">
+    <div id="progressBar"><div id="progressFill"></div></div>
+    <span id="progressLabel"></span>
+  </div>
+  <video id="previewVideo" controls></video>
+  <div id="bakeResult"></div>
+</div>
+
+<!-- ── TOAST ── -->
+<div id="toast"></div>
+
+<!-- ── MODAL ── -->
+<div id="modal">
+  <div id="modalBox">
+    <div id="modalTitle">Load Job</div>
+    <div id="modalList"></div>
+    <button class="btn btn-secondary" id="modalClose" onclick="closeModal()">Cancel</button>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let slots = [];          // [{id, label, videoPath, videoDurMs, ambientPath, ambientVol, sfxCues:[{id,path,name,offsetMs}]}]
+let transitions = [];    // [{afterSlotIndex, audioPath, audioName, fadeDurMs}]
+let library = { ambient: [], sfx: [], transitions: [] };
+let activeLibCat = 'ambient';
+let slotIdCounter = 0;
+let sfxIdCounter = 0;
+let slotWavesurfers = {};   // slotId → WaveSurfer instance
+let slotDurationsMs = {};   // slotId → duration from server
+
+function makeSlot(label) {
+  return {
+    id: ++slotIdCounter,
+    label: label || `Segment ${slotIdCounter}`,
+    videoPath: '',
+    videoDurMs: 0,
+    ambientPath: '',
+    ambientVol: 0.6,
+    sfxCues: []
+  };
+}
+
+function makeSfxCue(path, name, offsetMs) {
+  return { id: ++sfxIdCounter, path, name, offsetMs };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+window.addEventListener('DOMContentLoaded', async () => {
+  addSlot('Intro');
+  await loadLibrary();
+  setStatus('Ready');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LIBRARY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function loadLibrary() {
+  try {
+    const r = await fetch(`${SERVER_BASE}/api/stitch_editor/library`);
+    if (!r.ok) throw new Error(r.status);
+    library = await r.json();
+    renderLibrary();
+  } catch (e) {
+    toast(`Library load failed: ${e.message}`, 'error');
+  }
+}
+
+function switchTab(cat) {
+  stopLibPreview();
+  activeLibCat = cat;
+  document.querySelectorAll('.lib-tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.cat === cat));
+  renderLibrary();
+}
+
+function renderLibrary() {
+  stopLibPreview();
+  const q = document.getElementById('libSearch').value.toLowerCase();
+  const items = (library[activeLibCat] || []).filter(i =>
+    i.filename.toLowerCase().includes(q));
+  const list = document.getElementById('libList');
+  if (!items.length) {
+    list.innerHTML = '<div id="libEmpty">No files found</div>';
+    return;
+  }
+  list.innerHTML = items.map(i => `
+    <div class="lib-item" draggable="true"
+         data-path="${esc(i.path)}" data-name="${esc(i.filename)}" data-cat="${activeLibCat}"
+         ondragstart="onLibDragStart(event)"
+         onclick="toggleLibPreview(this, this.dataset.name)">
+      <span class="lib-item-play-dot"></span>
+      <span class="lib-item-name">${esc(i.filename)}</span>
+      <span class="lib-item-meta">${activeLibCat}</span>
+    </div>`).join('');
+}
+
+function onLibDragStart(ev) {
+  const el = ev.currentTarget;
+  ev.dataTransfer.effectAllowed = 'copy';
+  ev.dataTransfer.setData('application/x-mn-lib', JSON.stringify({
+    path: el.dataset.path,
+    name: el.dataset.name,
+    cat:  el.dataset.cat
+  }));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SLOT MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function addSlot(label) {
+  const slot = makeSlot(label);
+  slots.push(slot);
+  if (slots.length > 1) {
+    transitions.push({ afterSlotIndex: slots.length - 2, audioPath: '', audioName: '', fadeDurMs: 500 });
+  }
+  renderTimeline();
+}
+
+function removeSlot(slotId) {
+  const idx = slots.findIndex(s => s.id === slotId);
+  if (idx === -1) return;
+  destroyWaveSurfer(slotId);
+  slots.splice(idx, 1);
+  // remove the transition that was after slot[idx-1] or at idx
+  if (transitions.length >= idx && idx > 0) {
+    transitions.splice(idx - 1, 1);
+  } else if (transitions.length > 0 && idx === 0) {
+    transitions.splice(0, 1);
+  }
+  // renumber transition afterSlotIndex
+  transitions.forEach((t, i) => { t.afterSlotIndex = i; });
+  renderTimeline();
+}
+
+function renderTimeline() {
+  const timeline = document.getElementById('timeline');
+  const addBtn = document.getElementById('addSlotBtn');
+  // clear existing slots/transitions (keep addBtn)
+  Array.from(timeline.children).forEach(c => { if (c !== addBtn) c.remove(); });
+
+  slots.forEach((slot, idx) => {
+    // transition strip before slot (except first)
+    if (idx > 0 && transitions[idx - 1]) {
+      timeline.insertBefore(buildTransitionEl(idx - 1, transitions[idx - 1]), addBtn);
+    }
+    timeline.insertBefore(buildSlotEl(slot, idx), addBtn);
+  });
+
+  // re-init wavesurfers for slots that have audio/video
+  slots.forEach(slot => {
+    if (slot.videoPath && window.__mnWaveSurferReady) {
+      initWaveSurfer(slot);
+    }
+  });
+}
+
+function buildSlotEl(slot, idx) {
+  const div = document.createElement('div');
+  div.className = 'slot-wrapper';
+  div.innerHTML = `
+    <div class="slot" id="slot-${slot.id}"
+         ondragover="onSlotDragOver(event, ${slot.id})"
+         ondragleave="onSlotDragLeave(event, ${slot.id})"
+         ondrop="onSlotDrop(event, ${slot.id})">
+
+      <div class="slot-header">
+        <span class="slot-number">${idx + 1}</span>
+        <input class="slot-label" type="text" value="${esc(slot.label)}"
+               onchange="slots[${idx}].label = this.value" />
+        <button class="slot-remove" onclick="removeSlot(${slot.id})" title="Remove segment">✕</button>
+        <button class="slot-play-btn" id="playbtn-${slot.id}"
+                onclick="event.stopPropagation(); toggleSlotPlay(${slot.id})"
+                title="Play">▶</button>
+      </div>
+
+      <!-- Video zone -->
+      <div class="video-zone" id="vzone-${slot.id}"
+           onclick="triggerVideoFilePick(${slot.id})"
+           ondragover="onVideoDragOver(event, ${slot.id})"
+           ondragleave="onVideoDragLeave(event, ${slot.id})"
+           ondrop="onVideoDrop(event, ${slot.id})">
+        <span class="zone-icon">🎬</span>
+        ${slot.videoPath
+          ? `<span class="zone-name" title="${esc(slot.videoPath)}">${esc(shortName(slot.videoPath))}</span>
+             <span class="zone-dur">${fmtMs(slot.videoDurMs)}</span>`
+          : `<span class="zone-label">Drop video or click</span>`}
+        <div class="path-input-row" id="pathrow-${slot.id}" style="${slot.videoPath ? 'display:none' : ''}">
+          <input type="text" placeholder="Paste path…" id="pathfield-${slot.id}"
+                 onclick="event.stopPropagation()"
+                 onkeydown="if(event.key==='Enter'){setVideoByPath(${slot.id}, this.value)}" />
+          <button class="btn btn-secondary" onclick="event.stopPropagation();setVideoByPath(${slot.id}, document.getElementById('pathfield-${slot.id}').value)">Set</button>
+        </div>
+      </div>
+
+      <!-- Ambient zone -->
+      <div class="ambient-zone" id="azone-${slot.id}"
+           ondragover="onAmbientDragOver(event, ${slot.id})"
+           ondragleave="onAmbientDragLeave(event, ${slot.id})"
+           ondrop="onAmbientDrop(event, ${slot.id})">
+        <span class="zone-title">🎵 Ambient Bed</span>
+        ${slot.ambientPath
+          ? `<span class="ambient-name" title="${esc(slot.ambientPath)}">${esc(shortName(slot.ambientPath))}</span>`
+          : `<span style="font-size:10px;color:var(--muted)">Drop from library or drag file</span>`}
+        <div class="ambient-controls">
+          <label>Vol</label>
+          <input type="range" min="0" max="1" step="0.05"
+                 value="${slot.ambientVol}"
+                 oninput="slots.find(s=>s.id===${slot.id}).ambientVol=+this.value; this.nextElementSibling.textContent=Math.round(+this.value*100)+'%'" />
+          <span>${Math.round(slot.ambientVol * 100)}%</span>
+          ${slot.ambientPath ? `<button class="btn btn-secondary" style="font-size:9px;padding:2px 6px" onclick="clearAmbient(${slot.id})">✕</button>` : ''}
+        </div>
+      </div>
+
+      <!-- Waveform row + SFX drop -->
+      <div class="waveform-row" id="wrow-${slot.id}">
+        <div class="wavesurfer-host" id="ws-${slot.id}"></div>
+        <div class="waveform-placeholder" id="wsph-${slot.id}" style="${slot.videoPath ? 'display:none' : ''}">
+          Load video to see waveform
+        </div>
+        <!-- SFX markers rendered by JS -->
+        <div class="sfx-overlay" id="sfxov-${slot.id}"></div>
+        <!-- Invisible SFX drop target -->
+        <div class="sfx-drop-target" id="sfxdrop-${slot.id}"
+             ondragover="onSfxDragOver(event, ${slot.id})"
+             ondragleave="onSfxDragLeave(event, ${slot.id})"
+             ondrop="onSfxDrop(event, ${slot.id})">
+        </div>
+      </div>
+
+      <!-- Slot footer: SFX tag list -->
+      <div class="slot-footer">
+        <div class="sfx-list" id="sfxlist-${slot.id}">
+          ${buildSfxTags(slot)}
+        </div>
+      </div>
+    </div>`;
+  return div;
+}
+
+function buildSfxTags(slot) {
+  return slot.sfxCues.map(cue => `
+    <div class="sfx-tag" title="${esc(cue.path)}">
+      🔊 ${esc(shortName(cue.name || cue.path))} @${fmtMs(cue.offsetMs)}
+      <button onclick="removeSfxCue(${slot.id}, ${cue.id})" title="Remove">✕</button>
+    </div>`).join('');
+}
+
+function refreshSfxUI(slotId) {
+  const slot = slots.find(s => s.id === slotId);
+  if (!slot) return;
+  const listEl = document.getElementById(`sfxlist-${slotId}`);
+  if (listEl) listEl.innerHTML = buildSfxTags(slot);
+  renderSfxMarkers(slot);
+}
+
+function renderSfxMarkers(slot) {
+  const overlay = document.getElementById(`sfxov-${slot.id}`);
+  if (!overlay) return;
+  overlay.innerHTML = '';
+  const durMs = slot.videoDurMs || slotDurationsMs[slot.id] || 1;
+  slot.sfxCues.forEach(cue => {
+    const pct = Math.min(99, (cue.offsetMs / durMs) * 100);
+    const m = document.createElement('div');
+    m.className = 'sfx-marker';
+    m.style.left = `${pct}%`;
+    m.title = `${shortName(cue.name || cue.path)} @ ${fmtMs(cue.offsetMs)}`;
+    m.innerHTML = `
+      <span class="sfx-marker-label">${esc(shortName(cue.name || cue.path))}</span>
+      <button class="sfx-marker-del" onclick="removeSfxCue(${slot.id}, ${cue.id})">✕</button>`;
+    // drag to reposition
+    m.addEventListener('mousedown', e => startSfxMarkerDrag(e, slot.id, cue.id));
+    overlay.appendChild(m);
+  });
+}
+
+function startSfxMarkerDrag(e, slotId, cueId) {
+  e.preventDefault();
+  const wrow = document.getElementById(`wrow-${slotId}`);
+  const rect = wrow.getBoundingClientRect();
+  const slot = slots.find(s => s.id === slotId);
+  const durMs = slot.videoDurMs || slotDurationsMs[slotId] || 1;
+
+  function onMove(ev) {
+    const pct = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
+    const cue = slot.sfxCues.find(c => c.id === cueId);
+    if (cue) { cue.offsetMs = Math.round(pct * durMs); refreshSfxUI(slotId); }
+  }
+  function onUp() {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  }
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WAVESURFER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function initWaveSurfer(slot) {
+  if (!window.__mnWaveSurferReady) return;
+  destroyWaveSurfer(slot.id);
+
+  // fetch audio extraction from server
+  let audioUrl;
+  try {
+    const r = await fetch(`${SERVER_BASE}/api/stitch_editor/audio_extract`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ video_path: slot.videoPath })
+    });
+    if (r.ok) {
+      const d = await r.json();
+      audioUrl = d.audio_url;
+    }
+  } catch (_) { /* no audio — wavesurfer will be silent */ }
+
+  if (!audioUrl) {
+    const ph = document.getElementById(`wsph-${slot.id}`);
+    if (ph) ph.style.display = 'flex';
+    return;
+  }
+
+  const ph = document.getElementById(`wsph-${slot.id}`);
+  if (ph) ph.style.display = 'none';
+
+  const ws = WaveSurfer.create({
+    container: `#ws-${slot.id}`,
+    waveColor: '#533483',
+    progressColor: '#e94560',
+    height: 72,
+    barWidth: 2,
+    barGap: 1,
+    barRadius: 2,
+    interact: false,
+    normalize: true
+  });
+  ws.load(audioUrl);  // ws.load() only — never setMediaElement()
+  slotWavesurfers[slot.id] = ws;
+}
+
+function destroyWaveSurfer(slotId) {
+  if (slotWavesurfers[slotId]) {
+    try { slotWavesurfers[slotId].destroy(); } catch (_) {}
+    delete slotWavesurfers[slotId];
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// VIDEO DROP / SET
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function triggerVideoFilePick(slotId) {
+  // Chrome supports file.path; Safari doesn't
+  // We always show the paste-path row as fallback
+  const row = document.getElementById(`pathrow-${slotId}`);
+  if (row) row.style.display = 'flex';
+}
+
+function onVideoDragOver(ev, slotId) {
+  ev.preventDefault(); ev.stopPropagation();
+  ev.dataTransfer.dropEffect = 'copy';
+  document.getElementById(`vzone-${slotId}`)?.classList.add('drag-over');
+}
+function onVideoDragLeave(ev, slotId) {
+  ev.stopPropagation();
+  document.getElementById(`vzone-${slotId}`)?.classList.remove('drag-over');
+}
+async function onVideoDrop(ev, slotId) {
+  ev.preventDefault(); ev.stopPropagation();
+  document.getElementById(`vzone-${slotId}`)?.classList.remove('drag-over');
+
+  // Check for native file (Chrome gives file.path)
+  const file = ev.dataTransfer.files[0];
+  if (file) {
+    if (file.path) {
+      // Chrome native path
+      await setVideoByPath(slotId, file.path);
+    } else {
+      // Safari — can't get path; show paste-path input
+      toast('Safari: paste the file path below and press Enter', 'error');
+      const row = document.getElementById(`pathrow-${slotId}`);
+      if (row) row.style.display = 'flex';
+    }
+    return;
+  }
+  // Library item drag (shouldn't land here, but guard)
+  const libData = ev.dataTransfer.getData('application/x-mn-lib');
+  if (libData) { toast('Drop audio from library onto the Ambient zone', 'error'); }
+}
+
+async function setVideoByPath(slotId, rawPath) {
+  const p = (rawPath || '').trim();
+  if (!p) return;
+  const slot = slots.find(s => s.id === slotId);
+  if (!slot) return;
+
+  setStatus('Probing video…');
+  try {
+    // Ask server for duration (server also validates whitelist)
+    const r = await fetch(`${SERVER_BASE}/api/finder_video?path=${encodeURIComponent(p)}&probe=1`);
+    if (!r.ok) { const e = await r.json(); throw new Error(e.error || r.status); }
+    const d = await r.json();
+    slot.videoPath = p;
+    slot.videoDurMs = Math.round((d.duration_s || 0) * 1000);
+    slotDurationsMs[slotId] = slot.videoDurMs;
+    renderTimeline();
+    initWaveSurfer(slot);
+    setStatus(`Video set — ${fmtMs(slot.videoDurMs)}`);
+  } catch (e) {
+    toast(`Video error: ${e.message}`, 'error');
+    setStatus('Error');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AMBIENT DROP
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function onAmbientDragOver(ev, slotId) {
+  if (!ev.dataTransfer.types.includes('application/x-mn-lib') &&
+      !ev.dataTransfer.types.includes('Files')) return;
+  ev.preventDefault(); ev.stopPropagation();
+  ev.dataTransfer.dropEffect = 'copy';
+  document.getElementById(`azone-${slotId}`)?.classList.add('drag-over');
+}
+function onAmbientDragLeave(ev, slotId) {
+  ev.stopPropagation();
+  document.getElementById(`azone-${slotId}`)?.classList.remove('drag-over');
+}
+function onAmbientDrop(ev, slotId) {
+  ev.preventDefault(); ev.stopPropagation();
+  document.getElementById(`azone-${slotId}`)?.classList.remove('drag-over');
+
+  const libRaw = ev.dataTransfer.getData('application/x-mn-lib');
+  if (libRaw) {
+    const { path, name, cat } = JSON.parse(libRaw);
+    if (cat !== 'ambient') { toast('Drop an Ambient file here', 'error'); return; }
+    setAmbient(slotId, path, name);
+    return;
+  }
+  const file = ev.dataTransfer.files[0];
+  if (file && file.path) {
+    setAmbient(slotId, file.path, file.name);
+  }
+}
+
+function setAmbient(slotId, path, name) {
+  const slot = slots.find(s => s.id === slotId);
+  if (!slot) return;
+  slot.ambientPath = path;
+  slot.ambientName = name;
+  renderTimeline();
+}
+
+function clearAmbient(slotId) {
+  const slot = slots.find(s => s.id === slotId);
+  if (slot) { slot.ambientPath = ''; slot.ambientName = ''; }
+  renderTimeline();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SFX DROP
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function onSfxDragOver(ev, slotId) {
+  if (!ev.dataTransfer.types.includes('application/x-mn-lib') &&
+      !ev.dataTransfer.types.includes('Files')) return;
+  ev.preventDefault(); ev.stopPropagation();
+  ev.dataTransfer.dropEffect = 'copy';
+  document.getElementById(`sfxdrop-${slotId}`)?.classList.add('sfx-drag-over');
+}
+function onSfxDragLeave(ev, slotId) {
+  ev.stopPropagation();
+  document.getElementById(`sfxdrop-${slotId}`)?.classList.remove('sfx-drag-over');
+}
+function onSfxDrop(ev, slotId) {
+  ev.preventDefault(); ev.stopPropagation();
+  document.getElementById(`sfxdrop-${slotId}`)?.classList.remove('sfx-drag-over');
+
+  const slot = slots.find(s => s.id === slotId);
+  if (!slot) return;
+  if (!slot.videoPath) { toast('Set a video first before adding SFX cues', 'error'); return; }
+
+  // Compute slot-relative offset from drop X position
+  const wrow = document.getElementById(`wrow-${slotId}`);
+  const rect = wrow ? wrow.getBoundingClientRect() : { left: 0, width: 1 };
+  const pct = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
+  const durMs = slot.videoDurMs || slotDurationsMs[slotId] || 0;
+  const offsetMs = Math.round(pct * durMs);  // SLOT-RELATIVE (slot start = 0)
+
+  const libRaw = ev.dataTransfer.getData('application/x-mn-lib');
+  if (libRaw) {
+    const { path, name, cat } = JSON.parse(libRaw);
+    if (cat !== 'sfx') { toast('Drop an SFX file here', 'error'); return; }
+    slot.sfxCues.push(makeSfxCue(path, name, offsetMs));
+    refreshSfxUI(slotId);
+    return;
+  }
+  const file = ev.dataTransfer.files[0];
+  if (file && file.path) {
+    slot.sfxCues.push(makeSfxCue(file.path, file.name, offsetMs));
+    refreshSfxUI(slotId);
+  }
+}
+
+function removeSfxCue(slotId, cueId) {
+  const slot = slots.find(s => s.id === slotId);
+  if (!slot) return;
+  slot.sfxCues = slot.sfxCues.filter(c => c.id !== cueId);
+  refreshSfxUI(slotId);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SLOT-LEVEL DROP (ambient or SFX from library, dispatched by cat)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function onSlotDragOver(ev, slotId) {
+  if (!ev.dataTransfer.types.includes('application/x-mn-lib')) return;
+  ev.preventDefault();
+  document.getElementById(`slot-${slotId}`)?.classList.add('drag-over');
+}
+function onSlotDragLeave(ev, slotId) {
+  document.getElementById(`slot-${slotId}`)?.classList.remove('drag-over');
+}
+function onSlotDrop(ev, slotId) {
+  document.getElementById(`slot-${slotId}`)?.classList.remove('drag-over');
+  const raw = ev.dataTransfer.getData('application/x-mn-lib');
+  if (!raw) return;
+  ev.preventDefault();
+  const { path, name, cat } = JSON.parse(raw);
+  if (cat === 'ambient') { setAmbient(slotId, path, name); return; }
+  // sfx dropped onto slot body — treat as sfx at 0ms (requires video set)
+  if (cat === 'sfx') {
+    const slot = slots.find(s => s.id === slotId);
+    if (!slot) return;
+    if (!slot.videoPath) { toast('Set a video first before adding SFX cues', 'error'); return; }
+    slot.sfxCues.push(makeSfxCue(path, name, 0)); refreshSfxUI(slotId);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRANSITION STRIPS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function buildTransitionEl(tIdx, t) {
+  const div = document.createElement('div');
+  div.className = 'transition-strip';
+  div.innerHTML = `
+    <span class="t-label">↔ Transition</span>
+    <div class="transition-zone" id="tzone-${tIdx}"
+         ondragover="onTransitionDragOver(event, ${tIdx})"
+         ondragleave="onTransitionDragLeave(event, ${tIdx})"
+         ondrop="onTransitionDrop(event, ${tIdx})">
+      ${t.audioPath
+        ? `<span class="t-name" title="${esc(t.audioPath)}">${esc(shortName(t.audioName || t.audioPath))}</span>
+           <button class="t-remove" onclick="clearTransition(${tIdx})">✕</button>`
+        : `Drop transition sound here`}
+    </div>
+    <div class="transition-fade">
+      <label>Fade</label>
+      <input type="number" min="0" max="5000" step="100" value="${t.fadeDurMs}"
+             title="Fade duration ms"
+             onchange="transitions[${tIdx}].fadeDurMs = +this.value" />ms
+    </div>`;
+  return div;
+}
+
+function onTransitionDragOver(ev, tIdx) {
+  if (!ev.dataTransfer.types.includes('application/x-mn-lib') &&
+      !ev.dataTransfer.types.includes('Files')) return;
+  ev.preventDefault();
+  document.getElementById(`tzone-${tIdx}`)?.classList.add('drag-over');
+}
+function onTransitionDragLeave(ev, tIdx) {
+  document.getElementById(`tzone-${tIdx}`)?.classList.remove('drag-over');
+}
+function onTransitionDrop(ev, tIdx) {
+  ev.preventDefault();
+  document.getElementById(`tzone-${tIdx}`)?.classList.remove('drag-over');
+
+  const libRaw = ev.dataTransfer.getData('application/x-mn-lib');
+  if (libRaw) {
+    const { path, name, cat } = JSON.parse(libRaw);
+    if (cat !== 'transitions') { toast('Drop a Transitions file here', 'error'); return; }
+    transitions[tIdx].audioPath = path;
+    transitions[tIdx].audioName = name;
+    renderTimeline(); return;
+  }
+  const file = ev.dataTransfer.files[0];
+  if (file && file.path) {
+    transitions[tIdx].audioPath = file.path;
+    transitions[tIdx].audioName = file.name;
+    renderTimeline();
+  }
+}
+
+function clearTransition(tIdx) {
+  if (transitions[tIdx]) { transitions[tIdx].audioPath = ''; transitions[tIdx].audioName = ''; }
+  renderTimeline();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// JOB SAVE / LOAD / NEW / DELETE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function collectJob() {
+  // Snake_case keys match server pipeline expectations (_stitch_build_pipeline)
+  return {
+    name: document.getElementById('jobName').value.trim() || 'Untitled',
+    slots: slots.map(s => ({
+      id: s.id, label: s.label,
+      video_path: s.videoPath, video_dur_ms: s.videoDurMs,
+      ambient_bed_path: s.ambientPath, ambient_volume: s.ambientVol,
+      sfx_cues: s.sfxCues.map(c => ({ id: c.id, source_path: c.path, name: c.name, offset_ms: c.offsetMs }))
+    })),
+    transitions: transitions.map(t => ({
+      after_slot: t.afterSlotIndex,
+      source_path: t.audioPath, audio_name: t.audioName, fade_ms: t.fadeDurMs
+    }))
+  };
+}
+
+async function saveJob() {
+  const job = collectJob();
+  if (!job.name || job.name === 'Untitled') {
+    toast('Enter a job name first', 'error'); return;
+  }
+  try {
+    const r = await fetch(`${SERVER_BASE}/api/stitch_editor/job`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(job)
+    });
+    if (!r.ok) throw new Error((await r.json()).error || r.status);
+    toast(`Saved "${job.name}"`, 'success');
+    setStatus(`Saved: ${job.name}`);
+  } catch (e) {
+    toast(`Save failed: ${e.message}`, 'error');
+  }
+}
+
+async function openLoadModal() {
+  try {
+    const r = await fetch(`${SERVER_BASE}/api/stitch_editor/jobs`);
+    const { jobs } = await r.json();  // server returns {"jobs":[...]}
+    const list = document.getElementById('modalList');
+    if (!jobs || !jobs.length) {
+      list.innerHTML = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:12px">No saved jobs</div>';
+    } else {
+      list.innerHTML = jobs.map(j => `
+        <div class="modal-item" onclick="loadJob(${JSON.stringify(j.name)})">
+          <span class="modal-item-name">${esc(j.name)}</span>
+          <span class="modal-item-meta">${j.slot_count || 0} segments</span>
+        </div>`).join('');
+    }
+    document.getElementById('modal').classList.add('open');
+  } catch (e) { toast(`Load list failed: ${e.message}`, 'error'); }
+}
+
+async function loadJob(name) {
+  closeModal();
+  try {
+    const r = await fetch(`${SERVER_BASE}/api/stitch_editor/job/${encodeURIComponent(name)}`);
+    if (!r.ok) throw new Error(r.status);
+    const resp = await r.json();
+    applyJob(resp.job ?? resp);  // unwrap server envelope {"job":{...}} if present
+    toast(`Loaded "${name}"`, 'success');
+  } catch (e) { toast(`Load failed: ${e.message}`, 'error'); }
+}
+
+function applyJob(job) {
+  // destroy existing wavesurfers
+  Object.keys(slotWavesurfers).forEach(id => destroyWaveSurfer(+id));
+
+  document.getElementById('jobName').value = job.name || '';
+  slotIdCounter = 0; sfxIdCounter = 0;
+  slotDurationsMs = {};  // reset stale durations from prior job
+
+  // Accept both snake_case (saved by collectJob) and camelCase (legacy/direct)
+  slots = (job.slots || []).map(s => {
+    const videoPath   = s.video_path      ?? s.videoPath   ?? '';
+    const videoDurMs  = s.video_dur_ms    ?? s.videoDurMs  ?? 0;
+    const ambientPath = s.ambient_bed_path ?? s.ambientPath ?? '';
+    const ambientVol  = s.ambient_volume  ?? s.ambientVol  ?? 0.6;
+    const rawCues     = s.sfx_cues        ?? s.sfxCues     ?? [];
+    const slot = {
+      id: ++slotIdCounter, label: s.label || `Segment ${slotIdCounter}`,
+      videoPath, videoDurMs, ambientPath, ambientVol,
+      sfxCues: rawCues.map(c => ({
+        id: ++sfxIdCounter,
+        path: c.source_path ?? c.path ?? '',
+        name: c.name ?? '',
+        offsetMs: c.offset_ms ?? c.offsetMs ?? 0
+      }))
+    };
+    if (slot.videoDurMs) slotDurationsMs[slot.id] = slot.videoDurMs;
+    return slot;
+  });
+
+  transitions = (job.transitions || []).map((t, i) => ({
+    afterSlotIndex: i,
+    audioPath: t.source_path ?? t.audioPath ?? '',
+    audioName: t.audio_name  ?? t.audioName ?? '',
+    fadeDurMs: t.fade_ms     ?? t.fadeDurMs ?? 500
+  }));
+
+  renderTimeline();
+  slots.forEach(slot => { if (slot.videoPath && window.__mnWaveSurferReady) initWaveSurfer(slot); });
+}
+
+function newJob() {
+  Object.keys(slotWavesurfers).forEach(id => destroyWaveSurfer(+id));
+  slots = []; transitions = []; slotIdCounter = 0; sfxIdCounter = 0;
+  slotDurationsMs = {};
+  document.getElementById('jobName').value = '';
+  document.getElementById('previewVideo').style.display = 'none';
+  document.getElementById('bakeResult').textContent = '';
+  addSlot('Intro');
+}
+
+async function deleteJob() {
+  const name = document.getElementById('jobName').value.trim();
+  if (!name) { toast('No job loaded', 'error'); return; }
+  if (!confirm(`Delete job "${name}"?`)) return;
+  try {
+    await fetch(`${SERVER_BASE}/api/stitch_editor/job/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    toast(`Deleted "${name}"`, 'success');
+    newJob();
+  } catch (e) { toast(`Delete failed: ${e.message}`, 'error'); }
+}
+
+function closeModal() {
+  document.getElementById('modal').classList.remove('open');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PREVIEW
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function doPreview() {
+  const job = collectJob();
+  if (!job.slots.some(s => s.video_path)) { toast('Add at least one video segment', 'error'); return; }
+  showProgress('Building preview…', 10);
+  document.getElementById('previewVideo').style.display = 'none';
+  document.getElementById('bakeResult').textContent = '';
+
+  try {
+    const r = await fetch(`${SERVER_BASE}/api/stitch_editor/preview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(job)
+    });
+    showProgress('Processing…', 60);
+    if (!r.ok) { const e = await r.json(); throw new Error(e.error || r.status); }
+    const d = await r.json();
+    showProgress('Done', 100);
+
+    // Update slot durations from server response
+    if (d.slot_durations && Array.isArray(d.slot_durations)) {
+      d.slot_durations.forEach((durMs, i) => {
+        if (slots[i]) { slots[i].videoDurMs = durMs; slotDurationsMs[slots[i].id] = durMs; }
+      });
+      slots.forEach(s => renderSfxMarkers(s));
+    }
+
+    const vid = document.getElementById('previewVideo');
+    // Server may return absolute URL — don't double-prefix SERVER_BASE
+    vid.src = (d.preview_url || '').startsWith('http') ? d.preview_url : `${SERVER_BASE}${d.preview_url}`;
+    vid.style.display = 'block';
+    vid.load();
+    hideProgress();
+    setStatus(`Preview ready — ${fmtMs(d.duration_ms)}`);
+  } catch (e) {
+    hideProgress();
+    toast(`Preview failed: ${e.message}`, 'error');
+    setStatus('Preview error');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BAKE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function doBake() {
+  const job = collectJob();
+  if (!job.slots.some(s => s.video_path)) { toast('Add at least one video segment', 'error'); return; }
+  if (!confirm(`Bake "${job.name}" to a normalized MP4? This will register the output in Directus.`)) return;
+
+  showProgress('Normalizing segments…', 5);
+  document.getElementById('bakeResult').textContent = '';
+
+  try {
+    const r = await fetch(`${SERVER_BASE}/api/stitch_editor/bake`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(job)
+    });
+    showProgress('Mixing audio…', 40);
+    if (!r.ok) { const e = await r.json(); throw new Error(e.error || r.status); }
+    const d = await r.json();
+    showProgress('Registered', 100);
+    hideProgress();
+
+    const res = document.getElementById('bakeResult');
+    // Accept both server field names and aliases for robustness
+    const durMs   = d.duration_ms   ?? d.dur_ms ?? 0;
+    const sizeB   = d.size_bytes    ?? d.file_size_bytes ?? 0;
+    const outPath = d.output_path   ?? d.bake_path ?? '';
+    const assetId = d.asset_id ?? '?';
+    res.innerHTML = `✅ Bake complete — ${fmtMs(durMs)} · ${fmtBytes(sizeB)}<br>
+                     <span style="font-size:10px;color:var(--muted)">${esc(outPath)}</span><br>
+                     <span style="font-size:10px;color:var(--muted)">asset_id=${assetId}</span>`;
+    setStatus(`Baked — ${fmtBytes(sizeB)}`);
+    toast('Bake complete!', 'success');
+  } catch (e) {
+    hideProgress();
+    toast(`Bake failed: ${e.message}`, 'error');
+    setStatus('Bake error');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function setStatus(msg) { document.getElementById('statusBar').textContent = msg; }
+
+let _toastTimer;
+function toast(msg, type = '') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = `show ${type}`;
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => { el.className = ''; }, 3200);
+}
+
+function showProgress(label, pct) {
+  document.getElementById('progressWrap').style.display = 'flex';
+  document.getElementById('progressFill').style.width = `${pct}%`;
+  document.getElementById('progressLabel').textContent = label;
+}
+function hideProgress() {
+  setTimeout(() => { document.getElementById('progressWrap').style.display = 'none'; }, 800);
+}
+
+function fmtMs(ms) {
+  if (!ms) return '0:00';
+  const s = Math.round(ms / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+function fmtBytes(b) {
+  if (!b) return '? B';
+  if (b < 1024) return `${b} B`;
+  if (b < 1048576) return `${(b/1024).toFixed(1)} KB`;
+  return `${(b/1048576).toFixed(1)} MB`;
+}
+function shortName(p) {
+  if (!p) return '';
+  return p.split(/[\\/]/).pop();
+}
+function esc(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;')
+                        .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Close modal on outside click
+document.getElementById('modal').addEventListener('click', e => {
+  if (e.target === document.getElementById('modal')) closeModal();
+});
+
+// Keyboard shortcuts
+document.addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); saveJob(); }
+  if (e.key === 'Escape') closeModal();
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PER-SLOT PLAY / PAUSE  (Path B patch — patch_stitch_play_button.py)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Track which slotId is currently playing (null = none)
+let _activeSlotPlayId = null;
+// Map slotId → <video> element
+const _slotVideoEls = {};
+
+/**
+ * Toggle play/pause for a slot's inline video.
+ * Radio-style: starting one slot pauses any other that's playing.
+ * Endpoint: GET http://localhost:5111/api/finder_video?path=<encoded>
+ * (no probe param → serves bytes with Range support, perfect for <video>)
+ */
+function toggleSlotPlay(slotId) {
+  const slot = slots.find(s => s.id === slotId);
+  if (!slot || !slot.videoPath) {
+    toast('Drop a video file onto this slot first', 'error');
+    return;
+  }
+
+  const btn = document.getElementById(`playbtn-${slotId}`);
+  const vzone = document.getElementById(`vzone-${slotId}`);
+
+  // Pause any other currently-playing slot
+  if (_activeSlotPlayId !== null && _activeSlotPlayId !== slotId) {
+    _pauseSlot(_activeSlotPlayId);
+  }
+
+  // Get or create the inline <video> element for this slot
+  let vid = _slotVideoEls[slotId];
+  if (!vid) {
+    vid = document.createElement('video');
+    vid.id = `slotv-${slotId}`;
+    vid.className = 'slot-inline-video';
+    vid.controls = true;
+    vid.preload = 'metadata';
+    // Absolute URL per Rule 32 — uses finder_video endpoint (serves bytes, no probe)
+    const encodedPath = encodeURIComponent(slot.videoPath);
+    vid.src = `http://localhost:5111/api/finder_video?path=${encodedPath}`;
+    vid.addEventListener('ended', () => _pauseSlot(slotId));
+    vid.addEventListener('pause', () => {
+      if (_activeSlotPlayId === slotId) {
+        _setSlotPlayState(slotId, false);
+        _activeSlotPlayId = null;
+      }
+    });
+    // Append below the existing zone content (inside vzone)
+    if (vzone) {
+      vzone.classList.add('has-inline-video');
+      vzone.appendChild(vid);
+    }
+    _slotVideoEls[slotId] = vid;
+  }
+
+  const isPlaying = _activeSlotPlayId === slotId && !vid.paused;
+  if (isPlaying) {
+    vid.pause();
+    // pause event handler above cleans up state
+  } else {
+    vid.classList.add('visible');
+    vid.play().catch(err => {
+      toast(`Playback error: ${err.message}`, 'error');
+    });
+    _activeSlotPlayId = slotId;
+    _setSlotPlayState(slotId, true);
+  }
+}
+
+function _pauseSlot(slotId) {
+  const vid = _slotVideoEls[slotId];
+  if (vid && !vid.paused) vid.pause();
+  _setSlotPlayState(slotId, false);
+  if (_activeSlotPlayId === slotId) _activeSlotPlayId = null;
+}
+
+function _setSlotPlayState(slotId, playing) {
+  const btn = document.getElementById(`playbtn-${slotId}`);
+  if (btn) {
+    btn.textContent = playing ? '⏸' : '▶';
+    btn.title = playing ? 'Pause' : 'Play';
+    btn.classList.toggle('playing', playing);
+  }
+}
+
+/**
+ * Clean up inline video elements when a slot is removed or the timeline
+ * is re-rendered.  Called from removeSlot() and renderTimeline().
+ */
+function destroySlotVideo(slotId) {
+  const vid = _slotVideoEls[slotId];
+  if (vid) {
+    vid.pause();
+    vid.src = '';
+    vid.remove();
+    delete _slotVideoEls[slotId];
+  }
+  if (_activeSlotPlayId === slotId) _activeSlotPlayId = null;
+}
+
+// Patch removeSlot to also destroy inline video
+const _origRemoveSlot = removeSlot;
+removeSlot = function(slotId) {
+  destroySlotVideo(slotId);
+  _origRemoveSlot(slotId);
+};
+
+// Patch renderTimeline to destroy inline videos before re-render
+// (they'll be recreated on next Play click)
+const _origRenderTimeline = renderTimeline;
+renderTimeline = function() {
+  // destroy all inline videos (DOM nodes get wiped on re-render anyway)
+  Object.keys(_slotVideoEls).forEach(id => destroySlotVideo(+id));
+  _origRenderTimeline();
+};
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SLOT PREVIEW — Bottom Bar Play/Pause (Path B patch — patch_stitch_slot_preview.py)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Track which slot is "selected" (last interacted with)
+let _selectedSlotId = null;
+
+// Track slot focus on any slot interaction
+document.addEventListener('click', (e) => {
+  const slotEl = e.target.closest('.slot');
+  if (slotEl) {
+    const match = slotEl.id.match(/slot-(\d+)/);
+    if (match) _selectedSlotId = parseInt(match[1], 10);
+  }
+}, true);
+
+// Also track on drag events into slots
+document.addEventListener('drop', (e) => {
+  const slotEl = e.target.closest('.slot');
+  if (slotEl) {
+    const match = slotEl.id.match(/slot-(\d+)/);
+    if (match) _selectedSlotId = parseInt(match[1], 10);
+  }
+}, true);
+
+// State for slot preview
+let _slotPreviewPlaying = false;
+let _slotPreviewVideoEl = null;
+let _slotPreviewBtnEl = null;
+let _slotPreviewSpinnerEl = null;
+let _slotPreviewBuildingInProgress = false;
+let _slotPreviewAbortController = null;
+
+// Inject the slot preview button + video element into bottomActions on DOMContentLoaded
+window.addEventListener('DOMContentLoaded', () => {
+  const bottomActions = document.getElementById('bottomActions');
+  if (!bottomActions) return;
+
+  // Create the button
+  _slotPreviewBtnEl = document.createElement('button');
+  _slotPreviewBtnEl.id = 'slotPreviewBtn';
+  _slotPreviewBtnEl.className = 'btn btn-secondary';
+  _slotPreviewBtnEl.innerHTML = '<span class="spb-icon">▶</span> Slot Preview';
+  _slotPreviewBtnEl.title = 'Preview selected slot with audio mix';
+  _slotPreviewBtnEl.onclick = toggleSlotPreview;
+
+  // Create spinner
+  _slotPreviewSpinnerEl = document.createElement('span');
+  _slotPreviewSpinnerEl.id = 'slotPreviewSpinner';
+  _slotPreviewSpinnerEl.textContent = 'Building…';
+
+  // Create video element
+  _slotPreviewVideoEl = document.createElement('video');
+  _slotPreviewVideoEl.id = 'slotPreviewVideo';
+  _slotPreviewVideoEl.controls = true;
+  _slotPreviewVideoEl.preload = 'metadata';
+  _slotPreviewVideoEl.addEventListener('ended', () => setSlotPreviewState(false));
+  _slotPreviewVideoEl.addEventListener('pause', () => {
+    if (_slotPreviewPlaying) setSlotPreviewState(false);
+  });
+  _slotPreviewVideoEl.addEventListener('play', () => setSlotPreviewState(true));
+
+  // Insert after the existing Preview button (first child is ▶ Preview)
+  const existingPreview = bottomActions.querySelector('button');
+  if (existingPreview && existingPreview.nextSibling) {
+    bottomActions.insertBefore(_slotPreviewBtnEl, existingPreview.nextSibling);
+    bottomActions.insertBefore(_slotPreviewSpinnerEl, _slotPreviewBtnEl.nextSibling);
+    bottomActions.insertBefore(_slotPreviewVideoEl, _slotPreviewSpinnerEl.nextSibling);
+  } else {
+    bottomActions.appendChild(_slotPreviewBtnEl);
+    bottomActions.appendChild(_slotPreviewSpinnerEl);
+    bottomActions.appendChild(_slotPreviewVideoEl);
+  }
+});
+
+async function toggleSlotPreview() {
+  // If currently playing, pause
+  if (_slotPreviewPlaying && _slotPreviewVideoEl && !_slotPreviewVideoEl.paused) {
+    _slotPreviewVideoEl.pause();
+    return;
+  }
+
+  // Guard against rapid clicks while building
+  if (_slotPreviewBuildingInProgress) {
+    return;  // Already building, ignore click
+  }
+
+  // If we have a loaded video that's paused, resume from beginning
+  if (_slotPreviewVideoEl && _slotPreviewVideoEl.src && _slotPreviewVideoEl.paused && _slotPreviewVideoEl.currentTime > 0) {
+    _slotPreviewVideoEl.currentTime = 0;
+    _slotPreviewVideoEl.play().catch(e => toast(`Play error: ${e.message}`, 'error'));
+    return;
+  }
+
+  // Determine which slot to preview
+  let slotId = _selectedSlotId;
+  if (!slotId && slots.length > 0) {
+    slotId = slots[0].id;  // default to slot 1
+  }
+
+  // Handle empty slots case
+  if (slots.length === 0) {
+    toast('Add a slot first', 'error');
+    return;
+  }
+
+  const slot = slots.find(s => s.id === slotId);
+  if (!slot) {
+    toast('No slot selected', 'error');
+    return;
+  }
+  if (!slot.videoPath) {
+    toast('Selected slot has no video', 'error');
+    return;
+  }
+
+  // Build a single-slot job for preview
+  const singleSlotJob = {
+    name: `slot_preview_${slotId}`,
+    slots: [{
+      id: slot.id,
+      label: slot.label,
+      video_path: slot.videoPath,
+      video_dur_ms: slot.videoDurMs,
+      ambient_bed_path: slot.ambientPath,
+      ambient_volume: slot.ambientVol,
+      sfx_cues: slot.sfxCues.map(c => ({
+        id: c.id,
+        source_path: c.path,
+        name: c.name,
+        offset_ms: c.offsetMs
+      }))
+    }],
+    transitions: []  // no transitions for single slot
+  };
+
+  // Cancel any in-flight fetch
+  if (_slotPreviewAbortController) {
+    _slotPreviewAbortController.abort();
+  }
+  _slotPreviewAbortController = new AbortController();
+
+  // Show loading state
+  _slotPreviewBuildingInProgress = true;
+  if (_slotPreviewBtnEl) _slotPreviewBtnEl.disabled = true;
+  if (_slotPreviewSpinnerEl) _slotPreviewSpinnerEl.classList.add('loading');
+  setStatus(`Building slot ${slot.label} preview…`);
+
+  try {
+    const r = await fetch('http://localhost:5111/api/stitch_editor/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(singleSlotJob),
+      signal: _slotPreviewAbortController.signal
+    });
+
+    if (!r.ok) {
+      const e = await r.json();
+      throw new Error(e.error || r.status);
+    }
+
+    const d = await r.json();
+
+    // Reset loading state
+    _slotPreviewBuildingInProgress = false;
+    if (_slotPreviewBtnEl) _slotPreviewBtnEl.disabled = false;
+    if (_slotPreviewSpinnerEl) _slotPreviewSpinnerEl.classList.remove('loading');
+
+    // Set video source and show
+    const previewUrl = (d.preview_url || '').startsWith('http')
+      ? d.preview_url
+      : `http://localhost:5111${d.preview_url}`;
+
+    _slotPreviewVideoEl.src = previewUrl;
+    _slotPreviewVideoEl.classList.add('visible');
+    _slotPreviewVideoEl.load();
+    _slotPreviewVideoEl.play().catch(e => toast(`Play error: ${e.message}`, 'error'));
+
+    setStatus(`Slot preview ready — ${fmtMs(d.duration_ms || slot.videoDurMs)}`);
+
+  } catch (e) {
+    // Reset loading state
+    _slotPreviewBuildingInProgress = false;
+    if (_slotPreviewBtnEl) _slotPreviewBtnEl.disabled = false;
+    if (_slotPreviewSpinnerEl) _slotPreviewSpinnerEl.classList.remove('loading');
+    // Don't toast on abort (user initiated cancel by starting new preview)
+    if (e.name !== 'AbortError') {
+      toast(`Slot preview failed: ${e.message}`, 'error');
+      setStatus('Slot preview error');
+    }
+  }
+}
+
+function setSlotPreviewState(playing) {
+  _slotPreviewPlaying = playing;
+  if (_slotPreviewBtnEl) {
+    const icon = _slotPreviewBtnEl.querySelector('.spb-icon');
+    if (icon) icon.textContent = playing ? '⏸' : '▶';
+    _slotPreviewBtnEl.title = playing ? 'Pause slot preview' : 'Preview selected slot with audio mix';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LIBRARY AUDIO PREVIEW  (click-to-preview; inline pulsing dot indicator)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let _libPreviewFile = null;
+
+window.addEventListener('DOMContentLoaded', () => {
+  const a = document.createElement('audio');
+  a.id = 'libPreviewAudio';
+  a.preload = 'none';
+  document.body.appendChild(a);
+});
+
+function _getLibAudio() { return document.getElementById('libPreviewAudio'); }
+
+function stopLibPreview() {
+  const audio = _getLibAudio();
+  if (audio && !audio.paused) audio.pause();
+  if (audio) audio.onended = null;
+  document.querySelectorAll('.lib-item.lib-preview-playing')
+    .forEach(el => el.classList.remove('lib-preview-playing'));
+  _libPreviewFile = null;
+}
+
+function toggleLibPreview(el, filename) {
+  const audio = _getLibAudio();
+  if (!audio) return;
+  // Same item while playing → stop
+  if (_libPreviewFile === filename && !audio.paused) {
+    stopLibPreview();
+    return;
+  }
+  // Stop anything currently playing, then start new item
+  stopLibPreview();
+  _libPreviewFile = filename;
+  audio.src = `http://localhost:5111/api/stitch_editor/audio_file/${encodeURIComponent(filename)}`;
+  el.classList.add('lib-preview-playing');
+  audio.onended = () => {
+    el.classList.remove('lib-preview-playing');
+    _libPreviewFile = null;
+  };
+  audio.play().catch(err => console.warn('[LibPreview]', err));
+}
+
+</script>
+</body>
+</html>

@@ -1,0 +1,1208 @@
+/* storyboard-v2 — app + component styles. Class-only selectors per
+   Rule 36 §36.1 — no `body > X`, no `:nth-child` without acceptance comment. */
+
+.mn-app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--bg);
+}
+
+.mn-app-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+.mn-app-subhead {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+/* Tab bar */
+.mn-tab-bar {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+  padding: 0 8px;
+}
+.mn-tab {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+  padding: 10px 16px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 13px;
+}
+.mn-tab:hover {
+  color: var(--text);
+  background: transparent;
+}
+.mn-tab.is-active {
+  color: var(--text-strong);
+  border-bottom-color: var(--accent);
+}
+
+/* Main layout: tab content + library sidebar */
+.mn-app-main {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  flex: 1;
+  min-height: 0;
+}
+.mn-app-tab-content {
+  overflow: auto;
+  padding: 16px;
+}
+
+/* Tab pane container */
+.mn-tab-pane {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px;
+}
+.mn-pane-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.mn-pane-footer {
+  margin-top: 16px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+
+.mn-scope-chip {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--accent-bg);
+  padding: 2px 8px;
+  border: 1px solid var(--accent-border);
+  border-radius: 12px;
+}
+
+.mn-dim {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.mn-warn {
+  color: var(--text-warn);
+  font-size: 12px;
+}
+.mn-loading,
+.mn-empty {
+  color: var(--text-dim);
+  padding: 24px 8px;
+  text-align: center;
+}
+
+.mn-readonly-banner {
+  color: var(--text-warn);
+  font-size: 11px;
+  font-style: italic;
+}
+
+/* Storyboard tab */
+.mn-beat-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mn-beat-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 12px;
+}
+.mn-beat-meta {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+.mn-beat-index { font-family: var(--mono); }
+.mn-beat-speaker {
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--accent);
+}
+.mn-beat-text {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-strong);
+}
+.mn-beat-editable {
+  outline: none;
+  padding: 4px 8px;
+  margin: 4px -8px 0;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.mn-beat-editable:focus {
+  border-color: var(--accent);
+  background: var(--bg);
+}
+.mn-beat-anchor {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  background: var(--code-bg);
+  padding: 0 4px;
+  border-radius: 2px;
+}
+.mn-beat-stale-tts {
+  font-size: 10px;
+  color: var(--text-warn);
+  border: 1px solid var(--text-warn);
+  border-radius: 8px;
+  padding: 0 6px;
+}
+
+.mn-save-indicator {
+  margin-left: auto;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--text-dim);
+  min-width: 80px;
+  text-align: right;
+}
+.mn-save-saving { color: var(--text-warn); }
+.mn-save-saved  { color: #5cd089; }
+.mn-save-error  { color: var(--text-error); font-weight: 600; }
+
+/* Buttons */
+.mn-btn {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 14px;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.mn-btn:hover:not(:disabled) {
+  background: var(--bg-panel);
+  border-color: var(--border-strong);
+}
+.mn-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.mn-btn-primary {
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* BG accept-all status */
+.mn-bg-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.mn-bg-accept-status {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.mn-bg-accept-idle { color: var(--text-dim); }
+.mn-bg-accept-sending { color: var(--text-warn); }
+.mn-bg-accept-ok { color: #5cd089; }
+.mn-bg-accept-error { color: var(--text-error); }
+
+/* Cropper modal save action */
+.mn-cropper-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0;
+}
+.mn-cropper-save-status {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.mn-cropper-save-idle, .mn-cropper-save-sending { color: var(--text-dim); }
+.mn-cropper-save-saved { color: #5cd089; }
+.mn-cropper-save-error { color: var(--text-error); font-weight: 600; }
+
+/* Storyboard export buttons */
+.mn-export-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.mn-export-status {
+  margin-left: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.mn-export-ok { color: #5cd089; }
+.mn-export-error { color: var(--text-error); }
+
+/* Event selector (LD-467) */
+.mn-event-selector {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.mn-event-selector-label {
+  color: var(--text-dim);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+.mn-event-select {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-size: 12px;
+  font-family: inherit;
+}
+.mn-event-loading { font-size: 11px; color: var(--text-warn); }
+.mn-event-error { font-size: 11px; color: var(--text-error); }
+
+/* Phase producer (LDs 462, 463) */
+.mn-phase-producers {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.mn-phase-producer {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 12px;
+}
+.mn-phase-summary {
+  cursor: pointer;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mn-phase-stub-tag {
+  font-weight: normal;
+  font-size: 11px;
+  font-style: italic;
+}
+.mn-phase-body {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+.mn-phase-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0;
+  flex-wrap: wrap;
+}
+.mn-phase-suggestion {
+  background: var(--code-bg);
+  color: var(--text);
+  padding: 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  white-space: pre-wrap;
+  max-height: 200px;
+  overflow: auto;
+}
+.mn-phase-base-clip {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  background: var(--code-bg);
+  padding: 2px 6px;
+  border-radius: 2px;
+}
+.mn-phase-watercolor-list { margin-top: 12px; }
+.mn-phase-watercolor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+  margin-top: 6px;
+}
+.mn-phase-watercolor-tile {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: stretch;
+}
+.mn-phase-watercolor-thumb {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  background: var(--code-bg);
+  border-radius: 2px;
+}
+.mn-phase-watercolor-name {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mn-btn-small { padding: 3px 8px; font-size: 11px; }
+
+.mn-phase-script-editor {
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  margin: 8px 0;
+}
+.mn-phase-script-editor:focus { border-color: var(--accent); outline: none; }
+.mn-phase-status-tag { font-size: 11px; font-style: italic; }
+.mn-phase-status-line {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: var(--code-bg);
+  border-left: 3px solid var(--accent);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.mn-phase-audio, .mn-phase-lipsync {
+  margin: 8px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.mn-phase-audio audio, .mn-phase-lipsync video {
+  background: var(--code-bg);
+  border-radius: 3px;
+}
+.mn-beat-magic-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+/* Stitcher tab full UI (LD-471) */
+.mn-stitcher-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+.mn-stitcher-slot {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px;
+}
+.mn-stitcher-slot[data-has-video="false"] {
+  opacity: 0.6;
+  background: var(--bg-panel);
+}
+.mn-stitcher-slot-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.mn-stitcher-loudnorm-tag {
+  font-size: 9px;
+  color: #5cd089;
+  border: 1px solid #5cd089;
+  border-radius: 8px;
+  padding: 0 6px;
+}
+.mn-stitcher-slot-video {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  background: var(--code-bg);
+  padding: 4px 6px;
+  border-radius: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 6px;
+}
+.mn-stitcher-slot-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+.mn-stitcher-slot-row select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+.mn-stitcher-bake-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+.mn-phase-watercolor-anim-tag {
+  font-size: 9px;
+  color: var(--accent);
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  padding: 0 4px;
+  border-radius: 2px;
+  align-self: flex-start;
+}
+
+/* Production Map tab (LD-465) */
+.mn-map-table-wrap {
+  overflow: auto;
+  max-height: 70vh;
+}
+.mn-map-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.mn-map-table th, .mn-map-table td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: center;
+}
+.mn-map-table th {
+  background: var(--bg-elevated);
+  color: var(--text-strong);
+  font-weight: 600;
+}
+.mn-map-cell { font-family: var(--mono); }
+.mn-map-glyph { font-size: 14px; margin-right: 4px; }
+.mn-map-count { color: var(--text-dim); font-size: 10px; }
+.mn-map-cell-clickable { cursor: pointer; transition: background 80ms; }
+.mn-map-cell-clickable:hover { background: var(--accent-bg); }
+.mn-map-cell-clickable:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* BG tab */
+.mn-bg-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+.mn-bg-col {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px;
+}
+
+/* Stitcher tab */
+.mn-stitcher-empty {
+  text-align: center;
+  padding: 24px 12px;
+}
+
+/* Cropper modal */
+.mn-cropper-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.mn-cropper-modal-panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  width: min(900px, 90vw);
+  max-height: 90vh;
+  overflow: auto;
+}
+.mn-cropper-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.mn-cropper-close {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 20px;
+  line-height: 1;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+.mn-cropper-body { padding: 16px; }
+
+/* Library panel */
+.mn-library-panel {
+  border-left: 1px solid var(--border);
+  background: var(--bg-elevated);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.mn-library-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.mn-library-count {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.mn-library-body {
+  overflow: auto;
+  padding: 8px;
+}
+.mn-library-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+.mn-library-item {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 4px;
+  font-size: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mn-library-thumb {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  background: var(--code-bg);
+  border-radius: 2px;
+}
+.mn-library-thumb-placeholder {
+  background: var(--code-bg);
+  border: 1px dashed var(--border);
+}
+.mn-library-name {
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Scope boundary loading */
+.scope-boundary-loading {
+  padding: 32px;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+/* S4 polish — hide the legacy server-injected storyboard switcher.
+   Per Kim's hands-on findings: she'll never use this in normal flow; the
+   Event selector dropdown above is what she uses. The switcher is a v58
+   relic for storyboard rollback; we leave it accessible via direct DOM
+   manipulation but visually hide it on v59 to reduce confusion. */
+#sb-nav-bar { display: none !important; }
+
+/* Scope banner (LD-456 / LD-458 / LD-460 surfacing) */
+.mn-scope-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+  z-index: 50;
+}
+.mn-scope-banner-error {
+  background: rgba(255, 107, 107, 0.18);
+  color: var(--text-error);
+  border-bottom-color: var(--text-error);
+}
+.mn-scope-banner-info {
+  background: rgba(245, 176, 66, 0.15);
+  color: var(--text-warn);
+  border-bottom-color: var(--text-warn);
+}
+.mn-scope-banner-text {
+  flex: 1;
+  margin-right: 12px;
+}
+.mn-scope-banner-action {
+  background: transparent;
+  border: 1px solid currentColor;
+  color: inherit;
+  padding: 4px 10px;
+  border-radius: 3px;
+  font-weight: 600;
+  margin-right: 8px;
+}
+.mn-scope-banner-action:hover {
+  background: currentColor;
+  color: var(--bg);
+}
+.mn-scope-banner-dismiss {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-size: 18px;
+  line-height: 1;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  cursor: pointer;
+}
+.mn-scope-banner-dismiss:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* ---------------------------------------------------------------- */
+/* S5.5c Phase B — Shared UI primitives (LD UI_PRIMITIVES_SHARED_V1) */
+/* ---------------------------------------------------------------- */
+
+/* Modal */
+.mn-modal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.mn-modal-backdrop {
+  background: var(--ui-modal-backdrop);
+}
+.mn-modal-panel {
+  background: var(--ui-modal-panel-bg);
+  border: 1px solid var(--ui-modal-panel-border);
+  border-radius: 8px;
+  min-width: 480px;
+  max-width: 92vw;
+  max-height: 92vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+.mn-modal-wide { min-width: 720px; }
+.mn-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.mn-modal-title { font-size: 14px; }
+.mn-modal-close {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 20px;
+  line-height: 1;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.mn-modal-close:hover { background: var(--bg-elevated); color: var(--text-strong); }
+.mn-modal-body { flex: 1; overflow: auto; padding: 16px; }
+.mn-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+
+/* Toast */
+.mn-toast-host {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 1100;
+  max-width: 380px;
+}
+.mn-toast {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--ui-toast-bg-info);
+  border: 1px solid var(--ui-toast-border-info);
+  border-radius: 6px;
+  padding: 10px 12px;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.mn-toast-success {
+  background: var(--ui-toast-bg-success);
+  border-color: var(--ui-toast-border-success);
+}
+.mn-toast-error {
+  background: var(--ui-toast-bg-error);
+  border-color: var(--ui-toast-border-error);
+}
+.mn-toast-message {
+  flex: 1;
+  font-size: 13px;
+}
+.mn-toast-dismiss {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 16px;
+  line-height: 1;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  cursor: pointer;
+}
+.mn-toast-dismiss:hover { color: var(--text-strong); }
+
+/* Spinner */
+.mn-spinner {
+  display: inline-block;
+  vertical-align: middle;
+  line-height: 0;
+}
+.mn-spinner-inline { display: inline-flex; align-items: center; }
+.mn-spinner-ring {
+  display: inline-block;
+  border: 2px solid var(--border);
+  border-top-color: var(--ui-spinner-color);
+  border-radius: 50%;
+  animation: mn-spinner-rotate 0.9s linear infinite;
+}
+.mn-spinner-sm .mn-spinner-ring { width: 14px; height: 14px; }
+.mn-spinner-md .mn-spinner-ring { width: 22px; height: 22px; }
+.mn-spinner-lg .mn-spinner-ring { width: 38px; height: 38px; border-width: 3px; }
+@keyframes mn-spinner-rotate {
+  to { transform: rotate(360deg); }
+}
+
+/* Select */
+.mn-select-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.mn-select-label {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.mn-select {
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 13px;
+}
+.mn-select:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Tooltip */
+.mn-tooltip-wrap {
+  position: relative;
+  display: inline-block;
+}
+.mn-tooltip {
+  position: absolute;
+  background: var(--ui-tooltip-bg);
+  border: 1px solid var(--ui-tooltip-border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  z-index: 1200;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+.mn-tooltip-top { bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%); }
+.mn-tooltip-bottom { top: calc(100% + 6px); left: 50%; transform: translateX(-50%); }
+.mn-tooltip-left { right: calc(100% + 6px); top: 50%; transform: translateY(-50%); }
+.mn-tooltip-right { left: calc(100% + 6px); top: 50%; transform: translateY(-50%); }
+
+/* AssetTile (extends mn-library-item) */
+.mn-asset-tile { position: relative; }
+.mn-asset-tile-draggable { cursor: grab; }
+.mn-asset-tile-draggable:active { cursor: grabbing; }
+.mn-asset-tile-delete {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid var(--ui-toast-border-error);
+  color: var(--text-error);
+  border-radius: 50%;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 2;
+}
+.mn-asset-tile:hover .mn-asset-tile-delete { opacity: 1; }
+.mn-library-dims {
+  display: block;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+/* ---------------------------------------------------------------- */
+/* S5.5c Phase C — Cropper canvas + library delete (LD CROPPER_CANVAS_REAL_V1) */
+/* ---------------------------------------------------------------- */
+
+.mn-cropper-canvas-stage {
+  position: relative;
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  display: inline-block;
+  vertical-align: top;
+}
+.mn-cropper-canvas-stage canvas {
+  display: block;
+  max-width: 100%;
+  cursor: crosshair;
+}
+.mn-cropper-toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 0;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.mn-cropper-toolbar input[type="number"] {
+  width: 60px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 6px;
+}
+.mn-cropper-aspect-row {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.mn-cropper-aspect-pill {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.mn-cropper-aspect-pill.is-active {
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+/* ---------------------------------------------------------------- */
+/* S5.5c Phase D — Beat Generator full UI                          */
+/* ---------------------------------------------------------------- */
+
+.mn-bg-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.mn-bg-cost {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.mn-bg-cost-running {
+  color: var(--text-strong);
+  font-weight: 500;
+}
+.mn-bg-beat-list {
+  list-style: none;
+  margin: 12px 0 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.mn-bg-beat-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mn-bg-beat-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.mn-bg-beat-index {
+  font-weight: 600;
+  color: var(--text-strong);
+}
+.mn-bg-beat-anchor {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.mn-bg-beat-text {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+  resize: vertical;
+  min-height: 50px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.mn-bg-stage-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.mn-bg-stage-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  border-radius: 12px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--accent);
+}
+.mn-bg-stage-chip-x {
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0;
+  width: 14px;
+  height: 14px;
+  line-height: 1;
+}
+.mn-bg-refs-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.mn-bg-ref-slot {
+  width: 120px;
+  height: 120px;
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--text-dim);
+  position: relative;
+  overflow: hidden;
+}
+.mn-bg-ref-slot.has-image {
+  border-style: solid;
+  border-color: var(--border-strong);
+}
+.mn-bg-ref-slot img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.mn-bg-ref-slot-label {
+  position: absolute;
+  top: 2px;
+  left: 4px;
+  background: rgba(0, 0, 0, 0.6);
+  color: var(--text-strong);
+  padding: 1px 4px;
+  font-size: 10px;
+  border-radius: 2px;
+  z-index: 2;
+}
+.mn-bg-options-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 8px;
+}
+.mn-bg-option {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.mn-bg-option.is-selected {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+.mn-bg-option img {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 3px;
+}
+.mn-bg-option-empty {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: var(--code-bg);
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* ---------------------------------------------------------------- */
+/* S5.5e Phase C — Storyboard beat-level button row                */
+/* ---------------------------------------------------------------- */
+
+.mn-beat-button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 0;
+  font-size: 12px;
+}
+.mn-beat-button-row > .mn-btn {
+  font-size: 12px;
+  padding: 4px 10px;
+}
+.mn-beat-button-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px;
+  border-right: 1px solid var(--border);
+}
+.mn-beat-button-group:last-child { border-right: none; }
+.mn-beat-button-group-label {
+  color: var(--text-dim);
+  font-size: 11px;
+  margin-right: 4px;
+}
+.mn-beat-trim-input {
+  width: 56px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 4px;
+  font-size: 11px;
+}
+.mn-beat-audio-preview {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.mn-beat-audio-preview audio {
+  height: 24px;
+  vertical-align: middle;
+}
+
+/* ---------------------------------------------------------------- */
+/* S5.5e Phase B — ProjectSelector header zone                     */
+/* ---------------------------------------------------------------- */
+.mn-project-selector { display: inline-flex; align-items: center; gap: 6px; }
+.mn-project-selector-error {
+  color: var(--text-error);
+  font-size: 11px;
+}
+.mn-project-modal-input {
+  width: 100%;
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.mn-project-modal-error {
+  color: var(--text-error);
+  font-size: 12px;
+  margin-top: 4px;
+}
+.mn-project-modal-help {
+  color: var(--text-dim);
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+/* General small/primary button variants used in beat row + bg */
+.mn-btn-small {
+  font-size: 11px;
+  padding: 3px 8px;
+}

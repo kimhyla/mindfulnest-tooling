@@ -1,0 +1,105 @@
+{
+  "generated_at": "2026-04-14T03:47:34.062289Z",
+  "module": "M1",
+  "event": 1,
+  "project_base": "/sessions/admiring-quirky-noether/mnt/Claude Mindfulnest Project Files",
+  "image_base_path": "/sessions/admiring-quirky-noether/mnt/Claude Mindfulnest Project Files",
+  "images": {
+    "shot6_v2_establishing_frame": {
+      "registry_id": 2,
+      "filename": "shot6_v2_establishing_frame.png",
+      "source_filepath": "Production/Event_1/gemini_stills/shot6_v2_establishing_frame.png",
+      "absolute_path": "/sessions/admiring-quirky-noether/mnt/Claude Mindfulnest Project Files/Production/Event_1/gemini_stills/shot6_v2_establishing_frame.png",
+      "width": 960,
+      "height": 960,
+      "aspect_ratio": "1:1",
+      "asset_type": "reference_master",
+      "status": "approved",
+      "file_exists": true
+    },
+    "ref_establishing": {
+      "registry_id": 3,
+      "filename": "ref_establishing.png",
+      "source_filepath": "Cropper/reference shot.png",
+      "absolute_path": "/sessions/admiring-quirky-noether/mnt/Claude Mindfulnest Project Files/Cropper/reference shot.png",
+      "width": 944,
+      "height": 708,
+      "aspect_ratio": "4:3",
+      "asset_type": "crop_4x3",
+      "status": "approved",
+      "file_exists": true
+    },
+    "guidebird_closeup_4x3": {
+      "registry_id": 4,
+      "filename": "guidebird_closeup_4x3.png",
+      "source_filepath": "Cropper/gudiebird closeup1.png",
+      "absolute_path": "/sessions/admiring-quirky-noether/mnt/Claude Mindfulnest Project Files/Cropper/gudiebird closeup1.png",
+      "width": 1016,
+      "height": 762,
+      "aspect_ratio": "4:3",
+      "asset_type": "crop_4x3",
+      "status": "approved",
+      "file_exists": true
+    },
+    "gb_sideview_4x3": {
+      "registry_id": 10,
+      "filename": "gb_sideview_4x3.png",
+      "source_filepath": "Cropper/guidebird talking to sad tessa1.png",
+      "absolute_path": "/sessions/admiring-quirky-noether/mnt/Claude Mindfulnest Project Files/Cropper/guidebird talking to sad tessa1.png",
+      "width": 503,
+      "height": 377,
+      "aspect_ratio": "503:377",
+      "asset_type": "crop_4x3",
+      "status": "approved",
+      "file_exists": true
+    },
+    "tessa_initial_4x3": {
+      "registry_id": 11,
+      "filename": "tessa_initial_4x3.png",
+      "source_filepath": "Cropper/tessa initial crop.png",
+      "absolute_path": "/sessions/admiring-quirky-noether/mnt/Claude Mindfulnest Project Files/Cropper/tessa initial crop.png",
+      "width": 678,
+      "height": 509,
+      "aspect_ratio": "678:509",
+      "asset_type": "crop",
+      "status": "approved",
+      "file_exists": true
+    },
+    "tessa_closeup_4x3": {
+      "registry_id": 24,
+      "filename": "tessa_closeup_4x3.png",
+      "source_filepath": "Cropper/tessa_sad_closeup_4x3_final.png",
+      "absolute_path": "/sessions/admiring-quirky-noether/mnt/Claude Mindfulnest Project Files/Cropper/tessa_sad_closeup_4x3_final.png",
+      "width": 523,
+      "height": 392,
+      "aspect_ratio": "523:392",
+      "asset_type": "crop_4x3",
+      "status": "approved",
+      "file_exists": true
+    },
+    "medium_twoshot": {
+      "registry_id": 25,
+      "filename": "medium_twoshot.png",
+      "source_filepath": "Cropper/shot6_medium_twoshot.png",
+      "absolute_path": "/sessions/admiring-quirky-noether/mnt/Claude Mindfulnest Project Files/Cropper/shot6_medium_twoshot.png",
+      "width": 740,
+      "height": 600,
+      "aspect_ratio": "37:30",
+      "asset_type": "crop_4x3",
+      "status": "approved",
+      "file_exists": true
+    },
+    "tessa_initial_full": {
+      "registry_id": 26,
+      "filename": "tessa_initial_full.png",
+      "source_filepath": "Cropper/Tessa init full body2.png",
+      "absolute_path": "/sessions/admiring-quirky-noether/mnt/Claude Mindfulnest Project Files/Cropper/Tessa init full body2.png",
+      "width": 994,
+      "height": 746,
+      "aspect_ratio": "497:373",
+      "asset_type": "crop_4x3",
+      "status": "approved",
+      "file_exists": true
+    }
+  }
+}

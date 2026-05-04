@@ -1,0 +1,98 @@
+# MindfulNest Tooling Repo — .gitignore
+# This repo holds production tooling source ONLY (Python servers + storyboard-v2 client).
+# All media stays out. All secrets stay out. All caches/backups stay out.
+
+# Node / Vite / Playwright
+node_modules/
+dist/
+dist-ssr/
+test-results/
+playwright-report/
+.vite/
+.parcel-cache/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Backup files (production_server.py.bak.* etc.)
+*.bak
+*.bak.*
+*.bak_*
+*.pre_*
+*.tmp.*
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Secrets
+.env
+.env.local
+.env.*.local
+.doppler/
+API_KEYS_MASTER.md
+
+# Media — never ship
+*.mp4
+*.mov
+*.m4v
+*.webm
+*.wav
+*.mp3
+*.m4a
+*.ogg
+*.flac
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.tiff
+*.bmp
+*.pdf
+*.psd
+*.ai
+
+# MindfulNest production media folders — explicit excludes (belt + suspenders)
+Production/Event_*/
+Production/Magic/
+Production/Milestones/
+Production/Sessions/
+Production/_previews/
+Production/Voice_Profiles/
+Production/tts_cache/
+Production/Cache/
+Production/Character_Assets/
+Production/Arc_*/
+Production/Modules/
+Production/Final_Mixes/
+Production/audio/
+Production/video/
+
+# Pending writes (Directus offline queue)
+pending_directus_writes*.json
+pending_directus_writes*.jsonl
+.pending_directus_writes*
+
+# State files (per-machine; should not be committed)
+production_state.json
+
+# Archive subdirs
+archive/
+**/archive/

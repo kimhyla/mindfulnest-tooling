@@ -1,0 +1,80 @@
+{
+  "beats": [
+    {
+      "num": 1,
+      "speaker": "Guide Bird",
+      "text": "Welcome to the MindfulNest! I'm so glad you're here.",
+      "image_key": "master_wide_01",
+      "audio_key": "line_01",
+      "audio_file": null,
+      "audio_duration": 3.2,
+      "pause": 1.5,
+      "section": "Opening",
+      "clips": {
+        "option_A": null,
+        "option_A_duration": 0.0,
+        "option_B": null,
+        "option_B_duration": 0.0,
+        "option_C": null,
+        "option_C_duration": 0.0
+      }
+    },
+    {
+      "num": 2,
+      "speaker": "Tessa",
+      "text": "Wait, what just happened? Everything feels different!",
+      "image_key": "tessa_closeup_02",
+      "audio_key": "line_02",
+      "audio_file": null,
+      "audio_duration": 2.8,
+      "pause": 1.0,
+      "section": "Opening",
+      "clips": {
+        "option_A": null,
+        "option_A_duration": 5.04,
+        "option_B": null,
+        "option_B_duration": 4.92,
+        "option_C": null,
+        "option_C_duration": 0.0
+      }
+    },
+    {
+      "num": 3,
+      "speaker": "[Stage Direction]",
+      "text": "A shimmering light appears around Tessa's hands.",
+      "image_key": "tessa_magic_03",
+      "audio_key": null,
+      "audio_file": null,
+      "audio_duration": 0.0,
+      "pause": 2.0,
+      "section": "Transition",
+      "clips": {
+        "option_A": null,
+        "option_A_duration": 6.5,
+        "option_B": null,
+        "option_B_duration": 6.2,
+        "option_C": null,
+        "option_C_duration": 6.8
+      }
+    },
+    {
+      "num": 4,
+      "speaker": "Guide Bird",
+      "text": "That's the magic of the runestones awakening inside you!",
+      "image_key": "guidebird_face_04",
+      "audio_key": "line_04",
+      "audio_file": null,
+      "audio_duration": 3.6,
+      "pause": 1.2,
+      "section": "Climax",
+      "clips": {
+        "option_A": null,
+        "option_A_duration": 4.2,
+        "option_B": null,
+        "option_B_duration": 0.0,
+        "option_C": null,
+        "option_C_duration": 0.0
+      }
+    }
+  ]
+}

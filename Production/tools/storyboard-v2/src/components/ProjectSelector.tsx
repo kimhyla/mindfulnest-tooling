@@ -1,0 +1,356 @@
+// ProjectSelector — top-of-app dropdown for switching between Events AND Milestones.
+// Per LD PROJECT_SELECTOR_V1 (S5.5e). Extends LD-467 MULTI_EVENT_SELECTOR_V1
+// with milestone listing + "+ New Milestone" via the shared Modal primitive.
+//
+// Replaces EventSelector. Reads /api/project/list (v3-added), posts
+// /api/event/load OR /api/milestones/load on change. Server's
+// event_load_lock + monotonic event_generation guarantee atomic swap.
+//
+// URL parsing: milestone wins if both ?event= and ?milestone= are present
+// per Cursor v8 Q8 (ScopeBoundary error-toasts the conflict; v59 client
+// honors the chosen value).
+
+import { useEffect, useState } from 'preact/hooks';
+import {
+  activeScope, makeScope, activeProjectType, activeMilestoneId,
+} from '../state/scope';
+import { apiGet, pathappPatch } from '../api/client';
+import { MUTATION_ENDPOINTS } from '../api/endpoints';
+import { Modal } from './ui/Modal';
+import { Select } from './ui/Select';
+import { pushToast } from './ui/Toast';
+
+interface EventListItem {
+  event_id: string;
+  path: string;
+  storyboard?: string;
+}
+
+interface MilestoneListItem {
+  milestone_id: string;
+  milestone_label?: string | null;
+  path?: string;
+}
+
+interface ProjectListResponse {
+  ok: boolean;
+  events?: EventListItem[];
+  milestones?: MilestoneListItem[];
+  scope_type?: 'event' | 'milestone';
+  active_event_id?: string;
+  active_milestone_id?: string | null;
+}
+
+// Sentinel values used inside the <select> to trigger non-load actions.
+const NEW_MILESTONE_VALUE = '__new_milestone__';
+const NEW_EVENT_VALUE = '__new_event__'; // future S6+; surfaced as disabled stub
+
+const MILESTONE_ID_REGEX = /^[a-z0-9][a-z0-9_-]{2,63}$/;
+const RESERVED_PREFIXES = [
+  'event_', 'module_', 'arc_', 'phase_', 'scene_', 'milestone_',
+  'test_', 'system_', 'admin_', 'api_',
+];
+
+function validateMilestoneId(id: string): string | null {
+  if (!id) return 'milestone_id required';
+  if (!MILESTONE_ID_REGEX.test(id)) {
+    return 'must match ^[a-z0-9][a-z0-9_-]{2,63}$ (lowercase, 3-64 chars, only [a-z0-9_-])';
+  }
+  for (const prefix of RESERVED_PREFIXES) {
+    if (id.startsWith(prefix)) {
+      return `cannot start with reserved prefix "${prefix}"`;
+    }
+  }
+  return null;
+}
+
+interface NewMilestoneModalProps {
+  open: boolean;
+  onClose: () => void;
+  onCreated: (milestoneId: string) => void;
+}
+
+function NewMilestoneModal({ open, onClose, onCreated }: NewMilestoneModalProps) {
+  const [milestoneId, setMilestoneId] = useState('');
+  const [milestoneLabel, setMilestoneLabel] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Live regex feedback as the user types.
+  const liveError = milestoneId.length > 0 ? validateMilestoneId(milestoneId) : null;
+
+  const onSubmit = async () => {
+    const idError = validateMilestoneId(milestoneId);
+    if (idError) {
+      setError(idError);
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    const result = await pathappPatch<{ ok: boolean; milestone_id?: string; error?: string }>(
+      activeScope.value, 'milestones_create', {
+        milestone_id: milestoneId,
+        milestone_label: milestoneLabel || undefined,
+      },
+    );
+    setSubmitting(false);
+    if (result.ok && result.data?.ok) {
+      pushToast({ kind: 'success', message: `Milestone "${milestoneId}" created`, source: 'milestone-create' });
+      setMilestoneId('');
+      setMilestoneLabel('');
+      onCreated(milestoneId);
+    } else {
+      const msg = result.data?.error ?? result.error ?? `HTTP ${result.status}`;
+      setError(msg);
+    }
+  };
+
+  return (
+    <Modal
+      id="new-milestone"
+      title="+ New Milestone"
+      open={open}
+      onClose={onClose}
+      footer={
+        <>
+          <button
+            type="button"
+            class="mn-btn"
+            data-testid="new-milestone-cancel"
+            onClick={onClose}
+            disabled={submitting}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            class="mn-btn mn-btn-primary"
+            data-testid="new-milestone-create"
+            onClick={onSubmit}
+            disabled={submitting || !milestoneId || liveError !== null}
+          >
+            {submitting ? 'Creating…' : 'Create'}
+          </button>
+        </>
+      }
+    >
+      <p class="mn-dim">
+        Milestones are standalone single-video projects (e.g. trailers, app intro).
+        They live at <code>Production/Milestones/&lt;id&gt;/</code>.
+      </p>
+      <label class="mn-select-label" for="new-milestone-id">Milestone ID:</label>
+      <input
+        id="new-milestone-id"
+        class="mn-project-modal-input"
+        type="text"
+        placeholder="my_milestone_id"
+        value={milestoneId}
+        onInput={(e) => setMilestoneId((e.target as HTMLInputElement).value)}
+        data-testid="new-milestone-id-input"
+        autofocus
+      />
+      <p class="mn-project-modal-help">
+        Lowercase, 3–64 chars, alphanumeric + <code>_</code> + <code>-</code>.
+        First char must be alphanumeric. Cannot start with reserved prefixes
+        (event_, module_, arc_, phase_, scene_, milestone_, test_, system_, admin_, api_).
+      </p>
+      {liveError ? (
+        <p class="mn-project-modal-error" data-testid="new-milestone-id-error">
+          {liveError}
+        </p>
+      ) : null}
+
+      <label class="mn-select-label" for="new-milestone-label">Display label (optional):</label>
+      <input
+        id="new-milestone-label"
+        class="mn-project-modal-input"
+        type="text"
+        placeholder="My Milestone"
+        value={milestoneLabel}
+        onInput={(e) => setMilestoneLabel((e.target as HTMLInputElement).value)}
+        data-testid="new-milestone-label-input"
+      />
+
+      {error ? (
+        <p class="mn-project-modal-error" data-testid="new-milestone-error">
+          {error}
+        </p>
+      ) : null}
+    </Modal>
+  );
+}
+
+export function ProjectSelector() {
+  const [events, setEvents] = useState<EventListItem[]>([]);
+  const [milestones, setMilestones] = useState<MilestoneListItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  const [showNewMilestone, setShowNewMilestone] = useState(false);
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  // Fetch project list.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const res = await apiGet<ProjectListResponse>('project_list');
+      if (cancelled) return;
+      setLoading(false);
+      if (res.ok && res.data) {
+        setEvents(res.data.events ?? []);
+        setMilestones(res.data.milestones ?? []);
+        setErr(null);
+      } else {
+        setErr(res.error ?? 'failed to load project list');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [refreshTick]);
+
+  // URL precedence on first mount: milestone wins if both present (Cursor v8 Q8).
+  // ScopeBoundary already routes initial scope; this hook just notifies via toast
+  // on conflict so Kim sees what happened.
+  useEffect(() => {
+    try {
+      const url = new URL(window.location.href);
+      const eventParam = url.searchParams.get('event');
+      const milestoneParam = url.searchParams.get('milestone');
+      if (eventParam && milestoneParam) {
+        pushToast({
+          kind: 'info',
+          message: `URL had both ?event=${eventParam} and ?milestone=${milestoneParam}. Milestone wins.`,
+          source: 'project-selector-url-conflict',
+        });
+      }
+    } catch {
+      // window.location not available; ignore.
+    }
+  }, []);
+
+  // Compute current selected value.
+  // Format: 'event:<id>' or 'milestone:<id>'.
+  const currentValue = (() => {
+    if (activeProjectType.value === 'milestone' && activeMilestoneId.value) {
+      return `milestone:${activeMilestoneId.value}`;
+    }
+    return `event:${activeScope.value.event_id}`;
+  })();
+
+  const onChange = async (next: string) => {
+    if (next === NEW_MILESTONE_VALUE) {
+      setShowNewMilestone(true);
+      return;
+    }
+    if (next === NEW_EVENT_VALUE) {
+      pushToast({
+        kind: 'info',
+        message: 'New Event creation is server-side only for now (S6+).',
+        source: 'project-selector-new-event-stub',
+      });
+      return;
+    }
+    if (next === currentValue) return;
+
+    if (next.startsWith('event:')) {
+      const newEventId = next.slice('event:'.length);
+      const res = await fetch(MUTATION_ENDPOINTS.event_load, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event_id: newEventId }),
+      });
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        pushToast({
+          kind: 'error',
+          message: `Event load failed: HTTP ${res.status}: ${txt.slice(0, 80)}`,
+          source: 'project-selector-event-load-error',
+        });
+        return;
+      }
+      const data = (await res.json()) as { event_id: string; event_generation: number };
+      activeScope.value = makeScope(data.event_id, null, data.event_generation);
+      activeProjectType.value = 'event';
+      activeMilestoneId.value = null;
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.delete('milestone');
+        url.searchParams.set('event', data.event_id);
+        window.history.replaceState({}, '', url.toString());
+      } catch {
+        // headless context — fine.
+      }
+      window.location.reload();
+    } else if (next.startsWith('milestone:')) {
+      const milestoneId = next.slice('milestone:'.length);
+      const result = await pathappPatch<{ ok: boolean; milestone_id?: string }>(
+        activeScope.value, 'milestone_load', { milestone_id: milestoneId },
+      );
+      if (result.ok && result.data?.ok) {
+        activeProjectType.value = 'milestone';
+        activeMilestoneId.value = milestoneId;
+        try {
+          const url = new URL(window.location.href);
+          url.searchParams.delete('event');
+          url.searchParams.set('milestone', milestoneId);
+          window.history.replaceState({}, '', url.toString());
+        } catch {
+          // headless context — fine.
+        }
+        window.location.reload();
+      } else {
+        pushToast({
+          kind: 'error',
+          message: `Milestone load failed: ${result.error ?? `HTTP ${result.status}`}`,
+          source: 'project-selector-milestone-load-error',
+        });
+      }
+    }
+  };
+
+  return (
+    <div class="mn-project-selector" data-testid="project-selector">
+      <Select
+        id="project"
+        label="Project:"
+        value={currentValue}
+        onChange={onChange}
+        disabled={loading}
+        groups={[
+          {
+            label: 'Events',
+            options: [
+              ...events.map((e) => ({
+                value: `event:${e.event_id}`,
+                label: e.event_id,
+              })),
+              { value: NEW_EVENT_VALUE, label: '+ New Event (server-side only)', disabled: true },
+            ],
+          },
+          {
+            label: 'Milestones',
+            options: [
+              ...milestones.map((m) => ({
+                value: `milestone:${m.milestone_id}`,
+                label: m.milestone_label
+                  ? `${m.milestone_id} — ${m.milestone_label}`
+                  : m.milestone_id,
+              })),
+              { value: NEW_MILESTONE_VALUE, label: '+ New Milestone…' },
+            ],
+          },
+        ]}
+      />
+      {err ? (
+        <span class="mn-project-selector-error" data-testid="project-selector-error">{err}</span>
+      ) : null}
+      <NewMilestoneModal
+        open={showNewMilestone}
+        onClose={() => setShowNewMilestone(false)}
+        onCreated={(_id) => {
+          setShowNewMilestone(false);
+          setRefreshTick((n) => n + 1);
+          // Don't auto-load the new milestone — let Kim choose to switch.
+        }}
+      />
+    </div>
+  );
+}
