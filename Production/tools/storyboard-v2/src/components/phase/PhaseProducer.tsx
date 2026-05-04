@@ -18,7 +18,16 @@ import { activeScope } from '../../state/scope';
 import { SERVER_BASE } from '../../api/endpoints';
 import { WaveformTimeline, type WatercolorCue } from './WaveformTimeline';
 import { CuePopover } from './CuePopover';
+import { BaseClipPicker } from './BaseClipPicker';
 import { setDragData, type DragPayload } from '../../utils/dragdrop';
+
+type PhaseAClipPosition = 'flyin' | 'sitting' | 'flyout';
+const PHASE_A_CLIP_POSITIONS: ReadonlyArray<PhaseAClipPosition> = ['flyin', 'sitting', 'flyout'];
+const PHASE_A_CLIP_LABELS: Record<PhaseAClipPosition, string> = {
+  flyin: 'Fly-in',
+  sitting: 'Sitting',
+  flyout: 'Fly-out',
+};
 
 interface WatercolorItem {
   key: string;
@@ -59,6 +68,10 @@ interface PhaseStateSlice {
   stitched_mtime?: number;
   script?: string;
   watercolor_cues?: WatercolorCue[];
+  // Phase A only — 3-clip handling per PHASE_A_THREE_CLIP_HANDLING_V1.
+  chipper_flyin_clip_id?: string;
+  chipper_sitting_clip_id?: string;
+  chipper_flyout_clip_id?: string;
 }
 interface EventStateResponse {
   beats?: Record<string, unknown>;
@@ -84,6 +97,11 @@ function pickPhaseSlice(state: EventStateResponse, phase: 'a' | 'b'): PhaseState
   const sc = get<string>('script');                    if (sc) slice.script = sc;
   const cues = get<WatercolorCue[]>('watercolor_cues_json');
   if (Array.isArray(cues)) slice.watercolor_cues = cues;
+  if (phase === 'a') {
+    const fi = get<string>('chipper_flyin_clip_id');   if (fi) slice.chipper_flyin_clip_id = fi;
+    const si = get<string>('chipper_sitting_clip_id'); if (si) slice.chipper_sitting_clip_id = si;
+    const fo = get<string>('chipper_flyout_clip_id');  if (fo) slice.chipper_flyout_clip_id = fo;
+  }
   return slice;
 }
 
@@ -119,6 +137,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const [selectedBaseClip, setSelectedBaseClip] = useState<string>('');
   const [activeCueId, setActiveCueId] = useState<string | null>(null);
   const [popoverAnchor, setPopoverAnchor] = useState<{ x: number; y: number } | null>(null);
+  const [pickerPosition, setPickerPosition] = useState<PhaseAClipPosition | null>(null);
 
   const refreshAll = async () => {
     const [wc, bc, st] = await Promise.all([
@@ -319,6 +338,39 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     setDragData(e, payload);
   };
 
+  // ── Phase A 3-clip handling (Phase D) ──────────────────────────────────
+  const phaseAClipId = (pos: PhaseAClipPosition): string | undefined => {
+    if (pos === 'flyin') return stateSlice.chipper_flyin_clip_id;
+    if (pos === 'sitting') return stateSlice.chipper_sitting_clip_id;
+    return stateSlice.chipper_flyout_clip_id;
+  };
+
+  const onPickPhaseAClip = async (pos: PhaseAClipPosition, clipId: string) => {
+    const field = `phase_a_chipper_${pos}_clip_id`;
+    setPickerPosition(null);
+    setStateSlice((s) => ({
+      ...s,
+      [`chipper_${pos}_clip_id`]: clipId,
+    } as PhaseStateSlice));
+    const res = await pathappPatch(activeScope.value, 'v2_module_patch', {
+      field,
+      value: clipId,
+    });
+    if (!res.ok) {
+      setStatusMsg(`✗ ${field} HTTP ${res.status}: ${res.error ?? ''}`);
+    }
+  };
+
+  const phaseATotalDurationS = (): number => {
+    let total = 0;
+    for (const pos of PHASE_A_CLIP_POSITIONS) {
+      const id = phaseAClipId(pos);
+      const clip = baseClips.find((c) => c.id === id);
+      total += clip?.duration_s ?? 0;
+    }
+    return total;
+  };
+
   const audioFile = priorityAudioFile(stateSlice);
   const lipsyncFile = stateSlice.lipsync_file ?? null;
   const activeCue =
@@ -458,6 +510,64 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             data-testid={`phase-${phase}-status`}
           >
             {statusMsg}
+          </div>
+        ) : null}
+
+        {/* Phase A 3-clip section — only when phase==='a' (LD PHASE_A_THREE_CLIP_HANDLING_V1).
+            Phase B is single-clip via the existing baseclip select above. */}
+        {phase === 'a' ? (
+          <div class="mn-phase-a-clip-section" data-testid="phase-a-clip-section">
+            <strong>Phase A clips</strong>
+            <div class="mn-phase-a-clip-grid">
+              {PHASE_A_CLIP_POSITIONS.map((pos) => {
+                const id = phaseAClipId(pos);
+                const clip = baseClips.find((c) => c.id === id);
+                return (
+                  <div
+                    key={pos}
+                    class="mn-phase-a-clip-slot"
+                    data-testid={`phase-a-clip-slot-${pos}`}
+                    data-clip-id={id ?? ''}
+                  >
+                    <div class="mn-phase-a-clip-label">{PHASE_A_CLIP_LABELS[pos]}</div>
+                    <div class="mn-phase-a-clip-meta mn-dim">
+                      {clip ? `${clip.id} (${clip.duration_s ?? '?'}s)` : 'no clip'}
+                    </div>
+                    <button
+                      type="button"
+                      class="mn-btn mn-btn-small"
+                      data-testid={`phase-a-clip-pick-${pos}`}
+                      onClick={() => setPickerPosition(pos)}
+                    >
+                      Pick clip
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+            <div class="mn-phase-a-clip-total mn-dim">
+              Total: {phaseATotalDurationS().toFixed(1)}s
+            </div>
+            <button
+              type="button"
+              class="mn-btn"
+              data-testid="phase-a-restitch-btn"
+              onClick={onMixAudio}
+              disabled={busyAction !== null}
+              title="Re-stitch fly-in / sitting / fly-out into phase_a_stitched_file"
+            >
+              {busyAction === 'mix' ? 'Re-stitching…' : 'Re-stitch (Phase A)'}
+            </button>
+            <BaseClipPicker
+              open={pickerPosition !== null}
+              positionLabel={pickerPosition ? PHASE_A_CLIP_LABELS[pickerPosition] : ''}
+              character="chipper"
+              clips={baseClips}
+              onPick={(id) => {
+                if (pickerPosition) void onPickPhaseAClip(pickerPosition, id);
+              }}
+              onClose={() => setPickerPosition(null)}
+            />
           </div>
         ) : null}
 

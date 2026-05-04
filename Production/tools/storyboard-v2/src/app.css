@@ -511,6 +511,58 @@
 .mn-btn-danger {
   color: #c33;
 }
+
+/* Phase A 3-clip section — S5.5f / PHASE_A_THREE_CLIP_HANDLING_V1 */
+.mn-phase-a-clip-section {
+  margin: 12px 0;
+  padding: 8px 10px;
+  background: var(--code-bg);
+  border-radius: 3px;
+}
+.mn-phase-a-clip-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 8px 0;
+}
+.mn-phase-a-clip-slot {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mn-phase-a-clip-label {
+  font-weight: 600;
+  font-size: 12px;
+}
+.mn-phase-a-clip-meta {
+  font-size: 11px;
+}
+.mn-phase-a-clip-total {
+  margin: 6px 0;
+}
+
+/* BaseClipPicker list */
+.mn-base-clip-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.mn-base-clip-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 6px 8px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+}
+.mn-base-clip-row:hover {
+  background: var(--code-bg);
+}
 .mn-beat-magic-row {
   display: flex;
   gap: 6px;

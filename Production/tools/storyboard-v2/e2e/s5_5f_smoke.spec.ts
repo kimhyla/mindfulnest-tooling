@@ -509,3 +509,141 @@ test.describe('F9 — CuePopover Delete with Modal-confirm', () => {
     await expect(page.locator('[data-testid="modal-cue-delete"]')).toHaveCount(0);
   });
 });
+
+// ----------------------------------------------------------------------------
+// Phase D — Phase A 3-clip handling (F10-F13)
+//
+// Phase A producer renders 3 base-clip slots (fly-in / sitting / fly-out)
+// per LD PHASE_A_THREE_CLIP_HANDLING_V1. Phase B remains single-clip via
+// the existing selectedBaseClip + Cedric filter. Re-stitch fires manually
+// (Cursor v8 Q9) via the existing onMixAudio path
+// (pathappPatch 'phase_b_mix_audio' with phase:'a').
+// ----------------------------------------------------------------------------
+
+async function mockBaseClipsList(page: Page): Promise<void> {
+  await page.route('**/api/phase/base_clips_list**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        items: [
+          { id: 'flyin_clip_a', filename: 'flyin_a.mp4', ext: 'mp4', character: 'chipper', duration_s: 1.5 },
+          { id: 'sitting_clip_a', filename: 'sitting_a.mp4', ext: 'mp4', character: 'chipper', duration_s: 30.0 },
+          { id: 'flyout_clip_a', filename: 'flyout_a.mp4', ext: 'mp4', character: 'chipper', duration_s: 1.0 },
+          { id: 'cedric_clip_a', filename: 'cedric_a.mp4', ext: 'mp4', character: 'cedric', duration_s: 5.0 },
+        ],
+        count: 4,
+      }),
+    });
+  });
+}
+
+async function mockMixAudio(page: Page): Promise<void> {
+  await page.route('**/api/phase_b/mix_audio', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ok: true }),
+    });
+  });
+}
+
+async function openPhaseA(page: Page): Promise<void> {
+  await page.click('[data-testid="tab-phase-a"]');
+  await expect(page.locator('[data-testid="pane-phase-a"]')).toBeVisible();
+  const summary = page.locator('[data-testid="phase-producer-a"] > summary');
+  await expect(summary).toBeVisible();
+  await summary.click();
+}
+
+test.describe('F10 — Phase A 3-clip render', () => {
+  test('F10 — Phase A producer renders flyin / sitting / flyout slots', async ({ page }) => {
+    await mockAudioFiles(page);
+    await mockBaseClipsList(page);
+    await mockPhaseState(page, {});
+    await gotoApp(page);
+    await openPhaseA(page);
+
+    const section = page.locator('[data-testid="phase-a-clip-section"]');
+    await expect(section).toBeVisible();
+    await expect(page.locator('[data-testid="phase-a-clip-slot-flyin"]')).toBeVisible();
+    await expect(page.locator('[data-testid="phase-a-clip-slot-sitting"]')).toBeVisible();
+    await expect(page.locator('[data-testid="phase-a-clip-slot-flyout"]')).toBeVisible();
+  });
+});
+
+test.describe('F11 — Phase A clip pick', () => {
+  test('F11 — picking a clip in the sitting slot fires v2_module_patch with phase_a_chipper_sitting_clip_id', async ({ page }) => {
+    await mockAudioFiles(page);
+    await mockBaseClipsList(page);
+    await mockModulePatch(page);
+    await mockPhaseState(page, {});
+    await gotoApp(page);
+    await openPhaseA(page);
+
+    const patches: Request[] = [];
+    page.on('request', (req) => {
+      if (req.url().includes('/api/v2/module/patch')) patches.push(req);
+    });
+
+    // Open the picker for the sitting slot.
+    await page.locator('[data-testid="phase-a-clip-pick-sitting"]').click();
+    const pickerModal = page.locator('[data-testid="modal-base-clip-picker"]');
+    await expect(pickerModal).toBeVisible();
+
+    // Modal should list chipper clips; cedric_clip_a should NOT appear.
+    await expect(pickerModal.locator('[data-testid="base-clip-option-cedric_clip_a"]')).toHaveCount(0);
+    await expect(pickerModal.locator('[data-testid="base-clip-option-sitting_clip_a"]')).toBeVisible();
+
+    await pickerModal.locator('[data-testid="base-clip-option-sitting_clip_a"]').click();
+
+    await expect.poll(() => patches.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
+    const body = patches[0]!.postDataJSON() as Record<string, unknown>;
+    expect(body['field']).toBe('phase_a_chipper_sitting_clip_id');
+    expect(body['value']).toBe('sitting_clip_a');
+  });
+});
+
+test.describe('F12 — Phase A re-stitch', () => {
+  test('F12 — Re-stitch button fires phase_b_mix_audio with phase=a', async ({ page }) => {
+    await mockAudioFiles(page);
+    await mockBaseClipsList(page);
+    await mockModulePatch(page);
+    await mockMixAudio(page);
+    await mockPhaseState(page, {
+      phase_a_chipper_flyin_clip_id: 'flyin_clip_a',
+      phase_a_chipper_sitting_clip_id: 'sitting_clip_a',
+      phase_a_chipper_flyout_clip_id: 'flyout_clip_a',
+    });
+    await gotoApp(page);
+    await openPhaseA(page);
+
+    const mixReqs: Request[] = [];
+    page.on('request', (req) => {
+      if (req.url().includes('/api/phase_b/mix_audio')) mixReqs.push(req);
+    });
+
+    await page.locator('[data-testid="phase-a-restitch-btn"]').click();
+
+    await expect.poll(() => mixReqs.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
+    const body = mixReqs[0]!.postDataJSON() as Record<string, unknown>;
+    expect(body['phase']).toBe('a');
+  });
+});
+
+test.describe('F13 — Phase A vs Phase B branching', () => {
+  test('F13 — Phase B does NOT render the 3-clip section', async ({ page }) => {
+    await mockAudioFiles(page);
+    await mockBaseClipsList(page);
+    await mockPhaseState(page, {});
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    // 3-clip slots are Phase-A-only; under Phase B the section must be absent.
+    await expect(page.locator('[data-testid="phase-a-clip-section"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="phase-a-clip-slot-flyin"]')).toHaveCount(0);
+    // Single base-clip select still present for Phase B (existing behavior).
+    await expect(page.locator('[data-testid="phase-b-baseclip-select"]')).toBeVisible();
+  });
+});
