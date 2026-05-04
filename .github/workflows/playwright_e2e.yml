@@ -93,6 +93,95 @@ jobs:
         # surfaces independently of e2e flake. Wave 1 architectural-fix.
         run: python3 Production/tools/tests/test_sidecar_display_order_int.py
 
+      # ----------------------------------------------------------------
+      # MUTATION_CHANNEL_INVARIANT_V1 grep gate (Wave 1 architectural-fix
+      # spec §5 Phase 3.4 + Cursor R5 mandatory enforcement).
+      #
+      # All client-side state mutations MUST flow through pathappPatch
+      # (or loadEvent for event_load — which uses apiPostRaw to skip the
+      # M1 snapshot intentionally). Raw fetch to mutation endpoints
+      # (URL-literal or via MUTATION_ENDPOINTS constant) outside src/api/
+      # is a violation. The exclusion of src/api/ from the search lets
+      # pathappPatch + loadEvent legitimately use MUTATION_ENDPOINTS
+      # internally; everything else routes through them.
+      #
+      # KNOWN EXCLUSIONS — pre-existing event_load raw-fetch sites
+      # incidentally surfaced by Wave 1 grep, tracked as Wave 3 follow-up:
+      #   - src/components/ProjectSelector.tsx (2 instances) — blocker #50
+      #   - src/components/EventSelector.tsx (1)              — blocker #52
+      #   - src/components/ProductionMapTab.tsx (1)           — blocker #53
+      # Per spec §10 / Cursor R6 these are NOT fixed in this Wave 1
+      # session. The strict variant below surfaces them as a warning
+      # every CI run so they remain visible until Wave 3 conversions
+      # land. event_load semantics (event swap; no snapshot) mean the
+      # right helper for those sites is loadEvent (already in src/api/),
+      # not pathappPatch.
+      # ----------------------------------------------------------------
+
+      - name: Mutation channel invariant (blocking — known exclusions allowed)
+        working-directory: Production/tools/storyboard-v2
+        run: |
+          set -e
+          fail=0
+
+          # Grep 1: raw fetch to MUTATION_ENDPOINTS constant in components / state / utils.
+          # Excluded sites: 4 pre-existing event_load violations tracked as
+          # blockers #50, #52, #53 (Wave 3). New raw-fetch additions trip the gate.
+          matches=$(grep -rnE "fetch\(.*MUTATION_ENDPOINTS\." \
+            src/components/ src/state/ src/utils/ 2>/dev/null \
+            | grep -vE "(ProjectSelector\.tsx|EventSelector\.tsx|ProductionMapTab\.tsx).*MUTATION_ENDPOINTS\.event_load" \
+            || true)
+          if [ -n "$matches" ]; then
+            echo "::error::MUTATION_CHANNEL_INVARIANT_V1 violation — raw fetch to MUTATION_ENDPOINTS outside src/api/:"
+            echo "$matches"
+            echo "::error::Fix: route through pathappPatch (state mutations) or loadEvent (event swap) — both in src/api/."
+            fail=1
+          fi
+
+          # Grep 2: URL-literal stitch_editor mutation calls (preview / bake / job
+          # singular). /jobs (list READ) is preserved as legitimate raw fetch.
+          matches=$(grep -rnE "fetch\(.*\/api\/stitch_editor\/(preview|bake|job)" \
+            src/components/ src/state/ src/utils/ 2>/dev/null \
+            | grep -vE "/jobs[^/a-zA-Z]" \
+            || true)
+          if [ -n "$matches" ]; then
+            echo "::error::MUTATION_CHANNEL_INVARIANT_V1 violation — raw fetch to stitch_editor mutation endpoint:"
+            echo "$matches"
+            fail=1
+          fi
+
+          # Grep 3: URL-literal video mutation calls.
+          matches=$(grep -rnE "fetch\(.*\/api\/video\/(set_active|create)" \
+            src/components/ src/state/ src/utils/ 2>/dev/null || true)
+          if [ -n "$matches" ]; then
+            echo "::error::MUTATION_CHANNEL_INVARIANT_V1 violation — raw fetch to video mutation endpoint:"
+            echo "$matches"
+            fail=1
+          fi
+
+          if [ $fail -ne 0 ]; then
+            exit 1
+          fi
+          echo "Mutation channel invariant: PASS (with documented exclusions for blockers #50, #52, #53)"
+
+      - name: Mutation channel invariant — strict (warning surface for tracked exceptions)
+        working-directory: Production/tools/storyboard-v2
+        continue-on-error: true
+        run: |
+          # Strict variant — runs the broad MUTATION_ENDPOINTS sweep WITHOUT
+          # exclusions so the 4 tracked event_load sites remain visible in CI
+          # logs every run. continue-on-error keeps this a warning, not a
+          # block. Wave 3 closes by converting those sites to loadEvent and
+          # removing both this step and the exclusion in the gate above.
+          matches=$(grep -rnE "fetch\(.*MUTATION_ENDPOINTS\." \
+            src/components/ src/state/ src/utils/ 2>/dev/null || true)
+          if [ -n "$matches" ]; then
+            echo "::warning::MUTATION_CHANNEL_INVARIANT_V1 strict — tracked exceptions present (blockers #50/#52/#53 — Wave 3):"
+            echo "$matches"
+            exit 1
+          fi
+          echo "Mutation channel invariant strict: PASS (no tracked exceptions)"
+
       - name: Run Playwright e2e (proper-fix + retroactive + S5.5f + architectural-fix scopes)
         working-directory: Production/tools/storyboard-v2
         # Per spec §19.2 / §19.6 (S5.5f) + §19 / §8.9 (retroactive) — APPEND,
