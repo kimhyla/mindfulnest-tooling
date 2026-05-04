@@ -706,6 +706,74 @@
   padding: 24px 12px;
 }
 
+/* StitcherSlotWaveform — S5.5g / STITCHER_SFX_CUE_UI_V1 (HARD).
+   Per spec §3.2 mini-waveform per slot; spec §4 Phase B B1 height: 40px. */
+.mn-stitcher-slot-waveform {
+  position: relative;
+  margin: 6px 0;
+  padding: 4px 6px;
+  background: var(--code-bg);
+  border: 1px dashed var(--border);
+  border-radius: 3px;
+  min-height: 40px;
+}
+.mn-stitcher-slot-waveform.is-drag-over {
+  border-color: #c33;
+  background: rgba(204, 51, 51, 0.08);
+}
+.mn-stitcher-slot-waveform-canvas {
+  position: relative;
+  width: 100%;
+  min-height: 28px;
+}
+.mn-stitcher-slot-waveform-cue-overlay {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  top: 4px;
+  bottom: 4px;
+  pointer-events: none;
+}
+.mn-stitcher-sfx-cue-marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  margin-left: -3px;
+  background: rgba(50, 130, 200, 0.55);
+  border-left: 1px solid #2872b4;
+  border-right: 1px solid #2872b4;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.mn-stitcher-sfx-cue-marker:hover {
+  background: rgba(50, 130, 200, 0.85);
+}
+
+/* Module-level SFX cue strip (G6) — drop target spans below the slot strip. */
+.mn-stitcher-module-timeline {
+  margin: 12px 0;
+  padding: 12px;
+  background: var(--code-bg);
+  border: 1px dashed var(--border);
+  border-radius: 3px;
+  min-height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+}
+.mn-stitcher-module-timeline.is-drag-over {
+  border-color: #c33;
+  background: rgba(204, 51, 51, 0.08);
+}
+
+/* SfxCuePopover — sibling of CuePopover for SFX cue editing. */
+.mn-sfx-cue-popover {
+  /* Inherits all .mn-cue-popover styles; this scope hook is for future
+     SFX-specific overrides without re-litigating watercolor styling. */
+}
+
 /* Cropper modal */
 .mn-cropper-modal {
   position: fixed;
