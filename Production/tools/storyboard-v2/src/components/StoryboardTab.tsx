@@ -16,6 +16,8 @@ import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   activeScope,
   activeTargetVideo,
+  activeProjectType,
+  activeMilestoneId,
   scopeKey,
 } from '../state/scope';
 import { apiGet, pathappPatch } from '../api/client';
@@ -726,9 +728,13 @@ export function StoryboardTab() {
   const [loading, setLoading] = useState(true);
   const [refreshTick, setRefreshTick] = useState(0);
 
+  // R1 fix per spec §5 Phase 3.1 — explicit scope signals in dep array,
+  // first-run-sync via prevDepsRef, 200ms debounce on subsequent runs (Q6).
+  const prevFetchDepsRef = useRef<string | null>(null);
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    let timer: number | null = null;
+    const fetchState = async () => {
       const res = await apiGet<EventState>('v2_event_state', {
         event_id: activeScope.value.event_id,
       });
@@ -740,11 +746,33 @@ export function StoryboardTab() {
       } else {
         setError(res.error ?? 'unknown error');
       }
-    })();
+    };
+
+    const depKey = [
+      refreshTick,
+      activeScope.value.event_id,
+      activeProjectType.value,
+      activeMilestoneId.value ?? '',
+    ].join('|');
+
+    if (prevFetchDepsRef.current === null) {
+      prevFetchDepsRef.current = depKey;
+      fetchState();
+    } else if (prevFetchDepsRef.current !== depKey) {
+      prevFetchDepsRef.current = depKey;
+      timer = window.setTimeout(fetchState, 200);
+    }
+
     return () => {
       cancelled = true;
+      if (timer !== null) clearTimeout(timer);
     };
-  }, [refreshTick]);
+  }, [
+    refreshTick,
+    activeScope.value.event_id,
+    activeProjectType.value,
+    activeMilestoneId.value,
+  ]);
 
   // S5 — refresh on path_picker submit success.
   useEffect(() => {

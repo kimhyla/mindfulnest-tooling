@@ -133,9 +133,12 @@ def build_full_module_set(arc_rows: list[dict]) -> list[dict]:
                 else:
                     raise ValueError(f"Arc 10 module M{m_n} missing from ARC_10_MODULES")
             else:
-                # Arcs 2-9: placeholder. Required schema fields filled with "TBD"
+                # Arcs 2-9: placeholder. Required schema fields filled with TBD
                 # (creature_name is NOT NULL on prod_modules).
-                entry["creature_name"] = "TBD"
+                # S5.5c+e proper-fix R4 (cosmetic): "M{n} — TBD" instead of bare
+                # "TBD" so Production Map UI reads as "M7 — TBD" not raw "TBD".
+                # Policy doc: PRODUCTION_MAP_TBD_HONEST_V1.
+                entry["creature_name"] = f"M{m_n} — TBD"
                 entry["technique_name"] = "TBD"
                 entry["spell_name"] = "TBD"
             modules.append(entry)

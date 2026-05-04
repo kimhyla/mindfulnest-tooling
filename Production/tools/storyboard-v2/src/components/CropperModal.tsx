@@ -10,6 +10,7 @@ import type { Signal } from '@preact/signals';
 import { useRef, useState } from 'preact/hooks';
 import { activeScope, scopeKey } from '../state/scope';
 import { pathappPatch } from '../api/client';
+import { makeDropTarget } from '../utils/dragdrop';
 import { Modal } from './ui/Modal';
 import { Spinner } from './ui/Spinner';
 import { pushToast } from './ui/Toast';
@@ -114,6 +115,26 @@ export function CropperModal({ state, onClose, onSaved }: CropperModalProps) {
     }
   };
 
+  // R2.3 fix: drop target on the cropper canvas. Drop a library tile here →
+  // the modal's source image swaps to the dropped image. The drop handler
+  // sets state.source via the signal, and CropperCanvas re-renders the new src.
+  const canvasDropHandlers = makeDropTarget(
+    (payload) => {
+      if (payload.kind !== 'lib-image') return;
+      // Resolve a server-fetchable URL: prefer abs_path through /api/cr/full,
+      // fall back to lib_key. Either way, set source so canvas reloads.
+      const newSrc = payload.abs_path
+        ? `http://localhost:5111/api/cr/full?abs_path=${encodeURIComponent(payload.abs_path)}`
+        : payload.lib_key;
+      state.value = {
+        ...state.value,
+        source: newSrc,
+        sourceLabel: payload.filename ?? payload.lib_key,
+      };
+    },
+    (p) => p.kind === 'lib-image',
+  );
+
   if (!state.value.open) return null;
 
   return (
@@ -163,11 +184,20 @@ export function CropperModal({ state, onClose, onSaved }: CropperModalProps) {
         · Target beat: <code>{state.value.targetBeatId ?? '(no target)'}</code>{' '}
         · Active scope: <code>{scopeKey(activeScope.value)}</code>
       </p>
-      <CropperCanvas
-        imageSrc={state.value.source}
-        initialAspect="4:3"
-        onReady={(h) => { canvasRef.current = h; }}
-      />
+      <div
+        class="mn-cropper-canvas-wrap mn-drop-target"
+        data-testid="cropper-canvas-drop-target"
+        data-loaded-source={state.value.source ?? ''}
+        onDragOver={canvasDropHandlers.onDragOver}
+        onDragLeave={canvasDropHandlers.onDragLeave}
+        onDrop={canvasDropHandlers.onDrop}
+      >
+        <CropperCanvas
+          imageSrc={state.value.source}
+          initialAspect="4:3"
+          onReady={(h) => { canvasRef.current = h; }}
+        />
+      </div>
     </Modal>
   );
 }

@@ -85,6 +85,22 @@ Production/Final_Mixes/
 Production/audio/
 Production/video/
 
+# E2E test fixture (proper-fix Phase 1 §17) — explicitly tracked despite Event_*/ + media globs
+!Production/Event_e2e_fixture/
+!Production/Event_e2e_fixture/**
+# Mutation-prone files inside the fixture stay ignored (Q10B counter finding) — globalSetup copies pristine over them
+Production/Event_e2e_fixture/production_state.json
+Production/Event_e2e_fixture/production_spend.json
+Production/Event_e2e_fixture/.backups/
+Production/Event_e2e_fixture/clips_dir/
+# Generated dist must stay out
+Production/Event_e2e_fixture/dist/
+# Pristine snapshots are the canonical seed — explicitly tracked
+!Production/Event_e2e_fixture/.pristine/
+!Production/Event_e2e_fixture/.pristine/**
+# Override the global `production_state.json` rule (line 94) for the pristine copy
+!Production/Event_e2e_fixture/.pristine/production_state.json
+
 # Pending writes (Directus offline queue)
 pending_directus_writes*.json
 pending_directus_writes*.jsonl
@@ -96,3 +112,6 @@ production_state.json
 # Archive subdirs
 archive/
 **/archive/
+
+# E2E fixture pristine snapshot — final negation overrides global production_state.json rule above
+!Production/Event_e2e_fixture/.pristine/production_state.json

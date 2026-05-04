@@ -5133,6 +5133,9 @@ class ProductionHandler(BaseHTTPRequestHandler):
             # LD-458 EVENT_LOAD_GENERATION_LOCK_V1 — atomic event swap + gen bump.
             if path == "/api/event/load":
                 return self._handle_event_load(body)
+            # S5.5c+e proper-fix +NewEvent (LD NEW_EVENT_CREATION_UI_V1)
+            if path == "/api/event/create":
+                return self._handle_event_create(body)
             # S5.5b — VideoSelector POSTs (display-hint write + partition create).
             if path == "/api/video/set_active":
                 return self._handle_video_set_active(body)
@@ -6047,6 +6050,56 @@ class ProductionHandler(BaseHTTPRequestHandler):
             "size_bytes": size_bytes,
             "sha256": sha,
         })
+
+    def _handle_event_create(self, body: dict) -> None:
+        """POST /api/event/create  body: {event_id, event_label?}
+
+        S5.5c+e proper-fix +NewEvent (LD NEW_EVENT_CREATION_UI_V1).
+        Spec §4.4: regex ^[A-Z][A-Za-z0-9_]{2,63}$; reserved prefixes
+        Test_/_/Tmp_; case-insensitive uniqueness vs Production/Event_*;
+        StateManager._init_files for v3 state shape.
+
+        Returns:
+          200 {ok, event_id, event_dir}
+          400 on validation failure
+          409 on case-insensitive collision
+        """
+        import re as _re
+        new_event_id = (body or {}).get("event_id", "")
+        if not new_event_id or not _re.match(r'^[A-Z][A-Za-z0-9_]{2,63}$', new_event_id):
+            return self._send_json(400, {"ok": False, "error":
+                "event_id must match ^[A-Z][A-Za-z0-9_]{2,63}$"})
+        for prefix in ('Test_', '_', 'Tmp_'):
+            if new_event_id.startswith(prefix):
+                return self._send_json(400, {"ok": False, "error":
+                    f"event_id cannot start with reserved prefix {prefix!r}"})
+        # Case-insensitive uniqueness vs siblings.
+        parent = self.app.event_dir.parent
+        existing_lower = {p.name.lower() for p in parent.iterdir() if p.is_dir() and p.name.startswith("Event_")}
+        if new_event_id.lower() in existing_lower:
+            return self._send_json(409, {"ok": False, "error":
+                f"event_id {new_event_id!r} already exists (case-insensitive collision)"})
+        new_event_dir = parent / new_event_id
+        # Create dir + initialize state via StateManager (writes v3-shape state.json).
+        new_event_dir.mkdir(parents=True, exist_ok=False)
+        # Storyboard template — copy current event's storyboard if possible,
+        # else create minimal placeholder (lets future event_load satisfy
+        # the storyboard_v*_prod.html lookup).
+        try:
+            src_sb = self.app.storyboard_path
+            if src_sb.is_file():
+                import shutil as _shutil
+                _shutil.copy(src_sb, new_event_dir / src_sb.name)
+        except Exception as _e:
+            print(f"[event_create] storyboard copy skipped: {_e}", flush=True)
+        # Init state files (production_state.json + production_spend.json).
+        try:
+            _ = StateManager(new_event_dir, new_event_id)
+        except Exception as _e:
+            print(f"[event_create] WARN StateManager init: {_e}", flush=True)
+        print(f"[event_create] created {new_event_id} at {new_event_dir}", flush=True)
+        return self._send_json(200, {"ok": True, "event_id": new_event_id,
+                                      "event_dir": str(new_event_dir)})
 
     def _handle_event_load(self, body: dict) -> None:
         """POST /api/event/load  body: {event_id, arc_number?, module_id?, storyboard?}

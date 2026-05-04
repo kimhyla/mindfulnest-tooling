@@ -10,9 +10,13 @@
 // Per LD ASYNC_JOB_GENERATION_PIN_V1: GPT batch is async (10s poll cadence
 // per Cursor v8 Q6).
 
-import { useEffect, useMemo, useState } from 'preact/hooks';
-import { activeScope, scopeKey } from '../state/scope';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import {
+  activeScope, scopeKey,
+  activeProjectType, activeMilestoneId, activeTargetVideo,
+} from '../state/scope';
 import { apiGet, pathappPatch } from '../api/client';
+import { makeDropTarget } from '../utils/dragdrop';
 import { Spinner } from './ui/Spinner';
 import { Select } from './ui/Select';
 import { pushToast } from './ui/Toast';
@@ -122,10 +126,15 @@ export function BgTab() {
   const [runningCostUsd, setRunningCostUsd] = useState<number>(0);
   const [lastBatchCostUsd, setLastBatchCostUsd] = useState<number>(0);
 
-  // Initial load — pull segments and active state.
+  // Initial load + scope-change re-fetch (R1 fix per spec §5 Phase 3.1).
+  // Deps include all scope signals so changing event/milestone/partition
+  // re-fires the fetch. First mount runs sync; subsequent runs are debounced
+  // 200ms (counter Q6 — first-run-sync gate via prevDepsRef).
+  const prevDepsRef = useRef<string | null>(null);
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    let timer: number | null = null;
+    const fetchData = async () => {
       setLoading(true);
       const segRes = await apiGet<BgSegmentsResponse>('bg_segments', { arc_number: String(arcNumber) });
       if (cancelled) return;
@@ -144,9 +153,37 @@ export function BgTab() {
       const initialBeats = stateRes.data?.beats ?? [];
       setBeats(initialBeats);
       setLoading(false);
-    })();
-    return () => { cancelled = true; };
-  }, [arcNumber]);
+    };
+
+    const depKey = [
+      arcNumber,
+      activeScope.value.event_id,
+      activeProjectType.value,
+      activeMilestoneId.value ?? '',
+      activeTargetVideo.value,
+    ].join('|');
+
+    if (prevDepsRef.current === null) {
+      // First mount: sync — must not delay or initial render shows empty.
+      prevDepsRef.current = depKey;
+      fetchData();
+    } else if (prevDepsRef.current !== depKey) {
+      // Subsequent re-fires (scope change): 200ms debounce.
+      prevDepsRef.current = depKey;
+      timer = window.setTimeout(fetchData, 200);
+    }
+
+    return () => {
+      cancelled = true;
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, [
+    arcNumber,
+    activeScope.value.event_id,
+    activeProjectType.value,
+    activeMilestoneId.value,
+    activeTargetVideo.value,
+  ]);
 
   // Poll GPT job until done.
   useEffect(() => {
@@ -566,11 +603,15 @@ function BeatGenCard({
           label="Char ref"
           refImg={beat.reference_image ?? null}
           testId={`bg-char-ref-${index}`}
+          beatId={beat.beat_id}
+          refField="reference_image"
         />
         <BgRefSlot
           label="BG ref"
           refImg={beat.bg_ref_image ?? null}
           testId={`bg-bg-ref-${index}`}
+          beatId={beat.beat_id}
+          refField="bg_ref_image"
         />
         <button
           type="button"
@@ -592,6 +633,7 @@ function BeatGenCard({
             key={opt?.key ?? `slot-${i}`}
             optionIndex={i}
             beatIndex={index}
+            beatId={beat.beat_id}
             option={opt}
             selected={!!opt && opt.key === beat.accepted_image_key}
             onClick={() => opt?.key && onAccept(opt.key)}
@@ -613,12 +655,49 @@ interface BgRefSlotProps {
   testId: string;
 }
 
-function BgRefSlot({ label, refImg, testId }: BgRefSlotProps) {
+interface BgRefSlotPropsExt extends BgRefSlotProps {
+  beatId: string;
+  refField: 'reference_image' | 'bg_ref_image';
+}
+
+function BgRefSlot({ label, refImg, testId, beatId, refField }: BgRefSlotPropsExt) {
   const hasImage = !!refImg && (refImg.thumb_b64 || refImg.key);
+  // R2 fix: drop target for library-image drag → POST bg_update_beat with the
+  // ref field (reference_image or bg_ref_image) per server _BG_BEAT_WRITABLE
+  // (production_server.py:8744).
+  const dropHandlers = makeDropTarget(
+    async (payload) => {
+      if (payload.kind !== 'lib-image') return;
+      const result = await pathappPatch(activeScope.value, 'bg_update_beat', {
+        beat_id: beatId,
+        [refField]: {
+          key: payload.lib_key,
+          abs_path: payload.abs_path ?? '',
+        },
+      });
+      if (!result.ok) {
+        pushToast({
+          kind: 'error',
+          message: `${label} drop failed: ${result.error ?? `HTTP ${result.status}`}`,
+          source: 'bg-ref-drop-error',
+        });
+      } else {
+        pushToast({
+          kind: 'success',
+          message: `${label} set: ${payload.lib_key}`,
+          source: 'bg-ref-drop',
+        });
+      }
+    },
+    (p) => p.kind === 'lib-image',
+  );
   return (
     <div
-      class={`mn-bg-ref-slot${hasImage ? ' has-image' : ''}`}
+      class={`mn-bg-ref-slot mn-drop-target${hasImage ? ' has-image' : ''}`}
       data-testid={testId}
+      onDragOver={dropHandlers.onDragOver}
+      onDragLeave={dropHandlers.onDragLeave}
+      onDrop={dropHandlers.onDrop}
     >
       <span class="mn-bg-ref-slot-label">{label}</span>
       {refImg?.thumb_b64 ? (
@@ -644,24 +723,63 @@ interface BgOptionTileProps {
   onClick: () => void;
 }
 
-function BgOptionTile({ beatIndex, optionIndex, option, selected, onClick }: BgOptionTileProps) {
+interface BgOptionTilePropsExt extends BgOptionTileProps {
+  beatId: string;
+}
+
+function BgOptionTile({ beatIndex, optionIndex, option, selected, onClick, beatId }: BgOptionTilePropsExt) {
+  // R2.1 fix: drop target for library-image drag → POST bg_accept_lib_image
+  // with server-accurate body shape (spec §4.3): {beat_id, key, filename,
+  // abs_path, slot_index}. slot_index = optionIndex (0/1/2).
+  const dropHandlers = makeDropTarget(
+    async (payload) => {
+      if (payload.kind !== 'lib-image') return;
+      const result = await pathappPatch(activeScope.value, 'bg_accept_lib_image', {
+        beat_id: beatId,
+        key: payload.lib_key,
+        filename: payload.filename ?? '',
+        abs_path: payload.abs_path ?? '',
+        slot_index: optionIndex,
+      });
+      if (!result.ok) {
+        pushToast({
+          kind: 'error',
+          message: `Drop failed: ${result.error ?? `HTTP ${result.status}`}`,
+          source: 'bg-option-drop-error',
+        });
+      }
+    },
+    (p) => p.kind === 'lib-image',
+  );
   if (!option) {
     return (
       <div
-        class="mn-bg-option mn-bg-option-empty-wrap"
+        class="mn-bg-option mn-bg-option-empty-wrap mn-drop-target"
         data-testid={`bg-option-${beatIndex}-${optionIndex}`}
         data-bg-option-empty="true"
+        onDragOver={dropHandlers.onDragOver}
+        onDragLeave={dropHandlers.onDragLeave}
+        onDrop={dropHandlers.onDrop}
       >
         <div class="mn-bg-option-empty">option {optionIndex + 1} (empty)</div>
       </div>
     );
   }
+  // R3 fix: option without `key` → radio DISABLED + tooltip explaining why.
+  // Without this gate the click silently no-ops or 400s server-side because
+  // bg_accept_option requires option_key on the wire.
+  const keyMissing = !option.key;
+  const tooltip = keyMissing ? 'Option missing key — regenerate beat' : undefined;
   return (
     <div
-      class={`mn-bg-option${selected ? ' is-selected' : ''}`}
+      class={`mn-bg-option mn-drop-target${selected ? ' is-selected' : ''}${keyMissing ? ' is-disabled' : ''}`}
       data-testid={`bg-option-${beatIndex}-${optionIndex}`}
-      data-option-key={option.key}
-      onClick={onClick}
+      data-option-key={option.key ?? ''}
+      onClick={keyMissing ? undefined : onClick}
+      onDragOver={dropHandlers.onDragOver}
+      onDragLeave={dropHandlers.onDragLeave}
+      onDrop={dropHandlers.onDrop}
+      title={tooltip}
     >
       {option.thumb_b64 ? (
         <img src={option.thumb_b64} alt={`option ${optionIndex + 1}`} />
@@ -673,7 +791,10 @@ function BgOptionTile({ beatIndex, optionIndex, option, selected, onClick }: BgO
           type="radio"
           name={`bg-opt-${beatIndex}`}
           checked={selected}
-          onChange={onClick}
+          onChange={keyMissing ? undefined : onClick}
+          disabled={keyMissing}
+          title={tooltip}
+          aria-label={tooltip ?? `option ${optionIndex + 1}`}
           data-testid={`bg-option-radio-${beatIndex}-${optionIndex}`}
         />
         {' '}option {optionIndex + 1}

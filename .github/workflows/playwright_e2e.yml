@@ -1,0 +1,99 @@
+name: Playwright e2e
+
+# Storyboard v59 client e2e gate — proper-fix Phase 1.3 (spec §19.2 single-location).
+# LDs: MANDATORY_E2E_GATE_V1 (CRITICAL), CI_PLAYWRIGHT_ON_COMMIT_V1 (HIGH).
+#
+# Per-session inclusion: this workflow currently runs ONLY
+# `Production/tools/storyboard-v2/e2e/s5_5ce_proper_fix.spec.ts`. Future sessions
+# that ship new e2e specs add their target file to the `npx playwright test ...`
+# step below. The existing scaffold (smoke / behavioral-parity / rollback /
+# touchpoint-a) requires fuller fixture data (Event_1-shape sidecars) and is
+# out of scope for this proper-fix session — they continue to run manually
+# against Kim's Dropbox tree.
+
+on:
+  push:
+    branches: [main, claude/*, feature/*]
+  pull_request:
+    branches: [main]
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest  # Cursor v11: cheaper than macos-latest; Chromium runs fine on Ubuntu.
+    timeout-minutes: 30
+    env:
+      # Spec §19.5 + counter Q2 — Directus secrets injected from GitHub Actions
+      # secrets (set via `gh secret set` or repo Settings → Secrets and variables).
+      DIRECTUS_URL: ${{ secrets.DIRECTUS_URL }}
+      DIRECTUS_ADMIN_EMAIL: ${{ secrets.DIRECTUS_ADMIN_EMAIL }}
+      DIRECTUS_ADMIN_PASSWORD: ${{ secrets.DIRECTUS_ADMIN_PASSWORD }}
+      DIRECTUS_EMAIL: ${{ secrets.DIRECTUS_ADMIN_EMAIL }}
+      DIRECTUS_PASSWORD: ${{ secrets.DIRECTUS_ADMIN_PASSWORD }}
+      # Optional API keys — server boots in degraded mode if absent; tests that
+      # exercise vendor APIs (none in proper-fix) are out of scope here.
+      WAVESPEED_API_KEY: ${{ secrets.WAVESPEED_API_KEY }}
+      BFL_API_KEY: ${{ secrets.BFL_API_KEY }}
+      ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      CI: 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Fail-fast secrets preflight (counter Q2)
+        # Hard-fail before webServer.command spawns production_server.py if
+        # core Directus secrets are unset. Prevents silent-degraded-mode runs
+        # that produce false-RED tests for non-product reasons.
+        run: |
+          if [ -z "$DIRECTUS_URL" ] || [ -z "$DIRECTUS_ADMIN_EMAIL" ] || [ -z "$DIRECTUS_ADMIN_PASSWORD" ]; then
+            echo "::error::Required Directus secrets are not set."
+            echo "::error::Set DIRECTUS_URL, DIRECTUS_ADMIN_EMAIL, DIRECTUS_ADMIN_PASSWORD via Repo Settings → Secrets and variables → Actions, or via:"
+            echo "::error::  gh secret set DIRECTUS_URL --body 'https://directus-production-3460.up.railway.app'"
+            echo "::error::  gh secret set DIRECTUS_ADMIN_EMAIL --body '<kim email>'"
+            echo "::error::  gh secret set DIRECTUS_ADMIN_PASSWORD --body '<password>'"
+            exit 1
+          fi
+          echo "Secrets preflight OK"
+
+      - name: Install Python deps
+        run: |
+          python3 -m pip install --upgrade pip
+          # production_server.py imports PIL (image thumbs in /api/cr/library) +
+          # standard library; no requirements.txt yet. Install minimum.
+          python3 -m pip install Pillow
+
+      - name: Install client deps
+        working-directory: Production/tools/storyboard-v2
+        run: npm ci
+
+      - name: Build dist
+        working-directory: Production/tools/storyboard-v2
+        run: npm run build
+
+      - name: Install Playwright browsers
+        working-directory: Production/tools/storyboard-v2
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright e2e (proper-fix scope)
+        working-directory: Production/tools/storyboard-v2
+        # Per spec §19 scope decision: only s5_5ce.spec.ts runs in CI.
+        # Convention §8.9 says future sessions add their files to this list.
+        run: npx playwright test e2e/s5_5ce_proper_fix.spec.ts --reporter=line
+
+      - name: Upload test artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            Production/tools/storyboard-v2/playwright-report/
+            Production/tools/storyboard-v2/test-results/
+          retention-days: 7

@@ -9,7 +9,10 @@
 //   3. Returns null cleanly on cross-window drags / unrelated drops
 
 export type DragPayload =
-  | { kind: 'lib-image'; lib_key: string; tier: string; abs_path?: string }
+  // S5.5c+e proper-fix R2: filename added so drop handlers can build the
+  // server-accurate bg_accept_lib_image body {beat_id, key, filename,
+  // abs_path, slot_index} without a separate library lookup.
+  | { kind: 'lib-image'; lib_key: string; tier: string; abs_path?: string; filename?: string }
   | { kind: 'lib-watercolor'; lib_key: string; animation_type: string }
   | { kind: 'lib-sfx'; lib_key: string; source_path: string; tier: string }
   | { kind: 'beat'; beat_id: string };
@@ -54,11 +57,17 @@ export function getDragData(e: DragEvent): DragPayload | null {
 /**
  * Make a drop target — call ondragover.preventDefault and forward the parsed
  * payload to onDrop. Returns the props bag the component should spread.
+ *
+ * S5.5c+e proper-fix R2.4: also toggles `is-drag-over` class on the target
+ * element so CSS can show a visual cue. Class name matches spec §4.1 R2.
  */
 export interface DropTargetHandlers {
   onDragOver: (e: DragEvent) => void;
+  onDragLeave: (e: DragEvent) => void;
   onDrop: (e: DragEvent) => void;
 }
+
+const DRAG_OVER_CLASS = 'is-drag-over';
 
 export function makeDropTarget(
   onDrop: (payload: DragPayload, event: DragEvent) => void,
@@ -71,9 +80,23 @@ export function makeDropTarget(
       // we can do is preventDefault to enable drop and validate on drop.
       e.preventDefault();
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+      const el = e.currentTarget as Element | null;
+      if (el && !el.classList.contains(DRAG_OVER_CLASS)) {
+        el.classList.add(DRAG_OVER_CLASS);
+      }
+    },
+    onDragLeave: (e: DragEvent) => {
+      // Don't toggle off if we're moving to a child element (relatedTarget is
+      // inside currentTarget). HTML5 dragleave fires on every element transition.
+      const el = e.currentTarget as Element | null;
+      const related = e.relatedTarget as Node | null;
+      if (el && related && el.contains(related)) return;
+      el?.classList.remove(DRAG_OVER_CLASS);
     },
     onDrop: (e: DragEvent) => {
       e.preventDefault();
+      const el = e.currentTarget as Element | null;
+      el?.classList.remove(DRAG_OVER_CLASS);
       const payload = getDragData(e);
       if (!payload) return;
       if (filter && !filter(payload)) return;
