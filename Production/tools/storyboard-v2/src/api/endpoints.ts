@@ -63,6 +63,8 @@ export const MUTATION_ENDPOINTS = {
   state_snapshot: `${SERVER_BASE}/api/state/snapshot`,
   // Session 1.5 v3.1 NEW endpoint — atomic event swap + generation bump (LD-458)
   event_load: `${SERVER_BASE}/api/event/load`,
+  // S5.5c+e proper-fix +NewEvent — server-side event-dir creation
+  event_create: `${SERVER_BASE}/api/event/create`,
   // S3 v3.1 — phase + animate + stitcher mutations.
   phase_suggest_script: `${SERVER_BASE}/api/phase/suggest_script`,
   watercolor_animate: `${SERVER_BASE}/api/watercolor/animate`,

@@ -43,7 +43,7 @@ interface ProjectListResponse {
 
 // Sentinel values used inside the <select> to trigger non-load actions.
 const NEW_MILESTONE_VALUE = '__new_milestone__';
-const NEW_EVENT_VALUE = '__new_event__'; // future S6+; surfaced as disabled stub
+const NEW_EVENT_VALUE = '__new_event__'; // S5.5c+e proper-fix +NewEvent: enabled
 
 const MILESTONE_ID_REGEX = /^[a-z0-9][a-z0-9_-]{2,63}$/;
 const RESERVED_PREFIXES = [
@@ -62,6 +62,139 @@ function validateMilestoneId(id: string): string | null {
     }
   }
   return null;
+}
+
+// S5.5c+e proper-fix +NewEvent — event_id validation per spec §4.4
+// (regex ^[A-Z][A-Za-z0-9_]{2,63}$, reserved prefixes Test_/_/Tmp_).
+const EVENT_ID_REGEX = /^[A-Z][A-Za-z0-9_]{2,63}$/;
+const EVENT_RESERVED_PREFIXES = ['Test_', '_', 'Tmp_'];
+
+function validateEventId(id: string): string | null {
+  if (!id) return 'event_id required';
+  if (!EVENT_ID_REGEX.test(id)) {
+    return 'must match ^[A-Z][A-Za-z0-9_]{2,63}$ (PascalCase, 3-64 chars)';
+  }
+  for (const prefix of EVENT_RESERVED_PREFIXES) {
+    if (id.startsWith(prefix)) {
+      return `cannot start with reserved prefix "${prefix}"`;
+    }
+  }
+  return null;
+}
+
+interface NewEventModalProps {
+  open: boolean;
+  onClose: () => void;
+  onCreated: (eventId: string) => void;
+}
+
+function NewEventModal({ open, onClose, onCreated }: NewEventModalProps) {
+  const [eventId, setEventId] = useState('');
+  const [eventLabel, setEventLabel] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const liveError = eventId.length > 0 ? validateEventId(eventId) : null;
+
+  const onSubmit = async () => {
+    const idError = validateEventId(eventId);
+    if (idError) {
+      setError(idError);
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    const result = await pathappPatch<{ ok: boolean; event_id?: string; event_dir?: string; error?: string }>(
+      activeScope.value, 'event_create', {
+        event_id: eventId,
+        event_label: eventLabel || undefined,
+      },
+    );
+    setSubmitting(false);
+    if (result.ok && result.data?.ok) {
+      pushToast({ kind: 'success', message: `Event "${eventId}" created`, source: 'event-create' });
+      setEventId('');
+      setEventLabel('');
+      onCreated(eventId);
+    } else {
+      const msg = result.data?.error ?? result.error ?? `HTTP ${result.status}`;
+      setError(msg);
+    }
+  };
+
+  return (
+    <Modal
+      id="new-event"
+      title="+ New Event"
+      open={open}
+      onClose={onClose}
+      footer={
+        <>
+          <button
+            type="button"
+            class="mn-btn"
+            data-testid="new-event-cancel"
+            onClick={onClose}
+            disabled={submitting}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            class="mn-btn mn-btn-primary"
+            data-testid="new-event-create"
+            onClick={onSubmit}
+            disabled={submitting || !eventId || liveError !== null}
+          >
+            {submitting ? 'Creating…' : 'Create'}
+          </button>
+        </>
+      }
+    >
+      <p class="mn-dim">
+        Events are top-level production scopes (e.g. "Event_3", "M5E1").
+        They live at <code>Production/Event_&lt;id&gt;/</code>.
+      </p>
+      <label class="mn-select-label" for="new-event-id">Event ID:</label>
+      <input
+        id="new-event-id"
+        class="mn-project-modal-input"
+        type="text"
+        placeholder="Event_3"
+        value={eventId}
+        onInput={(e) => setEventId((e.target as HTMLInputElement).value)}
+        data-testid="new-event-id-input"
+        autofocus
+      />
+      <p class="mn-project-modal-help">
+        PascalCase, 3–64 chars, alphanumeric + <code>_</code>. First char
+        uppercase. Cannot start with reserved prefixes
+        (<code>Test_</code>, <code>_</code>, <code>Tmp_</code>).
+      </p>
+      {liveError ? (
+        <p class="mn-project-modal-error" data-testid="new-event-id-error">
+          {liveError}
+        </p>
+      ) : null}
+
+      <label class="mn-select-label" for="new-event-label">Display label (optional):</label>
+      <input
+        id="new-event-label"
+        class="mn-project-modal-input"
+        type="text"
+        placeholder="My Event"
+        value={eventLabel}
+        onInput={(e) => setEventLabel((e.target as HTMLInputElement).value)}
+        data-testid="new-event-label-input"
+      />
+
+      {error ? (
+        <p class="mn-project-modal-error" data-testid="new-event-error">
+          {error}
+        </p>
+      ) : null}
+    </Modal>
+  );
 }
 
 interface NewMilestoneModalProps {
@@ -186,6 +319,7 @@ export function ProjectSelector() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [showNewMilestone, setShowNewMilestone] = useState(false);
+  const [showNewEvent, setShowNewEvent] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
 
   // Fetch project list.
@@ -241,11 +375,9 @@ export function ProjectSelector() {
       return;
     }
     if (next === NEW_EVENT_VALUE) {
-      pushToast({
-        kind: 'info',
-        message: 'New Event creation is server-side only for now (S6+).',
-        source: 'project-selector-new-event-stub',
-      });
+      // S5.5c+e proper-fix +NewEvent: enabled — opens modal, posts to
+      // /api/event/create, auto-loads on success (mirrors milestone flow).
+      setShowNewEvent(true);
       return;
     }
     if (next === currentValue) return;
@@ -322,7 +454,7 @@ export function ProjectSelector() {
                 value: `event:${e.event_id}`,
                 label: e.event_id,
               })),
-              { value: NEW_EVENT_VALUE, label: '+ New Event (server-side only)', disabled: true },
+              { value: NEW_EVENT_VALUE, label: '+ New Event…' },
             ],
           },
           {
@@ -345,10 +477,52 @@ export function ProjectSelector() {
       <NewMilestoneModal
         open={showNewMilestone}
         onClose={() => setShowNewMilestone(false)}
-        onCreated={(_id) => {
+        onCreated={async (id) => {
+          // R1.2 fix: auto-load the newly-created milestone so the UI scope
+          // updates immediately (paired with R1 dep-array fix in BgTab +
+          // StoryboardTab so downstream views refetch). Per spec §5 Phase 3.1.
           setShowNewMilestone(false);
           setRefreshTick((n) => n + 1);
-          // Don't auto-load the new milestone — let Kim choose to switch.
+          const loadResult = await pathappPatch<{ ok: boolean; milestone_id?: string }>(
+            activeScope.value, 'milestone_load', { milestone_id: id },
+          );
+          if (loadResult.ok && loadResult.data?.ok) {
+            activeProjectType.value = 'milestone';
+            activeMilestoneId.value = id;
+          } else {
+            pushToast({
+              kind: 'error',
+              message: `Auto-load failed for "${id}": ${loadResult.error ?? 'unknown'}`,
+              source: 'milestone-auto-load-error',
+            });
+          }
+        }}
+      />
+      <NewEventModal
+        open={showNewEvent}
+        onClose={() => setShowNewEvent(false)}
+        onCreated={async (id) => {
+          // +NewEvent fix: after creating the event server-side, auto-load
+          // it (mirrors R1.2 milestone pattern).
+          setShowNewEvent(false);
+          setRefreshTick((n) => n + 1);
+          const loadRes = await fetch(MUTATION_ENDPOINTS.event_load, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ event_id: id }),
+          });
+          if (loadRes.ok) {
+            const data = (await loadRes.json()) as { event_id: string; event_generation: number };
+            activeScope.value = makeScope(data.event_id, null, data.event_generation);
+            activeProjectType.value = 'event';
+            activeMilestoneId.value = null;
+          } else {
+            pushToast({
+              kind: 'error',
+              message: `Auto-load failed for "${id}": HTTP ${loadRes.status}`,
+              source: 'event-auto-load-error',
+            });
+          }
         }}
       />
     </div>

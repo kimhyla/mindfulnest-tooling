@@ -129,6 +129,7 @@ export function LibraryPanel() {
                 lib_key: libKey,
                 tier: it.tier ?? 'unknown',
                 ...(it.abs_path ? { abs_path: it.abs_path } : {}),
+                ...(it.filename ? { filename: it.filename } : {}),
               };
               const dimsLabel = it.width && it.height ? `${it.width}×${it.height}` : undefined;
               const tileProps: {

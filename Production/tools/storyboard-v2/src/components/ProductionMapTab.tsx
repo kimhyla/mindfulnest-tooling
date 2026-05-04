@@ -89,6 +89,18 @@ export function ProductionMapTab() {
         <p class="mn-empty" data-testid="map-empty">No modules.</p>
       ) : (
         <div class="mn-map-table-wrap">
+          {/* R4 fix: UI note explaining V1 scope policy for M7-M54 placeholders.
+              See PRODUCTION_MAP_TBD_HONEST_V1 (S5.5c+e proper-fix §3) — TBD
+              entries are V1 scope by design, not parser bugs. */}
+          <p
+            class="mn-map-tbd-note mn-dim"
+            data-testid="production-map-tbd-note"
+          >
+            <strong>Note:</strong> M7-M54 are V1 scope placeholders — author
+            each by creating an Event. Once authored, run
+            <code> populate_prod_modules_from_gameplay_scope.py</code> to
+            update <code>creature_name</code> from the doc.
+          </p>
           <table class="mn-map-table" data-testid="map-table">
             <thead>
               <tr>
