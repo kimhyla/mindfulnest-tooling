@@ -1,0 +1,19 @@
+# V59 architectural-fix Wave 1 (F-CI-001) — canonical runtime dep list for
+# production_server.py + sibling tools modules exercised by the Playwright
+# e2e gate. Per LD PRODUCTION_TOOLING_REQUIREMENTS_TXT_V1.
+#
+# Audit method: grep -hE '^import [A-Z]|^from [A-Z]' Production/tools/*.py +
+# Production/lib/*.py, filtered against the Python stdlib. Production_server
+# imports `yaml` (5267, 5387) + `PIL` (820, 847, 5793, 8123, 8268). The
+# kling_startend_pipeline.py + ffmpeg_utils.py + lipsync_sender.py modules
+# (imported by production_server) add no further non-stdlib deps.
+#
+# Out of scope for this requirements file (and tracked separately if needed):
+#   - numpy / requests / etc. used by other production tools (geometry_detector,
+#     magic_compositor, build_tts_review) that the e2e gate does NOT exercise
+#   - pip-tools / lockfile (`requirements.lock`) — deferred per spec §10
+#
+# CI workflow installs from this file via `pip install -r Production/tools/requirements.txt`.
+
+PyYAML>=6.0
+Pillow>=10.0

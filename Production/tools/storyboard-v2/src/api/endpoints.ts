@@ -71,6 +71,10 @@ export const MUTATION_ENDPOINTS = {
   phase_suggest_script: `${SERVER_BASE}/api/phase/suggest_script`,
   watercolor_animate: `${SERVER_BASE}/api/watercolor/animate`,
   stitch_loudnorm: `${SERVER_BASE}/api/stitch_editor/loudnorm`,
+  // V59 architectural-fix Wave 1 (F-S2-001) — StitcherTab Preview/Bake
+  // routed via pathappPatch. stitch_save_job already exists below.
+  stitch_preview: `${SERVER_BASE}/api/stitch_editor/preview`,
+  stitch_bake: `${SERVER_BASE}/api/stitch_editor/bake`,
   // S4 v3.1 — Phase A/B producer mutations.
   phase_b_regen_audio: `${SERVER_BASE}/api/phase_b/regen_audio`,
   phase_b_mix_audio: `${SERVER_BASE}/api/phase_b/mix_audio`,
