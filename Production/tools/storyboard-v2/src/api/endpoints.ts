@@ -23,6 +23,8 @@ export const READ_ENDPOINTS = {
   event_list: `${SERVER_BASE}/api/event/list`,
   phase_watercolor_list: `${SERVER_BASE}/api/phase/watercolor_list`,
   phase_base_clips_list: `${SERVER_BASE}/api/phase/base_clips_list`,
+  // S5.5f — ambient bed preset inventory.
+  phase_b_ambient_preset_list: `${SERVER_BASE}/api/phase_b/ambient_preset_list`,
   production_map: `${SERVER_BASE}/api/production/map`,
   // S5.5b new — Bug 4 fix + VideoSelector data source
   event_current: `${SERVER_BASE}/api/event/current`,
@@ -74,6 +76,11 @@ export const MUTATION_ENDPOINTS = {
   phase_b_mix_audio: `${SERVER_BASE}/api/phase_b/mix_audio`,
   phase_b_lipsync: `${SERVER_BASE}/api/phase_b/lipsync`,
   stitch_save_job: `${SERVER_BASE}/api/stitch_editor/job`,
+  // S5.5f — top-level state writes via the v2 module-patch handler.
+  // Whitelisted fields: see _V2_MODULE_ALLOWED_FIELDS in production_server.py.
+  // Used for phase_X_watercolor_cues_json, phase_X_ambient_preset_id, the
+  // Phase A 3-clip slots, etc. Cursor v8 Beyond #2 — added to MUTATION_ENDPOINTS.
+  v2_module_patch: `${SERVER_BASE}/api/v2/module/patch`,
   // S5.5b new — VideoSelector + partition create
   video_set_active: `${SERVER_BASE}/api/video/set_active`,
   video_create: `${SERVER_BASE}/api/video/create`,

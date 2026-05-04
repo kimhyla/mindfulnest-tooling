@@ -4952,6 +4952,11 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_phase_watercolor_file()
             if path == "/api/phase/base_clips_list":
                 return self._handle_phase_base_clips_list()
+            # S5.5f — ambient preset inventory (LD AMBIENT_PRESET_SELECTOR_INPRODUCER_V1).
+            # Filesystem scan of Production/audio_library/ambient/*.mp3 — Cursor v8
+            # release-blocker fix; spec §3.7 option (b).
+            if path == "/api/phase_b/ambient_preset_list":
+                return self._handle_phase_b_ambient_preset_list()
             if path == "/api/production/map":
                 return self._handle_production_map()
             # ── Visible Magic Phase 2 (2026-04-24) ──────────────────────────────
@@ -7688,6 +7693,29 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     "ext": ext,
                     "character": character,
                     "duration_s": round(duration_s, 3) if duration_s else None,
+                })
+        return self._send_json(200, {"ok": True, "items": items, "count": len(items)})
+
+    def _handle_phase_b_ambient_preset_list(self) -> None:
+        """GET /api/phase_b/ambient_preset_list — list ambient bed presets.
+
+        Returns {ok, items: [{preset_id, file_size_bytes}], count}. Empty
+        list (count=0) is a valid result — the producer UI surfaces a
+        "no presets available" hint when the list is empty.
+
+        Per LD AMBIENT_PRESET_SELECTOR_INPRODUCER_V1 (S5.5f spec §3.7).
+        """
+        ambient_dir = Path(__file__).resolve().parent.parent / "audio_library" / "ambient"
+        items: list[dict] = []
+        if ambient_dir.is_dir():
+            for f in sorted(ambient_dir.iterdir(), key=lambda p: p.name):
+                if not f.is_file():
+                    continue
+                if f.suffix.lower() != ".mp3":
+                    continue
+                items.append({
+                    "preset_id": f.stem,
+                    "file_size_bytes": f.stat().st_size,
                 })
         return self._send_json(200, {"ok": True, "items": items, "count": len(items)})
 

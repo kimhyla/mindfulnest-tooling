@@ -16,6 +16,18 @@ import { useEffect, useState } from 'preact/hooks';
 import { apiGet, pathappPatch } from '../../api/client';
 import { activeScope } from '../../state/scope';
 import { SERVER_BASE } from '../../api/endpoints';
+import { WaveformTimeline, type WatercolorCue } from './WaveformTimeline';
+import { CuePopover } from './CuePopover';
+import { BaseClipPicker } from './BaseClipPicker';
+import { setDragData, type DragPayload } from '../../utils/dragdrop';
+
+type PhaseAClipPosition = 'flyin' | 'sitting' | 'flyout';
+const PHASE_A_CLIP_POSITIONS: ReadonlyArray<PhaseAClipPosition> = ['flyin', 'sitting', 'flyout'];
+const PHASE_A_CLIP_LABELS: Record<PhaseAClipPosition, string> = {
+  flyin: 'Fly-in',
+  sitting: 'Sitting',
+  flyout: 'Fly-out',
+};
 
 interface WatercolorItem {
   key: string;
@@ -45,6 +57,16 @@ interface BaseClipsResponse {
   count?: number;
 }
 
+interface AmbientPreset {
+  preset_id: string;
+  file_size_bytes: number;
+}
+interface AmbientPresetListResponse {
+  ok: boolean;
+  items?: AmbientPreset[];
+  count?: number;
+}
+
 interface PhaseStateSlice {
   voice_stem_file?: string;
   voice_stem_mtime?: number;
@@ -55,6 +77,13 @@ interface PhaseStateSlice {
   stitched_file?: string;        // phase A only
   stitched_mtime?: number;
   script?: string;
+  watercolor_cues?: WatercolorCue[];
+  // Phase A only — 3-clip handling per PHASE_A_THREE_CLIP_HANDLING_V1.
+  chipper_flyin_clip_id?: string;
+  chipper_sitting_clip_id?: string;
+  chipper_flyout_clip_id?: string;
+  // S5.5f — ambient bed preset (LD AMBIENT_PRESET_SELECTOR_INPRODUCER_V1).
+  ambient_preset_id?: string;
 }
 interface EventStateResponse {
   beats?: Record<string, unknown>;
@@ -78,10 +107,22 @@ function pickPhaseSlice(state: EventStateResponse, phase: 'a' | 'b'): PhaseState
   const st = get<string>('stitched_file');             if (st) slice.stitched_file = st;
   const stm = get<number>('stitched_mtime');           if (stm) slice.stitched_mtime = stm;
   const sc = get<string>('script');                    if (sc) slice.script = sc;
+  const cues = get<WatercolorCue[]>('watercolor_cues_json');
+  if (Array.isArray(cues)) slice.watercolor_cues = cues;
+  if (phase === 'a') {
+    const fi = get<string>('chipper_flyin_clip_id');   if (fi) slice.chipper_flyin_clip_id = fi;
+    const si = get<string>('chipper_sitting_clip_id'); if (si) slice.chipper_sitting_clip_id = si;
+    const fo = get<string>('chipper_flyout_clip_id');  if (fo) slice.chipper_flyout_clip_id = fo;
+  }
+  const ap = get<string>('ambient_preset_id'); if (ap) slice.ambient_preset_id = ap;
   return slice;
 }
 
-function priorityAudioFile(slice: PhaseStateSlice): { name: string; label: string } | null {
+type AudioSourceLabel = 'lipsync' | 'mixed' | 'stem';
+
+function priorityAudioFile(
+  slice: PhaseStateSlice,
+): { name: string; label: AudioSourceLabel } | null {
   if (slice.lipsync_file) return { name: slice.lipsync_file, label: 'lipsync' };
   if (slice.mixed_audio_file) return { name: slice.mixed_audio_file, label: 'mixed' };
   if (slice.voice_stem_file) return { name: slice.voice_stem_file, label: 'stem' };
@@ -89,10 +130,12 @@ function priorityAudioFile(slice: PhaseStateSlice): { name: string; label: strin
 }
 
 function fileUrl(name: string): string {
-  // Server's /files endpoint serves arbitrary event_dir files via ?path=
-  // For now we use a relative-to-event_dir convention since /api/v2/event-state
-  // already requires Event_1. The /files endpoint does the heavy lifting.
-  return `${SERVER_BASE}/files?path=${encodeURIComponent(`Production/Event_1/${name}`)}`;
+  // Server's /files endpoint serves arbitrary event_dir files via ?path=.
+  // Path is scope-bound: derived from activeScope.value.event_id so the same
+  // app works for Event_1, Event_e2e_fixture, or any other event without a
+  // hardcoded literal (F17 gate / spec §19.10 #2).
+  const eventId = activeScope.value.event_id;
+  return `${SERVER_BASE}/files?path=${encodeURIComponent(`Production/${eventId}/${name}`)}`;
 }
 
 export function PhaseProducer({ phase }: PhaseProducerProps) {
@@ -105,12 +148,17 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [selectedBaseClip, setSelectedBaseClip] = useState<string>('');
+  const [activeCueId, setActiveCueId] = useState<string | null>(null);
+  const [popoverAnchor, setPopoverAnchor] = useState<{ x: number; y: number } | null>(null);
+  const [pickerPosition, setPickerPosition] = useState<PhaseAClipPosition | null>(null);
+  const [ambientPresets, setAmbientPresets] = useState<AmbientPreset[]>([]);
 
   const refreshAll = async () => {
-    const [wc, bc, st] = await Promise.all([
+    const [wc, bc, st, ap] = await Promise.all([
       apiGet<WatercolorListResponse>('phase_watercolor_list'),
       apiGet<BaseClipsResponse>('phase_base_clips_list'),
       apiGet<EventStateResponse>('v2_event_state', { event_id: activeScope.value.event_id }),
+      apiGet<AmbientPresetListResponse>('phase_b_ambient_preset_list'),
     ]);
     if (wc.ok && wc.data?.items) setWatercolors(wc.data.items);
     if (bc.ok && bc.data?.items) {
@@ -125,6 +173,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       setStateSlice(slice);
       if (slice.script) setScriptDraft(slice.script);
     }
+    if (ap.ok && ap.data?.items) setAmbientPresets(ap.data.items);
   };
 
   useEffect(() => {
@@ -221,7 +270,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     const res = await pathappPatch(activeScope.value, 'stitch_save_job', {
       job_name: `phase_${phase}_${activeScope.value.event_id}`,
       slot: phase === 'a' ? 'phase_a' : 'phase_b',
-      video_path: `Production/Event_1/${srcFile}`,
+      video_path: `Production/${activeScope.value.event_id}/${srcFile}`,
     });
     setBusyAction(null);
     if (res.ok) {
@@ -241,8 +290,144 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     window.open(url.toString(), '_blank');
   };
 
+  // ── Watercolor cue authoring (Phase C) ──────────────────────────────────
+  // All cue mutations write the FULL phase_X_watercolor_cues_json array via
+  // v2_module_patch (whitelisted field; server-side _V2_MODULE_FIELD_VALIDATORS
+  // checks shape). Optimistic UI: setStateSlice locally then refresh on success.
+  const cueField = `phase_${phase}_watercolor_cues_json`;
+
+  const persistCues = async (next: WatercolorCue[]) => {
+    setStateSlice((s) => ({ ...s, watercolor_cues: next }));
+    const res = await pathappPatch(activeScope.value, 'v2_module_patch', {
+      field: cueField,
+      value: next,
+    });
+    if (!res.ok) {
+      setStatusMsg(`✗ cue patch HTTP ${res.status}: ${res.error ?? ''}`);
+    }
+  };
+
+  const onWatercolorDrop = (lib_key: string, offset_ms: number) => {
+    const newCue: WatercolorCue = {
+      id: `cue_${Math.random().toString(36).slice(2, 10)}`,
+      watercolor_key: lib_key,
+      offset_ms,
+      duration_ms: 3000,
+      animation_type: 'fade_in',
+      volume: 1.0,
+    };
+    const next = [...(stateSlice.watercolor_cues ?? []), newCue];
+    void persistCues(next);
+  };
+
+  const onCueClick = (cueId: string, anchor: { x: number; y: number }) => {
+    setActiveCueId(cueId);
+    setPopoverAnchor(anchor);
+  };
+
+  const onCuePatch = (updated: WatercolorCue) => {
+    const next = (stateSlice.watercolor_cues ?? []).map((c) =>
+      c.id === updated.id ? updated : c,
+    );
+    void persistCues(next);
+  };
+
+  const onCueDelete = () => {
+    if (!activeCueId) return;
+    const next = (stateSlice.watercolor_cues ?? []).filter((c) => c.id !== activeCueId);
+    setActiveCueId(null);
+    setPopoverAnchor(null);
+    void persistCues(next);
+  };
+
+  const onCuePopoverClose = () => {
+    setActiveCueId(null);
+    setPopoverAnchor(null);
+  };
+
+  const onWatercolorDragStart = (e: DragEvent, key: string) => {
+    const payload: DragPayload = {
+      kind: 'lib-watercolor',
+      lib_key: key,
+      animation_type: 'fade_in',
+    };
+    setDragData(e, payload);
+  };
+
+  // ── Phase A 3-clip handling (Phase D) ──────────────────────────────────
+  const phaseAClipId = (pos: PhaseAClipPosition): string | undefined => {
+    if (pos === 'flyin') return stateSlice.chipper_flyin_clip_id;
+    if (pos === 'sitting') return stateSlice.chipper_sitting_clip_id;
+    return stateSlice.chipper_flyout_clip_id;
+  };
+
+  const onPickPhaseAClip = async (pos: PhaseAClipPosition, clipId: string) => {
+    const field = `phase_a_chipper_${pos}_clip_id`;
+    setPickerPosition(null);
+    setStateSlice((s) => ({
+      ...s,
+      [`chipper_${pos}_clip_id`]: clipId,
+    } as PhaseStateSlice));
+    const res = await pathappPatch(activeScope.value, 'v2_module_patch', {
+      field,
+      value: clipId,
+    });
+    if (!res.ok) {
+      setStatusMsg(`✗ ${field} HTTP ${res.status}: ${res.error ?? ''}`);
+    }
+  };
+
+  const phaseATotalDurationS = (): number => {
+    let total = 0;
+    for (const pos of PHASE_A_CLIP_POSITIONS) {
+      const id = phaseAClipId(pos);
+      const clip = baseClips.find((c) => c.id === id);
+      total += clip?.duration_s ?? 0;
+    }
+    return total;
+  };
+
+  // ── Voice stem (Phase E) — Cursor v8 Q5: misnamed regen_audio writes voice_stem files.
+  const onGenerateStem = async () => {
+    setBusyAction('stem');
+    setStatusMsg('Generating stem from script…');
+    const res = await pathappPatch(activeScope.value, 'phase_b_regen_audio', {
+      phase,
+      script: scriptDraft,
+    });
+    setBusyAction(null);
+    if (res.ok) {
+      setStatusMsg('✓ Stem generated');
+      await refreshAll();
+    } else {
+      setStatusMsg(`✗ Stem HTTP ${res.status}: ${res.error ?? ''}`);
+    }
+  };
+
+  // ── Ambient preset (Phase E) ─────────────────────────────────────────
+  const onPickAmbientPreset = async (presetId: string) => {
+    const field = `phase_${phase}_ambient_preset_id`;
+    setStateSlice((s) => {
+      const next: PhaseStateSlice = { ...s };
+      if (presetId) next.ambient_preset_id = presetId;
+      else delete next.ambient_preset_id;
+      return next;
+    });
+    const res = await pathappPatch(activeScope.value, 'v2_module_patch', {
+      field,
+      value: presetId,
+    });
+    if (!res.ok) {
+      setStatusMsg(`✗ ${field} HTTP ${res.status}: ${res.error ?? ''}`);
+    }
+  };
+
   const audioFile = priorityAudioFile(stateSlice);
   const lipsyncFile = stateSlice.lipsync_file ?? null;
+  const activeCue =
+    activeCueId
+      ? (stateSlice.watercolor_cues ?? []).find((c) => c.id === activeCueId) ?? null
+      : null;
 
   return (
     <details
@@ -287,14 +472,65 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           placeholder={`Phase ${phase.toUpperCase()} script…`}
         />
 
-        {/* Audio player — priority lipsync > mixed > stem */}
-        {audioFile ? (
-          <div class="mn-phase-audio" data-testid={`phase-${phase}-audio`}>
-            <strong>Audio ({audioFile.label}):</strong>
-            <audio controls src={fileUrl(audioFile.name)} />
-            <span class="mn-dim">{audioFile.name}</span>
-          </div>
+        {/* Audio waveform — WaveSurfer v7 timeline (LD-330 / LD-472).
+            Priority: lipsync > mixed > stem (resolved by priorityAudioFile). */}
+        <WaveformTimeline
+          audioSrc={audioFile ? fileUrl(audioFile.name) : null}
+          sourceLabel={audioFile?.label ?? null}
+          sourceFilename={audioFile?.name ?? null}
+          cues={stateSlice.watercolor_cues ?? []}
+          onCueClick={onCueClick}
+          onWatercolorDrop={onWatercolorDrop}
+        />
+        {activeCue && popoverAnchor ? (
+          <CuePopover
+            cue={activeCue}
+            anchor={popoverAnchor}
+            onPatch={onCuePatch}
+            onDelete={onCueDelete}
+            onClose={onCuePopoverClose}
+          />
         ) : null}
+
+        {/* S5.5f Phase E — Voice stem (Generate-from-script) + Ambient preset.
+            File-upload UI is OUT OF SCOPE per spec §3.6 + Cursor v8 Q5;
+            'Generate stem' calls the misnamed but real /api/phase_b/regen_audio
+            handler which writes phase_<a|b>_voice_stem_*.mp3 server-side. */}
+        <div class="mn-phase-stem-row">
+          <button
+            type="button"
+            class="mn-btn"
+            data-testid={`phase-${phase}-generate-stem-btn`}
+            onClick={onGenerateStem}
+            disabled={busyAction !== null}
+            title="POST /api/phase_b/regen_audio with phase + script"
+          >
+            {busyAction === 'stem' ? 'Generating…' : 'Generate stem from script'}
+          </button>
+          <span class="mn-dim">writes phase_{phase}_voice_stem_*.mp3</span>
+        </div>
+
+        <div class="mn-phase-ambient-section">
+          <label class="mn-dim" for={`phase-${phase}-ambient`}>Ambient bed:</label>
+          <select
+            id={`phase-${phase}-ambient`}
+            data-testid={`phase-${phase}-ambient-preset-select`}
+            value={stateSlice.ambient_preset_id ?? ''}
+            onChange={(e: Event) =>
+              void onPickAmbientPreset((e.target as HTMLSelectElement).value)
+            }
+          >
+            <option value="">— none —</option>
+            {ambientPresets.map((p) => (
+              <option key={p.preset_id} value={p.preset_id}>
+                {p.preset_id}
+              </option>
+            ))}
+          </select>
+          {ambientPresets.length === 0 ? (
+            <span class="mn-dim">no presets in audio_library/ambient/</span>
+          ) : null}
+        </div>
 
         {/* Lipsync video player */}
         {lipsyncFile ? (
@@ -368,18 +604,85 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           </div>
         ) : null}
 
+        {/* Phase A 3-clip section — only when phase==='a' (LD PHASE_A_THREE_CLIP_HANDLING_V1).
+            Phase B is single-clip via the existing baseclip select above. */}
+        {phase === 'a' ? (
+          <div class="mn-phase-a-clip-section" data-testid="phase-a-clip-section">
+            <strong>Phase A clips</strong>
+            <div class="mn-phase-a-clip-grid">
+              {PHASE_A_CLIP_POSITIONS.map((pos) => {
+                const id = phaseAClipId(pos);
+                const clip = baseClips.find((c) => c.id === id);
+                return (
+                  <div
+                    key={pos}
+                    class="mn-phase-a-clip-slot"
+                    data-testid={`phase-a-clip-slot-${pos}`}
+                    data-clip-id={id ?? ''}
+                  >
+                    <div class="mn-phase-a-clip-label">{PHASE_A_CLIP_LABELS[pos]}</div>
+                    <div class="mn-phase-a-clip-meta mn-dim">
+                      {clip ? `${clip.id} (${clip.duration_s ?? '?'}s)` : 'no clip'}
+                    </div>
+                    <button
+                      type="button"
+                      class="mn-btn mn-btn-small"
+                      data-testid={`phase-a-clip-pick-${pos}`}
+                      onClick={() => setPickerPosition(pos)}
+                    >
+                      Pick clip
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+            <div class="mn-phase-a-clip-total mn-dim">
+              Total: {phaseATotalDurationS().toFixed(1)}s
+            </div>
+            <button
+              type="button"
+              class="mn-btn"
+              data-testid="phase-a-restitch-btn"
+              onClick={onMixAudio}
+              disabled={busyAction !== null}
+              title="Re-stitch fly-in / sitting / fly-out into phase_a_stitched_file"
+            >
+              {busyAction === 'mix' ? 'Re-stitching…' : 'Re-stitch (Phase A)'}
+            </button>
+            <BaseClipPicker
+              open={pickerPosition !== null}
+              positionLabel={pickerPosition ? PHASE_A_CLIP_LABELS[pickerPosition] : ''}
+              character="chipper"
+              clips={baseClips}
+              onPick={(id) => {
+                if (pickerPosition) void onPickPhaseAClip(pickerPosition, id);
+              }}
+              onClose={() => setPickerPosition(null)}
+            />
+          </div>
+        ) : null}
+
         {/* Watercolor library + Animate-this */}
         <div class="mn-phase-watercolor-list" data-testid={`phase-${phase}-watercolors`}>
           <strong>Watercolors ({watercolors.length}):</strong>
           <div class="mn-phase-watercolor-grid">
             {watercolors.map((wc) => (
-              <div class="mn-phase-watercolor-tile" key={wc.key}>
-                <img
-                  src={wc.thumb_url}
-                  alt={wc.filename}
-                  class="mn-phase-watercolor-thumb"
-                  loading="lazy"
-                />
+              <div
+                class="mn-phase-watercolor-tile"
+                key={wc.key}
+                data-testid={`phase-${phase}-watercolor-tile-${wc.key}`}
+                draggable
+                onDragStart={(e: DragEvent) => onWatercolorDragStart(e, wc.key)}
+              >
+                {/* LD-203 — white interior wraps the centered art. */}
+                <div class="mn-phase-watercolor-thumb-wrap">
+                  <img
+                    src={wc.thumb_url}
+                    alt={wc.filename}
+                    class="mn-phase-watercolor-thumb"
+                    loading="lazy"
+                  />
+                </div>
                 <span class="mn-phase-watercolor-name">{wc.key}</span>
                 {wc.kind === 'animation' ? (
                   <span class="mn-phase-watercolor-anim-tag">animated</span>

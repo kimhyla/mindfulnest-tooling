@@ -348,15 +348,31 @@
   gap: 8px;
   margin-top: 6px;
 }
+/* LD-203 WATERCOLOR_TILE_FRAMING_V1: brown border + cream mat + white interior + centered art.
+   Applied to library tiles (PhaseProducer + future LibraryPanel parity).
+   Frame nesting: outer brown border → cream mat (padding) → white interior wrapping the centered art. */
 .mn-phase-watercolor-tile {
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
+  /* Brown border. */
+  border: 2px solid #6b4f2a;
+  /* Cream mat. */
+  background: #f5e9c8;
   border-radius: 3px;
+  /* The cream mat is the padding zone. */
   padding: 6px;
   display: flex;
   flex-direction: column;
   gap: 4px;
   align-items: stretch;
+}
+/* White interior — wraps the thumb so the cream mat shows around the white. */
+.mn-phase-watercolor-tile .mn-phase-watercolor-thumb-wrap {
+  background: #ffffff;
+  border-radius: 2px;
+  /* Centered art. */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px;
 }
 .mn-phase-watercolor-thumb {
   width: 100%;
@@ -406,6 +422,162 @@
 .mn-phase-audio audio, .mn-phase-lipsync video {
   background: var(--code-bg);
   border-radius: 3px;
+}
+
+/* WaveformTimeline — S5.5f / WAVESURFER_TIMELINE_INTEGRATION_V1 */
+.mn-waveform-timeline {
+  position: relative;
+  margin: 8px 0;
+  padding: 6px 8px;
+  background: var(--code-bg);
+  border-radius: 3px;
+}
+.mn-waveform-empty {
+  padding: 12px;
+  text-align: center;
+  font-size: 12px;
+}
+.mn-waveform-source-label {
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.mn-waveform-canvas {
+  position: relative;
+  width: 100%;
+  min-height: 80px;
+}
+.mn-waveform-cue-overlay {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 6px;
+  top: 28px;
+  pointer-events: none;
+  /* WaveSurfer v7 renders absolutely-positioned children inside its container
+     that visually overlap our cue markers. Force the overlay above its
+     stacking context so the markers receive clicks. */
+  z-index: 5;
+}
+.mn-waveform-cue-marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  margin-left: -4px;
+  background: rgba(204, 51, 51, 0.55);
+  border-left: 1px solid #c33;
+  border-right: 1px solid #c33;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.mn-waveform-cue-marker:hover {
+  background: rgba(204, 51, 51, 0.85);
+}
+.mn-waveform-error {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #c33;
+}
+
+/* CuePopover — S5.5f / CUE_POPOVER_INSPECTOR_V1 */
+.mn-cue-popover {
+  width: 260px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  padding: 10px 12px;
+  font-size: 12px;
+}
+.mn-cue-popover-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.mn-cue-popover-close {
+  background: transparent;
+  border: 0;
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1;
+}
+.mn-cue-popover-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+}
+.mn-cue-popover-row > span:first-child {
+  flex: 0 0 80px;
+}
+.mn-cue-popover-row select,
+.mn-cue-popover-row input[type='number'] {
+  flex: 1;
+  min-width: 0;
+}
+.mn-cue-popover-row input[type='range'] {
+  flex: 1;
+}
+.mn-cue-popover-footer {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 10px;
+}
+.mn-btn-danger {
+  color: #c33;
+}
+
+/* Phase A 3-clip section — S5.5f / PHASE_A_THREE_CLIP_HANDLING_V1 */
+.mn-phase-a-clip-section {
+  margin: 12px 0;
+  padding: 8px 10px;
+  background: var(--code-bg);
+  border-radius: 3px;
+}
+.mn-phase-a-clip-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 8px 0;
+}
+.mn-phase-a-clip-slot {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mn-phase-a-clip-label {
+  font-weight: 600;
+  font-size: 12px;
+}
+.mn-phase-a-clip-meta {
+  font-size: 11px;
+}
+.mn-phase-a-clip-total {
+  margin: 6px 0;
+}
+
+/* BaseClipPicker list */
+.mn-base-clip-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.mn-base-clip-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 6px 8px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+}
+.mn-base-clip-row:hover {
+  background: var(--code-bg);
 }
 .mn-beat-magic-row {
   display: flex;
