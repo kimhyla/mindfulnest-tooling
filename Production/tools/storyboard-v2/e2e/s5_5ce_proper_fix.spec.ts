@@ -205,21 +205,22 @@ test.describe('R2 — drag-drop wiring', () => {
 
   test('R2.3 — drag library tile → drop on Cropper canvas loads image', async ({ page }) => {
     await gotoApp(page);
-    // Cropper opens via tab-cropper.
+    // Cropper opens via tab-cropper. Modal primitive uses `data-testid="modal-{id}"`
+    // so CropperModal id="cropper" → modal-cropper.
     await page.click('[data-testid="tab-cropper"]');
-    await expect(page.locator('[data-testid="cropper-modal"]')).toBeVisible();
+    await expect(page.locator('[data-testid="modal-cropper"]')).toBeVisible();
     const firstLibItem = page.locator('[data-testid^="library-item-"]').first();
     await expect(firstLibItem).toBeVisible();
     const cropperCanvas = page.locator('[data-testid="cropper-canvas-drop-target"]');
     // Before fix (RED): drop target absent. After: present + drop sets image source.
     await expect(cropperCanvas).toBeVisible();
     await firstLibItem.dragTo(cropperCanvas);
-    // After drop, the cropper modal title or status should reflect the loaded source.
-    // Assert via data-loaded-source attribute (added in R2.3 fix).
+    // After drop, the cropper canvas drop target's data-loaded-source attribute
+    // should reflect the dropped image (set by the R2.3 drop handler).
     await expect.poll(async () =>
-      page.locator('[data-testid="cropper-modal"]').getAttribute('data-loaded-source'),
+      page.locator('[data-testid="cropper-canvas-drop-target"]').getAttribute('data-loaded-source'),
       { timeout: 5_000 },
-    ).not.toBeNull();
+    ).toBeTruthy();
   });
 
   test('R2.4 — dragenter sets is-drag-over class on drop target; dragleave removes it', async ({ page }) => {
@@ -285,7 +286,7 @@ test.describe('R3 — option_key gate', () => {
     });
     const acceptReqs: Request[] = [];
     page.on('request', (req) => {
-      if (req.url().includes('bg_accept_option')) acceptReqs.push(req);
+      if (req.url().includes('bg/accept-option') || req.url().includes('bg_accept_option')) acceptReqs.push(req);
     });
     await gotoApp(page);
     await page.click('[data-testid="tab-bg"]');
