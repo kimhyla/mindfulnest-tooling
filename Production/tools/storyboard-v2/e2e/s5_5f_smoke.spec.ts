@@ -315,6 +315,7 @@ test.describe('F7 — Drag watercolor onto timeline → cue created', () => {
     await mockAudioFiles(page, 30);
     await mockModulePatch(page);
     await mockWatercolorList(page);
+    await mockAmbientPresetList(page, []);
     await mockPhaseState(page, {
       phase_b_lipsync_file: 'fix_lipsync.mp4',
       phase_b_watercolor_cues_json: [], // start empty
@@ -337,13 +338,30 @@ test.describe('F7 — Drag watercolor onto timeline → cue created', () => {
       if (req.url().includes('/api/v2/module/patch')) patches.push(req);
     });
 
-    // dragTo synthesizes drag start → drop. Position the drop at the
-    // 50% horizontal mark inside the waveform container.
+    // Synthetic drop event — same pattern as s5_5ce_proper_fix R2.3
+    // because Playwright's dragTo across nested Preact subtrees is fragile
+    // when the source element re-renders mid-drag. The waveform receives a
+    // DragEvent with the lib-watercolor payload at the 50% horizontal mark.
     const wfBox = await waveform.boundingBox();
     expect(wfBox).not.toBeNull();
-    await tile.dragTo(waveform, {
-      targetPosition: { x: wfBox!.width / 2, y: wfBox!.height / 2 },
-    });
+    await waveform.evaluate((el: Element, args: { x: number; y: number }) => {
+      const dt = new DataTransfer();
+      const payload = JSON.stringify({
+        kind: 'lib-watercolor',
+        lib_key: 'wc_test',
+        animation_type: 'fade_in',
+      });
+      dt.setData('application/x-mn-drag', payload);
+      dt.setData('text/plain', payload);
+      const drop = new DragEvent('drop', {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer: dt,
+        clientX: args.x,
+        clientY: args.y,
+      });
+      el.dispatchEvent(drop);
+    }, { x: wfBox!.x + wfBox!.width / 2, y: wfBox!.y + wfBox!.height / 2 });
 
     await expect.poll(() => patches.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
     const body = patches[0]!.postDataJSON() as Record<string, unknown>;
@@ -367,6 +385,7 @@ test.describe('F8 — Click cue marker → CuePopover edit', () => {
     await mockAudioFiles(page, 30);
     await mockModulePatch(page);
     await mockWatercolorList(page);
+    await mockAmbientPresetList(page, []);
     await mockPhaseState(page, {
       phase_b_lipsync_file: 'fix_lipsync.mp4',
       phase_b_watercolor_cues_json: [
@@ -417,6 +436,7 @@ test.describe('F9 — CuePopover Delete with Modal-confirm', () => {
     await mockAudioFiles(page, 30);
     await mockModulePatch(page);
     await mockWatercolorList(page);
+    await mockAmbientPresetList(page, []);
     await mockPhaseState(page, {
       phase_b_lipsync_file: 'fix_lipsync.mp4',
       phase_b_watercolor_cues_json: [
@@ -467,6 +487,7 @@ test.describe('F9 — CuePopover Delete with Modal-confirm', () => {
     await mockAudioFiles(page, 30);
     await mockModulePatch(page);
     await mockWatercolorList(page);
+    await mockAmbientPresetList(page, []);
     await mockPhaseState(page, {
       phase_b_lipsync_file: 'fix_lipsync.mp4',
       phase_b_watercolor_cues_json: [
@@ -645,5 +666,96 @@ test.describe('F13 — Phase A vs Phase B branching', () => {
     await expect(page.locator('[data-testid="phase-a-clip-slot-flyin"]')).toHaveCount(0);
     // Single base-clip select still present for Phase B (existing behavior).
     await expect(page.locator('[data-testid="phase-b-baseclip-select"]')).toBeVisible();
+  });
+});
+
+// ----------------------------------------------------------------------------
+// Phase E — Voice stem + ambient preset (F14-F15)
+//
+// Voice stem flow uses the existing (misnamed) /api/phase_b/regen_audio
+// endpoint per Cursor v8 Q5 — UX label is "Generate stem from script", NOT
+// file-upload (which is OUT OF SCOPE for this session per spec §3.6).
+// Ambient preset selector saves preset_id via v2_module_patch with field
+// phase_X_ambient_preset_id (whitelisted in _V2_MODULE_ALLOWED_FIELDS).
+// ----------------------------------------------------------------------------
+
+async function mockRegenAudio(page: Page): Promise<void> {
+  await page.route('**/api/phase_b/regen_audio', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ok: true, voice_stem_file: 'phase_b_stem_e2e.mp3' }),
+    });
+  });
+}
+
+async function mockAmbientPresetList(
+  page: Page,
+  presets: Array<{ preset_id: string; file_size_bytes: number }>,
+): Promise<void> {
+  await page.route('**/api/phase_b/ambient_preset_list', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ok: true, items: presets, count: presets.length }),
+    });
+  });
+}
+
+test.describe('F14 — Voice stem button (Generate stem from script)', () => {
+  test('F14 — clicking Generate-stem POSTs to /api/phase_b/regen_audio with phase + script', async ({ page }) => {
+    await mockAudioFiles(page);
+    await mockRegenAudio(page);
+    await mockAmbientPresetList(page, []);
+    await mockPhaseState(page, {
+      phase_b_script: 'Test script for stem generation.',
+    });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const reqs: Request[] = [];
+    page.on('request', (req) => {
+      if (req.url().includes('/api/phase_b/regen_audio')) reqs.push(req);
+    });
+
+    await page.locator('[data-testid="phase-b-generate-stem-btn"]').click();
+
+    await expect.poll(() => reqs.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
+    const body = reqs[0]!.postDataJSON() as Record<string, unknown>;
+    expect(body['phase']).toBe('b');
+    expect(typeof body['script']).toBe('string');
+    expect(body['script']).toContain('stem generation');
+  });
+});
+
+test.describe('F15 — Ambient preset selector', () => {
+  test('F15 — selecting a preset fires v2_module_patch with phase_b_ambient_preset_id', async ({ page }) => {
+    await mockAudioFiles(page);
+    await mockModulePatch(page);
+    await mockAmbientPresetList(page, [
+      { preset_id: 'forest', file_size_bytes: 1024000 },
+      { preset_id: 'rain', file_size_bytes: 980000 },
+    ]);
+    await mockPhaseState(page, {});
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const select = page.locator('[data-testid="phase-b-ambient-preset-select"]');
+    await expect(select).toBeVisible();
+    // List should be populated from the mocked endpoint.
+    await expect(select.locator('option[value="forest"]')).toHaveCount(1);
+    await expect(select.locator('option[value="rain"]')).toHaveCount(1);
+
+    const patches: Request[] = [];
+    page.on('request', (req) => {
+      if (req.url().includes('/api/v2/module/patch')) patches.push(req);
+    });
+
+    await select.selectOption('rain');
+
+    await expect.poll(() => patches.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
+    const body = patches[0]!.postDataJSON() as Record<string, unknown>;
+    expect(body['field']).toBe('phase_b_ambient_preset_id');
+    expect(body['value']).toBe('rain');
   });
 });

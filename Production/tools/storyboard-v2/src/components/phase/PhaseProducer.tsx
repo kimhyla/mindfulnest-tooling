@@ -57,6 +57,16 @@ interface BaseClipsResponse {
   count?: number;
 }
 
+interface AmbientPreset {
+  preset_id: string;
+  file_size_bytes: number;
+}
+interface AmbientPresetListResponse {
+  ok: boolean;
+  items?: AmbientPreset[];
+  count?: number;
+}
+
 interface PhaseStateSlice {
   voice_stem_file?: string;
   voice_stem_mtime?: number;
@@ -72,6 +82,8 @@ interface PhaseStateSlice {
   chipper_flyin_clip_id?: string;
   chipper_sitting_clip_id?: string;
   chipper_flyout_clip_id?: string;
+  // S5.5f — ambient bed preset (LD AMBIENT_PRESET_SELECTOR_INPRODUCER_V1).
+  ambient_preset_id?: string;
 }
 interface EventStateResponse {
   beats?: Record<string, unknown>;
@@ -102,6 +114,7 @@ function pickPhaseSlice(state: EventStateResponse, phase: 'a' | 'b'): PhaseState
     const si = get<string>('chipper_sitting_clip_id'); if (si) slice.chipper_sitting_clip_id = si;
     const fo = get<string>('chipper_flyout_clip_id');  if (fo) slice.chipper_flyout_clip_id = fo;
   }
+  const ap = get<string>('ambient_preset_id'); if (ap) slice.ambient_preset_id = ap;
   return slice;
 }
 
@@ -138,12 +151,14 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const [activeCueId, setActiveCueId] = useState<string | null>(null);
   const [popoverAnchor, setPopoverAnchor] = useState<{ x: number; y: number } | null>(null);
   const [pickerPosition, setPickerPosition] = useState<PhaseAClipPosition | null>(null);
+  const [ambientPresets, setAmbientPresets] = useState<AmbientPreset[]>([]);
 
   const refreshAll = async () => {
-    const [wc, bc, st] = await Promise.all([
+    const [wc, bc, st, ap] = await Promise.all([
       apiGet<WatercolorListResponse>('phase_watercolor_list'),
       apiGet<BaseClipsResponse>('phase_base_clips_list'),
       apiGet<EventStateResponse>('v2_event_state', { event_id: activeScope.value.event_id }),
+      apiGet<AmbientPresetListResponse>('phase_b_ambient_preset_list'),
     ]);
     if (wc.ok && wc.data?.items) setWatercolors(wc.data.items);
     if (bc.ok && bc.data?.items) {
@@ -158,6 +173,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       setStateSlice(slice);
       if (slice.script) setScriptDraft(slice.script);
     }
+    if (ap.ok && ap.data?.items) setAmbientPresets(ap.data.items);
   };
 
   useEffect(() => {
@@ -371,6 +387,41 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     return total;
   };
 
+  // ── Voice stem (Phase E) — Cursor v8 Q5: misnamed regen_audio writes voice_stem files.
+  const onGenerateStem = async () => {
+    setBusyAction('stem');
+    setStatusMsg('Generating stem from script…');
+    const res = await pathappPatch(activeScope.value, 'phase_b_regen_audio', {
+      phase,
+      script: scriptDraft,
+    });
+    setBusyAction(null);
+    if (res.ok) {
+      setStatusMsg('✓ Stem generated');
+      await refreshAll();
+    } else {
+      setStatusMsg(`✗ Stem HTTP ${res.status}: ${res.error ?? ''}`);
+    }
+  };
+
+  // ── Ambient preset (Phase E) ─────────────────────────────────────────
+  const onPickAmbientPreset = async (presetId: string) => {
+    const field = `phase_${phase}_ambient_preset_id`;
+    setStateSlice((s) => {
+      const next: PhaseStateSlice = { ...s };
+      if (presetId) next.ambient_preset_id = presetId;
+      else delete next.ambient_preset_id;
+      return next;
+    });
+    const res = await pathappPatch(activeScope.value, 'v2_module_patch', {
+      field,
+      value: presetId,
+    });
+    if (!res.ok) {
+      setStatusMsg(`✗ ${field} HTTP ${res.status}: ${res.error ?? ''}`);
+    }
+  };
+
   const audioFile = priorityAudioFile(stateSlice);
   const lipsyncFile = stateSlice.lipsync_file ?? null;
   const activeCue =
@@ -440,6 +491,46 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             onClose={onCuePopoverClose}
           />
         ) : null}
+
+        {/* S5.5f Phase E — Voice stem (Generate-from-script) + Ambient preset.
+            File-upload UI is OUT OF SCOPE per spec §3.6 + Cursor v8 Q5;
+            'Generate stem' calls the misnamed but real /api/phase_b/regen_audio
+            handler which writes phase_<a|b>_voice_stem_*.mp3 server-side. */}
+        <div class="mn-phase-stem-row">
+          <button
+            type="button"
+            class="mn-btn"
+            data-testid={`phase-${phase}-generate-stem-btn`}
+            onClick={onGenerateStem}
+            disabled={busyAction !== null}
+            title="POST /api/phase_b/regen_audio with phase + script"
+          >
+            {busyAction === 'stem' ? 'Generating…' : 'Generate stem from script'}
+          </button>
+          <span class="mn-dim">writes phase_{phase}_voice_stem_*.mp3</span>
+        </div>
+
+        <div class="mn-phase-ambient-section">
+          <label class="mn-dim" for={`phase-${phase}-ambient`}>Ambient bed:</label>
+          <select
+            id={`phase-${phase}-ambient`}
+            data-testid={`phase-${phase}-ambient-preset-select`}
+            value={stateSlice.ambient_preset_id ?? ''}
+            onChange={(e: Event) =>
+              void onPickAmbientPreset((e.target as HTMLSelectElement).value)
+            }
+          >
+            <option value="">— none —</option>
+            {ambientPresets.map((p) => (
+              <option key={p.preset_id} value={p.preset_id}>
+                {p.preset_id}
+              </option>
+            ))}
+          </select>
+          {ambientPresets.length === 0 ? (
+            <span class="mn-dim">no presets in audio_library/ambient/</span>
+          ) : null}
+        </div>
 
         {/* Lipsync video player */}
         {lipsyncFile ? (
