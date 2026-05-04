@@ -634,3 +634,120 @@ test.describe('G10 — Trim edit saves via stitch_save_job', () => {
     expect(Number(slots.intro!.trim_out_ms)).toBe(25_000);
   });
 });
+
+// ============================================================================
+// Phase E — Production Map multi-event mapping (G12-G13)
+// PRODUCTION_MAP_MULTI_EVENT_MAPPING_V1 (SOFT)
+//
+// Per audit doc §6 + handoff §3.4: server.py:8537-8544 fix uses
+// convention-based f"Event_{m_num}" lookup (not always Event_1).
+// E2E tests mock /api/production/map response to validate UI behavior;
+// the server-side fix is verified by Python-level smoke separately
+// (Phase E commit includes the server change so live behavior matches).
+// ============================================================================
+
+interface MockMapRow {
+  m_number: number;
+  creature_name: string;
+  video_role: string;
+  event_dir: string | null;
+  segments: Record<string, { status: string; count: number; latest?: string }>;
+}
+
+async function mockProductionMap(page: Page, modules: MockMapRow[]): Promise<void> {
+  await page.route('**/api/production/map', async (r) => {
+    await r.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        modules,
+        cache_ttl_s: 60,
+        generated_at: '2026-05-04T22:00:00Z',
+      }),
+    });
+  });
+}
+
+function makeMapRow(m_number: number, event_dir: string): MockMapRow {
+  return {
+    m_number,
+    creature_name: `Creature M${m_number}`,
+    video_role: 'intro',
+    event_dir,
+    segments: {
+      phase_a: { status: 'ready', count: 1, latest: `phase_a_stitched_${m_number}.mp4` },
+      phase_b: { status: 'missing', count: 0 },
+      intro_or_resolution: { status: 'ready', count: 1 },
+      final_concat: { status: 'missing', count: 0 },
+    },
+  };
+}
+
+async function openProductionMap(page: Page): Promise<void> {
+  await page.click('[data-testid="tab-map"]');
+  await expect(page.locator('[data-testid="pane-map"]')).toBeVisible();
+}
+
+test.describe('G12 — Production Map renders all V1 rows', () => {
+  test('G12 — 59 rows render in map-table', async ({ page }) => {
+    const modules = Array.from({ length: 59 }, (_, i) =>
+      makeMapRow(i + 1, `Event_${i + 1}`),
+    );
+    await mockProductionMap(page, modules);
+
+    await gotoApp(page);
+    await openProductionMap(page);
+
+    await expect(page.locator('[data-testid="map-table"]')).toBeVisible();
+    const rowCount = await page.locator('[data-testid^="map-row-m"]').count();
+    expect(rowCount).toBe(59);
+  });
+});
+
+test.describe('G13 — Production Map cell-click multi-event navigation', () => {
+  test('G13 — clicking M5 cell whose event_dir=Event_2 fires event_load with event_id=Event_2', async ({ page }) => {
+    // Distinct event_dirs per module — m1→Event_1, m5→Event_2, m6→Event_3.
+    const modules: MockMapRow[] = [
+      makeMapRow(1, 'Event_1'),
+      makeMapRow(5, 'Event_2'),
+      makeMapRow(6, 'Event_3'),
+    ];
+    await mockProductionMap(page, modules);
+
+    const eventLoadReqs: Request[] = [];
+    page.on('request', (req) => {
+      if (req.url().includes('/api/event/load') && req.method() === 'POST') {
+        eventLoadReqs.push(req);
+      }
+    });
+    await page.route('**/api/event/load', async (r) => {
+      await r.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          event_id: 'Event_2',
+          event_dir: 'Event_2',
+          storyboard: 'storyboard_v59_prod.html',
+          event_generation: 1,
+          previous_generation: 0,
+          previous_event_id: 'Event_e2e_fixture',
+        }),
+      });
+    });
+
+    await gotoApp(page);
+    await openProductionMap(page);
+
+    // Click any cell on the M5 row — onCellClick reads m.event_dir, which
+    // should resolve to 'Event_2' per the fixed multi-event mapping.
+    const m5Cell = page.locator('[data-testid="map-cell-m5-phase_a"]');
+    await expect(m5Cell).toBeVisible();
+    await m5Cell.click();
+
+    await expect.poll(() => eventLoadReqs.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
+    const body = eventLoadReqs[0]!.postDataJSON() as Record<string, unknown>;
+    expect(body['event_id']).toBe('Event_2');
+  });
+});
