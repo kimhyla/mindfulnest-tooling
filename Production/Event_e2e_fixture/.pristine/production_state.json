@@ -1,0 +1,72 @@
+{
+  "_module_version": 1,
+  "event_id": "Event_e2e_fixture",
+  "version": "v3",
+  "created_at": "2026-05-03T00:00:00Z",
+  "updated_at": "2026-05-03T00:00:00Z",
+  "videos": {
+    "intro": {
+      "video_label": "Intro",
+      "video_role": "intro",
+      "display_order": 1,
+      "image_overrides": {},
+      "completed_mp4_path": "",
+      "beats": {
+        "beat_01": {
+          "_version": 1,
+          "speaker": "Tessa",
+          "text": "Fixture beat one — placeholder dialogue for e2e testing.",
+          "audio_duration_s": 3.0,
+          "audio_file": "",
+          "phase_1": {}
+        },
+        "beat_02": {
+          "_version": 1,
+          "speaker": "Tessa",
+          "text": "Fixture beat two — second dialogue line.",
+          "audio_duration_s": 3.0,
+          "audio_file": "",
+          "phase_1": {}
+        },
+        "beat_03": {
+          "_version": 1,
+          "speaker": "Chipper",
+          "text": "Fixture beat three — third dialogue line.",
+          "audio_duration_s": 3.0,
+          "audio_file": "",
+          "phase_1": {}
+        }
+      }
+    },
+    "resolution": {
+      "video_label": "Resolution",
+      "video_role": "resolution",
+      "display_order": 2,
+      "image_overrides": {},
+      "completed_mp4_path": "",
+      "beats": {}
+    }
+  },
+  "phase_a": {
+    "phase_a_status": "pending",
+    "phase_a_script": "",
+    "phase_a_empty_desk_bg_id": null,
+    "phase_a_lipsync_file": "",
+    "phase_a_mixed_audio_file": ""
+  },
+  "phase_b": {
+    "phase_b_status": "pending",
+    "phase_b_cedric_base_clip_id": null,
+    "phase_b_lipsync_file": "",
+    "phase_b_watercolor_cues_json": []
+  },
+  "phase_a_script": "",
+  "phase_b_script": "",
+  "module_sfx_cues": [],
+  "active_video": "intro",
+  "fade_between_beats_ms": 200,
+  "phase_a_ambient_preset_id": null,
+  "phase_b_ambient_preset_id": null,
+  "full_module_segment_boundaries": {},
+  "latest_preview_stitched_path": ""
+}
