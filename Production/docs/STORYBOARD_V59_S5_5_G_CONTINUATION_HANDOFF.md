@@ -59,13 +59,29 @@ Full schema in audit doc §3. Key invariants:
 - Cache key MUST include trim fingerprint or LRU collisions
 - See audit doc §5 for full implementation sketch
 
-### §3.3 Transition kinds — explicit `kind` field
+### §3.3 Transition kinds — explicit `kind` field + dual audio behavior (Kim Q1+Q3 LOCKED 2026-05-04)
 
-- Add `kind: "crossfade" | "cut" | "dissolve"` on transition shape
+**Transition shape:**
+```json
+{
+  "kind": "crossfade" | "cut" | "dissolve",
+  "fade_ms": 500,           // visual fadeblack duration (used by dissolve; ignored by cut)
+  "audio_xfade_ms": 500,    // 0 = visual only, non-zero = audio crossfade duration
+  "source_path": "..."      // optional crossfade audio cue path (existing field)
+}
+```
+
+- Add `kind: "crossfade" | "cut" | "dissolve"` on transition shape (Q3 — explicit field; NOT inferred from source_path emptiness)
 - Server defaults `kind="crossfade"` when absent (backward compat)
-- `cut` — pipeline skips transition synthesis (existing path: empty `source_path` already skipped at server.py:14927)
-- `crossfade` — existing `trans_<after_slot>` SFX cue synthesis path (server.py:14920-14938)
-- **`dissolve` — NEW** — apply video fadeblack at boundary via ffmpeg fade filters; reference LD-376 (Phase A fadeblack pattern)
+- Server defaults `audio_xfade_ms = fade_ms` when absent (audio matches visual unless explicitly overridden)
+- `cut` — pipeline skips transition synthesis (existing path: empty `source_path` already skipped at server.py:14927); `fade_ms` and `audio_xfade_ms` ignored
+- `crossfade` — existing `trans_<after_slot>` SFX cue synthesis path (server.py:14920-14938); `audio_xfade_ms` controls the SFX fade duration
+- **`dissolve` — NEW** (Q1 LOCKED — supports BOTH visual-only AND visual+audio):
+  - Apply video fadeblack at boundary via ffmpeg fade filters; reference LD-376 (Phase A fadeblack pattern)
+  - If `audio_xfade_ms > 0`: ALSO crossfade audio across the boundary at the specified duration (visual + audio dissolve)
+  - If `audio_xfade_ms == 0`: pure visual fadeblack with hard audio cut
+  - Default: `audio_xfade_ms = fade_ms` (audio matches visual)
+  - Server cost: ~5-10 LOC at server.py:14920-14938 (transition synthesis branch on `kind`); UI cost: 1 numeric field or "Audio dissolve" checkbox in CuePopover
 
 ### §3.4 Production Map fix — convention-based m_number → Event_<N>
 
@@ -197,11 +213,15 @@ Run grep gate. Confirm green. Add row to verification table. Done.
 
 ---
 
-## §6 Open questions for Kim (surface before opening Phase B)
+## §6 Q1-Q3 RESOLVED (Kim 2026-05-04 — locked answers)
 
-1. **Dissolve transition audio behavior** — pure visual fadeblack only, or visual fadeblack + crossfade audio? (Audit doc §4 default assumption: both. Confirm before Phase C green.)
-2. **Spec line-number drift** — spec body cites stale line numbers (server.py:14659, 14824, 8434). The fresh session should prefer the current numbers in audit doc §2 — confirm this convention is acceptable, or whether spec body should be amended in Phase I closeout.
-3. **dissolve `kind` shape** — explicit field `kind: "crossfade"|"cut"|"dissolve"` (recommended) vs inferred from source_path emptiness + non-zero fade_ms. Audit doc §4 picked explicit; confirm.
+All 3 Phase A open questions answered by Kim post-Phase-A. Folded into §3.3 + §3.6 + §3 above. Recap:
+
+1. **Q1 — Dissolve transition audio behavior:** ✅ RESOLVED — supports BOTH options via `audio_xfade_ms` field on transition shape. Default `audio_xfade_ms = fade_ms` (audio crossfade matches visual fadeblack). `audio_xfade_ms = 0` → pure visual fadeblack with hard audio cut. `audio_xfade_ms > 0` → both visual + audio dissolve. Server adds ~5-10 LOC at server.py:14920-14938; UI adds 1 numeric field or "Audio dissolve" checkbox in CuePopover. See §3.3 for the full transition shape.
+2. **Q2 — Spec line-number drift:** ✅ RESOLVED — accept audit doc §2 as canonical for the Phase B-I session. Spec body stays as historical reference; do NOT amend spec body in Phase I closeout (would be churn for nothing). See §3.6.
+3. **Q3 — dissolve `kind` shape:** ✅ RESOLVED — explicit `kind` field on transition shape (NOT inferred from source_path/fade_ms). Future-proof for new transition types. See §3.3.
+
+These 3 answers are LOCKED in §3 above. Phase B-I terminal proceeds with them as decisions, not pending questions.
 
 ---
 
