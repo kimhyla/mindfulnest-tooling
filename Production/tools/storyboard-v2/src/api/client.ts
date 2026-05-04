@@ -208,12 +208,16 @@ export async function pathappPatch<T = unknown>(
   // dual-key emit lets server handlers transition incrementally.
   const scopeKey = scopeKeyFor(endpoint);
   const payload: Record<string, unknown> = {
-    // baseline — body can override
+    // baseline — body can override.
+    // S5.5c+e proper-fix R2: beat_id MOVED before ...body so drop handlers
+    // can pass the dropped-on beat_id explicitly without scope.beat_id
+    // (typically null) overwriting it. Scope-key + scope_version stay AFTER
+    // body since those identify the request scope and must not be overridden.
     scope_video_role: activeTargetVideo.value,
     scope_target_video: activeTargetVideo.value,
+    beat_id: scope.beat_id,
     ...body,
     [scopeKey]: scope.event_id,
-    beat_id: scope.beat_id,
     scope_version: scope.version,
   };
   // Milestone-scope injection per MILESTONE_STANDALONE_INDEPENDENT_V1.
