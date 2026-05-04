@@ -267,6 +267,39 @@ export function StitcherTab() {
     }
   };
 
+  // --------------------------------------------------------------------------
+  // Per-slot trim handlers (G9-G10) — STITCHER_PER_SLOT_TRIMS_V1 (HARD)
+  //
+  // Per audit doc §5 LOCKED:
+  //   - trim_in_ms (default 0) and trim_out_ms (null = end of clip)
+  //   - Persisted via stitch_save_job extension; server-side ffmpeg -ss/-to
+  //     in _stitch_normalize_slot with cache key including trim fingerprint
+  //
+  // UX: numeric inputs in SECONDS (Cursor v8 Q9 deferred keyboard nudge);
+  // wire format remains ms.
+  // --------------------------------------------------------------------------
+
+  const onTrimChange = (slotKey: SlotKey, side: 'in' | 'out', valueSeconds: string) => {
+    if (!job?.slots) return;
+    const slot = job.slots[slotKey];
+    if (!slot) return;
+    // Empty input on trim_out means "end of clip" → null per audit doc §5.
+    const ms: number | null = valueSeconds === '' || side === 'out' && Number(valueSeconds) <= 0
+      ? null
+      : Math.max(0, Math.round(Number(valueSeconds) * 1000));
+    const nextSlot: StitchSlot = {
+      ...slot,
+      ...(side === 'in'
+        ? { trim_in_ms: ms ?? 0 }
+        : { trim_out_ms: ms }),
+    };
+    const nextSlots: Record<string, StitchSlot> = {
+      ...job.slots,
+      [slotKey]: nextSlot,
+    };
+    void saveJobSlots(nextSlots);
+  };
+
   const onAmbientBedChange = async (slot: SlotKey, value: string) => {
     if (!job?.name) return;
     setBusySlot({ slot, action: 'ambient' });
@@ -478,6 +511,44 @@ export function StitcherTab() {
                     onSfxDrop={onSfxDropOnSlot(sd.key)}
                     onCueClick={onSfxClickOnSlot(sd.key)}
                   />
+                  {/* Per-slot trim controls (G9-G10) — values in seconds for
+                      UX; wire format = ms. trim_out blank/zero → null = full
+                      clip end (audit doc §5 LOCKED). */}
+                  <div class="mn-stitcher-slot-row mn-stitcher-trim-row">
+                    <label class="mn-dim" for={`stitcher-trim-in-${sd.key}`}>Trim in (s):</label>
+                    <input
+                      type="number"
+                      id={`stitcher-trim-in-${sd.key}`}
+                      data-testid={`stitcher-slot-trim-in-${sd.key}`}
+                      min={0}
+                      max={300}
+                      step={0.1}
+                      value={slot?.trim_in_ms ? (slot.trim_in_ms / 1000).toString() : '0'}
+                      disabled={busy || !slot?.video_path}
+                      onBlur={(e: Event) =>
+                        onTrimChange(sd.key, 'in', (e.target as HTMLInputElement).value)
+                      }
+                    />
+                    <label class="mn-dim" for={`stitcher-trim-out-${sd.key}`}>Trim out (s):</label>
+                    <input
+                      type="number"
+                      id={`stitcher-trim-out-${sd.key}`}
+                      data-testid={`stitcher-slot-trim-out-${sd.key}`}
+                      min={0}
+                      max={300}
+                      step={0.1}
+                      value={
+                        slot?.trim_out_ms !== null && slot?.trim_out_ms !== undefined
+                          ? (slot.trim_out_ms / 1000).toString()
+                          : ''
+                      }
+                      placeholder="end"
+                      disabled={busy || !slot?.video_path}
+                      onBlur={(e: Event) =>
+                        onTrimChange(sd.key, 'out', (e.target as HTMLInputElement).value)
+                      }
+                    />
+                  </div>
                   <div class="mn-stitcher-slot-row">
                     <label class="mn-dim" for={`stitcher-amb-${sd.key}`}>Ambient:</label>
                     <select

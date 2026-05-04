@@ -14691,8 +14691,21 @@ body {{padding-top:44px!important;}}
 
     # ---- Stitch Editor: core audio pipeline helpers ----
 
-    def _stitch_normalize_slot(self, video_path: str, cache_dir: Path) -> Path:
-        """Normalize a slot's video to LD-284 canonical spec. Cached by md5+mtime+sha256[:8]."""
+    def _stitch_normalize_slot(
+        self, video_path: str, cache_dir: Path,
+        trim_in_ms: int = 0, trim_out_ms: int | None = None,
+    ) -> Path:
+        """Normalize a slot's video to LD-284 canonical spec.
+
+        Cached by md5+mtime+sha256[:8] + trim fingerprint.
+
+        S5.5g — STITCHER_PER_SLOT_TRIMS_V1 (HARD). Per audit doc §5 LOCKED:
+          - trim_in_ms (default 0, inclusive)
+          - trim_out_ms (None = end of clip; else exclusive cutoff in ms)
+          - Cache key MUST include trim fingerprint or LRU collisions across
+            different trim windows of the same source
+          - Pre-trim via ffmpeg -ss / -to BEFORE normalize_for_concat
+        """
         import hashlib as _hl  # noqa: PLC0415
         from ffmpeg_stitch import normalize_for_concat  # noqa: PLC0415
 
@@ -14707,13 +14720,48 @@ body {{padding-top:44px!important;}}
         except Exception:
             pass
 
-        norm_name = f"se_norm_{path_md5}_{mtime_ms}_{sha_prefix}.mp4"
+        # Trim fingerprint (audit doc §5): "<in>-<out|end>" so different trim
+        # windows of the same source don't collide in the LRU cache.
+        trim_sig = f"{int(trim_in_ms)}-{trim_out_ms if trim_out_ms is not None else 'end'}"
+        norm_name = f"se_norm_{path_md5}_{mtime_ms}_{sha_prefix}_t{trim_sig}.mp4"
         norm_path = cache_dir / norm_name
-        if not norm_path.is_file():
-            try:
-                normalize_for_concat(Path(video_path), norm_path)
-            except Exception as exc:
-                raise RuntimeError(f"Normalize failed for {video_path}: {exc}") from exc
+        if norm_path.is_file():
+            return norm_path
+
+        # Source for normalization: pre-trimmed mp4 if trim is set, else original.
+        src_for_norm = Path(video_path)
+        if trim_in_ms > 0 or trim_out_ms is not None:
+            trim_in_s = max(0.0, trim_in_ms / 1000.0)
+            trim_path = cache_dir / f"se_pretrim_{path_md5}_{mtime_ms}_{sha_prefix}_t{trim_sig}.mp4"
+            if not trim_path.is_file():
+                cmd = [
+                    "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                    "-ss", f"{trim_in_s:.3f}",
+                    "-i", str(video_path),
+                ]
+                if trim_out_ms is not None and int(trim_out_ms) > int(trim_in_ms):
+                    trim_dur_s = (int(trim_out_ms) - int(trim_in_ms)) / 1000.0
+                    cmd += ["-t", f"{trim_dur_s:.3f}"]
+                cmd += [
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                    "-c:a", "aac", "-b:a", "128k",
+                    "-pix_fmt", "yuv420p",
+                    str(trim_path),
+                ]
+                try:
+                    subprocess.run(cmd, check=True, capture_output=True, timeout=180)
+                except subprocess.CalledProcessError as exc:
+                    stderr = (exc.stderr or b"")[:400].decode("utf-8", errors="replace")
+                    # Per LD-520 fail-loud — bubble out as RuntimeError.
+                    raise RuntimeError(
+                        f"slot pre-trim failed for {video_path}: {stderr}",
+                    ) from exc
+            src_for_norm = trim_path
+
+        try:
+            normalize_for_concat(src_for_norm, norm_path)
+        except Exception as exc:
+            raise RuntimeError(f"Normalize failed for {video_path}: {exc}") from exc
         return norm_path
 
     def _stitch_ensure_audio(self, norm_path: Path, cache_dir: Path) -> Path:
@@ -15000,6 +15048,28 @@ body {{padding-top:44px!important;}}
             for cue in (slot.get("sfx_cues") or []):
                 if cue.get("source_path") and not os.path.isfile(cue["source_path"]):
                     raise FileNotFoundError(f"Slot {i} SFX not found: {cue['source_path']}")
+            # S5.5g trim validation (audit doc §5):
+            #   trim_in_ms >= 0
+            #   trim_out_ms is null OR trim_out_ms > trim_in_ms
+            t_in = slot.get("trim_in_ms")
+            t_out = slot.get("trim_out_ms")
+            if t_in is not None:
+                try:
+                    t_in_i = int(t_in)
+                except (TypeError, ValueError):
+                    raise ValueError(f"Slot {i} trim_in_ms must be an integer")
+                if t_in_i < 0:
+                    raise ValueError(f"Slot {i} trim_in_ms must be >= 0")
+            if t_out is not None and str(t_out) != "":
+                try:
+                    t_out_i = int(t_out)
+                except (TypeError, ValueError):
+                    raise ValueError(f"Slot {i} trim_out_ms must be integer or null")
+                t_in_i = int(t_in) if t_in is not None else 0
+                if t_out_i <= t_in_i:
+                    raise ValueError(
+                        f"Slot {i} trim_out_ms ({t_out_i}) must be > trim_in_ms ({t_in_i})",
+                    )
 
         # Per-slot pipeline
         slot_finals: list[Path] = []
@@ -15007,8 +15077,20 @@ body {{padding-top:44px!important;}}
         for i, slot in enumerate(slots):
             vp = self._stitch_resolve_path(slot["video_path"])
 
-            # Step 1: Normalize (LD-284)
-            norm = self._stitch_normalize_slot(vp, cache_dir)
+            # Step 1: Normalize (LD-284) + S5.5g per-slot trim
+            # (STITCHER_PER_SLOT_TRIMS_V1 per audit doc §5).
+            trim_in_ms = int(slot.get("trim_in_ms", 0) or 0)
+            trim_out_raw = slot.get("trim_out_ms", None)
+            trim_out_ms: int | None = (
+                int(trim_out_raw)
+                if trim_out_raw is not None and str(trim_out_raw) != ""
+                else None
+            )
+            norm = self._stitch_normalize_slot(
+                vp, cache_dir,
+                trim_in_ms=trim_in_ms,
+                trim_out_ms=trim_out_ms,
+            )
 
             # Step 2: Audio parity (CONCAT_AUDIO_PARITY_V1)
             norm = self._stitch_ensure_audio(norm, cache_dir)
