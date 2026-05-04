@@ -82,11 +82,21 @@ jobs:
         working-directory: Production/tools/storyboard-v2
         run: npx playwright install --with-deps chromium
 
-      - name: Run Playwright e2e (proper-fix scope)
+      - name: Run Playwright e2e (proper-fix + retroactive coverage scope)
         working-directory: Production/tools/storyboard-v2
-        # Per spec §19 scope decision: only s5_5ce.spec.ts runs in CI.
-        # Convention §8.9 says future sessions add their files to this list.
-        run: npx playwright test e2e/s5_5ce_proper_fix.spec.ts --reporter=line
+        # Per spec §19 scope decision + §8.9 convention: each session that ships
+        # new e2e specs adds its target files to this list. Retroactive Coverage
+        # Sprint v1 (2026-05-04) adds the six surfaces S1-S6.
+        run: |
+          npx playwright test \
+            e2e/s5_5ce_proper_fix.spec.ts \
+            e2e/retroactive_s1_beat_lifecycle.spec.ts \
+            e2e/retroactive_s2_pathapp_patch.spec.ts \
+            e2e/retroactive_s3_storyboard_refresh.spec.ts \
+            e2e/retroactive_s4_magic_compositor.spec.ts \
+            e2e/retroactive_s5_library_rendering.spec.ts \
+            e2e/retroactive_s6_scope_boundary.spec.ts \
+            --reporter=line
 
       - name: Upload test artifacts on failure
         if: failure()
