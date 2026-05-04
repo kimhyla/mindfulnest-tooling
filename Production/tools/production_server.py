@@ -14751,6 +14751,109 @@ body {{padding-top:44px!important;}}
             ], check=True, capture_output=True, timeout=60)
         return sil_path
 
+    def _stitch_apply_dissolve_tail(
+        self, slot_path: Path, cache_dir: Path,
+        fade_ms: int, audio_xfade_ms: int,
+    ) -> Path:
+        """Apply video fade-to-black on the trailing fade_ms of slot_path.
+
+        Per spec §3.3 dissolve transition (Q1 LOCKED 2026-05-04):
+          - Visual: fade=t=out:st=(dur - fade_s):d=fade_s
+          - Audio:  if audio_xfade_ms > 0, afade=t=out at the matching window;
+                    if audio_xfade_ms == 0, audio left intact (concat will hard-cut)
+
+        Cache key includes fade_ms + audio_xfade_ms so re-bake produces
+        consistent output and different fade values don't collide.
+        """
+        import hashlib as _hl  # noqa: PLC0415
+        if fade_ms <= 0:
+            return slot_path
+        slot_dur_ms = self._ffprobe_duration_ms(slot_path)
+        if slot_dur_ms <= 0:
+            return slot_path
+        fade_s = min(fade_ms / 1000.0, slot_dur_ms / 1000.0)
+        afade_s = min(audio_xfade_ms / 1000.0, slot_dur_ms / 1000.0) if audio_xfade_ms > 0 else 0.0
+        start_v = max(0.0, slot_dur_ms / 1000.0 - fade_s)
+        start_a = max(0.0, slot_dur_ms / 1000.0 - afade_s) if afade_s > 0 else 0.0
+        sig_src = f"{slot_path.name}:tail:{fade_ms}:{audio_xfade_ms}"
+        sig = _hl.md5(sig_src.encode(), usedforsecurity=False).hexdigest()[:10]
+        out = cache_dir / f"se_diss_tail_{sig}.mp4"
+        if out.is_file():
+            return out
+
+        vf = f"fade=t=out:st={start_v:.3f}:d={fade_s:.3f}"
+        cmd = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-i", str(slot_path),
+            "-vf", vf,
+        ]
+        if afade_s > 0:
+            af = f"afade=t=out:st={start_a:.3f}:d={afade_s:.3f}"
+            cmd += ["-af", af]
+        cmd += [
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-c:a", "aac", "-b:a", "128k",
+            "-pix_fmt", "yuv420p",
+            str(out),
+        ]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, timeout=180)
+        except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or b"")[:400].decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"dissolve tail render failed for {slot_path.name}: {stderr}",
+            ) from exc
+        return out
+
+    def _stitch_apply_dissolve_head(
+        self, slot_path: Path, cache_dir: Path,
+        fade_ms: int, audio_xfade_ms: int,
+    ) -> Path:
+        """Apply video fade-from-black on the leading fade_ms of slot_path.
+
+        Per spec §3.3 dissolve transition (mirror of _stitch_apply_dissolve_tail
+        for the next slot's head). audio_xfade_ms=0 keeps audio intact (next
+        slot starts at full level — concat hard-joins). audio_xfade_ms>0
+        applies afade=t=in for the matching window.
+        """
+        import hashlib as _hl  # noqa: PLC0415
+        if fade_ms <= 0:
+            return slot_path
+        slot_dur_ms = self._ffprobe_duration_ms(slot_path)
+        if slot_dur_ms <= 0:
+            return slot_path
+        fade_s = min(fade_ms / 1000.0, slot_dur_ms / 1000.0)
+        afade_s = min(audio_xfade_ms / 1000.0, slot_dur_ms / 1000.0) if audio_xfade_ms > 0 else 0.0
+        sig_src = f"{slot_path.name}:head:{fade_ms}:{audio_xfade_ms}"
+        sig = _hl.md5(sig_src.encode(), usedforsecurity=False).hexdigest()[:10]
+        out = cache_dir / f"se_diss_head_{sig}.mp4"
+        if out.is_file():
+            return out
+
+        vf = f"fade=t=in:st=0:d={fade_s:.3f}"
+        cmd = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-i", str(slot_path),
+            "-vf", vf,
+        ]
+        if afade_s > 0:
+            af = f"afade=t=in:st=0:d={afade_s:.3f}"
+            cmd += ["-af", af]
+        cmd += [
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-c:a", "aac", "-b:a", "128k",
+            "-pix_fmt", "yuv420p",
+            str(out),
+        ]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, timeout=180)
+        except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or b"")[:400].decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"dissolve head render failed for {slot_path.name}: {stderr}",
+            ) from exc
+        return out
+
     def _stitch_mix_slot_audio(
         self, norm_path: Path, slot: dict, cache_dir: Path
     ) -> Path:
@@ -14917,25 +15020,70 @@ body {{padding-top:44px!important;}}
             final = self._stitch_mix_slot_audio(norm, slot, cache_dir)
             slot_finals.append(final)
 
-        # Handle transition sounds: inject as SFX cues at slot boundary
-        # Transition i = sound played between slot i and slot i+1
-        # Placed at offset_ms = (slot_i_dur_ms - transition.fade_ms // 2) in slot i
+        # Handle transitions per spec §3.3 + Q1 LOCKED 2026-05-04 +
+        # STITCHER_TRANSITIONS_V1 (HARD).
+        #
+        # Transition shape:
+        #   {after_slot, kind: 'crossfade'|'cut'|'dissolve', fade_ms,
+        #    audio_xfade_ms, source_path?}
+        #
+        # Defaults (handoff §3.3):
+        #   kind absent → 'crossfade' (backward compat for legacy jobs)
+        #   audio_xfade_ms absent → fade_ms (audio matches visual)
+        #
+        # kind semantics:
+        #   'cut'       → skip transition synthesis (no SFX cue; no fadeblack)
+        #   'crossfade' → existing trans_<after_slot> SFX cue at slot tail;
+        #                 audio_xfade_ms controls the SFX fadein/fadeout
+        #   'dissolve'  → visual fadeblack at boundary via ffmpeg fade=t=out
+        #                 on slot[after_slot] tail + fade=t=in on slot[after_slot+1]
+        #                 head; audio_xfade_ms=0 → hard audio cut;
+        #                 audio_xfade_ms>0 → afade out/in across the boundary
         transitions = body.get("transitions") or []
         for t in transitions:
             after_slot = int(t.get("after_slot", 0))
-            t_path = t.get("source_path") or ""
-            if not t_path or not os.path.isfile(t_path) or after_slot >= len(slot_finals):
+            if after_slot >= len(slot_finals):
+                continue
+            kind = (t.get("kind") or "crossfade").lower()
+            if kind == "cut":
                 continue
             fade_ms = int(t.get("fade_ms", 500))
-            slot_dur = slot_durations[after_slot]
-            offset_ms = max(0, slot_dur - fade_ms)
-            trans_slot = {"sfx_cues": [{"id": f"trans_{after_slot}", "source_path": t_path,
-                          "offset_ms": offset_ms, "volume": 0.7,
-                          "fadein_ms": 300, "fadeout_ms": 300}],
-                          "ambient_bed_path": None}
-            # Re-mix slot[after_slot] with transition injected as SFX
-            rebaked = self._stitch_mix_slot_audio(slot_finals[after_slot], trans_slot, cache_dir)
-            slot_finals[after_slot] = rebaked
+            audio_xfade_ms = int(t.get("audio_xfade_ms", fade_ms))
+            t_path = t.get("source_path") or ""
+
+            if kind == "crossfade":
+                # Existing path: synthesize trans_<after_slot> SFX cue.
+                # Requires source_path (else nothing to inject; fall back to no-op
+                # equivalent to 'cut' for the audio side).
+                if not t_path or not os.path.isfile(t_path):
+                    continue
+                slot_dur = slot_durations[after_slot]
+                offset_ms = max(0, slot_dur - fade_ms)
+                # audio_xfade_ms controls the SFX cue fadein/fadeout duration.
+                # Default 300/300 preserved when audio_xfade_ms=fade_ms (the
+                # legacy implicit 300ms remains the floor for very short fades).
+                cue_fade_ms = max(50, audio_xfade_ms // 2) if audio_xfade_ms > 0 else 300
+                trans_slot = {"sfx_cues": [{"id": f"trans_{after_slot}", "source_path": t_path,
+                              "offset_ms": offset_ms, "volume": 0.7,
+                              "fadein_ms": cue_fade_ms, "fadeout_ms": cue_fade_ms}],
+                              "ambient_bed_path": None}
+                rebaked = self._stitch_mix_slot_audio(slot_finals[after_slot], trans_slot, cache_dir)
+                slot_finals[after_slot] = rebaked
+
+            elif kind == "dissolve":
+                # NEW S5.5g — visual fadeblack at boundary. Apply fade=t=out
+                # to slot[after_slot] tail + fade=t=in to slot[after_slot+1]
+                # head. Audio fade conditional on audio_xfade_ms (Q1 LOCKED).
+                # Reference: LD-376 fadeblack pattern from Phase A.
+                slot_finals[after_slot] = self._stitch_apply_dissolve_tail(
+                    slot_finals[after_slot], cache_dir,
+                    fade_ms=fade_ms, audio_xfade_ms=audio_xfade_ms,
+                )
+                if after_slot + 1 < len(slot_finals):
+                    slot_finals[after_slot + 1] = self._stitch_apply_dissolve_head(
+                        slot_finals[after_slot + 1], cache_dir,
+                        fade_ms=fade_ms, audio_xfade_ms=audio_xfade_ms,
+                    )
 
         # Concat all slot finals (LD-284: already normalized)
         job_sig = json.dumps(

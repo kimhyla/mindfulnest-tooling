@@ -21,6 +21,7 @@ import { activeScope, scopeKey } from '../state/scope';
 import { pathappPatch } from '../api/client';
 import { SERVER_BASE } from '../api/endpoints';
 import { StitcherSlotWaveform } from './StitcherSlotWaveform';
+import { StitcherTransitionSelector, type Transition } from './StitcherTransitionSelector';
 import { SfxCuePopover, type SfxCue } from './phase/SfxCuePopover';
 import { makeDropTarget, type DragPayload } from '../utils/dragdrop';
 
@@ -46,7 +47,7 @@ interface StitchSlot {
 interface StitchJob {
   name?: string;
   slots?: Record<string, StitchSlot>;
-  transitions?: Array<Record<string, unknown>>;
+  transitions?: Transition[];
   bake_path?: string;
   bake_mtime?: number;
 }
@@ -162,7 +163,7 @@ export function StitcherTab() {
    */
   const saveJobSlots = async (
     nextSlots: Record<string, StitchSlot>,
-    transitions?: Array<Record<string, unknown>>,
+    transitions?: Transition[],
   ): Promise<boolean> => {
     if (!job?.name) return false;
     const res = await pathappPatch(activeScope.value, 'stitch_save_job', {
@@ -181,6 +182,29 @@ export function StitcherTab() {
     }
     setStatusMsg(`✗ Save HTTP ${res.status}: ${res.error ?? ''}`);
     return false;
+  };
+
+  /**
+   * Persist transitions only (slots unchanged). Used when a per-boundary
+   * transition selector changes kind / audio_xfade_ms. Per spec §3.3.
+   */
+  const saveJobTransitions = async (nextTransitions: Transition[]): Promise<boolean> => {
+    if (!job?.slots || !job?.name) return false;
+    return saveJobSlots(job.slots, nextTransitions);
+  };
+
+  const onTransitionChange = (next: Transition) => {
+    const existing = job?.transitions ?? [];
+    const idx = existing.findIndex((t) => t.after_slot === next.after_slot);
+    const nextArr = idx >= 0
+      ? existing.map((t, i) => (i === idx ? next : t))
+      : [...existing, next];
+    void saveJobTransitions(nextArr);
+  };
+
+  const findTransition = (afterSlot: number): Transition | null => {
+    const t = (job?.transitions ?? []).find((x) => x.after_slot === afterSlot);
+    return t ?? null;
   };
 
   const onPreviewSlot = async (slot: SlotKey) => {
@@ -492,6 +516,23 @@ export function StitcherTab() {
               );
             })}
           </div>
+
+          {/* Per-boundary transitions (G7-G8). 3 selectors for 4 slots:
+              after_slot=0 (intro→phase_a), 1 (phase_a→phase_b),
+              2 (phase_b→resolution). Per spec §3.3 + Q1 LOCKED 2026-05-04
+              + STITCHER_TRANSITIONS_V1 (HARD). Hidden in standalone mode. */}
+          {!standaloneMode ? (
+            <div class="mn-stitcher-transitions-row" data-testid="stitcher-transitions-row">
+              {[0, 1, 2].map((afterSlot) => (
+                <StitcherTransitionSelector
+                  key={`trans-${afterSlot}`}
+                  afterSlot={afterSlot}
+                  transition={findTransition(afterSlot)}
+                  onChange={onTransitionChange}
+                />
+              ))}
+            </div>
+          ) : null}
 
           {/* Module-level SFX cue strip (G6). Drop a lib-sfx payload below the
               slot strip to write into state.module_sfx_cues via

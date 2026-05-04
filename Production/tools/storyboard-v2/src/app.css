@@ -768,6 +768,41 @@
   background: rgba(204, 51, 51, 0.08);
 }
 
+/* Per-boundary transition selectors (G7-G8) — STITCHER_TRANSITIONS_V1 (HARD). */
+.mn-stitcher-transitions-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-around;
+  margin: 8px 0;
+  padding: 6px 8px;
+  background: var(--code-bg);
+  border-radius: 3px;
+  font-size: 12px;
+}
+.mn-stitcher-transition {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mn-stitcher-transition-label {
+  font-size: 11px;
+}
+.mn-stitcher-transition-kind {
+  font-size: 12px;
+  padding: 1px 4px;
+}
+.mn-stitcher-transition-audio {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.mn-stitcher-transition-audio input[type='number'] {
+  width: 60px;
+  padding: 1px 4px;
+  font-size: 12px;
+}
+
 /* SfxCuePopover — sibling of CuePopover for SFX cue editing. */
 .mn-sfx-cue-popover {
   /* Inherits all .mn-cue-popover styles; this scope hook is for future
