@@ -117,51 +117,90 @@ test.describe('R1 — scope-change re-fetch', () => {
 // R2 — Drag-drop wiring (BgTab option slots, char/BG ref slots, Cropper, CSS)
 // ----------------------------------------------------------------------------
 
+// Helper: mock the BG state endpoints so a single beat with one slot renders
+// without depending on the real BG sidecar (fixture sidecar is empty;
+// "Add empty beat" requires an active segment which the empty sidecar lacks).
+async function mockBgWithOneBeat(page: Page, beatId: string = 'beat_e2e_01'): Promise<void> {
+  await page.route('**/api/bg/segments**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        segments: [{ event_id: 'E1', phase: 'intro', name: 'Intro' }],
+      }),
+    });
+  });
+  await page.route('**/api/bg/session-state**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        active_context: { arc_number: 1, event_id: 'E1', phase: 'intro' },
+        beats: [
+          {
+            beat_id: beatId,
+            dialogue_text: 'Test beat for drag-drop assertions.',
+            speaker: 'Tessa',
+            status: 'ready',
+            gpt_options: [],
+            accepted_image_key: null,
+          },
+        ],
+      }),
+    });
+  });
+}
+
 test.describe('R2 — drag-drop wiring', () => {
   test('R2.1 — drag library tile → drop on BG option slot fires bg_accept_lib_image with correct body', async ({ page }) => {
+    await mockBgWithOneBeat(page);
     await gotoApp(page);
     await page.click('[data-testid="tab-bg"]');
     await expect(page.locator('[data-testid="pane-bg"]')).toBeVisible();
-    // Library has at least 1 item (seeded by globalSetup).
     const firstLibItem = page.locator('[data-testid^="library-item-"]').first();
     await expect(firstLibItem).toBeVisible();
-    // Need a BG beat to have at least one option slot. globalSetup fixture has
-    // empty BG sidecar; click "Add empty beat" to materialize one.
-    await page.locator('[data-testid="bg-add-empty-btn"]').click();
     const dropTarget = page.locator('[data-testid="bg-option-0-0"]');
-    // Capture POST to bg_accept_lib_image.
+    await expect(dropTarget).toBeVisible();
     const apReqs: Request[] = [];
     page.on('request', (req) => {
-      if (req.url().includes('bg_accept_lib_image')) apReqs.push(req);
+      if (req.url().includes('bg_accept_lib_image') || req.url().includes('bg/accept-lib-image')) {
+        apReqs.push(req);
+      }
     });
-    // Drag-drop via Playwright dragTo. After fix: drop target exists + POST fires.
-    // Before fix (RED): no drop target (locator hidden) → drag silently no-ops.
     await firstLibItem.dragTo(dropTarget);
     await expect.poll(() => apReqs.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
     const body = apReqs[0]!.postDataJSON() as Record<string, unknown>;
-    // Spec §4.3 corrected body shape.
-    expect(body['beat_id']).toBeDefined();
+    expect(body['beat_id']).toBe('beat_e2e_01');
     expect(body['key']).toBeDefined();
-    expect(body['filename']).toBeDefined();
-    expect(body['abs_path']).toBeDefined();
     expect(body['slot_index']).toBe(0);
+    // filename + abs_path may be empty strings if drag payload didn't carry them
+    // (depends on library data shape); presence-assert only.
+    expect('filename' in body).toBe(true);
+    expect('abs_path' in body).toBe(true);
   });
 
   test('R2.2 — drag library tile → drop on char ref slot triggers update', async ({ page }) => {
+    await mockBgWithOneBeat(page);
     await gotoApp(page);
     await page.click('[data-testid="tab-bg"]');
     const firstLibItem = page.locator('[data-testid^="library-item-"]').first();
     await expect(firstLibItem).toBeVisible();
-    await page.locator('[data-testid="bg-add-empty-btn"]').click();
     const charRefDrop = page.locator('[data-testid="bg-char-ref-0"]');
+    await expect(charRefDrop).toBeVisible();
     const updateReqs: Request[] = [];
     page.on('request', (req) => {
-      if (req.url().includes('bg_update_beat') || req.url().includes('bg_set_char_ref')) {
+      if (req.url().includes('bg_update_beat') || req.url().includes('bg/update-beat')) {
         updateReqs.push(req);
       }
     });
     await firstLibItem.dragTo(charRefDrop);
     await expect.poll(() => updateReqs.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
+    const body = updateReqs[0]!.postDataJSON() as Record<string, unknown>;
+    expect(body['beat_id']).toBe('beat_e2e_01');
+    // Either reference_image or bg_ref_image set (drag handler sends one).
+    expect(body['reference_image'] !== undefined || body['bg_ref_image'] !== undefined).toBe(true);
   });
 
   test('R2.3 — drag library tile → drop on Cropper canvas loads image', async ({ page }) => {
@@ -184,9 +223,9 @@ test.describe('R2 — drag-drop wiring', () => {
   });
 
   test('R2.4 — dragenter sets is-drag-over class on drop target; dragleave removes it', async ({ page }) => {
+    await mockBgWithOneBeat(page);
     await gotoApp(page);
     await page.click('[data-testid="tab-bg"]');
-    await page.locator('[data-testid="bg-add-empty-btn"]').click();
     const dropTarget = page.locator('[data-testid="bg-option-0-0"]');
     await expect(dropTarget).toBeVisible();
     // Synthesize dragenter / dragleave via DOM events (Playwright doesn't expose dragenter alone).
@@ -212,7 +251,7 @@ test.describe('R2 — drag-drop wiring', () => {
 test.describe('R3 — option_key gate', () => {
   test('R3.1 — radio click on option WITH key fires bg_accept_option, returns 200', async ({ page }) => {
     // Mock the BG state to inject one beat with one option (with key).
-    await page.route('**/api/bg_session_state**', async (route) => {
+    await page.route('**/api/bg/session-state**', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -234,7 +273,7 @@ test.describe('R3 — option_key gate', () => {
         }),
       });
     });
-    await page.route('**/api/bg_segments**', async (route) => {
+    await page.route('**/api/bg/segments**', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -262,7 +301,7 @@ test.describe('R3 — option_key gate', () => {
   });
 
   test('R3.2 — option WITHOUT key renders radio DISABLED with tooltip', async ({ page }) => {
-    await page.route('**/api/bg_session_state**', async (route) => {
+    await page.route('**/api/bg/session-state**', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -284,7 +323,7 @@ test.describe('R3 — option_key gate', () => {
         }),
       });
     });
-    await page.route('**/api/bg_segments**', async (route) => {
+    await page.route('**/api/bg/segments**', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
