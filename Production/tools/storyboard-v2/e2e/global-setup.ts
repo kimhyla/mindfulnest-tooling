@@ -35,13 +35,30 @@ async function globalSetup() {
     );
   }
 
-  // Restore mutation-prone files from pristine
+  // Restore mutation-prone files from pristine.
+  // NOTE: skip storyboard_v59_prod.html — it's overwritten with the BUILT
+  // v59 dist below, so .pristine's placeholder would shadow the real bundle.
   for (const fname of readdirSync(pristineDir)) {
-    if (fname.startsWith('.')) continue; // skip dotfiles
+    if (fname.startsWith('.')) continue;
+    if (fname === 'storyboard_v59_prod.html') continue;
     const src = resolve(pristineDir, fname);
     const dst = resolve(fixtureDir, fname);
     copyFileSync(src, dst);
   }
+
+  // Copy the freshly-built v59 app over the storyboard placeholder.
+  // production_server.py serves --storyboard at `/`, so this MUST be the
+  // built dist/index.html (single-file bundle ~120 kB) for the tests'
+  // page.goto('/') to render the app. Workflow runs `npm run build` before
+  // Playwright, so dist exists by the time globalSetup fires.
+  const builtBundle = resolve(__dirname_setup, '..', 'dist', 'index.html');
+  if (!existsSync(builtBundle)) {
+    throw new Error(
+      `[global-setup] FATAL: built v59 bundle missing at ${builtBundle}. ` +
+      'Run `npm run build` before `npx playwright test`. CI handles this in playwright_e2e.yml.'
+    );
+  }
+  copyFileSync(builtBundle, resolve(fixtureDir, 'storyboard_v59_prod.html'));
 
   // Seed library test PNG (BG_STILLS_DIR is project-level not event-scoped)
   if (!existsSync(stillsSourcesDir)) {
