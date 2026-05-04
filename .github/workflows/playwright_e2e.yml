@@ -90,7 +90,13 @@ jobs:
         working-directory: Production/tools/storyboard-v2
         run: npx playwright install --with-deps chromium
 
-      - name: Run Playwright e2e (proper-fix + retroactive + S5.5f scopes)
+      - name: Sidecar TypeError regression (AF.3.1 / F-SVR-001)
+        # Standalone unit test for _write_sidecar_L_json display_order=int
+        # regression. Runs before Playwright so a Python-side regression
+        # surfaces independently of e2e flake. Wave 1 architectural-fix.
+        run: python3 Production/tools/tests/test_sidecar_display_order_int.py
+
+      - name: Run Playwright e2e (proper-fix + retroactive + S5.5f + architectural-fix scopes)
         working-directory: Production/tools/storyboard-v2
         # Per spec §19.2 / §19.6 (S5.5f) + §19 / §8.9 (retroactive) — APPEND,
         # not replace, not glob. Each session that ships new e2e specs adds
@@ -101,6 +107,7 @@ jobs:
         #   - s5_5ce_proper_fix (13 tests — 5 R-bugs + +NewEvent flow)
         #   - retroactive_s1..s6 (41 tests — 6 surfaces from PR #2)
         #   - s5_5f_smoke (18 tests — F3-F17 from PR #3)
+        #   - architectural_fix (9 tests — Wave 1 mutation channel + sidecar)
         run: |
           npx playwright test \
             e2e/s5_5ce_proper_fix.spec.ts \
@@ -111,6 +118,7 @@ jobs:
             e2e/retroactive_s5_library_rendering.spec.ts \
             e2e/retroactive_s6_scope_boundary.spec.ts \
             e2e/s5_5f_smoke.spec.ts \
+            e2e/architectural_fix.spec.ts \
             --reporter=line
 
       - name: Upload test artifacts on failure
