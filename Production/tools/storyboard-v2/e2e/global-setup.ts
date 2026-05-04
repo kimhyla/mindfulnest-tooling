@@ -8,9 +8,14 @@
 
 import { existsSync, mkdirSync, copyFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// ESM-safe __dirname equivalent (package.json declares "type": "module").
+const __filename = fileURLToPath(import.meta.url);
+const __dirname_setup = dirname(__filename);
 
 // Resolve repo root from this file: e2e/global-setup.ts → ../../../.. (repo root)
-const repoRoot = resolve(__dirname, '..', '..', '..', '..');
+const repoRoot = resolve(__dirname_setup, '..', '..', '..', '..');
 const fixtureDir = resolve(repoRoot, 'Production', 'Event_e2e_fixture');
 const pristineDir = resolve(fixtureDir, '.pristine');
 const stillsDir = resolve(repoRoot, 'Production', 'beat_generator_stills');

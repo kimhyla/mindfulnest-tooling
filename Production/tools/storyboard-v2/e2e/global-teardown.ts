@@ -5,9 +5,13 @@
 // the next run's globalSetup will overwrite them from .pristine/.
 
 import { existsSync, unlinkSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const repoRoot = resolve(__dirname, '..', '..', '..', '..');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname_teardown = dirname(__filename);
+
+const repoRoot = resolve(__dirname_teardown, '..', '..', '..', '..');
 const stillsSourcesDir = resolve(repoRoot, 'Production', 'beat_generator_stills', 'sources');
 const TEST_PNG_NAME = 'e2e_fixture_test.png';
 const testPngPath = resolve(stillsSourcesDir, TEST_PNG_NAME);
