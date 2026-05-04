@@ -80,6 +80,9 @@ export const MUTATION_ENDPOINTS = {
   phase_b_mix_audio: `${SERVER_BASE}/api/phase_b/mix_audio`,
   phase_b_lipsync: `${SERVER_BASE}/api/phase_b/lipsync`,
   stitch_save_job: `${SERVER_BASE}/api/stitch_editor/job`,
+  // S5.5g — module-level SFX cue upsert (separate from per-slot sfx_cues
+  // which travel inside stitch_save_job.slots[i].sfx_cues per audit doc §3).
+  timeline_cue_upsert: `${SERVER_BASE}/api/timeline/cues`,
   // S5.5f — top-level state writes via the v2 module-patch handler.
   // Whitelisted fields: see _V2_MODULE_ALLOWED_FIELDS in production_server.py.
   // Used for phase_X_watercolor_cues_json, phase_X_ambient_preset_id, the
