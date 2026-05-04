@@ -539,3 +539,98 @@ test.describe('G8 — Transition kind change saves via stitch_save_job', () => {
     expect(t0!['kind']).toBe('dissolve');
   });
 });
+
+// ============================================================================
+// Phase D — Per-slot trims (G9-G10) — STITCHER_PER_SLOT_TRIMS_V1 (HARD)
+//
+// Per audit doc §5 LOCKED:
+//   - New slot fields trim_in_ms (default 0) and trim_out_ms (null = full clip)
+//   - Persisted via stitch_save_job extension (NOT a new endpoint)
+//   - Server-side ffmpeg -ss/-to in _stitch_normalize_slot; cache key includes
+//     trim fingerprint so different windows of the same source don't collide
+//
+// Cursor v8 Q9 deferred keyboard nudge; UX uses numeric inputs (in/out_ms in
+// seconds) to satisfy the contract while keeping the test surface simple.
+// ============================================================================
+
+test.describe('G9 — Per-slot trim handles render on each slot', () => {
+  test('G9 — trim_in + trim_out controls render for every populated slot', async ({ page }) => {
+    await mockStitcherJob(page);
+    await mockSnapshot(page);
+    await mockStitchSaveJob(page);
+    await mockSfxLibrary(page);
+
+    await gotoApp(page);
+    await openStitcher(page);
+
+    // Each slot has trim-in + trim-out controls.
+    for (const slotKey of ['intro', 'phase_a', 'phase_b', 'resolution']) {
+      await expect(page.locator(`[data-testid="stitcher-slot-trim-in-${slotKey}"]`)).toBeVisible();
+      await expect(page.locator(`[data-testid="stitcher-slot-trim-out-${slotKey}"]`)).toBeVisible();
+    }
+  });
+});
+
+test.describe('G10 — Trim edit saves via stitch_save_job', () => {
+  test('G10 — setting trim_in on intro saves slots.intro.trim_in_ms via stitch_save_job', async ({ page }) => {
+    await mockStitcherJob(page);
+    await mockSnapshot(page);
+    await mockStitchSaveJob(page);
+    await mockSfxLibrary(page);
+
+    const saveJobReqs: Request[] = [];
+    page.on('request', (req) => {
+      if (req.url().endsWith('/api/stitch_editor/job') && req.method() === 'POST') {
+        saveJobReqs.push(req);
+      }
+    });
+
+    await gotoApp(page);
+    await openStitcher(page);
+
+    // Trim controls take seconds (UX-friendly); UI converts to ms on save.
+    const trimIn = page.locator('[data-testid="stitcher-slot-trim-in-intro"]');
+    await expect(trimIn).toBeVisible();
+    await trimIn.fill('2');
+    await trimIn.blur();
+
+    await expect.poll(() => saveJobReqs.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
+    const body = saveJobReqs[saveJobReqs.length - 1]!.postDataJSON() as Record<string, unknown>;
+
+    // Auto-injected scope keys.
+    expect(body['event_id']).toBeDefined();
+    expect(body['scope_event_id']).toBeDefined();
+    expect(typeof body['scope_version']).toBe('number');
+
+    const slots = body['slots'] as Record<string, MockSlot>;
+    expect(slots).toBeDefined();
+    expect(Number(slots.intro!.trim_in_ms)).toBe(2000);
+  });
+
+  test('G10.2 — setting trim_out on intro saves slots.intro.trim_out_ms via stitch_save_job', async ({ page }) => {
+    await mockStitcherJob(page);
+    await mockSnapshot(page);
+    await mockStitchSaveJob(page);
+    await mockSfxLibrary(page);
+
+    const saveJobReqs: Request[] = [];
+    page.on('request', (req) => {
+      if (req.url().endsWith('/api/stitch_editor/job') && req.method() === 'POST') {
+        saveJobReqs.push(req);
+      }
+    });
+
+    await gotoApp(page);
+    await openStitcher(page);
+
+    const trimOut = page.locator('[data-testid="stitcher-slot-trim-out-intro"]');
+    await expect(trimOut).toBeVisible();
+    await trimOut.fill('25');
+    await trimOut.blur();
+
+    await expect.poll(() => saveJobReqs.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
+    const body = saveJobReqs[saveJobReqs.length - 1]!.postDataJSON() as Record<string, unknown>;
+    const slots = body['slots'] as Record<string, MockSlot>;
+    expect(Number(slots.intro!.trim_out_ms)).toBe(25_000);
+  });
+});
