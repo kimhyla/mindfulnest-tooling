@@ -1,0 +1,29 @@
+name: Smoke
+
+# Smoke CI — proves the GitHub Actions plumbing is wired end-to-end.
+# Runs storyboard-v2 build only (npm ci + npm run build).
+# The full Playwright e2e workflow lives in playwright_e2e.yml — added by
+# the v59 S5.5c+e proper-fix session per STORYBOARD_V59_S5_5_CE_PROPER_FIX_SPEC_v1.md
+# Phase 1.3.
+
+on:
+  push:
+    branches: [main, claude/*, feature/*]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install client deps
+        working-directory: Production/tools/storyboard-v2
+        run: npm ci
+      - name: Build dist
+        working-directory: Production/tools/storyboard-v2
+        run: npm run build
