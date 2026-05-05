@@ -1195,6 +1195,26 @@ class StateManager:
                 state["videos"][video_role]["display_order"] = []
                 state["videos"][video_role]["completed_mp4_path"] = None
             mutator_fn(state["videos"][video_role])
+            # DISPLAY_ORDER_STRICT_V1 prune (C2b) — keep partition.beats
+            # consistent with display_order. When display_order is a present
+            # LIST, drop any beats[bid] whose bid is not in it. Skip when
+            # display_order is missing or non-list (legacy data shapes —
+            # e.g. integer display_order in pre-v3 fixtures). The prune runs
+            # on every mutation, not only when the mutator changed
+            # display_order; the invariant is "beats {} ⊆ display_order
+            # whenever display_order is a list", and idempotent enforcement
+            # on every write is the safer contract. Pairs with the
+            # StoryboardTab.beatList renderer's Array.isArray gate so empty
+            # display_order = render zero beats end-to-end.
+            partition = state["videos"][video_role]
+            do = partition.get("display_order")
+            if isinstance(do, list):
+                allowed = set(do)
+                beats = partition.get("beats")
+                if isinstance(beats, dict):
+                    for bid in list(beats.keys()):
+                        if bid not in allowed:
+                            del beats[bid]
             state["updated_at"] = datetime.now(timezone.utc).isoformat()
         return self.mutate_state(_wrapped_mutator)
 
