@@ -3741,9 +3741,32 @@ _GRAFT_DEDUP: "_pathapp_collections.OrderedDict[str, dict]" = _pathapp_collectio
 _GRAFT_DEDUP_MAX = 256
 
 # Durable audit log for graft operations (and any other recovery primitives
-# that need a forever-on-disk record). Lives at the project root so it
-# survives event-dir migrations. Gitignored — see .gitignore.
-AUDIT_LOG_PATH = Path(__file__).resolve().parents[1] / ".recovery_audit.jsonl"
+# that need a forever-on-disk record). Per LD-505 two-tree boundary, the
+# audit log is FORENSIC STATE — it belongs in the canonical state tree
+# (Dropbox) alongside the event_dir, NOT in the tooling-repo code tree.
+#
+# Path resolution is dynamic via app.event_dir.parent (i.e., the
+# "Production/" parent of the running server's event-dir):
+#   - Production runtime (server launched from Dropbox tree against
+#     Production/Event_<N>): audit log lands at
+#     /Users/kimberlysmith/Library/CloudStorage/Dropbox/Claude Mindfulnest
+#     Project Files/Production/.recovery_audit.jsonl
+#   - CI / e2e fixture runs (server against Production/Event_e2e_fixture
+#     in tooling repo): audit log lands at tooling-repo
+#     Production/.recovery_audit.jsonl (gitignored).
+#
+# Use _audit_log_path(app) helper to read the resolved path; the legacy
+# module-level constant has been removed.
+
+def _audit_log_path(app) -> Path:
+    """Return the durable recovery-audit log path for the current server pin.
+
+    Co-located with `app.event_dir.parent` per spec §6.4 + LD-505 (forensic
+    state in canonical state tree). Single point of resolution so future
+    callers don't import a stale module-level constant from before the
+    runtime tree was decided.
+    """
+    return app.event_dir.parent / ".recovery_audit.jsonl"
 
 # v2 whitelist — ALL other fields must go through the legacy bespoke handlers
 _V2_ALLOWED_FIELDS = frozenset({
@@ -12601,7 +12624,7 @@ body {{padding-top:44px!important;}}
                     "ok": True, "status": "already_present",
                     "beat_id": src["beat_id"],
                     "pre_image_paths": pre_image_paths,
-                    "audit_log_path": str(AUDIT_LOG_PATH),
+                    "audit_log_path": str(_audit_log_path(self.app)),
                     "target_display_order": tgt_partition_pre.get("display_order", []),
                 }
                 _GRAFT_DEDUP[mutation_id] = result
@@ -12727,7 +12750,7 @@ body {{padding-top:44px!important;}}
             "ok": True,
             "status": "moved" if move else "copied",
             "pre_image_paths": pre_image_paths,
-            "audit_log_path": str(AUDIT_LOG_PATH),
+            "audit_log_path": str(_audit_log_path(self.app)),
             "target_display_order": post_partition.get("display_order", []),
             "beat_id": src["beat_id"],
         }
@@ -12743,13 +12766,18 @@ body {{padding-top:44px!important;}}
         flush+close. Concurrent writers from the same process are safe due
         to the GIL; multi-process serialization is not required since the
         server is single-process per LD-460.
+
+        Path resolves dynamically via _audit_log_path(self.app) — see the
+        helper docstring at module top. In production runtime this lands
+        the JSONL row in Dropbox tree (canonical state per LD-505).
         """
+        path = _audit_log_path(self.app)
         try:
-            AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-            with open(AUDIT_LOG_PATH, "a", encoding="utf-8") as f:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
         except Exception as exc:  # noqa: BLE001
-            print(f"[audit] WARN failed to append {row.get('action')!r}: {exc}",
+            print(f"[audit] WARN failed to append {row.get('action')!r} to {path}: {exc}",
                   flush=True)
 
     def _handle_beat_regenerate_audio(self, body: dict) -> None:

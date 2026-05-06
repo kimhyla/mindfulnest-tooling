@@ -90,7 +90,11 @@ test.describe('D5 — patch_state._apply routes target_partition via scope_route
     const introBeat = state?.videos?.intro?.beats?.[beatId];
     const resolutionBeat = state?.videos?.resolution?.beats?.[beatId];
 
-    expect(resolutionBeat?.pause_after_ms, 'resolution.beats[bid].pause_after_ms must hold the patch value after C-2').toBe(500);
+    // pause_after_ms is stored at beat.phase_1.pause_after_ms per patch_state
+    // _apply_partition (production_server.py: `beat.setdefault("phase_1", {})
+    // ["pause_after_ms"] = int(_v)`). Asserting the top-level slot would
+    // always be undefined regardless of fix correctness.
+    expect(resolutionBeat?.phase_1?.pause_after_ms, 'resolution.beats[bid].phase_1.pause_after_ms must hold the patch value after C-2').toBe(500);
     expect(introBeat, 'videos.intro must NOT have been touched by a resolution-scoped patch').toBeUndefined();
   });
 });
