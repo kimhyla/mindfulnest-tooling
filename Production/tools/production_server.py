@@ -97,6 +97,55 @@ def _bg_module():
     return _BG_MODULE
 
 
+# BG_HARDCODED_SCOPE_PURGE_V1 (C-4 K3 fix) — derive (arc_number, event_id_int,
+# phase) from the resolved scope (event_id + video_role). Replaces the prior
+# hardcoded arc=1/event=2/phase=pre literal in _handle_bg_add_beat. The
+# arc_number is fixed at 1 for the current single-arc deployment; this helper
+# is the one place to refactor when multi-arc lands. The phase mapping is the
+# canonical correspondence for v59 BG sidecars:
+#   intro       → pre
+#   resolution  → post
+#   standalone  → main
+_BG_PHASE_MAP: dict[str, str] = {"intro": "pre", "resolution": "post", "standalone": "main"}
+
+
+def _resolve_bg_segment_for_scope(scope_event_id: str, video_role: str) -> tuple[int, int, str]:
+    """Map a (scope_event_id, video_role) to a BG sidecar segment tuple.
+
+    Returns (arc_number, event_id_int, phase).
+    Raises ValueError when scope_event_id can't be parsed as `Event_<N>` or
+    when video_role has no phase mapping. Callers should convert ValueError
+    to HTTP 400 `bg_segment_unresolved`.
+
+    Examples:
+        _resolve_bg_segment_for_scope("Event_1", "intro")        → (1, 1, "pre")
+        _resolve_bg_segment_for_scope("Event_2", "resolution")    → (1, 2, "post")
+        _resolve_bg_segment_for_scope("Event_e2e_fixture", "intro")
+            → ValueError (fixture is non-numeric; tests must mock or skip)
+    """
+    arc_number = 1  # current single-arc deployment; refactor when multi-arc lands
+    if not scope_event_id.startswith("Event_"):
+        raise ValueError(
+            f"scope_event_id must be of form 'Event_<N>' for BG segment resolution; "
+            f"got {scope_event_id!r}"
+        )
+    suffix = scope_event_id[len("Event_"):]
+    try:
+        event_id_int = int(suffix)
+    except ValueError as e:
+        raise ValueError(
+            f"cannot parse numeric event id from scope_event_id={scope_event_id!r} "
+            f"(suffix={suffix!r})"
+        ) from e
+    phase = _BG_PHASE_MAP.get(video_role)
+    if phase is None:
+        raise ValueError(
+            f"no BG sidecar phase mapping for video_role={video_role!r}; "
+            f"valid roles: {sorted(_BG_PHASE_MAP.keys())}"
+        )
+    return (arc_number, event_id_int, phase)
+
+
 # Capabilities probe cache (populated on first use)
 _BG_CAPABILITIES = None
 
@@ -9325,17 +9374,35 @@ class ProductionHandler(BaseHTTPRequestHandler):
         Inserts a blank beat immediately after after_beat_id in the sidecar.
         beat_id is generated as max(existing_N)+1 (zero-padded to 2 digits)
         so gaps from prior deletes do not cause collisions."""
-        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
-            return
+        # SCOPE_ROUTER_V1 (C-4 K3 fix) — replaces legacy
+        # _assert_event_scope(allow_missing=True) and the hardcoded
+        # arc=1/event=2/phase=pre segment lookup.
+        # BG sidecar segment is derived from the resolved scope:
+        #   intro→pre, resolution→post, standalone→main
+        # Subsumes LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        # and pins LD BG_HARDCODED_SCOPE_PURGE_V1.
+        try:
+            scope = scope_router.resolve(body, self.app.event_dir.name)
+        except scope_router.ScopeError as e:
+            return self._send_json(e.http_status, {"error": e.code, **e.detail})
+
+        try:
+            arc_number, event_id_int, phase = _resolve_bg_segment_for_scope(
+                scope.event_id, scope.video_role,
+            )
+        except ValueError as exc:
+            return self._send_json(400, {"error": "bg_segment_unresolved", "detail": str(exc)})
 
         after_beat_id = body.get("after_beat_id", "")
-        segment = body.get("segment", "event_2_pre")
+        # Note: legacy clients passed `segment` literal (e.g. "event_2_pre");
+        # the scope-derived segment is now authoritative. Older callers' segment
+        # field is ignored — by design, since the scope keys must match the
+        # storyboard tab's pinned event/role.
 
         bg = _bg_module()
         with bg._sidecar_lock:
             sidecar = bg.read_sidecar()
-            seg = bg.get_seg_entry(sidecar, arc_number=1, event_id=2, phase="pre")
+            seg = bg.get_seg_entry(sidecar, arc_number=arc_number, event_id=event_id_int, phase=phase)
             beats = seg.get("beats", [])
 
             # Find insertion index
@@ -9345,8 +9412,9 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     insert_after = i
                     break
 
-            # Generate beat_id: max(N)+1 across ALL beats in this segment
-            prefix = "bg_arc1_event2_pre_beat_"
+            # Generate beat_id: max(N)+1 across ALL beats in this segment.
+            # Prefix derived from scope (formerly hardcoded "bg_arc1_event2_pre_beat_").
+            prefix = f"bg_arc{arc_number}_event{event_id_int}_{phase}_beat_"
             existing_nums = []
             for b in beats:
                 bid = b.get("beat_id", "")
