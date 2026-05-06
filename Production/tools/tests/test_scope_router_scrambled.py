@@ -168,24 +168,17 @@ class ScopeRouterScrambledStateTests(unittest.TestCase):
     # SCR.2 — _handle_beat_update_text on scrambled-state beat_05
     #          (whose top-level speaker is "Guide Bird")
     # ------------------------------------------------------------------
-    # HALT + SURFACE per Kim's pre-C-9 addendum: this test was authored to
-    # discover whether the SR+G architecture migrates legacy on-disk
-    # Guide-Bird speakers when an unrelated field (text) is touched. Local
-    # run (2026-05-06) confirmed the GAP: _handle_beat_update_text writes
-    # ONLY text; the K8 dual-store + SPEAKER_WRITE_BOUNDARY_CANONICALIZATION_V1
-    # only fire on patch_state(field='speaker', ...) writes. Effect:
-    # legacy 'Guide Bird' values persist in Event_1.state.json until
-    # someone explicitly writes the speaker field; TTS-time alias
-    # resolution (_canonicalize_speaker via _SPEAKER_ALIAS) compensates
-    # at READ time, so audio renders correctly, but the on-disk state
-    # never converges to canonical names without an explicit speaker
-    # patch operation. Marked expectedFailure so CI stays green; remove
-    # the decorator + commit the fix once Kim authorizes the architectural
-    # change (most likely: add `_canonicalize_on_touch` write to
-    # _handle_beat_update_text's update_partition mutator that re-writes
-    # beat['speaker'] = _canonicalize_speaker(beat.get('speaker') or '')
-    # plus the K8 phase_1 mirror).
-    @unittest.expectedFailure
+    # SCR.2 — _handle_beat_update_text on scrambled-state beat_05 (whose
+    # top-level speaker is "Guide Bird" in Event_1 disk-truth).
+    #
+    # As of Path A (Kim's authorization 2026-05-06):
+    # _handle_beat_update_text now does canonicalize-on-touch — every
+    # beat-touch re-canonicalizes the existing speaker via
+    # _canonicalize_speaker and writes both the top-level + phase_1
+    # mirror. Test now asserts GREEN: the LD claims at
+    # SPEAKER_DUAL_STORE_DEPRECATION_V1 + SPEAKER_WRITE_BOUNDARY_
+    # CANONICALIZATION_V1 hold at every beat-touchpoint, not just
+    # patch_state(field='speaker', ...).
     def test_SCR_2_update_text_on_legacy_guide_bird_speaker(self):
         """beat_05 update_text → text persisted; speaker canonicalized to Chipper.
 

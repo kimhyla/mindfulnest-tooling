@@ -12300,6 +12300,19 @@ body {{padding-top:44px!important;}}
             b["text_last_updated_at"] = _ts
             if _stale and old != _t:
                 b["text_modified_after_tts"] = True
+            # Canonicalize-on-touch (SCR.2 Path A — Kim's pre-C-9 decision):
+            # migrate legacy on-disk speaker values at every beat-touch so the
+            # SR+G architecture truly converges. Runs uniformly with the graft
+            # handler's existing canonicalization (C-7) so update_text and
+            # graft both touch K8 dual-store. Idempotent: if speaker is already
+            # canonical the writes are no-ops; phase_1 dict is created if
+            # absent. LDs SPEAKER_DUAL_STORE_DEPRECATION_V1 +
+            # SPEAKER_WRITE_BOUNDARY_CANONICALIZATION_V1 now hold at every
+            # beat-touchpoint, not just patch_state(field='speaker', ...).
+            legacy_spk = b.get("speaker") or ""
+            canon_spk = _canonicalize_speaker(legacy_spk) or ""
+            b["speaker"] = canon_spk
+            b.setdefault("phase_1", {})["speaker"] = canon_spk
             _holder["old"] = old
         self.app.state.mutate_video_state(scope.video_role, update_partition)
         old_text = _holder.get("old")
