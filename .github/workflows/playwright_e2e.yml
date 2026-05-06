@@ -186,7 +186,96 @@ jobs:
           fi
           echo "Mutation channel invariant strict: PASS (no tracked exceptions)"
 
-      - name: Run Playwright e2e (proper-fix + retroactive + S5.5f + architectural-fix scopes)
+      # ----------------------------------------------------------------
+      # SCOPE_ROUTER_V1 / BG_HARDCODED_SCOPE_PURGE_V1 AST grep gate
+      # (authoring-workflow architecture, spec_v2 §4 + handoff C-1).
+      #
+      # Bans hardcoded partition lifts in production_server.py:
+      #   * `state.setdefault("videos",{}).setdefault("intro"...` (K1, D5)
+      #   * direct top-level `state.setdefault("beats", {})` outside
+      #     scope_router.py + StateManager (K2)
+      #   * literal `arc_number=1, event_id=2, phase="pre"` in handlers (K3)
+      #
+      # On the C-1 RED-phase commit, this gate trips RED — it pins the
+      # contract that C-2..C-4 turn GREEN by removing the hardcodes. CI
+      # green is expected by the close of C-4.
+      #
+      # Allowed surfaces: scope_router.py (the router itself), and the
+      # StateManager block in production_server.py around line 1185-1218
+      # (the auto-create path inside mutate_video_state that initializes
+      # the partition with the role marker — pre-mutator, not in handler
+      # code, and therefore exempt by design).
+      # ----------------------------------------------------------------
+
+      - name: SCOPE_ROUTER_V1 + BG_HARDCODED_SCOPE_PURGE_V1 hardcode bans (continue-on-error during C-1 RED phase)
+        # NOTE: continue-on-error stays true through the C-2 → C-7 RED→GREEN
+        # progression. C-1 dry-run surfaced 6 K1/D5 sites (4083, 11243, 11272,
+        # 11970, 12051, 12739), 3 K2 sites (8996, 12627, 13170), and 1 K3
+        # site (9279) — broader than the canonical spec §3.1 line cites
+        # because §5.1 sibling-handler audit acceptance is "ZERO hits post-C-7"
+        # across the entire mutation surface, not just the K-finding canonicals.
+        # After post-C-7 acceptance is satisfied (grep returns ZERO), a
+        # follow-up commit flips this to a hard block (drop continue-on-error).
+        # Multi-line scan via python — single-line grep misses the K1
+        # hardcode at line 12051+ where the `setdefault` chain wraps across
+        # three lines (`state.setdefault("videos", ...)` / `.setdefault("intro"...`
+        # / `.setdefault("beats"...`). Python regex with re.DOTALL catches both.
+        continue-on-error: true
+        run: |
+          python3 - <<'PY'
+          import re, sys, pathlib
+          src = pathlib.Path("Production/tools/production_server.py").read_text(encoding="utf-8")
+
+          fail = 0
+
+          # K1 + D5 — hardcoded `videos.intro` partition lift outside router /
+          # StateManager. Allowed surfaces: scope_router.py (the router itself);
+          # StateManager.mutate_video_state auto-create block (~lines 1185-1196)
+          # which initializes the partition with the role marker pre-mutator.
+          # Detect multi-line setdefault chains.
+          k1_re = re.compile(
+              r'state\.setdefault\(\s*"videos"\s*,\s*\{\}\s*\)\.setdefault\(\s*"intro"',
+              re.DOTALL,
+          )
+          for m in k1_re.finditer(src):
+              # Line of the match start
+              line = src[:m.start()].count("\n") + 1
+              # Allowlist: StateManager init block
+              if 1180 <= line <= 1230:
+                  continue
+              snippet = src[m.start():m.end() + 60].replace("\n", " ")
+              print(f"::warning::K1/D5 hardcode at line {line}: {snippet!r}")
+              fail = 1
+
+          # K2 — direct top-level state.beats setdefault.
+          k2_re = re.compile(r'state\.setdefault\(\s*"beats"')
+          for m in k2_re.finditer(src):
+              line = src[:m.start()].count("\n") + 1
+              snippet = src[m.start():m.end() + 60].replace("\n", " ")
+              print(f"::warning::K2 top-level state.beats at line {line}: {snippet!r}")
+              fail = 1
+
+          # K3 — hardcoded BG segment.
+          k3_re = re.compile(r'arc_number=1,\s*event_id=2,\s*phase="pre"')
+          for m in k3_re.finditer(src):
+              line = src[:m.start()].count("\n") + 1
+              snippet = src[m.start():m.end() + 60].replace("\n", " ")
+              print(f"::warning::K3 hardcoded BG segment at line {line}: {snippet!r}")
+              fail = 1
+
+          if fail:
+              print(
+                  "::warning::Authoring-workflow hardcode bans — RED (expected during "
+                  "C-1 → C-4 progression; gate flips to hard-block after C-4)."
+              )
+              sys.exit(1)
+          print(
+              "Authoring-workflow hardcode bans: PASS "
+              "(no hardcoded videos.intro / state.beats / BG segment in handlers)"
+          )
+          PY
+
+      - name: Run Playwright e2e (proper-fix + retroactive + S5.5f + architectural-fix + authoring-workflow scopes)
         working-directory: Production/tools/storyboard-v2
         # Per spec §19.2 / §19.6 (S5.5f) + §19 / §8.9 (retroactive) — APPEND,
         # not replace, not glob. Each session that ships new e2e specs adds
@@ -199,6 +288,14 @@ jobs:
         #   - s5_5f_smoke (18 tests — F3-F17 from PR #3)
         #   - architectural_fix (9 tests — Wave 1 mutation channel + sidecar)
         #   - s5_5g_smoke (S5.5g G3-G13 functional behavior gates from PR #5)
+        #   - scope_router_red (C-1 RED suite for K1-K8 + D5 prevention claims;
+        #     turns GREEN as C-2..C-7 + C-10 land per handoff §3 test pinning)
+        #   - beat_graft_red (C-1 RED skeleton for /api/beat/graft cornerstone;
+        #     turns GREEN at C-7 per handoff §3)
+        # CI is RED on these two new files until their phase-paired commit
+        # lands (DS-2 expected RED → GREEN). C-7 + C-10 close the suite.
+        # Until C-2/C-3/C-5/C-6 land, the K-prevention tests in
+        # scope_router_red FAIL by design — that is the contract proof.
         run: |
           npx playwright test \
             e2e/s5_5ce_proper_fix.spec.ts \
@@ -211,6 +308,8 @@ jobs:
             e2e/s5_5f_smoke.spec.ts \
             e2e/architectural_fix.spec.ts \
             e2e/s5_5g_smoke.spec.ts \
+            e2e/scope_router_red.spec.ts \
+            e2e/beat_graft_red.spec.ts \
             --reporter=line
 
       - name: Upload test artifacts on failure
