@@ -4821,7 +4821,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             return {}
 
     # ---- LD-456 SCOPE_VALIDATION_V1 ----
-    def _assert_event_scope(self, body: dict, allow_missing: bool = True, allow_missing_video_role: bool = True) -> bool:
+    def _assert_event_scope(self, body: dict, allow_missing: bool = False, allow_missing_video_role: bool = False) -> bool:
         """Reject cross-event mutations at the door.
 
         Compares request `body['event_id']` (or URL query string fallback)
@@ -4833,17 +4833,22 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return
 
         On missing body['event_id']:
-          - allow_missing=True (default): pass through (legacy v58 client
-            compat — v58 clients never send event_id; tightening to 400
-            would break Kim's running session).
-          - allow_missing=False: reject with HTTP 400 (used in Session 1.5+
-            for endpoints that the v59 client always reaches first).
+          - allow_missing=False (DEFAULT, post-C-5 flip per LD
+            SCOPE_REQUIRED_DEFAULTS_V1): reject with HTTP 400. Mutation
+            handlers MUST hit this path; v59 clients per LD-461 always
+            inject scope_event_id, so missing is a real bug class.
+          - allow_missing=True: explicit opt-in for read-only probes only
+            (state_snapshot, bg_session_state, bg_poll_*, v2_sidecar,
+            phase_suggest_script, etc.) where unauthenticated reads are
+            tolerated by design.
 
         Origin: 2026-05-01 cross-event Accept-All leak. Beat Generator on
         Event 2 → Accept All → Event 2 keys leaked into Event 1 storyboard's
         L[] because _handle_bg_accept_beats derived sidecar_path from
         server-pinned self.app.event_dir but ignored body's active_context.
-        This guard makes that class structurally impossible.
+        This guard makes that class structurally impossible — and the
+        post-C-5 default flip closes the silent-default leak that
+        previously let scope_event_id-less requests through unchecked.
         """
         body_event = (body or {}).get("event_id")
         # Fallback: URL query string (some clients pass it there).
@@ -5432,7 +5437,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_magic_submit_path(self, body: dict) -> None:
         """Validate clicked path, write registry, kick off render pipeline."""
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
@@ -6015,7 +6020,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         Rule 19 compliance: every error path returns explicit JSON.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         import glob as _glob
@@ -6134,7 +6139,9 @@ class ProductionHandler(BaseHTTPRequestHandler):
         once Session 2+ wires mutations through. Session 1.5 ships the
         endpoint; mutations don't fire from the client yet.
         """
-        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        # READ-ONLY probe (M1 backup precursor — backs up state file, does
+        # not mutate Event state). Per spec_v2 §5.2 + SCOPE_REQUIRED_DEFAULTS_V1
+        # read-only probes keep allow_missing=True.
         if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
             return
 
@@ -6452,7 +6459,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         partition selection comes ONLY from body['scope_video_role'] on each
         mutating request. This endpoint exists solely for UX persistence.
         """
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
         video_role = (body or {}).get("video_role")
         if not video_role:
@@ -6490,7 +6497,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         StateManager.create_video. Returns 400 on invalid role; 409 on
         duplicate (partition already exists).
         """
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
         video_role = (body or {}).get("video_role")
         video_label = (body or {}).get("video_label")
@@ -7865,6 +7872,9 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
         Per LDs PHASE_A_PRODUCER_V1 + PHASE_B_PRODUCER_V1.
         """
+        # READ-ONLY probe (LLM script suggestion — does not mutate state).
+        # Per spec_v2 §5.2 + SCOPE_REQUIRED_DEFAULTS_V1 read-only probes keep
+        # allow_missing=True.
         if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
             return
         phase = ((body or {}).get("phase") or "").strip().lower()
@@ -8721,7 +8731,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
         Per LD-466 EXPORT_TO_STITCHER_V1 + spec §3.5.1 + Rule 8 (audio safety).
         """
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         input_path_raw = (body or {}).get("input_path")
@@ -8822,13 +8832,14 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
         NOTE on the BG `event_id` field: this is the BG-internal segment number
         (e.g., "1", "2", "3"), NOT the storyboard event scope. Scope-guard uses
-        body['scope_event_id'] when v59 client sends it; legacy clients pass
-        through (allow_missing=True).
+        body['scope_event_id'] when v59 client sends it; post-C-5
+        SCOPE_REQUIRED_DEFAULTS_V1, missing scope_event_id rejects with HTTP
+        400 (legacy permissive default removed for mutation handlers).
         """
         # LD-456 SCOPE_VALIDATION_V1 — guard against cross-storyboard-event mutation.
         # The BG body's `event_id` is overloaded (segment number); v59 client
         # passes the storyboard scope as `scope_event_id` to disambiguate.
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return  # LD-461 SCOPE_BODY_HELPER_V1 — migrated from hand-rolled dict
         arc_number = int(body.get("arc_number", 1))
         event_id   = str(body.get("event_id", "1"))
@@ -8853,7 +8864,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         guard uses body['scope_event_id'] when present.
         """
         # LD-456 SCOPE_VALIDATION_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return  # LD-461 SCOPE_BODY_HELPER_V1 — migrated from hand-rolled dict
         arc_number = int(body.get("arc_number", 1))
         event_id   = str(body.get("event_id", "1"))
@@ -8896,7 +8907,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         guard uses body['scope_event_id'] when present.
         """
         # LD-456 SCOPE_VALIDATION_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return  # LD-461 SCOPE_BODY_HELPER_V1 — migrated from hand-rolled dict
         arc_number = int(body.get("arc_number", 1))
         event_id   = str(body.get("event_id", "1"))
@@ -8957,7 +8968,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_bg_update_beat(self, body: dict) -> None:
         """POST /api/bg/update-beat {beat_id, [field...], scope_event_id?} -> { ok }"""
         # LD-456 SCOPE_VALIDATION_V1 — uses scope_event_id to disambiguate from BG segment numbers.
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return  # LD-461 SCOPE_BODY_HELPER_V1 — migrated from hand-rolled dict
         beat_id = body.get("beat_id")
         if not beat_id:
@@ -8987,7 +8998,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_bg_reorder_beats(self, body: dict) -> None:
         """POST /api/bg/reorder-beats {beat_ids: [...], scope_event_id?} -> { ok }"""
         # LD-456 SCOPE_VALIDATION_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return  # LD-461 SCOPE_BODY_HELPER_V1 — migrated from hand-rolled dict
         beat_ids = body.get("beat_ids", [])
         if not beat_ids:
@@ -9008,7 +9019,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_bg_delete_beat(self, body: dict) -> None:
         """POST /api/bg/delete-beat {beat_id} -> { ok }"""
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         beat_id = body.get("beat_id")
@@ -9119,7 +9130,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         """POST /api/bg/submit-flux-batch {beat_ids: [...]} -> { task_map }
         Burst-submits 3×N FLUX Kontext calls. Returns immediately with task_map."""
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
@@ -9178,7 +9189,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         """POST /api/bg/submit-gpt-batch {beat_ids: [...]}
         Spawns GPT generation in background thread pool. Returns {job_id} immediately."""
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
@@ -9286,7 +9297,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_bg_accept_option(self, body: dict) -> None:
         """POST /api/bg/accept-option {beat_id, option_key} -> { ok }"""
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         beat_id    = body.get("beat_id")
@@ -9325,7 +9336,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         Does NOT touch flux_options[]. Library assignment is tracked separately
         so the existing FLUX option display/crop flow is completely unaffected."""
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         beat_id    = body.get("beat_id", "")
@@ -9444,7 +9455,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
     def _handle_bg_create_group(self, body: dict) -> None:
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         name = (body.get("group_name") or "").strip()
@@ -9468,7 +9479,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
     def _handle_bg_delete_group(self, body: dict) -> None:
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         gid = body.get("group_id", "")
@@ -9485,7 +9496,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
     def _handle_bg_update_group(self, body: dict) -> None:
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         gid = body.get("group_id", "")
@@ -9505,7 +9516,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
     @with_pin_and_drain('_handle_bg_assemble_group', track_sync=False)
     def _handle_bg_assemble_group(self, body: dict) -> None:
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
@@ -9590,7 +9601,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
     @with_pin_and_drain('_handle_bg_run_local_animation', track_sync=True)
     def _handle_bg_run_local_animation(self, body: dict) -> None:
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
@@ -9695,7 +9706,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
     def _handle_bg_update_beat_anim_method(self, body: dict) -> None:
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         beat_id = body.get("beat_id", "")
@@ -9719,7 +9730,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
     def _handle_bg_accept_local_animation(self, body: dict) -> None:
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         beat_id = body.get("beat_id", "")
@@ -9809,7 +9820,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         Rule 6 upscale + Rule 6.2 WebP delivery + Directus Two-Write.
         Returns { key, filename, thumb_b64, gallery_b64 }."""
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
         crop_b64   = body.get("crop_png_b64", "")
         beat_id    = body.get("beat_id", "")
@@ -9898,7 +9909,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         tier='cropped' or absent -> BG_STILLS_DIR/crops/  (ready images)
         Returns { key, filename, thumb_b64, gallery_b64, tier, abs_path }."""
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
@@ -9993,7 +10004,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         stale one from the HTML file on disk.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
         beat_id = body.get("beat")
         image_key = body.get("image_key")
@@ -10150,7 +10161,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         This is the bridge from Cropper -> Storyboard library.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
         # LD-456 conditional HTML patching: v59 shells have no IN/TH/div.ic
         # markers; rewriting them would silently no-op. Short-circuit here so
@@ -10335,7 +10346,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         Body: {"beat": "beat_NN"} or {"beat": "beat_NN", "audio_override": "..."}
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
@@ -10706,7 +10717,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         trim. Unwired from the router — kept as debuggable reference.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
@@ -10948,7 +10959,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         {intro, resolution, standalone} per VIDEO_ROLE_PER_REQUEST_V2 (supersedes LD-474).
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         beat_id = body.get("beat") or body.get("beat_id")
@@ -11302,7 +11313,7 @@ body {{padding-top:44px!important;}}
 
     def _handle_animate(self, body: dict) -> None:
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         if self.app.client is None:
@@ -11496,7 +11507,7 @@ body {{padding-top:44px!important;}}
 
     def _handle_redo(self, body: dict) -> None:
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         beat_id = body.get("beat")
@@ -11551,7 +11562,7 @@ body {{padding-top:44px!important;}}
     def _handle_add_options(self, body: dict) -> None:
         """Dispatch Generate B+C to start-end (default) unless force_legacy."""
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         beat_id = body.get("beat")
@@ -12391,7 +12402,7 @@ body {{padding-top:44px!important;}}
         this endpoint ensures audio matches current state.text verbatim.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         beat_id = body.get("beat")
@@ -12501,7 +12512,7 @@ body {{padding-top:44px!important;}}
 
     def _handle_select(self, body: dict) -> None:
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         beat_id = body.get("beat")
@@ -12585,7 +12596,7 @@ body {{padding-top:44px!important;}}
         POST {"beat": "beat_03", "audio_delay": 1.5}
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         beat_id = body.get("beat")
@@ -12612,7 +12623,7 @@ body {{padding-top:44px!important;}}
         POST {"beat": "beat_07", "trim_start": 0, "trim_end": 3.5}
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         beat_id = body.get("beat")
@@ -12646,7 +12657,7 @@ body {{padding-top:44px!important;}}
 
     def _handle_budget_override(self, body: dict) -> None:
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         amount = float(body.get("amount", 5.0))
@@ -12856,7 +12867,7 @@ body {{padding-top:44px!important;}}
           - mutation_id goes through the shared dedup cache so retries are idempotent.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # Feature flag (also covers MINDFULNEST_WRITE_PATH=legacy)
@@ -13151,7 +13162,7 @@ body {{padding-top:44px!important;}}
         _version; module-level changes don't bump beat versions).
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal
@@ -13267,7 +13278,7 @@ body {{padding-top:44px!important;}}
                phase_1 too small.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # ------------------------------------------------------------------
@@ -13434,7 +13445,7 @@ body {{padding-top:44px!important;}}
           6. Last beat NEVER has trailing fade trimmed (counter (f) CRITICAL).
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # Lazy-load the lib so server startup doesn't hard-require it.
@@ -14232,7 +14243,7 @@ body {{padding-top:44px!important;}}
     def _handle_timeline_cue_upsert(self, body: dict) -> None:
         """POST /api/timeline/cues — upsert cue by id; atomic write via mutate_state."""
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         cue_id = body.get("id")
@@ -14335,7 +14346,7 @@ body {{padding-top:44px!important;}}
         + SIZE_BUDGET_PER_MODULE_V1). Returns {mp4_path} on success.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
@@ -14664,7 +14675,7 @@ body {{padding-top:44px!important;}}
     def _handle_stitch_save_job(self, body: dict) -> None:
         """POST /api/stitch_editor/job — save or upsert a named job."""
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         name = (body.get("name") or "").strip()
@@ -15375,7 +15386,7 @@ body {{padding-top:44px!important;}}
         MUTATION_CHANNEL_INVARIANT_V1 + LD-456 SCOPE_VALIDATION_V1.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
         try:
             out_path, slot_durations = self._stitch_build_pipeline(body)
@@ -15403,7 +15414,7 @@ body {{padding-top:44px!important;}}
         LD-283: ≤80MB. SIZE_BUDGET_VIDEO_V1: ≤1,900,000 bps.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
@@ -15597,7 +15608,7 @@ body {{padding-top:44px!important;}}
         Returns 200 with file path + duration on success.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
@@ -15900,7 +15911,7 @@ body {{padding-top:44px!important;}}
         Writes phase_{phase}_mixed_<TS>.mp3 and patches state.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
@@ -16341,7 +16352,7 @@ body {{padding-top:44px!important;}}
         Writes phase_{phase}_lipsync_<TS>.mp4 and patches state.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
@@ -16555,7 +16566,7 @@ body {{padding-top:44px!important;}}
         Cache miss: call render_watercolor_overlay, atomic write, LRU cleanup.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # Lazy-load helper.

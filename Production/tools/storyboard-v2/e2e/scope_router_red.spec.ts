@@ -116,8 +116,10 @@ test.describe('K2 — bg_accept_beats writes to videos.<role>.beats, NOT top-lev
 });
 
 test.describe('K6 — _assert_event_scope strict defaults (RED until C-5)', () => {
-  // RED until C-5: un-fixme in C-5 commit (same commit as _assert_event_scope strict-default flip)
-  test.fixme('TVMC-K6.1 — POST without event_id returns HTTP 400 scope_required', async ({ request }) => {
+  // GREEN as of C-5 (un-fixme'd in C-5 commit; the underlying handler
+  // _handle_beat_update_text was already migrated to scope_router in C-2,
+  // but C-5 is the SCOPE_REQUIRED_DEFAULTS_V1 enforcement boundary)
+  test('TVMC-K6.1 — POST without event_id returns HTTP 400 scope_required', async ({ request }) => {
     const r = await request.post(`${SERVER}/api/beat/update_text`, {
       data: {
         // Intentionally NO event_id / scope_event_id — server must reject after C-5.
