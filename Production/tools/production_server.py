@@ -57,6 +57,12 @@ _PROD_DIR_FOR_SHARED_LIB = os.path.abspath(os.path.join(os.path.dirname(__file__
 if _PROD_DIR_FOR_SHARED_LIB not in sys.path:
     sys.path.insert(0, _PROD_DIR_FOR_SHARED_LIB)
 from lib.atomic_json_write import atomic_json_write  # noqa: E402 (Windows/Dropbox retry-safe JSON writes per LD-368)
+# scope_router — mandatory partition router for v59 authoring-workflow
+# mutations (LD SCOPE_ROUTER_V1, C-1). Replaces hardcoded `videos.intro`
+# lifts in mutation handlers; resolve() validates body scope keys and
+# raises ScopeError with HTTP-status-aware code. See
+# Production/tools/scope_router.py for the contract.
+import scope_router  # noqa: E402 (must follow sys.path insert above)
 from ffmpeg_utils import strip_audio as _strip_clip_audio
 from lipsync_sender import LipSyncClient, COST_PER_LIPSYNC
 # Kling start-end pipeline helpers (decision 172 KLING_STARTEND_V1_CAPABILITY,
@@ -3966,6 +3972,7 @@ def patch_state(
     value,
     mutation_id: str | None = None,
     expected_version: int | None = None,
+    video_role: str = "intro",
 ) -> dict:
     """Atomic v2 state mutation with idempotency + version check + sidecar.
 
@@ -3983,6 +3990,14 @@ def patch_state(
     _handle_beat_update_text flow (via patch_state_via_legacy_dialogue)
     which preserves LD-181 TTS auto-regen. The caller is responsible
     for invoking that delegation path — see _handle_v2_patch.
+
+    SCOPE_ROUTER_V1 (C-2 D5 fix): `video_role` parameter resolves the
+    target partition. Defaults to "intro" for back-compat with callers
+    that haven't yet been updated to pass a scope-aware role; the v2
+    handler `_handle_v2_patch` resolves it from the body's
+    `scope_target_video` / `scope_video_role` (LD-461 alias) and passes
+    explicitly. Validated against StateManager._VALID_VIDEO_ROLES; an
+    invalid role returns status=error before any state read.
     """
     # Rollback gate — line 1 of the helper (Red-team-2 requirement)
     if os.environ.get("MINDFULNEST_WRITE_PATH", "v2") == "legacy":
@@ -4067,6 +4082,16 @@ def patch_state(
                         "error": f"display_order[{_i}] must be str, got {type(_item).__name__}"}
         # Deferred beat_id existence check — needs state read. Done inside _apply.
 
+    # SCOPE_ROUTER_V1 (C-2 D5 fix) — validate the resolved partition role
+    # before any state read. Mirrors scope_router._VALID_VIDEO_ROLES; we
+    # don't import the router here directly to keep patch_state agnostic
+    # of HTTP framing (the handler at _handle_v2_patch already mapped
+    # body keys via the router). An invalid role returns status=error.
+    if video_role not in {"intro", "resolution", "standalone"}:
+        return {"status": "error",
+                "error": f"invalid video_role {video_role!r}; "
+                         f"valid: ['intro', 'resolution', 'standalone']"}
+
     # Idempotency — dedup cache (LRU, bounded)
     if mutation_id:
         cached = _PATCH_STATE_DEDUP.get(mutation_id)
@@ -4075,30 +4100,31 @@ def patch_state(
             return {**cached, "status": "dedup", "cached": True}
 
     source_changed_out = {"value": None}
+    result_holder: dict = {}
 
-    def _apply(state, _bid=beat_id, _f=field, _v=value, _exp=expected_version, _sco=source_changed_out, _is_global=is_global):
-        # S5.5a2: lift to intro partition (BG_VIDEO_PARTITION_V1).
-        # patch_state's _apply mutator works on the full state dict and routes
-        # writes into videos.intro.{beats|display_order|image_overrides}.
-        intro_partition = state.setdefault("videos", {}).setdefault("intro", {
-            "video_role": "intro", "video_label": None,
-        })
-        beats = intro_partition.setdefault("beats", {})
+    def _apply_partition(partition, _bid=beat_id, _f=field, _v=value, _exp=expected_version, _sco=source_changed_out, _is_global=is_global, _holder=result_holder):
+        # SCOPE_ROUTER_V1 (C-2 D5 fix): the mutator receives the partition
+        # dict for the resolved video_role — never the full state, never the
+        # legacy top-level state.beats. mutate_video_state auto-creates the
+        # partition with role marker if missing (production_server.py:1185-1196)
+        # before invoking the mutator, so partition is always non-None here.
+        beats = partition.setdefault("beats", {})
         # Tier 3: __global__ mutations DO NOT create a beat entry. They mutate
         # the partition's top-level keys (display_order, etc.). Version checks
         # + bump are skipped (display_order is not beat-scoped).
         if _is_global:
             if _f == "display_order":
-                # Validate every beat_id exists in intro partition's beats
+                # Validate every beat_id exists in partition's beats
                 known = set(beats.keys())
                 unknown = [b for b in _v if b not in known]
                 if unknown:
-                    return {
+                    _holder.update({
                         "status": "error",
                         "error": f"display_order references unknown beat_ids: {unknown}",
-                    }
-                intro_partition["display_order"] = list(_v)
-            return {
+                    })
+                    return
+                partition["display_order"] = list(_v)
+            _holder.update({
                 "status": "applied",
                 "new_version": None,  # partition-level keys are not versioned per-beat
                 "scope": "global",
@@ -4106,25 +4132,33 @@ def patch_state(
                 "value_summary": (
                     f"list[{len(_v)}]" if isinstance(_v, list) else str(_v)
                 ),
-            }
+            })
+            return
 
         beat = beats.setdefault(_bid, {})
-        current_version = _v2_read_beat_version(state, _bid)
+        # Read version directly off the partition's beat (was previously
+        # `_v2_read_beat_version(state, _bid)` which is hardcoded to videos.intro
+        # — kept around for legacy single-partition callers; partition-aware
+        # callers read from the partition we already resolved).
+        try:
+            current_version = int(beat.get("_version", 0) or 0)
+        except (TypeError, ValueError):
+            current_version = 0
         if _exp is not None and _exp != current_version:
-            return {
+            _holder.update({
                 "status": "conflict",
                 "current_version": current_version,
                 "expected": _exp,
-            }
+            })
+            return
         # Apply mutation
         if _f == "dialogue":
             beat["text"] = _v
             beat["text_last_updated_at"] = datetime.now(timezone.utc).isoformat()
         elif _f == "image_override":
-            # S5.5a2: image_overrides lives at videos.intro.image_overrides
-            # (was state["image_overrides"] pre-migration). intro_partition
-            # already resolved at top of _apply.
-            intro_partition.setdefault("image_overrides", {})[_bid] = _v
+            # image_overrides lives at videos.<role>.image_overrides on the
+            # partition we already resolved (no longer hardcoded to intro).
+            partition.setdefault("image_overrides", {})[_bid] = _v
         elif _f == "selected_option":
             p1 = beat.setdefault("phase_1", {})
             old_selected = p1.get("selected_option")
@@ -4166,6 +4200,9 @@ def patch_state(
             # Tier 3: speaker change invalidates existing audio (mismatch until
             # next regen). _tier1a_mark_regen_fired clears speaker_mismatch
             # after a successful regen.
+            # NOTE: K8 dual-store contract lands in C-6 (speaker mirror to
+            # partition.beats[bid].speaker); this commit preserves the
+            # existing phase_1.speaker single-store path.
             p1 = beat.setdefault("phase_1", {})
             old_speaker = p1.get("speaker")
             p1["speaker"] = _v
@@ -4178,17 +4215,21 @@ def patch_state(
                 )
         # Bump version
         beat["_version"] = current_version + 1
-        return {
+        _holder.update({
             "status": "applied",
             "new_version": current_version + 1,
             "beat": dict(beat),  # shallow copy of beat state
-        }
+        })
 
     try:
-        result = app.state.mutate_state(_apply)
+        app.state.mutate_video_state(video_role, _apply_partition)
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
-        return {"status": "error", "error": f"mutate_state failed: {type(exc).__name__}: {exc}"}
+        return {"status": "error", "error": f"mutate_video_state failed: {type(exc).__name__}: {exc}"}
+    if not result_holder:
+        # Mutator never executed — defensive (shouldn't happen with mutate_video_state).
+        return {"status": "error", "error": "patch_state mutator did not run"}
+    result = result_holder
 
     if result.get("status") == "conflict":
         return result
@@ -12024,10 +12065,17 @@ body {{padding-top:44px!important;}}
           3. Marks beat.text_modified_after_tts = true if a TTS file exists
              for this beat (client can surface a stale-TTS warning).
         """
-        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
-            return
-        beat_id = body.get("beat")
+        # SCOPE_ROUTER_V1 (C-2 K1 fix) — replaces the hardcoded `videos.intro`
+        # lift with scope_router-driven partition resolution. Subsumes
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1 (resolve()
+        # coalesces the scope_event_id / scope_target_video aliases).
+        # The legacy "beat" body key is preserved for back-compat; newer
+        # clients may send "beat_id" — we honor either.
+        try:
+            scope = scope_router.resolve(body, self.app.event_dir.name)
+        except scope_router.ScopeError as e:
+            return self._send_json(e.http_status, {"error": e.code, **e.detail})
+        beat_id = body.get("beat") or scope.beat_id
         new_text = body.get("text")
         if not beat_id or new_text is None:
             return self._send_json(400, {"error": "missing 'beat' or 'text'"})
@@ -12045,20 +12093,22 @@ body {{padding-top:44px!important;}}
         # Step 1: detect if a TTS file exists (for stale-flag logic)
         tts_exists = _find_beat_audio(self.app.event_dir, beat_id, app=self.app) is not None
 
-        # Step 2: update state JSON atomically. S5.5a2: writes to videos.intro.beats.
+        # Step 2: update state JSON atomically via scope_router → mutate_video_state.
+        # The mutator receives the partition dict for `scope.video_role` — never
+        # the full state, never legacy top-level state.beats. K1 prevention.
         now_iso = datetime.now(timezone.utc).isoformat()
-        def update(state, _bid=beat_id, _t=new_text, _stale=tts_exists, _ts=now_iso):
-            intro_beats = state.setdefault("videos", {}).setdefault(
-                "intro", {"video_role": "intro", "video_label": None}
-            ).setdefault("beats", {})
-            b = intro_beats.setdefault(_bid, {})
+        _holder: dict = {}
+        def update_partition(partition, _bid=beat_id, _t=new_text, _stale=tts_exists, _ts=now_iso):
+            beats = partition.setdefault("beats", {})
+            b = beats.setdefault(_bid, {})
             old = b.get("text")
             b["text"] = _t
             b["text_last_updated_at"] = _ts
             if _stale and old != _t:
                 b["text_modified_after_tts"] = True
-            return old
-        old_text = self.app.state.mutate_state(update)
+            _holder["old"] = old
+        self.app.state.mutate_video_state(scope.video_role, update_partition)
+        old_text = _holder.get("old")
 
         # LD-459 UNIVERSAL_AUTOSAVE_V1 — regen the sidecar(s) after every
         # state mutation so v58 emergency rollback sees fresh dialogue via
@@ -12540,9 +12590,17 @@ body {{padding-top:44px!important;}}
           400 {status: "error", error} — whitelist / validation failure
           500 {status: "error", error} — mutate_state failure
         """
-        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
-            return
+        # SCOPE_ROUTER_V1 (C-2 D5 fix) — resolve scope keys before any further
+        # processing. Subsumes LD-456 SCOPE_VALIDATION_V1 + LD-461
+        # SCOPE_BODY_HELPER_V1 alias coalescing. allow_missing-style
+        # permissive defaults from the legacy path are NOT preserved here —
+        # client per LD-461 already injects the keys; resolve() now requires
+        # them for partition-aware routing. The C-5 commit flips _assert_event_scope
+        # call sites globally; this handler short-circuits to scope_router.
+        try:
+            scope = scope_router.resolve(body, self.app.event_dir.name)
+        except scope_router.ScopeError as e:
+            return self._send_json(e.http_status, {"status": "error", "error": e.code, **e.detail})
 
         # Parse beat_id from path: /api/v2/beat/beat_03/patch
         parts = [p for p in path.split("/") if p]
@@ -12610,7 +12668,16 @@ body {{padding-top:44px!important;}}
                 # needs to pass through; adding a new flag = add its name to
                 # _FORWARDED_V2_DIALOGUE_FIELDS. NO silent passthrough of
                 # arbitrary client fields (LD V2_DIALOGUE_EXPLICIT_FIELD_FORWARDING_WITH_ALLOWLIST).
-                legacy_body = {"beat": beat_id, "text": value}
+                # SCOPE_ROUTER_V1 (C-2): forward scope keys to the legacy
+                # handler so its internal scope_router.resolve() succeeds.
+                # Without these the dialogue-via-v2 path would 400 with
+                # scope_required (a regression from the C-2 K1 fix).
+                legacy_body = {
+                    "beat": beat_id,
+                    "text": value,
+                    "scope_event_id": scope.event_id,
+                    "scope_target_video": scope.video_role,
+                }
                 if TIER1A_ENABLED:
                     for _f in _FORWARDED_V2_DIALOGUE_FIELDS:
                         if _f in body:
@@ -12665,6 +12732,7 @@ body {{padding-top:44px!important;}}
             self.app, beat_id, field, value,
             mutation_id=mutation_id,
             expected_version=expected_version,
+            video_role=scope.video_role,
         )
         status = result.get("status")
         if status == "applied" or status == "dedup":

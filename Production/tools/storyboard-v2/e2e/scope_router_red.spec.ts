@@ -37,8 +37,8 @@ async function getState(request: APIRequestContext): Promise<any> {
 }
 
 test.describe('K1 — _handle_beat_update_text routes via scope_router (RED until C-2)', () => {
-  // RED until C-2: un-fixme in C-2 commit (same commit as the K1+D5 handler fix)
-  test.fixme('TVMC-K1.1 — role=resolution edit lands in videos.resolution.beats, NOT videos.intro', async ({ request }) => {
+  // GREEN as of C-2 (un-fixme'd in same commit as the K1+D5 handler fix)
+  test('TVMC-K1.1 — role=resolution edit lands in videos.resolution.beats, NOT videos.intro', async ({ request }) => {
     const beatId = 'beat_R1_K1';
     const text = `K1 RED ${Date.now()}`;
     const r = await request.post(`${SERVER}/api/beat/update_text`, {
@@ -64,8 +64,8 @@ test.describe('K1 — _handle_beat_update_text routes via scope_router (RED unti
 });
 
 test.describe('D5 — patch_state._apply routes target_partition via scope_router (RED until C-2)', () => {
-  // RED until C-2: un-fixme in C-2 commit
-  test.fixme('TVMC-D5.1 — patch_state pause_after_ms with role=resolution lands in videos.resolution', async ({ request }) => {
+  // GREEN as of C-2 (un-fixme'd in same commit)
+  test('TVMC-D5.1 — patch_state pause_after_ms with role=resolution lands in videos.resolution', async ({ request }) => {
     const beatId = 'beat_R2_D5';
     const r = await request.post(`${SERVER}/api/v2/beat/${beatId}/patch`, {
       data: {
