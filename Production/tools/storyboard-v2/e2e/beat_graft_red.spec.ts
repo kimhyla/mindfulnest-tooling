@@ -20,9 +20,24 @@
 //   SCR.3 cross-event move with --source-event flag (paired with C-9 salvage)
 
 import { test, expect, type APIRequestContext } from '@playwright/test';
+import { copyFileSync, existsSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const SERVER = 'http://localhost:5111';
 const EVENT_ID = 'Event_e2e_fixture';
+
+// Fixture restoration paths — mirrors globalSetup.ts. This file's GR.1 + GR.6
+// tests mutate videos.intro/.resolution destructively (copy/move beats), and
+// the next spec in alphabetical order — s5_5ce_proper_fix.spec.ts R1.1 —
+// asserts intro has exactly 3 beats. Without an afterAll restoration, R1.1
+// sees a polluted fixture and fails. Per DS-3 fixture pinning: tests that
+// mutate must restore.
+const __filename = fileURLToPath(import.meta.url);
+const __dirname_spec = dirname(__filename);
+const repoRoot = resolve(__dirname_spec, '..', '..', '..', '..');
+const fixtureDir = resolve(repoRoot, 'Production', 'Event_e2e_fixture');
+const pristineDir = resolve(fixtureDir, '.pristine');
 
 async function endpointReachable(request: APIRequestContext, path: string): Promise<boolean> {
   // OPTIONS-style probe: send a minimal POST and check that the server doesn't 404.
@@ -32,6 +47,20 @@ async function endpointReachable(request: APIRequestContext, path: string): Prom
 }
 
 test.describe('Pillar 7 — /api/beat/graft (RED skeleton until C-7)', () => {
+  // DS-3 fixture restoration — copy pristine state file back over the live
+  // fixture state file after our destructive tests. Mirrors the pattern in
+  // global-setup.ts which runs ONCE per test session; afterAll runs after
+  // the GR.* tests in this describe block, before the next spec runs.
+  test.afterAll(async () => {
+    const pristineState = resolve(pristineDir, 'production_state.json');
+    const liveState = resolve(fixtureDir, 'production_state.json');
+    if (existsSync(pristineState)) {
+      copyFileSync(pristineState, liveState);
+      // eslint-disable-next-line no-console
+      console.log('[beat_graft_red afterAll] restored fixture from pristine');
+    }
+  });
+
   // GREEN as of C-7 — route registered + handler returns 400 (not 404).
   test('endpoint registration sanity — /api/beat/graft route exists post-C-7', async ({ request }) => {
     // Pre-C-7: 404 (no route). Post-C-7: 400/422 (missing body fields) — anything

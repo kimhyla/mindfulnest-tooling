@@ -39,7 +39,10 @@ async function getState(request: APIRequestContext): Promise<any> {
 test.describe('K1 — _handle_beat_update_text routes via scope_router (RED until C-2)', () => {
   // GREEN as of C-2 (un-fixme'd in same commit as the K1+D5 handler fix)
   test('TVMC-K1.1 — role=resolution edit lands in videos.resolution.beats, NOT videos.intro', async ({ request }) => {
-    const beatId = 'beat_R1_K1';
+    // beat_id MUST match _handle_beat_update_text's beat_NN parser
+    // (`int(beat_id.split("_")[1])`); use a numeric form. beat_42 doesn't
+    // collide with the fixture's beat_01..03 in intro.
+    const beatId = 'beat_42';
     const text = `K1 RED ${Date.now()}`;
     const r = await request.post(`${SERVER}/api/beat/update_text`, {
       data: {
@@ -66,7 +69,8 @@ test.describe('K1 — _handle_beat_update_text routes via scope_router (RED unti
 test.describe('D5 — patch_state._apply routes target_partition via scope_router (RED until C-2)', () => {
   // GREEN as of C-2 (un-fixme'd in same commit)
   test('TVMC-D5.1 — patch_state pause_after_ms with role=resolution lands in videos.resolution', async ({ request }) => {
-    const beatId = 'beat_R2_D5';
+    // Numeric beat_NN (parser-friendly); 43 doesn't collide with fixture beats.
+    const beatId = 'beat_43';
     const r = await request.post(`${SERVER}/api/v2/beat/${beatId}/patch`, {
       data: {
         field: 'pause_after_ms',
@@ -74,7 +78,9 @@ test.describe('D5 — patch_state._apply routes target_partition via scope_route
         scope_event_id: EVENT_ID,
         scope_target_video: 'resolution',
         event_id: EVENT_ID,
-        expected_version: -1,  // accept any current version (test-only)
+        // expected_version omitted: handler treats None as "any" (skip version check).
+        // Passing -1 explicitly triggers conflict (-1 != 0 current); that's a test-design
+        // bug, not a contract one.
       },
     });
     // After C-2: HTTP 200 applied; before C-2: still 200 but write goes to videos.intro.
@@ -181,15 +187,17 @@ test.describe('K7 — speaker write-boundary canonicalization (RED until C-3)', 
 test.describe('K8 — speaker dual-store mirror (RED until C-6)', () => {
   // GREEN as of C-6 (un-fixme'd in same commit as K8 dual-store mirror contract)
   test('TVMC-K8.1 — patch_state speaker write mirrors to top-level partition.beats[bid].speaker AND phase_1.speaker', async ({ request }) => {
-    const beatId = 'beat_01';  // exists in fixture intro
+    // Use beat_44 (parser-friendly + non-colliding with fixture beat_01/02/03)
+    // so this test does not pollute the rendered fixture for downstream tests.
+    const beatId = 'beat_44';
     const r = await request.post(`${SERVER}/api/v2/beat/${beatId}/patch`, {
       data: {
         field: 'speaker',
-        value: 'Guide Bird',  // will canonicalize to Chipper after C-3 boundary; mirror tested separately
+        value: 'Guide Bird',  // canonicalizes to Chipper at write boundary per C-6
         scope_event_id: EVENT_ID,
         scope_target_video: 'intro',
         event_id: EVENT_ID,
-        expected_version: -1,
+        // expected_version omitted: skip version check (None == any).
       },
     });
     expect(r.ok(), `patch_state speaker must succeed; got HTTP ${r.status()}: ${await r.text()}`).toBeTruthy();
