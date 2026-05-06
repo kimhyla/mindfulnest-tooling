@@ -109,6 +109,11 @@ pending_directus_writes*.jsonl
 # State files (per-machine; should not be committed)
 production_state.json
 
+# Durable recovery audit log (BEAT_GRAFT_RECOVERY_MECHANISM_V1, C-7).
+# JSONL append-only; per-machine forensic record of /api/beat/graft
+# operations. Directus prod_activity_log is the cross-machine mirror.
+Production/.recovery_audit.jsonl
+
 # Archive subdirs
 archive/
 **/archive/

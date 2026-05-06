@@ -115,6 +115,13 @@ export const MUTATION_ENDPOINTS = {
   beat_use_as_final: `${SERVER_BASE}/api/beat/use_as_final`,
   beat_delay: `${SERVER_BASE}/api/beat/delay`,
   beat_trim: `${SERVER_BASE}/api/beat/trim`,
+  // Authoring-workflow Pillar 7 cornerstone (C-7) — canonical beat-recovery
+  // primitive. COPY default; move=true for cross-event/role moves. Per
+  // LD BEAT_GRAFT_RECOVERY_MECHANISM_V1: pre-render-only invariant
+  // (HTTP 400 on rendered media), audit JSONL + Directus mirror,
+  // mutation_id idempotency + content fingerprint, pre-image backups.
+  // Cross-event source requires server start with --source-event flag.
+  beat_graft: `${SERVER_BASE}/api/beat/graft`,
 } as const;
 
 export type ReadEndpoint = keyof typeof READ_ENDPOINTS;

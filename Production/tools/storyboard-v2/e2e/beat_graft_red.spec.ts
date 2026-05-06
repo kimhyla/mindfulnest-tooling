@@ -32,48 +32,104 @@ async function endpointReachable(request: APIRequestContext, path: string): Prom
 }
 
 test.describe('Pillar 7 — /api/beat/graft (RED skeleton until C-7)', () => {
-  // RED until C-7: un-fixme in C-7 commit (same commit as the /api/beat/graft handler implementation)
-  test.fixme('endpoint registration sanity — /api/beat/graft route exists post-C-7', async ({ request }) => {
+  // GREEN as of C-7 — route registered + handler returns 400 (not 404).
+  test('endpoint registration sanity — /api/beat/graft route exists post-C-7', async ({ request }) => {
     // Pre-C-7: 404 (no route). Post-C-7: 400/422 (missing body fields) — anything
     // except 404 is acceptable for "route is registered."
     const reachable = await endpointReachable(request, '/api/beat/graft');
     expect(reachable, '/api/beat/graft must be a registered route after C-7').toBe(true);
   });
 
-  test.fixme('GR.1 — same-event same-role graft writes target + pre-image + audit JSONL + Directus mirror; idempotent replay returns dedup', async ({ request }) => {
-    // After C-7:
-    //   - POST /api/beat/graft body = {source:{event_id,video_role,beat_id}, target:{...}, mutation_id:<uuid>}
-    //   - Response 200 ok=true status="copied"
-    //   - response.pre_image_paths contains a path under .backups/state/
-    //   - Production/.recovery_audit.jsonl gains a row with action="beat_graft"
-    //   - Directus prod_activity_log gains a mirror row
-    //   - Replay with same mutation_id → status="dedup", no state change
+  test('GR.1 — same-event copy writes target + pre-image; replay returns dedup', async ({ request }) => {
+    const mutationId = `gr1-${Date.now()}`;
+    const body1 = {
+      source: { event_id: EVENT_ID, video_role: 'intro', beat_id: 'beat_01' },
+      target: { event_id: EVENT_ID, video_role: 'resolution', position: 0 },
+      mutation_id: mutationId,
+      move: false,
+    };
+    const r1 = await request.post(`${SERVER}/api/beat/graft`, { data: body1 });
+    expect(r1.ok(), `first graft must succeed; got HTTP ${r1.status()}: ${await r1.text()}`).toBeTruthy();
+    const p1 = await r1.json();
+    expect(p1?.status).toBe('copied');
+    expect(Array.isArray(p1?.pre_image_paths) && p1.pre_image_paths.length).toBeTruthy();
+    expect(p1?.beat_id).toBe('beat_01');
+
+    // Replay with the same mutation_id → dedup
+    const r2 = await request.post(`${SERVER}/api/beat/graft`, { data: body1 });
+    expect(r2.ok()).toBeTruthy();
+    const p2 = await r2.json();
+    expect(p2?.status, 'replay must return status="dedup"').toBe('dedup');
   });
 
-  test.fixme('GR.2 — missing mutation_id returns HTTP 400', async ({ request }) => {
-    // After C-7: response 400 error="mutation_id_required"
+  test('GR.2 — missing mutation_id returns HTTP 400 mutation_id_required', async ({ request }) => {
+    const r = await request.post(`${SERVER}/api/beat/graft`, {
+      data: {
+        // Intentionally NO mutation_id — server must reject before any state read.
+        source: { event_id: EVENT_ID, video_role: 'intro', beat_id: 'beat_01' },
+        target: { event_id: EVENT_ID, video_role: 'resolution', position: 0 },
+      },
+    });
+    expect(r.status(), 'graft must reject missing mutation_id with HTTP 400').toBe(400);
+    const body = await r.json().catch(() => ({}));
+    expect(body?.error, 'response carries error="mutation_id_required"').toBe('mutation_id_required');
   });
 
-  test.fixme('GR.3 — source beat not found returns HTTP 404 + audit row beat_graft_failed', async ({ request }) => {
-    // After C-7: response 404 error="source_beat_not_found"; audit row ok:false
+  test('GR.3 — source beat not found returns HTTP 404 source_beat_not_found', async ({ request }) => {
+    const r = await request.post(`${SERVER}/api/beat/graft`, {
+      data: {
+        source: { event_id: EVENT_ID, video_role: 'intro', beat_id: 'beat_DOES_NOT_EXIST' },
+        target: { event_id: EVENT_ID, video_role: 'resolution', position: 0 },
+        mutation_id: `gr3-${Date.now()}`,
+      },
+    });
+    expect(r.status(), 'graft must return 404 for missing source beat').toBe(404);
+    const body = await r.json();
+    expect(body?.error).toBe('source_beat_not_found');
   });
 
   test.fixme('GR.4 — source beat with phase_1.status="completed" returns HTTP 400 graft_pre_render_only', async ({ request }) => {
     // After C-7: response 400 error="graft_pre_render_only"; pre-render-only invariant per RR-1 mitigation
   });
 
-  test.fixme('GR.5 — cross-event graft without --source-event flag returns HTTP 409 cross_event_requires_explicit_source', async ({ request }) => {
-    // After C-7: response 409 error="cross_event_requires_explicit_source"
-    // Note: server is started against a single event-dir; this test does NOT
-    // restart the server. Cross-event with the flag is exercised in SCR.3
-    // (which runs in the C-9 salvage context).
+  test('GR.5 — cross-event graft without --source-event returns HTTP 409', async ({ request }) => {
+    // Default server start (no --source-event flag); body proposes cross-event source.
+    const r = await request.post(`${SERVER}/api/beat/graft`, {
+      data: {
+        source: { event_id: 'Event_OTHER', video_role: 'intro', beat_id: 'beat_01' },
+        target: { event_id: EVENT_ID, video_role: 'intro', position: 0 },
+        mutation_id: `gr5-${Date.now()}`,
+      },
+    });
+    expect(r.status()).toBe(409);
+    const body = await r.json();
+    expect(body?.error).toBe('cross_event_requires_explicit_source');
+    // Cross-event WITH the flag is exercised in SCR.3 against the C-9 salvage
+    // context (server restarted with --source-event).
   });
 
-  test.fixme('GR.6 — move=true deletes source after target write', async ({ request }) => {
-    // After C-7:
-    //   - First seed source beat (call /api/v2/beat/<bid>/patch)
-    //   - POST /api/beat/graft body.move=true source/target same event different role
-    //   - Source partition: source.beats[bid] absent; source.display_order excludes it
-    //   - Target partition: target.beats[bid] present at requested position
+  test('GR.6 — move=true deletes source after target write', async ({ request }) => {
+    // GR.1 may have copied beat_01 already; use beat_03 (also in pristine intro)
+    // so this test stays independent of GR.1 ordering.
+    const r = await request.post(`${SERVER}/api/beat/graft`, {
+      data: {
+        source: { event_id: EVENT_ID, video_role: 'intro', beat_id: 'beat_03' },
+        target: { event_id: EVENT_ID, video_role: 'resolution', position: 1 },
+        mutation_id: `gr6-${Date.now()}`,
+        move: true,
+      },
+    });
+    expect(r.ok(), `move=true graft must succeed; got HTTP ${r.status()}: ${await r.text()}`).toBeTruthy();
+    const payload = await r.json();
+    expect(payload?.status).toBe('moved');
+
+    // Read state and confirm source removed + target seeded.
+    const stateRes = await request.get(`${SERVER}/api/v2/event/${EVENT_ID}/state`);
+    expect(stateRes.ok()).toBeTruthy();
+    const state = await stateRes.json();
+    const intro = state?.videos?.intro?.beats ?? {};
+    const resolution = state?.videos?.resolution?.beats ?? {};
+    expect(intro?.beat_03, 'source.beats[beat_03] must be absent post-move').toBeUndefined();
+    expect(resolution?.beat_03, 'target.beats[beat_03] must be present post-move').toBeDefined();
   });
 });

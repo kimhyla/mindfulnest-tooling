@@ -3732,6 +3732,19 @@ import uuid as _pathapp_uuid
 _PATCH_STATE_DEDUP: "_pathapp_collections.OrderedDict[str, dict]" = _pathapp_collections.OrderedDict()
 _PATCH_STATE_DEDUP_MAX = 256
 
+# BEAT_GRAFT_RECOVERY_MECHANISM_V1 (C-7) — separate dedup cache for
+# /api/beat/graft. Same shape and policy as _PATCH_STATE_DEDUP; kept
+# separate so a graft replay never collides with an unrelated patch_state
+# replay using the same mutation_id (the two endpoints share the same
+# uuid namespace but different replay semantics).
+_GRAFT_DEDUP: "_pathapp_collections.OrderedDict[str, dict]" = _pathapp_collections.OrderedDict()
+_GRAFT_DEDUP_MAX = 256
+
+# Durable audit log for graft operations (and any other recovery primitives
+# that need a forever-on-disk record). Lives at the project root so it
+# survives event-dir migrations. Gitignored — see .gitignore.
+AUDIT_LOG_PATH = Path(__file__).resolve().parents[1] / ".recovery_audit.jsonl"
+
 # v2 whitelist — ALL other fields must go through the legacy bespoke handlers
 _V2_ALLOWED_FIELDS = frozenset({
     "dialogue", "image_override", "selected_option", "trim_start", "trim_end",
@@ -5201,6 +5214,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_add_options(body)
             if path == "/api/beat/update_text":
                 return self._handle_beat_update_text(body)
+            # BEAT_GRAFT_RECOVERY_MECHANISM_V1 (C-7) — Pillar 7 cornerstone.
+            # Cross-event/role beat move with audit + idempotency + pre-image.
+            if path == "/api/beat/graft":
+                return self._handle_beat_graft(body)
             if path == "/api/beat/regenerate_audio":
                 return self._handle_beat_regenerate_audio(body)
             if path == "/api/select":
@@ -12420,6 +12437,321 @@ body {{padding-top:44px!important;}}
             "tts_regen": tts_regen_result,
         })
 
+    # ------------------------------------------------------------------
+    # BEAT_GRAFT_RECOVERY_MECHANISM_V1 — Pillar 7 cornerstone (C-7).
+    # ------------------------------------------------------------------
+    def _handle_beat_graft(self, body: dict) -> None:
+        """POST /api/beat/graft — copy or move a beat across event/role.
+
+        Body:
+            {
+              "source": {event_id, video_role, beat_id},
+              "target": {event_id, video_role, position},
+              "speaker_override": str | null,
+              "move": bool,                 # default false (COPY)
+              "mutation_id": str            # mandatory uuid4 idempotency key
+            }
+
+        Returns 200 with status in {"copied", "moved", "dedup", "already_present"}.
+        Pre-render-only invariant (RR-1 mitigation): rejects beats with
+        rendered media (phase_1.status="completed" OR options[*].file/lipsync_task_id).
+        See spec §6 + handoff §4 C-7 for the full contract.
+        """
+        # 1) Validate body shape
+        src = body.get("source") or {}
+        tgt = body.get("target") or {}
+        move = bool(body.get("move", False))
+        mutation_id = body.get("mutation_id")
+        speaker_override = body.get("speaker_override")
+        if not mutation_id:
+            return self._send_json(400, {"error": "mutation_id_required"})
+        if not isinstance(src, dict) or not isinstance(tgt, dict):
+            return self._send_json(400, {"error": "source/target must be objects"})
+        for fld in ("event_id", "video_role", "beat_id"):
+            if not src.get(fld):
+                return self._send_json(400, {"error": f"source.{fld}_required"})
+        for fld in ("event_id", "video_role"):
+            if not tgt.get(fld):
+                return self._send_json(400, {"error": f"target.{fld}_required"})
+        for r in (src["video_role"], tgt["video_role"]):
+            if r not in {"intro", "resolution", "standalone"}:
+                return self._send_json(400, {"error": "video_role_invalid", "got": r})
+
+        # 2) Idempotency dedup cache (mutation_id replay)
+        if mutation_id in _GRAFT_DEDUP:
+            cached = _GRAFT_DEDUP[mutation_id]
+            _GRAFT_DEDUP.move_to_end(mutation_id)
+            return self._send_json(200, {**cached, "status": "dedup"})
+
+        # 3) Validate target scope (server is write-pinned to its event_dir)
+        server_event = self.app.event_dir.name
+        if tgt["event_id"] != server_event:
+            return self._send_json(409, {
+                "error": "scope_mismatch",
+                "expected_event_id": server_event,
+                "got": tgt["event_id"],
+            })
+
+        # 4) Cross-event source: require --source-event CLI flag
+        cross_event = (src["event_id"] != tgt["event_id"])
+        source_event_dir: Path | None = None
+        if cross_event:
+            seed = getattr(self.app, "source_event_dir", None)
+            if seed is None or seed.name != src["event_id"]:
+                return self._send_json(409, {
+                    "error": "cross_event_requires_explicit_source",
+                    "hint": (
+                        f"Restart server with --source-event Production/{src['event_id']} "
+                        "to enable cross-event graft from this source."
+                    ),
+                })
+            source_event_dir = seed
+        else:
+            source_event_dir = self.app.event_dir
+
+        # 5) Load source state and locate the source beat
+        try:
+            source_state_path = source_event_dir / "production_state.json"
+            with open(source_state_path, "r", encoding="utf-8") as f:
+                source_state = json.load(f)
+        except FileNotFoundError:
+            return self._send_json(404, {"error": "source_state_not_found",
+                                         "path": str(source_state_path)})
+        src_partition = (source_state.get("videos") or {}).get(src["video_role"], {}) or {}
+        src_beats = src_partition.get("beats") or {}
+        src_beat = src_beats.get(src["beat_id"])
+        if src_beat is None:
+            self._append_audit_log({
+                "schema_version": 1, "action": "beat_graft_failed",
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "mutation_id": mutation_id,
+                "source": src, "target": tgt, "ok": False,
+                "reason": "source_beat_not_found",
+            })
+            return self._send_json(404, {"error": "source_beat_not_found",
+                                         "source": src})
+
+        # 6) Pre-render-only invariant (RR-1 mitigation)
+        phase_1 = src_beat.get("phase_1") or {}
+        if phase_1.get("status") == "completed":
+            return self._send_json(400, {
+                "error": "graft_pre_render_only",
+                "reason": "source.phase_1.status==completed",
+            })
+        for opt in (phase_1.get("options") or []):
+            if isinstance(opt, dict):
+                if opt.get("file") or opt.get("lipsync_task_id"):
+                    return self._send_json(400, {
+                        "error": "graft_pre_render_only",
+                        "reason": "source.phase_1.options[].file or lipsync_task_id non-empty",
+                    })
+
+        # 7) Pre-image snapshots (atomic copy of full state(s))
+        utc = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        pre_image_paths: list[str] = []
+        try:
+            seen_dirs: set[Path] = set()
+            for ev_dir in (source_event_dir, self.app.event_dir):
+                if ev_dir in seen_dirs:
+                    continue
+                seen_dirs.add(ev_dir)
+                bdir = ev_dir / ".backups" / "state"
+                bdir.mkdir(parents=True, exist_ok=True)
+                bpath = bdir / f"{utc}_pre_graft_{mutation_id}.json"
+                state_path = ev_dir / "production_state.json"
+                with open(state_path, "r", encoding="utf-8") as f:
+                    state_dict = json.load(f)
+                atomic_json_write(str(bpath), state_dict)
+                pre_image_paths.append(str(bpath))
+        except Exception as exc:  # noqa: BLE001
+            return self._send_json(503, {
+                "error": "pre_image_snapshot_failed",
+                "detail": f"{type(exc).__name__}: {exc}",
+            })
+
+        # 8) Speaker resolution (override or canonicalize source)
+        raw_speaker = (speaker_override
+                       if speaker_override is not None
+                       else (src_beat.get("speaker") or _resolve_beat_speaker(src_beat)))
+        canonical_speaker = _canonicalize_speaker(raw_speaker or "") or ""
+        if speaker_override is not None:
+            speaker_source = "override"
+        elif canonical_speaker and (raw_speaker or "").lower() != canonical_speaker.lower():
+            speaker_source = f"alias:{raw_speaker}->{canonical_speaker}"
+        elif canonical_speaker:
+            speaker_source = "untouched"
+        else:
+            speaker_source = "empty"
+
+        # 9) Content fingerprint check (replay safety on cold cache)
+        target_state_path = self.app.event_dir / "production_state.json"
+        try:
+            with open(target_state_path, "r", encoding="utf-8") as f:
+                target_state_pre = json.load(f)
+        except FileNotFoundError:
+            return self._send_json(500, {"error": "target_state_not_found"})
+        tgt_partition_pre = ((target_state_pre.get("videos") or {})
+                             .get(tgt["video_role"]) or {})
+        tgt_beats_pre = tgt_partition_pre.get("beats") or {}
+        if src["beat_id"] in tgt_beats_pre:
+            existing = tgt_beats_pre[src["beat_id"]]
+            if (existing.get("text") == src_beat.get("text")
+                and existing.get("speaker") == canonical_speaker):
+                result = {
+                    "ok": True, "status": "already_present",
+                    "beat_id": src["beat_id"],
+                    "pre_image_paths": pre_image_paths,
+                    "audit_log_path": str(AUDIT_LOG_PATH),
+                    "target_display_order": tgt_partition_pre.get("display_order", []),
+                }
+                _GRAFT_DEDUP[mutation_id] = result
+                while len(_GRAFT_DEDUP) > _GRAFT_DEDUP_MAX:
+                    _GRAFT_DEDUP.popitem(last=False)
+                return self._send_json(200, result)
+
+        # 10) Apply target write via mutate_video_state (DISPLAY_ORDER_STRICT prune runs)
+        target_position = tgt.get("position")
+
+        def _insert_target(partition,
+                           _bid=src["beat_id"], _payload=src_beat,
+                           _spk=canonical_speaker, _pos=target_position):
+            pbeats = partition.setdefault("beats", {})
+            pdo = partition.setdefault("display_order", [])
+            new_beat = dict(_payload)
+            new_beat["speaker"] = _spk
+            # K8 mirror — keep both stores consistent on insert
+            new_beat.setdefault("phase_1", {})
+            if isinstance(new_beat["phase_1"], dict):
+                new_beat["phase_1"]["speaker"] = _spk
+            pbeats[_bid] = new_beat
+            if isinstance(pdo, list):
+                if _bid in pdo:
+                    pdo.remove(_bid)
+                if _pos is None or _pos < 0 or _pos > len(pdo):
+                    clamped = len(pdo)
+                else:
+                    clamped = _pos
+                pdo.insert(clamped, _bid)
+
+        try:
+            self.app.state.mutate_video_state(tgt["video_role"], _insert_target)
+        except Exception as exc:  # noqa: BLE001
+            return self._send_json(500, {
+                "error": "target_write_failed",
+                "detail": f"{type(exc).__name__}: {exc}",
+                "pre_image_paths": pre_image_paths,
+            })
+
+        # 11) Optional move=true: delete source beat
+        if move:
+            if cross_event:
+                # Cross-event delete writes the source state file directly
+                # via atomic_json_write (the server is NOT pinned to source).
+                try:
+                    with open(source_state_path, "r", encoding="utf-8") as f:
+                        src_state_now = json.load(f)
+                    src_partition_now = ((src_state_now.setdefault("videos", {}))
+                                         .setdefault(src["video_role"], {}))
+                    src_beats_now = src_partition_now.get("beats") or {}
+                    if src["beat_id"] in src_beats_now:
+                        del src_beats_now[src["beat_id"]]
+                    src_do = src_partition_now.get("display_order")
+                    if isinstance(src_do, list) and src["beat_id"] in src_do:
+                        src_do.remove(src["beat_id"])
+                    atomic_json_write(str(source_state_path), src_state_now)
+                except Exception as exc:  # noqa: BLE001
+                    return self._send_json(500, {
+                        "error": "source_delete_failed",
+                        "detail": f"{type(exc).__name__}: {exc}",
+                        "pre_image_paths": pre_image_paths,
+                    })
+            else:
+                # Same-event delete via the partition router's mutator.
+                def _delete_source(partition, _bid=src["beat_id"]):
+                    sb = partition.get("beats") or {}
+                    if _bid in sb:
+                        del sb[_bid]
+                    sdo = partition.get("display_order")
+                    if isinstance(sdo, list) and _bid in sdo:
+                        sdo.remove(_bid)
+                try:
+                    self.app.state.mutate_video_state(src["video_role"], _delete_source)
+                except Exception as exc:  # noqa: BLE001
+                    return self._send_json(500, {
+                        "error": "source_delete_failed_same_event",
+                        "detail": f"{type(exc).__name__}: {exc}",
+                        "pre_image_paths": pre_image_paths,
+                    })
+
+        # 12) Audit log: file JSONL (durable) + Directus mirror (best-effort)
+        target_state_after_path = self.app.event_dir / "production_state.json"
+        target_state_after = {}
+        try:
+            with open(target_state_after_path, "r", encoding="utf-8") as f:
+                target_state_after = json.load(f)
+        except Exception:
+            pass
+        post_partition = ((target_state_after.get("videos") or {})
+                          .get(tgt["video_role"]) or {})
+        audit_row = {
+            "schema_version": 1, "action": "beat_graft",
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "mutation_id": mutation_id,
+            "source": {"event_id": src["event_id"],
+                       "video_role": src["video_role"],
+                       "beat_id": src["beat_id"]},
+            "target": {"event_id": tgt["event_id"],
+                       "video_role": tgt["video_role"],
+                       "beat_id": src["beat_id"],
+                       "position": target_position,
+                       "post_image_version": target_state_after.get("version", 0)},
+            "move": move, "cross_event": cross_event,
+            "speaker_resolved": canonical_speaker,
+            "speaker_source": speaker_source,
+            "actor": "production_server_v59",
+            "pre_image_paths": pre_image_paths,
+            "ok": True,
+        }
+        self._append_audit_log(audit_row)
+        try:
+            from lib.directus import try_post_or_queue
+            try_post_or_queue("prod_activity_log", {
+                "action": "beat_graft",
+                "performed_by": "production_server_v59",
+                "details": audit_row,
+            })
+        except Exception:
+            pass  # JSONL is the durable source of truth
+
+        result = {
+            "ok": True,
+            "status": "moved" if move else "copied",
+            "pre_image_paths": pre_image_paths,
+            "audit_log_path": str(AUDIT_LOG_PATH),
+            "target_display_order": post_partition.get("display_order", []),
+            "beat_id": src["beat_id"],
+        }
+        _GRAFT_DEDUP[mutation_id] = result
+        while len(_GRAFT_DEDUP) > _GRAFT_DEDUP_MAX:
+            _GRAFT_DEDUP.popitem(last=False)
+        return self._send_json(200, result)
+
+    def _append_audit_log(self, row: dict) -> None:
+        """Append a JSON line to the durable recovery audit log.
+
+        Atomic enough for our purposes: open in append mode, write line,
+        flush+close. Concurrent writers from the same process are safe due
+        to the GIL; multi-process serialization is not required since the
+        server is single-process per LD-460.
+        """
+        try:
+            AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(AUDIT_LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[audit] WARN failed to append {row.get('action')!r}: {exc}",
+                  flush=True)
+
     def _handle_beat_regenerate_audio(self, body: dict) -> None:
         """Explicit TTS regen trigger (decision 181 companion endpoint, April 17 2026).
 
@@ -16827,7 +17159,7 @@ def inactivity_watchdog(app: AppContext, stop_event: threading.Event, httpd: Pro
             time.sleep(1)
 
 
-def run_server(event_dir: Path, storyboard_name: str, event_id: str) -> int:
+def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_event_dir: Path | None = None) -> int:
     storyboard_path = event_dir / storyboard_name
     if not storyboard_path.is_file():
         print(f"ERROR: storyboard not found: {storyboard_path}", file=sys.stderr)
@@ -16919,6 +17251,14 @@ def run_server(event_dir: Path, storyboard_name: str, event_id: str) -> int:
         print(f"[startup:ghost_scrub] WARN: scrub failed (non-fatal): {_gs_exc}")
 
     app = AppContext(event_dir, storyboard_path, event_id, state, client)
+    # BEAT_GRAFT_RECOVERY_MECHANISM_V1 (C-7) — attach source_event_dir for
+    # cross-event graft operations. None when --source-event is not passed.
+    app.source_event_dir = source_event_dir
+    if source_event_dir is not None:
+        print(
+            f"[startup] /api/beat/graft cross-event source registered: "
+            f"{source_event_dir} (server still write-pinned to {event_dir.name})"
+        )
 
     httpd = ProductionServer(("127.0.0.1", SERVER_PORT), app)
     try:
@@ -17075,6 +17415,23 @@ def main() -> int:
     ap.add_argument("--storyboard", help="Filename of _prod.html inside event-dir")
     ap.add_argument("--event-id", help='Event identifier, e.g. "Event_1"')
     ap.add_argument("--smoke-test", action="store_true", help="Run self-test and exit")
+    # BEAT_GRAFT_RECOVERY_MECHANISM_V1 (C-7) — optional read-only side
+    # event-dir for /api/beat/graft cross-event source. The server stays
+    # PINNED to --event-dir for all writes (LD-456); --source-event lets
+    # the graft handler read state from a different event so the canonical
+    # recovery primitive can move beats between events with explicit operator
+    # ceremony (one-time CLI restart per cross-event session per DV-1).
+    ap.add_argument(
+        "--source-event",
+        type=Path,
+        default=None,
+        help=(
+            "Optional source event directory for /api/beat/graft cross-event "
+            "operations. When set, the graft handler accepts requests where "
+            "body.source.event_id != server-pinned event_id; otherwise such "
+            "requests return HTTP 409 cross_event_requires_explicit_source."
+        ),
+    )
     args = ap.parse_args()
 
     if args.smoke_test:
@@ -17083,7 +17440,10 @@ def main() -> int:
     if not (args.event_dir and args.storyboard and args.event_id):
         ap.error("--event-dir, --storyboard, and --event-id are required (or use --smoke-test)")
 
-    return run_server(Path(args.event_dir), args.storyboard, args.event_id)
+    return run_server(
+        Path(args.event_dir), args.storyboard, args.event_id,
+        source_event_dir=args.source_event,
+    )
 
 
 if __name__ == "__main__":
