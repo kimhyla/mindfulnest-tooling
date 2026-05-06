@@ -50,12 +50,25 @@ from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-# Auto-strip audio from downloaded animation clips (CLAUDE.md Rule 8 defense)
-sys.path.insert(0, os.path.dirname(__file__))
-# Production/ on sys.path for shared lib/ imports (atomic_json_write etc.)
+# Auto-strip audio from downloaded animation clips (CLAUDE.md Rule 8 defense).
+# Bootstrap order MATTERS: Production/ must come BEFORE Production/tools/ in
+# sys.path so `from lib.atomic_json_write import ...` resolves to
+# Production/lib/ (regular package) — there is a separate Production/tools/lib/
+# package (with __init__.py) that would shadow the lib import if it were
+# searched first. Pre-C-7.6: line `sys.path.insert(0, dirname)` was
+# unconditional, so when callers (e.g. unit tests) pre-populated sys.path
+# with Production/, this insert pushed Production/tools/ to position 0,
+# shadowing lib and breaking the next import. Now both inserts are
+# idempotent (skip if already on path) and ordered Production-first.
+_TOOLS_DIR_FOR_BOOTSTRAP = os.path.abspath(os.path.dirname(__file__))
 _PROD_DIR_FOR_SHARED_LIB = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if _PROD_DIR_FOR_SHARED_LIB not in sys.path:
     sys.path.insert(0, _PROD_DIR_FOR_SHARED_LIB)
+if _TOOLS_DIR_FOR_BOOTSTRAP not in sys.path:
+    # Insert AFTER Production/ so Production/lib wins the lib resolution
+    # while Production/tools remains reachable for `import scope_router`,
+    # `import beat_generator`, etc.
+    sys.path.insert(1, _TOOLS_DIR_FOR_BOOTSTRAP)
 from lib.atomic_json_write import atomic_json_write  # noqa: E402 (Windows/Dropbox retry-safe JSON writes per LD-368)
 # scope_router — mandatory partition router for v59 authoring-workflow
 # mutations (LD SCOPE_ROUTER_V1, C-1). Replaces hardcoded `videos.intro`

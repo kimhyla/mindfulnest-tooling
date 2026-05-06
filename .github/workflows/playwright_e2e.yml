@@ -97,6 +97,21 @@ jobs:
         # surfaces independently of e2e flake. Wave 1 architectural-fix.
         run: python3 Production/tools/tests/test_sidecar_display_order_int.py
 
+      - name: Scrambled-state SCR.1+SCR.2 (C-7.6 — READ-ONLY against Event_1)
+        # Pytest gates from spec §11.2 + Kim's pre-C-9 addendum 2026-05-06.
+        # SCR.1: scope_router.resolve doesn't crash on Event_1 stranded state.
+        # SCR.2: _handle_beat_update_text on beat_05 (Guide Bird speaker)
+        #        — currently expectedFailure (architectural gap surfaced
+        #          pre-salvage; awaiting Kim's authorization on whether
+        #          to add canonicalize-on-touch to update_partition).
+        # CI runs SKIP these tests because Event_1's actual state.json lives
+        # in Kim's Dropbox tree (not in this checkout). Tests execute when
+        # the file is reachable (Kim's local runs). Read-only invariant
+        # enforced via sha256 pre/post check in tearDownClass.
+        run: |
+          PRODUCTION_SERVER_SINGLE_MACHINE=1 \
+            python3 -m unittest -v Production.tools.tests.test_scope_router_scrambled
+
       # ----------------------------------------------------------------
       # MUTATION_CHANNEL_INVARIANT_V1 grep gate (Wave 1 architectural-fix
       # spec §5 Phase 3.4 + Cursor R5 mandatory enforcement).
