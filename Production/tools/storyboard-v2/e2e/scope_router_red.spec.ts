@@ -90,8 +90,8 @@ test.describe('D5 — patch_state._apply routes target_partition via scope_route
 });
 
 test.describe('K2 — bg_accept_beats writes to videos.<role>.beats, NOT top-level state.beats (RED until C-3)', () => {
-  // RED until C-3: un-fixme in C-3 commit (same commit as K2+K7 handler rewrite)
-  test.fixme('TVMC-K2.1 — accept-beats partition write; legacy top-level state.beats stays empty', async ({ request }) => {
+  // GREEN as of C-3 (un-fixme'd in same commit as K2+K7 handler rewrite)
+  test('TVMC-K2.1 — accept-beats partition write; legacy top-level state.beats stays empty', async ({ request }) => {
     const r = await request.post(`${SERVER}/api/bg/accept-beats`, {
       data: {
         event_id: EVENT_ID,
@@ -132,8 +132,8 @@ test.describe('K6 — _assert_event_scope strict defaults (RED until C-5)', () =
 });
 
 test.describe('K7 — speaker write-boundary canonicalization (RED until C-3)', () => {
-  // RED until C-3: un-fixme in C-3 commit (same commit as K2+K7)
-  test.fixme('TVMC-K7.1 — empty speaker stays empty (no "Guide Bird" default substitution)', async ({ request }) => {
+  // GREEN as of C-3 (un-fixme'd in same commit)
+  test('TVMC-K7.1 — empty speaker stays empty (no "Guide Bird" default substitution)', async ({ request }) => {
     const r = await request.post(`${SERVER}/api/bg/accept-beats`, {
       data: {
         event_id: EVENT_ID,
@@ -156,8 +156,8 @@ test.describe('K7 — speaker write-boundary canonicalization (RED until C-3)', 
     expect(seeded?.speaker, 'empty speaker remains empty').toBe('');
   });
 
-  // RED until C-3: un-fixme in C-3 commit
-  test.fixme('TVMC-K7.2 — "Guide Bird" sidecar value canonicalizes to "Chipper" at write boundary', async ({ request }) => {
+  // GREEN as of C-3 (un-fixme'd in same commit)
+  test('TVMC-K7.2 — "Guide Bird" sidecar value canonicalizes to "Chipper" at write boundary', async ({ request }) => {
     const r = await request.post(`${SERVER}/api/bg/accept-beats`, {
       data: {
         event_id: EVENT_ID,

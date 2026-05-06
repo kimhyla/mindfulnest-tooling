@@ -8987,13 +8987,16 @@ class ProductionHandler(BaseHTTPRequestHandler):
         `active_context.event_id` was Event 2. The scope guard rejects the
         cross-event request with HTTP 409 before any state mutates.
         """
-        # LD-456 SCOPE_VALIDATION_V1 — guard the cross-event leak class.
-        # When the v59 client implements Accept All in S2+, it sends
-        # `scope_event_id` matching the storyboard tab's active event. On
-        # mismatch with server-pinned event_dir, we 409 here BEFORE any
-        # sidecar write or state mutation.
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
-            return  # LD-461 SCOPE_BODY_HELPER_V1 — migrated from hand-rolled dict
+        # SCOPE_ROUTER_V1 (C-3 K2 fix) — replaces the legacy
+        # _assert_event_scope(allow_missing=True) call with strict-by-default
+        # scope_router resolution; subsumes LD-456 SCOPE_VALIDATION_V1 +
+        # LD-461 SCOPE_BODY_HELPER_V1. The cross-event leak class is closed
+        # both here AND structurally because the seed write below routes
+        # through scope_router.mutate_partition (no more legacy state.beats).
+        try:
+            scope = scope_router.resolve(body, self.app.event_dir.name)
+        except scope_router.ScopeError as e:
+            return self._send_json(e.http_status, {"error": e.code, **e.detail})
         beat_ids = [b["beat_id"] for b in body.get("beats", []) if "beat_id" in b]
         bg = _bg_module()
         with bg._sidecar_lock:
@@ -9013,37 +9016,52 @@ class ProductionHandler(BaseHTTPRequestHandler):
         except Exception as e:
             print(f"[BG] warning: could not delete storyboard sidecar: {e}")
 
-        # Seed production_state.beats with speaker + text for each accepted BG beat.
-        # Maps positionally: accepted beat N (0-indexed, skipping beats without
-        # accepted_image_key) -> storyboard beat_id "beat_{N+1:02d}".
-        # This lets _tts_regenerate_for_beat find the speaker via its normal
-        # production_state lookup (the anchor-based HTML fallback fails for BG
-        # beats because their L[] entry has a:null, not a:"line_NN").
+        # SCOPE_ROUTER_V1 (C-3 K2 fix) — seed the v3 partition (videos.<role>.beats),
+        # NOT the legacy top-level state.beats. The previous mutate_state() seed
+        # bypassed both the partition router and the DISPLAY_ORDER_STRICT_V1
+        # prune; subsequent migrate_state_to_videos_partition runs faithfully
+        # lifted that corrupted top-level into videos.intro on whatever event
+        # the server happened to be pinned at — that's the 2026-05-01 leak.
+        # Now: write into the partition for the resolved scope.video_role and
+        # extend partition.display_order. SPEAKER_WRITE_BOUNDARY_CANONICALIZATION_V1
+        # (C-3 K7 fix) — drop the legacy default-to-Guide-Bird literal that lived
+        # at this seed site; canonicalize the raw speaker via _canonicalize_speaker.
+        # Empty stays empty (LD-520 fail-loud at TTS time); the historical
+        # Guide-Bird value normalizes to Chipper via _SPEAKER_ALIAS at write time.
         try:
             beats_raw = body.get("beats", [])
             storyboard_pos = 0
-            state_seeds = {}
+            state_seeds: dict[str, dict] = {}
             for beat in beats_raw:
                 if not beat.get("accepted_image_key"):
                     continue
                 sb_bid = f"beat_{storyboard_pos + 1:02d}"
+                raw_speaker = beat.get("speaker") or ""
+                canonicalized = _canonicalize_speaker(raw_speaker) or ""
                 state_seeds[sb_bid] = {
-                    "speaker": beat.get("speaker") or "Guide Bird",
+                    "speaker": canonicalized,
                     "text": beat.get("dialogue_text") or "",
                 }
                 storyboard_pos += 1
             if state_seeds:
-                def _seed_bg_beats(state, _data=state_seeds):
-                    beats = state.setdefault("beats", {})
+                def _seed_partition(partition, _data=state_seeds):
+                    pbeats = partition.setdefault("beats", {})
+                    pdo = partition.setdefault("display_order", [])
+                    # If display_order is a legacy int (pre-v3 fixture shape),
+                    # leave it alone — DISPLAY_ORDER_STRICT_V1 prune skips ints
+                    # and the renderer's strict gate handles the int form too.
+                    pdo_is_list = isinstance(pdo, list)
                     for bid, fields in _data.items():
-                        b = beats.setdefault(bid, {})
+                        b = pbeats.setdefault(bid, {})
                         b["speaker"] = fields["speaker"]
                         b["text"] = fields["text"]
-                self.app.state.mutate_state(_seed_bg_beats)
-                print(f"[BG] seeded production_state for storyboard beats: "
+                        if pdo_is_list and bid not in pdo:
+                            pdo.append(bid)
+                self.app.state.mutate_video_state(scope.video_role, _seed_partition)
+                print(f"[BG] seeded videos.{scope.video_role}.beats for storyboard beats: "
                       f"{list(state_seeds.keys())}")
         except Exception as e:
-            print(f"[BG] warning: could not seed production_state: {e}")
+            print(f"[BG] warning: could not seed partition: {e}")
 
         return self._send_json(200, {"ok": True, "accepted": len(beat_ids)})
 
