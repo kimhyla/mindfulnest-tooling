@@ -56,6 +56,23 @@ echo "  dest: $DEST_DROPBOX"
 echo "  snap: $SNAPSHOT_DIR"
 
 # ----------------------------------------------------------------
+# (a-pre) Build the v59 client bundle from source. Without this step,
+# dist/index.html in tooling repo can drift behind src/ — manual partial
+# deploys (the bug class LD STORYBOARD_DEPLOY_PROCESS_V1 prevents) often
+# arose precisely from forgetting to rebuild. The script is the canonical
+# gate; rebuilding here closes the gap.
+# Skip via MN_DEPLOY_SKIP_BUILD=1 (e.g. when invoking from CI which has
+# already built dist).
+# ----------------------------------------------------------------
+if [[ -z "${MN_DEPLOY_SKIP_BUILD:-}" ]]; then
+    echo "[deploy] (a-pre) npm run build ..."
+    (
+        cd "$SRC_TOOLING/Production/tools/storyboard-v2"
+        npm run build 2>&1 | tail -10
+    )
+fi
+
+# ----------------------------------------------------------------
 # (a) Pre-deploy snapshot — rollback safety net
 # ----------------------------------------------------------------
 mkdir -p "$LOG_DIR"
@@ -89,16 +106,48 @@ for sub in Production/tools Production/lib Production/scripts; do
 done
 
 # ----------------------------------------------------------------
-# (c) dist/index.html (built v59 client bundle)
+# (c) dist/index.html (built v59 client bundle) — copy to TWO destinations:
+#   1. Production/tools/storyboard-v2/dist/index.html (canonical bundle path)
+#   2. Each Production/Event_<N>/storyboard_v59_prod.html (the file
+#      production_server.py serves at GET /). Without this per-event copy,
+#      the deployed server still serves the old bundle.
 # ----------------------------------------------------------------
 DIST="$SRC_TOOLING/Production/tools/storyboard-v2/dist/index.html"
 DIST_DEST="$DEST_DROPBOX/Production/tools/storyboard-v2/dist/index.html"
 if [[ -f "$DIST" ]]; then
     mkdir -p "$(dirname "$DIST_DEST")"
     cp "$DIST" "$DIST_DEST"
-    echo "[deploy] (c) dist/index.html copied"
+    echo "[deploy] (c) dist/index.html copied to canonical bundle path"
+
+    # Also fan out to each Event_*/storyboard_v59_prod.html in Dropbox.
+    # production_server.py reads $event_dir/storyboard_v59_prod.html and
+    # serves it at GET /. Each event must have a fresh copy of the bundle.
+    fanout_count=0
+    for ev_html in "$DEST_DROPBOX"/Production/Event_*/storyboard_v59_prod.html; do
+        # Glob may be literal if no matches; guard with -e.
+        if [[ -e "$ev_html" || -L "$ev_html" ]]; then
+            cp "$DIST" "$ev_html"
+            echo "  fanout: ${ev_html#$DEST_DROPBOX/}"
+            fanout_count=$((fanout_count + 1))
+        fi
+    done
+    # Also fan out to any Event_*/storyboard_v59_prod.html that doesn't yet
+    # exist but the parent Event_* dir does — first-time deploy of a new event.
+    for ev_dir in "$DEST_DROPBOX"/Production/Event_*/; do
+        ev_dir="${ev_dir%/}"
+        if [[ -d "$ev_dir" ]]; then
+            target="$ev_dir/storyboard_v59_prod.html"
+            if [[ ! -e "$target" ]]; then
+                cp "$DIST" "$target"
+                echo "  fanout (first-time): ${target#$DEST_DROPBOX/}"
+                fanout_count=$((fanout_count + 1))
+            fi
+        fi
+    done
+    echo "  total Event_* fanout: $fanout_count file(s)"
 else
-    echo "[deploy] (c) WARN: dist/index.html missing in source — run 'npm run build' before deploy"
+    echo "[deploy] (c) FATAL: dist/index.html missing in source — npm run build did not produce dist" >&2
+    exit 1
 fi
 
 # ----------------------------------------------------------------
