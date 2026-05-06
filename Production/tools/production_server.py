@@ -8786,13 +8786,13 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 if candidate.is_dir():
                     edir = candidate
             segments: dict[str, dict] = {}
+            videos_by_role: dict[str, dict] = {}
             if edir:
                 # Best-effort: file-based status.
                 # Per spec §3.9: 'canonical' is reserved for fly-in/fly-out source clips.
                 # Phase A stitched outputs use phase_a_stitched_*.mp4 (S4 migration).
                 phase_a = list(edir.glob("phase_a_stitched_*.mp4"))
                 phase_b = list(edir.glob("phase_b_lipsync_*.mp4"))
-                intro_or_resolution = list(edir.glob("storyboard_v*_prod.html"))
                 final_concat = list(edir.glob(f"M{m.get('m_number')}_*_final.mp4"))
                 segments = {
                     "phase_a": {
@@ -8805,21 +8805,92 @@ class ProductionHandler(BaseHTTPRequestHandler):
                         "count": len(phase_b),
                         "latest": phase_b[0].name if phase_b else None,
                     },
-                    "intro_or_resolution": {
-                        "status": "ready" if intro_or_resolution else "missing",
-                        "count": len(intro_or_resolution),
-                    },
                     "final_concat": {
                         "status": "ready" if final_concat else "missing",
                         "count": len(final_concat),
                     },
                 }
+
+                # C-12 ride-along (Production Map per-role + 5-state glyph) per
+                # post-redeploy v2 §3.3 Part 2 + handoff §4 C-12. Per-role
+                # state derives from (a) partition presence in state.videos,
+                # (b) display_order shape, (c) per-role completed mp4 presence,
+                # (d) module-level final concat presence. NO prod_modules schema
+                # migration (picker-spec R3 boundary preserved).
+                #
+                # 5-state glyph mapping (returned as `state` field on each role):
+                #   absent       — partition not in state.videos                → glyph '—'
+                #   empty        — partition present + display_order list is [] → glyph '○'
+                #   in_progress  — partition + non-empty display_order, no mp4  → glyph '◐'
+                #   complete     — partition + display_order + per-role mp4    → glyph '●'
+                #   final        — complete + module-level final concat        → glyph '★'
+                #
+                # For partitions whose display_order is the legacy int form
+                # (Event_e2e_fixture pre-v3 shape), treat any non-empty beats
+                # dict as 'in_progress' (matches renderer's fallback behavior).
+                state_path = edir / "production_state.json"
+                state_videos: dict = {}
+                try:
+                    with open(state_path, "r", encoding="utf-8") as _f:
+                        state_videos = (json.load(_f).get("videos") or {})
+                except (FileNotFoundError, json.JSONDecodeError):
+                    state_videos = {}
+
+                # Per-role completed mp4 globs. The canonical filenames vary
+                # by event so we accept either scene_<role>_*.mp4 (Event_1
+                # naming) or <role>_atomic_*.mp4 / <role>_atomic.mp4 (post-
+                # redeploy spec naming). Handler does NOT enforce a single
+                # filename — discovery is best-effort.
+                final_concat_present = bool(final_concat)
+                for _role in ("intro", "resolution", "standalone"):
+                    partition = state_videos.get(_role)
+                    if not isinstance(partition, dict):
+                        videos_by_role[_role] = {"state": "absent"}
+                        continue
+                    do = partition.get("display_order")
+                    beats = partition.get("beats") or {}
+                    if isinstance(do, list):
+                        is_empty = (len(do) == 0)
+                    else:
+                        # Legacy int / missing display_order: treat as 'present
+                        # with content' if any beats exist.
+                        is_empty = (len(beats) == 0)
+                    if is_empty:
+                        videos_by_role[_role] = {"state": "empty"}
+                        continue
+                    role_dir = edir / _role
+                    role_mp4s: list[Path] = []
+                    if role_dir.is_dir():
+                        role_mp4s = (
+                            list(role_dir.glob(f"scene_{_role}_*.mp4"))
+                            + list(role_dir.glob(f"{_role}_atomic*.mp4"))
+                        )
+                    else:
+                        role_mp4s = (
+                            list(edir.glob(f"scene_{_role}_*.mp4"))
+                            + list(edir.glob(f"{_role}_atomic*.mp4"))
+                        )
+                    if role_mp4s:
+                        if final_concat_present:
+                            videos_by_role[_role] = {
+                                "state": "final",
+                                "completed_mp4": role_mp4s[0].name,
+                            }
+                        else:
+                            videos_by_role[_role] = {
+                                "state": "complete",
+                                "completed_mp4": role_mp4s[0].name,
+                            }
+                    else:
+                        videos_by_role[_role] = {"state": "in_progress"}
+
             rows.append({
                 "m_number": m.get("m_number"),
                 "creature_name": m.get("creature_name"),
                 "video_role": m.get("video_role"),
                 "event_dir": edir.name if edir else None,
                 "segments": segments,
+                "videos_by_role": videos_by_role,
             })
 
         out = {
