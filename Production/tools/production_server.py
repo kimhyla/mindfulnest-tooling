@@ -11384,9 +11384,16 @@ body {{padding-top:44px!important;}}
         return all_beats
 
     def _handle_animate(self, body: dict) -> None:
-        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
-            return
+        # SCOPE_ROUTER_V1 (C-7.5 K1 sibling fix) — replaces legacy
+        # _assert_event_scope + scope_video_role-default-to-intro
+        # pattern. Mutators below route partition writes via
+        # mutate_video_state(scope.video_role, ...) instead of the
+        # hardcoded videos.intro setdefault chain that was caught by the
+        # SCOPE_ROUTER_V1 AST grep gate.
+        try:
+            scope = scope_router.resolve(body, self.app.event_dir.name)
+        except scope_router.ScopeError as e:
+            return self._send_json(e.http_status, {"error": e.code, **e.detail})
 
         if self.app.client is None:
             return self._send_json(500, {"error": "WaveSpeed client not configured (missing API key)"})
@@ -11410,8 +11417,9 @@ body {{padding-top:44px!important;}}
         submitted = 0
         skipped: list[dict] = []
 
-        # S5.5a2: scope_video_role from body, default 'intro' during refactor window (LD-474).
-        video_role = body.get("scope_video_role", "intro")
+        # video_role resolved by scope_router; image override lookup is
+        # partition-aware via the get_beat_image(_, video_role) helper.
+        video_role = scope.video_role
         for beat in beats:
             beat_id = self._beat_id(beat.get("line_number", -1))
             # Check image overrides first (from drag-drop), then storyboard
@@ -11448,23 +11456,21 @@ body {{padding-top:44px!important;}}
                 continue
             print(f"[animate] {beat_id} duration={beat_duration}s reason={duration_reason}")
 
-            # Initialize beat state. S5.5a2: writes to videos.intro.beats.
-            def init_beat(state, _beat_id=beat_id, _beat=beat):
-                intro_beats = state.setdefault("videos", {}).setdefault(
-                    "intro", {"video_role": "intro", "video_label": None}
-                ).setdefault("beats", {})
-                intro_beats.setdefault(_beat_id, {
+            # Initialize beat state via partition router (was videos.intro hardcode).
+            def init_beat_partition(partition, _beat_id=beat_id, _beat=beat):
+                pbeats = partition.setdefault("beats", {})
+                pbeats.setdefault(_beat_id, {
                     "speaker": _beat.get("speaker"),
                     "text": _beat.get("text"),
                     "section": _beat.get("section"),
                     "phase_1": {"status": "polling", "options": [], "selected_option": None},
                 })
-                intro_beats[_beat_id]["phase_1"] = {
+                pbeats[_beat_id]["phase_1"] = {
                     "status": "polling",
                     "options": [],
                     "selected_option": None,
                 }
-            self.app.state.mutate_state(init_beat)
+            self.app.state.mutate_video_state(scope.video_role, init_beat_partition)
 
             # Submit options_per_beat jobs, staggered
             for opt_idx in range(options_per_beat):
@@ -11477,12 +11483,10 @@ body {{padding-top:44px!important;}}
                     skipped.append({"beat": beat_id, "opt": opt_idx + 1, "reason": str(exc)})
                     continue
 
-                # S5.5a2: writes to videos.intro.beats[bid].phase_1.options.
-                def add_option(state, _bid=beat_id, _tid=task_id):
-                    intro_beats = state.setdefault("videos", {}).setdefault(
-                        "intro", {"video_role": "intro", "video_label": None}
-                    ).setdefault("beats", {})
-                    intro_beats[_bid]["phase_1"]["options"].append({
+                # Append option via partition router (was videos.intro hardcode).
+                def add_option_partition(partition, _bid=beat_id, _tid=task_id):
+                    pbeats = partition.setdefault("beats", {})
+                    pbeats[_bid]["phase_1"]["options"].append({
                         "task_id": _tid,
                         "status": "polling",
                         "file": None,
@@ -11492,7 +11496,7 @@ body {{padding-top:44px!important;}}
                         "retries": 0,
                         "last_error": None,
                     })
-                self.app.state.mutate_state(add_option)
+                self.app.state.mutate_video_state(scope.video_role, add_option_partition)
                 submitted += 1
 
                 # Stagger within a beat too — simple 2s gap every 6 jobs
@@ -12014,9 +12018,20 @@ body {{padding-top:44px!important;}}
         LEGACY PATH (pre-decision-172). Called by _handle_add_options when the
         beat has no end_frame_prompt configured. Single-image Kling v3, no
         FLUX Kontext end-frame generation. Preserved verbatim for fallback.
+
+        SCOPE_ROUTER_V1 (C-7.5 K1 sibling fix): scope is re-resolved here
+        even though the caller already validated, because this method is
+        also reachable directly via the dispatcher when beat_state carries
+        force_legacy=true. The double-validation is cheap and keeps the
+        handler self-contained.
         """
         if self.app.client is None:
             return self._send_json(500, {"error": "WaveSpeed client not configured"})
+
+        try:
+            scope = scope_router.resolve(body, self.app.event_dir.name)
+        except scope_router.ScopeError as e:
+            return self._send_json(e.http_status, {"error": e.code, **e.detail})
 
         beat_id = body.get("beat")
         num_new = int(body.get("count", 2))  # default: add 2 (B + C)
@@ -12074,11 +12089,11 @@ body {{padding-top:44px!important;}}
                 })
         print(f"[add_options] {beat_id} duration={duration}s reason={duration_reason}")
 
-        # Read current state to verify beat exists and get existing options
+        # Read current state to verify beat exists in scope.video_role partition.
         state = self.app.state.read_state()
-        beat_state = ((state.get("videos") or {}).get("intro") or {}).get("beats", {}).get(beat_id)
+        beat_state = ((state.get("videos") or {}).get(scope.video_role) or {}).get("beats", {}).get(beat_id)
         if not beat_state:
-            return self._send_json(404, {"error": f"beat {beat_id} not found in state"})
+            return self._send_json(404, {"error": f"beat {beat_id} not found in videos.{scope.video_role}.beats"})
 
         phase1 = beat_state.get("phase_1") or {}
         existing_options = phase1.get("options", [])
@@ -12093,14 +12108,14 @@ body {{padding-top:44px!important;}}
             for opt in existing_options[1:]:
                 if opt.get("file"):
                     old_bc_files.append(opt["file"])
-            def trim_to_a(state):
-                b = ((state.get("videos") or {}).get("intro") or {}).get("beats", {}).get(beat_id)
+            def trim_to_a_partition(partition, _bid=beat_id):
+                b = (partition.get("beats") or {}).get(_bid)
                 if b and b.get("phase_1"):
                     opts = b["phase_1"].get("options", [])
                     b["phase_1"]["options"] = opts[:1]  # keep only A
                     if (b["phase_1"].get("selected_option") or 0) > 1:
                         b["phase_1"]["selected_option"] = 1  # reset to A
-            self.app.state.mutate_state(trim_to_a)
+            self.app.state.mutate_video_state(scope.video_role, trim_to_a_partition)
             # Delete old B+C files from disk
             for fname in old_bc_files:
                 p = self.app.state.clips_dir / fname
@@ -12132,10 +12147,9 @@ body {{padding-top:44px!important;}}
                 "error": f"could not find beat data for {beat_id} in storyboard"
             })
 
-        # Use image override if available (from drag-drop assignment)
-        # S5.5a2: scope_video_role from body for partition-aware override lookup (LD-474).
-        video_role = body.get("scope_video_role", "intro")
-        beat_image = self.app.get_beat_image(beat_id, video_role)
+        # Use image override if available (from drag-drop assignment).
+        # video_role resolved by scope_router above.
+        beat_image = self.app.get_beat_image(beat_id, scope.video_role)
         if not beat_image:
             return self._send_json(400, {
                 "error": f"could not find image data for {beat_id} — try drag-dropping an image first"
@@ -12155,11 +12169,11 @@ body {{padding-top:44px!important;}}
         prompt = sanitize_prompt(build_motion_prompt(target_beat))
 
         # Mark beat as polling (options are generating) but KEEP existing options
-        def set_polling(state):
-            b = ((state.get("videos") or {}).get("intro") or {}).get("beats", {}).get(beat_id)
+        def set_polling_partition(partition, _bid=beat_id):
+            b = (partition.get("beats") or {}).get(_bid)
             if b and b.get("phase_1"):
                 b["phase_1"]["status"] = "polling"
-        self.app.state.mutate_state(set_polling)
+        self.app.state.mutate_video_state(scope.video_role, set_polling_partition)
 
         # Submit new animation jobs
         submitted = 0
@@ -12175,12 +12189,10 @@ body {{padding-top:44px!important;}}
                 submit_errors.append(err_str)
                 continue
 
-            # S5.5a2: writes to videos.intro.beats[bid].phase_1.options.
-            def add_option(state, _bid=beat_id, _tid=task_id):
-                intro_beats = state.setdefault("videos", {}).setdefault(
-                    "intro", {"video_role": "intro", "video_label": None}
-                ).setdefault("beats", {})
-                intro_beats[_bid]["phase_1"]["options"].append({
+            # Append option via partition router (was videos.intro hardcode).
+            def add_option_partition(partition, _bid=beat_id, _tid=task_id):
+                pbeats = partition.setdefault("beats", {})
+                pbeats[_bid]["phase_1"]["options"].append({
                     "task_id": _tid,
                     "status": "polling",
                     "file": None,
@@ -12190,7 +12202,7 @@ body {{padding-top:44px!important;}}
                     "retries": 0,
                     "last_error": None,
                 })
-            self.app.state.mutate_state(add_option)
+            self.app.state.mutate_video_state(scope.video_role, add_option_partition)
             submitted += 1
 
             if submitted % 6 == 0:
@@ -13178,14 +13190,26 @@ body {{padding-top:44px!important;}}
             legacy_status = _captured["status"] or 500
             legacy_payload = _captured["payload"] or {}
             if legacy_status == 200:
-                # Bump _version to mirror v2 semantics and write sidecar
-                def _bump(state, _bid=beat_id):
-                    b = state.setdefault("beats", {}).setdefault(_bid, {})
+                # Bump _version to mirror v2 semantics and write sidecar.
+                # SCOPE_ROUTER_V1 (C-7.5 K2 sibling fix): the _version bump
+                # MUST land on the same partition where _handle_beat_update_text
+                # just wrote the text — i.e., videos.<scope.video_role>.beats[bid].
+                # Pre-fix this _bump wrote to legacy top-level state.beats[bid]
+                # which diverged from the actual write location after C-2.
+                # Effect of pre-fix: ETag-style optimistic concurrency on v2
+                # dialogue patches was silently broken (_version landed in a
+                # legacy slot that no v3 reader consults).
+                _bump_holder = {"v": None}
+                def _bump_partition(partition, _bid=beat_id, _h=_bump_holder):
+                    b = partition.setdefault("beats", {}).setdefault(_bid, {})
                     v = int(b.get("_version", 0) or 0) + 1
                     b["_version"] = v
-                    return v
+                    _h["v"] = v
                 try:
-                    new_v = self.app.state.mutate_state(_bump)
+                    self.app.state.mutate_video_state(scope.video_role, _bump_partition)
+                    new_v = _bump_holder["v"]
+                    if new_v is None:  # mutator never ran (defensive)
+                        new_v = current_v + 1
                 except Exception as exc:  # noqa: BLE001
                     new_v = current_v + 1
                     print(f"[v2 dialogue] version bump failed: {exc}")
@@ -13258,9 +13282,14 @@ body {{padding-top:44px!important;}}
           - Sidecar is refreshed post-mutation.
           - mutation_id goes through the shared dedup cache so retries are idempotent.
         """
-        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
-            return
+        # SCOPE_ROUTER_V1 (C-7.5 K1 sibling fix) — replace legacy
+        # _assert_event_scope + intro hardcode. Mutator routes through
+        # mutate_video_state(scope.video_role, ...) so v2 beat creation
+        # lands in the partition the client is editing, not always intro.
+        try:
+            scope = scope_router.resolve(body, self.app.event_dir.name)
+        except scope_router.ScopeError as e:
+            return self._send_json(e.http_status, {"error": e.code, **e.detail})
 
         # Feature flag (also covers MINDFULNEST_WRITE_PATH=legacy)
         if os.environ.get("MINDFULNEST_WRITE_PATH", "v2") == "legacy":
@@ -13291,12 +13320,10 @@ body {{padding-top:44px!important;}}
 
         result_out: dict = {}
 
-        def _apply(state, _ia=insert_after, _out=result_out):
-            # S5.5a2: writes/reads videos.intro.beats + videos.intro.display_order.
-            intro = state.setdefault("videos", {}).setdefault(
-                "intro", {"video_role": "intro", "video_label": None}
-            )
-            beats = intro.setdefault("beats", {})
+        def _apply_partition(partition, _ia=insert_after, _out=result_out):
+            # Writes/reads partition.beats + partition.display_order via the
+            # scope_router (was videos.intro hardcode).
+            beats = partition.setdefault("beats", {})
             # Compute next beat_id: max existing NN + 1, zero-padded to 2.
             max_num = 0
             for bid in beats.keys():
@@ -13325,8 +13352,8 @@ body {{padding-top:44px!important;}}
                 "_version": 0,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
-            # Update display_order (now nested in intro partition).
-            existing_order = intro.get("display_order")
+            # Update display_order on the resolved partition (was videos.intro).
+            existing_order = partition.get("display_order")
             if not isinstance(existing_order, list):
                 # Initialize from sorted existing beat_ids (excluding the new one)
                 order = sorted(
@@ -13344,14 +13371,13 @@ body {{padding-top:44px!important;}}
             else:
                 order.append(new_bid)
                 insert_idx = len(order) - 1
-            intro["display_order"] = order
+            partition["display_order"] = order
             _out["beat_id"] = new_bid
             _out["inserted_after"] = _ia if _ia in (order[:insert_idx]) else None
             _out["display_order_len"] = len(order)
-            return _out
 
         try:
-            self.app.state.mutate_state(_apply)
+            self.app.state.mutate_video_state(scope.video_role, _apply_partition)
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc()
             return self._send_json(500, {
@@ -13669,9 +13695,15 @@ body {{padding-top:44px!important;}}
           400 {error, hint} — invalid from_slot, missing beat, empty option,
                phase_1 too small.
         """
-        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
-            return
+        # SCOPE_ROUTER_V1 (C-7.5 K2 sibling fix) — replaces legacy
+        # _assert_event_scope + intro-hardcoded pre-flight read with
+        # scope_router resolution. Pre-flight + mutate now both target
+        # scope.video_role partition, not the hardcoded intro / legacy
+        # top-level state.beats.
+        try:
+            scope = scope_router.resolve(body, self.app.event_dir.name, require_beat_id=False)
+        except scope_router.ScopeError as e:
+            return self._send_json(e.http_status, {"error": e.code, **e.detail})
 
         # ------------------------------------------------------------------
         # Input validation
@@ -13696,13 +13728,15 @@ body {{padding-top:44px!important;}}
         # ------------------------------------------------------------------
         # Pre-flight read: verify beat + option exist before mutate_state.
         # (Fast-fail on 400 conditions without taking the write lock.)
+        # Reads from videos.<scope.video_role>.beats[bid] per SCOPE_ROUTER_V1.
         # ------------------------------------------------------------------
         pre_state = self.app.state.read_state()
-        pre_beat = (((pre_state.get("videos") or {}).get("intro") or {}).get("beats") or {}).get(beat_id)
+        pre_partition = ((pre_state.get("videos") or {}).get(scope.video_role) or {})
+        pre_beat = (pre_partition.get("beats") or {}).get(beat_id)
         if pre_beat is None:
             return self._send_json(400, {
-                "error": f"beat {beat_id!r} not found",
-                "hint": "Verify beat_id exists in state.beats. Check /api/v2/event/<id>/state.",
+                "error": f"beat {beat_id!r} not found in videos.{scope.video_role}.beats",
+                "hint": "Verify beat_id exists in the partition. Check /api/v2/event/<id>/state.",
             })
         pre_phase1 = pre_beat.get("phase_1") or {}
         pre_options = pre_phase1.get("options") or []
@@ -13719,12 +13753,13 @@ body {{padding-top:44px!important;}}
             })
 
         # ------------------------------------------------------------------
-        # Atomic swap via mutate_state
+        # Atomic swap via mutate_video_state (partition router; no legacy
+        # top-level state.beats touch).
         # ------------------------------------------------------------------
         result_out: dict = {}
 
-        def _apply(state, _bid=beat_id, _fs=from_slot, _out=result_out):
-            beats = state.setdefault("beats", {})
+        def _apply_partition(partition, _bid=beat_id, _fs=from_slot, _out=result_out):
+            beats = partition.setdefault("beats", {})
             beat = beats.get(_bid)
             if beat is None:
                 # Race: beat vanished between pre-flight and lock acquisition.
@@ -13779,7 +13814,7 @@ body {{padding-top:44px!important;}}
             return _out
 
         try:
-            self.app.state.mutate_state(_apply)
+            self.app.state.mutate_video_state(scope.video_role, _apply_partition)
         except (KeyError, IndexError) as exc:
             return self._send_json(400, {
                 "error": f"swap failed: {exc}",
@@ -13788,7 +13823,7 @@ body {{padding-top:44px!important;}}
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc()
             return self._send_json(500, {
-                "error": f"mutate_state failed: {type(exc).__name__}: {exc}",
+                "error": f"mutate_video_state failed: {type(exc).__name__}: {exc}",
                 "hint": "State.json could not be persisted. Check Directus reachability.",
             })
 
