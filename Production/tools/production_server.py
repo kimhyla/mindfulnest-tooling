@@ -1133,6 +1133,40 @@ class StateManager:
             try:
                 state = json.loads(self.state_path.read_text())
                 result = fn(state)
+                # DISPLAY_ORDER_STRICT_V2 (C-10 K4 fix): defense-in-depth
+                # prune. The mutate_video_state path at line 1264-1296 has a
+                # symmetric prune since C2-bundle (DISPLAY_ORDER_STRICT_V1).
+                # Pre-C-10, callers that bypass mutate_video_state and write
+                # directly to state.videos.<role>.beats via mutate_state could
+                # leave orphan beats not in display_order — that's the K4
+                # asymmetry the 2026-05-01 leak exploited (state.beats was
+                # legacy top-level; subsequent migrate_state lift carried
+                # corrupted beats into videos.intro.beats and the prune in
+                # mutate_video_state never saw them because all the writers
+                # bypassed it via mutate_state). Post-C-7.5, all v59 mutation
+                # handlers route partition writes through mutate_video_state
+                # so this defense is largely structural-fallback now — but
+                # it's idempotent on every mutate_state call, so any future
+                # handler that accidentally writes into a partition still gets
+                # caught. Walks state["videos"] and prunes partition.beats to
+                # be a subset of partition.display_order WHEN display_order is
+                # a present LIST. Skip when display_order is missing or non-list
+                # (legacy int form — pre-v3 fixture shape).
+                videos = state.get("videos")
+                if isinstance(videos, dict):
+                    for _role, _partition in videos.items():
+                        if not isinstance(_partition, dict):
+                            continue
+                        _do = _partition.get("display_order")
+                        if not isinstance(_do, list):
+                            continue
+                        _allowed = set(_do)
+                        _beats = _partition.get("beats")
+                        if not isinstance(_beats, dict):
+                            continue
+                        for _bid in list(_beats.keys()):
+                            if _bid not in _allowed:
+                                del _beats[_bid]
                 state["updated_at"] = datetime.now(timezone.utc).isoformat()
                 self._atomic_write_json(self.state_path, state)
                 return result

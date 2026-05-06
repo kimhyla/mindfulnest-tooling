@@ -237,28 +237,9 @@ test.describe('K3 — bg_add_beat segment derived from scope (RED until C-4)', (
   });
 });
 
-test.describe('K4 — DISPLAY_ORDER_STRICT_V2 defense-in-depth in mutate_state (RED until C-10)', () => {
-  // Skeleton: requires direct StateManager test against a state shape with
-  // list-valued display_order excluding a beat. The fixture's display_order
-  // is int (legacy shape) so the existing mutate_video_state prune at line
-  // 1198-1217 wouldn't fire on it; testing the C-10 mutate_state addition
-  // requires either (a) a Python pytest with controlled state, or (b) using
-  // the v2 patch endpoint after first promoting display_order to a list via
-  // a separate mutator. Both add fixture-tree side effects that belong to
-  // the C-10 commit, not C-1's RED scaffold. Per spec §11.1, TVMC-K4.1 is
-  // a Pytest, not a Playwright test — full implementation moves to a
-  // Production/tools/tests/ pytest file at C-10.
-  test.fixme('TVMC-K4.1 — mutate_state caller prunes beats not in display_order (post-C-10)', async ({ request }) => {
-    // After C-10 lands:
-    //   - StateManager.mutate_state runs a post-write prune walking state.videos
-    //   - For each role with list-valued display_order, prunes partition.beats
-    //     to be a subset.
-    //   - Idempotent on every mutate_state call.
-    //
-    // Test contract (when fleshed out at C-10 in a pytest):
-    //   - Seed state: videos.intro.display_order=["beat_01"], beats={beat_01,beat_02}
-    //   - Call any handler that goes through mutate_state (e.g. patch_state)
-    //   - Assert post-call: state.videos.intro.beats == {beat_01:{...}}  (beat_02 pruned)
-    expect(true).toBe(false);
-  });
-});
+// TVMC-K4.1 (DISPLAY_ORDER_STRICT_V2 defense-in-depth in mutate_state)
+// landed at C-10 as a Pytest per spec §11.1 — see
+// Production/tools/tests/test_display_order_strict_v2.py. The Playwright
+// scaffold here intentionally has no K4 test entry; CI runs both the
+// Playwright suite + the Pytest suite (workflow `Sidecar TypeError
+// regression` step adjacent to it runs the Pytest gate).

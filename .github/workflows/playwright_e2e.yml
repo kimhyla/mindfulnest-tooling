@@ -97,6 +97,17 @@ jobs:
         # surfaces independently of e2e flake. Wave 1 architectural-fix.
         run: python3 Production/tools/tests/test_sidecar_display_order_int.py
 
+      - name: DISPLAY_ORDER_STRICT_V2 defense-in-depth (C-10 — TVMC-K4.1 Pytest)
+        # Pytest gate per spec §11.1 TVMC-K4.1: StateManager.mutate_state
+        # must prune partition.beats to be a subset of partition.display_order
+        # whenever display_order is a present LIST. Idempotent on every
+        # mutate_state call; isinstance-guard skips legacy int display_order
+        # (pre-v3 fixtures). Closes the K4 asymmetry (mutate_video_state
+        # always pruned, mutate_state never did pre-C-10).
+        run: |
+          PRODUCTION_SERVER_SINGLE_MACHINE=1 \
+            python3 -m unittest -v Production.tools.tests.test_display_order_strict_v2
+
       - name: Scrambled-state SCR.1+SCR.2 (C-7.6 — READ-ONLY against Event_1)
         # Pytest gates from spec §11.2 + Kim's pre-C-9 addendum 2026-05-06.
         # SCR.1: scope_router.resolve doesn't crash on Event_1 stranded state.
