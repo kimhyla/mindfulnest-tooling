@@ -809,6 +809,31 @@ def _canonicalize_speaker(raw: str) -> str:
     return _SPEAKER_ALIAS.get(key.lower(), key)
 
 
+def _resolve_beat_speaker(beat: dict) -> str:
+    """Read-side canonical speaker resolution (SPEAKER_DUAL_STORE_DEPRECATION_V1).
+
+    Top-level partition.beats[bid].speaker is the canonical store as of C-6.
+    phase_1.speaker is the legacy mirror — kept for one-release read-compat
+    so on-disk legacy values don't blank out before the N+1 sprint that
+    collapses the phase_1 write site.
+
+    Resolution order:
+      1. beat.get("speaker")                   (top-level canonical)
+      2. beat.get("phase_1", {}).get("speaker")  (legacy mirror)
+      3. ""                                    (fail-loud at TTS time per LD-520)
+
+    Callers MUST go through this helper for any speaker read; direct
+    `beat["phase_1"]["speaker"]` reads are scheduled for removal in the
+    SPEAKER_DUAL_STORE_DEPRECATION_V1 N+1 collapse.
+    """
+    beat = beat or {}
+    s = beat.get("speaker")
+    if s:
+        return s
+    phase_1 = beat.get("phase_1") or {}
+    return phase_1.get("speaker") or ""
+
+
 def build_motion_prompt(beat: dict) -> str:
     """Build a Rule 8.1-8.4 compliant motion prompt for Kling v3 Pro.
 
@@ -4246,18 +4271,25 @@ def patch_state(
             else:
                 p1["fade_after_ms"] = int(_v)
         elif _f == "speaker":
-            # Tier 3: speaker change invalidates existing audio (mismatch until
-            # next regen). _tier1a_mark_regen_fired clears speaker_mismatch
-            # after a successful regen.
-            # NOTE: K8 dual-store contract lands in C-6 (speaker mirror to
-            # partition.beats[bid].speaker); this commit preserves the
-            # existing phase_1.speaker single-store path.
+            # K8 + SPEAKER_DUAL_STORE_DEPRECATION_V1 (C-6): canonicalize at
+            # write boundary (SPEAKER_WRITE_BOUNDARY_CANONICALIZATION_V1)
+            # and write to BOTH the canonical top-level partition.beats[bid].speaker
+            # AND the legacy phase_1.speaker mirror. Read sites use
+            # _resolve_beat_speaker(beat) which prefers top-level and falls
+            # back to phase_1 for legacy on-disk values. The mirror is a
+            # one-release read-compat shim; SPEAKER_DUAL_STORE_DEPRECATION_V1
+            # tracks the N+1 sprint that drops the phase_1 write entirely.
+            canonical = _canonicalize_speaker(_v or "") or ""
+            old_top_speaker = beat.get("speaker") or ""
+            beat["speaker"] = canonical                    # canonical write target (TTS reads this)
             p1 = beat.setdefault("phase_1", {})
-            old_speaker = p1.get("speaker")
-            p1["speaker"] = _v
-            if (old_speaker or "") != _v:
-                # Only flip mismatch ON if the speaker actually changed. Don't
-                # clobber a pre-existing False after a regen cleared it.
+            old_phase1_speaker = p1.get("speaker") or ""
+            p1["speaker"] = canonical                      # mirror for read-compat shim
+            # Mismatch-flip semantics: speaker change invalidates existing
+            # audio (mismatch until next regen); _tier1a_mark_regen_fired
+            # clears speaker_mismatch after a successful regen.
+            old_speaker = old_top_speaker or old_phase1_speaker
+            if old_speaker != canonical:
                 p1["speaker_mismatch"] = True
                 p1["speaker_mismatch_set_at"] = (
                     datetime.now(timezone.utc).isoformat()

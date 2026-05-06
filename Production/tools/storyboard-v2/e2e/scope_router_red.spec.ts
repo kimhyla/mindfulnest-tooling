@@ -179,8 +179,8 @@ test.describe('K7 — speaker write-boundary canonicalization (RED until C-3)', 
 });
 
 test.describe('K8 — speaker dual-store mirror (RED until C-6)', () => {
-  // RED until C-6: un-fixme in C-6 commit (same commit as K8 dual-store mirror contract)
-  test.fixme('TVMC-K8.1 — patch_state speaker write mirrors to top-level partition.beats[bid].speaker AND phase_1.speaker', async ({ request }) => {
+  // GREEN as of C-6 (un-fixme'd in same commit as K8 dual-store mirror contract)
+  test('TVMC-K8.1 — patch_state speaker write mirrors to top-level partition.beats[bid].speaker AND phase_1.speaker', async ({ request }) => {
     const beatId = 'beat_01';  // exists in fixture intro
     const r = await request.post(`${SERVER}/api/v2/beat/${beatId}/patch`, {
       data: {
