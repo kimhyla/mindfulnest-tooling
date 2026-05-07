@@ -97,6 +97,32 @@ jobs:
         # surfaces independently of e2e flake. Wave 1 architectural-fix.
         run: python3 Production/tools/tests/test_sidecar_display_order_int.py
 
+      - name: DISPLAY_ORDER_STRICT_V2 defense-in-depth (C-10 — TVMC-K4.1 Pytest)
+        # Pytest gate per spec §11.1 TVMC-K4.1: StateManager.mutate_state
+        # must prune partition.beats to be a subset of partition.display_order
+        # whenever display_order is a present LIST. Idempotent on every
+        # mutate_state call; isinstance-guard skips legacy int display_order
+        # (pre-v3 fixtures). Closes the K4 asymmetry (mutate_video_state
+        # always pruned, mutate_state never did pre-C-10).
+        run: |
+          PRODUCTION_SERVER_SINGLE_MACHINE=1 \
+            python3 -m unittest -v Production.tools.tests.test_display_order_strict_v2
+
+      - name: Scrambled-state SCR.1+SCR.2 (C-7.6 — READ-ONLY against Event_1)
+        # Pytest gates from spec §11.2 + Kim's pre-C-9 addendum 2026-05-06.
+        # SCR.1: scope_router.resolve doesn't crash on Event_1 stranded state.
+        # SCR.2: _handle_beat_update_text on beat_05 (Guide Bird speaker)
+        #        — currently expectedFailure (architectural gap surfaced
+        #          pre-salvage; awaiting Kim's authorization on whether
+        #          to add canonicalize-on-touch to update_partition).
+        # CI runs SKIP these tests because Event_1's actual state.json lives
+        # in Kim's Dropbox tree (not in this checkout). Tests execute when
+        # the file is reachable (Kim's local runs). Read-only invariant
+        # enforced via sha256 pre/post check in tearDownClass.
+        run: |
+          PRODUCTION_SERVER_SINGLE_MACHINE=1 \
+            python3 -m unittest -v Production.tools.tests.test_scope_router_scrambled
+
       # ----------------------------------------------------------------
       # MUTATION_CHANNEL_INVARIANT_V1 grep gate (Wave 1 architectural-fix
       # spec §5 Phase 3.4 + Cursor R5 mandatory enforcement).
@@ -186,7 +212,106 @@ jobs:
           fi
           echo "Mutation channel invariant strict: PASS (no tracked exceptions)"
 
-      - name: Run Playwright e2e (proper-fix + retroactive + S5.5f + architectural-fix scopes)
+      # ----------------------------------------------------------------
+      # SCOPE_ROUTER_V1 / BG_HARDCODED_SCOPE_PURGE_V1 AST grep gate
+      # (authoring-workflow architecture, spec_v2 §4 + handoff C-1).
+      #
+      # Bans hardcoded partition lifts in production_server.py:
+      #   * `state.setdefault("videos",{}).setdefault("intro"...` (K1, D5)
+      #   * direct top-level `state.setdefault("beats", {})` outside
+      #     scope_router.py + StateManager (K2)
+      #   * literal `arc_number=1, event_id=2, phase="pre"` in handlers (K3)
+      #
+      # On the C-1 RED-phase commit, this gate trips RED — it pins the
+      # contract that C-2..C-4 turn GREEN by removing the hardcodes. CI
+      # green is expected by the close of C-4.
+      #
+      # Allowed surfaces: scope_router.py (the router itself), and the
+      # StateManager block in production_server.py around line 1185-1218
+      # (the auto-create path inside mutate_video_state that initializes
+      # the partition with the role marker — pre-mutator, not in handler
+      # code, and therefore exempt by design).
+      # ----------------------------------------------------------------
+
+      - name: SCOPE_ROUTER_V1 + BG_HARDCODED_SCOPE_PURGE_V1 hardcode bans (HARD BLOCK)
+        # As of C-7.5 the spec §5.1 sibling-handler audit acceptance is met:
+        # repository grep returns ZERO hits for K1/D5/K2/K3 hardcode patterns
+        # across production_server.py mutation handlers. C-1 surfaced 6 K1/D5
+        # sites + 3 K2 sites + 1 K3 site. C-2 through C-7.5 closed each one:
+        #   C-2: K1 canonical (12051) + D5 canonical (4083)
+        #   C-3: K2 canonical (8996); K7 Guide-Bird literal at write boundary
+        #   C-4: K3 canonical (9279)
+        #   C-7.5: 5 sibling sites — _handle_animate ×2, _handle_v2_patch._bump
+        #          (also reconciled K2 _version legacy bump),
+        #          _handle_v2_beat_swap_to_a, _handle_add_options_legacy,
+        #          _handle_v2_beat_create
+        # Gate flipped from warning-only (continue-on-error: true during
+        # C-1 → C-7 RED→GREEN progression) to hard block: any future
+        # regression that re-introduces a hardcoded videos.intro lift,
+        # top-level state.beats write, or arc_number=1/event_id=2/phase=pre
+        # literal will FAIL CI.
+        # Multi-line scan via python — single-line grep misses K1 chain
+        # wraps across three lines (`state.setdefault("videos", ...)` /
+        # `.setdefault("intro"...` / `.setdefault("beats"...`). Python regex
+        # with re.DOTALL catches both single- and multi-line forms.
+        run: |
+          python3 - <<'PY'
+          import re, sys, pathlib
+          src = pathlib.Path("Production/tools/production_server.py").read_text(encoding="utf-8")
+
+          fail = 0
+
+          # K1 + D5 — hardcoded `videos.intro` partition lift outside router /
+          # StateManager. Allowed surfaces: scope_router.py (the router itself);
+          # StateManager.mutate_video_state auto-create block (~lines 1185-1196)
+          # which initializes the partition with the role marker pre-mutator.
+          # Detect multi-line setdefault chains.
+          k1_re = re.compile(
+              r'state\.setdefault\(\s*"videos"\s*,\s*\{\}\s*\)\.setdefault\(\s*"intro"',
+              re.DOTALL,
+          )
+          for m in k1_re.finditer(src):
+              # Line of the match start
+              line = src[:m.start()].count("\n") + 1
+              # Allowlist: StateManager init block
+              if 1180 <= line <= 1230:
+                  continue
+              snippet = src[m.start():m.end() + 60].replace("\n", " ")
+              print(f"::error::K1/D5 hardcode at line {line}: {snippet!r}")
+              fail = 1
+
+          # K2 — direct top-level state.beats setdefault.
+          k2_re = re.compile(r'state\.setdefault\(\s*"beats"')
+          for m in k2_re.finditer(src):
+              line = src[:m.start()].count("\n") + 1
+              snippet = src[m.start():m.end() + 60].replace("\n", " ")
+              print(f"::error::K2 top-level state.beats at line {line}: {snippet!r}")
+              fail = 1
+
+          # K3 — hardcoded BG segment.
+          k3_re = re.compile(r'arc_number=1,\s*event_id=2,\s*phase="pre"')
+          for m in k3_re.finditer(src):
+              line = src[:m.start()].count("\n") + 1
+              snippet = src[m.start():m.end() + 60].replace("\n", " ")
+              print(f"::error::K3 hardcoded BG segment at line {line}: {snippet!r}")
+              fail = 1
+
+          if fail:
+              print(
+                  "::error::Authoring-workflow hardcode bans FAILED. Spec §5.1 acceptance "
+                  "is post-C-7 grep returns ZERO; any new hardcoded videos.intro / "
+                  "top-level state.beats / arc=1/event=2/phase=pre is a regression. "
+                  "Route the partition write via scope_router.mutate_partition or "
+                  "app.state.mutate_video_state(scope.video_role, ...) instead."
+              )
+              sys.exit(1)
+          print(
+              "Authoring-workflow hardcode bans: PASS "
+              "(no hardcoded videos.intro / state.beats / BG segment in handlers)"
+          )
+          PY
+
+      - name: Run Playwright e2e (proper-fix + retroactive + S5.5f + architectural-fix + authoring-workflow scopes)
         working-directory: Production/tools/storyboard-v2
         # Per spec §19.2 / §19.6 (S5.5f) + §19 / §8.9 (retroactive) — APPEND,
         # not replace, not glob. Each session that ships new e2e specs adds
@@ -199,6 +324,14 @@ jobs:
         #   - s5_5f_smoke (18 tests — F3-F17 from PR #3)
         #   - architectural_fix (9 tests — Wave 1 mutation channel + sidecar)
         #   - s5_5g_smoke (S5.5g G3-G13 functional behavior gates from PR #5)
+        #   - scope_router_red (C-1 RED suite for K1-K8 + D5 prevention claims;
+        #     turns GREEN as C-2..C-7 + C-10 land per handoff §3 test pinning)
+        #   - beat_graft_red (C-1 RED skeleton for /api/beat/graft cornerstone;
+        #     turns GREEN at C-7 per handoff §3)
+        # CI is RED on these two new files until their phase-paired commit
+        # lands (DS-2 expected RED → GREEN). C-7 + C-10 close the suite.
+        # Until C-2/C-3/C-5/C-6 land, the K-prevention tests in
+        # scope_router_red FAIL by design — that is the contract proof.
         run: |
           npx playwright test \
             e2e/s5_5ce_proper_fix.spec.ts \
@@ -211,6 +344,8 @@ jobs:
             e2e/s5_5f_smoke.spec.ts \
             e2e/architectural_fix.spec.ts \
             e2e/s5_5g_smoke.spec.ts \
+            e2e/scope_router_red.spec.ts \
+            e2e/beat_graft_red.spec.ts \
             --reporter=line
 
       - name: Upload test artifacts on failure

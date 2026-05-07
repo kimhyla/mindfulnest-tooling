@@ -286,6 +286,32 @@
 .mn-event-loading { font-size: 11px; color: var(--text-warn); }
 .mn-event-error { font-size: 11px; color: var(--text-error); }
 
+/* Video selector — C-13 ride-along, mirrors .mn-event-selector pattern.
+   Same visual language for the per-event scope chip + the per-video-role
+   chip in the storyboard scope banner. Per spec_v2 §5.5 + handoff §4 C-13. */
+.mn-video-selector {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.mn-video-selector-label {
+  color: var(--text-dim);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+.mn-video-select {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-size: 12px;
+  font-family: inherit;
+}
+.mn-video-loading { font-size: 11px; color: var(--text-warn); }
+.mn-video-error { font-size: 11px; color: var(--text-error); }
+
 /* Phase producer (LDs 462, 463) */
 .mn-phase-producers {
   display: flex;

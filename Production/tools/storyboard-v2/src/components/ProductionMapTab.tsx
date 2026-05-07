@@ -21,12 +21,23 @@ interface SegmentStatus {
   latest?: string;
 }
 
+// C-12 ride-along: per-role state derived server-side from partition
+// presence + display_order + completed mp4 + final concat. Picker-spec R3
+// preserved (no prod_modules schema change). 5-state glyph mapping in
+// statusGlyphForRole() below mirrors post-redeploy v2 §3.3 Part 2.
+type RoleStateValue = 'absent' | 'empty' | 'in_progress' | 'complete' | 'final';
+interface RoleStatus {
+  state: RoleStateValue;
+  completed_mp4?: string;
+}
+
 interface MapRow {
   m_number: number;
   creature_name: string;
   video_role: string;
   event_dir: string;
   segments: Record<string, SegmentStatus>;
+  videos_by_role?: Record<string, RoleStatus>;
 }
 
 interface MapResponse {
@@ -35,11 +46,21 @@ interface MapResponse {
   generated_at?: string;
 }
 
-const SEGMENTS = [
-  { key: 'phase_a', label: 'Phase A' },
-  { key: 'phase_b', label: 'Phase B' },
-  { key: 'intro_or_resolution', label: 'Storyboard' },
-  { key: 'final_concat', label: 'Final concat' },
+// 5-column layout per handoff §4 C-12: Intro, Phase A, Phase B, Resolution,
+// Final concat. The single legacy "Storyboard" column is replaced by per-role
+// columns (intro + resolution); Phase A / Phase B / Final concat unchanged.
+// Each segment has a `kind`: 'role' uses videos_by_role + 5-state glyph;
+// 'segment' uses the legacy ready/missing artifact glob status.
+type SegmentDef =
+  | { key: 'intro' | 'resolution'; kind: 'role'; label: string }
+  | { key: 'phase_a' | 'phase_b' | 'final_concat'; kind: 'segment'; label: string };
+
+const SEGMENTS: readonly SegmentDef[] = [
+  { key: 'intro', kind: 'role', label: 'Intro' },
+  { key: 'phase_a', kind: 'segment', label: 'Phase A' },
+  { key: 'phase_b', kind: 'segment', label: 'Phase B' },
+  { key: 'resolution', kind: 'role', label: 'Resolution' },
+  { key: 'final_concat', kind: 'segment', label: 'Final' },
 ] as const;
 
 function statusGlyph(s: SegmentStatus | undefined): string {
@@ -47,6 +68,25 @@ function statusGlyph(s: SegmentStatus | undefined): string {
   if (s.status === 'ready') return '✅';
   if (s.status === 'missing') return '❌';
   return '⏳';
+}
+
+// 5-state glyph for per-role columns. Mapping per post-redeploy v2 §3.3
+// Part 2 + handoff §4 C-12:
+//   absent      → '—'   em dash, n/a (partition not in state.videos)
+//   empty       → '○'   white circle (partition present, display_order=[])
+//   in_progress → '◐'   half circle (display_order populated, no mp4)
+//   complete    → '●'   black circle (display_order + per-role mp4)
+//   final       → '★'   star (complete + module-level final concat)
+function statusGlyphForRole(r: RoleStatus | undefined): string {
+  if (!r) return '—';
+  switch (r.state) {
+    case 'absent':      return '—';
+    case 'empty':       return '○';
+    case 'in_progress': return '◐';
+    case 'complete':    return '●';
+    case 'final':       return '★';
+    default:            return '?';
+  }
 }
 
 export function ProductionMapTab() {
@@ -119,7 +159,17 @@ export function ProductionMapTab() {
                   <td>{m.creature_name}</td>
                   <td>{m.video_role}</td>
                   {SEGMENTS.map((s) => {
-                    const seg = m.segments[s.key];
+                    // Two cell flavors:
+                    //   role    — videos_by_role[<role>].state → 5-state glyph
+                    //   segment — segments[<key>].status → 3-state glyph (ready/missing/⏳)
+                    const isRole = s.kind === 'role';
+                    const role = isRole ? m.videos_by_role?.[s.key] : undefined;
+                    const seg = !isRole ? m.segments[s.key] : undefined;
+                    const cellGlyph = isRole ? statusGlyphForRole(role) : statusGlyph(seg);
+                    const cellState = isRole ? (role?.state ?? 'absent') : (seg?.status ?? 'unknown');
+                    const titleHint = isRole
+                      ? `${s.label}: ${role?.state ?? 'absent'}${role?.completed_mp4 ? ' · ' + role.completed_mp4 : ''} · click to load this scope`
+                      : `${seg?.latest ?? ''}${seg?.latest ? ' · ' : ''}click to load this scope`;
                     const onCellClick = async () => {
                       // S4 — click cell to load that scope in storyboard.
                       // Per LD-465 PRODUCTION_MAP_V1.
@@ -151,16 +201,17 @@ export function ProductionMapTab() {
                     return (
                       <td
                         key={s.key}
-                        class="mn-map-cell mn-map-cell-clickable"
+                        class={isRole ? 'mn-map-cell mn-map-cell-role mn-map-cell-clickable' : 'mn-map-cell mn-map-cell-clickable'}
                         data-testid={`map-cell-m${m.m_number}-${s.key}`}
-                        data-segment-status={seg?.status ?? 'unknown'}
-                        title={`${seg?.latest ?? ''}${seg?.latest ? ' · ' : ''}click to load this scope`}
+                        data-segment-status={cellState}
+                        data-cell-kind={s.kind}
+                        title={titleHint}
                         onClick={onCellClick}
                         role="button"
                         tabIndex={0}
                       >
-                        <span class="mn-map-glyph">{statusGlyph(seg)}</span>
-                        {seg ? (
+                        <span class="mn-map-glyph">{cellGlyph}</span>
+                        {!isRole && seg ? (
                           <span class="mn-map-count">{seg.count}</span>
                         ) : null}
                       </td>
