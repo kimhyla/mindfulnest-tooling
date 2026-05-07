@@ -43,10 +43,13 @@ def main() -> int:
         print("error: --payload-file or --stdin required", file=sys.stderr)
         return 2
 
-    # Ensure date_locked is set if caller omitted it.
-    payload.setdefault("date_locked", _utcnow_iso())
-    # Ensure status is active.
-    payload.setdefault("status", "active")
+    # Ensure required fields are set per collection. Activity log uses
+    # collection-specific fields only; locked decisions need date_locked +
+    # status. Adding extras to other collections triggers SilentWriteFailure
+    # because Directus drops unknown fields.
+    if args.collection == "prod_locked_decisions":
+        payload.setdefault("date_locked", _utcnow_iso()[:10])
+        payload.setdefault("status", "active")
 
     result = try_post_or_queue(args.collection, payload)
     print(json.dumps(result, indent=2, default=str))
