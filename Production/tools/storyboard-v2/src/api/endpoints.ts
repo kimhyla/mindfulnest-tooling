@@ -23,6 +23,8 @@ export const READ_ENDPOINTS = {
   event_list: `${SERVER_BASE}/api/event/list`,
   phase_watercolor_list: `${SERVER_BASE}/api/phase/watercolor_list`,
   phase_base_clips_list: `${SERVER_BASE}/api/phase/base_clips_list`,
+  // S5.5f — ambient bed preset inventory.
+  phase_b_ambient_preset_list: `${SERVER_BASE}/api/phase_b/ambient_preset_list`,
   production_map: `${SERVER_BASE}/api/production/map`,
   // S5.5b new — Bug 4 fix + VideoSelector data source
   event_current: `${SERVER_BASE}/api/event/current`,
@@ -63,15 +65,29 @@ export const MUTATION_ENDPOINTS = {
   state_snapshot: `${SERVER_BASE}/api/state/snapshot`,
   // Session 1.5 v3.1 NEW endpoint — atomic event swap + generation bump (LD-458)
   event_load: `${SERVER_BASE}/api/event/load`,
+  // S5.5c+e proper-fix +NewEvent — server-side event-dir creation
+  event_create: `${SERVER_BASE}/api/event/create`,
   // S3 v3.1 — phase + animate + stitcher mutations.
   phase_suggest_script: `${SERVER_BASE}/api/phase/suggest_script`,
   watercolor_animate: `${SERVER_BASE}/api/watercolor/animate`,
   stitch_loudnorm: `${SERVER_BASE}/api/stitch_editor/loudnorm`,
+  // V59 architectural-fix Wave 1 (F-S2-001) — StitcherTab Preview/Bake
+  // routed via pathappPatch. stitch_save_job already exists below.
+  stitch_preview: `${SERVER_BASE}/api/stitch_editor/preview`,
+  stitch_bake: `${SERVER_BASE}/api/stitch_editor/bake`,
   // S4 v3.1 — Phase A/B producer mutations.
   phase_b_regen_audio: `${SERVER_BASE}/api/phase_b/regen_audio`,
   phase_b_mix_audio: `${SERVER_BASE}/api/phase_b/mix_audio`,
   phase_b_lipsync: `${SERVER_BASE}/api/phase_b/lipsync`,
   stitch_save_job: `${SERVER_BASE}/api/stitch_editor/job`,
+  // S5.5g — module-level SFX cue upsert (separate from per-slot sfx_cues
+  // which travel inside stitch_save_job.slots[i].sfx_cues per audit doc §3).
+  timeline_cue_upsert: `${SERVER_BASE}/api/timeline/cues`,
+  // S5.5f — top-level state writes via the v2 module-patch handler.
+  // Whitelisted fields: see _V2_MODULE_ALLOWED_FIELDS in production_server.py.
+  // Used for phase_X_watercolor_cues_json, phase_X_ambient_preset_id, the
+  // Phase A 3-clip slots, etc. Cursor v8 Beyond #2 — added to MUTATION_ENDPOINTS.
+  v2_module_patch: `${SERVER_BASE}/api/v2/module/patch`,
   // S5.5b new — VideoSelector + partition create
   video_set_active: `${SERVER_BASE}/api/video/set_active`,
   video_create: `${SERVER_BASE}/api/video/create`,
@@ -99,6 +115,13 @@ export const MUTATION_ENDPOINTS = {
   beat_use_as_final: `${SERVER_BASE}/api/beat/use_as_final`,
   beat_delay: `${SERVER_BASE}/api/beat/delay`,
   beat_trim: `${SERVER_BASE}/api/beat/trim`,
+  // Authoring-workflow Pillar 7 cornerstone (C-7) — canonical beat-recovery
+  // primitive. COPY default; move=true for cross-event/role moves. Per
+  // LD BEAT_GRAFT_RECOVERY_MECHANISM_V1: pre-render-only invariant
+  // (HTTP 400 on rendered media), audit JSONL + Directus mirror,
+  // mutation_id idempotency + content fingerprint, pre-image backups.
+  // Cross-event source requires server start with --source-event flag.
+  beat_graft: `${SERVER_BASE}/api/beat/graft`,
 } as const;
 
 export type ReadEndpoint = keyof typeof READ_ENDPOINTS;

@@ -17,7 +17,12 @@
 //   6. Returns ApiResult so callers can branch on ok/error.
 
 import type { Scope } from '../state/scope';
-import { activeScope } from '../state/scope';
+import {
+  activeScope,
+  activeTargetVideo,
+  activeProjectType,
+  activeMilestoneId,
+} from '../state/scope';
 import {
   READ_ENDPOINTS,
   MUTATION_ENDPOINTS,
@@ -195,13 +200,32 @@ export async function pathappPatch<T = unknown>(
   }
 
   // LD-461 — pick the right scope key per handler convention.
+  // S5.5b: also auto-inject scope_video_role from activeVideoRole signal so
+  // every mutating request carries the partition selector per LD-474. Caller
+  // can override by passing scope_video_role explicitly in `body`.
+  // S5.5d (v3): also auto-inject scope_target_video (canonical name, same
+  // value as scope_video_role) + scope_milestone_id when active. The
+  // dual-key emit lets server handlers transition incrementally.
   const scopeKey = scopeKeyFor(endpoint);
   const payload: Record<string, unknown> = {
+    // baseline — body can override.
+    // S5.5c+e proper-fix R2: beat_id MOVED before ...body so drop handlers
+    // can pass the dropped-on beat_id explicitly without scope.beat_id
+    // (typically null) overwriting it. Scope-key + scope_version stay AFTER
+    // body since those identify the request scope and must not be overridden.
+    scope_video_role: activeTargetVideo.value,
+    scope_target_video: activeTargetVideo.value,
+    beat_id: scope.beat_id,
     ...body,
     [scopeKey]: scope.event_id,
-    beat_id: scope.beat_id,
     scope_version: scope.version,
   };
+  // Milestone-scope injection per MILESTONE_STANDALONE_INDEPENDENT_V1.
+  if (activeProjectType.value === 'milestone' && activeMilestoneId.value) {
+    payload['scope_milestone_id'] = activeMilestoneId.value;
+  } else {
+    payload['scope_event_id'] = scope.event_id;
+  }
 
   const result = await apiPostRaw<T>(MUTATION_ENDPOINTS[endpoint], payload, method);
 

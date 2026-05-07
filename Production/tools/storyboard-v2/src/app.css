@@ -286,6 +286,32 @@
 .mn-event-loading { font-size: 11px; color: var(--text-warn); }
 .mn-event-error { font-size: 11px; color: var(--text-error); }
 
+/* Video selector — C-13 ride-along, mirrors .mn-event-selector pattern.
+   Same visual language for the per-event scope chip + the per-video-role
+   chip in the storyboard scope banner. Per spec_v2 §5.5 + handoff §4 C-13. */
+.mn-video-selector {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.mn-video-selector-label {
+  color: var(--text-dim);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+.mn-video-select {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-size: 12px;
+  font-family: inherit;
+}
+.mn-video-loading { font-size: 11px; color: var(--text-warn); }
+.mn-video-error { font-size: 11px; color: var(--text-error); }
+
 /* Phase producer (LDs 462, 463) */
 .mn-phase-producers {
   display: flex;
@@ -348,15 +374,31 @@
   gap: 8px;
   margin-top: 6px;
 }
+/* LD-203 WATERCOLOR_TILE_FRAMING_V1: brown border + cream mat + white interior + centered art.
+   Applied to library tiles (PhaseProducer + future LibraryPanel parity).
+   Frame nesting: outer brown border → cream mat (padding) → white interior wrapping the centered art. */
 .mn-phase-watercolor-tile {
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
+  /* Brown border. */
+  border: 2px solid #6b4f2a;
+  /* Cream mat. */
+  background: #f5e9c8;
   border-radius: 3px;
+  /* The cream mat is the padding zone. */
   padding: 6px;
   display: flex;
   flex-direction: column;
   gap: 4px;
   align-items: stretch;
+}
+/* White interior — wraps the thumb so the cream mat shows around the white. */
+.mn-phase-watercolor-tile .mn-phase-watercolor-thumb-wrap {
+  background: #ffffff;
+  border-radius: 2px;
+  /* Centered art. */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px;
 }
 .mn-phase-watercolor-thumb {
   width: 100%;
@@ -406,6 +448,162 @@
 .mn-phase-audio audio, .mn-phase-lipsync video {
   background: var(--code-bg);
   border-radius: 3px;
+}
+
+/* WaveformTimeline — S5.5f / WAVESURFER_TIMELINE_INTEGRATION_V1 */
+.mn-waveform-timeline {
+  position: relative;
+  margin: 8px 0;
+  padding: 6px 8px;
+  background: var(--code-bg);
+  border-radius: 3px;
+}
+.mn-waveform-empty {
+  padding: 12px;
+  text-align: center;
+  font-size: 12px;
+}
+.mn-waveform-source-label {
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.mn-waveform-canvas {
+  position: relative;
+  width: 100%;
+  min-height: 80px;
+}
+.mn-waveform-cue-overlay {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 6px;
+  top: 28px;
+  pointer-events: none;
+  /* WaveSurfer v7 renders absolutely-positioned children inside its container
+     that visually overlap our cue markers. Force the overlay above its
+     stacking context so the markers receive clicks. */
+  z-index: 5;
+}
+.mn-waveform-cue-marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  margin-left: -4px;
+  background: rgba(204, 51, 51, 0.55);
+  border-left: 1px solid #c33;
+  border-right: 1px solid #c33;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.mn-waveform-cue-marker:hover {
+  background: rgba(204, 51, 51, 0.85);
+}
+.mn-waveform-error {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #c33;
+}
+
+/* CuePopover — S5.5f / CUE_POPOVER_INSPECTOR_V1 */
+.mn-cue-popover {
+  width: 260px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  padding: 10px 12px;
+  font-size: 12px;
+}
+.mn-cue-popover-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.mn-cue-popover-close {
+  background: transparent;
+  border: 0;
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1;
+}
+.mn-cue-popover-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+}
+.mn-cue-popover-row > span:first-child {
+  flex: 0 0 80px;
+}
+.mn-cue-popover-row select,
+.mn-cue-popover-row input[type='number'] {
+  flex: 1;
+  min-width: 0;
+}
+.mn-cue-popover-row input[type='range'] {
+  flex: 1;
+}
+.mn-cue-popover-footer {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 10px;
+}
+.mn-btn-danger {
+  color: #c33;
+}
+
+/* Phase A 3-clip section — S5.5f / PHASE_A_THREE_CLIP_HANDLING_V1 */
+.mn-phase-a-clip-section {
+  margin: 12px 0;
+  padding: 8px 10px;
+  background: var(--code-bg);
+  border-radius: 3px;
+}
+.mn-phase-a-clip-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 8px 0;
+}
+.mn-phase-a-clip-slot {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mn-phase-a-clip-label {
+  font-weight: 600;
+  font-size: 12px;
+}
+.mn-phase-a-clip-meta {
+  font-size: 11px;
+}
+.mn-phase-a-clip-total {
+  margin: 6px 0;
+}
+
+/* BaseClipPicker list */
+.mn-base-clip-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.mn-base-clip-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 6px 8px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+}
+.mn-base-clip-row:hover {
+  background: var(--code-bg);
 }
 .mn-beat-magic-row {
   display: flex;
@@ -532,6 +730,119 @@
 .mn-stitcher-empty {
   text-align: center;
   padding: 24px 12px;
+}
+
+/* StitcherSlotWaveform — S5.5g / STITCHER_SFX_CUE_UI_V1 (HARD).
+   Per spec §3.2 mini-waveform per slot; spec §4 Phase B B1 height: 40px. */
+.mn-stitcher-slot-waveform {
+  position: relative;
+  margin: 6px 0;
+  padding: 4px 6px;
+  background: var(--code-bg);
+  border: 1px dashed var(--border);
+  border-radius: 3px;
+  min-height: 40px;
+}
+.mn-stitcher-slot-waveform.is-drag-over {
+  border-color: #c33;
+  background: rgba(204, 51, 51, 0.08);
+}
+.mn-stitcher-slot-waveform-canvas {
+  position: relative;
+  width: 100%;
+  min-height: 28px;
+}
+.mn-stitcher-slot-waveform-cue-overlay {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  top: 4px;
+  bottom: 4px;
+  pointer-events: none;
+}
+.mn-stitcher-sfx-cue-marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  margin-left: -3px;
+  background: rgba(50, 130, 200, 0.55);
+  border-left: 1px solid #2872b4;
+  border-right: 1px solid #2872b4;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.mn-stitcher-sfx-cue-marker:hover {
+  background: rgba(50, 130, 200, 0.85);
+}
+
+/* Module-level SFX cue strip (G6) — drop target spans below the slot strip. */
+.mn-stitcher-module-timeline {
+  margin: 12px 0;
+  padding: 12px;
+  background: var(--code-bg);
+  border: 1px dashed var(--border);
+  border-radius: 3px;
+  min-height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+}
+.mn-stitcher-module-timeline.is-drag-over {
+  border-color: #c33;
+  background: rgba(204, 51, 51, 0.08);
+}
+
+/* Per-slot trim row (G9-G10) — STITCHER_PER_SLOT_TRIMS_V1 (HARD). */
+.mn-stitcher-trim-row {
+  font-size: 12px;
+}
+.mn-stitcher-trim-row input[type='number'] {
+  width: 60px;
+  padding: 1px 4px;
+  font-size: 12px;
+}
+
+/* Per-boundary transition selectors (G7-G8) — STITCHER_TRANSITIONS_V1 (HARD). */
+.mn-stitcher-transitions-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-around;
+  margin: 8px 0;
+  padding: 6px 8px;
+  background: var(--code-bg);
+  border-radius: 3px;
+  font-size: 12px;
+}
+.mn-stitcher-transition {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mn-stitcher-transition-label {
+  font-size: 11px;
+}
+.mn-stitcher-transition-kind {
+  font-size: 12px;
+  padding: 1px 4px;
+}
+.mn-stitcher-transition-audio {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.mn-stitcher-transition-audio input[type='number'] {
+  width: 60px;
+  padding: 1px 4px;
+  font-size: 12px;
+}
+
+/* SfxCuePopover — sibling of CuePopover for SFX cue editing. */
+.mn-sfx-cue-popover {
+  /* Inherits all .mn-cue-popover styles; this scope hook is for future
+     SFX-specific overrides without re-litigating watercolor styling. */
 }
 
 /* Cropper modal */
@@ -1074,6 +1385,41 @@
   height: 100%;
   object-fit: cover;
 }
+/* BG-17 — thumbnail size enforcement per spec §4 Phase A. max-width/max-height
+   work alongside the existing width/height:100% on .mn-bg-ref-slot img — the
+   lesser of the two wins, so the rendered thumbnail caps at 80×80 even though
+   the slot is 120×120. */
+.mn-bg-ref-thumb {
+  max-width: 80px;
+  max-height: 80px;
+  object-fit: cover;
+}
+/* BG-18 — visible × button to remove a ref (per Kim 2026-05-06 lock). */
+.mn-bg-ref-remove-btn {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.65);
+  color: var(--text-strong, #fff);
+  font-size: 12px;
+  line-height: 18px;
+  text-align: center;
+  cursor: pointer;
+  z-index: 3;
+  display: none;
+}
+.mn-bg-ref-slot.has-image:hover .mn-bg-ref-remove-btn,
+.mn-bg-ref-slot.has-image:focus-within .mn-bg-ref-remove-btn {
+  display: block;
+}
+.mn-bg-ref-remove-btn:hover {
+  background: rgba(180, 20, 20, 0.85);
+}
 .mn-bg-ref-slot-label {
   position: absolute;
   top: 2px;
@@ -1205,4 +1551,200 @@
 .mn-btn-small {
   font-size: 11px;
   padding: 3px 8px;
+}
+
+/* ----------------------------------------------------------------
+   S5.5c-pass2 — Phase A additions (BG-5/8/34/35 + CC-16/17/18/19)
+   ---------------------------------------------------------------- */
+
+/* BG-5 — Edit chip pencil button (sits next to existing × button). */
+.mn-bg-stage-chip-edit {
+  background: transparent;
+  border: 0;
+  color: var(--text-dim, #888);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 2px;
+  margin-left: 1px;
+}
+.mn-bg-stage-chip-edit:hover {
+  color: var(--text-strong, #fff);
+}
+
+/* BG-5 — chip edit modal input. */
+.mn-bg-chip-edit-input {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 13px;
+  border: 1px solid var(--border, #444);
+  border-radius: 4px;
+  background: var(--bg, #1a1a1a);
+  color: var(--text, #ddd);
+}
+
+/* BG-8 — Insert beat after button (between cards). */
+.mn-bg-insert-after {
+  display: flex;
+  justify-content: center;
+  margin: 4px 0 0;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.mn-bg-beat-card:hover .mn-bg-insert-after,
+.mn-bg-beat-card:focus-within .mn-bg-insert-after {
+  opacity: 1;
+}
+.mn-bg-insert-after-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+}
+
+/* BG-34/35 — Modal unset-beat-list. */
+.mn-bg-modal-unset-list {
+  margin: 8px 0 0;
+  padding: 6px 0 6px 18px;
+  list-style: disc;
+  font-size: 12px;
+  color: var(--text-dim, #888);
+  max-height: 160px;
+  overflow-y: auto;
+}
+.mn-bg-modal-unset-list li {
+  padding: 1px 0;
+}
+
+/* CC-16 — Storyboard image-holder drop zone (per spec §4 Phase A). */
+.mn-storyboard-image-drop-zone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 80px;
+  margin: 4px 0;
+  background: var(--bg, #1a1a1a);
+  border: 1px dashed var(--border, #444);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--text-dim, #888);
+  overflow: hidden;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.mn-storyboard-image-drop-zone.has-image {
+  min-height: auto;
+  border-style: solid;
+  border-color: var(--border-strong, #666);
+  padding: 0;
+}
+.mn-storyboard-image-drop-zone.mn-drop-target-active {
+  border-color: var(--accent, #4a9);
+  background: rgba(74, 153, 102, 0.08);
+}
+.mn-storyboard-image-thumb {
+  display: block;
+  max-width: 100%;
+  max-height: 160px;
+  object-fit: contain;
+}
+.mn-storyboard-image-placeholder {
+  font-style: italic;
+}
+
+/* CC-17/18 — Library controls (search + tier dropdown). */
+.mn-library-controls {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border, #333);
+}
+.mn-library-search {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border, #444);
+  border-radius: 4px;
+  background: var(--bg, #1a1a1a);
+  color: var(--text, #ddd);
+}
+.mn-library-tier-select {
+  padding: 4px 6px;
+  font-size: 12px;
+  border: 1px solid var(--border, #444);
+  border-radius: 4px;
+  background: var(--bg, #1a1a1a);
+  color: var(--text, #ddd);
+}
+
+/* CC-19 — Library hover/sticky preview overlay. */
+.mn-library-tile-wrap {
+  display: contents;
+}
+.mn-library-preview {
+  position: fixed;
+  bottom: 12px;
+  right: 12px;
+  z-index: 60;
+  max-width: 360px;
+  max-height: 480px;
+  padding: 8px;
+  background: var(--bg-elevated, #222);
+  border: 1px solid var(--border-strong, #666);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: auto;
+}
+.mn-library-preview-pinned {
+  border-color: var(--accent, #4a9);
+}
+.mn-library-preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  color: var(--text-dim, #888);
+}
+.mn-library-preview-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 290px;
+}
+.mn-library-preview-close {
+  background: transparent;
+  border: 0;
+  color: var(--text-dim, #888);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+}
+.mn-library-preview-close:hover {
+  color: var(--text-strong, #fff);
+}
+.mn-library-preview-img {
+  display: block;
+  max-width: 320px;
+  max-height: 320px;
+  object-fit: contain;
+  background: #000;
+}
+.mn-library-preview-audio,
+.mn-library-preview-video {
+  width: 320px;
+  max-width: 100%;
+}
+.mn-library-preview-empty {
+  font-size: 11px;
+  text-align: center;
+  padding: 24px;
+}
+.mn-library-preview-notes {
+  font-size: 11px;
+  color: var(--text-dim, #888);
+  padding-top: 4px;
+  border-top: 1px solid var(--border, #444);
+  max-height: 80px;
+  overflow-y: auto;
 }

@@ -275,6 +275,15 @@
   const sourceVideoPath  = params.get('source_video_path') || '';
   const returnEndpoint   = params.get('return_endpoint') || '';
   const scopeEventId     = params.get('scope_event_id') || params.get('event_id') || '';
+  // S5.5b Bug 3 fix: source scope_video_role for magic POSTs (LD-474).
+  // Priority: URL param 'video_role' → URL param 'scope_video_role' →
+  // window.__MN_VIDEO_ROLE__ (set by host page) → 'intro' default.
+  // No reliance on state.active_video — that field is server-side display
+  // hint only (LD-474 forbids using it for partition selection).
+  const scopeVideoRole   = params.get('video_role')
+                        || params.get('scope_video_role')
+                        || (typeof window !== 'undefined' && window.__MN_VIDEO_ROLE__)
+                        || 'intro';
 
   // Resolve effective mode (explicit → inferred → legacy → manual).
   let mode = explicitMode;
@@ -591,6 +600,7 @@
           manual_path: manual_path,
           source_image_path: sourceImagePath,
           scope_event_id: scopeEventId || 'Event_1',
+          scope_video_role: scopeVideoRole,  // S5.5b Bug 3 fix (LD-474)
         };
       } else if (mode === 'magic_video') {
         body = {
@@ -599,6 +609,7 @@
           source_video_path: sourceVideoPath,
           source_image_path: sourceImagePath,  // drawing reference
           scope_event_id: scopeEventId || 'Event_1',
+          scope_video_role: scopeVideoRole,  // S5.5b Bug 3 fix (LD-474)
         };
       } else {  // watercolor_animate
         const motionDesc = (document.getElementById('motion-desc-input').value || '').trim();
@@ -611,6 +622,7 @@
           manual_path: manual_path,
           motion_description: motionDesc,
           scope_event_id: scopeEventId || 'Event_1',
+          scope_video_role: scopeVideoRole,  // S5.5b Bug 3 fix (LD-474)
         };
       }
 

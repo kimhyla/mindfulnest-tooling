@@ -16,9 +16,12 @@ import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   activeScope,
   activeTargetVideo,
+  activeProjectType,
+  activeMilestoneId,
   scopeKey,
 } from '../state/scope';
 import { apiGet, pathappPatch } from '../api/client';
+import { makeDropTarget } from '../utils/dragdrop';
 import { Spinner } from './ui/Spinner';
 import { pushToast } from './ui/Toast';
 import { BeatAudioPreview } from './BeatAudioPreview';
@@ -532,6 +535,7 @@ function BeatCard({ index, beatId, beat, eventId, onMutated }: BeatCardProps) {
           {indicatorLabel}
         </span>
       </div>
+      <BeatImageHolder index={index} beatId={beatId} beat={beat} eventId={eventId} onMutated={onMutated} />
       <p
         ref={editRef}
         class="mn-beat-text mn-beat-editable"
@@ -550,6 +554,79 @@ function BeatCard({ index, beatId, beat, eventId, onMutated }: BeatCardProps) {
       />
       <BeatMagicButtons index={index} beatId={beatId} beat={beat} eventId={eventId} />
     </li>
+  );
+}
+
+// ----------------------------------------------------------------
+// CC-16 — Storyboard image-holder drop zone (PREP for Phase B SB-14).
+//
+// Per spec §4 Phase A: define `mn-storyboard-image-drop-zone` CSS class +
+// onDrop handler accepting `lib-image` payload. The actual <img> rendering
+// + Assign/Inject buttons land in Phase B SB-14; Phase A stands up the drop
+// surface so library-tile drag works end-to-end and Phase B can layer on
+// the rest without changing this component's drop contract.
+// ----------------------------------------------------------------
+
+interface BeatImageHolderProps {
+  index: number;
+  beatId: string;
+  beat: BeatState;
+  eventId: string;
+  onMutated: () => void;
+}
+
+function BeatImageHolder({ index, beatId, beat, eventId, onMutated }: BeatImageHolderProps) {
+  const stillPath = beat.image_path;
+  const hasImage = !!stillPath;
+  const imgSrc = stillPath
+    ? `http://localhost:5111/files?path=${encodeURIComponent(`Production/${eventId}/${stillPath}`)}`
+    : undefined;
+
+  const dropHandlers = makeDropTarget(
+    async (payload) => {
+      if (payload.kind !== 'lib-image') return;
+      const result = await pathappPatch(activeScope.value, 'assign_image', {
+        beat: beatId,
+        image_key: payload.lib_key,
+      });
+      if (result.ok) {
+        pushToast({
+          kind: 'success',
+          message: `Image ${payload.lib_key} assigned to ${beatId}`,
+          source: 'sb-image-drop',
+        });
+        onMutated();
+      } else {
+        pushToast({
+          kind: 'error',
+          message: `Image assign failed: ${result.error ?? `HTTP ${result.status}`}`,
+          source: 'sb-image-drop-error',
+        });
+      }
+    },
+    (p) => p.kind === 'lib-image',
+  );
+
+  return (
+    <div
+      class={`mn-storyboard-image-drop-zone mn-drop-target${hasImage ? ' has-image' : ''}`}
+      data-testid={`beat-image-zone-${index}`}
+      data-beat-id={beatId}
+      onDragOver={dropHandlers.onDragOver}
+      onDragLeave={dropHandlers.onDragLeave}
+      onDrop={dropHandlers.onDrop}
+    >
+      {hasImage && imgSrc ? (
+        <img
+          src={imgSrc}
+          alt={`beat ${beatId} image`}
+          class="mn-storyboard-image-thumb"
+          loading="lazy"
+        />
+      ) : (
+        <span class="mn-dim mn-storyboard-image-placeholder">drop library image here</span>
+      )}
+    </div>
   );
 }
 
@@ -726,9 +803,13 @@ export function StoryboardTab() {
   const [loading, setLoading] = useState(true);
   const [refreshTick, setRefreshTick] = useState(0);
 
+  // R1 fix per spec §5 Phase 3.1 — explicit scope signals in dep array,
+  // first-run-sync via prevDepsRef, 200ms debounce on subsequent runs (Q6).
+  const prevFetchDepsRef = useRef<string | null>(null);
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    let timer: number | null = null;
+    const fetchState = async () => {
       const res = await apiGet<EventState>('v2_event_state', {
         event_id: activeScope.value.event_id,
       });
@@ -740,11 +821,33 @@ export function StoryboardTab() {
       } else {
         setError(res.error ?? 'unknown error');
       }
-    })();
+    };
+
+    const depKey = [
+      refreshTick,
+      activeScope.value.event_id,
+      activeProjectType.value,
+      activeMilestoneId.value ?? '',
+    ].join('|');
+
+    if (prevFetchDepsRef.current === null) {
+      prevFetchDepsRef.current = depKey;
+      fetchState();
+    } else if (prevFetchDepsRef.current !== depKey) {
+      prevFetchDepsRef.current = depKey;
+      timer = window.setTimeout(fetchState, 200);
+    }
+
     return () => {
       cancelled = true;
+      if (timer !== null) clearTimeout(timer);
     };
-  }, [refreshTick]);
+  }, [
+    refreshTick,
+    activeScope.value.event_id,
+    activeProjectType.value,
+    activeMilestoneId.value,
+  ]);
 
   // S5 — refresh on path_picker submit success.
   useEffect(() => {
@@ -763,10 +866,16 @@ export function StoryboardTab() {
     const role = activeTargetVideo.value;
     const partition = state.videos?.[role];
     if (partition?.beats && Object.keys(partition.beats).length > 0) {
-      // Honor display_order if present, else sorted beat_id.
-      const order = partition.display_order ?? [];
-      if (order.length > 0) {
-        return order
+      // DISPLAY_ORDER_STRICT_V1 — when display_order is a present LIST,
+      // honor it strictly (including the empty-list case which renders zero
+      // beats). Only when display_order is genuinely missing — undefined,
+      // or non-list legacy data shapes — do we fall through to the
+      // Object.entries sorted-by-beat_id legacy renderer. The Array.isArray
+      // gate is the defensive form of spec v2 §2.3 Part 1's
+      // `!== undefined` check; it correctly handles the historical fixture
+      // partition-ordering integer (e.g. `display_order: 1`) as legacy.
+      if (Array.isArray(partition.display_order)) {
+        return partition.display_order
           .filter((bid) => partition.beats?.[bid])
           .map((beat_id) => ({ beat_id, ...partition.beats![beat_id] }));
       }

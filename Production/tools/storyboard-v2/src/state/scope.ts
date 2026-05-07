@@ -40,6 +40,29 @@ export const activeScope = signal<Scope>(makeScope('Event_1', null, 1));
 export const activeEventId = computed(() => activeScope.value.event_id);
 export const activeScopeKey = computed(() => scopeKey(activeScope.value));
 
+// S5.5b VideoSelector — active video role (UX persistence, NOT partition selector).
+// Per LD-474 VIDEO_ROLE_PER_REQUEST_V1: this signal is read by client UI for
+// display + by pathappPatch for auto-injecting `scope_video_role` into mutating
+// request bodies. Server handlers MUST NOT read state.active_video for partition
+// selection — they read body['scope_video_role'] (which pathappPatch sources
+// from this signal). Default 'intro' matches the migration destination of v1
+// beats per LD-473 BG_VIDEO_PARTITION_V1.
+//
+// S5.5d (v3 architecture revision, 2026-05-03): RENAMED to `activeTargetVideo`
+// per TARGET_VIDEO_SELECTOR_V1 (V3 architecture). Per VIDEO_ROLE_PER_REQUEST_V2
+// the canonical roles narrow to {intro, resolution, standalone}; phase_a +
+// phase_b are top-level and addressed via dedicated tabs, not video roles.
+// `activeVideoRole` retained as alias for transitional compatibility.
+export const activeTargetVideo = signal<string>('intro');
+export const activeVideoRole = activeTargetVideo;  // alias — same signal
+
+// S5.5d v3 architecture: project-type signal — distinguishes event scope
+// (multi-beat with intro+resolution+phase_a+phase_b) from milestone scope
+// (standalone single video). Drives ProjectSelector + StitcherTab mode +
+// TabBar Phase A/B disable per MILESTONE_STANDALONE_INDEPENDENT_V1.
+export const activeProjectType = signal<'event' | 'milestone'>('event');
+export const activeMilestoneId = signal<string | null>(null);
+
 // Per-scope-keyed signal stores. Each unique scope key gets its own Map of
 // signals so signals from Event 1 cannot leak into Event 2 even if a stale
 // component reference survives a scope change.

@@ -129,7 +129,7 @@ Complete the missing 20% of MindfulNest's CI/CD infrastructure. The existing 80%
 
 ## §3 Approach
 
-The spec attacks the 7 gaps in **dependency-order with parallelism**. Phase A is the highest priority because it eliminates today's recurring failure class (silent stale-build deploys) and is independent of every other phase. Phase B (branch protection) is a one-time GitHub UI configuration that gates Phase C (AI review uses required-status checks). Phase C uses the **Claude API custom integration** path (Decision B from the prompt) — Kim already has Anthropic API access, costs are O($0.01-0.10/PR) at solo-dev cadence, and the prompt template gives full control over what the reviewer enforces (Rule 24 / Rule 35 / DS-1 through DS-19 / 6-layer contract). Phases D, E, and G operate on different files and can run in parallel after Phase A. Phase F is documentation-only and can land alongside any other phase.
+The spec attacks the gap inventory across **8 phases (A-H) in dependency-order with parallelism** (originally 7 gaps; Phase F upgraded to mechanical-hook scope and Phase H added for security scanning per 2026-05-07 pre-execution amendment). Phase A is the highest priority because it eliminates today's recurring failure class (silent stale-build deploys) and is independent of every other phase. Phase B (branch protection) is a one-time GitHub UI configuration that gates Phase C (AI review uses required-status checks). Phase C uses the **Claude API custom integration** path (Decision B from the prompt) — Kim already has Anthropic API access, costs are O($0.01-0.10/PR) at solo-dev cadence, and the prompt template gives full control over what the reviewer enforces (Rule 24 / Rule 35 / DS-1 through DS-19 / 6-layer contract). Phases D, E, and G operate on different files and can run in parallel after Phase A. Phase F (post-amendment) ships a mechanical browser-smoke gate in `try_post_or_queue` AND the DS-21 doc update; can land alongside any other phase. Phase H (CodeQL + Dependabot) is configuration-only and slots in after Phase B (branch protection enables required-checks for CodeQL).
 
 The spec does NOT introduce new vendors. It does NOT touch the React Native app itself (only activates 2 already-drafted workflows that target it). It does NOT replace deploy_storyboard_v59.sh — it adds verification gates to the existing script per LD-541. It does NOT replace the existing smoke.yml or playwright_e2e.yml workflows — it extends them.
 
@@ -774,6 +774,85 @@ Per CLAUDE.md Rule 35, `prod_activity_log.details` is JSON. Both contracts use a
 
 ---
 
+### Phase H — Security Scanning (CodeQL + Dependabot) (TIER A)
+
+**Estimated effort:** 30 min (workflow file scaffolds are GitHub-templated; mostly Settings UI clicks).
+
+**Tier classification rationale:** Routine (A). Configuration-only — no new code, no new vendors, GitHub UI + workflow file activation. Both vendors are GitHub-native and free. Phase 0 minimal.
+
+**Why this phase added:** Previous session's coverage table flagged "Security scanning (CodeQL + Dependabot — easy add to gap-fix; recommend before TestFlight)" but the actual phase was never written. Kim 2026-05-07 pre-execution amendment closes the gap so common vulns (tooling repo + RN repo) are caught before TestFlight launch.
+
+**Phase 0:**
+- Verify branch protection (Phase B) is configured before Phase H — CodeQL findings should block merges if blocking severity, which requires branch protection.
+- Read existing `.github/workflows/` directory to confirm no name collision with `codeql.yml`.
+- Confirm Dependabot is not already active (check `.github/dependabot.yml`).
+- Write `prod_preflight_reviews` row.
+
+**Work:**
+
+1. **CodeQL setup (tooling repo):**
+   - Create `.github/workflows/codeql.yml` using GitHub's standard template (`github/codeql-action@v3`).
+   - Languages to scan: `javascript-typescript`, `python`. Skip `bash` (CodeQL doesn't fully cover; use shellcheck separately if needed).
+   - Trigger on: `push` to main, `pull_request` opened/sync, weekly cron Monday 9am.
+   - Required check: `codeql / Analyze (javascript-typescript)` and `codeql / Analyze (python)` — added to branch protection ruleset (Phase B already set up requires-checks).
+
+2. **CodeQL setup (RN repo at `~/Projects/MindfulNest/`):**
+   - Same workflow, different language matrix: `javascript-typescript` only (RN is TS).
+   - Same triggers + required checks.
+
+3. **Dependabot setup (tooling repo):**
+   - Create `.github/dependabot.yml`:
+     ```yaml
+     version: 2
+     updates:
+       - package-ecosystem: "npm"
+         directory: "/Production/tools/storyboard-v2"
+         schedule:
+           interval: "weekly"
+           day: "monday"
+         open-pull-requests-limit: 5
+         labels: ["dependencies", "security"]
+       - package-ecosystem: "pip"
+         directory: "/"
+         schedule:
+           interval: "weekly"
+       - package-ecosystem: "github-actions"
+         directory: "/"
+         schedule:
+           interval: "weekly"
+     ```
+   - Enable Dependabot security alerts in Settings → Code security & analysis (GitHub UI).
+
+4. **Dependabot setup (RN repo):**
+   - Create `.github/dependabot.yml` with `npm` (root), `cocoapods` (`ios/`), `gradle` (`android/` if Android target exists), `github-actions` (root). Same weekly cadence.
+
+5. **Lock LD `CODEQL_DEPENDABOT_SECURITY_SCAN_V1`** via `try_post_or_queue`:
+   - decision_key: `CODEQL_DEPENDABOT_SECURITY_SCAN_V1`
+   - severity: `HARD` (live enum is `{HARD, SOFT}` per 2026-05-04 migration)
+   - scope_domain: `production`
+   - task_category: `tech_stack`
+   - enforcement_type: `ci_check`
+   - date_locked: 2026-05-06
+   - decision_text: CodeQL scans on every PR + weekly cron; Dependabot weekly PRs for vuln-flagged deps; both gate merges via branch protection. RN repo + tooling repo both covered.
+
+**Per-phase escape hatches:**
+- If CodeQL exceeds GitHub Actions free-tier minutes (currently 2000/mo for free public, unlimited for Pro), surface — Pro tier covers it but worth knowing.
+- If Dependabot generates >10 PRs/week (dep churn), tune `open-pull-requests-limit` down or add `groups:` config to bundle related updates.
+- If a CodeQL finding blocks Kim's hot-fix PR with a false positive, the dismiss workflow is `gh api ... /code-scanning/alerts/<id> --method PATCH -f state=dismissed` — surface to Kim before dismissing.
+
+**Phase H smoke gate (6 gates):**
+
+| # | Gate | Layer | Type | Pass criteria |
+|---|------|-------|------|---------------|
+| H1 | `.github/workflows/codeql.yml` present (tooling) | 1 | Auto | grep |
+| H2 | `.github/dependabot.yml` present (tooling) | 1 | Auto | grep |
+| H3 | First CodeQL run completes on tooling repo | 6 | Kim-browser | PR Checks tab shows codeql/Analyze passing |
+| H4 | Dependabot security alerts enabled in repo Settings | 1 | Kim-browser | Settings → Code security shows Dependabot active |
+| H5 | RN repo: codeql.yml + dependabot.yml present | 1 | Auto | ls |
+| H6 | LD row + activity log row present | 4 | Auto | try_post_or_queue read-back |
+
+---
+
 ## §5 Files Created / Modified
 
 **Created:**
@@ -1114,10 +1193,12 @@ Honest gap-flag from spec author. Items potentially under-specified or deferred:
 - LD-531 — `SCOPE_ROUTER_V1`
 - LD-541 — `STORYBOARD_DEPLOY_PROCESS_V1`
 
-**LDs proposed NEW by this spec (will be locked at execution time):**
-- `DEPLOY_VERIFICATION_GATE_V1` (Phase A)
-- `AI_REVIEW_AUTOMATION_V1` (Phase C)
-- `PRE_COMMIT_DROPBOX_EDIT_GATE_V1` (Phase G)
+**LDs proposed NEW by this spec (5 total — bumped from 4 by 2026-05-07 pre-execution amendment):**
+- `DEPLOY_VERIFICATION_GATE_V1` (Phase A) — pre-deploy mtime + post-deploy sha256 + curl smoke; severity HARD; scope=production; supersedes informal verification gaps in LD-541's current implementation.
+- `AI_REVIEW_AUTOMATION_V1` (Phase C) — Claude API custom integration on PR open/sync; severity SOFT; scope=tooling_ci.
+- `PRE_COMMIT_DROPBOX_EDIT_GATE_V1` (Phase G) — pre-commit hook blocks divergent Dropbox edits; severity HARD; scope=local_dev.
+- `BROWSER_SMOKE_MECHANICAL_GATE_V1` (Phase F) — `try_post_or_queue` rejects `*_COMPLETE` activity_log writes when no matching `KIM_BROWSER_SMOKE_PASSED` row exists; severity HARD; scope=production. Added 2026-05-06 by Kim before execution start because doc-only Phase F was discipline-dependent (§36.5 honesty model) — mechanical gate makes browser smoke truly hard.
+- `CODEQL_DEPENDABOT_SECURITY_SCAN_V1` (Phase H) — CodeQL on PR + weekly cron + Dependabot weekly vuln PRs; tooling + RN repos; severity HARD; scope=production; recommended-pre-TestFlight per previous session's coverage gap.
 
 **DS proposed NEW by this spec:**
 - DS-21 in `zero-error-qa` SKILL.md (Phase F)

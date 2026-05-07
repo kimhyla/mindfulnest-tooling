@@ -17,7 +17,7 @@ Before pasting the cold-start prompt below, confirm these files exist and are re
 - [ ] `Production/docs/V59_S5_5_C_PASS2_HANDOFF.md` `[CONFIRMED via ls — 12 KB, mtime 15:34]`
 - [ ] `Production/docs/V59_S5_5_E_PASS2_HANDOFF.md` `[CONFIRMED via ls — 15 KB, mtime 16:00]`
 - [ ] `Production/scripts/deploy_storyboard_v59.sh` `[CONFIRMED via find — exists at Production/scripts/, NOT Production/tools/]`
-- [ ] `Production/docs/V59_CICD_GAP_FIX_SPEC_v1.md` `[CONFIRMED via ls 2026-05-06 22:46 PT — 64,959 bytes (~983 lines). Authored by parallel agent post-handoff. Spec covers 7-gap CI/CD inventory.]`
+- [ ] `Production/docs/V59_CICD_GAP_FIX_SPEC_v1.md` `[CONFIRMED via ls 2026-05-06 23:36 PT — 82,043 bytes (~1206 lines, 8 phases A-H, 5 new LDs). Authored by parallel agent post-handoff; amended 2026-05-06 to add Phase F mechanical browser-smoke gate and Phase H security scanning. Spec covers CI/CD gap inventory.]`
 - [ ] `LESSONS_LEARNED_May06_2026_v59_Features_Build_And_CICD_Discovery.md` `[CONFIRMED via ls 2026-05-06 22:47 PT — 56,705 bytes (~583 lines, 66 lessons across 6 categories). Registered in Directus prod_reference_docs id=202.]`
 
 Both files exist on disk and are ready for fresh session to read. No re-derivation needed.
@@ -36,7 +36,7 @@ Read these BEFORE running any tool, in this exact order. Each read is targeted (
 
 4. **`Production/docs/V59_FEATURES_MASTER_INVENTORY_v2.md`** — Cursor v6 verdicts + Kim §13/§13c locks. Skim for which features Phase A *was supposed to* deliver, vs the bug list below. `[CONFIRMED exists]`
 
-5. **`Production/docs/V59_CICD_GAP_FIX_SPEC_v1.md`** — Spec covers 7 gaps that allowed the deploy-skipped failure class. Read §0 (Mandatory Operating Mode), gap inventory, Phase A (Deploy gates), §15 (Items Missed), §16 (Reference Index). `[CONFIRMED exists, 64,959 bytes]`
+5. **`Production/docs/V59_CICD_GAP_FIX_SPEC_v1.md`** — Spec covers the gaps that allowed the deploy-skipped failure class (8 phases A-H post-amendment). Read §0 (Mandatory Operating Mode), gap inventory, Phase A (Deploy gates), §15 (Items Missed), §16 (Reference Index). `[CONFIRMED exists, 82,043 bytes]`
 
 6. **`Production/docs/V59_S5_5_C_PASS2_HANDOFF.md`** — what Phase A claimed it shipped (server-side). Cross-check against the bug list below. `[CONFIRMED exists]`
 
@@ -86,7 +86,7 @@ These are the symptoms Kim sees in the browser. They are NOT independent — Bug
 Per Kim's chat direction 2026-05-06 (outgoing session), in this exact order — do NOT reorder without Kim's explicit override:
 
 1. **NEXT — Execute `V59_CICD_GAP_FIX_SPEC_v1.md`** (close the deploy-skipped failure class FIRST). Estimated ~8–12 hrs in atomic terminal session. `[INFERRED — time estimates per Kim's feedback memory `feedback_time_estimates.md` are unreliable; treat as rough only.]`
-   - Closes 7 gaps. Mechanically protects deploy step so future Phase X cannot "complete" without it.
+   - Closes the gap inventory across 8 phases (A-H). Mechanically protects deploy step so future Phase X cannot "complete" without it.
    - **Cursor consult outstanding** on patch-vs-rebuild question for tooling repo CI/CD — see "Open architectural questions" #1 below. Do NOT execute until Cursor verdict obtained OR Kim explicitly waives.
 
 2. **THEN — Storyboard fix** (Bug 1 + Bug 2) using mechanically-protected deploy. Estimated ~2–3 hrs.
@@ -194,8 +194,8 @@ READ FIRST (in order, targeted reads — do NOT full-read large files):
 4. Production/docs/V59_FEATURES_MASTER_INVENTORY_v2.md (Cursor v6
    verdicts + Kim §13/§13c locks)
 5. Production/docs/V59_CICD_GAP_FIX_SPEC_v1.md (CONFIRMED on
-   disk, 64,959 bytes / ~983 lines). Read §0, gap inventory,
-   Phase A, §15, §16.
+   disk, 82,043 bytes / ~1206 lines, 8 phases A-H, 5 new LDs).
+   Read §0, gap inventory, Phase A, §15, §16.
 6. Production/docs/V59_S5_5_C_PASS2_HANDOFF.md (what Phase A
    claimed to ship server-side — cross-check against bug list)
 
@@ -304,7 +304,7 @@ Once the fresh session executes the deploy gap-fix and tells you to test:
 ### Both spec + lessons-learned files CONFIRMED on disk (post-handoff verification 2026-05-06 22:47 PT)
 
 The two files this handoff originally flagged as possibly missing are now confirmed:
-1. `Production/docs/V59_CICD_GAP_FIX_SPEC_v1.md` — 64,959 bytes (~983 lines). 7-gap CI/CD spec, 7 phases A-G.
+1. `Production/docs/V59_CICD_GAP_FIX_SPEC_v1.md` — 82,043 bytes (~1206 lines). CI/CD gap-fix spec, 8 phases A-H, 5 new LDs (post-2026-05-06 amendment added Phase F mechanical browser-smoke gate + Phase H security scanning).
 2. `LESSONS_LEARNED_May06_2026_v59_Features_Build_And_CICD_Discovery.md` — 56,705 bytes (~583 lines, 66 lessons across 6 categories). Registered in Directus prod_reference_docs id=202.
 
 Both authored by parallel agents during outgoing session's mn-context SAVE flow. Fresh session can read directly — no re-derivation needed.

@@ -68,6 +68,17 @@ export function EventSelector() {
       const data = (await res.json()) as { event_id: string; event_generation: number };
       setCurrent(data.event_id);
       activeScope.value = makeScope(data.event_id, null, data.event_generation);
+      // S5.5b Bug 4 fix B: update URL with ?event=<id> BEFORE reload so
+      // ScopeBoundary on next mount reads the correct event from the URL
+      // (its first resolution source). Belt + suspenders with the new
+      // /api/event/current endpoint (fix A).
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.set('event', data.event_id);
+        window.history.replaceState({}, '', url.toString());
+      } catch {
+        // window.history not available in headless contexts — fall through.
+      }
       // Hard-reload so all v59 stores re-hydrate from the new event.
       window.location.reload();
     } catch (e) {
