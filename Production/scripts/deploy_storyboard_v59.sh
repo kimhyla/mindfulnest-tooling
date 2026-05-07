@@ -73,6 +73,40 @@ if [[ -z "${MN_DEPLOY_SKIP_BUILD:-}" ]]; then
 fi
 
 # ----------------------------------------------------------------
+# (a-pre.5) Pre-deploy stale-build detection
+# Per V59_CICD_GAP_FIX_SPEC_v1.md Phase A / LD DEPLOY_VERIFICATION_GATE_V1.
+# Detect uncompiled .tsx/.ts edits — any source file newer than dist/index.html
+# means dist is stale (build failed silently OR MN_DEPLOY_SKIP_BUILD=1 was set
+# while source had moved on). FATAL on stale.
+# ----------------------------------------------------------------
+DIST_HTML_SRC="$SRC_TOOLING/Production/tools/storyboard-v2/dist/index.html"
+if [[ ! -f "$DIST_HTML_SRC" ]]; then
+    echo "FATAL: $DIST_HTML_SRC missing — run: cd Production/tools/storyboard-v2 && npm run build" >&2
+    exit 1
+fi
+DIST_MTIME=$(stat -f %m "$DIST_HTML_SRC" 2>/dev/null || stat -c %Y "$DIST_HTML_SRC")
+SRC_TSX_DIR="$SRC_TOOLING/Production/tools/storyboard-v2/src"
+TSX_COUNT=$(find "$SRC_TSX_DIR" \( -name "*.tsx" -o -name "*.ts" \) -type f 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$TSX_COUNT" -lt 1 ]]; then
+    echo "FATAL: no .tsx/.ts files found under $SRC_TSX_DIR — directory layout broken; surface to Kim" >&2
+    exit 1
+fi
+STALE_FOUND=0
+while IFS= read -r tsx; do
+    [[ -z "$tsx" ]] && continue
+    TSX_MTIME=$(stat -f %m "$tsx" 2>/dev/null || stat -c %Y "$tsx")
+    if [[ "$TSX_MTIME" -gt "$DIST_MTIME" ]]; then
+        echo "FATAL: ${tsx#$SRC_TOOLING/} is newer than dist/index.html — uncompiled changes." >&2
+        STALE_FOUND=1
+    fi
+done < <(find "$SRC_TSX_DIR" \( -name "*.tsx" -o -name "*.ts" \) -type f 2>/dev/null)
+if [[ "$STALE_FOUND" -eq 1 ]]; then
+    echo "Run: cd Production/tools/storyboard-v2 && npm run build" >&2
+    exit 1
+fi
+echo "[deploy] (a-pre.5) stale-build check ok ($TSX_COUNT .tsx/.ts source file(s) all older than dist/index.html)"
+
+# ----------------------------------------------------------------
 # (a) Pre-deploy snapshot — rollback safety net
 # ----------------------------------------------------------------
 mkdir -p "$LOG_DIR"
@@ -149,6 +183,35 @@ else
     echo "[deploy] (c) FATAL: dist/index.html missing in source — npm run build did not produce dist" >&2
     exit 1
 fi
+
+# ----------------------------------------------------------------
+# (c.5) Post-deploy fanout sha256 verification
+# Per V59_CICD_GAP_FIX_SPEC_v1.md Phase A / LD DEPLOY_VERIFICATION_GATE_V1.
+# Confirms every Dropbox-side Event_*/storyboard_v59_prod.html matches the
+# canonical dist/index.html sha256. Catches the "one fanout silently old"
+# case (e.g. a copy interrupted by Dropbox sync conflict).
+# ----------------------------------------------------------------
+CANONICAL_SHA=$(shasum -a 256 "$DIST" | awk '{print $1}')
+echo "[deploy] (c.5) canonical dist sha256: $CANONICAL_SHA"
+fanout_verify_count=0
+fanout_verify_failed=0
+for fanout in "$DEST_DROPBOX"/Production/Event_*/storyboard_v59_prod.html; do
+    [[ -f "$fanout" ]] || continue
+    FANOUT_SHA=$(shasum -a 256 "$fanout" | awk '{print $1}')
+    if [[ "$FANOUT_SHA" != "$CANONICAL_SHA" ]]; then
+        echo "FATAL: ${fanout#$DEST_DROPBOX/} sha256 mismatch" >&2
+        echo "  expected: $CANONICAL_SHA" >&2
+        echo "  got:      $FANOUT_SHA" >&2
+        fanout_verify_failed=1
+    else
+        fanout_verify_count=$((fanout_verify_count + 1))
+    fi
+done
+if [[ "$fanout_verify_failed" -eq 1 ]]; then
+    echo "Fanout sha256 mismatch — refusing to leave a partial deploy live." >&2
+    exit 1
+fi
+echo "[deploy] (c.5) all $fanout_verify_count fanout copy(ies) match canonical sha256"
 
 # ----------------------------------------------------------------
 # (d) Per-file sha256 verification (FATAL on mismatch)
@@ -238,4 +301,50 @@ if ! kill -0 "$SERVER_PID" 2>/dev/null; then
     exit 1
 fi
 echo "[deploy] server launched: pid=$SERVER_PID  event_dir=$EVENT_DIR  storyboard=$storyboard_html"
+
+# ----------------------------------------------------------------
+# (g) Post-deploy curl smoke — verify served HTML carries fresh build-sha
+# Per V59_CICD_GAP_FIX_SPEC_v1.md Phase A / LD DEPLOY_VERIFICATION_GATE_V1.
+# CRITICAL: URL is /, NOT /storyboard_v59_prod.html. production_server.py
+# serves the SPA at root; the filename CLI arg is the disk path it READS,
+# never part of the URL. A probe against the filename path returns 404
+# {"error":"not found"} by design (per feedback_storyboard_url_serves_at_root.md
+# after 2026-05-07 sidefix bug).
+# ----------------------------------------------------------------
+SERVER_PORT="${MN_SERVER_PORT:-5111}"
+BUILD_SHA="$(cd "$SRC_TOOLING" && git rev-parse --short HEAD 2>/dev/null || git log -1 --pretty=%h 2>/dev/null || true)"
+if [[ -z "$BUILD_SHA" ]]; then
+    echo "FATAL: could not determine BUILD_SHA from git rev-parse or git log" >&2
+    exit 1
+fi
+echo "[deploy] (g) post-deploy curl smoke: probing http://localhost:${SERVER_PORT}/ for build-sha=$BUILD_SHA"
+sleep 2  # let server settle after restart
+SERVED="$(curl -sS --max-time 10 "http://localhost:${SERVER_PORT}/" 2>/dev/null || true)"
+if [[ -z "$SERVED" ]]; then
+    echo "[deploy] (g) curl returned empty; retrying once after 5s ..."
+    sleep 5
+    SERVED="$(curl -sS --max-time 10 "http://localhost:${SERVER_PORT}/" 2>/dev/null || true)"
+fi
+MARKER_COUNT=$(printf "%s" "$SERVED" | grep -c "build-sha.*$BUILD_SHA" || true)
+if [[ "$MARKER_COUNT" -lt 1 ]]; then
+    echo "FATAL: served HTML at http://localhost:${SERVER_PORT}/ does not contain build-sha=$BUILD_SHA (matches=$MARKER_COUNT)" >&2
+    echo "  Server may be serving stale content. Verify:" >&2
+    echo "    (1) URL is /, NOT /storyboard_v59_prod.html (production_server.py serves SPA at root)" >&2
+    echo "    (2) build emitted <meta name='build-sha' content='$BUILD_SHA'> into dist/index.html" >&2
+    echo "    (3) deploy step actually copied dist → Event_*/storyboard_v59_prod.html (see (c) above)" >&2
+    echo "  Diagnostic dump:" >&2
+    lsof -ti:"$SERVER_PORT" >&2 || true
+    pgrep -fl production_server.py >&2 || true
+    exit 1
+fi
+echo "[deploy] (g) curl smoke ok — server serving fresh build (sha=$BUILD_SHA, marker_matches=$MARKER_COUNT)"
+
+# ----------------------------------------------------------------
+# (h) Write .last_deploy timestamp sentinel
+# Per V59_CICD_GAP_FIX_SPEC_v1.md Phase G — pre-commit hook reads this
+# to detect "Dropbox runtime tree edited after last deploy" divergence.
+# ----------------------------------------------------------------
+date +%s > "$SRC_TOOLING/.last_deploy"
+echo "[deploy] (h) .last_deploy timestamp written: $(cat "$SRC_TOOLING/.last_deploy")"
+
 echo "[deploy] complete  snapshot=$SNAPSHOT_DIR  log=$LOG_DIR/server.log"
