@@ -11,13 +11,20 @@ name: Playwright e2e
 #     S5.5f F3-F17 distributed across Phase B-F per spec §19.2/§19.6)
 #   - `Production/tools/storyboard-v2/e2e/s5_5g_smoke.spec.ts` (S5.5g G3-G13
 #     functional behavior gates per spec §19.2.1 canonical numbering)
+#   - `e2e/storyboard-v59-bg-scope-sync.spec.ts` (V59 gap-fix Phase E —
+#     already fixture-ready, written against Event_e2e_fixture)
+#   - `e2e/storyboard-v59-display-order-empty.spec.ts` (V59 gap-fix Phase E —
+#     same; fixture-native)
 # Future sessions APPEND their target file to the `npx playwright test ...`
 # step below — never replace, never glob (a glob would silently include the
 # deferred existing scaffold which requires fuller fixture data). Per
 # §19.6.1 maintainability trigger: when count exceeds 15, migrate to a
-# Playwright project/tag-based grouping in playwright.config.ts.
-# The existing scaffold (smoke / behavioral-parity / rollback / touchpoint-a)
-# continues to run manually against Kim's Dropbox tree.
+# Playwright project/tag-based grouping in playwright.config.ts. Current
+# count after V59 gap-fix Phase E = 14 (12 prior + 2 new), still under
+# threshold. DEFERRED specs (behavioral-parity / rollback / smoke /
+# touchpoint-a) reference Event_1 fixtures (sources/, cropped/) that
+# Event_e2e_fixture does not provide — tracked as SPEC_BLOCKED_ON_FIXTURE
+# activity log rows, NOT silently mocked (Rule 19).
 
 on:
   push:
@@ -346,6 +353,8 @@ jobs:
             e2e/s5_5g_smoke.spec.ts \
             e2e/scope_router_red.spec.ts \
             e2e/beat_graft_red.spec.ts \
+            e2e/storyboard-v59-bg-scope-sync.spec.ts \
+            e2e/storyboard-v59-display-order-empty.spec.ts \
             --reporter=line
 
       - name: Upload test artifacts on failure
