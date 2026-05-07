@@ -126,3 +126,13 @@ Production/Event_*/.backups/
 *.backup
 *~
 *.bak.*
+
+# ============ Runtime state (audit Item 1, severity CRITICAL — 2026-05-07) ============
+# Per SILENT_DEFERRALS_AUDIT_20260507.md Item 1 + Kim authorization 2026-05-07.
+# Runtime byproducts (server PIDs, fixture locks, runtime JSON state) that previously
+# left the working tree dirty and tripped session-start STOP checks.
+*.pid
+.state.lock
+*.L.json
+beat_generator_state.json
+production_state.json
