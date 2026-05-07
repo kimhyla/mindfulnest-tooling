@@ -129,11 +129,46 @@ python3 Production/tools/production_server.py --event-dir Production/Event_1 --s
 ## Decision sequencing locked
 
 1. **THIS SESSION (terminal CLI, today):** Execute V59_CICD_GAP_FIX_SPEC_v1.md per the spec. ~8-12 hours.
-2. **NEXT SESSION (terminal CLI, post-gap-fix):** Cherry-pick the 22 remaining divergence files into tooling. ~2-3 hours.
-3. **AFTER #2:** Option B fix session. `bg_session_state` derives segment from `scope_event_id`. ~2-4 hours including six-layer verification.
-4. **AFTER #3:** Manual-drop-on-options regression port. ~1-2 hours.
-5. **AFTER #4:** Smoke-test other 6 tabs comprehensively. ~2-3 hours.
-6. **EVENTUAL:** Resolve the two-git-tree structural problem. Decide on ONE canonical tree. Out of scope here.
+2. **NEXT SESSION (terminal CLI, post-gap-fix):** Cherry-pick the 22 remaining divergence files into tooling. ~2-3 hours. → **resolves `prod_blockers` id=54** (Item 2: 22-file divergence) and **id=57** (Item 10: 27 pre-existing modifications — likely overlap with id=54; verify during execution).
+3. **AFTER #2:** Option B fix session. `bg_session_state` derives segment from `scope_event_id`. ~2-4 hours including six-layer verification. → **closes `prod_locked_decisions` id=545** (`SHORTCUT_STORYBOARD_FIX_BEFORE_GAPFIX_V1`) by superseding the shortcut + resolving Bug 2 + Bug 4 architectural root cause.
+4. **AFTER #3:** Manual-drop-on-options regression port. ~1-2 hours. → **resolves `prod_blockers` id=59** (Item 5).
+5. **AFTER #4:** Smoke-test other 6 tabs comprehensively. ~2-3 hours. → **resolves `prod_blockers` id=56** (Item 4: 6 tabs untested).
+6. **EVENTUAL:** Resolve the two-git-tree structural problem. Decide on ONE canonical tree. Tier C architectural decision (4+4 advocate/counter agents). Out of scope here. → **resolves `prod_blockers` id=55** (Item 3).
+
+---
+
+## Tracking artifacts registered 2026-05-07 (silent deferrals audit Items 2-14)
+
+Per Kim 2026-05-07 directive (`prod_locked_decisions` id=551 `VERBAL_DEFERRAL_TRACKING_REQUIRED_V1`, severity=HARD): every verbal deferral from prior sessions MUST have a Directus tracking artifact. The full audit lives at `Production/docs/SILENT_DEFERRALS_AUDIT_20260507.md`. Registered 2026-05-07 by Desktop prep session, all read-back-verified per Rule 35:
+
+**`prod_blockers` rows (7) — actionable defects, severity-graded:**
+
+| Audit # | Blocker id | Severity | Resolves when... |
+|---|---|---|---|
+| 2 | 54 | high | Future session #2 (22-file divergence cherry-pick) |
+| 3 | 55 | high | Future session #6 (two-git-tree decision; Tier C) |
+| 4 | 56 | high | Future session #5 (6-tab smoke pass; pre-TestFlight) |
+| 5 | 59 | medium | Future session #4 (manual-drop regression port) |
+| 6 | 60 | medium | Beat_22 corruption investigation (no scheduled session yet — file with prep for Option B) |
+| 10 | 57 | high | Future session #2 OR dedicated investigation (27 pre-existing mods provenance) |
+| 13 | 58 | high | Audit pass mapping 66 lessons → LDs/skills/memory (no scheduled session — informational track) |
+
+**`prod_locked_decisions` LDs (6) — design/awareness:**
+
+| Audit # | LD id | Decision key | Severity | Closure |
+|---|---|---|---|---|
+| 7 | 546 | `DEFERRED_SCHEMA_DOC_INCONSISTENCY_V1` | SOFT | Inline edit when schema reference doc next opens |
+| 8 | 547 | `DEFERRED_BROWSER_SMOKE_MEMORY_CROSSLINK_V1` | SOFT | One-line append to feedback_browser_smoke_required.md |
+| 9 | 548 | `DEFERRED_INVENTORY_BRANCH_RECONCILIATION_V1` | SOFT | Decision in architectural-fix or gap-fix Phase 0 |
+| 11 | 549 | `DEFERRED_DESKTOP_WORKTREE_CLEANUP_V1` | SOFT | When Desktop session ends |
+| 12 | 550 | `DEFERRED_PENDING_WRITES_BAK_CLEANUP_V1` | SOFT | ~30 days hence (or leave; gitignored, harmless) |
+| 14 | 551 | `VERBAL_DEFERRAL_TRACKING_REQUIRED_V1` | **HARD** | Ongoing — operationalized via dashboard-gate skill + weekly_preflight_audit |
+
+**`prod_locked_decisions` LD 545 (`SHORTCUT_STORYBOARD_FIX_BEFORE_GAPFIX_V1`)** — pre-existing from side-fix; will be superseded when Option B (sequence #3) lands. Status `active` until then.
+
+**Audit Item 1 (.gitignore for runtime state) — already RESOLVED inline 2026-05-07** before BLOCK 2 paste. Tooling commit `0abfadf`, Dropbox commit on `claude/storyboard-bug-1-fix-20260507`. No tracking row needed (resolved before registration phase).
+
+**Instruction to gap-fix terminal Claude:** when each future session lands its scoped work, PATCH the relevant `prod_blockers` row with `is_resolved=true, resolved_at=<ISO>`. For LDs being closed, PATCH with `status='superseded', superseded_by_id=<new_LD_id>` (or just leave SOFT informational LDs at status='active' if they decay naturally). Do NOT delete blocker/LD rows — supersession is the audit-preserving pattern.
 
 ---
 
