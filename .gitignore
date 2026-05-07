@@ -120,3 +120,13 @@ archive/
 
 # E2E fixture pristine snapshot — final negation overrides global production_state.json rule above
 !Production/Event_e2e_fixture/.pristine/production_state.json
+
+# ============ Runtime state (audit Item 1, severity CRITICAL — 2026-05-07) ============
+# Per SILENT_DEFERRALS_AUDIT_20260507.md Item 1 + Kim authorization 2026-05-07.
+# Runtime byproducts (server PIDs, fixture locks, runtime JSON state) that previously
+# left the working tree dirty and tripped session-start STOP checks. Patterns added
+# AFTER all pristine-snapshot negations so existing fixture rules are preserved.
+*.pid
+.state.lock
+*.L.json
+beat_generator_state.json
