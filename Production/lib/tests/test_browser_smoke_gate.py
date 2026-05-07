@@ -75,7 +75,9 @@ class TestPhaseFGate(unittest.TestCase):
 
         def get_items(collection, **kwargs):
             assert collection == "prod_activity_log"
-            f = (kwargs.get("filter") or {}).get("action") or {}
+            # Accept either name to be defensive against signature drift
+            filt = kwargs.get("filters") or kwargs.get("filter") or {}
+            f = (filt or {}).get("action") or {}
             action = f.get("_eq")
             if action == "KIM_BROWSER_SMOKE_PASSED":
                 return smoke_rows

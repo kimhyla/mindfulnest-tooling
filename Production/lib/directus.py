@@ -523,7 +523,7 @@ def _matching_row_exists(
     c = client or DirectusAdminClient()
     rows = c.get_items(
         "prod_activity_log",
-        filter={"action": {"_eq": action}},
+        filters={"action": {"_eq": action}},
         limit=-1,
     ) or []
     for row in rows:
