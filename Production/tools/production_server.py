@@ -9168,7 +9168,21 @@ class ProductionHandler(BaseHTTPRequestHandler):
             "speaker", "dialogue_text", "scene_notes", "emotion",
             "accepted_image_key", "reference_image", "bg_ref_image",
         })
-        unknown = set(body.keys()) - _BG_BEAT_WRITABLE - {"beat_id"}
+        # BUG1FIX-20260507 — exclude scope/metadata keys that pathappPatch
+        # auto-injects per LD-461 SCOPE_BODY_HELPER_V1 + LD-474
+        # VIDEO_ROLE_PER_REQUEST_V1. They are required for the scope guard
+        # at line ~9161 above, but are not writable beat fields. Without
+        # this exclusion the BG-ref drop body 400s with
+        # "Unknown beat fields: ['scope_event_id', ...]" because the
+        # whitelist gate runs after the scope guard consumed those same keys.
+        _BG_BEAT_SCOPE_KEYS = frozenset({
+            "beat_id",
+            "event_id", "scope_event_id",
+            "scope_video_role", "scope_target_video",
+            "scope_milestone_id",
+            "scope_version",
+        })
+        unknown = set(body.keys()) - _BG_BEAT_WRITABLE - _BG_BEAT_SCOPE_KEYS
         if unknown:
             return self._send_json(400, {"ok": False,
                                           "error": f"Unknown beat fields: {sorted(unknown)}"})
