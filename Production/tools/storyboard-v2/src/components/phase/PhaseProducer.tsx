@@ -188,9 +188,12 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   // Security (CodeQL js/missing-origin-check alert #2, real source line):
   // gate on e.origin === window.location.origin to refuse cross-origin
   // senders (malicious iframes / window openers).
+  // MED-5: drop the falsy `e.origin &&` short-circuit so a
+  // missing-Origin sender (file:// frames, certain native callers) is
+  // also rejected. Strict equality only.
   useEffect(() => {
     const onMsg = (e: MessageEvent) => {
-      if (e.origin && e.origin !== window.location.origin) return;
+      if (e.origin !== window.location.origin) return;
       const t = e.data?.type;
       if (t === 'mn-magic-or-animate-complete' || t === 'mn:watercolor-animated') {
         refreshAll();

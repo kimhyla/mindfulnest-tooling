@@ -6134,10 +6134,13 @@ class ProductionHandler(BaseHTTPRequestHandler):
         abs_path = params.get("abs_path", [None])[0]
         if not abs_path:
             return self._send_json(400, {"ok": False, "error": "abs_path required"})
-        # Safety: path must be within project root
-        project_root = str(Path(__file__).parent.parent.parent)
+        # Safety: path must be within project root.
+        # Security (CodeQL py/path-injection — separator-anchored containment):
+        # naive startswith(root) lets sibling '<root>_evil/...' slip past.
+        # Compare against `root + os.sep` (or accept exact-equal root).
+        project_root = os.path.realpath(str(Path(__file__).parent.parent.parent))
         real_path = os.path.realpath(abs_path)
-        if not real_path.startswith(os.path.realpath(project_root)):
+        if not (real_path == project_root or real_path.startswith(project_root + os.sep)):
             return self._send_json(403, {"ok": False, "error": "path outside project"})
         if not os.path.isfile(real_path):
             return self._send_json(404, {"ok": False, "error": "file not found"})
@@ -6187,12 +6190,15 @@ class ProductionHandler(BaseHTTPRequestHandler):
         if not candidates:
             return self._send_json(404, {"ok": False, "error": f"key '{key}' not found in sources/"})
 
-        # Realpath safety check — must be within project root (mirrors L5195-5198)
+        # Realpath safety check — must be within project root (mirrors L5195-5198).
+        # Security (CodeQL py/path-injection — separator-anchored containment):
+        # naive startswith(root) lets sibling '<root>_evil/...' slip past.
+        # Compare against `root + os.sep` (or accept exact-equal root).
         project_root = os.path.realpath(str(Path(__file__).parent.parent.parent))
         target = None
         for path in candidates:
             real = os.path.realpath(path)
-            if real.startswith(project_root):
+            if real == project_root or real.startswith(project_root + os.sep):
                 target = real
                 break
         if not target:
@@ -8240,16 +8246,31 @@ class ProductionHandler(BaseHTTPRequestHandler):
             return self._send_json(400, {"error": err})
 
         # Resolve absolute path for source image; reject paths outside project.
+        # Security (CodeQL py/path-injection — separator-anchored containment +
+        # no swallowed exception): naive startswith(root) lets sibling
+        # '<root>_evil/...' slip past, and `except Exception: pass` silently
+        # skipped the check on resolve() failures (long paths, broken symlinks).
+        # Reject in BOTH failure modes; never let a path with unverified
+        # containment flow into ffmpeg.
         sip = Path(source_image_path_raw)
         if not sip.is_absolute():
             sip = self.app.event_dir.parent.parent / source_image_path_raw
+        # Sanitize beat_id BEFORE it flows into the on-disk filename via
+        # f-string. Mirrors _handle_cr_save_crop (line ~10091-10095) — closes
+        # MED-4 (magic_compositor.py label sanitizer is mooted when callers
+        # pass an explicit output_path constructed from raw beat_id).
+        if "/" in beat_id or "\\" in beat_id or ".." in beat_id or beat_id.startswith("."):
+            return self._send_json(400, {"error": "invalid beat_id"})
+        import re as _re_mid_a
+        if not _re_mid_a.match(r"^[A-Za-z0-9][A-Za-z0-9_-]*$", beat_id):
+            return self._send_json(400, {"error": "beat_id must match [A-Za-z0-9_-]+"})
         try:
-            project_root = Path(__file__).resolve().parent.parent.parent
-            sip_resolved = sip.resolve()
-            if not str(sip_resolved).startswith(str(project_root)):
+            project_root = str(Path(__file__).resolve().parent.parent.parent)
+            sip_resolved = str(sip.resolve())
+            if not (sip_resolved == project_root or sip_resolved.startswith(project_root + os.sep)):
                 return self._send_json(400, {"error": "source_image_path outside project root"})
         except Exception:
-            pass
+            return self._send_json(400, {"error": "source_image_path validation failed"})
         if not sip.is_file():
             return self._send_json(404, {
                 "error": "source_image not found", "path": str(sip),
@@ -8355,16 +8376,24 @@ class ProductionHandler(BaseHTTPRequestHandler):
         svp = Path(source_video_path_raw)
         if not svp.is_absolute():
             svp = self.app.event_dir.parent.parent / source_video_path_raw
-        # Security (CodeQL py/path-injection alert #16): copy project-root
-        # validation pattern from sister handler `_handle_magic_still`
-        # (lines 8225-8228). Reject paths resolving outside the repo.
+        # Security (CodeQL py/path-injection alert #16 — separator-anchored
+        # containment + no swallowed exception): naive startswith(root) lets
+        # sibling '<root>_evil/...' slip past, and `except Exception: pass`
+        # silently skipped the check on resolve() failures (long paths,
+        # broken symlinks). Reject in BOTH failure modes; never let a path
+        # with unverified containment flow into ffmpeg.
+        if "/" in beat_id or "\\" in beat_id or ".." in beat_id or beat_id.startswith("."):
+            return self._send_json(400, {"error": "invalid beat_id"})
+        import re as _re_mid_b
+        if not _re_mid_b.match(r"^[A-Za-z0-9][A-Za-z0-9_-]*$", beat_id):
+            return self._send_json(400, {"error": "beat_id must match [A-Za-z0-9_-]+"})
         try:
-            project_root = Path(__file__).resolve().parent.parent.parent
-            svp_resolved = svp.resolve()
-            if not str(svp_resolved).startswith(str(project_root)):
+            project_root = str(Path(__file__).resolve().parent.parent.parent)
+            svp_resolved = str(svp.resolve())
+            if not (svp_resolved == project_root or svp_resolved.startswith(project_root + os.sep)):
                 return self._send_json(400, {"error": "source_video_path outside project root"})
         except Exception:
-            pass
+            return self._send_json(400, {"error": "source_video_path validation failed"})
         if not svp.is_file():
             return self._send_json(404, {
                 "error": "source_video not found", "path": str(svp),
@@ -9975,6 +10004,17 @@ class ProductionHandler(BaseHTTPRequestHandler):
             return self._send_json(400, {"ok": False, "error": "beat_id and video_path required"})
         if not os.path.exists(video_path):
             return self._send_json(400, {"ok": False, "error": f"video file not found: {video_path}"})
+        # MED-3: project-root containment. Body-controlled `video_path` flows
+        # to sidecar `accepted_video_path` which is later passed to ffmpeg.
+        # Without this guard, an attacker could store an arbitrary absolute
+        # path (e.g. /etc/passwd) into project state.
+        try:
+            project_root = str(Path(__file__).resolve().parent.parent.parent)
+            real_video = os.path.realpath(video_path)
+            if not (real_video == project_root or real_video.startswith(project_root + os.sep)):
+                return self._send_json(403, {"ok": False, "error": "video_path outside project root"})
+        except Exception:
+            return self._send_json(403, {"ok": False, "error": "video_path validation failed"})
         bg = _bg_module()
         import pathlib as _pl
         if not bg._ffprobe_ok(_pl.Path(video_path)):
@@ -10033,12 +10073,16 @@ class ProductionHandler(BaseHTTPRequestHandler):
           (or no Origin header, e.g. <img src> + curl) accepted.
         - Project-root containment: resolved real path must be inside the
           repo root, otherwise 403. Closes arbitrary-file-read via /files.
+        - Allow-Origin response echoes ONLY the verified Origin (never `*`)
+          so the inbound allowlist isn't mooted by a wildcard CORS reply
+          (MED-2 from PR #8 adversarial review).
         """
         # 1. Origin allowlist — refuse non-localhost cross-origin requests.
         origin = self.headers.get("Origin", "") or ""
-        if origin and not (
+        origin_ok = bool(origin) and (
             origin.startswith("http://127.0.0.1:") or origin.startswith("http://localhost:")
-        ):
+        )
+        if origin and not origin_ok:
             return self._send_json(403, {"error": "cross-origin not allowed"})
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         file_path = (qs.get("path") or [None])[0]
@@ -10065,7 +10109,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", ct)
             self.send_header("Content-Length", str(len(data)))
-            self.send_header("Access-Control-Allow-Origin", "*")
+            # MED-2: echo only the verified Origin, never `*`. If the
+            # request had no Origin (curl, <img src>, native fetch),
+            # omit the header entirely — same-origin needs no CORS reply.
+            if origin_ok:
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(data)
@@ -11416,11 +11465,30 @@ body {{padding-top:44px!important;}}
         })
 
     def _handle_storyboard_switch(self, body: dict) -> None:
-        """POST /api/storyboard/switch  body: {filename: str}"""
+        """POST /api/storyboard/switch  body: {filename: str}
+
+        Security (CodeQL py/path-injection — regex tightening + containment):
+        the previous regex `^storyboard_v\\d+.*\\.html$` allowed `.*` to
+        match `/`, so `storyboard_v1/../../etc/passwd.html` slipped through
+        the basename check and `event_dir / filename` resolved through `..`
+        to leak file contents via `_extract_storyboard_title`'s
+        `path.read_text()`. Tighten to a strict basename pattern and add
+        a separator-anchored containment check on the resolved real path.
+        """
         filename = (body.get("filename") or "").strip()
-        if not re.match(r'^storyboard_v\d+.*\.html$', filename):
+        # Strict basename: storyboard_v<digits>[_<lowercase-suffix>]?.html
+        if not re.match(r'^storyboard_v\d+(_[a-z0-9_-]+)?\.html$', filename):
             return self._send_json(400, {"error": f"invalid filename: {filename!r}"})
         target = self.app.event_dir / filename
+        # Containment: resolved real path must remain inside event_dir.
+        try:
+            event_dir_real = str(self.app.event_dir.resolve())
+            target_real = str(target.resolve())
+            if not (target_real == event_dir_real
+                    or target_real.startswith(event_dir_real + os.sep)):
+                return self._send_json(400, {"error": "filename escapes event_dir"})
+        except Exception:
+            return self._send_json(400, {"error": "filename validation failed"})
         if not target.is_file():
             return self._send_json(404, {"error": f"not found: {filename}"})
         with self.app._storyboard_write_lock:
