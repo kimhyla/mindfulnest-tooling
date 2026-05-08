@@ -100,3 +100,61 @@ if [[ "$FATAL" -eq 1 ]]; then
     exit 1
 fi
 echo "Pre-commit Dropbox-edit gate: clean."
+
+# ============================================================================
+# Watch list anti-pattern detection (LD 560 WATCH_LIST_MECHANICAL_ENFORCEMENT_V1)
+# Master tech spec v6 §9 — these patterns must NEVER reach a commit
+# ============================================================================
+
+WATCHLIST_FAIL=0
+
+# Pattern 1: Live overlay with cue timing (LD-280 violation)
+# setTimeout/setInterval near video timeUpdate handlers in client OR ffmpeg overlay filters in server
+if git diff --cached -- '*.tsx' '*.ts' '*.js' 2>/dev/null | grep -E '^\+.*timeUpdate.*setTimeout|^\+.*setInterval.*videoRef|^\+.*ffmpeg.*-filter_complex.*overlay' > /dev/null 2>&1; then
+    echo "FATAL §9.1: Live overlay with cue timing detected (master spec v6 §9 hard line)."
+    echo "  See: Production/docs/MINDFULNEST_TECH_SPEC_v6.md §9 + LD-280 RENDERING_ARCHITECTURE_SINGLE_MP4_ATOMIC_V1"
+    WATCHLIST_FAIL=1
+fi
+
+# Pattern 2: Runtime TTS (ElevenLabs SDK in app/ or MindfulNest/)
+if git diff --cached -- 'app/*' 'MindfulNest/*' 2>/dev/null | grep -E "^\+.*from ['\"]elevenlabs|^\+.*import.*elevenlabs|^\+.*ELEVENLABS_API_KEY" > /dev/null 2>&1; then
+    echo "FATAL §9.2: Runtime TTS detected in app/ or MindfulNest/ (master spec v6 §9 hard line)."
+    echo "  Production pipeline imports OK; app-side runtime TTS is forbidden per LD-281 NO_RUNTIME_TTS_PERSONALIZATION_V1"
+    WATCHLIST_FAIL=1
+fi
+
+# Pattern 3: expo-audio in app/module/ playback path
+if git diff --cached -- 'app/module/*' 'MindfulNest/app/module/*' 2>/dev/null | grep -E "^\+.*from ['\"]expo-audio|^\+.*import.*expo-audio" > /dev/null 2>&1; then
+    echo "FATAL §9.3: expo-audio in app/module/ playback path (LD-280 violation)."
+    echo "  One MP4 atomic playback only; no expo-audio + expo-video composition."
+    WATCHLIST_FAIL=1
+fi
+
+# Pattern 4: Per-child audio variables in production output paths
+if git diff --cached -- '*.mp3' '*.mp4' '*.json' '*.txt' 2>/dev/null | grep -E "^\+.*\\{(childName|therapistName|parentName|chosenGuideName|parentTitle)\\}" > /dev/null 2>&1; then
+    echo "FATAL §9.4: Per-child audio variables in production output (LD-281 violation)."
+    echo "  Variables must resolve at production-pipeline authoring time, not in shipped artifacts."
+    WATCHLIST_FAIL=1
+fi
+
+# Pattern 5: Multi-file expo-video playlist patterns
+if git diff --cached -- 'app/*' 'MindfulNest/*' 2>/dev/null | grep -E '^\+.*<Video.*source=.*\}.*\n.*<Video' > /dev/null 2>&1; then
+    echo "FATAL §9.5: Multi-file expo-video playlist pattern detected (LD-280 violation)."
+    echo "  Single MP4 atomic playback per module."
+    WATCHLIST_FAIL=1
+fi
+
+if [ "$WATCHLIST_FAIL" -eq 1 ]; then
+    echo ""
+    echo "Watch list violations detected — see master spec v6 §9 hard lines."
+    echo "Override (only with Kim explicit approval): MN_SKIP_WATCHLIST_GATE=1 + register"
+    echo "  SHORTCUT_WATCHLIST_BYPASS_<reason>_V1 LD before retrying."
+    if [ "${MN_SKIP_WATCHLIST_GATE:-}" = "1" ]; then
+        echo "MN_SKIP_WATCHLIST_GATE=1 set — bypass requires SHORTCUT LD."
+        # Future: query Directus for SHORTCUT_WATCHLIST_BYPASS_*_V1 to enforce
+        echo "WARNING: bypass active but audit row not verified — Kim must register SHORTCUT manually."
+    else
+        exit 1
+    fi
+fi
+echo "Pre-commit watch list gate: clean."
