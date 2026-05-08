@@ -241,7 +241,7 @@ SCOPE_VALIDATION_V1) then landed cleanly.
 | `id` | integer | no | auto |
 | `task_id` | string | no | task slug, e.g. `v6-spec-followup-directus-parity-20260428` |
 | `task_type` | string | no | classification: `architectural`, `routine`, `trivial` |
-| `task_description` | text | no | short description |
+| `task_description` | text | no | **REQUIRED** — short description; POST returns `FAILED_VALIDATION` 400 without it (discovered 2026-05-08 by Phase 0 retroactive remediation) |
 | `claude_summary` | text | no | **REQUIRED** — full reasoning, risk register, deviations |
 | `agent_advocates` | json | yes | array of advocate objects (any shape) |
 | `agent_counters` | json | yes | array of counter objects (any shape) |

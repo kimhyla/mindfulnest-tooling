@@ -194,15 +194,22 @@ Each phase below states classification, Phase 0 prerequisites, the work itself, 
 3. **Post-deploy curl smoke** for unique build marker. The build process is updated to inject the current commit SHA into the HTML at build time as a meta tag (`<meta name="build-sha" content="abc123...">`); the deploy script then asserts that marker is present in the served HTML:
    ```bash
    # Build emits BUILD_SHA into HTML. Deploy script verifies served HTML contains it.
+   # IMPORTANT: URL is /, NOT /storyboard_v59_prod.html. production_server.py serves the
+   # storyboard SPA at root path; the filename specified via --storyboard CLI arg is the
+   # disk path it READS, never part of the URL. A probe against the filename path 404s.
+   # (Captured per feedback_storyboard_url_serves_at_root.md after 2026-05-07 sidefix bug.)
    BUILD_SHA=$(git rev-parse --short HEAD)
    sleep 2  # let server settle after restart
    SERVED=$(curl -s http://localhost:5111/ || echo "")
-   if ! echo "$SERVED" | grep -q "build-sha.*$BUILD_SHA"; then
-       echo "FATAL: served HTML at http://localhost:5111/ does not contain build-sha=$BUILD_SHA"
-       echo "Server may be serving stale content."
+   MARKER_COUNT=$(echo "$SERVED" | grep -c "build-sha.*$BUILD_SHA" || true)
+   if [ "$MARKER_COUNT" -lt 1 ]; then
+       echo "FATAL: served HTML at http://localhost:5111/ does not contain build-sha=$BUILD_SHA (matches=$MARKER_COUNT)"
+       echo "Server may be serving stale content. Verify: (1) URL is /, NOT /storyboard_v59_prod.html;"
+       echo "(2) build emitted <meta name='build-sha' content='$BUILD_SHA'> into dist/index.html;"
+       echo "(3) deploy step actually copied dist → Event_*/storyboard_v59_prod.html."
        exit 1
    fi
-   echo "Server is serving fresh build (sha=$BUILD_SHA)."
+   echo "Server is serving fresh build (sha=$BUILD_SHA, marker_matches=$MARKER_COUNT)."
    ```
 
 4. **Build-time SHA injection** added to `Production/tools/storyboard-v2/vite.config.ts` (or equivalent build config) to emit `<meta name="build-sha" content="<git rev-parse --short HEAD>">` into the HTML head.

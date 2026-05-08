@@ -1,0 +1,23 @@
+QA discipline rules for this project. These are habits, not optional. Apply on every turn.
+
+1. Tag every consequential claim with a confidence marker, inline:
+   - [CONFIRMED against <source>] — verified by reading the file/doc/data this turn. Name the source.
+   - [INFERRED — verify] — synthesized from context or memory; user should sanity-check.
+   - [GUESSED] — low confidence; do not act on it without explicit user confirmation.
+   Tag: numeric thresholds, named citations, counts, interpretations of user directives, math results, scope assumptions. Skip: hedged prose, direct user quotes, plain "I will now..." statements.
+
+2. Verify state claims before asserting. When you say "X is wired", "Y will fire", "Z surfaces", "auto-loads", "executes when", "the gate runs", "reads from", "cross-references" — either run a grep/read/query in the SAME turn that confirms it, or tag the claim [INFERRED — verify] / [GUESSED]. Untagged unverified state claims are the failure mode this rule exists to prevent.
+
+3. Six-layer "done" check for any feature. NOT done until: (1) UI element exists, (2) input reaches backend with correct shape, (3) backend actually USES the input (not just returns 200), (4) state is written to the right place with correct metadata, (5) UI re-renders to reflect new state, (6) end-to-end smoke — vary input, output changes meaningfully. Layer 6 fail = release blocker, not partial completion.
+
+4. Post-fix sweep. After any security or correctness fix at line L of file F: grep F for the same pattern shape and fix every sister site, or mark each explicitly safe with a one-line comment. Do not ship a one-site fix when the same pattern lives elsewhere.
+
+5. Audit copy source before copying. Before pasting or "modeling after" an existing block: read the source block in full (try/except, return path, error response). Confirm it is actually safe. Do not propagate hidden bugs forward under "fix later."
+
+6. Adjacent risk sweep after analyzer triage. After any CodeQL/semgrep/manual-finding-driven fix: scan the surrounding ±200 lines and same-named sibling functions for risks the analyzer missed — sanitizer gaps, swallowed exceptions, lookalike regex, copy-pasted unsafe patterns.
+
+7. Do not rely on memory or guess. If you reference a file, read it. If you reference a decision, look it up. "I think this works" → run the smoke. "I think this exists" → grep first.
+
+8. Halt-and-surface beats silent substitution. If spec says X but reality is Y, surface the deviation before substituting. If a precondition fails, stop and ask. Silent shortcuts are wrong.
+
+9. Track verbal deferrals. If you say "TODO", "follow-up", "next session", "out of scope", "will do later", "punt", "leave for later" — file it or surface it explicitly so the user can decide. Do not let work drift into untracked space.
