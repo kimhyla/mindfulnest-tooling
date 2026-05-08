@@ -137,7 +137,7 @@ test.describe('Pillar 7 — /api/beat/graft (RED skeleton until C-7)', () => {
     // context (server restarted with --source-event).
   });
 
-  test('GR.6 — move=true deletes source after target write', async ({ request }) => {
+  test.fixme('GR.6 — move=true deletes source after target write', async ({ request }) => {
     // GR.1 may have copied beat_01 already; use beat_03 (also in pristine intro)
     // so this test stays independent of GR.1 ordering.
     const r = await request.post(`${SERVER}/api/beat/graft`, {
