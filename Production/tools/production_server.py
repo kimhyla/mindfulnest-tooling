@@ -2595,7 +2595,20 @@ def _find_beat_audio(event_dir: Path, beat_key: str, audio_override: str | None 
     animation-duration lookup."""
     if audio_override:
         p = Path(audio_override)
-        return p if p.is_file() else None
+        if not p.is_file():
+            return None
+        # Security (CodeQL py/path-injection alert #11 follow-up):
+        # audio_override flows from HTTP body and the returned Path is
+        # later handed to ffmpeg / lipsync subprocesses by callers.
+        # Containment guard: only accept paths inside the project root.
+        try:
+            project_root = str(Path(__file__).resolve().parent.parent.parent)
+            real = os.path.realpath(str(p))
+            if not (real == project_root or real.startswith(project_root + os.sep)):
+                return None
+        except Exception:
+            return None
+        return p
 
     try:
         beat_num = int(beat_key.split("_")[1])
@@ -14885,6 +14898,16 @@ body {{padding-top:44px!important;}}
                 "error": f"source_path not found: {source_path_str}",
                 "hint": "Ensure the SFX file exists at the given path.",
             })
+        # Security (CodeQL py/path-injection alert #28 follow-up):
+        # source_path is body-controlled and later read by ffmpeg in the
+        # stitcher mix. Reject paths outside the project root.
+        try:
+            project_root = str(Path(__file__).resolve().parent.parent.parent)
+            real_path = os.path.realpath(str(source_path))
+            if not (real_path == project_root or real_path.startswith(project_root + os.sep)):
+                return self._send_json(403, {"error": "source_path outside project root"})
+        except Exception:
+            return self._send_json(403, {"error": "source_path validation failed"})
 
         cue = {
             "id": cue_id,
@@ -14940,7 +14963,13 @@ body {{padding-top:44px!important;}}
         return self._send_json(200, {"ok": True, "baked": len(cues), "cues": cues})
 
     def _handle_timeline_open_in_quicktime(self, body: dict) -> None:
-        """POST /api/timeline/open_in_quicktime — open mp4_path in QuickTime Player."""
+        """POST /api/timeline/open_in_quicktime — open mp4_path in QuickTime Player.
+
+        Security (CodeQL py/path-injection alert #29 follow-up):
+        Extension whitelist alone leaves any readable .mp4/.mov/.m4v on disk
+        openable. macOS media-decoder CVEs make this a non-zero risk surface.
+        Add project-root containment so only files inside the repo open.
+        """
         mp4_path = body.get("mp4_path", "")
         if not mp4_path:
             return self._send_json(400, {"error": "mp4_path is required"})
@@ -14949,6 +14978,14 @@ body {{padding-top:44px!important;}}
             return self._send_json(404, {"error": f"file not found: {mp4_path}"})
         if p.suffix.lower() not in (".mp4", ".mov", ".m4v"):
             return self._send_json(400, {"error": "only .mp4/.mov/.m4v files allowed"})
+        # Project-root containment (separator-anchored)
+        try:
+            project_root = str(Path(__file__).resolve().parent.parent.parent)
+            real_path = os.path.realpath(str(p))
+            if not (real_path == project_root or real_path.startswith(project_root + os.sep)):
+                return self._send_json(403, {"error": "path outside project root"})
+        except Exception:
+            return self._send_json(403, {"error": "path validation failed"})
         try:
             subprocess.run(
                 ["open", "-a", "QuickTime Player", str(p)],
@@ -15154,13 +15191,35 @@ body {{padding-top:44px!important;}}
         Relative paths are anchored to the project root, NOT the server's CWD.
         Raises ValueError if the resolved path escapes the project root.
         Always use this instead of os.path.abspath() for any stitch-endpoint path.
+
+        Security (CodeQL py/path-injection follow-up): the containment check
+        is separator-anchored. Without the anchor, a sibling directory named
+        '<root>_evil' would slip past 'startswith(root)' (e.g.
+        '/proj/root_evil/x' starts with '/proj/root'). Compare against
+        `root + os.sep` (or accept exact-equal root) to close the edge case.
         """
         root = self._stitch_project_root()
         p = Path(raw)
         resolved = str((p if p.is_absolute() else root / p).resolve())
-        if not resolved.startswith(str(root)):
+        root_s = str(root)
+        if not (resolved == root_s or resolved.startswith(root_s + os.sep)):
             raise ValueError(f"path outside project root: {raw!r}")
         return resolved
+
+    def _stitch_assert_path_in_root(self, raw: str, label: str) -> None:
+        """Containment guard for body-controlled audio/SFX paths.
+
+        Security (CodeQL py/path-injection follow-up alerts #39/#40/#41 and #28):
+        used by _stitch_mix_slot_audio (ambient_bed_path, sfx_cues source_path)
+        and the transitions loop (t_path) to refuse any path resolving outside
+        the project root before it flows to ffmpeg `-i <path>`.
+
+        Raises ValueError if the resolved real path escapes the project root.
+        """
+        root = str(self._stitch_project_root())
+        real = os.path.realpath(raw)
+        if not (real == root or real.startswith(root + os.sep)):
+            raise ValueError(f"{label} outside project root: {raw!r}")
 
     def _stitch_production_dir(self) -> Path:
         """Production/ directory."""
@@ -15737,6 +15796,13 @@ body {{padding-top:44px!important;}}
             if not os.path.isfile(cue.get("source_path", "")):
                 raise FileNotFoundError(f"SFX not found: {cue.get('source_path')}")
 
+        # Security (CodeQL py/path-injection alerts #39/#40 follow-up):
+        # body-controlled paths flow into ffmpeg `-i`. Containment guard.
+        if ambient_path:
+            self._stitch_assert_path_in_root(ambient_path, "ambient_bed_path")
+        for cue in sfx_cues:
+            self._stitch_assert_path_in_root(cue.get("source_path", ""), "sfx source_path")
+
         # Cache key: norm mtime + ambient + sfx cue ids
         sig_parts = [str(norm_path.stat().st_mtime), ambient_path, str(ambient_volume)]
         sig_parts += [f"{c['id']}:{c['offset_ms']}" for c in sfx_cues]
@@ -15948,6 +16014,13 @@ body {{padding-top:44px!important;}}
                 # Requires source_path (else nothing to inject; fall back to no-op
                 # equivalent to 'cut' for the audio side).
                 if not t_path or not os.path.isfile(t_path):
+                    continue
+                # Security (CodeQL py/path-injection alert #41 follow-up):
+                # transition source_path is body-controlled and flows into
+                # ffmpeg `-i` via _stitch_mix_slot_audio. Containment guard.
+                try:
+                    self._stitch_assert_path_in_root(t_path, "transition source_path")
+                except ValueError:
                     continue
                 slot_dur = slot_durations[after_slot]
                 offset_ms = max(0, slot_dur - fade_ms)

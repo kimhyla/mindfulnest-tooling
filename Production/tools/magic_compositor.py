@@ -205,7 +205,20 @@ class MagicCompositor:
 
         self.output_dir = output_dir or os.path.dirname(background_path)
         ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-        self.label = label or f"{style}_{ts}"
+        # Security (CodeQL py/path-injection alert #10): label flows into
+        # default output_path via f"magic_{self.label}.mp4" / f"preview_{self.label}.png".
+        # When label is attacker-controlled (e.g. flows from beat_id over HTTP),
+        # an unsanitized label like '../../etc/x' lets the resulting output_path
+        # escape self.output_dir. Sanitize at construction-time: strip path
+        # separators and traversal sequences before assignment.
+        import re as _re
+        _raw_label = label or f"{style}_{ts}"
+        _sanitized_label = _re.sub(r"[/\\]", "_", _raw_label).replace("..", "_")
+        # Defensive: if anything else weird remains (null bytes, control chars),
+        # fall back to a deterministic safe label.
+        if "\x00" in _sanitized_label or not _sanitized_label.strip():
+            _sanitized_label = f"{style}_{ts}"
+        self.label = _sanitized_label
 
         print(f"Loading background: {os.path.basename(background_path)}", flush=True)
         self.bg_img = Image.open(background_path).convert("RGB")

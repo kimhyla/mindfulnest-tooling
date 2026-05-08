@@ -775,8 +775,12 @@ export function StoryboardTab() {
   ]);
 
   // S5 — refresh on path_picker submit success.
+  // Security (CodeQL js/missing-origin-check alert #1, real source line):
+  // gate postMessage on e.origin === window.location.origin to refuse
+  // cross-origin senders (malicious iframes / window openers).
   useEffect(() => {
     const onMsg = (e: MessageEvent) => {
+      if (e.origin && e.origin !== window.location.origin) return;
       if (e.data?.type === 'mn-magic-or-animate-complete') {
         setRefreshTick((n) => n + 1);
       }
