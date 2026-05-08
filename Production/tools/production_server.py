@@ -10078,10 +10078,14 @@ class ProductionHandler(BaseHTTPRequestHandler):
           (MED-2 from PR #8 adversarial review).
         """
         # 1. Origin allowlist — refuse non-localhost cross-origin requests.
+        # Security (CodeQL py/http-response-splitting): a strict whole-string
+        # regex match on a known-safe shape ensures `origin` cannot carry
+        # CR/LF (or anything else weird) when echoed in the Allow-Origin
+        # response header below. Prefix-only checks (.startswith) leave the
+        # tail unconstrained.
         origin = self.headers.get("Origin", "") or ""
-        origin_ok = bool(origin) and (
-            origin.startswith("http://127.0.0.1:") or origin.startswith("http://localhost:")
-        )
+        _origin_re = re.compile(r"^http://(?:127\.0\.0\.1|localhost):\d{1,5}$")
+        origin_ok = bool(origin) and bool(_origin_re.match(origin))
         if origin and not origin_ok:
             return self._send_json(403, {"error": "cross-origin not allowed"})
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
