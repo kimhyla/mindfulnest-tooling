@@ -388,8 +388,13 @@ if __name__ == "__main__":
     # Smoke test: verify we can round-trip a tiny activity log entry.
     import os as _os
 
-    if not _os.environ.get("DIRECTUS_EMAIL"):
-        print("Set DIRECTUS_EMAIL / DIRECTUS_PASSWORD to run smoke test.")
+    # Doppler-canonical names first, legacy bare names accepted (LD-227 Phase 1).
+    if not (_os.environ.get("DIRECTUS_ADMIN_EMAIL") or _os.environ.get("DIRECTUS_EMAIL")):
+        print(
+            "Run via `doppler run -- ` (Doppler project `mindfulnest`) or set "
+            "DIRECTUS_ADMIN_EMAIL/DIRECTUS_ADMIN_PASSWORD (or legacy "
+            "DIRECTUS_EMAIL/DIRECTUS_PASSWORD) to run smoke test."
+        )
         sys.exit(0)
 
     payload = {

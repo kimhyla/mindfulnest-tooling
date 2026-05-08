@@ -52,10 +52,27 @@ class DirectusAdminClient:
 
     def __init__(self, base_url: str = DIRECTUS_URL, email: Optional[str] = None, password: Optional[str] = None):
         self.base_url = base_url.rstrip("/")
-        self._email = email or os.environ.get("DIRECTUS_EMAIL") or self._read_from_keys_file("Admin Email")
-        self._password = password or os.environ.get("DIRECTUS_PASSWORD") or self._read_from_keys_file("Admin Password")
+        # Doppler-canonical names first (DIRECTUS_ADMIN_*), legacy bare names as fallback,
+        # API_KEYS_MASTER.md as last resort (LD-227 SHORTCUT_CREDSTORE_MD_FALLBACK_20260418).
+        self._email = (
+            email
+            or os.environ.get("DIRECTUS_ADMIN_EMAIL")
+            or os.environ.get("DIRECTUS_EMAIL")
+            or self._read_from_keys_file("Admin Email")
+        )
+        self._password = (
+            password
+            or os.environ.get("DIRECTUS_ADMIN_PASSWORD")
+            or os.environ.get("DIRECTUS_PASSWORD")
+            or self._read_from_keys_file("Admin Password")
+        )
         if not self._email or not self._password:
-            raise RuntimeError("Directus credentials not found. Set DIRECTUS_EMAIL/DIRECTUS_PASSWORD env or API_KEYS_MASTER.md.")
+            raise RuntimeError(
+                "Directus credentials not found. Run via `doppler run -- ` (Doppler "
+                "project `mindfulnest`) or set DIRECTUS_ADMIN_EMAIL/DIRECTUS_ADMIN_PASSWORD "
+                "env vars (or legacy DIRECTUS_EMAIL/DIRECTUS_PASSWORD), or ensure "
+                "API_KEYS_MASTER.md is reachable."
+            )
         self._token: Optional[str] = None
 
     @staticmethod

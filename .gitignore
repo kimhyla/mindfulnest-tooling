@@ -43,6 +43,12 @@ API_KEYS_MASTER*
 .env
 .env.*
 !.env.example
+# LD-227 Phase 1 (2026-05-08): Production/tools/lib/credentials.py is the
+# centralized credential-LOADING library — it contains env-var name strings
+# and parsing logic but NO credential VALUES. Allow this one path so the
+# library can be tracked + cross-machine synced. Any new file matching
+# *credentials* in OTHER locations remains ignored by default.
+!Production/tools/lib/credentials.py
 
 # ============ Project-specific working state ============
 # Directus offline write queue — local-only fallback.
