@@ -5899,6 +5899,15 @@ class ProductionHandler(BaseHTTPRequestHandler):
         if not keys:
             return self._send_json(400, {"error": "keys param required"})
 
+        # Security (CodeQL py/path-injection alerts #12, #13): reject any key
+        # containing path separators, leading dot, or '..' to prevent traversal
+        # outside crops_dir. Allow [A-Za-z0-9._-]+ basename only.
+        import re as _re
+        _SAFE_KEY = _re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]*$")
+        for k in keys:
+            if ".." in k or "/" in k or "\\" in k or k.startswith(".") or not _SAFE_KEY.match(k):
+                return self._send_json(400, {"error": f"invalid key: {k!r}"})
+
         bg = _bg_module()
         crops_dir = os.path.join(bg.BG_STILLS_DIR, "crops")
         result = {}
@@ -8333,6 +8342,16 @@ class ProductionHandler(BaseHTTPRequestHandler):
         svp = Path(source_video_path_raw)
         if not svp.is_absolute():
             svp = self.app.event_dir.parent.parent / source_video_path_raw
+        # Security (CodeQL py/path-injection alert #16): copy project-root
+        # validation pattern from sister handler `_handle_magic_still`
+        # (lines 8225-8228). Reject paths resolving outside the repo.
+        try:
+            project_root = Path(__file__).resolve().parent.parent.parent
+            svp_resolved = svp.resolve()
+            if not str(svp_resolved).startswith(str(project_root)):
+                return self._send_json(400, {"error": "source_video_path outside project root"})
+        except Exception:
+            pass
         if not svp.is_file():
             return self._send_json(404, {
                 "error": "source_video not found", "path": str(svp),
@@ -9994,11 +10013,32 @@ class ProductionHandler(BaseHTTPRequestHandler):
         return self._send_bytes(200, data, ct, {"Cache-Control": "no-cache"})
 
     def _handle_files_serve(self) -> None:
-        """GET /files?path=<absolute_path> — serve local file bytes (images/video)."""
+        """GET /files?path=<absolute_path> — serve local file bytes (images/video).
+
+        Security (CodeQL py/path-injection alerts #24, #25):
+        - Origin allowlist: cross-origin browser fetch refused. Only same-origin
+          (or no Origin header, e.g. <img src> + curl) accepted.
+        - Project-root containment: resolved real path must be inside the
+          repo root, otherwise 403. Closes arbitrary-file-read via /files.
+        """
+        # 1. Origin allowlist — refuse non-localhost cross-origin requests.
+        origin = self.headers.get("Origin", "") or ""
+        if origin and not (
+            origin.startswith("http://127.0.0.1:") or origin.startswith("http://localhost:")
+        ):
+            return self._send_json(403, {"error": "cross-origin not allowed"})
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         file_path = (qs.get("path") or [None])[0]
         if not file_path or not os.path.exists(file_path):
             return self._send_json(404, {"error": "file not found"})
+        # 2. Project-root containment — refuse paths outside the repo.
+        try:
+            project_root = str(Path(__file__).resolve().parent.parent.parent)
+            real_path = os.path.realpath(file_path)
+            if not (real_path == project_root or real_path.startswith(project_root + os.sep)):
+                return self._send_json(403, {"error": "path outside project root"})
+        except Exception:
+            return self._send_json(403, {"error": "path validation failed"})
         ext = os.path.splitext(file_path)[1].lower()
         content_types = {
             ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
@@ -10031,6 +10071,15 @@ class ProductionHandler(BaseHTTPRequestHandler):
         source_key = body.get("source_key", "")
         if not crop_b64:
             return self._send_json(400, {"error": "crop_png_b64 required"})
+
+        # Security (CodeQL py/path-injection alert #26): beat_id flows into
+        # the on-disk filename via f-string. Reject any path separators or
+        # traversal sequences; require basename-only [A-Za-z0-9_-].
+        if not beat_id or "/" in beat_id or "\\" in beat_id or ".." in beat_id or beat_id.startswith("."):
+            return self._send_json(400, {"error": "invalid beat_id"})
+        import re as _re
+        if not _re.match(r"^[A-Za-z0-9][A-Za-z0-9_-]*$", beat_id):
+            return self._send_json(400, {"error": "beat_id must match [A-Za-z0-9_-]+"})
 
         bg = _bg_module()
         try:
