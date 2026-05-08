@@ -10078,15 +10078,25 @@ class ProductionHandler(BaseHTTPRequestHandler):
           (MED-2 from PR #8 adversarial review).
         """
         # 1. Origin allowlist — refuse non-localhost cross-origin requests.
-        # Security (CodeQL py/http-response-splitting): a strict whole-string
-        # regex match on a known-safe shape ensures `origin` cannot carry
-        # CR/LF (or anything else weird) when echoed in the Allow-Origin
-        # response header below. Prefix-only checks (.startswith) leave the
-        # tail unconstrained.
-        origin = self.headers.get("Origin", "") or ""
-        _origin_re = re.compile(r"^http://(?:127\.0\.0\.1|localhost):\d{1,5}$")
-        origin_ok = bool(origin) and bool(_origin_re.match(origin))
-        if origin and not origin_ok:
+        # Security (CodeQL py/http-response-splitting): rebuild the echoed
+        # origin from validated components so no user-controlled bytes
+        # (especially CR/LF) can flow into the response header. The
+        # urllib.parse.urlparse + integer port + literal-host reconstruction
+        # is a recognized sanitizer pattern.
+        origin_in = self.headers.get("Origin", "") or ""
+        origin_safe = ""
+        if origin_in:
+            try:
+                _u = urllib.parse.urlparse(origin_in)
+                if _u.scheme == "http" and _u.hostname in ("127.0.0.1", "localhost") \
+                        and _u.port is not None and 1 <= int(_u.port) <= 65535 \
+                        and _u.path in ("", "/") and not _u.query and not _u.fragment:
+                    # Rebuild from typed pieces — no user bytes flow through.
+                    origin_safe = f"http://{_u.hostname}:{int(_u.port)}"
+            except (ValueError, TypeError):
+                origin_safe = ""
+        origin_ok = bool(origin_safe)
+        if origin_in and not origin_ok:
             return self._send_json(403, {"error": "cross-origin not allowed"})
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         file_path = (qs.get("path") or [None])[0]
@@ -10117,7 +10127,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
             # request had no Origin (curl, <img src>, native fetch),
             # omit the header entirely — same-origin needs no CORS reply.
             if origin_ok:
-                self.send_header("Access-Control-Allow-Origin", origin)
+                # `origin_safe` is rebuilt from f"http://{hostname}:{int(port)}"
+                # where hostname ∈ {"127.0.0.1", "localhost"} and port is int.
+                # No user-controlled bytes flow through; CR/LF impossible.
+                self.send_header("Access-Control-Allow-Origin", origin_safe)
                 self.send_header("Vary", "Origin")
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
