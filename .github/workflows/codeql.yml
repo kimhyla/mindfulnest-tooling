@@ -41,6 +41,10 @@ jobs:
           # default-queries + security-extended catches the OWASP Top 10 + injection
           # patterns that the AI review (Phase C) doesn't structurally model.
           queries: security-extended
+          # config-file: paths-ignore for backup/snapshot/one-shot-patcher files
+          # that produce noise without security value (LD CODEQL_DEPENDABOT_SECURITY_SCAN_V1
+          # amendment 2026-05-09).
+          config-file: ./.github/codeql/codeql-config.yml
 
       - name: Autobuild
         uses: github/codeql-action/autobuild@v3
