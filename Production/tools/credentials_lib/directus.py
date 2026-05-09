@@ -5,7 +5,7 @@ Handles authentication (auto-refresh JWT), CRUD operations,
 the 7-query bootstrap protocol, and all known schema quirks.
 
 Usage:
-    from lib.credentials import load_credentials
+    from credentials_lib.credentials import load_credentials
     from lib.directus import DirectusClient, parse_module_id
 
     creds = load_credentials()

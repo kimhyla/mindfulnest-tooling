@@ -1,0 +1,235 @@
+# ds23_ds25_check.yml
+# Deploy to: mindfulnest-tooling/.github/workflows/ds23_ds25_check.yml
+#
+# DS-23 (post-fix pattern sweep) + DS-25 (adjacent-risk PR gate) CI verification.
+# Normative design: Production/docs/DS_23_24_25_MECHANICAL_GATE_TECH_SPEC_v3.md
+#   §7.1.2 (DS-23 CI check, both-grammar regex + nested-key jsonb filter)
+#   §7.3.1 (DS-25 workflow_run if-clause + multi-PR detect + Tier 3 PR-merge gate)
+#
+# Verified against actual mindfulnest-tooling/.github/workflows/codeql.yml triggers:
+#   push: branches: [main]
+#   pull_request: branches: [main]
+#   schedule: cron weekly
+# v3-A broadened if-clause is a SUPERSET (no event missed); workflow_dispatch
+# listed defensively for future trigger additions.
+
+name: DS-23 / DS-25 Mechanical Gate
+
+on:
+  workflow_run:
+    workflows: [CodeQL]
+    types: [completed]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ds23-ds25-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # =========================================================================
+  # DS-23 — verify every PR-range commit touching security-adjacent files
+  # carries a sweep block (legacy or short-form).
+  # =========================================================================
+  ds_23_check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR range
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Identify security-adjacent commits in PR range
+        id: scan
+        env:
+          DIRECTUS_URL: ${{ secrets.DIRECTUS_URL }}
+          DIRECTUS_TOKEN: ${{ secrets.DIRECTUS_TOKEN }}
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          # Path-grep matches §7.1.1 SECURITY_GLOBS (top-level + nested coverage per v3-D).
+          SECURITY_GLOBS='production_server\.py|^Production/lib/.*\.py$|^firestore/rules/|^functions/src/.*\.(ts|js)$'
+          # §3.2-v3 / §7.1.2 v3 union regex — accepts BOTH legacy and short-form grammars.
+          SWEPT_REGEX='^Swept(:| .+ for `)'
+          FAIL=0
+          for COMMIT_SHA in $(git rev-list "$BASE..$HEAD"); do
+            if git show --name-only --format= "$COMMIT_SHA" | grep -qE "$SECURITY_GLOBS"; then
+              BODY="$(git log -1 --format=%B "$COMMIT_SHA")"
+              if echo "$BODY" | grep -qE "$SWEPT_REGEX"; then
+                echo "  $COMMIT_SHA: DS-23 sweep block present (matches union grammar)"
+              elif echo "$BODY" | grep -qE 'DS_23_GATE_BYPASSED|DS-23 sweep waived'; then
+                # §7.1.2 v3 M-3: nested-key jsonb filter (replaces v2 _contains).
+                # `details` confirmed jsonb at v3 author time; canonical bypass-row
+                # shape carries `details.commit_sha` as top-level key.
+                AUDIT_COUNT="$(curl -sS -H "Authorization: Bearer $DIRECTUS_TOKEN" \
+                  "$DIRECTUS_URL/items/prod_activity_log?filter[action][_eq]=DS_23_GATE_BYPASSED&filter[details][commit_sha][_eq]=$COMMIT_SHA" \
+                  | jq '.data | length')"
+                if [ "$AUDIT_COUNT" -lt 1 ]; then
+                  echo "::error::DS-23 BYPASS rejected: no audit row with details.commit_sha == $COMMIT_SHA"
+                  echo "::error::Bypass row writers MUST include commit_sha as top-level key in details (v3 canonical shape)."
+                  FAIL=1
+                else
+                  echo "  $COMMIT_SHA: DS-23 sweep waived; audit row verified ($AUDIT_COUNT match on details.commit_sha)"
+                fi
+              else
+                echo "::error::$COMMIT_SHA: DS-23 BLOCK MISSING in commit message (neither short form nor legacy form found)"
+                FAIL=1
+              fi
+            fi
+          done
+          echo "fail=$FAIL" >> "$GITHUB_OUTPUT"
+
+      - name: Fail if any commit lacks sweep block
+        if: steps.scan.outputs.fail == '1'
+        run: exit 1
+
+  # =========================================================================
+  # DS-25 — adjacent-risk PR gate (post-CodeQL triage + Tier 3 PR-merge halt).
+  # Triggers on workflow_run (any of pull_request|push|schedule|workflow_dispatch
+  # originating events — verified superset of actual codeql.yml triggers per
+  # §7.3.1 v3-C [VERIFIED-IN-V3-C]) + direct PR opens/edits.
+  # =========================================================================
+  ds_25_check:
+    if: >-
+      (github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main') ||
+      (github.event_name == 'workflow_run' &&
+       (github.event.workflow_run.event == 'pull_request' ||
+        github.event.workflow_run.event == 'push' ||
+        github.event.workflow_run.event == 'schedule' ||
+        github.event.workflow_run.event == 'workflow_dispatch'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve PR context
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DIRECTUS_URL: ${{ secrets.DIRECTUS_URL }}
+          DIRECTUS_TOKEN: ${{ secrets.DIRECTUS_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "workflow_run" ]; then
+            HEAD_SHA="${{ github.event.workflow_run.head_sha }}"
+            # §7.3.1 v3-B (LOW CLOSED): enumerate open PRs referencing $HEAD_SHA.
+            #   0 open PRs   → notice-only skip + DS_25_NO_PR_CONTEXT activity-log row.
+            #   >1 open PRs  → hard-fail + write prod_blockers row + activity-log row.
+            #   exactly 1    → proceed with that PR.
+            PR_LIST="$(gh api "/repos/${{ github.repository }}/commits/$HEAD_SHA/pulls" \
+              --jq 'map(select(.state == "open")) | map(.number)')"
+            PR_COUNT="$(echo "$PR_LIST" | jq 'length')"
+            if [ "$PR_COUNT" -eq 0 ]; then
+              echo "::warning::DS_25_NO_OPEN_PR: head_sha $HEAD_SHA has no associated open PR; skipping gate."
+              curl -sS -X POST -H "Authorization: Bearer $DIRECTUS_TOKEN" \
+                -H "Content-Type: application/json" \
+                "$DIRECTUS_URL/items/prod_activity_log" \
+                -d "{\"action\":\"DS_25_NO_PR_CONTEXT\",\"details\":{\"commit_sha\":\"$HEAD_SHA\",\"reason\":\"workflow_run with no open PR\",\"trigger_event\":\"${{ github.event.workflow_run.event }}\"},\"performed_by\":\"ds25_ci\"}"
+              echo "skip=1" >> "$GITHUB_OUTPUT"
+              exit 0
+            elif [ "$PR_COUNT" -gt 1 ]; then
+              echo "::error::DS_25_AMBIGUOUS_PR_CONTEXT: $PR_COUNT open PRs reference $HEAD_SHA: $PR_LIST. Operator must rebase/merge to disambiguate before gate runs."
+              curl -sS -X POST -H "Authorization: Bearer $DIRECTUS_TOKEN" \
+                -H "Content-Type: application/json" \
+                "$DIRECTUS_URL/items/prod_blockers" \
+                -d "{\"blocker_type\":\"DS_25_AMBIGUOUS_PR_CONTEXT_$HEAD_SHA\",\"is_resolved\":false,\"details\":{\"commit_sha\":\"$HEAD_SHA\",\"open_pr_numbers\":$PR_LIST,\"open_pr_count\":$PR_COUNT,\"reason\":\"multi-PR ambiguity surfaced by DS-25 PR resolution step\"}}"
+              curl -sS -X POST -H "Authorization: Bearer $DIRECTUS_TOKEN" \
+                -H "Content-Type: application/json" \
+                "$DIRECTUS_URL/items/prod_activity_log" \
+                -d "{\"action\":\"DS_25_AMBIGUOUS_PR_CONTEXT\",\"details\":{\"commit_sha\":\"$HEAD_SHA\",\"open_pr_numbers\":$PR_LIST,\"open_pr_count\":$PR_COUNT,\"trigger_event\":\"${{ github.event.workflow_run.event }}\"},\"performed_by\":\"ds25_ci\"}"
+              exit 1
+            fi
+            PR_NUMBER="$(echo "$PR_LIST" | jq -r '.[0]')"
+            echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          else
+            echo "pr_number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "skip=0" >> "$GITHUB_OUTPUT"
+
+      - name: Check if this PR touches CodeQL-flagged files
+        id: codeql_scope
+        if: steps.pr.outputs.skip != '1'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          PR_NUMBER="${{ steps.pr.outputs.pr_number }}"
+          FILES="$(gh pr view "$PR_NUMBER" --json files --jq '.files[].path')"
+          ALERTS="$(gh api -H "Accept: application/vnd.github+json" \
+              "/repos/${{ github.repository }}/code-scanning/alerts?state=open" \
+              --jq '.[] | select(.most_recent_instance.location.path) | .most_recent_instance.location.path' 2>/dev/null || echo "")"
+          TOUCHED=0
+          for file in $FILES; do
+            if echo "$ALERTS" | grep -qF "$file"; then
+              TOUCHED=1
+              break
+            fi
+          done
+          echo "touched=$TOUCHED" >> "$GITHUB_OUTPUT"
+
+      # §7.3.1 v3-E HIGH-2: Tier 3 PR-merge gate folded into YAML directly.
+      # MUST run BEFORE `Require sweep block in PR body` so the merge halt fires
+      # even when the PR doesn't touch CodeQL-flagged files (DS-24 halt is
+      # orthogonal to CodeQL scope per §11.7-v3-C).
+      - name: Check DS-24 PR-merge halt blockers
+        id: ds24_halt_check
+        if: steps.pr.outputs.skip != '1'
+        env:
+          DIRECTUS_TOKEN: ${{ secrets.DIRECTUS_TOKEN }}
+          DIRECTUS_URL: ${{ secrets.DIRECTUS_URL }}
+        run: |
+          set -euo pipefail
+          # §11.7-v3-C Tier 3: read prod_blockers for DS_24_PR_MERGE_BLOCKED_<file>
+          # rows (is_resolved=false). Any active row hard-fails the PR; resolution
+          # path is Kim PATCHing the underlying DS_24_FP_LOOP_SUSPECTED_<F> row to
+          # is_resolved=true (Tier 3 row auto-resolves on next preflight).
+          HALT_BLOCKERS="$(curl -sS -H "Authorization: Bearer $DIRECTUS_TOKEN" \
+            "$DIRECTUS_URL/items/prod_blockers?filter[blocker_type][_starts_with]=DS_24_PR_MERGE_BLOCKED_&filter[is_resolved][_eq]=false&fields=blocker_type,details" \
+            | jq -r '.data[] | "\(.blocker_type) — \(.details // {} | tojson)"')"
+          if [ -n "$HALT_BLOCKERS" ]; then
+            echo "::error::DS-24 PR-MERGE BLOCKED — active prod_blockers rows prevent merge:"
+            echo "$HALT_BLOCKERS"
+            curl -sS -X POST -H "Authorization: Bearer $DIRECTUS_TOKEN" \
+              -H "Content-Type: application/json" \
+              "$DIRECTUS_URL/items/prod_activity_log" \
+              -d "{\"action\":\"DS_24_PR_MERGE_BLOCKED_GATE_FIRED\",\"details\":{\"pr_number\":\"${{ steps.pr.outputs.pr_number }}\",\"blockers\":\"$HALT_BLOCKERS\"},\"performed_by\":\"ds25_ci\"}"
+            exit 1
+          fi
+          echo "DS-24 PR-merge halt check: no active blockers; proceeding."
+
+      - name: Require sweep block in PR body
+        if: steps.codeql_scope.outputs.touched == '1'
+        env:
+          DIRECTUS_URL: ${{ secrets.DIRECTUS_URL }}
+          DIRECTUS_TOKEN: ${{ secrets.DIRECTUS_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          PR_NUMBER="${{ steps.pr.outputs.pr_number }}"
+          BODY="$(gh pr view "$PR_NUMBER" --json body --jq '.body')"
+          HEAD_SHA="$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid')"
+          if echo "$BODY" | grep -qE 'Adjacent risk sweep on .+ after CodeQL triage'; then
+            BLOCK="$(echo "$BODY" | sed -n '/Adjacent risk sweep on /,/Result:/p')"
+            if [ "${#BLOCK}" -lt 100 ]; then
+              echo "::error::DS-25 sweep block present but <100 chars (placeholder rejected)"
+              exit 1
+            fi
+            echo "DS-25 gate: sweep block found, length OK"
+          elif echo "$BODY" | grep -qE 'ADJACENT_RISK_SWEEP_WAIVED|DS_25_GATE_BYPASSED'; then
+            # §7.3.1 v3 M-3: nested-key jsonb filter (replaces v2 _contains).
+            AUDIT_COUNT="$(curl -sS -H "Authorization: Bearer $DIRECTUS_TOKEN" \
+              "$DIRECTUS_URL/items/prod_activity_log?filter[action][_eq]=DS_25_GATE_BYPASSED&filter[details][commit_sha][_eq]=$HEAD_SHA" \
+              | jq '.data | length')"
+            if [ "$AUDIT_COUNT" -lt 1 ]; then
+              echo "::error::DS-25 BYPASS rejected: no audit row with details.commit_sha == $HEAD_SHA"
+              exit 1
+            fi
+            echo "DS-25 gate: waiver row referenced; audit row verified (nested-key match)"
+          else
+            echo "::error::PR touches CodeQL-flagged file(s) but PR body lacks DS-25 adjacent risk sweep block"
+            exit 1
+          fi

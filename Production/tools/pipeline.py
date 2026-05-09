@@ -35,7 +35,7 @@ TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(os.path.dirname(TOOLS_DIR))  # Claude Mindfulnest Project Files
 sys.path.insert(0, TOOLS_DIR)
 
-from lib.credentials import load_credentials
+from credentials_lib.credentials import load_credentials
 from lib.directus import DirectusClient, DirectusError, parse_module_id
 
 # QA Validators — import from Production/validators/

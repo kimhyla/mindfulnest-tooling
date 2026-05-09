@@ -31,6 +31,8 @@ import re
 import sys
 from datetime import date, datetime, timedelta, timezone
 
+from dateutil.relativedelta import relativedelta
+
 # Policy-lock date for the 14-day RARE_NEVER SHORTCUT closure cap (Kim directive 2026-05-07).
 # LDs locked BEFORE this date predate the policy and emit a softer GRANDFATHER_REVIEW
 # finding once for one-time triage; once triaged (CLOSE / AMEND / re-classify) they
@@ -41,8 +43,8 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 TOOLS_DIR = os.path.normpath(os.path.join(THIS_DIR, "..", "tools"))
 sys.path.insert(0, TOOLS_DIR)
 
-from lib.credentials import load_credentials  # noqa: E402
-from lib.directus import DirectusClient, DirectusError  # noqa: E402
+from credentials_lib.credentials import load_credentials  # noqa: E402
+from credentials_lib.directus import DirectusClient, DirectusError  # noqa: E402
 
 
 # Heuristic keywords — if an app_activity_log.action or details field
@@ -149,7 +151,7 @@ SHORTCUT_LD_CLASSIFICATION = {
     # 199 SHORTCUT_ARCH_WEIGHT_PCT_COLLAPSED_TO_ENUM — closed 2026-05-07 (status=closed); v2 inventory closure trigger met. Removed from active classification dict; status='active' filter excludes it from query. Kept here as a comment for traceability.
     200: "EVENT_DRIVEN",   # SHORTCUT_LD_LINKAGE_SNAPSHOT_ONLY — re-classified 2026-05-07 RARE_NEVER → EVENT_DRIVEN. Trigger events: (a) Stage 4 kickoff OR (b) second contributor added to prod_locked_decisions writes; quarterly audit cadence in LD notes.
     # 201 SHORTCUT_PARTIAL_STATUS_NO_PCT_FIELD — closed 2026-05-07 (status=closed); v2 inventory (5→2 PARTIAL drop) closure trigger met. Removed from active classification dict; status='active' filter excludes it from query. Kept here as a comment for traceability.
-    249: "EVENT_DRIVEN",   # SHORTCUT_IDENTITY_PLATFORM_EVALUATION_20260418 — re-classified 2026-05-07 RARE_NEVER → PERIODIC+EVENT_DRIVEN per LD notes. INTERIM mapping: PERIODIC class does not exist yet (deferred — needs tech spec); pragmatic interim treats quarterly review as event trigger. Promote to PERIODIC class once landed.
+    249: "PERIODIC",       # SHORTCUT_IDENTITY_PLATFORM_EVALUATION_20260418 — PERIODIC class per PERIODIC_CLASS_TECH_SPEC_v3 §B5 (quarterly identity-platform review). Directus MUST set review_cadence + next_review_date; NULL cadence surfaces PERIODIC_INVALID_CONFIGURATION.
     569: "RARE_NEVER",     # SHORTCUT_CODEQL_LOCK_FILE_0644_ACCEPT_V1 — "if/when refactored to 0o600 or CodeQL rule changes".
     570: "RARE_NEVER",     # SHORTCUT_CODEQL_REDOS_BOUNDED_INPUT_ACCEPT_V1 — "if/when regex refactored or CodeQL ReDoS rule gains length modeling".
     571: "RARE_NEVER",     # SHORTCUT_CODEQL_FILES_EXISTENCE_TEST_ACCEPT_V1 — "if/when endpoints validate against allowlist".
@@ -164,6 +166,52 @@ RARE_NEVER_CAP_DAYS = 14
 EVENT_DRIVEN_BACKSTOP_DAYS = 120  # safety net only; primary closure path is the named event.
 
 
+def _normalize_review_cadence(cadence: str) -> str:
+    return (cadence or "").strip().lower().replace(" ", "").replace("_", "-")
+
+
+def _relativedelta_for_review_cadence(cadence: str) -> relativedelta:
+    """§B4 / §B5 — calendar-aware step (replaces fixed +30-day approximations)."""
+    c = _normalize_review_cadence(cadence)
+    if c == "monthly":
+        return relativedelta(months=1)
+    if c == "quarterly":
+        return relativedelta(months=3)
+    if c in ("semi-annually", "semiannually"):
+        return relativedelta(months=6)
+    if c == "annually":
+        return relativedelta(years=1)
+    raise ValueError(f"not a calendar review_cadence: {cadence!r}")
+
+
+def add_review_cadence_to_date(base: date, cadence: str) -> date:
+    """Return ``base`` advanced by one review period for ``cadence`` (PERIODIC §A1)."""
+    return base + _relativedelta_for_review_cadence(cadence)
+
+
+def is_audit_eligible_periodic_row(classification: str, ld_row: dict) -> bool:
+    """§B1(b) — explicit two-arg predicate; never reads ld_row['classification']."""
+    if classification != "PERIODIC":
+        return False
+    cadence = ld_row.get("review_cadence")
+    if cadence is None:
+        return False
+    if _normalize_review_cadence(str(cadence)) in ("none", "event-driven"):
+        return False
+    try:
+        _relativedelta_for_review_cadence(str(cadence))
+    except ValueError:
+        return False
+    return True
+
+
+def _finding_severity_str(finding: dict) -> str:
+    """§B3 — canonical string severity with boolean back-compat."""
+    return finding.get("severity") or (
+        "critical" if finding.get("critical") else "warn"
+    )
+
+
 def check_shortcut_ld_closure_dates(client, dry_run=False):
     """Scan active SHORTCUT_*_V1 LDs and surface those approaching their closure cap.
 
@@ -175,6 +223,21 @@ def check_shortcut_ld_closure_dates(client, dry_run=False):
       - EVENT_DRIVEN LDs (gated on a named event/PR/cutover): primary closure path
         is the LD-defined event. 120-day backstop retained as a safety surface so
         these don't silently age forever if the event never lands.
+      - PERIODIC LDs (PERIODIC_CLASS_TECH_SPEC_v3): review_cadence + next_review_date
+        drive calendar surfacing; NULL cadence on PERIODIC is a critical
+        PERIODIC_INVALID_CONFIGURATION finding (never silent skip).
+
+    Prospective-only cap (meta-fix B + C, 2026-05-07):
+      - The 14-day RARE_NEVER cap applies ONLY to LDs locked on/after
+        SHORTCUT_CAP_POLICY_LOCK_DATE (2026-05-07).
+      - LDs locked BEFORE that date AND classified RARE_NEVER are GRANDFATHERED:
+        on first audit run after the policy-lock they emit ONE softer
+        GRANDFATHER_REVIEW finding (severity tag 'GRANDFATHER_REVIEW' — neither
+        WARN nor CRITICAL) prompting one-time triage (CLOSE / AMEND /
+        re-classify). Once triaged in Directus (status=closed OR re-classified
+        to EVENT_DRIVEN), they drop out of the active query OR fall under
+        EVENT_DRIVEN's 120-day backstop and stop re-firing under the cap.
+      - EVENT_DRIVEN LDs use the 120-day backstop regardless of date_locked.
 
     Per LD 561 MASTER_ROADMAP_LIVING_DOC_V1's closure-surfacing requirement.
     Classification mapping enumerated in SHORTCUT_LD_CLASSIFICATION at module top.
@@ -192,7 +255,16 @@ def check_shortcut_ld_closure_dates(client, dry_run=False):
             "decision_key": {"_starts_with": "SHORTCUT_"},
             "status": {"_eq": "active"},
         },
-        fields=["id", "decision_key", "date_locked", "decision_text", "notes"],
+        fields=[
+            "id",
+            "decision_key",
+            "date_locked",
+            "decision_text",
+            "notes",
+            "review_cadence",
+            "next_review_date",
+            "last_reviewed_date",
+        ],
     )
 
     findings = []
@@ -200,18 +272,140 @@ def check_shortcut_ld_closure_dates(client, dry_run=False):
         date_locked_raw = ld.get("date_locked")
         ld_id = ld.get("id")
         ld_key = ld.get("decision_key")
-        classification = SHORTCUT_LD_CLASSIFICATION.get(ld_id)
-        if classification is None:
+        classification = SHORTCUT_LD_CLASSIFICATION.get(ld_id, "UNCLASSIFIED")
+        if classification == "UNCLASSIFIED":
             findings.append({
                 "ld_id": ld_id,
                 "key": ld_key,
                 "error": (
                     f"UNCLASSIFIED SHORTCUT LD: id={ld_id} key={ld_key!r} has no entry "
-                    f"in SHORTCUT_LD_CLASSIFICATION. Add EVENT_DRIVEN or RARE_NEVER "
-                    f"to weekly_preflight_audit.py before next audit run."
+                    f"in SHORTCUT_LD_CLASSIFICATION. Add PERIODIC, EVENT_DRIVEN, or "
+                    f"RARE_NEVER to weekly_preflight_audit.py before next audit run."
                 ),
             })
             continue
+
+        # §B1 — stamp registry-derived class before any predicate reads it.
+        ld["_classification"] = classification
+
+        # §4.2 v3 — PERIODIC branch (calendar review surfacing; skips closure-cap path).
+        if classification == "PERIODIC":
+            cadence = ld.get("review_cadence")
+            if cadence is None:
+                findings.append({
+                    "ld_id": ld_id,
+                    "key": ld_key,
+                    "classification": "PERIODIC",
+                    "finding_type": "PERIODIC_INVALID_CONFIGURATION",
+                    "issue": "PERIODIC_INVALID_CONFIGURATION",
+                    "critical": True,
+                    "severity": "critical",
+                    "message": (
+                        f"PERIODIC SHORTCUT LD id={ld_id} ({ld_key}) has "
+                        f"review_cadence=NULL — invalid for PERIODIC class. "
+                        f"Set review_cadence ∈ {{monthly, quarterly, semi-annually, "
+                        f"annually, none, event-driven}} per PERIODIC_CLASS_TECH_SPEC_v3 "
+                        f"§A4, then re-run audit. NULL is reserved for non-PERIODIC LDs."
+                    ),
+                })
+                continue
+
+            cadence_norm = _normalize_review_cadence(str(cadence))
+            if cadence_norm in ("none", "event-driven"):
+                continue
+
+            try:
+                _relativedelta_for_review_cadence(str(cadence))
+            except ValueError:
+                findings.append({
+                    "ld_id": ld_id,
+                    "key": ld_key,
+                    "classification": "PERIODIC",
+                    "finding_type": "PERIODIC_INVALID_CADENCE_VALUE",
+                    "issue": "PERIODIC_INVALID_CADENCE_VALUE",
+                    "critical": True,
+                    "severity": "critical",
+                    "message": (
+                        f"PERIODIC SHORTCUT LD id={ld_id} ({ld_key}) has unknown "
+                        f"review_cadence={cadence!r}. Expected monthly, quarterly, "
+                        f"semi-annually, or annually (or opt-out none/event-driven)."
+                    ),
+                })
+                continue
+
+            next_review = ld.get("next_review_date")
+            if not next_review:
+                findings.append({
+                    "ld_id": ld_id,
+                    "key": ld_key,
+                    "classification": "PERIODIC",
+                    "finding_type": "PERIODIC_MISSING_NEXT_REVIEW_DATE",
+                    "issue": "PERIODIC_MISSING_NEXT_REVIEW_DATE",
+                    "critical": True,
+                    "severity": "critical",
+                    "message": (
+                        f"PERIODIC SHORTCUT LD id={ld_id} ({ld_key}) missing required "
+                        f"next_review_date for cadence={cadence!r}. Set this field "
+                        f"before next audit run."
+                    ),
+                })
+                continue
+
+            try:
+                next_review_date = datetime.strptime(str(next_review)[:10], "%Y-%m-%d").date()
+            except (ValueError, TypeError) as e:
+                findings.append({
+                    "ld_id": ld_id,
+                    "key": ld_key,
+                    "classification": "PERIODIC",
+                    "finding_type": "PERIODIC_INVALID_NEXT_REVIEW_DATE",
+                    "issue": "PERIODIC_INVALID_NEXT_REVIEW_DATE",
+                    "critical": True,
+                    "severity": "critical",
+                    "value": next_review,
+                    "error": str(e),
+                    "message": (
+                        f"PERIODIC SHORTCUT LD id={ld_id} ({ld_key}) has unparseable "
+                        f"next_review_date={next_review!r}: {e}. Fix the field then re-run."
+                    ),
+                })
+                continue
+
+            days_until_review = (next_review_date - today).days
+            if days_until_review <= 0:
+                days_overdue = abs(days_until_review)
+                is_crit = days_overdue >= 7
+                findings.append({
+                    "ld_id": ld_id,
+                    "key": ld_key,
+                    "classification": "PERIODIC",
+                    "next_review": next_review_date.isoformat(),
+                    "days_overdue": days_overdue,
+                    "critical": is_crit,
+                    "severity": "critical" if is_crit else "warn",
+                    "message": (
+                        f"PERIODIC LD {ld_key} (id={ld_id}) review OVERDUE by "
+                        f"{days_overdue} days "
+                        f"[{'CRITICAL' if is_crit else 'WARN'}]. "
+                        f"Next-review-date was {next_review_date.isoformat()}."
+                    ),
+                })
+            elif days_until_review <= 7:
+                findings.append({
+                    "ld_id": ld_id,
+                    "key": ld_key,
+                    "classification": "PERIODIC",
+                    "next_review": next_review_date.isoformat(),
+                    "days_until_review": days_until_review,
+                    "critical": False,
+                    "severity": "warn",
+                    "message": (
+                        f"PERIODIC LD {ld_key} (id={ld_id}) review due in "
+                        f"{days_until_review} days ({next_review_date.isoformat()})."
+                    ),
+                })
+            continue
+
         if not date_locked_raw:
             findings.append({
                 "ld_id": ld_id,
@@ -222,6 +416,33 @@ def check_shortcut_ld_closure_dates(client, dry_run=False):
         try:
             # Accept either YYYY-MM-DD or full ISO timestamp
             locked = datetime.strptime(str(date_locked_raw)[:10], "%Y-%m-%d").date()
+
+            # Prospective-only cap (meta-fix B + C, 2026-05-07): the 14-day
+            # RARE_NEVER cap applies only to LDs locked ON or AFTER the policy
+            # lock date. RARE_NEVER LDs locked before the policy date emit a
+            # softer GRANDFATHER_REVIEW finding once for one-time triage,
+            # rather than the standard cap CRITICAL. EVENT_DRIVEN LDs use the
+            # 120-day backstop regardless of date_locked.
+            policy_age = (locked - SHORTCUT_CAP_POLICY_LOCK_DATE).days
+            if classification == "RARE_NEVER" and policy_age < 0:
+                findings.append({
+                    "ld_id": ld_id,
+                    "key": ld_key,
+                    "classification": classification,
+                    "date_locked": locked.isoformat(),
+                    "policy_age_days": policy_age,
+                    "grandfather_review": True,
+                    "message": (
+                        f"SHORTCUT LD {ld_key} (id={ld_id}) is RARE_NEVER but "
+                        f"predates the 14-day cap policy "
+                        f"(policy locked {SHORTCUT_CAP_POLICY_LOCK_DATE.isoformat()}, "
+                        f"date_locked={locked.isoformat()}, policy_age={policy_age} days). "
+                        f"One-time triage required: CLOSE / AMEND / re-classify. "
+                        f"Once triaged, this finding will not re-fire."
+                    ),
+                })
+                continue
+
             cap_days = (
                 RARE_NEVER_CAP_DAYS if classification == "RARE_NEVER"
                 else EVENT_DRIVEN_BACKSTOP_DAYS
@@ -229,6 +450,7 @@ def check_shortcut_ld_closure_dates(client, dry_run=False):
             cap = locked + timedelta(days=cap_days)
             days_until_cap = (cap - today).days
             if days_until_cap <= warn_threshold_days:
+                is_cap_crit = days_until_cap <= critical_threshold_days
                 findings.append({
                     "ld_id": ld_id,
                     "key": ld_key,
@@ -237,7 +459,8 @@ def check_shortcut_ld_closure_dates(client, dry_run=False):
                     "date_locked": locked.isoformat(),
                     "cap": cap.isoformat(),
                     "days_until_cap": days_until_cap,
-                    "critical": days_until_cap <= critical_threshold_days,
+                    "critical": is_cap_crit,
+                    "severity": "critical" if is_cap_crit else "warn",
                     "message": (
                         f"SHORTCUT LD {ld_key} (id={ld_id}) [{classification}, "
                         f"{cap_days}-day cap] approaches closure cap {cap.isoformat()} "
@@ -257,16 +480,22 @@ def check_shortcut_ld_closure_dates(client, dry_run=False):
     for f in findings:
         if "error" in f:
             print(f"[shortcut-audit] WARN ld_id={f['ld_id']} key={f['key']}: {f['error']}")
+        elif f.get("grandfather_review"):
+            print(f"[shortcut-audit] GRANDFATHER_REVIEW {f['message']}")
         else:
-            tag = "CRITICAL" if f.get("critical") else "WARN"
+            # §B3 — string severity canonical; boolean critical retained for back-compat.
+            tag = _finding_severity_str(f).upper()
             print(f"[shortcut-audit] {tag} {f['message']}")
 
-    # If any finding has days_until_cap <= 7, write a CRITICAL prod_blockers row
+    # If any finding is severity critical, write a prod_blockers row
     # (de-duped by title prefix to avoid stacking on weekly reruns).
     for f in findings:
-        if not f.get("critical"):
+        if _finding_severity_str(f) != "critical":
             continue
-        title = f"SHORTCUT LD closure imminent: {f['key']} (id={f['ld_id']})"
+        if f.get("classification") == "PERIODIC":
+            title = f"SHORTCUT PERIODIC audit critical: {f['key']} (id={f['ld_id']})"
+        else:
+            title = f"SHORTCUT LD closure imminent: {f['key']} (id={f['ld_id']})"
         # Dedupe
         try:
             existing = client.get(
@@ -299,6 +528,356 @@ def check_shortcut_ld_closure_dates(client, dry_run=False):
             print(f"[shortcut-audit] ERROR creating blocker for {f['key']}: {e}")
 
     return findings
+
+
+# ---------------------------------------------------------------------------
+# PR-merge auto-close sub-check (LD 576 MERGE_CLEANUP_AUTO_CLOSE_PROTOCOL_V1).
+#
+# Scans active EVENT_DRIVEN SHORTCUT_*_V1 LDs whose closure event mentions
+# a PR merge. For each, queries `gh pr list --state merged` on the resolved
+# repo and matches recently-merged PRs against the LD's identifying tokens.
+# On match: PATCHes the LD to status='superseded' (idempotent) and logs the
+# auto-close. Failure modes documented in LD 576 decision_text.
+#
+# Repository resolution heuristic (in priority order):
+#   1. Explicit `<owner>/<repo>` in LD notes (regex)
+#   2. decision_key contains TOOLING -> kimhyla/mindfulnest-tooling
+#   3. decision_key contains RN or MAIN_APP -> RN repo (TBD)
+#   4. else: WARN, no auto-close
+# ---------------------------------------------------------------------------
+
+# PR-merge phrasing that indicates the closure event is keyed on a PR merging
+# to main (vs. e.g. "production cycle" or "post-launch traffic").
+_PR_MERGE_PATTERNS = [
+    re.compile(r"\bPR\s+#?\d+\b", re.IGNORECASE),
+    re.compile(r"\bPR\s+merges?\s+to\s+main\b", re.IGNORECASE),
+    re.compile(r"\bgap[-\s]?fix\s+PR\b", re.IGNORECASE),
+    re.compile(r"\bmerges?\s+to\s+main\b", re.IGNORECASE),
+]
+_REPO_PATTERN = re.compile(r"\b([a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+)(?:\s+repo|\s+repository)?\b")
+# Tokens scraped from notes that, when present in a PR title or body, count
+# as a strong identifier match. CRITICAL: only extract COMPOUND identifiers
+# (must contain at least one underscore). Single uppercase words like
+# "CRITICAL", "STAGE", "FATAL" are common in prose and would create
+# false-positive matches against unrelated PRs.
+_IDENTIFIER_TOKEN_PATTERN = re.compile(r"\b([A-Z][A-Z0-9]+(?:_[A-Za-z0-9]+)+)\b")
+# Repo hints in LD notes/decision_text that map to specific repos. Order matters:
+# more-specific phrases first.
+_REPO_HINT_PATTERNS = [
+    (re.compile(r"V59_CICD_GAP_FIX|gap[-\s]?fix\s+PR|tooling\s+repo\s+PR|storyboard\s+(?:fix|bug)", re.IGNORECASE), "kimhyla/mindfulnest-tooling"),
+    (re.compile(r"mindfulnest[-_]?ios|RN\s+repo|main\s+app\s+repo", re.IGNORECASE), "kimhyla/mindfulnest-ios"),
+]
+
+
+def _has_pr_merge_signal(text):
+    """Return True if any _PR_MERGE_PATTERNS matches the given text."""
+    if not text:
+        return False
+    return any(p.search(text) for p in _PR_MERGE_PATTERNS)
+
+
+def _resolve_repo_for_ld(ld):
+    """Best-effort repo resolution. Returns owner/repo string or None."""
+    notes = (ld.get("notes") or "")
+    decision_text = (ld.get("decision_text") or "")
+    decision_key = (ld.get("decision_key") or "")
+    haystack = f"{notes}\n{decision_text}"
+    # Strategy 1: explicit owner/repo in notes/decision_text. Filter out path-like
+    # matches (Production/docs/foo.md) by checking the owner segment looks like a
+    # GitHub user/org (no dots, no leading/trailing punctuation, length 3-39).
+    for m in _REPO_PATTERN.finditer(haystack):
+        candidate = m.group(1)
+        owner, repo = candidate.split("/", 1)
+        # GitHub owner constraint: 1-39 chars, alphanumeric + hyphens (no dots).
+        if "." in owner or not (3 <= len(owner) <= 39) or "/" in repo:
+            continue
+        # Exclude common path-prefix false positives.
+        if owner in {"Production", "docs", "Canon", "App", "Arc", "Storyboards"}:
+            continue
+        # Require a MindfulNest-flavored signal in the candidate to avoid
+        # picking up unrelated github-style strings buried in notes.
+        cand_l = candidate.lower()
+        if "mindfulnest" in cand_l or "mn-" in cand_l or owner.lower().startswith("kimhyla"):
+            return candidate
+    # Strategy 2: hint patterns (LD notes/decision_text mention an identifier
+    # that's known to map to a specific repo, e.g. "V59_CICD_GAP_FIX" -> tooling).
+    for pat, repo in _REPO_HINT_PATTERNS:
+        if pat.search(haystack):
+            return repo
+    # Strategy 3: decision_key heuristic.
+    upper_key = decision_key.upper()
+    if "TOOLING" in upper_key:
+        return "kimhyla/mindfulnest-tooling"
+    if ("MAIN_APP" in upper_key or "RN_REPO" in upper_key or "_RN_" in upper_key):
+        return "kimhyla/mindfulnest-ios"
+    return None
+
+
+def _list_recently_merged_prs(repo, limit=30):
+    """Run `gh pr list --state merged` for repo. Returns list of dicts.
+
+    Returns [] on any error (network, auth, repo not found). Errors logged
+    but never raise — the sub-check must not crash the main audit.
+    """
+    import subprocess
+    try:
+        result = subprocess.run(
+            [
+                "gh", "pr", "list",
+                "--repo", repo,
+                "--state", "merged",
+                "--limit", str(limit),
+                "--json", "number,title,body,headRefName,mergedAt,mergeCommit",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode != 0:
+            print(f"[pr-merge-audit] gh CLI error for {repo}: {result.stderr.strip()[:200]}")
+            return []
+        return json.loads(result.stdout) if result.stdout.strip() else []
+    except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"[pr-merge-audit] gh query failed for {repo}: {type(e).__name__}: {e}")
+        return []
+
+
+def _ld_identifier_tokens(ld):
+    """Extract identifying tokens from LD that we'd expect to see in a PR
+    title/body if the PR fulfills this LD. Includes the decision_key plus
+    any UPPER_SNAKE identifiers in notes/decision_text (e.g. V59_CICD_GAP_FIX).
+    """
+    tokens = set()
+    decision_key = ld.get("decision_key") or ""
+    if decision_key:
+        tokens.add(decision_key)
+        # Also drop the _V1 suffix and add fragments — V59_CICD_GAP_FIX_SPEC_v1
+        # often appears in a PR as V59_CICD_GAP_FIX (no _SPEC suffix).
+        stripped = re.sub(r"_V\d+$", "", decision_key, flags=re.IGNORECASE)
+        if stripped and stripped != decision_key:
+            tokens.add(stripped)
+    haystack = f"{ld.get('notes') or ''}\n{ld.get('decision_text') or ''}"
+    for m in _IDENTIFIER_TOKEN_PATTERN.finditer(haystack):
+        tok = m.group(1)
+        # Skip overly-generic tokens.
+        if tok in {"PR", "LD", "URL", "API", "JSON", "HTTP", "HTTPS", "MD", "RN", "CI", "CD"}:
+            continue
+        tokens.add(tok)
+    return tokens
+
+
+def _match_pr_to_ld(pr, ld_tokens):
+    """Return matched_field (str) if PR matches any LD token, else None.
+
+    Match order: title > body > headRefName.
+    """
+    title = pr.get("title") or ""
+    body = pr.get("body") or ""
+    branch = pr.get("headRefName") or ""
+    for tok in ld_tokens:
+        # Token match is case-sensitive against full token (avoid spurious
+        # 3-letter substring hits). Acceptable because we extract upper-snake.
+        if tok in title:
+            return f"title:{tok}"
+    for tok in ld_tokens:
+        if tok in body:
+            return f"body:{tok}"
+    for tok in ld_tokens:
+        # Branch refs are usually lowercase; allow case-insensitive there.
+        if tok.lower() in branch.lower():
+            return f"headRefName:{tok}"
+    return None
+
+
+def check_pr_merge_closure_events(client, dry_run=False):
+    """Auto-close active EVENT_DRIVEN SHORTCUT LDs whose PR-merge closure event has fired.
+
+    Per LD 576 MERGE_CLEANUP_AUTO_CLOSE_PROTOCOL_V1. Triggered weekly via cron.
+
+    For each active SHORTCUT_*_V1 LD classified EVENT_DRIVEN whose notes or
+    decision_text mention a PR merge:
+      1. Resolve target GitHub repo (notes-explicit or decision_key heuristic).
+      2. Query `gh pr list --state merged --limit 30` for recently-merged PRs.
+      3. Match PR title/body/branch against LD identifier tokens (decision_key
+         and UPPER_SNAKE identifiers extracted from LD text).
+      4. On match: PATCH the LD to status='superseded' (idempotent re-read first)
+         and POST an app_activity_log row recording the auto-close.
+
+    Returns:
+        dict summary with keys: scanned, eligible, matched, closed, warns, errors.
+    """
+    today = datetime.now(timezone.utc).date()
+
+    rows = client.get(
+        "prod_locked_decisions",
+        filters={
+            "decision_key": {"_starts_with": "SHORTCUT_"},
+            "status": {"_eq": "active"},
+        },
+        fields=["id", "decision_key", "date_locked", "decision_text", "notes"],
+    )
+
+    summary = {
+        "scanned": len(rows),
+        "eligible": 0,
+        "matched": 0,
+        "closed": 0,
+        "warns": [],
+        "errors": [],
+        "matches": [],
+        "dry_run": dry_run,
+    }
+
+    for ld in rows:
+        ld_id = ld.get("id")
+        ld_key = ld.get("decision_key")
+        classification = SHORTCUT_LD_CLASSIFICATION.get(ld_id)
+        if classification != "EVENT_DRIVEN":
+            continue
+        notes = ld.get("notes") or ""
+        decision_text = ld.get("decision_text") or ""
+        if not _has_pr_merge_signal(notes + "\n" + decision_text):
+            continue
+        summary["eligible"] += 1
+
+        repo = _resolve_repo_for_ld(ld)
+        if not repo:
+            warn = (
+                f"ld_id={ld_id} key={ld_key}: PR-merge signal present but repo "
+                f"could not be resolved from notes or decision_key heuristic"
+            )
+            summary["warns"].append(warn)
+            print(f"[pr-merge-audit] WARN {warn}")
+            continue
+
+        prs = _list_recently_merged_prs(repo, limit=30)
+        if not prs:
+            # Either no recent merges or gh failure; both are non-fatal.
+            continue
+
+        ld_tokens = _ld_identifier_tokens(ld)
+        matches = []
+        for pr in prs:
+            matched_field = _match_pr_to_ld(pr, ld_tokens)
+            if matched_field:
+                matches.append({"pr": pr, "matched_field": matched_field})
+
+        if not matches:
+            continue
+        summary["matched"] += 1
+
+        # Multiple matches: log all but act on the most-recent merge.
+        if len(matches) > 1:
+            warn = (
+                f"ld_id={ld_id} key={ld_key}: {len(matches)} PRs matched in repo "
+                f"{repo}; using most recent."
+            )
+            summary["warns"].append(warn)
+            print(f"[pr-merge-audit] WARN {warn}")
+        # Sort by mergedAt descending; pick first.
+        matches.sort(key=lambda m: m["pr"].get("mergedAt") or "", reverse=True)
+        chosen = matches[0]
+        chosen_pr = chosen["pr"]
+        merge_sha = (chosen_pr.get("mergeCommit") or {}).get("oid", "")
+        merged_at = chosen_pr.get("mergedAt", "")
+        pr_number = chosen_pr.get("number")
+        matched_field = chosen["matched_field"]
+
+        match_record = {
+            "ld_id": ld_id,
+            "key": ld_key,
+            "repo": repo,
+            "pr_number": pr_number,
+            "pr_title": chosen_pr.get("title", "")[:200],
+            "merge_sha": merge_sha,
+            "merged_at": merged_at,
+            "matched_field": matched_field,
+        }
+        summary["matches"].append(match_record)
+        print(
+            f"[pr-merge-audit] MATCH ld_id={ld_id} key={ld_key} -> "
+            f"{repo}#{pr_number} (merged {merged_at}; matched via {matched_field})"
+        )
+
+        if dry_run:
+            print(f"[pr-merge-audit] [DRY-RUN] would PATCH ld_id={ld_id} status=superseded")
+            continue
+
+        # Idempotency: re-read status before PATCH.
+        try:
+            current = client.get(
+                "prod_locked_decisions",
+                filters={"id": {"_eq": ld_id}},
+                fields=["id", "status"],
+                limit=1,
+            )
+            if current and current[0].get("status") != "active":
+                print(
+                    f"[pr-merge-audit] dedupe: ld_id={ld_id} status="
+                    f"{current[0].get('status')} (not active); skipping PATCH."
+                )
+                continue
+        except Exception as e:
+            err = f"ld_id={ld_id}: idempotency re-read failed: {e!r}"
+            summary["errors"].append(err)
+            print(f"[pr-merge-audit] ERROR {err}")
+            continue
+
+        closure_note = (
+            f"\n\n[AUTO-CLOSE 2026-{today.month:02d}-{today.day:02d} via "
+            f"weekly_preflight_audit.py::check_pr_merge_closure_events per LD 576] "
+            f"Closure event fired: {repo}#{pr_number} merged {merged_at} "
+            f"(commit {merge_sha[:12]}). Matched signal: {matched_field}."
+        )
+        existing_notes = (ld.get("notes") or "")
+        try:
+            client.update(
+                "prod_locked_decisions",
+                ld_id,
+                {
+                    "status": "superseded",
+                    "date_superseded": today.isoformat(),
+                    "notes": existing_notes + closure_note,
+                },
+            )
+            summary["closed"] += 1
+            print(f"[pr-merge-audit] CLOSED ld_id={ld_id} key={ld_key}")
+        except DirectusError as e:
+            err = f"ld_id={ld_id}: PATCH failed: {e}"
+            summary["errors"].append(err)
+            print(f"[pr-merge-audit] ERROR {err}")
+            continue
+
+        # Activity log row (best-effort).
+        try:
+            client._request("POST", "/items/app_activity_log", data={
+                "feature_id": 5,
+                "action": "auto-close SHORTCUT LD via PR-merge match",
+                "details": json.dumps({
+                    "ld_id": ld_id,
+                    "decision_key": ld_key,
+                    "repo": repo,
+                    "pr_number": pr_number,
+                    "merge_sha": merge_sha,
+                    "merged_at": merged_at,
+                    "matched_field": matched_field,
+                    "protocol_ld": 576,
+                }),
+                "performed_by": "weekly_preflight_audit.py::check_pr_merge_closure_events",
+            })
+        except DirectusError as e:
+            err = f"ld_id={ld_id}: activity log write failed (non-fatal): {e}"
+            summary["errors"].append(err)
+            print(f"[pr-merge-audit] WARN {err}")
+
+    print(
+        f"[pr-merge-audit] DONE — scanned={summary['scanned']} "
+        f"eligible={summary['eligible']} matched={summary['matched']} "
+        f"closed={summary['closed']} warns={len(summary['warns'])} "
+        f"errors={len(summary['errors'])} dry_run={dry_run}"
+    )
+    return summary
 
 
 def run_audit(days=7, hours=None, dry_run=False):
@@ -478,6 +1057,19 @@ def run_audit(days=7, hours=None, dry_run=False):
     except Exception as e:  # pragma: no cover
         print(f"[audit] WARNING: check_shortcut_ld_closure_dates sub-check failed: {e!r}")
         summary["shortcut_ld_findings"] = {"error": repr(e)}
+
+    # Sub-check: PR-merge auto-close (LD 576 MERGE_CLEANUP_AUTO_CLOSE_PROTOCOL_V1).
+    # Scans active EVENT_DRIVEN SHORTCUT_*_V1 LDs whose closure event mentions
+    # a PR merge; runs `gh pr list --state merged` per resolved repo; matches
+    # on PR title/body/branch against LD identifier tokens; on match, PATCHes
+    # the LD to status='superseded' (idempotent re-read first) and writes an
+    # app_activity_log row. Best-effort: never fails the main audit.
+    try:
+        pr_merge_summary = check_pr_merge_closure_events(client, dry_run=dry_run)
+        summary["pr_merge_closures"] = pr_merge_summary
+    except Exception as e:  # pragma: no cover
+        print(f"[audit] WARNING: check_pr_merge_closure_events sub-check failed: {e!r}")
+        summary["pr_merge_closures"] = {"error": repr(e)}
 
     return summary
 
