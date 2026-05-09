@@ -181,7 +181,7 @@ Claude Code History backup 2026-04-15/
 archive/
 .deploy_backups/
 content-lockfiles/
-scripts/
+/scripts/
 video_pipeline/
 Claude ElevenLabs Phase B Module Sounds/
 
