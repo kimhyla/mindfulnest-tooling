@@ -775,8 +775,15 @@ export function StoryboardTab() {
   ]);
 
   // S5 — refresh on path_picker submit success.
+  // Security (CodeQL js/missing-origin-check alert #1, real source line):
+  // gate postMessage on e.origin === window.location.origin to refuse
+  // cross-origin senders (malicious iframes / window openers).
+  // MED-5: drop the falsy `e.origin &&` short-circuit so a
+  // missing-Origin sender (file:// frames, certain native callers) is
+  // also rejected. Strict equality only.
   useEffect(() => {
     const onMsg = (e: MessageEvent) => {
+      if (e.origin !== window.location.origin) return;
       if (e.data?.type === 'mn-magic-or-animate-complete') {
         setRefreshTick((n) => n + 1);
       }
@@ -791,10 +798,16 @@ export function StoryboardTab() {
     const role = activeTargetVideo.value;
     const partition = state.videos?.[role];
     if (partition?.beats && Object.keys(partition.beats).length > 0) {
-      // Honor display_order if present, else sorted beat_id.
-      const order = partition.display_order ?? [];
-      if (order.length > 0) {
-        return order
+      // DISPLAY_ORDER_STRICT_V1 — when display_order is a present LIST,
+      // honor it strictly (including the empty-list case which renders zero
+      // beats). Only when display_order is genuinely missing — undefined,
+      // or non-list legacy data shapes — do we fall through to the
+      // Object.entries sorted-by-beat_id legacy renderer. The Array.isArray
+      // gate is the defensive form of spec v2 §2.3 Part 1's
+      // `!== undefined` check; it correctly handles the historical fixture
+      // partition-ordering integer (e.g. `display_order: 1`) as legacy.
+      if (Array.isArray(partition.display_order)) {
+        return partition.display_order
           .filter((bid) => partition.beats?.[bid])
           .map((beat_id) => ({ beat_id, ...partition.beats![beat_id] }));
       }

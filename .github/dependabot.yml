@@ -1,0 +1,35 @@
+version: 2
+
+# Per V59 CI/CD gap-fix Phase H / LD CODEQL_DEPENDABOT_SECURITY_SCAN_V1.
+# Dependabot opens weekly PRs for each ecosystem we ship. Vulnerable-dep
+# PRs get the "security" label so they sort to the top in the UI. Set
+# open-pull-requests-limit modestly to avoid PR spam at solo-dev cadence;
+# adjust if Kim sees value in higher cadence.
+
+updates:
+  - package-ecosystem: "npm"
+    directory: "/Production/tools/storyboard-v2"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "security"]
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    labels: ["dependencies", "security"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    labels: ["dependencies", "ci"]

@@ -358,10 +358,76 @@ def try_post_or_queue(
     Returns:
         - The Directus row on success (dict with 'id').
         - A sentinel dict {"queued": True, "path": str} if queued offline.
+        - A sentinel dict with browser_smoke_* flag if Phase F gate fires.
 
     Never raises. Used by mn-context SAVE mode which must not halt on "no
     internet" per feedback_desktop_no_hooks.md.
+
+    Phase F mechanical gate (DS-21 / LD BROWSER_SMOKE_MECHANICAL_GATE_V1):
+    rejects writes to ``prod_activity_log`` whose ``action`` ends in
+    ``_COMPLETE`` unless a matching ``KIM_BROWSER_SMOKE_PASSED`` row exists.
+    Override path: env ``MN_SKIP_BROWSER_SMOKE_GATE=1`` + matching
+    ``BROWSER_SMOKE_DEFERRED`` audit row. Fails CLOSED on Directus error so
+    a smoke-row query failure cannot silently let a COMPLETE write through.
     """
+    if collection == "prod_activity_log":
+        action = payload.get("action", "")
+        if _is_phase_complete_action(action):
+            phase_key = _extract_phase_key(action)
+            override_active = os.environ.get("MN_SKIP_BROWSER_SMOKE_GATE") == "1"
+            try:
+                smoke_present = _smoke_row_exists(phase_key, client=client)
+            except Exception as e:  # noqa: BLE001 — fail-CLOSED
+                return {
+                    "queued": False,
+                    "browser_smoke_gate_unverifiable": True,
+                    "phase_key": phase_key,
+                    "error": (
+                        f"Smoke-gate query failed for phase={phase_key!r}: "
+                        f"{type(e).__name__}: {e}. Refusing COMPLETE write."
+                    ),
+                }
+            if not smoke_present and not override_active:
+                return {
+                    "queued": False,
+                    "browser_smoke_missing": True,
+                    "phase_key": phase_key,
+                    "error": (
+                        f"Cannot write {action!r} — no KIM_BROWSER_SMOKE_PASSED "
+                        f"row found for phase={phase_key!r}. Browser smoke is a "
+                        f"hard prerequisite per DS-21. To override, set "
+                        f"MN_SKIP_BROWSER_SMOKE_GATE=1 AND write a "
+                        f"BROWSER_SMOKE_DEFERRED row first explaining why."
+                    ),
+                }
+            if not smoke_present and override_active:
+                try:
+                    deferred_present = _smoke_deferred_row_exists(
+                        phase_key, client=client
+                    )
+                except Exception as e:  # noqa: BLE001 — fail-CLOSED
+                    return {
+                        "queued": False,
+                        "browser_smoke_gate_unverifiable": True,
+                        "phase_key": phase_key,
+                        "error": (
+                            f"Override path: deferred-row query failed for "
+                            f"phase={phase_key!r}: {type(e).__name__}: {e}. "
+                            f"Refusing COMPLETE write."
+                        ),
+                    }
+                if not deferred_present:
+                    return {
+                        "queued": False,
+                        "override_without_audit": True,
+                        "phase_key": phase_key,
+                        "error": (
+                            f"MN_SKIP_BROWSER_SMOKE_GATE=1 but no "
+                            f"BROWSER_SMOKE_DEFERRED row exists for "
+                            f"phase={phase_key!r}. Write that row first."
+                        ),
+                    }
+
     try:
         return post_item_verified(collection, payload, client=client)
     except (DirectusWriteError, DirectusReadError) as e:
@@ -382,6 +448,89 @@ def try_post_or_queue(
             collection, payload, reason=f"unexpected: {type(e).__name__}: {e}"
         )
         return {"queued": True, "path": str(path), "error": str(e)}
+
+
+# -----------------------------------------------------------------------------
+# Phase F gate helpers — DS-21 / LD BROWSER_SMOKE_MECHANICAL_GATE_V1
+# -----------------------------------------------------------------------------
+
+
+_COMPLETE_SUFFIX = "_COMPLETE"
+
+
+def _is_phase_complete_action(action: str) -> bool:
+    """True for action strings that end in ``_COMPLETE`` (case-sensitive).
+
+    Examples that match: ``PHASE_A_COMPLETE``, ``S5_5C_PASS2_COMPLETE``,
+    ``PHASE_F_COMPLETE``. Examples that do NOT match:
+    ``KIM_BROWSER_SMOKE_PASSED``, ``BROWSER_SMOKE_DEFERRED``, ``COMPLETE``
+    (suffix only, no prefix is rejected as an audit-noise guard).
+    """
+    if not isinstance(action, str) or not action:
+        return False
+    return action.endswith(_COMPLETE_SUFFIX) and len(action) > len(_COMPLETE_SUFFIX)
+
+
+def _extract_phase_key(action: str) -> str:
+    """Strip trailing ``_COMPLETE`` to get the phase key.
+
+    e.g. ``S5_5C_PASS2_COMPLETE`` → ``S5_5C_PASS2``,
+         ``PHASE_F_COMPLETE`` → ``PHASE_F``.
+    """
+    if not _is_phase_complete_action(action):
+        return action
+    return action[: -len(_COMPLETE_SUFFIX)]
+
+
+def _smoke_row_exists(
+    phase_key: str, client: Optional[DirectusAdminClient] = None
+) -> bool:
+    """True iff at least one ``KIM_BROWSER_SMOKE_PASSED`` row matches phase_key.
+
+    Filters on ``action == 'KIM_BROWSER_SMOKE_PASSED'`` and
+    ``details.phase == phase_key``. Raises on Directus error so the caller
+    can fail-CLOSED.
+    """
+    return _matching_row_exists(
+        "KIM_BROWSER_SMOKE_PASSED", phase_key, client=client
+    )
+
+
+def _smoke_deferred_row_exists(
+    phase_key: str, client: Optional[DirectusAdminClient] = None
+) -> bool:
+    """True iff at least one ``BROWSER_SMOKE_DEFERRED`` row matches phase_key."""
+    return _matching_row_exists(
+        "BROWSER_SMOKE_DEFERRED", phase_key, client=client
+    )
+
+
+def _matching_row_exists(
+    action: str,
+    phase_key: str,
+    client: Optional[DirectusAdminClient] = None,
+) -> bool:
+    """Shared body for the two phase-gated lookups above.
+
+    Uses two complementary filter strategies because Directus's nested-JSON
+    filter behavior on `details.phase` has historically been inconsistent
+    across schema versions:
+      1. Server-side filter on action only (always works).
+      2. Client-side scan of `details.phase` on the returned rows.
+    The combined approach avoids false-negatives that would let COMPLETE
+    writes silently through if the nested filter failed quietly.
+    """
+    c = client or DirectusAdminClient()
+    rows = c.get_items(
+        "prod_activity_log",
+        filters={"action": {"_eq": action}},
+        limit=-1,
+    ) or []
+    for row in rows:
+        details = row.get("details") or {}
+        if isinstance(details, dict) and details.get("phase") == phase_key:
+            return True
+    return False
 
 
 if __name__ == "__main__":

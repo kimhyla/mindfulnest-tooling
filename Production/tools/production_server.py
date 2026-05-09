@@ -50,13 +50,32 @@ from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-# Auto-strip audio from downloaded animation clips (CLAUDE.md Rule 8 defense)
-sys.path.insert(0, os.path.dirname(__file__))
-# Production/ on sys.path for shared lib/ imports (atomic_json_write etc.)
+# Auto-strip audio from downloaded animation clips (CLAUDE.md Rule 8 defense).
+# Bootstrap order MATTERS: Production/ must come BEFORE Production/tools/ in
+# sys.path so `from lib.atomic_json_write import ...` resolves to
+# Production/lib/ (regular package) — there is a separate Production/tools/lib/
+# package (with __init__.py) that would shadow the lib import if it were
+# searched first. Pre-C-7.6: line `sys.path.insert(0, dirname)` was
+# unconditional, so when callers (e.g. unit tests) pre-populated sys.path
+# with Production/, this insert pushed Production/tools/ to position 0,
+# shadowing lib and breaking the next import. Now both inserts are
+# idempotent (skip if already on path) and ordered Production-first.
+_TOOLS_DIR_FOR_BOOTSTRAP = os.path.abspath(os.path.dirname(__file__))
 _PROD_DIR_FOR_SHARED_LIB = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if _PROD_DIR_FOR_SHARED_LIB not in sys.path:
     sys.path.insert(0, _PROD_DIR_FOR_SHARED_LIB)
+if _TOOLS_DIR_FOR_BOOTSTRAP not in sys.path:
+    # Insert AFTER Production/ so Production/lib wins the lib resolution
+    # while Production/tools remains reachable for `import scope_router`,
+    # `import beat_generator`, etc.
+    sys.path.insert(1, _TOOLS_DIR_FOR_BOOTSTRAP)
 from lib.atomic_json_write import atomic_json_write  # noqa: E402 (Windows/Dropbox retry-safe JSON writes per LD-368)
+# scope_router — mandatory partition router for v59 authoring-workflow
+# mutations (LD SCOPE_ROUTER_V1, C-1). Replaces hardcoded `videos.intro`
+# lifts in mutation handlers; resolve() validates body scope keys and
+# raises ScopeError with HTTP-status-aware code. See
+# Production/tools/scope_router.py for the contract.
+import scope_router  # noqa: E402 (must follow sys.path insert above)
 from ffmpeg_utils import strip_audio as _strip_clip_audio
 from lipsync_sender import LipSyncClient, COST_PER_LIPSYNC
 # Kling start-end pipeline helpers (decision 172 KLING_STARTEND_V1_CAPABILITY,
@@ -89,6 +108,55 @@ def _bg_module():
         import beat_generator as _m
         _BG_MODULE = _m
     return _BG_MODULE
+
+
+# BG_HARDCODED_SCOPE_PURGE_V1 (C-4 K3 fix) — derive (arc_number, event_id_int,
+# phase) from the resolved scope (event_id + video_role). Replaces the prior
+# hardcoded arc=1/event=2/phase=pre literal in _handle_bg_add_beat. The
+# arc_number is fixed at 1 for the current single-arc deployment; this helper
+# is the one place to refactor when multi-arc lands. The phase mapping is the
+# canonical correspondence for v59 BG sidecars:
+#   intro       → pre
+#   resolution  → post
+#   standalone  → main
+_BG_PHASE_MAP: dict[str, str] = {"intro": "pre", "resolution": "post", "standalone": "main"}
+
+
+def _resolve_bg_segment_for_scope(scope_event_id: str, video_role: str) -> tuple[int, int, str]:
+    """Map a (scope_event_id, video_role) to a BG sidecar segment tuple.
+
+    Returns (arc_number, event_id_int, phase).
+    Raises ValueError when scope_event_id can't be parsed as `Event_<N>` or
+    when video_role has no phase mapping. Callers should convert ValueError
+    to HTTP 400 `bg_segment_unresolved`.
+
+    Examples:
+        _resolve_bg_segment_for_scope("Event_1", "intro")        → (1, 1, "pre")
+        _resolve_bg_segment_for_scope("Event_2", "resolution")    → (1, 2, "post")
+        _resolve_bg_segment_for_scope("Event_e2e_fixture", "intro")
+            → ValueError (fixture is non-numeric; tests must mock or skip)
+    """
+    arc_number = 1  # current single-arc deployment; refactor when multi-arc lands
+    if not scope_event_id.startswith("Event_"):
+        raise ValueError(
+            f"scope_event_id must be of form 'Event_<N>' for BG segment resolution; "
+            f"got {scope_event_id!r}"
+        )
+    suffix = scope_event_id[len("Event_"):]
+    try:
+        event_id_int = int(suffix)
+    except ValueError as e:
+        raise ValueError(
+            f"cannot parse numeric event id from scope_event_id={scope_event_id!r} "
+            f"(suffix={suffix!r})"
+        ) from e
+    phase = _BG_PHASE_MAP.get(video_role)
+    if phase is None:
+        raise ValueError(
+            f"no BG sidecar phase mapping for video_role={video_role!r}; "
+            f"valid roles: {sorted(_BG_PHASE_MAP.keys())}"
+        )
+    return (arc_number, event_id_int, phase)
 
 
 # Capabilities probe cache (populated on first use)
@@ -754,6 +822,31 @@ def _canonicalize_speaker(raw: str) -> str:
     return _SPEAKER_ALIAS.get(key.lower(), key)
 
 
+def _resolve_beat_speaker(beat: dict) -> str:
+    """Read-side canonical speaker resolution (SPEAKER_DUAL_STORE_DEPRECATION_V1).
+
+    Top-level partition.beats[bid].speaker is the canonical store as of C-6.
+    phase_1.speaker is the legacy mirror — kept for one-release read-compat
+    so on-disk legacy values don't blank out before the N+1 sprint that
+    collapses the phase_1 write site.
+
+    Resolution order:
+      1. beat.get("speaker")                   (top-level canonical)
+      2. beat.get("phase_1", {}).get("speaker")  (legacy mirror)
+      3. ""                                    (fail-loud at TTS time per LD-520)
+
+    Callers MUST go through this helper for any speaker read; direct
+    `beat["phase_1"]["speaker"]` reads are scheduled for removal in the
+    SPEAKER_DUAL_STORE_DEPRECATION_V1 N+1 collapse.
+    """
+    beat = beat or {}
+    s = beat.get("speaker")
+    if s:
+        return s
+    phase_1 = beat.get("phase_1") or {}
+    return phase_1.get("speaker") or ""
+
+
 def build_motion_prompt(beat: dict) -> str:
     """Build a Rule 8.1-8.4 compliant motion prompt for Kling v3 Pro.
 
@@ -1040,6 +1133,40 @@ class StateManager:
             try:
                 state = json.loads(self.state_path.read_text())
                 result = fn(state)
+                # DISPLAY_ORDER_STRICT_V2 (C-10 K4 fix): defense-in-depth
+                # prune. The mutate_video_state path at line 1264-1296 has a
+                # symmetric prune since C2-bundle (DISPLAY_ORDER_STRICT_V1).
+                # Pre-C-10, callers that bypass mutate_video_state and write
+                # directly to state.videos.<role>.beats via mutate_state could
+                # leave orphan beats not in display_order — that's the K4
+                # asymmetry the 2026-05-01 leak exploited (state.beats was
+                # legacy top-level; subsequent migrate_state lift carried
+                # corrupted beats into videos.intro.beats and the prune in
+                # mutate_video_state never saw them because all the writers
+                # bypassed it via mutate_state). Post-C-7.5, all v59 mutation
+                # handlers route partition writes through mutate_video_state
+                # so this defense is largely structural-fallback now — but
+                # it's idempotent on every mutate_state call, so any future
+                # handler that accidentally writes into a partition still gets
+                # caught. Walks state["videos"] and prunes partition.beats to
+                # be a subset of partition.display_order WHEN display_order is
+                # a present LIST. Skip when display_order is missing or non-list
+                # (legacy int form — pre-v3 fixture shape).
+                videos = state.get("videos")
+                if isinstance(videos, dict):
+                    for _role, _partition in videos.items():
+                        if not isinstance(_partition, dict):
+                            continue
+                        _do = _partition.get("display_order")
+                        if not isinstance(_do, list):
+                            continue
+                        _allowed = set(_do)
+                        _beats = _partition.get("beats")
+                        if not isinstance(_beats, dict):
+                            continue
+                        for _bid in list(_beats.keys()):
+                            if _bid not in _allowed:
+                                del _beats[_bid]
                 state["updated_at"] = datetime.now(timezone.utc).isoformat()
                 self._atomic_write_json(self.state_path, state)
                 return result
@@ -1195,6 +1322,26 @@ class StateManager:
                 state["videos"][video_role]["display_order"] = []
                 state["videos"][video_role]["completed_mp4_path"] = None
             mutator_fn(state["videos"][video_role])
+            # DISPLAY_ORDER_STRICT_V1 prune (C2b) — keep partition.beats
+            # consistent with display_order. When display_order is a present
+            # LIST, drop any beats[bid] whose bid is not in it. Skip when
+            # display_order is missing or non-list (legacy data shapes —
+            # e.g. integer display_order in pre-v3 fixtures). The prune runs
+            # on every mutation, not only when the mutator changed
+            # display_order; the invariant is "beats {} ⊆ display_order
+            # whenever display_order is a list", and idempotent enforcement
+            # on every write is the safer contract. Pairs with the
+            # StoryboardTab.beatList renderer's Array.isArray gate so empty
+            # display_order = render zero beats end-to-end.
+            partition = state["videos"][video_role]
+            do = partition.get("display_order")
+            if isinstance(do, list):
+                allowed = set(do)
+                beats = partition.get("beats")
+                if isinstance(beats, dict):
+                    for bid in list(beats.keys()):
+                        if bid not in allowed:
+                            del beats[bid]
             state["updated_at"] = datetime.now(timezone.utc).isoformat()
         return self.mutate_state(_wrapped_mutator)
 
@@ -2448,7 +2595,20 @@ def _find_beat_audio(event_dir: Path, beat_key: str, audio_override: str | None 
     animation-duration lookup."""
     if audio_override:
         p = Path(audio_override)
-        return p if p.is_file() else None
+        if not p.is_file():
+            return None
+        # Security (CodeQL py/path-injection alert #11 follow-up):
+        # audio_override flows from HTTP body and the returned Path is
+        # later handed to ffmpeg / lipsync subprocesses by callers.
+        # Containment guard: only accept paths inside the project root.
+        try:
+            project_root = str(Path(__file__).resolve().parent.parent.parent)
+            real = os.path.realpath(str(p))
+            if not (real == project_root or real.startswith(project_root + os.sep)):
+                return None
+        except Exception:
+            return None
+        return p
 
     try:
         beat_num = int(beat_key.split("_")[1])
@@ -3632,6 +3792,42 @@ import uuid as _pathapp_uuid
 _PATCH_STATE_DEDUP: "_pathapp_collections.OrderedDict[str, dict]" = _pathapp_collections.OrderedDict()
 _PATCH_STATE_DEDUP_MAX = 256
 
+# BEAT_GRAFT_RECOVERY_MECHANISM_V1 (C-7) — separate dedup cache for
+# /api/beat/graft. Same shape and policy as _PATCH_STATE_DEDUP; kept
+# separate so a graft replay never collides with an unrelated patch_state
+# replay using the same mutation_id (the two endpoints share the same
+# uuid namespace but different replay semantics).
+_GRAFT_DEDUP: "_pathapp_collections.OrderedDict[str, dict]" = _pathapp_collections.OrderedDict()
+_GRAFT_DEDUP_MAX = 256
+
+# Durable audit log for graft operations (and any other recovery primitives
+# that need a forever-on-disk record). Per LD-505 two-tree boundary, the
+# audit log is FORENSIC STATE — it belongs in the canonical state tree
+# (Dropbox) alongside the event_dir, NOT in the tooling-repo code tree.
+#
+# Path resolution is dynamic via app.event_dir.parent (i.e., the
+# "Production/" parent of the running server's event-dir):
+#   - Production runtime (server launched from Dropbox tree against
+#     Production/Event_<N>): audit log lands at
+#     /Users/kimberlysmith/Library/CloudStorage/Dropbox/Claude Mindfulnest
+#     Project Files/Production/.recovery_audit.jsonl
+#   - CI / e2e fixture runs (server against Production/Event_e2e_fixture
+#     in tooling repo): audit log lands at tooling-repo
+#     Production/.recovery_audit.jsonl (gitignored).
+#
+# Use _audit_log_path(app) helper to read the resolved path; the legacy
+# module-level constant has been removed.
+
+def _audit_log_path(app) -> Path:
+    """Return the durable recovery-audit log path for the current server pin.
+
+    Co-located with `app.event_dir.parent` per spec §6.4 + LD-505 (forensic
+    state in canonical state tree). Single point of resolution so future
+    callers don't import a stale module-level constant from before the
+    runtime tree was decided.
+    """
+    return app.event_dir.parent / ".recovery_audit.jsonl"
+
 # v2 whitelist — ALL other fields must go through the legacy bespoke handlers
 _V2_ALLOWED_FIELDS = frozenset({
     "dialogue", "image_override", "selected_option", "trim_start", "trim_end",
@@ -3946,6 +4142,7 @@ def patch_state(
     value,
     mutation_id: str | None = None,
     expected_version: int | None = None,
+    video_role: str = "intro",
 ) -> dict:
     """Atomic v2 state mutation with idempotency + version check + sidecar.
 
@@ -3963,6 +4160,14 @@ def patch_state(
     _handle_beat_update_text flow (via patch_state_via_legacy_dialogue)
     which preserves LD-181 TTS auto-regen. The caller is responsible
     for invoking that delegation path — see _handle_v2_patch.
+
+    SCOPE_ROUTER_V1 (C-2 D5 fix): `video_role` parameter resolves the
+    target partition. Defaults to "intro" for back-compat with callers
+    that haven't yet been updated to pass a scope-aware role; the v2
+    handler `_handle_v2_patch` resolves it from the body's
+    `scope_target_video` / `scope_video_role` (LD-461 alias) and passes
+    explicitly. Validated against StateManager._VALID_VIDEO_ROLES; an
+    invalid role returns status=error before any state read.
     """
     # Rollback gate — line 1 of the helper (Red-team-2 requirement)
     if os.environ.get("MINDFULNEST_WRITE_PATH", "v2") == "legacy":
@@ -4047,6 +4252,16 @@ def patch_state(
                         "error": f"display_order[{_i}] must be str, got {type(_item).__name__}"}
         # Deferred beat_id existence check — needs state read. Done inside _apply.
 
+    # SCOPE_ROUTER_V1 (C-2 D5 fix) — validate the resolved partition role
+    # before any state read. Mirrors scope_router._VALID_VIDEO_ROLES; we
+    # don't import the router here directly to keep patch_state agnostic
+    # of HTTP framing (the handler at _handle_v2_patch already mapped
+    # body keys via the router). An invalid role returns status=error.
+    if video_role not in {"intro", "resolution", "standalone"}:
+        return {"status": "error",
+                "error": f"invalid video_role {video_role!r}; "
+                         f"valid: ['intro', 'resolution', 'standalone']"}
+
     # Idempotency — dedup cache (LRU, bounded)
     if mutation_id:
         cached = _PATCH_STATE_DEDUP.get(mutation_id)
@@ -4055,30 +4270,31 @@ def patch_state(
             return {**cached, "status": "dedup", "cached": True}
 
     source_changed_out = {"value": None}
+    result_holder: dict = {}
 
-    def _apply(state, _bid=beat_id, _f=field, _v=value, _exp=expected_version, _sco=source_changed_out, _is_global=is_global):
-        # S5.5a2: lift to intro partition (BG_VIDEO_PARTITION_V1).
-        # patch_state's _apply mutator works on the full state dict and routes
-        # writes into videos.intro.{beats|display_order|image_overrides}.
-        intro_partition = state.setdefault("videos", {}).setdefault("intro", {
-            "video_role": "intro", "video_label": None,
-        })
-        beats = intro_partition.setdefault("beats", {})
+    def _apply_partition(partition, _bid=beat_id, _f=field, _v=value, _exp=expected_version, _sco=source_changed_out, _is_global=is_global, _holder=result_holder):
+        # SCOPE_ROUTER_V1 (C-2 D5 fix): the mutator receives the partition
+        # dict for the resolved video_role — never the full state, never the
+        # legacy top-level state.beats. mutate_video_state auto-creates the
+        # partition with role marker if missing (production_server.py:1185-1196)
+        # before invoking the mutator, so partition is always non-None here.
+        beats = partition.setdefault("beats", {})
         # Tier 3: __global__ mutations DO NOT create a beat entry. They mutate
         # the partition's top-level keys (display_order, etc.). Version checks
         # + bump are skipped (display_order is not beat-scoped).
         if _is_global:
             if _f == "display_order":
-                # Validate every beat_id exists in intro partition's beats
+                # Validate every beat_id exists in partition's beats
                 known = set(beats.keys())
                 unknown = [b for b in _v if b not in known]
                 if unknown:
-                    return {
+                    _holder.update({
                         "status": "error",
                         "error": f"display_order references unknown beat_ids: {unknown}",
-                    }
-                intro_partition["display_order"] = list(_v)
-            return {
+                    })
+                    return
+                partition["display_order"] = list(_v)
+            _holder.update({
                 "status": "applied",
                 "new_version": None,  # partition-level keys are not versioned per-beat
                 "scope": "global",
@@ -4086,25 +4302,33 @@ def patch_state(
                 "value_summary": (
                     f"list[{len(_v)}]" if isinstance(_v, list) else str(_v)
                 ),
-            }
+            })
+            return
 
         beat = beats.setdefault(_bid, {})
-        current_version = _v2_read_beat_version(state, _bid)
+        # Read version directly off the partition's beat (was previously
+        # `_v2_read_beat_version(state, _bid)` which is hardcoded to videos.intro
+        # — kept around for legacy single-partition callers; partition-aware
+        # callers read from the partition we already resolved).
+        try:
+            current_version = int(beat.get("_version", 0) or 0)
+        except (TypeError, ValueError):
+            current_version = 0
         if _exp is not None and _exp != current_version:
-            return {
+            _holder.update({
                 "status": "conflict",
                 "current_version": current_version,
                 "expected": _exp,
-            }
+            })
+            return
         # Apply mutation
         if _f == "dialogue":
             beat["text"] = _v
             beat["text_last_updated_at"] = datetime.now(timezone.utc).isoformat()
         elif _f == "image_override":
-            # S5.5a2: image_overrides lives at videos.intro.image_overrides
-            # (was state["image_overrides"] pre-migration). intro_partition
-            # already resolved at top of _apply.
-            intro_partition.setdefault("image_overrides", {})[_bid] = _v
+            # image_overrides lives at videos.<role>.image_overrides on the
+            # partition we already resolved (no longer hardcoded to intro).
+            partition.setdefault("image_overrides", {})[_bid] = _v
         elif _f == "selected_option":
             p1 = beat.setdefault("phase_1", {})
             old_selected = p1.get("selected_option")
@@ -4143,32 +4367,46 @@ def patch_state(
             else:
                 p1["fade_after_ms"] = int(_v)
         elif _f == "speaker":
-            # Tier 3: speaker change invalidates existing audio (mismatch until
-            # next regen). _tier1a_mark_regen_fired clears speaker_mismatch
-            # after a successful regen.
+            # K8 + SPEAKER_DUAL_STORE_DEPRECATION_V1 (C-6): canonicalize at
+            # write boundary (SPEAKER_WRITE_BOUNDARY_CANONICALIZATION_V1)
+            # and write to BOTH the canonical top-level partition.beats[bid].speaker
+            # AND the legacy phase_1.speaker mirror. Read sites use
+            # _resolve_beat_speaker(beat) which prefers top-level and falls
+            # back to phase_1 for legacy on-disk values. The mirror is a
+            # one-release read-compat shim; SPEAKER_DUAL_STORE_DEPRECATION_V1
+            # tracks the N+1 sprint that drops the phase_1 write entirely.
+            canonical = _canonicalize_speaker(_v or "") or ""
+            old_top_speaker = beat.get("speaker") or ""
+            beat["speaker"] = canonical                    # canonical write target (TTS reads this)
             p1 = beat.setdefault("phase_1", {})
-            old_speaker = p1.get("speaker")
-            p1["speaker"] = _v
-            if (old_speaker or "") != _v:
-                # Only flip mismatch ON if the speaker actually changed. Don't
-                # clobber a pre-existing False after a regen cleared it.
+            old_phase1_speaker = p1.get("speaker") or ""
+            p1["speaker"] = canonical                      # mirror for read-compat shim
+            # Mismatch-flip semantics: speaker change invalidates existing
+            # audio (mismatch until next regen); _tier1a_mark_regen_fired
+            # clears speaker_mismatch after a successful regen.
+            old_speaker = old_top_speaker or old_phase1_speaker
+            if old_speaker != canonical:
                 p1["speaker_mismatch"] = True
                 p1["speaker_mismatch_set_at"] = (
                     datetime.now(timezone.utc).isoformat()
                 )
         # Bump version
         beat["_version"] = current_version + 1
-        return {
+        _holder.update({
             "status": "applied",
             "new_version": current_version + 1,
             "beat": dict(beat),  # shallow copy of beat state
-        }
+        })
 
     try:
-        result = app.state.mutate_state(_apply)
+        app.state.mutate_video_state(video_role, _apply_partition)
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
-        return {"status": "error", "error": f"mutate_state failed: {type(exc).__name__}: {exc}"}
+        return {"status": "error", "error": f"mutate_video_state failed: {type(exc).__name__}: {exc}"}
+    if not result_holder:
+        # Mutator never executed — defensive (shouldn't happen with mutate_video_state).
+        return {"status": "error", "error": "patch_state mutator did not run"}
+    result = result_holder
 
     if result.get("status") == "conflict":
         return result
@@ -4711,7 +4949,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             return {}
 
     # ---- LD-456 SCOPE_VALIDATION_V1 ----
-    def _assert_event_scope(self, body: dict, allow_missing: bool = True, allow_missing_video_role: bool = True) -> bool:
+    def _assert_event_scope(self, body: dict, allow_missing: bool = False, allow_missing_video_role: bool = False) -> bool:
         """Reject cross-event mutations at the door.
 
         Compares request `body['event_id']` (or URL query string fallback)
@@ -4723,17 +4961,22 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return
 
         On missing body['event_id']:
-          - allow_missing=True (default): pass through (legacy v58 client
-            compat — v58 clients never send event_id; tightening to 400
-            would break Kim's running session).
-          - allow_missing=False: reject with HTTP 400 (used in Session 1.5+
-            for endpoints that the v59 client always reaches first).
+          - allow_missing=False (DEFAULT, post-C-5 flip per LD
+            SCOPE_REQUIRED_DEFAULTS_V1): reject with HTTP 400. Mutation
+            handlers MUST hit this path; v59 clients per LD-461 always
+            inject scope_event_id, so missing is a real bug class.
+          - allow_missing=True: explicit opt-in for read-only probes only
+            (state_snapshot, bg_session_state, bg_poll_*, v2_sidecar,
+            phase_suggest_script, etc.) where unauthenticated reads are
+            tolerated by design.
 
         Origin: 2026-05-01 cross-event Accept-All leak. Beat Generator on
         Event 2 → Accept All → Event 2 keys leaked into Event 1 storyboard's
         L[] because _handle_bg_accept_beats derived sidecar_path from
         server-pinned self.app.event_dir but ignored body's active_context.
-        This guard makes that class structurally impossible.
+        This guard makes that class structurally impossible — and the
+        post-C-5 default flip closes the silent-default leak that
+        previously let scope_event_id-less requests through unchecked.
         """
         body_event = (body or {}).get("event_id")
         # Fallback: URL query string (some clients pass it there).
@@ -5054,6 +5297,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_add_options(body)
             if path == "/api/beat/update_text":
                 return self._handle_beat_update_text(body)
+            # BEAT_GRAFT_RECOVERY_MECHANISM_V1 (C-7) — Pillar 7 cornerstone.
+            # Cross-event/role beat move with audit + idempotency + pre-image.
+            if path == "/api/beat/graft":
+                return self._handle_beat_graft(body)
             if path == "/api/beat/regenerate_audio":
                 return self._handle_beat_regenerate_audio(body)
             if path == "/api/select":
@@ -5322,7 +5569,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_magic_submit_path(self, body: dict) -> None:
         """Validate clicked path, write registry, kick off render pipeline."""
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
@@ -5665,6 +5912,15 @@ class ProductionHandler(BaseHTTPRequestHandler):
         if not keys:
             return self._send_json(400, {"error": "keys param required"})
 
+        # Security (CodeQL py/path-injection alerts #12, #13): reject any key
+        # containing path separators, leading dot, or '..' to prevent traversal
+        # outside crops_dir. Allow [A-Za-z0-9._-]+ basename only.
+        import re as _re
+        _SAFE_KEY = _re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]*$")
+        for k in keys:
+            if ".." in k or "/" in k or "\\" in k or k.startswith(".") or not _SAFE_KEY.match(k):
+                return self._send_json(400, {"error": f"invalid key: {k!r}"})
+
         bg = _bg_module()
         crops_dir = os.path.join(bg.BG_STILLS_DIR, "crops")
         result = {}
@@ -5878,10 +6134,13 @@ class ProductionHandler(BaseHTTPRequestHandler):
         abs_path = params.get("abs_path", [None])[0]
         if not abs_path:
             return self._send_json(400, {"ok": False, "error": "abs_path required"})
-        # Safety: path must be within project root
-        project_root = str(Path(__file__).parent.parent.parent)
+        # Safety: path must be within project root.
+        # Security (CodeQL py/path-injection — separator-anchored containment):
+        # naive startswith(root) lets sibling '<root>_evil/...' slip past.
+        # Compare against `root + os.sep` (or accept exact-equal root).
+        project_root = os.path.realpath(str(Path(__file__).parent.parent.parent))
         real_path = os.path.realpath(abs_path)
-        if not real_path.startswith(os.path.realpath(project_root)):
+        if not (real_path == project_root or real_path.startswith(project_root + os.sep)):
             return self._send_json(403, {"ok": False, "error": "path outside project"})
         if not os.path.isfile(real_path):
             return self._send_json(404, {"ok": False, "error": "file not found"})
@@ -5905,7 +6164,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         Rule 19 compliance: every error path returns explicit JSON.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         import glob as _glob
@@ -5931,12 +6190,15 @@ class ProductionHandler(BaseHTTPRequestHandler):
         if not candidates:
             return self._send_json(404, {"ok": False, "error": f"key '{key}' not found in sources/"})
 
-        # Realpath safety check — must be within project root (mirrors L5195-5198)
+        # Realpath safety check — must be within project root (mirrors L5195-5198).
+        # Security (CodeQL py/path-injection — separator-anchored containment):
+        # naive startswith(root) lets sibling '<root>_evil/...' slip past.
+        # Compare against `root + os.sep` (or accept exact-equal root).
         project_root = os.path.realpath(str(Path(__file__).parent.parent.parent))
         target = None
         for path in candidates:
             real = os.path.realpath(path)
-            if real.startswith(project_root):
+            if real == project_root or real.startswith(project_root + os.sep):
                 target = real
                 break
         if not target:
@@ -6024,7 +6286,9 @@ class ProductionHandler(BaseHTTPRequestHandler):
         once Session 2+ wires mutations through. Session 1.5 ships the
         endpoint; mutations don't fire from the client yet.
         """
-        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        # READ-ONLY probe (M1 backup precursor — backs up state file, does
+        # not mutate Event state). Per spec_v2 §5.2 + SCOPE_REQUIRED_DEFAULTS_V1
+        # read-only probes keep allow_missing=True.
         if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
             return
 
@@ -6342,7 +6606,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         partition selection comes ONLY from body['scope_video_role'] on each
         mutating request. This endpoint exists solely for UX persistence.
         """
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
         video_role = (body or {}).get("video_role")
         if not video_role:
@@ -6380,7 +6644,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         StateManager.create_video. Returns 400 on invalid role; 409 on
         duplicate (partition already exists).
         """
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
         video_role = (body or {}).get("video_role")
         video_label = (body or {}).get("video_label")
@@ -7755,6 +8019,9 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
         Per LDs PHASE_A_PRODUCER_V1 + PHASE_B_PRODUCER_V1.
         """
+        # READ-ONLY probe (LLM script suggestion — does not mutate state).
+        # Per spec_v2 §5.2 + SCOPE_REQUIRED_DEFAULTS_V1 read-only probes keep
+        # allow_missing=True.
         if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
             return
         phase = ((body or {}).get("phase") or "").strip().lower()
@@ -7979,16 +8246,31 @@ class ProductionHandler(BaseHTTPRequestHandler):
             return self._send_json(400, {"error": err})
 
         # Resolve absolute path for source image; reject paths outside project.
+        # Security (CodeQL py/path-injection — separator-anchored containment +
+        # no swallowed exception): naive startswith(root) lets sibling
+        # '<root>_evil/...' slip past, and `except Exception: pass` silently
+        # skipped the check on resolve() failures (long paths, broken symlinks).
+        # Reject in BOTH failure modes; never let a path with unverified
+        # containment flow into ffmpeg.
         sip = Path(source_image_path_raw)
         if not sip.is_absolute():
             sip = self.app.event_dir.parent.parent / source_image_path_raw
+        # Sanitize beat_id BEFORE it flows into the on-disk filename via
+        # f-string. Mirrors _handle_cr_save_crop (line ~10091-10095) — closes
+        # MED-4 (magic_compositor.py label sanitizer is mooted when callers
+        # pass an explicit output_path constructed from raw beat_id).
+        if "/" in beat_id or "\\" in beat_id or ".." in beat_id or beat_id.startswith("."):
+            return self._send_json(400, {"error": "invalid beat_id"})
+        import re as _re_mid_a
+        if not _re_mid_a.match(r"^[A-Za-z0-9][A-Za-z0-9_-]*$", beat_id):
+            return self._send_json(400, {"error": "beat_id must match [A-Za-z0-9_-]+"})
         try:
-            project_root = Path(__file__).resolve().parent.parent.parent
-            sip_resolved = sip.resolve()
-            if not str(sip_resolved).startswith(str(project_root)):
+            project_root = str(Path(__file__).resolve().parent.parent.parent)
+            sip_resolved = str(sip.resolve())
+            if not (sip_resolved == project_root or sip_resolved.startswith(project_root + os.sep)):
                 return self._send_json(400, {"error": "source_image_path outside project root"})
         except Exception:
-            pass
+            return self._send_json(400, {"error": "source_image_path validation failed"})
         if not sip.is_file():
             return self._send_json(404, {
                 "error": "source_image not found", "path": str(sip),
@@ -8094,6 +8376,24 @@ class ProductionHandler(BaseHTTPRequestHandler):
         svp = Path(source_video_path_raw)
         if not svp.is_absolute():
             svp = self.app.event_dir.parent.parent / source_video_path_raw
+        # Security (CodeQL py/path-injection alert #16 — separator-anchored
+        # containment + no swallowed exception): naive startswith(root) lets
+        # sibling '<root>_evil/...' slip past, and `except Exception: pass`
+        # silently skipped the check on resolve() failures (long paths,
+        # broken symlinks). Reject in BOTH failure modes; never let a path
+        # with unverified containment flow into ffmpeg.
+        if "/" in beat_id or "\\" in beat_id or ".." in beat_id or beat_id.startswith("."):
+            return self._send_json(400, {"error": "invalid beat_id"})
+        import re as _re_mid_b
+        if not _re_mid_b.match(r"^[A-Za-z0-9][A-Za-z0-9_-]*$", beat_id):
+            return self._send_json(400, {"error": "beat_id must match [A-Za-z0-9_-]+"})
+        try:
+            project_root = str(Path(__file__).resolve().parent.parent.parent)
+            svp_resolved = str(svp.resolve())
+            if not (svp_resolved == project_root or svp_resolved.startswith(project_root + os.sep)):
+                return self._send_json(400, {"error": "source_video_path outside project root"})
+        except Exception:
+            return self._send_json(400, {"error": "source_video_path validation failed"})
         if not svp.is_file():
             return self._send_json(404, {
                 "error": "source_video not found", "path": str(svp),
@@ -8547,13 +8847,13 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 if candidate.is_dir():
                     edir = candidate
             segments: dict[str, dict] = {}
+            videos_by_role: dict[str, dict] = {}
             if edir:
                 # Best-effort: file-based status.
                 # Per spec §3.9: 'canonical' is reserved for fly-in/fly-out source clips.
                 # Phase A stitched outputs use phase_a_stitched_*.mp4 (S4 migration).
                 phase_a = list(edir.glob("phase_a_stitched_*.mp4"))
                 phase_b = list(edir.glob("phase_b_lipsync_*.mp4"))
-                intro_or_resolution = list(edir.glob("storyboard_v*_prod.html"))
                 final_concat = list(edir.glob(f"M{m.get('m_number')}_*_final.mp4"))
                 segments = {
                     "phase_a": {
@@ -8566,21 +8866,92 @@ class ProductionHandler(BaseHTTPRequestHandler):
                         "count": len(phase_b),
                         "latest": phase_b[0].name if phase_b else None,
                     },
-                    "intro_or_resolution": {
-                        "status": "ready" if intro_or_resolution else "missing",
-                        "count": len(intro_or_resolution),
-                    },
                     "final_concat": {
                         "status": "ready" if final_concat else "missing",
                         "count": len(final_concat),
                     },
                 }
+
+                # C-12 ride-along (Production Map per-role + 5-state glyph) per
+                # post-redeploy v2 §3.3 Part 2 + handoff §4 C-12. Per-role
+                # state derives from (a) partition presence in state.videos,
+                # (b) display_order shape, (c) per-role completed mp4 presence,
+                # (d) module-level final concat presence. NO prod_modules schema
+                # migration (picker-spec R3 boundary preserved).
+                #
+                # 5-state glyph mapping (returned as `state` field on each role):
+                #   absent       — partition not in state.videos                → glyph '—'
+                #   empty        — partition present + display_order list is [] → glyph '○'
+                #   in_progress  — partition + non-empty display_order, no mp4  → glyph '◐'
+                #   complete     — partition + display_order + per-role mp4    → glyph '●'
+                #   final        — complete + module-level final concat        → glyph '★'
+                #
+                # For partitions whose display_order is the legacy int form
+                # (Event_e2e_fixture pre-v3 shape), treat any non-empty beats
+                # dict as 'in_progress' (matches renderer's fallback behavior).
+                state_path = edir / "production_state.json"
+                state_videos: dict = {}
+                try:
+                    with open(state_path, "r", encoding="utf-8") as _f:
+                        state_videos = (json.load(_f).get("videos") or {})
+                except (FileNotFoundError, json.JSONDecodeError):
+                    state_videos = {}
+
+                # Per-role completed mp4 globs. The canonical filenames vary
+                # by event so we accept either scene_<role>_*.mp4 (Event_1
+                # naming) or <role>_atomic_*.mp4 / <role>_atomic.mp4 (post-
+                # redeploy spec naming). Handler does NOT enforce a single
+                # filename — discovery is best-effort.
+                final_concat_present = bool(final_concat)
+                for _role in ("intro", "resolution", "standalone"):
+                    partition = state_videos.get(_role)
+                    if not isinstance(partition, dict):
+                        videos_by_role[_role] = {"state": "absent"}
+                        continue
+                    do = partition.get("display_order")
+                    beats = partition.get("beats") or {}
+                    if isinstance(do, list):
+                        is_empty = (len(do) == 0)
+                    else:
+                        # Legacy int / missing display_order: treat as 'present
+                        # with content' if any beats exist.
+                        is_empty = (len(beats) == 0)
+                    if is_empty:
+                        videos_by_role[_role] = {"state": "empty"}
+                        continue
+                    role_dir = edir / _role
+                    role_mp4s: list[Path] = []
+                    if role_dir.is_dir():
+                        role_mp4s = (
+                            list(role_dir.glob(f"scene_{_role}_*.mp4"))
+                            + list(role_dir.glob(f"{_role}_atomic*.mp4"))
+                        )
+                    else:
+                        role_mp4s = (
+                            list(edir.glob(f"scene_{_role}_*.mp4"))
+                            + list(edir.glob(f"{_role}_atomic*.mp4"))
+                        )
+                    if role_mp4s:
+                        if final_concat_present:
+                            videos_by_role[_role] = {
+                                "state": "final",
+                                "completed_mp4": role_mp4s[0].name,
+                            }
+                        else:
+                            videos_by_role[_role] = {
+                                "state": "complete",
+                                "completed_mp4": role_mp4s[0].name,
+                            }
+                    else:
+                        videos_by_role[_role] = {"state": "in_progress"}
+
             rows.append({
                 "m_number": m.get("m_number"),
                 "creature_name": m.get("creature_name"),
                 "video_role": m.get("video_role"),
                 "event_dir": edir.name if edir else None,
                 "segments": segments,
+                "videos_by_role": videos_by_role,
             })
 
         out = {
@@ -8611,7 +8982,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
         Per LD-466 EXPORT_TO_STITCHER_V1 + spec §3.5.1 + Rule 8 (audio safety).
         """
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         input_path_raw = (body or {}).get("input_path")
@@ -8712,13 +9083,14 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
         NOTE on the BG `event_id` field: this is the BG-internal segment number
         (e.g., "1", "2", "3"), NOT the storyboard event scope. Scope-guard uses
-        body['scope_event_id'] when v59 client sends it; legacy clients pass
-        through (allow_missing=True).
+        body['scope_event_id'] when v59 client sends it; post-C-5
+        SCOPE_REQUIRED_DEFAULTS_V1, missing scope_event_id rejects with HTTP
+        400 (legacy permissive default removed for mutation handlers).
         """
         # LD-456 SCOPE_VALIDATION_V1 — guard against cross-storyboard-event mutation.
         # The BG body's `event_id` is overloaded (segment number); v59 client
         # passes the storyboard scope as `scope_event_id` to disambiguate.
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return  # LD-461 SCOPE_BODY_HELPER_V1 — migrated from hand-rolled dict
         arc_number = int(body.get("arc_number", 1))
         event_id   = str(body.get("event_id", "1"))
@@ -8743,7 +9115,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         guard uses body['scope_event_id'] when present.
         """
         # LD-456 SCOPE_VALIDATION_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return  # LD-461 SCOPE_BODY_HELPER_V1 — migrated from hand-rolled dict
         arc_number = int(body.get("arc_number", 1))
         event_id   = str(body.get("event_id", "1"))
@@ -8786,7 +9158,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         guard uses body['scope_event_id'] when present.
         """
         # LD-456 SCOPE_VALIDATION_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return  # LD-461 SCOPE_BODY_HELPER_V1 — migrated from hand-rolled dict
         arc_number = int(body.get("arc_number", 1))
         event_id   = str(body.get("event_id", "1"))
@@ -8847,7 +9219,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_bg_update_beat(self, body: dict) -> None:
         """POST /api/bg/update-beat {beat_id, [field...], scope_event_id?} -> { ok }"""
         # LD-456 SCOPE_VALIDATION_V1 — uses scope_event_id to disambiguate from BG segment numbers.
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return  # LD-461 SCOPE_BODY_HELPER_V1 — migrated from hand-rolled dict
         beat_id = body.get("beat_id")
         if not beat_id:
@@ -8857,7 +9229,21 @@ class ProductionHandler(BaseHTTPRequestHandler):
             "speaker", "dialogue_text", "scene_notes", "emotion",
             "accepted_image_key", "reference_image", "bg_ref_image",
         })
-        unknown = set(body.keys()) - _BG_BEAT_WRITABLE - {"beat_id"}
+        # BUG1FIX-20260507 — exclude scope/metadata keys that pathappPatch
+        # auto-injects per LD-461 SCOPE_BODY_HELPER_V1 + LD-474
+        # VIDEO_ROLE_PER_REQUEST_V1. They are required for the scope guard
+        # at line ~9161 above, but are not writable beat fields. Without
+        # this exclusion the BG-ref drop body 400s with
+        # "Unknown beat fields: ['scope_event_id', ...]" because the
+        # whitelist gate runs after the scope guard consumed those same keys.
+        _BG_BEAT_SCOPE_KEYS = frozenset({
+            "beat_id",
+            "event_id", "scope_event_id",
+            "scope_video_role", "scope_target_video",
+            "scope_milestone_id",
+            "scope_version",
+        })
+        unknown = set(body.keys()) - _BG_BEAT_WRITABLE - _BG_BEAT_SCOPE_KEYS
         if unknown:
             return self._send_json(400, {"ok": False,
                                           "error": f"Unknown beat fields: {sorted(unknown)}"})
@@ -8877,7 +9263,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_bg_reorder_beats(self, body: dict) -> None:
         """POST /api/bg/reorder-beats {beat_ids: [...], scope_event_id?} -> { ok }"""
         # LD-456 SCOPE_VALIDATION_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return  # LD-461 SCOPE_BODY_HELPER_V1 — migrated from hand-rolled dict
         beat_ids = body.get("beat_ids", [])
         if not beat_ids:
@@ -8898,7 +9284,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_bg_delete_beat(self, body: dict) -> None:
         """POST /api/bg/delete-beat {beat_id} -> { ok }"""
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         beat_id = body.get("beat_id")
@@ -8926,13 +9312,16 @@ class ProductionHandler(BaseHTTPRequestHandler):
         `active_context.event_id` was Event 2. The scope guard rejects the
         cross-event request with HTTP 409 before any state mutates.
         """
-        # LD-456 SCOPE_VALIDATION_V1 — guard the cross-event leak class.
-        # When the v59 client implements Accept All in S2+, it sends
-        # `scope_event_id` matching the storyboard tab's active event. On
-        # mismatch with server-pinned event_dir, we 409 here BEFORE any
-        # sidecar write or state mutation.
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
-            return  # LD-461 SCOPE_BODY_HELPER_V1 — migrated from hand-rolled dict
+        # SCOPE_ROUTER_V1 (C-3 K2 fix) — replaces the legacy
+        # _assert_event_scope(allow_missing=True) call with strict-by-default
+        # scope_router resolution; subsumes LD-456 SCOPE_VALIDATION_V1 +
+        # LD-461 SCOPE_BODY_HELPER_V1. The cross-event leak class is closed
+        # both here AND structurally because the seed write below routes
+        # through scope_router.mutate_partition (no more legacy state.beats).
+        try:
+            scope = scope_router.resolve(body, self.app.event_dir.name)
+        except scope_router.ScopeError as e:
+            return self._send_json(e.http_status, {"error": e.code, **e.detail})
         beat_ids = [b["beat_id"] for b in body.get("beats", []) if "beat_id" in b]
         bg = _bg_module()
         with bg._sidecar_lock:
@@ -8952,37 +9341,52 @@ class ProductionHandler(BaseHTTPRequestHandler):
         except Exception as e:
             print(f"[BG] warning: could not delete storyboard sidecar: {e}")
 
-        # Seed production_state.beats with speaker + text for each accepted BG beat.
-        # Maps positionally: accepted beat N (0-indexed, skipping beats without
-        # accepted_image_key) -> storyboard beat_id "beat_{N+1:02d}".
-        # This lets _tts_regenerate_for_beat find the speaker via its normal
-        # production_state lookup (the anchor-based HTML fallback fails for BG
-        # beats because their L[] entry has a:null, not a:"line_NN").
+        # SCOPE_ROUTER_V1 (C-3 K2 fix) — seed the v3 partition (videos.<role>.beats),
+        # NOT the legacy top-level state.beats. The previous mutate_state() seed
+        # bypassed both the partition router and the DISPLAY_ORDER_STRICT_V1
+        # prune; subsequent migrate_state_to_videos_partition runs faithfully
+        # lifted that corrupted top-level into videos.intro on whatever event
+        # the server happened to be pinned at — that's the 2026-05-01 leak.
+        # Now: write into the partition for the resolved scope.video_role and
+        # extend partition.display_order. SPEAKER_WRITE_BOUNDARY_CANONICALIZATION_V1
+        # (C-3 K7 fix) — drop the legacy default-to-Guide-Bird literal that lived
+        # at this seed site; canonicalize the raw speaker via _canonicalize_speaker.
+        # Empty stays empty (LD-520 fail-loud at TTS time); the historical
+        # Guide-Bird value normalizes to Chipper via _SPEAKER_ALIAS at write time.
         try:
             beats_raw = body.get("beats", [])
             storyboard_pos = 0
-            state_seeds = {}
+            state_seeds: dict[str, dict] = {}
             for beat in beats_raw:
                 if not beat.get("accepted_image_key"):
                     continue
                 sb_bid = f"beat_{storyboard_pos + 1:02d}"
+                raw_speaker = beat.get("speaker") or ""
+                canonicalized = _canonicalize_speaker(raw_speaker) or ""
                 state_seeds[sb_bid] = {
-                    "speaker": beat.get("speaker") or "Guide Bird",
+                    "speaker": canonicalized,
                     "text": beat.get("dialogue_text") or "",
                 }
                 storyboard_pos += 1
             if state_seeds:
-                def _seed_bg_beats(state, _data=state_seeds):
-                    beats = state.setdefault("beats", {})
+                def _seed_partition(partition, _data=state_seeds):
+                    pbeats = partition.setdefault("beats", {})
+                    pdo = partition.setdefault("display_order", [])
+                    # If display_order is a legacy int (pre-v3 fixture shape),
+                    # leave it alone — DISPLAY_ORDER_STRICT_V1 prune skips ints
+                    # and the renderer's strict gate handles the int form too.
+                    pdo_is_list = isinstance(pdo, list)
                     for bid, fields in _data.items():
-                        b = beats.setdefault(bid, {})
+                        b = pbeats.setdefault(bid, {})
                         b["speaker"] = fields["speaker"]
                         b["text"] = fields["text"]
-                self.app.state.mutate_state(_seed_bg_beats)
-                print(f"[BG] seeded production_state for storyboard beats: "
+                        if pdo_is_list and bid not in pdo:
+                            pdo.append(bid)
+                self.app.state.mutate_video_state(scope.video_role, _seed_partition)
+                print(f"[BG] seeded videos.{scope.video_role}.beats for storyboard beats: "
                       f"{list(state_seeds.keys())}")
         except Exception as e:
-            print(f"[BG] warning: could not seed production_state: {e}")
+            print(f"[BG] warning: could not seed partition: {e}")
 
         return self._send_json(200, {"ok": True, "accepted": len(beat_ids)})
 
@@ -8991,7 +9395,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         """POST /api/bg/submit-flux-batch {beat_ids: [...]} -> { task_map }
         Burst-submits 3×N FLUX Kontext calls. Returns immediately with task_map."""
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
@@ -9050,7 +9454,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         """POST /api/bg/submit-gpt-batch {beat_ids: [...]}
         Spawns GPT generation in background thread pool. Returns {job_id} immediately."""
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
@@ -9158,7 +9562,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_bg_accept_option(self, body: dict) -> None:
         """POST /api/bg/accept-option {beat_id, option_key} -> { ok }"""
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         beat_id    = body.get("beat_id")
@@ -9197,7 +9601,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         Does NOT touch flux_options[]. Library assignment is tracked separately
         so the existing FLUX option display/crop flow is completely unaffected."""
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         beat_id    = body.get("beat_id", "")
@@ -9246,17 +9650,35 @@ class ProductionHandler(BaseHTTPRequestHandler):
         Inserts a blank beat immediately after after_beat_id in the sidecar.
         beat_id is generated as max(existing_N)+1 (zero-padded to 2 digits)
         so gaps from prior deletes do not cause collisions."""
-        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
-            return
+        # SCOPE_ROUTER_V1 (C-4 K3 fix) — replaces legacy
+        # _assert_event_scope(allow_missing=True) and the hardcoded
+        # arc=1/event=2/phase=pre segment lookup.
+        # BG sidecar segment is derived from the resolved scope:
+        #   intro→pre, resolution→post, standalone→main
+        # Subsumes LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        # and pins LD BG_HARDCODED_SCOPE_PURGE_V1.
+        try:
+            scope = scope_router.resolve(body, self.app.event_dir.name)
+        except scope_router.ScopeError as e:
+            return self._send_json(e.http_status, {"error": e.code, **e.detail})
+
+        try:
+            arc_number, event_id_int, phase = _resolve_bg_segment_for_scope(
+                scope.event_id, scope.video_role,
+            )
+        except ValueError as exc:
+            return self._send_json(400, {"error": "bg_segment_unresolved", "detail": str(exc)})
 
         after_beat_id = body.get("after_beat_id", "")
-        segment = body.get("segment", "event_2_pre")
+        # Note: legacy clients passed `segment` literal (e.g. "event_2_pre");
+        # the scope-derived segment is now authoritative. Older callers' segment
+        # field is ignored — by design, since the scope keys must match the
+        # storyboard tab's pinned event/role.
 
         bg = _bg_module()
         with bg._sidecar_lock:
             sidecar = bg.read_sidecar()
-            seg = bg.get_seg_entry(sidecar, arc_number=1, event_id=2, phase="pre")
+            seg = bg.get_seg_entry(sidecar, arc_number=arc_number, event_id=event_id_int, phase=phase)
             beats = seg.get("beats", [])
 
             # Find insertion index
@@ -9266,8 +9688,9 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     insert_after = i
                     break
 
-            # Generate beat_id: max(N)+1 across ALL beats in this segment
-            prefix = "bg_arc1_event2_pre_beat_"
+            # Generate beat_id: max(N)+1 across ALL beats in this segment.
+            # Prefix derived from scope (formerly hardcoded "bg_arc1_event2_pre_beat_").
+            prefix = f"bg_arc{arc_number}_event{event_id_int}_{phase}_beat_"
             existing_nums = []
             for b in beats:
                 bid = b.get("beat_id", "")
@@ -9297,7 +9720,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
     def _handle_bg_create_group(self, body: dict) -> None:
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         name = (body.get("group_name") or "").strip()
@@ -9321,7 +9744,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
     def _handle_bg_delete_group(self, body: dict) -> None:
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         gid = body.get("group_id", "")
@@ -9338,7 +9761,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
     def _handle_bg_update_group(self, body: dict) -> None:
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         gid = body.get("group_id", "")
@@ -9358,7 +9781,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
     @with_pin_and_drain('_handle_bg_assemble_group', track_sync=False)
     def _handle_bg_assemble_group(self, body: dict) -> None:
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
@@ -9443,7 +9866,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
     @with_pin_and_drain('_handle_bg_run_local_animation', track_sync=True)
     def _handle_bg_run_local_animation(self, body: dict) -> None:
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
@@ -9548,7 +9971,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
     def _handle_bg_update_beat_anim_method(self, body: dict) -> None:
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         beat_id = body.get("beat_id", "")
@@ -9572,7 +9995,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
     def _handle_bg_accept_local_animation(self, body: dict) -> None:
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         beat_id = body.get("beat_id", "")
@@ -9581,6 +10004,17 @@ class ProductionHandler(BaseHTTPRequestHandler):
             return self._send_json(400, {"ok": False, "error": "beat_id and video_path required"})
         if not os.path.exists(video_path):
             return self._send_json(400, {"ok": False, "error": f"video file not found: {video_path}"})
+        # MED-3: project-root containment. Body-controlled `video_path` flows
+        # to sidecar `accepted_video_path` which is later passed to ffmpeg.
+        # Without this guard, an attacker could store an arbitrary absolute
+        # path (e.g. /etc/passwd) into project state.
+        try:
+            project_root = str(Path(__file__).resolve().parent.parent.parent)
+            real_video = os.path.realpath(video_path)
+            if not (real_video == project_root or real_video.startswith(project_root + os.sep)):
+                return self._send_json(403, {"ok": False, "error": "video_path outside project root"})
+        except Exception:
+            return self._send_json(403, {"ok": False, "error": "video_path validation failed"})
         bg = _bg_module()
         import pathlib as _pl
         if not bg._ffprobe_ok(_pl.Path(video_path)):
@@ -9632,11 +10066,50 @@ class ProductionHandler(BaseHTTPRequestHandler):
         return self._send_bytes(200, data, ct, {"Cache-Control": "no-cache"})
 
     def _handle_files_serve(self) -> None:
-        """GET /files?path=<absolute_path> — serve local file bytes (images/video)."""
+        """GET /files?path=<absolute_path> — serve local file bytes (images/video).
+
+        Security (CodeQL py/path-injection alerts #24, #25):
+        - Origin allowlist: cross-origin browser fetch refused. Only same-origin
+          (or no Origin header, e.g. <img src> + curl) accepted.
+        - Project-root containment: resolved real path must be inside the
+          repo root, otherwise 403. Closes arbitrary-file-read via /files.
+        - Allow-Origin response echoes ONLY the verified Origin (never `*`)
+          so the inbound allowlist isn't mooted by a wildcard CORS reply
+          (MED-2 from PR #8 adversarial review).
+        """
+        # 1. Origin allowlist — refuse non-localhost cross-origin requests.
+        # Security (CodeQL py/http-response-splitting): rebuild the echoed
+        # origin from validated components so no user-controlled bytes
+        # (especially CR/LF) can flow into the response header. The
+        # urllib.parse.urlparse + integer port + literal-host reconstruction
+        # is a recognized sanitizer pattern.
+        origin_in = self.headers.get("Origin", "") or ""
+        origin_safe = ""
+        if origin_in:
+            try:
+                _u = urllib.parse.urlparse(origin_in)
+                if _u.scheme == "http" and _u.hostname in ("127.0.0.1", "localhost") \
+                        and _u.port is not None and 1 <= int(_u.port) <= 65535 \
+                        and _u.path in ("", "/") and not _u.query and not _u.fragment:
+                    # Rebuild from typed pieces — no user bytes flow through.
+                    origin_safe = f"http://{_u.hostname}:{int(_u.port)}"
+            except (ValueError, TypeError):
+                origin_safe = ""
+        origin_ok = bool(origin_safe)
+        if origin_in and not origin_ok:
+            return self._send_json(403, {"error": "cross-origin not allowed"})
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         file_path = (qs.get("path") or [None])[0]
         if not file_path or not os.path.exists(file_path):
             return self._send_json(404, {"error": "file not found"})
+        # 2. Project-root containment — refuse paths outside the repo.
+        try:
+            project_root = str(Path(__file__).resolve().parent.parent.parent)
+            real_path = os.path.realpath(file_path)
+            if not (real_path == project_root or real_path.startswith(project_root + os.sep)):
+                return self._send_json(403, {"error": "path outside project root"})
+        except Exception:
+            return self._send_json(403, {"error": "path validation failed"})
         ext = os.path.splitext(file_path)[1].lower()
         content_types = {
             ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
@@ -9650,7 +10123,15 @@ class ProductionHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", ct)
             self.send_header("Content-Length", str(len(data)))
-            self.send_header("Access-Control-Allow-Origin", "*")
+            # MED-2: echo only the verified Origin, never `*`. If the
+            # request had no Origin (curl, <img src>, native fetch),
+            # omit the header entirely — same-origin needs no CORS reply.
+            if origin_ok:
+                # `origin_safe` is rebuilt from f"http://{hostname}:{int(port)}"
+                # where hostname ∈ {"127.0.0.1", "localhost"} and port is int.
+                # No user-controlled bytes flow through; CR/LF impossible.
+                self.send_header("Access-Control-Allow-Origin", origin_safe)
+                self.send_header("Vary", "Origin")
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(data)
@@ -9662,13 +10143,22 @@ class ProductionHandler(BaseHTTPRequestHandler):
         Rule 6 upscale + Rule 6.2 WebP delivery + Directus Two-Write.
         Returns { key, filename, thumb_b64, gallery_b64 }."""
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
         crop_b64   = body.get("crop_png_b64", "")
         beat_id    = body.get("beat_id", "")
         source_key = body.get("source_key", "")
         if not crop_b64:
             return self._send_json(400, {"error": "crop_png_b64 required"})
+
+        # Security (CodeQL py/path-injection alert #26): beat_id flows into
+        # the on-disk filename via f-string. Reject any path separators or
+        # traversal sequences; require basename-only [A-Za-z0-9_-].
+        if not beat_id or "/" in beat_id or "\\" in beat_id or ".." in beat_id or beat_id.startswith("."):
+            return self._send_json(400, {"error": "invalid beat_id"})
+        import re as _re
+        if not _re.match(r"^[A-Za-z0-9][A-Za-z0-9_-]*$", beat_id):
+            return self._send_json(400, {"error": "beat_id must match [A-Za-z0-9_-]+"})
 
         bg = _bg_module()
         try:
@@ -9751,7 +10241,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         tier='cropped' or absent -> BG_STILLS_DIR/crops/  (ready images)
         Returns { key, filename, thumb_b64, gallery_b64, tier, abs_path }."""
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
@@ -9846,7 +10336,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         stale one from the HTML file on disk.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
         beat_id = body.get("beat")
         image_key = body.get("image_key")
@@ -10003,7 +10493,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         This is the bridge from Cropper -> Storyboard library.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
         # LD-456 conditional HTML patching: v59 shells have no IN/TH/div.ic
         # markers; rewriting them would silently no-op. Short-circuit here so
@@ -10188,7 +10678,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         Body: {"beat": "beat_NN"} or {"beat": "beat_NN", "audio_override": "..."}
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
@@ -10559,7 +11049,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         trim. Unwired from the router — kept as debuggable reference.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
@@ -10801,7 +11291,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         {intro, resolution, standalone} per VIDEO_ROLE_PER_REQUEST_V2 (supersedes LD-474).
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         beat_id = body.get("beat") or body.get("beat_id")
@@ -10992,11 +11482,30 @@ body {{padding-top:44px!important;}}
         })
 
     def _handle_storyboard_switch(self, body: dict) -> None:
-        """POST /api/storyboard/switch  body: {filename: str}"""
+        """POST /api/storyboard/switch  body: {filename: str}
+
+        Security (CodeQL py/path-injection — regex tightening + containment):
+        the previous regex `^storyboard_v\\d+.*\\.html$` allowed `.*` to
+        match `/`, so `storyboard_v1/../../etc/passwd.html` slipped through
+        the basename check and `event_dir / filename` resolved through `..`
+        to leak file contents via `_extract_storyboard_title`'s
+        `path.read_text()`. Tighten to a strict basename pattern and add
+        a separator-anchored containment check on the resolved real path.
+        """
         filename = (body.get("filename") or "").strip()
-        if not re.match(r'^storyboard_v\d+.*\.html$', filename):
+        # Strict basename: storyboard_v<digits>[_<lowercase-suffix>]?.html
+        if not re.match(r'^storyboard_v\d+(_[a-z0-9_-]+)?\.html$', filename):
             return self._send_json(400, {"error": f"invalid filename: {filename!r}"})
         target = self.app.event_dir / filename
+        # Containment: resolved real path must remain inside event_dir.
+        try:
+            event_dir_real = str(self.app.event_dir.resolve())
+            target_real = str(target.resolve())
+            if not (target_real == event_dir_real
+                    or target_real.startswith(event_dir_real + os.sep)):
+                return self._send_json(400, {"error": "filename escapes event_dir"})
+        except Exception:
+            return self._send_json(400, {"error": "filename validation failed"})
         if not target.is_file():
             return self._send_json(404, {"error": f"not found: {filename}"})
         with self.app._storyboard_write_lock:
@@ -11154,9 +11663,16 @@ body {{padding-top:44px!important;}}
         return all_beats
 
     def _handle_animate(self, body: dict) -> None:
-        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
-            return
+        # SCOPE_ROUTER_V1 (C-7.5 K1 sibling fix) — replaces legacy
+        # _assert_event_scope + scope_video_role-default-to-intro
+        # pattern. Mutators below route partition writes via
+        # mutate_video_state(scope.video_role, ...) instead of the
+        # hardcoded videos.intro setdefault chain that was caught by the
+        # SCOPE_ROUTER_V1 AST grep gate.
+        try:
+            scope = scope_router.resolve(body, self.app.event_dir.name)
+        except scope_router.ScopeError as e:
+            return self._send_json(e.http_status, {"error": e.code, **e.detail})
 
         if self.app.client is None:
             return self._send_json(500, {"error": "WaveSpeed client not configured (missing API key)"})
@@ -11180,8 +11696,9 @@ body {{padding-top:44px!important;}}
         submitted = 0
         skipped: list[dict] = []
 
-        # S5.5a2: scope_video_role from body, default 'intro' during refactor window (LD-474).
-        video_role = body.get("scope_video_role", "intro")
+        # video_role resolved by scope_router; image override lookup is
+        # partition-aware via the get_beat_image(_, video_role) helper.
+        video_role = scope.video_role
         for beat in beats:
             beat_id = self._beat_id(beat.get("line_number", -1))
             # Check image overrides first (from drag-drop), then storyboard
@@ -11218,23 +11735,21 @@ body {{padding-top:44px!important;}}
                 continue
             print(f"[animate] {beat_id} duration={beat_duration}s reason={duration_reason}")
 
-            # Initialize beat state. S5.5a2: writes to videos.intro.beats.
-            def init_beat(state, _beat_id=beat_id, _beat=beat):
-                intro_beats = state.setdefault("videos", {}).setdefault(
-                    "intro", {"video_role": "intro", "video_label": None}
-                ).setdefault("beats", {})
-                intro_beats.setdefault(_beat_id, {
+            # Initialize beat state via partition router (was videos.intro hardcode).
+            def init_beat_partition(partition, _beat_id=beat_id, _beat=beat):
+                pbeats = partition.setdefault("beats", {})
+                pbeats.setdefault(_beat_id, {
                     "speaker": _beat.get("speaker"),
                     "text": _beat.get("text"),
                     "section": _beat.get("section"),
                     "phase_1": {"status": "polling", "options": [], "selected_option": None},
                 })
-                intro_beats[_beat_id]["phase_1"] = {
+                pbeats[_beat_id]["phase_1"] = {
                     "status": "polling",
                     "options": [],
                     "selected_option": None,
                 }
-            self.app.state.mutate_state(init_beat)
+            self.app.state.mutate_video_state(scope.video_role, init_beat_partition)
 
             # Submit options_per_beat jobs, staggered
             for opt_idx in range(options_per_beat):
@@ -11247,12 +11762,10 @@ body {{padding-top:44px!important;}}
                     skipped.append({"beat": beat_id, "opt": opt_idx + 1, "reason": str(exc)})
                     continue
 
-                # S5.5a2: writes to videos.intro.beats[bid].phase_1.options.
-                def add_option(state, _bid=beat_id, _tid=task_id):
-                    intro_beats = state.setdefault("videos", {}).setdefault(
-                        "intro", {"video_role": "intro", "video_label": None}
-                    ).setdefault("beats", {})
-                    intro_beats[_bid]["phase_1"]["options"].append({
+                # Append option via partition router (was videos.intro hardcode).
+                def add_option_partition(partition, _bid=beat_id, _tid=task_id):
+                    pbeats = partition.setdefault("beats", {})
+                    pbeats[_bid]["phase_1"]["options"].append({
                         "task_id": _tid,
                         "status": "polling",
                         "file": None,
@@ -11262,7 +11775,7 @@ body {{padding-top:44px!important;}}
                         "retries": 0,
                         "last_error": None,
                     })
-                self.app.state.mutate_state(add_option)
+                self.app.state.mutate_video_state(scope.video_role, add_option_partition)
                 submitted += 1
 
                 # Stagger within a beat too — simple 2s gap every 6 jobs
@@ -11349,7 +11862,7 @@ body {{padding-top:44px!important;}}
 
     def _handle_redo(self, body: dict) -> None:
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         beat_id = body.get("beat")
@@ -11404,7 +11917,7 @@ body {{padding-top:44px!important;}}
     def _handle_add_options(self, body: dict) -> None:
         """Dispatch Generate B+C to start-end (default) unless force_legacy."""
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         beat_id = body.get("beat")
@@ -11784,9 +12297,20 @@ body {{padding-top:44px!important;}}
         LEGACY PATH (pre-decision-172). Called by _handle_add_options when the
         beat has no end_frame_prompt configured. Single-image Kling v3, no
         FLUX Kontext end-frame generation. Preserved verbatim for fallback.
+
+        SCOPE_ROUTER_V1 (C-7.5 K1 sibling fix): scope is re-resolved here
+        even though the caller already validated, because this method is
+        also reachable directly via the dispatcher when beat_state carries
+        force_legacy=true. The double-validation is cheap and keeps the
+        handler self-contained.
         """
         if self.app.client is None:
             return self._send_json(500, {"error": "WaveSpeed client not configured"})
+
+        try:
+            scope = scope_router.resolve(body, self.app.event_dir.name)
+        except scope_router.ScopeError as e:
+            return self._send_json(e.http_status, {"error": e.code, **e.detail})
 
         beat_id = body.get("beat")
         num_new = int(body.get("count", 2))  # default: add 2 (B + C)
@@ -11844,11 +12368,11 @@ body {{padding-top:44px!important;}}
                 })
         print(f"[add_options] {beat_id} duration={duration}s reason={duration_reason}")
 
-        # Read current state to verify beat exists and get existing options
+        # Read current state to verify beat exists in scope.video_role partition.
         state = self.app.state.read_state()
-        beat_state = ((state.get("videos") or {}).get("intro") or {}).get("beats", {}).get(beat_id)
+        beat_state = ((state.get("videos") or {}).get(scope.video_role) or {}).get("beats", {}).get(beat_id)
         if not beat_state:
-            return self._send_json(404, {"error": f"beat {beat_id} not found in state"})
+            return self._send_json(404, {"error": f"beat {beat_id} not found in videos.{scope.video_role}.beats"})
 
         phase1 = beat_state.get("phase_1") or {}
         existing_options = phase1.get("options", [])
@@ -11863,14 +12387,14 @@ body {{padding-top:44px!important;}}
             for opt in existing_options[1:]:
                 if opt.get("file"):
                     old_bc_files.append(opt["file"])
-            def trim_to_a(state):
-                b = ((state.get("videos") or {}).get("intro") or {}).get("beats", {}).get(beat_id)
+            def trim_to_a_partition(partition, _bid=beat_id):
+                b = (partition.get("beats") or {}).get(_bid)
                 if b and b.get("phase_1"):
                     opts = b["phase_1"].get("options", [])
                     b["phase_1"]["options"] = opts[:1]  # keep only A
                     if (b["phase_1"].get("selected_option") or 0) > 1:
                         b["phase_1"]["selected_option"] = 1  # reset to A
-            self.app.state.mutate_state(trim_to_a)
+            self.app.state.mutate_video_state(scope.video_role, trim_to_a_partition)
             # Delete old B+C files from disk
             for fname in old_bc_files:
                 p = self.app.state.clips_dir / fname
@@ -11902,10 +12426,9 @@ body {{padding-top:44px!important;}}
                 "error": f"could not find beat data for {beat_id} in storyboard"
             })
 
-        # Use image override if available (from drag-drop assignment)
-        # S5.5a2: scope_video_role from body for partition-aware override lookup (LD-474).
-        video_role = body.get("scope_video_role", "intro")
-        beat_image = self.app.get_beat_image(beat_id, video_role)
+        # Use image override if available (from drag-drop assignment).
+        # video_role resolved by scope_router above.
+        beat_image = self.app.get_beat_image(beat_id, scope.video_role)
         if not beat_image:
             return self._send_json(400, {
                 "error": f"could not find image data for {beat_id} — try drag-dropping an image first"
@@ -11925,11 +12448,11 @@ body {{padding-top:44px!important;}}
         prompt = sanitize_prompt(build_motion_prompt(target_beat))
 
         # Mark beat as polling (options are generating) but KEEP existing options
-        def set_polling(state):
-            b = ((state.get("videos") or {}).get("intro") or {}).get("beats", {}).get(beat_id)
+        def set_polling_partition(partition, _bid=beat_id):
+            b = (partition.get("beats") or {}).get(_bid)
             if b and b.get("phase_1"):
                 b["phase_1"]["status"] = "polling"
-        self.app.state.mutate_state(set_polling)
+        self.app.state.mutate_video_state(scope.video_role, set_polling_partition)
 
         # Submit new animation jobs
         submitted = 0
@@ -11945,12 +12468,10 @@ body {{padding-top:44px!important;}}
                 submit_errors.append(err_str)
                 continue
 
-            # S5.5a2: writes to videos.intro.beats[bid].phase_1.options.
-            def add_option(state, _bid=beat_id, _tid=task_id):
-                intro_beats = state.setdefault("videos", {}).setdefault(
-                    "intro", {"video_role": "intro", "video_label": None}
-                ).setdefault("beats", {})
-                intro_beats[_bid]["phase_1"]["options"].append({
+            # Append option via partition router (was videos.intro hardcode).
+            def add_option_partition(partition, _bid=beat_id, _tid=task_id):
+                pbeats = partition.setdefault("beats", {})
+                pbeats[_bid]["phase_1"]["options"].append({
                     "task_id": _tid,
                     "status": "polling",
                     "file": None,
@@ -11960,7 +12481,7 @@ body {{padding-top:44px!important;}}
                     "retries": 0,
                     "last_error": None,
                 })
-            self.app.state.mutate_state(add_option)
+            self.app.state.mutate_video_state(scope.video_role, add_option_partition)
             submitted += 1
 
             if submitted % 6 == 0:
@@ -12004,10 +12525,17 @@ body {{padding-top:44px!important;}}
           3. Marks beat.text_modified_after_tts = true if a TTS file exists
              for this beat (client can surface a stale-TTS warning).
         """
-        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
-            return
-        beat_id = body.get("beat")
+        # SCOPE_ROUTER_V1 (C-2 K1 fix) — replaces the hardcoded `videos.intro`
+        # lift with scope_router-driven partition resolution. Subsumes
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1 (resolve()
+        # coalesces the scope_event_id / scope_target_video aliases).
+        # The legacy "beat" body key is preserved for back-compat; newer
+        # clients may send "beat_id" — we honor either.
+        try:
+            scope = scope_router.resolve(body, self.app.event_dir.name)
+        except scope_router.ScopeError as e:
+            return self._send_json(e.http_status, {"error": e.code, **e.detail})
+        beat_id = body.get("beat") or scope.beat_id
         new_text = body.get("text")
         if not beat_id or new_text is None:
             return self._send_json(400, {"error": "missing 'beat' or 'text'"})
@@ -12025,20 +12553,35 @@ body {{padding-top:44px!important;}}
         # Step 1: detect if a TTS file exists (for stale-flag logic)
         tts_exists = _find_beat_audio(self.app.event_dir, beat_id, app=self.app) is not None
 
-        # Step 2: update state JSON atomically. S5.5a2: writes to videos.intro.beats.
+        # Step 2: update state JSON atomically via scope_router → mutate_video_state.
+        # The mutator receives the partition dict for `scope.video_role` — never
+        # the full state, never legacy top-level state.beats. K1 prevention.
         now_iso = datetime.now(timezone.utc).isoformat()
-        def update(state, _bid=beat_id, _t=new_text, _stale=tts_exists, _ts=now_iso):
-            intro_beats = state.setdefault("videos", {}).setdefault(
-                "intro", {"video_role": "intro", "video_label": None}
-            ).setdefault("beats", {})
-            b = intro_beats.setdefault(_bid, {})
+        _holder: dict = {}
+        def update_partition(partition, _bid=beat_id, _t=new_text, _stale=tts_exists, _ts=now_iso):
+            beats = partition.setdefault("beats", {})
+            b = beats.setdefault(_bid, {})
             old = b.get("text")
             b["text"] = _t
             b["text_last_updated_at"] = _ts
             if _stale and old != _t:
                 b["text_modified_after_tts"] = True
-            return old
-        old_text = self.app.state.mutate_state(update)
+            # Canonicalize-on-touch (SCR.2 Path A — Kim's pre-C-9 decision):
+            # migrate legacy on-disk speaker values at every beat-touch so the
+            # SR+G architecture truly converges. Runs uniformly with the graft
+            # handler's existing canonicalization (C-7) so update_text and
+            # graft both touch K8 dual-store. Idempotent: if speaker is already
+            # canonical the writes are no-ops; phase_1 dict is created if
+            # absent. LDs SPEAKER_DUAL_STORE_DEPRECATION_V1 +
+            # SPEAKER_WRITE_BOUNDARY_CANONICALIZATION_V1 now hold at every
+            # beat-touchpoint, not just patch_state(field='speaker', ...).
+            legacy_spk = b.get("speaker") or ""
+            canon_spk = _canonicalize_speaker(legacy_spk) or ""
+            b["speaker"] = canon_spk
+            b.setdefault("phase_1", {})["speaker"] = canon_spk
+            _holder["old"] = old
+        self.app.state.mutate_video_state(scope.video_role, update_partition)
+        old_text = _holder.get("old")
 
         # LD-459 UNIVERSAL_AUTOSAVE_V1 — regen the sidecar(s) after every
         # state mutation so v58 emergency rollback sees fresh dialogue via
@@ -12221,6 +12764,326 @@ body {{padding-top:44px!important;}}
             "tts_regen": tts_regen_result,
         })
 
+    # ------------------------------------------------------------------
+    # BEAT_GRAFT_RECOVERY_MECHANISM_V1 — Pillar 7 cornerstone (C-7).
+    # ------------------------------------------------------------------
+    def _handle_beat_graft(self, body: dict) -> None:
+        """POST /api/beat/graft — copy or move a beat across event/role.
+
+        Body:
+            {
+              "source": {event_id, video_role, beat_id},
+              "target": {event_id, video_role, position},
+              "speaker_override": str | null,
+              "move": bool,                 # default false (COPY)
+              "mutation_id": str            # mandatory uuid4 idempotency key
+            }
+
+        Returns 200 with status in {"copied", "moved", "dedup", "already_present"}.
+        Pre-render-only invariant (RR-1 mitigation): rejects beats with
+        rendered media (phase_1.status="completed" OR options[*].file/lipsync_task_id).
+        See spec §6 + handoff §4 C-7 for the full contract.
+        """
+        # 1) Validate body shape
+        src = body.get("source") or {}
+        tgt = body.get("target") or {}
+        move = bool(body.get("move", False))
+        mutation_id = body.get("mutation_id")
+        speaker_override = body.get("speaker_override")
+        if not mutation_id:
+            return self._send_json(400, {"error": "mutation_id_required"})
+        if not isinstance(src, dict) or not isinstance(tgt, dict):
+            return self._send_json(400, {"error": "source/target must be objects"})
+        for fld in ("event_id", "video_role", "beat_id"):
+            if not src.get(fld):
+                return self._send_json(400, {"error": f"source.{fld}_required"})
+        for fld in ("event_id", "video_role"):
+            if not tgt.get(fld):
+                return self._send_json(400, {"error": f"target.{fld}_required"})
+        for r in (src["video_role"], tgt["video_role"]):
+            if r not in {"intro", "resolution", "standalone"}:
+                return self._send_json(400, {"error": "video_role_invalid", "got": r})
+
+        # 2) Idempotency dedup cache (mutation_id replay)
+        if mutation_id in _GRAFT_DEDUP:
+            cached = _GRAFT_DEDUP[mutation_id]
+            _GRAFT_DEDUP.move_to_end(mutation_id)
+            return self._send_json(200, {**cached, "status": "dedup"})
+
+        # 3) Validate target scope (server is write-pinned to its event_dir)
+        server_event = self.app.event_dir.name
+        if tgt["event_id"] != server_event:
+            return self._send_json(409, {
+                "error": "scope_mismatch",
+                "expected_event_id": server_event,
+                "got": tgt["event_id"],
+            })
+
+        # 4) Cross-event source: require --source-event CLI flag
+        cross_event = (src["event_id"] != tgt["event_id"])
+        source_event_dir: Path | None = None
+        if cross_event:
+            seed = getattr(self.app, "source_event_dir", None)
+            if seed is None or seed.name != src["event_id"]:
+                return self._send_json(409, {
+                    "error": "cross_event_requires_explicit_source",
+                    "hint": (
+                        f"Restart server with --source-event Production/{src['event_id']} "
+                        "to enable cross-event graft from this source."
+                    ),
+                })
+            source_event_dir = seed
+        else:
+            source_event_dir = self.app.event_dir
+
+        # 5) Load source state and locate the source beat
+        try:
+            source_state_path = source_event_dir / "production_state.json"
+            with open(source_state_path, "r", encoding="utf-8") as f:
+                source_state = json.load(f)
+        except FileNotFoundError:
+            return self._send_json(404, {"error": "source_state_not_found",
+                                         "path": str(source_state_path)})
+        src_partition = (source_state.get("videos") or {}).get(src["video_role"], {}) or {}
+        src_beats = src_partition.get("beats") or {}
+        src_beat = src_beats.get(src["beat_id"])
+        if src_beat is None:
+            self._append_audit_log({
+                "schema_version": 1, "action": "beat_graft_failed",
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "mutation_id": mutation_id,
+                "source": src, "target": tgt, "ok": False,
+                "reason": "source_beat_not_found",
+            })
+            return self._send_json(404, {"error": "source_beat_not_found",
+                                         "source": src})
+
+        # 6) Pre-render-only invariant (RR-1 mitigation)
+        phase_1 = src_beat.get("phase_1") or {}
+        if phase_1.get("status") == "completed":
+            return self._send_json(400, {
+                "error": "graft_pre_render_only",
+                "reason": "source.phase_1.status==completed",
+            })
+        for opt in (phase_1.get("options") or []):
+            if isinstance(opt, dict):
+                if opt.get("file") or opt.get("lipsync_task_id"):
+                    return self._send_json(400, {
+                        "error": "graft_pre_render_only",
+                        "reason": "source.phase_1.options[].file or lipsync_task_id non-empty",
+                    })
+
+        # 7) Pre-image snapshots (atomic copy of full state(s))
+        utc = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        pre_image_paths: list[str] = []
+        try:
+            seen_dirs: set[Path] = set()
+            for ev_dir in (source_event_dir, self.app.event_dir):
+                if ev_dir in seen_dirs:
+                    continue
+                seen_dirs.add(ev_dir)
+                bdir = ev_dir / ".backups" / "state"
+                bdir.mkdir(parents=True, exist_ok=True)
+                bpath = bdir / f"{utc}_pre_graft_{mutation_id}.json"
+                state_path = ev_dir / "production_state.json"
+                with open(state_path, "r", encoding="utf-8") as f:
+                    state_dict = json.load(f)
+                atomic_json_write(str(bpath), state_dict)
+                pre_image_paths.append(str(bpath))
+        except Exception as exc:  # noqa: BLE001
+            return self._send_json(503, {
+                "error": "pre_image_snapshot_failed",
+                "detail": f"{type(exc).__name__}: {exc}",
+            })
+
+        # 8) Speaker resolution (override or canonicalize source)
+        raw_speaker = (speaker_override
+                       if speaker_override is not None
+                       else (src_beat.get("speaker") or _resolve_beat_speaker(src_beat)))
+        canonical_speaker = _canonicalize_speaker(raw_speaker or "") or ""
+        if speaker_override is not None:
+            speaker_source = "override"
+        elif canonical_speaker and (raw_speaker or "").lower() != canonical_speaker.lower():
+            speaker_source = f"alias:{raw_speaker}->{canonical_speaker}"
+        elif canonical_speaker:
+            speaker_source = "untouched"
+        else:
+            speaker_source = "empty"
+
+        # 9) Content fingerprint check (replay safety on cold cache)
+        target_state_path = self.app.event_dir / "production_state.json"
+        try:
+            with open(target_state_path, "r", encoding="utf-8") as f:
+                target_state_pre = json.load(f)
+        except FileNotFoundError:
+            return self._send_json(500, {"error": "target_state_not_found"})
+        tgt_partition_pre = ((target_state_pre.get("videos") or {})
+                             .get(tgt["video_role"]) or {})
+        tgt_beats_pre = tgt_partition_pre.get("beats") or {}
+        if src["beat_id"] in tgt_beats_pre:
+            existing = tgt_beats_pre[src["beat_id"]]
+            if (existing.get("text") == src_beat.get("text")
+                and existing.get("speaker") == canonical_speaker):
+                result = {
+                    "ok": True, "status": "already_present",
+                    "beat_id": src["beat_id"],
+                    "pre_image_paths": pre_image_paths,
+                    "audit_log_path": str(_audit_log_path(self.app)),
+                    "target_display_order": tgt_partition_pre.get("display_order", []),
+                }
+                _GRAFT_DEDUP[mutation_id] = result
+                while len(_GRAFT_DEDUP) > _GRAFT_DEDUP_MAX:
+                    _GRAFT_DEDUP.popitem(last=False)
+                return self._send_json(200, result)
+
+        # 10) Apply target write via mutate_video_state (DISPLAY_ORDER_STRICT prune runs)
+        target_position = tgt.get("position")
+
+        def _insert_target(partition,
+                           _bid=src["beat_id"], _payload=src_beat,
+                           _spk=canonical_speaker, _pos=target_position):
+            pbeats = partition.setdefault("beats", {})
+            pdo = partition.setdefault("display_order", [])
+            new_beat = dict(_payload)
+            new_beat["speaker"] = _spk
+            # K8 mirror — keep both stores consistent on insert
+            new_beat.setdefault("phase_1", {})
+            if isinstance(new_beat["phase_1"], dict):
+                new_beat["phase_1"]["speaker"] = _spk
+            pbeats[_bid] = new_beat
+            if isinstance(pdo, list):
+                if _bid in pdo:
+                    pdo.remove(_bid)
+                if _pos is None or _pos < 0 or _pos > len(pdo):
+                    clamped = len(pdo)
+                else:
+                    clamped = _pos
+                pdo.insert(clamped, _bid)
+
+        try:
+            self.app.state.mutate_video_state(tgt["video_role"], _insert_target)
+        except Exception as exc:  # noqa: BLE001
+            return self._send_json(500, {
+                "error": "target_write_failed",
+                "detail": f"{type(exc).__name__}: {exc}",
+                "pre_image_paths": pre_image_paths,
+            })
+
+        # 11) Optional move=true: delete source beat
+        if move:
+            if cross_event:
+                # Cross-event delete writes the source state file directly
+                # via atomic_json_write (the server is NOT pinned to source).
+                try:
+                    with open(source_state_path, "r", encoding="utf-8") as f:
+                        src_state_now = json.load(f)
+                    src_partition_now = ((src_state_now.setdefault("videos", {}))
+                                         .setdefault(src["video_role"], {}))
+                    src_beats_now = src_partition_now.get("beats") or {}
+                    if src["beat_id"] in src_beats_now:
+                        del src_beats_now[src["beat_id"]]
+                    src_do = src_partition_now.get("display_order")
+                    if isinstance(src_do, list) and src["beat_id"] in src_do:
+                        src_do.remove(src["beat_id"])
+                    atomic_json_write(str(source_state_path), src_state_now)
+                except Exception as exc:  # noqa: BLE001
+                    return self._send_json(500, {
+                        "error": "source_delete_failed",
+                        "detail": f"{type(exc).__name__}: {exc}",
+                        "pre_image_paths": pre_image_paths,
+                    })
+            else:
+                # Same-event delete via the partition router's mutator.
+                def _delete_source(partition, _bid=src["beat_id"]):
+                    sb = partition.get("beats") or {}
+                    if _bid in sb:
+                        del sb[_bid]
+                    sdo = partition.get("display_order")
+                    if isinstance(sdo, list) and _bid in sdo:
+                        sdo.remove(_bid)
+                try:
+                    self.app.state.mutate_video_state(src["video_role"], _delete_source)
+                except Exception as exc:  # noqa: BLE001
+                    return self._send_json(500, {
+                        "error": "source_delete_failed_same_event",
+                        "detail": f"{type(exc).__name__}: {exc}",
+                        "pre_image_paths": pre_image_paths,
+                    })
+
+        # 12) Audit log: file JSONL (durable) + Directus mirror (best-effort)
+        target_state_after_path = self.app.event_dir / "production_state.json"
+        target_state_after = {}
+        try:
+            with open(target_state_after_path, "r", encoding="utf-8") as f:
+                target_state_after = json.load(f)
+        except Exception:
+            pass
+        post_partition = ((target_state_after.get("videos") or {})
+                          .get(tgt["video_role"]) or {})
+        audit_row = {
+            "schema_version": 1, "action": "beat_graft",
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "mutation_id": mutation_id,
+            "source": {"event_id": src["event_id"],
+                       "video_role": src["video_role"],
+                       "beat_id": src["beat_id"]},
+            "target": {"event_id": tgt["event_id"],
+                       "video_role": tgt["video_role"],
+                       "beat_id": src["beat_id"],
+                       "position": target_position,
+                       "post_image_version": target_state_after.get("version", 0)},
+            "move": move, "cross_event": cross_event,
+            "speaker_resolved": canonical_speaker,
+            "speaker_source": speaker_source,
+            "actor": "production_server_v59",
+            "pre_image_paths": pre_image_paths,
+            "ok": True,
+        }
+        self._append_audit_log(audit_row)
+        try:
+            from lib.directus import try_post_or_queue
+            try_post_or_queue("prod_activity_log", {
+                "action": "beat_graft",
+                "performed_by": "production_server_v59",
+                "details": audit_row,
+            })
+        except Exception:
+            pass  # JSONL is the durable source of truth
+
+        result = {
+            "ok": True,
+            "status": "moved" if move else "copied",
+            "pre_image_paths": pre_image_paths,
+            "audit_log_path": str(_audit_log_path(self.app)),
+            "target_display_order": post_partition.get("display_order", []),
+            "beat_id": src["beat_id"],
+        }
+        _GRAFT_DEDUP[mutation_id] = result
+        while len(_GRAFT_DEDUP) > _GRAFT_DEDUP_MAX:
+            _GRAFT_DEDUP.popitem(last=False)
+        return self._send_json(200, result)
+
+    def _append_audit_log(self, row: dict) -> None:
+        """Append a JSON line to the durable recovery audit log.
+
+        Atomic enough for our purposes: open in append mode, write line,
+        flush+close. Concurrent writers from the same process are safe due
+        to the GIL; multi-process serialization is not required since the
+        server is single-process per LD-460.
+
+        Path resolves dynamically via _audit_log_path(self.app) — see the
+        helper docstring at module top. In production runtime this lands
+        the JSONL row in Dropbox tree (canonical state per LD-505).
+        """
+        path = _audit_log_path(self.app)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[audit] WARN failed to append {row.get('action')!r} to {path}: {exc}",
+                  flush=True)
+
     def _handle_beat_regenerate_audio(self, body: dict) -> None:
         """Explicit TTS regen trigger (decision 181 companion endpoint, April 17 2026).
 
@@ -12235,7 +13098,7 @@ body {{padding-top:44px!important;}}
         this endpoint ensures audio matches current state.text verbatim.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         beat_id = body.get("beat")
@@ -12345,7 +13208,7 @@ body {{padding-top:44px!important;}}
 
     def _handle_select(self, body: dict) -> None:
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         beat_id = body.get("beat")
@@ -12429,7 +13292,7 @@ body {{padding-top:44px!important;}}
         POST {"beat": "beat_03", "audio_delay": 1.5}
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         beat_id = body.get("beat")
@@ -12456,7 +13319,7 @@ body {{padding-top:44px!important;}}
         POST {"beat": "beat_07", "trim_start": 0, "trim_end": 3.5}
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         beat_id = body.get("beat")
@@ -12490,7 +13353,7 @@ body {{padding-top:44px!important;}}
 
     def _handle_budget_override(self, body: dict) -> None:
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         amount = float(body.get("amount", 5.0))
@@ -12520,9 +13383,17 @@ body {{padding-top:44px!important;}}
           400 {status: "error", error} — whitelist / validation failure
           500 {status: "error", error} — mutate_state failure
         """
-        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
-            return
+        # SCOPE_ROUTER_V1 (C-2 D5 fix) — resolve scope keys before any further
+        # processing. Subsumes LD-456 SCOPE_VALIDATION_V1 + LD-461
+        # SCOPE_BODY_HELPER_V1 alias coalescing. allow_missing-style
+        # permissive defaults from the legacy path are NOT preserved here —
+        # client per LD-461 already injects the keys; resolve() now requires
+        # them for partition-aware routing. The C-5 commit flips _assert_event_scope
+        # call sites globally; this handler short-circuits to scope_router.
+        try:
+            scope = scope_router.resolve(body, self.app.event_dir.name)
+        except scope_router.ScopeError as e:
+            return self._send_json(e.http_status, {"status": "error", "error": e.code, **e.detail})
 
         # Parse beat_id from path: /api/v2/beat/beat_03/patch
         parts = [p for p in path.split("/") if p]
@@ -12590,7 +13461,16 @@ body {{padding-top:44px!important;}}
                 # needs to pass through; adding a new flag = add its name to
                 # _FORWARDED_V2_DIALOGUE_FIELDS. NO silent passthrough of
                 # arbitrary client fields (LD V2_DIALOGUE_EXPLICIT_FIELD_FORWARDING_WITH_ALLOWLIST).
-                legacy_body = {"beat": beat_id, "text": value}
+                # SCOPE_ROUTER_V1 (C-2): forward scope keys to the legacy
+                # handler so its internal scope_router.resolve() succeeds.
+                # Without these the dialogue-via-v2 path would 400 with
+                # scope_required (a regression from the C-2 K1 fix).
+                legacy_body = {
+                    "beat": beat_id,
+                    "text": value,
+                    "scope_event_id": scope.event_id,
+                    "scope_target_video": scope.video_role,
+                }
                 if TIER1A_ENABLED:
                     for _f in _FORWARDED_V2_DIALOGUE_FIELDS:
                         if _f in body:
@@ -12602,14 +13482,26 @@ body {{padding-top:44px!important;}}
             legacy_status = _captured["status"] or 500
             legacy_payload = _captured["payload"] or {}
             if legacy_status == 200:
-                # Bump _version to mirror v2 semantics and write sidecar
-                def _bump(state, _bid=beat_id):
-                    b = state.setdefault("beats", {}).setdefault(_bid, {})
+                # Bump _version to mirror v2 semantics and write sidecar.
+                # SCOPE_ROUTER_V1 (C-7.5 K2 sibling fix): the _version bump
+                # MUST land on the same partition where _handle_beat_update_text
+                # just wrote the text — i.e., videos.<scope.video_role>.beats[bid].
+                # Pre-fix this _bump wrote to legacy top-level state.beats[bid]
+                # which diverged from the actual write location after C-2.
+                # Effect of pre-fix: ETag-style optimistic concurrency on v2
+                # dialogue patches was silently broken (_version landed in a
+                # legacy slot that no v3 reader consults).
+                _bump_holder = {"v": None}
+                def _bump_partition(partition, _bid=beat_id, _h=_bump_holder):
+                    b = partition.setdefault("beats", {}).setdefault(_bid, {})
                     v = int(b.get("_version", 0) or 0) + 1
                     b["_version"] = v
-                    return v
+                    _h["v"] = v
                 try:
-                    new_v = self.app.state.mutate_state(_bump)
+                    self.app.state.mutate_video_state(scope.video_role, _bump_partition)
+                    new_v = _bump_holder["v"]
+                    if new_v is None:  # mutator never ran (defensive)
+                        new_v = current_v + 1
                 except Exception as exc:  # noqa: BLE001
                     new_v = current_v + 1
                     print(f"[v2 dialogue] version bump failed: {exc}")
@@ -12645,6 +13537,7 @@ body {{padding-top:44px!important;}}
             self.app, beat_id, field, value,
             mutation_id=mutation_id,
             expected_version=expected_version,
+            video_role=scope.video_role,
         )
         status = result.get("status")
         if status == "applied" or status == "dedup":
@@ -12681,9 +13574,14 @@ body {{padding-top:44px!important;}}
           - Sidecar is refreshed post-mutation.
           - mutation_id goes through the shared dedup cache so retries are idempotent.
         """
-        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
-            return
+        # SCOPE_ROUTER_V1 (C-7.5 K1 sibling fix) — replace legacy
+        # _assert_event_scope + intro hardcode. Mutator routes through
+        # mutate_video_state(scope.video_role, ...) so v2 beat creation
+        # lands in the partition the client is editing, not always intro.
+        try:
+            scope = scope_router.resolve(body, self.app.event_dir.name)
+        except scope_router.ScopeError as e:
+            return self._send_json(e.http_status, {"error": e.code, **e.detail})
 
         # Feature flag (also covers MINDFULNEST_WRITE_PATH=legacy)
         if os.environ.get("MINDFULNEST_WRITE_PATH", "v2") == "legacy":
@@ -12714,12 +13612,10 @@ body {{padding-top:44px!important;}}
 
         result_out: dict = {}
 
-        def _apply(state, _ia=insert_after, _out=result_out):
-            # S5.5a2: writes/reads videos.intro.beats + videos.intro.display_order.
-            intro = state.setdefault("videos", {}).setdefault(
-                "intro", {"video_role": "intro", "video_label": None}
-            )
-            beats = intro.setdefault("beats", {})
+        def _apply_partition(partition, _ia=insert_after, _out=result_out):
+            # Writes/reads partition.beats + partition.display_order via the
+            # scope_router (was videos.intro hardcode).
+            beats = partition.setdefault("beats", {})
             # Compute next beat_id: max existing NN + 1, zero-padded to 2.
             max_num = 0
             for bid in beats.keys():
@@ -12748,8 +13644,8 @@ body {{padding-top:44px!important;}}
                 "_version": 0,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
-            # Update display_order (now nested in intro partition).
-            existing_order = intro.get("display_order")
+            # Update display_order on the resolved partition (was videos.intro).
+            existing_order = partition.get("display_order")
             if not isinstance(existing_order, list):
                 # Initialize from sorted existing beat_ids (excluding the new one)
                 order = sorted(
@@ -12767,14 +13663,13 @@ body {{padding-top:44px!important;}}
             else:
                 order.append(new_bid)
                 insert_idx = len(order) - 1
-            intro["display_order"] = order
+            partition["display_order"] = order
             _out["beat_id"] = new_bid
             _out["inserted_after"] = _ia if _ia in (order[:insert_idx]) else None
             _out["display_order_len"] = len(order)
-            return _out
 
         try:
-            self.app.state.mutate_state(_apply)
+            self.app.state.mutate_video_state(scope.video_role, _apply_partition)
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc()
             return self._send_json(500, {
@@ -12977,7 +13872,7 @@ body {{padding-top:44px!important;}}
         _version; module-level changes don't bump beat versions).
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal
@@ -13092,9 +13987,15 @@ body {{padding-top:44px!important;}}
           400 {error, hint} — invalid from_slot, missing beat, empty option,
                phase_1 too small.
         """
-        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
-            return
+        # SCOPE_ROUTER_V1 (C-7.5 K2 sibling fix) — replaces legacy
+        # _assert_event_scope + intro-hardcoded pre-flight read with
+        # scope_router resolution. Pre-flight + mutate now both target
+        # scope.video_role partition, not the hardcoded intro / legacy
+        # top-level state.beats.
+        try:
+            scope = scope_router.resolve(body, self.app.event_dir.name, require_beat_id=False)
+        except scope_router.ScopeError as e:
+            return self._send_json(e.http_status, {"error": e.code, **e.detail})
 
         # ------------------------------------------------------------------
         # Input validation
@@ -13119,13 +14020,15 @@ body {{padding-top:44px!important;}}
         # ------------------------------------------------------------------
         # Pre-flight read: verify beat + option exist before mutate_state.
         # (Fast-fail on 400 conditions without taking the write lock.)
+        # Reads from videos.<scope.video_role>.beats[bid] per SCOPE_ROUTER_V1.
         # ------------------------------------------------------------------
         pre_state = self.app.state.read_state()
-        pre_beat = (((pre_state.get("videos") or {}).get("intro") or {}).get("beats") or {}).get(beat_id)
+        pre_partition = ((pre_state.get("videos") or {}).get(scope.video_role) or {})
+        pre_beat = (pre_partition.get("beats") or {}).get(beat_id)
         if pre_beat is None:
             return self._send_json(400, {
-                "error": f"beat {beat_id!r} not found",
-                "hint": "Verify beat_id exists in state.beats. Check /api/v2/event/<id>/state.",
+                "error": f"beat {beat_id!r} not found in videos.{scope.video_role}.beats",
+                "hint": "Verify beat_id exists in the partition. Check /api/v2/event/<id>/state.",
             })
         pre_phase1 = pre_beat.get("phase_1") or {}
         pre_options = pre_phase1.get("options") or []
@@ -13142,12 +14045,13 @@ body {{padding-top:44px!important;}}
             })
 
         # ------------------------------------------------------------------
-        # Atomic swap via mutate_state
+        # Atomic swap via mutate_video_state (partition router; no legacy
+        # top-level state.beats touch).
         # ------------------------------------------------------------------
         result_out: dict = {}
 
-        def _apply(state, _bid=beat_id, _fs=from_slot, _out=result_out):
-            beats = state.setdefault("beats", {})
+        def _apply_partition(partition, _bid=beat_id, _fs=from_slot, _out=result_out):
+            beats = partition.setdefault("beats", {})
             beat = beats.get(_bid)
             if beat is None:
                 # Race: beat vanished between pre-flight and lock acquisition.
@@ -13202,7 +14106,7 @@ body {{padding-top:44px!important;}}
             return _out
 
         try:
-            self.app.state.mutate_state(_apply)
+            self.app.state.mutate_video_state(scope.video_role, _apply_partition)
         except (KeyError, IndexError) as exc:
             return self._send_json(400, {
                 "error": f"swap failed: {exc}",
@@ -13211,7 +14115,7 @@ body {{padding-top:44px!important;}}
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc()
             return self._send_json(500, {
-                "error": f"mutate_state failed: {type(exc).__name__}: {exc}",
+                "error": f"mutate_video_state failed: {type(exc).__name__}: {exc}",
                 "hint": "State.json could not be persisted. Check Directus reachability.",
             })
 
@@ -13260,7 +14164,7 @@ body {{padding-top:44px!important;}}
           6. Last beat NEVER has trailing fade trimmed (counter (f) CRITICAL).
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # Lazy-load the lib so server startup doesn't hard-require it.
@@ -14058,7 +14962,7 @@ body {{padding-top:44px!important;}}
     def _handle_timeline_cue_upsert(self, body: dict) -> None:
         """POST /api/timeline/cues — upsert cue by id; atomic write via mutate_state."""
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         cue_id = body.get("id")
@@ -14079,6 +14983,16 @@ body {{padding-top:44px!important;}}
                 "error": f"source_path not found: {source_path_str}",
                 "hint": "Ensure the SFX file exists at the given path.",
             })
+        # Security (CodeQL py/path-injection alert #28 follow-up):
+        # source_path is body-controlled and later read by ffmpeg in the
+        # stitcher mix. Reject paths outside the project root.
+        try:
+            project_root = str(Path(__file__).resolve().parent.parent.parent)
+            real_path = os.path.realpath(str(source_path))
+            if not (real_path == project_root or real_path.startswith(project_root + os.sep)):
+                return self._send_json(403, {"error": "source_path outside project root"})
+        except Exception:
+            return self._send_json(403, {"error": "source_path validation failed"})
 
         cue = {
             "id": cue_id,
@@ -14134,7 +15048,13 @@ body {{padding-top:44px!important;}}
         return self._send_json(200, {"ok": True, "baked": len(cues), "cues": cues})
 
     def _handle_timeline_open_in_quicktime(self, body: dict) -> None:
-        """POST /api/timeline/open_in_quicktime — open mp4_path in QuickTime Player."""
+        """POST /api/timeline/open_in_quicktime — open mp4_path in QuickTime Player.
+
+        Security (CodeQL py/path-injection alert #29 follow-up):
+        Extension whitelist alone leaves any readable .mp4/.mov/.m4v on disk
+        openable. macOS media-decoder CVEs make this a non-zero risk surface.
+        Add project-root containment so only files inside the repo open.
+        """
         mp4_path = body.get("mp4_path", "")
         if not mp4_path:
             return self._send_json(400, {"error": "mp4_path is required"})
@@ -14143,6 +15063,14 @@ body {{padding-top:44px!important;}}
             return self._send_json(404, {"error": f"file not found: {mp4_path}"})
         if p.suffix.lower() not in (".mp4", ".mov", ".m4v"):
             return self._send_json(400, {"error": "only .mp4/.mov/.m4v files allowed"})
+        # Project-root containment (separator-anchored)
+        try:
+            project_root = str(Path(__file__).resolve().parent.parent.parent)
+            real_path = os.path.realpath(str(p))
+            if not (real_path == project_root or real_path.startswith(project_root + os.sep)):
+                return self._send_json(403, {"error": "path outside project root"})
+        except Exception:
+            return self._send_json(403, {"error": "path validation failed"})
         try:
             subprocess.run(
                 ["open", "-a", "QuickTime Player", str(p)],
@@ -14161,7 +15089,7 @@ body {{padding-top:44px!important;}}
         + SIZE_BUDGET_PER_MODULE_V1). Returns {mp4_path} on success.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
@@ -14348,13 +15276,35 @@ body {{padding-top:44px!important;}}
         Relative paths are anchored to the project root, NOT the server's CWD.
         Raises ValueError if the resolved path escapes the project root.
         Always use this instead of os.path.abspath() for any stitch-endpoint path.
+
+        Security (CodeQL py/path-injection follow-up): the containment check
+        is separator-anchored. Without the anchor, a sibling directory named
+        '<root>_evil' would slip past 'startswith(root)' (e.g.
+        '/proj/root_evil/x' starts with '/proj/root'). Compare against
+        `root + os.sep` (or accept exact-equal root) to close the edge case.
         """
         root = self._stitch_project_root()
         p = Path(raw)
         resolved = str((p if p.is_absolute() else root / p).resolve())
-        if not resolved.startswith(str(root)):
+        root_s = str(root)
+        if not (resolved == root_s or resolved.startswith(root_s + os.sep)):
             raise ValueError(f"path outside project root: {raw!r}")
         return resolved
+
+    def _stitch_assert_path_in_root(self, raw: str, label: str) -> None:
+        """Containment guard for body-controlled audio/SFX paths.
+
+        Security (CodeQL py/path-injection follow-up alerts #39/#40/#41 and #28):
+        used by _stitch_mix_slot_audio (ambient_bed_path, sfx_cues source_path)
+        and the transitions loop (t_path) to refuse any path resolving outside
+        the project root before it flows to ffmpeg `-i <path>`.
+
+        Raises ValueError if the resolved real path escapes the project root.
+        """
+        root = str(self._stitch_project_root())
+        real = os.path.realpath(raw)
+        if not (real == root or real.startswith(root + os.sep)):
+            raise ValueError(f"{label} outside project root: {raw!r}")
 
     def _stitch_production_dir(self) -> Path:
         """Production/ directory."""
@@ -14490,7 +15440,7 @@ body {{padding-top:44px!important;}}
     def _handle_stitch_save_job(self, body: dict) -> None:
         """POST /api/stitch_editor/job — save or upsert a named job."""
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         name = (body.get("name") or "").strip()
@@ -14931,6 +15881,13 @@ body {{padding-top:44px!important;}}
             if not os.path.isfile(cue.get("source_path", "")):
                 raise FileNotFoundError(f"SFX not found: {cue.get('source_path')}")
 
+        # Security (CodeQL py/path-injection alerts #39/#40 follow-up):
+        # body-controlled paths flow into ffmpeg `-i`. Containment guard.
+        if ambient_path:
+            self._stitch_assert_path_in_root(ambient_path, "ambient_bed_path")
+        for cue in sfx_cues:
+            self._stitch_assert_path_in_root(cue.get("source_path", ""), "sfx source_path")
+
         # Cache key: norm mtime + ambient + sfx cue ids
         sig_parts = [str(norm_path.stat().st_mtime), ambient_path, str(ambient_volume)]
         sig_parts += [f"{c['id']}:{c['offset_ms']}" for c in sfx_cues]
@@ -15143,6 +16100,13 @@ body {{padding-top:44px!important;}}
                 # equivalent to 'cut' for the audio side).
                 if not t_path or not os.path.isfile(t_path):
                     continue
+                # Security (CodeQL py/path-injection alert #41 follow-up):
+                # transition source_path is body-controlled and flows into
+                # ffmpeg `-i` via _stitch_mix_slot_audio. Containment guard.
+                try:
+                    self._stitch_assert_path_in_root(t_path, "transition source_path")
+                except ValueError:
+                    continue
                 slot_dur = slot_durations[after_slot]
                 offset_ms = max(0, slot_dur - fade_ms)
                 # audio_xfade_ms controls the SFX cue fadein/fadeout duration.
@@ -15201,7 +16165,7 @@ body {{padding-top:44px!important;}}
         MUTATION_CHANNEL_INVARIANT_V1 + LD-456 SCOPE_VALIDATION_V1.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
         try:
             out_path, slot_durations = self._stitch_build_pipeline(body)
@@ -15229,7 +16193,7 @@ body {{padding-top:44px!important;}}
         LD-283: ≤80MB. SIZE_BUDGET_VIDEO_V1: ≤1,900,000 bps.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
@@ -15423,7 +16387,7 @@ body {{padding-top:44px!important;}}
         Returns 200 with file path + duration on success.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
@@ -15726,7 +16690,7 @@ body {{padding-top:44px!important;}}
         Writes phase_{phase}_mixed_<TS>.mp3 and patches state.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
@@ -16167,7 +17131,7 @@ body {{padding-top:44px!important;}}
         Writes phase_{phase}_lipsync_<TS>.mp4 and patches state.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
@@ -16381,7 +17345,7 @@ body {{padding-top:44px!important;}}
         Cache miss: call render_watercolor_overlay, atomic write, LRU cleanup.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         # Lazy-load helper.
@@ -16610,7 +17574,7 @@ def inactivity_watchdog(app: AppContext, stop_event: threading.Event, httpd: Pro
             time.sleep(1)
 
 
-def run_server(event_dir: Path, storyboard_name: str, event_id: str) -> int:
+def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_event_dir: Path | None = None) -> int:
     storyboard_path = event_dir / storyboard_name
     if not storyboard_path.is_file():
         print(f"ERROR: storyboard not found: {storyboard_path}", file=sys.stderr)
@@ -16702,6 +17666,14 @@ def run_server(event_dir: Path, storyboard_name: str, event_id: str) -> int:
         print(f"[startup:ghost_scrub] WARN: scrub failed (non-fatal): {_gs_exc}")
 
     app = AppContext(event_dir, storyboard_path, event_id, state, client)
+    # BEAT_GRAFT_RECOVERY_MECHANISM_V1 (C-7) — attach source_event_dir for
+    # cross-event graft operations. None when --source-event is not passed.
+    app.source_event_dir = source_event_dir
+    if source_event_dir is not None:
+        print(
+            f"[startup] /api/beat/graft cross-event source registered: "
+            f"{source_event_dir} (server still write-pinned to {event_dir.name})"
+        )
 
     httpd = ProductionServer(("127.0.0.1", SERVER_PORT), app)
     try:
@@ -16858,6 +17830,23 @@ def main() -> int:
     ap.add_argument("--storyboard", help="Filename of _prod.html inside event-dir")
     ap.add_argument("--event-id", help='Event identifier, e.g. "Event_1"')
     ap.add_argument("--smoke-test", action="store_true", help="Run self-test and exit")
+    # BEAT_GRAFT_RECOVERY_MECHANISM_V1 (C-7) — optional read-only side
+    # event-dir for /api/beat/graft cross-event source. The server stays
+    # PINNED to --event-dir for all writes (LD-456); --source-event lets
+    # the graft handler read state from a different event so the canonical
+    # recovery primitive can move beats between events with explicit operator
+    # ceremony (one-time CLI restart per cross-event session per DV-1).
+    ap.add_argument(
+        "--source-event",
+        type=Path,
+        default=None,
+        help=(
+            "Optional source event directory for /api/beat/graft cross-event "
+            "operations. When set, the graft handler accepts requests where "
+            "body.source.event_id != server-pinned event_id; otherwise such "
+            "requests return HTTP 409 cross_event_requires_explicit_source."
+        ),
+    )
     args = ap.parse_args()
 
     if args.smoke_test:
@@ -16866,7 +17855,10 @@ def main() -> int:
     if not (args.event_dir and args.storyboard and args.event_id):
         ap.error("--event-dir, --storyboard, and --event-id are required (or use --smoke-test)")
 
-    return run_server(Path(args.event_dir), args.storyboard, args.event_id)
+    return run_server(
+        Path(args.event_dir), args.storyboard, args.event_id,
+        source_event_dir=args.source_event,
+    )
 
 
 if __name__ == "__main__":
