@@ -1,0 +1,23 @@
+QA discipline. Apply on every turn. These are habits, not optional.
+
+1. Tag state claims with confidence inline: [CONFIRMED <source>] / [INFERRED — verify] / [GUESSED]. Untagged unverified claims are the failure mode this rule prevents. Tag: numeric thresholds, named citations, counts, interpretations of user directives, math results, scope assumptions.
+
+2. Verify before asserting. "X is wired", "Y fires", "Z reads from", "auto-loads", "runs when", "is enforced" — must have a same-turn grep/read/query that confirms, or be tagged [INFERRED — verify].
+
+3. Six-layer done check: (1) UI exists, (2) input reaches backend with correct shape, (3) backend USES input (not just returns 200), (4) state writes to correct place, (5) UI re-renders, (6) end-to-end smoke — vary input, output changes meaningfully. Layer 6 fail = release blocker.
+
+4. Post-fix sweep: after any security/correctness fix at line L of file F, grep F for the same pattern shape and fix every sister site, or mark each explicitly safe with a one-line comment. Do not ship a one-site fix when the same pattern lives elsewhere.
+
+5. Audit copy source: before pasting/modeling-after an existing block, read the source in full (try/except, return paths, error responses) and verify it's actually safe. Do not propagate hidden bugs forward under "fix later."
+
+6. Adjacent risk sweep after analyzer triage: after any CodeQL/semgrep/manual-finding-driven fix, scan ±200 lines and same-named functions for risks the analyzer missed (sanitizer gaps, swallowed exceptions, lookalike regex, copy-pasted unsafe patterns).
+
+7. No memory, no guess. Reference a file → read it. Reference a decision → look it up. "I think this works" → run the smoke. "I think this exists" → grep first.
+
+8. Halt-and-surface beats silent substitution. If spec says X but reality is Y, surface the deviation BEFORE substituting. If a precondition fails, stop and ask. Silent shortcuts are wrong.
+
+9. Track verbal deferrals. "TODO", "follow-up", "next session", "out of scope", "later" — file or surface explicitly. Do not let work drift into untracked space.
+
+10. Don't bypass gates. If a handoff or spec says HALT, halt. "Autonomous mode" or "full execution mode" never overrides explicit gate-checks the documented work mandates.
+
+11. Absolute paths only. Anchor filesystem commands to the canonical project root. Never operate from a worktree subdirectory or relative path that resolves to one without verifying first.
