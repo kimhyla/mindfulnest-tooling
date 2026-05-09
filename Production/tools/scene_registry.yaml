@@ -1,0 +1,131 @@
+m1_e1_res_beat_01_heartwood:
+  archetype: ground_left_to_target
+  beat: res_beat_01
+  color_target: orange
+  description: Magic travels from left forest edge to Heartwood altar step edge
+  direction: left
+  event_id: e1
+  floor_perspective: true
+  manual_path:
+  - - 0.0
+    - 0.79
+  - - 0.133
+    - 0.775
+  - - 0.267
+    - 0.76
+  - - 0.4
+    - 0.73
+  module_id: m1
+  source_asset_query:
+    collection: prod_visual_assets
+    filter:
+      event_id: e1
+      module_id: m1
+      shot_role: res_beat_01_heartwood_base
+      status: approved
+  style: tessa_ori
+m1_e1_res_beat_01_heartwood_wide:
+  archetype: ground_left_to_target
+  beat: res_beat_01
+  color_target: orange
+  description: Magic travels from left colonnade floor to Heartwood altar (wide shot)
+  direction: left
+  event_id: e1
+  manual_path:
+  - - 0.111
+    - 0.731
+  - - 0.316
+    - 0.792
+  - - 0.311
+    - 0.824
+  - - 0.344
+    - 0.832
+  - - 0.369
+    - 0.81
+  - - 0.467
+    - 0.811
+  - - 0.5
+    - 0.727
+  - - 0.503
+    - 0.659
+  - - 0.497
+    - 0.642
+  module_id: m1
+  source_asset_query:
+    collection: prod_visual_assets
+    filter:
+      event_id: e1
+      module_id: m1
+      shot_role: res_beat_01_heartwood_wide
+      status: approved
+  style: tessa_ori
+m1_e1_res_beat_01_tessa_exit:
+  archetype: character_exit_ground
+  beat: res_beat_01
+  color_target: null
+  description: Tessa walks right off frame with magic ground trail
+  direction: right
+  event_id: e1
+  module_id: m1
+  manual_path:
+    - [0.577, 0.538]
+    - [0.530, 0.558]
+    - [0.532, 0.638]
+    - [0.567, 0.668]
+    - [0.592, 0.672]
+    - [0.620, 0.765]
+    - [0.631, 0.849]
+    - [0.681, 0.888]
+    - [0.765, 0.885]
+    - [1.000, 0.859]
+  source_asset_query:
+    collection: prod_visual_assets
+    filter:
+      event_id: e1
+      module_id: m1
+      shot_role: res_beat_01_tessa_kling
+      status: approved
+  style: tessa_ori
+m1_e1_res_beat_02_runestone:
+  archetype: stone_activation
+  beat: res_beat_02
+  color_target: orange
+  description: Orange runestone activation radial burst
+  direction: null
+  event_id: e1
+  module_id: m1
+  source_asset_query:
+    collection: prod_visual_assets
+    filter:
+      event_id: e1
+      module_id: m1
+      shot_role: res_beat_02_base
+      status: approved
+  style: tessa_ori
+m1_e1_res_bg_arc1_event1_post_beat_02:
+  archetype: ground_left_to_target
+  beat: res_beat_01
+  event_id: e1
+  manual_path:
+  - - 0.153
+    - 0.645
+  - - 0.104
+    - 0.667
+  - - 0.219
+    - 0.704
+  - - 0.075
+    - 0.762
+  - - 0.222
+    - 0.77
+  - - 0.222
+    - 0.746
+  - - 0.362
+    - 0.736
+  - - 0.362
+    - 0.704
+  - - 0.427
+    - 0.691
+  - - 0.438
+    - 0.658
+  module_id: m1
+  style: tessa_ori
