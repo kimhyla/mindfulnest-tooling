@@ -555,12 +555,36 @@ _PR_MERGE_PATTERNS = [
     re.compile(r"\bmerges?\s+to\s+main\b", re.IGNORECASE),
 ]
 _REPO_PATTERN = re.compile(r"\b([a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+)(?:\s+repo|\s+repository)?\b")
-# Tokens scraped from notes that, when present in a PR title or body, count
-# as a strong identifier match. CRITICAL: only extract COMPOUND identifiers
-# (must contain at least one underscore). Single uppercase words like
-# "CRITICAL", "STAGE", "FATAL" are common in prose and would create
-# false-positive matches against unrelated PRs.
-_IDENTIFIER_TOKEN_PATTERN = re.compile(r"\b([A-Z][A-Z0-9]+(?:_[A-Za-z0-9]+)+)\b")
+# Compound-identifier shape: must start uppercase and contain at least one
+# underscore. Used INSIDE structured closure-event hint patterns only — never
+# scraped freely from decision_text/notes (LD-576-amend-1, see below).
+_COMPOUND_IDENT = r"([A-Z][A-Z0-9]+(?:_[A-Za-z0-9]+)+)"
+# Structured closure-event hint patterns — phrases that explicitly name the
+# closure event in the LD's notes/decision_text. Only identifiers captured
+# INSIDE one of these patterns are used as match tokens; arbitrary UPPER_SNAKE
+# in the LD's prose is NEVER mined.
+#
+# 2026-05-09 amendment (LD-576-amend-1, LD-565 false-close incident):
+# Previously, _ld_identifier_tokens() scraped EVERY UPPER_SNAKE token from
+# the LD's decision_text/notes via _IDENTIFIER_TOKEN_PATTERN. That caused
+# LD-565 (SHORTCUT_TOOLING_REPO_PUBLIC_FOR_CODESCAN_V1) to false-close on
+# 2026-05-09 when kimhyla/mindfulnest-tooling#8 merged: the LD's
+# decision_text mentioned `API_KEYS_MASTER` (related-context reference, not
+# a closure event), PR #8's body also mentioned `API_KEYS_MASTER.md`, and
+# the matcher reported `body:API_KEYS_MASTER`. Closure criteria for LD-565
+# (tooling private flip OR Enterprise CodeQL OR 2026-09-07 hard cap) were
+# NOT met. The close was reverted manually.
+_CLOSURE_EVENT_HINT_PATTERNS = [
+    re.compile(rf"\bgates?\s+on\s+{_COMPOUND_IDENT}\s+(?:PR\s+merge|merges?)\b", re.IGNORECASE),
+    re.compile(rf"\bcloses?\s+(?:on|when)\s+{_COMPOUND_IDENT}\s+(?:PR\s+)?merges?\b", re.IGNORECASE),
+    re.compile(rf"\bclosure\s+event\s*[:\-]\s*{_COMPOUND_IDENT}\s+PR\s+merges?\b", re.IGNORECASE),
+    re.compile(rf"\b{_COMPOUND_IDENT}\s+PR\s+merges?\s+to\s+main\b", re.IGNORECASE),
+]
+# Explicit PR reference in LD notes/decision_text — e.g. "kimhyla/mindfulnest-tooling#8".
+# A PR matching this exact (repo, number) is treated as a strong closure signal.
+_EXPLICIT_PR_REF_PATTERN = re.compile(
+    r"\b([a-zA-Z][a-zA-Z0-9_-]{2,38}/[a-zA-Z0-9_.-]+)#(\d+)\b"
+)
 # Repo hints in LD notes/decision_text that map to specific repos. Order matters:
 # more-specific phrases first.
 _REPO_HINT_PATTERNS = [
@@ -643,50 +667,115 @@ def _list_recently_merged_prs(repo, limit=30):
         return []
 
 
-def _ld_identifier_tokens(ld):
-    """Extract identifying tokens from LD that we'd expect to see in a PR
-    title/body if the PR fulfills this LD. Includes the decision_key plus
-    any UPPER_SNAKE identifiers in notes/decision_text (e.g. V59_CICD_GAP_FIX).
+def _ld_closure_signals(ld):
+    """Extract STRUCTURED closure-event signals from an LD.
+
+    Returns a dict with three lists:
+      - decision_keys: literals (decision_key + de-suffixed _V<N> form) that, if
+        found in PR title/body/branch, indicate a closure match.
+      - explicit_pr_refs: list of (owner_repo, pr_number) tuples extracted from
+        LD notes/decision_text via the ``owner/repo#NN`` pattern. A PR matching
+        this exact (repo, number) is treated as a strong closure signal.
+      - structured_event_tokens: identifier tokens parsed from designated phrase
+        patterns such as ``gates on X PR merge`` or ``closure event: X``. Only
+        identifiers captured inside one of those phrases qualify.
+
+    CRITICAL (LD-576-amend-1, 2026-05-09): this function does NOT return
+    arbitrary UPPER_SNAKE tokens scraped from the LD's prose. The previous
+    `_ld_identifier_tokens` did, which caused the LD-565 false-close when
+    PR-#8's body shared an incidental `API_KEYS_MASTER` substring with LD-565's
+    decision_text. The matcher must only act on signals that the LD author
+    deliberately put in the closure-event grammar.
     """
-    tokens = set()
+    signals = {
+        "decision_keys": [],
+        "explicit_pr_refs": [],
+        "structured_event_tokens": [],
+    }
     decision_key = ld.get("decision_key") or ""
     if decision_key:
-        tokens.add(decision_key)
-        # Also drop the _V1 suffix and add fragments — V59_CICD_GAP_FIX_SPEC_v1
-        # often appears in a PR as V59_CICD_GAP_FIX (no _SPEC suffix).
+        signals["decision_keys"].append(decision_key)
         stripped = re.sub(r"_V\d+$", "", decision_key, flags=re.IGNORECASE)
         if stripped and stripped != decision_key:
-            tokens.add(stripped)
+            signals["decision_keys"].append(stripped)
+
     haystack = f"{ld.get('notes') or ''}\n{ld.get('decision_text') or ''}"
-    for m in _IDENTIFIER_TOKEN_PATTERN.finditer(haystack):
-        tok = m.group(1)
-        # Skip overly-generic tokens.
-        if tok in {"PR", "LD", "URL", "API", "JSON", "HTTP", "HTTPS", "MD", "RN", "CI", "CD"}:
+
+    for m in _EXPLICIT_PR_REF_PATTERN.finditer(haystack):
+        owner_repo = m.group(1)
+        try:
+            pr_number = int(m.group(2))
+        except (TypeError, ValueError):
             continue
-        tokens.add(tok)
-    return tokens
+        owner = owner_repo.split("/", 1)[0]
+        # Same path-prefix guard used in _resolve_repo_for_ld — exclude things
+        # like "Production/docs#5" that aren't real GitHub refs.
+        if "." in owner or not (3 <= len(owner) <= 39):
+            continue
+        if owner in {"Production", "docs", "Canon", "App", "Arc", "Storyboards"}:
+            continue
+        signals["explicit_pr_refs"].append((owner_repo, pr_number))
+
+    for pat in _CLOSURE_EVENT_HINT_PATTERNS:
+        for m in pat.finditer(haystack):
+            tok = m.group(1)
+            if tok and tok not in signals["structured_event_tokens"]:
+                signals["structured_event_tokens"].append(tok)
+
+    return signals
 
 
-def _match_pr_to_ld(pr, ld_tokens):
-    """Return matched_field (str) if PR matches any LD token, else None.
+def _match_pr_to_ld(pr, repo, signals):
+    """Return matched_field (str) if PR matches one of the LD's closure signals.
 
-    Match order: title > body > headRefName.
+    Match precedence:
+      1. explicit_pr_refs        — strongest; LD literally cited this repo#NN.
+      2. decision_keys           — PR title/body/branch contains the LD's
+                                   decision_key (or its _V<N>-stripped form).
+      3. structured_event_tokens — PR title/body/branch contains an identifier
+                                   the LD designated as the closure-event token
+                                   (parsed from `gates on X PR merge` etc.).
+
+    Returns None if no signal matches. Critically, this function NEVER falls
+    through to scraping arbitrary tokens from the LD's prose — the signals dict
+    is the sole source of match material.
     """
     title = pr.get("title") or ""
     body = pr.get("body") or ""
     branch = pr.get("headRefName") or ""
-    for tok in ld_tokens:
-        # Token match is case-sensitive against full token (avoid spurious
-        # 3-letter substring hits). Acceptable because we extract upper-snake.
+
+    pr_number = pr.get("number")
+    if pr_number is not None:
+        try:
+            pr_number_int = int(pr_number)
+        except (TypeError, ValueError):
+            pr_number_int = None
+        if pr_number_int is not None:
+            for ref_repo, ref_num in signals.get("explicit_pr_refs", []):
+                if ref_repo == repo and ref_num == pr_number_int:
+                    return f"explicit_pr_ref:{ref_repo}#{ref_num}"
+
+    title_l = title.lower()
+    body_l = body.lower()
+    branch_l = branch.lower()
+
+    for dk in signals.get("decision_keys", []):
+        dk_l = dk.lower()
+        if dk_l in title_l:
+            return f"title:{dk}"
+        if dk_l in body_l:
+            return f"body:{dk}"
+        if dk_l in branch_l:
+            return f"headRefName:{dk}"
+
+    for tok in signals.get("structured_event_tokens", []):
         if tok in title:
             return f"title:{tok}"
-    for tok in ld_tokens:
         if tok in body:
             return f"body:{tok}"
-    for tok in ld_tokens:
-        # Branch refs are usually lowercase; allow case-insensitive there.
-        if tok.lower() in branch.lower():
+        if tok.lower() in branch_l:
             return f"headRefName:{tok}"
+
     return None
 
 
@@ -756,10 +845,30 @@ def check_pr_merge_closure_events(client, dry_run=False):
             # Either no recent merges or gh failure; both are non-fatal.
             continue
 
-        ld_tokens = _ld_identifier_tokens(ld)
+        ld_signals = _ld_closure_signals(ld)
+        # Eligibility hard-stop: if the LD has no structured closure signals at
+        # all (no decision_key match material, no explicit PR ref, no parsed
+        # `gates on X PR merge` hint), skip auto-close entirely. This is the
+        # post-LD-576-amend-1 backstop — a PR-merge signal in prose alone is
+        # not enough; the LD must declare a structured closure event for the
+        # matcher to have anything to work with.
+        if not (
+            ld_signals["decision_keys"]
+            or ld_signals["explicit_pr_refs"]
+            or ld_signals["structured_event_tokens"]
+        ):
+            warn = (
+                f"ld_id={ld_id} key={ld_key}: PR-merge signal present in prose "
+                f"but no structured closure-event grammar (no `gates on X PR "
+                f"merge`, no explicit `repo#NN`); skipping auto-close per "
+                f"LD-576-amend-1."
+            )
+            summary["warns"].append(warn)
+            print(f"[pr-merge-audit] WARN {warn}")
+            continue
         matches = []
         for pr in prs:
-            matched_field = _match_pr_to_ld(pr, ld_tokens)
+            matched_field = _match_pr_to_ld(pr, repo, ld_signals)
             if matched_field:
                 matches.append({"pr": pr, "matched_field": matched_field})
 
@@ -795,9 +904,18 @@ def check_pr_merge_closure_events(client, dry_run=False):
             "matched_field": matched_field,
         }
         summary["matches"].append(match_record)
+        # Surface the match tier (explicit_pr_ref / decision_key / structured_event_token)
+        # so ad-hoc reviewers can verify the signal class before PATCH lands.
+        match_tier = matched_field.split(":", 1)[0] if ":" in matched_field else matched_field
         print(
             f"[pr-merge-audit] MATCH ld_id={ld_id} key={ld_key} -> "
-            f"{repo}#{pr_number} (merged {merged_at}; matched via {matched_field})"
+            f"{repo}#{pr_number} (merged {merged_at}; matched via {matched_field}; "
+            f"tier={match_tier})"
+        )
+        print(
+            f"[pr-merge-audit]   ld_signals: decision_keys={ld_signals['decision_keys']} "
+            f"explicit_pr_refs={ld_signals['explicit_pr_refs']} "
+            f"structured_event_tokens={ld_signals['structured_event_tokens']}"
         )
 
         if dry_run:
@@ -1074,12 +1192,54 @@ def run_audit(days=7, hours=None, dry_run=False):
     return summary
 
 
+def run_pr_merge_only(dry_run):
+    """Ad-hoc invocation of just check_pr_merge_closure_events. Per LD-576-amend-1
+    this defaults to dry-run and requires explicit --commit to mutate, so engineers
+    can inspect the matcher's behavior without risking a false-close."""
+    creds = load_credentials("supabase_directus_creds.md")
+    client = DirectusClient(
+        url=creds["DIRECTUS_URL"],
+        admin_token=creds["DIRECTUS_ADMIN_TOKEN"],
+    )
+    print(
+        f"[pr-merge-only] invoking check_pr_merge_closure_events "
+        f"dry_run={dry_run} (--commit to mutate)"
+    )
+    summary = check_pr_merge_closure_events(client, dry_run=dry_run)
+    print(json.dumps(summary, indent=2, default=str))
+    return summary
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true", help="Report only; do not write blockers")
     parser.add_argument("--days", type=int, default=7, help="Lookback window in days (default 7)")
     parser.add_argument("--hours", type=int, default=None, help="Lookback window in hours (overrides --days if set — for session-end audits)")
+    parser.add_argument(
+        "--pr-merge-only",
+        action="store_true",
+        help="Run only the PR-merge auto-close sub-check (LD-576). Defaults to "
+             "dry-run; pass --commit to actually mutate. Designed for ad-hoc "
+             "matcher inspection without risking a false-close (LD-576-amend-1).",
+    )
+    parser.add_argument(
+        "--commit",
+        action="store_true",
+        help="Only relevant with --pr-merge-only: opt in to writes. Without "
+             "this flag, --pr-merge-only operates in dry-run.",
+    )
     args = parser.parse_args()
+
+    if args.pr_merge_only:
+        # Ad-hoc PR-merge inspection path: dry-run by default. Explicit --commit
+        # required to mutate. The weekly cron path (no --pr-merge-only flag)
+        # is unchanged — it still uses --dry-run as its sole opt-out.
+        dry = not args.commit
+        run_pr_merge_only(dry_run=dry)
+        return
+
+    if args.commit:
+        print("[audit] WARN: --commit has no effect without --pr-merge-only; ignoring.")
 
     run_audit(days=args.days, hours=args.hours, dry_run=args.dry_run)
 
