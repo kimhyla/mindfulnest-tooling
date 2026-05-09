@@ -24,7 +24,7 @@ PROJECT_ROOT = Path(
 )
 sys.path.insert(0, str(PROJECT_ROOT / "Production" / "tools"))
 
-from lib.credentials import load_credentials  # type: ignore
+from credentials_lib.credentials import load_credentials  # type: ignore
 from lib.directus import DirectusClient  # type: ignore
 
 TASK_ID = "MOTION_VOCABULARY_V1_IMPLEMENTATION_20260419"
