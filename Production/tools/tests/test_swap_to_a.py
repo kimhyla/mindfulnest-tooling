@@ -25,7 +25,7 @@ from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(TOOLS))
-sys.path.insert(0, str(TOOLS / "lib"))
+sys.path.insert(0, str(TOOLS / "credentials_lib"))
 
 # Bypass cross-machine Directus lock — required for isolated tests.
 os.environ["PRODUCTION_SERVER_SINGLE_MACHINE"] = "1"

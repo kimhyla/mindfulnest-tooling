@@ -41,7 +41,7 @@ from pathlib import Path
 # Production is already in sys.path so production_server's own check
 # skips re-inserting it; meanwhile production_server unconditionally
 # re-inserts Production/tools at [0], leaving sys.path[0]=Production/tools.
-# Production/tools/lib/ is a regular package (with __init__.py) that
+# Production/tools/credentials_lib/ is a regular package (with __init__.py) that
 # SHADOWS Production/lib/, so `from lib.atomic_json_write import ...`
 # resolves to the wrong package and fails. The fix: insert ONLY
 # Production/ here (so the lib package is reachable for find_spec / for
@@ -52,7 +52,7 @@ _PRODUCTION_DIR = _THIS_FILE.parents[2]               # tooling-repo/Production
 _PRODUCTION_DIR_S = str(_PRODUCTION_DIR)
 _TOOLS_DIR_S = str(_PRODUCTION_DIR / "tools")
 # Production/ goes at FRONT (so the `lib.*` package resolves to
-# Production/lib/, not the shadowing Production/tools/lib/ package).
+# Production/lib/, not the shadowing Production/tools/credentials_lib/ package).
 # Production/tools/ goes at END (lower priority for `lib` search but
 # visible for explicit `import production_server` / `import scope_router`).
 if _PRODUCTION_DIR_S not in sys.path:

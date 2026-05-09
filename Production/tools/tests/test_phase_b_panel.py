@@ -38,14 +38,14 @@ from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(TOOLS))
-sys.path.insert(0, str(TOOLS / "lib"))
+sys.path.insert(0, str(TOOLS / "credentials_lib"))
 
 os.environ["PRODUCTION_SERVER_SINGLE_MACHINE"] = "1"
 os.environ["MINDFULNEST_T1_ENABLED"] = "1"
 os.environ.pop("MINDFULNEST_WRITE_PATH", None)
 
 import production_server as PS  # noqa: E402
-import ffmpeg_stitch as FS  # noqa: E402
+import credentials_lib.ffmpeg_stitch as FS  # noqa: E402
 
 PROJECT_ROOT = TOOLS.parent.parent
 
@@ -538,7 +538,7 @@ class TestPhaseEndpoints(unittest.TestCase):
                  mock.patch.object(PS.subprocess, "run",
                                    side_effect=lambda *a, **kw: mock.MagicMock(
                                        returncode=0, stdout=b"", stderr=b"")):
-                # We can't patch the lazy import from ffmpeg_stitch directly; use
+                # We can't patch the lazy credentials_lib.ffmpeg_stitch import directly; use
                 # module attr patch at the lib level.
                 with mock.patch("ffmpeg_stitch.render_watercolor_overlay",
                                 fake_render):

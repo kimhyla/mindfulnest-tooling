@@ -27,7 +27,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "Production" / "tools"))
 
-from lib import ffmpeg_stitch as FS  # noqa: E402
+from credentials_lib import ffmpeg_stitch as FS  # noqa: E402
 
 
 FFMPEG = shutil.which("ffmpeg")

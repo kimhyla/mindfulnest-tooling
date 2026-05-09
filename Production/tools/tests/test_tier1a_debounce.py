@@ -238,13 +238,13 @@ class TestTier1ADebounceHTTP(unittest.TestCase):
 
         # Monkey-patch credentials so load_credentials() returns stub key.
         # production_server imports credentials lazily inside the handler; we
-        # patch sys.modules so the `from credentials import load_credentials`
+        # patch sys.modules so the `from credentials_lib.credentials import load_credentials`
         # statement resolves to our stub.
         import importlib  # noqa: PLC0415
-        _libdir = str(TOOLS / "lib")
+        _libdir = str(TOOLS / "credentials_lib")
         if _libdir not in sys.path:
             sys.path.insert(0, _libdir)
-        import credentials as _cred_mod  # type: ignore  # noqa: PLC0415
+        import credentials_lib.credentials as _cred_mod  # type: ignore  # noqa: PLC0415
         self._orig_load_creds = _cred_mod.load_credentials
         _cred_mod.load_credentials = _CredStub.load_credentials
 
@@ -273,7 +273,7 @@ class TestTier1ADebounceHTTP(unittest.TestCase):
         PS._tts_regenerate_for_beat = self._orig_tts  # type: ignore[assignment]
         PS._tier1a_async_log_debounce = self._orig_async_audit  # type: ignore[assignment]
         PS._async_log_text_update = self._orig_async_text  # type: ignore[assignment]
-        import credentials as _cred_mod  # type: ignore  # noqa: PLC0415
+        import credentials_lib.credentials as _cred_mod  # type: ignore  # noqa: PLC0415
         _cred_mod.load_credentials = self._orig_load_creds
         import shutil  # noqa: PLC0415
         shutil.rmtree(self.tmp, ignore_errors=True)

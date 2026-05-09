@@ -36,14 +36,14 @@ from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(TOOLS))
-sys.path.insert(0, str(TOOLS / "lib"))
+sys.path.insert(0, str(TOOLS / "credentials_lib"))
 
 os.environ["PRODUCTION_SERVER_SINGLE_MACHINE"] = "1"
 os.environ["MINDFULNEST_T1_ENABLED"] = "1"
 os.environ.pop("MINDFULNEST_WRITE_PATH", None)
 
 import production_server as PS  # noqa: E402
-import ffmpeg_stitch as FS  # noqa: E402
+import credentials_lib.ffmpeg_stitch as FS  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
