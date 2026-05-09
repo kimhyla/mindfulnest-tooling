@@ -211,3 +211,16 @@ animation_selections (1).json
 dashboard-ops-eval-viewer.html
 ziR6fyTf/
 Production/tmp*.tmp
+
+# Additional Claude Code session state (not project source)
+.claude/LATEST_CHECKPOINT.json
+.claude/hooks/
+.claude/scheduled_tasks.lock
+.claude/session_checkpoints/
+.claude/session_scratchpad.json
+.claude/settings.json
+.claude/settings.local.json
+.claude/worktrees/
+
+# Dot-prefixed variant of pending Directus writes (existing pattern was un-prefixed)
+.pending_directus_writes*
