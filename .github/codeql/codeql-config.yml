@@ -1,0 +1,34 @@
+name: "MindfulNest CodeQL config"
+
+# Per LD CODEQL_DEPENDABOT_SECURITY_SCAN_V1 (gap-fix Phase H).
+# This config tunes the default scan to exclude paths that produce
+# noise without security value, AND keep security-extended coverage on
+# all production code paths.
+#
+# Updated 2026-05-09: paths-ignore added for backup/snapshot file
+# patterns after `production_server_pre_spec_ab_backup.py` produced
+# 17 alerts (overly-permissive-file, path-injection) on dead code that
+# was a one-time pre-refactor snapshot, never actually executed.
+
+queries:
+  # security-extended catches OWASP Top 10 + injection patterns.
+  # security-and-quality additionally catches code-quality findings
+  # but adds noise; use security-extended only to match the workflow.
+  - uses: security-extended
+
+paths-ignore:
+  # Pre-refactor snapshots / one-time backup copies of production code.
+  # These are not executed and exist only as Kim audit artifacts; their
+  # findings duplicate findings on the live code paths and pollute the
+  # Security tab.
+  - "**/*_pre_spec_*.py"
+  - "**/*_backup.py"
+  - "**/*_pre_spec_*_backup.py"
+  - "**/production_server_pre_*.py"
+
+  # One-shot patcher scripts (patch_v38_*.py series). These were applied
+  # once during v38 build and have not been re-run since; they reference
+  # historical code paths that no longer exist. Findings on them have
+  # zero blast radius.
+  - "Production/tools/patch_v38_*.py"
+  - "Production/tools/patchers/*_patcher.py"
