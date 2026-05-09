@@ -275,3 +275,38 @@ audio-producer-skill/
 # Production/tools/ untracked working subdirs (not source)
 Production/tools/_option_c_prototype_exec/
 Production/tools/storyboard-v2/
+
+# .skill / weird-name FILES (not just dirs — patterns above with trailing / only matched dirs)
+*.skill
+ziR6fyTf
+
+# Production/tools state + output files (working artifacts, not source)
+Production/tools/magic_clip_registry.json
+Production/tools/sample_animation_*
+Production/tools/storyboard_image_map_*.json
+Production/tools/stitch_editor.html
+Production/tools/stitch_editor_state.json
+Production/tools/stitch_editor_state.lock
+Production/tools/stitch_editor_template.html
+Production/tools/tests/TIER3_BROWSER_E2E_REPORT_*.md
+
+# Production/ root-level working files
+Production/audio_review_local.html
+Production/character_subjects.json
+Production/kling_check_status.sh
+Production/m3 phase b meditation script.txt
+Production/module_M[0-9]_config.json
+Production/module_json_builder_eval_results.html
+Production/skeleton_beats_*.html
+Production/skeleton_to_beats_review.html
+Production/shot6_*.py
+
+# Production/ root-level subdirs (untracked working content)
+Production/contracts/
+Production/dashboards/
+Production/e2e/
+Production/exports/
+Production/github_actions/
+Production/handoffs/
+Production/migrations/
+Production/tests/fixtures/
