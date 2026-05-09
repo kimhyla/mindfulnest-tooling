@@ -15,7 +15,8 @@
 
 set -euo pipefail
 
-PROJECT_DIR="${HOME}/Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files"
+# LD-505: MN_DROPBOX_ROOT overrides ~/Library/... when the synced tree mounts elsewhere.
+PROJECT_DIR="${MN_DROPBOX_ROOT:-${HOME}/Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files}"
 SCRIPTS_DIR="${PROJECT_DIR}/Production/scripts"
 LAUNCH_AGENTS_DIR="${HOME}/Library/LaunchAgents"
 LOG_DIR="${HOME}/MindfulNestBackups/launchd-logs"
@@ -69,12 +70,13 @@ write_plist "com.mindfulnest.daily-backup" "${SCRIPTS_DIR}/daily_backup.sh" 3 15
 write_plist "com.mindfulnest.weekly-snapshot" "/usr/bin/env" 4 0 "0"  # placeholder — plist doesn't accept multi-arg easily; use wrapper
 
 # Simpler: wrap python3 invocation in a shell script for launchd
-cat > "${SCRIPTS_DIR}/_weekly_snapshot_wrapper.sh" <<'WRAPPER'
+cat > "${SCRIPTS_DIR}/_weekly_snapshot_wrapper.sh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-cd "${HOME}/Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files"
-exec /usr/bin/python3 Production/scripts/weekly_directus_snapshot.py
-WRAPPER
+: "\${MN_DROPBOX_ROOT:=${HOME}/Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files}"
+cd "\${MN_DROPBOX_ROOT}"
+exec /opt/homebrew/bin/doppler run -- /usr/bin/python3 Production/scripts/weekly_directus_snapshot.py
+EOF
 chmod +x "${SCRIPTS_DIR}/_weekly_snapshot_wrapper.sh"
 
 # Re-register weekly-snapshot using the wrapper

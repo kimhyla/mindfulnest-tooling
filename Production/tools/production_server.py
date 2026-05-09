@@ -70,6 +70,7 @@ if _TOOLS_DIR_FOR_BOOTSTRAP not in sys.path:
     # `import beat_generator`, etc.
     sys.path.insert(1, _TOOLS_DIR_FOR_BOOTSTRAP)
 from lib.atomic_json_write import atomic_json_write  # noqa: E402 (Windows/Dropbox retry-safe JSON writes per LD-368)
+from lib.paths import DROPBOX_ROOT  # noqa: E402 LD-505 Phase B: MN_DROPBOX_ROOT, not __file__ chain
 # scope_router — mandatory partition router for v59 authoring-workflow
 # mutations (LD SCOPE_ROUTER_V1, C-1). Replaces hardcoded `videos.intro`
 # lifts in mutation handlers; resolve() validates body scope keys and
@@ -2602,7 +2603,7 @@ def _find_beat_audio(event_dir: Path, beat_key: str, audio_override: str | None 
         # later handed to ffmpeg / lipsync subprocesses by callers.
         # Containment guard: only accept paths inside the project root.
         try:
-            project_root = str(Path(__file__).resolve().parent.parent.parent)
+            project_root = os.path.realpath(str(DROPBOX_ROOT))
             real = os.path.realpath(str(p))
             if not (real == project_root or real.startswith(project_root + os.sep)):
                 return None
@@ -5527,7 +5528,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         registry = _yaml.safe_load(reg_path.read_text()) or {}
         scene = registry.get(scene_key, {})
         # Resolve from well-known paths
-        db = Path(__file__).parent.parent.parent  # Dropbox/Claude Mindfulnest Project Files
+        db = DROPBOX_ROOT
         shot_role = scene.get("source_asset_query", {}).get("filter", {}).get("shot_role", "")
         event_id = scene.get("event_id", "e1").replace("e", "Event_")
         candidates = []
@@ -5691,7 +5692,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 # ── Step 2: Resolve background still ──────────────────
                 _MAGIC_JOBS[job_id].update({"status": "rendering_preview",
                                             "message": "Resolving background still..."})
-                db = Path(__file__).parent.parent.parent
+                db = DROPBOX_ROOT
                 _KNOWN_STILLS = {
                     "m1_e1_res_beat_01_heartwood": "heartwood_3q_left_1456.png",
                     "m1_e1_res_beat_01_heartwood_wide": "heartwood_wide_1456.png",
@@ -6138,7 +6139,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         # Security (CodeQL py/path-injection — separator-anchored containment):
         # naive startswith(root) lets sibling '<root>_evil/...' slip past.
         # Compare against `root + os.sep` (or accept exact-equal root).
-        project_root = os.path.realpath(str(Path(__file__).parent.parent.parent))
+        project_root = os.path.realpath(str(DROPBOX_ROOT))
         real_path = os.path.realpath(abs_path)
         if not (real_path == project_root or real_path.startswith(project_root + os.sep)):
             return self._send_json(403, {"ok": False, "error": "path outside project"})
@@ -6194,7 +6195,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         # Security (CodeQL py/path-injection — separator-anchored containment):
         # naive startswith(root) lets sibling '<root>_evil/...' slip past.
         # Compare against `root + os.sep` (or accept exact-equal root).
-        project_root = os.path.realpath(str(Path(__file__).parent.parent.parent))
+        project_root = os.path.realpath(str(DROPBOX_ROOT))
         target = None
         for path in candidates:
             real = os.path.realpath(path)
@@ -8265,7 +8266,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         if not _re_mid_a.match(r"^[A-Za-z0-9][A-Za-z0-9_-]*$", beat_id):
             return self._send_json(400, {"error": "beat_id must match [A-Za-z0-9_-]+"})
         try:
-            project_root = str(Path(__file__).resolve().parent.parent.parent)
+            project_root = os.path.realpath(str(DROPBOX_ROOT))
             sip_resolved = str(sip.resolve())
             if not (sip_resolved == project_root or sip_resolved.startswith(project_root + os.sep)):
                 return self._send_json(400, {"error": "source_image_path outside project root"})
@@ -8388,7 +8389,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         if not _re_mid_b.match(r"^[A-Za-z0-9][A-Za-z0-9_-]*$", beat_id):
             return self._send_json(400, {"error": "beat_id must match [A-Za-z0-9_-]+"})
         try:
-            project_root = str(Path(__file__).resolve().parent.parent.parent)
+            project_root = os.path.realpath(str(DROPBOX_ROOT))
             svp_resolved = str(svp.resolve())
             if not (svp_resolved == project_root or svp_resolved.startswith(project_root + os.sep)):
                 return self._send_json(400, {"error": "source_video_path outside project root"})
@@ -10009,7 +10010,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         # Without this guard, an attacker could store an arbitrary absolute
         # path (e.g. /etc/passwd) into project state.
         try:
-            project_root = str(Path(__file__).resolve().parent.parent.parent)
+            project_root = os.path.realpath(str(DROPBOX_ROOT))
             real_video = os.path.realpath(video_path)
             if not (real_video == project_root or real_video.startswith(project_root + os.sep)):
                 return self._send_json(403, {"ok": False, "error": "video_path outside project root"})
@@ -10104,7 +10105,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             return self._send_json(404, {"error": "file not found"})
         # 2. Project-root containment — refuse paths outside the repo.
         try:
-            project_root = str(Path(__file__).resolve().parent.parent.parent)
+            project_root = os.path.realpath(str(DROPBOX_ROOT))
             real_path = os.path.realpath(file_path)
             if not (real_path == project_root or real_path.startswith(project_root + os.sep)):
                 return self._send_json(403, {"error": "path outside project root"})
@@ -14987,7 +14988,7 @@ body {{padding-top:44px!important;}}
         # source_path is body-controlled and later read by ffmpeg in the
         # stitcher mix. Reject paths outside the project root.
         try:
-            project_root = str(Path(__file__).resolve().parent.parent.parent)
+            project_root = os.path.realpath(str(DROPBOX_ROOT))
             real_path = os.path.realpath(str(source_path))
             if not (real_path == project_root or real_path.startswith(project_root + os.sep)):
                 return self._send_json(403, {"error": "source_path outside project root"})
@@ -15065,7 +15066,7 @@ body {{padding-top:44px!important;}}
             return self._send_json(400, {"error": "only .mp4/.mov/.m4v files allowed"})
         # Project-root containment (separator-anchored)
         try:
-            project_root = str(Path(__file__).resolve().parent.parent.parent)
+            project_root = os.path.realpath(str(DROPBOX_ROOT))
             real_path = os.path.realpath(str(p))
             if not (real_path == project_root or real_path.startswith(project_root + os.sep)):
                 return self._send_json(403, {"error": "path outside project root"})
