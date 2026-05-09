@@ -87,8 +87,10 @@ def _read_credentials():
     Read Directus credentials from API_KEYS_MASTER.md at runtime.
     NEVER hardcode credentials — this function is the single source of truth.
 
-    Falls back to environment variables DIRECTUS_EMAIL / DIRECTUS_PASSWORD
-    if the file cannot be found (e.g. in CI or isolated environments).
+    Falls back to environment variables. Doppler-canonical names
+    (DIRECTUS_ADMIN_EMAIL/DIRECTUS_ADMIN_PASSWORD per LD-208) are read first;
+    legacy bare names (DIRECTUS_EMAIL/DIRECTUS_PASSWORD) accepted for backward
+    compat. LD-227 Phase 1 amendment 2026-05-08.
     """
     # Try to find API_KEYS_MASTER.md relative to this script
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -121,16 +123,18 @@ def _read_credentials():
                 print(f"  Credentials loaded from {os.path.basename(path)}")
                 return email, password
 
-    # Fallback to environment variables
-    email = os.environ.get("DIRECTUS_EMAIL")
-    password = os.environ.get("DIRECTUS_PASSWORD")
+    # Fallback to environment variables — Doppler-canonical first, legacy fallback.
+    email = os.environ.get("DIRECTUS_ADMIN_EMAIL") or os.environ.get("DIRECTUS_EMAIL")
+    password = os.environ.get("DIRECTUS_ADMIN_PASSWORD") or os.environ.get("DIRECTUS_PASSWORD")
     if email and password:
         print("  Credentials loaded from environment variables")
         return email, password
 
     raise FileNotFoundError(
-        "Cannot find API_KEYS_MASTER.md and no DIRECTUS_EMAIL/DIRECTUS_PASSWORD env vars set. "
-        "Ensure API_KEYS_MASTER.md exists in Production/ or set environment variables."
+        "Cannot find API_KEYS_MASTER.md and no DIRECTUS_ADMIN_EMAIL/DIRECTUS_ADMIN_PASSWORD "
+        "(or legacy DIRECTUS_EMAIL/DIRECTUS_PASSWORD) env vars set. "
+        "Run via `doppler run -- ` (Doppler project `mindfulnest`) or ensure "
+        "API_KEYS_MASTER.md exists in Production/."
     )
 
 
