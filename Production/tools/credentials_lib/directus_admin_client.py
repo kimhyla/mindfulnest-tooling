@@ -6,7 +6,7 @@ Production/scripts/ tool that needs `get_items` / `post_item` / `patch_item`
 with credential-free construction.
 
 Usage:
-    from lib.directus_admin_client import DirectusAdminClient, DirectusAdminError
+    from credentials_lib.directus_admin_client import DirectusAdminClient, DirectusAdminError
 
     client = DirectusAdminClient()          # loads creds automatically
     rows   = client.get_items("prod_locked_decisions", filters={...}, limit=-1)
@@ -15,17 +15,8 @@ Usage:
 
 from __future__ import annotations
 
-import sys
-import os
-from pathlib import Path
-
-# Allow import from sibling lib/ regardless of cwd
-_LIB_DIR = Path(__file__).resolve().parent
-if str(_LIB_DIR) not in sys.path:
-    sys.path.insert(0, str(_LIB_DIR))
-
-from credentials import load_credentials          # noqa: E402
-from directus import DirectusClient, DirectusError  # noqa: E402
+from .credentials import load_credentials
+from .directus import DirectusClient, DirectusError
 
 
 class DirectusAdminError(Exception):

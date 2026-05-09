@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _clients import local  # type: ignore
-from lib.directus import DirectusError  # type: ignore
+from credentials_lib.directus import DirectusError  # type: ignore
 
 VA = "prod_visual_assets"
 

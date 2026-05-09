@@ -40,8 +40,8 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 TOOLS_DIR = os.path.normpath(os.path.join(THIS_DIR, "..", "tools"))
 sys.path.insert(0, TOOLS_DIR)
 
-from lib.credentials import load_credentials  # noqa: E402
-from lib.directus import DirectusClient, DirectusError  # noqa: E402
+from credentials_lib.credentials import load_credentials  # noqa: E402
+from credentials_lib.directus import DirectusClient, DirectusError  # noqa: E402
 
 
 TODAY = "2026-04-17"

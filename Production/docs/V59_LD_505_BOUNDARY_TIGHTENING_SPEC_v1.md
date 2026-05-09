@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-08
 **Produced by:** tech-spec skill (two-Opus-agent debate + synthesis)
-**Status:** SPEC DRAFT — awaiting Cursor cross-review before lock
+**Status:** SPEC DRAFT — Cursor adversarial review amendments applied 2026-05-09 (v2); awaiting Kim lock
 **Supersedes:** LD-264 `PRODUCTION_TOOLS_STAYS_IN_DROPBOX` (active soft, 2026-04-18) — this spec proposes new LD `LD_505_BOUNDARY_TIGHTENING_V1` to override
 
 ---
@@ -57,7 +57,7 @@ After Phase G (final verification), spawn a fresh agent to independently verify:
 - Tooling repo on GitHub has expected structure
 - Dropbox-resident `.git/` is truly removed
 - Production server runs from tooling clone successfully
-- All 35 Directus prod_assets rows have project-relative paths
+- All 35 Directus prod_assets rows have MN_DROPBOX_ROOT-relative paths
 - Memory dir symlink is intact and resolving
 
 ### §0.7 Standing Rules Reference
@@ -71,7 +71,7 @@ CLAUDE.md Rules: 5 (Dropbox-synced workflow), 15 (reference docs sync), 18 (LD a
 3. Memory dir symlink test fails (Claude Code can't load memory from new path) → STOP
 4. Production server fails to start from tooling clone → STOP
 5. Browser smoke fails post-migration (storyboard 404 or 500) → STOP
-6. Dropbox sync conflicts mid-execution → STOP, wait for sync to settle
+6. Dropbox sync conflicts mid-execution, Dropbox “conflicted copy” files adjacent to `.git/`, or `rm -rf .git` permission/sync errors → STOP; settle sync and resolve in Finder before deletion
 7. Git operation hangs > 5 min → STOP, investigate (don't kill arbitrarily)
 8. Required env var (MINDFULNEST_ROOT, MN_DROPBOX_ROOT) not set on PC → STOP
 9. LD-264 supersede write returns silent_write_failure after 2 retries → STOP
@@ -103,6 +103,8 @@ Cross-machine model:
 
 This eliminates the divergence-vector that produced the 29-file uncommitted-divergence problem (commit 95e4462 on Dropbox-resident `claude/preserve-uncommitted-divergence-20260507`) without violating LD-283 size budgets, LD-505 media-not-in-git boundary, or Rule 3 .docx workflow.
 
+**Dropbox working tree vs `.git/` removal:** Deleting `.git/` does **not** erase uncommitted file contents — working-tree bytes remain. You lose **git metadata** (commits, branches, `git diff`/`git status`). Residual risk is **orphaned or ambiguous edits** in the Dropbox folder versus canonical code in `~/Projects/mindfulnest-tooling`, plus confusion about where to commit next.
+
 ---
 
 ## §2 — Governing Decisions
@@ -116,7 +118,7 @@ This spec is built on top of and explicitly compatible with:
 | **LD-541 STORYBOARD_DEPLOY_PROCESS_V1** | active SOFT, 2026-05-04 | Honored — deploy_storyboard_v59.sh continues to be the only allowed deploy bridge; rsync semantics simplify post-migration since tooling is sole source |
 | **LD-283 SIZE_BUDGET_PER_MODULE_V1** | active HIGH | Honored — media stays in Dropbox, never in git or git-LFS, no per-module ceiling violations |
 | **LD-280 RENDERING_ARCHITECTURE_SINGLE_MP4_ATOMIC_V1** | active HIGH | Honored — atomic MP4 production pipeline runs unchanged from tooling clone with Dropbox-mounted event-dir |
-| **LD-421/422 ASSET_FINDABILITY_OVERHAUL_V1/_BUILD_V1** | active HIGH | Honored — registered_write.py + find_asset.py continue to work; 35 prod_assets.file_path rows batch-PATCHed to project-relative |
+| **LD-421/422 ASSET_FINDABILITY_OVERHAUL_V1/_BUILD_V1** | active HIGH | Honored — registered_write.py + find_asset.py continue to work; 35 prod_assets.file_path rows batch-PATCHed to **MN_DROPBOX_ROOT-relative** paths (stripped absolute prefix; resolved with `MN_DROPBOX_ROOT` + relative segment) |
 | **LD-368 WINDOWS_DROPBOX_ATOMIC_RENAME_RETRY_V1** | active MEDIUM | Honored — Windows PC continues to need this for tools writing to Dropbox-mounted paths (server state writes) |
 | **LD-367 DIRECTUS_ADMIN_CLIENT_CROSS_PLATFORM_PATH_V1** | active MEDIUM | Honored — _candidate_keys_paths() already handles cross-platform; no change needed |
 | **LD-327 APP_REPO_SESSION_DIRECTUS_CRED_LOADING_V1** | active HIGH | Honored — credential resolution from `Production/API_KEYS_MASTER.md` (Dropbox-mounted) continues; env override available |
@@ -132,6 +134,8 @@ This spec is built on top of and explicitly compatible with:
 ---
 
 ## §3 — Approach
+
+**Phase letter mapping (2026-05-09):** Phase letters were re-sequenced on this date. **Prior drafts** of this spec labeled **Phase B** = LD supersede + Directus (`prod_assets`) and **Phase C** = tooling-repo path sweep; **this revision** labels **Phase B** = path sweep and **Phase C** = Directus + `prod_assets`. Any external runbook or handoff that cites **pre-2026-05-09** phase letters should map: **old Phase B → current Phase C**, **old Phase C → current Phase B**. Underlying steps are unchanged; this is labeling clarity only.
 
 ### Why supersede LD-264
 
@@ -199,9 +203,23 @@ Where `$DROPBOX_ROOT="/Users/kimberlysmith/Library/CloudStorage/Dropbox/Claude M
 - Windows-specific: `Production/lib/atomic_json_write.py` retry helper (LD-368) continues to apply to state writes
 - Bootstrap: `Production/scripts/setup_bypass_permissions.py` (per memory `project_windows_bypass_pending.md`)
 
+### LD-227 Phase 1 env-FIRST — ordering vs paths + secrets
+
+This migration must stay coherent with **LD-227 / PR #15 env-FIRST** credential loading already merged on tooling `main`.
+
+| Layer | Precedence | Responsibility |
+| --- | --- | --- |
+| **`MN_DROPBOX_ROOT`** | Must be set (shell rc or session export) before starting `production_server.py` or batch Directus tools | After Phase B, `Production/lib/paths.py` (and callers) resolve Dropbox-backed files as `Path(MN_DROPBOX_ROOT) / <relative>` |
+| **Process environment** (Doppler-injected or shell) | **First** for secrets where loaders were updated per LD-227 | Do not assume file-only reads if env-FIRST paths exist on the running revision |
+| **`API_KEYS_MASTER.md`** | **Fallback** when env keys absent | Dropbox: `$MN_DROPBOX_ROOT/Production/API_KEYS_MASTER.md` (still not in git per LD-327) |
+
+**Hard sequencing rule:** **Phase B** (path sweep merged + pushed) completes **before** **Phase C** `prod_assets.file_path` PATCH, so runtime resolution matches DB-relative paths on every consumer running from the tooling clone.
+
 ---
 
 ## §4 — Implementation Steps
+
+**Mandatory execution order:** Phase **A** → **B** → **C** → **D** → **E** → **F** → **G**. Phases **B** (path sweep + push) and **C** (Directus + `prod_assets`) behave as one **atomic migration slice**: **do not** PATCH `prod_assets` until Phase B’s changes are on `main` and verified; **freeze** automation that resolves asset paths or launches `production_server.py` from the Dropbox tree for the duration of Phase C unless explicitly coordinated.
 
 Phased execution. Each phase ends with verification before next phase begins.
 
@@ -209,7 +227,7 @@ Phased execution. Each phase ends with verification before next phase begins.
 
 1. Verify all dependent prerequisites are complete:
    - V59 CI/CD gap-fix has merged to main (per timing decision)
-   - 22-file divergence reconciliation has merged to main
+   - ~~22-file divergence reconciliation has merged to main~~ **AMENDED 2026-05-09 per Kim 2026-05-07 sequencing directive in `MINDFULNEST_PROFESSIONAL_SETUP_ROADMAP_v1.md` Week 1:** the 22-file cherry-pick is now handoff seq #3 and MUST NOT begin until LD-505 migration completes. This prereq is **dropped**; LD-505 runs on the still-divergent tree, and the 22-file reconciliation operates on the unified post-LD-505 tree.
    - Working trees in BOTH `.git/` directories are clean (no uncommitted)
    - `lsof -ti:5111` returns the storyboard server PID (not yet killed)
 2. Snapshot the Dropbox-resident `.git/` BEFORE any destructive operation:
@@ -217,34 +235,101 @@ Phased execution. Each phase ends with verification before next phase begins.
    cd "/Users/kimberlysmith/Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files"
    tar czf "$HOME/dropbox_git_snapshot_$(date -u +%Y%m%d_%H%M%S).tar.gz" .git/
    ```
-3. Push all named branches from Dropbox-resident `.git/` to tooling repo as preservation refs:
+3. Verify Dropbox-resident `.git/` **origin** matches tooling clone **origin** (same GitHub URL — blocks accidental archive pushes to the wrong remote):
    ```bash
    cd "/Users/kimberlysmith/Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files"
-   for BRANCH in $(git branch | grep -v '^\*' | sed 's/^  //'); do
-     git push origin "${BRANCH}:archive/dropbox-resident/${BRANCH}"
-   done
-   git push origin "claude/preserve-uncommitted-divergence-20260507:archive/dropbox-resident/preserve-uncommitted-divergence-20260507"
+   DROP_REMOTE="$(git remote get-url origin)"
+   cd ~/Projects/mindfulnest-tooling
+   TOOL_REMOTE="$(git remote get-url origin)"
+   test "$DROP_REMOTE" = "$TOOL_REMOTE" || { echo "BLOCKING: origin URL mismatch"; exit 1; }
    ```
-   This preserves all 9+ Dropbox-resident branches as `archive/dropbox-resident/*` namespace in tooling repo.
-4. Verify push succeeded:
+4. Push **all** local branches from Dropbox-resident `.git/` (including **the current branch / HEAD**) to tooling repo as preservation refs — use `git branch --format` (never drop `*` lines):
+   ```bash
+   cd "/Users/kimberlysmith/Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files"
+   for BRANCH in $(git branch --format="%(refname:short)"); do
+     git push origin "${BRANCH}:refs/heads/archive/dropbox-resident/${BRANCH}"
+   done
+   git push origin "claude/preserve-uncommitted-divergence-20260507:refs/heads/archive/dropbox-resident/preserve-uncommitted-divergence-20260507"
+   ```
+   This preserves Dropbox-resident branches under `archive/dropbox-resident/*`.
+5. Verify push succeeded:
    ```bash
    cd ~/Projects/mindfulnest-tooling
    git fetch origin
    git branch -r | grep "archive/dropbox-resident"
    ```
-5. Register `prod_activity_log` row:
+6. Register `prod_activity_log` row:
    - action: `migration_phase_a_preflight_complete`
    - details: list of preserved branches, snapshot tar.gz path
 
-### Phase B — LD Supersede + Pre-Migration Directus Updates (~45 min)
+### Phase B — Path Sweep in Tooling Repo (~2-3 hrs)
 
-1. Register `LD_505_BOUNDARY_TIGHTENING_V1` LD per Rule 18:
+**Runs before Phase C.** Completes the code-side path resolution so MN_DROPBOX_ROOT-relative `prod_assets.file_path` values resolve correctly in Phase C.
+
+1. Identify hardcoded Dropbox paths in tooling repo:
+   ```bash
+   cd ~/Projects/mindfulnest-tooling
+   grep -rln "Library/CloudStorage/Dropbox" --include="*.py" --include="*.sh" --include="*.ts" --include="*.tsx" --include="*.json" > /tmp/dropbox_path_files.txt
+   wc -l /tmp/dropbox_path_files.txt
+   ```
+2. Categorize hits:
+   - Comments / docs: leave as-is where clearly historical
+   - Default fallback values: replace with `os.environ.get('MN_DROPBOX_ROOT', '<existing default>')` pattern
+   - Actual hardcoded references: replace with env var resolution
+3. Update `Production/lib/paths.py` to centralize cross-platform resolution:
+   - Read `MN_DROPBOX_ROOT` env var (fall back to platform-specific defaults if unset)
+   - Read `MN_TOOLING_ROOT` env var (defaults to `Path(__file__).parent.parent.parent` resolved to tooling clone root)
+   - All scripts that need Dropbox content paths import from `paths.py` rather than hardcoding
+4. Update `Production/scripts/deploy_storyboard_v59.sh` (already env-overridable per LD-541):
+   - Already supports `MN_TOOLING_ROOT` and `MN_DROPBOX_ROOT` — verify no other hardcoded paths
+5. Update `Production/scripts/_weekly_snapshot_wrapper.sh` and `Production/scripts/install_backup_crons.sh` to read env vars instead of hardcoded paths.
+6. Update `.claude/skills/execute/SKILL.md` (known hardcoded path references) — replace with env var or relative-to-cwd patterns.
+7. **Skills-wide sweep:** hardcoded Dropbox/Mac paths under `.claude/skills/` (not only `execute`):
+   ```bash
+   cd ~/Projects/mindfulnest-tooling
+   grep -rln "Library/CloudStorage" .claude/skills/ || true
+   ```
+8. **Host-level leakage sweep (outside repo — mandatory):** capture anything still pointing Python/scripts at the Dropbox tree or stale paths (fix launchd/plists/cron separately after review):
+   ```bash
+   test -f "$HOME/.claude/settings.json" && grep -nE 'Library/CloudStorage/Dropbox|Claude Mindfulnest Project Files' "$HOME/.claude/settings.json" || echo "(no ~/.claude/settings.json hits)"
+   launchctl list 2>/dev/null | grep -iE 'mindfulnest|mindful|production_server|weekly_preflight|dropbox.*Project Files' || true
+   crontab -l 2>/dev/null | grep -E 'Library/CloudStorage/Dropbox|Claude Mindfulnest|mindfulnest-tooling|Production/scripts' || true
+   ```
+   Record findings in Phase G morning report; update plists/crontab entries to tooling-clone paths before relying on automation post-migration.
+9. Compile + test:
+   - `python3 -m py_compile Production/tools/production_server.py`
+   - `python3 -m py_compile Production/lib/paths.py`
+   - `python3 -c "from Production.lib.paths import DROPBOX_ROOT, TOOLING_ROOT; print(DROPBOX_ROOT, TOOLING_ROOT)"`
+   - `python3 -m pytest Production/lib/tests/test_directus_verified.py -q`
+   - `python3 Production/tools/build_storyboard.py --smoke-test`
+10. Commit on tooling repo: `git commit -m "phase-b: path sweep — MN_DROPBOX_ROOT resolution + host leakage audit"`
+11. Push to GitHub and confirm `main` (or your execution branch) contains the commit before starting Phase C.
+
+12. Register `prod_activity_log` row:
+    - action: `migration_phase_b_path_sweep_complete`
+    - details: grep hit counts, pytest + storyboard smoke results, commit SHA
+
+### Phase C — LD Supersede + Directus Updates (~45 min)
+
+**Precondition:** Phase B pushed; tooling clone at HEAD resolves paths per §3 matrix (LD-227 env-FIRST + `MN_DROPBOX_ROOT`). **Freeze** jobs that resolve `prod_assets.file_path` or start `production_server.py` from the Dropbox tree for the duration of this phase unless coordinated.
+
+1. **Mandatory live enum probe** for `prod_locked_decisions.severity` via Directus `/fields` (do **not** assume — schema migrated 2026-05-04). Uses authenticated transport already wired on `DirectusAdminClient`:
+   ```python
+   from Production.lib.directus_admin_client import DirectusAdminClient  # Note: import path `Production.lib.directus_admin_client` assumes PYTHONPATH=Production:Production/tools/credentials_lib (or running from tooling clone root). If running from a worktree with different layout, adjust per worktree.
+
+   dac = DirectusAdminClient()
+   resp = dac._request("GET", "/fields/prod_locked_decisions/severity")
+   # Executor MUST parse resp["data"] per runtime Directus JSON for allowed choices (typically meta.options.choices).
+   # Record observed choices in prod_activity_log / morning report.
+   severity_for_post = "HARD"  # use only if present in live choices; otherwise pick the documented HARD-equivalent from the probe output
+   ```
+2. Register `LD_505_BOUNDARY_TIGHTENING_V1` LD per Rule 18 (`severity` = `severity_for_post` from step 1):
    ```python
    from Production.lib.directus import try_post_or_queue
    result = try_post_or_queue('prod_locked_decisions', {
        'decision_key': 'LD_505_BOUNDARY_TIGHTENING_V1',
        'decision_name': 'Eliminate Dropbox-resident .git/; tooling repo as sole code tree',
-       'severity': 'HARD',
+       'severity': severity_for_post,
        'scope_domain': 'production',
        'task_category': 'tech_stack',
        'enforcement_type': 'code_invariant',
@@ -255,7 +340,7 @@ Phased execution. Each phase ends with verification before next phase begins.
        'notes': 'Supersedes LD-264 (active soft, 2026-04-18). New context not available 2026-04-18: 29-file divergence problem class, LD-505 tooling repo creation, gap-fix Phase G pre-commit hook structural requirement. See spec §3.'
    })
    ```
-2. PATCH LD-264 to `superseded_by_id` = LD_505_BOUNDARY_TIGHTENING_V1's id, status = 'superseded':
+3. PATCH LD-264 to `superseded_by_id` = LD_505_BOUNDARY_TIGHTENING_V1's id, status = 'superseded':
    ```python
    from Production.lib.directus_admin_client import DirectusAdminClient
    c = DirectusAdminClient()
@@ -266,8 +351,9 @@ Phased execution. Each phase ends with verification before next phase begins.
        'date_superseded': '<execution date>'
    })
    ```
-3. Read-back-after-write verify both writes per Rule 35.
-4. Batch PATCH 35 `prod_assets.file_path` rows from Dropbox-absolute to project-relative:
+4. Read-back-after-write verify both LD writes per Rule 35.
+5. **Mandatory backup before mutation:** export every targeted `prod_assets` row's `id` and `file_path` (CSV or JSON) to disk — e.g. `$HOME/prod_assets_file_path_backup_<TS>.json` — and verify file non-empty. No batch PATCH until backup exists.
+6. Batch PATCH affected `prod_assets.file_path` rows from Dropbox-absolute to **MN_DROPBOX_ROOT-relative** (strip `DROPBOX_PREFIX`; resolved at runtime as `Path(MN_DROPBOX_ROOT) / relative`):
    ```python
    c = DirectusAdminClient()
    DROPBOX_PREFIX = '/Users/kimberlysmith/Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files/'
@@ -275,41 +361,13 @@ Phased execution. Each phase ends with verification before next phase begins.
    for asset in absolute_assets:
        new_path = asset['file_path'].replace(DROPBOX_PREFIX, '')
        c.patch_item('prod_assets', asset['id'], {'file_path': new_path})
-       # read-back-after-write per Rule 35
        verify = c.get_items('prod_assets', filters={'id': {'_eq': asset['id']}}, fields=['file_path'])
        assert verify[0]['file_path'] == new_path
    ```
-5. Verify post-PATCH count of Dropbox-absolute rows = 0.
-6. Register `prod_activity_log` row:
-   - action: `migration_phase_b_directus_updates_complete`
-   - details: ld_count_registered=1, ld_count_superseded=1, prod_assets_patched=35
-
-### Phase C — Path Sweep in Tooling Repo (~2-3 hrs)
-
-1. Identify all hardcoded Dropbox paths in tooling repo:
-   ```bash
-   cd ~/Projects/mindfulnest-tooling
-   grep -rln "Library/CloudStorage/Dropbox" --include="*.py" --include="*.sh" --include="*.ts" --include="*.tsx" --include="*.json" > /tmp/dropbox_path_files.txt
-   wc -l /tmp/dropbox_path_files.txt
-   ```
-2. Categorize hits:
-   - Comments / docs: leave as-is, will be obvious historical references
-   - Default fallback values: replace with `os.environ.get('MN_DROPBOX_ROOT', '<existing default>')` pattern
-   - Actual hardcoded references: replace with env var resolution
-3. Update `Production/lib/paths.py` to centralize cross-platform resolution:
-   - Read `MN_DROPBOX_ROOT` env var (fall back to platform-specific defaults if unset)
-   - Read `MN_TOOLING_ROOT` env var (defaults to `Path(__file__).parent.parent.parent` resolved to tooling clone root)
-   - All scripts that need Dropbox content paths import from `paths.py` rather than hardcoding
-4. Update `Production/scripts/deploy_storyboard_v59.sh` (already env-overridable per LD-541):
-   - Already supports `MN_TOOLING_ROOT` and `MN_DROPBOX_ROOT` — verify no other hardcoded paths
-5. Update `Production/scripts/_weekly_snapshot_wrapper.sh` and `Production/scripts/install_backup_crons.sh` to read env vars instead of hardcoded paths.
-6. Update `.claude/skills/execute/SKILL.md` (4 hardcoded path references) — replace with env var or relative-to-cwd patterns.
-7. Compile + test:
-   - `python3 -m py_compile Production/tools/production_server.py`
-   - `python3 -m py_compile Production/lib/paths.py`
-   - `python3 -c "from Production.lib.paths import DROPBOX_ROOT, TOOLING_ROOT; print(DROPBOX_ROOT, TOOLING_ROOT)"`
-8. Commit on tooling repo: `git commit -m "phase-c: path sweep — replace hardcoded Dropbox paths with env-var resolution"`
-9. Push to GitHub.
+7. Verify post-PATCH count of rows with `file_path` starting with `/Users/kimberlysmith` (Mac prefix) = 0 — adjust prefix filter if other absolute roots appear.
+8. Register `prod_activity_log` row:
+   - action: `migration_phase_c_directus_updates_complete`
+   - details: ld_count_registered=1, ld_count_superseded=1, prod_assets_patched=N, backup path, live severity choices observed
 
 ### Phase D — Memory Directory Symlink (~10 min)
 
@@ -339,8 +397,8 @@ Phased execution. Each phase ends with verification before next phase begins.
 ### Phase E — Eliminate Dropbox-Resident .git/ (~15 min)
 
 1. Final pre-deletion verification:
-   - All branches preserved in tooling repo `archive/dropbox-resident/*` namespace (per Phase A step 3)
-   - `git status` in Dropbox tree shows clean OR all uncommitted intentionally accepted as lost
+   - All branches preserved in tooling repo `archive/dropbox-resident/*` namespace (per Phase A step 4)
+   - `git status` in Dropbox tree shows clean OR operator accepts retaining **uncommitted bytes without git metadata** (see §1 warning — nothing is deleted from the working tree by removing `.git/` alone)
    - Snapshot tar.gz from Phase A step 2 is intact at `$HOME/dropbox_git_snapshot_*.tar.gz`
 2. Remove `.git/` directory:
    ```bash
@@ -403,7 +461,7 @@ Phased execution. Each phase ends with verification before next phase begins.
    - Confirm tooling repo on GitHub has all expected branches including `archive/dropbox-resident/*`
    - Confirm Dropbox-resident `.git/` is truly removed
    - Confirm production server runs from tooling clone successfully
-   - Confirm all 35 Directus prod_assets rows have project-relative paths (re-query)
+   - Confirm all patched `prod_assets` rows remain MN_DROPBOX_ROOT-relative (re-query count vs Phase C)
    - Confirm memory dir symlink resolves correctly
    - Confirm CLAUDE.md and CLAUDE_NARRATIVE_REFERENCE.md are accessible from tooling clone path
 2. Update reference docs registry per Rule 15:
@@ -424,6 +482,7 @@ Phased execution. Each phase ends with verification before next phase begins.
 - `Production/docs/V59_LD_505_BOUNDARY_TIGHTENING_SPEC_v1.md` (this file)
 - `Production/docs/V59_LD_505_BOUNDARY_TIGHTENING_MORNING_REPORT_<TS>.md` (Phase G output)
 - `~/dropbox_git_snapshot_<TS>.tar.gz` (Phase A snapshot)
+- `~/prod_assets_file_path_backup_<TS>.json` (or CSV) — Phase C mandatory backup before `prod_assets` PATCH
 - `~/.claude/projects/-Users-kimberlysmith-Projects-mindfulnest-tooling/memory/` (symlinked to old hash dir)
 
 ### Modified (in tooling repo)
@@ -432,7 +491,7 @@ Phased execution. Each phase ends with verification before next phase begins.
 - `Production/scripts/install_backup_crons.sh` — env var resolution
 - `Production/scripts/deploy_storyboard_v59.sh` — verify env-var-only (already partially done)
 - `.claude/skills/execute/SKILL.md` — replace 4 hardcoded path references
-- Any other files surfaced by Phase C step 1 grep
+- Any other files surfaced by Phase B step 1 grep
 - `.gitignore` (tooling) — verify continues to exclude `Production/Event_*/` etc.
 
 ### Removed
@@ -447,7 +506,7 @@ Phased execution. Each phase ends with verification before next phase begins.
 |---|---|---|---|
 | `prod_locked_decisions` | INSERT | 1 | Register `LD_505_BOUNDARY_TIGHTENING_V1` |
 | `prod_locked_decisions` | PATCH | 1 | Mark LD-264 as superseded |
-| `prod_assets` | PATCH | 35 | Convert Dropbox-absolute file_path to project-relative |
+| `prod_assets` | PATCH | ≤35 (actual N from query) | Convert Dropbox-absolute file_path to MN_DROPBOX_ROOT-relative |
 | `prod_reference_docs` | PATCH | up to 96 (likely much fewer) | Spot-check + update any rows with absolute Dropbox paths (currently 0 verified by Agent A; safety check) |
 | `prod_activity_log` | INSERT | 7 | One per phase (A-G) milestone |
 
@@ -474,7 +533,7 @@ Per Rule 19 (no error paths left open):
 | `prod_assets` PATCH fails on any of 35 rows | Halt at first failure. Investigate. Do NOT proceed (split-state). |
 | `rm -rf .git/` returns permission error | Halt. Investigate (Dropbox lock, sync conflict). Restart Dropbox if needed. |
 | Production server fails to start from tooling clone | Halt. Diagnose path resolution. Restore previous server if needed: `cd "$DROPBOX_ROOT" && python3 Production/tools/production_server.py ...`. Investigate root cause before re-attempting. |
-| Browser smoke fails post-restart (404 or 500) | Halt. Check server logs. Likely hardcoded path missed in Phase C sweep. |
+| Browser smoke fails post-restart (404 or 500) | Halt. Check server logs. Likely hardcoded path missed in Phase B sweep. |
 | Memory symlink doesn't resolve | Fall back to copy (with documented limitation). Continue. |
 | Tail-end verifier reports any [GUESSED] tag | Halt, re-verify the specific claim. Do NOT close migration as complete. |
 
@@ -488,7 +547,8 @@ Phase G verifier checks (independent agent, per §0.6):
    ```bash
    cd ~/Projects/mindfulnest-tooling
    git fetch origin
-   git branch -r | grep -c "archive/dropbox-resident/" >= 9  # 9+ preserved branches
+   ARCHIVE_COUNT="$(git branch -r | grep -c 'archive/dropbox-resident/' || true)"
+   test "$ARCHIVE_COUNT" -ge 9 || { echo "BLOCKING: expected >=9 archive/dropbox-resident refs, got $ARCHIVE_COUNT"; exit 1; }
    git remote -v  # confirms GitHub remote present
    ```
 2. **Dropbox `.git/` removal:**
@@ -505,14 +565,21 @@ Phase G verifier checks (independent agent, per §0.6):
 4. **Directus state:**
    - LD `LD_505_BOUNDARY_TIGHTENING_V1` exists, status=active
    - LD `PRODUCTION_TOOLS_STAYS_IN_DROPBOX` exists, status=superseded, superseded_by_id correct
-   - `prod_assets` rows with file_path starting with `/Users/kimberlysmith` count = 0
-5. **Memory dir resolution:**
+   - `prod_assets` rows with `file_path` starting with `/Users/kimberlysmith` (Mac absolute) count = 0; spot-check other absolute roots if used
+5. **Mechanical test subset (tooling clone cwd):**
+   ```bash
+   cd ~/Projects/mindfulnest-tooling
+   python3 -m pytest Production/lib/tests/test_directus_verified.py -q
+   python3 Production/tools/build_storyboard.py --smoke-test
+   ```
+   *Fallback if `Production/lib/tests/` is absent in this clone:* `python3 -c "import Production.lib.directus_admin_client; print(\"import OK\")"` — verifies the module loads without test fixtures.
+6. **Memory dir resolution:**
    - Open fresh Claude Code session in `~/Projects/mindfulnest-tooling`
    - Confirm MEMORY.md auto-loads (recent session digests visible)
-6. **Cross-platform readiness (Mac side only initially; PC verification deferred to bootstrap session):**
+7. **Cross-platform readiness (Mac side only initially; PC verification deferred to bootstrap session):**
    - `python3 Production/tools/production_server.py --help` runs cleanly
    - `python3 -c "from Production.lib.paths import DROPBOX_ROOT, TOOLING_ROOT"` runs cleanly
-7. **Reference doc consistency:**
+8. **Reference doc consistency:**
    - `Production/tools/sync_reference_docs.py` (Rule 15) reports 0 drift OR documented expected drift
 
 ---
@@ -522,10 +589,13 @@ Phase G verifier checks (independent agent, per §0.6):
 If migration fails mid-execution:
 
 ### Pre-Phase E (before .git/ removal)
-- All operations are additive or recoverable. Roll back by reverting commits in tooling repo + restoring Directus rows from backup.
-- Specific:
-  - Phase B Directus changes: PATCH LD `LD_505_BOUNDARY_TIGHTENING_V1` to status=`failed_rollback`; PATCH LD-264 to status=`active`, superseded_by_id=null. Rebuild prod_assets.file_path back to Dropbox-absolute.
-  - Phase C path sweep: `git revert <commit>` in tooling repo.
+- All operations are additive or recoverable. Roll back by reverting commits in tooling repo + restoring Directus rows from **Phase C backup** (`prod_assets` id/file_path export).
+- **Locked decisions (`prod_locked_decisions`):** use **only** enum values allowed by live schema (`status` ∈ `{active, superseded}` — never invent values like `failed_rollback`).
+  - **`LD_505_BOUNDARY_TIGHTENING_V1`:** append a paragraph to `notes` documenting rollback (timestamp, reason, operator).
+  - **`PRODUCTION_TOOLS_STAYS_IN_DROPBOX` (LD-264):** PATCH `status='active'`, `superseded_by_id=null`, clear `date_superseded` if your client supports nulling it, append rollback paragraph to `notes`.
+  - Optionally PATCH `LD_505_BOUNDARY_TIGHTENING_V1` to `status='superseded'` **only if** you have a superseding row or documented governance closure path that fits your registry rules; otherwise **`notes` audit on the tightening LD + LD-264 reactivation** is sufficient.
+- **`prod_assets.file_path`:** restore each row from Phase C backup JSON/CSV (forward-fix), then read-back-after-write verify.
+- **Phase B path sweep:** `git revert <commit>` (or reset-to-remote) in tooling repo.
 
 ### Post-Phase E (after .git/ removal)
 - Restore from snapshot:
@@ -534,7 +604,7 @@ If migration fails mid-execution:
   tar xzf "$HOME/dropbox_git_snapshot_<TS>.tar.gz"
   ls -la .git/  # verify restored
   ```
-- This restores the Dropbox-resident `.git/` to pre-migration state. All branches and history preserved.
+- **Warning:** If the Dropbox working tree changed **after** the tarball was taken, restored `.git/` index/state may **desync** from on-disk files (`git status` noise, false dirty states). Prefer restoring onto a known-clean tree, run `git status` / `git fsck`, and reconcile before relying on history.
 
 ### Catastrophic (snapshot also lost)
 - Tooling repo on GitHub has all preserved branches as `archive/dropbox-resident/*`. Re-clone tooling repo to a fresh directory; cherry-pick or rebase any work needed.
@@ -620,8 +690,8 @@ Out of scope for the migration session itself, but documented here for the event
 | Phase | Time estimate |
 |---|---|
 | A — Pre-flight + preservation | 30 min |
-| B — LD supersede + Directus updates | 45 min |
-| C — Path sweep | 2-3 hrs |
+| B — Path sweep | 2–3 hrs |
+| C — LD supersede + Directus updates | 45 min |
 | D — Memory symlink | 10 min |
 | E — Eliminate Dropbox `.git/` | 15 min |
 | F — Server restart | 20 min |
@@ -629,7 +699,7 @@ Out of scope for the migration session itself, but documented here for the event
 | **Total** | **~5-6 hrs** (Mac side) |
 | PC bootstrap (separate session) | +1-2 hrs |
 
-Phase C (path sweep) is the largest variable. If the tooling repo has more hardcoded Dropbox paths than the agents estimated, this could extend to 4-5 hrs.
+Phase B (path sweep) is the largest variable. If the tooling repo has more hardcoded Dropbox paths than the agents estimated, this could extend to 4–5 hrs.
 
 ---
 
@@ -640,7 +710,8 @@ Before starting Phase A, the executing session must verify:
 - [ ] V59 CI/CD gap-fix has merged to main (per timing decision)
 - [ ] 22-file divergence reconciliation has completed and merged
 - [ ] LD-545 SHORTCUT_STORYBOARD_FIX_BEFORE_GAPFIX_V1 is status=superseded
-- [ ] Both `.git/` working trees are clean (no uncommitted changes that would be lost)
+- [ ] Both `.git/` working trees are clean (no uncommitted **commits** pending — see §1: uncommitted **file bytes** in Dropbox are not deleted by removing `.git/`, but metadata is lost)
+- [ ] `pending_directus_writes.json` queue drained (or verified empty) — no queued Directus writes before Phase C
 - [ ] Storyboard server is running and accessible at http://localhost:5111/
 - [ ] GitHub auth is valid (`gh auth status`)
 - [ ] Directus is reachable (smoke test: `python3 -c "from Production.lib.directus_admin_client import DirectusAdminClient; c=DirectusAdminClient(); print(c.get_items('prod_modules', limit=1))"`)
@@ -649,6 +720,9 @@ Before starting Phase A, the executing session must verify:
 - [ ] Both home Mac and work PC dates of last sync are < 24 hrs apart
 - [ ] Kim is available for the ~5-6 hr execution window (or has explicitly authorized overnight)
 - [ ] No other production session is running concurrently
+- [ ] **Host automation audit:** record baseline from `launchctl list`, `crontab -l`, and grep of `~/.claude/settings.json` for Dropbox paths (Phase B step 8 repeats — compare before/after)
+- [ ] **Skills hardcoded paths:** `grep -rln "Library/CloudStorage" .claude/skills/` in tooling clone reviewed (Phase B step 7)
+- [ ] **`mn-context` / `.mn-context/`:** after first successful tooling-clone session, confirm `session_events.jsonl` and checkpoints resolve relative to tooling root (not stale Dropbox-only cwd)
 
 After each phase:
 - [ ] Phase completion `prod_activity_log` row written
@@ -664,23 +738,23 @@ This spec is comprehensive but the following may need future amendment or are fl
 
 1. **PC bootstrap detail.** §11 outlines but doesn't fully spec the PC migration. Treat as a separate dependent session that runs after Mac migration completes. May surface PC-specific issues (path separator conventions, line ending conversions, OneDrive vs Dropbox mounting differences) not anticipated here.
 
-2. **Cron / launchd update completeness.** Phase C addresses 3 known cron-relevant scripts. If other automated tasks exist (LaunchAgents at user level, scheduled tasks on PC, Directus scheduled writes from `weekly_preflight_audit.py`), they may need separate updating. Suggest a verification step: `launchctl list | grep -i mindfulnest` and `crontab -l` on Mac.
+2. **Cron / launchd update completeness.** Phase B updates known cron-install scripts **and** §14 mandates baseline/post comparison for `launchctl`, `crontab`, and `~/.claude/settings.json`. Residual LaunchAgents (especially PC) may still need manual fixes after execution.
 
 3. **`.dropbox` xattr handling.** Per Agent A finding: Dropbox-resident `.git/` is xattr-tagged `com.dropbox.ignored=1` to prevent Dropbox from corrupting the index. After migration, this xattr is irrelevant (no `.git/` to ignore). Removing `.git/` should also remove the xattr inherently, but verify with `xattr -l` if any concern.
 
 4. **Active session handoffs.** If a Claude Code session is in progress at migration time, its in-memory state (skill loaded, file references, MEMORY.md auto-load) may not survive cwd change. Suggest: complete or save all active sessions before Phase D.
 
-5. **Outstanding `pending_directus_writes.json` queue entries.** If any queued writes exist at migration time, they should be drained before Phase B's batch PATCH operations to avoid race conditions. Add to Phase A pre-flight check.
+5. **Outstanding `pending_directus_writes.json` queue entries.** Promoted to §14 — drain before **Phase C** (not Phase B).
 
 6. **Test that `~/Projects/mindfulnest-tooling/.git/` is itself git-friendly to operations from inside Dropbox.** Edge case: if Kim later opens a Claude Code session in the Dropbox path (out of habit), the session will not find a git repo and may behave oddly. Documentation update needed.
 
 7. **Verify symlink works on macOS Spotlight indexing.** Spotlight may follow symlinks differently than expected. If memory dir symlink causes Spotlight to index the same files twice or report inconsistent results, may need to set `mdimporter`/Spotlight excludes.
 
-8. **The 41 open `prod_blockers` reference Dropbox paths in their description text.** Phase B doesn't update these (description is prose, not a path field). Consider a separate sweep to update or accept as historical context.
+8. **The 41 open `prod_blockers` reference Dropbox paths in their description text.** Phase C doesn't update these (description is prose, not a path field). Consider a separate sweep to update or accept as historical context.
 
-9. **Skills at `.claude/skills/` may have additional hardcoded paths beyond `execute/SKILL.md`.** Phase C step 6 covers execute skill's 4 hits but a broader sweep is prudent: `grep -rln "Library/CloudStorage" .claude/skills/`.
+9. **Skills at `.claude/skills/` — additional hardcoded paths.** Promoted to §14 + Phase B steps 7–8; broader sweep remains prudent if new skills land between spec lock and execution.
 
-10. **The `mn-context` skill's session_events.jsonl path resolution.** This file is at `.mn-context/session_events.jsonl` relative to project root. Migration changes "project root" depending on which tree the session sees as root. Verify the skill resolves correctly in the tooling clone.
+10. **The `mn-context` skill's session_events.jsonl path resolution.** Promoted to §14 checklist — confirm `.mn-context/` resolves from tooling clone cwd after migration.
 
 11. **Production pipeline gaps explicitly named in master tech spec v6 §2 — NOT addressed by this migration.** Three Stream B + Stream F items NOT STARTED:
    - **`assemble_module.py`** — single-MP4 stitcher (LD-284 normalization + concat + universal-phrasing resolver). Per v6 §2: "primary gap to first end-to-end module ship." Mandatory Event 0 spike before M2-M59 production proceeds.
@@ -703,20 +777,20 @@ All files cited in this spec:
 
 | Path | Purpose |
 |---|---|
-| `Production/lib/paths.py` | Centralized path resolution (created/updated in Phase C) |
+| `Production/lib/paths.py` | Centralized path resolution (created/updated in Phase B) |
 | `Production/lib/directus.py` | `try_post_or_queue` for Directus writes (Rule 35) |
-| `Production/lib/directus_admin_client.py` | DirectusAdminClient for queries and PATCH |
+| `Production/lib/directus_admin_client.py` | DirectusAdminClient for queries, PATCH, and `/fields` severity probe |
 | `Production/lib/atomic_json_write.py` | Windows atomic-rename retry helper (LD-368) |
 | `Production/tools/production_server.py` | The server (~17K lines, mostly path-portable already) |
 | `Production/scripts/deploy_storyboard_v59.sh` | Deploy script (already env-overridable per LD-541) |
-| `Production/scripts/_weekly_snapshot_wrapper.sh` | Weekly snapshot cron (Phase C update) |
-| `Production/scripts/install_backup_crons.sh` | Cron installer (Phase C update) |
+| `Production/scripts/_weekly_snapshot_wrapper.sh` | Weekly snapshot cron (Phase B update) |
+| `Production/scripts/install_backup_crons.sh` | Cron installer (Phase B update) |
 | `Production/scripts/weekly_preflight_audit.py` | Phase 0 audit cron (LD-124) |
 | `Production/scripts/setup_bypass_permissions.py` | Windows bootstrap (per memory `project_windows_bypass_pending.md`) |
 | `Production/tools/sync_reference_docs.py` | Reference doc registry sync (Rule 15) |
 | `Production/scripts/asset_findability_hook.py` | Asset findability hook A (LD-421) |
 | `Production/scripts/asset_lookup_hook.py` | Asset findability hook B (LD-421) |
-| `.claude/skills/execute/SKILL.md` | Execute skill (Phase C update — 4 hardcoded path references) |
+| `.claude/skills/execute/SKILL.md` | Execute skill (Phase B update — hardcoded path references) |
 | `~/Projects/mindfulnest-tooling/` | Tooling repo working tree (becomes sole git tree) |
 | `~/.claude/projects/-Users-kimberlysmith-Library-CloudStorage-Dropbox-Claude-Mindfulnest-Project-Files/memory/` | Old memory hash directory |
 | `~/.claude/projects/-Users-kimberlysmith-Projects-mindfulnest-tooling/memory/` | New memory hash directory (symlinked to old) |
@@ -731,6 +805,6 @@ All files cited in this spec:
 
 **End of spec.**
 
-`[CONFIRMED — spec authored 2026-05-08 via tech-spec skill protocol (dual-Opus-agent debate + synthesis), structured per §0/§14/§15/§16 mandatory format, all factual claims tagged with confidence annotation per Rule 24, Kim locked Option A + symlink + sequencing 2026-05-08.]`
+`[CONFIRMED — v1 authored 2026-05-08 via tech-spec skill; v2 amended 2026-05-09 in-repo: Phase B/C swap + atomic slice, rollback enum fix, severity /fields probe, host-path sweep, LD-227 matrix, prod_assets backup, mechanical tests in §8 §14.]`
 
-`[NEXT STEP: Cursor cross-review. Paste this spec into Cursor with prompt: "Review this migration spec for MindfulNest. What did this miss? What's the highest-risk assumption? What would a senior infra engineer at a real company change?" Then return findings here for Phase 5 amendments before lock.]`
+`[NEXT STEP: Kim lock — register LD after final human read of §4 execution order + §9 rollback.]`

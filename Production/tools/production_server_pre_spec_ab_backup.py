@@ -250,11 +250,11 @@ def _tier1a_async_log_debounce(event_id: str, beat_id: str, elapsed_s: float) ->
     _tier1a_should_audit() — caller MUST gate on that before invoking this."""
     def _do_write():
         try:
-            _libdir = os.path.join(os.path.dirname(__file__), "lib")
+            _libdir = os.path.join(os.path.dirname(__file__), "credentials_lib")
             if _libdir not in sys.path:
                 sys.path.insert(0, _libdir)
-            from credentials import load_credentials  # type: ignore
-            from directus import DirectusClient  # type: ignore
+            from credentials_lib.credentials import load_credentials  # type: ignore
+            from credentials_lib.directus import DirectusClient  # type: ignore
             creds = load_credentials()
             c = DirectusClient(
                 creds["directus_url"],
@@ -286,11 +286,11 @@ def _bg_register_assembled_clip(group_id: str, clip_path: str, file_size_bytes: 
     """Register an assembled group clip to Directus (prod_visual_assets + prod_activity_log).
     On failure, append payloads to pending_directus_writes.json per CLAUDE.md Rule 20."""
     try:
-        _libdir = os.path.join(os.path.dirname(__file__), "lib")
+        _libdir = os.path.join(os.path.dirname(__file__), "credentials_lib")
         if _libdir not in sys.path:
             sys.path.insert(0, _libdir)
-        from credentials import load_credentials  # type: ignore
-        from directus import DirectusClient  # type: ignore
+        from credentials_lib.credentials import load_credentials  # type: ignore
+        from credentials_lib.directus import DirectusClient  # type: ignore
         creds = load_credentials()
         c = DirectusClient(
             creds["directus_url"],
@@ -1911,11 +1911,11 @@ def _get_directus_lock_client():
         if _DIRECTUS_LOCK_CLIENT_SINGLETON is not None:
             return _DIRECTUS_LOCK_CLIENT_SINGLETON
         try:
-            _libdir = os.path.join(os.path.dirname(__file__), "lib")
+            _libdir = os.path.join(os.path.dirname(__file__), "credentials_lib")
             if _libdir not in sys.path:
                 sys.path.insert(0, _libdir)
-            from credentials import load_credentials  # type: ignore
-            from directus import DirectusClient  # type: ignore
+            from credentials_lib.credentials import load_credentials  # type: ignore
+            from credentials_lib.directus import DirectusClient  # type: ignore
             creds = load_credentials()
             client = DirectusClient(
                 creds["directus_url"],
@@ -2236,11 +2236,11 @@ def _t1_directus_log(action: str, details: dict) -> None:
     """
     def _do_write():
         try:
-            _libdir = os.path.join(os.path.dirname(__file__), "lib")
+            _libdir = os.path.join(os.path.dirname(__file__), "credentials_lib")
             if _libdir not in sys.path:
                 sys.path.insert(0, _libdir)
-            from credentials import load_credentials  # type: ignore
-            from directus import DirectusClient  # type: ignore
+            from credentials_lib.credentials import load_credentials  # type: ignore
+            from credentials_lib.directus import DirectusClient  # type: ignore
             creds = load_credentials()
             c = DirectusClient(
                 creds["directus_url"],
@@ -2271,11 +2271,11 @@ def _async_log_text_update(event_id: str, beat_id: str, old_text: str | None,
     DIALOGUE_EDITS_MUST_PERSIST (id=151) Rule 18 Two-Write compliance."""
     def _do_write():
         try:
-            _libdir = os.path.join(os.path.dirname(__file__), "lib")
+            _libdir = os.path.join(os.path.dirname(__file__), "credentials_lib")
             if _libdir not in sys.path:
                 sys.path.insert(0, _libdir)
-            from credentials import load_credentials  # type: ignore
-            from directus import DirectusClient  # type: ignore
+            from credentials_lib.credentials import load_credentials  # type: ignore
+            from credentials_lib.directus import DirectusClient  # type: ignore
             creds = load_credentials()
             c = DirectusClient(
                 creds["directus_url"],
@@ -2307,11 +2307,11 @@ def _async_log_image_override(event_id: str, beat_id: str, image_key: str) -> No
         try:
             # Lazy import to avoid circular / optional dep at server boot.
             # Guard sys.path append so long sessions don't accumulate duplicates.
-            _libdir = os.path.join(os.path.dirname(__file__), "lib")
+            _libdir = os.path.join(os.path.dirname(__file__), "credentials_lib")
             if _libdir not in sys.path:
                 sys.path.insert(0, _libdir)
-            from credentials import load_credentials  # type: ignore
-            from directus import DirectusClient  # type: ignore
+            from credentials_lib.credentials import load_credentials  # type: ignore
+            from credentials_lib.directus import DirectusClient  # type: ignore
             creds = load_credentials()
             c = DirectusClient(
                 creds["directus_url"],
@@ -2760,11 +2760,11 @@ def _async_log_lipsync_submit(event_id: str, beat_id: str,
     """Fire-and-forget Directus log for lipsync submit + §8.4 pre-conditioning."""
     def _do_write():
         try:
-            _libdir = os.path.join(os.path.dirname(__file__), "lib")
+            _libdir = os.path.join(os.path.dirname(__file__), "credentials_lib")
             if _libdir not in sys.path:
                 sys.path.insert(0, _libdir)
-            from credentials import load_credentials  # type: ignore
-            from directus import DirectusClient  # type: ignore
+            from credentials_lib.credentials import load_credentials  # type: ignore
+            from credentials_lib.directus import DirectusClient  # type: ignore
             creds = load_credentials()
             c = DirectusClient(
                 creds["directus_url"], creds["directus_email"], creds["directus_password"],
@@ -2792,11 +2792,11 @@ def _async_log_lipsync_complete(event_id: str, beat_id: str,
     """Fire-and-forget Directus log for lipsync completion."""
     def _do_write():
         try:
-            _libdir = os.path.join(os.path.dirname(__file__), "lib")
+            _libdir = os.path.join(os.path.dirname(__file__), "credentials_lib")
             if _libdir not in sys.path:
                 sys.path.insert(0, _libdir)
-            from credentials import load_credentials  # type: ignore
-            from directus import DirectusClient  # type: ignore
+            from credentials_lib.credentials import load_credentials  # type: ignore
+            from credentials_lib.directus import DirectusClient  # type: ignore
             creds = load_credentials()
             c = DirectusClient(
                 creds["directus_url"], creds["directus_email"], creds["directus_password"],
@@ -2849,11 +2849,11 @@ def _get_voice_directus_client():
     with _VOICE_DIRECTUS_CLIENT_LOCK:
         if _VOICE_DIRECTUS_CLIENT is not None:
             return _VOICE_DIRECTUS_CLIENT
-        _libdir = os.path.join(os.path.dirname(__file__), "lib")
+        _libdir = os.path.join(os.path.dirname(__file__), "credentials_lib")
         if _libdir not in sys.path:
             sys.path.insert(0, _libdir)
-        from credentials import load_credentials  # type: ignore
-        from directus import DirectusClient  # type: ignore
+        from credentials_lib.credentials import load_credentials  # type: ignore
+        from credentials_lib.directus import DirectusClient  # type: ignore
         creds = load_credentials()
         _VOICE_DIRECTUS_CLIENT = DirectusClient(
             creds["directus_url"],
@@ -2905,11 +2905,11 @@ def _load_voice_profiles_from_directus(force_refresh: bool = False) -> dict[str,
         if _VOICE_PROFILE_CACHE is not None and not force_refresh:
             return _VOICE_PROFILE_CACHE
         try:
-            _libdir = os.path.join(os.path.dirname(__file__), "lib")
+            _libdir = os.path.join(os.path.dirname(__file__), "credentials_lib")
             if _libdir not in sys.path:
                 sys.path.insert(0, _libdir)
-            from credentials import load_credentials  # type: ignore
-            from directus import DirectusClient  # type: ignore
+            from credentials_lib.credentials import load_credentials  # type: ignore
+            from credentials_lib.directus import DirectusClient  # type: ignore
             creds = load_credentials()
             c = DirectusClient(creds["directus_url"], creds["directus_email"],
                                creds["directus_password"])
@@ -3127,11 +3127,11 @@ def _tts_regenerate_for_beat(app, beat_id: str, text: str,
     # Rule 18 fire-and-forget activity log.
     def _log():
         try:
-            _libdir = os.path.join(os.path.dirname(__file__), "lib")
+            _libdir = os.path.join(os.path.dirname(__file__), "credentials_lib")
             if _libdir not in sys.path:
                 sys.path.insert(0, _libdir)
-            from credentials import load_credentials  # type: ignore
-            from directus import DirectusClient  # type: ignore
+            from credentials_lib.credentials import load_credentials  # type: ignore
+            from credentials_lib.directus import DirectusClient  # type: ignore
             creds = load_credentials()
             c = DirectusClient(creds["directus_url"], creds["directus_email"],
                                creds["directus_password"])
@@ -3762,11 +3762,11 @@ def patch_state(
             import urllib.parse as _up
             # Reuse lib/directus if available — best-effort, short timeout
             try:
-                _libdir = os.path.join(os.path.dirname(__file__), "lib")
+                _libdir = os.path.join(os.path.dirname(__file__), "credentials_lib")
                 if _libdir not in sys.path:
                     sys.path.insert(0, _libdir)
-                from credentials import load_credentials  # type: ignore
-                from directus import DirectusClient  # type: ignore
+                from credentials_lib.credentials import load_credentials  # type: ignore
+                from credentials_lib.directus import DirectusClient  # type: ignore
                 creds = load_credentials()
                 dc = DirectusClient(creds["directus_url"], creds["directus_email"], creds["directus_password"])
                 dc.create("prod_activity_log", {
@@ -7811,10 +7811,10 @@ body {{padding-top:44px!important;}}
         if text_actually_changed and not skip_flag and not debounce_skip:
             # Load ElevenLabs key (cached at first call).
             try:
-                _libdir = os.path.join(os.path.dirname(__file__), "lib")
+                _libdir = os.path.join(os.path.dirname(__file__), "credentials_lib")
                 if _libdir not in sys.path:
                     sys.path.insert(0, _libdir)
-                from credentials import load_credentials  # type: ignore
+                from credentials_lib.credentials import load_credentials  # type: ignore
                 creds = load_credentials()
                 el_key = creds.get("elevenlabs_key") or ""
             except Exception as exc:  # noqa: BLE001
@@ -7970,10 +7970,10 @@ body {{padding-top:44px!important;}}
 
         # Load ElevenLabs key
         try:
-            _libdir = os.path.join(os.path.dirname(__file__), "lib")
+            _libdir = os.path.join(os.path.dirname(__file__), "credentials_lib")
             if _libdir not in sys.path:
                 sys.path.insert(0, _libdir)
-            from credentials import load_credentials  # type: ignore
+            from credentials_lib.credentials import load_credentials  # type: ignore
             creds = load_credentials()
             el_key = creds.get("elevenlabs_key") or ""
         except Exception as exc:  # noqa: BLE001
@@ -8473,11 +8473,11 @@ body {{padding-top:44px!important;}}
         # Fire-and-forget Directus audit
         def _async_audit():
             try:
-                _libdir = os.path.join(os.path.dirname(__file__), "lib")
+                _libdir = os.path.join(os.path.dirname(__file__), "credentials_lib")
                 if _libdir not in sys.path:
                     sys.path.insert(0, _libdir)
-                from credentials import load_credentials  # type: ignore
-                from directus import DirectusClient  # type: ignore
+                from credentials_lib.credentials import load_credentials  # type: ignore
+                from credentials_lib.directus import DirectusClient  # type: ignore
                 creds = load_credentials()
                 dc = DirectusClient(
                     creds["directus_url"],
@@ -8832,8 +8832,8 @@ body {{padding-top:44px!important;}}
         """
         # Lazy-load the lib so server startup doesn't hard-require it.
         try:
-            sys.path.insert(0, os.path.join(os.path.dirname(__file__), "lib"))
-            from ffmpeg_stitch import (  # type: ignore
+            sys.path.insert(0, os.path.join(os.path.dirname(__file__), "credentials_lib"))
+            from credentials_lib.ffmpeg_stitch import (  # type: ignore
                 FADE_CLAMP_BUFFER_S,
                 NORMALIZATION_RECIPE_HASH,
                 PREVIEW_RECIPE_VERSION,
@@ -8854,7 +8854,7 @@ body {{padding-top:44px!important;}}
         except ImportError as exc:
             return self._send_json(500, {
                 "error": f"lib/ffmpeg_stitch import failed: {exc}",
-                "hint": "Verify Production/tools/lib/ffmpeg_stitch.py exists.",
+                "hint": "Verify Production/tools/credentials_lib/ffmpeg_stitch.py exists.",
             })
 
         snapshot = body.get("state_snapshot") or {}
@@ -10235,8 +10235,8 @@ body {{padding-top:44px!important;}}
 
         Returns {file, mtime, duration_s} or None if inputs missing.
         """
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "lib"))
-        from ffmpeg_stitch import normalize_for_concat, concat_with_xfade_clips  # type: ignore
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "credentials_lib"))
+        from credentials_lib.ffmpeg_stitch import normalize_for_concat, concat_with_xfade_clips  # type: ignore
 
         state = self.app.state.read_state()
 
@@ -10313,8 +10313,8 @@ body {{padding-top:44px!important;}}
         offset_2 = max(0.0, flyin_dur + raw_dur - fade_in_s - fade_out_s)
 
         intermediate_path = norm_dir / f"intermediate_{ts}.mp4"
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "lib"))
-        from ffmpeg_stitch import (  # type: ignore
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "credentials_lib"))
+        from credentials_lib.ffmpeg_stitch import (  # type: ignore
             NORMALIZATION_VF_EXPR, NORMALIZATION_ENCODER_ARGS,
         )
         # fadeblack on the second transition: middle fades to pure black at
@@ -10606,8 +10606,8 @@ body {{padding-top:44px!important;}}
         """
         # Lazy-load helper.
         try:
-            sys.path.insert(0, os.path.join(os.path.dirname(__file__), "lib"))
-            from ffmpeg_stitch import (  # type: ignore
+            sys.path.insert(0, os.path.join(os.path.dirname(__file__), "credentials_lib"))
+            from credentials_lib.ffmpeg_stitch import (  # type: ignore
                 render_watercolor_overlay,
                 resolve_watercolor_asset,
                 WATERCOLOR_OVERLAY_RECIPE_HASH,
@@ -10616,7 +10616,7 @@ body {{padding-top:44px!important;}}
         except ImportError as exc:
             return self._send_json(500, {
                 "error": f"lib/ffmpeg_stitch import failed: {exc}",
-                "hint": "Verify Production/tools/lib/ffmpeg_stitch.py has render_watercolor_overlay.",
+                "hint": "Verify Production/tools/credentials_lib/ffmpeg_stitch.py has render_watercolor_overlay.",
             })
 
         phase = (body.get("phase") or "").strip().lower()

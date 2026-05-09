@@ -13,7 +13,7 @@ HERE = Path(__file__).resolve()
 PROD_ROOT = HERE.parent.parent.parent  # .../Production
 sys.path.insert(0, str(PROD_ROOT / "tools"))
 
-from lib.directus import DirectusClient, DirectusError  # type: ignore
+from credentials_lib.directus import DirectusClient, DirectusError  # type: ignore
 
 EMAIL = "kimhyla11@gmail.com"
 PASSWORD = "directus11$"

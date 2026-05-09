@@ -115,9 +115,9 @@ def log_recovery_activity(
     """Fire POST to prod_activity_log. Returns True on success, False on any failure.
     Non-blocking: recovery proceeds even if Directus is unreachable."""
     try:
-        sys.path.insert(0, str(SCRIPT_DIR / "lib"))
-        from credentials import load_credentials  # type: ignore
-        from directus import DirectusClient  # type: ignore
+        sys.path.insert(0, str(SCRIPT_DIR / "credentials_lib"))
+        from credentials_lib.credentials import load_credentials  # type: ignore
+        from credentials_lib.directus import DirectusClient  # type: ignore
         creds = load_credentials()
         c = DirectusClient(
             creds["directus_url"], creds["directus_email"], creds["directus_password"]
@@ -317,9 +317,9 @@ def main() -> int:
         return 1
 
     # Load API key
-    sys.path.insert(0, str(SCRIPT_DIR / "lib"))
+    sys.path.insert(0, str(SCRIPT_DIR / "credentials_lib"))
     try:
-        from credentials import load_credentials  # type: ignore
+        from credentials_lib.credentials import load_credentials  # type: ignore
         creds = load_credentials()
         api_key = creds.get("wavespeed_key") or creds.get("wavespeed_api_key")
         if not api_key:

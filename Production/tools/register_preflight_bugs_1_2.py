@@ -15,7 +15,7 @@ PROJECT_ROOT = Path(
 )
 sys.path.insert(0, str(PROJECT_ROOT / "Production" / "tools"))
 
-from lib.directus import DirectusClient  # type: ignore
+from credentials_lib.directus import DirectusClient  # type: ignore
 
 EMAIL = "kimhyla11@gmail.com"
 PASSWORD = "directus11$"

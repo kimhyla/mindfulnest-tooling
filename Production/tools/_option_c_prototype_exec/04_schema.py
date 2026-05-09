@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _clients import local  # type: ignore
-from lib.directus import DirectusError  # type: ignore
+from credentials_lib.directus import DirectusError  # type: ignore
 
 BEATS = "prod_storyboard_beats"
 CANDIDATES = "prod_video_candidates"

@@ -77,8 +77,8 @@ def log(msg: str) -> None:
 
 
 def load_elevenlabs_key() -> str:
-    sys.path.insert(0, str(HERE / "lib"))
-    from credentials import load_credentials  # type: ignore
+    sys.path.insert(0, str(HERE / "credentials_lib"))
+    from credentials_lib.credentials import load_credentials  # type: ignore
     creds = load_credentials()
     k = creds.get("elevenlabs_key") or ""
     if not k:

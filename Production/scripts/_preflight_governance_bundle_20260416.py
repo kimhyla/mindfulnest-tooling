@@ -8,8 +8,8 @@ import sys, os, json
 THIS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.normpath(os.path.join(THIS, "..", "tools")))
 
-from lib.credentials import load_credentials
-from lib.directus import DirectusClient
+from credentials_lib.credentials import load_credentials
+from credentials_lib.directus import DirectusClient
 
 TASK_ID = "governance-bundle-20260416"
 TASK_TYPE = "architectural"

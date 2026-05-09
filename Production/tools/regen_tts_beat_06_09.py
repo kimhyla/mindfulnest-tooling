@@ -65,8 +65,8 @@ def log(msg: str) -> None:
 
 
 def load_elevenlabs_key() -> str:
-    sys.path.insert(0, str(HERE / "lib"))
-    from credentials import load_credentials  # type: ignore
+    sys.path.insert(0, str(HERE / "credentials_lib"))
+    from credentials_lib.credentials import load_credentials  # type: ignore
     creds = load_credentials()
     key = creds.get("elevenlabs_key") or ""
     if not key:
@@ -130,9 +130,9 @@ def directus_log(beat_id: str, out_file: str, text: str, voice: dict,
                  size_bytes: int, duration_s: float) -> None:
     """Rule 18 two-write: log this TTS regen to prod_activity_log."""
     try:
-        sys.path.insert(0, str(HERE / "lib"))
-        from credentials import load_credentials  # type: ignore
-        from directus import DirectusClient  # type: ignore
+        sys.path.insert(0, str(HERE / "credentials_lib"))
+        from credentials_lib.credentials import load_credentials  # type: ignore
+        from credentials_lib.directus import DirectusClient  # type: ignore
         creds = load_credentials()
         c = DirectusClient(creds["directus_url"], creds["directus_email"],
                            creds["directus_password"])

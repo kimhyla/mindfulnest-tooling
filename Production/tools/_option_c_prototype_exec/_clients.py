@@ -13,8 +13,7 @@ HERE = Path(__file__).resolve()
 PROD_ROOT = HERE.parent.parent.parent  # .../Production
 sys.path.insert(0, str(PROD_ROOT / "tools"))
 
-# Load directus.py directly to avoid `lib` package collision with Production/lib
-# (credential_store lives in Production/lib/lib/). See prototype_kling_adapter.py.
+# Load directus.py directly for this archived prototype's historical client.
 def _load(name: str, path: Path):
     spec = importlib.util.spec_from_file_location(name, str(path))
     mod = importlib.util.module_from_spec(spec)
@@ -22,14 +21,13 @@ def _load(name: str, path: Path):
     spec.loader.exec_module(mod)
     return mod
 
-_directus_path = PROD_ROOT / "tools" / "lib" / "directus.py"
+_directus_path = PROD_ROOT / "tools" / "credentials_lib" / "directus.py"
 if _directus_path.exists():
     _mod = _load("_option_c_directus", _directus_path)
     DirectusClient = _mod.DirectusClient
     DirectusError = _mod.DirectusError
 else:
-    # Fallback: regular package import (works when Production/lib isn't shadowing)
-    from lib.directus import DirectusClient, DirectusError  # type: ignore
+    from credentials_lib.directus import DirectusClient, DirectusError  # type: ignore
 
 HOSTED_URL = "https://directus-production-3460.up.railway.app"
 HOSTED_EMAIL = "kimhyla11@gmail.com"

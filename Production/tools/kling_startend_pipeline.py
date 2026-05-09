@@ -162,8 +162,8 @@ def load_api_keys() -> dict:
         keys["bfl"] = m.group(1).strip()
     else:
         # Try lib/credentials (works correctly for BFL — only wavespeed has the bug)
-        sys.path.insert(0, str(HERE / "lib"))
-        from credentials import load_credentials  # type: ignore
+        sys.path.insert(0, str(HERE / "credentials_lib"))
+        from credentials_lib.credentials import load_credentials  # type: ignore
         creds = load_credentials()
         keys["bfl"] = creds.get("bfl_key", "")
 
@@ -586,9 +586,9 @@ def kling_poll_fresh(task_id: str, api_key: str, timeout_s: int = 900) -> dict:
 def directus_log(action: str, details: dict) -> None:
     """Fire-and-forget activity log write. Non-blocking on failure."""
     try:
-        sys.path.insert(0, str(HERE / "lib"))
-        from credentials import load_credentials  # type: ignore
-        from directus import DirectusClient  # type: ignore
+        sys.path.insert(0, str(HERE / "credentials_lib"))
+        from credentials_lib.credentials import load_credentials  # type: ignore
+        from credentials_lib.directus import DirectusClient  # type: ignore
         creds = load_credentials()
         c = DirectusClient(creds["directus_url"], creds["directus_email"],
                            creds["directus_password"])

@@ -162,7 +162,7 @@ def _find_keys_file():
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
     candidates = [
-        os.path.join(script_dir, "..", "..", "API_KEYS_MASTER.md"),   # tools/lib/ -> Production/
+        os.path.join(script_dir, "..", "..", "API_KEYS_MASTER.md"),   # tools/credentials_lib/ -> Production/
         os.path.join(script_dir, "..", "API_KEYS_MASTER.md"),          # tools/ -> tools/../
         os.path.join(script_dir, "..", "..", "..", "Production", "API_KEYS_MASTER.md"),
     ]

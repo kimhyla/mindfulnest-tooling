@@ -47,7 +47,7 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 
-from directus_admin_client import DirectusAdminClient
+from credentials_lib.directus_admin_client import DirectusAdminClient
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 

@@ -49,7 +49,7 @@ sys.path.insert(0, str(HERE.parent))
 
 # The Doppler boilerplate above already cached `lib` as Production/lib (for
 # credential_store). That shadows `lib.directus` which lives at
-# Production/tools/lib/directus.py. Load it directly via importlib so we
+# Production/tools/credentials_lib/directus.py. Load it directly via importlib so we
 # don't fight the package-name collision.
 import importlib.util as _ilu
 def _load_file(name: str, path: Path):
@@ -58,7 +58,7 @@ def _load_file(name: str, path: Path):
     assert spec.loader is not None
     spec.loader.exec_module(mod)
     return mod
-_directus_mod = _load_file("_prototype_directus", PROD_ROOT / "tools" / "lib" / "directus.py")
+_directus_mod = _load_file("_prototype_directus", PROD_ROOT / "tools" / "credentials_lib" / "directus.py")
 DirectusClient = _directus_mod.DirectusClient
 DirectusError = _directus_mod.DirectusError
 

@@ -33,7 +33,7 @@ else:
     _PROJECT_ROOT = "/Users/kimberlysmith/Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files"
 sys.path.insert(0, _PROJECT_ROOT)
 
-from Production.tools.lib import credentials, directus
+from Production.tools.credentials_lib import credentials, directus
 
 # --- Configuration ---
 
