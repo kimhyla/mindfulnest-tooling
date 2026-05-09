@@ -224,3 +224,54 @@ Production/tmp*.tmp
 
 # Dot-prefixed variant of pending Directus writes (existing pattern was un-prefixed)
 .pending_directus_writes*
+
+# Production/ root-level working/content directories (per LD-505 audit Tier 5/6 leftovers)
+Production/Grizzle/
+Production/Guide_Bird/
+Production/Tessa/
+Production/Willow/
+Production/Milestones/
+Production/RUNBOOKS/
+Production/Phase_A_Office_Generation/
+Production/Phase_B_Style_Guide/
+Production/_audit_workspace/
+Production/_handoff_workspace/
+Production/_previews/
+Production/_sandbox_archive_April8_2026/
+Production/_session_*
+Production/api/
+Production/audio-producer-skill/
+Production/skills/
+Production/specs/
+Production/stitch_editor_cache/
+Production/test_harness/
+Production/validators/
+Production/video-producer.skill/
+
+# Production/ root-level standalone working files (not source)
+Production/audio_review.html
+Production/start_production_server*.command
+Production/species_swap.py
+Production/AUDIO_STRIPPING_DELIVERABLES.txt
+Production/DIFF_REPORT_MODULE_PLAN_v2_1_to_v2_2.txt
+Production/LOCKED_DECISIONS_CATALOG_v1.txt
+Production/MODULE_CONTEXT_REGISTRY_v1.json
+Production/PROD_SCRIPTS_REGISTRY_TEST_REPORT_April14_2026.txt
+Production/Quick_Reference_Card_v1.txt
+Production/TOOLS_AUDIT_SUMMARY.txt
+Production/Quick_Reference_Card_v2.md
+Production/storyboard_browser_smoke.png
+Production/storyboard_browser_smoke_after.png
+
+# Root-level loose binary/asset
+BLENDER_3D_COST_BREAKDOWN_SPREADSHEET.csv
+
+# More .skill/ dirs that *.skill/ pattern didn't catch
+storyboard-producer.skill/
+dashboard-ops.skill/
+dashboard-gate.skill/
+audio-producer-skill/
+
+# Production/tools/ untracked working subdirs (not source)
+Production/tools/_option_c_prototype_exec/
+Production/tools/storyboard-v2/
