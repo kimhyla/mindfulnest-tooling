@@ -142,3 +142,72 @@ Production/Event_*/.backups/
 *.L.json
 beat_generator_state.json
 production_state.json
+
+# ============ LD-505 Pre-Phase-A Triage additions (2026-05-09 by Kim defaults D-1/D-3/D-5/D-6/D-8) ============
+# Per LD505_PRE_PHASE_A_TRIAGE_AUDIT_20260510.md §1 disposition rollup.
+# Already-tracked files under these patterns continue to be tracked
+# (gitignore is not retroactive); these patterns prevent NEW pollution.
+
+# D-1: Claude Code project-local skills are runtime artifacts (not source)
+.claude/skills/
+
+# D-3: orphan root-level skill dirs (no .claude/skills/ counterpart)
+case-study-skill/
+email-nurture/
+website-copy-skill/
+*.skill/
+
+# D-5: binary installer accidentally committed to Event_1 working tree
+Production/Event_1/Claude.dmg
+*.dmg
+
+# D-6: storyboard-v2 e2e *.ts duplicates of tooling repo (tooling is canonical per LD-505)
+Production/tools/storyboard-v2/e2e/*.ts
+
+# D-8: 22 root-level content directories — working/content material, not source
+Marketing/
+Old Versions/
+Research/
+Session Logs/
+Module Demos/
+Parent Coach/
+App Design/
+Business/
+Clinical/
+Cropper/
+Canon/
+Arc Skeletons/
+Claude Code History backup 2026-04-15/
+archive/
+.deploy_backups/
+content-lockfiles/
+scripts/
+video_pipeline/
+Claude ElevenLabs Phase B Module Sounds/
+
+# Tier 3: bulk Production/Event_* output (327 untracked entries; whitelist exceptions
+# for currently-tracked files: production_state.json + storyboard_v59_prod.html + .sha256)
+Production/Event_*/
+!Production/Event_*/production_state.json
+!Production/Event_*/storyboard_v59_prod.html
+!Production/Event_*/storyboard_v59_prod.html.sha256
+!Production/Event_*/storyboard_v58_prod_GOLDEN_BACKUP_20260502_160345.html
+!Production/Event_*/storyboard_v58_prod_GOLDEN_BACKUP_20260502_160345.html.sha256
+
+# Tier 6D: loose state/temp/log/conflicted files at repo root
+*conflicted copy*
+desktop (2).ini
+desktop.ini
+server_restart.log
+test_write.txt
+feedback.json
+fal_lora_result.txt
+mindfulnest_full_schema.sql
+storyboard_sequence_2026-04-16.json
+crop_manifest_M1_e1.json
+crop_manifest_M1_e1 (1).json
+animation_selections.json
+animation_selections (1).json
+dashboard-ops-eval-viewer.html
+ziR6fyTf/
+Production/tmp*.tmp
