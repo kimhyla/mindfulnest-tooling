@@ -32,8 +32,8 @@ import {
   makeScope,
   scopeKey,
 } from '../state/scope';
-import { READ_ENDPOINTS, MUTATION_ENDPOINTS } from '../api/endpoints';
-import { pathappPatch } from '../api/client';
+import { READ_ENDPOINTS } from '../api/endpoints';
+import { loadEvent, pathappPatch } from '../api/client';
 
 export interface ScopeBoundaryProps {
   children: ComponentChildren;
@@ -125,16 +125,13 @@ export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
         && effectiveMilestoneId
         && !urlMs
       ) {
+        // Route through src/api/loadEvent per MUTATION_CHANNEL_INVARIANT_V1
+        // (LD-519) — raw fetch on MUTATION_ENDPOINTS outside src/api/ is gated.
         try {
-          const el = await fetch(MUTATION_ENDPOINTS.event_load, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ event_id: eventId }),
-          });
-          if (el.ok) {
-            const d = (await el.json()) as { event_generation?: number };
-            if (typeof d.event_generation === 'number') {
-              effectiveGen = d.event_generation;
+          const elResult = await loadEvent(eventId);
+          if (elResult.ok && elResult.data) {
+            if (typeof elResult.data.event_generation === 'number') {
+              effectiveGen = elResult.data.event_generation;
             }
             effectiveScopeType = 'event';
             effectiveMilestoneId = null;
