@@ -558,13 +558,18 @@ function BeatCard({ index, beatId, beat, eventId, onMutated }: BeatCardProps) {
 }
 
 // ----------------------------------------------------------------
-// CC-16 — Storyboard image-holder drop zone (PREP for Phase B SB-14).
+// CC-16 — Storyboard image-holder drop zone (Phase A primitive; Phase B SB-14
+// extends).
 //
 // Per spec §4 Phase A: define `mn-storyboard-image-drop-zone` CSS class +
 // onDrop handler accepting `lib-image` payload. The actual <img> rendering
 // + Assign/Inject buttons land in Phase B SB-14; Phase A stands up the drop
 // surface so library-tile drag works end-to-end and Phase B can layer on
 // the rest without changing this component's drop contract.
+//
+// Per LD-656 PHASED_DELIVERY_PRIMITIVE_HOOKS_S5_5C_V1: this is phased
+// architecture, NOT a Rule 19 shortcut. Phase A scope is complete; Phase B
+// SB-14 is separate scope with its own ship plan.
 // ----------------------------------------------------------------
 
 interface BeatImageHolderProps {

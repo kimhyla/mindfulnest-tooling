@@ -15,7 +15,9 @@
 //            debounced 300ms, combined with tier filter.
 //   - CC-19: hover preview after 500ms (image 320px max). Click sticky-pins.
 //            Audio/video preview shells reserved for Phase D when those tiers
-//            populate (current cr_library returns image-only).
+//            populate (current cr_library returns image-only). Per LD-656
+//            PHASED_DELIVERY_PRIMITIVE_HOOKS_S5_5C_V1 — phased architecture,
+//            not Rule 19 shortcut.
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { activeScope } from '../state/scope';
@@ -41,7 +43,8 @@ interface LibItem {
   width?: number;
   height?: number;
   // CC-17/18 — optional fields populated when prod_assets metadata is enriched
-  // server-side (Phase D extension). Not populated by current cr_library.
+  // server-side (Phase D extension per LD-656). [INFERRED — verify] not
+  // populated by current cr_library.
   asset_type?: string;
   tags?: string[];
   asset_name?: string;
@@ -75,10 +78,13 @@ function displayName(it: LibItem): string {
 // ----------------------------------------------------------------
 // Mapping is client-side; no prod_assets schema change. Each tier resolves
 // against the existing item.asset_type / item.tags / item.asset_name fields
-// (server populates from prod_assets where available; cr_library currently
-// returns image-only items where asset_type is INFERRED from item.tier).
+// [INFERRED — verify] server populates from prod_assets where available;
+// cr_library currently returns image-only items where asset_type is inferred
+// from item.tier.
 //
-// LD-pending: LIBRARY_TIER_FILTER_V1 captures the verbatim mapping rules.
+// [INFERRED — verify] LIBRARY_TIER_FILTER_V1 to capture the verbatim mapping
+// rules — file when CC-17/18/19 land in main and the rules are confirmed
+// against runtime cr_library behavior.
 
 export type LibraryTier = 'images' | 'ambient' | 'sfx' | 'transitions' | 'watercolors';
 
@@ -154,8 +160,9 @@ function matchesSearch(it: LibItem, q: string): boolean {
     it.display_name ?? '',
     it.key ?? '',
     it.asset_name ?? '',
-    // iteration_notes only populated when server enriches from prod_assets;
-    // included for future-proofing (Phase D extension).
+    // [INFERRED — verify] iteration_notes only populated when server enriches
+    // from prod_assets; included for future-proofing (Phase D extension per
+    // LD-656).
     it.iteration_notes ?? '',
   ].join(' ').toLowerCase();
   return haystack.includes(needle);
@@ -163,7 +170,9 @@ function matchesSearch(it: LibItem, q: string): boolean {
 
 // ----------------------------------------------------------------
 // CC-19 — Hover preview (image 320px max). Audio/video preview shells
-// reserved for Phase D when those tiers populate.
+// reserved for Phase D when those tiers populate. Per LD-656
+// PHASED_DELIVERY_PRIMITIVE_HOOKS_S5_5C_V1 — phased architecture,
+// not Rule 19 shortcut.
 // ----------------------------------------------------------------
 
 const PREVIEW_HOVER_DELAY_MS = 500;
@@ -396,7 +405,8 @@ export function LibraryPanel() {
       </div>
 
       {/* CC-19 — Hover/sticky preview overlay. Image-only for Phase A;
-          audio/video shell reserved for Phase D extension. */}
+          audio/video shell reserved for Phase D extension. Per LD-656
+          PHASED_DELIVERY_PRIMITIVE_HOOKS_S5_5C_V1. */}
       {preview ? (
         <div
           class={`mn-library-preview${preview.pinned ? ' mn-library-preview-pinned' : ''}`}
