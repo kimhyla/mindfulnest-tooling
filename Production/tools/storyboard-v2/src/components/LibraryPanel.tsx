@@ -349,10 +349,12 @@ export function LibraryPanel() {
             Library is empty for this event.
           </p>
         ) : filteredItems.length === 0 ? (
+          {/* Empty-state UI; non-image tiers will populate per LD-656
+              PHASED_DELIVERY_PRIMITIVE_HOOKS_S5_5C_V1 Phase D. */}
           <p class="mn-empty" data-testid="library-empty-tier">
             {searchQuery
               ? `No items match "${searchQuery}" in tier ${tier}.`
-              : `No items in tier ${tier} yet (Phase D will extend the data source).`}
+              : `No items in tier ${tier} yet.`}
           </p>
         ) : (
           <ul class="mn-library-list" data-testid="library-list">
