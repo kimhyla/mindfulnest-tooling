@@ -5346,9 +5346,16 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_v2_module_patch(body)
             if path == "/api/phase_b/regen_audio":
                 return self._handle_phase_b_regen_audio(body)
+            # F-PHASE-A-001 — canonical /api/phase_a/* aliases (same handlers; body.phase disambiguates).
+            if path == "/api/phase_a/regen_audio":
+                return self._handle_phase_b_regen_audio(body)
             if path == "/api/phase_b/mix_audio":
                 return self._handle_phase_b_mix_audio(body)
+            if path == "/api/phase_a/mix_audio":
+                return self._handle_phase_b_mix_audio(body)
             if path == "/api/phase_b/lipsync":
+                return self._handle_phase_b_lipsync(body)
+            if path == "/api/phase_a/lipsync":
                 return self._handle_phase_b_lipsync(body)
             if path == "/api/phase_b/preview":
                 return self._handle_phase_b_preview(body)
