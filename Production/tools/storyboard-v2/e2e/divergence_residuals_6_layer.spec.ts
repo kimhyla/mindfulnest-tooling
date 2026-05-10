@@ -103,8 +103,10 @@ test.describe('Track A residual #3 — BeatImageHolder assign_image drop wiring'
     const assignReqs: Request[] = [];
     page.on('request', (req) => {
       const url = req.url();
-      // pathappPatch routes via /api/v59/pathapp/<op> or similar. Capture
-      // any POST whose body contains "assign_image".
+      // [INFERRED — verify against api/client.ts at run time] pathappPatch
+      // routes via /api/v59/pathapp/<op> or similar. Capture any POST whose
+      // body contains "assign_image" — body-based check makes this robust to
+      // route shape changes.
       if (req.method() === 'POST' && (url.includes('/pathapp') || url.includes('/api/'))) {
         const body = req.postData() || '';
         if (body.includes('assign_image')) assignReqs.push(req);
@@ -162,7 +164,9 @@ test.describe('Track A residual #3 — BeatImageHolder assign_image drop wiring'
     await mockSnapshot(page);
     await gotoApp(page);
     await page.click('[data-testid="tab-storyboard"]');
-    // CC-16 from snapshot 95e4462 should now be in main.
+    // [CONFIRMED against archive/dropbox-resident/claude/preserve-uncommitted-divergence-20260507
+    //  commit 95e4462, reconciled into main via PR #19 commit 62d8e91] CC-16
+    // BeatImageHolder + .mn-storyboard-image-drop-zone CSS class now in main.
     const zone = page.locator('.mn-storyboard-image-drop-zone').first();
     await expect(zone).toBeVisible();
   });
