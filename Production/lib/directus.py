@@ -19,13 +19,29 @@ sent. Directus silently drops fields that don't match the collection schema.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+# fcntl is POSIX-only. On Windows we fall back to a process-local threading.Lock,
+# which serializes within-process queue mutation. Cross-process safety on Windows
+# would require msvcrt.locking() or the portalocker package; the current MCP
+# deployment ships only the MCP server as a writer, so process-local lock is
+# sufficient for committed Windows configs.
+try:
+    import fcntl  # type: ignore[import-not-found]
+    _HAVE_FCNTL = True
+except ImportError:
+    fcntl = None  # type: ignore[assignment]
+    _HAVE_FCNTL = False
+
+_THREAD_LOCK = threading.Lock()
 
 # Local import — directus_admin_client is a sibling in the same package.
 try:
@@ -312,7 +328,77 @@ def read_item(
 # -----------------------------------------------------------------------------
 
 
-_PENDING_QUEUE_PATH = Path(__file__).resolve().parent.parent.parent / "pending_directus_writes.json"
+def _resolve_pending_queue_path() -> Path:
+    """Resolve the canonical pending_directus_writes.json path.
+
+    Resolution order:
+    1. ``MN_PENDING_QUEUE_PATH`` env var — explicit absolute override.
+    2. ``MN_DROPBOX_ROOT`` env var + ``pending_directus_writes.json`` —
+       canonical Dropbox-tree project root. This makes the MCP server's
+       offline queue and the existing 88 callsites' queue converge to the
+       SAME file, so a write from either path is replayed by either's
+       session-start protocol.
+    3. Fallback to ``<this-file>.parent.parent.parent / pending_directus_writes.json``
+       (tooling-repo root). Used in tests and standalone runs where neither
+       env var is set.
+
+    Per CLAUDE.md Rule 19 (no error paths left open): the env-var-first
+    resolution closes the dual-queue coexistence bug — entries written by
+    the MCP server are now replayed by the Dropbox session-start protocol
+    when MN_DROPBOX_ROOT is set, and vice versa.
+    """
+    override = os.environ.get("MN_PENDING_QUEUE_PATH")
+    if override:
+        return Path(override).expanduser()
+    dropbox_root = os.environ.get("MN_DROPBOX_ROOT")
+    if dropbox_root:
+        return Path(dropbox_root).expanduser() / "pending_directus_writes.json"
+    return Path(__file__).resolve().parent.parent.parent / "pending_directus_writes.json"
+
+
+_PENDING_QUEUE_PATH = _resolve_pending_queue_path()
+
+
+_LOCK_PATH = _PENDING_QUEUE_PATH.with_suffix(".lock")
+
+
+@contextlib.contextmanager
+def _queue_file_lock():
+    """Advisory lock around pending_directus_writes.json mutation.
+
+    On POSIX (macOS/Linux), uses an fcntl.flock on a sidecar lock file for
+    cross-process safety. Closes the concurrent-writer race documented in
+    LD-661 `MCP_QUEUE_RACE_KNOWN_PHASE1_V1`: two processes (e.g., the
+    Directus MCP server + a parallel script) racing on read-parse-append-write
+    would lose entries; fcntl.flock serializes them.
+
+    On Windows (no fcntl module), falls back to a process-local
+    threading.Lock. This serializes within-process writers but does NOT
+    serialize cross-process writers. Production Windows deployments with
+    multiple writer processes would need to close that gap (msvcrt.locking
+    or portalocker) before relying on the queue under contention; the MCP
+    server is currently the sole writer in committed Windows configs, so
+    process-local lock is sufficient.
+
+    Lock file is a sidecar (`pending_directus_writes.lock`) — locking the
+    queue file directly would race with reads of an empty file at startup.
+    Lock is released on context exit even on exception.
+    """
+    _LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if _HAVE_FCNTL:
+        # Open in append mode so the file exists; fcntl works on the fd.
+        fd = os.open(str(_LOCK_PATH), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+    else:
+        with _THREAD_LOCK:
+            yield
 
 
 def queue_write_offline(collection: str, payload: dict, reason: str = "offline") -> Path:
@@ -324,28 +410,32 @@ def queue_write_offline(collection: str, payload: dict, reason: str = "offline")
 
     The file lives at the project root next to CLAUDE.md so session-start
     protocols can find it without knowing the lib path.
-    """
-    queue: list[dict] = []
-    if _PENDING_QUEUE_PATH.exists():
-        try:
-            queue = json.loads(_PENDING_QUEUE_PATH.read_text(encoding="utf-8"))
-            if not isinstance(queue, list):
-                queue = []
-        except (json.JSONDecodeError, OSError):
-            queue = []
 
-    queue.append(
-        {
-            "queued_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "collection": collection,
-            "payload": payload,
-            "reason": reason,
-        }
-    )
-    _PENDING_QUEUE_PATH.write_text(
-        json.dumps(queue, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-    return _PENDING_QUEUE_PATH
+    Concurrency: cross-process safe via fcntl.flock on a sidecar
+    `pending_directus_writes.lock` file. See LD-661 closure 2026-05-10.
+    """
+    with _queue_file_lock():
+        queue: list[dict] = []
+        if _PENDING_QUEUE_PATH.exists():
+            try:
+                queue = json.loads(_PENDING_QUEUE_PATH.read_text(encoding="utf-8"))
+                if not isinstance(queue, list):
+                    queue = []
+            except (json.JSONDecodeError, OSError):
+                queue = []
+
+        queue.append(
+            {
+                "queued_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "collection": collection,
+                "payload": payload,
+                "reason": reason,
+            }
+        )
+        _PENDING_QUEUE_PATH.write_text(
+            json.dumps(queue, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        return _PENDING_QUEUE_PATH
 
 
 def try_post_or_queue(
@@ -446,6 +536,108 @@ def try_post_or_queue(
     except Exception as e:  # noqa: BLE001 — last-ditch degrade-gracefully path
         path = queue_write_offline(
             collection, payload, reason=f"unexpected: {type(e).__name__}: {e}"
+        )
+        return {"queued": True, "path": str(path), "error": str(e)}
+
+
+def patch_item_verified(
+    collection: str,
+    item_id: Any,
+    payload: dict,
+    client: Optional[DirectusAdminClient] = None,
+) -> dict:
+    """PATCH an item to Directus, read it back, and verify every field matches.
+
+    Mirror of post_item_verified for UPDATE semantics. Closes the same silent
+    partial-write failure class on PATCH paths (Directus accepts a PATCH and
+    returns 200 even when fields are silently dropped).
+
+    Args:
+        collection: Directus collection name.
+        item_id: id of the row to PATCH.
+        payload: Dict of fields to update. Auto-fields are presence-verified
+                 only (see _AUTO_FIELDS).
+        client: Optional DirectusAdminClient.
+
+    Returns:
+        The Directus row as read back after PATCH.
+
+    Raises:
+        DirectusWriteError: on HTTP error from PATCH
+        DirectusReadError: on HTTP error from verification GET
+        SilentWriteFailure: on any field value mismatch after PATCH
+    """
+    c = client or DirectusAdminClient()
+
+    try:
+        c.patch_item(collection, item_id, payload)
+    except DirectusAdminError as e:
+        raise DirectusWriteError(collection, payload, e) from e
+
+    try:
+        row = c.get_item(collection, item_id)
+    except DirectusAdminError as e:
+        raise DirectusReadError(collection, item_id, e) from e
+
+    if not isinstance(row, dict):
+        raise DirectusReadError(
+            collection,
+            item_id,
+            RuntimeError(f"Read-back returned non-dict: {row!r}"),
+        )
+
+    mismatches = _diff_payload_vs_row(payload, row)
+    if mismatches:
+        raise SilentWriteFailure(collection, item_id, mismatches)
+
+    return row
+
+
+def try_patch_or_queue(
+    collection: str,
+    item_id: Any,
+    payload: dict,
+    client: Optional[DirectusAdminClient] = None,
+) -> dict:
+    """Try verified PATCH; on connection/write failure, queue to disk.
+
+    Mirror of try_post_or_queue for UPDATE semantics. Authored 2026-05-10 as
+    Phase A.6 of V59_DIRECTUS_MCP_SERVER_SPEC_v1 (cursor cross-review finding
+    4A). Same return-shape contract as try_post_or_queue: never raises;
+    returns row dict on success, sentinel dicts on each failure mode.
+
+    Returns:
+        - The Directus row on success (dict with 'id').
+        - {queued: True, path: str} if queued offline.
+        - {queued: False, silent_write_failure: True, item_id, mismatches, error}.
+
+    Note: PATCH does NOT trigger the Phase F browser-smoke gate currently.
+    The DS-21 gate fires on prod_activity_log _COMPLETE actions which are
+    POSTs by definition (creating new audit-trail rows), not PATCHes. If
+    governance ever needs PATCH-gated behavior, mirror the gate logic here.
+    """
+    queue_payload = dict(payload)
+    queue_payload["__patch_target_id"] = item_id  # mark for replay tooling
+    try:
+        return patch_item_verified(collection, item_id, payload, client=client)
+    except (DirectusWriteError, DirectusReadError) as e:
+        path = queue_write_offline(
+            collection, queue_payload, reason=f"patch_error: {e}"
+        )
+        return {"queued": True, "path": str(path), "error": str(e)}
+    except SilentWriteFailure as e:
+        return {
+            "queued": False,
+            "silent_write_failure": True,
+            "item_id": e.item_id,
+            "mismatches": e.mismatches,
+            "error": str(e),
+        }
+    except Exception as e:  # noqa: BLE001
+        path = queue_write_offline(
+            collection,
+            queue_payload,
+            reason=f"unexpected_patch: {type(e).__name__}: {e}",
         )
         return {"queued": True, "path": str(path), "error": str(e)}
 

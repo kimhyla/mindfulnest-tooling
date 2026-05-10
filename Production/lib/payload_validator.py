@@ -597,6 +597,17 @@ def invalidate_schema_cache(collection: Optional[str] = None) -> None:
     _refresh_overrides(None)
 
 
+def cached_collections() -> list[str]:
+    """Public accessor returning the list of currently-cached collection names.
+
+    Stable API surface for callers (e.g. the Directus MCP schema tool) that
+    need to enumerate cached collections without reaching into the private
+    ``_SCHEMA_CACHE`` dict. Maintainability barrier: refactors of the cache
+    structure only need to preserve this function's signature.
+    """
+    return list(_SCHEMA_CACHE.keys())
+
+
 # -----------------------------------------------------------------------------
 # Mode + validation
 # -----------------------------------------------------------------------------
@@ -676,7 +687,11 @@ def validate_payload(
             "payload": dict(payload),
         }
 
-    if not collection.startswith("prod_"):
+    if not (
+        collection.startswith("prod_")
+        or collection.startswith("app_")
+        or collection.startswith("coppa_")
+    ):
         return {
             "stripped_auto_fields": [],
             "retired_fields_used": [],

@@ -27,7 +27,7 @@ from Production.lib.paths import DROPBOX_ROOT  # noqa: E402
 
 _PROJECT_ROOT = str(DROPBOX_ROOT)
 
-from Production.tools.lib import credentials, directus
+from Production.tools.credentials_lib import credentials, directus  # noqa: E402  # LD MCP_REGISTERED_WRITE_MIGRATED_TO_TOOLING_V1 (2026-05-10): tooling dir is named credentials_lib, not lib. Fixes ModuleNotFoundError that previously surfaced only at first MCP register_asset/find_asset invocation (Rule 19 fail-late).
 
 # --- Configuration ---
 

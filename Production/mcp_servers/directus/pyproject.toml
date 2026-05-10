@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mn-directus-mcp"
+version = "0.1.0"
+description = "MindfulNest MCP server for Directus — schema-validated tool boundary enforcing Rule 35 + LD-364 read-back-after-write."
+requires-python = ">=3.10"
+dependencies = [
+    "fastmcp>=3.0",
+    "pydantic>=2.0",
+]
+
+[project.scripts]
+mn-directus-mcp = "server:main"
+
+[tool.setuptools]
+py-modules = ["server"]
+
+[tool.setuptools.packages.find]
+include = ["tools*"]
