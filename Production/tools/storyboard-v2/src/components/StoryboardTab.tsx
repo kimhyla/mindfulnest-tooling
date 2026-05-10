@@ -590,6 +590,10 @@ function BeatImageHolder({ index, beatId, beat, eventId, onMutated }: BeatImageH
   const dropHandlers = makeDropTarget(
     async (payload) => {
       if (payload.kind !== 'lib-image') return;
+      // 6-Layer wiring: backend handler is `_handle_assign_image` in
+      // production_server.py (registered route `assign_image` on pathappPatch
+      // dispatch table). Confirmed present at production_server.py
+      // _handle_assign_image (search by name; line drifts with file edits).
       const result = await pathappPatch(activeScope.value, 'assign_image', {
         beat: beatId,
         image_key: payload.lib_key,
