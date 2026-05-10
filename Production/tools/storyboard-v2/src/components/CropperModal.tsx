@@ -10,6 +10,7 @@ import type { Signal } from '@preact/signals';
 import { useRef, useState } from 'preact/hooks';
 import { activeScope, scopeKey } from '../state/scope';
 import { pathappPatch } from '../api/client';
+import { SERVER_BASE } from '../api/endpoints';
 import { makeDropTarget } from '../utils/dragdrop';
 import { Modal } from './ui/Modal';
 import { Spinner } from './ui/Spinner';
@@ -124,7 +125,7 @@ export function CropperModal({ state, onClose, onSaved }: CropperModalProps) {
       // Resolve a server-fetchable URL: prefer abs_path through /api/cr/full,
       // fall back to lib_key. Either way, set source so canvas reloads.
       const newSrc = payload.abs_path
-        ? `http://localhost:5111/api/cr/full?abs_path=${encodeURIComponent(payload.abs_path)}`
+        ? `${SERVER_BASE}/api/cr/full?abs_path=${encodeURIComponent(payload.abs_path)}`
         : payload.lib_key;
       state.value = {
         ...state.value,

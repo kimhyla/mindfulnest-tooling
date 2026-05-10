@@ -132,6 +132,20 @@ function loadPersistedTier(): LibraryTier {
   try {
     const v = window.localStorage.getItem(LIBRARY_TIER_LS_KEY);
     if (v && (LIBRARY_TIERS as string[]).includes(v)) return v as LibraryTier;
+    // Eviction: if a value persists that is no longer in LIBRARY_TIERS
+    // (e.g. enum shrank, schema migrated), remove it so the next read
+    // doesn't keep returning DEFAULT via fall-through. Best-effort.
+    if (v !== null && v !== undefined) {
+      try {
+        window.localStorage.removeItem(LIBRARY_TIER_LS_KEY);
+      } catch (e) {
+        // Read-only storage / quota / disabled — surface the persistent
+        // invalid value to the console so a stale tier doesn't get
+        // silently re-loaded on every render forever (DS observability).
+        // eslint-disable-next-line no-console
+        console.warn('[LibraryPanel] Could not evict invalid tier value', { value: v, error: e });
+      }
+    }
   } catch {
     /* localStorage may be unavailable in some test contexts */
   }

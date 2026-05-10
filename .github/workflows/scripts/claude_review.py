@@ -106,14 +106,31 @@ def call_anthropic(client, system_prompt: str, diff_chunk: str, *, retries: int 
 
 
 _NON_BLOCKING_SKIP_PHRASES = (
+    # Explicit "(non-)blocking" markers — high-precision phrases.
     "no blocking",
     "not blocking",
     "non-blocking",
-    "no new blocking",
-    "not a new",
-    "not a blocker",
     "non-blocker",
     "no blocker",
+    "no new blocking",
+    "downgrading to non-blocking",
+    # Anchored bot self-resolution pattern. Earlier broad substrings
+    # ("not a new", "not a blocker", "this is a fix") were all rejected
+    # because they can match mid-sentence in genuine blocking findings
+    # (e.g. "this is not a new pattern but a real blocker", "this is a
+    # fix for X but introduces Y blocking issue"). Only retain phrases
+    # that are unambiguous self-dismissal in any context.
+    "not a new introduction",
+)
+
+# Bullet content markers indicating "no findings" — bot writes "- (none)"
+# when the section has no entries. Compared against the bullet's content
+# AFTER stripping the leading "- ", normalized to lowercase.
+_EMPTY_BULLET_MARKERS = (
+    "(none)",
+    "none",
+    "n/a",
+    "—",
 )
 
 
@@ -131,6 +148,14 @@ def has_blocking(text: str) -> bool:
         if not (line.startswith("- ") and len(line) > 2):
             continue
         line_l = line.lower()
+        # Empty-marker structural skip: bot writes "- (none)" / "- N/A"
+        # when there are no findings. Compare bullet content (after the
+        # "- " prefix) trimmed + lowercased against known markers. This
+        # is more reliable than substring match — "(none)" inside a real
+        # finding ("this is (none) of the issue") would no longer mask.
+        bullet_content = line[2:].strip().lower()
+        if bullet_content in _EMPTY_BULLET_MARKERS:
+            continue
         # Skip bullets where the bot's own prose explicitly says the finding
         # isn't blocking (e.g. "no blocking", "no new blocking issue
         # introduced", "not a new introduction"). The original single-phrase
