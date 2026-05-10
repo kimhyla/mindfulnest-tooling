@@ -71,6 +71,10 @@ if _TOOLS_DIR_FOR_BOOTSTRAP not in sys.path:
     sys.path.insert(1, _TOOLS_DIR_FOR_BOOTSTRAP)
 from lib.atomic_json_write import atomic_json_write  # noqa: E402 (Windows/Dropbox retry-safe JSON writes per LD-368)
 from lib.paths import DROPBOX_ROOT  # noqa: E402 LD-505 Phase B: MN_DROPBOX_ROOT, not __file__ chain
+
+# Checkout root (…/mindfulnest-tooling). Resolves /files?path=Production/… when cwd is not Dropbox.
+_MN_REPO_ROOT = Path(__file__).resolve().parents[2]
+
 # scope_router — mandatory partition router for v59 authoring-workflow
 # mutations (LD SCOPE_ROUTER_V1, C-1). Replaces hardcoded `videos.intro`
 # lifts in mutation handlers; resolve() validates body scope keys and
@@ -10315,17 +10319,24 @@ class ProductionHandler(BaseHTTPRequestHandler):
             if os.path.isfile(file_path):
                 resolved = file_path
             elif not os.path.isabs(file_path):
-                joined = os.path.join(str(DROPBOX_ROOT), file_path)
-                if os.path.isfile(joined):
-                    resolved = joined
+                drop_join = os.path.join(str(DROPBOX_ROOT), file_path)
+                if os.path.isfile(drop_join):
+                    resolved = drop_join
+                else:
+                    alt = (_MN_REPO_ROOT / Path(file_path)).resolve()
+                    if alt.is_file():
+                        resolved = str(alt)
         if not resolved:
             return self._send_json(404, {"error": "file not found"})
         file_path = resolved
-        # 2. Project-root containment — refuse paths outside the repo.
+        # 2. Containment — under Dropbox root OR checkout root (CI / Playwright cwd).
         try:
-            project_root = os.path.realpath(str(DROPBOX_ROOT))
+            drop_root = os.path.realpath(str(DROPBOX_ROOT))
+            repo_root = os.path.realpath(str(_MN_REPO_ROOT))
             real_path = os.path.realpath(file_path)
-            if not (real_path == project_root or real_path.startswith(project_root + os.sep)):
+            under_drop = real_path == drop_root or real_path.startswith(drop_root + os.sep)
+            under_repo = real_path == repo_root or real_path.startswith(repo_root + os.sep)
+            if not (under_drop or under_repo):
                 return self._send_json(403, {"error": "path outside project root"})
         except Exception:
             return self._send_json(403, {"error": "path validation failed"})
