@@ -72,10 +72,15 @@ async function mockSnapshot(page: Page): Promise<void> {
 // ----------------------------------------------------------------------------
 
 test.describe('Track A residual #3 — BeatImageHolder assign_image drop wiring', () => {
-  test('drop on mn-storyboard-image-drop-zone fires pathappPatch op=assign_image with { beat, image_key }', async ({ page }) => {
-    // Mock minimal storyboard state — one event with one beat that has no
-    // image_path so the drop zone renders.
+  test('drop on mn-storyboard-image-drop-zone fires pathappPatch op=assign_image with { beat, image_key } AND triggers parent re-fetch (Layer 5)', async ({ page }) => {
+    // Mock state endpoint with a counter so we can prove Layer 5 — the
+    // onMutated() callback in BeatImageHolder fires after the server
+    // response, which bumps refreshTick in the parent StoryboardTab,
+    // which re-runs the state-fetch useEffect. We expect ≥2 state
+    // fetches: 1 on mount + ≥1 post-mutation.
+    let stateFetchCount = 0;
     await page.route('**/api/v2/event/**/state', async (r) => {
+      stateFetchCount += 1;
       await r.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -103,10 +108,10 @@ test.describe('Track A residual #3 — BeatImageHolder assign_image drop wiring'
     const assignReqs: Request[] = [];
     page.on('request', (req) => {
       const url = req.url();
-      // [INFERRED — verify against api/client.ts at run time] pathappPatch
-      // routes via /api/v59/pathapp/<op> or similar. Capture any POST whose
-      // body contains "assign_image" — body-based check makes this robust to
-      // route shape changes.
+      // [INFERRED — verify against src/api/client.ts] pathappPatch routes
+      // via /api/v59/pathapp/<op> or similar. Capture any POST whose body
+      // contains "assign_image" — body-based check makes this robust to
+      // route-shape changes.
       if (req.method() === 'POST' && (url.includes('/pathapp') || url.includes('/api/'))) {
         const body = req.postData() || '';
         if (body.includes('assign_image')) assignReqs.push(req);
@@ -129,19 +134,33 @@ test.describe('Track A residual #3 — BeatImageHolder assign_image drop wiring'
     await expect(dropZone).toBeVisible({ timeout: 5_000 });
     await expect(dropZone).toHaveClass(/mn-storyboard-image-drop-zone/);
 
+    // Capture initial state-fetch count so the post-mutation re-fetch can
+    // be detected as a strict increase rather than an absolute number
+    // (the mount sequence may issue >1 fetch depending on useEffect deps).
+    const stateFetchCountAtDrop = stateFetchCount;
+
     // 6-Layer check: dispatch the synthetic drop and verify pathappPatch fires
-    // with the right op + body. We don't deep-assert the response because the
-    // contract under test is the UI→backend wiring, not the server behavior.
+    // with the right op + body.
     await synthDrop(page, '[data-testid="beat-image-zone-0"]', {
       kind: 'lib-image',
       lib_key: 'test_lib_key_pa01',
     });
 
+    // Layer 4 — UI→backend mutation wiring.
     await expect.poll(() => assignReqs.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
     const body = JSON.parse(assignReqs[0].postData() || '{}');
     // body shape: { beat, image_key, op or implied via URL routing }
     expect(body['beat']).toBe('beat_pa_01');
     expect(body['image_key']).toBe('test_lib_key_pa01');
+
+    // Layer 5 — onMutated() callback triggers parent state re-fetch. The
+    // contract: after the assign_image response resolves, BeatImageHolder
+    // calls onMutated, which in StoryboardTab bumps refreshTick, which
+    // re-runs the state-fetch useEffect. Assert state fetch count strictly
+    // increased after the drop — proves the wiring is end-to-end, not
+    // just request-only.
+    await expect.poll(() => stateFetchCount, { timeout: 5_000, intervals: [200, 500, 1000] })
+      .toBeGreaterThan(stateFetchCountAtDrop);
   });
 
   test('drop zone CSS class is present in DOM (sanity — proves PR #19 reconciliation landed)', async ({ page }) => {
