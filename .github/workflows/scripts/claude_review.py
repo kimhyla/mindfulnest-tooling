@@ -105,6 +105,18 @@ def call_anthropic(client, system_prompt: str, diff_chunk: str, *, retries: int 
     raise RuntimeError(f"call_anthropic exhausted retries: {last_err}")
 
 
+_NON_BLOCKING_SKIP_PHRASES = (
+    "no blocking",
+    "not blocking",
+    "non-blocking",
+    "no new blocking",
+    "not a new",
+    "not a blocker",
+    "non-blocker",
+    "no blocker",
+)
+
+
 def has_blocking(text: str) -> bool:
     blocking_section = re.search(
         r"###\s*Blocking\s*\n(.*?)(?:\n###|\Z)",
@@ -116,8 +128,17 @@ def has_blocking(text: str) -> bool:
     body = blocking_section.group(1)
     for line in body.splitlines():
         line = line.strip()
-        if line.startswith("- ") and len(line) > 2 and "no blocking" not in line.lower():
-            return True
+        if not (line.startswith("- ") and len(line) > 2):
+            continue
+        line_l = line.lower()
+        # Skip bullets where the bot's own prose explicitly says the finding
+        # isn't blocking (e.g. "no blocking", "no new blocking issue
+        # introduced", "not a new introduction"). The original single-phrase
+        # check ("no blocking") missed common patterns the bot emits when it
+        # lists a deletion or pre-existing issue.
+        if any(p in line_l for p in _NON_BLOCKING_SKIP_PHRASES):
+            continue
+        return True
     return False
 
 

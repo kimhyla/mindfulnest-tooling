@@ -9389,6 +9389,31 @@ class ProductionHandler(BaseHTTPRequestHandler):
         except Exception as e:
             print(f"[BG] warning: could not seed partition: {e}")
 
+        # BG-37 — Audit-trail row for Accept All (per Rule 18 + spec §4 Phase A).
+        # Captures selection_map (beat_id → accepted_image_key) so the next
+        # session can reproduce which selections were locked for this segment.
+        # Best-effort; non-blocking — never fails the request on Directus error.
+        try:
+            from lib.directus import try_post_or_queue
+            selection_map = {
+                b.get("beat_id"): b.get("accepted_image_key")
+                for b in body.get("beats", [])
+                if b.get("beat_id")
+            }
+            try_post_or_queue("prod_activity_log", {
+                "action": "BEAT_GEN_ACCEPT_ALL",
+                "performed_by": "v59_bg_accept_beats",
+                "details": {
+                    "selection_map": selection_map,
+                    "event_id": scope.event_id,
+                    "target": scope.video_role,
+                    "accepted_count": len(beat_ids),
+                    "ld": "BG_ACCEPT_BEATS_ACTIVITY_LOG_V1",
+                },
+            })
+        except Exception as e:
+            print(f"[BG] warning: BEAT_GEN_ACCEPT_ALL activity log failed: {e}")
+
         return self._send_json(200, {"ok": True, "accepted": len(beat_ids)})
 
     @with_pin_and_drain('_handle_bg_submit_flux', track_sync=True)
@@ -10141,8 +10166,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
     def _handle_cr_save_crop(self, body: dict) -> None:
         """POST /api/cr/save-crop {crop_png_b64, beat_id, source_key, event_id?}
-        Rule 6 upscale + Rule 6.2 WebP delivery + Directus Two-Write.
-        Returns { key, filename, thumb_b64, gallery_b64 }."""
+        Rule 6 upscale + Rule 6.2 WebP delivery + registered_write two-write (BG-22).
+        Returns { key, filename, thumb_b64, gallery_b64, asset_id }."""
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
         if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
@@ -10180,58 +10205,47 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
         key = f"crop_{beat_id}_{ts}"
 
-        # Directus Two-Write (Rule 14 + Registration Compliance Gate)
-        # Write 1: prod_visual_assets  Write 2: prod_activity_log
-        # Uses inline urllib (LD-137 fresh SSL per call) — same pattern as rest of server.
+        # BG-22 + C-9 — Asset registration via registered_write.register_asset
+        # (replaces the legacy inline `_directus_post_bg("prod_visual_assets", ...)`
+        # block per spec §4 Phase A). registered_write performs the Two-Write
+        # internally (prod_assets row + prod_activity_log register_asset row),
+        # SHA256-deduped, with `iteration_notes` capture per LD-421 + Rule 34.
+        # Failures are queued to pending_directus_writes.json automatically.
+        # asset_type mapping: legacy "crop_4x3" → "still_delivery" per Rule 6.2 +
+        # _ACCEPTED_ASSET_TYPES whitelist. Module-agnostic crop registers with
+        # module_id=1 + library=True per _MODULE_MAP convention.
+        asset_id = None
         try:
-            DIRECTUS_BASE = "https://directus-production-3460.up.railway.app"
-            ctx_d = ssl.create_default_context()
-            ctx_d.options |= ssl.OP_NO_TICKET
-
-            def _directus_post_bg(collection, payload):
-                # Auth
-                conn_a = http.client.HTTPSConnection(
-                    "directus-production-3460.up.railway.app", context=ctx_d, timeout=15)
-                conn_a.request("POST", "/auth/login",
-                    body=json.dumps({"email": "kimhyla11@gmail.com", "password": "directus11$"}).encode(),
-                    headers={"Content-Type": "application/json"})
-                tok = json.loads(conn_a.getresponse().read())["data"]["access_token"]
-                conn_a.close()
-                # Write
-                conn_b = http.client.HTTPSConnection(
-                    "directus-production-3460.up.railway.app", context=ctx_d, timeout=15)
-                conn_b.request("POST", f"/items/{collection}",
-                    body=json.dumps(payload).encode(),
-                    headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json"})
-                result = json.loads(conn_b.getresponse().read())
-                conn_b.close()
-                return result
-
-            _directus_post_bg("prod_visual_assets", {
-                "filename":        filename,
-                "filepath":        delivery_path,
-                "role":            "delivery",
-                "asset_type":      "crop_4x3",
-                "status":          "approved",
-                "aspect_ratio":    "4:3",
-                "width":           width,
-                "height":          height,
-                "file_size_bytes": len(delivery_bytes),
-            })
-            _directus_post_bg("prod_activity_log", {
-                "action":    "crop_saved",
-                "component": "beat_generator_cropper",
-                "details":   json.dumps({"key": key, "filename": filename, "beat_id": beat_id}),
-            })
-            print(f"[BG] Directus Two-Write OK: {filename}")
+            from registered_write import register_asset as _register_asset
+            iteration_notes = (
+                f"BG cropper output for beat {beat_id or '<unset>'} from source "
+                f"key {source_key or '<unset>'} (4:3 crop, {width}x{height} WebP)"
+            )
+            asset_id, _abs_path = _register_asset(
+                file_path=delivery_path,
+                asset_type="still_delivery",
+                module_id=1,
+                beat_id=beat_id or None,
+                produced_by_skill="v59_bg_cropper",
+                iteration_notes=iteration_notes,
+                tags=["bg_cropper", "crop_4x3", "delivery"],
+                library=True,
+                role="delivery",
+                colloquial_name=f"crop {beat_id} {ts}",
+            )
+            if asset_id and asset_id > 0:
+                print(f"[BG] registered_write OK asset_id={asset_id} {filename}")
+            else:
+                print(f"[BG] registered_write queued (offline) for {filename}")
         except Exception as e:
-            print(f"[BG] Directus Two-Write warning (non-fatal): {e}")
+            print(f"[BG] registered_write warning (non-fatal): {e}")
 
         return self._send_json(200, {
             "key": key,
             "filename": filename,
             "thumb_b64": thumb_b64,
             "gallery_b64": gallery_b64,
+            "asset_id": asset_id,
         })
 
     @with_pin_and_drain('_handle_cr_upload', track_sync=True)
