@@ -11,7 +11,7 @@ import { useEffect } from 'preact/hooks';
 import { ScopeBoundary } from './components/ScopeBoundary';
 import { ScopeBanner } from './components/ScopeBanner';
 import { ToastHost } from './components/ui/Toast';
-import { TabBar, type TabKey } from './components/TabBar';
+import { TabBar, TABS, ACTIVE_TAB_STORAGE_KEY, type TabKey } from './components/TabBar';
 import { StoryboardTab } from './components/StoryboardTab';
 import { BgTab } from './components/BgTab';
 import { CropperModal, initialCropperModalState } from './components/CropperModal';
@@ -27,9 +27,19 @@ import { PhaseBTab } from './components/tabs/PhaseBTab';
 import { activeScope, scopeKey } from './state/scope';
 import './app.css';
 
+function readStoredActiveTab(): TabKey {
+  try {
+    const raw = sessionStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
+    if (raw && TABS.some((t) => t.key === raw)) return raw as TabKey;
+  } catch {
+    // ignore
+  }
+  return 'storyboard';
+}
+
 // Top-level signals — cross-tab UI state lives here, NOT in any component
 // closure. This keeps state explicit and inspectable.
-const activeTab = signal<TabKey>('storyboard');
+const activeTab = signal<TabKey>(readStoredActiveTab());
 const cropperState = signal({ ...initialCropperModalState });
 
 function ActivePane() {
