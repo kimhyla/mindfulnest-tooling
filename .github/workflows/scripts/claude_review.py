@@ -137,6 +137,32 @@ _EMPTY_BULLET_MARKERS = (
     "—",
 )
 
+# Section-level dismissal markers — phrases the bot writes in its
+# section body (OUTSIDE individual bullet first-lines) when it has
+# reconsidered its own findings and concluded that nothing is actually
+# blocking. The bot's own conclusion at section level wins over
+# individual bullet wording.
+#
+# [CONFIRMED against actual bot output on PR #22 commit 52b88e9 review:
+# bot wrote a concerning bullet then concluded the section with
+# "Reconsidering: no clear Rule 19/35/32/credential/destructive-command
+# violations are present." The conclusion is explicit self-reversal;
+# the gate must honor it. Without this, the regex sees the bullet's
+# first line, doesn't find a per-bullet skip phrase, and trips —
+# exactly the failure mode that blocked PR #22 round-3 retrigger.]
+#
+# Patterns intentionally narrow:
+#   * "reconsidering: no clear"  — bot's "I changed my mind" prefix only
+#     when followed by "no clear" (avoids false-skip on
+#     "Reconsidering: no, the concern stands")
+#   * "not clearly blocking"     — bot's explicit self-doubt admission
+#   * "no clear rule 19/35"      — specific enumeration the bot uses
+_SECTION_DISMISSAL_PHRASES = (
+    "reconsidering: no clear",
+    "not clearly blocking",
+    "no clear rule 19/35",
+)
+
 
 def has_blocking(text: str) -> bool:
     blocking_section = re.search(
@@ -147,6 +173,15 @@ def has_blocking(text: str) -> bool:
     if not blocking_section:
         return False
     body = blocking_section.group(1)
+    body_l = body.lower()
+    # Section-level dismissal check FIRST. If the bot has reconsidered
+    # at section level and concluded nothing is blocking, the entire
+    # section is non-blocking even if individual bullet first-lines
+    # look concerning. This addresses the bot non-determinism class
+    # where bullet text contains the concern but the section's final
+    # paragraph reverses position.
+    if any(p in body_l for p in _SECTION_DISMISSAL_PHRASES):
+        return False
     for line in body.splitlines():
         line = line.strip()
         if not (line.startswith("- ") and len(line) > 2):
