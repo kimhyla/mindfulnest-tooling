@@ -38,6 +38,12 @@ async function gotoApp(page: Page): Promise<void> {
     // eslint-disable-next-line no-console
     console.warn('[pageerror]', err.message);
   });
+  // Rule 32 N/A: applies to fetch() calls in production tool HTML (storyboard,
+  // beat generator, cropper) per CLAUDE.md Rule 32 wording. Playwright e2e
+  // test navigation uses Playwright's `baseURL` config (set to
+  // `http://localhost:5111` in playwright.config.ts) — established
+  // convention used in 18 existing spec files. [CONFIRMED via
+  // `grep -rln "page.goto('/')" Production/tools/storyboard-v2/e2e/`]
   await page.goto('/');
   await expect(page.locator('[data-testid="app-root"]')).toBeVisible();
 }
@@ -65,6 +71,16 @@ async function mockSegments(page: Page): Promise<void> {
 }
 
 test.describe('Layer B Option B — bg_session_state scope-canonical contract', () => {
+  // T1 is a regression guard for an EXISTING client contract — the
+  // storyboard-v2 client is already wired (in api/client.ts +
+  // BgTab.tsx) to send `scope_event_id` on bg_session_state requests
+  // when a scope is active. This PR's server change presumes that
+  // wiring; T1 makes the presumption explicit so any future client
+  // refactor that drops scope_event_id is caught at CI time. The
+  // assertion is strict-equality on `scope_event_id` (NOT the
+  // `event_id` legacy alias) — a vacuous pass would require the
+  // client to emit zero requests, which fails on the prior
+  // `expect.poll(() => sessionStateReqs.length).toBeGreaterThanOrEqual(1)`.
   test('T1 — bg_session_state request includes scope_event_id query param when client has a scope', async ({ page }) => {
     await mockSnapshot(page);
     await mockSegments(page);
@@ -113,53 +129,17 @@ test.describe('Layer B Option B — bg_session_state scope-canonical contract', 
     expect(url0.searchParams.has('scope_event_id')).toBe(true);
   });
 
-  test('T2 — response scope_active_context.event_id matches request scope_event_id (round-trip contract)', async ({ page }) => {
-    await mockSnapshot(page);
-    await mockSegments(page);
-
-    let lastRequestedEventId: string | null = null;
-    let lastRespondedScopeEventId: string | null = null;
-
-    await page.route('**/api/bg/session-state**', async (r) => {
-      const url = new URL(r.request().url());
-      const eid = url.searchParams.get('scope_event_id') ?? url.searchParams.get('event_id');
-      lastRequestedEventId = eid;
-      // Server-side Option B contract: response's scope_active_context
-      // mirrors the request's scope_event_id (NOT sidecar's active_context).
-      const responseScope = { arc_number: 1, event_id: eid ?? 'fallback', phase: 'intro' };
-      lastRespondedScopeEventId = responseScope.event_id;
-      await r.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          // Sidecar active_context intentionally DIVERGES from scope to
-          // exercise the Option B contract (scope wins).
-          active_context: { arc_number: 1, event_id: 'STALE_ACTIVE_CONTEXT', phase: 'intro' },
-          scope_active_context: responseScope,
-          beats: [],
-          flux_options_complete: false,
-          capabilities: {},
-          migration_warnings: [{
-            type: 'scope_active_context_divergence',
-            message: 'scope_event_id derived segment differs from sidecar.active_context — scope is canonical per LD-545 Option B',
-            scope: responseScope,
-            active_context: { arc_number: 1, event_id: 'STALE_ACTIVE_CONTEXT', phase: 'intro' },
-          }],
-        }),
-      });
-    });
-
-    await gotoApp(page);
-    await page.click('[data-testid="tab-bg"]');
-
-    // Wait until the mock has observed at least one request.
-    await expect.poll(() => lastRequestedEventId, { timeout: 5_000 }).not.toBeNull();
-
-    // T2 assertion: response's scope_active_context.event_id matches what
-    // the request asked for. This is the contract gallant-bouman's
-    // production_server.py edit established (LD-545 Option B).
-    expect(lastRespondedScopeEventId).toBe(lastRequestedEventId);
-  });
+  // T2 deliberately removed in round-3 review cycle: a previous draft
+  // asserted the round-trip `lastRespondedScopeEventId === lastRequestedEventId`,
+  // which the AI review correctly flagged as trivially true by mock
+  // construction (the mock built the response scope from the request's
+  // event_id parameter, so the assertion tested the mock's own logic).
+  // The server-side contract this would have tested (response's
+  // scope_active_context derived from request, NOT sidecar's
+  // active_context) belongs in a Python pytest against the real handler,
+  // not a Playwright mock — filed as prod_blockers id=114 for
+  // architectural follow-up. T3 below covers the meaningful client-render
+  // contract under divergence.
 
   test('T3 — divergence migration_warning does not break the BG render (Bug 2/4 regression guard)', async ({ page }) => {
     await mockSnapshot(page);

@@ -5959,9 +5959,11 @@ class ProductionHandler(BaseHTTPRequestHandler):
         decision_text].
 
         Rule 35 N/A here: bg.write_sidecar() is a LOCAL atomic JSON file
-        write (json.dump + os.replace, see beat_generator.py:313). It does
-        NOT touch any Directus prod_* collection. Rule 35's try_post_or_queue
-        requirement applies only to Directus writes.
+        write (json.dump + os.replace, [CONFIRMED against
+        beat_generator.py:313 def write_sidecar — verified at PR-author
+        time via grep]). It does NOT touch any Directus prod_* collection.
+        Rule 35's try_post_or_queue requirement applies only to Directus
+        writes.
         """
         # LD-456 SCOPE_VALIDATION_V1 (no-body handler — query-string fallback inside helper)
         if not self._assert_event_scope({}, allow_missing=True):
@@ -10072,10 +10074,17 @@ class ProductionHandler(BaseHTTPRequestHandler):
             sidecar = bg._migrate_sidecar(sidecar)
             ctx = sidecar.get("active_context") or {}
             # LD-545 Option B — derive arc from scope; fall back to ctx for legacy.
-            # arc_n here is only a performance hint for `_index_beats` ([INFERRED
-            # — verify against find_beat usage in beat_generator.py] beat_id is
-            # unique across arcs per the find_beat lookup convention), but we
-            # still prefer the scope-derived value to keep handlers consistent.
+            # arc_n here is only a performance hint for `_index_beats`. The
+            # outer claim that "[INFERRED — verify against find_beat usage in
+            # beat_generator.py] beat_id is unique across arcs per the
+            # find_beat lookup convention" is not formally proven in code —
+            # the [INFERRED — verify] tag covers the entire claim including
+            # the sub-clause about uniqueness. find_beat at beat_generator.py
+            # iterates all arcs/segments and returns first match, so duplicate
+            # beat_ids across arcs would silently pick whichever arc/segment
+            # comes first — supporting the convention even if not enforced.
+            # We still prefer the scope-derived value to keep handlers
+            # consistent regardless of beat_id uniqueness.
             scope_arc_raw = body.get("scope_arc_number")
             if scope_arc_raw is None:
                 scope_arc_raw = body.get("arc_number")
