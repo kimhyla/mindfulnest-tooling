@@ -21,6 +21,22 @@
 
 import { test, expect, type Page, type Request } from '@playwright/test';
 
+const FIXTURE_EVENT = 'Event_e2e_fixture';
+
+// Reset server-side event scope before every test (test-hygiene only — no
+// production code change). The shared production_server can be left in
+// scope_type='milestone' by earlier specs (e.g. f_project_001_milestone_scope.spec.ts
+// R1.x → milestone_load). ScopeBoundary then hydrates UI as milestone scope
+// (per ef0b007 F-PROJECT-001 fix), which disables the Phase A/B tabs every
+// G-test in this file (Stitcher/SFX/transitions/trims) expects to interact
+// with. Re-pin server to the fixture event so each test starts from a clean
+// event-scope baseline. Absolute URL per Rule 32.
+test.beforeEach(async ({ request }) => {
+  await request.post('http://localhost:5111/api/event/load', {
+    data: { event_id: FIXTURE_EVENT },
+  });
+});
+
 // ----------------------------------------------------------------------------
 // Helpers
 // ----------------------------------------------------------------------------
