@@ -184,9 +184,20 @@ export async function pathappPatch<T = unknown>(
   if (!opts.skipSnapshot && endpoint !== 'state_snapshot' && endpoint !== 'event_load') {
     // Fire-and-forget snapshot with explicit scope. Failure is logged but
     // does NOT block the mutation (the snapshot is a safety net, not a gate).
+    //
+    // F-STORYBOARD-001 fix (prod_blockers id=120, 2026-05-10):
+    // Server's /api/state/snapshot handler requires scope_video_role per LD-474
+    // (VIDEO_ROLE_INVALID error). Inline smoke captured 6/7 snapshot calls
+    // returning 400. Including scope_video_role + scope_event_id in the body
+    // matches the pattern used for the main mutation payload below.
     const snap = await apiPostRaw(
       MUTATION_ENDPOINTS.state_snapshot,
-      { event_id: scope.event_id },
+      {
+        event_id: scope.event_id,
+        scope_event_id: scope.event_id,
+        scope_video_role: activeTargetVideo.value,
+        scope_version: scope.version,
+      },
       'POST',
     );
     if (!snap.ok) {
