@@ -107,7 +107,8 @@ MAX_MODULE_BYTES: int = 83_886_080
 MAX_MODULE_DURATION_MS: int = 420_000
 
 #: LD-296 SIZE_BUDGET_VIDEO_V1 — per-input overall bitrate ≤ 1.9 Mbps
-#: (1,900,000 bps); 5% guard band under the 2.0 Mbps hard ceiling.
+#: (1,900,000 bps); 5% guard band under the 2.0 Mbps hard ceiling
+#: [CONFIRMED against LD-296 SIZE_BUDGET_VIDEO_V1 + V59_PRODUCTION_PIPELINE_STREAM_BF_SPEC_v1 §3.4].
 MAX_BITRATE_BPS: int = 1_900_000
 
 #: ffmpeg silencedetect / anullsrc parameters for Step 1.5 silence injection
@@ -710,9 +711,11 @@ def _emit_listen_through(
 ) -> None:
     """Wrap the Phase B audio MP3 in an MP4 with a black 1280x720 slate frame.
 
-    Per ASSEMBLE_MODULE_CONTRACT.md "Listen-through file generation. Produce
+    Per ASSEMBLE_MODULE_CONTRACT.md: "Listen-through file generation. Produce
     a separate listen-through MP4 (Phase B audio + slate frames) for Kim's
-    QuickTime review per dashboard-gate audio delivery rule."
+    QuickTime review per dashboard-gate audio delivery rule" [CONFIRMED
+    against Production/contracts/ASSEMBLE_MODULE_CONTRACT.md:37 + spec §7.3
+    SOFT FAIL handling].
     """
     args = [
         FFMPEG_BIN,
@@ -950,14 +953,21 @@ _ARTIFACT_ASSET_TYPE_MAP = {
 
 
 def _asset_type_for_artifact(path: Path) -> str:
+    """Map a Phase C artifact filename to a ``registered_write._ACCEPTED_ASSET_TYPES``
+    value. Manifest / ffprobe / log / size_report / sha256 sidecars use the
+    ``"unknown"`` backfill fallback, which IS in the accepted set [CONFIRMED
+    against Production/tools/registered_write.py:36-58]. Final atomic MP4 uses
+    ``final_atomic_mp4`` per LD-280. Listen-through .mp4 is Kim-review, NOT a
+    delivery asset, so it explicitly uses ``"unknown"`` to stay out of the
+    delivery class.
+    """
     name = path.name
     if name.endswith(".listen_through.mp4"):
-        # Kim-review file, NOT a delivery asset — keep distinct asset_type.
         return "unknown"
     if name.endswith(".mp4"):
         return "final_atomic_mp4"
     if name.endswith(".manifest.json"):
-        return "unknown"  # Future: `module_manifest_json` once enum extended.
+        return "unknown"
     return _ARTIFACT_ASSET_TYPE_MAP.get(path.suffix, "unknown")
 
 
