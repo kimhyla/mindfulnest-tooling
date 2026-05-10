@@ -203,10 +203,11 @@ def ffmpeg_run(args: List[str]) -> int:
     """Run ffmpeg with the given argv (no implicit ``ffmpeg`` prefix — caller
     supplies the full command list starting with the binary name).
 
-    Returns the integer exit code so step functions can branch on it. Stderr
-    streams to the parent process so CI logs surface ffmpeg failures.
+    Returns the integer exit code so step functions can branch on it. Stdout
+    and stderr are inherited from the parent process (NOT captured) so ffmpeg's
+    progress + error lines appear in CI logs verbatim when a step HARD STOPs.
     """
-    result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    result = subprocess.run(args)
     return result.returncode
 
 
@@ -879,10 +880,15 @@ def step_10_emit_artifacts(
         _emit_listen_through(audio_mix_path, listen_artifact)
     except Exception:
         pass  # Soft fail per spec §7.3.
-    # Safety net (runs whether _emit_listen_through raised OR returned without
-    # writing a file — e.g. ffmpeg mocked, or rc != 0 silently). Stub keeps the
-    # 7-artifact length invariant; downstream Kim-review tooling sees an empty
-    # file and surfaces the gap rather than a missing-file error.
+    # Length-invariant safety net — runs whether _emit_listen_through raised
+    # OR returned without writing a file (ffmpeg returned non-zero silently,
+    # ffmpeg mocked in tests, etc.). An empty file lets Kim-review tooling
+    # distinguish "listen-through unavailable for this run" from "manifest
+    # missing the artifact" — the latter would cascade through size_report
+    # registration mismatches per Rule 19. Not a deferral; explicitly the
+    # contract behavior documented in spec §7.3 "Listen-through file
+    # generation fails → Soft fail; assemble_module continues; Kim review
+    # file unavailable for this run."
     if not listen_artifact.exists():
         listen_artifact.write_bytes(b"")
 
