@@ -106,14 +106,24 @@ def call_anthropic(client, system_prompt: str, diff_chunk: str, *, retries: int 
 
 
 _NON_BLOCKING_SKIP_PHRASES = (
+    # Explicit "(non-)blocking" markers — high-precision phrases.
     "no blocking",
     "not blocking",
     "non-blocking",
-    "no new blocking",
-    "not a new",
-    "not a blocker",
     "non-blocker",
     "no blocker",
+    "no new blocking",
+    "downgrading to non-blocking",
+    # Anchored bot self-resolution patterns. Replace earlier broad
+    # substrings ("not a new", "not a blocker") with longer phrases that
+    # are unambiguous self-dismissal — addresses the bot's own concern
+    # that short substrings could mask real findings whose text happens
+    # to contain "not a new pattern" or "not a blocker for deployment".
+    # Note: "is not a blocker" is intentionally OMITTED — even anchored
+    # via "is", it still matches "is not a blocker for deployment". Rely
+    # on explicit non-blocking markers + "this is a fix" instead.
+    "not a new introduction",
+    "this is a fix",
 )
 
 

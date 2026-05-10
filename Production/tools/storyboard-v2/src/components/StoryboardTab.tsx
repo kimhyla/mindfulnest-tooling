@@ -21,6 +21,7 @@ import {
   scopeKey,
 } from '../state/scope';
 import { apiGet, pathappPatch } from '../api/client';
+import { SERVER_BASE } from '../api/endpoints';
 import { makeDropTarget } from '../utils/dragdrop';
 import { Spinner } from './ui/Spinner';
 import { pushToast } from './ui/Toast';
@@ -584,7 +585,7 @@ function BeatImageHolder({ index, beatId, beat, eventId, onMutated }: BeatImageH
   const stillPath = beat.image_path;
   const hasImage = !!stillPath;
   const imgSrc = stillPath
-    ? `http://localhost:5111/files?path=${encodeURIComponent(`Production/${eventId}/${stillPath}`)}`
+    ? `${SERVER_BASE}/files?path=${encodeURIComponent(`Production/${eventId}/${stillPath}`)}`
     : undefined;
 
   const dropHandlers = makeDropTarget(
@@ -592,8 +593,10 @@ function BeatImageHolder({ index, beatId, beat, eventId, onMutated }: BeatImageH
       if (payload.kind !== 'lib-image') return;
       // 6-Layer wiring: backend handler is `_handle_assign_image` in
       // production_server.py (registered route `assign_image` on pathappPatch
-      // dispatch table). Confirmed present at production_server.py
-      // _handle_assign_image (search by name; line drifts with file edits).
+      // dispatch table). [INFERRED — verify against production_server.py at
+      // commit time; line drifts with file edits.] Coverage:
+      // e2e/storyboard_v59_assign_image_drop.spec.ts asserts the drop →
+      // PATCH `assign_image` → server-side onMutated() round-trip.
       const result = await pathappPatch(activeScope.value, 'assign_image', {
         beat: beatId,
         image_key: payload.lib_key,
@@ -665,7 +668,7 @@ function BeatMagicButtons({ index, beatId, beat, eventId }: BeatMagicProps) {
 
   const openMagicStill = () => {
     if (!stillPath) return;
-    const u = new URL('http://localhost:5111/magic');
+    const u = new URL(`${SERVER_BASE}/magic`);
     u.searchParams.set('mode', 'magic_still');
     u.searchParams.set('beat_id', beatId);
     u.searchParams.set('source_image_path', `Production/${eventId}/${stillPath}`);
@@ -676,7 +679,7 @@ function BeatMagicButtons({ index, beatId, beat, eventId }: BeatMagicProps) {
 
   const openMagicVideo = () => {
     if (!videoPath) return;
-    const u = new URL('http://localhost:5111/magic');
+    const u = new URL(`${SERVER_BASE}/magic`);
     u.searchParams.set('mode', 'magic_video');
     u.searchParams.set('beat_id', beatId);
     u.searchParams.set('source_video_path', `Production/${eventId}/${videoPath}`);

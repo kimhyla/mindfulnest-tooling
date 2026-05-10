@@ -132,6 +132,12 @@ function loadPersistedTier(): LibraryTier {
   try {
     const v = window.localStorage.getItem(LIBRARY_TIER_LS_KEY);
     if (v && (LIBRARY_TIERS as string[]).includes(v)) return v as LibraryTier;
+    // Eviction: if a value persists that is no longer in LIBRARY_TIERS
+    // (e.g. enum shrank, schema migrated), remove it so the next read
+    // doesn't keep returning DEFAULT via fall-through. Best-effort.
+    if (v !== null && v !== undefined) {
+      try { window.localStorage.removeItem(LIBRARY_TIER_LS_KEY); } catch { /* swallow */ }
+    }
   } catch {
     /* localStorage may be unavailable in some test contexts */
   }
