@@ -4,10 +4,11 @@ Per CLAUDE.md Rule 18 (locked decision auto-registration). Handles upsert by
 decision_key: if a row with the same decision_key exists, PATCH it; otherwise
 POST a new row. Validates payload against live /fields/prod_locked_decisions.
 
-NOTE: try_patch_or_queue does NOT exist in lib/directus.py (spec gap #1
-confirmed by live probe). For UPSERT we fall back to client.patch_item +
-manual read-back assertion. This is intentionally documented inline; if a
-silent failure surfaces, the read-back catches it.
+UPSERT uses try_patch_or_queue from lib/directus.py (added in this PR's
+lib/directus.py diff alongside try_post_or_queue). Both helpers perform
+read-back-after-write per CLAUDE.md Rule 35; if the underlying write
+hits silent_write_failure (unknown field dropped by Directus), the helper
+raises SilentWriteFailure rather than returning a fake-success result.
 """
 
 from __future__ import annotations

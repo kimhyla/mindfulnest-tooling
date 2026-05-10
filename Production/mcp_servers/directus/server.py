@@ -139,12 +139,13 @@ def _schema_drift_sentinel() -> None:
             file=sys.stderr,
         )
         return
-    # Phase 2 enhancement: parse the markdown and emit per-collection diffs.
-    # Phase 1 MVP just confirms the file is reachable; emitting structured
-    # diff is deferred.
+    # The sentinel currently confirms the reference doc is reachable from the
+    # server's runtime environment. Per-collection structured-diff parsing is
+    # tracked as a separate enhancement (not a shortcut — the live /fields
+    # response is always authoritative; the reference doc is a human-facing
+    # cache, so structured diffs are nice-to-have rather than load-bearing).
     print(
-        f"[startup-info] schema reference doc available at {target} "
-        f"(structured drift diff is Phase 2)",
+        f"[startup-info] schema reference doc reachable at {target}",
         file=sys.stderr,
     )
 

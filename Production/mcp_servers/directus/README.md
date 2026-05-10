@@ -110,7 +110,6 @@ Live Directus probes from `.venv/bin/python` against production Directus:
 
 ## Limitations / known issues
 
-- **Phase 1.5 cursor-agent test pending** — does cursor-agent support MCP server config? Does its sandbox reach a public HTTPS endpoint with bearer header? Both questions gate Phase 2 remote-HTTP escalation.
-- **`try_patch_or_queue` does not exist in `lib/directus.py`.** `lock_decision` UPSERT path uses inline `client.patch_item` + manual read-back assertion (see `tools/decisions.py::_patch_with_readback`). Could be promoted into `lib/directus.py` as a future cleanup.
-- **Phase 2 tools deferred:** `directus_patch`, `directus_delete`, `register_asset`, `find_asset`, `preflight_review`, `directus_invalidate_schema`. See spec §10.
-- **Schema-cache 15-min TTL.** When Kim adds a Directus field, worst-case 15-min lag before MCP picks it up. Server restart for instant flush. `directus_invalidate_schema` tool is Phase 2.
+- **Phase 1.5 cursor-agent test pending** — does cursor-agent support MCP server config? Does its sandbox reach a public HTTPS endpoint with bearer header? Both questions gate any future remote-HTTP escalation.
+- **Schema-cache 15-min TTL.** When Kim adds a Directus field, worst-case 15-min lag before MCP picks it up. Use `directus_invalidate_schema` for instant flush, or restart the server.
+- **Windows install untested.** `install_windows.ps1` ships in this PR but has not been run on a Windows machine yet; first invocation on the work PC validates it. Tracked in user memory at `project_directus_mcp_windows_install_pending.md`.
