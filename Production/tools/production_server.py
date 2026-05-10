@@ -8076,8 +8076,17 @@ class ProductionHandler(BaseHTTPRequestHandler):
         "no presets available" hint when the list is empty.
 
         Per LD AMBIENT_PRESET_SELECTOR_INPRODUCER_V1 (S5.5f spec §3.7).
+
+        F-AMBIENT-001 (prod_blockers id=118) fix: directory was previously
+        `Production/audio_library/ambient/` which does NOT exist on disk.
+        The canonical sound-library convention used by `_handle_stitch_library`
+        (line 15531: `production / "assets" / "sound_library"`) is the single
+        source of truth. Endpoint now scans `Production/assets/sound_library/ambient/`.
+        Note: endpoint name `phase_b_ambient_preset_list` is a misnomer (this is
+        a global ambient catalog, not phase-b-specific) but renaming is out of
+        scope for this fix per the parent dispatch.
         """
-        ambient_dir = Path(__file__).resolve().parent.parent / "audio_library" / "ambient"
+        ambient_dir = Path(__file__).resolve().parent.parent / "assets" / "sound_library" / "ambient"
         items: list[dict] = []
         if ambient_dir.is_dir():
             for f in sorted(ambient_dir.iterdir(), key=lambda p: p.name):

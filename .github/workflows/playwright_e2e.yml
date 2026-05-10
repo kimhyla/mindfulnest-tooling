@@ -355,6 +355,8 @@ jobs:
             e2e/beat_graft_red.spec.ts \
             e2e/storyboard-v59-bg-scope-sync.spec.ts \
             e2e/storyboard-v59-display-order-empty.spec.ts \
+            e2e/f_bg_001_segment_dropdown_empty_state.spec.ts \
+            e2e/f_ambient_001_real_preset_catalog.spec.ts \
             --reporter=line
 
       - name: Upload test artifacts on failure
