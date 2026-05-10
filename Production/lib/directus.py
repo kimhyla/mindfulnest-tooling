@@ -450,6 +450,108 @@ def try_post_or_queue(
         return {"queued": True, "path": str(path), "error": str(e)}
 
 
+def patch_item_verified(
+    collection: str,
+    item_id: Any,
+    payload: dict,
+    client: Optional[DirectusAdminClient] = None,
+) -> dict:
+    """PATCH an item to Directus, read it back, and verify every field matches.
+
+    Mirror of post_item_verified for UPDATE semantics. Closes the same silent
+    partial-write failure class on PATCH paths (Directus accepts a PATCH and
+    returns 200 even when fields are silently dropped).
+
+    Args:
+        collection: Directus collection name.
+        item_id: id of the row to PATCH.
+        payload: Dict of fields to update. Auto-fields are presence-verified
+                 only (see _AUTO_FIELDS).
+        client: Optional DirectusAdminClient.
+
+    Returns:
+        The Directus row as read back after PATCH.
+
+    Raises:
+        DirectusWriteError: on HTTP error from PATCH
+        DirectusReadError: on HTTP error from verification GET
+        SilentWriteFailure: on any field value mismatch after PATCH
+    """
+    c = client or DirectusAdminClient()
+
+    try:
+        c.patch_item(collection, item_id, payload)
+    except DirectusAdminError as e:
+        raise DirectusWriteError(collection, payload, e) from e
+
+    try:
+        row = c.get_item(collection, item_id)
+    except DirectusAdminError as e:
+        raise DirectusReadError(collection, item_id, e) from e
+
+    if not isinstance(row, dict):
+        raise DirectusReadError(
+            collection,
+            item_id,
+            RuntimeError(f"Read-back returned non-dict: {row!r}"),
+        )
+
+    mismatches = _diff_payload_vs_row(payload, row)
+    if mismatches:
+        raise SilentWriteFailure(collection, item_id, mismatches)
+
+    return row
+
+
+def try_patch_or_queue(
+    collection: str,
+    item_id: Any,
+    payload: dict,
+    client: Optional[DirectusAdminClient] = None,
+) -> dict:
+    """Try verified PATCH; on connection/write failure, queue to disk.
+
+    Mirror of try_post_or_queue for UPDATE semantics. Authored 2026-05-10 as
+    Phase A.6 of V59_DIRECTUS_MCP_SERVER_SPEC_v1 (cursor cross-review finding
+    4A). Same return-shape contract as try_post_or_queue: never raises;
+    returns row dict on success, sentinel dicts on each failure mode.
+
+    Returns:
+        - The Directus row on success (dict with 'id').
+        - {queued: True, path: str} if queued offline.
+        - {queued: False, silent_write_failure: True, item_id, mismatches, error}.
+
+    Note: PATCH does NOT trigger the Phase F browser-smoke gate currently.
+    The DS-21 gate fires on prod_activity_log _COMPLETE actions which are
+    POSTs by definition (creating new audit-trail rows), not PATCHes. If
+    governance ever needs PATCH-gated behavior, mirror the gate logic here.
+    """
+    queue_payload = dict(payload)
+    queue_payload["__patch_target_id"] = item_id  # mark for replay tooling
+    try:
+        return patch_item_verified(collection, item_id, payload, client=client)
+    except (DirectusWriteError, DirectusReadError) as e:
+        path = queue_write_offline(
+            collection, queue_payload, reason=f"patch_error: {e}"
+        )
+        return {"queued": True, "path": str(path), "error": str(e)}
+    except SilentWriteFailure as e:
+        return {
+            "queued": False,
+            "silent_write_failure": True,
+            "item_id": e.item_id,
+            "mismatches": e.mismatches,
+            "error": str(e),
+        }
+    except Exception as e:  # noqa: BLE001
+        path = queue_write_offline(
+            collection,
+            queue_payload,
+            reason=f"unexpected_patch: {type(e).__name__}: {e}",
+        )
+        return {"queued": True, "path": str(path), "error": str(e)}
+
+
 # -----------------------------------------------------------------------------
 # Phase F gate helpers — DS-21 / LD BROWSER_SMOKE_MECHANICAL_GATE_V1
 # -----------------------------------------------------------------------------

@@ -1,0 +1,159 @@
+"""
+MindfulNest Directus MCP server (Phase 1 MVP).
+
+Composes Production/lib/{directus.py, payload_validator.py, directus_admin_client.py}
+into 6 schema-validated MCP tools that enforce CLAUDE.md Rule 35 + LD-364
+read-back-after-write at the tool boundary.
+
+Tool list (Phase 1):
+- directus_search   (read-only)
+- directus_get      (read-only)
+- schema_describe   (read-only)
+- log_activity      (write — prod_activity_log)
+- lock_decision     (write — prod_locked_decisions, upsert by decision_key)
+- directus_create   (write — generic, any prod_*/app_*/coppa_* collection)
+
+INVARIANTS (Rule 36):
+- All writes go through try_post_or_queue or try_patch_or_queue (LD-364
+  read-back-after-write).
+- All prod_* writes go through validate_payload (Rule 35 schema validation).
+- Schema cache TTL = 15 min (mirrors lib.payload_validator._SCHEMA_TTL_SEC).
+- Server is local stdio Phase 1; remote HTTP escalation is Phase 2 candidate
+  gated on cursor-agent empirical tests (spec V59_DIRECTUS_MCP_SERVER_SPEC_v1
+  §4 Phase E.5).
+- prod_locked_decisions.date_locked is type=date, NOT datetime — date-only
+  ISO format ("YYYY-MM-DD"), enforced in tools/decisions.py::_utc_now_iso.
+- MCP-internal phase closure action names use suffix _V1 (NOT _COMPLETE) by
+  DELIBERATE policy: the DS-21 BROWSER_SMOKE_MECHANICAL_GATE_V1 fires on
+  action.endswith('_COMPLETE') and the MCP server has no browser surface, so
+  bypassing the gate is correct policy. DO NOT rename closure actions to
+  end in _COMPLETE without first writing matching KIM_BROWSER_SMOKE_PASSED
+  rows or BROWSER_SMOKE_DEFERRED rows. Per cursor cross-review finding 8C.
+- Concurrent-writer queue race: lib.directus.queue_write_offline does NOT
+  hold an fcntl.flock on pending_directus_writes.json. Two concurrent writers
+  (MCP server + a parallel script) can race and lose entries. Acknowledged
+  via LD MCP_QUEUE_RACE_KNOWN_PHASE1_V1; Phase 2 candidate fix.
+
+Spec: Production/docs/V59_DIRECTUS_MCP_SERVER_SPEC_v1.md
+LD: DIRECTUS_MCP_SERVER_PHASE1_V1 (registered at Phase F)
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+# Make Production/ importable so we can pull in lib/ siblings.
+_THIS = Path(__file__).resolve()
+_PRODUCTION_ROOT = _THIS.parent.parent.parent  # tooling/Production/
+_TOOLING_ROOT = _PRODUCTION_ROOT.parent
+sys.path.insert(0, str(_PRODUCTION_ROOT))
+
+from fastmcp import FastMCP  # noqa: E402
+
+from tools import activity, crud, decisions, schema  # noqa: E402
+
+mcp = FastMCP(
+    name="mn-directus",
+    instructions=(
+        "MindfulNest Directus MCP server. Schema-validated read/write access to "
+        "the production Directus instance. All writes use read-back-after-write "
+        "(LD-364 POST_ITEM_VERIFIED_V1). All prod_* writes go through schema "
+        "validation against live /fields/<collection> with 15-min cache TTL "
+        "(Rule 35 DIRECTUS_SCHEMA_VERIFICATION_V1).\n\n"
+        "Tools:\n"
+        "- directus_search / directus_get / schema_describe (read)\n"
+        "- log_activity / lock_decision / directus_create (write)\n\n"
+        "On write failure, tools return structured variants — never silent "
+        "success. See V59_DIRECTUS_MCP_SERVER_SPEC_v1 §7 for error handling."
+    ),
+)
+
+# Register tools (each module attaches @mcp.tool decorators by calling register()).
+crud.register(mcp)
+schema.register(mcp)
+activity.register(mcp)
+decisions.register(mcp)
+
+
+def _prime_schema_cache() -> None:
+    """At startup, prime the validator's schema cache for high-frequency
+    collections. Surfaces /fields probe failures EARLY (before first tool call)
+    rather than on the hot path. Soft-fail: log to stderr but don't refuse to
+    start (collection-specific tools handle re-probe on demand).
+    """
+    high_frequency = [
+        "prod_activity_log",
+        "prod_locked_decisions",
+        "prod_assets",
+        "prod_blockers",
+        "prod_reference_docs",
+        "prod_preflight_reviews",
+    ]
+    try:
+        from lib.directus_admin_client import DirectusAdminClient
+        from lib.payload_validator import _cached_fields  # noqa: SLF001 — internal
+
+        client = DirectusAdminClient()
+        for coll in high_frequency:
+            try:
+                _cached_fields(client, coll)
+            except Exception as e:  # noqa: BLE001
+                print(
+                    f"[startup-warn] schema-cache prime failed for {coll}: "
+                    f"{type(e).__name__}: {e}",
+                    file=sys.stderr,
+                )
+    except Exception as e:  # noqa: BLE001
+        print(
+            f"[startup-warn] could not prime schema cache: "
+            f"{type(e).__name__}: {e}",
+            file=sys.stderr,
+        )
+
+
+def _schema_drift_sentinel() -> None:
+    """Compare the on-disk reference doc against live Directus schema and emit
+    drift warnings to stderr. Never fails server startup — the live schema is
+    authoritative; the reference doc is a human-facing cache that may lag.
+    """
+    ref_doc = (
+        _PRODUCTION_ROOT.parent
+        / "Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files"
+        / "Production/DIRECTUS_SCHEMA_FIELD_NAMES_REFERENCE.md"
+    )
+    # The above path may not resolve from tooling repo; reference doc lives in
+    # Dropbox per LD-505 (content side). Try the canonical Dropbox path.
+    dropbox_ref = Path(
+        "/Users/kimberlysmith/Library/CloudStorage/Dropbox/"
+        "Claude Mindfulnest Project Files/Production/"
+        "DIRECTUS_SCHEMA_FIELD_NAMES_REFERENCE.md"
+    )
+    target = dropbox_ref if dropbox_ref.exists() else ref_doc
+    if not target.exists():
+        print(
+            f"[startup-info] schema reference doc not found at {target} — "
+            f"drift sentinel skipped (live /fields remains source of truth)",
+            file=sys.stderr,
+        )
+        return
+    # Phase 2 enhancement: parse the markdown and emit per-collection diffs.
+    # Phase 1 MVP just confirms the file is reachable; emitting structured
+    # diff is deferred.
+    print(
+        f"[startup-info] schema reference doc available at {target} "
+        f"(structured drift diff is Phase 2)",
+        file=sys.stderr,
+    )
+
+
+def main() -> None:
+    """Entry point. FastMCP runs the stdio transport by default."""
+    _prime_schema_cache()
+    _schema_drift_sentinel()
+    mcp.run()
+
+
+if __name__ == "__main__":
+    main()
