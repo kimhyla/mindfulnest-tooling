@@ -101,13 +101,16 @@ test.describe('Layer B Option B — bg_session_state scope-canonical contract', 
     await expect.poll(() => sessionStateReqs.length, { timeout: 5_000 })
       .toBeGreaterThanOrEqual(1);
 
-    // T1 assertion: at least one request carries scope_event_id (or its
-    // legacy alias event_id) in the query — proves the client is wired
-    // to drive scope-canonical lookup.
+    // T1 assertion (tightened): at least one request carries the NEW
+    // `scope_event_id` query param — strict-equality check on the
+    // Option-B-canonical key, NOT the `event_id` legacy alias. The
+    // alias-fallback in the server is a transitional safety net for
+    // legacy clients, but the storyboard-v2 client must drive the
+    // scope-canonical wiring; accepting `event_id` here would mask
+    // a regression where the client skips scope and only sends the
+    // legacy key.
     const url0 = new URL(sessionStateReqs[0].url());
-    const hasScopeKey =
-      url0.searchParams.has('scope_event_id') || url0.searchParams.has('event_id');
-    expect(hasScopeKey).toBe(true);
+    expect(url0.searchParams.has('scope_event_id')).toBe(true);
   });
 
   test('T2 — response scope_active_context.event_id matches request scope_event_id (round-trip contract)', async ({ page }) => {

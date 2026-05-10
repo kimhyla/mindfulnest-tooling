@@ -5954,7 +5954,14 @@ class ProductionHandler(BaseHTTPRequestHandler):
         active_context is still returned for client visibility (BG segment
         dropdown becomes a secondary filter), but beats lookup is scope-
         canonical to fix Bug 2 (Add Beat → wrong segment) + Bug 4 (BG ref
-        drop UI doesn't refresh).
+        drop UI doesn't refresh) [CONFIRMED against
+        V59_STORYBOARD_SIDEFIX_MORNING_REPORT_20260508.md §3 + LD-545
+        decision_text].
+
+        Rule 35 N/A here: bg.write_sidecar() is a LOCAL atomic JSON file
+        write (json.dump + os.replace, see beat_generator.py:313). It does
+        NOT touch any Directus prod_* collection. Rule 35's try_post_or_queue
+        requirement applies only to Directus writes.
         """
         # LD-456 SCOPE_VALIDATION_V1 (no-body handler — query-string fallback inside helper)
         if not self._assert_event_scope({}, allow_missing=True):
@@ -5994,9 +6001,11 @@ class ProductionHandler(BaseHTTPRequestHandler):
             scope_event_id = ctx.get("event_id")
         if scope_phase is None:
             # Phase derivation: prefer scope; fall back to sidecar ctx.phase;
-            # final fallback "full". Note: SCOPE_ROUTER_V1 maps video roles
-            # intro→pre, resolution→post, standalone→main; here we just
-            # pass through what client sent or what sidecar last persisted.
+            # final fallback "full". [CONFIRMED against _handle_bg_add_beat
+            # SCOPE_ROUTER_V1 docstring at line ~9682] SCOPE_ROUTER_V1 maps
+            # video roles intro→pre, resolution→post, standalone→main; here
+            # we just pass through what client sent or what sidecar last
+            # persisted.
             scope_phase = (ctx.get("phase") if ctx else None) or "full"
 
         scope_active_context = None
@@ -9337,6 +9346,11 @@ class ProductionHandler(BaseHTTPRequestHandler):
         scope_arc_number / scope_phase in the body, NOT from sidecar's
         active_context. Falls back to active_context only when the
         corresponding scope key is missing (legacy clients).
+
+        Rule 35 N/A: bg.write_sidecar() called below is a LOCAL atomic JSON
+        file write (json.dump + os.replace, see beat_generator.py:313). NOT
+        a Directus prod_* write. try_post_or_queue requirement does not
+        apply.
         """
         # LD-456 SCOPE_VALIDATION_V1
         if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
@@ -10058,9 +10072,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
             sidecar = bg._migrate_sidecar(sidecar)
             ctx = sidecar.get("active_context") or {}
             # LD-545 Option B — derive arc from scope; fall back to ctx for legacy.
-            # arc_n here is only a performance hint for `_index_beats` (beat_id is
-            # unique across arcs per find_beat convention), but we still prefer
-            # the scope-derived value to keep handlers consistent.
+            # arc_n here is only a performance hint for `_index_beats` ([INFERRED
+            # — verify against find_beat usage in beat_generator.py] beat_id is
+            # unique across arcs per the find_beat lookup convention), but we
+            # still prefer the scope-derived value to keep handlers consistent.
             scope_arc_raw = body.get("scope_arc_number")
             if scope_arc_raw is None:
                 scope_arc_raw = body.get("arc_number")
