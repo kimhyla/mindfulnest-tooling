@@ -134,6 +134,16 @@ jobs:
           PRODUCTION_SERVER_SINGLE_MACHINE=1 \
             python3 -m unittest -v Production.lib.tests.test_release_gates
 
+      - name: Phase C — assemble_module 10-step pipeline (DS-2 strict TDD)
+        # Phase C per V59_PRODUCTION_PIPELINE_STREAM_BF_SPEC_v1 §4.3 + §3.2 (R2
+        # 10-step pipeline) + §3.4 (R4 Step 1.5 audio parity + bitrate gate) +
+        # ASSEMBLE_MODULE_CONTRACT.md (7 declared output artifacts). Mock-based;
+        # patches subprocess for ffprobe/ffmpeg and register_asset for Directus.
+        # Runs offline; no real ffmpeg/ffprobe/network required.
+        run: |
+          PRODUCTION_SERVER_SINGLE_MACHINE=1 \
+            python3 -m unittest -v Production.tools.tests.test_assemble_module
+
       - name: Scrambled-state SCR.1+SCR.2 (C-7.6 — READ-ONLY against Event_1)
         # Pytest gates from spec §11.2 + Kim's pre-C-9 addendum 2026-05-06.
         # SCR.1: scope_router.resolve doesn't crash on Event_1 stranded state.
