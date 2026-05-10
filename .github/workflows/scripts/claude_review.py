@@ -143,24 +143,35 @@ _EMPTY_BULLET_MARKERS = (
 # blocking. The bot's own conclusion at section level wins over
 # individual bullet wording.
 #
-# [CONFIRMED against actual bot output on PR #22 commit 52b88e9 review:
-# bot wrote a concerning bullet then concluded the section with
-# "Reconsidering: no clear Rule 19/35/32/credential/destructive-command
-# violations are present." The conclusion is explicit self-reversal;
-# the gate must honor it. Without this, the regex sees the bullet's
-# first line, doesn't find a per-bullet skip phrase, and trips —
-# exactly the failure mode that blocked PR #22 round-3 retrigger.]
+# Authority: LD-667 SHORTCUT_CLAUDE_REVIEW_REGEX_PATCH_PRE_OPTION_A_V1.
+# Closure plan: Option A — modify review_prompt.md to require a
+# structured verdict line (e.g. "## Final verdict: NO_BLOCKING_FINDINGS")
+# and parse THAT instead of natural-language reversal phrases. Option B
+# (this code) is interim but unblocks PR #22 today; Option A follows.
 #
-# Patterns intentionally narrow:
+# Pattern class observed across multiple PR #22 rounds: bot writes a
+# concerning bullet then concludes the section with explicit
+# self-reversal language ("Reconsidering: no clear ... violations are
+# present", "Not clearly blocking on its own", "Downgrading to
+# Non-blocking"). The conclusion is the bot's actual verdict; the gate
+# honors it.
+#
+# Patterns intentionally narrow + tested adversarially:
 #   * "reconsidering: no clear"  — bot's "I changed my mind" prefix only
 #     when followed by "no clear" (avoids false-skip on
 #     "Reconsidering: no, the concern stands")
 #   * "not clearly blocking"     — bot's explicit self-doubt admission
-#   * "no clear rule 19/35"      — specific enumeration the bot uses
+#   * "no clear rule N"          — bot's per-rule self-reversal (covers
+#     enumerations like "no clear Rule 19/35/32/credential/destructive
+#     violations are present" by matching each rule number)
 _SECTION_DISMISSAL_PHRASES = (
     "reconsidering: no clear",
     "not clearly blocking",
-    "no clear rule 19/35",
+    "no clear rule 19",
+    "no clear rule 24",
+    "no clear rule 32",
+    "no clear rule 35",
+    "no clear violations are present",
 )
 
 
@@ -173,14 +184,16 @@ def has_blocking(text: str) -> bool:
     if not blocking_section:
         return False
     body = blocking_section.group(1)
-    body_l = body.lower()
-    # Section-level dismissal check FIRST. If the bot has reconsidered
-    # at section level and concluded nothing is blocking, the entire
-    # section is non-blocking even if individual bullet first-lines
-    # look concerning. This addresses the bot non-determinism class
-    # where bullet text contains the concern but the section's final
-    # paragraph reverses position.
-    if any(p in body_l for p in _SECTION_DISMISSAL_PHRASES):
+    # Section-level dismissal check FIRST, but ONLY against non-bullet
+    # text (so a bullet that quotes the bot's earlier language can't
+    # falsely trigger a skip). If the bot has reconsidered at section
+    # level — in a paragraph or final-line conclusion — and concluded
+    # nothing is blocking, the entire section is non-blocking.
+    non_bullet_text = "\n".join(
+        line for line in body.splitlines()
+        if not line.strip().startswith("- ")
+    ).lower()
+    if any(p in non_bullet_text for p in _SECTION_DISMISSAL_PHRASES):
         return False
     for line in body.splitlines():
         line = line.strip()
