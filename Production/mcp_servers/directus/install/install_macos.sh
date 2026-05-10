@@ -65,13 +65,18 @@ echo "[install] Installing fastmcp + pydantic..."
 # Claude Code MCP config
 if command -v claude >/dev/null 2>&1; then
     if [[ "$USE_DOPPLER" == "1" ]]; then
-        echo "[install] Adding to Claude Code via doppler run --..."
-        claude mcp remove directus 2>/dev/null || true
-        claude mcp add directus -- /opt/homebrew/bin/doppler run -- "$VENV_DIR/bin/python" "$SERVER_DIR/server.py"
+        echo "[install] Adding to Claude Code at user scope (-s user) via doppler run with explicit project..."
+        claude mcp remove directus -s user 2>/dev/null || true
+        claude mcp remove directus 2>/dev/null || true  # also remove project scope if present
+        # User scope = available in ALL Claude Code sessions on this machine (any cwd).
+        # --project and --config explicit because doppler can't infer project from
+        # arbitrary cwd (Claude Code may be launched from any dir for user-scope MCPs).
+        claude mcp add -s user directus -- /opt/homebrew/bin/doppler run --project mindfulnest --config dev -- "$VENV_DIR/bin/python" "$SERVER_DIR/server.py"
     else
-        echo "[install] Adding to Claude Code (no Doppler — relies on API_KEYS_MASTER.md fallback)..."
+        echo "[install] Adding to Claude Code at user scope (no Doppler — relies on API_KEYS_MASTER.md fallback)..."
+        claude mcp remove directus -s user 2>/dev/null || true
         claude mcp remove directus 2>/dev/null || true
-        claude mcp add directus -- "$VENV_DIR/bin/python" "$SERVER_DIR/server.py"
+        claude mcp add -s user directus -- "$VENV_DIR/bin/python" "$SERVER_DIR/server.py"
     fi
     claude mcp list | grep -E "^directus" || echo "[install] WARN: claude mcp list did not show directus"
 else
@@ -88,7 +93,7 @@ echo "  \"mcpServers\": {"
 echo "    \"directus\": {"
 if [[ "$USE_DOPPLER" == "1" ]]; then
     echo "      \"command\": \"/opt/homebrew/bin/doppler\","
-    echo "      \"args\": [\"run\", \"--\", \"$VENV_DIR/bin/python\", \"$SERVER_DIR/server.py\"]"
+    echo "      \"args\": [\"run\", \"--project\", \"mindfulnest\", \"--config\", \"dev\", \"--\", \"$VENV_DIR/bin/python\", \"$SERVER_DIR/server.py\"]"
 else
     echo "      \"command\": \"$VENV_DIR/bin/python\","
     echo "      \"args\": [\"$SERVER_DIR/server.py\"]"

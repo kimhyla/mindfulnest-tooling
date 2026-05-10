@@ -13,6 +13,38 @@ from lib.directus_admin_client import DirectusAdminClient, DirectusAdminError
 
 def register(mcp: Any) -> None:
     @mcp.tool(
+        name="directus_invalidate_schema",
+        description=(
+            "Force-flush the schema cache for one collection (or all). Useful "
+            "when Kim has just added a Directus field via the admin UI and "
+            "the MCP server's 15-min TTL hasn't expired yet. Read-only on "
+            "Directus side; only mutates the in-memory cache.\n\n"
+            "Args:\n"
+            "- collection (str, optional): if omitted, flushes all cached "
+            "  collections.\n\n"
+            "Returns: {ok: true, flushed: 'all' | <collection>, "
+            "remaining_cached: list[str]}."
+        ),
+    )
+    def directus_invalidate_schema(collection: str | None = None) -> dict:
+        try:
+            from lib.payload_validator import (
+                _SCHEMA_CACHE,  # noqa: SLF001
+                invalidate_schema_cache,
+            )
+            before = list(_SCHEMA_CACHE.keys())
+            invalidate_schema_cache(collection)
+            after = list(_SCHEMA_CACHE.keys())
+            return {
+                "ok": True,
+                "flushed": collection or "all",
+                "before_cached": before,
+                "remaining_cached": after,
+            }
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "internal_error": True, "msg": f"{type(e).__name__}: {e}"}
+
+    @mcp.tool(
         name="schema_describe",
         description=(
             "Describe the field schema for a Directus collection. Read-only. Returns "

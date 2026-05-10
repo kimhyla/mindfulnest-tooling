@@ -19,6 +19,8 @@ sent. Directus silently drops fields that don't match the collection schema.
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import sys
@@ -315,6 +317,36 @@ def read_item(
 _PENDING_QUEUE_PATH = Path(__file__).resolve().parent.parent.parent / "pending_directus_writes.json"
 
 
+_LOCK_PATH = _PENDING_QUEUE_PATH.with_suffix(".lock")
+
+
+@contextlib.contextmanager
+def _queue_file_lock():
+    """Cross-process advisory lock around pending_directus_writes.json mutation.
+
+    Closes the concurrent-writer race documented in LD-661
+    `MCP_QUEUE_RACE_KNOWN_PHASE1_V1`. Two processes (e.g., the Directus MCP
+    server + a parallel script using try_post_or_queue) calling
+    queue_write_offline simultaneously would, before this lock, race on
+    read-parse-append-write and lose entries. fcntl.flock serializes them.
+
+    Lock file is a sidecar (`pending_directus_writes.lock`) — locking the
+    queue file directly would race with reads of an empty file at startup.
+    Lock is released on context exit even on exception.
+    """
+    _LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # Open in append mode so the file exists; fcntl works on the fd.
+    fd = os.open(str(_LOCK_PATH), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
 def queue_write_offline(collection: str, payload: dict, reason: str = "offline") -> Path:
     """Append a write to pending_directus_writes.json for later replay.
 
@@ -324,28 +356,32 @@ def queue_write_offline(collection: str, payload: dict, reason: str = "offline")
 
     The file lives at the project root next to CLAUDE.md so session-start
     protocols can find it without knowing the lib path.
-    """
-    queue: list[dict] = []
-    if _PENDING_QUEUE_PATH.exists():
-        try:
-            queue = json.loads(_PENDING_QUEUE_PATH.read_text(encoding="utf-8"))
-            if not isinstance(queue, list):
-                queue = []
-        except (json.JSONDecodeError, OSError):
-            queue = []
 
-    queue.append(
-        {
-            "queued_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "collection": collection,
-            "payload": payload,
-            "reason": reason,
-        }
-    )
-    _PENDING_QUEUE_PATH.write_text(
-        json.dumps(queue, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-    return _PENDING_QUEUE_PATH
+    Concurrency: cross-process safe via fcntl.flock on a sidecar
+    `pending_directus_writes.lock` file. See LD-661 closure 2026-05-10.
+    """
+    with _queue_file_lock():
+        queue: list[dict] = []
+        if _PENDING_QUEUE_PATH.exists():
+            try:
+                queue = json.loads(_PENDING_QUEUE_PATH.read_text(encoding="utf-8"))
+                if not isinstance(queue, list):
+                    queue = []
+            except (json.JSONDecodeError, OSError):
+                queue = []
+
+        queue.append(
+            {
+                "queued_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "collection": collection,
+                "payload": payload,
+                "reason": reason,
+            }
+        )
+        _PENDING_QUEUE_PATH.write_text(
+            json.dumps(queue, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        return _PENDING_QUEUE_PATH
 
 
 def try_post_or_queue(

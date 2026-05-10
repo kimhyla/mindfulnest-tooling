@@ -98,3 +98,82 @@ def register(mcp: Any) -> None:
             }
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "internal_error": True, "msg": f"{type(e).__name__}: {e}"}
+
+    @mcp.tool(
+        name="preflight_review",
+        description=(
+            "Create a prod_preflight_reviews row per CLAUDE.md Rule 19 + Rule 35 "
+            "(zero-error-qa Phase 0 audit trail). REQUIRED fields enforced at "
+            "tool boundary — task_description must be present (per LD-597 "
+            "TASK_DESCRIPTION_GOTCHA_DRIFT_RESOLUTION_V1) or schema validator "
+            "rejects.\n\n"
+            "Required:\n"
+            "- task_id (str): UPPER_SNAKE identifier for the task\n"
+            "- task_type (str): trivial | routine | architectural | "
+            "  cross_cutting | infrastructure_setup | etc.\n"
+            "- task_description (str, REQUIRED): one-line description of what "
+            "  this preflight gates\n"
+            "- claude_summary (str): reasoning + tier classification + agent "
+            "  spawn count + any deviations\n\n"
+            "Optional: agent_advocates (list/dict), agent_counters (list/dict), "
+            "synthesis (str), approved_to_proceed (bool), approved_at (ISO8601), "
+            "related_activity_log_id (int).\n\n"
+            "Variants: same as log_activity."
+        ),
+    )
+    def preflight_review(
+        task_id: str,
+        task_type: str,
+        task_description: str,
+        claude_summary: str,
+        agent_advocates: dict | list | None = None,
+        agent_counters: dict | list | None = None,
+        synthesis: str | None = None,
+        approved_to_proceed: bool | None = None,
+        approved_at: str | None = None,
+        related_activity_log_id: int | None = None,
+    ) -> dict:
+        payload: dict[str, Any] = {
+            "task_id": task_id,
+            "task_type": task_type,
+            "task_description": task_description,
+            "claude_summary": claude_summary,
+        }
+        if agent_advocates is not None:
+            payload["agent_advocates"] = agent_advocates
+        if agent_counters is not None:
+            payload["agent_counters"] = agent_counters
+        if synthesis is not None:
+            payload["synthesis"] = synthesis
+        if approved_to_proceed is not None:
+            payload["approved_to_proceed"] = approved_to_proceed
+        if approved_at is not None:
+            payload["approved_at"] = approved_at
+        if related_activity_log_id is not None:
+            payload["related_activity_log_id"] = related_activity_log_id
+
+        try:
+            validated = validate_payload("prod_preflight_reviews", payload, mode="strict")
+            payload = validated["payload"]
+        except (UnknownPayloadKeyError, RetiredPayloadKeyError, SchemaProbeError) as e:
+            return _validation_error_response("prod_preflight_reviews", e)
+
+        try:
+            result = try_post_or_queue("prod_preflight_reviews", payload)
+            return _wrap_write_result(result)
+        except SilentWriteFailure as e:
+            return {
+                "ok": False,
+                "silent_write_failure": True,
+                "collection": e.collection,
+                "item_id": e.item_id,
+                "mismatches": e.mismatches,
+            }
+        except (DirectusWriteError, DirectusReadError) as e:
+            return {
+                "ok": False,
+                "directus_error": True,
+                "msg": f"{type(e).__name__}: {e}",
+            }
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "internal_error": True, "msg": f"{type(e).__name__}: {e}"}

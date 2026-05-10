@@ -52,7 +52,7 @@ sys.path.insert(0, str(_PRODUCTION_ROOT))
 
 from fastmcp import FastMCP  # noqa: E402
 
-from tools import activity, crud, decisions, schema  # noqa: E402
+from tools import activity, assets, crud, decisions, schema  # noqa: E402
 
 mcp = FastMCP(
     name="mn-directus",
@@ -75,6 +75,7 @@ crud.register(mcp)
 schema.register(mcp)
 activity.register(mcp)
 decisions.register(mcp)
+assets.register(mcp)
 
 
 def _prime_schema_cache() -> None:

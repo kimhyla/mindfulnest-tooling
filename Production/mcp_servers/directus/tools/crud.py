@@ -1,12 +1,43 @@
-"""Generic CRUD tools: directus_search, directus_get, directus_create.
+"""Generic CRUD tools: directus_search, directus_get, directus_create,
+directus_patch, directus_delete.
 
-All writes go through try_post_or_queue (LD-364 read-back-after-write).
-prod_* writes additionally go through validate_payload (Rule 35).
+All writes go through try_post_or_queue / try_patch_or_queue
+(LD-364 read-back-after-write). prod_* writes additionally go through
+validate_payload (Rule 35).
+
+directus_delete is GATED behind:
+- env var MN_MCP_ALLOW_DESTRUCTIVE=1 (must be explicit)
+- a per-collection allowlist that EXCLUDES prod_locked_decisions, prod_assets,
+  app_*, coppa_* (those are governance/audit/compliance — never auto-deleted)
+- confirm_destructive=True flag in the call
+
+Per Cursor cross-review finding 6B + CLAUDE.md "Destructive db operations"
+prohibition (per-action explicit Kim authorization required).
 """
 
 from __future__ import annotations
 
+import os
 from typing import Any
+
+
+def _coerce_for_mcp_result(obj: Any, _depth: int = 0) -> Any:
+    """Make arbitrary nested objects safe for FastMCP/Pydantic result serialization.
+
+    Per Cursor finding 3B: silent_write_failure.mismatches contains arbitrary
+    Python types (datetime, sets, custom dataclasses, raw JSON-decoded blobs)
+    in the sent/got fields. FastMCP-3.x serializes via Pydantic; arbitrary
+    objects fail validation. Coerce to str/repr safely.
+    """
+    if _depth > 10:  # depth limit guard against pathological cycles
+        return repr(obj)[:200]
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return obj
+    if isinstance(obj, (list, tuple)):
+        return [_coerce_for_mcp_result(x, _depth + 1) for x in obj]
+    if isinstance(obj, dict):
+        return {str(k): _coerce_for_mcp_result(v, _depth + 1) for k, v in obj.items()}
+    return repr(obj)[:500]
 
 from lib.directus import (
     DirectusReadError,
@@ -42,7 +73,7 @@ def _wrap_write_result(result: Any) -> dict:
             "ok": False,
             "silent_write_failure": True,
             "item_id": result.get("item_id"),
-            "mismatches": result.get("mismatches", []),
+            "mismatches": _coerce_for_mcp_result(result.get("mismatches", [])),
             "error": result.get("error"),
         }
     if result.get("browser_smoke_missing"):
@@ -238,6 +269,80 @@ def register(mcp: Any) -> None:
                 "ok": False,
                 "directus_error": True,
                 "msg": f"{type(e).__name__}: {e}",
+            }
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "internal_error": True, "msg": f"{type(e).__name__}: {e}"}
+
+    @mcp.tool(
+        name="directus_delete",
+        description=(
+            "DESTRUCTIVE — delete a row by id. Triple-gated:\n"
+            "1. env var MN_MCP_ALLOW_DESTRUCTIVE=1 must be set\n"
+            "2. confirm_destructive=True must be passed\n"
+            "3. collection must NOT be in the protected list "
+            "(prod_locked_decisions, prod_assets, prod_visual_assets, "
+            "prod_audio_assets, prod_reference_docs, prod_modules, app_*, "
+            "coppa_*)\n\n"
+            "Per CLAUDE.md prohibitions list 'Destructive db operations' + "
+            "Cursor cross-review finding 6B. For protected collections, use "
+            "directus_patch to mark status='superseded' / is_current=false / "
+            "is_resolved=true instead. Audit-trail rows should not be deleted; "
+            "they are append-only by governance design.\n\n"
+            "Variants: {ok: true, deleted: true, collection, item_id} | "
+            "{ok: false, gate_failed: 'env_var'|'confirm'|'protected_collection', "
+            "msg}."
+        ),
+    )
+    def directus_delete(collection: str, item_id: int, confirm_destructive: bool = False) -> dict:
+        protected = {
+            "prod_locked_decisions",
+            "prod_assets",
+            "prod_visual_assets",
+            "prod_audio_assets",
+            "prod_reference_docs",
+            "prod_modules",
+            "prod_activity_log",
+            "prod_preflight_reviews",
+        }
+        if collection in protected or collection.startswith("app_") or collection.startswith("coppa_"):
+            return {
+                "ok": False,
+                "gate_failed": "protected_collection",
+                "msg": (
+                    f"Collection {collection!r} is protected from automated "
+                    f"deletion. Use directus_patch to mark superseded / "
+                    f"is_current=false / is_resolved=true instead. "
+                    f"Audit-trail rows are append-only by governance design."
+                ),
+            }
+        if os.environ.get("MN_MCP_ALLOW_DESTRUCTIVE") != "1":
+            return {
+                "ok": False,
+                "gate_failed": "env_var",
+                "msg": (
+                    "MN_MCP_ALLOW_DESTRUCTIVE=1 not set in MCP server env. "
+                    "Per CLAUDE.md prohibitions list, destructive operations "
+                    "require per-action explicit Kim authorization. Set the "
+                    "env var in the MCP launch config (Doppler or "
+                    "claude_desktop_config) only when explicitly authorized."
+                ),
+            }
+        if not confirm_destructive:
+            return {
+                "ok": False,
+                "gate_failed": "confirm",
+                "msg": "confirm_destructive=True required.",
+            }
+        try:
+            client = DirectusAdminClient()
+            client.delete_item(collection, item_id)
+            return {"ok": True, "deleted": True, "collection": collection, "item_id": item_id}
+        except DirectusAdminError as e:
+            return {
+                "ok": False,
+                "directus_error": True,
+                "status": e.status,
+                "body": e.body[:500],
             }
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "internal_error": True, "msg": f"{type(e).__name__}: {e}"}

@@ -5,6 +5,10 @@
       "command": "/opt/homebrew/bin/doppler",
       "args": [
         "run",
+        "--project",
+        "mindfulnest",
+        "--config",
+        "dev",
         "--",
         "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/mcp_servers/directus/.venv/bin/python",
         "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/mcp_servers/directus/server.py"
