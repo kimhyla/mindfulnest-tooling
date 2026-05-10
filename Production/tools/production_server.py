@@ -5946,10 +5946,39 @@ class ProductionHandler(BaseHTTPRequestHandler):
         return self._send_json(200, {"segments": segments, "arc_number": arc_number})
 
     def _handle_bg_session_state(self) -> None:
-        """GET /api/bg/session-state -> { active_context, beats, flux_options_complete, capabilities, migration_warnings }"""
+        """GET /api/bg/session-state -> { active_context, beats, flux_options_complete,
+        capabilities, migration_warnings, scope_active_context }
+
+        LD-545 Option B: beats are derived from the request's scope_event_id /
+        scope_arc_number / scope_phase, NOT from sidecar's active_context. The
+        active_context is still returned for client visibility (BG segment
+        dropdown becomes a secondary filter), but beats lookup is scope-
+        canonical to fix Bug 2 (Add Beat → wrong segment) + Bug 4 (BG ref
+        drop UI doesn't refresh) [CONFIRMED against
+        V59_STORYBOARD_SIDEFIX_MORNING_REPORT_20260508.md §3 + LD-545
+        decision_text].
+
+        Rule 35 N/A here: bg.write_sidecar() is a LOCAL atomic JSON file
+        write (json.dump + os.replace, [CONFIRMED against
+        beat_generator.py:313 def write_sidecar — verified at PR-author
+        time via grep]). It does NOT touch any Directus prod_* collection.
+        Rule 35's try_post_or_queue requirement applies only to Directus
+        writes.
+        """
         # LD-456 SCOPE_VALIDATION_V1 (no-body handler — query-string fallback inside helper)
         if not self._assert_event_scope({}, allow_missing=True):
             return
+
+        # Parse scope from query string. _assert_event_scope already validated
+        # presence + match against self.app.event_dir; we re-parse here to
+        # extract the values we need for segment derivation.
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        def _q(name: str, default=None):
+            v = qs.get(name)
+            return v[0] if v else default
+        scope_event_id = _q("scope_event_id") or _q("event_id")
+        scope_arc_raw = _q("scope_arc_number") or _q("arc_number")
+        scope_phase = _q("scope_phase")  # may be None — derived from video role
 
         bg = _bg_module()
         with bg._sidecar_lock:
@@ -5957,21 +5986,72 @@ class ProductionHandler(BaseHTTPRequestHandler):
             sidecar = bg._migrate_sidecar(sidecar)
             bg.write_sidecar(sidecar)
         ctx = sidecar.get("active_context")
+
+        # LD-545 Option B — scope-derived segment.
+        # Build the scope-canonical context. Fall back to sidecar's
+        # active_context fields ONLY when the corresponding scope param
+        # is missing (e.g. legacy clients that don't pass scope yet).
+        scope_arc = None
+        if scope_arc_raw is not None:
+            try:
+                scope_arc = int(scope_arc_raw)
+            except (TypeError, ValueError):
+                scope_arc = None
+        if scope_arc is None and ctx:
+            scope_arc = ctx.get("arc_number")
+        if scope_event_id is None and ctx:
+            scope_event_id = ctx.get("event_id")
+        if scope_phase is None:
+            # Phase derivation: prefer scope; fall back to sidecar ctx.phase;
+            # final fallback "full". [CONFIRMED against _handle_bg_add_beat
+            # SCOPE_ROUTER_V1 docstring at line ~9682] SCOPE_ROUTER_V1 maps
+            # video roles intro→pre, resolution→post, standalone→main; here
+            # we just pass through what client sent or what sidecar last
+            # persisted.
+            scope_phase = (ctx.get("phase") if ctx else None) or "full"
+
+        scope_active_context = None
         beats = []
-        if ctx:
-            arc_n = ctx.get("arc_number")
-            event_id = ctx.get("event_id")
-            phase = ctx.get("phase", "full")
-            if arc_n is not None and event_id is not None:
-                seg = bg.get_seg_entry(sidecar, arc_n, event_id, phase)
-                beats = seg.get("beats", [])
+        if scope_arc is not None and scope_event_id is not None:
+            seg = bg.get_seg_entry(sidecar, scope_arc, scope_event_id, scope_phase)
+            beats = seg.get("beats", [])
+            scope_active_context = {
+                "arc_number": scope_arc,
+                "event_id": scope_event_id,
+                "phase": scope_phase,
+            }
+
+        # Migration warning if scope and sidecar's active_context disagree
+        # (debug aid — surfaces the divergence Bug 2 + Bug 4 trip on).
+        warnings = list(sidecar.get("migration_warnings", []))
+        if ctx and scope_active_context and (
+            ctx.get("arc_number") != scope_active_context["arc_number"]
+            or ctx.get("event_id") != scope_active_context["event_id"]
+            or (ctx.get("phase") or "full") != scope_active_context["phase"]
+        ):
+            warnings.append({
+                "type": "scope_active_context_divergence",
+                "message": (
+                    "scope_event_id derived segment differs from sidecar.active_context — "
+                    "scope is canonical per LD-545 Option B"
+                ),
+                "scope": scope_active_context,
+                "active_context": ctx,
+            })
+
         all_done = beats and all(b.get("flux_options") for b in beats)
         return self._send_json(200, {
+            # `active_context` retained for backward compat (BG segment
+            # dropdown reads it as secondary filter).
             "active_context": ctx,
+            # New field per LD-545: the scope-derived context that beats
+            # were actually computed from. Clients should treat this as
+            # canonical for the rendered beats list.
+            "scope_active_context": scope_active_context,
             "beats": beats,
             "flux_options_complete": bool(all_done),
             "capabilities": _bg_capabilities(),
-            "migration_warnings": sidecar.get("migration_warnings", []),
+            "migration_warnings": warnings,
         })
 
     def _handle_bg_poll_flux(self) -> None:
@@ -9262,7 +9342,18 @@ class ProductionHandler(BaseHTTPRequestHandler):
         return self._send_json(200, {"ok": True, "written": written})
 
     def _handle_bg_reorder_beats(self, body: dict) -> None:
-        """POST /api/bg/reorder-beats {beat_ids: [...], scope_event_id?} -> { ok }"""
+        """POST /api/bg/reorder-beats {beat_ids: [...], scope_event_id?} -> { ok }
+
+        LD-545 Option B: segment is derived from scope_event_id /
+        scope_arc_number / scope_phase in the body, NOT from sidecar's
+        active_context. Falls back to active_context only when the
+        corresponding scope key is missing (legacy clients).
+
+        Rule 35 N/A: bg.write_sidecar() called below is a LOCAL atomic JSON
+        file write (json.dump + os.replace, see beat_generator.py:313). NOT
+        a Directus prod_* write. try_post_or_queue requirement does not
+        apply.
+        """
         # LD-456 SCOPE_VALIDATION_V1
         if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return  # LD-461 SCOPE_BODY_HELPER_V1 — migrated from hand-rolled dict
@@ -9273,9 +9364,61 @@ class ProductionHandler(BaseHTTPRequestHandler):
         with bg._sidecar_lock:
             sidecar = bg.read_sidecar()
             ctx = sidecar.get("active_context")
-            if not ctx:
-                return self._send_json(400, {"error": "no active context"})
-            seg = bg.get_seg_entry(sidecar, ctx["arc_number"], ctx["segment_index"])
+
+            # LD-545 Option B — derive segment from request scope; fall
+            # back to active_context only when scope is absent.
+            scope_event_id = body.get("scope_event_id")
+            if scope_event_id is None:
+                scope_event_id = body.get("event_id")
+            scope_arc_raw = body.get("scope_arc_number")
+            if scope_arc_raw is None:
+                scope_arc_raw = body.get("arc_number")
+            scope_arc = None
+            if scope_arc_raw is not None:
+                try:
+                    scope_arc = int(scope_arc_raw)
+                except (TypeError, ValueError):
+                    scope_arc = None
+            scope_phase = body.get("scope_phase")
+            if scope_arc is None and ctx:
+                scope_arc = ctx.get("arc_number")
+            if scope_event_id is None and ctx:
+                scope_event_id = ctx.get("event_id")
+            if scope_phase is None:
+                scope_phase = (ctx.get("phase") if ctx else None) or "full"
+
+            if scope_arc is None or scope_event_id is None:
+                return self._send_json(400, {"error": "no scope or active context"})
+
+            scope_active_context = {
+                "arc_number": scope_arc,
+                "event_id": scope_event_id,
+                "phase": scope_phase,
+            }
+
+            # Surface divergence between scope and sidecar.active_context
+            # so the client can detect Bug 2 / Bug 4 style drift.
+            if ctx and (
+                ctx.get("arc_number") != scope_active_context["arc_number"]
+                or ctx.get("event_id") != scope_active_context["event_id"]
+                or (ctx.get("phase") or "full") != scope_active_context["phase"]
+            ):
+                warnings = list(sidecar.get("migration_warnings", []))
+                warnings.append({
+                    "type": "scope_active_context_divergence",
+                    "message": (
+                        "reorder-beats scope differs from sidecar.active_context — "
+                        "scope is canonical per LD-545 Option B"
+                    ),
+                    "scope": scope_active_context,
+                    "active_context": ctx,
+                })
+                sidecar["migration_warnings"] = warnings
+
+            # get_seg_entry signature: (sidecar, arc_number, event_id, phase="full")
+            # — see beat_generator.get_seg_entry. The legacy two-arg form using
+            # `segment_index` was incorrect and is replaced here.
+            seg = bg.get_seg_entry(sidecar, scope_arc, scope_event_id, scope_phase)
             beats = seg.get("beats", [])
             beat_map = {b["beat_id"]: b for b in beats}
             seg["beats"] = [beat_map[bid] for bid in beat_ids if bid in beat_map]
@@ -9930,7 +10073,30 @@ class ProductionHandler(BaseHTTPRequestHandler):
             sidecar = bg.read_sidecar()
             sidecar = bg._migrate_sidecar(sidecar)
             ctx = sidecar.get("active_context") or {}
-            arc_n = ctx.get("arc_number", 1)
+            # LD-545 Option B — derive arc from scope; fall back to ctx for legacy.
+            # arc_n here is only a performance hint for `_index_beats`. The
+            # outer claim that "[INFERRED — verify against find_beat usage in
+            # beat_generator.py] beat_id is unique across arcs per the
+            # find_beat lookup convention" is not formally proven in code —
+            # the [INFERRED — verify] tag covers the entire claim including
+            # the sub-clause about uniqueness. find_beat at beat_generator.py
+            # iterates all arcs/segments and returns first match, so duplicate
+            # beat_ids across arcs would silently pick whichever arc/segment
+            # comes first — supporting the convention even if not enforced.
+            # We still prefer the scope-derived value to keep handlers
+            # consistent regardless of beat_id uniqueness.
+            scope_arc_raw = body.get("scope_arc_number")
+            if scope_arc_raw is None:
+                scope_arc_raw = body.get("arc_number")
+            scope_arc = None
+            if scope_arc_raw is not None:
+                try:
+                    scope_arc = int(scope_arc_raw)
+                except (TypeError, ValueError):
+                    scope_arc = None
+            if scope_arc is None:
+                scope_arc = ctx.get("arc_number", 1)
+            arc_n = scope_arc
             beats_by_id = bg._index_beats(sidecar, arc_n)
             beat = beats_by_id.get(beat_id)
             if not beat:

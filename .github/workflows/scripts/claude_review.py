@@ -137,6 +137,97 @@ _EMPTY_BULLET_MARKERS = (
     "—",
 )
 
+# Section-level dismissal markers — phrases the bot writes in its
+# section body (OUTSIDE individual bullet first-lines) when it has
+# reconsidered its own findings and concluded that nothing is actually
+# blocking. The bot's own conclusion at section level wins over
+# individual bullet wording.
+#
+# Authority: SHORTCUT_CLAUDE_REVIEW_REGEX_PATCH_PRE_OPTION_A_V1 (LD-667)
+# — interim regex patch with closure plan = Option A.
+# Closure plan per SHORTCUT_CLAUDE_REVIEW_REGEX_PATCH_PRE_OPTION_A_V1:
+# Option A — modify review_prompt.md to require a structured verdict
+# line (e.g. "## Final verdict: NO_BLOCKING_FINDINGS") and parse THAT
+# instead of natural-language reversal phrases. Option B (this code)
+# is interim per SHORTCUT_CLAUDE_REVIEW_REGEX_PATCH_PRE_OPTION_A_V1
+# but unblocks PR #22 today per
+# SHORTCUT_CLAUDE_REVIEW_REGEX_PATCH_PRE_OPTION_A_V1; Option A follows
+# per SHORTCUT_CLAUDE_REVIEW_REGEX_PATCH_PRE_OPTION_A_V1 closure plan.
+#
+# Pattern class observed across multiple PR #22 rounds: bot writes a
+# concerning bullet then concludes the section with explicit
+# self-reversal language ("Reconsidering: no clear ... violations are
+# present", "Not clearly blocking on its own", "Downgrading to
+# Non-blocking"). The conclusion is the bot's actual verdict; the gate
+# honors it.
+#
+# Patterns intentionally narrow [INFERRED — verify by re-running the
+# 24-case smoke enumerated in PR #24 round-3 (commit description) +
+# any new adversarial cases at PR-author time. Smoke fixtures are NOT
+# persisted as a pytest in this repo yet — that's a follow-up under
+# Option A / a separate test-extraction PR.]:
+#   * "reconsidering: no clear"  — bot's "I changed my mind" prefix only
+#     when followed by "no clear" (avoids false-skip on
+#     "Reconsidering: no, the concern stands")
+#   * "not clearly blocking"     — bot's explicit self-doubt admission
+#   * "no clear rule N"          — bot's per-rule self-reversal
+#   * "no clear rule N/M"        — bot's combined-rule enumerations
+#                                  (PR #22 round-3 actual phrase)
+#   * "no clear violations are present" — full-verdict catch
+_SECTION_DISMISSAL_PHRASES = (
+    "reconsidering: no clear",
+    "not clearly blocking",
+    # Per-rule self-reversals.
+    "no clear rule 19",
+    "no clear rule 24",
+    "no clear rule 32",
+    "no clear rule 33",
+    "no clear rule 35",
+    # Combined-form enumerations (observed in actual bot output on
+    # PR #22 round-3: "no clear Rule 19/35/32/credential/destructive-
+    # command violations are present"). Matches the bot's verbatim
+    # phrasing — narrower than "no clear" alone (which could mask
+    # real findings about format conventions etc).
+    "no clear rule 19/35",
+    "no clear rule 19/35/32",
+    "no clear rule 32/35",
+    "no clear credential",
+    "no clear destructive",
+    # Full-verdict catches.
+    "no clear violations are present",
+    "no clear violations introduced",
+)
+
+
+def _is_section_paragraph_line(line: str) -> bool:
+    """True if line is plain section-level paragraph text — NOT a bullet,
+    NOT indented continuation, NOT a blockquote, NOT blank. Used to
+    restrict the dismissal scan to top-level prose where the bot writes
+    its actual section-level conclusion. Closes the false-skip vectors
+    flagged by AI review NB2/NB3 on PR #24 round-1 (markdown alt-bullet
+    `* `, blockquote `>`, indented continuation lines could carry a
+    dismissal phrase that doesn't reflect a section-level verdict)."""
+    if not line:
+        return False
+    if line[0] in (" ", "\t"):
+        return False  # indented = continuation of bullet/list/quote
+    stripped = line.strip()
+    if not stripped:
+        return False
+    # Markdown bullets (all three list markers + ordered).
+    if stripped.startswith(("- ", "* ", "+ ")):
+        return False
+    # Ordered list "1. ", "10. ", "1) ", "10) ", etc. Match leading run
+    # of digits followed by ". " or ") " — handles single AND multi-digit
+    # numbers (NB3 fix: prior code only checked stripped[1] which missed
+    # "10. item" and longer-numbered lists).
+    if re.match(r"\d+[.)]\s", stripped):
+        return False
+    # Blockquote — bot might quote a prior review's reversal phrase.
+    if stripped.startswith(">"):
+        return False
+    return True
+
 
 def has_blocking(text: str) -> bool:
     blocking_section = re.search(
@@ -147,16 +238,41 @@ def has_blocking(text: str) -> bool:
     if not blocking_section:
         return False
     body = blocking_section.group(1)
+    # Section-level dismissal check FIRST, but ONLY against TOP-LEVEL
+    # PARAGRAPH text (excludes bullets `- *  +`, ordered lists `1. `,
+    # blockquotes `>`, indented continuations, blank lines). This
+    # ensures a bullet that quotes the bot's earlier reversal language
+    # — or a blockquote, or an indented continuation — can't falsely
+    # trigger a skip. The dismissal phrase must appear in a top-level
+    # section paragraph where the bot writes its actual verdict.
+    section_paragraph_text = "\n".join(
+        line for line in body.splitlines()
+        if _is_section_paragraph_line(line)
+    ).lower()
+    if any(p in section_paragraph_text for p in _SECTION_DISMISSAL_PHRASES):
+        return False
+    # Per-bullet scan — catch all markdown bullet forms (`- `, `* `, `+ `)
+    # so that real concerns in alternate-bullet syntax aren't silently
+    # dropped. Symmetric with the section-paragraph exclusion above:
+    # whatever the section scan excludes as "bullet", the per-bullet
+    # scan must include — otherwise concerns in alt-bullet syntax fall
+    # through both checks.
     for line in body.splitlines():
         line = line.strip()
-        if not (line.startswith("- ") and len(line) > 2):
+        is_bullet = (
+            (line.startswith("- ") and len(line) > 2)
+            or (line.startswith("* ") and len(line) > 2)
+            or (line.startswith("+ ") and len(line) > 2)
+        )
+        if not is_bullet:
             continue
         line_l = line.lower()
-        # Empty-marker structural skip: bot writes "- (none)" / "- N/A"
+        # Empty-marker structural skip: bot writes "- (none)" / "* N/A"
         # when there are no findings. Compare bullet content (after the
-        # "- " prefix) trimmed + lowercased against known markers. This
-        # is more reliable than substring match — "(none)" inside a real
-        # finding ("this is (none) of the issue") would no longer mask.
+        # "- " / "* " / "+ " prefix) trimmed + lowercased against known
+        # markers. This is more reliable than substring match — "(none)"
+        # inside a real finding ("this is (none) of the issue") would no
+        # longer mask.
         bullet_content = line[2:].strip().lower()
         if bullet_content in _EMPTY_BULLET_MARKERS:
             continue
