@@ -409,3 +409,9 @@ Full alert dump: `/tmp/codeql_alerts.json` (45 alerts, fetched via `gh api repos
 - `prod_blockers` row 76 — update `is_resolved=true` after each batch of dismissals/fixes lands.
 - New `prod_locked_decisions` rows — 5 SHORTCUT LDs above.
 - `prod_activity_log` — entry citing this report after triage decisions are accepted.
+
+---
+
+## 2026-05-10 follow-up — LD-678 (BLOCKER_123_FALSE_POSITIVE_DISMISSAL_V1)
+
+Code-scanning alerts 172/173/174/175 (the 4 high-severity findings introduced by PRs #27/#28 that were causing the github-advanced-security CodeQL rollup to flip `mergeStateStatus=BLOCKED`) were dismissed as false positives on 2026-05-10 22:57:41–43Z per LD-678. Verification PR opened on this branch; merge if CodeQL rollup clean.
