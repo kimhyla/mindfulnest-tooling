@@ -32,7 +32,7 @@ import {
   makeScope,
   scopeKey,
 } from '../state/scope';
-import { READ_ENDPOINTS, MUTATION_ENDPOINTS } from '../api/endpoints';
+import { READ_ENDPOINTS } from '../api/endpoints';
 import { pathappPatch } from '../api/client';
 
 export interface ScopeBoundaryProps {
@@ -110,57 +110,29 @@ export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
       }
       if (cancelled) return;
       const eventId = serverEventId ?? resolveLocalFallback();
-      let effectiveGen = serverGeneration;
-      let effectiveScopeType = serverScopeType;
-      let effectiveMilestoneId = serverMilestoneId;
-      const urlMs = new URLSearchParams(window.location.search).get('milestone');
-
-      // Shared production_server process: an earlier session can leave
-      // scope_type='milestone' while this navigation has no ?milestone= (e.g.
-      // Playwright order). Re-pin to event scope so event-only tabs work; deep
-      // links still pass ?milestone= (handled below).
-      if (
-        effectiveScopeType === 'milestone'
-        && typeof effectiveMilestoneId === 'string'
-        && effectiveMilestoneId
-        && !urlMs
-      ) {
-        try {
-          const el = await fetch(MUTATION_ENDPOINTS.event_load, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ event_id: eventId }),
-          });
-          if (el.ok) {
-            const d = (await el.json()) as { event_generation?: number };
-            if (typeof d.event_generation === 'number') {
-              effectiveGen = d.event_generation;
-            }
-            effectiveScopeType = 'event';
-            effectiveMilestoneId = null;
-          }
-        } catch {
-          // non-fatal — fall through with server-reported scope
-        }
-      }
-
-      activeScope.value = makeScope(eventId, null, effectiveGen);
-
-      // F-PROJECT-001: milestone scope survives reload — ?milestone= bootstrap
-      // or hydrate when URL and server already agree.
+      activeScope.value = makeScope(eventId, null, serverGeneration);
+      // F-PROJECT-001: milestone scope survives reload — hydrate from server
+      // (GET /api/event/current) and/or ?milestone= when server is still on event.
       let milestoneId: string | null = null;
-      if (urlMs) {
+      if (serverScopeType === 'milestone' && typeof serverMilestoneId === 'string' && serverMilestoneId) {
+        milestoneId = serverMilestoneId;
+      } else {
         try {
-          const loadRes = await pathappPatch<{ ok?: boolean; event_generation?: number }>(
-            activeScope.value,
-            'milestone_load',
-            { milestone_id: urlMs },
-          );
-          if (loadRes.ok && loadRes.data?.ok) {
-            milestoneId = urlMs;
-            const eg = loadRes.data.event_generation;
-            if (typeof eg === 'number') {
-              activeScope.value = makeScope(eventId, null, eg);
+          const urlMs = new URLSearchParams(window.location.search).get('milestone');
+          if (urlMs) {
+            const loadRes = await pathappPatch<{ ok?: boolean }>(
+              activeScope.value,
+              'milestone_load',
+              { milestone_id: urlMs },
+            );
+            if (loadRes.ok && loadRes.data?.ok) {
+              milestoneId = urlMs;
+              if (typeof loadRes.data === 'object' && loadRes.data !== null) {
+                const eg = (loadRes.data as { event_generation?: number }).event_generation;
+                if (typeof eg === 'number') {
+                  activeScope.value = makeScope(eventId, null, eg);
+                }
+              }
             }
           }
         } catch (err) {
@@ -185,12 +157,6 @@ export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
             );
           }
         }
-      } else if (
-        effectiveScopeType === 'milestone'
-        && typeof effectiveMilestoneId === 'string'
-        && effectiveMilestoneId
-      ) {
-        milestoneId = effectiveMilestoneId;
       }
       if (milestoneId) {
         activeProjectType.value = 'milestone';
