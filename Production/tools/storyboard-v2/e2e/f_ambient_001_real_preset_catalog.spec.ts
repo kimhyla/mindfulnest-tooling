@@ -38,7 +38,7 @@
 // openPhaseB) and e2e/architectural_fix.spec.ts (mockStitcherJob).
 
 import { test, expect, type Page } from '@playwright/test';
-import { existsSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
+import { mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -133,16 +133,20 @@ test.describe('F-AMBIENT-001 — real ambient preset catalog (server + Phase B +
   const seededFiles: string[] = [];
 
   test.beforeAll(() => {
-    if (!existsSync(ambientDir)) {
-      mkdirSync(ambientDir, { recursive: true });
-    }
+    // `mkdirSync` with recursive:true is idempotent (no TOCTOU).
+    mkdirSync(ambientDir, { recursive: true });
     for (const presetId of CANONICAL_PRESETS) {
       const filePath = resolve(ambientDir, `${presetId}.mp3`);
-      if (!existsSync(filePath)) {
-        // Empty stub — _handle_phase_b_ambient_preset_list only checks
-        // suffix == ".mp3" and reads f.stat().st_size; no content decode.
-        writeFileSync(filePath, Buffer.alloc(0));
+      // Atomic exclusive create — eliminates the check-then-act race that
+      // CodeQL flags on `existsSync` + `writeFileSync`. If another process
+      // (or a stale pre-existing file) holds the path, EEXIST is thrown and
+      // we deliberately skip tracking it for cleanup so we never delete
+      // files we didn't create.
+      try {
+        writeFileSync(filePath, Buffer.alloc(0), { flag: 'wx' });
         seededFiles.push(filePath);
+      } catch (err: unknown) {
+        if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') throw err;
       }
     }
     // eslint-disable-next-line no-console
@@ -153,7 +157,13 @@ test.describe('F-AMBIENT-001 — real ambient preset catalog (server + Phase B +
 
   test.afterAll(() => {
     for (const filePath of seededFiles) {
-      if (existsSync(filePath)) unlinkSync(filePath);
+      // Atomic delete — if the file is already gone (another runner / manual
+      // cleanup) we swallow ENOENT instead of check-then-delete races.
+      try {
+        unlinkSync(filePath);
+      } catch (err: unknown) {
+        if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err;
+      }
     }
     // eslint-disable-next-line no-console
     console.log(`[f_ambient_001] removed ${seededFiles.length} seeded stub mp3(s)`);
