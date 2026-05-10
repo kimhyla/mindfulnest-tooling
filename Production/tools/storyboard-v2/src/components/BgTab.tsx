@@ -132,7 +132,12 @@ export function BgTab() {
   const [segments, setSegments] = useState<BgSegment[]>([]);
   const [activeSegment, setActiveSegment] = useState<string>(''); // "<event_id>|<phase>"
   const [beats, setBeats] = useState<BgBeat[]>([]);
-  const [loading, setLoading] = useState(false);
+  // F-BG-001 fix: initial state is `true` because the data-load useEffect
+  // fires synchronously on first mount (prevDepsRef === null branch) and
+  // immediately sets loading=true. Without `true` here, the first paint
+  // would falsely show the loaded-empty placeholder "(no segments yet)"
+  // for one frame before the fetch starts.
+  const [loading, setLoading] = useState(true);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [pollResults, setPollResults] = useState<Record<string, GptOption[]>>({});
   const [acceptStatus, setAcceptStatus] = useState<'idle' | 'sending' | 'ok' | 'error'>('idle');
@@ -532,7 +537,20 @@ export function BgTab() {
           options={segmentOptions}
           value={activeSegment}
           onChange={onSelectSegment}
-          placeholder={segments.length === 0 ? 'Loading…' : 'Select segment'}
+          // F-BG-001 fix: distinguish in-flight fetch from loaded-empty.
+          // Pre-fix code keyed off `segments.length === 0`, which left the
+          // placeholder stuck on "Loading…" forever when the server returned
+          // {segments: [], arc_number: N} (a valid empty result, not a
+          // pending request). Now: loading state controls the loading copy;
+          // empty-after-load surfaces "(no segments yet)" so the user knows
+          // authoring is required.
+          placeholder={
+            loading
+              ? 'Loading…'
+              : segments.length === 0
+                ? '(no segments yet)'
+                : 'Select segment'
+          }
         />
         <button
           type="button"
