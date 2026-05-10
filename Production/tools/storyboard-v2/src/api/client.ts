@@ -188,8 +188,12 @@ export async function pathappPatch<T = unknown>(
     // F-STORYBOARD-001 fix (prod_blockers id=120, 2026-05-10):
     // Server's /api/state/snapshot handler requires scope_video_role per LD-474
     // (VIDEO_ROLE_INVALID error). Inline smoke captured 6/7 snapshot calls
-    // returning 400. Including scope_video_role + scope_event_id in the body
-    // matches the pattern used for the main mutation payload below.
+    // returning 400 [CONFIRMED against prod_activity_log id=2706 closure summary
+    // + direct probe POST /api/state/snapshot with {event_id, scope} returning
+    // {"error":"video_role_required","code":"VIDEO_ROLE_INVALID","hint":"scope_video_role
+    // required on this endpoint (LD-474)"}]. Including scope_video_role +
+    // scope_event_id in the body matches the pattern used for the main mutation
+    // payload below.
     const snap = await apiPostRaw(
       MUTATION_ENDPOINTS.state_snapshot,
       {

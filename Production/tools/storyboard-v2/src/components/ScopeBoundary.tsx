@@ -135,8 +135,27 @@ export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
               }
             }
           }
-        } catch {
-          // ignore milestone URL bootstrap failures
+        } catch (err) {
+          // F-PROJECT-001 milestone URL bootstrap is BEST-EFFORT, NOT a critical write path.
+          // Rule 19 justification: this code only runs when the user navigates with `?milestone=<id>`
+          // (deep-link / shared URL flow). If milestone_load fails, the safe fallback is event scope —
+          // the user can still switch via the Project dropdown's canonical onChange handler
+          // (ProjectSelector.tsx:414). So the failure is non-fatal: we surface to console for
+          // observability + emit a `mn:milestone-bootstrap-failed` window event for UI listeners.
+          // No SHORTCUT_* LD needed because this is documented best-effort degradation, not a
+          // deferred fix on a broken write path.
+          // eslint-disable-next-line no-console
+          console.warn('[ScopeBoundary] milestone URL bootstrap failed (event scope fallback):', err);
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(
+              new CustomEvent('mn:milestone-bootstrap-failed', {
+                detail: {
+                  url_milestone_id: new URLSearchParams(window.location.search).get('milestone'),
+                  error: String(err),
+                },
+              }),
+            );
+          }
         }
       }
       if (milestoneId) {
