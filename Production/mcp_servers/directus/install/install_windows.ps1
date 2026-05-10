@@ -8,8 +8,11 @@
 # - Claude Code CLI installed
 # - Doppler logged in + project configured for Directus credentials
 #
-# UNTESTED on Windows as of 2026-05-10 (Phase 1 spec §15 #3); verify on first
-# work-PC run and update as needed.
+# Windows validation status: deferred per
+# `SHORTCUT_DIRECTUS_MCP_WINDOWS_VALIDATION_PENDING_V1` (LD-671) — not yet run
+# on a Windows machine as of 2026-05-10. Closure protocol on first work-PC
+# session is documented in the LD's notes field; the user-memory file
+# `project_directus_mcp_windows_install_pending.md` fires the reminder.
 
 $ErrorActionPreference = "Stop"
 

@@ -56,7 +56,7 @@ cd ~\Projects\mindfulnest-tooling\Production\mcp_servers\directus
 ./install/install_windows.ps1
 ```
 
-(Untested on Windows as of 2026-05-10; verify on first run.)
+(Windows validation deferred per `SHORTCUT_DIRECTUS_MCP_WINDOWS_VALIDATION_PENDING_V1` (LD-671); first work-PC run validates per the LD's closure protocol.)
 
 ## Run manually
 
@@ -117,4 +117,4 @@ Live Directus probes from `.venv/bin/python` against production Directus:
 
 - **Schema-cache TTL is 15 min.** When a Directus field is added, worst-case lag before the MCP picks it up is 15 min. Use `directus_invalidate_schema` for an instant flush, or restart the server.
 - **Cursor-agent sandbox + remote HTTPS.** Whether cursor-agent's sandbox reaches a public HTTPS endpoint with a bearer header is an empirical question that hasn't been exercised yet; the answer would govern any future move from local stdio to remote transport. Recorded as an open investigation, not a limitation of the current deployment.
-- **Platform support.** macOS install (`install_macos.sh`) is exercised. Windows install (`install_windows.ps1`) ships alongside it but has not yet been run on a Windows machine; first invocation on the work PC is the validation step. The `project_directus_mcp_windows_install_pending.md` user-memory file fires a reminder when that machine transition is detected.
+- **Platform support.** macOS install (`install_macos.sh`) is exercised — 17 pytest tests pass + live MCP boot smoke confirms 12 tools register. Windows install (`install_windows.ps1`) ships alongside it; Windows validation is deferred per `SHORTCUT_DIRECTUS_MCP_WINDOWS_VALIDATION_PENDING_V1` (LD-671) until the first work-PC session, with the closure protocol documented in that LD. The `project_directus_mcp_windows_install_pending.md` user-memory file fires a reminder when the machine transition is detected.
