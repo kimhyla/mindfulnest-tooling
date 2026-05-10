@@ -57,6 +57,11 @@ _THIS = Path(__file__).resolve()
 _PRODUCTION_ROOT = _THIS.parent.parent.parent  # tooling/Production/
 _TOOLING_ROOT = _PRODUCTION_ROOT.parent
 sys.path.insert(0, str(_PRODUCTION_ROOT))
+# _TOOLING_ROOT also on sys.path so the `Production` PEP 420 namespace package
+# resolves for `from Production.tools.registered_write import ...` in tools/assets.py.
+# Locked 2026-05-10 per LD MCP_REGISTERED_WRITE_MIGRATED_TO_TOOLING_V1; see
+# Production/docs/V59_REGISTERED_WRITE_MIGRATION_SPEC_v1.md.
+sys.path.insert(0, str(_TOOLING_ROOT))
 
 from fastmcp import FastMCP  # noqa: E402
 

@@ -5,14 +5,26 @@ LD-421/422 (ASSET_FINDABILITY_BUILD_V1) — atomic SHA256 + dedup + Two-Write
 Rule (prod_assets row + prod_activity_log row). The MCP server MUST go
 through this wrapper, not bypass it (per CLAUDE.md Rule 34).
 
-Note: registered_write.py uses Production.tools.lib.directus (the credstore-md
-fallback Directus client), NOT the Production.lib.directus we use elsewhere
-in the MCP. This is the existing dual-lib situation; both work.
+Eager top-of-module imports (locked 2026-05-10 per LD
+MCP_REGISTERED_WRITE_MIGRATED_TO_TOOLING_V1; see
+Production/docs/V59_REGISTERED_WRITE_MIGRATION_SPEC_v1.md): registered_write
++ credentials_lib are now in this tooling-mcp tree at canonical paths.
+Failure to import here surfaces at MCP boot (fail-fast), not at first tool
+invocation (fail-late) — per CLAUDE.md Rule 19.
+
+Pre-existing dual-lib situation (out of scope for this migration; see spec
+§4 FOLLOWUP-1): registered_write.py imports Production.tools.credentials_lib.directus
+(21612 b), distinct from the Production.lib.directus (28989 b) used by the
+MCP server's CRUD/decisions/activity tools. Both work today; unification
+is a future PR.
 """
 
 from __future__ import annotations
 
 from typing import Any
+
+# Eager imports — proven reachable at MCP boot per V59_REGISTERED_WRITE_MIGRATION_SPEC_v1.
+from Production.tools.registered_write import register_asset as _reg, search as _search
 
 
 def register(mcp: Any) -> None:
@@ -55,7 +67,6 @@ def register(mcp: Any) -> None:
         role: str | None = None,
     ) -> dict:
         try:
-            from Production.tools.registered_write import register_asset as _reg
             asset_id, abs_path = _reg(
                 file_path=file_path,
                 asset_type=asset_type,
@@ -106,7 +117,6 @@ def register(mcp: Any) -> None:
         limit: int = 50,
     ) -> dict:
         try:
-            from Production.tools.registered_write import search as _search
             results = _search(
                 phrase=phrase,
                 module_id=module_id,

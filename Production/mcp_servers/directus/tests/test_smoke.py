@@ -25,8 +25,14 @@ import pytest
 # Make Production/ importable from tooling layout.
 _THIS = Path(__file__).resolve()
 _PRODUCTION = _THIS.parent.parent.parent.parent
+_TOOLING = _PRODUCTION.parent
 sys.path.insert(0, str(_PRODUCTION))
 sys.path.insert(0, str(_THIS.parent.parent))
+# _TOOLING on sys.path so the `Production` PEP 420 namespace package resolves
+# for `from Production.tools.registered_write import ...` in tools/assets.py.
+# Mirrors server.py setup; locked 2026-05-10 per LD
+# MCP_REGISTERED_WRITE_MIGRATED_TO_TOOLING_V1.
+sys.path.insert(0, str(_TOOLING))
 
 from lib.directus_admin_client import DirectusAdminClient  # noqa: E402
 
@@ -45,7 +51,13 @@ def _call(name: str, args: dict) -> dict:
 
 
 def test_tool_inventory_has_all_expected_tools():
-    """All 12 tools (6 read + 6 write) are registered with the MCP server."""
+    """All 12 tools (6 read + 6 write) are registered with the MCP server.
+
+    Per LD MCP_REGISTERED_WRITE_MIGRATED_TO_TOOLING_V1 (2026-05-10), this
+    asserts EXACTLY 12 tools — register_asset and find_asset are now
+    unconditionally registered via top-of-module imports in tools/assets.py
+    (no lazy/conditional skip path remains).
+    """
     tools = asyncio.run(server.mcp.list_tools())
     names = {t.name for t in tools}
     expected = {
@@ -66,6 +78,36 @@ def test_tool_inventory_has_all_expected_tools():
     }
     missing = expected - names
     assert not missing, f"Missing tools: {missing}; got {names}"
+    extra = names - expected
+    assert not extra, f"Unexpected extra tools: {extra}; got {names}"
+    assert len(names) == 12, f"Expected exactly 12 tools, got {len(names)}: {names}"
+
+
+def test_registered_write_module_importable_at_mcp_root():
+    """Per V59_REGISTERED_WRITE_MIGRATION_SPEC_v1: registered_write.py + its
+    credentials_lib/ dependency must resolve from the tooling-mcp Production
+    tree alone (no Dropbox sys.path injection required).
+
+    Regression guard: if anyone removes Production/tools/registered_write.py
+    or Production/tools/credentials_lib/ from this repo, this test fails
+    LOUDLY at pytest time instead of silently at MCP tool-invocation time.
+    """
+    # Import directly via the tooling-mcp Production root (which test_smoke.py
+    # already injected at the top of this file via sys.path.insert).
+    import Production.tools.registered_write as rw  # noqa: E402
+
+    # Public API surface per the wrapper docstring.
+    assert callable(getattr(rw, "register_asset", None)), \
+        "Production.tools.registered_write.register_asset missing"
+    assert callable(getattr(rw, "search", None)), \
+        "Production.tools.registered_write.search missing"
+    assert callable(getattr(rw, "approve_asset", None)), \
+        "Production.tools.registered_write.approve_asset missing"
+    assert callable(getattr(rw, "add_iteration_note", None)), \
+        "Production.tools.registered_write.add_iteration_note missing"
+
+    # And the credentials_lib dependency must also resolve.
+    from Production.tools.credentials_lib import credentials, directus  # noqa: F401, E402
 
 
 # -----------------------------------------------------------------------------
