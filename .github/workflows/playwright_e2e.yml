@@ -124,6 +124,16 @@ jobs:
           PRODUCTION_SERVER_SINGLE_MACHINE=1 \
             python3 -m unittest -v Production.tools.tests.test_register_asset
 
+      - name: Phase B — verify_app_hash_encoding R3 gate (DS-2 strict TDD)
+        # Phase B Step 6 per V59_PRODUCTION_PIPELINE_STREAM_BF_SPEC_v1 §4.2 + §3.3.
+        # verify_app_hash_encoding() refuses to advance r2_atomic_publish if any
+        # digestStringAsync call uses CryptoEncoding.Base64 OUTPUT encoding (which
+        # would invalidate the R3 single-hex-hash strategy). Synthetic .ts fixtures
+        # in temp dirs make the gate testable offline (no app repo dependency).
+        run: |
+          PRODUCTION_SERVER_SINGLE_MACHINE=1 \
+            python3 -m unittest -v Production.lib.tests.test_release_gates
+
       - name: Scrambled-state SCR.1+SCR.2 (C-7.6 — READ-ONLY against Event_1)
         # Pytest gates from spec §11.2 + Kim's pre-C-9 addendum 2026-05-06.
         # SCR.1: scope_router.resolve doesn't crash on Event_1 stranded state.
