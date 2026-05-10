@@ -17,9 +17,24 @@ import {
 } from '../state/scope';
 import { apiGet, pathappPatch } from '../api/client';
 import { makeDropTarget } from '../utils/dragdrop';
+import { Modal } from './ui/Modal';
 import { Spinner } from './ui/Spinner';
 import { Select } from './ui/Select';
 import { pushToast } from './ui/Toast';
+
+// ----------------------------------------------------------------
+// Modal state — single-modal stack invariant per UI_PRIMITIVES_SHARED_V1.
+// BG-9 (delete confirm), BG-34/35 (Accept All warn + confirm), BG-5 (edit chip),
+// BG-18 (remove ref confirm) all multiplex through this state machine.
+// ----------------------------------------------------------------
+
+type BgModalState =
+  | { kind: 'none' }
+  | { kind: 'delete-beat'; beatId: string }
+  | { kind: 'accept-all-warn'; unsetIds: string[]; readyCount: number }
+  | { kind: 'accept-all-confirm'; readyCount: number }
+  | { kind: 'edit-chip'; beatId: string; oldChipText: string; draftText: string }
+  | { kind: 'remove-ref'; beatId: string; refField: 'reference_image' | 'bg_ref_image'; label: string };
 
 // ----------------------------------------------------------------
 // Types — derived from server handler shapes (production_server.py:8627+)
@@ -125,6 +140,9 @@ export function BgTab() {
   // Running cost across this session (only counts batches submitted from this UI).
   const [runningCostUsd, setRunningCostUsd] = useState<number>(0);
   const [lastBatchCostUsd, setLastBatchCostUsd] = useState<number>(0);
+  // BG-9 / BG-34/35 / BG-5 / BG-18 — Modal state machine.
+  const [modalState, setModalState] = useState<BgModalState>({ kind: 'none' });
+  const closeModal = () => setModalState({ kind: 'none' });
 
   // Initial load + scope-change re-fetch (R1 fix per spec §5 Phase 3.1).
   // Deps include all scope signals so changing event/milestone/partition
@@ -285,9 +303,15 @@ export function BgTab() {
     }
   };
 
-  const onDeleteBeat = async (beatId: string) => {
-    const ok = window.confirm(`Delete beat ${beatId}?`);
-    if (!ok) return;
+  // BG-9 — Modal-based delete confirm (replaces window.confirm per Kim 2026-05-06 lock).
+  const onDeleteBeat = (beatId: string) => {
+    setModalState({ kind: 'delete-beat', beatId });
+  };
+
+  const executeDeleteBeat = async () => {
+    if (modalState.kind !== 'delete-beat') return;
+    const beatId = modalState.beatId;
+    closeModal();
     const result = await pathappPatch(activeScope.value, 'bg_delete_beat', { beat_id: beatId });
     if (result.ok) {
       pushToast({ kind: 'info', message: `Deleted ${beatId}`, source: 'bg-delete' });
@@ -327,6 +351,81 @@ export function BgTab() {
     }
   };
 
+  // BG-5 — Edit chip via Modal (replaces no-edit-was-possible UX).
+  // Click pencil icon → modal with prefilled draftText input → save → splice
+  // (oldChipText) → (newChipText) in the beat's dialogue text. Empty newChipText
+  // is rejected (use Remove × instead).
+  const requestEditChip = (beatId: string, oldChipText: string) => {
+    setModalState({ kind: 'edit-chip', beatId, oldChipText, draftText: oldChipText });
+  };
+
+  const executeEditChip = async () => {
+    if (modalState.kind !== 'edit-chip') return;
+    const { beatId, oldChipText, draftText } = modalState;
+    const trimmed = draftText.trim();
+    if (!trimmed || trimmed === oldChipText) {
+      closeModal();
+      return;
+    }
+    closeModal();
+    const beat = beats.find((b) => b.beat_id === beatId);
+    if (!beat) return;
+    const currentText = beat.dialogue_text ?? '';
+    const oldEsc = oldChipText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`\\(${oldEsc}\\)`);
+    const nextText = currentText.replace(re, `(${trimmed})`);
+    if (nextText === currentText) {
+      pushToast({
+        kind: 'error',
+        message: `Could not locate chip "${oldChipText}" in dialogue`,
+        source: 'bg-chip-edit-miss',
+      });
+      return;
+    }
+    // Optimistic local update.
+    setBeats((bs) => bs.map((b) => (b.beat_id === beatId ? { ...b, dialogue_text: nextText } : b)));
+    const result = await pathappPatch(activeScope.value, 'bg_update_beat', {
+      beat_id: beatId,
+      dialogue_text: nextText,
+    });
+    if (!result.ok) {
+      pushToast({
+        kind: 'error',
+        message: `Chip edit save failed: ${result.error}`,
+        source: 'bg-chip-edit-error',
+      });
+    }
+  };
+
+  // BG-18 — Remove ref via Modal confirm (clears reference_image / bg_ref_image).
+  const requestRemoveRef = (
+    beatId: string,
+    refField: 'reference_image' | 'bg_ref_image',
+    label: string,
+  ) => {
+    setModalState({ kind: 'remove-ref', beatId, refField, label });
+  };
+
+  const executeRemoveRef = async () => {
+    if (modalState.kind !== 'remove-ref') return;
+    const { beatId, refField, label } = modalState;
+    closeModal();
+    const result = await pathappPatch(activeScope.value, 'bg_update_beat', {
+      beat_id: beatId,
+      [refField]: null,
+    });
+    if (result.ok) {
+      pushToast({ kind: 'info', message: `${label} cleared`, source: 'bg-ref-remove' });
+      await refreshState();
+    } else {
+      pushToast({
+        kind: 'error',
+        message: `${label} remove failed: ${result.error}`,
+        source: 'bg-ref-remove-error',
+      });
+    }
+  };
+
   const onAcceptOption = async (beatId: string, optionKey: string) => {
     const result = await pathappPatch(activeScope.value, 'bg_accept_option', {
       beat_id: beatId, option_key: optionKey,
@@ -339,11 +438,35 @@ export function BgTab() {
     }
   };
 
-  const onAcceptAll = async () => {
+  // BG-34/35 — Accept All warn modal (lists unset beats) + confirm modal
+  // (Lock in N selections...). Replaces direct mutation; gates on user
+  // acknowledgement of unset beats per Kim 2026-05-06 lock.
+  const onAcceptAll = () => {
     if (beats.length === 0) {
       pushToast({ kind: 'info', message: 'No beats to accept.', source: 'bg-accept-all-empty' });
       return;
     }
+    const ready = beats.filter((b) => b.accepted_image_key);
+    const unset = beats.filter((b) => !b.accepted_image_key).map((b) => b.beat_id);
+    if (unset.length > 0) {
+      // BG-34 — Show warn modal with unset beat_ids before proceeding.
+      setModalState({ kind: 'accept-all-warn', unsetIds: unset, readyCount: ready.length });
+      return;
+    }
+    // All beats have selections → straight to BG-35 confirm.
+    setModalState({ kind: 'accept-all-confirm', readyCount: ready.length });
+  };
+
+  // BG-34 → BG-35 transition: warn modal "Continue anyway" advances to confirm.
+  const proceedToAcceptConfirm = () => {
+    if (modalState.kind !== 'accept-all-warn') return;
+    setModalState({ kind: 'accept-all-confirm', readyCount: modalState.readyCount });
+  };
+
+  // BG-35 — Final confirm fires the actual mutation.
+  const executeAcceptAll = async () => {
+    if (modalState.kind !== 'accept-all-confirm') return;
+    closeModal();
     setAcceptStatus('sending');
     // Cursor v8 Q9 — partial-failure idempotent retry: the server is the source
     // of truth for pipeline_stage; the client just submits the current
@@ -460,6 +583,9 @@ export function BgTab() {
               onUpdateText={(t) => onUpdateBeatText(b.beat_id, t)}
               onGenerate={() => onGenerateBatch(b.beat_id)}
               onAccept={(optionKey) => onAcceptOption(b.beat_id, optionKey)}
+              onEditChip={(c) => requestEditChip(b.beat_id, c)}
+              onInsertAfter={() => onAddBeat(b.beat_id)}
+              onRemoveRef={(refField, label) => requestRemoveRef(b.beat_id, refField, label)}
             />
           ))}
         </ol>
@@ -485,6 +611,187 @@ export function BgTab() {
           {acceptStatus === 'ok' ? `✓ Accepted ${beats.filter((b) => b.accepted_image_key).length} beats` : ''}
         </span>
       </footer>
+
+      {/* BG-9 — Delete-beat confirm Modal */}
+      <Modal
+        id="bg-delete-beat"
+        title="Delete beat?"
+        open={modalState.kind === 'delete-beat'}
+        onClose={closeModal}
+        footer={
+          <>
+            <button type="button" class="mn-btn" data-testid="bg-delete-cancel" onClick={closeModal}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="mn-btn mn-btn-primary"
+              data-testid="bg-delete-confirm"
+              onClick={executeDeleteBeat}
+            >
+              Delete
+            </button>
+          </>
+        }
+      >
+        <p>
+          Delete beat{' '}
+          <strong>{modalState.kind === 'delete-beat' ? modalState.beatId : ''}</strong>?
+          This removes the beat record from the BG sidecar.
+        </p>
+      </Modal>
+
+      {/* BG-34 — Accept All warn Modal (lists unset beat_ids) */}
+      <Modal
+        id="bg-accept-all-warn"
+        title="Some beats have no selection"
+        open={modalState.kind === 'accept-all-warn'}
+        onClose={closeModal}
+        footer={
+          <>
+            <button
+              type="button"
+              class="mn-btn"
+              data-testid="bg-accept-warn-cancel"
+              onClick={closeModal}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="mn-btn mn-btn-primary"
+              data-testid="bg-accept-warn-continue"
+              onClick={proceedToAcceptConfirm}
+            >
+              Continue anyway
+            </button>
+          </>
+        }
+      >
+        {modalState.kind === 'accept-all-warn' ? (
+          <>
+            <p>
+              <strong>{modalState.unsetIds.length}</strong> beat
+              {modalState.unsetIds.length === 1 ? '' : 's'} have no accepted image.
+              They will be skipped. <strong>{modalState.readyCount}</strong> beat
+              {modalState.readyCount === 1 ? '' : 's'} will be sent to Storyboard.
+            </p>
+            <ul class="mn-bg-modal-unset-list" data-testid="bg-accept-warn-list">
+              {modalState.unsetIds.map((id) => (
+                <li key={id}>{id}</li>
+              ))}
+            </ul>
+          </>
+        ) : null}
+      </Modal>
+
+      {/* BG-35 — Accept All final confirm Modal */}
+      <Modal
+        id="bg-accept-all-confirm"
+        title="Lock in selections?"
+        open={modalState.kind === 'accept-all-confirm'}
+        onClose={closeModal}
+        footer={
+          <>
+            <button
+              type="button"
+              class="mn-btn"
+              data-testid="bg-accept-confirm-cancel"
+              onClick={closeModal}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="mn-btn mn-btn-primary"
+              data-testid="bg-accept-confirm-go"
+              onClick={executeAcceptAll}
+            >
+              Lock in & advance
+            </button>
+          </>
+        }
+      >
+        {modalState.kind === 'accept-all-confirm' ? (
+          <p>
+            Lock in <strong>{modalState.readyCount}</strong> selection
+            {modalState.readyCount === 1 ? '' : 's'} and advance pipeline_stage?
+            This sends accepted beats to Storyboard.
+          </p>
+        ) : null}
+      </Modal>
+
+      {/* BG-5 — Edit chip Modal */}
+      <Modal
+        id="bg-edit-chip"
+        title="Edit stage direction"
+        open={modalState.kind === 'edit-chip'}
+        onClose={closeModal}
+        footer={
+          <>
+            <button type="button" class="mn-btn" data-testid="bg-chip-edit-cancel" onClick={closeModal}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="mn-btn mn-btn-primary"
+              data-testid="bg-chip-edit-save"
+              onClick={executeEditChip}
+            >
+              Save
+            </button>
+          </>
+        }
+      >
+        {modalState.kind === 'edit-chip' ? (
+          <>
+            <p class="mn-dim">Editing chip for beat {modalState.beatId}</p>
+            <input
+              type="text"
+              class="mn-bg-chip-edit-input"
+              data-testid="bg-chip-edit-input"
+              value={modalState.draftText}
+              onInput={(e) => {
+                const next = (e.target as HTMLInputElement).value;
+                setModalState((prev) =>
+                  prev.kind === 'edit-chip' ? { ...prev, draftText: next } : prev,
+                );
+              }}
+              autoFocus
+            />
+          </>
+        ) : null}
+      </Modal>
+
+      {/* BG-18 — Remove ref confirm Modal */}
+      <Modal
+        id="bg-remove-ref"
+        title="Remove reference?"
+        open={modalState.kind === 'remove-ref'}
+        onClose={closeModal}
+        footer={
+          <>
+            <button type="button" class="mn-btn" data-testid="bg-remove-ref-cancel" onClick={closeModal}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="mn-btn mn-btn-primary"
+              data-testid="bg-remove-ref-confirm"
+              onClick={executeRemoveRef}
+            >
+              Remove
+            </button>
+          </>
+        }
+      >
+        {modalState.kind === 'remove-ref' ? (
+          <p>
+            Remove the <strong>{modalState.label}</strong> from this beat?
+            The reference is cleared; you can drop a new image any time.
+          </p>
+        ) : null}
+      </Modal>
     </section>
   );
 }
@@ -502,11 +809,16 @@ interface BeatGenCardProps {
   onUpdateText: (next: string) => void;
   onGenerate: () => void;
   onAccept: (optionKey: string) => void;
+  // BG-5 / BG-8 / BG-18 — visible-button handlers (NOT right-click per Kim 2026-05-06).
+  onEditChip: (chipText: string) => void;
+  onInsertAfter: () => void;
+  onRemoveRef: (refField: 'reference_image' | 'bg_ref_image', label: string) => void;
 }
 
 function BeatGenCard({
   index, beat, pollResultForBeat, busy,
   onDelete, onUpdateText, onGenerate, onAccept,
+  onEditChip, onInsertAfter, onRemoveRef,
 }: BeatGenCardProps) {
   const [localText, setLocalText] = useState<string>(beat.dialogue_text ?? '');
   const [chips, setChips] = useState<string[]>(extractStageChips(beat.dialogue_text ?? ''));
@@ -584,6 +896,17 @@ function BeatGenCard({
           {chips.map((c) => (
             <span key={c} class="mn-bg-stage-chip">
               <span>{c}</span>
+              {/* BG-5 — Edit chip pencil icon (visible button per Kim 2026-05-06 lock). */}
+              <button
+                type="button"
+                class="mn-bg-stage-chip-edit"
+                data-testid={`bg-chip-edit-${index}`}
+                onClick={() => onEditChip(c)}
+                aria-label={`Edit stage direction ${c}`}
+                title="Edit chip"
+              >
+                ✎
+              </button>
               <button
                 type="button"
                 class="mn-bg-stage-chip-x"
@@ -605,6 +928,7 @@ function BeatGenCard({
           testId={`bg-char-ref-${index}`}
           beatId={beat.beat_id}
           refField="reference_image"
+          onRemoveRef={onRemoveRef}
         />
         <BgRefSlot
           label="BG ref"
@@ -612,6 +936,7 @@ function BeatGenCard({
           testId={`bg-bg-ref-${index}`}
           beatId={beat.beat_id}
           refField="bg_ref_image"
+          onRemoveRef={onRemoveRef}
         />
         <button
           type="button"
@@ -640,6 +965,20 @@ function BeatGenCard({
           />
         ))}
       </div>
+
+      {/* BG-8 — Insert beat after this card (visible + button per Kim 2026-05-06 lock). */}
+      <div class="mn-bg-insert-after" data-testid={`bg-insert-after-${index}`}>
+        <button
+          type="button"
+          class="mn-btn mn-btn-small mn-bg-insert-after-btn"
+          data-testid={`bg-insert-after-btn-${index}`}
+          onClick={onInsertAfter}
+          aria-label={`Insert beat after ${beat.beat_id}`}
+          title="Insert beat after this one"
+        >
+          + Insert beat
+        </button>
+      </div>
     </li>
   );
 }
@@ -658,9 +997,11 @@ interface BgRefSlotProps {
 interface BgRefSlotPropsExt extends BgRefSlotProps {
   beatId: string;
   refField: 'reference_image' | 'bg_ref_image';
+  // BG-18 — visible × button to remove the ref (NOT right-click per Kim 2026-05-06).
+  onRemoveRef: (refField: 'reference_image' | 'bg_ref_image', label: string) => void;
 }
 
-function BgRefSlot({ label, refImg, testId, beatId, refField }: BgRefSlotPropsExt) {
+function BgRefSlot({ label, refImg, testId, beatId, refField, onRemoveRef }: BgRefSlotPropsExt) {
   const hasImage = !!refImg && (refImg.thumb_b64 || refImg.key);
   // R2 fix: drop target for library-image drag → POST bg_update_beat with the
   // ref field (reference_image or bg_ref_image) per server _BG_BEAT_WRITABLE
@@ -700,8 +1041,23 @@ function BgRefSlot({ label, refImg, testId, beatId, refField }: BgRefSlotPropsEx
       onDrop={dropHandlers.onDrop}
     >
       <span class="mn-bg-ref-slot-label">{label}</span>
+      {hasImage ? (
+        <button
+          type="button"
+          class="mn-bg-ref-remove-btn"
+          data-testid={`${testId}-remove`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onRemoveRef(refField, label);
+          }}
+          aria-label={`Remove ${label}`}
+          title={`Remove ${label}`}
+        >
+          ✕
+        </button>
+      ) : null}
       {refImg?.thumb_b64 ? (
-        <img src={refImg.thumb_b64} alt={label} />
+        <img src={refImg.thumb_b64} alt={label} class="mn-bg-ref-thumb" />
       ) : refImg?.key ? (
         <span class="mn-dim">{refImg.key}</span>
       ) : (
