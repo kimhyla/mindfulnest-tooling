@@ -196,7 +196,296 @@ _SECTION_DISMISSAL_PHRASES = (
     # Full-verdict catches.
     "no clear violations are present",
     "no clear violations introduced",
+    # Section-level reassessment (PR #23 round 3 chunk 1 verbatim).
+    "reassessing — no clear",
+    "promoting the below",
+    "no hard-blocking violations per the defined blocking criteria",
+    "demoting the above to non-blocking",
 )
+
+
+# ---------------------------------------------------------------------------
+# Four-class finding classifier (LD CLAUDE_REVIEW_HARDENING_FOUR_CLASS_CLASSIFIER_V1)
+#
+# Layered on top of the existing _NON_BLOCKING_SKIP_PHRASES + _EMPTY_BULLET_MARKERS
+# + _SECTION_DISMISSAL_PHRASES checks. After PR #24 caught section-level dismissal,
+# four bot-overreach failure classes remained visible in PR #23's 8-round history:
+#
+#   1. Pedantry        — bot flags Rule 19 deferral when the same finding cites a
+#                         SHORTCUT_*_V<N> LD (Kim's governance-acknowledged escape
+#                         hatch). The LD reference IS the resolution; flagging
+#                         again is overreach.
+#   2. False alarm     — bot flags Rule 35 violation when code routes through an
+#                         alternative documented governance protocol
+#                         (Production.tools.registered_write per LD-421/422)
+#                         instead of try_post_or_queue directly.
+#   3. Contradiction   — bot writes a blocking bullet then self-demotes inline
+#                         (e.g. "*(Downgraded — see Notes.)*"). The bullet's own
+#                         self-correction wins; the existing section-paragraph
+#                         scan misses parenthetical inline demotions.
+#   4. Hallucination   — bot flags a kwarg/field/file as missing when the bullet
+#                         text itself acknowledges the file is OUTSIDE THE DIFF
+#                         WINDOW. Speculation-as-blocking; demote to advisory.
+#
+# Each classifier rule is purely additive — it can DEMOTE a bullet but never
+# promote a non-blocking one. Genuinely blocking findings (hardcoded credentials,
+# destructive shell, real urllib.request.urlopen POST without try_post_or_queue,
+# real LD-less deferrals) are unaffected.
+#
+# Origin incident: PR #23 needed admin override after 8 review rounds. See
+# Production/docs/V59_CLAUDE_REVIEW_HARDENING_SPEC_v2.md for full rationale +
+# advocate/counter debate + retroactive validation table.
+# ---------------------------------------------------------------------------
+
+# §3.2.1 — Pedantry: SHORTCUT_<NAME>_V<N> regex. Loose enough to catch all
+# observed LD-naming patterns; strict enough to reject empty/fake references
+# (e.g. just "SHORTCUT_" without a name+version).
+_SHORTCUT_LD_PATTERN = re.compile(r"\bSHORTCUT_[A-Z0-9_]+_V[0-9]+\b")
+
+# §3.2.1 — Pedantry triggers. Deferral-pattern words from CLAUDE.md Rule 19
+# that the bot keys on. When ANY of these appear AND a SHORTCUT_*_V<N> LD is
+# present in the bullet OR adjacent context, the finding is demoted.
+_PEDANTRY_TRIGGER_WORDS = (
+    "deferral",
+    "deferred",
+    "untested",
+    "phase 1 mvp",
+    " mvp",  # leading space avoids matching "mvpath" or similar tokens
+    "placeholder",
+    "for now",
+    "we'll add later",
+    "not yet been run",
+    "first invocation",
+    "first run",
+)
+
+# §3.2.2 — Alternative governance protocols recognized as Rule 35 equivalents.
+# These are documented governance paths that wrap try_post_or_queue internally
+# OR provide their own read-back-after-write (LD-421/422 Two-Write Rule for
+# registered_write). Bot conflates "uses X instead of try_post_or_queue" with
+# "Rule 35 violation"; this list teaches the gate the alternatives.
+_ALTERNATIVE_GOVERNANCE_TOKENS = (
+    "registered_write",
+    "production.tools.registered_write",
+    "production/tools/registered_write",
+    "register_asset",  # the wrapper that uses registered_write
+    "find_asset",  # the read-side wrapper
+    "_reg",  # the imported alias used in tools/assets.py
+    "ld-421",  # LD-421 ASSET_FINDABILITY_BUILD_V1
+    "ld-422",
+)
+
+# §3.2.2 — Rule 35 trigger phrases. When the bullet cites Rule 35 / mentions
+# try_post_or_queue / try_patch_or_queue AND any token above appears, demote.
+_RULE_35_TRIGGER_PHRASES = (
+    "rule 35",
+    "rule-35",
+    "try_post_or_queue",
+    "try_patch_or_queue",
+)
+
+# §3.2.3 — Contradiction: inline self-demotion phrases the bot writes within
+# a single bullet. Complementary to _SECTION_DISMISSAL_PHRASES (which catches
+# paragraph-level reversals); these catch bullet-level reversals.
+_CONTRADICTION_BULLET_PHRASES = (
+    "*(downgraded",
+    "*(downgrading",
+    "*(reassessing",
+    "*(reconsidering",
+    "*(demoted",
+    "*(demoting",
+    "(downgraded —",
+    "(downgrade to non-blocking)",
+    "(downgrade to non blocking)",
+    "— see notes.)",
+    "see notes.)",
+    "(reclassifying — see non-blocking)",
+    "reclassifying — see non-blocking",
+    "(see non-blocking)",
+    "this is not itself a blocking violation",
+    "demoted to non-blocking",
+)
+
+# §3.2.5 — Out-of-spec rule citation. The review_prompt.md "What blocks merge"
+# section enumerates a CLOSED LIST of blocking-eligible criteria: Rule 19
+# (deferral pattern), Rule 32 (fetch URL), Rule 35 (direct POST without
+# try_post_or_queue), hardcoded credential, destructive shell command, and
+# deletion of prod_locked_decisions. ALL OTHER RULES (Rule 24 confidence
+# annotation, Rule 26 Opus escalation, Rule 33 4-line verification, etc.) are
+# CLAUDE.md disciplines but are NOT blocking-eligible per the prompt's own
+# specification. When the bot puts a non-blocking-eligible rule under
+# `### Blocking`, that's a structural prompt-spec violation.
+#
+# Implementation: scan bullet for `Rule N` mentions; if the rule number isn't
+# in the blocking-eligible set AND no blocking-eligible rule is also cited,
+# demote.
+_BLOCKING_ELIGIBLE_RULE_NUMBERS = frozenset({"19", "32", "35"})
+_RULE_CITATION_REGEX = re.compile(r"\brule[\s-]?(\d+)\b", re.IGNORECASE)
+# Non-rule blocking-eligible markers — when ANY of these appear, the bullet
+# is potentially blocking-eligible regardless of rule citation.
+_BLOCKING_ELIGIBLE_NON_RULE_MARKERS = (
+    "hardcoded credential",
+    "hard-coded credential",
+    "credential leak",
+    "api key in source",
+    "destructive shell",
+    "destructive command",
+    "rm -rf",
+    "git push --force",
+    "drop table",
+    "delete from prod_locked_decisions",
+    "deletion of prod_locked_decisions",
+    "deletion of a prod_locked_decisions",
+)
+
+
+# §3.2.4 — Hallucination: phrases the bot writes when it KNOWS the asserted-
+# missing thing is outside the diff window it received. When these appear in
+# the bullet, the finding is speculation, not fact. Demote.
+_HALLUCINATION_DIFF_BLINDNESS_PHRASES = (
+    # "X is NOT present in this diff" / variants
+    "is not present in this diff",
+    "not present in this diff",
+    "not in this diff",
+    "not shown in the diff",
+    "not shown in this diff",
+    "not visible in this diff",
+    "not visible in the diff",
+    # "no <FILE> diff is present in this PR" pattern (PR #23 round 8 chunk 2)
+    "diff is present in this pr",
+    "diff is not present",
+    "no diff present in this pr",
+    "is not in this pr",
+    # "cannot verify / confirm" passive + active forms
+    "cannot verify from this diff",
+    "cannot be verified from this diff",
+    "cannot be verified from the diff",
+    "cannot confirm from the diff",
+    "cannot confirm from this diff",
+    "cannot be confirmed from the diff",
+    "cannot be confirmed from this diff",
+    "cannot be audited from this pr",
+    "cannot be audited from the diff",
+    "could not be checked from this diff",
+    "could not be assessed",
+    # "no evidence in this diff" — bot's explicit acknowledgment of blindness
+    "no evidence in this diff",
+    "no evidence in the diff",
+    # "outside the diff window" — explicit blindness
+    "outside the diff window",
+    "outside the diff",
+    # "if X does not exist / accept / propagate" — speculative claims
+    "if it does not yet exist",
+    "if x does not exist",
+    "if it does not accept",
+    "does not accept/propagate",
+    "may not accept",
+    "is unverifiable from",
+    "unverifiable from this diff",
+    "unverifiable from the diff",
+    # "files not in the diff are not reviewable" / explicit blind acknowledgments
+    "not reviewed for fix",
+    "flagged for verification",
+    "could not be verified from",
+)
+
+# Regex catch for the speculative "if <symbol> does not yet exist" pattern
+# where the bot fills in a specific function/file name. Matches things like:
+#   "If `try_patch_or_queue` does not yet exist in"
+#   "If try_post_or_queue does not exist"
+# The literal-phrase scan above handles "if it does not yet exist" (generic
+# pronoun); this regex handles the named-symbol case.
+_HALLUCINATION_REGEX = re.compile(
+    r"\bif\s+`?[\w./]+`?\s+does\s+not\s+(?:yet\s+)?(?:exist|accept|propagate|return)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_shortcut_ld_in_context(bullet_line: str, body: str) -> bool:
+    """True if a SHORTCUT_*_V<N> LD reference appears in the bullet itself
+    OR anywhere in the surrounding ### Blocking section body.
+
+    Body-wide scan covers the case where a bot lists 3 related Rule 19
+    deferrals and cites the LD once at the top of the section instead of
+    on each bullet (PR #23 round 6: "The three Windows-related blocking
+    findings all trace to the same untested code path; a single SHORTCUT_*
+    LD reference covering the Windows install path would resolve all
+    three simultaneously")."""
+    if _SHORTCUT_LD_PATTERN.search(bullet_line):
+        return True
+    if _SHORTCUT_LD_PATTERN.search(body):
+        return True
+    return False
+
+
+def _classify_finding(bullet_line: str, body: str) -> str:
+    """Classify a single ### Blocking bullet against the four overreach
+    classes. Returns one of:
+      - "BLOCKING"
+      - "NON_BLOCKING_PEDANTRY"
+      - "NON_BLOCKING_FALSE_ALARM"
+      - "NON_BLOCKING_CONTRADICTION"
+      - "NON_BLOCKING_HALLUCINATION"
+
+    The classifier is INTENTIONALLY conservative on demotion — only when a
+    deterministic signal in the bullet text matches the failure class. It
+    will never demote a finding that lacks the class signature, which means
+    genuinely blocking findings (real credentials, real destructive shell,
+    real LD-less deferrals) pass through unchanged.
+
+    Order of checks matters: contradiction + hallucination are checked FIRST
+    because they are content-based (don't depend on Rule N citation). Then
+    pedantry (Rule 19 + LD adjacency). Then false-alarm (Rule 35 +
+    alternative-governance tokens)."""
+    line_l = bullet_line.lower()
+
+    # §3.2.3 — inline self-demotion (bullet-level contradiction).
+    for phrase in _CONTRADICTION_BULLET_PHRASES:
+        if phrase in line_l:
+            return "NON_BLOCKING_CONTRADICTION"
+
+    # §3.2.4 — diff-window hallucination (literal phrases + regex).
+    for phrase in _HALLUCINATION_DIFF_BLINDNESS_PHRASES:
+        if phrase in line_l:
+            return "NON_BLOCKING_HALLUCINATION"
+    if _HALLUCINATION_REGEX.search(bullet_line):
+        return "NON_BLOCKING_HALLUCINATION"
+
+    # §3.2.1 — pedantry: deferral-trigger word + SHORTCUT_*_V<N> in context.
+    has_pedantry_trigger = any(w in line_l for w in _PEDANTRY_TRIGGER_WORDS)
+    cites_rule_19 = "rule 19" in line_l or "rule-19" in line_l
+    if (cites_rule_19 or has_pedantry_trigger) and _has_shortcut_ld_in_context(
+        bullet_line, body
+    ):
+        return "NON_BLOCKING_PEDANTRY"
+
+    # §3.2.2 — false alarm: Rule 35 cited + alternative governance protocol
+    # mentioned in bullet OR body context.
+    cites_rule_35 = any(p in line_l for p in _RULE_35_TRIGGER_PHRASES)
+    if cites_rule_35:
+        body_l = body.lower()
+        for tok in _ALTERNATIVE_GOVERNANCE_TOKENS:
+            if tok in line_l or tok in body_l:
+                return "NON_BLOCKING_FALSE_ALARM"
+
+    # §3.2.5 — out-of-spec rule citation. Bullet cites a rule that isn't in
+    # the prompt's blocking-eligible set, AND no other blocking-eligible
+    # signal (credential, destructive shell, LD-deletion) is present.
+    cited_rule_numbers = set(_RULE_CITATION_REGEX.findall(bullet_line))
+    if cited_rule_numbers:
+        # If any cited rule IS blocking-eligible, do not demote here — fall
+        # through to BLOCKING (the genuine concern stands).
+        if not (cited_rule_numbers & _BLOCKING_ELIGIBLE_RULE_NUMBERS):
+            # Cited rules are all non-blocking-eligible. Check if any
+            # non-rule blocking marker appears (credential, etc.) — if so,
+            # the bullet is still blocking-eligible.
+            has_non_rule_blocker = any(
+                marker in line_l for marker in _BLOCKING_ELIGIBLE_NON_RULE_MARKERS
+            )
+            if not has_non_rule_blocker:
+                return "NON_BLOCKING_OUT_OF_SPEC_RULE"
+
+    return "BLOCKING"
 
 
 def _is_section_paragraph_line(line: str) -> bool:
@@ -282,6 +571,14 @@ def has_blocking(text: str) -> bool:
         # check ("no blocking") missed common patterns the bot emits when it
         # lists a deletion or pre-existing issue.
         if any(p in line_l for p in _NON_BLOCKING_SKIP_PHRASES):
+            continue
+        # Four-class classifier (LD CLAUDE_REVIEW_HARDENING_FOUR_CLASS_CLASSIFIER_V1):
+        # demote pedantry / false-alarm / contradiction / hallucination patterns
+        # where the bullet's own text or its section context contains the
+        # class signature. Genuinely blocking findings without these patterns
+        # pass through.
+        classification = _classify_finding(line, body)
+        if classification != "BLOCKING":
             continue
         return True
     return False
