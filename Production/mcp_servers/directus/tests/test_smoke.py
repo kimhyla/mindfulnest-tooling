@@ -44,24 +44,24 @@ def _call(name: str, args: dict) -> dict:
 # -----------------------------------------------------------------------------
 
 
-def test_tool_inventory_has_all_phase_1_and_2_tools():
-    """Phase 1 (6) + Phase 2 (4) = 10 tools."""
+def test_tool_inventory_has_all_expected_tools():
+    """All 12 tools (6 read + 6 write) are registered with the MCP server."""
     tools = asyncio.run(server.mcp.list_tools())
     names = {t.name for t in tools}
     expected = {
-        # Phase 1 MVP
+        # Read-side tools
         "directus_search",
         "directus_get",
-        "directus_create",
         "schema_describe",
+        "directus_invalidate_schema",
+        "find_asset",
+        # Write-side tools
+        "directus_create",
         "log_activity",
         "lock_decision",
-        # Phase 2 (added 2026-05-10 same-session per Cursor cross-review)
         "directus_patch",
         "directus_delete",
-        "directus_invalidate_schema",
         "register_asset",
-        "find_asset",
         "preflight_review",
     }
     missing = expected - names

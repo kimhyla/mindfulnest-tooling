@@ -249,9 +249,9 @@ def register(mcp: Any) -> None:
             "Variants: same as directus_create. Use this for: closing blockers "
             "(is_resolved=True), superseding LDs (status='superseded'), updating "
             "asset records, or any field-level update on existing rows.\n\n"
-            "Note: PATCH does NOT trigger the DS-21 Phase F browser-smoke gate "
-            "currently (gate fires only on prod_activity_log _COMPLETE POSTs). If "
-            "governance ever needs PATCH gating, surface as a Phase 2 spec amendment."
+            "Note: PATCH does not trigger the DS-21 Phase F browser-smoke gate; "
+            "the gate fires only on prod_activity_log _COMPLETE POSTs. Extending "
+            "gate coverage to PATCH would require a separate spec amendment."
         ),
     )
     def directus_patch(collection: str, item_id: int, payload: dict) -> dict:

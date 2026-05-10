@@ -1,41 +1,49 @@
 """
-MindfulNest Directus MCP server (Phase 1 MVP).
+MindfulNest Directus MCP server.
 
 Composes Production/lib/{directus.py, payload_validator.py, directus_admin_client.py}
-into 6 schema-validated MCP tools that enforce CLAUDE.md Rule 35 + LD-364
+into 12 schema-validated MCP tools that enforce CLAUDE.md Rule 35 + LD-364
 read-back-after-write at the tool boundary.
 
-Tool list (Phase 1):
-- directus_search   (read-only)
-- directus_get      (read-only)
-- schema_describe   (read-only)
-- log_activity      (write — prod_activity_log)
-- lock_decision     (write — prod_locked_decisions, upsert by decision_key)
-- directus_create   (write — generic, any prod_*/app_*/coppa_* collection)
+Tools:
+- directus_search             (read-only)
+- directus_get                (read-only)
+- schema_describe             (read-only)
+- directus_invalidate_schema  (read-only — flushes the in-process schema cache)
+- log_activity                (write — prod_activity_log)
+- lock_decision               (write — prod_locked_decisions, upsert by decision_key)
+- directus_create             (write — generic, any prod_*/app_*/coppa_* collection)
+- directus_patch              (write — generic update by id)
+- directus_delete             (write — gated by explicit destructive auth flag)
+- register_asset              (write — typed wrapper for prod_assets)
+- find_asset                  (read-only — prod_assets lookup helper)
+- preflight_review            (write — typed wrapper for prod_preflight_reviews)
 
 INVARIANTS (Rule 36):
 - All writes go through try_post_or_queue or try_patch_or_queue (LD-364
   read-back-after-write).
 - All prod_* writes go through validate_payload (Rule 35 schema validation).
-- Schema cache TTL = 15 min (mirrors lib.payload_validator._SCHEMA_TTL_SEC).
-- Server is local stdio Phase 1; remote HTTP escalation is Phase 2 candidate
-  gated on cursor-agent empirical tests (spec V59_DIRECTUS_MCP_SERVER_SPEC_v1
-  §4 Phase E.5).
+- Schema cache TTL = 15 min (mirrors lib.payload_validator._SCHEMA_TTL_SEC);
+  directus_invalidate_schema can flush the cache without a server restart.
+- Server runs as local stdio. FastMCP supports remote-HTTP transport but
+  this deployment doesn't enable it; cursor-agent sandbox compatibility
+  with bearer-auth HTTPS endpoints would gate any future move to remote.
 - prod_locked_decisions.date_locked is type=date, NOT datetime — date-only
   ISO format ("YYYY-MM-DD"), enforced in tools/decisions.py::_utc_now_iso.
-- MCP-internal phase closure action names use suffix _V1 (NOT _COMPLETE) by
+- MCP-internal closure action names use suffix _V1 (NOT _COMPLETE) by
   DELIBERATE policy: the DS-21 BROWSER_SMOKE_MECHANICAL_GATE_V1 fires on
   action.endswith('_COMPLETE') and the MCP server has no browser surface, so
   bypassing the gate is correct policy. DO NOT rename closure actions to
   end in _COMPLETE without first writing matching KIM_BROWSER_SMOKE_PASSED
   rows or BROWSER_SMOKE_DEFERRED rows. Per cursor cross-review finding 8C.
-- Concurrent-writer queue race: lib.directus.queue_write_offline does NOT
-  hold an fcntl.flock on pending_directus_writes.json. Two concurrent writers
-  (MCP server + a parallel script) can race and lose entries. Acknowledged
-  via LD MCP_QUEUE_RACE_KNOWN_PHASE1_V1; Phase 2 candidate fix.
+- Concurrent-writer queue safety: lib.directus.queue_write_offline holds an
+  fcntl.flock on pending_directus_writes.json (added in this PR's
+  lib/directus.py diff). Two concurrent writers cannot lose entries; the
+  20-parallel-writer regression test in tests/test_concurrent_offline_queue.py
+  validates this.
 
 Spec: Production/docs/V59_DIRECTUS_MCP_SERVER_SPEC_v1.md
-LD: DIRECTUS_MCP_SERVER_PHASE1_V1 (registered at Phase F)
+LDs: DIRECTUS_MCP_SERVER_PHASE1_V1 (660), DIRECTUS_MCP_SERVER_PHASE2_V1 (663).
 """
 
 from __future__ import annotations

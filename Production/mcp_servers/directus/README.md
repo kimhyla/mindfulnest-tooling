@@ -1,11 +1,9 @@
 # MindfulNest Directus MCP Server
 
-Schema-validated MCP server that exposes 6 tools for read/write access to MindfulNest's Directus instance.
-
-**Phase 1 MVP — local stdio. Phase 2 candidate (gated): remote streamable-HTTP.**
+Schema-validated MCP server that exposes 12 tools for read/write access to MindfulNest's Directus instance. Runs as local stdio; FastMCP's remote-HTTP transport is supported by the framework but not enabled in this deployment.
 
 Spec: `Production/docs/V59_DIRECTUS_MCP_SERVER_SPEC_v1.md` (Dropbox tree)
-LD: `DIRECTUS_MCP_SERVER_PHASE1_V1`
+LDs: `DIRECTUS_MCP_SERVER_PHASE1_V1` (660), `DIRECTUS_MCP_SERVER_PHASE2_V1` (663)
 prod_reference_docs id: 207
 
 ---
@@ -21,9 +19,15 @@ Eliminates the Rule 35 "silent-write-failure" class STRUCTURALLY. Wrong field na
 | `directus_search` | read | Filtered query against any collection. |
 | `directus_get` | read | Fetch by id. |
 | `schema_describe` | read | Live `/fields/<coll>` introspection (with 15-min cache). |
+| `directus_invalidate_schema` | read | Flush the in-process schema cache; next call re-fetches `/fields`. |
+| `find_asset` | read | Lookup helper for `prod_assets`. |
 | `log_activity` | write | Typed wrapper for `prod_activity_log`. |
 | `lock_decision` | write | Upsert by `decision_key` for `prod_locked_decisions`. |
 | `directus_create` | write | Generic create for any collection (prod_*/app_*/coppa_*). |
+| `directus_patch` | write | Generic update by id, schema-validated. |
+| `directus_delete` | write | Generic delete; gated by an explicit destructive-auth flag. |
+| `register_asset` | write | Typed wrapper for `prod_assets`. |
+| `preflight_review` | write | Typed wrapper for `prod_preflight_reviews`. |
 
 All write tools return structured variants:
 - `{ok: true, row, id}` on success
@@ -87,13 +91,14 @@ The MCP server is glue. It does NOT re-implement schema validation, read-back, o
 
 ## INVARIANTS (Rule 36)
 
-- All writes go through `try_post_or_queue` (LD-364 read-back-after-write).
+- All writes go through `try_post_or_queue` or `try_patch_or_queue` (LD-364 read-back-after-write).
 - All `prod_*` writes go through `validate_payload` (Rule 35 schema validation).
-- Schema cache TTL = 15 min (mirrors `lib.payload_validator._SCHEMA_TTL_SEC`).
+- Schema cache TTL = 15 min (mirrors `lib.payload_validator._SCHEMA_TTL_SEC`); `directus_invalidate_schema` flushes without restart.
 - `prod_locked_decisions.date_locked` is type=date, NOT datetime — `lock_decision` tool sends date-only ISO format.
-- Server is local stdio Phase 1; remote-HTTP escalation is a Phase 2 candidate gated on cursor-agent empirical tests (spec §4 Phase E.5).
+- Server runs as local stdio. FastMCP supports remote-HTTP transport but this deployment doesn't enable it; cursor-agent sandbox compatibility with bearer-auth HTTPS endpoints would gate any future move to remote.
+- `lib.directus.queue_write_offline` holds an `fcntl.flock` on `pending_directus_writes.json`; the 20-parallel-writer regression test in `tests/test_concurrent_offline_queue.py` validates concurrent-writer safety.
 
-## Phase 1 verification (smoke evidence, 2026-05-10)
+## Smoke evidence (2026-05-10)
 
 Live Directus probes from `.venv/bin/python` against production Directus:
 
@@ -108,8 +113,8 @@ Live Directus probes from `.venv/bin/python` against production Directus:
 - C.5 ✓ — Sentinel id=658 cleaned up to status=superseded, is_current=false.
 - C.6 ✓ — `directus_create('prod_blockers', {bogus_field: '...'})` rejected with `{validation_error: true, unknown_keys: ['bogus_field']}`.
 
-## Limitations / known issues
+## Operational notes
 
-- **Phase 1.5 cursor-agent test pending** — does cursor-agent support MCP server config? Does its sandbox reach a public HTTPS endpoint with bearer header? Both questions gate any future remote-HTTP escalation.
-- **Schema-cache 15-min TTL.** When Kim adds a Directus field, worst-case 15-min lag before MCP picks it up. Use `directus_invalidate_schema` for instant flush, or restart the server.
-- **Windows install untested.** `install_windows.ps1` ships in this PR but has not been run on a Windows machine yet; first invocation on the work PC validates it. Tracked in user memory at `project_directus_mcp_windows_install_pending.md`.
+- **Schema-cache TTL is 15 min.** When a Directus field is added, worst-case lag before the MCP picks it up is 15 min. Use `directus_invalidate_schema` for an instant flush, or restart the server.
+- **Cursor-agent sandbox + remote HTTPS.** Whether cursor-agent's sandbox reaches a public HTTPS endpoint with a bearer header is an empirical question that hasn't been exercised yet; the answer would govern any future move from local stdio to remote transport. Recorded as an open investigation, not a limitation of the current deployment.
+- **Platform support.** macOS install (`install_macos.sh`) is exercised. Windows install (`install_windows.ps1`) ships alongside it but has not yet been run on a Windows machine; first invocation on the work PC is the validation step. The `project_directus_mcp_windows_install_pending.md` user-memory file fires a reminder when that machine transition is detected.
