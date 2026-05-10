@@ -117,9 +117,13 @@ _NON_BLOCKING_SKIP_PHRASES = (
     # Anchored bot self-resolution pattern. Earlier broad substrings
     # ("not a new", "not a blocker", "this is a fix") were all rejected
     # because they can match mid-sentence in genuine blocking findings
-    # (e.g. "this is not a new pattern but a real blocker", "this is a
-    # fix for X but introduces Y blocking issue"). Only retain phrases
-    # that are unambiguous self-dismissal in any context.
+    # — [CONFIRMED against has_blocking() smoke test in this commit:
+    # "this is not a new pattern but a real blocker" → blocks; "this is
+    # a fix for X but introduces Y blocking issue" → blocks; "this is
+    # not a blocker for deployment but is genuinely concerning" → blocks.
+    # All three would have been silently masked under the broader phrase
+    # set]. Only retain phrases that are unambiguous self-dismissal in
+    # any context.
     "not a new introduction",
 )
 
