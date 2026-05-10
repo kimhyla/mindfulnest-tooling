@@ -18,7 +18,7 @@
 
 import { useEffect, useState } from 'preact/hooks';
 import { activeScope, scopeKey } from '../state/scope';
-import { pathappPatch } from '../api/client';
+import { apiGet, pathappPatch } from '../api/client';
 import { SERVER_BASE } from '../api/endpoints';
 import { StitcherSlotWaveform } from './StitcherSlotWaveform';
 import { StitcherTransitionSelector, type Transition } from './StitcherTransitionSelector';
@@ -57,13 +57,25 @@ interface StitchLibraryResponse {
   jobs?: StitchJob[];
 }
 
-const AMBIENT_BED_CHOICES = [
-  { value: '', label: '— none —' },
-  { value: 'gentle_forest', label: 'Gentle forest' },
-  { value: 'soft_chimes', label: 'Soft chimes' },
-  { value: 'warm_room_tone', label: 'Warm room tone' },
-  { value: 'water_stream', label: 'Water stream' },
-];
+// F-AMBIENT-001 (prod_blockers id=118) — ambient bed catalog. Pre-fix this
+// was a hardcoded array of 4 fake preset_ids (gentle_forest, soft_chimes,
+// warm_room_tone, water_stream) that did not resolve to ANY file on disk;
+// selecting one would fail at audio assembly. The fetched catalog comes from
+// `/api/phase_b/ambient_preset_list` (misleadingly named — it is the global
+// ambient catalog used by Phase A, Phase B, AND Stitcher; rename is out of
+// scope per the F-AMBIENT-001 dispatch). Same shape as PhaseProducer's
+// AmbientPreset interface (PhaseProducer.tsx:60-68) so the two surfaces stay
+// consistent. The "— none —" entry is prepended at render time so users can
+// still clear a slot's ambient bed.
+interface AmbientPreset {
+  preset_id: string;
+  file_size_bytes: number;
+}
+interface AmbientPresetListResponse {
+  ok: boolean;
+  items?: AmbientPreset[];
+  count?: number;
+}
 
 // Server defaults from server.py:14085-14087 (_handle_timeline_cue_upsert).
 const SFX_DEFAULTS = {
@@ -99,6 +111,24 @@ export function StitcherTab() {
   const [refreshTick, setRefreshTick] = useState(0);
   const [standaloneMode, setStandaloneMode] = useState(false);
   const [popover, setPopover] = useState<PopoverState | null>(null);
+  // F-AMBIENT-001 — fetched ambient catalog (replaces hardcoded constant).
+  // Pattern lifted from PhaseProducer.tsx:154-176 so Phase A, Phase B, and
+  // Stitcher all consume the same catalog via the same single endpoint.
+  const [ambientPresets, setAmbientPresets] = useState<AmbientPreset[]>([]);
+
+  // One-shot fetch of the ambient catalog. The catalog is module-level static
+  // (filesystem inventory of Production/assets/sound_library/ambient/), not
+  // scope-dependent — no need to re-fetch on event/video changes.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const res = await apiGet<AmbientPresetListResponse>('phase_b_ambient_preset_list');
+      if (!cancelled && res.ok && res.data?.items) {
+        setAmbientPresets(res.data.items);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -558,8 +588,12 @@ export function StitcherTab() {
                       disabled={busy || !slot?.video_path}
                       onChange={(e: Event) => onAmbientBedChange(sd.key, (e.target as HTMLSelectElement).value)}
                     >
-                      {AMBIENT_BED_CHOICES.map((c) => (
-                        <option key={c.value} value={c.value}>{c.label}</option>
+                      {/* F-AMBIENT-001 — empty/no-selection always available so users
+                          can clear an existing ambient bed. Real preset_ids follow,
+                          fetched from /api/phase_b/ambient_preset_list. */}
+                      <option value="">— none —</option>
+                      {ambientPresets.map((p) => (
+                        <option key={p.preset_id} value={p.preset_id}>{p.preset_id}</option>
                       ))}
                     </select>
                   </div>

@@ -183,6 +183,26 @@ test.describe('AF.1 — StitcherTab mutation channel (F-S2-001)', () => {
 
   test('AF.1.3 — Save Job (ambient bed change): POST /api/stitch_editor/job via pathappPatch; M1 snapshot fires before; auto-injected scope keys', async ({ page }) => {
     await mockStitcherJob(page);
+    // F-AMBIENT-001 — Stitcher now fetches the ambient catalog from
+    // /api/phase_b/ambient_preset_list (replacing the pre-fix hardcoded
+    // AMBIENT_BED_CHOICES constant). Pre-fix this test selected
+    // 'warm_room_tone' (a fake hardcoded preset_id); post-fix that option
+    // no longer exists, so we mock the catalog endpoint with a single
+    // preset and select that. The test purpose is to verify mutation
+    // routing (snapshot before save, auto-injected scope keys), not the
+    // particular preset value.
+    const ambientPresetId = 'meditation_pretty_v1';
+    await page.route('**/api/phase_b/ambient_preset_list', async (r) => {
+      await r.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          items: [{ preset_id: ambientPresetId, file_size_bytes: 1024 }],
+          count: 1,
+        }),
+      });
+    });
     const snapReqs: Request[] = [];
     const saveJobReqs: Request[] = [];
     page.on('request', (req) => {
@@ -207,7 +227,11 @@ test.describe('AF.1 — StitcherTab mutation channel (F-S2-001)', () => {
     await page.click('[data-testid="tab-stitcher"]');
     const ambientSelect = page.locator('[data-testid="stitcher-amb-intro"]');
     await expect(ambientSelect).toBeVisible();
-    await ambientSelect.selectOption('warm_room_tone');
+    // Wait for the fetched preset option to appear before selecting.
+    await expect(
+      ambientSelect.locator(`option[value="${ambientPresetId}"]`),
+    ).toHaveCount(1, { timeout: 5_000 });
+    await ambientSelect.selectOption(ambientPresetId);
 
     await expect.poll(() => saveJobReqs.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
     await expect.poll(() => snapReqs.length).toBeGreaterThanOrEqual(1);
@@ -221,7 +245,7 @@ test.describe('AF.1 — StitcherTab mutation channel (F-S2-001)', () => {
     expect(body['scope_target_video']).toBe('intro');
     expect(body['scope_video_role']).toBe('intro');
     expect(typeof body['scope_version']).toBe('number');
-    expect(body['ambient_bed']).toBe('warm_room_tone');
+    expect(body['ambient_bed']).toBe(ambientPresetId);
     expect(body['slot']).toBe('intro');
   });
 
