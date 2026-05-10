@@ -481,34 +481,35 @@ class TestStep10EmitArtifacts(unittest.TestCase):
                     reward={"coins": 5, "items": []},
                     out_dir=out_dir,
                 )
-        self.assertEqual(len(artifacts), 7)
 
-        names = sorted(p.name for p in artifacts)
-        expected = sorted(
-            [
-                "M001.mp4",
-                "M001.manifest.json",
-                "M001.ffprobe.json",
-                "M001.decode_test.log",
-                "M001.size_report.json",
-                "M001.sha256",
-                "M001.listen_through.mp4",
-            ]
-        )
-        self.assertEqual(names, expected)
+            self.assertEqual(len(artifacts), 7)
 
-        # Manifest is valid JSON with the expected fields.
-        manifest = json.loads((out_dir / "M001.manifest.json").read_text())
-        self.assertEqual(manifest["moduleId"], "M001")
-        self.assertEqual(manifest["source_hash"], "a" * 64)
-        self.assertEqual(manifest["output_hash"], "b" * 64)
-        self.assertEqual(manifest["phaseBoundaries"]["story_start_ms"], 0)
-        self.assertEqual(manifest["phaseBoundaries"]["phase_b_start_ms"], 1000)
-        self.assertEqual(manifest["phaseBoundaries"]["phase_b_end_ms"], 5000)
+            names = sorted(p.name for p in artifacts)
+            expected = sorted(
+                [
+                    "M001.mp4",
+                    "M001.manifest.json",
+                    "M001.ffprobe.json",
+                    "M001.decode_test.log",
+                    "M001.size_report.json",
+                    "M001.sha256",
+                    "M001.listen_through.mp4",
+                ]
+            )
+            self.assertEqual(names, expected)
 
-        # sha256 sidecar file contains the output_hash on its first line.
-        sha_text = (out_dir / "M001.sha256").read_text().strip()
-        self.assertTrue(sha_text.startswith("b" * 64))
+            # Manifest is valid JSON with the expected fields.
+            manifest = json.loads((out_dir / "M001.manifest.json").read_text())
+            self.assertEqual(manifest["moduleId"], "M001")
+            self.assertEqual(manifest["source_hash"], "a" * 64)
+            self.assertEqual(manifest["output_hash"], "b" * 64)
+            self.assertEqual(manifest["phaseBoundaries"]["story_start_ms"], 0)
+            self.assertEqual(manifest["phaseBoundaries"]["phase_b_start_ms"], 1000)
+            self.assertEqual(manifest["phaseBoundaries"]["phase_b_end_ms"], 5000)
+
+            # sha256 sidecar file contains the output_hash on its first line.
+            sha_text = (out_dir / "M001.sha256").read_text().strip()
+            self.assertTrue(sha_text.startswith("b" * 64))
 
 
 # ============================================================================
@@ -593,11 +594,11 @@ class TestStep13PhaseBoundaries(unittest.TestCase):
                 "phase_b_end_ms": 8000,
             }
             assemble_module.step_13_emit_phase_boundaries(manifest_path, raw)
-        manifest = json.loads(manifest_path.read_text())
-        pb = manifest["phaseBoundaries"]
-        self.assertEqual(pb["story_start_ms"], 0)
-        self.assertEqual(pb["phase_b_start_ms"], 2000)
-        self.assertEqual(pb["phase_b_end_ms"], 8000)
+            manifest = json.loads(manifest_path.read_text())
+            pb = manifest["phaseBoundaries"]
+            self.assertEqual(pb["story_start_ms"], 0)
+            self.assertEqual(pb["phase_b_start_ms"], 2000)
+            self.assertEqual(pb["phase_b_end_ms"], 8000)
 
     def test_rejects_out_of_order_boundaries(self):
         with tempfile.TemporaryDirectory() as tmp:
