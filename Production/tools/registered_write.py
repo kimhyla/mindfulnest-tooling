@@ -152,6 +152,9 @@ def register_asset(
     library: bool = False,
     notes: str = "",
     role: str = None,
+    cdn_url: Optional[str] = None,
+    manifest_published_at: Optional[str] = None,
+    codec_recipe_hash: Optional[str] = None,
 ) -> Tuple[int, str]:
     """
     Atomic registration: validate path → SHA256 → POST prod_assets → POST prod_activity_log.
@@ -161,6 +164,14 @@ def register_asset(
 
     Raises ValueError if file_path is outside PROJECT_ROOT.
     Raises FileNotFoundError if file doesn't exist on disk.
+
+    R2 fields (Phase B 2026-05-10 per V59_PRODUCTION_PIPELINE_STREAM_BF_SPEC_v1 §4.2):
+        cdn_url: Cloudflare R2 public URL per LD-432. Default None until Phase D
+            r2_atomic_publish wires the post-cutover write path.
+        manifest_published_at: ISO-8601 timestamp string for when the module
+            manifest was atomically published to R2 per spec §4.4.
+        codec_recipe_hash: SHA-256 hex (64 chars) of the codec recipe per LD-284
+            normalization spec — identifies which encode profile produced this asset.
     """
     # Step 1: Validate path
     abs_path = _validate_path(file_path)
@@ -210,6 +221,12 @@ def register_asset(
         'is_current': True,
         'kim_verdict': 'pending',
         'created_at': datetime.utcnow().isoformat(),
+        # Phase B 2026-05-10 — R2 mirror columns. Always emit the keys (with None
+        # default) so test_register_asset.test_r2_fields_default_to_none_when_omitted
+        # passes and so Directus consistently stores NULL when no R2 data yet.
+        'cdn_url': cdn_url,
+        'manifest_published_at': manifest_published_at,
+        'codec_recipe_hash': codec_recipe_hash,
     }
 
     try:
