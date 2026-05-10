@@ -14044,25 +14044,6 @@ body {{padding-top:44px!important;}}
             # Defensive — never block reads on parser errors. Log + proceed.
             print(f"[scope-guard] WARN: URL parse on {path} raised {exc!r}; "
                   f"falling through to server-pinned event.", flush=True)
-        # F-PROJECT-001: when server scope is milestone, v2 state reads must
-        # return milestone_dir/state.json (not the pinned event's production_state).
-        if getattr(self.app, "scope_type", "event") == "milestone":
-            md = getattr(self.app, "milestone_dir", None)
-            if md is not None:
-                sp = md / "state.json"
-                if not sp.is_file():
-                    return self._send_json(404, {
-                        "error": "milestone_state_missing",
-                        "code": "MILESTONE_STATE_MISSING",
-                        "hint": str(sp),
-                    })
-                try:
-                    st = json.loads(sp.read_text(encoding="utf-8"))
-                except json.JSONDecodeError as exc:
-                    return self._send_json(500, {
-                        "error": f"milestone state.json invalid JSON: {exc}",
-                    })
-                return self._send_json(200, st)
         state = self.app.state.read_state()
         return self._send_json(200, state)
 
