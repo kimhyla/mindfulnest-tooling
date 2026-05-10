@@ -10310,8 +10310,17 @@ class ProductionHandler(BaseHTTPRequestHandler):
             return self._send_json(403, {"error": "cross-origin not allowed"})
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         file_path = (qs.get("path") or [None])[0]
-        if not file_path or not os.path.exists(file_path):
+        resolved: str | None = None
+        if file_path:
+            if os.path.isfile(file_path):
+                resolved = file_path
+            elif not os.path.isabs(file_path):
+                joined = os.path.join(str(DROPBOX_ROOT), file_path)
+                if os.path.isfile(joined):
+                    resolved = joined
+        if not resolved:
             return self._send_json(404, {"error": "file not found"})
+        file_path = resolved
         # 2. Project-root containment — refuse paths outside the repo.
         try:
             project_root = os.path.realpath(str(DROPBOX_ROOT))

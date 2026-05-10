@@ -37,6 +37,7 @@ jobs:
     runs-on: ubuntu-latest  # Cursor v11: cheaper than macos-latest; Chromium runs fine on Ubuntu.
     timeout-minutes: 30
     env:
+      MN_DROPBOX_ROOT: ${{ github.workspace }}
       # Spec §19.5 + counter Q2 — Directus secrets injected from GitHub Actions
       # secrets (set via `gh secret set` or repo Settings → Secrets and variables).
       DIRECTUS_URL: ${{ secrets.DIRECTUS_URL }}
