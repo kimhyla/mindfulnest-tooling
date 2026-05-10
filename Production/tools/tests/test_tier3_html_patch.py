@@ -14,12 +14,15 @@ from __future__ import annotations
 
 import pathlib
 import re
+import sys
 import unittest
 
+_REPO = pathlib.Path(__file__).resolve().parents[3]
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+from Production.lib.paths import DROPBOX_ROOT  # noqa: E402
 
-PROJECT_ROOT = pathlib.Path(
-    "/Users/kimberlysmith/Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files"
-)
+PROJECT_ROOT = DROPBOX_ROOT
 TARGET = PROJECT_ROOT / "Production" / "Event_1" / "storyboard_v38_prod.html"
 
 

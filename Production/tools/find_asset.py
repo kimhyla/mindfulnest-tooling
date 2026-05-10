@@ -29,15 +29,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-# Cross-platform PROJECT_ROOT resolution (per LD-367, mirrors docx_confirmation_hook.py).
-_PROJECT_ROOT_ENV = os.environ.get('MINDFULNEST_PROJECT_ROOT')
-if _PROJECT_ROOT_ENV:
-    _PROJECT_ROOT = _PROJECT_ROOT_ENV
-elif _platform.system() == 'Windows':
-    _PROJECT_ROOT = r"C:\Users\ECDS Clinical\Dropbox\Claude Mindfulnest Project Files"
-else:
-    _PROJECT_ROOT = "/Users/kimberlysmith/Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files"
-sys.path.insert(0, _PROJECT_ROOT)
+# Code from tooling clone; Dropbox media tree via MN_DROPBOX_ROOT / lib.paths (LD-505 Phase B).
+_TOOLING_REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_TOOLING_REPO))
+from Production.lib.paths import DROPBOX_ROOT  # noqa: E402
+
+_PROJECT_ROOT = str(DROPBOX_ROOT)
 
 from Production.tools.lib import credentials, directus
 

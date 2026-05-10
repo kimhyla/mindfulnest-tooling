@@ -23,6 +23,12 @@ import json
 import os
 import sys
 import glob
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from Production.lib.paths import DROPBOX_ROOT  # noqa: E402
 
 
 def get_directus_token(base_url, email, password):
@@ -250,7 +256,10 @@ def run_sync_check(project_root, base_url, email, password, mode='full'):
 
 
 def find_project_root():
-    """Find the MindfulNest project folder. Checks env var, session mounts, and Mac Dropbox."""
+    """Find the MindfulNest project folder. Checks env/session mounts before defaults."""
+    if DROPBOX_ROOT.is_dir():
+        return str(DROPBOX_ROOT.resolve())
+
     # 1. Explicit env var (highest priority)
     env_root = os.environ.get('PROJECT_ROOT')
     if env_root and os.path.isdir(env_root):
@@ -283,7 +292,7 @@ def main():
     if not project_root:
         print("ERROR: Could not find project folder.")
         print("Options:")
-        print("  1. Set PROJECT_ROOT env var: export PROJECT_ROOT=/path/to/Claude Mindfulnest Project Files")
+        print("  1. Set MN_DROPBOX_ROOT (or PROJECT_ROOT): export MN_DROPBOX_ROOT=/path/to/Claude Mindfulnest Project Files")
         print("  2. Run from a Cowork session with the project folder mounted")
         print("  3. Run on Kim's Mac with Dropbox synced")
         sys.exit(1)

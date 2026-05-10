@@ -20,6 +20,8 @@
 #
 # Usage:
 #   bash Production/scripts/deploy_storyboard_v59.sh
+#     (defaults: MN_TOOLING_ROOT = this Mac's tooling checkout;
+#               MN_DROPBOX_ROOT = Dropbox "Claude Mindfulnest Project Files" — overrides per LD-505 / LD-541)
 #     (default event_dir = Production/Event_1; override via MN_EVENT_DIR env)
 #
 #   MN_EVENT_DIR=Production/Event_2 bash Production/scripts/deploy_storyboard_v59.sh

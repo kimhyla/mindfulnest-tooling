@@ -76,10 +76,7 @@ import scope_router as _scope_router  # noqa: E402,F401
 #       (scrambled state preserved as forensic record post-recovery)
 # CI runs may not have Dropbox mounted; in that case both predicates
 # return None and the test SKIPs since the fixture lives in Kim's tree.
-_DROPBOX_ROOT = Path(
-    "/Users/kimberlysmith/Library/CloudStorage/Dropbox/"
-    "Claude Mindfulnest Project Files"
-)
+from Production.lib.paths import DROPBOX_ROOT as _DROPBOX_ROOT
 _EVENT_1_STATE = _DROPBOX_ROOT / "Production" / "Event_1" / "production_state.json"
 _EVENT_1_BACKUPS = _DROPBOX_ROOT / "Production" / "Event_1" / ".backups" / "state"
 

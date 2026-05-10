@@ -27,7 +27,7 @@ Scope is strict .docx only; does NOT touch .md reference docs (pipeline
 generates those; Rule 3 pipeline-output exemption applies). Does NOT touch
 .json, .mp3, .mp4, or any other extension.
 
-Stdlib only (json, os, re, sys, pathlib, hashlib, time, datetime).
+MindfulNest-local paths via Production.lib.paths (LD-505); otherwise stdlib only
 """
 
 from __future__ import annotations
@@ -41,16 +41,12 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-import platform as _platform
-_PROJECT_ROOT_ENV = os.environ.get("MINDFULNEST_PROJECT_ROOT")
-if _PROJECT_ROOT_ENV:
-    PROJECT_ROOT = Path(_PROJECT_ROOT_ENV)
-elif _platform.system() == "Windows":
-    PROJECT_ROOT = Path(r"C:\Users\ECDS Clinical\Dropbox\Claude Mindfulnest Project Files")
-else:
-    PROJECT_ROOT = Path(
-        "/Users/kimberlysmith/Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files"
-    )
+_REPO = Path(__file__).resolve().parents[2]
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+from Production.lib.paths import DROPBOX_ROOT  # noqa: E402
+
+PROJECT_ROOT = DROPBOX_ROOT
 CACHE_DIR = Path.home() / ".claude" / "mindfulnest-cache"
 CONFIRMATION_CACHE = CACHE_DIR / "docx_confirmation_cache.json"
 SHADOW_LOG = CACHE_DIR / "hook_shadow_log.jsonl"
