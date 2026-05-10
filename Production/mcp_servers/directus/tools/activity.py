@@ -13,7 +13,6 @@ from typing import Any
 from lib.directus import (
     DirectusReadError,
     DirectusWriteError,
-    SilentWriteFailure,
     try_post_or_queue,
 )
 from lib.payload_validator import (
@@ -82,14 +81,6 @@ def register(mcp: Any) -> None:
         try:
             result = try_post_or_queue("prod_activity_log", payload)
             return _wrap_write_result(result)
-        except SilentWriteFailure as e:
-            return {
-                "ok": False,
-                "silent_write_failure": True,
-                "collection": e.collection,
-                "item_id": e.item_id,
-                "mismatches": e.mismatches,
-            }
         except (DirectusWriteError, DirectusReadError) as e:
             return {
                 "ok": False,
@@ -161,14 +152,6 @@ def register(mcp: Any) -> None:
         try:
             result = try_post_or_queue("prod_preflight_reviews", payload)
             return _wrap_write_result(result)
-        except SilentWriteFailure as e:
-            return {
-                "ok": False,
-                "silent_write_failure": True,
-                "collection": e.collection,
-                "item_id": e.item_id,
-                "mismatches": e.mismatches,
-            }
         except (DirectusWriteError, DirectusReadError) as e:
             return {
                 "ok": False,

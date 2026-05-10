@@ -17,9 +17,6 @@ from datetime import datetime, timezone
 from typing import Any
 
 from lib.directus import (
-    DirectusReadError,
-    DirectusWriteError,
-    SilentWriteFailure,
     try_patch_or_queue,
     try_post_or_queue,
 )
@@ -145,26 +142,12 @@ def register(mcp: Any) -> None:
             if wrapped.get("ok"):
                 wrapped["upserted"] = "created"
             return wrapped
-        except SilentWriteFailure as e:
-            return {
-                "ok": False,
-                "silent_write_failure": True,
-                "collection": e.collection,
-                "item_id": e.item_id,
-                "mismatches": e.mismatches,
-            }
         except DirectusAdminError as e:
             return {
                 "ok": False,
                 "directus_error": True,
                 "status": e.status,
                 "body": e.body[:500],
-            }
-        except (DirectusWriteError, DirectusReadError) as e:
-            return {
-                "ok": False,
-                "directus_error": True,
-                "msg": f"{type(e).__name__}: {e}",
             }
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "internal_error": True, "msg": f"{type(e).__name__}: {e}"}

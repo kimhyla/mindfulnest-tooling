@@ -20,6 +20,20 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from lib.directus import (
+    DirectusReadError,
+    DirectusWriteError,
+    try_patch_or_queue,
+    try_post_or_queue,
+)
+from lib.directus_admin_client import DirectusAdminClient, DirectusAdminError
+from lib.payload_validator import (
+    RetiredPayloadKeyError,
+    SchemaProbeError,
+    UnknownPayloadKeyError,
+    validate_payload,
+)
+
 
 def _coerce_for_mcp_result(obj: Any, _depth: int = 0) -> Any:
     """Make arbitrary nested objects safe for FastMCP/Pydantic result serialization.
@@ -38,21 +52,6 @@ def _coerce_for_mcp_result(obj: Any, _depth: int = 0) -> Any:
     if isinstance(obj, dict):
         return {str(k): _coerce_for_mcp_result(v, _depth + 1) for k, v in obj.items()}
     return repr(obj)[:500]
-
-from lib.directus import (
-    DirectusReadError,
-    DirectusWriteError,
-    SilentWriteFailure,
-    try_patch_or_queue,
-    try_post_or_queue,
-)
-from lib.directus_admin_client import DirectusAdminClient, DirectusAdminError
-from lib.payload_validator import (
-    RetiredPayloadKeyError,
-    SchemaProbeError,
-    UnknownPayloadKeyError,
-    validate_payload,
-)
 
 
 def _wrap_write_result(result: Any) -> dict:
@@ -213,7 +212,11 @@ def register(mcp: Any) -> None:
         ),
     )
     def directus_create(collection: str, payload: dict) -> dict:
-        if collection.startswith("prod_"):
+        if (
+            collection.startswith("prod_")
+            or collection.startswith("app_")
+            or collection.startswith("coppa_")
+        ):
             try:
                 validated = validate_payload(collection, payload, mode="strict")
                 payload = validated["payload"]
@@ -222,14 +225,6 @@ def register(mcp: Any) -> None:
         try:
             result = try_post_or_queue(collection, payload)
             return _wrap_write_result(result)
-        except SilentWriteFailure as e:
-            return {
-                "ok": False,
-                "silent_write_failure": True,
-                "collection": e.collection,
-                "item_id": e.item_id,
-                "mismatches": e.mismatches,
-            }
         except (DirectusWriteError, DirectusReadError) as e:
             return {
                 "ok": False,
@@ -255,7 +250,11 @@ def register(mcp: Any) -> None:
         ),
     )
     def directus_patch(collection: str, item_id: int, payload: dict) -> dict:
-        if collection.startswith("prod_"):
+        if (
+            collection.startswith("prod_")
+            or collection.startswith("app_")
+            or collection.startswith("coppa_")
+        ):
             try:
                 validated = validate_payload(collection, payload, mode="strict")
                 payload = validated["payload"]

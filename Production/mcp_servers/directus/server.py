@@ -123,35 +123,36 @@ def _prime_schema_cache() -> None:
 
 
 def _schema_drift_sentinel() -> None:
-    """Compare the on-disk reference doc against live Directus schema and emit
-    drift warnings to stderr. Never fails server startup — the live schema is
-    authoritative; the reference doc is a human-facing cache that may lag.
+    """Confirm the on-disk reference doc is reachable from the server's runtime
+    environment. Never fails server startup — the live schema is authoritative;
+    the reference doc is a human-facing cache validated by Rule 35
+    read-back-after-write at the tool boundary.
+
+    Resolution order for the reference doc location:
+    1. ``MN_DIRECTUS_SCHEMA_REF_DOC`` env var (operator-supplied absolute path).
+    2. ``MN_DROPBOX_ROOT`` env var + ``Production/DIRECTUS_SCHEMA_FIELD_NAMES_REFERENCE.md``.
+    3. Skipped with a neutral log message when neither is set.
     """
-    ref_doc = (
-        _PRODUCTION_ROOT.parent
-        / "Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files"
-        / "Production/DIRECTUS_SCHEMA_FIELD_NAMES_REFERENCE.md"
-    )
-    # The above path may not resolve from tooling repo; reference doc lives in
-    # Dropbox per LD-505 (content side). Try the canonical Dropbox path.
-    dropbox_ref = Path(
-        "/Users/kimberlysmith/Library/CloudStorage/Dropbox/"
-        "Claude Mindfulnest Project Files/Production/"
-        "DIRECTUS_SCHEMA_FIELD_NAMES_REFERENCE.md"
-    )
-    target = dropbox_ref if dropbox_ref.exists() else ref_doc
-    if not target.exists():
+    candidates: list[Path] = []
+    env_doc = os.environ.get("MN_DIRECTUS_SCHEMA_REF_DOC")
+    if env_doc:
+        candidates.append(Path(env_doc).expanduser())
+    env_root = os.environ.get("MN_DROPBOX_ROOT")
+    if env_root:
+        candidates.append(
+            Path(env_root).expanduser()
+            / "Production/DIRECTUS_SCHEMA_FIELD_NAMES_REFERENCE.md"
+        )
+
+    target = next((p for p in candidates if p.exists()), None)
+    if target is None:
         print(
-            f"[startup-info] schema reference doc not found at {target} — "
-            f"drift sentinel skipped (live /fields remains source of truth)",
+            "[startup-info] schema reference doc not located via "
+            "MN_DIRECTUS_SCHEMA_REF_DOC or MN_DROPBOX_ROOT — drift sentinel "
+            "skipped (live /fields remains source of truth at the tool boundary)",
             file=sys.stderr,
         )
         return
-    # The sentinel currently confirms the reference doc is reachable from the
-    # server's runtime environment. Per-collection structured-diff parsing is
-    # tracked as a separate enhancement (not a shortcut — the live /fields
-    # response is always authoritative; the reference doc is a human-facing
-    # cache, so structured diffs are nice-to-have rather than load-bearing).
     print(
         f"[startup-info] schema reference doc reachable at {target}",
         file=sys.stderr,

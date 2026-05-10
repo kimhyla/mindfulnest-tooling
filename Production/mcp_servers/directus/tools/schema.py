@@ -29,12 +29,12 @@ def register(mcp: Any) -> None:
     def directus_invalidate_schema(collection: str | None = None) -> dict:
         try:
             from lib.payload_validator import (
-                _SCHEMA_CACHE,  # noqa: SLF001
+                cached_collections,
                 invalidate_schema_cache,
             )
-            before = list(_SCHEMA_CACHE.keys())
+            before = cached_collections()
             invalidate_schema_cache(collection)
-            after = list(_SCHEMA_CACHE.keys())
+            after = cached_collections()
             return {
                 "ok": True,
                 "flushed": collection or "all",

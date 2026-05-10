@@ -102,7 +102,7 @@ The MCP server is glue. It does NOT re-implement schema validation, read-back, o
 
 Live Directus probes from `.venv/bin/python` against production Directus:
 
-- B.1 ✓ — `mcp.list_tools()` returns 6 tools.
+- B.1 ✓ — `mcp.list_tools()` returns 12 tools (5 read-side + 7 write-side, matching `tests/test_smoke.py::test_tool_inventory_has_all_expected_tools`). Asset tools (`register_asset`, `find_asset`) are conditionally registered when `Production.tools.registered_write` is importable from the runtime sys.path.
 - B.2 ✓ — `directus_search('prod_locked_decisions', filters={'decision_key': {'_eq':'POST_ITEM_VERIFIED_V1'}})` returns LD-364 row.
 - B.3 ✓ — `directus_get('prod_locked_decisions', 364)` returns same row.
 - B.4 ✓ — `schema_describe('prod_activity_log')` returns 11 fields including `action`, `details`, `performed_by`.

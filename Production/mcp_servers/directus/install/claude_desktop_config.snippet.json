@@ -1,5 +1,5 @@
 {
-  "_comment": "Add this 'directus' entry under 'mcpServers' in your claude_desktop_config.json. macOS path: ~/Library/Application Support/Claude/claude_desktop_config.json. Replace the absolute paths with your local install. Per CLAUDE.md LD-208 (RENT_SECRETS_VIA_DOPPLER) + LD-227 (SHORTCUT_CREDSTORE_MD_FALLBACK_20260418), prefer the doppler-wrapped command form to avoid the macOS GUI-launch env-inheritance pitfall. NOTE: command MUST be ABSOLUTE path (/opt/homebrew/bin/doppler) — Claude Desktop GUI launch does not inherit shell PATH so a bare 'doppler' fails to resolve.",
+  "_comment": "Add this 'directus' entry under 'mcpServers' in your claude_desktop_config.json. macOS path: ~/Library/Application Support/Claude/claude_desktop_config.json. Replace <YOUR_HOME> with your home directory absolute path (e.g. /Users/yourname). Per CLAUDE.md LD-208 (RENT_SECRETS_VIA_DOPPLER) + LD-227 (SHORTCUT_CREDSTORE_MD_FALLBACK_20260418), prefer the doppler-wrapped command form to avoid the macOS GUI-launch env-inheritance pitfall. NOTE: command MUST be ABSOLUTE path (/opt/homebrew/bin/doppler) — Claude Desktop GUI launch does not inherit shell PATH so a bare 'doppler' fails to resolve.",
   "mcpServers": {
     "directus": {
       "command": "/opt/homebrew/bin/doppler",
@@ -10,16 +10,16 @@
         "--config",
         "dev",
         "--",
-        "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/mcp_servers/directus/.venv/bin/python",
-        "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/mcp_servers/directus/server.py"
+        "<YOUR_HOME>/Projects/mindfulnest-tooling/Production/mcp_servers/directus/.venv/bin/python",
+        "<YOUR_HOME>/Projects/mindfulnest-tooling/Production/mcp_servers/directus/server.py"
       ]
     }
   },
   "_fallback_no_doppler": {
-    "_comment": "If doppler is not installed, fall back to direct invocation. Server will read DIRECTUS_URL + DIRECTUS_ADMIN_EMAIL + DIRECTUS_ADMIN_PASSWORD from process env, then API_KEYS_MASTER.md per LD-227.",
-    "command": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/mcp_servers/directus/.venv/bin/python",
+    "_comment": "If doppler is not installed, fall back to direct invocation. Server will read DIRECTUS_URL + DIRECTUS_ADMIN_EMAIL + DIRECTUS_ADMIN_PASSWORD from process env, then API_KEYS_MASTER.md per LD-227. Replace <YOUR_HOME> with your home directory absolute path.",
+    "command": "<YOUR_HOME>/Projects/mindfulnest-tooling/Production/mcp_servers/directus/.venv/bin/python",
     "args": [
-      "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/mcp_servers/directus/server.py"
+      "<YOUR_HOME>/Projects/mindfulnest-tooling/Production/mcp_servers/directus/server.py"
     ]
   }
 }

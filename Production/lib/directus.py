@@ -20,14 +20,28 @@ sent. Directus silently drops fields that don't match the collection schema.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import json
 import os
 import sys
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+# fcntl is POSIX-only. On Windows we fall back to a process-local threading.Lock,
+# which serializes within-process queue mutation. Cross-process safety on Windows
+# would require msvcrt.locking() or the portalocker package; the current MCP
+# deployment ships only the MCP server as a writer, so process-local lock is
+# sufficient for committed Windows configs.
+try:
+    import fcntl  # type: ignore[import-not-found]
+    _HAVE_FCNTL = True
+except ImportError:
+    fcntl = None  # type: ignore[assignment]
+    _HAVE_FCNTL = False
+
+_THREAD_LOCK = threading.Lock()
 
 # Local import — directus_admin_client is a sibling in the same package.
 try:
@@ -314,7 +328,35 @@ def read_item(
 # -----------------------------------------------------------------------------
 
 
-_PENDING_QUEUE_PATH = Path(__file__).resolve().parent.parent.parent / "pending_directus_writes.json"
+def _resolve_pending_queue_path() -> Path:
+    """Resolve the canonical pending_directus_writes.json path.
+
+    Resolution order:
+    1. ``MN_PENDING_QUEUE_PATH`` env var — explicit absolute override.
+    2. ``MN_DROPBOX_ROOT`` env var + ``pending_directus_writes.json`` —
+       canonical Dropbox-tree project root. This makes the MCP server's
+       offline queue and the existing 88 callsites' queue converge to the
+       SAME file, so a write from either path is replayed by either's
+       session-start protocol.
+    3. Fallback to ``<this-file>.parent.parent.parent / pending_directus_writes.json``
+       (tooling-repo root). Used in tests and standalone runs where neither
+       env var is set.
+
+    Per CLAUDE.md Rule 19 (no error paths left open): the env-var-first
+    resolution closes the dual-queue coexistence bug — entries written by
+    the MCP server are now replayed by the Dropbox session-start protocol
+    when MN_DROPBOX_ROOT is set, and vice versa.
+    """
+    override = os.environ.get("MN_PENDING_QUEUE_PATH")
+    if override:
+        return Path(override).expanduser()
+    dropbox_root = os.environ.get("MN_DROPBOX_ROOT")
+    if dropbox_root:
+        return Path(dropbox_root).expanduser() / "pending_directus_writes.json"
+    return Path(__file__).resolve().parent.parent.parent / "pending_directus_writes.json"
+
+
+_PENDING_QUEUE_PATH = _resolve_pending_queue_path()
 
 
 _LOCK_PATH = _PENDING_QUEUE_PATH.with_suffix(".lock")
@@ -322,29 +364,41 @@ _LOCK_PATH = _PENDING_QUEUE_PATH.with_suffix(".lock")
 
 @contextlib.contextmanager
 def _queue_file_lock():
-    """Cross-process advisory lock around pending_directus_writes.json mutation.
+    """Advisory lock around pending_directus_writes.json mutation.
 
-    Closes the concurrent-writer race documented in LD-661
-    `MCP_QUEUE_RACE_KNOWN_PHASE1_V1`. Two processes (e.g., the Directus MCP
-    server + a parallel script using try_post_or_queue) calling
-    queue_write_offline simultaneously would, before this lock, race on
-    read-parse-append-write and lose entries. fcntl.flock serializes them.
+    On POSIX (macOS/Linux), uses an fcntl.flock on a sidecar lock file for
+    cross-process safety. Closes the concurrent-writer race documented in
+    LD-661 `MCP_QUEUE_RACE_KNOWN_PHASE1_V1`: two processes (e.g., the
+    Directus MCP server + a parallel script) racing on read-parse-append-write
+    would lose entries; fcntl.flock serializes them.
+
+    On Windows (no fcntl module), falls back to a process-local
+    threading.Lock. This serializes within-process writers but does NOT
+    serialize cross-process writers. Production Windows deployments with
+    multiple writer processes would need to close that gap (msvcrt.locking
+    or portalocker) before relying on the queue under contention; the MCP
+    server is currently the sole writer in committed Windows configs, so
+    process-local lock is sufficient.
 
     Lock file is a sidecar (`pending_directus_writes.lock`) — locking the
     queue file directly would race with reads of an empty file at startup.
     Lock is released on context exit even on exception.
     """
     _LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
-    # Open in append mode so the file exists; fcntl works on the fd.
-    fd = os.open(str(_LOCK_PATH), os.O_RDWR | os.O_CREAT, 0o600)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        yield
-    finally:
+    if _HAVE_FCNTL:
+        # Open in append mode so the file exists; fcntl works on the fd.
+        fd = os.open(str(_LOCK_PATH), os.O_RDWR | os.O_CREAT, 0o600)
         try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
         finally:
-            os.close(fd)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+    else:
+        with _THREAD_LOCK:
+            yield
 
 
 def queue_write_offline(collection: str, payload: dict, reason: str = "offline") -> Path:
