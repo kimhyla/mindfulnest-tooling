@@ -143,15 +143,16 @@ _EMPTY_BULLET_MARKERS = (
 # blocking. The bot's own conclusion at section level wins over
 # individual bullet wording.
 #
-# Authority: LD-667 SHORTCUT_CLAUDE_REVIEW_REGEX_PATCH_PRE_OPTION_A_V1
-# (interim regex patch; the LD itself is the deferral anchor — see also
-# the inline references on the "interim", "follows", and "unblocks PR
-# #22" admissions a few lines below).
-# Closure plan: Option A — modify review_prompt.md to require a
-# structured verdict line (e.g. "## Final verdict: NO_BLOCKING_FINDINGS")
-# and parse THAT instead of natural-language reversal phrases. Option B
-# (this code) is interim per LD-667 but unblocks PR #22 today per
-# LD-667; Option A follows per LD-667 closure plan.
+# Authority: SHORTCUT_CLAUDE_REVIEW_REGEX_PATCH_PRE_OPTION_A_V1 (LD-667)
+# — interim regex patch with closure plan = Option A.
+# Closure plan per SHORTCUT_CLAUDE_REVIEW_REGEX_PATCH_PRE_OPTION_A_V1:
+# Option A — modify review_prompt.md to require a structured verdict
+# line (e.g. "## Final verdict: NO_BLOCKING_FINDINGS") and parse THAT
+# instead of natural-language reversal phrases. Option B (this code)
+# is interim per SHORTCUT_CLAUDE_REVIEW_REGEX_PATCH_PRE_OPTION_A_V1
+# but unblocks PR #22 today per
+# SHORTCUT_CLAUDE_REVIEW_REGEX_PATCH_PRE_OPTION_A_V1; Option A follows
+# per SHORTCUT_CLAUDE_REVIEW_REGEX_PATCH_PRE_OPTION_A_V1 closure plan.
 #
 # Pattern class observed across multiple PR #22 rounds: bot writes a
 # concerning bullet then concludes the section with explicit
@@ -160,8 +161,11 @@ _EMPTY_BULLET_MARKERS = (
 # Non-blocking"). The conclusion is the bot's actual verdict; the gate
 # honors it.
 #
-# Patterns intentionally narrow [CONFIRMED via 15-case smoke test in
-# PR #24 round-2 commit f24e527 message + 16-case smoke in round-3]:
+# Patterns intentionally narrow [INFERRED — verify by re-running the
+# 24-case smoke enumerated in PR #24 round-3 (commit description) +
+# any new adversarial cases at PR-author time. Smoke fixtures are NOT
+# persisted as a pytest in this repo yet — that's a follow-up under
+# Option A / a separate test-extraction PR.]:
 #   * "reconsidering: no clear"  — bot's "I changed my mind" prefix only
 #     when followed by "no clear" (avoids false-skip on
 #     "Reconsidering: no, the concern stands")
@@ -213,8 +217,12 @@ def _is_section_paragraph_line(line: str) -> bool:
     # Markdown bullets (all three list markers + ordered).
     if stripped.startswith(("- ", "* ", "+ ")):
         return False
-    if len(stripped) >= 2 and stripped[0].isdigit() and stripped[1] in ".)":
-        return False  # ordered list "1. " / "1) "
+    # Ordered list "1. ", "10. ", "1) ", "10) ", etc. Match leading run
+    # of digits followed by ". " or ") " — handles single AND multi-digit
+    # numbers (NB3 fix: prior code only checked stripped[1] which missed
+    # "10. item" and longer-numbered lists).
+    if re.match(r"\d+[.)]\s", stripped):
+        return False
     # Blockquote — bot might quote a prior review's reversal phrase.
     if stripped.startswith(">"):
         return False
