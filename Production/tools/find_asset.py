@@ -36,7 +36,7 @@ from Production.lib.paths import DROPBOX_ROOT  # noqa: E402
 
 _PROJECT_ROOT = str(DROPBOX_ROOT)
 
-from Production.tools.lib import credentials, directus
+from Production.tools.credentials_lib import credentials, directus  # noqa: E402  # Phase B 2026-05-10: align with registered_write.py — tooling dir is credentials_lib, not lib (LD MCP_REGISTERED_WRITE_MIGRATED_TO_TOOLING_V1). Prior `from Production.tools.lib` raised ModuleNotFoundError at every CLI invocation.
 
 # --- Configuration ---
 
@@ -158,6 +158,55 @@ def _search_notes_name(client, phrase: str, filters: dict) -> List[Dict]:
     except Exception:
         pass
     return results
+
+
+def _search_specific_field(client, field: str, phrase: str, filters: dict) -> List[Dict]:
+    """Phase B 2026-05-10 — Single-field icontains search.
+
+    Used when CLI passes ``--field <name>`` to scope the search to a specific
+    queryable column instead of the 5-step protocol. Required for the 3 new
+    R2 fields (cdn_url / manifest_published_at / codec_recipe_hash) which the
+    fixed 5-step pipeline doesn't otherwise reach.
+
+    Returns rows with ``_match_source = 'field:<field>'`` and ``_score = 0.9``
+    (between alias 0.95 and colloquial 0.85 — a deliberate field query is
+    high-confidence intent).
+    """
+    results: List[Dict] = []
+    try:
+        filter_parts = [f'filter[{field}][_icontains]={phrase}']
+        if filters.get('module_id'):
+            filter_parts.append(f'filter[module_id][_eq]={filters["module_id"]}')
+        if filters.get('event_id'):
+            filter_parts.append(f'filter[event_id][_eq]={filters["event_id"]}')
+        url = f'/items/prod_assets?{"&".join(filter_parts)}&limit=50'
+        for r in client._request('GET', url)['data']:
+            r['_match_source'] = f'field:{field}'
+            r['_score'] = 0.9
+            results.append(r)
+    except Exception:
+        pass
+    return results
+
+
+# Phase B 2026-05-10 — fields that can be passed to ``--field``. Ordered by
+# expected query frequency. New R2 columns (cdn_url, manifest_published_at,
+# codec_recipe_hash) are queryable after Phase B per spec §4.2 Step 7. The
+# remaining names mirror the 5-step protocol's fixed columns so callers can
+# reproduce its behavior with explicit single-field scope.
+QUERYABLE_FIELDS = (
+    'cdn_url',
+    'manifest_published_at',
+    'codec_recipe_hash',
+    'iteration_notes',
+    'colloquial_name',
+    'notes',
+    'asset_name',
+    'sha256',
+    'file_path',
+    'beat_id',
+    'produced_by_skill',
+)
 
 
 def _search_disk_fallback(phrase: str) -> List[Dict]:
@@ -312,12 +361,26 @@ def find(
     event_id: int = None,
     no_preview: bool = False,
     json_output: bool = False,
+    field: Optional[str] = None,
 ) -> int:
     """
-    Execute 5-step find protocol.
+    Execute 5-step find protocol — OR a single-field scoped search if ``field`` is set.
+
+    When ``field`` is one of QUERYABLE_FIELDS, the find runs ONLY the targeted
+    field-icontains query (Phase B 2026-05-10 per spec §4.2 Step 7). This is
+    required to reach the 3 new R2 columns (cdn_url / manifest_published_at /
+    codec_recipe_hash) which the default 5-step pipeline doesn't query.
 
     Returns exit code: 0=one match, 1=multiple, 2=zero, 3=error
     """
+    if field is not None and field not in QUERYABLE_FIELDS:
+        print(
+            f"Error: --field {field!r} is not in the queryable set. "
+            f"Choices: {', '.join(QUERYABLE_FIELDS)}",
+            file=sys.stderr,
+        )
+        return 3
+
     filters = {}
     if module_id:
         filters['module_id'] = module_id
@@ -332,23 +395,29 @@ def find(
 
     all_results = []
 
-    # Step 0: iteration_notes
-    all_results.extend(_search_iteration_notes(client, phrase, filters))
+    if field is not None:
+        # Single-field scope — bypass the 5-step protocol (deliberate intent
+        # to query one specific column, especially the new R2 fields).
+        all_results.extend(_search_specific_field(client, field, phrase, filters))
+    else:
+        # Step 0: iteration_notes
+        all_results.extend(_search_iteration_notes(client, phrase, filters))
 
-    # Step 1: aliases
-    all_results.extend(_search_aliases(client, phrase))
+        # Step 1: aliases
+        all_results.extend(_search_aliases(client, phrase))
 
-    # Step 2: colloquial_name + tags
-    all_results.extend(_search_colloquial_tags(client, phrase, filters))
+        # Step 2: colloquial_name + tags
+        all_results.extend(_search_colloquial_tags(client, phrase, filters))
 
-    # Step 3: notes + asset_name
-    all_results.extend(_search_notes_name(client, phrase, filters))
+        # Step 3: notes + asset_name
+        all_results.extend(_search_notes_name(client, phrase, filters))
 
     # Dedupe
     results = _dedupe_results(all_results)
 
-    # Step 4: Disk fallback (ONLY if zero Directus results)
-    if not results:
+    # Step 4: Disk fallback (ONLY if zero Directus results AND no specific field requested —
+    # disk fallback is keyed on filenames, doesn't apply to schema columns like cdn_url).
+    if not results and field is None:
         disk_results = _search_disk_fallback(phrase)
         results.extend(disk_results)
 
@@ -406,6 +475,17 @@ def main():
     parser.add_argument('--event', '-e', type=int, help='Filter by event_id')
     parser.add_argument('--no-preview', action='store_true', help='Skip HTML preview')
     parser.add_argument('--json', action='store_true', help='Output JSON only')
+    parser.add_argument(
+        '--field',
+        '-f',
+        choices=QUERYABLE_FIELDS,
+        default=None,
+        help=(
+            'Restrict search to a single column. Required for the new R2 fields '
+            '(cdn_url, manifest_published_at, codec_recipe_hash) which the 5-step '
+            'protocol does not query. Phase B 2026-05-10 per spec §4.2 Step 7.'
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -415,6 +495,7 @@ def main():
         event_id=args.event,
         no_preview=args.no_preview,
         json_output=args.json,
+        field=args.field,
     )
 
     sys.exit(exit_code)
