@@ -357,6 +357,7 @@ jobs:
             e2e/storyboard-v59-display-order-empty.spec.ts \
             e2e/f_bg_001_segment_dropdown_empty_state.spec.ts \
             e2e/f_ambient_001_real_preset_catalog.spec.ts \
+            e2e/f_storyboard_001_scope_injection.spec.ts \
             --reporter=line
 
       - name: Upload test artifacts on failure
