@@ -415,3 +415,29 @@ Full alert dump: `/tmp/codeql_alerts.json` (45 alerts, fetched via `gh api repos
 ## 2026-05-10 follow-up — LD-678 (BLOCKER_123_FALSE_POSITIVE_DISMISSAL_V1)
 
 Code-scanning alerts 172/173/174/175 (the 4 high-severity findings introduced by PRs #27/#28 that were causing the github-advanced-security CodeQL rollup to flip `mergeStateStatus=BLOCKED`) were dismissed as false positives on 2026-05-10 22:57:41–43Z per LD-678. Verification PR opened on this branch; merge if CodeQL rollup clean.
+
+---
+
+## 2026-05-11 follow-up — chronic-alert cleanup
+
+15 of the 35 chronic open alerts on `main` were API-dismissed on 2026-05-11 03:51Z per the verdicts catalogued above + post-PR-8 code re-verification:
+
+**6 dismissed `won't fix` (DISMISS_ACCEPTED_RISK):**
+- #3 (py/polynomial-redos, production_server.py:10775) — bounded HTTP body input, localhost-only
+- #42 (py/overly-permissive-file, production_server.py:7576) — empty 0o644 fcntl lock file
+- #43 (py/overly-permissive-file, production_server.py:14493) — empty 0o644 fcntl lock file
+- #44 (py/overly-permissive-file, production_server.py:15036) — empty 0o644 fcntl lock file
+- #45 (py/overly-permissive-file, production_server.py:17671) — empty 0o644 fcntl lock file
+- #48 (py/path-injection, production_server.py:2603) — `is_file()` existence test only, no read
+
+**9 dismissed `false positive` (DISMISS_FALSE_POSITIVE; validator/fix landed):**
+- #12, #13 (py/path-injection, production_server.py:5943-5944) — arc_number is `int()`-converted at read site; integer cannot encode traversal
+- #20 (py/path-injection, production_server.py:10219) — project-root realpath validator added at 10213-10218 (separator-anchored vs DROPBOX_ROOT)
+- #25 (py/path-injection, production_server.py:10350) — beat_id sanitizer added at 10358 rejecting path separators + traversal
+- #49, #50 (py/path-injection, production_server.py:15507, 16320) — `_stitch_resolve_path` validator at 15490-15497 covers all stitch paths; `_stitch_cache_dir` returns server-constructed path with no user input
+- #51, #52 (py/path-injection, production_server.py:6237, 6243) — `_handle_cr_library_delete` validates via `glob.escape()` at 6266 + realpath project-root separator-anchored check at 6278-6285
+- #54 (py/path-injection, production_server.py:8495) — `svp` validated at 8480-8486 before ffprobe subprocess.run (list-form, no shell); matches Finding 3 G recommendation
+
+**20 alerts remain open as un-classified vs this triage doc** — they are in files outside the PR #8 triage scope (path_picker.html XSS #77-83, lipsync_sender.py #86, build_*.py #96-97, pipeline.py + phase_a_tts.py + kling_startend_pipeline.py + regen_tts_beat_06_09.py clear-text logging #108/#123/#124-126/#152) or are NEW post-PR-8 alerts (production_server.py:10319-10327 path-injection #179-182). Each needs its own triage pass before dismissal. **No alert with `FIX_INLINE_PR8` verdict was dismissed** — only alerts whose downstream fix or validator could be re-verified in the current code (or already classified DISMISS_* in the triage doc) were actioned.
+
+Per [Rule 19 escape-hatch protocol], no new `SHORTCUT_*` LD was registered for this batch because the dismissals reference the existing triage doc + verifiable inline validators rather than introducing new accepted-risk surface.
