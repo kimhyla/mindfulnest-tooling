@@ -9401,6 +9401,11 @@ class ProductionHandler(BaseHTTPRequestHandler):
         if unknown:
             return self._send_json(400, {"ok": False,
                                           "error": f"Unknown beat fields: {sorted(unknown)}"})
+        # 2026-05-11 Rule 26 fix — when client drops a library image into
+        # the Char ref / BG ref slot, server-side PIL thumbnail generation
+        # ensures BgRefSlot displays the IMAGE (not the lib_key string).
+        # Mirrors _handle_bg_accept_lib_image's thumbnail pattern.
+        thumb_b64 = None
         with bg._sidecar_lock:
             sidecar = bg._load_sidecar_migrated()
             _, beat = bg.find_beat(sidecar, beat_id)
@@ -9409,10 +9414,30 @@ class ProductionHandler(BaseHTTPRequestHandler):
             written = []
             for field in _BG_BEAT_WRITABLE:
                 if field in body:
-                    beat[field] = body[field]
+                    value = body[field]
+                    # For reference_image / bg_ref_image: if abs_path is set
+                    # and the file exists, render a PIL thumbnail and inject
+                    # thumb_b64 so BgRefSlot can <img src=...> after refresh.
+                    if field in ("reference_image", "bg_ref_image") and isinstance(value, dict):
+                        abs_path = value.get("abs_path") or ""
+                        if abs_path and os.path.exists(abs_path) and not value.get("thumb_b64"):
+                            try:
+                                from PIL import Image as _PILImage
+                                import io as _io_thumb
+                                with _PILImage.open(abs_path) as im:
+                                    im.thumbnail((200, 150), _PILImage.LANCZOS)
+                                    buf = _io_thumb.BytesIO()
+                                    im.convert("RGB").save(buf, "JPEG", quality=72)
+                                _t = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+                                value = dict(value)
+                                value["thumb_b64"] = _t
+                                thumb_b64 = _t
+                            except (OSError, ImportError) as _thumb_err:
+                                print(f"[REFDROP] thumbnail skipped for {abs_path!r}: {_thumb_err}", flush=True)
+                    beat[field] = value
                     written.append(field)
             bg.write_sidecar(sidecar)
-        return self._send_json(200, {"ok": True, "written": written})
+        return self._send_json(200, {"ok": True, "written": written, "thumb_b64": thumb_b64})
 
     def _handle_bg_reorder_beats(self, body: dict) -> None:
         """POST /api/bg/reorder-beats {beat_ids: [...], scope_event_id?} -> { ok }
