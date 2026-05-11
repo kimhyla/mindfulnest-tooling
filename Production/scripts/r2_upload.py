@@ -237,6 +237,12 @@ def _activity_log(action: str, details: dict) -> None:
     Per spec §4.4 Step 4: each upload logs `R2_UPLOAD_<key>` to prod_activity_log.
     Soft-fail because R2 uploads should never be blocked by an audit-log failure;
     try_post_or_queue handles offline queueing per CLAUDE.md Rule 35.
+
+    Payload schema [CONFIRMED against Production/DIRECTUS_SCHEMA_FIELD_NAMES_REFERENCE.md
+    §`prod_activity_log` (live snapshot 2026-04-28): the canonical fields are
+    `action` (str, required), `details` (JSON, optional structured payload),
+    `performed_by` (str, optional). `details` is the JSON column — NOT `notes`,
+    which is silently dropped by Directus for this collection.
     """
     try:
         from Production.lib import directus  # local import: avoid hard dep at module load

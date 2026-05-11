@@ -21,7 +21,18 @@ Governing LDs:
 
 If any step fails, AtomicPublishAbortedError is raised carrying the step number +
 reason + evidence dict. Prior manifest.json is preserved (we never overwrite it
-before Step 4 succeeds).
+before Step 4 succeeds) [CONFIRMED against R2_DEPLOYMENT_CONTRACT.md §Atomic
+publish order: "If any step fails, the publish is aborted and the prior
+`manifest.json` remains the live canonical version."].
+
+ETag-as-SHA256-hex assumption (Step 2): [INFERRED — verify against live R2]
+For non-multipart S3 PUTs the ETag is the hex MD5 of the payload, not SHA-256.
+Cloudflare R2 behavior may differ; pending confirmation at first live cutover
+that R2 returns the upload's SHA-256 (or that we adjust the verification to
+match whatever ETag form R2 emits). Until then, Step 2's strict ETag-equals-
+expected_hash check is the correctness gate — if R2 returns a different ETag
+form, the gate will trip at cutover time and the publish aborts cleanly. This
+is the failure-CLOSED design per spec §4.4.
 
 Public API:
     atomic_publish(manifest_path, asset_specs, catalog_version, *, ...) -> dict
@@ -259,8 +270,14 @@ def atomic_publish(
         spec = entry["spec"]
         key = spec["key"]
         local_bytes = Path(spec["local_path"]).read_bytes()
+        if len(local_bytes) == 0:
+            raise AtomicPublishAbortedError(
+                step=3,
+                reason=f"local asset for key={key!r} is 0 bytes — cannot range-verify an empty file",
+                evidence={"key": key, "local_path": str(spec["local_path"])},
+            )
         expected_prefix = local_bytes[:1024]
-        end_offset = max(0, len(expected_prefix) - 1)
+        end_offset = len(expected_prefix) - 1  # safe: local_bytes is non-empty here
         rg = uploader.range_get(key, (0, end_offset))
         if rg.get("status") != 206:
             raise AtomicPublishAbortedError(
@@ -332,8 +349,21 @@ def atomic_publish(
             evidence={"manifest_bytes_len": len(manifest_bytes)},
         )
     first_module = modules[0]
-    first_asset_url = first_module["assetUrl"]
-    expected_output_hash = first_module["output_hash"]
+    first_asset_url = first_module.get("assetUrl")
+    expected_output_hash = first_module.get("output_hash")
+    if not first_asset_url or not expected_output_hash:
+        raise AtomicPublishAbortedError(
+            step=5,
+            reason=(
+                "smoke fetch of manifest.json returned a first module without "
+                "assetUrl or output_hash — manifest schema violation"
+            ),
+            evidence={
+                "first_module_keys": list(first_module.keys()),
+                "has_asset_url": bool(first_asset_url),
+                "has_output_hash": bool(expected_output_hash),
+            },
+        )
     try:
         asset_bytes = asset_smoke(first_asset_url)
     except Exception as e:
