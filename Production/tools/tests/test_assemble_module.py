@@ -32,8 +32,16 @@ from unittest.mock import MagicMock, patch
 _TOOLING_REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_TOOLING_REPO))
 
-_FIXTURE_ROOT = tempfile.mkdtemp(prefix="phase_c_test_root_")
-os.environ.setdefault("MN_DROPBOX_ROOT", _FIXTURE_ROOT)
+# Idempotent shared fixture root (see test_fixture_root_isolation.py for context):
+# whichever test module imports first creates the tempdir and sets MN_DROPBOX_ROOT;
+# subsequent test modules bind their _FIXTURE_ROOT to the SAME path. This keeps
+# every test in the suite agreeing with registered_write._PROJECT_ROOT (which
+# captures MN_DROPBOX_ROOT at import time and cannot be reset thereafter).
+if "MN_DROPBOX_ROOT" in os.environ:
+    _FIXTURE_ROOT = os.environ["MN_DROPBOX_ROOT"]
+else:
+    _FIXTURE_ROOT = tempfile.mkdtemp(prefix="phase_c_test_root_")
+    os.environ["MN_DROPBOX_ROOT"] = _FIXTURE_ROOT
 
 from Production.tools import assemble_module  # noqa: E402  RED until GREEN commit
 
