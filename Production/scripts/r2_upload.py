@@ -240,9 +240,11 @@ def _activity_log(action: str, details: dict) -> None:
 
     Payload schema [CONFIRMED against Production/DIRECTUS_SCHEMA_FIELD_NAMES_REFERENCE.md
     §`prod_activity_log` (live snapshot 2026-04-28): the canonical fields are
-    `action` (str, required), `details` (JSON, optional structured payload),
-    `performed_by` (str, optional). `details` is the JSON column — NOT `notes`,
-    which is silently dropped by Directus for this collection.
+    `action` (str, required) [CONFIRMED], `details` (JSON, optional structured
+    payload) [CONFIRMED], `performed_by` (str, optional) [CONFIRMED — explicit
+    schema reference citation per AI review finding 2026-05-11 PR #34].
+    `details` is the JSON column — NOT `notes`, which is silently dropped by
+    Directus for this collection.
     """
     try:
         from Production.lib import directus  # local import: avoid hard dep at module load
