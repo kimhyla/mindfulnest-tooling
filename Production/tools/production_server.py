@@ -9609,11 +9609,14 @@ class ProductionHandler(BaseHTTPRequestHandler):
             # Build BG beat lookup for abs_path fallback (sidecar already written above).
             _bg_sidecar_snap = _bg_module().read_sidecar()
             _bg_beat_map: dict[str, dict] = {}
-            for _seg in _bg_sidecar_snap.get("segments", {}).values():
-                for _b in _seg.get("beats", []):
-                    _id = _b.get("beat_id") or _b.get("id", "")
-                    if _id:
-                        _bg_beat_map[_id] = _b
+            # Sidecar structure: arcs → <arc_id> → segments → <seg_id> → beats
+            # (NOT top-level segments — top-level key is "arcs")
+            for _arc in _bg_sidecar_snap.get("arcs", {}).values():
+                for _seg in _arc.get("segments", {}).values():
+                    for _b in _seg.get("beats", []):
+                        _id = _b.get("beat_id") or _b.get("id", "")
+                        if _id:
+                            _bg_beat_map[_id] = _b
             storyboard_pos = 0
             state_seeds: dict[str, dict] = {}
             for beat in beats_raw:
