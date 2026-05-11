@@ -478,7 +478,12 @@ export function BgTab() {
     // selections. Re-running Accept All is safe (server merges).
     const acceptedBeats = beats
       .filter((b) => b.accepted_image_key)
-      .map((b) => ({ beat_id: b.beat_id }));
+      .map((b) => ({
+        beat_id: b.beat_id,
+        accepted_image_key: b.accepted_image_key,
+        speaker: b.speaker,
+        dialogue_text: b.dialogue_text,
+      }));
     const [event_id] = (activeSegment || '|').split('|');
     const result = await pathappPatch(activeScope.value, 'bg_accept_beats', {
       beats: acceptedBeats,
