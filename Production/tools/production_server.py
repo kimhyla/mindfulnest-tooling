@@ -9595,8 +9595,25 @@ class ProductionHandler(BaseHTTPRequestHandler):
         # at this seed site; canonicalize the raw speaker via _canonicalize_speaker.
         # Empty stays empty (LD-520 fail-loud at TTS time); the historical
         # Guide-Bird value normalizes to Chipper via _SPEAKER_ALIAS at write time.
+        # BG→Storyboard image-assignment transfer (2-Opus debate locked design).
+        # Extends the existing speaker/text seed to also write image_overrides +
+        # image_overrides_abs into the storyboard partition AND warm the in-memory
+        # _image_overrides cache so animate/add_options calls don't read None
+        # before lazy-hydration fires. The audit row below references these
+        # via the outer-scope mirrors.
+        _overwrite_log: dict[str, dict] = {}
+        _warmed_count = 0
+        _image_seeds: dict[str, str] = {}
         try:
             beats_raw = body.get("beats", [])
+            # Build BG beat lookup for abs_path fallback (sidecar already written above).
+            _bg_sidecar_snap = _bg_module().read_sidecar()
+            _bg_beat_map: dict[str, dict] = {}
+            for _seg in _bg_sidecar_snap.get("segments", {}).values():
+                for _b in _seg.get("beats", []):
+                    _id = _b.get("beat_id") or _b.get("id", "")
+                    if _id:
+                        _bg_beat_map[_id] = _b
             storyboard_pos = 0
             state_seeds: dict[str, dict] = {}
             for beat in beats_raw:
@@ -9605,15 +9622,45 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 sb_bid = f"beat_{storyboard_pos + 1:02d}"
                 raw_speaker = beat.get("speaker") or ""
                 canonicalized = _canonicalize_speaker(raw_speaker) or ""
+                # Resolve abs_path: primary = resolve_library_image_path (always
+                # absolute, always current); fallback = BG sidecar
+                # accepted_library_ref.abs_path. Never trust accepted_local_path
+                # raw — may be relative path.
+                image_key = beat.get("accepted_image_key")
+                abs_path = None
+                try:
+                    _resolved = self.app.resolve_library_image_path(image_key)
+                    if _resolved and os.path.isfile(_resolved):
+                        abs_path = str(_resolved)
+                except Exception:
+                    pass
+                if not abs_path:
+                    _bg_beat = _bg_beat_map.get(beat.get("beat_id", ""), {})
+                    _ref = _bg_beat.get("accepted_library_ref") or {}
+                    _sidecar_abs = _ref.get("abs_path")
+                    if _sidecar_abs and os.path.isfile(_sidecar_abs):
+                        abs_path = _sidecar_abs
+                    if not abs_path:
+                        # accepted_local_path may be relative — normalize.
+                        _local = _bg_beat.get("accepted_local_path")
+                        if _local:
+                            _norm = _local if os.path.isabs(_local) else str(
+                                self.app.event_dir.parent.parent / _local)
+                            if os.path.isfile(_norm):
+                                abs_path = _norm
                 state_seeds[sb_bid] = {
                     "speaker": canonicalized,
                     "text": beat.get("dialogue_text") or "",
+                    "image_key": image_key,
+                    "abs_path": abs_path,   # may be None — handled gracefully in partition seed
                 }
                 storyboard_pos += 1
             if state_seeds:
-                def _seed_partition(partition, _data=state_seeds):
+                def _seed_partition(partition, _data=state_seeds, _owlog=_overwrite_log):
                     pbeats = partition.setdefault("beats", {})
-                    pdo = partition.setdefault("display_order", [])
+                    pdo    = partition.setdefault("display_order", [])
+                    p_ov   = partition.setdefault("image_overrides", {})       # NEW
+                    p_abs  = partition.setdefault("image_overrides_abs", {})   # NEW
                     # If display_order is a legacy int (pre-v3 fixture shape),
                     # leave it alone — DISPLAY_ORDER_STRICT_V1 prune skips ints
                     # and the renderer's strict gate handles the int form too.
@@ -9621,12 +9668,36 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     for bid, fields in _data.items():
                         b = pbeats.setdefault(bid, {})
                         b["speaker"] = fields["speaker"]
-                        b["text"] = fields["text"]
+                        b["text"]    = fields["text"]
+                        if fields.get("image_key"):                            # NEW
+                            prev = p_ov.get(bid)
+                            if prev and prev != fields["image_key"]:
+                                _owlog[bid] = {"prev_key": prev, "new_key": fields["image_key"]}
+                            p_ov[bid] = fields["image_key"]
+                        if fields.get("abs_path"):                             # NEW
+                            p_abs[bid] = fields["abs_path"]
                         if pdo_is_list and bid not in pdo:
                             pdo.append(bid)
                 self.app.state.mutate_video_state(scope.video_role, _seed_partition)
+                # Warm in-memory cache so animate/add_options calls don't read None.
+                _pending = self.app._pending_override_keys.get(scope.video_role, {})
+                for sb_bid, fields in state_seeds.items():
+                    _ikey = fields.get("image_key")
+                    if not _ikey:
+                        continue
+                    _image_seeds[sb_bid] = _ikey
+                    try:
+                        _fullres = self.app.get_fullres_gallery_image(_ikey)
+                        if _fullres:
+                            self.app._image_overrides.setdefault(scope.video_role, {})[sb_bid] = _fullres
+                            _warmed_count += 1
+                    except Exception:
+                        pass
+                    _pending.pop(sb_bid, None)   # clear lazy-hydrate marker
+                self.app.invalidate_beats_cache()
                 print(f"[BG] seeded videos.{scope.video_role}.beats for storyboard beats: "
-                      f"{list(state_seeds.keys())}")
+                      f"{list(state_seeds.keys())} (image_overrides={len(_image_seeds)}, "
+                      f"warmed={_warmed_count}, overwrites={len(_overwrite_log)})")
         except Exception as e:
             print(f"[BG] warning: could not seed partition: {e}")
 
@@ -9649,6 +9720,9 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     "event_id": scope.event_id,
                     "target": scope.video_role,
                     "accepted_count": len(beat_ids),
+                    "image_overrides_seeded": _image_seeds,
+                    "image_overrides_warmed": _warmed_count,
+                    "image_override_overwrites": _overwrite_log,
                     "ld": "BG_ACCEPT_BEATS_ACTIVITY_LOG_V1",
                 },
             })
