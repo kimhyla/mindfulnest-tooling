@@ -4873,16 +4873,64 @@ class AppContext:
         return None
 
     def get_fullres_gallery_image(self, image_key: str) -> str | None:
-        """Look up a full-res gallery image by key from the storyboard HTML."""
+        """Resolve image_key to a full-res data URI.
+
+        Path C (v59 shell): the Vite shell has no embedded gallery markers, so
+        we resolve via the on-disk library inventory (BG_STILLS_DIR, sources/,
+        crops/, Character_Assets/) matching filename stem against image_key with
+        space→underscore normalization. Legacy HTML scan kept as fallback for
+        pre-v59 storyboards. Fixes DRAG_DROP_V59_GALLERY_V1.
+        """
+        fp = self.resolve_library_image_path(image_key)
+        if fp:
+            try:
+                with open(fp, "rb") as f:
+                    raw = f.read()
+                ext = os.path.splitext(fp)[1].lower().lstrip(".")
+                mime = {"png": "image/png", "webp": "image/webp",
+                        "jpg": "image/jpeg", "jpeg": "image/jpeg"}.get(ext, "image/png")
+                return f"data:{mime};base64," + base64.b64encode(raw).decode("ascii")
+            except OSError:
+                pass
+        # Legacy fallback for pre-v59 storyboards (HTML gallery markers).
         html = self.storyboard_path.read_text(encoding="utf-8")
-        # Gallery images: <div class="ic"><img src="data:image/..."><p>filename.png</p></div>
-        # Match by key derived from filename
         pattern = r'<div class="ic"><img src="(data:image/[^"]+)"><p>([^<]+)</p></div>'
+        normalized = image_key.replace(" ", "_")
         for m in re.finditer(pattern, html):
             src, name = m.group(1), m.group(2)
             key = name.replace(".png", "").replace(".PNG", "").replace(" ", "_")
-            if key == image_key:
+            if key == image_key or key == normalized:
                 return src
+        return None
+
+    def resolve_library_image_path(self, image_key: str) -> str | None:
+        """Resolve image_key to its absolute on-disk path in library directories.
+
+        Scans BG_STILLS_DIR, sources/, crops/, Character_Assets/ in order,
+        matching filename stem with space→underscore normalization.
+        Returns None if not found (caller falls back to legacy HTML scan).
+        """
+        bg = _bg_module()
+        normalized = image_key.replace(" ", "_")
+        candidate_dirs = [
+            bg.BG_STILLS_DIR,
+            os.path.join(bg.BG_STILLS_DIR, "sources"),
+            os.path.join(bg.BG_STILLS_DIR, "crops"),
+            os.path.normpath(os.path.join(bg.BG_STILLS_DIR, "..", "Character_Assets")),
+        ]
+        for d in candidate_dirs:
+            if not os.path.isdir(d):
+                continue
+            try:
+                entries = os.listdir(d)
+            except OSError:
+                continue
+            for fname in entries:
+                if not fname.lower().endswith((".png", ".webp", ".jpg", ".jpeg")):
+                    continue
+                stem = os.path.splitext(fname)[0]
+                if stem == image_key or stem.replace(" ", "_") == normalized:
+                    return os.path.join(d, fname)
         return None
 
     def touch(self) -> None:
@@ -6151,7 +6199,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     buf = _io2.BytesIO()
                     im.convert("RGB").save(buf, "JPEG", quality=72)
                 thumb_b64 = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
-                return {"key": os.path.splitext(fname)[0], "filename": fname,
+                # Normalize key: spaces → underscores for consistent matching
+                # against _handle_assign_image / resolve_library_image_path.
+                return {"key": os.path.splitext(fname)[0].replace(" ", "_"),
+                        "filename": fname,
                         "thumb_b64": thumb_b64, "gallery_b64": thumb_b64,
                         "tier": tier, "abs_path": fp}
             except OSError:
@@ -10565,7 +10616,14 @@ class ProductionHandler(BaseHTTPRequestHandler):
         # refactor window; required after all clients pass it explicitly.
         video_role = body.get("scope_video_role", "intro")
 
-        # Look up full-res gallery image
+        # Look up full-res gallery image.
+        # Prefer abs_path from body if client sent it (R4 guard — avoids key
+        # collision when two library dirs contain a same-stem file).
+        body_abs_path = body.get("abs_path")
+        if body_abs_path and os.path.isfile(body_abs_path):
+            abs_path = body_abs_path
+        else:
+            abs_path = self.app.resolve_library_image_path(image_key)
         fullres = self.app.get_fullres_gallery_image(image_key)
         if not fullres:
             # Fall back: maybe the key IS in TH (thumbnail) — better than nothing
@@ -10601,10 +10659,14 @@ class ProductionHandler(BaseHTTPRequestHandler):
             #    to keep production_state.json small; the data URI lives in
             #    _image_overrides in memory, re-resolved from the gallery on
             #    restart via get_fullres_gallery_image().
+            #    Also persists abs_path so _handle_v2_event_state can project
+            #    image_path for v59 shell clients (DRAG_DROP_V59_GALLERY_V1).
             #    S5.5a2: writes to videos[role].image_overrides via
             #    mutate_video_state (BG_VIDEO_PARTITION_V1).
-            def _persist(partition, _bid=beat_id, _key=image_key):
+            def _persist(partition, _bid=beat_id, _key=image_key, _ap=abs_path):
                 partition.setdefault("image_overrides", {})[_bid] = _key
+                if _ap:
+                    partition.setdefault("image_overrides_abs", {})[_bid] = _ap
                 return None
             self.app.state.mutate_video_state(video_role, _persist)
 
@@ -14078,6 +14140,28 @@ body {{padding-top:44px!important;}}
             print(f"[scope-guard] WARN: URL parse on {path} raised {exc!r}; "
                   f"falling through to server-pinned event.", flush=True)
         state = self.app.state.read_state()
+        # Project image_path onto beats from image_overrides_abs so v59 Vite
+        # shell clients can render assigned images. The Vite shell has no
+        # embedded gallery — beat.image_path is the client's only render signal.
+        # Computes a relative path from event_dir so the existing /files endpoint
+        # can serve it via its DROPBOX_ROOT-relative resolution path.
+        # DRAG_DROP_V59_GALLERY_V1 fix.
+        try:
+            event_dir_abs = str((DROPBOX_ROOT / self.app.event_dir).resolve())
+            for _role, _part in (state.get("videos") or {}).items():
+                if not isinstance(_part, dict):
+                    continue
+                _abs_map = _part.get("image_overrides_abs") or {}
+                _beats = _part.setdefault("beats", {})
+                for _bid, _ap in _abs_map.items():
+                    _beat = _beats.setdefault(_bid, {})
+                    if not _beat.get("image_path") and _ap and os.path.isfile(_ap):
+                        try:
+                            _beat["image_path"] = os.path.relpath(_ap, event_dir_abs)
+                        except ValueError:
+                            pass  # different drives on Windows; skip
+        except Exception as _exc:
+            print(f"[v2-state] WARN: image_path projection failed: {_exc!r}", flush=True)
         return self._send_json(200, state)
 
     # ------------------------------------------------------------------
