@@ -9866,10 +9866,51 @@ class ProductionHandler(BaseHTTPRequestHandler):
             }
             beat["accepted_image_key"] = key
             beat["status"] = "lib_chosen"
+
+            # Generate PIL thumbnail from abs_path and inject into gpt_options[slot_index]
+            # so BgOptionTile renders thumb_b64 after drop (Layer 5 of six-layer verify).
+            # Mirrors _read_image at production_server.py ~line 6192.
+            thumb_b64 = None
+            try:
+                if abs_path and os.path.exists(abs_path):
+                    from PIL import Image as _PILImage
+                    import io as _io_thumb
+                    with _PILImage.open(abs_path) as im:
+                        im.thumbnail((200, 150), _PILImage.LANCZOS)
+                        buf = _io_thumb.BytesIO()
+                        im.convert("RGB").save(buf, "JPEG", quality=72)
+                    thumb_b64 = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+            except (OSError, ImportError) as _thumb_err:
+                print(f"[LIBDROP] thumbnail skipped for {abs_path!r}: {_thumb_err}", flush=True)
+                thumb_b64 = None
+
+            if thumb_b64:
+                opts = beat.get("gpt_options") or []
+                option_entry = {
+                    "key": key,
+                    "thumb_b64": thumb_b64,
+                    "source": "library_drop",
+                    "local_path": abs_path,
+                    "filename": filename,
+                }
+                if slot_index < len(opts) and isinstance(opts[slot_index], dict):
+                    opts[slot_index].update(option_entry)
+                else:
+                    # Pad with None up to slot_index, then place the entry.
+                    while len(opts) < slot_index:
+                        opts.append(None)
+                    if slot_index < len(opts):
+                        opts[slot_index] = option_entry
+                    else:
+                        opts.append(option_entry)
+                beat["gpt_options"] = opts
+
             bg.write_sidecar(sidecar)
-        print(f"[LIBDROP] accepted library image {key!r} -> beat {beat_id}", flush=True)
+        print(f"[LIBDROP] accepted library image {key!r} -> beat {beat_id} (thumb={'yes' if thumb_b64 else 'no'})", flush=True)
         return self._send_json(200, {"ok": True, "beat_id": beat_id,
-                                     "accepted_image_key": key})
+                                     "accepted_image_key": key,
+                                     "thumb_b64": thumb_b64,
+                                     "slot_index": slot_index})
 
     # ================================================================
     # Stitch Groups + Local Animation handlers (added 2026-04-23)

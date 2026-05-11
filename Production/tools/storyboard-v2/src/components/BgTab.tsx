@@ -604,6 +604,7 @@ export function BgTab() {
               onEditChip={(c) => requestEditChip(b.beat_id, c)}
               onInsertAfter={() => onAddBeat(b.beat_id)}
               onRemoveRef={(refField, label) => requestRemoveRef(b.beat_id, refField, label)}
+              onRefresh={() => refreshState()}
             />
           ))}
         </ol>
@@ -831,12 +832,14 @@ interface BeatGenCardProps {
   onEditChip: (chipText: string) => void;
   onInsertAfter: () => void;
   onRemoveRef: (refField: 'reference_image' | 'bg_ref_image', label: string) => void;
+  // 2026-05-11 fix — parent refreshState() threaded into BgRefSlot + BgOptionTile.
+  onRefresh: () => void;
 }
 
 function BeatGenCard({
   index, beat, pollResultForBeat, busy,
   onDelete, onUpdateText, onGenerate, onAccept,
-  onEditChip, onInsertAfter, onRemoveRef,
+  onEditChip, onInsertAfter, onRemoveRef, onRefresh,
 }: BeatGenCardProps) {
   const [localText, setLocalText] = useState<string>(beat.dialogue_text ?? '');
   const [chips, setChips] = useState<string[]>(extractStageChips(beat.dialogue_text ?? ''));
@@ -947,6 +950,7 @@ function BeatGenCard({
           beatId={beat.beat_id}
           refField="reference_image"
           onRemoveRef={onRemoveRef}
+          onRefresh={onRefresh}
         />
         <BgRefSlot
           label="BG ref"
@@ -955,6 +959,7 @@ function BeatGenCard({
           beatId={beat.beat_id}
           refField="bg_ref_image"
           onRemoveRef={onRemoveRef}
+          onRefresh={onRefresh}
         />
         <button
           type="button"
@@ -980,6 +985,7 @@ function BeatGenCard({
             option={opt}
             selected={!!opt && opt.key === beat.accepted_image_key}
             onClick={() => opt?.key && onAccept(opt.key)}
+            onRefresh={onRefresh}
           />
         ))}
       </div>
@@ -1017,9 +1023,11 @@ interface BgRefSlotPropsExt extends BgRefSlotProps {
   refField: 'reference_image' | 'bg_ref_image';
   // BG-18 — visible × button to remove the ref (NOT right-click per Kim 2026-05-06).
   onRemoveRef: (refField: 'reference_image' | 'bg_ref_image', label: string) => void;
+  // 2026-05-11 fix — parent refreshState() to repaint stale beats[] after drop success.
+  onRefresh: () => void;
 }
 
-function BgRefSlot({ label, refImg, testId, beatId, refField, onRemoveRef }: BgRefSlotPropsExt) {
+function BgRefSlot({ label, refImg, testId, beatId, refField, onRemoveRef, onRefresh }: BgRefSlotPropsExt) {
   const hasImage = !!refImg && (refImg.thumb_b64 || refImg.key);
   // R2 fix: drop target for library-image drag → POST bg_update_beat with the
   // ref field (reference_image or bg_ref_image) per server _BG_BEAT_WRITABLE
@@ -1046,6 +1054,8 @@ function BgRefSlot({ label, refImg, testId, beatId, refField, onRemoveRef }: BgR
           message: `${label} set: ${payload.lib_key}`,
           source: 'bg-ref-drop',
         });
+        // 2026-05-11 fix — repaint parent beats[] so the slot shows the new ref.
+        onRefresh();
       }
     },
     (p) => p.kind === 'lib-image',
@@ -1099,9 +1109,11 @@ interface BgOptionTileProps {
 
 interface BgOptionTilePropsExt extends BgOptionTileProps {
   beatId: string;
+  // 2026-05-11 fix — parent refreshState() to repaint stale option slot after drop.
+  onRefresh: () => void;
 }
 
-function BgOptionTile({ beatIndex, optionIndex, option, selected, onClick, beatId }: BgOptionTilePropsExt) {
+function BgOptionTile({ beatIndex, optionIndex, option, selected, onClick, beatId, onRefresh }: BgOptionTilePropsExt) {
   // R2.1 fix: drop target for library-image drag → POST bg_accept_lib_image
   // with server-accurate body shape (spec §4.3): {beat_id, key, filename,
   // abs_path, slot_index}. slot_index = optionIndex (0/1/2).
@@ -1121,6 +1133,17 @@ function BgOptionTile({ beatIndex, optionIndex, option, selected, onClick, beatI
           message: `Drop failed: ${result.error ?? `HTTP ${result.status}`}`,
           source: 'bg-option-drop-error',
         });
+      } else {
+        // 2026-05-11 fix — show success toast (parity with BgRefSlot) + repaint
+        // parent beats[]. Server returns thumb_b64 in the response (see
+        // _handle_bg_accept_lib_image), but onRefresh() is the canonical
+        // way to pick it up via bg_session_state.
+        pushToast({
+          kind: 'success',
+          message: `Option ${optionIndex + 1} set: ${payload.lib_key}`,
+          source: 'bg-option-drop',
+        });
+        onRefresh();
       }
     },
     (p) => p.kind === 'lib-image',
