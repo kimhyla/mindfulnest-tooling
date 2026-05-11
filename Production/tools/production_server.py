@@ -9639,18 +9639,22 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     pass
                 if not abs_path:
                     _bg_beat = _bg_beat_map.get(beat.get("beat_id", ""), {})
-                    _ref = _bg_beat.get("accepted_library_ref") or {}
-                    _sidecar_abs = _ref.get("abs_path")
-                    if _sidecar_abs and os.path.isfile(_sidecar_abs):
-                        abs_path = _sidecar_abs
+                    # Try accepted_local_path FIRST — authoritative for option-
+                    # accepted beats (set by bg_accept_option). accepted_library_ref
+                    # may be stale from a prior library drag that was later
+                    # overridden by an option selection.
+                    _local = _bg_beat.get("accepted_local_path")
+                    if _local:
+                        _norm = _local if os.path.isabs(_local) else str(
+                            self.app.event_dir.parent.parent / _local)
+                        if os.path.isfile(_norm):
+                            abs_path = _norm
                     if not abs_path:
-                        # accepted_local_path may be relative — normalize.
-                        _local = _bg_beat.get("accepted_local_path")
-                        if _local:
-                            _norm = _local if os.path.isabs(_local) else str(
-                                self.app.event_dir.parent.parent / _local)
-                            if os.path.isfile(_norm):
-                                abs_path = _norm
+                        # Fallback: accepted_library_ref.abs_path (library drag).
+                        _ref = _bg_beat.get("accepted_library_ref") or {}
+                        _sidecar_abs = _ref.get("abs_path")
+                        if _sidecar_abs and os.path.isfile(_sidecar_abs):
+                            abs_path = _sidecar_abs
                 state_seeds[sb_bid] = {
                     "speaker": canonicalized,
                     "text": beat.get("dialogue_text") or "",
@@ -13535,8 +13539,9 @@ body {{padding-top:44px!important;}}
         if not beat_id:
             return self._send_json(400, {"error": "missing 'beat'"})
 
+        video_role = body.get("scope_video_role") or body.get("scope_target_video") or "intro"
         state = self.app.state.read_state()
-        beat_state = (((state.get("videos") or {}).get("intro") or {}).get("beats") or {}).get(beat_id) or {}
+        beat_state = (((state.get("videos") or {}).get(video_role) or {}).get("beats") or {}).get(beat_id) or {}
         text = (beat_state.get("text") or "").strip()
         # Fallback: if state has no text yet (beat never edited+blurred),
         # parse the storyboard L[] t: field. Same pattern
