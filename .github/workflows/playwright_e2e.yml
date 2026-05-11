@@ -159,6 +159,15 @@ jobs:
           PRODUCTION_SERVER_SINGLE_MACHINE=1 \
             python3 -m unittest -v Production.tools.tests.test_scope_router_scrambled
 
+      - name: F-REGEN-AUDIO-001 — body-key contract (DS-2 strict TDD)
+        # prod_blockers id=124 closure. Server _handle_beat_regenerate_audio
+        # must accept the v59 client's `{beat_id: ...}` body shape (per
+        # StoryboardTab.tsx:192) — back-compat fallback to legacy `{beat: ...}`.
+        # Mock-based; offline; no Directus or ElevenLabs side-effects.
+        run: |
+          PRODUCTION_SERVER_SINGLE_MACHINE=1 \
+            python3 -m unittest -v Production.tools.tests.test_handle_beat_regenerate_audio_body_key
+
       # ----------------------------------------------------------------
       # MUTATION_CHANNEL_INVARIANT_V1 grep gate (Wave 1 architectural-fix
       # spec §5 Phase 3.4 + Cursor R5 mandatory enforcement).
