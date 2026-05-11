@@ -24,8 +24,16 @@
 
 import { useEffect, useState } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
-import { activeScope, activeVideoRole, makeScope, scopeKey } from '../state/scope';
+import {
+  activeScope,
+  activeVideoRole,
+  activeProjectType,
+  activeMilestoneId,
+  makeScope,
+  scopeKey,
+} from '../state/scope';
 import { READ_ENDPOINTS } from '../api/endpoints';
+import { pathappPatch } from '../api/client';
 
 export interface ScopeBoundaryProps {
   children: ComponentChildren;
@@ -55,6 +63,8 @@ interface EventCurrentResponse {
   event_generation?: number;
   active_video?: string | null;
   partition_keys?: string[];
+  scope_type?: string;
+  active_milestone_id?: string | null;
 }
 
 export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
@@ -67,7 +77,10 @@ export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
       if (forceEventId) {
         if (!cancelled) {
           activeScope.value = makeScope(forceEventId, null, 1);
+          activeProjectType.value = 'event';
+          activeMilestoneId.value = null;
           document.body.setAttribute('data-resolved-scope', scopeKey(activeScope.value));
+          document.body.setAttribute('data-active-project-type', 'event');
           setResolved(true);
         }
         return;
@@ -76,6 +89,8 @@ export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
       let serverEventId: string | null = null;
       let serverGeneration = 1;
       let serverActiveVideo: string | null = null;
+      let serverScopeType: string | undefined;
+      let serverMilestoneId: string | null | undefined;
       try {
         const res = await fetch(READ_ENDPOINTS.event_current);
         if (res.ok) {
@@ -86,6 +101,8 @@ export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
               serverGeneration = data.event_generation;
             }
             serverActiveVideo = data.active_video ?? null;
+            serverScopeType = data.scope_type;
+            serverMilestoneId = data.active_milestone_id;
           }
         }
       } catch {
@@ -94,6 +111,61 @@ export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
       if (cancelled) return;
       const eventId = serverEventId ?? resolveLocalFallback();
       activeScope.value = makeScope(eventId, null, serverGeneration);
+      // F-PROJECT-001: milestone scope survives reload — hydrate from server
+      // (GET /api/event/current) and/or ?milestone= when server is still on event.
+      let milestoneId: string | null = null;
+      if (serverScopeType === 'milestone' && typeof serverMilestoneId === 'string' && serverMilestoneId) {
+        milestoneId = serverMilestoneId;
+      } else {
+        try {
+          const urlMs = new URLSearchParams(window.location.search).get('milestone');
+          if (urlMs) {
+            const loadRes = await pathappPatch<{ ok?: boolean }>(
+              activeScope.value,
+              'milestone_load',
+              { milestone_id: urlMs },
+            );
+            if (loadRes.ok && loadRes.data?.ok) {
+              milestoneId = urlMs;
+              if (typeof loadRes.data === 'object' && loadRes.data !== null) {
+                const eg = (loadRes.data as { event_generation?: number }).event_generation;
+                if (typeof eg === 'number') {
+                  activeScope.value = makeScope(eventId, null, eg);
+                }
+              }
+            }
+          }
+        } catch (err) {
+          // F-PROJECT-001 milestone URL bootstrap — Rule 19 escape hatch.
+          // SHORTCUT: SHORTCUT_F_PROJECT_001_MILESTONE_BOOTSTRAP_BEST_EFFORT_V1
+          // (prod_locked_decisions id=679) documents this deferral + closure plan.
+          // Canonical milestone-scope entry is the Project dropdown onChange handler
+          // (ProjectSelector.tsx:414); URL-bootstrap is a secondary deep-link convenience
+          // and fallback to event scope is the safe default.
+          // Observability: console.warn below + mn:milestone-bootstrap-failed CustomEvent.
+          // eslint-disable-next-line no-console
+          console.warn('[ScopeBoundary] milestone URL bootstrap failed (event scope fallback):', err);
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(
+              new CustomEvent('mn:milestone-bootstrap-failed', {
+                detail: {
+                  url_milestone_id: new URLSearchParams(window.location.search).get('milestone'),
+                  error: String(err),
+                },
+              }),
+            );
+          }
+        }
+      }
+      if (milestoneId) {
+        activeProjectType.value = 'milestone';
+        activeMilestoneId.value = milestoneId;
+        document.body.setAttribute('data-active-project-type', 'milestone');
+      } else {
+        activeProjectType.value = 'event';
+        activeMilestoneId.value = null;
+        document.body.setAttribute('data-active-project-type', 'event');
+      }
       // S5.5b: seed activeVideoRole from server's state.active_video.
       // LD-474: this is a DISPLAY HINT only; never use it for partition selection.
       if (serverActiveVideo && typeof serverActiveVideo === 'string') {

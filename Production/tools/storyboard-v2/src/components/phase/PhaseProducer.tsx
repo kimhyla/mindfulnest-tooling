@@ -237,7 +237,8 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     }
     setBusyAction('lipsync');
     setStatusMsg('Sending for lipsync…');
-    const res = await pathappPatch(activeScope.value, 'phase_b_lipsync', {
+    const lipsyncEp = phase === 'a' ? 'phase_a_lipsync' : 'phase_b_lipsync';
+    const res = await pathappPatch(activeScope.value, lipsyncEp, {
       phase,
       base_clip_id: selectedBaseClip,
     });
@@ -254,7 +255,8 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const onMixAudio = async () => {
     setBusyAction('mix');
     setStatusMsg('Mix Audio (Phase A auto-fires stitch)…');
-    const res = await pathappPatch(activeScope.value, 'phase_b_mix_audio', { phase });
+    const mixEp = phase === 'a' ? 'phase_a_mix_audio' : 'phase_b_mix_audio';
+    const res = await pathappPatch(activeScope.value, mixEp, { phase });
     setBusyAction(null);
     if (res.ok) {
       setStatusMsg('✓ Mix complete (Phase A stitch auto-fired)');
@@ -398,7 +400,8 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const onGenerateStem = async () => {
     setBusyAction('stem');
     setStatusMsg('Generating stem from script…');
-    const res = await pathappPatch(activeScope.value, 'phase_b_regen_audio', {
+    const regenEp = phase === 'a' ? 'phase_a_regen_audio' : 'phase_b_regen_audio';
+    const res = await pathappPatch(activeScope.value, regenEp, {
       phase,
       script: scriptDraft,
     });

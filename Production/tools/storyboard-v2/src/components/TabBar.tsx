@@ -14,6 +14,7 @@
 // detour that v58 had).
 
 import type { Signal } from '@preact/signals';
+import { useEffect } from 'preact/hooks';
 import { activeProjectType } from '../state/scope';
 
 export type TabKey =
@@ -43,8 +44,25 @@ export interface TabBarProps {
   activeTab: Signal<TabKey>;
 }
 
+/** Persisted across in-app project switches (F-PROJECT-001 — no full reload). */
+export const ACTIVE_TAB_STORAGE_KEY = 'mn:v59:active_tab';
+
 export function TabBar({ activeTab }: TabBarProps) {
   const isMilestone = activeProjectType.value === 'milestone';
+
+  useEffect(() => {
+    const cur = activeTab.value;
+    const def = TABS.find((t) => t.key === cur);
+    if (isMilestone && def?.eventOnly) {
+      activeTab.value = 'storyboard';
+      try {
+        sessionStorage.setItem(ACTIVE_TAB_STORAGE_KEY, 'storyboard');
+      } catch {
+        // ignore
+      }
+    }
+  }, [isMilestone, activeTab.value]);
+
   return (
     <nav class="mn-tab-bar" data-testid="tab-bar">
       {TABS.map((t) => {
@@ -59,7 +77,14 @@ export function TabBar({ activeTab }: TabBarProps) {
             disabled={disabled}
             title={disabled ? 'Disabled in milestone scope (event-only tab)' : undefined}
             onClick={() => {
-              if (!disabled) activeTab.value = t.key;
+              if (!disabled) {
+                activeTab.value = t.key;
+                try {
+                  sessionStorage.setItem(ACTIVE_TAB_STORAGE_KEY, t.key);
+                } catch {
+                  // ignore
+                }
+              }
             }}
           >
             {t.label}

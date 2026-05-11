@@ -77,8 +77,11 @@ export const MUTATION_ENDPOINTS = {
   stitch_bake: `${SERVER_BASE}/api/stitch_editor/bake`,
   // S4 v3.1 — Phase A/B producer mutations.
   phase_b_regen_audio: `${SERVER_BASE}/api/phase_b/regen_audio`,
+  phase_a_regen_audio: `${SERVER_BASE}/api/phase_a/regen_audio`,
   phase_b_mix_audio: `${SERVER_BASE}/api/phase_b/mix_audio`,
+  phase_a_mix_audio: `${SERVER_BASE}/api/phase_a/mix_audio`,
   phase_b_lipsync: `${SERVER_BASE}/api/phase_b/lipsync`,
+  phase_a_lipsync: `${SERVER_BASE}/api/phase_a/lipsync`,
   stitch_save_job: `${SERVER_BASE}/api/stitch_editor/job`,
   // S5.5g — module-level SFX cue upsert (separate from per-slot sfx_cues
   // which travel inside stitch_save_job.slots[i].sfx_cues per audit doc §3).

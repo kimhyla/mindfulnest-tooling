@@ -410,7 +410,7 @@ export function ProjectSelector() {
       } catch {
         // headless context — fine.
       }
-      window.location.reload();
+      setRefreshTick((n) => n + 1);
     } else if (next.startsWith('milestone:')) {
       const milestoneId = next.slice('milestone:'.length);
       const result = await pathappPatch<{ ok: boolean; milestone_id?: string }>(
@@ -427,7 +427,7 @@ export function ProjectSelector() {
         } catch {
           // headless context — fine.
         }
-        window.location.reload();
+        setRefreshTick((n) => n + 1);
       } else {
         pushToast({
           kind: 'error',

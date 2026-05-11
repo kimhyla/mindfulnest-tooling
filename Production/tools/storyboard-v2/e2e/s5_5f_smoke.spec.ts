@@ -19,6 +19,19 @@ import { test, expect, type Page, type Request } from '@playwright/test';
 
 const FIXTURE_EVENT = 'Event_e2e_fixture';
 
+// Reset server-side event scope before every test (test-hygiene only — no
+// production code change). The shared production_server can be left in
+// scope_type='milestone' by earlier specs (e.g. f_project_001_milestone_scope.spec.ts
+// R1.x → milestone_load). ScopeBoundary then hydrates UI as milestone scope
+// (per ef0b007 F-PROJECT-001 fix), which disables the Phase A/B tabs every
+// F-test in this file expects to click. Re-pin server to the fixture event so
+// each test starts from a clean event-scope baseline. Absolute URL per Rule 32.
+test.beforeEach(async ({ request }) => {
+  await request.post('http://localhost:5111/api/event/load', {
+    data: { event_id: FIXTURE_EVENT },
+  });
+});
+
 // ----------------------------------------------------------------------------
 // Helpers
 // ----------------------------------------------------------------------------
@@ -538,7 +551,7 @@ test.describe('F9 — CuePopover Delete with Modal-confirm', () => {
 // per LD PHASE_A_THREE_CLIP_HANDLING_V1. Phase B remains single-clip via
 // the existing selectedBaseClip + Cedric filter. Re-stitch fires manually
 // (Cursor v8 Q9) via the existing onMixAudio path
-// (pathappPatch 'phase_b_mix_audio' with phase:'a').
+// (pathappPatch 'phase_a_mix_audio' with phase:'a').
 // ----------------------------------------------------------------------------
 
 async function mockBaseClipsList(page: Page): Promise<void> {
@@ -561,12 +574,12 @@ async function mockBaseClipsList(page: Page): Promise<void> {
 }
 
 async function mockMixAudio(page: Page): Promise<void> {
+  const body = JSON.stringify({ ok: true });
+  await page.route('**/api/phase_a/mix_audio', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body });
+  });
   await page.route('**/api/phase_b/mix_audio', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ ok: true }),
-    });
+    await route.fulfill({ status: 200, contentType: 'application/json', body });
   });
 }
 
@@ -627,7 +640,7 @@ test.describe('F11 — Phase A clip pick', () => {
 });
 
 test.describe('F12 — Phase A re-stitch', () => {
-  test('F12 — Re-stitch button fires phase_b_mix_audio with phase=a', async ({ page }) => {
+  test('F12 — Re-stitch button fires phase_a/mix_audio with phase=a', async ({ page }) => {
     await mockAudioFiles(page);
     await mockBaseClipsList(page);
     await mockModulePatch(page);
@@ -642,7 +655,7 @@ test.describe('F12 — Phase A re-stitch', () => {
 
     const mixReqs: Request[] = [];
     page.on('request', (req) => {
-      if (req.url().includes('/api/phase_b/mix_audio')) mixReqs.push(req);
+      if (req.url().includes('/api/phase_a/mix_audio')) mixReqs.push(req);
     });
 
     await page.locator('[data-testid="phase-a-restitch-btn"]').click();
