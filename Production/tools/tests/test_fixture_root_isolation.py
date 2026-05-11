@@ -67,8 +67,10 @@ class TestFixtureRootIsolation(unittest.TestCase):
 
     def test_env_var_matches_registered_write_project_root(self):
         """MN_DROPBOX_ROOT env var MUST match registered_write._PROJECT_ROOT."""
-        from Production.tools import registered_write
+        # Import a fixture-setting test module FIRST so MN_DROPBOX_ROOT is
+        # populated before registered_write captures _PROJECT_ROOT.
         from Production.tools.tests import test_assemble_module  # noqa: F401  ensure import side-effects
+        from Production.tools import registered_write
 
         env_root = os.environ.get("MN_DROPBOX_ROOT")
         captured_root = registered_write._PROJECT_ROOT
@@ -88,8 +90,10 @@ class TestFixtureRootIsolation(unittest.TestCase):
     def test_phase_b_files_pass_validation_under_shared_root(self):
         """Files created under the shared root must pass register_asset path validation."""
         import tempfile
-        from Production.tools import registered_write
+        # Import the fixture-setting test module FIRST so MN_DROPBOX_ROOT is
+        # populated before registered_write captures _PROJECT_ROOT.
         from Production.tools.tests import test_register_asset  # noqa: F401
+        from Production.tools import registered_write
 
         # _make_test_file writes under _FIXTURE_ROOT.
         path = test_register_asset._make_test_file()
