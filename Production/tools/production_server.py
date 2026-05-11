@@ -13306,7 +13306,11 @@ body {{padding-top:44px!important;}}
     def _handle_beat_regenerate_audio(self, body: dict) -> None:
         """Explicit TTS regen trigger (decision 181 companion endpoint, April 17 2026).
 
-        POST /api/beat/regenerate_audio {beat: "beat_NN"}
+        POST /api/beat/regenerate_audio {beat_id: "beat_NN"}
+        (legacy alias: {beat: "beat_NN"} — back-compat per F-REGEN-AUDIO-001
+        / prod_blockers id=124; matches precedent at production_server.py
+        :11516 _handle_use_as_final).
+
         Forces ElevenLabs v3 TTS regen using the beat's CURRENT text in
         state (no need to re-edit text first). Useful when:
           - User wants to re-roll a voice take they don't like
@@ -13320,7 +13324,9 @@ body {{padding-top:44px!important;}}
         if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
-        beat_id = body.get("beat")
+        # F-REGEN-AUDIO-001: v59 client (StoryboardTab.tsx:192) sends
+        # {beat_id: ...}; legacy callers send {beat: ...}.
+        beat_id = body.get("beat_id") or body.get("beat")
         if not beat_id:
             return self._send_json(400, {"error": "missing 'beat'"})
 
