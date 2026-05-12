@@ -246,10 +246,17 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
   // Show Animate when audio exists (intro workflow) OR when image is assigned
   // without audio yet (resolution/Kling image-first pipeline per Rule 8.3).
   const showAnimate = lifecycle === 'audio_generated' || (lifecycle === 'draft' && !!beat.image_path);
-  const showAddOptions = ['animated'].includes(lifecycle);
-  const showSelectedOptionRadios = ['animated', 'selected'].includes(lifecycle);
-  const showLipsync = ['selected', 'lipsync_pending'].includes(lifecycle);
-  const showUseAsFinal = ['audio_generated', 'selected'].includes(lifecycle);
+  // count=2 is product-locked per server default; label reflects this.
+  const showAddOptions = ['animated', 'selected', 'lipsync_pending', 'final'].includes(lifecycle);
+  const showSelectedOptionRadios = ['animated', 'selected', 'lipsync_pending', 'final'].includes(lifecycle);
+  // In final state: only show Lipsync if the beat was finalised via lipsync
+  // (not use-as-final) AND an option is selected. Loose != null catches both
+  // null and undefined (server may write either for unset selected_option).
+  const showLipsync = (
+    ['selected', 'lipsync_pending'].includes(lifecycle) ||
+    (lifecycle === 'final' && beat.final?.source === 'lipsync')
+  ) && beat.phase_1?.selected_option != null;
+  const showUseAsFinal = ['audio_generated', 'animated', 'selected'].includes(lifecycle);
   const showPreview = lifecycle !== 'draft';
 
   const optionCount = beat.phase_1?.options?.length ?? 0;
@@ -295,7 +302,7 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
               onClick={onAddOptions}
               disabled={busy !== null}
             >
-              + Add options
+              + 2 more options
             </button>
           ) : null}
         </span>
@@ -365,7 +372,7 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
             {lifecycle === 'lipsync_pending' ? (
               <><Spinner size="sm" inline /> in progress</>
             ) : (
-              busy === 'Lipsync' ? <><Spinner size="sm" inline /> …</> : '👄 Lipsync'
+              busy === 'Lipsync' ? <><Spinner size="sm" inline /> …</> : (lifecycle === 'final' ? '👄 Resend Lipsync' : '👄 Lipsync')
             )}
           </button>
         ) : null}
