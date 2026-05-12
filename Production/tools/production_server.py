@@ -3625,7 +3625,6 @@ def _tts_regenerate_for_beat(app, beat_id: str, text: str,
 
     # Update state: audio_file, audio_duration_s, clear text_modified_after_tts,
     # mark lipsync.audio_changed if a completed lipsync exists.
-    # S5.5a2: legacy TTS-regen mut → intro partition.
     now_iso = datetime.now(timezone.utc).isoformat()
     def _update(partition, _bid=beat_id, _af=out_path.name, _d=dur, _iso=now_iso):
         b = partition.setdefault("beats", {}).setdefault(_bid, {})
@@ -3637,7 +3636,7 @@ def _tts_regenerate_for_beat(app, beat_id: str, text: str,
         ls = b.get("lipsync") or {}
         if ls.get("status") == "completed":
             ls["audio_changed"] = True
-    app.state.mutate_video_state("intro", _update)
+    app.state.mutate_video_state(video_role, _update)
 
     result = {
         "ok": True,
@@ -11139,8 +11138,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
         if not beat_key:
             return self._send_json(400, {"error": "missing 'beat' field"})
 
+        video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
+
         state = self.app.state.read_state()
-        beat_state = ((state.get("videos") or {}).get("intro") or {}).get("beats", {}).get(beat_key)
+        beat_state = ((state.get("videos") or {}).get(video_role) or {}).get("beats", {}).get(beat_key)
         if not beat_state:
             return self._send_json(404, {"error": f"beat '{beat_key}' not found in state"})
 
@@ -11510,9 +11511,11 @@ class ProductionHandler(BaseHTTPRequestHandler):
         if not beat_key:
             return self._send_json(400, {"error": "missing 'beat' field"})
 
+        video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
+
         # Read state to find the selected clip
         state = self.app.state.read_state()
-        beat_state = ((state.get("videos") or {}).get("intro") or {}).get("beats", {}).get(beat_key)
+        beat_state = ((state.get("videos") or {}).get(video_role) or {}).get("beats", {}).get(beat_key)
         if not beat_state:
             return self._send_json(404, {"error": f"beat '{beat_key}' not found in state"})
 
@@ -12073,7 +12076,7 @@ body {{padding-top:44px!important;}}
     def _beat_id(self, line_number: int) -> str:
         return f"beat_{line_number:02d}"
 
-    def _select_beats_for_mode(self, mode: str, requested: list[str] | None) -> list[dict]:
+    def _select_beats_for_mode(self, mode: str, requested: list[str] | None, video_role: str = "intro") -> list[dict]:
         all_beats = self.app.beats()
         if mode == "all":
             return all_beats
@@ -12085,7 +12088,7 @@ body {{padding-top:44px!important;}}
         if mode == "retry":
             state = self.app.state.read_state()
             failed = {
-                bid for bid, b in ((state.get("videos") or {}).get("intro") or {}).get("beats", {}).items()
+                bid for bid, b in ((state.get("videos") or {}).get(video_role) or {}).get("beats", {}).items()
                 if (b.get("phase_1") or {}).get("status") in ("failed", "partial")
             }
             return [b for b in all_beats if self._beat_id(b.get("line_number", -1)) in failed]
@@ -12109,7 +12112,7 @@ body {{padding-top:44px!important;}}
         mode = body.get("mode", "all")
         options_per_beat = int(body.get("options_per_beat", 3))
         requested = body.get("beats")
-        beats = self._select_beats_for_mode(mode, requested)
+        beats = self._select_beats_for_mode(mode, requested, scope.video_role)
 
         # Budget pre-check
         spend = self.app.state.read_spend()
@@ -12299,10 +12302,12 @@ body {{padding-top:44px!important;}}
         if not beat_id:
             return self._send_json(400, {"error": "missing 'beat'"})
 
+        video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
+
         # Acquire lock -> clear state -> list old files -> release -> delete -> resubmit
         old_files: list[str] = []
-        def clear(state):
-            b = ((state.get("videos") or {}).get("intro") or {}).get("beats", {}).get(beat_id)
+        def clear(state, _role=video_role):
+            b = ((state.get("videos") or {}).get(_role) or {}).get("beats", {}).get(beat_id)
             if not b:
                 return
             for opt in (b.get("phase_1") or {}).get("options", []):
@@ -12319,12 +12324,21 @@ body {{padding-top:44px!important;}}
                 except OSError:
                     pass
 
-        # Resubmit via the existing /api/animate path, but scoped to this beat
-        return self._handle_animate({
+        # Resubmit via the existing /api/animate path, but scoped to this beat.
+        # Forward scope_video_role/scope_target_video so the resubmit hits the
+        # same partition as the cleared beat (was hardcoded "intro" pre-fix).
+        forwarded = {
             "mode": "test",
             "beats": [beat_id],
             "options_per_beat": options_per_beat,
-        })
+        }
+        if (body or {}).get("scope_video_role"):
+            forwarded["scope_video_role"] = body["scope_video_role"]
+        if (body or {}).get("scope_target_video"):
+            forwarded["scope_target_video"] = body["scope_target_video"]
+        if (body or {}).get("scope_event_id"):
+            forwarded["scope_event_id"] = body["scope_event_id"]
+        return self._handle_animate(forwarded)
 
     # ========================================================================
     # _handle_add_options — DISPATCHER (decisions 172 + 180)
@@ -12353,6 +12367,8 @@ body {{padding-top:44px!important;}}
         if not beat_id:
             return self._send_json(400, {"error": "missing 'beat'"})
 
+        video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
+
         try:
             state = self.app.state.read_state()
         except Exception as exc:
@@ -12360,7 +12376,7 @@ body {{padding-top:44px!important;}}
                 "error": f"failed to read state for dispatch: {type(exc).__name__}: {exc}"
             })
 
-        beat_state = (((state.get("videos") or {}).get("intro") or {}).get("beats") or {}).get(beat_id) or {}
+        beat_state = (((state.get("videos") or {}).get(video_role) or {}).get("beats") or {}).get(beat_id) or {}
         force_legacy = bool(beat_state.get("force_legacy"))
 
         if force_legacy:
@@ -13656,13 +13672,15 @@ body {{padding-top:44px!important;}}
         except (TypeError, ValueError):
             return self._send_json(400, {"error": f"selected_option must be int, got {selected!r}"})
 
+        video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
+
         # Side-channel: the new selected clip may diverge from the clip the
         # existing lipsync was produced against. Detect that and surface it
         # so the UI can offer "🔁 Re-run Lip Sync" (decision 153, Tier 5).
         source_changed_out = None
-        def mut(state, _sel=sel_int):
+        def mut(state, _sel=sel_int, _role=video_role):
             nonlocal source_changed_out
-            beat = ((state.get("videos") or {}).get("intro") or {}).get("beats", {}).get(beat_id)
+            beat = ((state.get("videos") or {}).get(_role) or {}).get("beats", {}).get(beat_id)
             if not beat:
                 return False
             phase1 = beat.get("phase_1") or {}
@@ -13738,8 +13756,10 @@ body {{padding-top:44px!important;}}
         if delay < 0 or delay > 10:
             return self._send_json(400, {"error": "audio_delay must be 0-10 seconds"})
 
-        def update(state):
-            b = ((state.get("videos") or {}).get("intro") or {}).get("beats", {}).get(beat_id)
+        video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
+
+        def update(state, _role=video_role):
+            b = ((state.get("videos") or {}).get(_role) or {}).get("beats", {}).get(beat_id)
             if not b:
                 return False
             b.setdefault("phase_1", {})["audio_delay"] = round(delay, 2)
@@ -13770,8 +13790,10 @@ body {{padding-top:44px!important;}}
             if trim_end <= trim_start:
                 return self._send_json(400, {"error": "trim_end must be > trim_start"})
 
-        def update(state):
-            b = ((state.get("videos") or {}).get("intro") or {}).get("beats", {}).get(beat_id)
+        video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
+
+        def update(state, _role=video_role):
+            b = ((state.get("videos") or {}).get(_role) or {}).get("beats", {}).get(beat_id)
             if not b:
                 return False
             p1 = b.setdefault("phase_1", {})

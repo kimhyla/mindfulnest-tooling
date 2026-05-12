@@ -240,7 +240,9 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated }: BeatButton
 
   // Visibility per state-machine table (S5.5e spec §3.1).
   const showRegenAudio = ['draft', 'audio_generated', 'animated', 'selected', 'final'].includes(lifecycle);
-  const showAnimate = ['audio_generated'].includes(lifecycle);
+  // Show Animate when audio exists (intro workflow) OR when image is assigned
+  // without audio yet (resolution/Kling image-first pipeline per Rule 8.3).
+  const showAnimate = lifecycle === 'audio_generated' || (lifecycle === 'draft' && !!beat.image_path);
   const showAddOptions = ['animated'].includes(lifecycle);
   const showSelectedOptionRadios = ['animated', 'selected'].includes(lifecycle);
   const showLipsync = ['selected', 'lipsync_pending'].includes(lifecycle);
