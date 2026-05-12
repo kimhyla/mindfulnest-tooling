@@ -12262,6 +12262,13 @@ body {{padding-top:44px!important;}}
         })
 
     def _handle_status(self) -> None:
+        # Resolve video_role from query string (GET requests pass scope via QS).
+        # When only beat_id is provided (per-beat poll from the Animate button),
+        # search across all partitions for that specific beat — the client does
+        # not inject scope_video_role into apiGet calls (only pathappPatch does).
+        _qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        beat_id_filter = (_qs.get("beat_id") or [None])[0]
+        explicit_role = (_qs.get("scope_video_role") or _qs.get("scope_target_video") or [None])[0]
         state = self.app.state.read_state()
         spend = self.app.state.read_spend()
         beats_out: dict = {}
@@ -12269,7 +12276,27 @@ body {{padding-top:44px!important;}}
         completed = 0
         polling = 0
         failed = 0
-        for bid, beat in ((state.get("videos") or {}).get("intro") or {}).get("beats", {}).items():
+        # Build the beat source: explicit role > beat_id cross-partition search > intro fallback.
+        if explicit_role:
+            beats_src = ((state.get("videos") or {}).get(explicit_role) or {}).get("beats", {})
+        elif beat_id_filter:
+            # Find the partition that has this beat with phase_1 data (polling options).
+            beats_src = {}
+            for _role, _partition in (state.get("videos") or {}).items():
+                _b = (_partition or {}).get("beats", {}).get(beat_id_filter)
+                if _b and (_b.get("phase_1") or {}).get("options"):
+                    beats_src = {beat_id_filter: _b}
+                    break
+            if not beats_src:
+                # Fallback: just return the beat from whichever partition has it
+                for _role, _partition in (state.get("videos") or {}).items():
+                    _b = (_partition or {}).get("beats", {}).get(beat_id_filter)
+                    if _b:
+                        beats_src = {beat_id_filter: _b}
+                        break
+        else:
+            beats_src = ((state.get("videos") or {}).get("intro") or {}).get("beats", {})
+        for bid, beat in beats_src.items():
             total += 1
             phase1 = beat.get("phase_1") or {}
             status = phase1.get("status", "unknown")
