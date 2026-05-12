@@ -3485,7 +3485,8 @@ def _resolve_voice_profile(speaker: str) -> dict | None:
 
 
 def _tts_regenerate_for_beat(app, beat_id: str, text: str,
-                             elevenlabs_key: str) -> dict:
+                             elevenlabs_key: str,
+                             video_role: str = "intro") -> dict:
     """Synchronously regenerate TTS audio for a beat via ElevenLabs v3.
 
     Rule 11 source fidelity: text preserved verbatim, voice profile locked
@@ -3505,8 +3506,8 @@ def _tts_regenerate_for_beat(app, beat_id: str, text: str,
     except (IndexError, ValueError):
         return {"ok": False, "error": f"unparseable beat_id: {beat_id!r}"}
 
-    # Resolve speaker -> voice profile. S5.5a2: read from intro partition.
-    beats = app.state.get_beats("intro")
+    # Resolve speaker -> voice profile. Read from the caller's actual partition.
+    beats = app.state.get_beats(video_role)
     beat_state = beats.get(beat_id) or {}
     speaker = beat_state.get("speaker") or ""
     if not speaker:
@@ -13606,7 +13607,7 @@ body {{padding-top:44px!important;}}
         print(f"[regen_audio] {beat_id} explicit button trigger "
               f"({len(text)}c text in state)")
         try:
-            result = _tts_regenerate_for_beat(self.app, beat_id, text, el_key)
+            result = _tts_regenerate_for_beat(self.app, beat_id, text, el_key, video_role=video_role)
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc()
             return self._send_json(500, {
