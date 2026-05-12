@@ -12,7 +12,8 @@
 //
 // Note: beforeunload guard + 503 fallback are S3 polish (parity-audit out-of-scope here).
 
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import type { RefObject } from 'preact';
 import {
   activeScope,
   activeTargetVideo,
@@ -153,9 +154,11 @@ interface BeatButtonRowProps {
   cacheBust?: string;
   /** Triggered after any successful mutation so parent can refresh state. */
   onMutated: () => void;
+  previewOptIdx: number | null;
+  onPreviewOption: (optIdx: number) => void;
 }
 
-function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated }: BeatButtonRowProps) {
+function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptIdx, onPreviewOption }: BeatButtonRowProps) {
   const lifecycle = deriveBeatLifecycle(beat);
   const [busy, setBusy] = useState<string | null>(null); // which button is in-flight
   const [trimIn, setTrimIn] = useState<string>(String(beat.trim_in ?? '0.0'));
@@ -261,16 +264,27 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated }: BeatButton
           {Array.from({ length: optionCount }).map((_, i) => {
             const oi = i + 1;
             return (
-              <button
-                key={oi}
-                type="button"
-                class={`mn-btn mn-btn-small${selectedOption === oi ? ' is-active' : ''}`}
-                data-testid={`beat-${index}-select-option-${oi}`}
-                onClick={() => onSelectOption(oi)}
-                disabled={busy !== null}
-              >
-                opt {oi}{selectedOption === oi ? ' ✓' : ''}
-              </button>
+              <span key={oi} class="mn-beat-option-pair">
+                <button
+                  type="button"
+                  class={`mn-btn mn-btn-small${selectedOption === oi ? ' is-active' : ''}`}
+                  data-testid={`beat-${index}-select-option-${oi}`}
+                  onClick={() => onSelectOption(oi)}
+                  disabled={busy !== null}
+                >
+                  opt {oi}{selectedOption === oi ? ' ✓' : ''}
+                </button>
+                <button
+                  type="button"
+                  class={`mn-btn mn-btn-small mn-preview-btn${previewOptIdx === oi ? ' mn-preview-btn-active' : ''}`}
+                  data-testid={`beat-${index}-preview-option-${oi}`}
+                  onClick={() => onPreviewOption(oi)}
+                  disabled={busy !== null || !beat.phase_1?.options?.[i]?.file}
+                  title={`Preview with audio: opt ${oi}`}
+                >
+                  {previewOptIdx === oi ? '⏸' : '▶'}
+                </button>
+              </span>
             );
           })}
           {showAddOptions ? (
@@ -453,6 +467,57 @@ function BeatCard({ index, beatId, beat, eventId, onMutated }: BeatCardProps) {
   const [status, setStatus] = useState<SaveStatus>('idle');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(beat.text_last_updated_at ?? null);
+  const [previewOptIdx, setPreviewOptIdx] = useState<number | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const previewVideoSrc = previewOptIdx !== null
+    ? `http://localhost:5111/asset/${beat.phase_1?.options?.[previewOptIdx - 1]?.file}`
+    : null;
+
+  const previewAudioSrc = `http://localhost:5111/api/beat/audio/${beatId}?event_id=${eventId}`;
+
+  useEffect(() => {
+    if (previewOptIdx === null) return;
+    const vid = videoRef.current;
+    const aud = audioRef.current;
+    if (!vid || !aud) return;
+    aud.currentTime = 0;
+    vid.play().catch(() => {});
+    aud.play().catch(() => {});
+  }, [previewOptIdx]);
+
+  useEffect(() => {
+    return () => {
+      videoRef.current?.pause();
+      audioRef.current?.pause();
+    };
+  }, []);
+
+  const handlePreviewOption = useCallback((optIdx: number) => {
+    const file = beat.phase_1?.options?.[optIdx - 1]?.file;
+    if (!file) return;
+    const vid = videoRef.current;
+    const aud = audioRef.current;
+    if (previewOptIdx === optIdx) {
+      if (vid && !vid.paused) {
+        vid.pause();
+        aud?.pause();
+      } else {
+        vid?.play().catch(() => {});
+        aud?.play().catch(() => {});
+      }
+      return;
+    }
+    vid?.pause();
+    aud?.pause();
+    setPreviewOptIdx(optIdx);
+  }, [previewOptIdx, beat.phase_1?.options]);
+
+  const handlePreviewEnded = useCallback(() => {
+    audioRef.current?.pause();
+    setPreviewOptIdx(null);
+  }, []);
 
   // Hydrate the ref's initial text + recover from localStorage if a fresher draft.
   useEffect(() => {
@@ -538,7 +603,23 @@ function BeatCard({ index, beatId, beat, eventId, onMutated }: BeatCardProps) {
           {indicatorLabel}
         </span>
       </div>
-      <BeatImageHolder index={index} beatId={beatId} beat={beat} eventId={eventId} onMutated={onMutated} />
+      <audio
+        ref={audioRef}
+        src={previewAudioSrc}
+        preload="auto"
+        style={{ display: 'none' }}
+        data-testid={`beat-audio-hidden-${index}`}
+      />
+      <BeatImageHolder
+        index={index}
+        beatId={beatId}
+        beat={beat}
+        eventId={eventId}
+        onMutated={onMutated}
+        previewVideoSrc={previewVideoSrc}
+        videoRef={videoRef as RefObject<HTMLVideoElement>}
+        onPreviewEnded={handlePreviewEnded}
+      />
       <p
         ref={editRef}
         class="mn-beat-text mn-beat-editable"
@@ -554,6 +635,8 @@ function BeatCard({ index, beatId, beat, eventId, onMutated }: BeatCardProps) {
         beat={beat}
         {...(savedAt ? { cacheBust: savedAt } : {})}
         onMutated={onMutated}
+        previewOptIdx={previewOptIdx}
+        onPreviewOption={handlePreviewOption}
       />
       <BeatMagicButtons index={index} beatId={beatId} beat={beat} eventId={eventId} />
     </li>
@@ -581,9 +664,12 @@ interface BeatImageHolderProps {
   beat: BeatState;
   eventId: string;
   onMutated: () => void;
+  previewVideoSrc?: string | null;
+  videoRef?: RefObject<HTMLVideoElement>;
+  onPreviewEnded?: () => void;
 }
 
-function BeatImageHolder({ index, beatId, beat, eventId, onMutated }: BeatImageHolderProps) {
+function BeatImageHolder({ index, beatId, beat, eventId, onMutated, previewVideoSrc, videoRef, onPreviewEnded }: BeatImageHolderProps) {
   const stillPath = beat.image_path;
   const hasImage = !!stillPath;
   const imgSrc = stillPath
@@ -623,14 +709,24 @@ function BeatImageHolder({ index, beatId, beat, eventId, onMutated }: BeatImageH
 
   return (
     <div
-      class={`mn-storyboard-image-drop-zone mn-drop-target${hasImage ? ' has-image' : ''}`}
+      class={`mn-storyboard-image-drop-zone mn-drop-target${hasImage ? ' has-image' : ''}${previewVideoSrc ? ' mn-previewing' : ''}`}
       data-testid={`beat-image-zone-${index}`}
       data-beat-id={beatId}
       onDragOver={dropHandlers.onDragOver}
       onDragLeave={dropHandlers.onDragLeave}
       onDrop={dropHandlers.onDrop}
     >
-      {hasImage && imgSrc ? (
+      {previewVideoSrc ? (
+        <video
+          {...(videoRef ? { ref: videoRef } : {})}
+          src={previewVideoSrc}
+          class="mn-storyboard-preview-video"
+          playsInline
+          preload="auto"
+          onEnded={onPreviewEnded}
+          data-testid={`beat-preview-video-${index}`}
+        />
+      ) : hasImage && imgSrc ? (
         <img
           src={imgSrc}
           alt={`beat ${beatId} image`}

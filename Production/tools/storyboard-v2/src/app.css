@@ -1748,3 +1748,38 @@
   max-height: 80px;
   overflow-y: auto;
 }
+
+/* ── Preview with Audio ───────────────────────────────────────────── */
+.mn-beat-option-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.mn-preview-btn {
+  background: #1a3a5c;
+  color: #fff;
+  min-width: 28px;
+}
+.mn-preview-btn:hover:not(:disabled) {
+  background: #2a5a8c;
+}
+.mn-preview-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.mn-preview-btn-active {
+  background: #c0392b;
+}
+.mn-preview-btn-active:hover:not(:disabled) {
+  background: #e74c3c;
+}
+.mn-storyboard-preview-video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: 4px;
+  background: #000;
+}
+.mn-storyboard-image-drop-zone.mn-previewing {
+  border-color: #2a5a8c;
+}
