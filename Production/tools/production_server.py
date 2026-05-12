@@ -5452,6 +5452,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_redo(body)
             if path == "/api/beat/add_options":
                 return self._handle_add_options(body)
+            if path == "/api/beat/swap_to_a":
+                # Flat alias for v2 path-param endpoint so pathappPatch can reach it.
+                _beat_id_from_body = body.get("beat_id") or body.get("beat")
+                if not _beat_id_from_body:
+                    return self._send_json(400, {"error": "missing beat_id in body"})
+                return self._handle_v2_beat_swap_to_a(_beat_id_from_body, body)
             if path == "/api/beat/update_text":
                 return self._handle_beat_update_text(body)
             # BEAT_GRAFT_RECOVERY_MECHANISM_V1 (C-7) — Pillar 7 cornerstone.

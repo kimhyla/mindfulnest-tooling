@@ -114,6 +114,7 @@ export const MUTATION_ENDPOINTS = {
   animate_redo: `${SERVER_BASE}/api/animate/redo`,
   select: `${SERVER_BASE}/api/select`,
   beat_add_options: `${SERVER_BASE}/api/beat/add_options`,
+  beat_swap_to_a: `${SERVER_BASE}/api/beat/swap_to_a`,
   lipsync: `${SERVER_BASE}/api/lipsync`,
   beat_use_as_final: `${SERVER_BASE}/api/beat/use_as_final`,
   beat_delay: `${SERVER_BASE}/api/beat/delay`,

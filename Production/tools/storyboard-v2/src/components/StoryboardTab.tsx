@@ -41,7 +41,7 @@ interface BeatState {
   magic_video_path?: string;
   // S5 — preferred video source for magic_video (lipsync, then animation).
   lipsync?: { file?: string; status?: string };
-  phase_1?: { selected_option?: number; options?: Array<{ file?: string }> };
+  phase_1?: { selected_option?: number; options?: Array<{ file?: string; status?: string }> };
   // S5.5e — fields read by the beat-level state machine (LD BEAT_LIFECYCLE_STATE_MACHINE_V1).
   // beat.final block is the "is final?" signal per Cursor v8 (NOT a use_as_final boolean).
   // Server writes this at production_server.py:10733-10747 with shape:
@@ -225,7 +225,12 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
   };
   const onSelectOption = (optionIndex: number) =>
     runMutation('Select option', 'select', { option_index: optionIndex });
-  const onAddOptions = () => runMutation('Add options', 'beat_add_options', {});
+  const onAddOptions = () => {
+    if (lifecycle === 'lipsync_pending' && !window.confirm('This will discard current Options B & C and generate 2 fresh alternatives. Option A is preserved. A lipsync is queued — this may orphan it. Continue?')) return;
+    runMutation('Add options', 'beat_add_options', {});
+  };
+  const onSwapToA = (fromSlot: number) =>
+    runMutation('Move to A', 'beat_swap_to_a', { from_slot: fromSlot });
   const onLipsync = () => runMutation('Lipsync', 'lipsync', {});
   const onUseAsFinal = () => runMutation('Use as Final', 'beat_use_as_final', {});
   const onApplyTrim = () => {
@@ -270,6 +275,8 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
           <span class="mn-beat-button-group-label">Phase 1:</span>
           {Array.from({ length: optionCount }).map((_, i) => {
             const oi = i + 1;
+            const opt = beat.phase_1?.options?.[i];
+            const optReady = !!(opt?.file && opt?.status !== 'pending' && opt?.status !== 'failed');
             return (
               <span key={oi} class="mn-beat-option-pair">
                 <button
@@ -286,25 +293,38 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
                   class={`mn-btn mn-btn-small mn-preview-btn${previewOptIdx === oi ? ' mn-preview-btn-active' : ''}`}
                   data-testid={`beat-${index}-preview-option-${oi}`}
                   onClick={() => onPreviewOption(oi)}
-                  disabled={busy !== null || !beat.phase_1?.options?.[i]?.file}
+                  disabled={busy !== null || !opt?.file}
                   title={`Preview with audio: opt ${oi}`}
                 >
                   {previewOptIdx === oi ? '⏸' : '▶'}
                 </button>
+                {oi > 1 ? (
+                  <button
+                    type="button"
+                    class="mn-btn mn-btn-small"
+                    data-testid={`beat-${index}-swap-to-a-${oi}`}
+                    onClick={() => onSwapToA(oi)}
+                    disabled={busy !== null || !optReady}
+                    title={optReady ? `Promote opt ${oi} to slot A` : 'Option must finish generating first'}
+                  >→A</button>
+                ) : null}
               </span>
             );
           })}
-          {showAddOptions ? (
-            <button
-              type="button"
-              class="mn-btn mn-btn-small"
-              data-testid={`beat-${index}-add-options`}
-              onClick={onAddOptions}
-              disabled={busy !== null}
-            >
-              + 2 more options
-            </button>
-          ) : null}
+        </span>
+      ) : null}
+      {showAddOptions ? (
+        <span class="mn-beat-button-group" data-testid={`beat-${index}-regen-group`}>
+          <button
+            type="button"
+            class="mn-btn mn-btn-small"
+            data-testid={`beat-${index}-add-options`}
+            onClick={onAddOptions}
+            disabled={busy !== null}
+            title="Keep Option A, generate 2 fresh alternatives (B & C)"
+          >
+            🔄 Regenerate B + C
+          </button>
         </span>
       ) : null}
 
@@ -479,7 +499,7 @@ function BeatCard({ index, beatId, beat, eventId, onMutated }: BeatCardProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const previewVideoSrc = previewOptIdx !== null
-    ? `http://localhost:5111/asset/${beat.phase_1?.options?.[previewOptIdx - 1]?.file}`
+    ? `http://localhost:5111/asset/${beat.phase_1?.options?.[previewOptIdx - 1]?.file}?v=${beat._version ?? 0}`
     : null;
 
   const previewAudioSrc = `http://localhost:5111/api/beat/audio/${beatId}?event_id=${eventId}`;
