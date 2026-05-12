@@ -4737,7 +4737,28 @@ class AppContext:
         self.active_milestone_id: str | None = None
         self.milestone_dir: Path | None = None
 
-    def beats(self) -> list[dict]:
+    def beats(self, video_role: str = "intro") -> list[dict]:
+        # v59 Vite SPA has no embedded beat data — project from state.
+        if _storyboard_is_v59_shell(self):
+            state = self.state.read_state()
+            state_beats = ((state.get("videos") or {}).get(video_role) or {}).get("beats") or {}
+            result = []
+            for beat_id in sorted(state_beats.keys()):
+                b = state_beats[beat_id]
+                try:
+                    ln = int(beat_id.split("_")[1])
+                except (IndexError, ValueError):
+                    ln = -1
+                result.append({
+                    "line_number": ln,
+                    "speaker": b.get("speaker", ""),
+                    "text": b.get("text", ""),
+                    "section": b.get("section", ""),
+                    "image": None,  # resolved at animate time via get_beat_image()
+                    "image_key": b.get("image_path", ""),
+                })
+            return result
+        # Legacy path: HTML-embedded beat data (pre-v59 storyboards).
         if self._beats_cache is None:
             html = self.storyboard_path.read_text(encoding="utf-8")
             self._beats_cache = extract_beats_from_html(html)
@@ -12077,7 +12098,7 @@ body {{padding-top:44px!important;}}
         return f"beat_{line_number:02d}"
 
     def _select_beats_for_mode(self, mode: str, requested: list[str] | None, video_role: str = "intro") -> list[dict]:
-        all_beats = self.app.beats()
+        all_beats = self.app.beats(video_role)
         if mode == "all":
             return all_beats
         if mode == "test":
@@ -12391,7 +12412,7 @@ body {{padding-top:44px!important;}}
             speaker = beat_state.get("speaker") or ""
             # Best-effort speaker extraction from storyboard L[] if state lacks it
             if not speaker:
-                for b in self.app.beats():
+                for b in self.app.beats(video_role):
                     if self._beat_id(b.get("line_number", -1)) == beat_id:
                         speaker = b.get("speaker") or ""
                         break
@@ -12539,8 +12560,10 @@ body {{padding-top:44px!important;}}
             })
 
         # Resolve start image (data URI).
+        # S5.5a2: scope_video_role from body for partition-aware override lookup (LD-474).
+        video_role = body.get("scope_video_role") or body.get("scope_target_video") or "intro"
         target_beat = None
-        for b in self.app.beats():
+        for b in self.app.beats(video_role):
             if self._beat_id(b.get("line_number", -1)) == beat_id:
                 target_beat = b
                 break
@@ -12548,8 +12571,6 @@ body {{padding-top:44px!important;}}
             return self._send_json(400, {
                 "error": f"could not find beat data for {beat_id} in storyboard"
             })
-        # S5.5a2: scope_video_role from body for partition-aware override lookup (LD-474).
-        video_role = body.get("scope_video_role", "intro")
         beat_image = self.app.get_beat_image(beat_id, video_role)
         if not beat_image:
             return self._send_json(400, {
@@ -12862,7 +12883,7 @@ body {{padding-top:44px!important;}}
         # Find the beat data (image + prompt) from the storyboard
         # Check image overrides FIRST (from drag-drop), then fall back to storyboard
         target_beat = None
-        for b in self.app.beats():
+        for b in self.app.beats(scope.video_role):
             if self._beat_id(b.get("line_number", -1)) == beat_id:
                 target_beat = b
                 break
