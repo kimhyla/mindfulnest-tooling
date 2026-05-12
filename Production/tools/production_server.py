@@ -6467,9 +6467,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
             referenced = []
 
         if referenced:
-            return self._send_json(409, {
+            # 422 (not 409) so the client doesn't misread this as a scope mismatch.
+            # Real reason: this file is registered in prod_assets (Rule 34 / CC-23).
+            return self._send_json(422, {
                 "ok": False,
-                "error": f"key '{key}' is referenced in prod_assets — refusing delete",
+                "error": f"'{key}' is registered in prod_assets (id={[r.get('id') for r in referenced]}) — deregister first to delete",
+                "code": "PROD_ASSETS_PROTECTED",
                 "asset_ids": [r.get("id") for r in referenced],
             })
 

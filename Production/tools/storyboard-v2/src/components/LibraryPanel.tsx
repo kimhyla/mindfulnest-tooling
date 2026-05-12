@@ -296,9 +296,12 @@ export function LibraryPanel() {
       pushToast({ kind: 'success', message: `Deleted ${displayName(item)}`, source: 'library-delete' });
       setRefreshTick((n) => n + 1);
     } else {
+      // Use server's error message if present (e.g. "registered in prod_assets" — 422);
+      // fall back to HTTP status string for unexpected codes.
+      const deleteErrMsg = (result.data as Record<string, unknown> | undefined)?.['error'] as string | undefined;
       pushToast({
         kind: 'error',
-        message: `Delete failed: ${result.error ?? `HTTP ${result.status}`}`,
+        message: `Delete failed: ${deleteErrMsg ?? result.error ?? `HTTP ${result.status}`}`,
         source: 'library-delete-error',
       });
     }

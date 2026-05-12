@@ -7,15 +7,16 @@
 // (single mutation channel).
 
 import type { Signal } from '@preact/signals';
-import { useRef, useState } from 'preact/hooks';
-import { activeScope, scopeKey } from '../state/scope';
-import { pathappPatch } from '../api/client';
+import { useEffect, useRef, useState } from 'preact/hooks';
+import { activeScope } from '../state/scope';
+import { apiGet, pathappPatch } from '../api/client';
 import { SERVER_BASE } from '../api/endpoints';
 import { makeDropTarget } from '../utils/dragdrop';
 import { Modal } from './ui/Modal';
 import { Spinner } from './ui/Spinner';
 import { pushToast } from './ui/Toast';
 import { CropperCanvas, type CropperCanvasHandle } from './CropperCanvas';
+import { flattenLibraryResponse } from './LibraryPanel';
 
 export interface CropperModalState {
   open: boolean;
@@ -56,10 +57,51 @@ interface SaveResult {
   gallery_b64?: string;
 }
 
+// ----------------------------------------------------------------
+// LibraryStrip — compact horizontal scroller shown inside the modal
+// so images can be loaded without drag-drop (which is blocked by the
+// modal backdrop overlay). Fetches /api/cr/library when modal opens.
+// ----------------------------------------------------------------
+
+interface LibStripItem {
+  key?: string;
+  abs_path?: string;
+  filename?: string;
+  thumb_b64?: string;
+  thumb_url?: string;
+  display_name?: string;
+}
+
+function useLibraryStrip(open: boolean, eventId: string) {
+  const [items, setItems] = useState<LibStripItem[]>([]);
+  const [query, setQuery] = useState('');
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    (async () => {
+      const res = await apiGet<object>('cr_library', { event_id: eventId });
+      if (cancelled || !res.ok || !res.data) return;
+      setItems(flattenLibraryResponse(res.data as Parameters<typeof flattenLibraryResponse>[0]));
+    })();
+    return () => { cancelled = true; };
+  }, [open, eventId]);
+
+  const filtered = query
+    ? items.filter((it) => (it.filename ?? it.display_name ?? it.key ?? '').toLowerCase().includes(query.toLowerCase()))
+    : items;
+
+  return { filtered, query, setQuery };
+}
+
 export function CropperModal({ state, onClose, onSaved }: CropperModalProps) {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'error'>('idle');
   const [saveDetail, setSaveDetail] = useState<string | null>(null);
   const canvasRef = useRef<CropperCanvasHandle | null>(null);
+
+  // Load-from-library strip — workaround for modal backdrop blocking Library panel drag-drop
+  const { filtered: libItems, query: libQuery, setQuery: setLibQuery } =
+    useLibraryStrip(state.value.open, activeScope.value.event_id);
 
   const close = () => {
     state.value = { ...state.value, open: false };
@@ -180,10 +222,57 @@ export function CropperModal({ state, onClose, onSaved }: CropperModalProps) {
         </>
       }
     >
-      <p class="mn-dim">
-        Source: <code>{state.value.source ?? '(no source)'}</code>{' '}
-        · Target beat: <code>{state.value.targetBeatId ?? '(no target)'}</code>{' '}
-        · Active scope: <code>{scopeKey(activeScope.value)}</code>
+      {/* Load-from-library strip — modal backdrop blocks Library panel drag-drop,
+          so we show a compact scrollable row of library thumbnails here.
+          Click any thumbnail to load it as the crop source. */}
+      <div class="mn-cropper-lib-strip" data-testid="cropper-lib-strip">
+        <div class="mn-cropper-lib-strip-header">
+          <span class="mn-dim" style="font-size:11px;white-space:nowrap">Load from library:</span>
+          <input
+            type="search"
+            class="mn-cropper-lib-search"
+            placeholder="filter…"
+            value={libQuery}
+            onInput={(e) => setLibQuery((e.target as HTMLInputElement).value)}
+            data-testid="cropper-lib-search"
+          />
+        </div>
+        <div class="mn-cropper-lib-thumbs" data-testid="cropper-lib-thumbs">
+          {libItems.length === 0 ? (
+            <span class="mn-dim" style="font-size:11px;padding:4px 8px">Library empty</span>
+          ) : (
+            libItems.map((it, i) => {
+              const src = it.thumb_b64 ?? it.thumb_url;
+              const label = it.display_name ?? it.filename ?? it.key ?? `item-${i}`;
+              const loadSrc = it.abs_path
+                ? `${SERVER_BASE}/api/cr/full?abs_path=${encodeURIComponent(it.abs_path)}`
+                : src ?? '';
+              return (
+                <button
+                  key={it.key ?? it.abs_path ?? i}
+                  type="button"
+                  class="mn-cropper-lib-thumb"
+                  title={label}
+                  data-testid={`cropper-lib-thumb-${i}`}
+                  onClick={() => {
+                    if (!loadSrc) return;
+                    state.value = { ...state.value, source: loadSrc, sourceLabel: label };
+                  }}
+                >
+                  {src ? (
+                    <img src={src} alt={label} class="mn-cropper-lib-thumb-img" />
+                  ) : (
+                    <span class="mn-dim" style="font-size:10px">{label.slice(0, 8)}</span>
+                  )}
+                </button>
+              );
+            })
+          )}
+        </div>
+      </div>
+      <p class="mn-dim" style="font-size:11px;margin:0 0 8px 0">
+        Source: <code>{state.value.source ? state.value.sourceLabel ?? state.value.source.slice(-30) : '(none — pick from library above or open cropper from a beat)'}</code>{' '}
+        · Beat: <code>{state.value.targetBeatId ?? '(none)'}</code>
       </p>
       <div
         class="mn-cropper-canvas-wrap mn-drop-target"
