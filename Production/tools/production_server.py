@@ -4952,6 +4952,16 @@ class AppContext:
                 stem = os.path.splitext(fname)[0]
                 if stem == image_key or stem.replace(" ", "_") == normalized:
                     return os.path.join(d, fname)
+            # Prefix-match fallback: key may lack a trailing _<timestamp> suffix
+            # added when the file was written (e.g. "bg_foo_opt1" stored but
+            # "bg_foo_opt1_1777470570.png" is on disk). Match stem.startswith(key+"_")
+            # to avoid collisions between similarly-named keys.
+            for fname in entries:
+                if not fname.lower().endswith((".png", ".webp", ".jpg", ".jpeg")):
+                    continue
+                stem = os.path.splitext(fname)[0]
+                if stem.startswith(image_key + "_") or stem.startswith(normalized + "_"):
+                    return os.path.join(d, fname)
         return None
 
     def touch(self) -> None:
@@ -12242,6 +12252,8 @@ body {{padding-top:44px!important;}}
                 if submitted % 6 == 0:
                     time.sleep(POLL_BATCH_GAP_SEC)
 
+        print(f"[animate] done: submitted={submitted} skipped={len(skipped)} "
+              f"role={scope.video_role} details={skipped[:5]}")
         self._send_json(200, {
             "submitted": submitted,
             "beats_queued": len(beats) - len([s for s in skipped if "opt" not in s]),
