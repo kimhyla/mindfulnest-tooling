@@ -2020,51 +2020,48 @@ class PollingThread(threading.Thread):
         failed (no artifact). Stale options are NOT returned for polling.
         """
         now = time.time()
-        # S5.5a2: poller iterates intro partition beats.
-        beats = self.state.get_beats("intro")
-        out: list[tuple[str, int, dict]] = []
-        # Collect stale candidates and process them after the read loop so we
-        # don't mutate state (and invalidate iteration) inside the for-loop.
-        stale_candidates: list[tuple[str, int, dict]] = []
+        # Iterate ALL video-role partitions (not just intro) so resolution/
+        # standalone beats are polled. Returns 4-tuples (beat_id, idx, opt, role).
+        state_snap = self.state.read_state()
+        all_partitions = (state_snap.get("videos") or {})
+        out: list[tuple[str, int, dict, str]] = []
+        stale_candidates: list[tuple[str, int, dict, str]] = []
         t1_enabled = _t1_enabled()
-        for beat_id, beat in beats.items():
-            phase1 = beat.get("phase_1") or {}
-            for idx, opt in enumerate(phase1.get("options", [])):
-                if opt.get("status") != "polling" or not opt.get("task_id"):
-                    continue
-                # Tier 1B stale-timeout check (feature-flagged).
-                if t1_enabled:
-                    submitted_epoch = opt.get("submitted_at_epoch")
-                    if submitted_epoch:
-                        try:
-                            elapsed = now - float(submitted_epoch)
-                        except (TypeError, ValueError):
-                            elapsed = 0
-                        source = opt.get("source") or "kling"
-                        threshold = STALE_TIMEOUT_SEC.get(
-                            source, STALE_TIMEOUT_DEFAULT_SEC,
-                        )
-                        if elapsed > threshold:
-                            stale_candidates.append((beat_id, idx, opt))
-                            continue
-                next_at = opt.get("next_attempt_at_epoch", 0)
-                if next_at > now:
-                    continue  # still in backoff window — skip this cycle
-                out.append((beat_id, idx, opt))
-        # Process stale candidates AFTER building the ready list. Each
-        # call performs its own read-modify-write cycle under the StateManager
-        # lock; ordering doesn't matter because each operates on a disjoint
-        # (beat_id, opt_idx) slot.
-        for beat_id, idx, opt in stale_candidates:
+        for video_role, partition in all_partitions.items():
+            beats = (partition or {}).get("beats", {})
+            for beat_id, beat in beats.items():
+                phase1 = beat.get("phase_1") or {}
+                for idx, opt in enumerate(phase1.get("options", [])):
+                    if opt.get("status") != "polling" or not opt.get("task_id"):
+                        continue
+                    if t1_enabled:
+                        submitted_epoch = opt.get("submitted_at_epoch")
+                        if submitted_epoch:
+                            try:
+                                elapsed = now - float(submitted_epoch)
+                            except (TypeError, ValueError):
+                                elapsed = 0
+                            source = opt.get("source") or "kling"
+                            threshold = STALE_TIMEOUT_SEC.get(
+                                source, STALE_TIMEOUT_DEFAULT_SEC,
+                            )
+                            if elapsed > threshold:
+                                stale_candidates.append((beat_id, idx, opt, video_role))
+                                continue
+                    next_at = opt.get("next_attempt_at_epoch", 0)
+                    if next_at > now:
+                        continue
+                    out.append((beat_id, idx, opt, video_role))
+        for beat_id, idx, opt, video_role in stale_candidates:
             try:
-                self._mark_stale_timeout_with_artifact_check(beat_id, idx, opt)
+                self._mark_stale_timeout_with_artifact_check(beat_id, idx, opt, video_role)
             except Exception as exc:  # noqa: BLE001 — never kill the poller
                 print(f"[T1] beat={beat_id} opt={idx + 1} stale_check_error: {exc}")
                 traceback.print_exc()
         return out
 
     def _mark_stale_timeout_with_artifact_check(
-        self, beat_id: str, opt_idx: int, opt: dict,
+        self, beat_id: str, opt_idx: int, opt: dict, video_role: str = "intro",
     ) -> None:
         """Tier 1B core: an option has exceeded its wall-clock timeout. Before
         declaring it failed, look for the expected output file on disk.
@@ -2177,7 +2174,7 @@ class PollingThread(threading.Thread):
                     phase1["status"] = "polling"
             return "applied"
 
-        result = self.state.mutate_video_state("intro", mut)
+        result = self.state.mutate_video_state(video_role, mut)
         if result == "already_terminal":
             # Another thread raced us to a terminal state — nothing to log.
             return
@@ -2219,11 +2216,11 @@ class PollingThread(threading.Thread):
             if self.stop_event.is_set():
                 return
             batch = pending[i : i + POLL_BATCH_SIZE]
-            for beat_id, opt_idx, opt in batch:
-                self._poll_one(beat_id, opt_idx, opt)
+            for beat_id, opt_idx, opt, video_role in batch:
+                self._poll_one(beat_id, opt_idx, opt, video_role)
             time.sleep(POLL_BATCH_GAP_SEC)
 
-    def _poll_one(self, beat_id: str, opt_idx: int, opt: dict) -> None:
+    def _poll_one(self, beat_id: str, opt_idx: int, opt: dict, video_role: str = "intro") -> None:
         task_id = opt["task_id"]
         # Backoff is handled upstream in _pending_tasks (skips options whose
         # next_attempt_at_epoch is still in the future). DO NOT sleep here —
@@ -2232,28 +2229,28 @@ class PollingThread(threading.Thread):
         try:
             result = self.client.poll(task_id)
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
-            self._handle_transient_failure(beat_id, opt_idx, str(exc), task_id=task_id)
+            self._handle_transient_failure(beat_id, opt_idx, str(exc), task_id=task_id, video_role=video_role)
             return
         except Exception as exc:  # noqa: BLE001
-            self._handle_transient_failure(beat_id, opt_idx, repr(exc), task_id=task_id)
+            self._handle_transient_failure(beat_id, opt_idx, repr(exc), task_id=task_id, video_role=video_role)
             return
 
         status = (result.get("status") or "").lower()
         if status == "completed" and result.get("outputs"):
             self._download_and_mark_completed(
                 beat_id, opt_idx, task_id, result["outputs"][0],
-                source="poll_complete",
+                source="poll_complete", video_role=video_role,
             )
         elif status in ("failed", "error"):
             _ws_err = result.get("message") or result.get("error") or result.get("detail") or ""
             print(f"[poll] {beat_id} opt{opt_idx} wavespeed failure detail: {_ws_err!r} full={list(result.keys())}")
             self._handle_transient_failure(
-                beat_id, opt_idx, f"wavespeed reported failure: {_ws_err}", task_id=task_id,
+                beat_id, opt_idx, f"wavespeed reported failure: {_ws_err}", task_id=task_id, video_role=video_role,
             )
         # else: still processing — leave alone
 
     def _download_and_mark_completed(
-        self, beat_id: str, opt_idx: int, task_id: str, url: str, *, source: str,
+        self, beat_id: str, opt_idx: int, task_id: str, url: str, *, source: str, video_role: str = "intro",
     ) -> bool:
         """Extracted so both normal poll-complete AND async CDN re-check paths
         converge on one implementation. Idempotent: if dest already exists with
@@ -2342,7 +2339,7 @@ class PollingThread(threading.Thread):
                 phase1["status"] = "polling"
             return "resurrected"
 
-        mut_result = self.state.mutate_video_state("intro", mut_with_guard)
+        mut_result = self.state.mutate_video_state(video_role, mut_with_guard)
         # Pass task_id so spend ledger prevents double-charge on recovery
         self.state.add_spend("kling_animation", COST_PER_CLIP_KLING, task_id=task_id)
         if mut_result == "resurrected":
@@ -2365,7 +2362,7 @@ class PollingThread(threading.Thread):
         return True
 
     def _handle_transient_failure(
-        self, beat_id: str, opt_idx: int, err: str, *, task_id: str | None = None,
+        self, beat_id: str, opt_idx: int, err: str, *, task_id: str | None = None, video_role: str = "intro",
     ) -> None:
         """Increment retries and conditionally mark failed.
 
@@ -2415,7 +2412,7 @@ class PollingThread(threading.Thread):
                 # Status stays 'polling' — this is no longer a path to 'failed'
                 # unless the vendor says so or the orphan sweep finds it truly dead.
             return new_retries
-        new_retries = self.state.mutate_video_state("intro", mut)
+        new_retries = self.state.mutate_video_state(video_role, mut)
 
         # Pre-fail CDN check (C4): only at configured retry levels, async,
         # 10s timeout, doesn't block this poller thread.
@@ -10813,6 +10810,22 @@ class ProductionHandler(BaseHTTPRequestHandler):
         key = os.path.splitext(filename)[0]
 
         print(f"[library] upload saved: {dest_path} tier={tier}")
+        # CC-23 / Rule 34 — register upload in prod_assets (Two-Write Rule).
+        # still_master for source images (pre-crop masters); still_delivery for crops.
+        try:
+            from registered_write import register_asset as _reg_upload  # type: ignore
+            _asset_type = "still_master" if tier == "source" else "still_delivery"
+            _reg_upload(
+                file_path=dest_path,
+                asset_type=_asset_type,
+                module_id=1,
+                produced_by_skill="cr_upload_endpoint",
+                iteration_notes=f"Manual upload via library panel (tier={tier})",
+                tags=["library_upload", tier],
+                role=tier,
+            )
+        except Exception as _reg_exc:
+            print(f"[library] register_asset warning (non-fatal): {_reg_exc}")
         return self._send_json(200, {
             "ok": True,
             "key": key, "filename": filename,

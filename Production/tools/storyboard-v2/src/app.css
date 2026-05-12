@@ -1674,6 +1674,28 @@
   background: var(--bg, #1a1a1a);
   color: var(--text, #ddd);
 }
+/* CC-20 — Add Image upload button. Class-only selector (Rule 36 §36.1). */
+.mn-library-upload-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border, #444);
+  border-radius: 4px;
+  background: var(--bg, #1a1a1a);
+  color: var(--text, #ddd);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+.mn-library-upload-btn:hover:not([aria-disabled]) {
+  border-color: var(--border-strong, #666);
+  background: var(--bg-elevated, #222);
+}
+.mn-library-upload-btn[aria-disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
 /* CC-19 — Library hover/sticky preview overlay. */
 .mn-library-tile-wrap {

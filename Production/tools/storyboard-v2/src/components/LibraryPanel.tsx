@@ -205,6 +205,8 @@ export function LibraryPanel() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshTick, setRefreshTick] = useState(0);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // CC-17 — tier state, persisted to localStorage
   const [tier, setTier] = useState<LibraryTier>(loadPersistedTier);
@@ -309,6 +311,44 @@ export function LibraryPanel() {
     setPreview(null);
   };
 
+  const onUpload = async (e: Event) => {
+    const files = (e.target as HTMLInputElement).files;
+    if (!files || files.length === 0) return;
+    setUploading(true);
+    let added = 0;
+    for (const file of Array.from(files)) {
+      try {
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(file);
+        });
+        const image_b64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+        const result = await pathappPatch(activeScope.value, 'cr_upload', {
+          filename: file.name,
+          image_b64,
+          tier: 'source',
+        });
+        if (result.ok) {
+          added++;
+          pushToast({ kind: 'success', message: `Uploaded ${file.name}`, source: 'library-upload' });
+        } else {
+          pushToast({
+            kind: 'error',
+            message: `Upload failed: ${result.error ?? `HTTP ${result.status}`}`,
+            source: 'library-upload-error',
+          });
+        }
+      } catch (err) {
+        pushToast({ kind: 'error', message: `Upload error: ${String(err)}`, source: 'library-upload-error' });
+      }
+    }
+    setUploading(false);
+    if (added > 0) setRefreshTick((n) => n + 1);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
   // CC-17 + CC-18 — combine tier filter + debounced search
   const filteredItems = useMemo(() => {
     const tierFilter = TIER_TO_FILTER_MAP[tier];
@@ -346,6 +386,24 @@ export function LibraryPanel() {
             <option key={t} value={t}>{t}</option>
           ))}
         </select>
+        {/* CC-20 — Add Image upload button (hidden file input behind label) */}
+        <label
+          class="mn-library-upload-btn"
+          data-testid="library-upload-btn"
+          aria-disabled={uploading ? 'true' : undefined}
+          title="Upload image to library"
+        >
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            multiple
+            hidden
+            onChange={onUpload}
+            data-testid="library-upload-input"
+          />
+          {uploading ? '…' : '+ Add'}
+        </label>
       </div>
 
       <div class="mn-library-body">
