@@ -492,6 +492,31 @@ def _load_subject_element(speaker: str) -> "dict | None":
 #  Kling v3.0 Pro start-end submission (via WaveSpeed)
 # =========================================================================
 
+def _resolve_wavespeed_host(host: str = "api.wavespeed.ai") -> str | None:
+    """Resolve via public DNS to bypass ISP DNS poisoning (LD-379).
+    Kim's ISP (Altice/Optimum) returns 167.206.37.145 for api.wavespeed.ai
+    instead of the real Tencent Cloud IP 49.51.190.24. Returns IPv4 or None.
+    Ported from lipsync_sender.py and production_server.py."""
+    import re as _re
+    for resolver in ("8.8.8.8", "1.1.1.1"):
+        try:
+            r = subprocess.run(
+                ["dig", "+short", "+time=3", "+tries=1", f"@{resolver}", host],
+                capture_output=True, text=True, timeout=5,
+            )
+            for line in r.stdout.splitlines():
+                line = line.strip()
+                if _re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", line):
+                    return line
+        except (subprocess.TimeoutExpired, OSError):
+            continue
+    try:
+        import socket as _socket
+        return _socket.gethostbyname(host)
+    except OSError:
+        return None
+
+
 def kling_startend_submit(start_b64_uri: str, end_b64_uri: str,
                           prompt: str, negative_prompt: str,
                           duration: int, api_key: str,
@@ -499,16 +524,17 @@ def kling_startend_submit(start_b64_uri: str, end_b64_uri: str,
                           max_retries: int = 3) -> str:
     """Submit with both image (start) and end_image. Returns task_id.
 
-    Hardened April 17 2026 via shared robust_https_request: fresh connection
-    per attempt (urllib-stuck-state workaround) + 90s timeout + exponential
-    backoff retry. Two-data-URI payloads are ~300-800 KB which can push
-    urllib over the ragged edge on congested WaveSpeed days.
+    Uses curl --resolve to bypass ISP DNS poisoning (LD-379) — the ISP
+    returns a wrong IP for api.wavespeed.ai that returns fake-looking task IDs
+    which are never found on the real poll endpoint. curl --resolve connects
+    to the DNS-resolved IP while presenting the real hostname in SNI.
 
     element_entry: optional Kling Elements identity anchor. When provided,
     appended as element_list=[entry] to reinforce character identity throughout
     the clip (beyond start-frame pixel anchoring alone). Fail-open: pass None
     to omit element_list entirely — preserves current behavior exactly.
     """
+    import tempfile as _tempfile
     payload = {
         "image": start_b64_uri,
         "end_image": end_b64_uri,
@@ -524,28 +550,68 @@ def kling_startend_submit(start_b64_uri: str, end_b64_uri: str,
             f"name={element_entry['element_name']!r}")
     else:
         log("[kling] subject binding: no element_entry — proceeding without element_list")
+
+    resolved_ip = _resolve_wavespeed_host("api.wavespeed.ai")
+    log(f"[kling] DNS resolved api.wavespeed.ai → {resolved_ip or '(system fallback)'}")
+
     body_bytes = json.dumps(payload).encode("utf-8")
-    try:
-        status, raw = robust_https_request(
-            host="api.wavespeed.ai",
-            path="/api/v3/kwaivgi/kling-v3.0-pro/image-to-video",
-            method="POST",
-            headers={"Authorization": f"Bearer {api_key}",
-                     "Content-Type": "application/json"},
-            body=body_bytes,
-            timeout=90,
-            max_retries=max_retries,
-        )
-    except Exception as exc:
-        sys.exit(f"Kling submit failed after {max_retries} attempts: {exc}")
-    if status >= 400:
-        sys.exit(f"Kling submit HTTP {status}: {raw[:500].decode('utf-8', 'replace')}")
-    result = json.loads(raw.decode("utf-8"))
-    task_id = (result.get("data", {}).get("id")
-               or result.get("id") or result.get("task_id"))
-    if not task_id:
-        sys.exit(f"Kling submit returned no task_id: {result}")
-    return task_id
+    last_err: str = ""
+    for attempt in range(max_retries):
+        tmp = None
+        try:
+            tmp = _tempfile.NamedTemporaryFile(delete=False, suffix=".json")
+            tmp.write(body_bytes)
+            tmp.flush()
+            tmp.close()
+            cmd = [
+                "curl", "-s", "-S", "--http1.1",
+                "--max-time", "90",
+                "-X", "POST",
+                "-H", f"Authorization: Bearer {api_key}",
+                "-H", "Content-Type: application/json",
+                "-H", "Connection: close",
+                "-w", "\n__STATUS__%{http_code}",
+                "-d", f"@{tmp.name}",
+            ]
+            if resolved_ip:
+                cmd += ["--resolve", f"api.wavespeed.ai:443:{resolved_ip}"]
+            cmd.append("https://api.wavespeed.ai/api/v3/kwaivgi/kling-v3.0-pro/image-to-video")
+            result = subprocess.run(cmd, capture_output=True, timeout=100)
+            raw = result.stdout
+            marker = b"\n__STATUS__"
+            idx = raw.rfind(marker)
+            if idx < 0:
+                stderr = result.stderr.decode(errors="replace").strip()
+                last_err = f"curl exited {result.returncode}: {stderr or '(no stderr)'}"
+                if attempt < max_retries - 1:
+                    time.sleep(3 ** attempt)
+                continue
+            status = int(raw[idx + len(marker):].strip())
+            body_raw = raw[:idx]
+            if status >= 500 and attempt < max_retries - 1:
+                last_err = f"HTTP {status}"
+                time.sleep(3 ** attempt)
+                continue
+            if status >= 400:
+                sys.exit(f"Kling submit HTTP {status}: {body_raw[:500].decode('utf-8', 'replace')}")
+            response = json.loads(body_raw.decode("utf-8"))
+            task_id = (response.get("data", {}).get("id")
+                       or response.get("id") or response.get("task_id"))
+            if not task_id:
+                sys.exit(f"Kling submit returned no task_id: {response}")
+            log(f"[kling] submitted OK task_id={task_id} (attempt {attempt+1})")
+            return task_id
+        except subprocess.TimeoutExpired as exc:
+            last_err = f"TimeoutExpired: {exc}"
+            if attempt < max_retries - 1:
+                time.sleep(3 ** attempt)
+        finally:
+            if tmp:
+                try:
+                    os.unlink(tmp.name)
+                except OSError:
+                    pass
+    sys.exit(f"Kling submit failed after {max_retries} attempts: {last_err}")
 
 
 def kling_poll_fresh(task_id: str, api_key: str, timeout_s: int = 900) -> dict:
