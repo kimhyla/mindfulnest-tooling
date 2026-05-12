@@ -1423,6 +1423,30 @@ class StateManager:
 # shared between calls. ~30 extra LOC, zero new dependencies.
 # ---------------------------------------------------------------------------
 
+def _wavespeed_resolve_host(host: str) -> str | None:
+    """Resolve hostname via public DNS (8.8.8.8 / 1.1.1.1) instead of the
+    system resolver. Kim's ISP (Altice/Optimum) DNS-poisons api.wavespeed.ai
+    to 167.206.37.145 instead of the real Tencent Cloud IP 49.51.190.24,
+    causing every connection to time out. Ported from lipsync_sender.py.
+    Discovered 2026-04-21. LD-379 WAVESPEED_DNS_RESILIENCE_V1_20260421."""
+    for resolver in ("8.8.8.8", "1.1.1.1"):
+        try:
+            result = subprocess.run(
+                ["dig", "+short", "+time=3", "+tries=1", f"@{resolver}", host],
+                capture_output=True, text=True, timeout=5,
+            )
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", line):
+                    return line
+        except (subprocess.TimeoutExpired, OSError):
+            continue
+    try:
+        return socket.gethostbyname(host)
+    except OSError:
+        return None
+
+
 def _wavespeed_request(
     method: str,
     url: str,
@@ -1435,39 +1459,73 @@ def _wavespeed_request(
     Returns (status_code, body_bytes). Raises urllib.error.URLError on network
     failure (so existing exception handlers keep working). Always closes the
     connection before returning."""
+    import tempfile
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme != "https":
         raise ValueError(f"refusing non-https URL: {url!r}")
+    hostname = parsed.hostname or parsed.netloc
+    port = parsed.port or 443
     path = parsed.path + ("?" + parsed.query if parsed.query else "")
-    # Fresh SSL context per call — prevents session-ticket accumulation.
-    # OP_NO_TICKET defeats RFC 5077 session resumption (counter-agent C2 HIGH
-    # finding, April 16 2026): even a fresh SSLContext negotiates and caches
-    # tickets for the duration of the context. Explicitly disabling tickets +
-    # compression removes the remaining stuck-state vectors. On macOS stock
-    # Python, this eliminates the LibreSSL process-level session cache path.
-    ctx = ssl.create_default_context()
-    ctx.options |= ssl.OP_NO_TICKET
-    ctx.options |= ssl.OP_NO_COMPRESSION
-    conn = http.client.HTTPSConnection(parsed.netloc, timeout=timeout, context=ctx)
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "Connection": "close",  # never reuse this connection
-    }
+    full_url = f"https://{hostname}:{port}{path}"
+
+    # LD-379: bypass ISP DNS poisoning via curl --resolve. Switching from
+    # http.client to curl because http.client with a raw IP causes
+    # SSLCertVerificationError (IP address mismatch for api.wavespeed.ai).
+    # curl --resolve connects to the resolved IP while presenting the real
+    # hostname in SNI + cert verification, so TLS succeeds. Ported from
+    # lipsync_sender.py which already uses this pattern.
+    resolved_ip = _wavespeed_resolve_host(hostname)
+
+    cmd = [
+        "curl", "-s", "-S",
+        "--http1.1",            # avoids HTTP/2 handshake hang on macOS curl
+        "-m", str(timeout),
+        "-X", method,
+        "-H", f"Authorization: Bearer {api_key}",
+        "-H", "Content-Type: application/json",
+        "-H", "Connection: close",
+        "-w", "\n__STATUS__%{http_code}",   # append HTTP status as sentinel
+    ]
+    if resolved_ip:
+        cmd += ["--resolve", f"{hostname}:{port}:{resolved_ip}"]
+
+    tmp = None
     try:
-        conn.request(method, path, body=body, headers=headers)
-        resp = conn.getresponse()
-        status = resp.status
-        data = resp.read()
-    except (TimeoutError, http.client.HTTPException, OSError) as exc:
-        # Wrap in urllib.error.URLError so existing callers' except clauses still catch it
-        raise urllib.error.URLError(f"{type(exc).__name__}: {exc}") from exc
+        if body is not None:
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
+            tmp.write(body)
+            tmp.flush()
+            tmp.close()
+            cmd += ["-d", f"@{tmp.name}"]
+        cmd.append(full_url)
+        result = subprocess.run(cmd, capture_output=True, timeout=timeout + 10)
+        raw = result.stdout
+        marker = b"\n__STATUS__"
+        idx = raw.rfind(marker)
+        if idx >= 0:
+            data = raw[:idx]
+            try:
+                status = int(raw[idx + len(marker):].strip())
+            except ValueError as exc:
+                raise urllib.error.URLError(
+                    f"could not parse HTTP status from curl output: {raw[idx:]!r}"
+                ) from exc
+        else:
+            stderr = result.stderr.decode(errors="replace").strip()
+            raise urllib.error.URLError(
+                f"curl exited {result.returncode}: {stderr or '(no stderr)'}"
+            )
+        return status, data
+    except subprocess.TimeoutExpired as exc:
+        raise urllib.error.URLError(f"TimeoutExpired: {exc}") from exc
+    except FileNotFoundError as exc:
+        raise urllib.error.URLError("curl not found — install curl") from exc
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-    return status, data
+        if tmp:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
 
 
 class StitchEditorState:
