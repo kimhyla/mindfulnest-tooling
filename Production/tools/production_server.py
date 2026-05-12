@@ -12133,6 +12133,13 @@ body {{padding-top:44px!important;}}
         mode = body.get("mode", "all")
         options_per_beat = int(body.get("options_per_beat", 3))
         requested = body.get("beats")
+        # Per-beat Animate button sends beat_id (singular) without a mode or
+        # beats list — auto-scope to just that beat so a single-beat click does
+        # not trigger a batch-all run that hits the budget gate (S5.5f fix).
+        if not requested and body.get("beat_id"):
+            requested = [body["beat_id"]]
+            if mode == "all":
+                mode = "test"
         beats = self._select_beats_for_mode(mode, requested, scope.video_role)
 
         # Budget pre-check
