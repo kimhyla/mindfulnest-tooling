@@ -2268,9 +2268,27 @@ class PollingThread(threading.Thread):
         """
         fname = f"{beat_id}_option_{opt_idx + 1}.mp4"
         dest = self.state.clips_dir / fname
+
+        # Stale-file guard: if a file exists for this slot, verify it postdates
+        # the task's submission epoch. If stale (mtime <= submitted_at_epoch),
+        # delete it so we re-download the correct output from this task.
+        # Mirrors the artifact-recovery pattern at line 2101.
+        if dest.exists() and dest.stat().st_size > 0:
+            beats = self.state.get_beats(video_role)
+            _phase1_opts = (beats.get(beat_id) or {}).get("phase_1", {}).get("options", [])
+            _submitted_epoch: "float | None" = (
+                _phase1_opts[opt_idx].get("submitted_at_epoch")
+                if opt_idx < len(_phase1_opts) else None
+            )
+            if _submitted_epoch and dest.stat().st_mtime <= _submitted_epoch:
+                print(f"[{source}] {beat_id} opt {opt_idx + 1}: stale file "
+                      f"(mtime {dest.stat().st_mtime:.0f} <= submitted {_submitted_epoch}) "
+                      f"— deleting for fresh download")
+                dest.unlink()
+
         size: int
         if dest.exists() and dest.stat().st_size > 0:
-            # Idempotency guard — already have a file for this slot
+            # Idempotency guard — file is current (mtime > submitted epoch)
             size = dest.stat().st_size
             print(f"[{source}] {beat_id} opt {opt_idx + 1}: file already present ({size} bytes); marking complete without re-download")
         else:
@@ -12526,51 +12544,76 @@ body {{padding-top:44px!important;}}
         # added later still route start-end without manual config.
         end_frame_prompt = (beat_state.get("end_frame_prompt") or "").strip()
         if not end_frame_prompt:
-            speaker = beat_state.get("speaker") or ""
-            # Best-effort speaker extraction from storyboard L[] if state lacks it
-            if not speaker:
-                for b in self.app.beats(video_role):
-                    if self._beat_id(b.get("line_number", -1)) == beat_id:
-                        speaker = b.get("speaker") or ""
-                        break
-            speaker_lc = speaker.lower() if speaker else ""
-            if "guide bird" in speaker_lc or "pip" in speaker_lc or "chipper" in speaker_lc:
+            # Derive end-frame prompt from Kim's creative cues in beat text.
+            # Priority: (parenthetical) > [emotion_at_start] > neutral fallback.
+            # Never synthesize from speaker name — that was invented without Kim's input.
+            import re as _re
+            beat_text = (beat_state.get("text") or "").strip()
+
+            _BG_LOCK = (
+                "Keep the background COMPLETELY IDENTICAL to the input — "
+                "every tree, leaf, light ray, and environment element must "
+                "stay pixel-perfect unchanged. Do NOT alter, shift, blur, "
+                "or recompose any background element whatsoever. "
+            )
+            _MOUTH_TAIL = (
+                " Beak/mouth at rest, natural mouth geometry preserved. "
+                "Same cartoon 3D Pixar-style art, same outfit, same 4:3 "
+                "composition, same lighting on the character."
+            )
+
+            # 1. (parenthetical) anywhere → use as direct character direction.
+            _paren = _re.search(r'\(([^)]{3,})\)', beat_text)
+            if _paren:
+                char_dir = _paren.group(1).strip()
                 end_frame_prompt = (
-                    "Keep the background COMPLETELY IDENTICAL to the input — "
-                    "every tree, leaf, light ray, and environment element must "
-                    "stay pixel-perfect unchanged. Do NOT alter, shift, blur, "
-                    "or recompose any background element whatsoever. "
-                    "ONLY change the character: Chipper the Guide Bird now has "
-                    "a slightly softened expression with natural warmth in his "
-                    "eyes, subtle attentive head tilt. Beak closed. "
-                    "Same cartoon 3D Pixar-style art, same outfit, same 4:3 "
-                    "composition, same lighting on the character."
+                    _BG_LOCK
+                    + f"ONLY change the character: {char_dir}."
+                    + _MOUTH_TAIL
                 )
-            elif "tessa" in speaker_lc:
-                end_frame_prompt = (
-                    "Keep the background COMPLETELY IDENTICAL to the input — "
-                    "every tree, leaf, light ray, and environment element must "
-                    "stay pixel-perfect unchanged. Do NOT alter, shift, blur, "
-                    "or recompose any background element whatsoever. "
-                    "ONLY change the character: Tessa the turtle with a "
-                    "slightly softened, more reflective expression, eyes "
-                    "warming with attention. Beak/mouth closed. "
-                    "Same cartoon 3D Pixar-style art, same outfit, same 4:3 "
-                    "composition, same lighting on the character."
-                )
+                print(f"[add_options:dispatch] {beat_id}: end_frame_prompt from (parenthetical)")
+
             else:
-                # Generic fallback — works for any creature but less tuned.
+                # 2. [emotion] at start of text → map to expression description.
+                # Exclude TTS directives: [pause], [break], [breath], [sigh].
+                _TTS_TAGS = {"pause", "break", "breath", "sigh", "silence"}
+                _start_tag = _re.match(r'^\[([^\]]+)\]', beat_text)
+                _emotion = _start_tag.group(1).lower().strip() if _start_tag else ""
+                _EMOTION_MAP = {
+                    "curious":    "curious expression, eyes wide and alert, slight questioning head tilt",
+                    "excited":    "excited expression, eyes bright and wide, alert eager posture",
+                    "happy":      "warm happy expression, eyes open and bright",
+                    "delighted":  "delighted expression, eyes open and bright, gentle smile",
+                    "sad":        "gentle sad expression, soft downward gaze, eyes half-lidded",
+                    "worried":    "worried expression, eyes wide, slight brow tension",
+                    "scared":     "scared expression, eyes wide, slight lean back",
+                    "surprised":  "surprised expression, eyes wide, slight lean back",
+                    "determined": "determined expression, eyes steady and focused",
+                    "relieved":   "relieved expression, eyes soft and open, relaxed posture",
+                    "neutral":    None,  # → fallback
+                }
+                if _emotion and _emotion not in _TTS_TAGS and _emotion in _EMOTION_MAP:
+                    char_dir = _EMOTION_MAP[_emotion]
+                    if char_dir:
+                        end_frame_prompt = (
+                            _BG_LOCK
+                            + f"ONLY change the character: {char_dir}."
+                            + _MOUTH_TAIL
+                        )
+                        print(f"[add_options:dispatch] {beat_id}: end_frame_prompt from [emotion={_emotion!r}]")
+
+            # 3. Neutral fallback — no emotional shift; let Kling produce micro-motion.
+            if not end_frame_prompt:
                 end_frame_prompt = (
-                    "Keep the background COMPLETELY IDENTICAL to the input — "
-                    "every background element must stay pixel-perfect unchanged. "
-                    "Do NOT alter, shift, blur, or recompose any background. "
-                    "ONLY change the character: natural subtle expression "
-                    "evolution, eyes warming with attention, small postural "
-                    "shift. Mouth closed. Same cartoon 3D art style, same "
-                    "outfit, same 4:3 composition."
+                    _BG_LOCK
+                    + "ONLY change the character: same expression as the input — "
+                    "eyes open, natural alert posture, no emotional shift, no "
+                    "expression change. Natural mouth geometry preserved, "
+                    "beak/mouth at rest. "
+                    "Same cartoon 3D Pixar-style art, same outfit, same 4:3 "
+                    "composition, same lighting on the character."
                 )
-            print(f"[add_options:dispatch] {beat_id}: no end_frame_prompt in state -> "
-                  f"using synthesized default for speaker={speaker!r}")
+                print(f"[add_options:dispatch] {beat_id}: end_frame_prompt neutral fallback (no cue in text)")
 
         print(f"[add_options:dispatch] {beat_id}: -> start-end pipeline "
               f"(decision 180 universal default; prompt {len(end_frame_prompt)}c)")
