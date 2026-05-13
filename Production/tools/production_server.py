@@ -12722,8 +12722,9 @@ body {{padding-top:44px!important;}}
 
         if len(existing_options) > 1:
             old_bc_files = [o.get("file") for o in existing_options[1:] if o.get("file")]
-            def trim_to_a(st):
-                b = st.get("beats", {}).get(beat_id)
+            def trim_to_a(st, _bid=beat_id, _role=video_role):
+                # Partition-aware (SCOPE_ROUTER_V1) — same fix as add_option closure
+                b = ((st.get("videos") or {}).get(_role) or {}).get("beats", {}).get(_bid)
                 if b and b.get("phase_1"):
                     b["phase_1"]["options"] = b["phase_1"].get("options", [])[:1]
                     if (b["phase_1"].get("selected_option") or 0) > 1:
