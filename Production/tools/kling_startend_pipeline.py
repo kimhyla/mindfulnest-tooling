@@ -517,12 +517,20 @@ def _resolve_wavespeed_host(host: str = "api.wavespeed.ai") -> str | None:
         return None
 
 
-def kling_startend_submit(start_b64_uri: str, end_b64_uri: str,
+def kling_startend_submit(start_b64_uri: str, end_b64_uri: "str | None",
                           prompt: str, negative_prompt: str,
                           duration: int, api_key: str,
                           element_entry: "dict | None" = None,
                           max_retries: int = 3) -> str:
-    """Submit with both image (start) and end_image. Returns task_id.
+    """Submit start image (and optional end_image) to Kling. Returns task_id.
+
+    end_b64_uri=None → single-image mode: Kling animates freely from the start
+    frame. Use this when natural character motion is the goal — identical start
+    and end frames starve Kling and produce near-stillness.
+
+    end_b64_uri=<uri> → start-end mode: Kling interpolates between the two
+    frames. Use when a specific end pose/gaze is required (e.g. lipsync targets
+    where the character must face camera throughout).
 
     Uses curl --resolve to bypass ISP DNS poisoning (LD-379) — the ISP
     returns a wrong IP for api.wavespeed.ai that returns fake-looking task IDs
@@ -537,13 +545,17 @@ def kling_startend_submit(start_b64_uri: str, end_b64_uri: str,
     import tempfile as _tempfile
     payload = {
         "image": start_b64_uri,
-        "end_image": end_b64_uri,
         "prompt": prompt,
         "negative_prompt": negative_prompt,
         "duration": duration,
         "cfg_scale": CFG_SCALE_BASELINE,
         "sound": False,
     }
+    if end_b64_uri is not None:
+        payload["end_image"] = end_b64_uri
+        log("[kling] mode: start-end (end_image provided)")
+    else:
+        log("[kling] mode: single-image (no end_image — Kling animates freely)")
     if element_entry:
         payload["element_list"] = [element_entry]
         log(f"[kling] subject binding active: element_id={element_entry['element_id']!r} "

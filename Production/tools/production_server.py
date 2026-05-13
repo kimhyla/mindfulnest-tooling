@@ -12771,59 +12771,6 @@ body {{padding-top:44px!important;}}
                 "error": f"could not find image data for {beat_id} — drag-drop an image first"
             })
 
-        # GPT_OPT_SKIP_V1 — structural fix for contaminated source frames.
-        # Beat Generator GPT writes image_overrides[beat_id] = "gpt_opt*" images
-        # that have narrative effects (magic trails, scene glows) PAINTED IN.
-        # When these are the Kling source frame the effects either freeze (start=end)
-        # or get amplified (FLUX Kontext). Fix: if image_overrides points to a
-        # gpt_opt key AND a clean crop exists in crops/ for this beat, substitute
-        # the crop automatically — no manual drag-drop required.
-        # Falls back to the gpt image only if no matching crop is found.
-        try:
-            _raw_state = self.app.state.read_state()
-            _raw_key = ((_raw_state.get("videos") or {})
-                        .get(video_role, {})
-                        .get("image_overrides", {})
-                        .get(beat_id, ""))
-            if re.search(r"gpt_opt", str(_raw_key), re.IGNORECASE):
-                _bg = _bg_module()
-                _crops_dir = Path(_bg.BG_STILLS_DIR) / "crops"
-                _beat_num = beat_id.split("_")[-1]  # "beat_03" → "03"
-                _matching = sorted(
-                    [p for p in _crops_dir.iterdir()
-                     if p.is_file() and f"beat_{_beat_num}" in p.name.lower()],
-                    key=lambda p: p.stat().st_mtime,
-                    reverse=True,
-                ) if _crops_dir.is_dir() else []
-                if _matching:
-                    _crop_path = _matching[0]
-                    with open(_crop_path, "rb") as _cf:
-                        _crop_raw = _cf.read()
-                    _crop_ext = _crop_path.suffix.lower().lstrip(".")
-                    _crop_mime = {
-                        "png": "image/png", "webp": "image/webp",
-                        "jpg": "image/jpeg", "jpeg": "image/jpeg",
-                    }.get(_crop_ext, "image/png")
-                    beat_image = (
-                        f"data:{_crop_mime};base64,"
-                        + base64.b64encode(_crop_raw).decode("ascii")
-                    )
-                    print(
-                        f"[add_options:startend] {beat_id} GPT_OPT_SKIP_V1: "
-                        f"overriding gpt image ({_raw_key!r}) with crop: {_crop_path.name}"
-                    )
-                else:
-                    print(
-                        f"[add_options:startend] {beat_id} GPT_OPT_SKIP_V1: "
-                        f"gpt image detected ({_raw_key!r}) but no crop found — "
-                        f"using gpt image as fallback"
-                    )
-        except Exception as _gpt_skip_exc:
-            print(
-                f"[add_options:startend] {beat_id} GPT_OPT_SKIP_V1: "
-                f"crop-preference check failed ({_gpt_skip_exc!r}) — using image_overrides"
-            )
-
         target_beat = dict(target_beat)
         beat_image, upscale_info = auto_upscale_image(beat_image)
         if "upscaled" in upscale_info:
@@ -12882,22 +12829,23 @@ body {{padding-top:44px!important;}}
         submitted_tasks: list[str] = []
 
         for opt_idx in range(num_new):
-            # Per Kim's directive: "send out exactly the image that is loaded in the
-            # storyboard, and nothing else." Skip FLUX Kontext end frame generation
-            # entirely — using the same storyboard image at both start and end keeps
-            # the background pixel-stable (no environment amplification / hallucination).
-            # Source provenance: "kling_startend_noflux" (see add_option below).
-            end_bytes_final = start_bytes
-            print(f"[add_options:startend] {beat_id} opt{opt_idx+1} using start image as end frame (noflux)")
-
-            # Step 3: Kling start-end submit (same image at both endpoints).
+            # Single-image Kling: send only the beat's current image (whatever
+            # Kim has assigned via drag-drop or Beat Gen import) as the start
+            # frame. No end frame — Kling animates freely from that one image.
+            #
+            # Why single-image: sending start=end (identical frames) starves
+            # Kling — it satisfies both endpoint anchors with near-zero motion.
+            # Why no FLUX Kontext: that step generated a second frame from the
+            # source image but amplified environmental effects (trail, glows).
+            # Single-image with the beat's own image is the simplest correct path.
             start_uri = f"data:image/png;base64,{base64.b64encode(start_bytes).decode('ascii')}"
-            end_uri = start_uri  # identical — background locked, character motion from prompt
+            print(f"[add_options:startend] {beat_id} opt{opt_idx+1} single-image Kling "
+                  f"(beat image as sole source, no end frame)")
 
             try:
                 task_id = kling_startend_submit(
                     start_b64_uri=start_uri,
-                    end_b64_uri=end_uri,
+                    end_b64_uri=None,   # single-image mode — Kling animates freely
                     prompt=positive_prompt,
                     negative_prompt=RULE8_ANTI_LIPSYNC,
                     duration=duration,
@@ -12931,7 +12879,7 @@ body {{padding-top:44px!important;}}
                     "submitted_at_epoch": int(time.time()),  # Tier 1B timeout
                     "retries": 0,
                     "last_error": None,
-                    "source": "kling_startend_noflux",  # Kim directive: start=end, no FLUX Kontext
+                    "source": "kling_single_image",  # single start frame only, no end frame
                     "end_frame_prompt": _ep,
                     "cfg_scale": _KSENDPIPE_CFG_SCALE,
                     "negative_prompt": RULE8_ANTI_LIPSYNC,
@@ -12945,7 +12893,7 @@ body {{padding-top:44px!important;}}
                 _ksendpipe_directus_log("kling_startend_submitted", {
                     "beat": beat_id,
                     "kling_task_id": task_id,
-                    "source": "kling_startend_noflux",
+                    "source": "kling_single_image",
                     "end_frame_prompt_preview": end_frame_prompt[:120],
                     "cfg_scale": _KSENDPIPE_CFG_SCALE,
                     "duration": duration,
