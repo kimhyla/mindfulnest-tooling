@@ -13862,10 +13862,17 @@ body {{padding-top:44px!important;}}
         if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
-        beat_id = body.get("beat")
-        selected = body.get("selected_option")
+        # Accept both legacy field names ("beat", "selected_option") and the
+        # current client field names ("beat_id", "option_index").
+        # runMutation() in StoryboardTab always injects beat_id; pathappPatch
+        # also sets beat_id from scope. The old names are kept for any caller
+        # that targets the endpoint directly (e.g. scripts, tests).
+        beat_id = body.get("beat") or body.get("beat_id")
+        selected = (body.get("selected_option")
+                    if body.get("selected_option") is not None
+                    else body.get("option_index"))
         if not beat_id or selected is None:
-            return self._send_json(400, {"error": "missing beat or selected_option"})
+            return self._send_json(400, {"error": "missing beat/beat_id or selected_option/option_index"})
         try:
             sel_int = int(selected)
         except (TypeError, ValueError):
