@@ -26,6 +26,7 @@ import { SERVER_BASE } from '../api/endpoints';
 import { makeDropTarget } from '../utils/dragdrop';
 import { Spinner } from './ui/Spinner';
 import { pushToast } from './ui/Toast';
+import { Modal } from './ui/Modal';
 import { BeatAudioPreview } from './BeatAudioPreview';
 
 interface BeatState {
@@ -493,9 +494,11 @@ interface BeatCardProps {
   beat: BeatState;
   eventId: string;
   onMutated: () => void;
+  onInsertAfter: () => void;
+  onDeleteBeat: () => void;
 }
 
-function BeatCard({ index, beatId, beat, eventId, onMutated }: BeatCardProps) {
+function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDeleteBeat }: BeatCardProps) {
   const initialText = beat.text ?? '';
   // CRITICAL: contenteditable must be UNCONTROLLED. State-driven children on a
   // contenteditable trigger a re-render on every keystroke, which clobbers
@@ -642,6 +645,17 @@ function BeatCard({ index, beatId, beat, eventId, onMutated }: BeatCardProps) {
         >
           {indicatorLabel}
         </span>
+        <button
+          type="button"
+          class="mn-btn mn-btn-small"
+          data-testid={`sb-delete-beat-${index}`}
+          onClick={onDeleteBeat}
+          aria-label={`Delete beat ${beatId}`}
+          title="Delete this beat"
+          style="margin-left:auto"
+        >
+          ✕
+        </button>
       </div>
       <audio
         ref={audioRef}
@@ -679,6 +693,17 @@ function BeatCard({ index, beatId, beat, eventId, onMutated }: BeatCardProps) {
         onPreviewOption={handlePreviewOption}
       />
       <BeatMagicButtons index={index} beatId={beatId} beat={beat} eventId={eventId} />
+      <div class="mn-sb-insert-after" data-testid={`sb-insert-after-${index}`}>
+        <button
+          class="mn-btn mn-btn-small mn-sb-insert-after-btn"
+          data-testid={`sb-insert-after-btn-${index}`}
+          onClick={onInsertAfter}
+          aria-label={`Insert beat after ${beatId}`}
+          title="Insert beat after this one"
+        >
+          + Insert beat
+        </button>
+      </div>
     </li>
   );
 }
@@ -952,6 +977,7 @@ export function StoryboardTab() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshTick, setRefreshTick] = useState(0);
+  const [deleteConfirmBeatId, setDeleteConfirmBeatId] = useState<string | null>(null);
 
   // R1 fix per spec §5 Phase 3.1 — explicit scope signals in dep array,
   // first-run-sync via prevDepsRef, 200ms debounce on subsequent runs (Q6).
@@ -1060,6 +1086,33 @@ export function StoryboardTab() {
 
   const eventId = activeScope.value.event_id;
 
+  const executeDeleteBeat = async () => {
+    const beatId = deleteConfirmBeatId;
+    if (!beatId) return;
+    setDeleteConfirmBeatId(null);
+    const result = await pathappPatch(activeScope.value, 'v2_beat_delete', {
+      beat_id: beatId,
+    });
+    if (result.ok) {
+      pushToast({ kind: 'info', message: `Beat ${beatId} deleted`, source: 'sb-delete' });
+      setRefreshTick((n) => n + 1);
+    } else {
+      pushToast({ kind: 'error', message: `Delete failed: ${result.error}`, source: 'sb-delete-error' });
+    }
+  };
+
+  const onAddBeat = async (afterBeatId: string) => {
+    const result = await pathappPatch(activeScope.value, 'v2_beat_create', {
+      insert_after: afterBeatId,
+    });
+    if (result.ok) {
+      pushToast({ kind: 'info', message: 'Beat added', source: 'sb-add' });
+      setRefreshTick((n) => n + 1);
+    } else {
+      pushToast({ kind: 'error', message: `Add failed: ${result.error}`, source: 'sb-add-error' });
+    }
+  };
+
   return (
     <section class="mn-tab-pane mn-storyboard-pane" data-testid="pane-storyboard">
       <header class="mn-pane-header">
@@ -1095,6 +1148,8 @@ export function StoryboardTab() {
               beat={b}
               eventId={eventId}
               onMutated={() => setRefreshTick((n) => n + 1)}
+              onInsertAfter={() => void onAddBeat(b.beat_id)}
+              onDeleteBeat={() => setDeleteConfirmBeatId(b.beat_id)}
             />
           ))}
         </ol>
@@ -1107,6 +1162,34 @@ export function StoryboardTab() {
             : `${beatList.length} beats — dialogue edit live (saves through pathappPatch).`}
         </p>
       </footer>
+      <Modal
+        id="sb-delete-beat"
+        title="Delete beat?"
+        open={deleteConfirmBeatId !== null}
+        onClose={() => setDeleteConfirmBeatId(null)}
+        footer={
+          <>
+            <button
+              type="button"
+              class="mn-btn mn-btn-danger"
+              data-testid="sb-delete-beat-confirm"
+              onClick={() => void executeDeleteBeat()}
+            >
+              Delete
+            </button>
+            <button
+              type="button"
+              class="mn-btn"
+              data-testid="sb-delete-beat-cancel"
+              onClick={() => setDeleteConfirmBeatId(null)}
+            >
+              Cancel
+            </button>
+          </>
+        }
+      >
+        <p>Delete <strong>{deleteConfirmBeatId}</strong>? This cannot be undone.</p>
+      </Modal>
     </section>
   );
 }

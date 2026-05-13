@@ -5493,6 +5493,9 @@ class ProductionHandler(BaseHTTPRequestHandler):
             # Tier 3 v2 create endpoint (April 18 2026, LD TIER3_BEAT_CREATE_ENDPOINT)
             if path == "/api/v2/beat/create":
                 return self._handle_v2_beat_create(body)
+            # Storyboard-tab beat delete (production state, not BG sidecar)
+            if path == "/api/v2/beat/delete":
+                return self._handle_v2_beat_delete(body)
             # Swap-to-A v2 endpoint (April 19 2026) — park a B/C favorite into
             # slot A so Regenerate B+C doesn't overwrite it (or its lipsync).
             if path.startswith("/api/v2/beat/") and path.endswith("/swap_to_a"):
@@ -10900,10 +10903,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
         if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
-        beat_id = body.get("beat")
+        beat_id = body.get("beat") or body.get("beat_id")
         image_key = body.get("image_key")
         if not beat_id or not image_key:
-            return self._send_json(400, {"error": "missing 'beat' or 'image_key'"})
+            return self._send_json(400, {"error": "missing 'beat'/'beat_id' or 'image_key'"})
         # S5.5a2: scope_video_role from body (LD-474). Default 'intro' during
         # refactor window; required after all clients pass it explicitly.
         video_role = body.get("scope_video_role", "intro")
@@ -11279,9 +11282,9 @@ class ProductionHandler(BaseHTTPRequestHandler):
         if self.app.client is None:
             return self._send_json(500, {"error": "WaveSpeed client not configured (missing API key)"})
 
-        beat_key = body.get("beat")
+        beat_key = body.get("beat") or body.get("beat_id")
         if not beat_key:
-            return self._send_json(400, {"error": "missing 'beat' field"})
+            return self._send_json(400, {"error": "missing 'beat'/'beat_id' field"})
 
         video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
 
@@ -11483,8 +11486,9 @@ class ProductionHandler(BaseHTTPRequestHandler):
         # and increment retries. Fixes stale-task_id bug (beat_08 evidence,
         # 2026-04-18): retry was leaving 25h-old submit metadata in state.
         def init_lipsync(st, _bk=beat_key, _src=int(selected),
-                         _audio_name=audio_for_lipsync.name, _ap=audio_processing):
-            beat = st["beats"][_bk]
+                         _audio_name=audio_for_lipsync.name, _ap=audio_processing,
+                         _role=video_role):
+            beat = ((st.get("videos") or {}).get(_role) or {}).get("beats", {})[_bk]
             existing = beat.get("lipsync")
             is_retry = isinstance(existing, dict) and existing.get("status") in (
                 "submitting", "polling", "failed", "completed",
@@ -11536,12 +11540,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
             try:
                 task_id = lipsync_client.submit(video_for_lipsync, audio_for_lipsync)
 
-                def set_polling(st, _bk=beat_key, _tid=task_id):
-                    st["beats"][_bk]["lipsync"]["status"] = "polling"
-                    st["beats"][_bk]["lipsync"]["task_id"] = _tid
-                    st["beats"][_bk]["lipsync"]["submitted_at"] = datetime.now(timezone.utc).isoformat()
-                    # Tier 1B: epoch form for wall-clock timeout comparisons.
-                    st["beats"][_bk]["lipsync"]["submitted_at_epoch"] = int(time.time())
+                def set_polling(st, _bk=beat_key, _tid=task_id, _role=video_role):
+                    _ls = (((st.get("videos") or {}).get(_role) or {}).get("beats", {}).get(_bk) or {}).get("lipsync") or {}
+                    _ls["status"] = "polling"
+                    _ls["task_id"] = _tid
+                    _ls["submitted_at"] = datetime.now(timezone.utc).isoformat()
+                    _ls["submitted_at_epoch"] = int(time.time())
                 self.app.state.mutate_state(set_polling)
 
                 result = lipsync_client.poll_until_done(task_id)
@@ -11553,8 +11557,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     dest = self.app.state.clips_dir / dest_name
                     size = lipsync_client.download(url, dest)
 
-                    def mark_done(st, _bk=beat_key, _fn=dest_name, _sz=size):
-                        beat = st["beats"][_bk]
+                    def mark_done(st, _bk=beat_key, _fn=dest_name, _sz=size, _role=video_role):
+                        beat = ((st.get("videos") or {}).get(_role) or {}).get("beats", {})[_bk]
                         ls = beat["lipsync"]
                         ls["status"] = "completed"
                         ls["file"] = _fn
@@ -11585,8 +11589,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     except Exception as exc:  # noqa: BLE001
                         print(f"[lipsync] complete-log failed (non-blocking): {exc}")
                 else:
-                    def mark_failed(st, _bk=beat_key, _err=str(result)):
-                        ls = st["beats"][_bk]["lipsync"]
+                    def mark_failed(st, _bk=beat_key, _err=str(result), _role=video_role):
+                        ls = (((st.get("videos") or {}).get(_role) or {}).get("beats", {}).get(_bk) or {}).get("lipsync") or {}
                         ls["status"] = "failed"
                         ls["last_error"] = _err[:500]
                     self.app.state.mutate_state(mark_failed)
@@ -11594,9 +11598,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
             except Exception as exc:
                 traceback.print_exc()
-                def mark_err(st, _bk=beat_key, _err=str(exc)):
-                    st["beats"][_bk]["lipsync"]["status"] = "failed"
-                    st["beats"][_bk]["lipsync"]["last_error"] = _err[:500]
+                def mark_err(st, _bk=beat_key, _err=str(exc), _role=video_role):
+                    _ls = (((st.get("videos") or {}).get(_role) or {}).get("beats", {}).get(_bk) or {}).get("lipsync") or {}
+                    _ls["status"] = "failed"
+                    _ls["last_error"] = _err[:500]
                 self.app.state.mutate_state(mark_err)
 
         threading.Thread(target=do_lipsync, daemon=True, name=f"lipsync-{beat_key}").start()
@@ -11652,9 +11657,9 @@ class ProductionHandler(BaseHTTPRequestHandler):
         if self.app.client is None:
             return self._send_json(500, {"error": "WaveSpeed client not configured (missing API key)"})
 
-        beat_key = body.get("beat")
+        beat_key = body.get("beat") or body.get("beat_id")
         if not beat_key:
-            return self._send_json(400, {"error": "missing 'beat' field"})
+            return self._send_json(400, {"error": "missing 'beat'/'beat_id' field"})
 
         video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
 
@@ -11710,8 +11715,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
         # against this source_option on every selection change and sets
         # source_changed=True if they differ. The client surfaces a
         # "🔁 Re-run Lip Sync" affordance when source_changed is true.
-        def init_lipsync(st, _bk=beat_key, _src=int(selected)):
-            beat = st["beats"][_bk]
+        def init_lipsync(st, _bk=beat_key, _src=int(selected), _role=video_role):
+            beat = ((st.get("videos") or {}).get(_role) or {}).get("beats", {})[_bk]
             beat.setdefault("lipsync", {
                 "status": "submitting",
                 "task_id": None,
@@ -11738,12 +11743,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
             try:
                 task_id = lipsync_client.submit(clip_path, audio_path)
 
-                def set_polling(st, _bk=beat_key, _tid=task_id):
-                    st["beats"][_bk]["lipsync"]["status"] = "polling"
-                    st["beats"][_bk]["lipsync"]["task_id"] = _tid
-                    st["beats"][_bk]["lipsync"]["submitted_at"] = datetime.now(timezone.utc).isoformat()
-                    # Tier 1B: epoch form for wall-clock timeout comparisons.
-                    st["beats"][_bk]["lipsync"]["submitted_at_epoch"] = int(time.time())
+                def set_polling(st, _bk=beat_key, _tid=task_id, _role=video_role):
+                    _ls = (((st.get("videos") or {}).get(_role) or {}).get("beats", {}).get(_bk) or {}).get("lipsync") or {}
+                    _ls["status"] = "polling"
+                    _ls["task_id"] = _tid
+                    _ls["submitted_at"] = datetime.now(timezone.utc).isoformat()
+                    _ls["submitted_at_epoch"] = int(time.time())
                 # LD-460 — pin check before set_polling mutate_state (thread closure).
                 if not self._check_event_pin(_pin, "lipsync_submit_legacy_set_polling"):
                     print("[lipsync_submit_legacy] event drift mid-thread; skipping mutate_state", flush=True)
@@ -11760,8 +11765,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     dest = self.app.state.clips_dir / dest_name
                     size = lipsync_client.download(url, dest)
 
-                    def mark_done(st, _bk=beat_key, _fn=dest_name, _sz=size):
-                        beat = st["beats"][_bk]
+                    def mark_done(st, _bk=beat_key, _fn=dest_name, _sz=size, _role=video_role):
+                        beat = ((st.get("videos") or {}).get(_role) or {}).get("beats", {})[_bk]
                         ls = beat["lipsync"]
                         ls["status"] = "completed"
                         ls["file"] = _fn
@@ -11784,8 +11789,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     self.app.state.add_spend("lipsync", COST_PER_LIPSYNC)
                     print(f"[lipsync] {beat_key} COMPLETED -> {dest_name} ({size} bytes)")
                 else:
-                    def mark_failed(st, _bk=beat_key, _err=str(result)):
-                        ls = st["beats"][_bk]["lipsync"]
+                    def mark_failed(st, _bk=beat_key, _err=str(result), _role=video_role):
+                        ls = (((st.get("videos") or {}).get(_role) or {}).get("beats", {}).get(_bk) or {}).get("lipsync") or {}
                         ls["status"] = "failed"
                         ls["last_error"] = _err[:500]
                     self.app.state.mutate_state(mark_failed)
@@ -11794,9 +11799,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
             except Exception as exc:
                 traceback.print_exc()
-                def mark_err(st, _bk=beat_key, _err=str(exc)):
-                    st["beats"][_bk]["lipsync"]["status"] = "failed"
-                    st["beats"][_bk]["lipsync"]["last_error"] = _err[:500]
+                def mark_err(st, _bk=beat_key, _err=str(exc), _role=video_role):
+                    _ls = (((st.get("videos") or {}).get(_role) or {}).get("beats", {}).get(_bk) or {}).get("lipsync") or {}
+                    _ls["status"] = "failed"
+                    _ls["last_error"] = _err[:500]
                 self.app.state.mutate_state(mark_err)
 
         threading.Thread(target=do_lipsync, daemon=True, name=f"lipsync-{beat_key}").start()
@@ -11821,27 +11827,29 @@ class ProductionHandler(BaseHTTPRequestHandler):
         """
         state = self.app.state.read_state()
         lipsync_beats = {}
-        for beat_id, beat in ((state.get("videos") or {}).get("intro") or {}).get("beats", {}).items():
-            ls = beat.get("lipsync")
-            if ls:
-                lipsync_beats[beat_id] = {
-                    "status": ls.get("status", "unknown"),
-                    "task_id": ls.get("task_id"),
-                    "file": ls.get("file"),
-                    "size_bytes": ls.get("size_bytes"),
-                    "audio_file": ls.get("audio_file"),
-                    "last_error": ls.get("last_error"),
-                    "source_option": ls.get("source_option"),
-                    "source_changed": bool(ls.get("source_changed")),
-                    # Decision 181 (April 17 2026): audio_changed flag
-                    # surfaces when TTS was regenerated after lipsync
-                    # completed — client renders Re-run Lip Sync button.
-                    "audio_changed": bool(ls.get("audio_changed")),
-                }
-                if ls.get("file"):
-                    lipsync_beats[beat_id]["url"] = f"/asset/{ls['file']}"
-                # Spec A: include final block so storyboard can show no-lipsync indicator
-                lipsync_beats[beat_id]["final"] = beat.get("final", None)
+        # v3 state: scan ALL video partitions (intro, resolution, …), not just intro.
+        for _role, partition in (state.get("videos") or {}).items():
+            for beat_id, beat in (partition.get("beats") or {}).items():
+                ls = beat.get("lipsync")
+                if ls:
+                    lipsync_beats[beat_id] = {
+                        "status": ls.get("status", "unknown"),
+                        "task_id": ls.get("task_id"),
+                        "file": ls.get("file"),
+                        "size_bytes": ls.get("size_bytes"),
+                        "audio_file": ls.get("audio_file"),
+                        "last_error": ls.get("last_error"),
+                        "source_option": ls.get("source_option"),
+                        "source_changed": bool(ls.get("source_changed")),
+                        # Decision 181 (April 17 2026): audio_changed flag
+                        # surfaces when TTS was regenerated after lipsync
+                        # completed — client renders Re-run Lip Sync button.
+                        "audio_changed": bool(ls.get("audio_changed")),
+                    }
+                    if ls.get("file"):
+                        lipsync_beats[beat_id]["url"] = f"/asset/{ls['file']}"
+                    # Spec A: include final block so storyboard can show no-lipsync indicator
+                    lipsync_beats[beat_id]["final"] = beat.get("final", None)
 
         total = len(lipsync_beats)
         completed = sum(1 for v in lipsync_beats.values() if v["status"] == "completed")
@@ -12698,15 +12706,8 @@ body {{padding-top:44px!important;}}
                 self.app.event_dir, beat_id, body.get("audio_override"),
                 app=self.app,
             )
-            if audio_path is None:
-                try:
-                    beat_num_s = f"line_{int(beat_id.split('_')[1]):02d}"
-                except (IndexError, ValueError):
-                    beat_num_s = "(unparseable)"
-                return self._send_json(404, {
-                    "error": f"no TTS audio found for {beat_id} ({beat_num_s})",
-                    "hint": "animation duration cannot be inferred without audio",
-                })
+            # audio_path may be None for blank/new beats — _infer_animation_duration
+            # handles None by returning (KLING_MIN_DURATION_SEC, "no_audio_found_default_5s")
             try:
                 duration, duration_reason = _infer_animation_duration(audio_path)
             except ValueError as exc:
@@ -12714,7 +12715,7 @@ body {{padding-top:44px!important;}}
                     "error": str(exc),
                     "hint": "Edit script or split audio into shorter beats",
                     "beat": beat_id,
-                    "audio_file": audio_path.name,
+                    "audio_file": audio_path.name if audio_path else "(no audio)",
                 })
         print(f"[add_options:startend] {beat_id} duration={duration}s reason={duration_reason}")
 
@@ -13955,10 +13956,10 @@ body {{padding-top:44px!important;}}
         if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
-        beat_id = body.get("beat")
+        beat_id = body.get("beat") or body.get("beat_id")
         delay = float(body.get("audio_delay", 0))
         if not beat_id:
-            return self._send_json(400, {"error": "missing 'beat'"})
+            return self._send_json(400, {"error": "missing 'beat'/'beat_id'"})
         if delay < 0 or delay > 10:
             return self._send_json(400, {"error": "audio_delay must be 0-10 seconds"})
 
@@ -13984,9 +13985,9 @@ body {{padding-top:44px!important;}}
         if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
-        beat_id = body.get("beat")
+        beat_id = body.get("beat") or body.get("beat_id")
         if not beat_id:
-            return self._send_json(400, {"error": "missing 'beat'"})
+            return self._send_json(400, {"error": "missing 'beat'/'beat_id'"})
         trim_start = float(body.get("trim_start", 0))
         trim_end = body.get("trim_end")  # null = use full clip
         if trim_start < 0:
@@ -14301,9 +14302,25 @@ body {{padding-top:44px!important;}}
             while new_bid in beats:
                 new_num += 1
                 new_bid = f"beat_{new_num:02d}"
+            # Inherit speaker from insert_after beat (or last beat in order)
+            _src_bid = _ia if (_ia and _ia in beats) else None
+            if not _src_bid:
+                _cur_order = partition.get("display_order")
+                if isinstance(_cur_order, list) and _cur_order:
+                    _src_bid = _cur_order[-1]
+                elif beats:
+                    _src_bid = max(beats.keys())
+            _inherited_speaker = ""
+            if _src_bid and _src_bid in beats:
+                _inherited_speaker = (
+                    beats[_src_bid].get("speaker")
+                    or (beats[_src_bid].get("phase_1") or {}).get("speaker")
+                    or ""
+                )
             # Minimum scaffold
             beats[new_bid] = {
                 "text": "",
+                "speaker": _inherited_speaker,
                 "phase_1": {"status": "pending", "options": []},
                 "_version": 0,
                 "created_at": datetime.now(timezone.utc).isoformat(),
@@ -14389,6 +14406,57 @@ body {{padding-top:44px!important;}}
         threading.Thread(target=_async_audit, daemon=True).start()
 
         return self._send_json(200, response)
+
+    def _handle_v2_beat_delete(self, body: dict) -> None:
+        """POST /api/v2/beat/delete — remove a beat from production state.
+
+        Body: {"beat_id": str}
+
+        Removes the beat from partition.beats and partition.display_order.
+        Returns 404 if beat not found, 200 on success.
+        Refreshes sidecar after mutation.
+        """
+        try:
+            scope = scope_router.resolve(body, self.app.event_dir.name)
+        except scope_router.ScopeError as e:
+            return self._send_json(e.http_status, {"error": e.code, **e.detail})
+
+        beat_id = body.get("beat_id")
+        if not isinstance(beat_id, str) or not beat_id:
+            return self._send_json(400, {"error": "beat_id required and must be non-empty string"})
+
+        result_out: dict = {}
+
+        def _apply_partition(partition, _bid=beat_id, _out=result_out):
+            beats = partition.get("beats") or {}
+            if _bid not in beats:
+                _out["not_found"] = True
+                return
+            del beats[_bid]
+            order = partition.get("display_order")
+            if isinstance(order, list) and _bid in order:
+                order.remove(_bid)
+            _out["deleted"] = True
+
+        try:
+            self.app.state.mutate_video_state(scope.video_role, _apply_partition)
+        except Exception as exc:  # noqa: BLE001
+            traceback.print_exc()
+            return self._send_json(500, {
+                "error": f"beat delete failed: {type(exc).__name__}: {exc}",
+            })
+
+        if result_out.get("not_found"):
+            return self._send_json(404, {"error": f"beat {beat_id!r} not found"})
+
+        # Sidecar refresh
+        try:
+            fresh = self.app.state.read_state()
+            _write_sidecar_L_json(self.app, fresh)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[v2 beat_delete] sidecar write failed: {exc}")
+
+        return self._send_json(200, {"status": "deleted", "beat_id": beat_id})
 
     def _handle_v2_get(self, path: str) -> None:
         """GET /api/v2/beat/<beat_id>

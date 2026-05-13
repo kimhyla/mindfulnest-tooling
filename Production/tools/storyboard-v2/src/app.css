@@ -1657,6 +1657,17 @@
   padding: 2px 8px;
 }
 
+/* Storyboard tab — insert-after (always visible, no hover-reveal needed). */
+.mn-sb-insert-after {
+  display: flex;
+  justify-content: center;
+  margin: 6px 0 2px;
+}
+.mn-sb-insert-after-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+}
+
 /* BG-34/35 — Modal unset-beat-list. */
 .mn-bg-modal-unset-list {
   margin: 8px 0 0;
@@ -1758,6 +1769,35 @@
 /* CC-19 — Library hover/sticky preview overlay. */
 .mn-library-tile-wrap {
   display: contents;
+}
+
+/* ─── Crop button (✂) — hover-revealed on library tiles + BG option tiles ─── */
+/* Library: .mn-asset-tile already has position:relative — crop btn sits top-left
+   (delete btn is top-right) so they don't overlap. */
+.mn-crop-btn {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 0.15s;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 2px 5px;
+  font-size: 12px;
+  cursor: pointer;
+  line-height: 1.2;
+  pointer-events: none;
+}
+.mn-asset-tile:hover .mn-crop-btn,
+.mn-bg-option:hover .mn-crop-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+.mn-crop-btn:hover {
+  background: rgba(0, 0, 0, 0.80);
 }
 .mn-library-preview {
   position: fixed;

@@ -16,7 +16,9 @@ import {
   activeProjectType, activeMilestoneId, activeTargetVideo,
 } from '../state/scope';
 import { apiGet, pathappPatch } from '../api/client';
+import { SERVER_BASE } from '../api/endpoints';
 import { makeDropTarget } from '../utils/dragdrop';
+import { openCropper } from '../state/cropper';
 import { Modal } from './ui/Modal';
 import { Spinner } from './ui/Spinner';
 import { Select } from './ui/Select';
@@ -1319,6 +1321,31 @@ function BgOptionTile({
         />
         {' '}option {optionIndex + 1}
       </label>
+      {/* ✂ Send to Cropper — hover-revealed. gallery_b64 is raw base64 (not data: URI). */}
+      {(option.gallery_b64 || option.local_path || option.thumb_b64) && (
+        <button
+          type="button"
+          class="mn-crop-btn"
+          title="Send to Cropper"
+          data-testid={`bg-option-crop-btn-${beatIndex}-${optionIndex}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            const src = option.gallery_b64
+              ? `data:image/webp;base64,${option.gallery_b64}`
+              : option.local_path
+                ? `${SERVER_BASE}/api/cr/full?abs_path=${encodeURIComponent(option.local_path)}`
+                : `data:image/webp;base64,${option.thumb_b64}`;
+            if (!src) return;
+            openCropper({
+              source: src,
+              sourceLabel: option.key ?? `beat ${beatId} option ${optionIndex + 1}`,
+              targetBeatId: beatId,
+            });
+          }}
+        >
+          ✂
+        </button>
+      )}
     </div>
   );
 }

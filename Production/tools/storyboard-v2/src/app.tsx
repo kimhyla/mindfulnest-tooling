@@ -14,7 +14,8 @@ import { ToastHost } from './components/ui/Toast';
 import { TabBar, TABS, ACTIVE_TAB_STORAGE_KEY, type TabKey } from './components/TabBar';
 import { StoryboardTab } from './components/StoryboardTab';
 import { BgTab } from './components/BgTab';
-import { CropperModal, initialCropperModalState } from './components/CropperModal';
+import { CropperModal } from './components/CropperModal';
+import { cropperState } from './state/cropper';
 import { StitcherTab } from './components/StitcherTab';
 import { LibraryPanel } from './components/LibraryPanel';
 import { ProductionMapTab, MAP_CELL_NAVIGATE_EVENT } from './components/ProductionMapTab';
@@ -40,8 +41,6 @@ function readStoredActiveTab(): TabKey {
 // Top-level signals — cross-tab UI state lives here, NOT in any component
 // closure. This keeps state explicit and inspectable.
 const activeTab = signal<TabKey>(readStoredActiveTab());
-const cropperState = signal({ ...initialCropperModalState });
-
 function ActivePane() {
   switch (activeTab.value) {
     case 'storyboard':
@@ -120,6 +119,10 @@ export function App() {
             if (activeTab.value === 'cropper') {
               activeTab.value = 'storyboard';
             }
+          }}
+          onSaved={(_result) => {
+            // Crop saved to library — notify LibraryPanel to refresh.
+            window.dispatchEvent(new CustomEvent('mn:library-refresh'));
           }}
         />
       </div>

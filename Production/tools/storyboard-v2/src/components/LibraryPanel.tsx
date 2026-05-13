@@ -22,9 +22,11 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { activeScope } from '../state/scope';
 import { apiGet, pathappPatch } from '../api/client';
+import { SERVER_BASE } from '../api/endpoints';
 import { AssetTile } from './ui/AssetTile';
 import { pushToast } from './ui/Toast';
 import type { DragPayload } from '../utils/dragdrop';
+import { openCropper } from '../state/cropper';
 
 // ----------------------------------------------------------------
 // Types
@@ -263,6 +265,13 @@ export function LibraryPanel() {
     return () => window.removeEventListener('click', onDocClick);
   }, [preview]);
 
+  // mn:library-refresh — fired by CropperModal onSaved after a crop is saved.
+  useEffect(() => {
+    const onLibRefresh = () => setRefreshTick((n) => n + 1);
+    window.addEventListener('mn:library-refresh', onLibRefresh);
+    return () => window.removeEventListener('mn:library-refresh', onLibRefresh);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -296,14 +305,41 @@ export function LibraryPanel() {
       pushToast({ kind: 'success', message: `Deleted ${displayName(item)}`, source: 'library-delete' });
       setRefreshTick((n) => n + 1);
     } else {
-      // Use server's error message if present (e.g. "registered in prod_assets" — 422);
-      // fall back to HTTP status string for unexpected codes.
-      const deleteErrMsg = (result.data as Record<string, unknown> | undefined)?.['error'] as string | undefined;
-      pushToast({
-        kind: 'error',
-        message: `Delete failed: ${deleteErrMsg ?? result.error ?? `HTTP ${result.status}`}`,
-        source: 'library-delete-error',
-      });
+      const resultData = result.data as Record<string, unknown> | undefined;
+      const deleteErrCode = resultData?.['code'] as string | undefined;
+      const assetIds = resultData?.['asset_ids'] as number[] | undefined;
+
+      if (deleteErrCode === 'PROD_ASSETS_PROTECTED' && assetIds?.length) {
+        // Registered in Directus — offer a second confirmation with explicit warning.
+        const forceConfirmed = window.confirm(
+          `"${displayName(item)}" is registered in Directus (prod_assets id=${assetIds.join(', ')}).\n\nDeregister from Directus AND permanently delete from disk?\n\nThis cannot be undone.`
+        );
+        if (!forceConfirmed) return;
+        const forceResult = await pathappPatch(activeScope.value, 'cr_library_delete', {
+          key: k,
+          abs_path: item.abs_path ?? '',
+          force: true,
+        });
+        if (forceResult.ok) {
+          pushToast({ kind: 'success', message: `Deregistered + deleted ${displayName(item)}`, source: 'library-delete' });
+          setRefreshTick((n) => n + 1);
+        } else {
+          const forceErrMsg = (forceResult.data as Record<string, unknown> | undefined)?.['error'] as string | undefined;
+          pushToast({
+            kind: 'error',
+            message: `Force delete failed: ${forceErrMsg ?? forceResult.error ?? `HTTP ${forceResult.status}`}`,
+            source: 'library-delete-error',
+          });
+        }
+      } else {
+        // Use server's error message if present; fall back to HTTP status string.
+        const deleteErrMsg = resultData?.['error'] as string | undefined;
+        pushToast({
+          kind: 'error',
+          message: `Delete failed: ${deleteErrMsg ?? result.error ?? `HTTP ${result.status}`}`,
+          source: 'library-delete-error',
+        });
+      }
     }
   };
 
@@ -465,6 +501,13 @@ export function LibraryPanel() {
               if (ts !== undefined) tileProps.thumbSrc = ts;
               if (it.tier !== undefined) tileProps.tier = it.tier;
               if (dimsLabel !== undefined) tileProps.dimsLabel = dimsLabel;
+              const cropSrc = it.abs_path
+                ? `${SERVER_BASE}/api/cr/full?abs_path=${encodeURIComponent(it.abs_path)}`
+                : it.gallery_b64
+                  ? (it.gallery_b64.startsWith('data:') ? it.gallery_b64 : `data:image/webp;base64,${it.gallery_b64}`)
+                  : it.thumb_b64
+                    ? (it.thumb_b64.startsWith('data:') ? it.thumb_b64 : `data:image/webp;base64,${it.thumb_b64}`)
+                    : (it.thumb_url ?? '');
               return (
                 <div
                   key={libKey}
@@ -473,7 +516,26 @@ export function LibraryPanel() {
                   onMouseEnter={() => requestPreview(it)}
                   onMouseLeave={cancelPreviewRequest}
                 >
-                  <AssetTile {...tileProps} />
+                  <AssetTile {...tileProps}>
+                    {cropSrc ? (
+                      <button
+                        type="button"
+                        class="mn-crop-btn"
+                        title="Send to Cropper"
+                        data-testid={`library-crop-btn-${i}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openCropper({
+                            source: cropSrc,
+                            sourceLabel: it.display_name ?? it.filename ?? it.key ?? 'Library image',
+                            targetBeatId: null,
+                          });
+                        }}
+                      >
+                        ✂
+                      </button>
+                    ) : null}
+                  </AssetTile>
                 </div>
               );
             })}

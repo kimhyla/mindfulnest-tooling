@@ -11,7 +11,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { activeScope } from '../state/scope';
 import { apiGet, pathappPatch } from '../api/client';
 import { SERVER_BASE } from '../api/endpoints';
-import { makeDropTarget } from '../utils/dragdrop';
+import { makeDropTarget, setDragData, type DragPayload } from '../utils/dragdrop';
 import { Modal } from './ui/Modal';
 import { Spinner } from './ui/Spinner';
 import { pushToast } from './ui/Toast';
@@ -112,11 +112,6 @@ export function CropperModal({ state, onClose, onSaved }: CropperModalProps) {
   };
 
   const onSaveCrop = async () => {
-    if (!state.value.targetBeatId) {
-      setSaveStatus('error');
-      setSaveDetail('No target beat — open the cropper from a beat slot.');
-      return;
-    }
     if (!canvasRef.current) {
       setSaveStatus('error');
       setSaveDetail('Canvas not ready.');
@@ -125,7 +120,7 @@ export function CropperModal({ state, onClose, onSaved }: CropperModalProps) {
     const cropPngB64 = canvasRef.current.exportCropPngB64();
     if (!cropPngB64) {
       setSaveStatus('error');
-      setSaveDetail('Crop region is empty or image not loaded.');
+      setSaveDetail('Crop too small (output must be ≥600px shortest side) or image not loaded.');
       return;
     }
     setSaveStatus('saving');
@@ -215,7 +210,7 @@ export function CropperModal({ state, onClose, onSaved }: CropperModalProps) {
             class="mn-btn mn-btn-primary"
             data-testid="cropper-save-btn"
             onClick={onSaveCrop}
-            disabled={saveStatus === 'saving' || !state.value.targetBeatId}
+            disabled={saveStatus === 'saving'}
           >
             {saveStatus === 'saving' ? 'Saving…' : 'Save crop'}
           </button>
@@ -253,7 +248,19 @@ export function CropperModal({ state, onClose, onSaved }: CropperModalProps) {
                   type="button"
                   class="mn-cropper-lib-thumb"
                   title={label}
+                  draggable={!!loadSrc}
                   data-testid={`cropper-lib-thumb-${i}`}
+                  onDragStart={(e: DragEvent) => {
+                    if (!loadSrc) return;
+                    const payload: DragPayload = {
+                      kind: 'lib-image',
+                      lib_key: it.key ?? it.abs_path ?? label,
+                      tier: 'unknown',
+                      ...(it.abs_path ? { abs_path: it.abs_path } : {}),
+                      ...(it.filename ? { filename: it.filename } : {}),
+                    };
+                    setDragData(e, payload);
+                  }}
                   onClick={() => {
                     if (!loadSrc) return;
                     state.value = { ...state.value, source: loadSrc, sourceLabel: label };
