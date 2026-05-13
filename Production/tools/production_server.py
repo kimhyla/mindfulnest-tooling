@@ -3681,6 +3681,31 @@ def _load_voice_profiles_from_directus(force_refresh: bool = False) -> dict[str,
             _VOICE_PROFILE_CACHE = cache
             print(f"[voice-profiles] loaded {len(cache)} profiles from Directus: "
                   f"{sorted(cache.keys())}")
+            # V1_VOICE_PROFILE_COMPLETENESS_V1 (locked 2026-05-13) — warn
+            # loudly at load time when V1-required character voices are
+            # missing from prod_voice_profiles, so the gap surfaces at
+            # server start rather than at first Regen Audio click. Per
+            # LD-148 ELEVENLABS_V3_FOR_ALL_CHARACTERS, all V1 creatures +
+            # NPCs require registered voice profiles.
+            _V1_REQUIRED_VOICES = {
+                # 6 V1 creatures (LD-353 V1_CREATURE_SET_6_BENSON_AT_M3)
+                "Cedric", "Chipper", "Tessa", "Luna",
+                "Benson", "Ember", "Bork", "Bramble",
+                # NPCs referenced in Arc 1 (LD-148 list)
+                # Note: Oliver/Grizzle/Willow appear later in the arc roadmap
+                # but are not strictly blocking M1 audio production.
+            }
+            _missing = sorted(_V1_REQUIRED_VOICES - set(cache.keys()))
+            if _missing:
+                print(
+                    f"[voice-profiles] WARN: V1-required voice profiles "
+                    f"MISSING from Directus: {_missing}. Regen Audio will "
+                    f"fail for any beat with these speakers. Add via "
+                    f"POST /items/prod_voice_profiles with fields "
+                    f"{{character_name, elevenlabs_voice_id, stability, "
+                    f"similarity_boost, style, speed, model='eleven_v3'}}. "
+                    f"Per LD V1_VOICE_PROFILE_COMPLETENESS_V1."
+                )
             return cache
         except Exception as exc:  # noqa: BLE001
             print(f"[voice-profiles] WARN load failed ({exc}); using empty cache")
@@ -3756,9 +3781,17 @@ def _tts_regenerate_for_beat(app, beat_id: str, text: str,
 
     profile = _resolve_voice_profile(speaker)
     if not profile or not profile.get("voice_id"):
+        # Surface all currently-registered + missing speakers so Kim can
+        # see the gap shape (not just the one beat's failure).
+        _registered = sorted((_VOICE_PROFILE_CACHE or {}).keys())
         return {"ok": False,
-                "error": f"no voice profile for speaker {speaker!r} "
-                         f"(configure in Directus prod_voice_profiles)"}
+                "error": f"no voice profile for speaker {speaker!r}. "
+                         f"Currently registered: {_registered}. "
+                         f"Add via POST /items/prod_voice_profiles "
+                         f"(character_name, elevenlabs_voice_id, stability, "
+                         f"similarity_boost, style, speed, model='eleven_v3'). "
+                         f"Per LD-148 ELEVENLABS_V3_FOR_ALL_CHARACTERS + "
+                         f"LD V1_VOICE_PROFILE_COMPLETENESS_V1."}
 
     # Build voice_settings, dropping keys ElevenLabs rejects when None.
     voice_settings = {}
