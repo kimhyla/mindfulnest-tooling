@@ -12828,39 +12828,17 @@ body {{padding-top:44px!important;}}
         submitted_tasks: list[str] = []
 
         for opt_idx in range(num_new):
-            # Step 1: FLUX Kontext.
-            try:
-                end_bytes = flux_kontext_generate_end_frame(
-                    start_image_bytes=start_bytes,
-                    end_prompt=end_frame_prompt,
-                    api_key=bfl_key,
-                    aspect_ratio="4:3",
-                    timeout_s=180,
-                )
-            except SystemExit as exc:
-                err = f"flux_kontext SystemExit: {exc}"
-                print(f"[ERR] add_options:startend FLUX Kontext opt{opt_idx+1}: {err}")
-                submit_errors.append(err)
-                continue
-            except Exception as exc:
-                err = f"flux_kontext {type(exc).__name__}: {exc}"
-                print(f"[ERR] add_options:startend FLUX Kontext opt{opt_idx+1}: {err}")
-                submit_errors.append(err)
-                continue
+            # Per Kim's directive: "send out exactly the image that is loaded in the
+            # storyboard, and nothing else." Skip FLUX Kontext end frame generation
+            # entirely — using the same storyboard image at both start and end keeps
+            # the background pixel-stable (no environment amplification / hallucination).
+            # Source provenance: "kling_startend_noflux" (see add_option below).
+            end_bytes_final = start_bytes
+            print(f"[add_options:startend] {beat_id} opt{opt_idx+1} using start image as end frame (noflux)")
 
-            # Step 2: Rule 6 auto-upscale end frame bytes.
-            try:
-                end_bytes_final, end_info, _end_dims = _ksendpipe_ensure_min_dimensions(end_bytes)
-                if "upscaled" in end_info:
-                    print(f"[add_options:startend] {beat_id} opt{opt_idx+1} end: {end_info}")
-            except Exception as exc:
-                err = f"ensure_min_dimensions {type(exc).__name__}: {exc}"
-                submit_errors.append(err)
-                continue
-
-            # Step 3: Kling start-end submit.
+            # Step 3: Kling start-end submit (same image at both endpoints).
             start_uri = f"data:image/png;base64,{base64.b64encode(start_bytes).decode('ascii')}"
-            end_uri = f"data:image/png;base64,{base64.b64encode(end_bytes_final).decode('ascii')}"
+            end_uri = start_uri  # identical — background locked, character motion from prompt
 
             try:
                 task_id = kling_startend_submit(
@@ -12899,7 +12877,7 @@ body {{padding-top:44px!important;}}
                     "submitted_at_epoch": int(time.time()),  # Tier 1B timeout
                     "retries": 0,
                     "last_error": None,
-                    "source": "kling_startend",       # decision 172 provenance
+                    "source": "kling_startend_noflux",  # Kim directive: start=end, no FLUX Kontext
                     "end_frame_prompt": _ep,
                     "cfg_scale": _KSENDPIPE_CFG_SCALE,
                     "negative_prompt": RULE8_ANTI_LIPSYNC,
@@ -12913,7 +12891,7 @@ body {{padding-top:44px!important;}}
                 _ksendpipe_directus_log("kling_startend_submitted", {
                     "beat": beat_id,
                     "kling_task_id": task_id,
-                    "source": "kling_startend",
+                    "source": "kling_startend_noflux",
                     "end_frame_prompt_preview": end_frame_prompt[:120],
                     "cfg_scale": _KSENDPIPE_CFG_SCALE,
                     "duration": duration,
