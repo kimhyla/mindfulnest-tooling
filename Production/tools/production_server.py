@@ -1688,7 +1688,8 @@ class WaveSpeedClient:
         data_obj = payload.get("data") or {}
         status = data_obj.get("status") or payload.get("status") or "unknown"
         outputs = data_obj.get("outputs") or payload.get("outputs") or []
-        return {"status": status, "outputs": outputs, "raw": payload}
+        error = data_obj.get("error") or payload.get("error") or ""
+        return {"status": status, "outputs": outputs, "error": error, "raw": payload}
 
     def download(self, url: str, dest: Path) -> int:
         """Download a video URL to dest, return bytes written.
