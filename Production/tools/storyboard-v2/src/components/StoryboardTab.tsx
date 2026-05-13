@@ -225,9 +225,22 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
   };
   const onSelectOption = (optionIndex: number) =>
     runMutation('Select option', 'select', { option_index: optionIndex });
-  const onAddOptions = () => {
+  const onAddOptions = async () => {
     if (lifecycle === 'lipsync_pending' && !window.confirm('This will discard current Options B & C and generate 2 fresh alternatives. Option A is preserved. A lipsync is queued — this may orphan it. Continue?')) return;
-    runMutation('Add options', 'beat_add_options', {});
+    const ok = await runMutation('Add options', 'beat_add_options', {});
+    if (!ok) return;
+    // Poll until all submitted options reach a terminal state (completed/failed).
+    // Mirrors the onAnimate poll loop — Kling is async so the initial response
+    // only shows "polling"; without this loop the user has to manually refresh.
+    let polls = 0;
+    const pollAddOptions = async () => {
+      polls += 1;
+      const res = await apiGet('v2_event_state', { event_id: activeScope.value.event_id });
+      if (res.ok) onMutated();
+      // Stop when all options are terminal or after 120 polls (~10 min).
+      if (polls < 120) window.setTimeout(pollAddOptions, POLL_ANIMATE_MS);
+    };
+    window.setTimeout(pollAddOptions, POLL_ANIMATE_MS);
   };
   const onSwapToA = (fromSlot: number) =>
     runMutation('Move to A', 'beat_swap_to_a', { from_slot: fromSlot });
