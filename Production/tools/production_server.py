@@ -12670,6 +12670,11 @@ body {{padding-top:44px!important;}}
 
         beat_id = body["beat"]  # validated by dispatcher
         num_new = int(body.get("count", 2))
+        # video_role MUST be resolved at the very top — closures below capture it
+        # as a default-argument value at definition time (not call time). Resolving
+        # here prevents UnboundLocalError when Python sees the later assignment and
+        # treats video_role as a local for the entire function scope.
+        video_role = body.get("scope_video_role") or body.get("scope_target_video") or "intro"
 
         # Duration resolution — identical to legacy, repeated for independence.
         explicit_duration = body.get("duration")
@@ -12750,8 +12755,7 @@ body {{padding-top:44px!important;}}
             })
 
         # Resolve start image (data URI).
-        # S5.5a2: scope_video_role from body for partition-aware override lookup (LD-474).
-        video_role = body.get("scope_video_role") or body.get("scope_target_video") or "intro"
+        # S5.5a2: scope_video_role used here — resolved at top of function (see above).
         target_beat = None
         for b in self.app.beats(video_role):
             if self._beat_id(b.get("line_number", -1)) == beat_id:
@@ -12811,9 +12815,9 @@ body {{padding-top:44px!important;}}
                 "error": f"start image data-URI malformed: {type(exc).__name__}: {exc}"
             })
 
-        # Mark beat polling.
-        def set_polling(st):
-            b = st.get("beats", {}).get(beat_id)
+        # Mark beat polling — partition-aware (SCOPE_ROUTER_V1 / v3 state).
+        def set_polling(st, _bid=beat_id, _role=video_role):
+            b = ((st.get("videos") or {}).get(_role) or {}).get("beats", {}).get(_bid)
             if b and b.get("phase_1"):
                 b["phase_1"]["status"] = "polling"
         self.app.state.mutate_state(set_polling)
