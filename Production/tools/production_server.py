@@ -6473,14 +6473,26 @@ class ProductionHandler(BaseHTTPRequestHandler):
             referenced = []
 
         if referenced:
-            # 422 (not 409) so the client doesn't misread this as a scope mismatch.
-            # Real reason: this file is registered in prod_assets (Rule 34 / CC-23).
-            return self._send_json(422, {
-                "ok": False,
-                "error": f"'{key}' is registered in prod_assets (id={[r.get('id') for r in referenced]}) — deregister first to delete",
-                "code": "PROD_ASSETS_PROTECTED",
-                "asset_ids": [r.get("id") for r in referenced],
-            })
+            force = bool((body or {}).get("force"))
+            if not force:
+                # 422 (not 409) so the client doesn't misread this as a scope mismatch.
+                # Real reason: this file is registered in prod_assets (Rule 34 / CC-23).
+                return self._send_json(422, {
+                    "ok": False,
+                    "error": f"'{key}' is registered in prod_assets (id={[r.get('id') for r in referenced]}) — deregister first to delete",
+                    "code": "PROD_ASSETS_PROTECTED",
+                    "asset_ids": [r.get("id") for r in referenced],
+                })
+            # force=True: soft-deregister each prod_assets row (status→archived) then
+            # hard-delete from disk. Audit trail preserved in Directus.
+            try:
+                for row in referenced:
+                    rid = row.get("id")
+                    if rid:
+                        _c.delete_item("prod_assets", rid)
+                        print(f"[lib-delete] deleted prod_assets id={rid} for key '{key}'")
+            except Exception as e:
+                return self._send_json(500, {"ok": False, "error": f"Directus deregister failed: {e}"})
 
         # Hard delete with Rule 19 explicit JSON on all error paths
         try:
@@ -10687,19 +10699,22 @@ class ProductionHandler(BaseHTTPRequestHandler):
         if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
         crop_b64   = body.get("crop_png_b64", "")
-        beat_id    = body.get("beat_id", "")
+        beat_id    = body.get("beat_id") or ""   # null/absent → "" (library-origin crop)
         source_key = body.get("source_key", "")
         if not crop_b64:
             return self._send_json(400, {"error": "crop_png_b64 required"})
 
         # Security (CodeQL py/path-injection alert #26): beat_id flows into
-        # the on-disk filename via f-string. Reject any path separators or
-        # traversal sequences; require basename-only [A-Za-z0-9_-].
-        if not beat_id or "/" in beat_id or "\\" in beat_id or ".." in beat_id or beat_id.startswith("."):
-            return self._send_json(400, {"error": "invalid beat_id"})
+        # the on-disk filename via f-string. Validate if provided; fall back
+        # to "lib" prefix for library-origin crops that have no beat context.
         import re as _re
-        if not _re.match(r"^[A-Za-z0-9][A-Za-z0-9_-]*$", beat_id):
-            return self._send_json(400, {"error": "beat_id must match [A-Za-z0-9_-]+"})
+        if beat_id:
+            if "/" in beat_id or "\\" in beat_id or ".." in beat_id or beat_id.startswith("."):
+                return self._send_json(400, {"error": "invalid beat_id"})
+            if not _re.match(r"^[A-Za-z0-9][A-Za-z0-9_-]*$", beat_id):
+                return self._send_json(400, {"error": "beat_id must match [A-Za-z0-9_-]+"})
+        else:
+            beat_id = "lib"  # library-origin crop; timestamp suffix keeps filename unique
 
         bg = _bg_module()
         try:
@@ -12462,7 +12477,7 @@ body {{padding-top:44px!important;}}
         if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
-        beat_id = body.get("beat")
+        beat_id = body.get("beat_id") or body.get("beat")
         options_per_beat = int(body.get("options_per_beat", 3))
         if not beat_id:
             return self._send_json(400, {"error": "missing 'beat'"})
@@ -12528,9 +12543,13 @@ body {{padding-top:44px!important;}}
         if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
-        beat_id = body.get("beat")
+        beat_id = body.get("beat_id") or body.get("beat")
         if not beat_id:
             return self._send_json(400, {"error": "missing 'beat'"})
+
+        # Normalize so sub-handlers can safely subscript body["beat"].
+        if "beat" not in body:
+            body = dict(body, beat=beat_id)
 
         video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
 
@@ -12861,8 +12880,12 @@ body {{padding-top:44px!important;}}
             # Step 4: Persist option with provenance.
             _eid = element_entry["element_id"] if element_entry else None
             def add_option(st, _bid=beat_id, _tid=task_id, _ep=end_frame_prompt,
-                           _dur=duration, _eid=_eid):
-                st["beats"][_bid]["phase_1"]["options"].append({
+                           _dur=duration, _eid=_eid, _role=video_role):
+                # Partition-aware: use videos.<role>.beats (SCOPE_ROUTER_V1)
+                _beats = ((st.get("videos") or {}).get(_role) or {}).get("beats") or {}
+                if _bid not in _beats:
+                    return  # beat not in this partition; state may have legacy top-level
+                _beats[_bid]["phase_1"]["options"].append({
                     "task_id": _tid,
                     "status": "polling",
                     "file": None,
@@ -12947,7 +12970,7 @@ body {{padding-top:44px!important;}}
         except scope_router.ScopeError as e:
             return self._send_json(e.http_status, {"error": e.code, **e.detail})
 
-        beat_id = body.get("beat")
+        beat_id = body.get("beat_id") or body.get("beat")
         num_new = int(body.get("count", 2))  # default: add 2 (B + C)
         if not beat_id:
             return self._send_json(400, {"error": "missing 'beat'"})
