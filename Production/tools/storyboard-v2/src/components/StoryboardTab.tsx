@@ -133,7 +133,7 @@ type BeatLifecycle =
 function deriveBeatLifecycle(b: BeatState): BeatLifecycle {
   // Cursor v8: beat.final block presence IS the "final" signal.
   if (b.final && b.final.file) return 'final';
-  if (b.lipsync?.status === 'pending' || b.lipsync?.status === 'submitted') {
+  if (['pending', 'submitted', 'submitting', 'polling'].includes(b.lipsync?.status ?? '')) {
     return 'lipsync_pending';
   }
   const hasOptions = !!(b.phase_1?.options && b.phase_1.options.length > 0);
@@ -410,6 +410,17 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
             )}
           </button>
         ) : null}
+        {beat.lipsync?.status === 'completed' && beat.lipsync?.file ? (
+          <button
+            type="button"
+            class="mn-btn mn-btn-small"
+            data-testid={`beat-${index}-lipsync-play`}
+            onClick={() => onPreviewOption(0)}
+            title="Preview lipsync result (video has audio baked in)"
+          >
+            {previewOptIdx === 0 ? '⏸ lipsync' : '▶ lipsync'}
+          </button>
+        ) : null}
         {showUseAsFinal ? (
           <button
             type="button"
@@ -515,7 +526,10 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const previewVideoSrc = previewOptIdx !== null
-    ? `http://localhost:5111/asset/${beat.phase_1?.options?.[previewOptIdx - 1]?.file}?v=${beat._version ?? 0}`
+    ? previewOptIdx === 0
+      // sentinel 0 = preview lipsync result (ByteDance audio baked in, no separate TTS player)
+      ? (beat.lipsync?.file ? `http://localhost:5111/asset/${beat.lipsync.file}?v=${beat._version ?? 0}` : null)
+      : `http://localhost:5111/asset/${beat.phase_1?.options?.[previewOptIdx - 1]?.file}?v=${beat._version ?? 0}`
     : null;
 
   const previewAudioSrc = `http://localhost:5111/api/beat/audio/${beatId}?event_id=${eventId}`;
@@ -524,10 +538,17 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
     if (previewOptIdx === null) return;
     const vid = videoRef.current;
     const aud = audioRef.current;
-    if (!vid || !aud) return;
-    aud.currentTime = 0;
+    if (!vid) return;
+    // previewOptIdx === 0 is the lipsync sentinel: ByteDance bakes AAC audio into the
+    // output video. Playing the TTS audio player simultaneously doubles the dialogue.
+    // For lipsync preview, play video only — do NOT start the separate audio element.
+    const isLipsyncPreview = previewOptIdx === 0;
+    if (!isLipsyncPreview) {
+      if (!aud) return;
+      aud.currentTime = 0;
+    }
     vid.play().catch(() => {});
-    aud.play().catch(() => {});
+    if (!isLipsyncPreview) aud?.play().catch(() => {});
   }, [previewOptIdx]);
 
   useEffect(() => {
@@ -538,24 +559,27 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
   }, []);
 
   const handlePreviewOption = useCallback((optIdx: number) => {
-    const file = beat.phase_1?.options?.[optIdx - 1]?.file;
+    // Sentinel 0 = preview lipsync result. ByteDance audio is baked in — never touch the TTS audio player.
+    const isLipsyncPreview = optIdx === 0;
+    const file = isLipsyncPreview ? beat.lipsync?.file : beat.phase_1?.options?.[optIdx - 1]?.file;
     if (!file) return;
     const vid = videoRef.current;
     const aud = audioRef.current;
     if (previewOptIdx === optIdx) {
+      // Toggle play/pause for the current preview.
       if (vid && !vid.paused) {
         vid.pause();
-        aud?.pause();
+        if (!isLipsyncPreview) aud?.pause();
       } else {
         vid?.play().catch(() => {});
-        aud?.play().catch(() => {});
+        if (!isLipsyncPreview) aud?.play().catch(() => {});
       }
       return;
     }
     vid?.pause();
-    aud?.pause();
+    if (!isLipsyncPreview) aud?.pause();
     setPreviewOptIdx(optIdx);
-  }, [previewOptIdx, beat.phase_1?.options]);
+  }, [previewOptIdx, beat.phase_1?.options, beat.lipsync?.file]);
 
   const handlePreviewEnded = useCallback(() => {
     audioRef.current?.pause();
