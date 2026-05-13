@@ -21,6 +21,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { activeScope } from '../state/scope';
+import { activeTab } from '../app';
 import { apiGet, pathappPatch } from '../api/client';
 import { SERVER_BASE } from '../api/endpoints';
 import { AssetTile } from './ui/AssetTile';
@@ -213,6 +214,23 @@ export function LibraryPanel() {
   // CC-17 — tier state, persisted to localStorage
   const [tier, setTier] = useState<LibraryTier>(loadPersistedTier);
 
+  // LD-682 STITCHER_LIBRARY_DEFAULT_SFX_TIER_V1 — when the Stitcher tab is
+  // active, default the tier to 'sfx' (SFX drops are the dominant Library
+  // interaction inside Stitcher). User can still flip manually; the
+  // transient override is NOT persisted to localStorage so leaving Stitcher
+  // restores their prior preference. Reactive on activeTab signal.
+  useEffect(() => {
+    if (activeTab.value === 'stitcher') {
+      setTier((prev) => (prev === 'sfx' ? prev : 'sfx'));
+    } else {
+      // Restore localStorage-preferred tier when leaving Stitcher.
+      setTier((prev) => {
+        const preferred = loadPersistedTier();
+        return prev === preferred ? prev : preferred;
+      });
+    }
+  }, [activeTab.value]);
+
   // CC-18 — search input (immediate) + debounced query (300ms)
   const [searchInput, setSearchInput] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -345,7 +363,12 @@ export function LibraryPanel() {
 
   const onTierChange = (next: LibraryTier) => {
     setTier(next);
-    persistTier(next);
+    // LD-682: when inside Stitcher tab, tier flips are transient (don't
+    // persist) so leaving Stitcher restores the user's preferred default.
+    // Outside Stitcher, manual flips persist as the new default.
+    if (activeTab.value !== 'stitcher') {
+      persistTier(next);
+    }
     // Unpin preview on tier change so the user sees fresh hits.
     setPreview(null);
   };

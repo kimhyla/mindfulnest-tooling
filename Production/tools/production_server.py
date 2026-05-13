@@ -164,6 +164,140 @@ def _resolve_bg_segment_for_scope(scope_event_id: str, video_role: str) -> tuple
     return (arc_number, event_id_int, phase)
 
 
+# PB_2_THERAPEUTIC_SOURCES_LOAD_V1 — resolve event_id ("M1E1") to module metadata
+# (arc_number, m_number, event_number, creature_name, technique_name) via
+# Directus prod_modules. Used by _handle_phase_suggest_script to ground the
+# Claude API prompt in the real authored Therapeutic Note + Technique Inventory
+# for the current module, instead of generic templates.
+#
+# Cache 15min to avoid repeated Directus hits during script-iteration sessions.
+# Convention fallback on Directus failure: M(N) -> Arc((N-1)//6 + 1) which
+# matches the V1 scope layout (M1-M6=Arc1, M7-M12=Arc2, ...).
+_MODULE_RESOLVE_CACHE: dict = {}
+_MODULE_RESOLVE_CACHE_TS: float = 0.0
+_MODULE_RESOLVE_CACHE_TTL_S: float = 900.0
+
+_EVENT_ID_PATTERN = re.compile(r"M(\d+)E(\d+)", re.IGNORECASE)
+
+
+def _resolve_module_id_for_state(state_manager) -> int:
+    """Resolve the Directus prod_modules.id for the currently-loaded event.
+
+    Reads state.event_id (canonical 'M<n>E<m>' form), maps to m_number,
+    looks up prod_modules.id via the cached _MODULE_RESOLVE_CACHE +
+    Directus query. Returns 1 as a defensive fallback ONLY when:
+      - state has no event_id
+      - event_id is malformed
+      - Directus is unreachable AND m_number not in convention-fallback cache
+
+    Closes Rule 19 "no shortcuts" violation: prior code hardcoded
+    `module_id=1` at 12+ call sites (e.g. magic_still, magic_video,
+    server:7733, 8157) which silently produced wrong prod_assets rows for
+    any module beyond M1. Per LD `MODULE_ID_DYNAMIC_RESOLUTION_V1`
+    (locked 2026-05-13).
+    """
+    try:
+        state = state_manager.read_state()
+    except Exception:
+        return 1
+    event_id = state.get('event_id') or ''
+    meta = _resolve_module_for_event(event_id)
+    if not meta:
+        return 1
+    # _resolve_module_for_event returns the m_number; prod_modules.id may
+    # differ from m_number for some rows (per Directus query earlier:
+    # m_number=3 has id=5, m_number=4 has id=3). We need the actual id.
+    # Query cache directly for the id mapping.
+    global _MODULE_RESOLVE_CACHE, _MODULE_RESOLVE_CACHE_TS
+    # Refresh cache if stale (mirrors _resolve_module_for_event TTL)
+    if time.time() - _MODULE_RESOLVE_CACHE_TS > _MODULE_RESOLVE_CACHE_TTL_S:
+        try:
+            sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+            from directus_admin_client import DirectusAdminClient  # type: ignore
+            _client = DirectusAdminClient()
+            _mods = _client.get_items('prod_modules', limit=100)
+            # Store id alongside arc_number/creature/technique.
+            _MODULE_RESOLVE_CACHE = {
+                int(mr['m_number']): {
+                    'id': int(mr.get('id') or mr['m_number']),
+                    'arc_number': int(mr.get('arc_number') or 1),
+                    'creature_name': str(mr.get('creature_name') or 'Unknown'),
+                    'technique_name': str(mr.get('technique_name') or ''),
+                }
+                for mr in _mods if mr.get('m_number') is not None
+            }
+            _MODULE_RESOLVE_CACHE_TS = time.time()
+        except Exception:
+            pass
+    cached = _MODULE_RESOLVE_CACHE.get(meta['m_number'], {})
+    return int(cached.get('id', meta['m_number']))
+
+
+def _resolve_module_for_event(event_id_str: str):
+    """Resolve event_id like 'M1E1' to module metadata dict.
+
+    Returns dict with keys: arc_number, m_number, event_number, creature_name,
+    technique_name. Returns None if event_id_str cannot be parsed.
+
+    Queries Directus prod_modules (cached 15min); falls back to convention
+    M(N) -> Arc((N-1)//6 + 1) on Directus failure. The convention assumes the
+    V1 layout (6 modules per arc); production should rely on the Directus
+    lookup which carries the authoritative play-order vs M-number mapping.
+    """
+    global _MODULE_RESOLVE_CACHE, _MODULE_RESOLVE_CACHE_TS
+    if not event_id_str:
+        return None
+    m = _EVENT_ID_PATTERN.match(str(event_id_str))
+    if not m:
+        return None
+    m_number = int(m.group(1))
+    event_number = int(m.group(2))
+
+    # Refresh cache if stale
+    if time.time() - _MODULE_RESOLVE_CACHE_TS > _MODULE_RESOLVE_CACHE_TTL_S:
+        try:
+            sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+            from directus_admin_client import DirectusAdminClient  # type: ignore
+            _client = DirectusAdminClient()
+            _mods = _client.get_items('prod_modules', limit=100)
+            _MODULE_RESOLVE_CACHE = {
+                int(mr['m_number']): {
+                    'id': int(mr.get('id') or mr['m_number']),
+                    'arc_number': int(mr.get('arc_number') or 1),
+                    'creature_name': str(mr.get('creature_name') or 'Unknown'),
+                    'technique_name': str(mr.get('technique_name') or ''),
+                }
+                for mr in _mods if mr.get('m_number') is not None
+            }
+            _MODULE_RESOLVE_CACHE_TS = time.time()
+        except Exception as e:
+            # Fail-quiet: log + fall through to convention. Caller still gets useful data.
+            print(f'[_resolve_module_for_event] Directus query failed '
+                  f'({type(e).__name__}: {e}); using convention fallback')
+
+    if m_number in _MODULE_RESOLVE_CACHE:
+        meta = _MODULE_RESOLVE_CACHE[m_number]
+    else:
+        # Convention fallback (V1 layout): M(N) -> Arc((N-1)//6 + 1).
+        # Tessa-Bramble M1-M6=Arc1, M7-M12=Arc2, etc. Returns m_number
+        # as the id since prod_modules.id == m_number for most rows (M3/M4
+        # are the known exceptions; without Directus we can't disambiguate).
+        meta = {
+            'id': m_number,
+            'arc_number': ((m_number - 1) // 6) + 1,
+            'creature_name': 'Unknown',
+            'technique_name': '',
+        }
+
+    return {
+        'arc_number': meta['arc_number'],
+        'm_number': m_number,
+        'event_number': event_number,
+        'creature_name': meta['creature_name'],
+        'technique_name': meta['technique_name'],
+    }
+
+
 # Capabilities probe cache (populated on first use)
 _BG_CAPABILITIES = None
 
@@ -865,17 +999,34 @@ def build_motion_prompt(beat: dict) -> str:
     section = beat.get("section", "") or ""
 
     emotion = beat.get("emotion", "neutral") or "neutral"
+    # Fix 5 (20260513): freeform BG emotion strings (non-VALID_EMOTIONS) are
+    # promoted to _freeform_override rather than silently discarded. The BG
+    # authors rich descriptions like "sputtering, flapping wings, freaking out"
+    # that are the intended motion. Only fall back to neutral if emotion was
+    # empty/missing.
+    _freeform_override: "str | None" = None
     if emotion not in VALID_EMOTIONS:
-        print(f"[WARN] unknown emotion {emotion!r} for speaker {speaker!r}; "
-              f"falling back to 'neutral'")
-        emotion = "neutral"
+        _freeform_override = emotion
+        print(f"[motion] freeform emotion promoted to override for speaker={speaker!r}: {emotion[:60]!r}")
+        emotion = "neutral"  # kept for beak/mouth constraint selection only
 
     lipsync_targeted = beat.get("lipsync_targeted", True)
     if lipsync_targeted is None:
         lipsync_targeted = True
 
+    # Fix 1 (20260513 motion-quality-pipeline): direct stage-direction override.
+    # When _handle_add_options_startend parses Kim's (parenthetical) cues from
+    # beat.text, it stamps _motion_override onto the beat dict. That string
+    # already passed sanitize_prompt at the call site (positive_prompt wraps
+    # build_motion_prompt's output in sanitize_prompt), so banned Rule 8.1
+    # words are scrubbed downstream. Override wins over the lookup table
+    # because Kim's authored text is more specific than the per-creature
+    # emotion vocabulary. _freeform_override (Fix 5) is second priority.
+    _override = beat.get("_motion_override") or _freeform_override
     profile = SPEAKER_MOTION_PROFILES.get(speaker)
-    if profile:
+    if _override:
+        action = _override
+    elif profile:
         action = profile.get(emotion) or profile["neutral"]
     else:
         action = SECTION_ACTIONS.get(section, DEFAULT_ACTION)
@@ -7636,7 +7787,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 _reg(
                     file_path=str(cache_path),
                     asset_type="beat_scene",
-                    module_id=1,  # M1 stub — refine when prod_modules id resolves
+                    module_id=_resolve_module_id_for_state(self.app.state),
                     event_id=None,
                     beat_id=beat_id,
                     parent_asset_id=None,
@@ -8060,7 +8211,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 asset_id, _ = _reg(
                     file_path=str(scene_path),
                     asset_type="scene_concat_mp4",
-                    module_id=1,  # M1 stub
+                    module_id=_resolve_module_id_for_state(self.app.state),
                     event_id=event_id_for_asset,
                     beat_id=None,
                     parent_asset_id=None,
@@ -8296,11 +8447,30 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_phase_suggest_script(self, body: dict) -> None:
         """POST /api/phase/suggest_script {phase, event_id?, scope_event_id?}
 
-        Calls Claude API (claude-haiku-4-5 — script suggestions don't need
-        Opus). Phase A reads phase_b_script + module description as context.
-        Phase B reads arc skeleton + therapeutic notes + phase-b-writer skill.
+        Drafts a Phase A or Phase B script via Claude API, grounded in the
+        authored Therapeutic Note + Unified Technique Inventory for the
+        current module.
 
-        Per LDs PHASE_A_PRODUCER_V1 + PHASE_B_PRODUCER_V1.
+        Resolves the current event_id (e.g., 'M1E1') to module metadata via
+        prod_modules (arc_number, m_number, creature_name, technique_name),
+        then loads:
+          - The '### Therapeutic Note —' section from
+            Arc Skeletons/ARC_NN_SKELETON_FINAL.md matching the (M<m_number>)
+            marker in the event title.
+          - The Canon/UNIFIED_TECHNIQUE_INVENTORY_v1_<latest>.md (canonical
+            technique catalog with mechanism + age suitability + clinical refs).
+
+        Phase A: also reads phase_b_script (so the demo references the
+        meditation that just played) and tailors output to the Chipper voice
+        + 30-60s playful demo format.
+        Phase B: produces 90-120s Cedric meditation with cue markers and
+        9-step arc, grounded in the Therapeutic Note's clinical framing.
+
+        Per LDs PHASE_A_PRODUCER_V1 + PHASE_B_PRODUCER_V1 +
+        PB_2_THERAPEUTIC_SOURCES_LOAD_V1 (locked 2026-05-13 to close the
+        silent-failure: prior implementation ignored both the Therapeutic
+        Note and the Technique Inventory, producing generic meditation text
+        for every module regardless of the authored technique).
         """
         # READ-ONLY probe (LLM script suggestion — does not mutate state).
         # Per spec_v2 §5.2 + SCOPE_REQUIRED_DEFAULTS_V1 read-only probes keep
@@ -8330,55 +8500,167 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 "phase": phase,
             })
 
-        # Build context per phase.
+        # Read state + resolve the event_id to module metadata.
         try:
             state = self.app.state.read_state()
         except Exception:
             state = {}
+
+        scope = self._scope_body(body)
+        # Prefer state.event_id (canonical 'M<n>E<m>' form, e.g. 'M1E1') over
+        # scope.event_id (directory form, e.g. 'Event_1') so the prod_modules
+        # resolver finds the row. state stores the M-form because it's the
+        # event identity from the production pipeline; scope normalizes to
+        # directory-id for scope-guard routing.
+        event_id_str = (
+            state.get('event_id')
+            or (body or {}).get('event_id')
+            or scope.get('event_id')
+            or (body or {}).get('scope_event_id')
+            or ''
+        )
+        module_meta = _resolve_module_for_event(event_id_str) or {
+            'arc_number': 1, 'm_number': 1, 'event_number': 1,
+            'creature_name': 'Unknown', 'technique_name': '',
+        }
+
+        # Load the authored therapeutic sources for this module.
+        bg = _bg_module()
+        therapeutic_note = bg.extract_therapeutic_note(
+            module_meta['arc_number'], module_meta['m_number'],
+        )
+        technique_inventory = bg.load_technique_inventory()
+
+        # Sources_loaded telemetry — surfaced in the JSON response so callers
+        # can detect the silent-failure regression class (handler runs but
+        # therapeutic sources fail to load).
+        sources_loaded = {
+            'therapeutic_note_chars': len(therapeutic_note),
+            'technique_inventory_chars': len(technique_inventory),
+            'arc_number': module_meta['arc_number'],
+            'm_number': module_meta['m_number'],
+            'creature_name': module_meta['creature_name'],
+            'technique_name': module_meta['technique_name'],
+        }
+        if not therapeutic_note:
+            print(
+                f'[suggest_script] WARNING: no Therapeutic Note found for '
+                f'arc={module_meta["arc_number"]} m_number={module_meta["m_number"]} '
+                f'event_id={event_id_str!r}. Claude prompt will lack authored context.'
+            )
+        if not technique_inventory:
+            print(
+                '[suggest_script] WARNING: technique inventory unavailable at '
+                'Canon/UNIFIED_TECHNIQUE_INVENTORY_v1_*.md. Claude prompt will '
+                'lack canonical technique catalog.'
+            )
+
+        # Module identity block — shared header for both phases.
+        module_identity = (
+            f"Module identity (resolved from event_id={event_id_str!r}):\n"
+            f"  - Arc: {module_meta['arc_number']}\n"
+            f"  - M-number: M{module_meta['m_number']}\n"
+            f"  - Creature: {module_meta['creature_name']}\n"
+            f"  - Technique: {module_meta['technique_name'] or '(see Therapeutic Note below)'}\n"
+        )
+
+        therapeutic_section = (
+            "Authored Therapeutic Note for THIS module (from Arc Skeleton — "
+            "this is the canonical source of truth for the technique, "
+            "rationale, and clinical framing; the script MUST teach the "
+            "technique it describes, not a generic meditation):\n"
+            f"---\n{therapeutic_note}\n---\n"
+            if therapeutic_note
+            else "Authored Therapeutic Note: (NOT FOUND — Claude must explicitly state this gap in the response if asked to write a clinically-grounded script)\n"
+        )
+
+        technique_section = (
+            "Canonical Technique Inventory (the catalog of all MindfulNest "
+            "techniques with mechanism, age suitability, and clinical "
+            "references — use the matching entry as the authoritative "
+            "definition of the technique):\n"
+            f"---\n{technique_inventory}\n---\n"
+            if technique_inventory
+            else ""
+        )
 
         if phase == "a":
             # S5.5d (v3): phase_b is TOP-LEVEL state.
             _phase_b_partition = state.get("phase_b") or {}
             phase_b_script = _phase_b_partition.get("phase_b_script") or "(no phase_b_script in state — write Phase B first or paste a draft to seed context)"
             user_prompt = (
-                "You are drafting a Phase A 'demo' script for an interactive children's "
-                "therapeutic app (MindfulNest). Phase A is the Chipper-led demonstration "
-                "that follows Phase B's calm meditation. The child has just completed "
-                "Phase B; Chipper now demonstrates the technique playfully so the child "
-                "can try it themselves.\n\n"
+                "You are drafting a Phase A 'demo' script for an interactive "
+                "children's therapeutic app (MindfulNest, ages 7-11). Phase A "
+                "is the Chipper-led playful demonstration that follows Phase "
+                "B's calm meditation. The child has just completed Phase B; "
+                "Chipper now demonstrates the technique so the child can try "
+                "it themselves.\n\n"
+                f"{module_identity}\n"
+                f"{therapeutic_section}\n"
+                f"{technique_section}\n"
+                "Phase B script just completed (the meditation the child "
+                f"just heard):\n---\n{phase_b_script}\n---\n\n"
                 "Constraints:\n"
-                "  - 30-60 seconds spoken (Chipper voice).\n"
+                "  - 30-60 seconds spoken (Chipper voice — bright, playful, "
+                "    encouraging).\n"
                 "  - Direct address ('let's try this together').\n"
-                "  - Reference the technique by name ONCE; don't restate the meditation.\n"
-                "  - No clinical jargon.\n"
-                "  - Plain text. No stage directions.\n\n"
-                f"Phase B script just completed:\n---\n{phase_b_script}\n---\n\n"
+                "  - Reference the technique by its in-world spell name "
+                "    (e.g., 'Magic Hands Spell') from the Therapeutic Note.\n"
+                "  - Demonstrate ONE concrete action the child can do at "
+                "    home (e.g., 'put your hands together and feel the warm "
+                "    tingly feeling').\n"
+                "  - Don't restate the meditation — demonstrate it.\n"
+                "  - No clinical jargon. No stage directions. Plain spoken "
+                "    text.\n\n"
                 "Write the Phase A demo script now."
             )
             system_prompt = (
-                "You are a CRI (Competence-Rooted Identity) script writer for "
-                "MindfulNest, drafting Phase A demo scripts for ages 7-11."
+                "You are a CRI (Competence-Rooted Identity) script writer "
+                "for MindfulNest, drafting Phase A playful demonstrations "
+                "for ages 7-11 in the Chipper guide-bird voice. Ground every "
+                "script in the authored Therapeutic Note + Technique "
+                "Inventory provided in the user message."
             )
         else:  # phase == "b"
-            module_id = state.get("module_id") or "M?"
             user_prompt = (
-                "You are drafting a Phase B 'meditation' script for an interactive "
-                "children's therapeutic app (MindfulNest). Phase B is the Cedric-narrated "
-                "meditation that introduces a therapeutic technique through the fictional "
+                "You are drafting a Phase B 'meditation' script for an "
+                "interactive children's therapeutic app (MindfulNest, ages "
+                "7-11). Phase B is the Cedric-narrated meditation that "
+                "introduces a therapeutic technique through the fictional "
                 "Everdale world.\n\n"
+                f"{module_identity}\n"
+                f"{therapeutic_section}\n"
+                f"{technique_section}\n"
                 "Constraints:\n"
-                "  - 90-120 seconds spoken (Cedric voice).\n"
-                "  - 9-step meditation arc: arrive → observe → invitation → technique-intro → "
-                "    technique-practice (3-4 steps) → return → seal.\n"
-                "  - Use {{INHALE_CUE}}, {{EXHALE_CUE}}, {{HOLD_CUE}} cue markers.\n"
-                "  - Frame the technique inside Everdale narrative (no clinical names).\n"
+                "  - 90-120 seconds spoken (Cedric voice — wise narrator, "
+                "    warm, unhurried).\n"
+                "  - 9-step meditation arc: arrive -> observe -> "
+                "    invitation -> technique-intro -> technique-practice "
+                "    (3-4 sub-steps) -> return -> seal.\n"
+                "  - Use {{INHALE_CUE}}, {{EXHALE_CUE}}, {{HOLD_CUE}} cue "
+                "    markers at the moments where the child's breath "
+                "    should engage with the technique.\n"
+                "  - Frame the technique inside Everdale narrative — use "
+                "    the in-world spell name (e.g., 'Magic Hands') from the "
+                "    Therapeutic Note, NOT clinical names like 'palm "
+                "    interoception'.\n"
+                "  - Teach the SPECIFIC technique described in the "
+                "    Therapeutic Note. Do NOT substitute a generic "
+                "    meditation. If the technique is palm interoception, "
+                "    the script must guide the child through feeling their "
+                "    palms. If it is physiological sigh, the script must "
+                "    guide the double-inhale-extended-exhale pattern. "
+                "    Etc.\n"
                 "  - Direct second-person address.\n\n"
-                f"Module: {module_id}.\n\n"
                 "Write the Phase B meditation script now."
             )
             system_prompt = (
-                "You are a CRI script writer drafting Phase B meditation scripts for "
-                "MindfulNest (B2C children's therapeutic app, ages 7-11). Cedric narrator voice."
+                "You are a CRI script writer drafting Phase B meditation "
+                "scripts for MindfulNest (B2C children's therapeutic app, "
+                "ages 7-11), narrated by Cedric the wizard. Ground every "
+                "script in the authored Therapeutic Note + Technique "
+                "Inventory provided in the user message — never invent or "
+                "substitute techniques."
             )
 
         # Call Anthropic Messages API via urllib (no SDK dependency).
@@ -8437,6 +8719,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             "generation_time_ms": elapsed_ms,
             "tokens_in": usage.get("input_tokens"),
             "tokens_out": usage.get("output_tokens"),
+            "sources_loaded": sources_loaded,
         })
 
     # ============================================================
@@ -8612,7 +8895,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             registered_id, _ = register_asset(
                 file_path=str(rendered),
                 asset_type="magic_clip",
-                module_id=1,
+                module_id=_resolve_module_id_for_state(self.app.state),
                 beat_id=beat_id,
                 produced_by_skill="magic_still_endpoint",
                 colloquial_name=f"magic on still {beat_id}",
@@ -8626,10 +8909,27 @@ class ProductionHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             print(f"[magic_still] WARN registered_write failed: {exc}", flush=True)
 
+        # MAG-1 fix: write magic_still_path back into state.beats[beat_id] so
+        # the client UI can render the "has magic" indicator + serve the
+        # composite on next page load. Idempotent — re-rendering overwrites.
+        magic_filename = Path(rendered).name
+        try:
+            scope = scope_router.resolve(body, self.app.event_dir.name)
+
+            def _set_magic_still(partition: dict) -> None:
+                beats = partition.setdefault("beats", {})
+                beat = beats.setdefault(beat_id, {})
+                beat["magic_still_path"] = magic_filename
+
+            scope_router.mutate_partition(self.app.state, scope, _set_magic_still)
+        except Exception as exc:
+            print(f"[magic_still] WARN state writeback failed: {exc}", flush=True)
+
         return self._send_json(200, {
             "ok": True,
             "beat_id": beat_id,
             "composite_path": str(rendered),
+            "magic_still_path": magic_filename,
             "asset_id": registered_id,
             "manual_path_points": len(clean_path),
         })
@@ -8806,7 +9106,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             registered_id, _ = register_asset(
                 file_path=str(out_path),
                 asset_type="magic_clip",
-                module_id=1,
+                module_id=_resolve_module_id_for_state(self.app.state),
                 beat_id=beat_id,
                 produced_by_skill="magic_video_endpoint",
                 colloquial_name=f"magic on video {beat_id}",
@@ -8822,10 +9122,26 @@ class ProductionHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             print(f"[magic_video] WARN registered_write failed: {exc}", flush=True)
 
+        # MAG-1 fix: write magic_video_path back into state.beats[beat_id].
+        # Same pattern as magic_still — see _handle_magic_still for rationale.
+        magic_filename = Path(out_path).name
+        try:
+            scope = scope_router.resolve(body, self.app.event_dir.name)
+
+            def _set_magic_video(partition: dict) -> None:
+                beats = partition.setdefault("beats", {})
+                beat = beats.setdefault(beat_id, {})
+                beat["magic_video_path"] = magic_filename
+
+            scope_router.mutate_partition(self.app.state, scope, _set_magic_video)
+        except Exception as exc:
+            print(f"[magic_video] WARN state writeback failed: {exc}", flush=True)
+
         return self._send_json(200, {
             "ok": True,
             "beat_id": beat_id,
             "composite_path": str(out_path),
+            "magic_video_path": magic_filename,
             "asset_id": registered_id,
             "source_dims": [width, height],
             "duration_s": vid_duration,
@@ -9058,7 +9374,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             registered_id, _ = register_asset(
                 file_path=str(out_path),
                 asset_type="magic_clip",
-                module_id=1,
+                module_id=_resolve_module_id_for_state(self.app.state),
                 produced_by_skill="watercolor_animate_endpoint",
                 colloquial_name=f"{watercolor_key} animated",
                 tags=["watercolor_animation", watercolor_key, "claude_filter_complex"],
@@ -9789,6 +10105,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     "text": beat.get("dialogue_text") or "",
                     "image_key": image_key,
                     "abs_path": abs_path,   # may be None — handled gracefully in partition seed
+                    "emotion": beat.get("emotion") or "",  # Fix 4: propagate BG sidecar emotion
+                    "scene_notes": beat.get("scene_notes") or "",  # Fix 6: stored for future motion use
                 }
                 storyboard_pos += 1
             if state_seeds:
@@ -9805,6 +10123,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
                         b = pbeats.setdefault(bid, {})
                         b["speaker"] = fields["speaker"]
                         b["text"]    = fields["text"]
+                        # Fix 4: only write emotion if non-empty (don't overwrite existing with "")
+                        if fields.get("emotion"):
+                            b["emotion"] = fields["emotion"]
+                        # Fix 6: propagate scene_notes for future motion-hint use
+                        if fields.get("scene_notes"):
+                            b["scene_notes"] = fields["scene_notes"]
                         if fields.get("image_key"):                            # NEW
                             prev = p_ov.get(bid)
                             if prev and prev != fields["image_key"]:
@@ -10167,31 +10491,77 @@ class ProductionHandler(BaseHTTPRequestHandler):
         """POST /api/bg/add-beat {after_beat_id, segment} -> {ok, beat}
         Inserts a blank beat immediately after after_beat_id in the sidecar.
         beat_id is generated as max(existing_N)+1 (zero-padded to 2 digits)
-        so gaps from prior deletes do not cause collisions."""
-        # SCOPE_ROUTER_V1 (C-4 K3 fix) — replaces legacy
-        # _assert_event_scope(allow_missing=True) and the hardcoded
-        # arc=1/event=2/phase=pre segment lookup.
-        # BG sidecar segment is derived from the resolved scope:
-        #   intro→pre, resolution→post, standalone→main
-        # Subsumes LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        # and pins LD BG_HARDCODED_SCOPE_PURGE_V1.
+        so gaps from prior deletes do not cause collisions.
+
+        Segment derivation per BG_ADD_BEAT_ACTIVE_CONTEXT_V1 (locked
+        2026-05-13): the BG tab is a MULTI-SEGMENT authoring tool by
+        design — its segment dropdown lets the user select any arc/event/
+        phase regardless of which event the storyboard tool is pinned to.
+        Segment for this write is therefore derived from (in priority):
+          1. Client's explicit `segment` field (e.g. "event_2_pre")
+          2. Sidecar `active_context` (server-side memory of last BG dropdown choice)
+          3. Storyboard scope-router fallback (only when BG sidecar has no
+             active_context yet — first-use case).
+        This supersedes the K3 BG_HARDCODED_SCOPE_PURGE_V1 storyboard-pin
+        constraint for BG-add-beat ONLY — storyboard-pin remains canonical
+        for partition writes per scope_router.mutate_partition; BG sidecar
+        is a separate authoring surface keyed by (arc, event_id_int, phase).
+        """
+        # Scope still validated for security (event_id must match running server).
         try:
             scope = scope_router.resolve(body, self.app.event_dir.name)
         except scope_router.ScopeError as e:
             return self._send_json(e.http_status, {"error": e.code, **e.detail})
 
-        try:
-            arc_number, event_id_int, phase = _resolve_bg_segment_for_scope(
-                scope.event_id, scope.video_role,
-            )
-        except ValueError as exc:
-            return self._send_json(400, {"error": "bg_segment_unresolved", "detail": str(exc)})
+        # Segment derivation — priority 1: client's explicit `segment` field.
+        # Format "event_<N>_<phase>" matches what BgTab.tsx sends at line ~303.
+        segment_raw = (body or {}).get("segment", "")
+        arc_number: int | None = None
+        event_id_int: int | None = None
+        phase: str | None = None
+        if segment_raw:
+            seg_match = re.match(r"^event_(\d+)_(\w+)$", segment_raw)
+            if seg_match:
+                event_id_int = int(seg_match.group(1))
+                phase = seg_match.group(2)
+                # BG sidecar is single-arc today; arc derives from scope.
+                # When multi-arc lands, the client should pass arc in segment.
+                arc_number = 1
+
+        # Priority 2: sidecar active_context (BG dropdown's persisted choice).
+        if event_id_int is None or phase is None:
+            bg_module = _bg_module()
+            with bg_module._sidecar_lock:
+                _ctx_sidecar = bg_module.read_sidecar()
+                _ctx = _ctx_sidecar.get("active_context") or {}
+            if _ctx:
+                try:
+                    arc_number = int(_ctx.get("arc_number", 1))
+                    event_id_int = int(_ctx.get("event_id", 0)) or None
+                    phase = _ctx.get("phase") or None
+                except (TypeError, ValueError):
+                    pass
+
+        # Priority 3: scope-router fallback (first-use case where BG sidecar
+        # has no active_context yet — usually only triggers in fresh sidecars).
+        if event_id_int is None or phase is None:
+            try:
+                arc_number, event_id_int, phase = _resolve_bg_segment_for_scope(
+                    scope.event_id, scope.video_role,
+                )
+            except ValueError as exc:
+                return self._send_json(400, {
+                    "error": "bg_segment_unresolved",
+                    "detail": str(exc),
+                    "hint": (
+                        "No BG segment could be derived: client did not "
+                        "send `segment` field, sidecar has no active_context, "
+                        "and storyboard scope is unparseable. Pick a segment "
+                        "in the BG dropdown before adding a beat."
+                    ),
+                })
 
         after_beat_id = body.get("after_beat_id", "")
-        # Note: legacy clients passed `segment` literal (e.g. "event_2_pre");
-        # the scope-derived segment is now authoritative. Older callers' segment
-        # field is ignored — by design, since the scope keys must match the
-        # storyboard tab's pinned event/role.
 
         bg = _bg_module()
         with bg._sidecar_lock:
@@ -10233,8 +10603,18 @@ class ProductionHandler(BaseHTTPRequestHandler):
             beats.insert(insert_after + 1, new_beat)
             bg.write_sidecar(sidecar)
 
-        print(f"[BG] add-beat: inserted {new_beat_id} after {after_beat_id!r}")
-        return self._send_json(200, {"ok": True, "beat": new_beat})
+        print(
+            f"[BG] add-beat: inserted {new_beat_id} into "
+            f"arc{arc_number}/event_{event_id_int}_{phase} "
+            f"after {after_beat_id!r} (segment_source="
+            f"{'client_field' if segment_raw else 'sidecar_ctx_or_scope'})"
+        )
+        return self._send_json(200, {
+            "ok": True,
+            "beat": new_beat,
+            "segment": f"event_{event_id_int}_{phase}",
+            "arc_number": arc_number,
+        })
 
     def _handle_bg_create_group(self, body: dict) -> None:
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
@@ -10758,7 +11138,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             asset_id, _abs_path = _register_asset(
                 file_path=delivery_path,
                 asset_type="still_delivery",
-                module_id=1,
+                module_id=_resolve_module_id_for_state(self.app.state),
                 beat_id=beat_id or None,
                 produced_by_skill="v59_bg_cropper",
                 iteration_notes=iteration_notes,
@@ -10864,7 +11244,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             _reg_upload(
                 file_path=dest_path,
                 asset_type=_asset_type,
-                module_id=1,
+                module_id=_resolve_module_id_for_state(self.app.state),
                 produced_by_skill="cr_upload_endpoint",
                 iteration_notes=f"Manual upload via library panel (tier={tier})",
                 tags=["library_upload", tier],
@@ -12599,16 +12979,44 @@ body {{padding-top:44px!important;}}
                 "composition, same lighting on the character."
             )
 
-            # 1. (parenthetical) anywhere → use as direct character direction.
+            # Resolve speaker for neutral-fallback pose lookup below.
+            _disp_speaker = _canonicalize_speaker(beat_state.get("speaker", "") or "")
+
+            # 1. (parenthetical) anywhere → stage direction only.
+            #    Emotion-only annotations like "(happy, friendly)" must NOT be sent
+            #    to FLUX Kontext verbatim — the character already looks happy/friendly
+            #    in the start frame, so FLUX generates a nearly-identical end frame,
+            #    and Kling barely moves (super-still symptom).
+            #    Stage directions contain physical action verbs and give FLUX a clear
+            #    geometric target (e.g. "looks at viewer" → head turns to camera).
+            #    Emotion-only parentheticals fall through to the safe neutral pose (path 3).
+            _STAGE_VERBS = {
+                "looks", "look", "looking", "glances", "glance", "faces", "face",
+                "turns", "turn", "turns to", "tilts", "tilt", "leans", "lean",
+                "reaches", "reach", "points", "point", "raises", "raise",
+                "walks", "walk", "steps", "step", "moves", "move",
+                "holds", "hold", "gestures", "gesture", "nods", "nod",
+                "bows", "bow", "crouches", "crouch", "stands", "stand",
+                "sits", "sit", "jumps", "jump", "lands", "land",
+                "extends", "extend", "lowers", "lower", "lifts", "lift",
+                "shrugs", "shrug", "waves", "wave", "claps", "clap",
+                "places", "place", "grabs", "grab", "drops", "drop",
+                "at", "toward", "forward", "backward", "sideways", "upward", "downward",
+            }
             _paren = _re.search(r'\(([^)]{3,})\)', beat_text)
             if _paren:
                 char_dir = _paren.group(1).strip()
-                end_frame_prompt = (
-                    _BG_LOCK
-                    + f"ONLY change the character: {char_dir}."
-                    + _MOUTH_TAIL
-                )
-                print(f"[add_options:dispatch] {beat_id}: end_frame_prompt from (parenthetical)")
+                _paren_words = set(_re.findall(r'\w+', char_dir.lower()))
+                _is_stage_direction = bool(_paren_words & _STAGE_VERBS)
+                if _is_stage_direction:
+                    end_frame_prompt = (
+                        _BG_LOCK
+                        + f"ONLY change the character: {char_dir}."
+                        + _MOUTH_TAIL
+                    )
+                    print(f"[add_options:dispatch] {beat_id}: end_frame_prompt from (parenthetical) stage direction")
+                else:
+                    print(f"[add_options:dispatch] {beat_id}: (parenthetical) is emotion-only {char_dir!r} — falling through to neutral pose")
 
             else:
                 # 2. [emotion] at start of text → map to expression description.
@@ -12639,18 +13047,29 @@ body {{padding-top:44px!important;}}
                         )
                         print(f"[add_options:dispatch] {beat_id}: end_frame_prompt from [emotion={_emotion!r}]")
 
-            # 3. Neutral fallback — no emotional shift; let Kling produce micro-motion.
+            # 3. Neutral fallback — use safe STATIC geometric pose (small head tilt).
+            #    "Same as input" (old) → identical frames → Kling barely moves.
+            #    SPEAKER_MOTION_PROFILES vocab (Fix 7 mistake) → FLUX Kontext
+            #    hallucinates objects from motion words → Kling produces chaos.
+            #    A simple head tilt is ALWAYS renderable by FLUX Kontext with no
+            #    hallucination risk and gives Kling a clear but safe motion target.
             if not end_frame_prompt:
+                _SAFE_NEUTRAL_POSE = {
+                    "Chipper": "head tilted gently to one side, attentive expression",
+                    "Tessa":   "head tilted gently, quiet attentive expression",
+                    "Luna":    "head turned slightly to one side, alert expression",
+                    "Benson":  "one ear tilted, head turned slightly, quiet attentive expression",
+                    "Ember":   "head turned slightly to one side, calm relaxed gaze",
+                    "Bork":    "hovering in a slightly tilted position, calm expression",
+                    "Bramble": "head turned slightly, grounded quiet presence",
+                }
+                _safe_pose = _SAFE_NEUTRAL_POSE.get(_disp_speaker, "head tilted gently, attentive expression")
                 end_frame_prompt = (
                     _BG_LOCK
-                    + "ONLY change the character: same expression as the input — "
-                    "eyes open, natural alert posture, no emotional shift, no "
-                    "expression change. Natural mouth geometry preserved, "
-                    "beak/mouth at rest. "
-                    "Same cartoon 3D Pixar-style art, same outfit, same 4:3 "
-                    "composition, same lighting on the character."
+                    + f"ONLY change the character: {_safe_pose}."
+                    + _MOUTH_TAIL
                 )
-                print(f"[add_options:dispatch] {beat_id}: end_frame_prompt neutral fallback (no cue in text)")
+                print(f"[add_options:dispatch] {beat_id}: end_frame_prompt neutral fallback — safe static pose")
 
         print(f"[add_options:dispatch] {beat_id}: -> start-end pipeline "
               f"(decision 180 universal default; prompt {len(end_frame_prompt)}c)")
@@ -12780,6 +13199,54 @@ body {{padding-top:44px!important;}}
         ok, info = validate_image_dimensions(beat_image)
         if not ok:
             return self._send_json(400, {"error": f"image validation failed: {info}"})
+
+        # Fix 1 (20260513 motion-quality-pipeline): parse Kim's stage direction
+        # from beat.text into either a direct motion-override (parenthetical)
+        # or a mapped emotion key. Without this step build_motion_prompt sees
+        # only speaker/section and defaults to "neutral" for every beat that
+        # lacks an explicit emotion field — which is all 18 resolution beats
+        # in production_state.json (Kim's symptom). The (parenthetical) form
+        # is the strongest signal (verbatim from Kim's authored text); the
+        # [emotion_tag] form is a fallback for tone-only direction.
+        # The override string is wrapped by sanitize_prompt one line below
+        # (positive_prompt = sanitize_prompt(build_motion_prompt(target_beat)))
+        # so Rule 8.1 banned words are stripped before the prompt leaves this
+        # function.
+        import re as _re_motion
+        _beat_text = target_beat.get("text", "") or ""
+        _paren_motion = _re_motion.search(r'\(([^)]{3,})\)', _beat_text)
+        if _paren_motion:
+            target_beat["_motion_override"] = _paren_motion.group(1).strip()
+            print(f"[add_options:startend] {beat_id}: motion_override from "
+                  f"(parenthetical) = {target_beat['_motion_override']!r}")
+        else:
+            _start_tag = _re_motion.match(r'^\s*\[([^\]]+)\]', _beat_text)
+            if _start_tag:
+                _raw_tag = _start_tag.group(1).strip().lower()
+                # Strip trailing modifiers (e.g. "[happy, friendly]" -> "happy")
+                _first_tag = _raw_tag.split(",")[0].strip()
+                _TTS_TAGS = {"pause", "break", "breath", "sigh", "silence"}
+                _EM_TO_VOCAB = {
+                    "curious":      "happy_excited",
+                    "excited":      "happy_excited",
+                    "happy":        "happy_excited",
+                    "delighted":    "happy_excited",
+                    "friendly":     "happy_excited",
+                    "sad":          "sad_disappointed",
+                    "disappointed": "sad_disappointed",
+                    "relieved":     "sad_disappointed",
+                    "worried":      "upset_shocked",
+                    "scared":       "upset_shocked",
+                    "surprised":    "upset_shocked",
+                    "shocked":      "upset_shocked",
+                    "determined":   "neutral",
+                    "relaxed":      "neutral",
+                }
+                if _first_tag and _first_tag not in _TTS_TAGS and _first_tag in _EM_TO_VOCAB:
+                    target_beat["emotion"] = _EM_TO_VOCAB[_first_tag]
+                    print(f"[add_options:startend] {beat_id}: emotion mapped "
+                          f"from [{_first_tag}] -> {target_beat['emotion']!r}")
+
         positive_prompt = sanitize_prompt(build_motion_prompt(target_beat))
 
         # Subject binding — load Kling element_entry for this beat's speaker.
@@ -12824,29 +13291,117 @@ body {{padding-top:44px!important;}}
                 b["phase_1"]["status"] = "polling"
         self.app.state.mutate_state(set_polling)
 
-        # Per-option loop: FLUX Kontext end frame -> Kling start-end submit.
+        # Fix 3 (20260513 motion-quality-pipeline): generate end frame via FLUX
+        # Kontext ONCE per beat and reuse for all num_new Kling options.
+        # Rule 8.3: end frame provides pixel-level gaze/pose anchoring without
+        # positive-prompt motion-lock — the one allowed exception to §8.2's
+        # do-not-stack rule. end_frame_prompt is already Rule 8.3 compliant
+        # (built by dispatcher at lines ~12605-12667 using _BG_LOCK + char-dir
+        # + _MOUTH_TAIL; no motion-lock phrases inside).
+        # Budget at line ~12748 already accounts for COST_FLUX_KONTEXT +
+        # COST_KLING_10S per option (per-option cost), so the spend check
+        # already passed for this generation.
+        # Fail-loud per Rule 19: if FLUX errors out, return 500 — no silent
+        # fallback to single-image (that masks the failure and Kim never sees
+        # the lipsync-pipeline-incompatible motion she's debugging).
+        # Graceful degradation: empty end_frame_prompt OR missing bfl_key =>
+        # explicit single-image mode with an [INFO] log (not an error).
+        end_b64_uri: str | None = None
+        if end_frame_prompt and bfl_key:
+            try:
+                end_frame_bytes = flux_kontext_generate_end_frame(
+                    start_image_bytes=start_bytes,
+                    end_prompt=end_frame_prompt,
+                    api_key=bfl_key,
+                )
+                # Rule 6: auto-upscale end frame to ≥600px shortest side.
+                end_data_uri = (
+                    "data:image/png;base64,"
+                    + base64.b64encode(end_frame_bytes).decode("ascii")
+                )
+                end_data_uri, _end_upscale_info = auto_upscale_image(end_data_uri)
+                if "upscaled" in _end_upscale_info:
+                    print(f"[add_options:startend] {beat_id} end frame: "
+                          f"{_end_upscale_info}")
+                ok_end, info_end = validate_image_dimensions(end_data_uri)
+                if not ok_end:
+                    return self._send_json(500, {
+                        "error": f"end frame validation failed: {info_end}",
+                        "beat": beat_id,
+                    })
+                end_b64_uri = end_data_uri
+                print(f"[add_options:startend] {beat_id}: FLUX Kontext end "
+                      f"frame generated ({len(end_frame_bytes):,}B)")
+                # Fix 8 (20260513): override motion prompt to natural-interpolation.
+                # Vocabulary action terms fight the frame anchors and produce barely-
+                # moving output. Per LD-177 validated pattern (Tessa beat_05):
+                # minimal prompt + specific end frame > vocabulary prompt in start-end mode.
+                # The docstring above says "Gaze anchor comes from end-frame pixel geometry,
+                # not prompt words" — this makes the motion prompt honour that design intent.
+                _in_birds_8 = _canonical_speaker in BIRD_SPEAKERS
+                _cstr_8 = "Beak closed, no speech, no lip movement." if _in_birds_8 else "Mouth closed, no speech."
+                _tail_8 = LIPSYNC_SAFE_TAIL if target_beat.get("lipsync_targeted", True) else SPRITE_IDLE_TAIL
+                _hdr_8 = f"Cartoon {_canonical_speaker} character" if _canonical_speaker else "Cartoon character"
+                positive_prompt = sanitize_prompt(
+                    f"{_hdr_8}, natural motion between start and end frames. {_cstr_8} {_tail_8}"
+                )
+                print(f"[add_options:startend] {beat_id}: motion prompt -> natural-interpolation (end frame confirmed)")
+            except SystemExit as exc:
+                return self._send_json(500, {
+                    "error": f"FLUX Kontext end frame generation failed: {exc}",
+                    "beat": beat_id,
+                    "hint": ("Check BFL (FLUX) API key or retry — FLUX Kontext "
+                             "is required for start-end pipeline"),
+                })
+            except Exception as exc:
+                return self._send_json(500, {
+                    "error": (f"FLUX Kontext unexpected error: "
+                              f"{type(exc).__name__}: {exc}"),
+                    "beat": beat_id,
+                })
+        else:
+            print(f"[add_options:startend] {beat_id}: no end frame "
+                  f"(end_frame_prompt empty or no bfl_key) — single-image mode")
+
+        # Per-option loop: Kling start-end submit (end frame reused across opts).
         submitted = 0
         submit_errors: list[str] = []
         submitted_tasks: list[str] = []
 
         for opt_idx in range(num_new):
-            # Single-image Kling: send only the beat's current image (whatever
-            # Kim has assigned via drag-drop or Beat Gen import) as the start
-            # frame. No end frame — Kling animates freely from that one image.
-            #
-            # Why single-image: sending start=end (identical frames) starves
-            # Kling — it satisfies both endpoint anchors with near-zero motion.
-            # Why no FLUX Kontext: that step generated a second frame from the
-            # source image but amplified environmental effects (trail, glows).
-            # Single-image with the beat's own image is the simplest correct path.
-            start_uri = f"data:image/png;base64,{base64.b64encode(start_bytes).decode('ascii')}"
-            print(f"[add_options:startend] {beat_id} opt{opt_idx+1} single-image Kling "
-                  f"(beat image as sole source, no end frame)")
+            # When end_b64_uri is set (FLUX Kontext succeeded), Kling receives
+            # both start+end frames per decision 172 KLING_STARTEND_V1_CAPABILITY
+            # — pinning both endpoints structurally eliminates the §8.2 settling-
+            # window / 10s-drift failure modes.
+            # When end_b64_uri is None (no end_frame_prompt OR no bfl_key), we
+            # fall back to single-image Kling — start frame only, Kling animates
+            # freely. This is the graceful-degradation path; the start-end path
+            # is the universal default per decision 180.
+            # Fix 9 (20260513): normalize start bytes to actual PNG.
+            # Crop-library overrides may be WebP on disk; sending WebP bytes
+            # with image/png MIME type causes WaveSpeed Kling to reject the
+            # submission. Convert non-PNG sources before encoding.
+            _start_bytes_png = start_bytes
+            if "image/png" not in _hdr:
+                try:
+                    from PIL import Image as _PilPng
+                    _pngbuf = io.BytesIO()
+                    _PilPng.open(io.BytesIO(start_bytes)).save(_pngbuf, format="PNG")
+                    _start_bytes_png = _pngbuf.getvalue()
+                    print(f"[add_options:startend] {beat_id}: converted start frame "
+                          f"{_hdr!r} -> PNG ({len(_start_bytes_png):,}B)")
+                except Exception as _png_exc:
+                    print(f"[add_options:startend] {beat_id}: PNG conversion failed "
+                          f"({_png_exc}), using raw bytes — may fail at WaveSpeed")
+            start_uri = f"data:image/png;base64,{base64.b64encode(_start_bytes_png).decode('ascii')}"
+            _mode_tag = "start-end" if end_b64_uri else "single-image"
+            print(f"[add_options:startend] {beat_id} opt{opt_idx+1} {_mode_tag} "
+                  f"Kling submit")
 
             try:
                 task_id = kling_startend_submit(
                     start_b64_uri=start_uri,
-                    end_b64_uri=None,   # single-image mode — Kling animates freely
+                    end_b64_uri=end_b64_uri,   # None => single-image fallback
                     prompt=positive_prompt,
                     negative_prompt=RULE8_ANTI_LIPSYNC,
                     duration=duration,
@@ -12865,9 +13420,13 @@ body {{padding-top:44px!important;}}
                 continue
 
             # Step 4: Persist option with provenance.
+            # Fix 3 (20260513): source reflects whether FLUX Kontext end frame
+            # was generated (kling_startend) or we fell back to single-image.
             _eid = element_entry["element_id"] if element_entry else None
+            _source_tag = "kling_startend" if end_b64_uri else "kling_single_image"
             def add_option(st, _bid=beat_id, _tid=task_id, _ep=end_frame_prompt,
-                           _dur=duration, _eid=_eid, _role=video_role):
+                           _dur=duration, _eid=_eid, _role=video_role,
+                           _src=_source_tag):
                 # Partition-aware: use videos.<role>.beats (SCOPE_ROUTER_V1)
                 _beats = ((st.get("videos") or {}).get(_role) or {}).get("beats") or {}
                 if _bid not in _beats:
@@ -12880,7 +13439,7 @@ body {{padding-top:44px!important;}}
                     "submitted_at_epoch": int(time.time()),  # Tier 1B timeout
                     "retries": 0,
                     "last_error": None,
-                    "source": "kling_single_image",  # single start frame only, no end frame
+                    "source": _src,
                     "end_frame_prompt": _ep,
                     "cfg_scale": _KSENDPIPE_CFG_SCALE,
                     "negative_prompt": RULE8_ANTI_LIPSYNC,
@@ -12894,7 +13453,7 @@ body {{padding-top:44px!important;}}
                 _ksendpipe_directus_log("kling_startend_submitted", {
                     "beat": beat_id,
                     "kling_task_id": task_id,
-                    "source": "kling_single_image",
+                    "source": _source_tag,
                     "end_frame_prompt_preview": end_frame_prompt[:120],
                     "cfg_scale": _KSENDPIPE_CFG_SCALE,
                     "duration": duration,
@@ -13209,6 +13768,12 @@ body {{padding-top:44px!important;}}
             old = b.get("text")
             b["text"] = _t
             b["text_last_updated_at"] = _ts
+            # Clear cached end_frame_prompt when text changes — force re-derive on next Regen.
+            # Without this, stale prompts override new stage directions in beat text.
+            # Future-proofs FLUX Kontext restore: stale end_frame_prompts would otherwise
+            # silently override Kim's text edits once FLUX is re-enabled.
+            if old != _t:
+                b["end_frame_prompt"] = ""
             if _stale and old != _t:
                 b["text_modified_after_tts"] = True
             # Canonicalize-on-touch (SCR.2 Path A — Kim's pre-C-9 decision):
@@ -17043,14 +17608,16 @@ body {{padding-top:44px!important;}}
                     f"Stitch editor bake. Job: {job_name}. "
                     f"{len(slots)} slot(s), {sum(len(s.get('sfx_cues') or []) for s in slots)} SFX cues."
                 )
-                # module_id=1 sentinel for non-module-scoped assets (per _MODULE_MAP comment)
+                # module_id resolved via state.event_id -> prod_modules per
+                # LD MODULE_ID_DYNAMIC_RESOLUTION_V1; closes the Rule 19
+                # "module_id=1 sentinel" stub class.
                 # LD-460 — terminal pin check before final asset register.
                 if not self._check_event_pin(_pin, "stitch_bake_register_asset"):
                     return self._send_json(423, {"error": "event_changed_mid_job", "code": "ASYNC_JOB_GENERATION_PIN_V1", "orphaned_bake_path": str(bake_path)})
                 asset_id, _ = register_asset(
                     file_path=str(bake_path),
                     asset_type="final_atomic_mp4",
-                    module_id=1,
+                    module_id=_resolve_module_id_for_state(self.app.state),
                     event_id=None,
                     produced_by_skill="stitch-editor",
                     iteration_notes=iter_notes,
@@ -18072,17 +18639,20 @@ body {{padding-top:44px!important;}}
         })
 
     # Phase B/A preview — composes lipsync video + watercolor cues.
-    # Preflight 135 (2026-04-20): reposition to top-left with reasonable padding.
-    # Canvas is 1280x720. Phase B target: upper-left region with 60px padding
-    # from top+left edges. Tile fits within 440x440 bbox (leaves room for Cedric
-    # on the right + bottom padding). Phase A: top-right symmetric.
-    # Scaled from compose_phase_b_poc.py (800x480 canvas, OVERLAY_X=24, OVERLAY_Y=24, OVERLAY_WIDTH=260).
-    # Canvas here is 1280x720 (ratio 1.6x/1.5x) -> frame_x=40, frame_y=36, frame_max_w=420.
-    # Height 420*1.5=630 portrait bbox for 1096x1608 framed tiles (aspect 0.68).
-    _PHASE_FRAME_X = {"b": 75, "a": 830}
-    _PHASE_FRAME_Y = 50
-    _PHASE_FRAME_MAX_W = {"b": 375, "a": 375}
-    _PHASE_FRAME_MAX_H = {"b": 560, "a": 560}
+    # LD-331 WATERCOLOR_OVERLAY_SCALE_TO_BBOX_NO_PAD_V2 (effective 2026-04-20):
+    #   Phase B LEFT bbox = 600x540 at (frame_x=40, frame_y=180)
+    #   Phase A RIGHT bbox = 480x540 at (frame_x=800, frame_y=180)
+    # Watercolor PNG/MP4 scales via `scale=w=frame_max_w:h=frame_max_h:
+    # force_original_aspect_ratio=decrease` with NO centered-pad step, then
+    # lands at (frame_x, frame_y) at its native scaled size — correctly
+    # fitting LEFT vs RIGHT half of the 1280x720 canvas.
+    # Implementation (ffmpeg_stitch.py _wc_build_cue_prefilter) defaults to
+    # 600x540 for Phase B; these dicts override per-phase for the call site.
+    # Closes inventory v2 PB-17 + PA-19 WIRED-BUT-BROKEN class.
+    _PHASE_FRAME_X = {"b": 40, "a": 800}
+    _PHASE_FRAME_Y = 180
+    _PHASE_FRAME_MAX_W = {"b": 600, "a": 480}
+    _PHASE_FRAME_MAX_H = {"b": 540, "a": 540}
 
     def _handle_phase_b_preview(self, body: dict) -> None:
         """POST /api/phase_b/preview

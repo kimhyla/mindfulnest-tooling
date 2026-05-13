@@ -231,8 +231,21 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   };
 
   const onSendForLipsync = async () => {
-    if (!selectedBaseClip) {
-      setStatusMsg('Pick a base clip first.');
+    // PA-9 (Phase A): lipsync MUST target the sitting clip (the talking-head
+    // segment), not whatever clip happens to be in the base-clip dropdown.
+    // Phase A is a 3-clip sequence (fly-in / sitting / fly-out); only the
+    // sitting clip carries the dialogue audio. Per LD-375 PHASE_A_CANONICAL_PIPELINE_V1.
+    // Phase B is single-clip Cedric — selectedBaseClip is the canonical target.
+    const lipsyncClipId =
+      phase === 'a'
+        ? stateSlice.chipper_sitting_clip_id ?? selectedBaseClip
+        : selectedBaseClip;
+    if (!lipsyncClipId) {
+      setStatusMsg(
+        phase === 'a'
+          ? 'Pick a sitting clip first (Phase A 3-clip picker → sitting slot).'
+          : 'Pick a base clip first.',
+      );
       return;
     }
     setBusyAction('lipsync');
@@ -240,7 +253,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     const lipsyncEp = phase === 'a' ? 'phase_a_lipsync' : 'phase_b_lipsync';
     const res = await pathappPatch(activeScope.value, lipsyncEp, {
       phase,
-      base_clip_id: selectedBaseClip,
+      base_clip_id: lipsyncClipId,
     });
     setBusyAction(null);
     if (res.ok) {
@@ -396,6 +409,29 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     return total;
   };
 
+  // ── Script persist on blur (PB-1 / PA-1) ─────────────────────────────
+  // Save scriptDraft to server only when value actually changed since last
+  // refresh (avoid spurious writes when user just tab-focuses the textarea).
+  // Server whitelist accepts phase_a_script + phase_b_script via
+  // v2_module_patch (production_server.py:4035, 4048, 4157, 4170).
+  // Closes inventory v2 PB-1 + PA-1 WIRED-BUT-BROKEN class.
+  const onScriptBlur = async () => {
+    const currentServer = stateSlice.script ?? '';
+    if (scriptDraft === currentServer) return; // no-op
+    const field = `phase_${phase}_script`;
+    const res = await pathappPatch(activeScope.value, 'v2_module_patch', {
+      field,
+      value: scriptDraft,
+    });
+    if (res.ok) {
+      // Reflect saved value into stateSlice so subsequent blurs don't re-fire.
+      setStateSlice((s) => ({ ...s, script: scriptDraft }));
+      setStatusMsg('✓ Script saved');
+    } else {
+      setStatusMsg(`✗ Script save HTTP ${res.status}: ${res.error ?? ''}`);
+    }
+  };
+
   // ── Voice stem (Phase E) — Cursor v8 Q5: misnamed regen_audio writes voice_stem files.
   const onGenerateStem = async () => {
     setBusyAction('stem');
@@ -479,6 +515,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           rows={8}
           value={scriptDraft}
           onInput={(e: Event) => setScriptDraft((e.target as HTMLTextAreaElement).value)}
+          onBlur={onScriptBlur}
           placeholder={`Phase ${phase.toUpperCase()} script…`}
         />
 

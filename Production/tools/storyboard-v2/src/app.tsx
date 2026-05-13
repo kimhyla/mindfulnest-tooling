@@ -25,7 +25,7 @@ import { ProjectSelector } from './components/ProjectSelector';
 import { VideoSelector } from './components/VideoSelector';
 import { PhaseATab } from './components/tabs/PhaseATab';
 import { PhaseBTab } from './components/tabs/PhaseBTab';
-import { activeScope, scopeKey } from './state/scope';
+import { activeScope, activeProjectType, scopeKey } from './state/scope';
 import './app.css';
 
 function readStoredActiveTab(): TabKey {
@@ -39,8 +39,10 @@ function readStoredActiveTab(): TabKey {
 }
 
 // Top-level signals — cross-tab UI state lives here, NOT in any component
-// closure. This keeps state explicit and inspectable.
-const activeTab = signal<TabKey>(readStoredActiveTab());
+// closure. This keeps state explicit and inspectable. activeTab is exported
+// so cross-cutting components (e.g. LibraryPanel per LD-682
+// STITCHER_LIBRARY_DEFAULT_SFX_TIER_V1) can react to tab transitions.
+export const activeTab = signal<TabKey>(readStoredActiveTab());
 function ActivePane() {
   switch (activeTab.value) {
     case 'storyboard':
@@ -98,7 +100,10 @@ export function App() {
             Path C rewrite &middot; Session 4 v3.1 — full producer wiring + animate + stitcher complete
           </span>
           <ProjectSelector />
-          <VideoSelector />
+          {/* CC-9: hide VideoSelector in milestone scope — milestones have no
+              per-video-role partitioning; their content is the single
+              'standalone' video. Reactive on activeProjectType signal. */}
+          {activeProjectType.value === 'event' ? <VideoSelector /> : null}
         </header>
 
         <TabBar activeTab={activeTab} />
