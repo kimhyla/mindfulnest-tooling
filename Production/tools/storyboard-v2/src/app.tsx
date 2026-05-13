@@ -31,7 +31,7 @@ import './app.css';
 function readStoredActiveTab(): TabKey {
   try {
     const raw = sessionStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
-    if (raw && TABS.some((t) => t.key === raw)) return raw as TabKey;
+    if (raw && raw !== 'cropper' && TABS.some((t) => t.key === raw)) return raw as TabKey;
   } catch {
     // ignore
   }
