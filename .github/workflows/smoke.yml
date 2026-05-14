@@ -27,3 +27,24 @@ jobs:
       - name: Build dist
         working-directory: Production/tools/storyboard-v2
         run: npm run build
+
+  body-key-contract:
+    # Counter-B Option B — closes prod_blockers id=140 + LD
+    # BODY_KEY_CONTRACT_CI_GREP_GATE_V1. Fails CI when the storyboard-v2
+    # client sends a body key the server never reads, OR the server reads a
+    # key the client never sends, for any registered MUTATION_ENDPOINT.
+    # Tolerates known fossil mismatches via baseline file. Tolerates
+    # explicit `# BODY_KEY_ALLOW:` / `// BODY_KEY_ALLOW:` annotations.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run unit tests for the check
+        run: python3 -m pytest Production/scripts/tests/test_body_key_contract_check.py -v
+      - name: Enforce body-key contract (delta vs baseline)
+        run: |
+          python3 Production/scripts/body_key_contract_check.py \
+            --baseline Production/scripts/body_key_contract_baseline.json
