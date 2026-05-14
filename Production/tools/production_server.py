@@ -938,7 +938,18 @@ SPEAKER_MOTION_PROFILES: "dict[str, dict[str, str]]" = {
         "happy_excited":    "energetic body bounce, quick wing flutter, enthusiastic head nod, bright feather ruffle",
         "upset_shocked":    "quick wing half-lift, feather bristle, sharp head turn, rapid blink",
         "sad_disappointed": "soft feather settle, gentle wing-fold, head tilt, quiet blinking",
-        "neutral":          "small hops in place, wing adjustments, warm head tilts, bright eye sparkle",
+        # Rewrite 2026-05-14 per CHIPPER_NEUTRAL_PROFILE_STILLNESS_REWRITE_V1 +
+        # 3+3 Opus debate (Advocate A Candidate B; Counter B/C rejected as
+        # Rule-8.2-violating or over-engineering). Prior string "small hops in
+        # place, wing adjustments, warm head tilts, bright eye sparkle" was
+        # the literal source of the bouncing-Chipper + eye-sparkle Kling
+        # output Kim repeatedly reported. New vocabulary preserves Chipper
+        # character (still attentive, still warm) without locomotion verbs
+        # ("hops") or VFX verbs ("sparkle"). Pattern-matched against sister
+        # neutrals (Tessa/Luna shapes) for Rule 8.1/8.2/8.4 compliance.
+        # Override path (Fix 1 _motion_override) still wins when present —
+        # this only affects the fall-through case.
+        "neutral":          "gentle head micro-tilt, quiet wing adjustments, soft feather ripple, attentive blink",
     },
 }
 
