@@ -5772,6 +5772,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_v2_beat_swap_to_a(_beat_id_from_body, body)
             if path == "/api/beat/update_text":
                 return self._handle_beat_update_text(body)
+            if path == "/api/beat/update_speaker":
+                # LD CHARACTER_DROPDOWN_RESTORED_V1 — speaker dropdown
+                # write path mirroring update_text. Storyboard tab routes
+                # through here; BG tab still uses /api/bg/update-beat which
+                # already accepts `speaker` via _BG_BEAT_WRITABLE.
+                return self._handle_beat_update_speaker(body)
             # BEAT_GRAFT_RECOVERY_MECHANISM_V1 (C-7) — Pillar 7 cornerstone.
             # Cross-event/role beat move with audit + idempotency + pre-image.
             if path == "/api/beat/graft":
@@ -14167,6 +14173,76 @@ body {{padding-top:44px!important;}}
             ),
             "old_text_preview": (old_text or "")[:100],
             "tts_regen": tts_regen_result,
+        })
+
+    # ------------------------------------------------------------------
+    # LD CHARACTER_DROPDOWN_RESTORED_V1 — speaker dropdown write path for
+    # the Storyboard tab. Mirrors _handle_beat_update_text contract but
+    # without HTML L[] patching (speaker is metadata, not body text).
+    # BG tab still uses /api/bg/update-beat which has its own _BG_BEAT_WRITABLE
+    # gate. Both paths converge on patch_state(field='speaker', ...) semantics:
+    # canonicalize at write boundary (SPEAKER_WRITE_BOUNDARY_CANONICALIZATION_V1)
+    # + dual-write top-level + phase_1 (SPEAKER_DUAL_STORE_DEPRECATION_V1) +
+    # set phase_1.speaker_mismatch + flip text_modified_after_tts so the
+    # stale-TTS badge surfaces in the UI.
+    # ------------------------------------------------------------------
+    def _handle_beat_update_speaker(self, body: dict) -> None:
+        """POST /api/beat/update_speaker {beat|beat_id, speaker, event_id?}"""
+        try:
+            scope = scope_router.resolve(body, self.app.event_dir.name)
+        except scope_router.ScopeError as e:
+            return self._send_json(e.http_status, {"error": e.code, **e.detail})
+        beat_id = body.get("beat") or body.get("beat_id") or scope.beat_id
+        new_speaker_raw = body.get("speaker")
+        if not beat_id or new_speaker_raw is None:
+            return self._send_json(400, {"error": "missing 'beat' or 'speaker'"})
+        if not isinstance(new_speaker_raw, str):
+            return self._send_json(400, {"error": "'speaker' must be a string"})
+        new_speaker = new_speaker_raw.strip()
+        if not new_speaker:
+            return self._send_json(400, {"error": "'speaker' must be a non-empty string"})
+        if len(new_speaker) > 100:
+            return self._send_json(400, {"error": "speaker exceeds 100 chars"})
+
+        canonical = _canonicalize_speaker(new_speaker) or new_speaker
+        tts_exists = _find_beat_audio(self.app.event_dir, beat_id, app=self.app) is not None
+        now_iso = datetime.now(timezone.utc).isoformat()
+        _holder: dict = {}
+
+        def update_partition(partition, _bid=beat_id, _spk=canonical, _stale=tts_exists, _ts=now_iso):
+            beats = partition.setdefault("beats", {})
+            b = beats.setdefault(_bid, {})
+            old_top = b.get("speaker") or ""
+            p1 = b.setdefault("phase_1", {})
+            old_p1 = p1.get("speaker") or ""
+            old_speaker = old_top or old_p1
+            b["speaker"] = _spk
+            p1["speaker"] = _spk
+            if old_speaker != _spk:
+                p1["speaker_mismatch"] = True
+                p1["speaker_mismatch_set_at"] = _ts
+                if _stale:
+                    b["text_modified_after_tts"] = True
+            _holder["old"] = old_speaker
+            _holder["changed"] = (old_speaker != _spk)
+
+        self.app.state.mutate_video_state(scope.video_role, update_partition)
+
+        try:
+            _write_sidecar_L_json(self.app, self.app.state.read_state())
+        except Exception as exc:  # noqa: BLE001
+            print(f"[update_speaker] WARN sidecar regen failed: "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+
+        self._send_json(200, {
+            "ok": True,
+            "beat": beat_id,
+            "speaker": canonical,
+            "saved_at": now_iso,
+            "changed": _holder.get("changed", False),
+            "text_modified_after_tts": (
+                tts_exists and _holder.get("changed", False)
+            ),
         })
 
     # ------------------------------------------------------------------

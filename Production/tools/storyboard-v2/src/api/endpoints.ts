@@ -57,6 +57,12 @@ export const MUTATION_ENDPOINTS = {
   bg_reorder_beats: `${SERVER_BASE}/api/bg/reorder-beats`,
   assign_image: `${SERVER_BASE}/api/assign-image`,
   beat_update_text: `${SERVER_BASE}/api/beat/update_text`,
+  // Character speaker dropdown — per-beat speaker mutation (LD CHARACTER_DROPDOWN_RESTORED_V1).
+  // Mirrors beat_update_text contract (event_id scope key, beat body field). Server
+  // canonicalizes the value via _canonicalize_speaker, dual-writes top-level +
+  // phase_1.speaker (SPEAKER_DUAL_STORE_DEPRECATION_V1), and sets
+  // text_modified_after_tts=true on change so the stale-TTS badge fires.
+  beat_update_speaker: `${SERVER_BASE}/api/beat/update_speaker`,
   inject_image: `${SERVER_BASE}/api/inject-image`,
   cr_save_crop: `${SERVER_BASE}/api/cr/save-crop`,
   cr_library_delete: `${SERVER_BASE}/api/cr/library/delete`,

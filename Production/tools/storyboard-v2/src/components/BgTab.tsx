@@ -24,6 +24,15 @@ import { Spinner } from './ui/Spinner';
 import { Select } from './ui/Select';
 import { pushToast } from './ui/Toast';
 
+// Canonical speaker roster (LD CHARACTER_DROPDOWN_RESTORED_V1).
+// Kept identical to StoryboardTab.KNOWN_SPEAKERS — single source of truth
+// is content-lockfiles/voice_profiles.toml. Drift between the two consts
+// is a CI-checkable error (C13 Test D lockfile correctness).
+const KNOWN_SPEAKERS: readonly string[] = [
+  'Cedric', 'Chipper', 'Tessa', 'Luna', 'Benson',
+  'Ember', 'Bork', 'Bramble', 'Grizzle', 'Oliver',
+] as const;
+
 // ----------------------------------------------------------------
 // Modal state — single-modal stack invariant per UI_PRIMITIVES_SHARED_V1.
 // BG-9 (delete confirm), BG-34/35 (Accept All warn + confirm), BG-5 (edit chip),
@@ -337,6 +346,27 @@ export function BgTab() {
     }
   };
 
+  // Speaker dropdown handler (LD CHARACTER_DROPDOWN_RESTORED_V1).
+  // BG already accepts `speaker` field on bg_update_beat — see
+  // production_server.py _BG_BEAT_WRITABLE (line ~9937). Optimistic local
+  // update so the dropdown reflects the new value before refreshState()
+  // (matches the 2026-05-11 Rule 26 fix pattern for ref-image drops).
+  const onUpdateBeatSpeaker = async (beatId: string, nextSpeaker: string) => {
+    setBeats((bs) => bs.map((b) => (
+      b.beat_id === beatId ? { ...b, speaker: nextSpeaker } : b
+    )));
+    const result = await pathappPatch(activeScope.value, 'bg_update_beat', {
+      beat_id: beatId, speaker: nextSpeaker,
+    });
+    if (!result.ok) {
+      pushToast({
+        kind: 'error',
+        message: `Speaker save failed: ${result.error}`,
+        source: 'bg-update-speaker',
+      });
+    }
+  };
+
   const onGenerateBatch = async (beatId: string) => {
     if (activeJobId) {
       pushToast({ kind: 'info', message: 'A batch is still running.', source: 'bg-busy' });
@@ -606,6 +636,7 @@ export function BgTab() {
               busy={activeJobId !== null}
               onDelete={() => onDeleteBeat(b.beat_id)}
               onUpdateText={(t) => onUpdateBeatText(b.beat_id, t)}
+              onUpdateSpeaker={(s) => onUpdateBeatSpeaker(b.beat_id, s)}
               onGenerate={() => onGenerateBatch(b.beat_id)}
               onAccept={(optionKey) => onAcceptOption(b.beat_id, optionKey)}
               onEditChip={(c) => requestEditChip(b.beat_id, c)}
@@ -869,6 +900,8 @@ interface BeatGenCardProps {
   busy: boolean;
   onDelete: () => void;
   onUpdateText: (next: string) => void;
+  // LD CHARACTER_DROPDOWN_RESTORED_V1 — speaker dropdown change.
+  onUpdateSpeaker: (next: string) => void;
   onGenerate: () => void;
   onAccept: (optionKey: string) => void;
   // BG-5 / BG-8 / BG-18 — visible-button handlers (NOT right-click per Kim 2026-05-06).
@@ -892,7 +925,7 @@ interface BeatGenCardProps {
 
 function BeatGenCard({
   index, beat, pollResultForBeat, busy,
-  onDelete, onUpdateText, onGenerate, onAccept,
+  onDelete, onUpdateText, onUpdateSpeaker, onGenerate, onAccept,
   onEditChip, onInsertAfter, onRemoveRef, onRefresh,
   onPatchOptionTile, onPatchRefImage,
 }: BeatGenCardProps) {
@@ -942,7 +975,26 @@ function BeatGenCard({
       <div class="mn-bg-beat-meta">
         <span class="mn-bg-beat-index">#{index + 1}</span>
         <span class="mn-bg-beat-anchor">{beat.beat_id}</span>
-        {beat.speaker ? <span class="mn-beat-speaker">{beat.speaker}</span> : null}
+        <select
+          class="mn-beat-speaker"
+          data-testid={`bg-beat-speaker-${index}`}
+          value={beat.speaker ?? ''}
+          onChange={(e) => {
+            const target = e.target as HTMLSelectElement | null;
+            const v = (target?.value ?? '').trim();
+            if (v && v !== (beat.speaker ?? '')) onUpdateSpeaker(v);
+          }}
+          aria-label={`Speaker for beat ${beat.beat_id}`}
+          title="Change speaker (will trigger stale-TTS state on regen path)"
+        >
+          {(beat.speaker && !KNOWN_SPEAKERS.includes(beat.speaker)) ? (
+            <option value={beat.speaker}>{beat.speaker}</option>
+          ) : null}
+          {!beat.speaker ? <option value="">— speaker —</option> : null}
+          {KNOWN_SPEAKERS.map((s) => (
+            <option key={s} value={s}>{s}</option>
+          ))}
+        </select>
         {beat.status ? <span class="mn-dim">[{beat.status}]</span> : null}
         <button
           type="button"
