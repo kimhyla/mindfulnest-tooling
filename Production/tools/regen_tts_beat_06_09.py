@@ -163,7 +163,9 @@ def main():
     log(f"Regenerate TTS for beat_06 + beat_09 — TS {TS}")
     log("=" * 70)
     api_key = load_elevenlabs_key()
-    log(f"  elevenlabs key loaded: ...{api_key[-8:]}")
+    # CodeQL py/clear-text-logging fix (#152): do not log key suffix.
+    # Suffix (last 8 chars) is sensitive data per CWE-532; presence is enough.
+    log(f"  elevenlabs key loaded (length={len(api_key)})")
 
     results = []
     for beat_id, cfg in BEATS.items():

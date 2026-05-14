@@ -827,7 +827,8 @@ def main() -> None:
 
     # Keys
     keys = load_api_keys()
-    log(f"  keys loaded: wavespeed=...{keys['wavespeed'][-6:]}, bfl=...{keys['bfl'][-6:]}")
+    # CodeQL py/clear-text-logging fix (#108): do not log key suffixes.
+    log(f"  keys loaded: wavespeed(length={len(keys['wavespeed'])}), bfl(length={len(keys['bfl'])})")
 
     # --- Step 1: resolve start image ---
     log(f"\n[1/6] Resolve start image for {BEAT}")
