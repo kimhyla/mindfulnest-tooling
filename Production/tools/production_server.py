@@ -14665,6 +14665,13 @@ body {{padding-top:44px!important;}}
     def _handle_beat_trim(self, body: dict) -> None:
         """Set clip trim points for a beat.
         POST {"beat": "beat_07", "trim_start": 0, "trim_end": 3.5}
+                          OR {"beat_id": ..., "trim_in": 0, "trim_out": 3.5}
+
+        Per LD `BODY_KEY_BACKCOMPAT_TRIM_V1` (2026-05-14): the v59 client
+        (StoryboardTab.tsx:267-269) sends `trim_in`/`trim_out`; this handler
+        originally read only `trim_start`/`trim_end`. Same key-mismatch class
+        as F-REGEN-AUDIO-001 + LD-693 (delay_slider). Accept both to close
+        the silent no-op surfaced by the CI grep gate (LD-699).
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
         if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
@@ -14673,8 +14680,17 @@ body {{padding-top:44px!important;}}
         beat_id = body.get("beat") or body.get("beat_id")
         if not beat_id:
             return self._send_json(400, {"error": "missing 'beat'/'beat_id'"})
-        trim_start = float(body.get("trim_start", 0))
-        trim_end = body.get("trim_end")  # null = use full clip
+        # BODY_KEY_BACKCOMPAT_TRIM_V1 — accept trim_in/trim_out (client canonical)
+        # AND trim_start/trim_end (legacy server keys). Server-key-first precedence
+        # matches LD-693 (audio_delay over delay_seconds).
+        raw_trim_start = body.get("trim_start")  # BODY_KEY_ALLOW: trim_start legacy server key, see LD BODY_KEY_BACKCOMPAT_TRIM_V1
+        if raw_trim_start is None:
+            raw_trim_start = body.get("trim_in", 0)
+        trim_start = float(raw_trim_start)
+        raw_trim_end = body.get("trim_end")  # BODY_KEY_ALLOW: trim_end legacy server key, see LD BODY_KEY_BACKCOMPAT_TRIM_V1
+        if raw_trim_end is None:
+            raw_trim_end = body.get("trim_out")  # null = use full clip
+        trim_end = raw_trim_end
         if trim_start < 0:
             return self._send_json(400, {"error": "trim_start must be >= 0"})
         if trim_end is not None:
