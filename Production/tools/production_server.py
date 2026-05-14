@@ -10025,14 +10025,24 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     # thumb_b64 so BgRefSlot can <img src=...> after refresh.
                     if field in ("reference_image", "bg_ref_image") and isinstance(value, dict):
                         abs_path = value.get("abs_path") or ""
-                        # CodeQL py/path-injection gate (LD CODEQL_TOPLEVEL_FAILURE_FIX_PATH_INJECTION_V1):
-                        # client-supplied abs_path MUST resolve under an approved library root
-                        # before any os.path.exists / PIL.open. See AppContext.is_path_under_library_root.
-                        if abs_path and self.app.is_path_under_library_root(abs_path) and os.path.exists(abs_path) and not value.get("thumb_b64"):
+                        # CodeQL py/path-injection gate (LD CODEQL_PATH_INJECTION_NATIVE_PATTERN_REFACTOR_V1
+                        # — supersedes LD-702/706). Inline realpath + startswith check on the SAME
+                        # dataflow node that feeds os.path.exists / PIL.open. CodeQL's path-injection
+                        # query recognizes realpath + startswith(ROOT + os.sep) as a native sanitizer;
+                        # bool-returning helpers (is_path_under_library_root) get stripped by CodeQL's
+                        # interprocedural analysis. Same safety guarantee, native signal.
+                        _abs_resolved = os.path.realpath(abs_path) if isinstance(abs_path, str) and abs_path else ""
+                        _safe = False
+                        if _abs_resolved:
+                            for _r in self.app._library_root_dirs():
+                                if _r and (_abs_resolved == _r or _abs_resolved.startswith(_r + os.sep)):
+                                    _safe = True
+                                    break
+                        if _safe and os.path.exists(_abs_resolved) and not value.get("thumb_b64"):
                             try:
                                 from PIL import Image as _PILImage
                                 import io as _io_thumb
-                                with _PILImage.open(abs_path) as im:
+                                with _PILImage.open(_abs_resolved) as im:
                                     im.thumbnail((200, 150), _PILImage.LANCZOS)
                                     buf = _io_thumb.BytesIO()
                                     im.convert("RGB").save(buf, "JPEG", quality=72)
@@ -10041,7 +10051,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
                                 value["thumb_b64"] = _t
                                 thumb_b64 = _t
                             except (OSError, ImportError) as _thumb_err:
-                                print(f"[REFDROP] thumbnail skipped for {abs_path!r}: {_thumb_err}", flush=True)
+                                print(f"[REFDROP] thumbnail skipped for {_abs_resolved!r}: {_thumb_err}", flush=True)
                     beat[field] = value
                     written.append(field)
             bg.write_sidecar(sidecar)
@@ -10594,13 +10604,20 @@ class ProductionHandler(BaseHTTPRequestHandler):
             # Mirrors _read_image at production_server.py ~line 6192.
             thumb_b64 = None
             try:
-                # CodeQL py/path-injection gate (LD CODEQL_TOPLEVEL_FAILURE_FIX_PATH_INJECTION_V1):
-                # abs_path here came from client request body — confine to library roots
-                # before reading. See AppContext.is_path_under_library_root.
-                if abs_path and self.app.is_path_under_library_root(abs_path) and os.path.exists(abs_path):
+                # CodeQL py/path-injection gate (LD CODEQL_PATH_INJECTION_NATIVE_PATTERN_REFACTOR_V1
+                # — supersedes LD-702/706). Inline realpath + startswith check on the SAME dataflow
+                # node that feeds os.path.exists / PIL.open. Native CodeQL-recognized sanitizer.
+                _abs_resolved = os.path.realpath(abs_path) if isinstance(abs_path, str) and abs_path else ""
+                _safe = False
+                if _abs_resolved:
+                    for _r in self.app._library_root_dirs():
+                        if _r and (_abs_resolved == _r or _abs_resolved.startswith(_r + os.sep)):
+                            _safe = True
+                            break
+                if _safe and os.path.exists(_abs_resolved):
                     from PIL import Image as _PILImage
                     import io as _io_thumb
-                    with _PILImage.open(abs_path) as im:
+                    with _PILImage.open(_abs_resolved) as im:
                         im.thumbnail((200, 150), _PILImage.LANCZOS)
                         buf = _io_thumb.BytesIO()
                         im.convert("RGB").save(buf, "JPEG", quality=72)
@@ -11460,15 +11477,21 @@ class ProductionHandler(BaseHTTPRequestHandler):
         # Look up full-res gallery image.
         # Prefer abs_path from body if client sent it (R4 guard — avoids key
         # collision when two library dirs contain a same-stem file).
-        # CodeQL py/path-injection gate (LD CODEQL_TOPLEVEL_FAILURE_FIX_PATH_INJECTION_V1):
-        # client-supplied body_abs_path MUST resolve under an approved library
-        # root before os.path.isfile / downstream use. If it does not, fall
-        # through to server-side resolution from image_key (trusted lookup).
+        # CodeQL py/path-injection gate (LD CODEQL_PATH_INJECTION_NATIVE_PATTERN_REFACTOR_V1
+        # — supersedes LD-702/706). Inline realpath + startswith check on the SAME dataflow
+        # node that feeds os.path.isfile. Native CodeQL-recognized sanitizer. If body_abs_path
+        # does not resolve under an approved root, fall through to server-side resolution
+        # from image_key (trusted lookup).
         body_abs_path = body.get("abs_path")
-        if (body_abs_path
-                and self.app.is_path_under_library_root(body_abs_path)
-                and os.path.isfile(body_abs_path)):
-            abs_path = body_abs_path
+        _body_resolved = os.path.realpath(body_abs_path) if isinstance(body_abs_path, str) and body_abs_path else ""
+        _body_safe = False
+        if _body_resolved:
+            for _r in self.app._library_root_dirs():
+                if _r and (_body_resolved == _r or _body_resolved.startswith(_r + os.sep)):
+                    _body_safe = True
+                    break
+        if _body_safe and os.path.isfile(_body_resolved):
+            abs_path = _body_resolved
         else:
             abs_path = self.app.resolve_library_image_path(image_key)
         fullres = self.app.get_fullres_gallery_image(image_key)
