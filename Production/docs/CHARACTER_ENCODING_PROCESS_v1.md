@@ -13,18 +13,26 @@ When you encode a new character or revise an existing one, this process applies 
 - Pipeline registration (Directus + lockfile + voice cache)
 - Verification protocol before locking the character
 
-## Rule 1 — The three text channels MUST be distinct
+## Rule 1 — The text channels — what each piece of `beat.text` does
 
-`beat.text` is the single source for three orthogonal channels. Confusing them is the most common bug class in this pipeline:
+`beat.text` is the single source consumed by TWO independent pipelines: **TTS (ElevenLabs v3)** and **motion (Kling via FLUX Kontext)**. Each pipeline interprets the same string differently.
 
-| Channel | Format in beat.text | Consumed by | Stripped from | Locked by |
-|---|---|---|---|---|
-| **Spoken dialogue** | Plain words: `"It says 'stay loose and light'"` | ElevenLabs TTS | nothing (it IS the speech) | Rule 11 source fidelity |
-| **Visual motion direction** | `(parenthetical of 3+ chars)`: `"(walks forward, gently)"` | Kling positive prompt via `_motion_override` | TTS payload (via `_clean_text_for_tts`) | LD-443 + LD-690 |
-| **Emotional register** | `[bracket tag]`: `[warm]`, `[excited]`, `[whisper]` | ElevenLabs v3 native emotional audio | nothing (v3 reads the tag) | VOICE_ROSTER_LOCKED_v2.md §Emotional Direction |
-| **Cue marker** | `[pause]`, `[break]`, `[silence]` | TTS pause via `... ` ellipsis | Kling prompts (not motion direction) | LD-690 |
+**Revised 2026-05-14 (LD-691 supersedes LD-690):** the TTS cleaner does NOT strip parentheticals and does NOT enforce a bracket allowlist. ElevenLabs v3 already has its own heuristics for interpreting authored voice direction; we trust those. Kim writes whatever she wants in brackets; v3 decides.
 
-**Authoring rule:** write spoken dialogue plainly. Bracket emotional state. Parenthesize visual motion. Use `[pause]` for breath/silence. Do not nest. Do not put motion cues in brackets or emotion cues in parens.
+| Channel | Format in beat.text | TTS pipeline | Motion pipeline |
+|---|---|---|---|
+| **Spoken dialogue** | Plain words: `"It says 'stay loose and light'"` | spoken verbatim | ignored |
+| **Visual motion direction** | `(parenthetical at line start)`: `"(walks forward, then looks up at viewer)"` | v3 MAY interpret as voice direction or read aloud (its own heuristics) — **NOT stripped** | extracted → goes to FLUX Kontext to generate the end-frame → Kling animates start→end pose |
+| **Emotional register** | `[any bracket tag]`: `[shocked voice]`, `[warm]`, `[jaw-dropping shock]`, anything | v3 reads/interprets natively — **NOT stripped**, no allowlist | ignored |
+| **Cue marker** | `[pause]`, `[break]`, `[silence]` (case-insensitive, literal) | replaced with `... ` (ellipsis = natural pause) — **the ONLY thing stripped** | ignored |
+
+**Authoring guidance — not enforced, just suggested for predictability:**
+- Plain spoken dialogue → plain text
+- Visual motion (what the character DOES on screen) → `(parenthetical at line start)` — this is the ONLY thing FLUX Kontext + Kling read for end-frame direction
+- Voice/emotional register → `[any bracket]` — use any word or phrase, v3 will do what it can
+- Pause/break → `[pause]` (literal — this is the ONE cue marker the cleaner substitutes)
+
+**What v3 does with parentheticals is probabilistic** — if a parenthetical contains voice/emotion keywords (`(shocked voice)`, `(whisper)`), v3 usually treats as direction; if it contains pure action verbs (`(walks forward)`), v3 sometimes reads aloud. If a parenthetical gets read aloud unexpectedly, the fix is authoring-side: move the cue into a bracket tag, or rephrase. The TTS cleaner does NOT try to second-guess this.
 
 ## Rule 2 — Motion vocabulary must NEVER contain locomotion or VFX verbs in `neutral`
 
@@ -108,17 +116,17 @@ Motion verbs invite the model to invent action; posture descriptors anchor it to
 
 **Negative-prompt discipline** (per Rule 8.2, validated again in 2026-05-14 Counter B): NEVER add motion-locking phrases (`"standing still"`, `"frozen"`, `"no movement"`) to lipsync-targeted clips. Doing so starves ByteDance LatentSync's mouth-region micro-motion signal. Use POSTURE descriptors in the positive prompt instead.
 
-## Rule 7 — TTS stage-direction stripping is MANDATORY
+## Rule 7 — TTS cleaner contract (V2, supersedes V1)
 
-Per LD-690. Every ElevenLabs TTS request MUST go through `_clean_text_for_tts()`. NEVER send `beat.text` verbatim.
+Per LD-691 (supersedes LD-690). Every ElevenLabs TTS request goes through `_clean_text_for_tts()` but the cleaner is now minimal:
 
-The cleaner contract:
-- **Strip:** `(parenthetical)` of 3+ chars, `[pause]`/`[break]`/`[silence]` cue brackets
-- **Replace:** cue brackets with `" ... "` (v3 reads ellipsis as natural pause; safer than `<break/>` SSML)
-- **Preserve:** v3 native audio tags via `TTS_V3_NATIVE_TAGS` allowlist (`[warm]`, `[gentle]`, `[whisper]`, `[excited]`, etc.)
-- **Preserve:** spoken dialogue byte-for-byte (Rule 11 source fidelity)
+The cleaner contract (V2):
+- **Replace:** `[pause]` / `[break]` / `[silence]` (case-insensitive) → ` ... ` (ellipsis pause). ElevenLabs v3 reads ellipsis as natural speech pause.
+- **Pass everything else verbatim** — parentheticals, brackets of any word/phrase, dialogue, punctuation. NO allowlist. NO blanket stripping.
 
-Any new TTS submission site in the codebase MUST call the cleaner. Direct ElevenLabs calls bypassing the cleaner are a Rule 19 violation.
+V1's mistake (locked + reverted same day, 2026-05-14): V1 stripped every parenthetical of 3+ chars AND enforced a 27-word emotional-tag allowlist. Evidence V1 was over-fixing: `beat_02` audio with `(shocked, show-stopper voice)` parenthetical was authored BEFORE V1 landed and worked correctly — v3 interpreted as voice direction. V1's blanket strip would have removed Kim's voice cues.
+
+Any new TTS submission site MUST call `_clean_text_for_tts()`. Direct ElevenLabs calls bypassing the cleaner are a Rule 19 violation.
 
 ## Rule 8 — Lock the character with an invariant, not just an intent
 

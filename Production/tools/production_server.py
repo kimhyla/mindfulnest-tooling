@@ -3745,73 +3745,53 @@ def _resolve_voice_profile(speaker: str) -> dict | None:
     return None
 
 
-# ElevenLabs v3 native audio tags (LD-148 ELEVENLABS_V3_FOR_ALL_CHARACTERS +
-# VOICE_ROSTER_LOCKED_v2.md §"Emotional Direction System"). These bracket tags
-# describe emotional state and are interpreted by v3 — they MUST be preserved
-# when stripping cue markers. Lowercase canonical; matcher is case-insensitive.
-TTS_V3_NATIVE_TAGS = frozenset({
-    "warm", "gentle", "whisper", "excited", "sad", "happy", "shocked",
-    "surprised", "scared", "worried", "breath", "sigh", "laugh", "laughs",
-    "chuckle", "giggle", "soft", "quiet", "loud", "angry", "calm", "tense",
-    "relieved", "anxious", "playful", "serious", "tired", "energetic",
-    "bursting with relief and excitement", "trying to hold back tears",
-    "quiet, carrying the weight of memory",
-})
+# Cue-marker denylist: meta-markers that aren't meant to be spoken aloud.
+# ElevenLabs v3 doesn't natively understand the literal word "pause" as a
+# silence — without replacement it would speak "pause" as the noun. Replaced
+# with " ... " (ellipsis) which v3 reads as a natural speech pause.
+#
+# This is intentionally a SHORT denylist, not an allowlist. Everything else
+# (parentheticals, free-form bracket content, emotional tags) passes
+# through verbatim — ElevenLabs v3 is flexible at interpreting authored
+# voice/emotional direction and Kim should not be restricted to an
+# enumerated vocabulary.
+TTS_CUE_MARKER_PATTERN = re.compile(
+    r'\[\s*(pause|break|silence)\s*\]',
+    flags=re.IGNORECASE,
+)
 
 
 def _clean_text_for_tts(text: str) -> str:
-    """Strip stage-direction markup before sending to ElevenLabs v3.
+    """Pre-process beat.text for the ElevenLabs v3 TTS payload.
 
-    Per LD `TTS_STRIP_STAGE_DIRECTION_V1` (2026-05-14). Pre-fix bug: TTS
-    pipeline sent beat.text verbatim to ElevenLabs, causing v3 to read
-    Kim's `(parenthetical stage direction)` cues aloud as dialogue
-    (e.g., beat_16 Luna voice spoke "worked up in a comedic and increasing
-    level of frenzy"). Rule 11 source fidelity is preserved because spoken
-    dialogue is unchanged byte-for-byte — only authoring metadata is
-    stripped.
+    Per LD `TTS_STRIP_STAGE_DIRECTION_V2` (2026-05-14, supersedes V1).
 
-    Cleans:
-      - `(parenthetical stage direction)` of 3+ chars - LD-443
-        STAGE_DIRECTION_EXTRACTION_V1 designates these as image-prompt
-        cues, NEVER spoken text.
-      - `[pause]` / `[break]` / `[silence]` markers - replaced with
-        " ... " (ellipsis), which ElevenLabs v3 interprets as a natural
-        speech pause. (Chose ellipsis over `<break>` SSML to avoid v3-SSML
-        unsupported-tag risk; ellipsis works deterministically.)
-      - Stray whitespace runs after removal.
+    History — V1 (earlier on 2026-05-14) over-fixed by stripping every
+    (parenthetical) of 3+ chars + applying a 27-word allowlist for
+    bracket emotional tags. Evidence: beat_02 audio ('shocked,
+    show-stopper voice' parenthetical) was authored BEFORE V1 landed
+    and worked correctly — ElevenLabs v3 interpreted the parens as
+    voice direction. V1's blanket strip would have removed Kim's
+    voice-direction cues. The allowlist also silently dropped any
+    bracket Kim wrote that wasn't in the 27-word table.
 
-    Preserves (per VOICE_ROSTER_LOCKED_v2.md §Emotional Direction System):
-      - ElevenLabs v3 native audio tags like `[warm]`, `[gentle]`,
-        `[whisper]`, `[excited]`, etc. (TTS_V3_NATIVE_TAGS frozenset above).
-      - All spoken dialogue verbatim.
+    V2 contract: PASS EVERYTHING through verbatim EXCEPT explicit cue
+    markers `[pause]` / `[break]` / `[silence]` which become ` ... `
+    (ellipsis pause). v3 reads ellipsis as natural speech pause.
 
-    Returns the cleaned text. Logs stripping at the caller.
+    Rationale: ElevenLabs v3 already handles parenthetical voice
+    direction and bracket emotional tags with its own heuristics.
+    Kim authors freely — no allowlist restriction. If v3 reads a
+    parenthetical aloud unexpectedly, that's an authoring-style
+    decision Kim can rephrase (e.g., move the cue into a bracket tag
+    at the start of the line).
+
+    Rule 11 source fidelity: spoken dialogue is byte-for-byte preserved.
     """
     if not text:
         return text
-
-    # 1. Strip (parenthetical) stage direction of 3+ chars.
-    cleaned = re.sub(r'\([^)]{3,}\)', '', text)
-
-    # 2. Replace cue-style brackets with ellipsis pauses, preserving v3 native
-    #    emotional tags. Match [single_word] OR [multi-word phrase]; check the
-    #    canonical (lowercased, stripped) form against TTS_V3_NATIVE_TAGS.
-    def _bracket_repl(m: re.Match) -> str:
-        content = m.group(1).strip().lower()
-        # Multi-word phrasal emotional cues (e.g., "[bursting with relief...]")
-        # are passed through if the full content is in the allowlist.
-        if content in TTS_V3_NATIVE_TAGS:
-            return m.group(0)  # preserve native tag exactly as authored
-        # Cue markers (pause, break, silence) -> ellipsis pause
-        if content in ("pause", "break", "silence"):
-            return " ... "
-        # Unknown bracket — strip it (could be a typo or experimental tag);
-        # log a warning at caller.
-        return ""
-
-    cleaned = re.sub(r'\[([^\]]+)\]', _bracket_repl, cleaned)
-
-    # 3. Collapse run-on whitespace from removals.
+    cleaned = TTS_CUE_MARKER_PATTERN.sub(' ... ', text)
+    # Collapse any whitespace runs created by the substitution.
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     return cleaned
 
