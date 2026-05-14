@@ -50,3 +50,12 @@ jobs:
         run: |
           python3 Production/scripts/body_key_contract_check.py \
             --baseline Production/scripts/body_key_contract_baseline.json
+      - name: Enforce endpoint-presence contract
+        # LD DROPDOWN_SPEAKER_DURABILITY_FIX_V1 — closes the verification-of-
+        # deployment-target gap exposed on 2026-05-14: a client endpoint
+        # (/api/beat/update_speaker) was declared in MUTATION_ENDPOINTS but
+        # had no matching server route, and the body-key gate did not catch
+        # it. This step asserts every MUTATION_ENDPOINTS URL has a server
+        # route registered. Symmetric to body-key-contract; same parsers.
+        run: |
+          python3 -m pytest Production/scripts/tests/test_endpoint_presence_contract.py -v

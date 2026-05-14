@@ -5,6 +5,7 @@
     "CLIENT_EXTRA|bg_accept_beats|/api/bg/accept-beats|segment",
     "CLIENT_EXTRA|bg_add_beat|/api/bg/add-beat|phase",
     "CLIENT_EXTRA|bg_update_beat|/api/bg/update-beat|dialogue_text",
+    "CLIENT_EXTRA|bg_update_beat|/api/bg/update-beat|speaker",
     "CLIENT_EXTRA|cr_library_delete|/api/cr/library/delete|abs_path",
     "CLIENT_EXTRA|stitch_preview|/api/stitch_editor/preview|name",
     "CLIENT_EXTRA|stitch_preview|/api/stitch_editor/preview|slot",
@@ -14,14 +15,10 @@
     "CLIENT_EXTRA|stitch_save_job|/api/stitch_editor/job|slot",
     "CLIENT_EXTRA|stitch_save_job|/api/stitch_editor/job|srcFile",
     "CLIENT_EXTRA|stitch_save_job|/api/stitch_editor/job|video_path",
-    "SERVER_EXTRA|animate|/api/animate|beats",
-    "SERVER_EXTRA|animate|/api/animate|mode",
-    "SERVER_EXTRA|animate|/api/animate|options_per_beat",
     "SERVER_EXTRA|assign_image|/api/assign-image|abs_path",
     "SERVER_EXTRA|beat_add_options|/api/beat/add_options|beat",
     "SERVER_EXTRA|beat_delay|/api/beat/delay|audio_delay",
     "SERVER_EXTRA|beat_delay|/api/beat/delay|beat",
-    "SERVER_EXTRA|beat_regenerate_audio|/api/beat/regenerate_audio|beat",
     "SERVER_EXTRA|beat_trim|/api/beat/trim|beat",
     "SERVER_EXTRA|beat_update_text|/api/beat/update_text|skip_tts_regen",
     "SERVER_EXTRA|beat_use_as_final|/api/beat/use_as_final|beat",
@@ -48,7 +45,7 @@
       "endpoint": "bg_update_beat",
       "url": "?",
       "key": "",
-      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/BgTab.tsx:420",
+      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/BgTab.tsx:450",
       "server_loc": null,
       "note": "dynamic endpoint or computed/spread body key"
     },
@@ -84,8 +81,8 @@
       "endpoint": "bg_accept_beats",
       "url": "/api/bg/accept-beats",
       "key": "segment",
-      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/BgTab.tsx:490",
-      "server_loc": "Production/tools/production_server.py:10098 (_handle_bg_accept_beats)",
+      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/BgTab.tsx:520",
+      "server_loc": "Production/tools/production_server.py:10104 (_handle_bg_accept_beats)",
       "note": ""
     },
     {
@@ -93,8 +90,8 @@
       "endpoint": "bg_set_active_context",
       "url": "/api/bg/set-active-context",
       "key": "phase",
-      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/BgTab.tsx:273",
-      "server_loc": "Production/tools/production_server.py:9787 (_handle_bg_set_active_context)",
+      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/BgTab.tsx:282",
+      "server_loc": "Production/tools/production_server.py:9793 (_handle_bg_set_active_context)",
       "note": ""
     },
     {
@@ -102,8 +99,17 @@
       "endpoint": "bg_update_beat",
       "url": "/api/bg/update-beat",
       "key": "dialogue_text",
-      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/BgTab.tsx:332; /Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/BgTab.tsx:394",
-      "server_loc": "Production/tools/production_server.py:9927 (_handle_bg_update_beat)",
+      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/BgTab.tsx:341; /Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/BgTab.tsx:358; /Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/BgTab.tsx:424",
+      "server_loc": "Production/tools/production_server.py:9933 (_handle_bg_update_beat)",
+      "note": ""
+    },
+    {
+      "kind": "CLIENT_EXTRA",
+      "endpoint": "bg_update_beat",
+      "url": "/api/bg/update-beat",
+      "key": "speaker",
+      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/BgTab.tsx:341; /Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/BgTab.tsx:358; /Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/BgTab.tsx:424",
+      "server_loc": "Production/tools/production_server.py:9933 (_handle_bg_update_beat)",
       "note": ""
     },
     {
@@ -111,8 +117,8 @@
       "endpoint": "assign_image",
       "url": "/api/assign-image",
       "key": "abs_path",
-      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:811",
-      "server_loc": "Production/tools/production_server.py:11382 (_handle_assign_image)",
+      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:919",
+      "server_loc": "Production/tools/production_server.py:11388 (_handle_assign_image)",
       "note": ""
     },
     {
@@ -120,8 +126,8 @@
       "endpoint": "beat_update_text",
       "url": "/api/beat/update_text",
       "key": "skip_tts_regen",
-      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:648",
-      "server_loc": "Production/tools/production_server.py:13829 (_handle_beat_update_text)",
+      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:737",
+      "server_loc": "Production/tools/production_server.py:13835 (_handle_beat_update_text)",
       "note": ""
     },
     {
@@ -130,7 +136,7 @@
       "url": "/api/cr/library/delete",
       "key": "abs_path",
       "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/LibraryPanel.tsx:318; /Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/LibraryPanel.tsx:336",
-      "server_loc": "Production/tools/production_server.py:6673 (_handle_cr_library_delete)",
+      "server_loc": "Production/tools/production_server.py:6679 (_handle_cr_library_delete)",
       "note": ""
     },
     {
@@ -139,7 +145,7 @@
       "url": "/api/phase/suggest_script",
       "key": "phase",
       "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/phase/PhaseProducer.tsx:211",
-      "server_loc": "Production/tools/production_server.py:8556 (_handle_phase_suggest_script)",
+      "server_loc": "Production/tools/production_server.py:8562 (_handle_phase_suggest_script)",
       "note": ""
     },
     {
@@ -148,7 +154,7 @@
       "url": "/api/stitch_editor/loudnorm",
       "key": "output_path",
       "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StitcherTab.tsx:288",
-      "server_loc": "Production/tools/production_server.py:9675 (_handle_stitch_loudnorm)",
+      "server_loc": "Production/tools/production_server.py:9681 (_handle_stitch_loudnorm)",
       "note": ""
     },
     {
@@ -157,7 +163,7 @@
       "url": "/api/stitch_editor/loudnorm",
       "key": "target_lra",
       "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StitcherTab.tsx:288",
-      "server_loc": "Production/tools/production_server.py:9675 (_handle_stitch_loudnorm)",
+      "server_loc": "Production/tools/production_server.py:9681 (_handle_stitch_loudnorm)",
       "note": ""
     },
     {
@@ -166,7 +172,7 @@
       "url": "/api/stitch_editor/loudnorm",
       "key": "target_lufs",
       "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StitcherTab.tsx:288",
-      "server_loc": "Production/tools/production_server.py:9675 (_handle_stitch_loudnorm)",
+      "server_loc": "Production/tools/production_server.py:9681 (_handle_stitch_loudnorm)",
       "note": ""
     },
     {
@@ -175,7 +181,7 @@
       "url": "/api/stitch_editor/loudnorm",
       "key": "target_tp",
       "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StitcherTab.tsx:288",
-      "server_loc": "Production/tools/production_server.py:9675 (_handle_stitch_loudnorm)",
+      "server_loc": "Production/tools/production_server.py:9681 (_handle_stitch_loudnorm)",
       "note": ""
     },
     {
@@ -184,7 +190,7 @@
       "url": "/api/stitch_editor/preview",
       "key": "name",
       "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StitcherTab.tsx:247",
-      "server_loc": "Production/tools/production_server.py:17614 (_handle_stitch_preview)",
+      "server_loc": "Production/tools/production_server.py:17737 (_handle_stitch_preview)",
       "note": ""
     },
     {
@@ -193,7 +199,7 @@
       "url": "/api/stitch_editor/preview",
       "key": "slot",
       "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StitcherTab.tsx:247",
-      "server_loc": "Production/tools/production_server.py:17614 (_handle_stitch_preview)",
+      "server_loc": "Production/tools/production_server.py:17737 (_handle_stitch_preview)",
       "note": ""
     },
     {
@@ -202,7 +208,7 @@
       "url": "/api/stitch_editor/job",
       "key": "ambient_bed",
       "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StitcherTab.tsx:200; /Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StitcherTab.tsx:338; /Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/phase/PhaseProducer.tsx:292",
-      "server_loc": "Production/tools/production_server.py:16895 (_handle_stitch_save_job)",
+      "server_loc": "Production/tools/production_server.py:17018 (_handle_stitch_save_job)",
       "note": ""
     },
     {
@@ -211,7 +217,7 @@
       "url": "/api/stitch_editor/job",
       "key": "job_name",
       "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StitcherTab.tsx:200; /Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StitcherTab.tsx:338; /Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/phase/PhaseProducer.tsx:292",
-      "server_loc": "Production/tools/production_server.py:16895 (_handle_stitch_save_job)",
+      "server_loc": "Production/tools/production_server.py:17018 (_handle_stitch_save_job)",
       "note": ""
     },
     {
@@ -220,7 +226,7 @@
       "url": "/api/stitch_editor/job",
       "key": "phase",
       "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StitcherTab.tsx:200; /Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StitcherTab.tsx:338; /Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/phase/PhaseProducer.tsx:292",
-      "server_loc": "Production/tools/production_server.py:16895 (_handle_stitch_save_job)",
+      "server_loc": "Production/tools/production_server.py:17018 (_handle_stitch_save_job)",
       "note": ""
     },
     {
@@ -229,7 +235,7 @@
       "url": "/api/stitch_editor/job",
       "key": "slot",
       "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StitcherTab.tsx:200; /Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StitcherTab.tsx:338; /Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/phase/PhaseProducer.tsx:292",
-      "server_loc": "Production/tools/production_server.py:16895 (_handle_stitch_save_job)",
+      "server_loc": "Production/tools/production_server.py:17018 (_handle_stitch_save_job)",
       "note": ""
     },
     {
@@ -238,7 +244,7 @@
       "url": "/api/stitch_editor/job",
       "key": "srcFile",
       "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StitcherTab.tsx:200; /Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StitcherTab.tsx:338; /Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/phase/PhaseProducer.tsx:292",
-      "server_loc": "Production/tools/production_server.py:16895 (_handle_stitch_save_job)",
+      "server_loc": "Production/tools/production_server.py:17018 (_handle_stitch_save_job)",
       "note": ""
     },
     {
@@ -247,7 +253,7 @@
       "url": "/api/stitch_editor/job",
       "key": "video_path",
       "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StitcherTab.tsx:200; /Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StitcherTab.tsx:338; /Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/phase/PhaseProducer.tsx:292",
-      "server_loc": "Production/tools/production_server.py:16895 (_handle_stitch_save_job)",
+      "server_loc": "Production/tools/production_server.py:17018 (_handle_stitch_save_job)",
       "note": ""
     },
     {
@@ -256,7 +262,7 @@
       "url": "/api/timeline/cues",
       "key": "end_ms",
       "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StitcherTab.tsx:441",
-      "server_loc": "Production/tools/production_server.py:16417 (_handle_timeline_cue_upsert)",
+      "server_loc": "Production/tools/production_server.py:16540 (_handle_timeline_cue_upsert)",
       "note": ""
     },
     {
@@ -264,8 +270,8 @@
       "endpoint": "v2_beat_create",
       "url": "/api/v2/beat/create",
       "key": "mutation_id",
-      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:1163",
-      "server_loc": "Production/tools/production_server.py:14918 (_handle_v2_beat_create)",
+      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:1271",
+      "server_loc": "Production/tools/production_server.py:15041 (_handle_v2_beat_create)",
       "note": ""
     },
     {
@@ -273,44 +279,8 @@
       "endpoint": "bg_add_beat",
       "url": "/api/bg/add-beat",
       "key": "phase",
-      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/BgTab.tsx:301",
-      "server_loc": "Production/tools/production_server.py:10599 (_handle_bg_add_beat)",
-      "note": ""
-    },
-    {
-      "kind": "SERVER_EXTRA",
-      "endpoint": "beat_regenerate_audio",
-      "url": "/api/beat/regenerate_audio",
-      "key": "beat",
-      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:221",
-      "server_loc": "Production/tools/production_server.py:14406 (_handle_beat_regenerate_audio)",
-      "note": ""
-    },
-    {
-      "kind": "SERVER_EXTRA",
-      "endpoint": "animate",
-      "url": "/api/animate",
-      "key": "beats",
-      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:224",
-      "server_loc": "Production/tools/production_server.py:12739 (_handle_animate)",
-      "note": ""
-    },
-    {
-      "kind": "SERVER_EXTRA",
-      "endpoint": "animate",
-      "url": "/api/animate",
-      "key": "mode",
-      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:224",
-      "server_loc": "Production/tools/production_server.py:12739 (_handle_animate)",
-      "note": ""
-    },
-    {
-      "kind": "SERVER_EXTRA",
-      "endpoint": "animate",
-      "url": "/api/animate",
-      "key": "options_per_beat",
-      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:224",
-      "server_loc": "Production/tools/production_server.py:12739 (_handle_animate)",
+      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/BgTab.tsx:310",
+      "server_loc": "Production/tools/production_server.py:10605 (_handle_bg_add_beat)",
       "note": ""
     },
     {
@@ -318,8 +288,8 @@
       "endpoint": "select",
       "url": "/api/select",
       "key": "beat",
-      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:242",
-      "server_loc": "Production/tools/production_server.py:14535 (_handle_select)",
+      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:306",
+      "server_loc": "Production/tools/production_server.py:14658 (_handle_select)",
       "note": ""
     },
     {
@@ -327,8 +297,8 @@
       "endpoint": "select",
       "url": "/api/select",
       "key": "selected_option",
-      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:242",
-      "server_loc": "Production/tools/production_server.py:14535 (_handle_select)",
+      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:306",
+      "server_loc": "Production/tools/production_server.py:14658 (_handle_select)",
       "note": ""
     },
     {
@@ -336,8 +306,8 @@
       "endpoint": "beat_add_options",
       "url": "/api/beat/add_options",
       "key": "beat",
-      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:245",
-      "server_loc": "Production/tools/production_server.py:13038 (_handle_add_options)",
+      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:309",
+      "server_loc": "Production/tools/production_server.py:13044 (_handle_add_options)",
       "note": ""
     },
     {
@@ -345,8 +315,8 @@
       "endpoint": "lipsync",
       "url": "/api/lipsync",
       "key": "audio_override",
-      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:262",
-      "server_loc": "Production/tools/production_server.py:11740 (_handle_lipsync_submit)",
+      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:326",
+      "server_loc": "Production/tools/production_server.py:11746 (_handle_lipsync_submit)",
       "note": ""
     },
     {
@@ -354,8 +324,8 @@
       "endpoint": "lipsync",
       "url": "/api/lipsync",
       "key": "beat",
-      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:262",
-      "server_loc": "Production/tools/production_server.py:11740 (_handle_lipsync_submit)",
+      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:326",
+      "server_loc": "Production/tools/production_server.py:11746 (_handle_lipsync_submit)",
       "note": ""
     },
     {
@@ -363,8 +333,8 @@
       "endpoint": "lipsync",
       "url": "/api/lipsync",
       "key": "skip_auto_preroll",
-      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:262",
-      "server_loc": "Production/tools/production_server.py:11740 (_handle_lipsync_submit)",
+      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:326",
+      "server_loc": "Production/tools/production_server.py:11746 (_handle_lipsync_submit)",
       "note": ""
     },
     {
@@ -372,8 +342,8 @@
       "endpoint": "lipsync",
       "url": "/api/lipsync",
       "key": "skip_loudnorm",
-      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:262",
-      "server_loc": "Production/tools/production_server.py:11740 (_handle_lipsync_submit)",
+      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:326",
+      "server_loc": "Production/tools/production_server.py:11746 (_handle_lipsync_submit)",
       "note": ""
     },
     {
@@ -381,8 +351,8 @@
       "endpoint": "beat_use_as_final",
       "url": "/api/beat/use_as_final",
       "key": "beat",
-      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:263",
-      "server_loc": "Production/tools/production_server.py:12358 (_handle_use_as_final)",
+      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:327",
+      "server_loc": "Production/tools/production_server.py:12364 (_handle_use_as_final)",
       "note": ""
     },
     {
@@ -390,8 +360,8 @@
       "endpoint": "beat_delay",
       "url": "/api/beat/delay",
       "key": "audio_delay",
-      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:274",
-      "server_loc": "Production/tools/production_server.py:14625 (_handle_beat_delay)",
+      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:338",
+      "server_loc": "Production/tools/production_server.py:14748 (_handle_beat_delay)",
       "note": ""
     },
     {
@@ -399,8 +369,8 @@
       "endpoint": "beat_delay",
       "url": "/api/beat/delay",
       "key": "beat",
-      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:274",
-      "server_loc": "Production/tools/production_server.py:14625 (_handle_beat_delay)",
+      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:338",
+      "server_loc": "Production/tools/production_server.py:14748 (_handle_beat_delay)",
       "note": ""
     },
     {
@@ -408,8 +378,8 @@
       "endpoint": "beat_trim",
       "url": "/api/beat/trim",
       "key": "beat",
-      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:267",
-      "server_loc": "Production/tools/production_server.py:14665 (_handle_beat_trim)",
+      "client_loc": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx:331",
+      "server_loc": "Production/tools/production_server.py:14788 (_handle_beat_trim)",
       "note": ""
     }
   ]

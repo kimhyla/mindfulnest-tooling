@@ -87,6 +87,17 @@ interface EventState {
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 
 // localStorage shadow key per beat (24h TTL — checked on read).
+// Canonical speaker roster (LD CHARACTER_DROPDOWN_RESTORED_V1).
+// Mirrors content-lockfiles/voice_profiles.toml `[characters.*]` table +
+// the legacy build_storyboard.py BG_SPEAKERS list (line 1941). 10 entries
+// total: 2 storyteller voices + 6 creatures + 2 Arc 1 NPCs.
+// Source of truth: prod_voice_profiles Directus collection. Keep this list
+// in sync — drift is a CI-checkable error (C13 Test D lockfile correctness).
+const KNOWN_SPEAKERS: readonly string[] = [
+  'Cedric', 'Chipper', 'Tessa', 'Luna', 'Benson',
+  'Ember', 'Bork', 'Bramble', 'Grizzle', 'Oliver',
+] as const;
+
 function shadowKey(eventId: string, beatId: string): string {
   return `mn:v59:shadow:${eventId}:${beatId}`;
 }
@@ -690,6 +701,31 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
     writeShadow(eventId, beatId, next);
   };
 
+  // Speaker dropdown change handler (LD CHARACTER_DROPDOWN_RESTORED_V1).
+  // Writes through pathappPatch (scope-validated mutation channel) — server
+  // canonicalizes the value, dual-writes top-level + phase_1.speaker, and
+  // sets text_modified_after_tts=true so the stale-TTS badge fires. No
+  // auto-regen — Kim clicks Regen Audio to apply.
+  const onSpeakerChange = async (e: Event) => {
+    const target = e.target as HTMLSelectElement | null;
+    const nextSpeaker = (target?.value ?? '').trim();
+    if (!nextSpeaker || nextSpeaker === (beat.speaker ?? '')) return;
+    const result = await pathappPatch(activeScope.value, 'beat_update_speaker', {
+      beat: beatId,
+      speaker: nextSpeaker,
+    });
+    if (result.ok) {
+      // Trigger parent refresh so the new speaker + stale-TTS badge render.
+      onMutated();
+    } else {
+      pushToast({
+        kind: 'error',
+        message: `Speaker save failed: ${result.error ?? 'unknown'}`,
+        source: 'speaker-update',
+      });
+    }
+  };
+
   const onBlur = async () => {
     const next = editRef.current?.innerText ?? '';
     if (next === initialText) {
@@ -743,7 +779,26 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
       <div class="mn-beat-meta">
         <span class="mn-beat-index">#{index + 1}</span>
         <span class="mn-beat-anchor">{beatId}</span>
-        <span class="mn-beat-speaker">{beat.speaker ?? 'speaker'}</span>
+        <select
+          class="mn-beat-speaker"
+          data-testid={`beat-speaker-${index}`}
+          value={beat.speaker ?? ''}
+          onChange={onSpeakerChange}
+          aria-label={`Speaker for beat ${beatId}`}
+          title="Change speaker (triggers stale TTS — click Regen Audio to apply)"
+        >
+          {(beat.speaker && !KNOWN_SPEAKERS.includes(beat.speaker)) ? (
+            // Preserve legacy/unknown speaker value so the field doesn't
+            // silently switch to the first option on load. Kim can pick a
+            // canonical name to migrate. Two-write speaker dual-store keeps
+            // the on-disk value canonicalized at every beat-touch.
+            <option value={beat.speaker}>{beat.speaker}</option>
+          ) : null}
+          {!beat.speaker ? <option value="">— speaker —</option> : null}
+          {KNOWN_SPEAKERS.map((s) => (
+            <option key={s} value={s}>{s}</option>
+          ))}
+        </select>
         {beat.text_modified_after_tts ? (
           <span class="mn-beat-stale-tts" data-testid={`beat-stale-tts-${index}`}>
             stale TTS
