@@ -3,15 +3,20 @@
 //
 // API:
 //   import { pushToast, ToastHost } from './ui/Toast';
-//   pushToast({ kind: 'info' | 'success' | 'error', message: string, ttlMs?: number });
+//   pushToast({ kind: 'info' | 'success' | 'warning' | 'error', message: string, ttlMs?: number });
 //   <ToastHost /> mounts the host (already done in app.tsx).
 //
 // Cap: max 5 visible at once; oldest auto-dismisses early on overflow.
-// Default ttl: 5000ms (info/success), 8000ms (error). Click any toast to dismiss.
+// Default ttl: 5000ms (info/success), 6500ms (warning), 8000ms (error).
+// Click any toast to dismiss.
+//
+// 'warning' added 2026-05-14 per LD TTS_OVER_CAP_WARNING_AT_REGEN_V1 — surfaces
+// recoverable pre-flight issues (e.g. audio > Kling 10s cap at TTS regen time)
+// without erroring out a successful mutation.
 
 import { signal } from '@preact/signals';
 
-export type ToastKind = 'info' | 'success' | 'error';
+export type ToastKind = 'info' | 'success' | 'warning' | 'error';
 
 export interface ToastEntry {
   id: number;
@@ -28,7 +33,9 @@ let _nextId = 1;
 const MAX_VISIBLE = 5;
 
 function defaultTtl(kind: ToastKind): number {
-  return kind === 'error' ? 8000 : 5000;
+  if (kind === 'error') return 8000;
+  if (kind === 'warning') return 6500;
+  return 5000;
 }
 
 export function pushToast(entry: Omit<ToastEntry, 'id'>): number {
@@ -67,7 +74,7 @@ export function ToastHost() {
           class={`mn-toast mn-toast-${t.kind}`}
           data-testid={`toast-${t.id}`}
           data-toast-kind={t.kind}
-          role={t.kind === 'error' ? 'alert' : 'status'}
+          role={t.kind === 'error' || t.kind === 'warning' ? 'alert' : 'status'}
           onClick={() => dismissToast(t.id)}
         >
           <span class="mn-toast-message">{t.message}</span>

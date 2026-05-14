@@ -226,7 +226,12 @@ def pad_audio_for_lipsync(audio_path: Path) -> Path:
         return audio_path
 
     import tempfile
-    padded = Path(tempfile.mktemp(suffix="_padded.mp3"))
+    # py/insecure-temporary-file fix: mktemp() has a TOCTOU race window.
+    # mkstemp() atomically creates the file with mode 0600 (owner-only).
+    # We immediately close the fd because ffmpeg writes via path string.
+    fd, padded_str = tempfile.mkstemp(suffix="_padded.mp3")
+    os.close(fd)
+    padded = Path(padded_str)
 
     # ffmpeg: prepend silence + original audio + append silence
     cmd = [
