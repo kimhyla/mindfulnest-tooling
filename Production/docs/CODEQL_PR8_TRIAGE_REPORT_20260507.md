@@ -441,3 +441,25 @@ Code-scanning alerts 172/173/174/175 (the 4 high-severity findings introduced by
 **20 alerts remain open as un-classified vs this triage doc** — they are in files outside the PR #8 triage scope (path_picker.html XSS #77-83, lipsync_sender.py #86, build_*.py #96-97, pipeline.py + phase_a_tts.py + kling_startend_pipeline.py + regen_tts_beat_06_09.py clear-text logging #108/#123/#124-126/#152) or are NEW post-PR-8 alerts (production_server.py:10319-10327 path-injection #179-182). Each needs its own triage pass before dismissal. **No alert with `FIX_INLINE_PR8` verdict was dismissed** — only alerts whose downstream fix or validator could be re-verified in the current code (or already classified DISMISS_* in the triage doc) were actioned.
 
 Per [Rule 19 escape-hatch protocol], no new `SHORTCUT_*` LD was registered for this batch because the dismissals reference the existing triage doc + verifiable inline validators rather than introducing new accepted-risk surface.
+
+---
+
+## 2026-05-11 follow-up — CodeQL chip A (path-injection #179-182)
+
+The 4 NEW post-PR-8 path-injection alerts on `production_server.py:10319-10327` flagged in the previous follow-up's "20 alerts remain open" list were dismissed `false positive` on 2026-05-11 13:19:15-20Z. They are the same class as alert #175 dismissed via LD-678.
+
+**4 dismissed `false positive` (DISMISS_FALSE_POSITIVE):**
+- #179 (py/path-injection, production_server.py:10319) — sink: `os.path.isfile(file_path)` where file_path comes from `?path=` query param
+- #180 (py/path-injection, production_server.py:10323) — sink: `os.path.join(str(DROPBOX_ROOT), file_path)`
+- #181 (py/path-injection, production_server.py:10327) — sink: `alt.is_file()` after `_MN_REPO_ROOT / Path(file_path)`
+- #182 (py/path-injection, production_server.py:10326) — sink: `(_MN_REPO_ROOT / Path(file_path)).resolve()`
+
+**Rationale.** The `/files` GET handler at production_server.py has a 3-layer defense around these sinks:
+
+1. **Origin allowlist** (lines ~10300-10314) — rejects any cross-origin request whose `Origin` header is not `http://127.0.0.1:<port>` or `http://localhost:<port>`. CR/LF and arbitrary bytes cannot flow into the echoed CORS header (CodeQL py/http-response-splitting sanitizer pattern).
+2. **Resolution** (lines 10319-10327) — the flagged sinks. User input from `?path=` is resolved against either the absolute path, `DROPBOX_ROOT`-joined, or `_MN_REPO_ROOT`-joined fallback. No filesystem read happens here, only existence checks.
+3. **Containment** (lines 10336-10341) — `os.path.realpath()` on the resolved path, then prefix-match against `os.path.realpath(DROPBOX_ROOT)` and `os.path.realpath(_MN_REPO_ROOT)`. Any path that does not resolve under one of those two roots returns HTTP 403 `{"error": "path outside project root"}` BEFORE the file is opened.
+
+Path-injection attacks (e.g., `?path=../../etc/passwd`) are blocked at the containment layer. CodeQL's data-flow analysis does not trace through the `os.path.realpath` + `str.startswith(root + os.sep)` containment idiom, so it re-flags every sink that touches user-controlled bytes upstream of the check. Same precedent as alert #26 (and its re-flag #175) dismissed at `_handle_cr_save_crop`.
+
+Per [Rule 19 escape-hatch protocol], no new `SHORTCUT_*` LD was registered because the dismissals reference the existing 3-layer containment check + LD-678 precedent rather than introducing new accepted-risk surface.
