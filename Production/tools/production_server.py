@@ -14625,13 +14625,24 @@ body {{padding-top:44px!important;}}
     def _handle_beat_delay(self, body: dict) -> None:
         """Set audio delay (video lead-in) for a beat.
         POST {"beat": "beat_03", "audio_delay": 1.5}
+                          OR {"beat_id": ..., "delay_seconds": 1.5}
+
+        Per LD `BEAT_DELAY_BODY_KEY_BACKCOMPAT_V1` (2026-05-14): the v59
+        client (StoryboardTab.tsx:260) sends `delay_seconds`; this handler
+        originally read only `audio_delay`. Same key-mismatch class as
+        F-REGEN-AUDIO-001 May 11 fix. Accept both to close the silent
+        no-op (delay was getting persisted as 0 regardless of UI value).
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
         if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
         beat_id = body.get("beat") or body.get("beat_id")
-        delay = float(body.get("audio_delay", 0))
+        # Accept both v59-client `delay_seconds` and legacy `audio_delay`.
+        raw_delay = body.get("audio_delay")
+        if raw_delay is None:
+            raw_delay = body.get("delay_seconds", 0)
+        delay = float(raw_delay)
         if not beat_id:
             return self._send_json(400, {"error": "missing 'beat'/'beat_id'"})
         if delay < 0 or delay > 10:

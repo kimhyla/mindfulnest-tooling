@@ -56,7 +56,15 @@ interface BeatState {
   // Trim/delay (LD-160). Optional — older beats may not carry these.
   trim_in?: number;
   trim_out?: number | string;
-  delay_seconds?: number;
+  // Server canonical field is `audio_delay` (production_server.py:14646 writes
+  // to phase_1.audio_delay; status endpoint at :12943 returns it under this
+  // key). `delay_seconds` is kept as a legacy client alias for backwards-
+  // compat with any caller still emitting it. Fixed 2026-05-14 per
+  // BEAT_DELAY_CLIENT_HYDRATION_FIX_V1 — prior code read `beat.delay_seconds`
+  // and slider always re-defaulted to 0.0 on page reload because server only
+  // emits `audio_delay`.
+  audio_delay?: number;
+  delay_seconds?: number;  // legacy alias, deprecated
 }
 
 interface VideoPartition {
@@ -164,7 +172,13 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
   const [busy, setBusy] = useState<string | null>(null); // which button is in-flight
   const [trimIn, setTrimIn] = useState<string>(String(beat.trim_in ?? '0.0'));
   const [trimOut, setTrimOut] = useState<string>(String(beat.trim_out ?? 'full'));
-  const [delaySec, setDelaySec] = useState<string>(String(beat.delay_seconds ?? '0.0'));
+  // L6 fix 2026-05-14: server canonical key is `audio_delay`; `delay_seconds`
+  // is a legacy client-side alias kept for backcompat. Previously read only
+  // `beat.delay_seconds` which was undefined → slider always re-rendered as
+  // 0.0 on page reload even when state persisted the user's value.
+  const [delaySec, setDelaySec] = useState<string>(
+    String(beat.audio_delay ?? beat.delay_seconds ?? '0.0'),
+  );
 
   // ----------------------------------------------------------------
   // Polling (animate + lipsync)
@@ -543,13 +557,33 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
     // output video. Playing the TTS audio player simultaneously doubles the dialogue.
     // For lipsync preview, play video only — do NOT start the separate audio element.
     const isLipsyncPreview = previewOptIdx === 0;
+    // L5c fix 2026-05-14 per BEAT_PREVIEW_HONOR_AUDIO_DELAY_V1: read the
+    // persisted audio_delay (Video Lead-in slider) and defer audio.play()
+    // by that many seconds so the preview matches what the rendered MP4
+    // will do (server-side ffmpeg adelay filter bakes the same delay in).
+    // Without this, the per-beat preview ignored Kim's slider value and the
+    // audio always started at t=0 simultaneously with the video.
+    const audioDelaySec = Number(beat.audio_delay ?? beat.delay_seconds ?? 0) || 0;
     if (!isLipsyncPreview) {
       if (!aud) return;
       aud.currentTime = 0;
     }
     vid.play().catch(() => {});
-    if (!isLipsyncPreview) aud?.play().catch(() => {});
-  }, [previewOptIdx]);
+    if (!isLipsyncPreview && aud) {
+      if (audioDelaySec > 0) {
+        const ms = Math.round(audioDelaySec * 1000);
+        // Hold the audio until the delay elapses; if Kim cancels the preview
+        // (previewOptIdx changes) the effect's cleanup pauses both elements.
+        const t = window.setTimeout(() => {
+          aud.play().catch(() => {});
+        }, ms);
+        return () => {
+          window.clearTimeout(t);
+        };
+      }
+      aud.play().catch(() => {});
+    }
+  }, [previewOptIdx, beat.audio_delay, beat.delay_seconds]);
 
   useEffect(() => {
     return () => {
