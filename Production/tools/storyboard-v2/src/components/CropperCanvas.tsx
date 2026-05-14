@@ -64,6 +64,11 @@ interface DragState {
 }
 
 const HANDLE_SIZE = 10;
+/** Rule 6 (CLAUDE.md) — shortest OUTPUT side must be ≥600px. */
+const MIN_OUTPUT_PX = 600;
+/** Absolute display-space floor — fallback when scale is unknown. */
+const ABSOLUTE_MIN_DISPLAY_PX = 8;
+
 
 function aspectRatio(mode: AspectMode): number | null {
   switch (mode) {
@@ -131,8 +136,22 @@ export function CropperCanvas(props: CropperCanvasInner) {
     renderRectRef.current = null;
     imgRef.current = null;
     if (!imageSrc) return;
+    let cancelled = false;
     const img = new Image();
-    img.crossOrigin = 'anonymous';
+    // No crossOrigin — all sources are either same-origin URLs or data URIs.
+    const loadImg = (src: string) => {
+      if (cancelled) return;
+      img.src = src;
+    };
+    // /api/cr/full returns JSON {ok, data_uri} — fetch + extract before setting src.
+    if (imageSrc.startsWith('http://') || imageSrc.startsWith('https://')) {
+      fetch(imageSrc)
+        .then((r) => r.json())
+        .then((d: { data_uri?: string }) => loadImg(d.data_uri ?? imageSrc))
+        .catch(() => loadImg(imageSrc));
+    } else {
+      loadImg(imageSrc);
+    }
     img.onload = () => {
       imgRef.current = img;
       setImageReady(true);
@@ -166,9 +185,9 @@ export function CropperCanvas(props: CropperCanvasInner) {
       setCropState(initial);
     };
     img.onerror = () => {
-      setImageError(`Failed to load image: ${imageSrc}`);
+      if (!cancelled) setImageError(`Failed to load image: ${imageSrc}`);
     };
-    img.src = imageSrc;
+    return () => { cancelled = true; };
   }, [imageSrc, displayWidth, displayHeight]);
 
   // Re-draw when crop or image changes.
@@ -261,8 +280,27 @@ export function CropperCanvas(props: CropperCanvasInner) {
       if (h.includes('e')) { next.w = drag.startRect.w + dx; }
       if (h.includes('n')) { next.y = drag.startRect.y + dy; next.h = drag.startRect.h - dy; }
       if (h.includes('s')) { next.h = drag.startRect.h + dy; }
-      if (next.w < 8) { next.w = 8; if (h.includes('w')) next.x = drag.startRect.x + drag.startRect.w - 8; }
-      if (next.h < 8) { next.h = 8; if (h.includes('n')) next.y = drag.startRect.y + drag.startRect.h - 8; }
+      // Aspect-aware minimum: when locked, applyAspect sets h = w/ratio AFTER this clamp,
+      // so we must ensure minW is large enough that the resulting h also clears MIN_OUTPUT_PX.
+      const rr = renderRectRef.current;
+      const currentAspect = aspectRatio(aspect);
+      let minW = ABSOLUTE_MIN_DISPLAY_PX;
+      let minH = ABSOLUTE_MIN_DISPLAY_PX;
+      if (rr && rr.sx > 0 && rr.sy > 0) {
+        if (currentAspect) {
+          // w/sx ≥ 600  →  w ≥ 600·sx
+          // (w/currentAspect)/sy ≥ 600  →  w ≥ 600·sy·currentAspect
+          minW = Math.max(ABSOLUTE_MIN_DISPLAY_PX,
+            Math.ceil(MIN_OUTPUT_PX * rr.sx),
+            Math.ceil(MIN_OUTPUT_PX * rr.sy * currentAspect));
+          minH = Math.ceil(minW / currentAspect);
+        } else {
+          minW = Math.max(ABSOLUTE_MIN_DISPLAY_PX, Math.ceil(MIN_OUTPUT_PX * rr.sx));
+          minH = Math.max(ABSOLUTE_MIN_DISPLAY_PX, Math.ceil(MIN_OUTPUT_PX * rr.sy));
+        }
+      }
+      if (next.w < minW) { next.w = minW; if (h.includes('w')) next.x = drag.startRect.x + drag.startRect.w - minW; }
+      if (next.h < minH) { next.h = minH; if (h.includes('n')) next.y = drag.startRect.y + drag.startRect.h - minH; }
     }
     next = applyAspect(next, aspectRatio(aspect), c.width, c.height);
     next = clampRectToCanvas(next, c.width, c.height);
@@ -282,13 +320,15 @@ export function CropperCanvas(props: CropperCanvasInner) {
         const img = imgRef.current;
         const rr = renderRectRef.current;
         if (!img || !rr) return null;
-        if (crop.w < 4 || crop.h < 4) return null;
-        // Translate displayed crop → natural-image crop.
+        // Translate displayed crop → natural-image crop first, then enforce Rule 6.
         const sx = (crop.x - rr.x) / rr.sx;
         const sy = (crop.y - rr.y) / rr.sy;
         const sw = crop.w / rr.sx;
         const sh = crop.h / rr.sy;
         if (sw < 1 || sh < 1) return null;
+        // Rule 6 — output shortest side must be ≥600px. Layer A (drag clamp) should
+        // prevent reaching here, but this gate is a safety net for edge cases.
+        if (Math.min(sw, sh) < MIN_OUTPUT_PX) return null;
         const exportCanvas = document.createElement('canvas');
         exportCanvas.width = Math.round(sw);
         exportCanvas.height = Math.round(sh);

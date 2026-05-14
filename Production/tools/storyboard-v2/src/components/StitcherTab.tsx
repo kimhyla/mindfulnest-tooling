@@ -17,7 +17,7 @@
 // All actions go through pathappPatch so scope guards + snapshot fire.
 
 import { useEffect, useState } from 'preact/hooks';
-import { activeScope, scopeKey } from '../state/scope';
+import { activeScope, activeProjectType, scopeKey } from '../state/scope';
 import { apiGet, pathappPatch } from '../api/client';
 import { SERVER_BASE } from '../api/endpoints';
 import { StitcherSlotWaveform } from './StitcherSlotWaveform';
@@ -109,7 +109,10 @@ export function StitcherTab() {
   const [busySlot, setBusySlot] = useState<{ slot: SlotKey; action: string } | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
-  const [standaloneMode, setStandaloneMode] = useState(false);
+  // ST-14: derive standaloneMode from canonical activeProjectType signal —
+  // reactive on signal change. Milestone scope is always 1-slot standalone
+  // by definition; event scope is 4-slot. (Was: inferred from slot count.)
+  const standaloneMode = activeProjectType.value === 'milestone';
   const [popover, setPopover] = useState<PopoverState | null>(null);
   // F-AMBIENT-001 — fetched ambient catalog (replaces hardcoded constant).
   // Pattern lifted from PhaseProducer.tsx:154-176 so Phase A, Phase B, and
@@ -168,10 +171,8 @@ export function StitcherTab() {
           ? { ...detailData.job, name: detailData.name ?? eventJobSummary.name }
           : null;
         setJob(fullJob);
-        if (fullJob?.slots) {
-          const slotKeys = Object.keys(fullJob.slots);
-          setStandaloneMode(slotKeys.length === 1);
-        }
+        // standaloneMode is now a derived value (see component top); no need
+        // to set it here. ST-14 fix removed the slot-count inference path.
         setError(null);
       } catch (e) {
         if (!cancelled) setError(String(e));

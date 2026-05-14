@@ -16,7 +16,9 @@ import {
   activeProjectType, activeMilestoneId, activeTargetVideo,
 } from '../state/scope';
 import { apiGet, pathappPatch } from '../api/client';
+import { SERVER_BASE } from '../api/endpoints';
 import { makeDropTarget } from '../utils/dragdrop';
+import { openCropper } from '../state/cropper';
 import { Modal } from './ui/Modal';
 import { Spinner } from './ui/Spinner';
 import { Select } from './ui/Select';
@@ -478,7 +480,12 @@ export function BgTab() {
     // selections. Re-running Accept All is safe (server merges).
     const acceptedBeats = beats
       .filter((b) => b.accepted_image_key)
-      .map((b) => ({ beat_id: b.beat_id }));
+      .map((b) => ({
+        beat_id: b.beat_id,
+        accepted_image_key: b.accepted_image_key,
+        speaker: b.speaker,
+        dialogue_text: b.dialogue_text,
+      }));
     const [event_id] = (activeSegment || '|').split('|');
     const result = await pathappPatch(activeScope.value, 'bg_accept_beats', {
       beats: acceptedBeats,
@@ -604,6 +611,43 @@ export function BgTab() {
               onEditChip={(c) => requestEditChip(b.beat_id, c)}
               onInsertAfter={() => onAddBeat(b.beat_id)}
               onRemoveRef={(refField, label) => requestRemoveRef(b.beat_id, refField, label)}
+              onRefresh={() => refreshState()}
+              // 2026-05-11 Rule 26 fix — optimistic local-state patchers so the
+              // UI updates IMMEDIATELY from the server response, independent
+              // of the follow-up bg_session_state GET. Eliminates the
+              // "second drop doesn't repaint" symptom (RC1: stale
+              // pollResultForBeat shadowed persisted gpt_options on refresh)
+              // and the "Char ref shows key text instead of thumb" symptom
+              // (RC2: bg_update_beat doesn't return a thumbnail).
+              onPatchOptionTile={(slotIndex, patch) => {
+                setBeats((bs) => bs.map((bb): BgBeat => {
+                  if (bb.beat_id !== b.beat_id) return bb;
+                  const opts: (GptOption | null)[] = [...(bb.gpt_options ?? [])];
+                  while (opts.length <= slotIndex) opts.push(null);
+                  const existing = (opts[slotIndex] as GptOption | null) ?? { key: '' };
+                  opts[slotIndex] = { ...existing, ...patch };
+                  const next: BgBeat = {
+                    ...bb,
+                    gpt_options: opts.filter((o): o is GptOption => o !== null),
+                    accepted_image_key: patch.key ?? bb.accepted_image_key ?? null,
+                    status: 'lib_chosen',
+                  };
+                  return next;
+                }));
+                // RC1 fix — clear stale pollResultForBeat so the persisted
+                // gpt_options (just patched above) become the visible source.
+                setPollResults((prev) => {
+                  if (!(b.beat_id in prev)) return prev;
+                  const next = { ...prev };
+                  delete next[b.beat_id];
+                  return next;
+                });
+              }}
+              onPatchRefImage={(refField, patch) => {
+                setBeats((bs) => bs.map((bb) =>
+                  bb.beat_id === b.beat_id ? { ...bb, [refField]: patch } : bb,
+                ));
+              }}
             />
           ))}
         </ol>
@@ -831,12 +875,26 @@ interface BeatGenCardProps {
   onEditChip: (chipText: string) => void;
   onInsertAfter: () => void;
   onRemoveRef: (refField: 'reference_image' | 'bg_ref_image', label: string) => void;
+  // 2026-05-11 fix — parent refreshState() threaded into BgRefSlot + BgOptionTile.
+  onRefresh: () => void;
+  // 2026-05-11 Rule 26 fix — optimistic local-state patchers per beat.
+  // BgOptionTile calls onPatchOptionTile(slotIndex, {key, thumb_b64, ...}) on
+  // successful library-image drop to update the gpt_options[slot] entry +
+  // accepted_image_key + status WITHOUT waiting for the refresh round-trip.
+  // BgRefSlot calls onPatchRefImage('reference_image'|'bg_ref_image',
+  // {key, abs_path, thumb_b64?}) similarly for char/bg refs.
+  onPatchOptionTile: (slotIndex: number, patch: Partial<GptOption> & { key?: string; thumb_b64?: string }) => void;
+  onPatchRefImage: (
+    refField: 'reference_image' | 'bg_ref_image',
+    patch: { key?: string; abs_path?: string; thumb_b64?: string } | null,
+  ) => void;
 }
 
 function BeatGenCard({
   index, beat, pollResultForBeat, busy,
   onDelete, onUpdateText, onGenerate, onAccept,
-  onEditChip, onInsertAfter, onRemoveRef,
+  onEditChip, onInsertAfter, onRemoveRef, onRefresh,
+  onPatchOptionTile, onPatchRefImage,
 }: BeatGenCardProps) {
   const [localText, setLocalText] = useState<string>(beat.dialogue_text ?? '');
   const [chips, setChips] = useState<string[]>(extractStageChips(beat.dialogue_text ?? ''));
@@ -947,6 +1005,8 @@ function BeatGenCard({
           beatId={beat.beat_id}
           refField="reference_image"
           onRemoveRef={onRemoveRef}
+          onRefresh={onRefresh}
+          onPatchRefImage={onPatchRefImage}
         />
         <BgRefSlot
           label="BG ref"
@@ -955,6 +1015,8 @@ function BeatGenCard({
           beatId={beat.beat_id}
           refField="bg_ref_image"
           onRemoveRef={onRemoveRef}
+          onRefresh={onRefresh}
+          onPatchRefImage={onPatchRefImage}
         />
         <button
           type="button"
@@ -973,13 +1035,21 @@ function BeatGenCard({
       <div class="mn-bg-options-row" data-testid={`bg-options-row-${index}`}>
         {optionsToShow.map((opt, i) => (
           <BgOptionTile
-            key={opt?.key ?? `slot-${i}`}
+            // 2026-05-11 Rule 26 fix — key is INDEX-stable, not opt.key. With
+            // the prior `opt?.key ?? slot-${i}` key, dropping a library image
+            // changed the key from "slot-N" to lib_key, which unmount/remount
+            // sequence triggered a brief "no thumb" flash before next render.
+            // Stable index keys + optimistic onPatchOptionTile guarantee the
+            // tile re-renders in place with thumb_b64 immediately.
+            key={`bg-opt-${index}-${i}`}
             optionIndex={i}
             beatIndex={index}
             beatId={beat.beat_id}
             option={opt}
             selected={!!opt && opt.key === beat.accepted_image_key}
             onClick={() => opt?.key && onAccept(opt.key)}
+            onRefresh={onRefresh}
+            onPatchOptionTile={onPatchOptionTile}
           />
         ))}
       </div>
@@ -1017,35 +1087,70 @@ interface BgRefSlotPropsExt extends BgRefSlotProps {
   refField: 'reference_image' | 'bg_ref_image';
   // BG-18 — visible × button to remove the ref (NOT right-click per Kim 2026-05-06).
   onRemoveRef: (refField: 'reference_image' | 'bg_ref_image', label: string) => void;
+  // 2026-05-11 fix — parent refreshState() to repaint stale beats[] after drop success.
+  onRefresh: () => void;
+  // 2026-05-11 Rule 26 fix — optimistic local-state patcher (see BeatGenCardProps).
+  onPatchRefImage: (
+    refField: 'reference_image' | 'bg_ref_image',
+    patch: { key?: string; abs_path?: string; thumb_b64?: string } | null,
+  ) => void;
 }
 
-function BgRefSlot({ label, refImg, testId, beatId, refField, onRemoveRef }: BgRefSlotPropsExt) {
+function BgRefSlot({ label, refImg, testId, beatId, refField, onRemoveRef, onRefresh, onPatchRefImage }: BgRefSlotPropsExt) {
   const hasImage = !!refImg && (refImg.thumb_b64 || refImg.key);
   // R2 fix: drop target for library-image drag → POST bg_update_beat with the
   // ref field (reference_image or bg_ref_image) per server _BG_BEAT_WRITABLE
   // (production_server.py:8744).
+  //
+  // 2026-05-11 Rule 26 fix — optimistic update BEFORE the server round-trip
+  // so the slot shows the dropped image immediately. refreshState() runs
+  // afterward as a background consistency check.
   const dropHandlers = makeDropTarget(
     async (payload) => {
       if (payload.kind !== 'lib-image') return;
-      const result = await pathappPatch(activeScope.value, 'bg_update_beat', {
-        beat_id: beatId,
-        [refField]: {
-          key: payload.lib_key,
-          abs_path: payload.abs_path ?? '',
-        },
+      // OPTIMISTIC LOCAL UPDATE — sets key + abs_path immediately. The server
+      // response with thumb_b64 (if available) layers on top after the await.
+      onPatchRefImage(refField, {
+        key: payload.lib_key,
+        abs_path: payload.abs_path ?? '',
       });
+      const result = await pathappPatch<{ ok: boolean; thumb_b64?: string }>(
+        activeScope.value, 'bg_update_beat', {
+          beat_id: beatId,
+          [refField]: {
+            key: payload.lib_key,
+            abs_path: payload.abs_path ?? '',
+          },
+        },
+      );
       if (!result.ok) {
+        // ROLLBACK on server failure — clear the optimistic patch.
+        onPatchRefImage(refField, null);
         pushToast({
           kind: 'error',
           message: `${label} drop failed: ${result.error ?? `HTTP ${result.status}`}`,
           source: 'bg-ref-drop-error',
         });
       } else {
+        // Layer thumb_b64 onto the optimistic update if server returned one.
+        // Server side _handle_bg_update_beat was patched 2026-05-11 to mirror
+        // _handle_bg_accept_lib_image's PIL thumbnail generation.
+        if (result.data?.thumb_b64) {
+          onPatchRefImage(refField, {
+            key: payload.lib_key,
+            abs_path: payload.abs_path ?? '',
+            thumb_b64: result.data.thumb_b64,
+          });
+        }
         pushToast({
           kind: 'success',
           message: `${label} set: ${payload.lib_key}`,
           source: 'bg-ref-drop',
         });
+        // Background consistency check — refreshState confirms server is in
+        // sync with our optimistic local state. If a divergence appears here
+        // it would surface in the next render via setBeats from refreshState.
+        onRefresh();
       }
     },
     (p) => p.kind === 'lib-image',
@@ -1099,16 +1204,40 @@ interface BgOptionTileProps {
 
 interface BgOptionTilePropsExt extends BgOptionTileProps {
   beatId: string;
+  // 2026-05-11 fix — parent refreshState() to repaint stale option slot after drop.
+  onRefresh: () => void;
+  // 2026-05-11 Rule 26 fix — optimistic local-state patcher (see BeatGenCardProps).
+  onPatchOptionTile: (slotIndex: number, patch: Partial<GptOption> & { key?: string; thumb_b64?: string }) => void;
 }
 
-function BgOptionTile({ beatIndex, optionIndex, option, selected, onClick, beatId }: BgOptionTilePropsExt) {
+function BgOptionTile({
+  beatIndex, optionIndex, option, selected, onClick, beatId, onRefresh, onPatchOptionTile,
+}: BgOptionTilePropsExt) {
   // R2.1 fix: drop target for library-image drag → POST bg_accept_lib_image
   // with server-accurate body shape (spec §4.3): {beat_id, key, filename,
   // abs_path, slot_index}. slot_index = optionIndex (0/1/2).
+  //
+  // 2026-05-11 Rule 26 fix — optimistic update from server response. Server
+  // returns {ok, beat_id, accepted_image_key, thumb_b64, slot_index} so we can
+  // patch the local gpt_options[slot] directly without waiting for the GET
+  // round-trip (which previously got shadowed by stale pollResultForBeat).
   const dropHandlers = makeDropTarget(
     async (payload) => {
       if (payload.kind !== 'lib-image') return;
-      const result = await pathappPatch(activeScope.value, 'bg_accept_lib_image', {
+      // OPTIMISTIC LOCAL UPDATE — sets key + filename immediately so the
+      // empty-slot "(empty)" placeholder swaps to a real tile before the
+      // server response. thumb_b64 layers on after the server response.
+      onPatchOptionTile(optionIndex, {
+        key: payload.lib_key,
+        ...(payload.abs_path ? { local_path: payload.abs_path } : {}),
+      });
+      const result = await pathappPatch<{
+        ok: boolean;
+        beat_id?: string;
+        accepted_image_key?: string;
+        thumb_b64?: string;
+        slot_index?: number;
+      }>(activeScope.value, 'bg_accept_lib_image', {
         beat_id: beatId,
         key: payload.lib_key,
         filename: payload.filename ?? '',
@@ -1116,11 +1245,30 @@ function BgOptionTile({ beatIndex, optionIndex, option, selected, onClick, beatI
         slot_index: optionIndex,
       });
       if (!result.ok) {
+        // ROLLBACK on server failure — empty key, no thumb.
+        onPatchOptionTile(optionIndex, { key: '' });
         pushToast({
           kind: 'error',
           message: `Drop failed: ${result.error ?? `HTTP ${result.status}`}`,
           source: 'bg-option-drop-error',
         });
+      } else {
+        // Layer thumb_b64 from server response onto optimistic update.
+        // _handle_bg_accept_lib_image already returns thumb_b64 on success.
+        if (result.data?.thumb_b64) {
+          onPatchOptionTile(optionIndex, {
+            key: payload.lib_key,
+            thumb_b64: result.data.thumb_b64,
+            ...(payload.abs_path ? { local_path: payload.abs_path } : {}),
+          });
+        }
+        pushToast({
+          kind: 'success',
+          message: `Option ${optionIndex + 1} set: ${payload.lib_key}`,
+          source: 'bg-option-drop',
+        });
+        // Background consistency check.
+        onRefresh();
       }
     },
     (p) => p.kind === 'lib-image',
@@ -1173,6 +1321,31 @@ function BgOptionTile({ beatIndex, optionIndex, option, selected, onClick, beatI
         />
         {' '}option {optionIndex + 1}
       </label>
+      {/* ✂ Send to Cropper — hover-revealed. gallery_b64 is raw base64 (not data: URI). */}
+      {(option.gallery_b64 || option.local_path || option.thumb_b64) && (
+        <button
+          type="button"
+          class="mn-crop-btn"
+          title="Send to Cropper"
+          data-testid={`bg-option-crop-btn-${beatIndex}-${optionIndex}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            const src = option.gallery_b64
+              ? `data:image/webp;base64,${option.gallery_b64}`
+              : option.local_path
+                ? `${SERVER_BASE}/api/cr/full?abs_path=${encodeURIComponent(option.local_path)}`
+                : `data:image/webp;base64,${option.thumb_b64}`;
+            if (!src) return;
+            openCropper({
+              source: src,
+              sourceLabel: option.key ?? `beat ${beatId} option ${optionIndex + 1}`,
+              targetBeatId: beatId,
+            });
+          }}
+        >
+          ✂
+        </button>
+      )}
     </div>
   );
 }

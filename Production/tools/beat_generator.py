@@ -580,6 +580,119 @@ def extract_beats(arc_number, event_id, phase="full"):
 
 
 # ---------------------------------------------------------------------------
+# PB_2_THERAPEUTIC_SOURCES_LOAD_V1 — therapeutic source loaders for Suggest Script
+#
+# Extends existing skeleton-parsing infrastructure (_skeleton_path, _EVENT_HEADER,
+# _SECTION_THERAP, _NEXT_H3) with two public helpers:
+#   - find_event_for_module(arc_number, m_number) -> arc_event_id string or None
+#   - extract_therapeutic_note(arc_number, m_number) -> Therapeutic Note section text
+#   - load_technique_inventory() -> full text of latest Canon/UNIFIED_TECHNIQUE_INVENTORY_v1_*.md
+#
+# Used by production_server._handle_phase_suggest_script to ground Claude API
+# prompts in real authored sources instead of generic templates.
+# ---------------------------------------------------------------------------
+
+_CANON_BASE = os.path.join(_PROJECT_DIR, "Canon")
+
+# Matches "(M<n>)" anywhere in an EVENT header title (e.g., "TESSA'S FALL (M1)")
+_M_NUMBER_IN_TITLE = re.compile(r"\(M(\d+)\)", re.IGNORECASE)
+
+
+def find_event_for_module(arc_number, m_number):
+    """Find arc-event-id whose ## EVENT header title contains (M<m_number>).
+
+    Returns the arc-event-id string (e.g., '1', '3b', '5') or None if not found.
+    Per Arc 1 skeleton convention: play order differs from M-number; the M-marker
+    in the event title is the canonical mapping (e.g., 'EVENT 5: ... (M3)' = M3).
+    """
+    path = _skeleton_path(arc_number)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except Exception:
+        return None
+    for m in _EVENT_HEADER.finditer(text):
+        title = m.group(2) or ""
+        m_marker = _M_NUMBER_IN_TITLE.search(title)
+        if m_marker and int(m_marker.group(1)) == int(m_number):
+            return str(m.group(1))
+    return None
+
+
+def extract_therapeutic_note(arc_number, m_number):
+    """Extract the '### Therapeutic Note —' section for the event matching (M<m_number>).
+
+    Returns the section text (from the Therapeutic Note H3 to the next H3 within
+    the event block) as a stripped string. Empty string if not found.
+
+    Used by Phase A and Phase B Suggest Script handlers to ground Claude prompts
+    in the authored therapeutic content for the module.
+    """
+    path = _skeleton_path(arc_number)
+    if not os.path.exists(path):
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except Exception:
+        return ""
+
+    # Locate the event whose title carries the (M<m_number>) marker
+    event_start = None
+    for m in _EVENT_HEADER.finditer(text):
+        title = m.group(2) or ""
+        m_marker = _M_NUMBER_IN_TITLE.search(title)
+        if m_marker and int(m_marker.group(1)) == int(m_number):
+            event_start = m.start()
+            break
+    if event_start is None:
+        return ""
+
+    # Find event end (next ## EVENT header or EOF)
+    next_event = _EVENT_HEADER.search(text, event_start + 1)
+    event_end = next_event.start() if next_event else len(text)
+    event_block = text[event_start:event_end]
+
+    # Find the Therapeutic Note H3 within this event block
+    therap_match = _SECTION_THERAP.search(event_block)
+    if not therap_match:
+        return ""
+
+    # End of section = next H3 within the event block (or end of block)
+    next_h3 = _NEXT_H3.search(event_block, therap_match.end())
+    section_end = next_h3.start() if next_h3 else len(event_block)
+    return event_block[therap_match.start():section_end].strip()
+
+
+def load_technique_inventory():
+    """Load the highest-version Canon/UNIFIED_TECHNIQUE_INVENTORY_v1_*.md.
+
+    Returns the full text, or empty string if not found. The technique inventory
+    is the canonical catalog of MindfulNest techniques (palm interoception,
+    physiological sigh, squeeze-release, etc.) with mechanism + age suitability
+    + clinical references. Injected into Suggest Script prompts so Claude
+    references the canonical technique names + mechanisms rather than inventing.
+    """
+    import glob
+    paths = glob.glob(os.path.join(_CANON_BASE, "UNIFIED_TECHNIQUE_INVENTORY_v1_*.md"))
+    if not paths:
+        return ""
+
+    def _version_key(p):
+        m = re.search(r"v1_(\d+)", os.path.basename(p))
+        return int(m.group(1)) if m else 0
+
+    latest = max(paths, key=_version_key)
+    try:
+        with open(latest, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception:
+        return ""
+
+
+# ---------------------------------------------------------------------------
 # FLUX Kontext API  (BFL api.bfl.ai)
 # ---------------------------------------------------------------------------
 

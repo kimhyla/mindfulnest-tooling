@@ -100,10 +100,14 @@ export async function apiGet<T = unknown>(
       // non-JSON or empty body
     }
     if (!res.ok) {
+      // Prefer the server's own error message over the generic HTTP status line.
+      // All server 400/500 paths write a descriptive `error` field in the JSON body.
+      const _d = data as Record<string, unknown> | undefined;
+      const serverMsg = _d?.['error'] ?? _d?.['message'];
       return {
         ok: false,
         status: res.status,
-        error: `${res.status} ${res.statusText}`,
+        error: serverMsg ? String(serverMsg) : `${res.status} ${res.statusText}`,
         ...(data === undefined ? {} : { data }),
       };
     }
@@ -300,10 +304,14 @@ async function apiPostRaw<T = unknown>(
       // non-JSON body (e.g., 204 No Content)
     }
     if (!res.ok) {
+      // Prefer the server's own error message over the generic HTTP status line.
+      // All server 400/500 paths write a descriptive `error` field in the JSON body.
+      const _d = data as Record<string, unknown> | undefined;
+      const serverMsg = _d?.['error'] ?? _d?.['message'];
       return {
         ok: false,
         status: res.status,
-        error: `${res.status} ${res.statusText}`,
+        error: serverMsg ? String(serverMsg) : `${res.status} ${res.statusText}`,
         ...(data === undefined ? {} : { data }),
       };
     }

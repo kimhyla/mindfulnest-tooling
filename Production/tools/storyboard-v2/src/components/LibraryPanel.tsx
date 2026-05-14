@@ -21,10 +21,13 @@
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { activeScope } from '../state/scope';
+import { activeTab } from '../app';
 import { apiGet, pathappPatch } from '../api/client';
+import { SERVER_BASE } from '../api/endpoints';
 import { AssetTile } from './ui/AssetTile';
 import { pushToast } from './ui/Toast';
 import type { DragPayload } from '../utils/dragdrop';
+import { openCropper } from '../state/cropper';
 
 // ----------------------------------------------------------------
 // Types
@@ -205,9 +208,28 @@ export function LibraryPanel() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshTick, setRefreshTick] = useState(0);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // CC-17 — tier state, persisted to localStorage
   const [tier, setTier] = useState<LibraryTier>(loadPersistedTier);
+
+  // LD-682 STITCHER_LIBRARY_DEFAULT_SFX_TIER_V1 — when the Stitcher tab is
+  // active, default the tier to 'sfx' (SFX drops are the dominant Library
+  // interaction inside Stitcher). User can still flip manually; the
+  // transient override is NOT persisted to localStorage so leaving Stitcher
+  // restores their prior preference. Reactive on activeTab signal.
+  useEffect(() => {
+    if (activeTab.value === 'stitcher') {
+      setTier((prev) => (prev === 'sfx' ? prev : 'sfx'));
+    } else {
+      // Restore localStorage-preferred tier when leaving Stitcher.
+      setTier((prev) => {
+        const preferred = loadPersistedTier();
+        return prev === preferred ? prev : preferred;
+      });
+    }
+  }, [activeTab.value]);
 
   // CC-18 — search input (immediate) + debounced query (300ms)
   const [searchInput, setSearchInput] = useState<string>('');
@@ -261,6 +283,13 @@ export function LibraryPanel() {
     return () => window.removeEventListener('click', onDocClick);
   }, [preview]);
 
+  // mn:library-refresh — fired by CropperModal onSaved after a crop is saved.
+  useEffect(() => {
+    const onLibRefresh = () => setRefreshTick((n) => n + 1);
+    window.addEventListener('mn:library-refresh', onLibRefresh);
+    return () => window.removeEventListener('mn:library-refresh', onLibRefresh);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -294,19 +323,92 @@ export function LibraryPanel() {
       pushToast({ kind: 'success', message: `Deleted ${displayName(item)}`, source: 'library-delete' });
       setRefreshTick((n) => n + 1);
     } else {
-      pushToast({
-        kind: 'error',
-        message: `Delete failed: ${result.error ?? `HTTP ${result.status}`}`,
-        source: 'library-delete-error',
-      });
+      const resultData = result.data as Record<string, unknown> | undefined;
+      const deleteErrCode = resultData?.['code'] as string | undefined;
+      const assetIds = resultData?.['asset_ids'] as number[] | undefined;
+
+      if (deleteErrCode === 'PROD_ASSETS_PROTECTED' && assetIds?.length) {
+        // Registered in Directus — offer a second confirmation with explicit warning.
+        const forceConfirmed = window.confirm(
+          `"${displayName(item)}" is registered in Directus (prod_assets id=${assetIds.join(', ')}).\n\nDeregister from Directus AND permanently delete from disk?\n\nThis cannot be undone.`
+        );
+        if (!forceConfirmed) return;
+        const forceResult = await pathappPatch(activeScope.value, 'cr_library_delete', {
+          key: k,
+          abs_path: item.abs_path ?? '',
+          force: true,
+        });
+        if (forceResult.ok) {
+          pushToast({ kind: 'success', message: `Deregistered + deleted ${displayName(item)}`, source: 'library-delete' });
+          setRefreshTick((n) => n + 1);
+        } else {
+          const forceErrMsg = (forceResult.data as Record<string, unknown> | undefined)?.['error'] as string | undefined;
+          pushToast({
+            kind: 'error',
+            message: `Force delete failed: ${forceErrMsg ?? forceResult.error ?? `HTTP ${forceResult.status}`}`,
+            source: 'library-delete-error',
+          });
+        }
+      } else {
+        // Use server's error message if present; fall back to HTTP status string.
+        const deleteErrMsg = resultData?.['error'] as string | undefined;
+        pushToast({
+          kind: 'error',
+          message: `Delete failed: ${deleteErrMsg ?? result.error ?? `HTTP ${result.status}`}`,
+          source: 'library-delete-error',
+        });
+      }
     }
   };
 
   const onTierChange = (next: LibraryTier) => {
     setTier(next);
-    persistTier(next);
+    // LD-682: when inside Stitcher tab, tier flips are transient (don't
+    // persist) so leaving Stitcher restores the user's preferred default.
+    // Outside Stitcher, manual flips persist as the new default.
+    if (activeTab.value !== 'stitcher') {
+      persistTier(next);
+    }
     // Unpin preview on tier change so the user sees fresh hits.
     setPreview(null);
+  };
+
+  const onUpload = async (e: Event) => {
+    const files = (e.target as HTMLInputElement).files;
+    if (!files || files.length === 0) return;
+    setUploading(true);
+    let added = 0;
+    for (const file of Array.from(files)) {
+      try {
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(file);
+        });
+        const image_b64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+        const result = await pathappPatch(activeScope.value, 'cr_upload', {
+          filename: file.name,
+          image_b64,
+          tier: 'source',
+        });
+        if (result.ok) {
+          added++;
+          pushToast({ kind: 'success', message: `Uploaded ${file.name}`, source: 'library-upload' });
+        } else {
+          pushToast({
+            kind: 'error',
+            message: `Upload failed: ${result.error ?? `HTTP ${result.status}`}`,
+            source: 'library-upload-error',
+          });
+        }
+      } catch (err) {
+        pushToast({ kind: 'error', message: `Upload error: ${String(err)}`, source: 'library-upload-error' });
+      }
+    }
+    setUploading(false);
+    if (added > 0) setRefreshTick((n) => n + 1);
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   // CC-17 + CC-18 — combine tier filter + debounced search
@@ -346,6 +448,24 @@ export function LibraryPanel() {
             <option key={t} value={t}>{t}</option>
           ))}
         </select>
+        {/* CC-20 — Add Image upload button (hidden file input behind label) */}
+        <label
+          class="mn-library-upload-btn"
+          data-testid="library-upload-btn"
+          aria-disabled={uploading ? 'true' : undefined}
+          title="Upload image to library"
+        >
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            multiple
+            hidden
+            onChange={onUpload}
+            data-testid="library-upload-input"
+          />
+          {uploading ? '…' : '+ Add'}
+        </label>
       </div>
 
       <div class="mn-library-body">
@@ -404,6 +524,13 @@ export function LibraryPanel() {
               if (ts !== undefined) tileProps.thumbSrc = ts;
               if (it.tier !== undefined) tileProps.tier = it.tier;
               if (dimsLabel !== undefined) tileProps.dimsLabel = dimsLabel;
+              const cropSrc = it.abs_path
+                ? `${SERVER_BASE}/api/cr/full?abs_path=${encodeURIComponent(it.abs_path)}`
+                : it.gallery_b64
+                  ? (it.gallery_b64.startsWith('data:') ? it.gallery_b64 : `data:image/webp;base64,${it.gallery_b64}`)
+                  : it.thumb_b64
+                    ? (it.thumb_b64.startsWith('data:') ? it.thumb_b64 : `data:image/webp;base64,${it.thumb_b64}`)
+                    : (it.thumb_url ?? '');
               return (
                 <div
                   key={libKey}
@@ -412,7 +539,26 @@ export function LibraryPanel() {
                   onMouseEnter={() => requestPreview(it)}
                   onMouseLeave={cancelPreviewRequest}
                 >
-                  <AssetTile {...tileProps} />
+                  <AssetTile {...tileProps}>
+                    {cropSrc ? (
+                      <button
+                        type="button"
+                        class="mn-crop-btn"
+                        title="Send to Cropper"
+                        data-testid={`library-crop-btn-${i}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openCropper({
+                            source: cropSrc,
+                            sourceLabel: it.display_name ?? it.filename ?? it.key ?? 'Library image',
+                            targetBeatId: null,
+                          });
+                        }}
+                      >
+                        ✂
+                      </button>
+                    ) : null}
+                  </AssetTile>
                 </div>
               );
             })}

@@ -24,6 +24,21 @@ Production/
   smoke.yml                Smoke CI — npm ci + npm run build (Phase 5 of repo setup)
 ```
 
+## First-time setup (every fresh clone, every machine)
+
+Install the git hooks once per clone:
+
+```bash
+bash Production/scripts/setup-git-hooks.sh
+```
+
+Idempotent — safe to re-run. Installs:
+
+- `.git/hooks/pre-commit` — blocks divergent Dropbox runtime edits (LD `PRE_COMMIT_DROPBOX_EDIT_GATE_V1`). Bypass: `MN_SKIP_DROPBOX_EDIT_GATE=1 git commit ...`
+- `.git/hooks/pre-push` — blocks untracked source files + local TS build errors before push (LD `GIT_HOOK_INFRASTRUCTURE_CROSS_MACHINE_V1`, prevents the 2026-05-14 cropper.ts class of 36hr-red-CI). Bypass: `git push --no-verify`
+
+Templates live at `Production/scripts/git_hooks/`. The `.git/hooks/` directory itself is git-ignored by design — hooks must be installed per-clone. Works on Mac directly and on Windows via Git-Bash (ships with Git for Windows).
+
 ## Development
 
 Local Mac dev with Dropbox synced:
