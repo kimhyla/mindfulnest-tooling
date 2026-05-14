@@ -12,7 +12,8 @@
 //
 // Note: beforeunload guard + 503 fallback are S3 polish (parity-audit out-of-scope here).
 
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import type { RefObject } from 'preact';
 import {
   activeScope,
   activeTargetVideo,
@@ -25,6 +26,7 @@ import { SERVER_BASE } from '../api/endpoints';
 import { makeDropTarget } from '../utils/dragdrop';
 import { Spinner } from './ui/Spinner';
 import { pushToast } from './ui/Toast';
+import { Modal } from './ui/Modal';
 import { BeatAudioPreview } from './BeatAudioPreview';
 
 interface BeatState {
@@ -40,7 +42,7 @@ interface BeatState {
   magic_video_path?: string;
   // S5 — preferred video source for magic_video (lipsync, then animation).
   lipsync?: { file?: string; status?: string };
-  phase_1?: { selected_option?: number; options?: Array<{ file?: string }> };
+  phase_1?: { selected_option?: number; options?: Array<{ file?: string; status?: string }> };
   // S5.5e — fields read by the beat-level state machine (LD BEAT_LIFECYCLE_STATE_MACHINE_V1).
   // beat.final block is the "is final?" signal per Cursor v8 (NOT a use_as_final boolean).
   // Server writes this at production_server.py:10733-10747 with shape:
@@ -54,7 +56,15 @@ interface BeatState {
   // Trim/delay (LD-160). Optional — older beats may not carry these.
   trim_in?: number;
   trim_out?: number | string;
-  delay_seconds?: number;
+  // Server canonical field is `audio_delay` (production_server.py:14646 writes
+  // to phase_1.audio_delay; status endpoint at :12943 returns it under this
+  // key). `delay_seconds` is kept as a legacy client alias for backwards-
+  // compat with any caller still emitting it. Fixed 2026-05-14 per
+  // BEAT_DELAY_CLIENT_HYDRATION_FIX_V1 — prior code read `beat.delay_seconds`
+  // and slider always re-defaulted to 0.0 on page reload because server only
+  // emits `audio_delay`.
+  audio_delay?: number;
+  delay_seconds?: number;  // legacy alias, deprecated
 }
 
 interface VideoPartition {
@@ -131,7 +141,7 @@ type BeatLifecycle =
 function deriveBeatLifecycle(b: BeatState): BeatLifecycle {
   // Cursor v8: beat.final block presence IS the "final" signal.
   if (b.final && b.final.file) return 'final';
-  if (b.lipsync?.status === 'pending' || b.lipsync?.status === 'submitted') {
+  if (['pending', 'submitted', 'submitting', 'polling'].includes(b.lipsync?.status ?? '')) {
     return 'lipsync_pending';
   }
   const hasOptions = !!(b.phase_1?.options && b.phase_1.options.length > 0);
@@ -153,14 +163,22 @@ interface BeatButtonRowProps {
   cacheBust?: string;
   /** Triggered after any successful mutation so parent can refresh state. */
   onMutated: () => void;
+  previewOptIdx: number | null;
+  onPreviewOption: (optIdx: number) => void;
 }
 
-function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated }: BeatButtonRowProps) {
+function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptIdx, onPreviewOption }: BeatButtonRowProps) {
   const lifecycle = deriveBeatLifecycle(beat);
   const [busy, setBusy] = useState<string | null>(null); // which button is in-flight
   const [trimIn, setTrimIn] = useState<string>(String(beat.trim_in ?? '0.0'));
   const [trimOut, setTrimOut] = useState<string>(String(beat.trim_out ?? 'full'));
-  const [delaySec, setDelaySec] = useState<string>(String(beat.delay_seconds ?? '0.0'));
+  // L6 fix 2026-05-14: server canonical key is `audio_delay`; `delay_seconds`
+  // is a legacy client-side alias kept for backcompat. Previously read only
+  // `beat.delay_seconds` which was undefined → slider always re-rendered as
+  // 0.0 on page reload even when state persisted the user's value.
+  const [delaySec, setDelaySec] = useState<string>(
+    String(beat.audio_delay ?? beat.delay_seconds ?? '0.0'),
+  );
 
   // ----------------------------------------------------------------
   // Polling (animate + lipsync)
@@ -222,7 +240,25 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated }: BeatButton
   };
   const onSelectOption = (optionIndex: number) =>
     runMutation('Select option', 'select', { option_index: optionIndex });
-  const onAddOptions = () => runMutation('Add options', 'beat_add_options', {});
+  const onAddOptions = async () => {
+    if (lifecycle === 'lipsync_pending' && !window.confirm('This will discard current Options B & C and generate 2 fresh alternatives. Option A is preserved. A lipsync is queued — this may orphan it. Continue?')) return;
+    const ok = await runMutation('Add options', 'beat_add_options', {});
+    if (!ok) return;
+    // Poll until all submitted options reach a terminal state (completed/failed).
+    // Mirrors the onAnimate poll loop — Kling is async so the initial response
+    // only shows "polling"; without this loop the user has to manually refresh.
+    let polls = 0;
+    const pollAddOptions = async () => {
+      polls += 1;
+      const res = await apiGet('v2_event_state', { event_id: activeScope.value.event_id });
+      if (res.ok) onMutated();
+      // Stop when all options are terminal or after 120 polls (~10 min).
+      if (polls < 120) window.setTimeout(pollAddOptions, POLL_ANIMATE_MS);
+    };
+    window.setTimeout(pollAddOptions, POLL_ANIMATE_MS);
+  };
+  const onSwapToA = (fromSlot: number) =>
+    runMutation('Move to A', 'beat_swap_to_a', { from_slot: fromSlot });
   const onLipsync = () => runMutation('Lipsync', 'lipsync', {});
   const onUseAsFinal = () => runMutation('Use as Final', 'beat_use_as_final', {});
   const onApplyTrim = () => {
@@ -240,11 +276,20 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated }: BeatButton
 
   // Visibility per state-machine table (S5.5e spec §3.1).
   const showRegenAudio = ['draft', 'audio_generated', 'animated', 'selected', 'final'].includes(lifecycle);
-  const showAnimate = ['audio_generated'].includes(lifecycle);
-  const showAddOptions = ['animated'].includes(lifecycle);
-  const showSelectedOptionRadios = ['animated', 'selected'].includes(lifecycle);
-  const showLipsync = ['selected', 'lipsync_pending'].includes(lifecycle);
-  const showUseAsFinal = ['audio_generated', 'selected'].includes(lifecycle);
+  // Show Animate when audio exists (intro workflow) OR when image is assigned
+  // without audio yet (resolution/Kling image-first pipeline per Rule 8.3).
+  const showAnimate = lifecycle === 'audio_generated' || (lifecycle === 'draft' && !!beat.image_path);
+  // count=2 is product-locked per server default; label reflects this.
+  const showAddOptions = ['animated', 'selected', 'lipsync_pending', 'final'].includes(lifecycle);
+  const showSelectedOptionRadios = ['animated', 'selected', 'lipsync_pending', 'final'].includes(lifecycle);
+  // In final state: only show Lipsync if the beat was finalised via lipsync
+  // (not use-as-final) AND an option is selected. Loose != null catches both
+  // null and undefined (server may write either for unset selected_option).
+  const showLipsync = (
+    ['selected', 'lipsync_pending'].includes(lifecycle) ||
+    (lifecycle === 'final' && beat.final?.source === 'lipsync')
+  ) && beat.phase_1?.selected_option != null;
+  const showUseAsFinal = ['audio_generated', 'animated', 'selected'].includes(lifecycle);
   const showPreview = lifecycle !== 'draft';
 
   const optionCount = beat.phase_1?.options?.length ?? 0;
@@ -258,30 +303,56 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated }: BeatButton
           <span class="mn-beat-button-group-label">Phase 1:</span>
           {Array.from({ length: optionCount }).map((_, i) => {
             const oi = i + 1;
+            const opt = beat.phase_1?.options?.[i];
+            const optReady = !!(opt?.file && opt?.status !== 'pending' && opt?.status !== 'failed');
             return (
-              <button
-                key={oi}
-                type="button"
-                class={`mn-btn mn-btn-small${selectedOption === oi ? ' is-active' : ''}`}
-                data-testid={`beat-${index}-select-option-${oi}`}
-                onClick={() => onSelectOption(oi)}
-                disabled={busy !== null}
-              >
-                opt {oi}{selectedOption === oi ? ' ✓' : ''}
-              </button>
+              <span key={oi} class="mn-beat-option-pair">
+                <button
+                  type="button"
+                  class={`mn-btn mn-btn-small${selectedOption === oi ? ' is-active' : ''}`}
+                  data-testid={`beat-${index}-select-option-${oi}`}
+                  onClick={() => onSelectOption(oi)}
+                  disabled={busy !== null}
+                >
+                  opt {oi}{selectedOption === oi ? ' ✓' : ''}
+                </button>
+                <button
+                  type="button"
+                  class={`mn-btn mn-btn-small mn-preview-btn${previewOptIdx === oi ? ' mn-preview-btn-active' : ''}`}
+                  data-testid={`beat-${index}-preview-option-${oi}`}
+                  onClick={() => onPreviewOption(oi)}
+                  disabled={busy !== null || !opt?.file}
+                  title={`Preview with audio: opt ${oi}`}
+                >
+                  {previewOptIdx === oi ? '⏸' : '▶'}
+                </button>
+                {oi > 1 ? (
+                  <button
+                    type="button"
+                    class="mn-btn mn-btn-small"
+                    data-testid={`beat-${index}-swap-to-a-${oi}`}
+                    onClick={() => onSwapToA(oi)}
+                    disabled={busy !== null || !optReady}
+                    title={optReady ? `Promote opt ${oi} to slot A` : 'Option must finish generating first'}
+                  >→A</button>
+                ) : null}
+              </span>
             );
           })}
-          {showAddOptions ? (
-            <button
-              type="button"
-              class="mn-btn mn-btn-small"
-              data-testid={`beat-${index}-add-options`}
-              onClick={onAddOptions}
-              disabled={busy !== null}
-            >
-              + Add options
-            </button>
-          ) : null}
+        </span>
+      ) : null}
+      {showAddOptions ? (
+        <span class="mn-beat-button-group" data-testid={`beat-${index}-regen-group`}>
+          <button
+            type="button"
+            class="mn-btn mn-btn-small"
+            data-testid={`beat-${index}-add-options`}
+            onClick={onAddOptions}
+            disabled={busy !== null}
+            title="Keep Option A, generate 2 fresh alternatives (B & C)"
+          >
+            🔄 Regenerate B + C
+          </button>
         </span>
       ) : null}
 
@@ -349,8 +420,19 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated }: BeatButton
             {lifecycle === 'lipsync_pending' ? (
               <><Spinner size="sm" inline /> in progress</>
             ) : (
-              busy === 'Lipsync' ? <><Spinner size="sm" inline /> …</> : '👄 Lipsync'
+              busy === 'Lipsync' ? <><Spinner size="sm" inline /> …</> : (lifecycle === 'final' ? '👄 Resend Lipsync' : '👄 Lipsync')
             )}
+          </button>
+        ) : null}
+        {beat.lipsync?.status === 'completed' && beat.lipsync?.file ? (
+          <button
+            type="button"
+            class="mn-btn mn-btn-small"
+            data-testid={`beat-${index}-lipsync-play`}
+            onClick={() => onPreviewOption(0)}
+            title="Preview lipsync result (video has audio baked in)"
+          >
+            {previewOptIdx === 0 ? '⏸ lipsync' : '▶ lipsync'}
           </button>
         ) : null}
         {showUseAsFinal ? (
@@ -437,9 +519,11 @@ interface BeatCardProps {
   beat: BeatState;
   eventId: string;
   onMutated: () => void;
+  onInsertAfter: () => void;
+  onDeleteBeat: () => void;
 }
 
-function BeatCard({ index, beatId, beat, eventId, onMutated }: BeatCardProps) {
+function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDeleteBeat }: BeatCardProps) {
   const initialText = beat.text ?? '';
   // CRITICAL: contenteditable must be UNCONTROLLED. State-driven children on a
   // contenteditable trigger a re-render on every keystroke, which clobbers
@@ -451,6 +535,90 @@ function BeatCard({ index, beatId, beat, eventId, onMutated }: BeatCardProps) {
   const [status, setStatus] = useState<SaveStatus>('idle');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(beat.text_last_updated_at ?? null);
+  const [previewOptIdx, setPreviewOptIdx] = useState<number | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const previewVideoSrc = previewOptIdx !== null
+    ? previewOptIdx === 0
+      // sentinel 0 = preview lipsync result (ByteDance audio baked in, no separate TTS player)
+      ? (beat.lipsync?.file ? `http://localhost:5111/asset/${beat.lipsync.file}?v=${beat._version ?? 0}` : null)
+      : `http://localhost:5111/asset/${beat.phase_1?.options?.[previewOptIdx - 1]?.file}?v=${beat._version ?? 0}`
+    : null;
+
+  const previewAudioSrc = `http://localhost:5111/api/beat/audio/${beatId}?event_id=${eventId}`;
+
+  useEffect(() => {
+    if (previewOptIdx === null) return;
+    const vid = videoRef.current;
+    const aud = audioRef.current;
+    if (!vid) return;
+    // previewOptIdx === 0 is the lipsync sentinel: ByteDance bakes AAC audio into the
+    // output video. Playing the TTS audio player simultaneously doubles the dialogue.
+    // For lipsync preview, play video only — do NOT start the separate audio element.
+    const isLipsyncPreview = previewOptIdx === 0;
+    // L5c fix 2026-05-14 per BEAT_PREVIEW_HONOR_AUDIO_DELAY_V1: read the
+    // persisted audio_delay (Video Lead-in slider) and defer audio.play()
+    // by that many seconds so the preview matches what the rendered MP4
+    // will do (server-side ffmpeg adelay filter bakes the same delay in).
+    // Without this, the per-beat preview ignored Kim's slider value and the
+    // audio always started at t=0 simultaneously with the video.
+    const audioDelaySec = Number(beat.audio_delay ?? beat.delay_seconds ?? 0) || 0;
+    if (!isLipsyncPreview) {
+      if (!aud) return;
+      aud.currentTime = 0;
+    }
+    vid.play().catch(() => {});
+    if (!isLipsyncPreview && aud) {
+      if (audioDelaySec > 0) {
+        const ms = Math.round(audioDelaySec * 1000);
+        // Hold the audio until the delay elapses; if Kim cancels the preview
+        // (previewOptIdx changes) the effect's cleanup pauses both elements.
+        const t = window.setTimeout(() => {
+          aud.play().catch(() => {});
+        }, ms);
+        return () => {
+          window.clearTimeout(t);
+        };
+      }
+      aud.play().catch(() => {});
+    }
+  }, [previewOptIdx, beat.audio_delay, beat.delay_seconds]);
+
+  useEffect(() => {
+    return () => {
+      videoRef.current?.pause();
+      audioRef.current?.pause();
+    };
+  }, []);
+
+  const handlePreviewOption = useCallback((optIdx: number) => {
+    // Sentinel 0 = preview lipsync result. ByteDance audio is baked in — never touch the TTS audio player.
+    const isLipsyncPreview = optIdx === 0;
+    const file = isLipsyncPreview ? beat.lipsync?.file : beat.phase_1?.options?.[optIdx - 1]?.file;
+    if (!file) return;
+    const vid = videoRef.current;
+    const aud = audioRef.current;
+    if (previewOptIdx === optIdx) {
+      // Toggle play/pause for the current preview.
+      if (vid && !vid.paused) {
+        vid.pause();
+        if (!isLipsyncPreview) aud?.pause();
+      } else {
+        vid?.play().catch(() => {});
+        if (!isLipsyncPreview) aud?.play().catch(() => {});
+      }
+      return;
+    }
+    vid?.pause();
+    if (!isLipsyncPreview) aud?.pause();
+    setPreviewOptIdx(optIdx);
+  }, [previewOptIdx, beat.phase_1?.options, beat.lipsync?.file]);
+
+  const handlePreviewEnded = useCallback(() => {
+    audioRef.current?.pause();
+    setPreviewOptIdx(null);
+  }, []);
 
   // Hydrate the ref's initial text + recover from localStorage if a fresher draft.
   useEffect(() => {
@@ -535,8 +703,35 @@ function BeatCard({ index, beatId, beat, eventId, onMutated }: BeatCardProps) {
         >
           {indicatorLabel}
         </span>
+        <button
+          type="button"
+          class="mn-btn mn-btn-small"
+          data-testid={`sb-delete-beat-${index}`}
+          onClick={onDeleteBeat}
+          aria-label={`Delete beat ${beatId}`}
+          title="Delete this beat"
+          style="margin-left:auto"
+        >
+          ✕
+        </button>
       </div>
-      <BeatImageHolder index={index} beatId={beatId} beat={beat} eventId={eventId} onMutated={onMutated} />
+      <audio
+        ref={audioRef}
+        src={previewAudioSrc}
+        preload="auto"
+        style={{ display: 'none' }}
+        data-testid={`beat-audio-hidden-${index}`}
+      />
+      <BeatImageHolder
+        index={index}
+        beatId={beatId}
+        beat={beat}
+        eventId={eventId}
+        onMutated={onMutated}
+        previewVideoSrc={previewVideoSrc}
+        videoRef={videoRef as RefObject<HTMLVideoElement>}
+        onPreviewEnded={handlePreviewEnded}
+      />
       <p
         ref={editRef}
         class="mn-beat-text mn-beat-editable"
@@ -552,8 +747,21 @@ function BeatCard({ index, beatId, beat, eventId, onMutated }: BeatCardProps) {
         beat={beat}
         {...(savedAt ? { cacheBust: savedAt } : {})}
         onMutated={onMutated}
+        previewOptIdx={previewOptIdx}
+        onPreviewOption={handlePreviewOption}
       />
       <BeatMagicButtons index={index} beatId={beatId} beat={beat} eventId={eventId} />
+      <div class="mn-sb-insert-after" data-testid={`sb-insert-after-${index}`}>
+        <button
+          class="mn-btn mn-btn-small mn-sb-insert-after-btn"
+          data-testid={`sb-insert-after-btn-${index}`}
+          onClick={onInsertAfter}
+          aria-label={`Insert beat after ${beatId}`}
+          title="Insert beat after this one"
+        >
+          + Insert beat
+        </button>
+      </div>
     </li>
   );
 }
@@ -579,9 +787,12 @@ interface BeatImageHolderProps {
   beat: BeatState;
   eventId: string;
   onMutated: () => void;
+  previewVideoSrc?: string | null;
+  videoRef?: RefObject<HTMLVideoElement>;
+  onPreviewEnded?: () => void;
 }
 
-function BeatImageHolder({ index, beatId, beat, eventId, onMutated }: BeatImageHolderProps) {
+function BeatImageHolder({ index, beatId, beat, eventId, onMutated, previewVideoSrc, videoRef, onPreviewEnded }: BeatImageHolderProps) {
   const stillPath = beat.image_path;
   const hasImage = !!stillPath;
   const imgSrc = stillPath
@@ -621,14 +832,24 @@ function BeatImageHolder({ index, beatId, beat, eventId, onMutated }: BeatImageH
 
   return (
     <div
-      class={`mn-storyboard-image-drop-zone mn-drop-target${hasImage ? ' has-image' : ''}`}
+      class={`mn-storyboard-image-drop-zone mn-drop-target${hasImage ? ' has-image' : ''}${previewVideoSrc ? ' mn-previewing' : ''}`}
       data-testid={`beat-image-zone-${index}`}
       data-beat-id={beatId}
       onDragOver={dropHandlers.onDragOver}
       onDragLeave={dropHandlers.onDragLeave}
       onDrop={dropHandlers.onDrop}
     >
-      {hasImage && imgSrc ? (
+      {previewVideoSrc ? (
+        <video
+          {...(videoRef ? { ref: videoRef } : {})}
+          src={previewVideoSrc}
+          class="mn-storyboard-preview-video"
+          playsInline
+          preload="auto"
+          onEnded={onPreviewEnded}
+          data-testid={`beat-preview-video-${index}`}
+        />
+      ) : hasImage && imgSrc ? (
         <img
           src={imgSrc}
           alt={`beat ${beatId} image`}
@@ -814,6 +1035,7 @@ export function StoryboardTab() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshTick, setRefreshTick] = useState(0);
+  const [deleteConfirmBeatId, setDeleteConfirmBeatId] = useState<string | null>(null);
 
   // R1 fix per spec §5 Phase 3.1 — explicit scope signals in dep array,
   // first-run-sync via prevDepsRef, 200ms debounce on subsequent runs (Q6).
@@ -922,6 +1144,33 @@ export function StoryboardTab() {
 
   const eventId = activeScope.value.event_id;
 
+  const executeDeleteBeat = async () => {
+    const beatId = deleteConfirmBeatId;
+    if (!beatId) return;
+    setDeleteConfirmBeatId(null);
+    const result = await pathappPatch(activeScope.value, 'v2_beat_delete', {
+      beat_id: beatId,
+    });
+    if (result.ok) {
+      pushToast({ kind: 'info', message: `Beat ${beatId} deleted`, source: 'sb-delete' });
+      setRefreshTick((n) => n + 1);
+    } else {
+      pushToast({ kind: 'error', message: `Delete failed: ${result.error}`, source: 'sb-delete-error' });
+    }
+  };
+
+  const onAddBeat = async (afterBeatId: string) => {
+    const result = await pathappPatch(activeScope.value, 'v2_beat_create', {
+      insert_after: afterBeatId,
+    });
+    if (result.ok) {
+      pushToast({ kind: 'info', message: 'Beat added', source: 'sb-add' });
+      setRefreshTick((n) => n + 1);
+    } else {
+      pushToast({ kind: 'error', message: `Add failed: ${result.error}`, source: 'sb-add-error' });
+    }
+  };
+
   return (
     <section class="mn-tab-pane mn-storyboard-pane" data-testid="pane-storyboard">
       <header class="mn-pane-header">
@@ -957,6 +1206,8 @@ export function StoryboardTab() {
               beat={b}
               eventId={eventId}
               onMutated={() => setRefreshTick((n) => n + 1)}
+              onInsertAfter={() => void onAddBeat(b.beat_id)}
+              onDeleteBeat={() => setDeleteConfirmBeatId(b.beat_id)}
             />
           ))}
         </ol>
@@ -969,6 +1220,34 @@ export function StoryboardTab() {
             : `${beatList.length} beats — dialogue edit live (saves through pathappPatch).`}
         </p>
       </footer>
+      <Modal
+        id="sb-delete-beat"
+        title="Delete beat?"
+        open={deleteConfirmBeatId !== null}
+        onClose={() => setDeleteConfirmBeatId(null)}
+        footer={
+          <>
+            <button
+              type="button"
+              class="mn-btn mn-btn-danger"
+              data-testid="sb-delete-beat-confirm"
+              onClick={() => void executeDeleteBeat()}
+            >
+              Delete
+            </button>
+            <button
+              type="button"
+              class="mn-btn"
+              data-testid="sb-delete-beat-cancel"
+              onClick={() => setDeleteConfirmBeatId(null)}
+            >
+              Cancel
+            </button>
+          </>
+        }
+      >
+        <p>Delete <strong>{deleteConfirmBeatId}</strong>? This cannot be undone.</p>
+      </Modal>
     </section>
   );
 }

@@ -123,7 +123,7 @@ class BeatRegenerateAudioBodyKeyContractTests(unittest.TestCase):
         # patching the module attribute is sufficient.
         self._original_tts = _ps._tts_regenerate_for_beat
 
-        def _fake_tts(_app, beat_id, _text, _key):
+        def _fake_tts(_app, beat_id, _text, _key, video_role="intro"):
             return {
                 "ok": True,
                 "audio_file": f"{beat_id}_fake.mp3",

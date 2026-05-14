@@ -14,7 +14,8 @@ import { ToastHost } from './components/ui/Toast';
 import { TabBar, TABS, ACTIVE_TAB_STORAGE_KEY, type TabKey } from './components/TabBar';
 import { StoryboardTab } from './components/StoryboardTab';
 import { BgTab } from './components/BgTab';
-import { CropperModal, initialCropperModalState } from './components/CropperModal';
+import { CropperModal } from './components/CropperModal';
+import { cropperState } from './state/cropper';
 import { StitcherTab } from './components/StitcherTab';
 import { LibraryPanel } from './components/LibraryPanel';
 import { ProductionMapTab, MAP_CELL_NAVIGATE_EVENT } from './components/ProductionMapTab';
@@ -24,13 +25,13 @@ import { ProjectSelector } from './components/ProjectSelector';
 import { VideoSelector } from './components/VideoSelector';
 import { PhaseATab } from './components/tabs/PhaseATab';
 import { PhaseBTab } from './components/tabs/PhaseBTab';
-import { activeScope, scopeKey } from './state/scope';
+import { activeScope, activeProjectType, scopeKey } from './state/scope';
 import './app.css';
 
 function readStoredActiveTab(): TabKey {
   try {
     const raw = sessionStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
-    if (raw && TABS.some((t) => t.key === raw)) return raw as TabKey;
+    if (raw && raw !== 'cropper' && TABS.some((t) => t.key === raw)) return raw as TabKey;
   } catch {
     // ignore
   }
@@ -38,10 +39,10 @@ function readStoredActiveTab(): TabKey {
 }
 
 // Top-level signals — cross-tab UI state lives here, NOT in any component
-// closure. This keeps state explicit and inspectable.
-const activeTab = signal<TabKey>(readStoredActiveTab());
-const cropperState = signal({ ...initialCropperModalState });
-
+// closure. This keeps state explicit and inspectable. activeTab is exported
+// so cross-cutting components (e.g. LibraryPanel per LD-682
+// STITCHER_LIBRARY_DEFAULT_SFX_TIER_V1) can react to tab transitions.
+export const activeTab = signal<TabKey>(readStoredActiveTab());
 function ActivePane() {
   switch (activeTab.value) {
     case 'storyboard':
@@ -99,7 +100,10 @@ export function App() {
             Path C rewrite &middot; Session 4 v3.1 — full producer wiring + animate + stitcher complete
           </span>
           <ProjectSelector />
-          <VideoSelector />
+          {/* CC-9: hide VideoSelector in milestone scope — milestones have no
+              per-video-role partitioning; their content is the single
+              'standalone' video. Reactive on activeProjectType signal. */}
+          {activeProjectType.value === 'event' ? <VideoSelector /> : null}
         </header>
 
         <TabBar activeTab={activeTab} />
@@ -120,6 +124,10 @@ export function App() {
             if (activeTab.value === 'cropper') {
               activeTab.value = 'storyboard';
             }
+          }}
+          onSaved={(_result) => {
+            // Crop saved to library — notify LibraryPanel to refresh.
+            window.dispatchEvent(new CustomEvent('mn:library-refresh'));
           }}
         />
       </div>

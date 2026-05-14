@@ -44,6 +44,7 @@ _LEGACY_LABEL_MAP = {
     "EVOLINK_API_KEY":           "**EvoLink**",
     "GEMINI_API_KEY":            "**Google Gemini**",
     "OPENAI_API_KEY":            "**OpenAI**",
+    "ANTHROPIC_API_KEY":         "**Anthropic API**",
 }
 
 

@@ -79,10 +79,14 @@ export function TabBar({ activeTab }: TabBarProps) {
             onClick={() => {
               if (!disabled) {
                 activeTab.value = t.key;
-                try {
-                  sessionStorage.setItem(ACTIVE_TAB_STORAGE_KEY, t.key);
-                } catch {
-                  // ignore
+                // Cropper is a modal overlay, not a persistent destination —
+                // don't save it so refresh restores the prior real tab.
+                if (t.key !== 'cropper') {
+                  try {
+                    sessionStorage.setItem(ACTIVE_TAB_STORAGE_KEY, t.key);
+                  } catch {
+                    // ignore
+                  }
                 }
               }
             }}
