@@ -297,29 +297,70 @@
   const animateMode = (mode === 'watercolor_animate' || mode === 'watercolor_animate_legacy_alias');
   let   videoPath = '';   // set when render completes
 
+  // CodeQL js/xss fix (#77-#82): user-controlled URL params (beatId,
+  // sceneKey, watercolorKey) and server-controlled values (videoPath,
+  // data.explanation) were flowing into innerHTML. Replaced with safe DOM
+  // construction via textContent. setDropText() builds the same visual
+  // tree (<b>, <small>, <br>) but treats all user values as text.
+  function setDropText(parts) {
+    const target = document.getElementById('drop-text');
+    target.replaceChildren();
+    for (const p of parts) {
+      if (p.tag === 'br') { target.appendChild(document.createElement('br')); continue; }
+      if (p.tag) {
+        const node = document.createElement(p.tag);
+        if (p.style) node.setAttribute('style', p.style);
+        node.textContent = p.text || '';
+        target.appendChild(node);
+      } else {
+        target.appendChild(document.createTextNode(p.text || ''));
+      }
+    }
+  }
+
   // ── Show mode-specific header + motion-desc input ────────────────────
   const lbl = document.getElementById('scene-key-label');
   if (mode === 'magic_still') {
     lbl.textContent = `Magic on still — beat ${beatId}`;
     lbl.style.display = 'block';
-    document.getElementById('drop-text').innerHTML =
-      `Auto-loading still for beat <b>${beatId}</b>…<br><small style="color:#555">Draw a 3-8 point path where the magic should travel.</small>`;
+    setDropText([
+      { text: 'Auto-loading still for beat ' },
+      { tag: 'b', text: beatId },
+      { text: '…' },
+      { tag: 'br' },
+      { tag: 'small', style: 'color:#555', text: 'Draw a 3-8 point path where the magic should travel.' },
+    ]);
   } else if (mode === 'magic_video') {
     lbl.textContent = `Magic on video — beat ${beatId}`;
     lbl.style.display = 'block';
-    document.getElementById('drop-text').innerHTML =
-      `Auto-loading video reference for beat <b>${beatId}</b>…<br><small style="color:#555">Draw a 3-8 point path on the still reference; magic will overlay onto the moving video.</small>`;
+    setDropText([
+      { text: 'Auto-loading video reference for beat ' },
+      { tag: 'b', text: beatId },
+      { text: '…' },
+      { tag: 'br' },
+      { tag: 'small', style: 'color:#555', text: 'Draw a 3-8 point path on the still reference; magic will overlay onto the moving video.' },
+    ]);
   } else if (mode === 'watercolor_animate') {
     lbl.textContent = `Animate watercolor: ${watercolorKey}`;
     lbl.style.display = 'block';
-    document.getElementById('drop-text').innerHTML =
-      `Auto-loading watercolor <b>${watercolorKey}</b>…<br><small style="color:#555">Draw the WHERE; describe the WHAT-KIND in the box above.</small>`;
+    setDropText([
+      { text: 'Auto-loading watercolor ' },
+      { tag: 'b', text: watercolorKey },
+      { text: '…' },
+      { tag: 'br' },
+      { tag: 'small', style: 'color:#555', text: 'Draw the WHERE; describe the WHAT-KIND in the box above.' },
+    ]);
     document.getElementById('motion-desc-row').style.display = 'block';
   } else if (mode === 'magic_still_legacy' || sceneKey) {
     lbl.textContent = `scene: ${sceneKey}`;
     lbl.style.display = 'block';
-    document.getElementById('drop-text').innerHTML =
-      `Auto-loading background for <b>${sceneKey}</b>…<br><small style="color:#555">(or drag a PNG/JPEG to override)</small>`;
+    setDropText([
+      { text: 'Auto-loading background for ' },
+      { tag: 'b', text: sceneKey },
+      { text: '…' },
+      { tag: 'br' },
+      { tag: 'small', style: 'color:#555', text: '(or drag a PNG/JPEG to override)' },
+    ]);
   }
 
   // ── DOM refs ───────────────────────────────────────────────────────────
@@ -347,8 +388,11 @@
       if (sourceImagePath) {
         loadImageFromURL(`http://localhost:5111/files?path=${encodeURIComponent(sourceImagePath)}`);
       } else {
-        document.getElementById('drop-text').innerHTML =
-          `No source_image_path provided.<br><small style="color:#555">Drag a PNG/JPEG instead.</small>`;
+        setDropText([
+          { text: 'No source_image_path provided.' },
+          { tag: 'br' },
+          { tag: 'small', style: 'color:#555', text: 'Drag a PNG/JPEG instead.' },
+        ]);
       }
     } else if (sceneKey) {
       fetch(`/api/magic/resolve_bg?scene_key=${encodeURIComponent(sceneKey)}`)
@@ -359,14 +403,19 @@
           } else if (bgParam) {
             loadImageFromURL(bgParam);
           } else {
-            document.getElementById('drop-text').innerHTML =
-              `Could not auto-load bg for <b>${sceneKey}</b>.<br><small style="color:#555">Drag a PNG/JPEG instead.</small>`;
+            // CodeQL js/xss fix (#81): sceneKey from URL param → textContent.
+            setDropText([
+              { text: 'Could not auto-load bg for ' },
+              { tag: 'b', text: sceneKey },
+              { text: '.' },
+              { tag: 'br' },
+              { tag: 'small', style: 'color:#555', text: 'Drag a PNG/JPEG instead.' },
+            ]);
           }
         })
         .catch(() => {
           if (bgParam) { loadImageFromURL(bgParam); return; }
-          document.getElementById('drop-text').innerHTML =
-            `Server unreachable. Drag a PNG/JPEG below.`;
+          setDropText([{ text: 'Server unreachable. Drag a PNG/JPEG below.' }]);
         });
     } else if (bgParam) {
       loadImageFromURL(bgParam);
@@ -377,8 +426,11 @@
     const image = new Image();
     image.onload = () => { applyImage(image); };
     image.onerror = () => {
-      document.getElementById('drop-text').innerHTML =
-        `Failed to load background image.<br><small style="color:#555">Drag a PNG/JPEG instead.</small>`;
+      setDropText([
+        { text: 'Failed to load background image.' },
+        { tag: 'br' },
+        { tag: 'small', style: 'color:#555', text: 'Drag a PNG/JPEG instead.' },
+      ]);
     };
     image.src = url;
   }
@@ -626,8 +678,29 @@
         };
       }
 
+      // CodeQL js/client-side-request-forgery fix (#83): returnEndpoint
+       // comes from `?return_endpoint=...` URL param. Without an allowlist a
+      // malicious link could send the user's path data to an attacker-chosen
+      // path on localhost:5111. Restrict to the documented set of endpoints
+      // (LD-468/469/470/474) and reject anything else. The hostname is
+      // already fixed to localhost:5111 by the template literal — the
+      // attack surface is the path-and-query portion only.
+      const ALLOWED_RETURN_ENDPOINTS = new Set([
+        '/api/storyboard/magic_still',
+        '/api/storyboard/magic_video',
+        '/api/watercolor/animate',
+        '/api/magic/submit_path',
+      ]);
+      // Strip any query/fragment before allowlist check — allowlist matches
+      // bare path only; legitimate flows do not need query params here.
+      const returnEndpointPath = (returnEndpoint || '').split('?')[0].split('#')[0];
+      if (!ALLOWED_RETURN_ENDPOINTS.has(returnEndpointPath)) {
+        showError(`Invalid return_endpoint: ${returnEndpointPath}. Allowed: ${[...ALLOWED_RETURN_ENDPOINTS].join(', ')}`);
+        return;
+      }
+
       try {
-        const resp = await fetch(`http://localhost:5111${returnEndpoint}`, {
+        const resp = await fetch(`http://localhost:5111${returnEndpointPath}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
@@ -648,17 +721,36 @@
         videoPath = data.composite_path || data.animated_path || data.output_path || '';
         document.getElementById('progress-panel').style.display = 'none';
         document.getElementById('result-panel').style.display = 'block';
-        const explanationLine = data.explanation
-          ? `<br><small>Generated: ${data.explanation}</small>`
-          : '';
-        document.getElementById('result-panel').innerHTML =
-          `<div style="padding:16px;background:#1a3a1a;border:1px solid #4a8a4a;border-radius:6px;color:#a0e0a0">
-            ✅ ${mode.replace(/_/g,' ')} complete.
-            ${videoPath ? `<br>Output: <code>${videoPath}</code>` : ''}
-            ${explanationLine}
-            <br><br>
-            <button onclick="window.close()" style="padding:8px 16px;background:#4a8a4a;color:#fff;border:0;border-radius:4px;cursor:pointer">Close tab + return to v59</button>
-          </div>`;
+
+        // CodeQL js/xss fix (#82): videoPath + data.explanation are
+        // server-controlled but still flowed into innerHTML. Replace with
+        // safe DOM construction.
+        const panel = document.getElementById('result-panel');
+        panel.replaceChildren();
+        const wrap = document.createElement('div');
+        wrap.setAttribute('style', 'padding:16px;background:#1a3a1a;border:1px solid #4a8a4a;border-radius:6px;color:#a0e0a0');
+        wrap.appendChild(document.createTextNode(`✅ ${mode.replace(/_/g, ' ')} complete.`));
+        if (videoPath) {
+          wrap.appendChild(document.createElement('br'));
+          wrap.appendChild(document.createTextNode('Output: '));
+          const code = document.createElement('code');
+          code.textContent = videoPath;
+          wrap.appendChild(code);
+        }
+        if (data.explanation) {
+          wrap.appendChild(document.createElement('br'));
+          const small = document.createElement('small');
+          small.textContent = `Generated: ${data.explanation}`;
+          wrap.appendChild(small);
+        }
+        wrap.appendChild(document.createElement('br'));
+        wrap.appendChild(document.createElement('br'));
+        const btn = document.createElement('button');
+        btn.setAttribute('style', 'padding:8px 16px;background:#4a8a4a;color:#fff;border:0;border-radius:4px;cursor:pointer');
+        btn.textContent = 'Close tab + return to v59';
+        btn.addEventListener('click', () => window.close());
+        wrap.appendChild(btn);
+        panel.appendChild(wrap);
       } catch(err) {
         showError(err.message);
       }
