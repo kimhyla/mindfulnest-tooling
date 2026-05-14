@@ -170,11 +170,46 @@ def _values_equal(sent: Any, got: Any) -> bool:
 
 
 def _looks_like_iso(s: str) -> bool:
-    if not isinstance(s, str) or len(s) < 10:
+    """Return True iff `s` is a fully-valid ISO-8601 datetime/date.
+
+    Tightened 2026-05-14 (INFRA-002): the prior heuristic accepted ANY string
+    whose first 11 chars matched `YYYY-MM-DDT...`. Free-text content like
+    `"2026-05-10T12:00Z → 17:35Z (≈5.5 hr)"` slipped through and crashed
+    `_normalize_iso` on `int("5 h")` / `int("5hr")` during fractional-second
+    parsing — caused MCP-layer ValueError that re-queued every drain attempt.
+
+    Fix: use `datetime.fromisoformat` (Python 3.11+ accepts trailing 'Z') for
+    actual ISO validation. Strict positive structure required: a string whose
+    parser-canonical form is unambiguous datetime/date. Rejects:
+      - free-text containing date prefix
+      - dates with appended commentary (`"2026-05-10T12:00Z notes"`)
+      - timezone separators with extra text
+    """
+    if not isinstance(s, str):
         return False
-    return s[4] == "-" and s[7] == "-" and (
-        len(s) == 10 or (len(s) > 10 and s[10] in "T ")
-    )
+    s = s.strip()
+    if len(s) < 10 or len(s) > 35:
+        # date-only is 10; "2026-04-21T19:30:00.123456+00:00" is 32 — cap at 35 for slack
+        return False
+    # Quick prefix shape filter (cheap rejection before full parse)
+    if s[4] != "-" or s[7] != "-":
+        return False
+    if len(s) > 10 and s[10] not in "T ":
+        return False
+    # Authoritative validation: try to parse it.
+    candidate = s
+    if candidate.endswith("Z"):
+        candidate = candidate[:-1] + "+00:00"
+    try:
+        if len(s) == 10:
+            from datetime import date
+            date.fromisoformat(s)
+        else:
+            from datetime import datetime as _dt
+            _dt.fromisoformat(candidate)
+    except (ValueError, TypeError):
+        return False
+    return True
 
 
 def _normalize_iso(s: str) -> str:
@@ -183,35 +218,48 @@ def _normalize_iso(s: str) -> str:
     - Strip trailing 'Z' or '+00:00' (treat as UTC either way)
     - Strip sub-millisecond digits (Directus truncates to ms)
     - Replace 'T' separator with space-agnostic marker (actually keep T)
+
+    Defensive: this function is only meant to receive strings that already
+    passed `_looks_like_iso`. If a malformed string still reaches here
+    (caller skipped the gate), return the original string unchanged rather
+    than crashing — the caller's equality check will fall through to exact
+    string compare. Added 2026-05-14 (INFRA-002).
     """
-    s = s.strip()
-    # Normalize UTC markers
-    if s.endswith("Z"):
-        s = s[:-1] + "+00:00"
-    # If it ends with +HH:MM, keep as-is. If no tz and it's date+time, leave it.
-    # Strip microseconds beyond 3 digits, and strip all-zero fractional seconds.
-    if "." in s:
-        head, _, tail = s.rpartition(".")
-        # tail is like '123456+00:00' or '123456'
-        tz = ""
-        for sep in ("+", "-"):
-            # skip the '-' that appears in the date portion — only consider
-            # separators AFTER at least one digit
-            for idx in range(1, len(tail)):
-                if tail[idx] == sep:
-                    tz = tail[idx:]
-                    tail = tail[:idx]
+    original = s
+    try:
+        s = s.strip()
+        # Normalize UTC markers
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        # If it ends with +HH:MM, keep as-is. If no tz and it's date+time, leave it.
+        # Strip microseconds beyond 3 digits, and strip all-zero fractional seconds.
+        if "." in s:
+            head, _, tail = s.rpartition(".")
+            # tail is like '123456+00:00' or '123456'
+            tz = ""
+            for sep in ("+", "-"):
+                # skip the '-' that appears in the date portion — only consider
+                # separators AFTER at least one digit
+                for idx in range(1, len(tail)):
+                    if tail[idx] == sep:
+                        tz = tail[idx:]
+                        tail = tail[:idx]
+                        break
+                if tz:
                     break
-            if tz:
-                break
-        tail = tail[:3]  # keep ms only
-        # If all-zero ms, drop the fractional-second portion entirely so
-        # "2026-04-21T19:30:00Z" and "2026-04-21T19:30:00.000Z" compare equal.
-        if tail and int(tail.ljust(3, "0")) == 0:
-            s = f"{head}{tz}"
-        else:
-            s = f"{head}.{tail.ljust(3, '0')}{tz}"
-    return s
+            tail = tail[:3]  # keep ms only
+            # If all-zero ms, drop the fractional-second portion entirely so
+            # "2026-04-21T19:30:00Z" and "2026-04-21T19:30:00.000Z" compare equal.
+            if tail and int(tail.ljust(3, "0")) == 0:
+                s = f"{head}{tz}"
+            else:
+                s = f"{head}.{tail.ljust(3, '0')}{tz}"
+        return s
+    except (ValueError, TypeError, IndexError):
+        # Defense-in-depth: never crash the diff pipeline on a malformed
+        # string that slipped past _looks_like_iso. Return original so the
+        # caller's equality check degrades to exact-string compare.
+        return original
 
 
 def _diff_payload_vs_row(payload: dict, row: dict) -> list[dict]:

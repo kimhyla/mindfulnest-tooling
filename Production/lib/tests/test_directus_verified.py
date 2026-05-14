@@ -30,6 +30,8 @@ from lib.directus import (  # noqa: E402
     DirectusWriteError,
     SilentWriteFailure,
     _diff_payload_vs_row,
+    _looks_like_iso,
+    _normalize_iso,
     _values_equal,
     post_item_verified,
     queue_write_offline,
@@ -84,6 +86,96 @@ class TestValuesEqual(unittest.TestCase):
     def test_type_coercion_rejected(self):
         # "42" is NOT 42 — we want to SURFACE this so the caller knows.
         self.assertFalse(_values_equal("42", 42))
+
+
+class TestIsoDetectionStrictness(unittest.TestCase):
+    """Regression coverage for INFRA-002 (2026-05-14).
+
+    Bug: the prior `_looks_like_iso` heuristic accepted any string whose
+    first 11 chars matched `YYYY-MM-DDT...`, then `_normalize_iso`
+    crashed on `int("5 h")` parsing a fractional-second tail it should
+    never have seen. Free-text payload values like
+    `"2026-05-10T12:00Z → 17:35Z (≈5.5 hr)"` re-queued every
+    pending-write drain attempt for 4 days.
+    """
+
+    # --- _looks_like_iso accepts valid ISO ---
+
+    def test_iso_date_only_accepted(self):
+        self.assertTrue(_looks_like_iso("2026-05-14"))
+
+    def test_iso_datetime_no_tz_accepted(self):
+        self.assertTrue(_looks_like_iso("2026-05-14T12:34:56"))
+
+    def test_iso_datetime_z_accepted(self):
+        self.assertTrue(_looks_like_iso("2026-05-14T12:34:56Z"))
+
+    def test_iso_datetime_offset_accepted(self):
+        self.assertTrue(_looks_like_iso("2026-05-14T12:34:56+00:00"))
+
+    def test_iso_datetime_microseconds_accepted(self):
+        self.assertTrue(_looks_like_iso("2026-05-14T12:34:56.123456+00:00"))
+
+    def test_iso_datetime_space_separator_accepted(self):
+        self.assertTrue(_looks_like_iso("2026-05-14 12:34:56"))
+
+    # --- _looks_like_iso rejects free-text with date prefix ---
+
+    def test_freetext_with_date_prefix_arrow_rejected(self):
+        # The exact INFRA-002 entry [3] payload string.
+        self.assertFalse(
+            _looks_like_iso("2026-05-10T12:00Z → 17:35Z (≈5.5 hr)")
+        )
+
+    def test_freetext_with_date_prefix_paren_rejected(self):
+        # The exact INFRA-002 entry [4] payload string.
+        self.assertFalse(_looks_like_iso("2026-05-10T12:00Z to 17:35Z (5.5hr)"))
+
+    def test_freetext_with_date_and_notes_rejected(self):
+        self.assertFalse(_looks_like_iso("2026-05-14T12:00 some notes here"))
+
+    def test_short_string_rejected(self):
+        self.assertFalse(_looks_like_iso("2026-05"))
+
+    def test_non_string_rejected(self):
+        self.assertFalse(_looks_like_iso(None))
+        self.assertFalse(_looks_like_iso(42))
+        self.assertFalse(_looks_like_iso(["2026-05-14"]))
+
+    def test_malformed_date_rejected(self):
+        # Wrong month/day separators
+        self.assertFalse(_looks_like_iso("2026/05/14T12:34:56"))
+        # Invalid month
+        self.assertFalse(_looks_like_iso("2026-13-14T12:34:56"))
+
+    # --- _normalize_iso resilience: never crashes on free-text ---
+
+    def test_normalize_iso_freetext_does_not_crash(self):
+        """Defense-in-depth: if a malformed string slips past the gate,
+        normalize must return SOMETHING (we test for return value, not
+        specific normalization)."""
+        result = _normalize_iso("2026-05-10T12:00Z → 17:35Z (≈5.5 hr)")
+        self.assertIsInstance(result, str)
+
+    def test_normalize_iso_5hr_does_not_crash(self):
+        # Exact reproduction of the int('5 h') ValueError.
+        result = _normalize_iso("anything.5 hr suffix")
+        self.assertIsInstance(result, str)
+        result = _normalize_iso("anything.5hr suffix")
+        self.assertIsInstance(result, str)
+
+    # --- end-to-end via _values_equal: free-text comparisons work ---
+
+    def test_values_equal_freetext_with_date_prefix_uses_exact_compare(self):
+        """The original incident: a payload field containing a free-text
+        date-prefixed value crashed during read-back diff. Now it should
+        fall through to exact-string equality."""
+        a = "2026-05-10T12:00Z → 17:35Z (≈5.5 hr)"
+        # Same string must compare equal (exact match)
+        self.assertTrue(_values_equal(a, a))
+        # Different string must compare unequal — no crash
+        b = "2026-05-10T12:00Z → 17:35Z (≈5hr)"
+        self.assertFalse(_values_equal(a, b))
 
 
 class TestHappyPath(unittest.TestCase):
