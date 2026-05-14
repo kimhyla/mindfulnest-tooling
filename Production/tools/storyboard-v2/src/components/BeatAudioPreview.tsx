@@ -45,7 +45,7 @@ export function BeatAudioPreview({ beatId, cacheBust, testId, disabled }: BeatAu
         key={`audio-${beatId}-${reloadTick}`}
         src={url.toString()}
         controls
-        preload="none"
+        preload="metadata"
         data-testid={`beat-audio-element-${testId ?? beatId}`}
       />
       <button
