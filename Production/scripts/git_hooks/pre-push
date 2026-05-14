@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Pre-push: guards against the "missing tracked file" + "TS build red" classes
+# that bit us on 2026-05-14 (cropper.ts untracked, 36hr CI red).
+#
+# Per feedback_check_ci_before_claiming_shipped.md +
+# LD GIT_HOOK_INFRASTRUCTURE_CROSS_MACHINE_V1.
+#
+# This file is the SOURCE for the local-only .git/hooks/pre-push. Install
+# via Production/scripts/setup-git-hooks.sh (mac/linux) or via Git-Bash on
+# Windows (same script — bash + git rev-parse + git status are all portable).
+# The hook itself is not version-controlled at .git/hooks/ (git intentionally
+# ignores that path; solo-dev scope, no Husky/lefthook).
+#
+# Emergency bypass: `git push --no-verify` (document why in commit msg).
+#
+# Two checks (both fail-closed):
+#   1) Any untracked source file inside a tracked source directory →
+#      FATAL ("CI will fail to find the module after fresh clone").
+#   2) `tsc -b` in storyboard-v2 fails locally → FATAL ("CI will fail
+#      the same way — fix locally first"). Skipped if node_modules absent.
+
+set -e
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT"
+
+echo "==> pre-push: checking for untracked source files in tracked source dirs"
+UNTRACKED=$(git status --porcelain \
+    Production/tools/storyboard-v2/src/ \
+    Production/tools/ \
+    Production/lib/ \
+    Production/scripts/ \
+    2>/dev/null \
+    | awk '/^\?\?/ {print $2}' \
+    | grep -v __pycache__ \
+    | grep -v '\.bak' \
+    || true)
+if [ -n "$UNTRACKED" ]; then
+    echo ""
+    echo "ERROR: untracked source files in tracked source directories:"
+    echo "$UNTRACKED" | sed 's/^/    /'
+    echo ""
+    echo "These will FAIL CI build (cannot find module / import error)."
+    echo "Fix: git add <file>  OR  add to .gitignore if truly transient."
+    echo "Emergency bypass: git push --no-verify"
+    exit 1
+fi
+echo "    OK — no untracked source files."
+
+echo "==> pre-push: running TypeScript build in storyboard-v2/"
+cd Production/tools/storyboard-v2
+if [ -d node_modules ]; then
+    if ! npx --no-install tsc -b 2>&1 | tail -20; then
+        echo ""
+        echo "ERROR: TypeScript build failed locally."
+        echo "Fix the errors above before pushing — CI will fail the same way."
+        echo "Emergency bypass: git push --no-verify"
+        exit 1
+    fi
+    echo "    OK — TypeScript build clean."
+else
+    echo "    SKIPPED — node_modules not present; cannot run tsc locally."
+fi
+
+echo "==> pre-push: all guards passed; proceeding with push."
