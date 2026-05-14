@@ -1096,6 +1096,13 @@
   background: var(--ui-toast-bg-error);
   border-color: var(--ui-toast-border-error);
 }
+/* 'warning' kind — amber. CSS vars not yet defined; inline values keep this
+ * self-contained per LD TTS_OVER_CAP_WARNING_AT_REGEN_V1 (2026-05-14). */
+.mn-toast-warning {
+  background: #4a3a0d;
+  border-color: #b88a2a;
+  color: #fde9b4;
+}
 .mn-toast-message {
   flex: 1;
   font-size: 13px;

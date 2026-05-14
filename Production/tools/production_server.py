@@ -14515,13 +14515,60 @@ body {{padding-top:44px!important;}}
                 _tier1a_mark_regen_fired(
                     beat_id, app=self.app, regen_ok=_t1_enabled(),
                 )
-            return self._send_json(200, {
+
+            # Fix B — TTS over-cap warning at regen time
+            # (LD TTS_OVER_CAP_WARNING_AT_REGEN_V1, 2026-05-14). CLAUDE.md Rule
+            # 8.5 + LD-400 lock Kling v3 at a 10s hard ceiling; if the new TTS
+            # exceeds it, the next Animate click will be skipped server-side
+            # with a Rule-8.5 reason string. Surface that NOW instead of at
+            # animation submit time so Kim can shorten the script before
+            # burning a click. Non-blocking: we DO NOT refuse the regen — Kim
+            # may legitimately keep over-cap audio for non-Kling paths.
+            duration_warning = None
+            try:
+                dur = float(result.get("audio_duration_s") or 0)
+            except (TypeError, ValueError):
+                dur = 0.0
+            if dur > KLING_MAX_DURATION_SEC:
+                duration_warning = {
+                    "audio_duration_s": dur,
+                    "kling_max_s": float(KLING_MAX_DURATION_SEC),
+                    "message": (
+                        f"Audio is {dur:.2f}s but Kling v3 maximum is "
+                        f"{KLING_MAX_DURATION_SEC}s — animation submission "
+                        f"will be blocked. Shorten the script."
+                    ),
+                }
+                # Fire-and-forget activity log row (Rule 18 + Rule 35).
+                try:
+                    from lib.directus import try_post_or_queue  # type: ignore
+                    try_post_or_queue("prod_activity_log", {
+                        "action": "tts_duration_warning",
+                        "performed_by": "production_server",
+                        "details": {
+                            "beat_id": beat_id,
+                            "audio_duration_s": dur,
+                            "kling_max_s": float(KLING_MAX_DURATION_SEC),
+                            "char_count": len(text),
+                            "voice_id": result.get("voice_id"),
+                            "speaker": result.get("speaker"),
+                            "rule_reference": "LD-400 LIPSYNC_MAX_DURATION_10S_NO_SILENCE_V1 + CLAUDE.md Rule 8.5",
+                        },
+                    })
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[regen_audio] {beat_id} duration_warning activity log failed: {exc}")
+                print(f"[regen_audio] {beat_id} OVER CAP: {dur:.2f}s > {KLING_MAX_DURATION_SEC}s")
+
+            response = {
                 "ok": True,
                 "beat": beat_id,
                 "tts_regen": result,
                 "message": (f"Audio regenerated for {beat_id}: "
                             f"{result['audio_file']} ({result['audio_duration_s']:.2f}s)"),
-            })
+            }
+            if duration_warning is not None:
+                response["duration_warning"] = duration_warning
+            return self._send_json(200, response)
 
         # Fail-loud — surface the error.
         print(f"[regen_audio] {beat_id} FAILED: {result.get('error', 'unknown')}")

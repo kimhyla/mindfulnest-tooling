@@ -218,25 +218,78 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
     return result.ok;
   };
 
-  const onRegenAudio = () => runMutation('Regen Audio', 'beat_regenerate_audio', {});
-  const onAnimate = async () => {
-    setBusy('Animate');
-    const result = await pathappPatch(activeScope.value, 'animate', { beat_id: beatId });
+  const onRegenAudio = async () => {
+    setBusy('Regen Audio');
+    const result = await pathappPatch<{ tts_regen?: { audio_duration_s?: number }, duration_warning?: { message?: string; audio_duration_s?: number; kling_max_s?: number } }>(
+      activeScope.value, 'beat_regenerate_audio', { beat_id: beatId },
+    );
     setBusy(null);
     if (result.ok) {
-      pushToast({ kind: 'info', message: 'Animation submitted (poll status)', source: 'beat-animate' });
-      // Spawn poll loop until status returns 3 options.
-      let polls = 0;
-      const pollAnim = async () => {
-        polls += 1;
-        const r = await apiGet('animate_status', { beat_id: beatId });
-        if (r.ok) onMutated();
-        if (polls < 60) window.setTimeout(pollAnim, POLL_ANIMATE_MS);
-      };
-      window.setTimeout(pollAnim, POLL_ANIMATE_MS);
+      pushToast({ kind: 'success', message: 'Regen Audio ok', source: 'beat-Regen Audio' });
+      // Fix B (client) — surface server-side duration warning when audio
+      // exceeds the Kling v3 10s ceiling. Symmetric with Fix A: don't silently
+      // accept a payload that signals downstream-blocked state.
+      const warning = result.data?.duration_warning;
+      if (warning && typeof warning.message === 'string') {
+        pushToast({
+          kind: 'warning',
+          message: `Audio over cap: ${warning.message}`,
+          source: 'beat-Regen Audio-warning',
+        });
+      }
+      onMutated();
     } else {
-      pushToast({ kind: 'error', message: `Animate failed: ${result.error}`, source: 'beat-animate-error' });
+      pushToast({ kind: 'error', message: `Regen Audio failed: ${result.error}`, source: 'beat-Regen Audio-error' });
     }
+    return result.ok;
+  };
+  const onAnimate = async () => {
+    setBusy('Animate');
+    const result = await pathappPatch<{ submitted?: number; skipped?: Array<{ beat?: string; reason?: string; opt?: number }>; status?: string }>(
+      activeScope.value, 'animate', { beat_id: beatId },
+    );
+    setBusy(null);
+    if (!result.ok) {
+      pushToast({ kind: 'error', message: `Animate failed: ${result.error}`, source: 'beat-animate-error' });
+      return;
+    }
+    // Fix A — inspect submitted/skipped before declaring success + polling.
+    // Server returns HTTP 200 with {submitted, skipped, status} even when the
+    // animation request was rejected pre-flight (e.g. Rule 8.5 audio > 10s
+    // Kling ceiling). Previously the client only checked result.ok and
+    // started a blind 60-iteration poll loop, hiding the real reason from Kim.
+    const submitted = result.data?.submitted ?? 0;
+    const skipped = Array.isArray(result.data?.skipped) ? result.data!.skipped! : [];
+    if (submitted === 0 && skipped.length > 0) {
+      const first = skipped[0];
+      const reason = first?.reason || 'unknown reason';
+      const extra = skipped.length > 1 ? ` (+${skipped.length - 1} more)` : '';
+      pushToast({
+        kind: 'error',
+        message: `Animate skipped: ${reason}${extra}`,
+        source: 'beat-animate-skipped',
+      });
+      return;
+    }
+    if (submitted === 0 && skipped.length === 0) {
+      pushToast({ kind: 'info', message: 'Nothing to animate.', source: 'beat-animate-noop' });
+      return;
+    }
+    // submitted > 0 — normal path. If there are partial skips, log to console
+    // (don't double-toast; the success toast covers the dominant signal).
+    if (skipped.length > 0) {
+      console.warn(`[onAnimate] ${beatId}: ${submitted} submitted, ${skipped.length} skipped`, skipped);
+    }
+    pushToast({ kind: 'info', message: 'Animation submitted (poll status)', source: 'beat-animate' });
+    // Spawn poll loop until status returns 3 options.
+    let polls = 0;
+    const pollAnim = async () => {
+      polls += 1;
+      const r = await apiGet('animate_status', { beat_id: beatId });
+      if (r.ok) onMutated();
+      if (polls < 60) window.setTimeout(pollAnim, POLL_ANIMATE_MS);
+    };
+    window.setTimeout(pollAnim, POLL_ANIMATE_MS);
   };
   const onSelectOption = (optionIndex: number) =>
     runMutation('Select option', 'select', { option_index: optionIndex });
