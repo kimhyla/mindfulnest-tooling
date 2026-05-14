@@ -19119,6 +19119,35 @@ def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_e
         print(f"[startup:ghost_scrub] WARN: scrub failed (non-fatal): {_gs_exc}")
 
     app = AppContext(event_dir, storyboard_path, event_id, state, client)
+
+    # DIRECTUS_LOCK_WARMUP_V1 (2026-05-14): warm the cross-machine lock
+    # client singleton + JWT auth at startup so the first user-triggered
+    # mutate_state (typically Lipsync or Regen Audio) doesn't pay
+    # JWT-login + Railway-cold-start latency inside its 10s lock budget.
+    # Closes the "Directus lock unreachable" transient that fires on
+    # the FIRST per-process call (Kim hit this on beat_17 2026-05-13).
+    # Failure here is non-fatal — the cold path still works, just may
+    # surface the transient error on first user click. Per Agent B's
+    # b1 recommendation from FULL QA / Tier C lipsync investigation.
+    try:
+        _warm_client = _get_directus_lock_client()
+        if _warm_client is not None:
+            _t0 = time.time()
+            # No-op probe to force JWT auth + first GET to complete now,
+            # not during the user's first mutate. limit=1 keeps payload small.
+            _warm_client.get("prod_locks", filters={
+                "resource_key": {"_eq": "__warmup_probe__"},
+            }, limit=1)
+            print(f"[startup:dlock-warmup] Directus lock client warmed "
+                  f"({(time.time()-_t0)*1000:.0f}ms)")
+        else:
+            print("[startup:dlock-warmup] WARN: lock client unavailable "
+                  "(credentials or import); first mutate will retry path")
+    except Exception as _wexc:  # noqa: BLE001
+        print(f"[startup:dlock-warmup] WARN: warmup probe failed: "
+              f"{type(_wexc).__name__}: {_wexc} — first mutate will hit "
+              f"the lazy path under its own budget")
+
     # BEAT_GRAFT_RECOVERY_MECHANISM_V1 (C-7) — attach source_event_dir for
     # cross-event graft operations. None when --source-event is not passed.
     app.source_event_dir = source_event_dir
