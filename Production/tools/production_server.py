@@ -3745,6 +3745,77 @@ def _resolve_voice_profile(speaker: str) -> dict | None:
     return None
 
 
+# ElevenLabs v3 native audio tags (LD-148 ELEVENLABS_V3_FOR_ALL_CHARACTERS +
+# VOICE_ROSTER_LOCKED_v2.md §"Emotional Direction System"). These bracket tags
+# describe emotional state and are interpreted by v3 — they MUST be preserved
+# when stripping cue markers. Lowercase canonical; matcher is case-insensitive.
+TTS_V3_NATIVE_TAGS = frozenset({
+    "warm", "gentle", "whisper", "excited", "sad", "happy", "shocked",
+    "surprised", "scared", "worried", "breath", "sigh", "laugh", "laughs",
+    "chuckle", "giggle", "soft", "quiet", "loud", "angry", "calm", "tense",
+    "relieved", "anxious", "playful", "serious", "tired", "energetic",
+    "bursting with relief and excitement", "trying to hold back tears",
+    "quiet, carrying the weight of memory",
+})
+
+
+def _clean_text_for_tts(text: str) -> str:
+    """Strip stage-direction markup before sending to ElevenLabs v3.
+
+    Per LD `TTS_STRIP_STAGE_DIRECTION_V1` (2026-05-14). Pre-fix bug: TTS
+    pipeline sent beat.text verbatim to ElevenLabs, causing v3 to read
+    Kim's `(parenthetical stage direction)` cues aloud as dialogue
+    (e.g., beat_16 Luna voice spoke "worked up in a comedic and increasing
+    level of frenzy"). Rule 11 source fidelity is preserved because spoken
+    dialogue is unchanged byte-for-byte — only authoring metadata is
+    stripped.
+
+    Cleans:
+      - `(parenthetical stage direction)` of 3+ chars - LD-443
+        STAGE_DIRECTION_EXTRACTION_V1 designates these as image-prompt
+        cues, NEVER spoken text.
+      - `[pause]` / `[break]` / `[silence]` markers - replaced with
+        " ... " (ellipsis), which ElevenLabs v3 interprets as a natural
+        speech pause. (Chose ellipsis over `<break>` SSML to avoid v3-SSML
+        unsupported-tag risk; ellipsis works deterministically.)
+      - Stray whitespace runs after removal.
+
+    Preserves (per VOICE_ROSTER_LOCKED_v2.md §Emotional Direction System):
+      - ElevenLabs v3 native audio tags like `[warm]`, `[gentle]`,
+        `[whisper]`, `[excited]`, etc. (TTS_V3_NATIVE_TAGS frozenset above).
+      - All spoken dialogue verbatim.
+
+    Returns the cleaned text. Logs stripping at the caller.
+    """
+    if not text:
+        return text
+
+    # 1. Strip (parenthetical) stage direction of 3+ chars.
+    cleaned = re.sub(r'\([^)]{3,}\)', '', text)
+
+    # 2. Replace cue-style brackets with ellipsis pauses, preserving v3 native
+    #    emotional tags. Match [single_word] OR [multi-word phrase]; check the
+    #    canonical (lowercased, stripped) form against TTS_V3_NATIVE_TAGS.
+    def _bracket_repl(m: re.Match) -> str:
+        content = m.group(1).strip().lower()
+        # Multi-word phrasal emotional cues (e.g., "[bursting with relief...]")
+        # are passed through if the full content is in the allowlist.
+        if content in TTS_V3_NATIVE_TAGS:
+            return m.group(0)  # preserve native tag exactly as authored
+        # Cue markers (pause, break, silence) -> ellipsis pause
+        if content in ("pause", "break", "silence"):
+            return " ... "
+        # Unknown bracket — strip it (could be a typo or experimental tag);
+        # log a warning at caller.
+        return ""
+
+    cleaned = re.sub(r'\[([^\]]+)\]', _bracket_repl, cleaned)
+
+    # 3. Collapse run-on whitespace from removals.
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned
+
+
 def _tts_regenerate_for_beat(app, beat_id: str, text: str,
                              elevenlabs_key: str,
                              video_role: str = "intro") -> dict:
@@ -3826,6 +3897,20 @@ def _tts_regenerate_for_beat(app, beat_id: str, text: str,
     tts_dir.mkdir(parents=True, exist_ok=True)
     out_path = tts_dir / f"line_{beat_num_s}_{speaker_slug}.mp3"
 
+    # Strip stage-direction markup before sending to ElevenLabs per
+    # TTS_STRIP_STAGE_DIRECTION_V1 (2026-05-14). beat.text is the
+    # source-of-truth for AUTHORING (image-prompt cues per LD-443,
+    # motion-prompt cues per Fix 1 morning of 2026-05-13), but only the
+    # spoken-dialogue portion goes to TTS. v3 native emotional tags
+    # ([warm], [gentle], etc.) are preserved; cue brackets ([pause],
+    # [break], [silence]) become natural ellipsis pauses; parentheticals
+    # of 3+ chars are stripped. Rule 11 source fidelity: spoken dialogue
+    # text is unchanged byte-for-byte; only authoring metadata is stripped.
+    tts_text = _clean_text_for_tts(text)
+    if tts_text != text:
+        print(f"[tts-regen] {beat_id} stripped stage direction: "
+              f"{len(text)}c -> {len(tts_text)}c")
+
     # Call ElevenLabs v1/text-to-speech synchronously.
     # ElevenLabs TTS submit — use universal hardening helper
     # (decision 185 UNIVERSAL_EXTERNAL_API_HARDENING, April 17 2026):
@@ -3833,7 +3918,7 @@ def _tts_regenerate_for_beat(app, beat_id: str, text: str,
     # exponential backoff. Same pattern applied to Kling + FLUX Kontext.
     from kling_startend_pipeline import robust_https_request
     body = json.dumps({
-        "text": text,
+        "text": tts_text,
         "model_id": model_id,
         "voice_settings": voice_settings,
     }).encode("utf-8")
