@@ -143,10 +143,15 @@ test.describe('S1 — beat lifecycle state machine', () => {
     await expect(row).toHaveAttribute('data-lifecycle', 'selected');
     // Lipsync visible (selected + lipsync_pending only).
     await expect(page.locator('[data-testid="beat-0-lipsync"]')).toBeVisible();
-    // Use-as-Final visible (audio_generated + selected only).
+    // Use-as-Final visible (audio_generated + animated + selected per
+    // StoryboardTab.tsx visibility expansion 2026-05-12, commit 829a5a5).
     await expect(page.locator('[data-testid="beat-0-use-as-final"]')).toBeVisible();
-    // Add options HIDDEN — only animated state shows it.
-    await expect(page.locator('[data-testid="beat-0-add-options"]')).toHaveCount(0);
+    // Add options VISIBLE — per commit 829a5a5 (Kim, 2026-05-12), add-options
+    // is now always available in animated/selected/lipsync_pending/final so
+    // Kim can generate fresh options at any pipeline stage. Server mutate_state
+    // uses fcntl.lockf + threading.Lock so concurrent add_options during
+    // lipsync_pending is race-safe.
+    await expect(page.locator('[data-testid="beat-0-add-options"]')).toBeVisible();
     // Selected option indicator (✓ on the active radio).
     const opt2 = page.locator('[data-testid="beat-0-select-option-2"]');
     await expect(opt2).toBeVisible();
@@ -179,7 +184,7 @@ test.describe('S1 — beat lifecycle state machine', () => {
     await expect(lip).toContainText(/in progress/i);
   });
 
-  test('S1.6 — final: beat.final.file present → lifecycle="final"; final marker visible; Animate/Lipsync hidden', async ({ page }) => {
+  test('S1.6 — final: beat.final.file present → lifecycle="final"; final marker visible; Animate/Use-as-Final hidden; Lipsync visible as Resend when source=lipsync', async ({ page }) => {
     await mockEventStateWithBeat(page, {
       speaker: 'Tessa',
       text: 'Final beat.',
@@ -200,10 +205,16 @@ test.describe('S1 — beat lifecycle state machine', () => {
     const marker = page.locator('[data-testid="beat-0-final-marker"]');
     await expect(marker).toBeVisible();
     await expect(marker).toContainText('lipsync');
-    // Animate / Lipsync / Use-as-Final HIDDEN in final state.
+    // Animate HIDDEN in final state (showAnimate excludes 'final').
     await expect(page.locator('[data-testid="beat-0-animate"]')).toHaveCount(0);
-    await expect(page.locator('[data-testid="beat-0-lipsync"]')).toHaveCount(0);
+    // Use-as-Final HIDDEN in final state (showUseAsFinal = ['audio_generated','animated','selected']).
     await expect(page.locator('[data-testid="beat-0-use-as-final"]')).toHaveCount(0);
+    // Lipsync VISIBLE in final state when final.source === 'lipsync' — labeled
+    // "Resend Lipsync" per commit 829a5a5 (Kim, 2026-05-12). Allows regenerating
+    // lipsync on a finalised beat without unwinding the final marker.
+    const lipBtn = page.locator('[data-testid="beat-0-lipsync"]');
+    await expect(lipBtn).toBeVisible();
+    await expect(lipBtn).toContainText(/resend lipsync/i);
     // Regen audio still allowed in final per spec §3.1.
     await expect(page.locator('[data-testid="beat-0-regen-audio"]')).toBeVisible();
   });
