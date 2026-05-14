@@ -164,6 +164,140 @@ def _resolve_bg_segment_for_scope(scope_event_id: str, video_role: str) -> tuple
     return (arc_number, event_id_int, phase)
 
 
+# PB_2_THERAPEUTIC_SOURCES_LOAD_V1 — resolve event_id ("M1E1") to module metadata
+# (arc_number, m_number, event_number, creature_name, technique_name) via
+# Directus prod_modules. Used by _handle_phase_suggest_script to ground the
+# Claude API prompt in the real authored Therapeutic Note + Technique Inventory
+# for the current module, instead of generic templates.
+#
+# Cache 15min to avoid repeated Directus hits during script-iteration sessions.
+# Convention fallback on Directus failure: M(N) -> Arc((N-1)//6 + 1) which
+# matches the V1 scope layout (M1-M6=Arc1, M7-M12=Arc2, ...).
+_MODULE_RESOLVE_CACHE: dict = {}
+_MODULE_RESOLVE_CACHE_TS: float = 0.0
+_MODULE_RESOLVE_CACHE_TTL_S: float = 900.0
+
+_EVENT_ID_PATTERN = re.compile(r"M(\d+)E(\d+)", re.IGNORECASE)
+
+
+def _resolve_module_id_for_state(state_manager) -> int:
+    """Resolve the Directus prod_modules.id for the currently-loaded event.
+
+    Reads state.event_id (canonical 'M<n>E<m>' form), maps to m_number,
+    looks up prod_modules.id via the cached _MODULE_RESOLVE_CACHE +
+    Directus query. Returns 1 as a defensive fallback ONLY when:
+      - state has no event_id
+      - event_id is malformed
+      - Directus is unreachable AND m_number not in convention-fallback cache
+
+    Closes Rule 19 "no shortcuts" violation: prior code hardcoded
+    `module_id=1` at 12+ call sites (e.g. magic_still, magic_video,
+    server:7733, 8157) which silently produced wrong prod_assets rows for
+    any module beyond M1. Per LD `MODULE_ID_DYNAMIC_RESOLUTION_V1`
+    (locked 2026-05-13).
+    """
+    try:
+        state = state_manager.read_state()
+    except Exception:
+        return 1
+    event_id = state.get('event_id') or ''
+    meta = _resolve_module_for_event(event_id)
+    if not meta:
+        return 1
+    # _resolve_module_for_event returns the m_number; prod_modules.id may
+    # differ from m_number for some rows (per Directus query earlier:
+    # m_number=3 has id=5, m_number=4 has id=3). We need the actual id.
+    # Query cache directly for the id mapping.
+    global _MODULE_RESOLVE_CACHE, _MODULE_RESOLVE_CACHE_TS
+    # Refresh cache if stale (mirrors _resolve_module_for_event TTL)
+    if time.time() - _MODULE_RESOLVE_CACHE_TS > _MODULE_RESOLVE_CACHE_TTL_S:
+        try:
+            sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+            from directus_admin_client import DirectusAdminClient  # type: ignore
+            _client = DirectusAdminClient()
+            _mods = _client.get_items('prod_modules', limit=100)
+            # Store id alongside arc_number/creature/technique.
+            _MODULE_RESOLVE_CACHE = {
+                int(mr['m_number']): {
+                    'id': int(mr.get('id') or mr['m_number']),
+                    'arc_number': int(mr.get('arc_number') or 1),
+                    'creature_name': str(mr.get('creature_name') or 'Unknown'),
+                    'technique_name': str(mr.get('technique_name') or ''),
+                }
+                for mr in _mods if mr.get('m_number') is not None
+            }
+            _MODULE_RESOLVE_CACHE_TS = time.time()
+        except Exception:
+            pass
+    cached = _MODULE_RESOLVE_CACHE.get(meta['m_number'], {})
+    return int(cached.get('id', meta['m_number']))
+
+
+def _resolve_module_for_event(event_id_str: str):
+    """Resolve event_id like 'M1E1' to module metadata dict.
+
+    Returns dict with keys: arc_number, m_number, event_number, creature_name,
+    technique_name. Returns None if event_id_str cannot be parsed.
+
+    Queries Directus prod_modules (cached 15min); falls back to convention
+    M(N) -> Arc((N-1)//6 + 1) on Directus failure. The convention assumes the
+    V1 layout (6 modules per arc); production should rely on the Directus
+    lookup which carries the authoritative play-order vs M-number mapping.
+    """
+    global _MODULE_RESOLVE_CACHE, _MODULE_RESOLVE_CACHE_TS
+    if not event_id_str:
+        return None
+    m = _EVENT_ID_PATTERN.match(str(event_id_str))
+    if not m:
+        return None
+    m_number = int(m.group(1))
+    event_number = int(m.group(2))
+
+    # Refresh cache if stale
+    if time.time() - _MODULE_RESOLVE_CACHE_TS > _MODULE_RESOLVE_CACHE_TTL_S:
+        try:
+            sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+            from directus_admin_client import DirectusAdminClient  # type: ignore
+            _client = DirectusAdminClient()
+            _mods = _client.get_items('prod_modules', limit=100)
+            _MODULE_RESOLVE_CACHE = {
+                int(mr['m_number']): {
+                    'id': int(mr.get('id') or mr['m_number']),
+                    'arc_number': int(mr.get('arc_number') or 1),
+                    'creature_name': str(mr.get('creature_name') or 'Unknown'),
+                    'technique_name': str(mr.get('technique_name') or ''),
+                }
+                for mr in _mods if mr.get('m_number') is not None
+            }
+            _MODULE_RESOLVE_CACHE_TS = time.time()
+        except Exception as e:
+            # Fail-quiet: log + fall through to convention. Caller still gets useful data.
+            print(f'[_resolve_module_for_event] Directus query failed '
+                  f'({type(e).__name__}: {e}); using convention fallback')
+
+    if m_number in _MODULE_RESOLVE_CACHE:
+        meta = _MODULE_RESOLVE_CACHE[m_number]
+    else:
+        # Convention fallback (V1 layout): M(N) -> Arc((N-1)//6 + 1).
+        # Tessa-Bramble M1-M6=Arc1, M7-M12=Arc2, etc. Returns m_number
+        # as the id since prod_modules.id == m_number for most rows (M3/M4
+        # are the known exceptions; without Directus we can't disambiguate).
+        meta = {
+            'id': m_number,
+            'arc_number': ((m_number - 1) // 6) + 1,
+            'creature_name': 'Unknown',
+            'technique_name': '',
+        }
+
+    return {
+        'arc_number': meta['arc_number'],
+        'm_number': m_number,
+        'event_number': event_number,
+        'creature_name': meta['creature_name'],
+        'technique_name': meta['technique_name'],
+    }
+
+
 # Capabilities probe cache (populated on first use)
 _BG_CAPABILITIES = None
 
@@ -804,7 +938,18 @@ SPEAKER_MOTION_PROFILES: "dict[str, dict[str, str]]" = {
         "happy_excited":    "energetic body bounce, quick wing flutter, enthusiastic head nod, bright feather ruffle",
         "upset_shocked":    "quick wing half-lift, feather bristle, sharp head turn, rapid blink",
         "sad_disappointed": "soft feather settle, gentle wing-fold, head tilt, quiet blinking",
-        "neutral":          "small hops in place, wing adjustments, warm head tilts, bright eye sparkle",
+        # Rewrite 2026-05-14 per CHIPPER_NEUTRAL_PROFILE_STILLNESS_REWRITE_V1 +
+        # 3+3 Opus debate (Advocate A Candidate B; Counter B/C rejected as
+        # Rule-8.2-violating or over-engineering). Prior string "small hops in
+        # place, wing adjustments, warm head tilts, bright eye sparkle" was
+        # the literal source of the bouncing-Chipper + eye-sparkle Kling
+        # output Kim repeatedly reported. New vocabulary preserves Chipper
+        # character (still attentive, still warm) without locomotion verbs
+        # ("hops") or VFX verbs ("sparkle"). Pattern-matched against sister
+        # neutrals (Tessa/Luna shapes) for Rule 8.1/8.2/8.4 compliance.
+        # Override path (Fix 1 _motion_override) still wins when present —
+        # this only affects the fall-through case.
+        "neutral":          "gentle head micro-tilt, quiet wing adjustments, soft feather ripple, attentive blink",
     },
 }
 
@@ -865,17 +1010,34 @@ def build_motion_prompt(beat: dict) -> str:
     section = beat.get("section", "") or ""
 
     emotion = beat.get("emotion", "neutral") or "neutral"
+    # Fix 5 (20260513): freeform BG emotion strings (non-VALID_EMOTIONS) are
+    # promoted to _freeform_override rather than silently discarded. The BG
+    # authors rich descriptions like "sputtering, flapping wings, freaking out"
+    # that are the intended motion. Only fall back to neutral if emotion was
+    # empty/missing.
+    _freeform_override: "str | None" = None
     if emotion not in VALID_EMOTIONS:
-        print(f"[WARN] unknown emotion {emotion!r} for speaker {speaker!r}; "
-              f"falling back to 'neutral'")
-        emotion = "neutral"
+        _freeform_override = emotion
+        print(f"[motion] freeform emotion promoted to override for speaker={speaker!r}: {emotion[:60]!r}")
+        emotion = "neutral"  # kept for beak/mouth constraint selection only
 
     lipsync_targeted = beat.get("lipsync_targeted", True)
     if lipsync_targeted is None:
         lipsync_targeted = True
 
+    # Fix 1 (20260513 motion-quality-pipeline): direct stage-direction override.
+    # When _handle_add_options_startend parses Kim's (parenthetical) cues from
+    # beat.text, it stamps _motion_override onto the beat dict. That string
+    # already passed sanitize_prompt at the call site (positive_prompt wraps
+    # build_motion_prompt's output in sanitize_prompt), so banned Rule 8.1
+    # words are scrubbed downstream. Override wins over the lookup table
+    # because Kim's authored text is more specific than the per-creature
+    # emotion vocabulary. _freeform_override (Fix 5) is second priority.
+    _override = beat.get("_motion_override") or _freeform_override
     profile = SPEAKER_MOTION_PROFILES.get(speaker)
-    if profile:
+    if _override:
+        action = _override
+    elif profile:
         action = profile.get(emotion) or profile["neutral"]
     else:
         action = SECTION_ACTIONS.get(section, DEFAULT_ACTION)
@@ -1423,6 +1585,30 @@ class StateManager:
 # shared between calls. ~30 extra LOC, zero new dependencies.
 # ---------------------------------------------------------------------------
 
+def _wavespeed_resolve_host(host: str) -> str | None:
+    """Resolve hostname via public DNS (8.8.8.8 / 1.1.1.1) instead of the
+    system resolver. Kim's ISP (Altice/Optimum) DNS-poisons api.wavespeed.ai
+    to 167.206.37.145 instead of the real Tencent Cloud IP 49.51.190.24,
+    causing every connection to time out. Ported from lipsync_sender.py.
+    Discovered 2026-04-21. LD-379 WAVESPEED_DNS_RESILIENCE_V1_20260421."""
+    for resolver in ("8.8.8.8", "1.1.1.1"):
+        try:
+            result = subprocess.run(
+                ["dig", "+short", "+time=3", "+tries=1", f"@{resolver}", host],
+                capture_output=True, text=True, timeout=5,
+            )
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", line):
+                    return line
+        except (subprocess.TimeoutExpired, OSError):
+            continue
+    try:
+        return socket.gethostbyname(host)
+    except OSError:
+        return None
+
+
 def _wavespeed_request(
     method: str,
     url: str,
@@ -1435,39 +1621,73 @@ def _wavespeed_request(
     Returns (status_code, body_bytes). Raises urllib.error.URLError on network
     failure (so existing exception handlers keep working). Always closes the
     connection before returning."""
+    import tempfile
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme != "https":
         raise ValueError(f"refusing non-https URL: {url!r}")
+    hostname = parsed.hostname or parsed.netloc
+    port = parsed.port or 443
     path = parsed.path + ("?" + parsed.query if parsed.query else "")
-    # Fresh SSL context per call — prevents session-ticket accumulation.
-    # OP_NO_TICKET defeats RFC 5077 session resumption (counter-agent C2 HIGH
-    # finding, April 16 2026): even a fresh SSLContext negotiates and caches
-    # tickets for the duration of the context. Explicitly disabling tickets +
-    # compression removes the remaining stuck-state vectors. On macOS stock
-    # Python, this eliminates the LibreSSL process-level session cache path.
-    ctx = ssl.create_default_context()
-    ctx.options |= ssl.OP_NO_TICKET
-    ctx.options |= ssl.OP_NO_COMPRESSION
-    conn = http.client.HTTPSConnection(parsed.netloc, timeout=timeout, context=ctx)
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "Connection": "close",  # never reuse this connection
-    }
+    full_url = f"https://{hostname}:{port}{path}"
+
+    # LD-379: bypass ISP DNS poisoning via curl --resolve. Switching from
+    # http.client to curl because http.client with a raw IP causes
+    # SSLCertVerificationError (IP address mismatch for api.wavespeed.ai).
+    # curl --resolve connects to the resolved IP while presenting the real
+    # hostname in SNI + cert verification, so TLS succeeds. Ported from
+    # lipsync_sender.py which already uses this pattern.
+    resolved_ip = _wavespeed_resolve_host(hostname)
+
+    cmd = [
+        "curl", "-s", "-S",
+        "--http1.1",            # avoids HTTP/2 handshake hang on macOS curl
+        "-m", str(timeout),
+        "-X", method,
+        "-H", f"Authorization: Bearer {api_key}",
+        "-H", "Content-Type: application/json",
+        "-H", "Connection: close",
+        "-w", "\n__STATUS__%{http_code}",   # append HTTP status as sentinel
+    ]
+    if resolved_ip:
+        cmd += ["--resolve", f"{hostname}:{port}:{resolved_ip}"]
+
+    tmp = None
     try:
-        conn.request(method, path, body=body, headers=headers)
-        resp = conn.getresponse()
-        status = resp.status
-        data = resp.read()
-    except (TimeoutError, http.client.HTTPException, OSError) as exc:
-        # Wrap in urllib.error.URLError so existing callers' except clauses still catch it
-        raise urllib.error.URLError(f"{type(exc).__name__}: {exc}") from exc
+        if body is not None:
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
+            tmp.write(body)
+            tmp.flush()
+            tmp.close()
+            cmd += ["-d", f"@{tmp.name}"]
+        cmd.append(full_url)
+        result = subprocess.run(cmd, capture_output=True, timeout=timeout + 10)
+        raw = result.stdout
+        marker = b"\n__STATUS__"
+        idx = raw.rfind(marker)
+        if idx >= 0:
+            data = raw[:idx]
+            try:
+                status = int(raw[idx + len(marker):].strip())
+            except ValueError as exc:
+                raise urllib.error.URLError(
+                    f"could not parse HTTP status from curl output: {raw[idx:]!r}"
+                ) from exc
+        else:
+            stderr = result.stderr.decode(errors="replace").strip()
+            raise urllib.error.URLError(
+                f"curl exited {result.returncode}: {stderr or '(no stderr)'}"
+            )
+        return status, data
+    except subprocess.TimeoutExpired as exc:
+        raise urllib.error.URLError(f"TimeoutExpired: {exc}") from exc
+    except FileNotFoundError as exc:
+        raise urllib.error.URLError("curl not found — install curl") from exc
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-    return status, data
+        if tmp:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
 
 
 class StitchEditorState:
@@ -1630,7 +1850,8 @@ class WaveSpeedClient:
         data_obj = payload.get("data") or {}
         status = data_obj.get("status") or payload.get("status") or "unknown"
         outputs = data_obj.get("outputs") or payload.get("outputs") or []
-        return {"status": status, "outputs": outputs, "raw": payload}
+        error = data_obj.get("error") or payload.get("error") or ""
+        return {"status": status, "outputs": outputs, "error": error, "raw": payload}
 
     def download(self, url: str, dest: Path) -> int:
         """Download a video URL to dest, return bytes written.
@@ -1962,51 +2183,48 @@ class PollingThread(threading.Thread):
         failed (no artifact). Stale options are NOT returned for polling.
         """
         now = time.time()
-        # S5.5a2: poller iterates intro partition beats.
-        beats = self.state.get_beats("intro")
-        out: list[tuple[str, int, dict]] = []
-        # Collect stale candidates and process them after the read loop so we
-        # don't mutate state (and invalidate iteration) inside the for-loop.
-        stale_candidates: list[tuple[str, int, dict]] = []
+        # Iterate ALL video-role partitions (not just intro) so resolution/
+        # standalone beats are polled. Returns 4-tuples (beat_id, idx, opt, role).
+        state_snap = self.state.read_state()
+        all_partitions = (state_snap.get("videos") or {})
+        out: list[tuple[str, int, dict, str]] = []
+        stale_candidates: list[tuple[str, int, dict, str]] = []
         t1_enabled = _t1_enabled()
-        for beat_id, beat in beats.items():
-            phase1 = beat.get("phase_1") or {}
-            for idx, opt in enumerate(phase1.get("options", [])):
-                if opt.get("status") != "polling" or not opt.get("task_id"):
-                    continue
-                # Tier 1B stale-timeout check (feature-flagged).
-                if t1_enabled:
-                    submitted_epoch = opt.get("submitted_at_epoch")
-                    if submitted_epoch:
-                        try:
-                            elapsed = now - float(submitted_epoch)
-                        except (TypeError, ValueError):
-                            elapsed = 0
-                        source = opt.get("source") or "kling"
-                        threshold = STALE_TIMEOUT_SEC.get(
-                            source, STALE_TIMEOUT_DEFAULT_SEC,
-                        )
-                        if elapsed > threshold:
-                            stale_candidates.append((beat_id, idx, opt))
-                            continue
-                next_at = opt.get("next_attempt_at_epoch", 0)
-                if next_at > now:
-                    continue  # still in backoff window — skip this cycle
-                out.append((beat_id, idx, opt))
-        # Process stale candidates AFTER building the ready list. Each
-        # call performs its own read-modify-write cycle under the StateManager
-        # lock; ordering doesn't matter because each operates on a disjoint
-        # (beat_id, opt_idx) slot.
-        for beat_id, idx, opt in stale_candidates:
+        for video_role, partition in all_partitions.items():
+            beats = (partition or {}).get("beats", {})
+            for beat_id, beat in beats.items():
+                phase1 = beat.get("phase_1") or {}
+                for idx, opt in enumerate(phase1.get("options", [])):
+                    if opt.get("status") != "polling" or not opt.get("task_id"):
+                        continue
+                    if t1_enabled:
+                        submitted_epoch = opt.get("submitted_at_epoch")
+                        if submitted_epoch:
+                            try:
+                                elapsed = now - float(submitted_epoch)
+                            except (TypeError, ValueError):
+                                elapsed = 0
+                            source = opt.get("source") or "kling"
+                            threshold = STALE_TIMEOUT_SEC.get(
+                                source, STALE_TIMEOUT_DEFAULT_SEC,
+                            )
+                            if elapsed > threshold:
+                                stale_candidates.append((beat_id, idx, opt, video_role))
+                                continue
+                    next_at = opt.get("next_attempt_at_epoch", 0)
+                    if next_at > now:
+                        continue
+                    out.append((beat_id, idx, opt, video_role))
+        for beat_id, idx, opt, video_role in stale_candidates:
             try:
-                self._mark_stale_timeout_with_artifact_check(beat_id, idx, opt)
+                self._mark_stale_timeout_with_artifact_check(beat_id, idx, opt, video_role)
             except Exception as exc:  # noqa: BLE001 — never kill the poller
                 print(f"[T1] beat={beat_id} opt={idx + 1} stale_check_error: {exc}")
                 traceback.print_exc()
         return out
 
     def _mark_stale_timeout_with_artifact_check(
-        self, beat_id: str, opt_idx: int, opt: dict,
+        self, beat_id: str, opt_idx: int, opt: dict, video_role: str = "intro",
     ) -> None:
         """Tier 1B core: an option has exceeded its wall-clock timeout. Before
         declaring it failed, look for the expected output file on disk.
@@ -2119,7 +2337,7 @@ class PollingThread(threading.Thread):
                     phase1["status"] = "polling"
             return "applied"
 
-        result = self.state.mutate_video_state("intro", mut)
+        result = self.state.mutate_video_state(video_role, mut)
         if result == "already_terminal":
             # Another thread raced us to a terminal state — nothing to log.
             return
@@ -2161,11 +2379,11 @@ class PollingThread(threading.Thread):
             if self.stop_event.is_set():
                 return
             batch = pending[i : i + POLL_BATCH_SIZE]
-            for beat_id, opt_idx, opt in batch:
-                self._poll_one(beat_id, opt_idx, opt)
+            for beat_id, opt_idx, opt, video_role in batch:
+                self._poll_one(beat_id, opt_idx, opt, video_role)
             time.sleep(POLL_BATCH_GAP_SEC)
 
-    def _poll_one(self, beat_id: str, opt_idx: int, opt: dict) -> None:
+    def _poll_one(self, beat_id: str, opt_idx: int, opt: dict, video_role: str = "intro") -> None:
         task_id = opt["task_id"]
         # Backoff is handled upstream in _pending_tasks (skips options whose
         # next_attempt_at_epoch is still in the future). DO NOT sleep here —
@@ -2174,28 +2392,28 @@ class PollingThread(threading.Thread):
         try:
             result = self.client.poll(task_id)
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
-            self._handle_transient_failure(beat_id, opt_idx, str(exc), task_id=task_id)
+            self._handle_transient_failure(beat_id, opt_idx, str(exc), task_id=task_id, video_role=video_role)
             return
         except Exception as exc:  # noqa: BLE001
-            self._handle_transient_failure(beat_id, opt_idx, repr(exc), task_id=task_id)
+            self._handle_transient_failure(beat_id, opt_idx, repr(exc), task_id=task_id, video_role=video_role)
             return
 
         status = (result.get("status") or "").lower()
         if status == "completed" and result.get("outputs"):
             self._download_and_mark_completed(
                 beat_id, opt_idx, task_id, result["outputs"][0],
-                source="poll_complete",
+                source="poll_complete", video_role=video_role,
             )
         elif status in ("failed", "error"):
             _ws_err = result.get("message") or result.get("error") or result.get("detail") or ""
             print(f"[poll] {beat_id} opt{opt_idx} wavespeed failure detail: {_ws_err!r} full={list(result.keys())}")
             self._handle_transient_failure(
-                beat_id, opt_idx, f"wavespeed reported failure: {_ws_err}", task_id=task_id,
+                beat_id, opt_idx, f"wavespeed reported failure: {_ws_err}", task_id=task_id, video_role=video_role,
             )
         # else: still processing — leave alone
 
     def _download_and_mark_completed(
-        self, beat_id: str, opt_idx: int, task_id: str, url: str, *, source: str,
+        self, beat_id: str, opt_idx: int, task_id: str, url: str, *, source: str, video_role: str = "intro",
     ) -> bool:
         """Extracted so both normal poll-complete AND async CDN re-check paths
         converge on one implementation. Idempotent: if dest already exists with
@@ -2213,9 +2431,27 @@ class PollingThread(threading.Thread):
         """
         fname = f"{beat_id}_option_{opt_idx + 1}.mp4"
         dest = self.state.clips_dir / fname
+
+        # Stale-file guard: if a file exists for this slot, verify it postdates
+        # the task's submission epoch. If stale (mtime <= submitted_at_epoch),
+        # delete it so we re-download the correct output from this task.
+        # Mirrors the artifact-recovery pattern at line 2101.
+        if dest.exists() and dest.stat().st_size > 0:
+            beats = self.state.get_beats(video_role)
+            _phase1_opts = (beats.get(beat_id) or {}).get("phase_1", {}).get("options", [])
+            _submitted_epoch: "float | None" = (
+                _phase1_opts[opt_idx].get("submitted_at_epoch")
+                if opt_idx < len(_phase1_opts) else None
+            )
+            if _submitted_epoch and dest.stat().st_mtime <= _submitted_epoch:
+                print(f"[{source}] {beat_id} opt {opt_idx + 1}: stale file "
+                      f"(mtime {dest.stat().st_mtime:.0f} <= submitted {_submitted_epoch}) "
+                      f"— deleting for fresh download")
+                dest.unlink()
+
         size: int
         if dest.exists() and dest.stat().st_size > 0:
-            # Idempotency guard — already have a file for this slot
+            # Idempotency guard — file is current (mtime > submitted epoch)
             size = dest.stat().st_size
             print(f"[{source}] {beat_id} opt {opt_idx + 1}: file already present ({size} bytes); marking complete without re-download")
         else:
@@ -2284,7 +2520,7 @@ class PollingThread(threading.Thread):
                 phase1["status"] = "polling"
             return "resurrected"
 
-        mut_result = self.state.mutate_video_state("intro", mut_with_guard)
+        mut_result = self.state.mutate_video_state(video_role, mut_with_guard)
         # Pass task_id so spend ledger prevents double-charge on recovery
         self.state.add_spend("kling_animation", COST_PER_CLIP_KLING, task_id=task_id)
         if mut_result == "resurrected":
@@ -2307,7 +2543,7 @@ class PollingThread(threading.Thread):
         return True
 
     def _handle_transient_failure(
-        self, beat_id: str, opt_idx: int, err: str, *, task_id: str | None = None,
+        self, beat_id: str, opt_idx: int, err: str, *, task_id: str | None = None, video_role: str = "intro",
     ) -> None:
         """Increment retries and conditionally mark failed.
 
@@ -2357,7 +2593,7 @@ class PollingThread(threading.Thread):
                 # Status stays 'polling' — this is no longer a path to 'failed'
                 # unless the vendor says so or the orphan sweep finds it truly dead.
             return new_retries
-        new_retries = self.state.mutate_video_state("intro", mut)
+        new_retries = self.state.mutate_video_state(video_role, mut)
 
         # Pre-fail CDN check (C4): only at configured retry levels, async,
         # 10s timeout, doesn't block this poller thread.
@@ -3456,6 +3692,31 @@ def _load_voice_profiles_from_directus(force_refresh: bool = False) -> dict[str,
             _VOICE_PROFILE_CACHE = cache
             print(f"[voice-profiles] loaded {len(cache)} profiles from Directus: "
                   f"{sorted(cache.keys())}")
+            # V1_VOICE_PROFILE_COMPLETENESS_V1 (locked 2026-05-13) — warn
+            # loudly at load time when V1-required character voices are
+            # missing from prod_voice_profiles, so the gap surfaces at
+            # server start rather than at first Regen Audio click. Per
+            # LD-148 ELEVENLABS_V3_FOR_ALL_CHARACTERS, all V1 creatures +
+            # NPCs require registered voice profiles.
+            _V1_REQUIRED_VOICES = {
+                # 6 V1 creatures (LD-353 V1_CREATURE_SET_6_BENSON_AT_M3)
+                "Cedric", "Chipper", "Tessa", "Luna",
+                "Benson", "Ember", "Bork", "Bramble",
+                # NPCs referenced in Arc 1 (LD-148 list)
+                # Note: Oliver/Grizzle/Willow appear later in the arc roadmap
+                # but are not strictly blocking M1 audio production.
+            }
+            _missing = sorted(_V1_REQUIRED_VOICES - set(cache.keys()))
+            if _missing:
+                print(
+                    f"[voice-profiles] WARN: V1-required voice profiles "
+                    f"MISSING from Directus: {_missing}. Regen Audio will "
+                    f"fail for any beat with these speakers. Add via "
+                    f"POST /items/prod_voice_profiles with fields "
+                    f"{{character_name, elevenlabs_voice_id, stability, "
+                    f"similarity_boost, style, speed, model='eleven_v3'}}. "
+                    f"Per LD V1_VOICE_PROFILE_COMPLETENESS_V1."
+                )
             return cache
         except Exception as exc:  # noqa: BLE001
             print(f"[voice-profiles] WARN load failed ({exc}); using empty cache")
@@ -3484,8 +3745,60 @@ def _resolve_voice_profile(speaker: str) -> dict | None:
     return None
 
 
+# Cue-marker denylist: meta-markers that aren't meant to be spoken aloud.
+# ElevenLabs v3 doesn't natively understand the literal word "pause" as a
+# silence — without replacement it would speak "pause" as the noun. Replaced
+# with " ... " (ellipsis) which v3 reads as a natural speech pause.
+#
+# This is intentionally a SHORT denylist, not an allowlist. Everything else
+# (parentheticals, free-form bracket content, emotional tags) passes
+# through verbatim — ElevenLabs v3 is flexible at interpreting authored
+# voice/emotional direction and Kim should not be restricted to an
+# enumerated vocabulary.
+TTS_CUE_MARKER_PATTERN = re.compile(
+    r'\[\s*(pause|break|silence)\s*\]',
+    flags=re.IGNORECASE,
+)
+
+
+def _clean_text_for_tts(text: str) -> str:
+    """Pre-process beat.text for the ElevenLabs v3 TTS payload.
+
+    Per LD `TTS_STRIP_STAGE_DIRECTION_V2` (2026-05-14, supersedes V1).
+
+    History — V1 (earlier on 2026-05-14) over-fixed by stripping every
+    (parenthetical) of 3+ chars + applying a 27-word allowlist for
+    bracket emotional tags. Evidence: beat_02 audio ('shocked,
+    show-stopper voice' parenthetical) was authored BEFORE V1 landed
+    and worked correctly — ElevenLabs v3 interpreted the parens as
+    voice direction. V1's blanket strip would have removed Kim's
+    voice-direction cues. The allowlist also silently dropped any
+    bracket Kim wrote that wasn't in the 27-word table.
+
+    V2 contract: PASS EVERYTHING through verbatim EXCEPT explicit cue
+    markers `[pause]` / `[break]` / `[silence]` which become ` ... `
+    (ellipsis pause). v3 reads ellipsis as natural speech pause.
+
+    Rationale: ElevenLabs v3 already handles parenthetical voice
+    direction and bracket emotional tags with its own heuristics.
+    Kim authors freely — no allowlist restriction. If v3 reads a
+    parenthetical aloud unexpectedly, that's an authoring-style
+    decision Kim can rephrase (e.g., move the cue into a bracket tag
+    at the start of the line).
+
+    Rule 11 source fidelity: spoken dialogue is byte-for-byte preserved.
+    """
+    if not text:
+        return text
+    cleaned = TTS_CUE_MARKER_PATTERN.sub(' ... ', text)
+    # Collapse any whitespace runs created by the substitution.
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned
+
+
 def _tts_regenerate_for_beat(app, beat_id: str, text: str,
-                             elevenlabs_key: str) -> dict:
+                             elevenlabs_key: str,
+                             video_role: str = "intro") -> dict:
     """Synchronously regenerate TTS audio for a beat via ElevenLabs v3.
 
     Rule 11 source fidelity: text preserved verbatim, voice profile locked
@@ -3505,8 +3818,8 @@ def _tts_regenerate_for_beat(app, beat_id: str, text: str,
     except (IndexError, ValueError):
         return {"ok": False, "error": f"unparseable beat_id: {beat_id!r}"}
 
-    # Resolve speaker -> voice profile. S5.5a2: read from intro partition.
-    beats = app.state.get_beats("intro")
+    # Resolve speaker -> voice profile. Read from the caller's actual partition.
+    beats = app.state.get_beats(video_role)
     beat_state = beats.get(beat_id) or {}
     speaker = beat_state.get("speaker") or ""
     if not speaker:
@@ -3530,9 +3843,17 @@ def _tts_regenerate_for_beat(app, beat_id: str, text: str,
 
     profile = _resolve_voice_profile(speaker)
     if not profile or not profile.get("voice_id"):
+        # Surface all currently-registered + missing speakers so Kim can
+        # see the gap shape (not just the one beat's failure).
+        _registered = sorted((_VOICE_PROFILE_CACHE or {}).keys())
         return {"ok": False,
-                "error": f"no voice profile for speaker {speaker!r} "
-                         f"(configure in Directus prod_voice_profiles)"}
+                "error": f"no voice profile for speaker {speaker!r}. "
+                         f"Currently registered: {_registered}. "
+                         f"Add via POST /items/prod_voice_profiles "
+                         f"(character_name, elevenlabs_voice_id, stability, "
+                         f"similarity_boost, style, speed, model='eleven_v3'). "
+                         f"Per LD-148 ELEVENLABS_V3_FOR_ALL_CHARACTERS + "
+                         f"LD V1_VOICE_PROFILE_COMPLETENESS_V1."}
 
     # Build voice_settings, dropping keys ElevenLabs rejects when None.
     voice_settings = {}
@@ -3556,6 +3877,20 @@ def _tts_regenerate_for_beat(app, beat_id: str, text: str,
     tts_dir.mkdir(parents=True, exist_ok=True)
     out_path = tts_dir / f"line_{beat_num_s}_{speaker_slug}.mp3"
 
+    # Strip stage-direction markup before sending to ElevenLabs per
+    # TTS_STRIP_STAGE_DIRECTION_V1 (2026-05-14). beat.text is the
+    # source-of-truth for AUTHORING (image-prompt cues per LD-443,
+    # motion-prompt cues per Fix 1 morning of 2026-05-13), but only the
+    # spoken-dialogue portion goes to TTS. v3 native emotional tags
+    # ([warm], [gentle], etc.) are preserved; cue brackets ([pause],
+    # [break], [silence]) become natural ellipsis pauses; parentheticals
+    # of 3+ chars are stripped. Rule 11 source fidelity: spoken dialogue
+    # text is unchanged byte-for-byte; only authoring metadata is stripped.
+    tts_text = _clean_text_for_tts(text)
+    if tts_text != text:
+        print(f"[tts-regen] {beat_id} stripped stage direction: "
+              f"{len(text)}c -> {len(tts_text)}c")
+
     # Call ElevenLabs v1/text-to-speech synchronously.
     # ElevenLabs TTS submit — use universal hardening helper
     # (decision 185 UNIVERSAL_EXTERNAL_API_HARDENING, April 17 2026):
@@ -3563,7 +3898,7 @@ def _tts_regenerate_for_beat(app, beat_id: str, text: str,
     # exponential backoff. Same pattern applied to Kling + FLUX Kontext.
     from kling_startend_pipeline import robust_https_request
     body = json.dumps({
-        "text": text,
+        "text": tts_text,
         "model_id": model_id,
         "voice_settings": voice_settings,
     }).encode("utf-8")
@@ -3624,7 +3959,6 @@ def _tts_regenerate_for_beat(app, beat_id: str, text: str,
 
     # Update state: audio_file, audio_duration_s, clear text_modified_after_tts,
     # mark lipsync.audio_changed if a completed lipsync exists.
-    # S5.5a2: legacy TTS-regen mut → intro partition.
     now_iso = datetime.now(timezone.utc).isoformat()
     def _update(partition, _bid=beat_id, _af=out_path.name, _d=dur, _iso=now_iso):
         b = partition.setdefault("beats", {}).setdefault(_bid, {})
@@ -3636,7 +3970,7 @@ def _tts_regenerate_for_beat(app, beat_id: str, text: str,
         ls = b.get("lipsync") or {}
         if ls.get("status") == "completed":
             ls["audio_changed"] = True
-    app.state.mutate_video_state("intro", _update)
+    app.state.mutate_video_state(video_role, _update)
 
     result = {
         "ok": True,
@@ -4737,7 +5071,28 @@ class AppContext:
         self.active_milestone_id: str | None = None
         self.milestone_dir: Path | None = None
 
-    def beats(self) -> list[dict]:
+    def beats(self, video_role: str = "intro") -> list[dict]:
+        # v59 Vite SPA has no embedded beat data — project from state.
+        if _storyboard_is_v59_shell(self):
+            state = self.state.read_state()
+            state_beats = ((state.get("videos") or {}).get(video_role) or {}).get("beats") or {}
+            result = []
+            for beat_id in sorted(state_beats.keys()):
+                b = state_beats[beat_id]
+                try:
+                    ln = int(beat_id.split("_")[1])
+                except (IndexError, ValueError):
+                    ln = -1
+                result.append({
+                    "line_number": ln,
+                    "speaker": b.get("speaker", ""),
+                    "text": b.get("text", ""),
+                    "section": b.get("section", ""),
+                    "image": None,  # resolved at animate time via get_beat_image()
+                    "image_key": b.get("image_path", ""),
+                })
+            return result
+        # Legacy path: HTML-embedded beat data (pre-v59 storyboards).
         if self._beats_cache is None:
             html = self.storyboard_path.read_text(encoding="utf-8")
             self._beats_cache = extract_beats_from_html(html)
@@ -4873,16 +5228,74 @@ class AppContext:
         return None
 
     def get_fullres_gallery_image(self, image_key: str) -> str | None:
-        """Look up a full-res gallery image by key from the storyboard HTML."""
+        """Resolve image_key to a full-res data URI.
+
+        Path C (v59 shell): the Vite shell has no embedded gallery markers, so
+        we resolve via the on-disk library inventory (BG_STILLS_DIR, sources/,
+        crops/, Character_Assets/) matching filename stem against image_key with
+        space→underscore normalization. Legacy HTML scan kept as fallback for
+        pre-v59 storyboards. Fixes DRAG_DROP_V59_GALLERY_V1.
+        """
+        fp = self.resolve_library_image_path(image_key)
+        if fp:
+            try:
+                with open(fp, "rb") as f:
+                    raw = f.read()
+                ext = os.path.splitext(fp)[1].lower().lstrip(".")
+                mime = {"png": "image/png", "webp": "image/webp",
+                        "jpg": "image/jpeg", "jpeg": "image/jpeg"}.get(ext, "image/png")
+                return f"data:{mime};base64," + base64.b64encode(raw).decode("ascii")
+            except OSError:
+                pass
+        # Legacy fallback for pre-v59 storyboards (HTML gallery markers).
         html = self.storyboard_path.read_text(encoding="utf-8")
-        # Gallery images: <div class="ic"><img src="data:image/..."><p>filename.png</p></div>
-        # Match by key derived from filename
         pattern = r'<div class="ic"><img src="(data:image/[^"]+)"><p>([^<]+)</p></div>'
+        normalized = image_key.replace(" ", "_")
         for m in re.finditer(pattern, html):
             src, name = m.group(1), m.group(2)
             key = name.replace(".png", "").replace(".PNG", "").replace(" ", "_")
-            if key == image_key:
+            if key == image_key or key == normalized:
                 return src
+        return None
+
+    def resolve_library_image_path(self, image_key: str) -> str | None:
+        """Resolve image_key to its absolute on-disk path in library directories.
+
+        Scans BG_STILLS_DIR, sources/, crops/, Character_Assets/ in order,
+        matching filename stem with space→underscore normalization.
+        Returns None if not found (caller falls back to legacy HTML scan).
+        """
+        bg = _bg_module()
+        normalized = image_key.replace(" ", "_")
+        candidate_dirs = [
+            bg.BG_STILLS_DIR,
+            os.path.join(bg.BG_STILLS_DIR, "sources"),
+            os.path.join(bg.BG_STILLS_DIR, "crops"),
+            os.path.normpath(os.path.join(bg.BG_STILLS_DIR, "..", "Character_Assets")),
+        ]
+        for d in candidate_dirs:
+            if not os.path.isdir(d):
+                continue
+            try:
+                entries = os.listdir(d)
+            except OSError:
+                continue
+            for fname in entries:
+                if not fname.lower().endswith((".png", ".webp", ".jpg", ".jpeg")):
+                    continue
+                stem = os.path.splitext(fname)[0]
+                if stem == image_key or stem.replace(" ", "_") == normalized:
+                    return os.path.join(d, fname)
+            # Prefix-match fallback: key may lack a trailing _<timestamp> suffix
+            # added when the file was written (e.g. "bg_foo_opt1" stored but
+            # "bg_foo_opt1_1777470570.png" is on disk). Match stem.startswith(key+"_")
+            # to avoid collisions between similarly-named keys.
+            for fname in entries:
+                if not fname.lower().endswith((".png", ".webp", ".jpg", ".jpeg")):
+                    continue
+                stem = os.path.splitext(fname)[0]
+                if stem.startswith(image_key + "_") or stem.startswith(normalized + "_"):
+                    return os.path.join(d, fname)
         return None
 
     def touch(self) -> None:
@@ -5300,6 +5713,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_redo(body)
             if path == "/api/beat/add_options":
                 return self._handle_add_options(body)
+            if path == "/api/beat/swap_to_a":
+                # Flat alias for v2 path-param endpoint so pathappPatch can reach it.
+                _beat_id_from_body = body.get("beat_id") or body.get("beat")
+                if not _beat_id_from_body:
+                    return self._send_json(400, {"error": "missing beat_id in body"})
+                return self._handle_v2_beat_swap_to_a(_beat_id_from_body, body)
             if path == "/api/beat/update_text":
                 return self._handle_beat_update_text(body)
             # BEAT_GRAFT_RECOVERY_MECHANISM_V1 (C-7) — Pillar 7 cornerstone.
@@ -5334,6 +5753,9 @@ class ProductionHandler(BaseHTTPRequestHandler):
             # Tier 3 v2 create endpoint (April 18 2026, LD TIER3_BEAT_CREATE_ENDPOINT)
             if path == "/api/v2/beat/create":
                 return self._handle_v2_beat_create(body)
+            # Storyboard-tab beat delete (production state, not BG sidecar)
+            if path == "/api/v2/beat/delete":
+                return self._handle_v2_beat_delete(body)
             # Swap-to-A v2 endpoint (April 19 2026) — park a B/C favorite into
             # slot A so Regenerate B+C doesn't overwrite it (or its lipsync).
             if path.startswith("/api/v2/beat/") and path.endswith("/swap_to_a"):
@@ -6151,7 +6573,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     buf = _io2.BytesIO()
                     im.convert("RGB").save(buf, "JPEG", quality=72)
                 thumb_b64 = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
-                return {"key": os.path.splitext(fname)[0], "filename": fname,
+                # Normalize key: spaces → underscores for consistent matching
+                # against _handle_assign_image / resolve_library_image_path.
+                return {"key": os.path.splitext(fname)[0].replace(" ", "_"),
+                        "filename": fname,
                         "thumb_b64": thumb_b64, "gallery_b64": thumb_b64,
                         "tier": tier, "abs_path": fp}
             except OSError:
@@ -6312,11 +6737,26 @@ class ProductionHandler(BaseHTTPRequestHandler):
             referenced = []
 
         if referenced:
-            return self._send_json(409, {
-                "ok": False,
-                "error": f"key '{key}' is referenced in prod_assets — refusing delete",
-                "asset_ids": [r.get("id") for r in referenced],
-            })
+            force = bool((body or {}).get("force"))
+            if not force:
+                # 422 (not 409) so the client doesn't misread this as a scope mismatch.
+                # Real reason: this file is registered in prod_assets (Rule 34 / CC-23).
+                return self._send_json(422, {
+                    "ok": False,
+                    "error": f"'{key}' is registered in prod_assets (id={[r.get('id') for r in referenced]}) — deregister first to delete",
+                    "code": "PROD_ASSETS_PROTECTED",
+                    "asset_ids": [r.get("id") for r in referenced],
+                })
+            # force=True: soft-deregister each prod_assets row (status→archived) then
+            # hard-delete from disk. Audit trail preserved in Directus.
+            try:
+                for row in referenced:
+                    rid = row.get("id")
+                    if rid:
+                        _c.delete_item("prod_assets", rid)
+                        print(f"[lib-delete] deleted prod_assets id={rid} for key '{key}'")
+            except Exception as e:
+                return self._send_json(500, {"ok": False, "error": f"Directus deregister failed: {e}"})
 
         # Hard delete with Rule 19 explicit JSON on all error paths
         try:
@@ -7456,7 +7896,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 _reg(
                     file_path=str(cache_path),
                     asset_type="beat_scene",
-                    module_id=1,  # M1 stub — refine when prod_modules id resolves
+                    module_id=_resolve_module_id_for_state(self.app.state),
                     event_id=None,
                     beat_id=beat_id,
                     parent_asset_id=None,
@@ -7880,7 +8320,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 asset_id, _ = _reg(
                     file_path=str(scene_path),
                     asset_type="scene_concat_mp4",
-                    module_id=1,  # M1 stub
+                    module_id=_resolve_module_id_for_state(self.app.state),
                     event_id=event_id_for_asset,
                     beat_id=None,
                     parent_asset_id=None,
@@ -8116,11 +8556,30 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_phase_suggest_script(self, body: dict) -> None:
         """POST /api/phase/suggest_script {phase, event_id?, scope_event_id?}
 
-        Calls Claude API (claude-haiku-4-5 — script suggestions don't need
-        Opus). Phase A reads phase_b_script + module description as context.
-        Phase B reads arc skeleton + therapeutic notes + phase-b-writer skill.
+        Drafts a Phase A or Phase B script via Claude API, grounded in the
+        authored Therapeutic Note + Unified Technique Inventory for the
+        current module.
 
-        Per LDs PHASE_A_PRODUCER_V1 + PHASE_B_PRODUCER_V1.
+        Resolves the current event_id (e.g., 'M1E1') to module metadata via
+        prod_modules (arc_number, m_number, creature_name, technique_name),
+        then loads:
+          - The '### Therapeutic Note —' section from
+            Arc Skeletons/ARC_NN_SKELETON_FINAL.md matching the (M<m_number>)
+            marker in the event title.
+          - The Canon/UNIFIED_TECHNIQUE_INVENTORY_v1_<latest>.md (canonical
+            technique catalog with mechanism + age suitability + clinical refs).
+
+        Phase A: also reads phase_b_script (so the demo references the
+        meditation that just played) and tailors output to the Chipper voice
+        + 30-60s playful demo format.
+        Phase B: produces 90-120s Cedric meditation with cue markers and
+        9-step arc, grounded in the Therapeutic Note's clinical framing.
+
+        Per LDs PHASE_A_PRODUCER_V1 + PHASE_B_PRODUCER_V1 +
+        PB_2_THERAPEUTIC_SOURCES_LOAD_V1 (locked 2026-05-13 to close the
+        silent-failure: prior implementation ignored both the Therapeutic
+        Note and the Technique Inventory, producing generic meditation text
+        for every module regardless of the authored technique).
         """
         # READ-ONLY probe (LLM script suggestion — does not mutate state).
         # Per spec_v2 §5.2 + SCOPE_REQUIRED_DEFAULTS_V1 read-only probes keep
@@ -8150,55 +8609,167 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 "phase": phase,
             })
 
-        # Build context per phase.
+        # Read state + resolve the event_id to module metadata.
         try:
             state = self.app.state.read_state()
         except Exception:
             state = {}
+
+        scope = self._scope_body(body)
+        # Prefer state.event_id (canonical 'M<n>E<m>' form, e.g. 'M1E1') over
+        # scope.event_id (directory form, e.g. 'Event_1') so the prod_modules
+        # resolver finds the row. state stores the M-form because it's the
+        # event identity from the production pipeline; scope normalizes to
+        # directory-id for scope-guard routing.
+        event_id_str = (
+            state.get('event_id')
+            or (body or {}).get('event_id')
+            or scope.get('event_id')
+            or (body or {}).get('scope_event_id')
+            or ''
+        )
+        module_meta = _resolve_module_for_event(event_id_str) or {
+            'arc_number': 1, 'm_number': 1, 'event_number': 1,
+            'creature_name': 'Unknown', 'technique_name': '',
+        }
+
+        # Load the authored therapeutic sources for this module.
+        bg = _bg_module()
+        therapeutic_note = bg.extract_therapeutic_note(
+            module_meta['arc_number'], module_meta['m_number'],
+        )
+        technique_inventory = bg.load_technique_inventory()
+
+        # Sources_loaded telemetry — surfaced in the JSON response so callers
+        # can detect the silent-failure regression class (handler runs but
+        # therapeutic sources fail to load).
+        sources_loaded = {
+            'therapeutic_note_chars': len(therapeutic_note),
+            'technique_inventory_chars': len(technique_inventory),
+            'arc_number': module_meta['arc_number'],
+            'm_number': module_meta['m_number'],
+            'creature_name': module_meta['creature_name'],
+            'technique_name': module_meta['technique_name'],
+        }
+        if not therapeutic_note:
+            print(
+                f'[suggest_script] WARNING: no Therapeutic Note found for '
+                f'arc={module_meta["arc_number"]} m_number={module_meta["m_number"]} '
+                f'event_id={event_id_str!r}. Claude prompt will lack authored context.'
+            )
+        if not technique_inventory:
+            print(
+                '[suggest_script] WARNING: technique inventory unavailable at '
+                'Canon/UNIFIED_TECHNIQUE_INVENTORY_v1_*.md. Claude prompt will '
+                'lack canonical technique catalog.'
+            )
+
+        # Module identity block — shared header for both phases.
+        module_identity = (
+            f"Module identity (resolved from event_id={event_id_str!r}):\n"
+            f"  - Arc: {module_meta['arc_number']}\n"
+            f"  - M-number: M{module_meta['m_number']}\n"
+            f"  - Creature: {module_meta['creature_name']}\n"
+            f"  - Technique: {module_meta['technique_name'] or '(see Therapeutic Note below)'}\n"
+        )
+
+        therapeutic_section = (
+            "Authored Therapeutic Note for THIS module (from Arc Skeleton — "
+            "this is the canonical source of truth for the technique, "
+            "rationale, and clinical framing; the script MUST teach the "
+            "technique it describes, not a generic meditation):\n"
+            f"---\n{therapeutic_note}\n---\n"
+            if therapeutic_note
+            else "Authored Therapeutic Note: (NOT FOUND — Claude must explicitly state this gap in the response if asked to write a clinically-grounded script)\n"
+        )
+
+        technique_section = (
+            "Canonical Technique Inventory (the catalog of all MindfulNest "
+            "techniques with mechanism, age suitability, and clinical "
+            "references — use the matching entry as the authoritative "
+            "definition of the technique):\n"
+            f"---\n{technique_inventory}\n---\n"
+            if technique_inventory
+            else ""
+        )
 
         if phase == "a":
             # S5.5d (v3): phase_b is TOP-LEVEL state.
             _phase_b_partition = state.get("phase_b") or {}
             phase_b_script = _phase_b_partition.get("phase_b_script") or "(no phase_b_script in state — write Phase B first or paste a draft to seed context)"
             user_prompt = (
-                "You are drafting a Phase A 'demo' script for an interactive children's "
-                "therapeutic app (MindfulNest). Phase A is the Chipper-led demonstration "
-                "that follows Phase B's calm meditation. The child has just completed "
-                "Phase B; Chipper now demonstrates the technique playfully so the child "
-                "can try it themselves.\n\n"
+                "You are drafting a Phase A 'demo' script for an interactive "
+                "children's therapeutic app (MindfulNest, ages 7-11). Phase A "
+                "is the Chipper-led playful demonstration that follows Phase "
+                "B's calm meditation. The child has just completed Phase B; "
+                "Chipper now demonstrates the technique so the child can try "
+                "it themselves.\n\n"
+                f"{module_identity}\n"
+                f"{therapeutic_section}\n"
+                f"{technique_section}\n"
+                "Phase B script just completed (the meditation the child "
+                f"just heard):\n---\n{phase_b_script}\n---\n\n"
                 "Constraints:\n"
-                "  - 30-60 seconds spoken (Chipper voice).\n"
+                "  - 30-60 seconds spoken (Chipper voice — bright, playful, "
+                "    encouraging).\n"
                 "  - Direct address ('let's try this together').\n"
-                "  - Reference the technique by name ONCE; don't restate the meditation.\n"
-                "  - No clinical jargon.\n"
-                "  - Plain text. No stage directions.\n\n"
-                f"Phase B script just completed:\n---\n{phase_b_script}\n---\n\n"
+                "  - Reference the technique by its in-world spell name "
+                "    (e.g., 'Magic Hands Spell') from the Therapeutic Note.\n"
+                "  - Demonstrate ONE concrete action the child can do at "
+                "    home (e.g., 'put your hands together and feel the warm "
+                "    tingly feeling').\n"
+                "  - Don't restate the meditation — demonstrate it.\n"
+                "  - No clinical jargon. No stage directions. Plain spoken "
+                "    text.\n\n"
                 "Write the Phase A demo script now."
             )
             system_prompt = (
-                "You are a CRI (Competence-Rooted Identity) script writer for "
-                "MindfulNest, drafting Phase A demo scripts for ages 7-11."
+                "You are a CRI (Competence-Rooted Identity) script writer "
+                "for MindfulNest, drafting Phase A playful demonstrations "
+                "for ages 7-11 in the Chipper guide-bird voice. Ground every "
+                "script in the authored Therapeutic Note + Technique "
+                "Inventory provided in the user message."
             )
         else:  # phase == "b"
-            module_id = state.get("module_id") or "M?"
             user_prompt = (
-                "You are drafting a Phase B 'meditation' script for an interactive "
-                "children's therapeutic app (MindfulNest). Phase B is the Cedric-narrated "
-                "meditation that introduces a therapeutic technique through the fictional "
+                "You are drafting a Phase B 'meditation' script for an "
+                "interactive children's therapeutic app (MindfulNest, ages "
+                "7-11). Phase B is the Cedric-narrated meditation that "
+                "introduces a therapeutic technique through the fictional "
                 "Everdale world.\n\n"
+                f"{module_identity}\n"
+                f"{therapeutic_section}\n"
+                f"{technique_section}\n"
                 "Constraints:\n"
-                "  - 90-120 seconds spoken (Cedric voice).\n"
-                "  - 9-step meditation arc: arrive → observe → invitation → technique-intro → "
-                "    technique-practice (3-4 steps) → return → seal.\n"
-                "  - Use {{INHALE_CUE}}, {{EXHALE_CUE}}, {{HOLD_CUE}} cue markers.\n"
-                "  - Frame the technique inside Everdale narrative (no clinical names).\n"
+                "  - 90-120 seconds spoken (Cedric voice — wise narrator, "
+                "    warm, unhurried).\n"
+                "  - 9-step meditation arc: arrive -> observe -> "
+                "    invitation -> technique-intro -> technique-practice "
+                "    (3-4 sub-steps) -> return -> seal.\n"
+                "  - Use {{INHALE_CUE}}, {{EXHALE_CUE}}, {{HOLD_CUE}} cue "
+                "    markers at the moments where the child's breath "
+                "    should engage with the technique.\n"
+                "  - Frame the technique inside Everdale narrative — use "
+                "    the in-world spell name (e.g., 'Magic Hands') from the "
+                "    Therapeutic Note, NOT clinical names like 'palm "
+                "    interoception'.\n"
+                "  - Teach the SPECIFIC technique described in the "
+                "    Therapeutic Note. Do NOT substitute a generic "
+                "    meditation. If the technique is palm interoception, "
+                "    the script must guide the child through feeling their "
+                "    palms. If it is physiological sigh, the script must "
+                "    guide the double-inhale-extended-exhale pattern. "
+                "    Etc.\n"
                 "  - Direct second-person address.\n\n"
-                f"Module: {module_id}.\n\n"
                 "Write the Phase B meditation script now."
             )
             system_prompt = (
-                "You are a CRI script writer drafting Phase B meditation scripts for "
-                "MindfulNest (B2C children's therapeutic app, ages 7-11). Cedric narrator voice."
+                "You are a CRI script writer drafting Phase B meditation "
+                "scripts for MindfulNest (B2C children's therapeutic app, "
+                "ages 7-11), narrated by Cedric the wizard. Ground every "
+                "script in the authored Therapeutic Note + Technique "
+                "Inventory provided in the user message — never invent or "
+                "substitute techniques."
             )
 
         # Call Anthropic Messages API via urllib (no SDK dependency).
@@ -8257,6 +8828,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             "generation_time_ms": elapsed_ms,
             "tokens_in": usage.get("input_tokens"),
             "tokens_out": usage.get("output_tokens"),
+            "sources_loaded": sources_loaded,
         })
 
     # ============================================================
@@ -8432,7 +9004,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             registered_id, _ = register_asset(
                 file_path=str(rendered),
                 asset_type="magic_clip",
-                module_id=1,
+                module_id=_resolve_module_id_for_state(self.app.state),
                 beat_id=beat_id,
                 produced_by_skill="magic_still_endpoint",
                 colloquial_name=f"magic on still {beat_id}",
@@ -8446,10 +9018,27 @@ class ProductionHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             print(f"[magic_still] WARN registered_write failed: {exc}", flush=True)
 
+        # MAG-1 fix: write magic_still_path back into state.beats[beat_id] so
+        # the client UI can render the "has magic" indicator + serve the
+        # composite on next page load. Idempotent — re-rendering overwrites.
+        magic_filename = Path(rendered).name
+        try:
+            scope = scope_router.resolve(body, self.app.event_dir.name)
+
+            def _set_magic_still(partition: dict) -> None:
+                beats = partition.setdefault("beats", {})
+                beat = beats.setdefault(beat_id, {})
+                beat["magic_still_path"] = magic_filename
+
+            scope_router.mutate_partition(self.app.state, scope, _set_magic_still)
+        except Exception as exc:
+            print(f"[magic_still] WARN state writeback failed: {exc}", flush=True)
+
         return self._send_json(200, {
             "ok": True,
             "beat_id": beat_id,
             "composite_path": str(rendered),
+            "magic_still_path": magic_filename,
             "asset_id": registered_id,
             "manual_path_points": len(clean_path),
         })
@@ -8626,7 +9215,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             registered_id, _ = register_asset(
                 file_path=str(out_path),
                 asset_type="magic_clip",
-                module_id=1,
+                module_id=_resolve_module_id_for_state(self.app.state),
                 beat_id=beat_id,
                 produced_by_skill="magic_video_endpoint",
                 colloquial_name=f"magic on video {beat_id}",
@@ -8642,10 +9231,26 @@ class ProductionHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             print(f"[magic_video] WARN registered_write failed: {exc}", flush=True)
 
+        # MAG-1 fix: write magic_video_path back into state.beats[beat_id].
+        # Same pattern as magic_still — see _handle_magic_still for rationale.
+        magic_filename = Path(out_path).name
+        try:
+            scope = scope_router.resolve(body, self.app.event_dir.name)
+
+            def _set_magic_video(partition: dict) -> None:
+                beats = partition.setdefault("beats", {})
+                beat = beats.setdefault(beat_id, {})
+                beat["magic_video_path"] = magic_filename
+
+            scope_router.mutate_partition(self.app.state, scope, _set_magic_video)
+        except Exception as exc:
+            print(f"[magic_video] WARN state writeback failed: {exc}", flush=True)
+
         return self._send_json(200, {
             "ok": True,
             "beat_id": beat_id,
             "composite_path": str(out_path),
+            "magic_video_path": magic_filename,
             "asset_id": registered_id,
             "source_dims": [width, height],
             "duration_s": vid_duration,
@@ -8878,7 +9483,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             registered_id, _ = register_asset(
                 file_path=str(out_path),
                 asset_type="magic_clip",
-                module_id=1,
+                module_id=_resolve_module_id_for_state(self.app.state),
                 produced_by_skill="watercolor_animate_endpoint",
                 colloquial_name=f"{watercolor_key} animated",
                 tags=["watercolor_animation", watercolor_key, "claude_filter_complex"],
@@ -9350,6 +9955,11 @@ class ProductionHandler(BaseHTTPRequestHandler):
         if unknown:
             return self._send_json(400, {"ok": False,
                                           "error": f"Unknown beat fields: {sorted(unknown)}"})
+        # 2026-05-11 Rule 26 fix — when client drops a library image into
+        # the Char ref / BG ref slot, server-side PIL thumbnail generation
+        # ensures BgRefSlot displays the IMAGE (not the lib_key string).
+        # Mirrors _handle_bg_accept_lib_image's thumbnail pattern.
+        thumb_b64 = None
         with bg._sidecar_lock:
             sidecar = bg._load_sidecar_migrated()
             _, beat = bg.find_beat(sidecar, beat_id)
@@ -9358,10 +9968,30 @@ class ProductionHandler(BaseHTTPRequestHandler):
             written = []
             for field in _BG_BEAT_WRITABLE:
                 if field in body:
-                    beat[field] = body[field]
+                    value = body[field]
+                    # For reference_image / bg_ref_image: if abs_path is set
+                    # and the file exists, render a PIL thumbnail and inject
+                    # thumb_b64 so BgRefSlot can <img src=...> after refresh.
+                    if field in ("reference_image", "bg_ref_image") and isinstance(value, dict):
+                        abs_path = value.get("abs_path") or ""
+                        if abs_path and os.path.exists(abs_path) and not value.get("thumb_b64"):
+                            try:
+                                from PIL import Image as _PILImage
+                                import io as _io_thumb
+                                with _PILImage.open(abs_path) as im:
+                                    im.thumbnail((200, 150), _PILImage.LANCZOS)
+                                    buf = _io_thumb.BytesIO()
+                                    im.convert("RGB").save(buf, "JPEG", quality=72)
+                                _t = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+                                value = dict(value)
+                                value["thumb_b64"] = _t
+                                thumb_b64 = _t
+                            except (OSError, ImportError) as _thumb_err:
+                                print(f"[REFDROP] thumbnail skipped for {abs_path!r}: {_thumb_err}", flush=True)
+                    beat[field] = value
                     written.append(field)
             bg.write_sidecar(sidecar)
-        return self._send_json(200, {"ok": True, "written": written})
+        return self._send_json(200, {"ok": True, "written": written, "thumb_b64": thumb_b64})
 
     def _handle_bg_reorder_beats(self, body: dict) -> None:
         """POST /api/bg/reorder-beats {beat_ids: [...], scope_event_id?} -> { ok }
@@ -9519,8 +10149,28 @@ class ProductionHandler(BaseHTTPRequestHandler):
         # at this seed site; canonicalize the raw speaker via _canonicalize_speaker.
         # Empty stays empty (LD-520 fail-loud at TTS time); the historical
         # Guide-Bird value normalizes to Chipper via _SPEAKER_ALIAS at write time.
+        # BG→Storyboard image-assignment transfer (2-Opus debate locked design).
+        # Extends the existing speaker/text seed to also write image_overrides +
+        # image_overrides_abs into the storyboard partition AND warm the in-memory
+        # _image_overrides cache so animate/add_options calls don't read None
+        # before lazy-hydration fires. The audit row below references these
+        # via the outer-scope mirrors.
+        _overwrite_log: dict[str, dict] = {}
+        _warmed_count = 0
+        _image_seeds: dict[str, str] = {}
         try:
             beats_raw = body.get("beats", [])
+            # Build BG beat lookup for abs_path fallback (sidecar already written above).
+            _bg_sidecar_snap = _bg_module().read_sidecar()
+            _bg_beat_map: dict[str, dict] = {}
+            # Sidecar structure: arcs → <arc_id> → segments → <seg_id> → beats
+            # (NOT top-level segments — top-level key is "arcs")
+            for _arc in _bg_sidecar_snap.get("arcs", {}).values():
+                for _seg in _arc.get("segments", {}).values():
+                    for _b in _seg.get("beats", []):
+                        _id = _b.get("beat_id") or _b.get("id", "")
+                        if _id:
+                            _bg_beat_map[_id] = _b
             storyboard_pos = 0
             state_seeds: dict[str, dict] = {}
             for beat in beats_raw:
@@ -9529,15 +10179,51 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 sb_bid = f"beat_{storyboard_pos + 1:02d}"
                 raw_speaker = beat.get("speaker") or ""
                 canonicalized = _canonicalize_speaker(raw_speaker) or ""
+                # Resolve abs_path: primary = resolve_library_image_path (always
+                # absolute, always current); fallback = BG sidecar
+                # accepted_library_ref.abs_path. Never trust accepted_local_path
+                # raw — may be relative path.
+                image_key = beat.get("accepted_image_key")
+                abs_path = None
+                try:
+                    _resolved = self.app.resolve_library_image_path(image_key)
+                    if _resolved and os.path.isfile(_resolved):
+                        abs_path = str(_resolved)
+                except Exception:
+                    pass
+                if not abs_path:
+                    _bg_beat = _bg_beat_map.get(beat.get("beat_id", ""), {})
+                    # Try accepted_local_path FIRST — authoritative for option-
+                    # accepted beats (set by bg_accept_option). accepted_library_ref
+                    # may be stale from a prior library drag that was later
+                    # overridden by an option selection.
+                    _local = _bg_beat.get("accepted_local_path")
+                    if _local:
+                        _norm = _local if os.path.isabs(_local) else str(
+                            self.app.event_dir.parent.parent / _local)
+                        if os.path.isfile(_norm):
+                            abs_path = _norm
+                    if not abs_path:
+                        # Fallback: accepted_library_ref.abs_path (library drag).
+                        _ref = _bg_beat.get("accepted_library_ref") or {}
+                        _sidecar_abs = _ref.get("abs_path")
+                        if _sidecar_abs and os.path.isfile(_sidecar_abs):
+                            abs_path = _sidecar_abs
                 state_seeds[sb_bid] = {
                     "speaker": canonicalized,
                     "text": beat.get("dialogue_text") or "",
+                    "image_key": image_key,
+                    "abs_path": abs_path,   # may be None — handled gracefully in partition seed
+                    "emotion": beat.get("emotion") or "",  # Fix 4: propagate BG sidecar emotion
+                    "scene_notes": beat.get("scene_notes") or "",  # Fix 6: stored for future motion use
                 }
                 storyboard_pos += 1
             if state_seeds:
-                def _seed_partition(partition, _data=state_seeds):
+                def _seed_partition(partition, _data=state_seeds, _owlog=_overwrite_log):
                     pbeats = partition.setdefault("beats", {})
-                    pdo = partition.setdefault("display_order", [])
+                    pdo    = partition.setdefault("display_order", [])
+                    p_ov   = partition.setdefault("image_overrides", {})       # NEW
+                    p_abs  = partition.setdefault("image_overrides_abs", {})   # NEW
                     # If display_order is a legacy int (pre-v3 fixture shape),
                     # leave it alone — DISPLAY_ORDER_STRICT_V1 prune skips ints
                     # and the renderer's strict gate handles the int form too.
@@ -9545,12 +10231,42 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     for bid, fields in _data.items():
                         b = pbeats.setdefault(bid, {})
                         b["speaker"] = fields["speaker"]
-                        b["text"] = fields["text"]
+                        b["text"]    = fields["text"]
+                        # Fix 4: only write emotion if non-empty (don't overwrite existing with "")
+                        if fields.get("emotion"):
+                            b["emotion"] = fields["emotion"]
+                        # Fix 6: propagate scene_notes for future motion-hint use
+                        if fields.get("scene_notes"):
+                            b["scene_notes"] = fields["scene_notes"]
+                        if fields.get("image_key"):                            # NEW
+                            prev = p_ov.get(bid)
+                            if prev and prev != fields["image_key"]:
+                                _owlog[bid] = {"prev_key": prev, "new_key": fields["image_key"]}
+                            p_ov[bid] = fields["image_key"]
+                        if fields.get("abs_path"):                             # NEW
+                            p_abs[bid] = fields["abs_path"]
                         if pdo_is_list and bid not in pdo:
                             pdo.append(bid)
                 self.app.state.mutate_video_state(scope.video_role, _seed_partition)
+                # Warm in-memory cache so animate/add_options calls don't read None.
+                _pending = self.app._pending_override_keys.get(scope.video_role, {})
+                for sb_bid, fields in state_seeds.items():
+                    _ikey = fields.get("image_key")
+                    if not _ikey:
+                        continue
+                    _image_seeds[sb_bid] = _ikey
+                    try:
+                        _fullres = self.app.get_fullres_gallery_image(_ikey)
+                        if _fullres:
+                            self.app._image_overrides.setdefault(scope.video_role, {})[sb_bid] = _fullres
+                            _warmed_count += 1
+                    except Exception:
+                        pass
+                    _pending.pop(sb_bid, None)   # clear lazy-hydrate marker
+                self.app.invalidate_beats_cache()
                 print(f"[BG] seeded videos.{scope.video_role}.beats for storyboard beats: "
-                      f"{list(state_seeds.keys())}")
+                      f"{list(state_seeds.keys())} (image_overrides={len(_image_seeds)}, "
+                      f"warmed={_warmed_count}, overwrites={len(_overwrite_log)})")
         except Exception as e:
             print(f"[BG] warning: could not seed partition: {e}")
 
@@ -9573,6 +10289,9 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     "event_id": scope.event_id,
                     "target": scope.video_role,
                     "accepted_count": len(beat_ids),
+                    "image_overrides_seeded": _image_seeds,
+                    "image_overrides_warmed": _warmed_count,
+                    "image_override_overwrites": _overwrite_log,
                     "ld": "BG_ACCEPT_BEATS_ACTIVITY_LOG_V1",
                 },
             })
@@ -9815,10 +10534,51 @@ class ProductionHandler(BaseHTTPRequestHandler):
             }
             beat["accepted_image_key"] = key
             beat["status"] = "lib_chosen"
+
+            # Generate PIL thumbnail from abs_path and inject into gpt_options[slot_index]
+            # so BgOptionTile renders thumb_b64 after drop (Layer 5 of six-layer verify).
+            # Mirrors _read_image at production_server.py ~line 6192.
+            thumb_b64 = None
+            try:
+                if abs_path and os.path.exists(abs_path):
+                    from PIL import Image as _PILImage
+                    import io as _io_thumb
+                    with _PILImage.open(abs_path) as im:
+                        im.thumbnail((200, 150), _PILImage.LANCZOS)
+                        buf = _io_thumb.BytesIO()
+                        im.convert("RGB").save(buf, "JPEG", quality=72)
+                    thumb_b64 = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+            except (OSError, ImportError) as _thumb_err:
+                print(f"[LIBDROP] thumbnail skipped for {abs_path!r}: {_thumb_err}", flush=True)
+                thumb_b64 = None
+
+            if thumb_b64:
+                opts = beat.get("gpt_options") or []
+                option_entry = {
+                    "key": key,
+                    "thumb_b64": thumb_b64,
+                    "source": "library_drop",
+                    "local_path": abs_path,
+                    "filename": filename,
+                }
+                if slot_index < len(opts) and isinstance(opts[slot_index], dict):
+                    opts[slot_index].update(option_entry)
+                else:
+                    # Pad with None up to slot_index, then place the entry.
+                    while len(opts) < slot_index:
+                        opts.append(None)
+                    if slot_index < len(opts):
+                        opts[slot_index] = option_entry
+                    else:
+                        opts.append(option_entry)
+                beat["gpt_options"] = opts
+
             bg.write_sidecar(sidecar)
-        print(f"[LIBDROP] accepted library image {key!r} -> beat {beat_id}", flush=True)
+        print(f"[LIBDROP] accepted library image {key!r} -> beat {beat_id} (thumb={'yes' if thumb_b64 else 'no'})", flush=True)
         return self._send_json(200, {"ok": True, "beat_id": beat_id,
-                                     "accepted_image_key": key})
+                                     "accepted_image_key": key,
+                                     "thumb_b64": thumb_b64,
+                                     "slot_index": slot_index})
 
     # ================================================================
     # Stitch Groups + Local Animation handlers (added 2026-04-23)
@@ -9840,31 +10600,77 @@ class ProductionHandler(BaseHTTPRequestHandler):
         """POST /api/bg/add-beat {after_beat_id, segment} -> {ok, beat}
         Inserts a blank beat immediately after after_beat_id in the sidecar.
         beat_id is generated as max(existing_N)+1 (zero-padded to 2 digits)
-        so gaps from prior deletes do not cause collisions."""
-        # SCOPE_ROUTER_V1 (C-4 K3 fix) — replaces legacy
-        # _assert_event_scope(allow_missing=True) and the hardcoded
-        # arc=1/event=2/phase=pre segment lookup.
-        # BG sidecar segment is derived from the resolved scope:
-        #   intro→pre, resolution→post, standalone→main
-        # Subsumes LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-        # and pins LD BG_HARDCODED_SCOPE_PURGE_V1.
+        so gaps from prior deletes do not cause collisions.
+
+        Segment derivation per BG_ADD_BEAT_ACTIVE_CONTEXT_V1 (locked
+        2026-05-13): the BG tab is a MULTI-SEGMENT authoring tool by
+        design — its segment dropdown lets the user select any arc/event/
+        phase regardless of which event the storyboard tool is pinned to.
+        Segment for this write is therefore derived from (in priority):
+          1. Client's explicit `segment` field (e.g. "event_2_pre")
+          2. Sidecar `active_context` (server-side memory of last BG dropdown choice)
+          3. Storyboard scope-router fallback (only when BG sidecar has no
+             active_context yet — first-use case).
+        This supersedes the K3 BG_HARDCODED_SCOPE_PURGE_V1 storyboard-pin
+        constraint for BG-add-beat ONLY — storyboard-pin remains canonical
+        for partition writes per scope_router.mutate_partition; BG sidecar
+        is a separate authoring surface keyed by (arc, event_id_int, phase).
+        """
+        # Scope still validated for security (event_id must match running server).
         try:
             scope = scope_router.resolve(body, self.app.event_dir.name)
         except scope_router.ScopeError as e:
             return self._send_json(e.http_status, {"error": e.code, **e.detail})
 
-        try:
-            arc_number, event_id_int, phase = _resolve_bg_segment_for_scope(
-                scope.event_id, scope.video_role,
-            )
-        except ValueError as exc:
-            return self._send_json(400, {"error": "bg_segment_unresolved", "detail": str(exc)})
+        # Segment derivation — priority 1: client's explicit `segment` field.
+        # Format "event_<N>_<phase>" matches what BgTab.tsx sends at line ~303.
+        segment_raw = (body or {}).get("segment", "")
+        arc_number: int | None = None
+        event_id_int: int | None = None
+        phase: str | None = None
+        if segment_raw:
+            seg_match = re.match(r"^event_(\d+)_(\w+)$", segment_raw)
+            if seg_match:
+                event_id_int = int(seg_match.group(1))
+                phase = seg_match.group(2)
+                # BG sidecar is single-arc today; arc derives from scope.
+                # When multi-arc lands, the client should pass arc in segment.
+                arc_number = 1
+
+        # Priority 2: sidecar active_context (BG dropdown's persisted choice).
+        if event_id_int is None or phase is None:
+            bg_module = _bg_module()
+            with bg_module._sidecar_lock:
+                _ctx_sidecar = bg_module.read_sidecar()
+                _ctx = _ctx_sidecar.get("active_context") or {}
+            if _ctx:
+                try:
+                    arc_number = int(_ctx.get("arc_number", 1))
+                    event_id_int = int(_ctx.get("event_id", 0)) or None
+                    phase = _ctx.get("phase") or None
+                except (TypeError, ValueError):
+                    pass
+
+        # Priority 3: scope-router fallback (first-use case where BG sidecar
+        # has no active_context yet — usually only triggers in fresh sidecars).
+        if event_id_int is None or phase is None:
+            try:
+                arc_number, event_id_int, phase = _resolve_bg_segment_for_scope(
+                    scope.event_id, scope.video_role,
+                )
+            except ValueError as exc:
+                return self._send_json(400, {
+                    "error": "bg_segment_unresolved",
+                    "detail": str(exc),
+                    "hint": (
+                        "No BG segment could be derived: client did not "
+                        "send `segment` field, sidecar has no active_context, "
+                        "and storyboard scope is unparseable. Pick a segment "
+                        "in the BG dropdown before adding a beat."
+                    ),
+                })
 
         after_beat_id = body.get("after_beat_id", "")
-        # Note: legacy clients passed `segment` literal (e.g. "event_2_pre");
-        # the scope-derived segment is now authoritative. Older callers' segment
-        # field is ignored — by design, since the scope keys must match the
-        # storyboard tab's pinned event/role.
 
         bg = _bg_module()
         with bg._sidecar_lock:
@@ -9906,8 +10712,18 @@ class ProductionHandler(BaseHTTPRequestHandler):
             beats.insert(insert_after + 1, new_beat)
             bg.write_sidecar(sidecar)
 
-        print(f"[BG] add-beat: inserted {new_beat_id} after {after_beat_id!r}")
-        return self._send_json(200, {"ok": True, "beat": new_beat})
+        print(
+            f"[BG] add-beat: inserted {new_beat_id} into "
+            f"arc{arc_number}/event_{event_id_int}_{phase} "
+            f"after {after_beat_id!r} (segment_source="
+            f"{'client_field' if segment_raw else 'sidecar_ctx_or_scope'})"
+        )
+        return self._send_json(200, {
+            "ok": True,
+            "beat": new_beat,
+            "segment": f"event_{event_id_int}_{phase}",
+            "arc_number": arc_number,
+        })
 
     def _handle_bg_create_group(self, body: dict) -> None:
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
@@ -10376,19 +11192,22 @@ class ProductionHandler(BaseHTTPRequestHandler):
         if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
         crop_b64   = body.get("crop_png_b64", "")
-        beat_id    = body.get("beat_id", "")
+        beat_id    = body.get("beat_id") or ""   # null/absent → "" (library-origin crop)
         source_key = body.get("source_key", "")
         if not crop_b64:
             return self._send_json(400, {"error": "crop_png_b64 required"})
 
         # Security (CodeQL py/path-injection alert #26): beat_id flows into
-        # the on-disk filename via f-string. Reject any path separators or
-        # traversal sequences; require basename-only [A-Za-z0-9_-].
-        if not beat_id or "/" in beat_id or "\\" in beat_id or ".." in beat_id or beat_id.startswith("."):
-            return self._send_json(400, {"error": "invalid beat_id"})
+        # the on-disk filename via f-string. Validate if provided; fall back
+        # to "lib" prefix for library-origin crops that have no beat context.
         import re as _re
-        if not _re.match(r"^[A-Za-z0-9][A-Za-z0-9_-]*$", beat_id):
-            return self._send_json(400, {"error": "beat_id must match [A-Za-z0-9_-]+"})
+        if beat_id:
+            if "/" in beat_id or "\\" in beat_id or ".." in beat_id or beat_id.startswith("."):
+                return self._send_json(400, {"error": "invalid beat_id"})
+            if not _re.match(r"^[A-Za-z0-9][A-Za-z0-9_-]*$", beat_id):
+                return self._send_json(400, {"error": "beat_id must match [A-Za-z0-9_-]+"})
+        else:
+            beat_id = "lib"  # library-origin crop; timestamp suffix keeps filename unique
 
         bg = _bg_module()
         try:
@@ -10428,7 +11247,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             asset_id, _abs_path = _register_asset(
                 file_path=delivery_path,
                 asset_type="still_delivery",
-                module_id=1,
+                module_id=_resolve_module_id_for_state(self.app.state),
                 beat_id=beat_id or None,
                 produced_by_skill="v59_bg_cropper",
                 iteration_notes=iteration_notes,
@@ -10526,6 +11345,22 @@ class ProductionHandler(BaseHTTPRequestHandler):
         key = os.path.splitext(filename)[0]
 
         print(f"[library] upload saved: {dest_path} tier={tier}")
+        # CC-23 / Rule 34 — register upload in prod_assets (Two-Write Rule).
+        # still_master for source images (pre-crop masters); still_delivery for crops.
+        try:
+            from registered_write import register_asset as _reg_upload  # type: ignore
+            _asset_type = "still_master" if tier == "source" else "still_delivery"
+            _reg_upload(
+                file_path=dest_path,
+                asset_type=_asset_type,
+                module_id=_resolve_module_id_for_state(self.app.state),
+                produced_by_skill="cr_upload_endpoint",
+                iteration_notes=f"Manual upload via library panel (tier={tier})",
+                tags=["library_upload", tier],
+                role=tier,
+            )
+        except Exception as _reg_exc:
+            print(f"[library] register_asset warning (non-fatal): {_reg_exc}")
         return self._send_json(200, {
             "ok": True,
             "key": key, "filename": filename,
@@ -10557,15 +11392,22 @@ class ProductionHandler(BaseHTTPRequestHandler):
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
         if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
-        beat_id = body.get("beat")
+        beat_id = body.get("beat") or body.get("beat_id")
         image_key = body.get("image_key")
         if not beat_id or not image_key:
-            return self._send_json(400, {"error": "missing 'beat' or 'image_key'"})
+            return self._send_json(400, {"error": "missing 'beat'/'beat_id' or 'image_key'"})
         # S5.5a2: scope_video_role from body (LD-474). Default 'intro' during
         # refactor window; required after all clients pass it explicitly.
         video_role = body.get("scope_video_role", "intro")
 
-        # Look up full-res gallery image
+        # Look up full-res gallery image.
+        # Prefer abs_path from body if client sent it (R4 guard — avoids key
+        # collision when two library dirs contain a same-stem file).
+        body_abs_path = body.get("abs_path")
+        if body_abs_path and os.path.isfile(body_abs_path):
+            abs_path = body_abs_path
+        else:
+            abs_path = self.app.resolve_library_image_path(image_key)
         fullres = self.app.get_fullres_gallery_image(image_key)
         if not fullres:
             # Fall back: maybe the key IS in TH (thumbnail) — better than nothing
@@ -10601,10 +11443,14 @@ class ProductionHandler(BaseHTTPRequestHandler):
             #    to keep production_state.json small; the data URI lives in
             #    _image_overrides in memory, re-resolved from the gallery on
             #    restart via get_fullres_gallery_image().
+            #    Also persists abs_path so _handle_v2_event_state can project
+            #    image_path for v59 shell clients (DRAG_DROP_V59_GALLERY_V1).
             #    S5.5a2: writes to videos[role].image_overrides via
             #    mutate_video_state (BG_VIDEO_PARTITION_V1).
-            def _persist(partition, _bid=beat_id, _key=image_key):
+            def _persist(partition, _bid=beat_id, _key=image_key, _ap=abs_path):
                 partition.setdefault("image_overrides", {})[_bid] = _key
+                if _ap:
+                    partition.setdefault("image_overrides_abs", {})[_bid] = _ap
                 return None
             self.app.state.mutate_video_state(video_role, _persist)
 
@@ -10925,12 +11771,14 @@ class ProductionHandler(BaseHTTPRequestHandler):
         if self.app.client is None:
             return self._send_json(500, {"error": "WaveSpeed client not configured (missing API key)"})
 
-        beat_key = body.get("beat")
+        beat_key = body.get("beat") or body.get("beat_id")
         if not beat_key:
-            return self._send_json(400, {"error": "missing 'beat' field"})
+            return self._send_json(400, {"error": "missing 'beat'/'beat_id' field"})
+
+        video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
 
         state = self.app.state.read_state()
-        beat_state = ((state.get("videos") or {}).get("intro") or {}).get("beats", {}).get(beat_key)
+        beat_state = ((state.get("videos") or {}).get(video_role) or {}).get("beats", {}).get(beat_key)
         if not beat_state:
             return self._send_json(404, {"error": f"beat '{beat_key}' not found in state"})
 
@@ -11127,8 +11975,9 @@ class ProductionHandler(BaseHTTPRequestHandler):
         # and increment retries. Fixes stale-task_id bug (beat_08 evidence,
         # 2026-04-18): retry was leaving 25h-old submit metadata in state.
         def init_lipsync(st, _bk=beat_key, _src=int(selected),
-                         _audio_name=audio_for_lipsync.name, _ap=audio_processing):
-            beat = st["beats"][_bk]
+                         _audio_name=audio_for_lipsync.name, _ap=audio_processing,
+                         _role=video_role):
+            beat = ((st.get("videos") or {}).get(_role) or {}).get("beats", {})[_bk]
             existing = beat.get("lipsync")
             is_retry = isinstance(existing, dict) and existing.get("status") in (
                 "submitting", "polling", "failed", "completed",
@@ -11180,12 +12029,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
             try:
                 task_id = lipsync_client.submit(video_for_lipsync, audio_for_lipsync)
 
-                def set_polling(st, _bk=beat_key, _tid=task_id):
-                    st["beats"][_bk]["lipsync"]["status"] = "polling"
-                    st["beats"][_bk]["lipsync"]["task_id"] = _tid
-                    st["beats"][_bk]["lipsync"]["submitted_at"] = datetime.now(timezone.utc).isoformat()
-                    # Tier 1B: epoch form for wall-clock timeout comparisons.
-                    st["beats"][_bk]["lipsync"]["submitted_at_epoch"] = int(time.time())
+                def set_polling(st, _bk=beat_key, _tid=task_id, _role=video_role):
+                    _ls = (((st.get("videos") or {}).get(_role) or {}).get("beats", {}).get(_bk) or {}).get("lipsync") or {}
+                    _ls["status"] = "polling"
+                    _ls["task_id"] = _tid
+                    _ls["submitted_at"] = datetime.now(timezone.utc).isoformat()
+                    _ls["submitted_at_epoch"] = int(time.time())
                 self.app.state.mutate_state(set_polling)
 
                 result = lipsync_client.poll_until_done(task_id)
@@ -11197,8 +12046,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     dest = self.app.state.clips_dir / dest_name
                     size = lipsync_client.download(url, dest)
 
-                    def mark_done(st, _bk=beat_key, _fn=dest_name, _sz=size):
-                        beat = st["beats"][_bk]
+                    def mark_done(st, _bk=beat_key, _fn=dest_name, _sz=size, _role=video_role):
+                        beat = ((st.get("videos") or {}).get(_role) or {}).get("beats", {})[_bk]
                         ls = beat["lipsync"]
                         ls["status"] = "completed"
                         ls["file"] = _fn
@@ -11229,8 +12078,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     except Exception as exc:  # noqa: BLE001
                         print(f"[lipsync] complete-log failed (non-blocking): {exc}")
                 else:
-                    def mark_failed(st, _bk=beat_key, _err=str(result)):
-                        ls = st["beats"][_bk]["lipsync"]
+                    def mark_failed(st, _bk=beat_key, _err=str(result), _role=video_role):
+                        ls = (((st.get("videos") or {}).get(_role) or {}).get("beats", {}).get(_bk) or {}).get("lipsync") or {}
                         ls["status"] = "failed"
                         ls["last_error"] = _err[:500]
                     self.app.state.mutate_state(mark_failed)
@@ -11238,9 +12087,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
             except Exception as exc:
                 traceback.print_exc()
-                def mark_err(st, _bk=beat_key, _err=str(exc)):
-                    st["beats"][_bk]["lipsync"]["status"] = "failed"
-                    st["beats"][_bk]["lipsync"]["last_error"] = _err[:500]
+                def mark_err(st, _bk=beat_key, _err=str(exc), _role=video_role):
+                    _ls = (((st.get("videos") or {}).get(_role) or {}).get("beats", {}).get(_bk) or {}).get("lipsync") or {}
+                    _ls["status"] = "failed"
+                    _ls["last_error"] = _err[:500]
                 self.app.state.mutate_state(mark_err)
 
         threading.Thread(target=do_lipsync, daemon=True, name=f"lipsync-{beat_key}").start()
@@ -11296,13 +12146,15 @@ class ProductionHandler(BaseHTTPRequestHandler):
         if self.app.client is None:
             return self._send_json(500, {"error": "WaveSpeed client not configured (missing API key)"})
 
-        beat_key = body.get("beat")
+        beat_key = body.get("beat") or body.get("beat_id")
         if not beat_key:
-            return self._send_json(400, {"error": "missing 'beat' field"})
+            return self._send_json(400, {"error": "missing 'beat'/'beat_id' field"})
+
+        video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
 
         # Read state to find the selected clip
         state = self.app.state.read_state()
-        beat_state = ((state.get("videos") or {}).get("intro") or {}).get("beats", {}).get(beat_key)
+        beat_state = ((state.get("videos") or {}).get(video_role) or {}).get("beats", {}).get(beat_key)
         if not beat_state:
             return self._send_json(404, {"error": f"beat '{beat_key}' not found in state"})
 
@@ -11352,8 +12204,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
         # against this source_option on every selection change and sets
         # source_changed=True if they differ. The client surfaces a
         # "🔁 Re-run Lip Sync" affordance when source_changed is true.
-        def init_lipsync(st, _bk=beat_key, _src=int(selected)):
-            beat = st["beats"][_bk]
+        def init_lipsync(st, _bk=beat_key, _src=int(selected), _role=video_role):
+            beat = ((st.get("videos") or {}).get(_role) or {}).get("beats", {})[_bk]
             beat.setdefault("lipsync", {
                 "status": "submitting",
                 "task_id": None,
@@ -11380,12 +12232,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
             try:
                 task_id = lipsync_client.submit(clip_path, audio_path)
 
-                def set_polling(st, _bk=beat_key, _tid=task_id):
-                    st["beats"][_bk]["lipsync"]["status"] = "polling"
-                    st["beats"][_bk]["lipsync"]["task_id"] = _tid
-                    st["beats"][_bk]["lipsync"]["submitted_at"] = datetime.now(timezone.utc).isoformat()
-                    # Tier 1B: epoch form for wall-clock timeout comparisons.
-                    st["beats"][_bk]["lipsync"]["submitted_at_epoch"] = int(time.time())
+                def set_polling(st, _bk=beat_key, _tid=task_id, _role=video_role):
+                    _ls = (((st.get("videos") or {}).get(_role) or {}).get("beats", {}).get(_bk) or {}).get("lipsync") or {}
+                    _ls["status"] = "polling"
+                    _ls["task_id"] = _tid
+                    _ls["submitted_at"] = datetime.now(timezone.utc).isoformat()
+                    _ls["submitted_at_epoch"] = int(time.time())
                 # LD-460 — pin check before set_polling mutate_state (thread closure).
                 if not self._check_event_pin(_pin, "lipsync_submit_legacy_set_polling"):
                     print("[lipsync_submit_legacy] event drift mid-thread; skipping mutate_state", flush=True)
@@ -11402,8 +12254,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     dest = self.app.state.clips_dir / dest_name
                     size = lipsync_client.download(url, dest)
 
-                    def mark_done(st, _bk=beat_key, _fn=dest_name, _sz=size):
-                        beat = st["beats"][_bk]
+                    def mark_done(st, _bk=beat_key, _fn=dest_name, _sz=size, _role=video_role):
+                        beat = ((st.get("videos") or {}).get(_role) or {}).get("beats", {})[_bk]
                         ls = beat["lipsync"]
                         ls["status"] = "completed"
                         ls["file"] = _fn
@@ -11426,8 +12278,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     self.app.state.add_spend("lipsync", COST_PER_LIPSYNC)
                     print(f"[lipsync] {beat_key} COMPLETED -> {dest_name} ({size} bytes)")
                 else:
-                    def mark_failed(st, _bk=beat_key, _err=str(result)):
-                        ls = st["beats"][_bk]["lipsync"]
+                    def mark_failed(st, _bk=beat_key, _err=str(result), _role=video_role):
+                        ls = (((st.get("videos") or {}).get(_role) or {}).get("beats", {}).get(_bk) or {}).get("lipsync") or {}
                         ls["status"] = "failed"
                         ls["last_error"] = _err[:500]
                     self.app.state.mutate_state(mark_failed)
@@ -11436,9 +12288,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
             except Exception as exc:
                 traceback.print_exc()
-                def mark_err(st, _bk=beat_key, _err=str(exc)):
-                    st["beats"][_bk]["lipsync"]["status"] = "failed"
-                    st["beats"][_bk]["lipsync"]["last_error"] = _err[:500]
+                def mark_err(st, _bk=beat_key, _err=str(exc), _role=video_role):
+                    _ls = (((st.get("videos") or {}).get(_role) or {}).get("beats", {}).get(_bk) or {}).get("lipsync") or {}
+                    _ls["status"] = "failed"
+                    _ls["last_error"] = _err[:500]
                 self.app.state.mutate_state(mark_err)
 
         threading.Thread(target=do_lipsync, daemon=True, name=f"lipsync-{beat_key}").start()
@@ -11463,27 +12316,29 @@ class ProductionHandler(BaseHTTPRequestHandler):
         """
         state = self.app.state.read_state()
         lipsync_beats = {}
-        for beat_id, beat in ((state.get("videos") or {}).get("intro") or {}).get("beats", {}).items():
-            ls = beat.get("lipsync")
-            if ls:
-                lipsync_beats[beat_id] = {
-                    "status": ls.get("status", "unknown"),
-                    "task_id": ls.get("task_id"),
-                    "file": ls.get("file"),
-                    "size_bytes": ls.get("size_bytes"),
-                    "audio_file": ls.get("audio_file"),
-                    "last_error": ls.get("last_error"),
-                    "source_option": ls.get("source_option"),
-                    "source_changed": bool(ls.get("source_changed")),
-                    # Decision 181 (April 17 2026): audio_changed flag
-                    # surfaces when TTS was regenerated after lipsync
-                    # completed — client renders Re-run Lip Sync button.
-                    "audio_changed": bool(ls.get("audio_changed")),
-                }
-                if ls.get("file"):
-                    lipsync_beats[beat_id]["url"] = f"/asset/{ls['file']}"
-                # Spec A: include final block so storyboard can show no-lipsync indicator
-                lipsync_beats[beat_id]["final"] = beat.get("final", None)
+        # v3 state: scan ALL video partitions (intro, resolution, …), not just intro.
+        for _role, partition in (state.get("videos") or {}).items():
+            for beat_id, beat in (partition.get("beats") or {}).items():
+                ls = beat.get("lipsync")
+                if ls:
+                    lipsync_beats[beat_id] = {
+                        "status": ls.get("status", "unknown"),
+                        "task_id": ls.get("task_id"),
+                        "file": ls.get("file"),
+                        "size_bytes": ls.get("size_bytes"),
+                        "audio_file": ls.get("audio_file"),
+                        "last_error": ls.get("last_error"),
+                        "source_option": ls.get("source_option"),
+                        "source_changed": bool(ls.get("source_changed")),
+                        # Decision 181 (April 17 2026): audio_changed flag
+                        # surfaces when TTS was regenerated after lipsync
+                        # completed — client renders Re-run Lip Sync button.
+                        "audio_changed": bool(ls.get("audio_changed")),
+                    }
+                    if ls.get("file"):
+                        lipsync_beats[beat_id]["url"] = f"/asset/{ls['file']}"
+                    # Spec A: include final block so storyboard can show no-lipsync indicator
+                    lipsync_beats[beat_id]["final"] = beat.get("final", None)
 
         total = len(lipsync_beats)
         completed = sum(1 for v in lipsync_beats.values() if v["status"] == "completed")
@@ -11863,8 +12718,8 @@ body {{padding-top:44px!important;}}
     def _beat_id(self, line_number: int) -> str:
         return f"beat_{line_number:02d}"
 
-    def _select_beats_for_mode(self, mode: str, requested: list[str] | None) -> list[dict]:
-        all_beats = self.app.beats()
+    def _select_beats_for_mode(self, mode: str, requested: list[str] | None, video_role: str = "intro") -> list[dict]:
+        all_beats = self.app.beats(video_role)
         if mode == "all":
             return all_beats
         if mode == "test":
@@ -11875,7 +12730,7 @@ body {{padding-top:44px!important;}}
         if mode == "retry":
             state = self.app.state.read_state()
             failed = {
-                bid for bid, b in ((state.get("videos") or {}).get("intro") or {}).get("beats", {}).items()
+                bid for bid, b in ((state.get("videos") or {}).get(video_role) or {}).get("beats", {}).items()
                 if (b.get("phase_1") or {}).get("status") in ("failed", "partial")
             }
             return [b for b in all_beats if self._beat_id(b.get("line_number", -1)) in failed]
@@ -11899,7 +12754,14 @@ body {{padding-top:44px!important;}}
         mode = body.get("mode", "all")
         options_per_beat = int(body.get("options_per_beat", 3))
         requested = body.get("beats")
-        beats = self._select_beats_for_mode(mode, requested)
+        # Per-beat Animate button sends beat_id (singular) without a mode or
+        # beats list — auto-scope to just that beat so a single-beat click does
+        # not trigger a batch-all run that hits the budget gate (S5.5f fix).
+        if not requested and body.get("beat_id"):
+            requested = [body["beat_id"]]
+            if mode == "all":
+                mode = "test"
+        beats = self._select_beats_for_mode(mode, requested, scope.video_role)
 
         # Budget pre-check
         spend = self.app.state.read_spend()
@@ -12001,6 +12863,8 @@ body {{padding-top:44px!important;}}
                 if submitted % 6 == 0:
                     time.sleep(POLL_BATCH_GAP_SEC)
 
+        print(f"[animate] done: submitted={submitted} skipped={len(skipped)} "
+              f"role={scope.video_role} details={skipped[:5]}")
         self._send_json(200, {
             "submitted": submitted,
             "beats_queued": len(beats) - len([s for s in skipped if "opt" not in s]),
@@ -12009,6 +12873,13 @@ body {{padding-top:44px!important;}}
         })
 
     def _handle_status(self) -> None:
+        # Resolve video_role from query string (GET requests pass scope via QS).
+        # When only beat_id is provided (per-beat poll from the Animate button),
+        # search across all partitions for that specific beat — the client does
+        # not inject scope_video_role into apiGet calls (only pathappPatch does).
+        _qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        beat_id_filter = (_qs.get("beat_id") or [None])[0]
+        explicit_role = (_qs.get("scope_video_role") or _qs.get("scope_target_video") or [None])[0]
         state = self.app.state.read_state()
         spend = self.app.state.read_spend()
         beats_out: dict = {}
@@ -12016,7 +12887,27 @@ body {{padding-top:44px!important;}}
         completed = 0
         polling = 0
         failed = 0
-        for bid, beat in ((state.get("videos") or {}).get("intro") or {}).get("beats", {}).items():
+        # Build the beat source: explicit role > beat_id cross-partition search > intro fallback.
+        if explicit_role:
+            beats_src = ((state.get("videos") or {}).get(explicit_role) or {}).get("beats", {})
+        elif beat_id_filter:
+            # Find the partition that has this beat with phase_1 data (polling options).
+            beats_src = {}
+            for _role, _partition in (state.get("videos") or {}).items():
+                _b = (_partition or {}).get("beats", {}).get(beat_id_filter)
+                if _b and (_b.get("phase_1") or {}).get("options"):
+                    beats_src = {beat_id_filter: _b}
+                    break
+            if not beats_src:
+                # Fallback: just return the beat from whichever partition has it
+                for _role, _partition in (state.get("videos") or {}).items():
+                    _b = (_partition or {}).get("beats", {}).get(beat_id_filter)
+                    if _b:
+                        beats_src = {beat_id_filter: _b}
+                        break
+        else:
+            beats_src = ((state.get("videos") or {}).get("intro") or {}).get("beats", {})
+        for bid, beat in beats_src.items():
             total += 1
             phase1 = beat.get("phase_1") or {}
             status = phase1.get("status", "unknown")
@@ -12084,15 +12975,17 @@ body {{padding-top:44px!important;}}
         if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
-        beat_id = body.get("beat")
+        beat_id = body.get("beat_id") or body.get("beat")
         options_per_beat = int(body.get("options_per_beat", 3))
         if not beat_id:
             return self._send_json(400, {"error": "missing 'beat'"})
 
+        video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
+
         # Acquire lock -> clear state -> list old files -> release -> delete -> resubmit
         old_files: list[str] = []
-        def clear(state):
-            b = ((state.get("videos") or {}).get("intro") or {}).get("beats", {}).get(beat_id)
+        def clear(state, _role=video_role):
+            b = ((state.get("videos") or {}).get(_role) or {}).get("beats", {}).get(beat_id)
             if not b:
                 return
             for opt in (b.get("phase_1") or {}).get("options", []):
@@ -12109,12 +13002,21 @@ body {{padding-top:44px!important;}}
                 except OSError:
                     pass
 
-        # Resubmit via the existing /api/animate path, but scoped to this beat
-        return self._handle_animate({
+        # Resubmit via the existing /api/animate path, but scoped to this beat.
+        # Forward scope_video_role/scope_target_video so the resubmit hits the
+        # same partition as the cleared beat (was hardcoded "intro" pre-fix).
+        forwarded = {
             "mode": "test",
             "beats": [beat_id],
             "options_per_beat": options_per_beat,
-        })
+        }
+        if (body or {}).get("scope_video_role"):
+            forwarded["scope_video_role"] = body["scope_video_role"]
+        if (body or {}).get("scope_target_video"):
+            forwarded["scope_target_video"] = body["scope_target_video"]
+        if (body or {}).get("scope_event_id"):
+            forwarded["scope_event_id"] = body["scope_event_id"]
+        return self._handle_animate(forwarded)
 
     # ========================================================================
     # _handle_add_options — DISPATCHER (decisions 172 + 180)
@@ -12139,9 +13041,15 @@ body {{padding-top:44px!important;}}
         if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
-        beat_id = body.get("beat")
+        beat_id = body.get("beat_id") or body.get("beat")
         if not beat_id:
             return self._send_json(400, {"error": "missing 'beat'"})
+
+        # Normalize so sub-handlers can safely subscript body["beat"].
+        if "beat" not in body:
+            body = dict(body, beat=beat_id)
+
+        video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
 
         try:
             state = self.app.state.read_state()
@@ -12150,7 +13058,7 @@ body {{padding-top:44px!important;}}
                 "error": f"failed to read state for dispatch: {type(exc).__name__}: {exc}"
             })
 
-        beat_state = (((state.get("videos") or {}).get("intro") or {}).get("beats") or {}).get(beat_id) or {}
+        beat_state = (((state.get("videos") or {}).get(video_role) or {}).get("beats") or {}).get(beat_id) or {}
         force_legacy = bool(beat_state.get("force_legacy"))
 
         if force_legacy:
@@ -12162,51 +13070,115 @@ body {{padding-top:44px!important;}}
         # added later still route start-end without manual config.
         end_frame_prompt = (beat_state.get("end_frame_prompt") or "").strip()
         if not end_frame_prompt:
-            speaker = beat_state.get("speaker") or ""
-            # Best-effort speaker extraction from storyboard L[] if state lacks it
-            if not speaker:
-                for b in self.app.beats():
-                    if self._beat_id(b.get("line_number", -1)) == beat_id:
-                        speaker = b.get("speaker") or ""
-                        break
-            speaker_lc = speaker.lower() if speaker else ""
-            if "guide bird" in speaker_lc or "pip" in speaker_lc or "chipper" in speaker_lc:
-                end_frame_prompt = (
-                    "Keep the background COMPLETELY IDENTICAL to the input — "
-                    "every tree, leaf, light ray, and environment element must "
-                    "stay pixel-perfect unchanged. Do NOT alter, shift, blur, "
-                    "or recompose any background element whatsoever. "
-                    "ONLY change the character: Chipper the Guide Bird now has "
-                    "a slightly softened expression with natural warmth in his "
-                    "eyes, subtle attentive head tilt. Beak closed. "
-                    "Same cartoon 3D Pixar-style art, same outfit, same 4:3 "
-                    "composition, same lighting on the character."
-                )
-            elif "tessa" in speaker_lc:
-                end_frame_prompt = (
-                    "Keep the background COMPLETELY IDENTICAL to the input — "
-                    "every tree, leaf, light ray, and environment element must "
-                    "stay pixel-perfect unchanged. Do NOT alter, shift, blur, "
-                    "or recompose any background element whatsoever. "
-                    "ONLY change the character: Tessa the turtle with a "
-                    "slightly softened, more reflective expression, eyes "
-                    "warming with attention. Beak/mouth closed. "
-                    "Same cartoon 3D Pixar-style art, same outfit, same 4:3 "
-                    "composition, same lighting on the character."
-                )
+            # Derive end-frame prompt from Kim's creative cues in beat text.
+            # Priority: (parenthetical) > [emotion_at_start] > neutral fallback.
+            # Never synthesize from speaker name — that was invented without Kim's input.
+            import re as _re
+            beat_text = (beat_state.get("text") or "").strip()
+
+            _BG_LOCK = (
+                "Keep the background COMPLETELY IDENTICAL to the input — "
+                "every tree, leaf, light ray, and environment element must "
+                "stay pixel-perfect unchanged. Do NOT alter, shift, blur, "
+                "or recompose any background element whatsoever. "
+            )
+            _MOUTH_TAIL = (
+                " Beak/mouth at rest, natural mouth geometry preserved. "
+                "Same cartoon 3D Pixar-style art, same outfit, same 4:3 "
+                "composition, same lighting on the character."
+            )
+
+            # Resolve speaker for neutral-fallback pose lookup below.
+            _disp_speaker = _canonicalize_speaker(beat_state.get("speaker", "") or "")
+
+            # 1. (parenthetical) anywhere → stage direction only.
+            #    Emotion-only annotations like "(happy, friendly)" must NOT be sent
+            #    to FLUX Kontext verbatim — the character already looks happy/friendly
+            #    in the start frame, so FLUX generates a nearly-identical end frame,
+            #    and Kling barely moves (super-still symptom).
+            #    Stage directions contain physical action verbs and give FLUX a clear
+            #    geometric target (e.g. "looks at viewer" → head turns to camera).
+            #    Emotion-only parentheticals fall through to the safe neutral pose (path 3).
+            _STAGE_VERBS = {
+                "looks", "look", "looking", "glances", "glance", "faces", "face",
+                "turns", "turn", "turns to", "tilts", "tilt", "leans", "lean",
+                "reaches", "reach", "points", "point", "raises", "raise",
+                "walks", "walk", "steps", "step", "moves", "move",
+                "holds", "hold", "gestures", "gesture", "nods", "nod",
+                "bows", "bow", "crouches", "crouch", "stands", "stand",
+                "sits", "sit", "jumps", "jump", "lands", "land",
+                "extends", "extend", "lowers", "lower", "lifts", "lift",
+                "shrugs", "shrug", "waves", "wave", "claps", "clap",
+                "places", "place", "grabs", "grab", "drops", "drop",
+                "at", "toward", "forward", "backward", "sideways", "upward", "downward",
+            }
+            _paren = _re.search(r'\(([^)]{3,})\)', beat_text)
+            if _paren:
+                char_dir = _paren.group(1).strip()
+                _paren_words = set(_re.findall(r'\w+', char_dir.lower()))
+                _is_stage_direction = bool(_paren_words & _STAGE_VERBS)
+                if _is_stage_direction:
+                    end_frame_prompt = (
+                        _BG_LOCK
+                        + f"ONLY change the character: {char_dir}."
+                        + _MOUTH_TAIL
+                    )
+                    print(f"[add_options:dispatch] {beat_id}: end_frame_prompt from (parenthetical) stage direction")
+                else:
+                    print(f"[add_options:dispatch] {beat_id}: (parenthetical) is emotion-only {char_dir!r} — falling through to neutral pose")
+
             else:
-                # Generic fallback — works for any creature but less tuned.
+                # 2. [emotion] at start of text → map to expression description.
+                # Exclude TTS directives: [pause], [break], [breath], [sigh].
+                _TTS_TAGS = {"pause", "break", "breath", "sigh", "silence"}
+                _start_tag = _re.match(r'^\[([^\]]+)\]', beat_text)
+                _emotion = _start_tag.group(1).lower().strip() if _start_tag else ""
+                _EMOTION_MAP = {
+                    "curious":    "curious expression, eyes wide and alert, slight questioning head tilt",
+                    "excited":    "excited expression, eyes bright and wide, alert eager posture",
+                    "happy":      "warm happy expression, eyes open and bright",
+                    "delighted":  "delighted expression, eyes open and bright, gentle smile",
+                    "sad":        "gentle sad expression, soft downward gaze, eyes half-lidded",
+                    "worried":    "worried expression, eyes wide, slight brow tension",
+                    "scared":     "scared expression, eyes wide, slight lean back",
+                    "surprised":  "surprised expression, eyes wide, slight lean back",
+                    "determined": "determined expression, eyes steady and focused",
+                    "relieved":   "relieved expression, eyes soft and open, relaxed posture",
+                    "neutral":    None,  # → fallback
+                }
+                if _emotion and _emotion not in _TTS_TAGS and _emotion in _EMOTION_MAP:
+                    char_dir = _EMOTION_MAP[_emotion]
+                    if char_dir:
+                        end_frame_prompt = (
+                            _BG_LOCK
+                            + f"ONLY change the character: {char_dir}."
+                            + _MOUTH_TAIL
+                        )
+                        print(f"[add_options:dispatch] {beat_id}: end_frame_prompt from [emotion={_emotion!r}]")
+
+            # 3. Neutral fallback — use safe STATIC geometric pose (small head tilt).
+            #    "Same as input" (old) → identical frames → Kling barely moves.
+            #    SPEAKER_MOTION_PROFILES vocab (Fix 7 mistake) → FLUX Kontext
+            #    hallucinates objects from motion words → Kling produces chaos.
+            #    A simple head tilt is ALWAYS renderable by FLUX Kontext with no
+            #    hallucination risk and gives Kling a clear but safe motion target.
+            if not end_frame_prompt:
+                _SAFE_NEUTRAL_POSE = {
+                    "Chipper": "head tilted gently to one side, attentive expression",
+                    "Tessa":   "head tilted gently, quiet attentive expression",
+                    "Luna":    "head turned slightly to one side, alert expression",
+                    "Benson":  "one ear tilted, head turned slightly, quiet attentive expression",
+                    "Ember":   "head turned slightly to one side, calm relaxed gaze",
+                    "Bork":    "hovering in a slightly tilted position, calm expression",
+                    "Bramble": "head turned slightly, grounded quiet presence",
+                }
+                _safe_pose = _SAFE_NEUTRAL_POSE.get(_disp_speaker, "head tilted gently, attentive expression")
                 end_frame_prompt = (
-                    "Keep the background COMPLETELY IDENTICAL to the input — "
-                    "every background element must stay pixel-perfect unchanged. "
-                    "Do NOT alter, shift, blur, or recompose any background. "
-                    "ONLY change the character: natural subtle expression "
-                    "evolution, eyes warming with attention, small postural "
-                    "shift. Mouth closed. Same cartoon 3D art style, same "
-                    "outfit, same 4:3 composition."
+                    _BG_LOCK
+                    + f"ONLY change the character: {_safe_pose}."
+                    + _MOUTH_TAIL
                 )
-            print(f"[add_options:dispatch] {beat_id}: no end_frame_prompt in state -> "
-                  f"using synthesized default for speaker={speaker!r}")
+                print(f"[add_options:dispatch] {beat_id}: end_frame_prompt neutral fallback — safe static pose")
 
         print(f"[add_options:dispatch] {beat_id}: -> start-end pipeline "
               f"(decision 180 universal default; prompt {len(end_frame_prompt)}c)")
@@ -12234,6 +13206,11 @@ body {{padding-top:44px!important;}}
 
         beat_id = body["beat"]  # validated by dispatcher
         num_new = int(body.get("count", 2))
+        # video_role MUST be resolved at the very top — closures below capture it
+        # as a default-argument value at definition time (not call time). Resolving
+        # here prevents UnboundLocalError when Python sees the later assignment and
+        # treats video_role as a local for the entire function scope.
+        video_role = body.get("scope_video_role") or body.get("scope_target_video") or "intro"
 
         # Duration resolution — identical to legacy, repeated for independence.
         explicit_duration = body.get("duration")
@@ -12257,15 +13234,8 @@ body {{padding-top:44px!important;}}
                 self.app.event_dir, beat_id, body.get("audio_override"),
                 app=self.app,
             )
-            if audio_path is None:
-                try:
-                    beat_num_s = f"line_{int(beat_id.split('_')[1]):02d}"
-                except (IndexError, ValueError):
-                    beat_num_s = "(unparseable)"
-                return self._send_json(404, {
-                    "error": f"no TTS audio found for {beat_id} ({beat_num_s})",
-                    "hint": "animation duration cannot be inferred without audio",
-                })
+            # audio_path may be None for blank/new beats — _infer_animation_duration
+            # handles None by returning (KLING_MIN_DURATION_SEC, "no_audio_found_default_5s")
             try:
                 duration, duration_reason = _infer_animation_duration(audio_path)
             except ValueError as exc:
@@ -12273,7 +13243,7 @@ body {{padding-top:44px!important;}}
                     "error": str(exc),
                     "hint": "Edit script or split audio into shorter beats",
                     "beat": beat_id,
-                    "audio_file": audio_path.name,
+                    "audio_file": audio_path.name if audio_path else "(no audio)",
                 })
         print(f"[add_options:startend] {beat_id} duration={duration}s reason={duration_reason}")
 
@@ -12287,8 +13257,9 @@ body {{padding-top:44px!important;}}
 
         if len(existing_options) > 1:
             old_bc_files = [o.get("file") for o in existing_options[1:] if o.get("file")]
-            def trim_to_a(st):
-                b = st.get("beats", {}).get(beat_id)
+            def trim_to_a(st, _bid=beat_id, _role=video_role):
+                # Partition-aware (SCOPE_ROUTER_V1) — same fix as add_option closure
+                b = ((st.get("videos") or {}).get(_role) or {}).get("beats", {}).get(_bid)
                 if b and b.get("phase_1"):
                     b["phase_1"]["options"] = b["phase_1"].get("options", [])[:1]
                     if (b["phase_1"].get("selected_option") or 0) > 1:
@@ -12313,8 +13284,9 @@ body {{padding-top:44px!important;}}
             })
 
         # Resolve start image (data URI).
+        # S5.5a2: scope_video_role used here — resolved at top of function (see above).
         target_beat = None
-        for b in self.app.beats():
+        for b in self.app.beats(video_role):
             if self._beat_id(b.get("line_number", -1)) == beat_id:
                 target_beat = b
                 break
@@ -12322,13 +13294,12 @@ body {{padding-top:44px!important;}}
             return self._send_json(400, {
                 "error": f"could not find beat data for {beat_id} in storyboard"
             })
-        # S5.5a2: scope_video_role from body for partition-aware override lookup (LD-474).
-        video_role = body.get("scope_video_role", "intro")
         beat_image = self.app.get_beat_image(beat_id, video_role)
         if not beat_image:
             return self._send_json(400, {
                 "error": f"could not find image data for {beat_id} — drag-drop an image first"
             })
+
         target_beat = dict(target_beat)
         beat_image, upscale_info = auto_upscale_image(beat_image)
         if "upscaled" in upscale_info:
@@ -12337,6 +13308,54 @@ body {{padding-top:44px!important;}}
         ok, info = validate_image_dimensions(beat_image)
         if not ok:
             return self._send_json(400, {"error": f"image validation failed: {info}"})
+
+        # Fix 1 (20260513 motion-quality-pipeline): parse Kim's stage direction
+        # from beat.text into either a direct motion-override (parenthetical)
+        # or a mapped emotion key. Without this step build_motion_prompt sees
+        # only speaker/section and defaults to "neutral" for every beat that
+        # lacks an explicit emotion field — which is all 18 resolution beats
+        # in production_state.json (Kim's symptom). The (parenthetical) form
+        # is the strongest signal (verbatim from Kim's authored text); the
+        # [emotion_tag] form is a fallback for tone-only direction.
+        # The override string is wrapped by sanitize_prompt one line below
+        # (positive_prompt = sanitize_prompt(build_motion_prompt(target_beat)))
+        # so Rule 8.1 banned words are stripped before the prompt leaves this
+        # function.
+        import re as _re_motion
+        _beat_text = target_beat.get("text", "") or ""
+        _paren_motion = _re_motion.search(r'\(([^)]{3,})\)', _beat_text)
+        if _paren_motion:
+            target_beat["_motion_override"] = _paren_motion.group(1).strip()
+            print(f"[add_options:startend] {beat_id}: motion_override from "
+                  f"(parenthetical) = {target_beat['_motion_override']!r}")
+        else:
+            _start_tag = _re_motion.match(r'^\s*\[([^\]]+)\]', _beat_text)
+            if _start_tag:
+                _raw_tag = _start_tag.group(1).strip().lower()
+                # Strip trailing modifiers (e.g. "[happy, friendly]" -> "happy")
+                _first_tag = _raw_tag.split(",")[0].strip()
+                _TTS_TAGS = {"pause", "break", "breath", "sigh", "silence"}
+                _EM_TO_VOCAB = {
+                    "curious":      "happy_excited",
+                    "excited":      "happy_excited",
+                    "happy":        "happy_excited",
+                    "delighted":    "happy_excited",
+                    "friendly":     "happy_excited",
+                    "sad":          "sad_disappointed",
+                    "disappointed": "sad_disappointed",
+                    "relieved":     "sad_disappointed",
+                    "worried":      "upset_shocked",
+                    "scared":       "upset_shocked",
+                    "surprised":    "upset_shocked",
+                    "shocked":      "upset_shocked",
+                    "determined":   "neutral",
+                    "relaxed":      "neutral",
+                }
+                if _first_tag and _first_tag not in _TTS_TAGS and _first_tag in _EM_TO_VOCAB:
+                    target_beat["emotion"] = _EM_TO_VOCAB[_first_tag]
+                    print(f"[add_options:startend] {beat_id}: emotion mapped "
+                          f"from [{_first_tag}] -> {target_beat['emotion']!r}")
+
         positive_prompt = sanitize_prompt(build_motion_prompt(target_beat))
 
         # Subject binding — load Kling element_entry for this beat's speaker.
@@ -12374,57 +13393,124 @@ body {{padding-top:44px!important;}}
                 "error": f"start image data-URI malformed: {type(exc).__name__}: {exc}"
             })
 
-        # Mark beat polling.
-        def set_polling(st):
-            b = st.get("beats", {}).get(beat_id)
+        # Mark beat polling — partition-aware (SCOPE_ROUTER_V1 / v3 state).
+        def set_polling(st, _bid=beat_id, _role=video_role):
+            b = ((st.get("videos") or {}).get(_role) or {}).get("beats", {}).get(_bid)
             if b and b.get("phase_1"):
                 b["phase_1"]["status"] = "polling"
         self.app.state.mutate_state(set_polling)
 
-        # Per-option loop: FLUX Kontext end frame -> Kling start-end submit.
+        # Fix 3 (20260513 motion-quality-pipeline): generate end frame via FLUX
+        # Kontext ONCE per beat and reuse for all num_new Kling options.
+        # Rule 8.3: end frame provides pixel-level gaze/pose anchoring without
+        # positive-prompt motion-lock — the one allowed exception to §8.2's
+        # do-not-stack rule. end_frame_prompt is already Rule 8.3 compliant
+        # (built by dispatcher at lines ~12605-12667 using _BG_LOCK + char-dir
+        # + _MOUTH_TAIL; no motion-lock phrases inside).
+        # Budget at line ~12748 already accounts for COST_FLUX_KONTEXT +
+        # COST_KLING_10S per option (per-option cost), so the spend check
+        # already passed for this generation.
+        # Fail-loud per Rule 19: if FLUX errors out, return 500 — no silent
+        # fallback to single-image (that masks the failure and Kim never sees
+        # the lipsync-pipeline-incompatible motion she's debugging).
+        # Graceful degradation: empty end_frame_prompt OR missing bfl_key =>
+        # explicit single-image mode with an [INFO] log (not an error).
+        end_b64_uri: str | None = None
+        if end_frame_prompt and bfl_key:
+            try:
+                end_frame_bytes = flux_kontext_generate_end_frame(
+                    start_image_bytes=start_bytes,
+                    end_prompt=end_frame_prompt,
+                    api_key=bfl_key,
+                )
+                # Rule 6: auto-upscale end frame to ≥600px shortest side.
+                end_data_uri = (
+                    "data:image/png;base64,"
+                    + base64.b64encode(end_frame_bytes).decode("ascii")
+                )
+                end_data_uri, _end_upscale_info = auto_upscale_image(end_data_uri)
+                if "upscaled" in _end_upscale_info:
+                    print(f"[add_options:startend] {beat_id} end frame: "
+                          f"{_end_upscale_info}")
+                ok_end, info_end = validate_image_dimensions(end_data_uri)
+                if not ok_end:
+                    return self._send_json(500, {
+                        "error": f"end frame validation failed: {info_end}",
+                        "beat": beat_id,
+                    })
+                end_b64_uri = end_data_uri
+                print(f"[add_options:startend] {beat_id}: FLUX Kontext end "
+                      f"frame generated ({len(end_frame_bytes):,}B)")
+                # Fix 8 (20260513): override motion prompt to natural-interpolation.
+                # Vocabulary action terms fight the frame anchors and produce barely-
+                # moving output. Per LD-177 validated pattern (Tessa beat_05):
+                # minimal prompt + specific end frame > vocabulary prompt in start-end mode.
+                # The docstring above says "Gaze anchor comes from end-frame pixel geometry,
+                # not prompt words" — this makes the motion prompt honour that design intent.
+                _in_birds_8 = _canonical_speaker in BIRD_SPEAKERS
+                _cstr_8 = "Beak closed, no speech, no lip movement." if _in_birds_8 else "Mouth closed, no speech."
+                _tail_8 = LIPSYNC_SAFE_TAIL if target_beat.get("lipsync_targeted", True) else SPRITE_IDLE_TAIL
+                _hdr_8 = f"Cartoon {_canonical_speaker} character" if _canonical_speaker else "Cartoon character"
+                positive_prompt = sanitize_prompt(
+                    f"{_hdr_8}, natural motion between start and end frames. {_cstr_8} {_tail_8}"
+                )
+                print(f"[add_options:startend] {beat_id}: motion prompt -> natural-interpolation (end frame confirmed)")
+            except SystemExit as exc:
+                return self._send_json(500, {
+                    "error": f"FLUX Kontext end frame generation failed: {exc}",
+                    "beat": beat_id,
+                    "hint": ("Check BFL (FLUX) API key or retry — FLUX Kontext "
+                             "is required for start-end pipeline"),
+                })
+            except Exception as exc:
+                return self._send_json(500, {
+                    "error": (f"FLUX Kontext unexpected error: "
+                              f"{type(exc).__name__}: {exc}"),
+                    "beat": beat_id,
+                })
+        else:
+            print(f"[add_options:startend] {beat_id}: no end frame "
+                  f"(end_frame_prompt empty or no bfl_key) — single-image mode")
+
+        # Per-option loop: Kling start-end submit (end frame reused across opts).
         submitted = 0
         submit_errors: list[str] = []
         submitted_tasks: list[str] = []
 
         for opt_idx in range(num_new):
-            # Step 1: FLUX Kontext.
-            try:
-                end_bytes = flux_kontext_generate_end_frame(
-                    start_image_bytes=start_bytes,
-                    end_prompt=end_frame_prompt,
-                    api_key=bfl_key,
-                    aspect_ratio="4:3",
-                    timeout_s=180,
-                )
-            except SystemExit as exc:
-                err = f"flux_kontext SystemExit: {exc}"
-                print(f"[ERR] add_options:startend FLUX Kontext opt{opt_idx+1}: {err}")
-                submit_errors.append(err)
-                continue
-            except Exception as exc:
-                err = f"flux_kontext {type(exc).__name__}: {exc}"
-                print(f"[ERR] add_options:startend FLUX Kontext opt{opt_idx+1}: {err}")
-                submit_errors.append(err)
-                continue
-
-            # Step 2: Rule 6 auto-upscale end frame bytes.
-            try:
-                end_bytes_final, end_info, _end_dims = _ksendpipe_ensure_min_dimensions(end_bytes)
-                if "upscaled" in end_info:
-                    print(f"[add_options:startend] {beat_id} opt{opt_idx+1} end: {end_info}")
-            except Exception as exc:
-                err = f"ensure_min_dimensions {type(exc).__name__}: {exc}"
-                submit_errors.append(err)
-                continue
-
-            # Step 3: Kling start-end submit.
-            start_uri = f"data:image/png;base64,{base64.b64encode(start_bytes).decode('ascii')}"
-            end_uri = f"data:image/png;base64,{base64.b64encode(end_bytes_final).decode('ascii')}"
+            # When end_b64_uri is set (FLUX Kontext succeeded), Kling receives
+            # both start+end frames per decision 172 KLING_STARTEND_V1_CAPABILITY
+            # — pinning both endpoints structurally eliminates the §8.2 settling-
+            # window / 10s-drift failure modes.
+            # When end_b64_uri is None (no end_frame_prompt OR no bfl_key), we
+            # fall back to single-image Kling — start frame only, Kling animates
+            # freely. This is the graceful-degradation path; the start-end path
+            # is the universal default per decision 180.
+            # Fix 9 (20260513): normalize start bytes to actual PNG.
+            # Crop-library overrides may be WebP on disk; sending WebP bytes
+            # with image/png MIME type causes WaveSpeed Kling to reject the
+            # submission. Convert non-PNG sources before encoding.
+            _start_bytes_png = start_bytes
+            if "image/png" not in _hdr:
+                try:
+                    from PIL import Image as _PilPng
+                    _pngbuf = io.BytesIO()
+                    _PilPng.open(io.BytesIO(start_bytes)).save(_pngbuf, format="PNG")
+                    _start_bytes_png = _pngbuf.getvalue()
+                    print(f"[add_options:startend] {beat_id}: converted start frame "
+                          f"{_hdr!r} -> PNG ({len(_start_bytes_png):,}B)")
+                except Exception as _png_exc:
+                    print(f"[add_options:startend] {beat_id}: PNG conversion failed "
+                          f"({_png_exc}), using raw bytes — may fail at WaveSpeed")
+            start_uri = f"data:image/png;base64,{base64.b64encode(_start_bytes_png).decode('ascii')}"
+            _mode_tag = "start-end" if end_b64_uri else "single-image"
+            print(f"[add_options:startend] {beat_id} opt{opt_idx+1} {_mode_tag} "
+                  f"Kling submit")
 
             try:
                 task_id = kling_startend_submit(
                     start_b64_uri=start_uri,
-                    end_b64_uri=end_uri,
+                    end_b64_uri=end_b64_uri,   # None => single-image fallback
                     prompt=positive_prompt,
                     negative_prompt=RULE8_ANTI_LIPSYNC,
                     duration=duration,
@@ -12443,10 +13529,18 @@ body {{padding-top:44px!important;}}
                 continue
 
             # Step 4: Persist option with provenance.
+            # Fix 3 (20260513): source reflects whether FLUX Kontext end frame
+            # was generated (kling_startend) or we fell back to single-image.
             _eid = element_entry["element_id"] if element_entry else None
+            _source_tag = "kling_startend" if end_b64_uri else "kling_single_image"
             def add_option(st, _bid=beat_id, _tid=task_id, _ep=end_frame_prompt,
-                           _dur=duration, _eid=_eid):
-                st["beats"][_bid]["phase_1"]["options"].append({
+                           _dur=duration, _eid=_eid, _role=video_role,
+                           _src=_source_tag):
+                # Partition-aware: use videos.<role>.beats (SCOPE_ROUTER_V1)
+                _beats = ((st.get("videos") or {}).get(_role) or {}).get("beats") or {}
+                if _bid not in _beats:
+                    return  # beat not in this partition; state may have legacy top-level
+                _beats[_bid]["phase_1"]["options"].append({
                     "task_id": _tid,
                     "status": "polling",
                     "file": None,
@@ -12454,7 +13548,7 @@ body {{padding-top:44px!important;}}
                     "submitted_at_epoch": int(time.time()),  # Tier 1B timeout
                     "retries": 0,
                     "last_error": None,
-                    "source": "kling_startend",       # decision 172 provenance
+                    "source": _src,
                     "end_frame_prompt": _ep,
                     "cfg_scale": _KSENDPIPE_CFG_SCALE,
                     "negative_prompt": RULE8_ANTI_LIPSYNC,
@@ -12468,7 +13562,7 @@ body {{padding-top:44px!important;}}
                 _ksendpipe_directus_log("kling_startend_submitted", {
                     "beat": beat_id,
                     "kling_task_id": task_id,
-                    "source": "kling_startend",
+                    "source": _source_tag,
                     "end_frame_prompt_preview": end_frame_prompt[:120],
                     "cfg_scale": _KSENDPIPE_CFG_SCALE,
                     "duration": duration,
@@ -12531,7 +13625,7 @@ body {{padding-top:44px!important;}}
         except scope_router.ScopeError as e:
             return self._send_json(e.http_status, {"error": e.code, **e.detail})
 
-        beat_id = body.get("beat")
+        beat_id = body.get("beat_id") or body.get("beat")
         num_new = int(body.get("count", 2))  # default: add 2 (B + C)
         if not beat_id:
             return self._send_json(400, {"error": "missing 'beat'"})
@@ -12636,7 +13730,7 @@ body {{padding-top:44px!important;}}
         # Find the beat data (image + prompt) from the storyboard
         # Check image overrides FIRST (from drag-drop), then fall back to storyboard
         target_beat = None
-        for b in self.app.beats():
+        for b in self.app.beats(scope.video_role):
             if self._beat_id(b.get("line_number", -1)) == beat_id:
                 target_beat = b
                 break
@@ -12783,6 +13877,12 @@ body {{padding-top:44px!important;}}
             old = b.get("text")
             b["text"] = _t
             b["text_last_updated_at"] = _ts
+            # Clear cached end_frame_prompt when text changes — force re-derive on next Regen.
+            # Without this, stale prompts override new stage directions in beat text.
+            # Future-proofs FLUX Kontext restore: stale end_frame_prompts would otherwise
+            # silently override Kim's text edits once FLUX is re-enabled.
+            if old != _t:
+                b["end_frame_prompt"] = ""
             if _stale and old != _t:
                 b["text_modified_after_tts"] = True
             # Canonicalize-on-touch (SCR.2 Path A — Kim's pre-C-9 decision):
@@ -13330,8 +14430,9 @@ body {{padding-top:44px!important;}}
         if not beat_id:
             return self._send_json(400, {"error": "missing 'beat'"})
 
+        video_role = body.get("scope_video_role") or body.get("scope_target_video") or "intro"
         state = self.app.state.read_state()
-        beat_state = (((state.get("videos") or {}).get("intro") or {}).get("beats") or {}).get(beat_id) or {}
+        beat_state = (((state.get("videos") or {}).get(video_role) or {}).get("beats") or {}).get(beat_id) or {}
         text = (beat_state.get("text") or "").strip()
         # Fallback: if state has no text yet (beat never edited+blurred),
         # parse the storyboard L[] t: field. Same pattern
@@ -13396,7 +14497,7 @@ body {{padding-top:44px!important;}}
         print(f"[regen_audio] {beat_id} explicit button trigger "
               f"({len(text)}c text in state)")
         try:
-            result = _tts_regenerate_for_beat(self.app, beat_id, text, el_key)
+            result = _tts_regenerate_for_beat(self.app, beat_id, text, el_key, video_role=video_role)
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc()
             return self._send_json(500, {
@@ -13436,22 +14537,31 @@ body {{padding-top:44px!important;}}
         if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
-        beat_id = body.get("beat")
-        selected = body.get("selected_option")
+        # Accept both legacy field names ("beat", "selected_option") and the
+        # current client field names ("beat_id", "option_index").
+        # runMutation() in StoryboardTab always injects beat_id; pathappPatch
+        # also sets beat_id from scope. The old names are kept for any caller
+        # that targets the endpoint directly (e.g. scripts, tests).
+        beat_id = body.get("beat") or body.get("beat_id")
+        selected = (body.get("selected_option")
+                    if body.get("selected_option") is not None
+                    else body.get("option_index"))
         if not beat_id or selected is None:
-            return self._send_json(400, {"error": "missing beat or selected_option"})
+            return self._send_json(400, {"error": "missing beat/beat_id or selected_option/option_index"})
         try:
             sel_int = int(selected)
         except (TypeError, ValueError):
             return self._send_json(400, {"error": f"selected_option must be int, got {selected!r}"})
 
+        video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
+
         # Side-channel: the new selected clip may diverge from the clip the
         # existing lipsync was produced against. Detect that and surface it
         # so the UI can offer "🔁 Re-run Lip Sync" (decision 153, Tier 5).
         source_changed_out = None
-        def mut(state, _sel=sel_int):
+        def mut(state, _sel=sel_int, _role=video_role):
             nonlocal source_changed_out
-            beat = ((state.get("videos") or {}).get("intro") or {}).get("beats", {}).get(beat_id)
+            beat = ((state.get("videos") or {}).get(_role) or {}).get("beats", {}).get(beat_id)
             if not beat:
                 return False
             phase1 = beat.get("phase_1") or {}
@@ -13515,20 +14625,33 @@ body {{padding-top:44px!important;}}
     def _handle_beat_delay(self, body: dict) -> None:
         """Set audio delay (video lead-in) for a beat.
         POST {"beat": "beat_03", "audio_delay": 1.5}
+                          OR {"beat_id": ..., "delay_seconds": 1.5}
+
+        Per LD `BEAT_DELAY_BODY_KEY_BACKCOMPAT_V1` (2026-05-14): the v59
+        client (StoryboardTab.tsx:260) sends `delay_seconds`; this handler
+        originally read only `audio_delay`. Same key-mismatch class as
+        F-REGEN-AUDIO-001 May 11 fix. Accept both to close the silent
+        no-op (delay was getting persisted as 0 regardless of UI value).
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
         if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
-        beat_id = body.get("beat")
-        delay = float(body.get("audio_delay", 0))
+        beat_id = body.get("beat") or body.get("beat_id")
+        # Accept both v59-client `delay_seconds` and legacy `audio_delay`.
+        raw_delay = body.get("audio_delay")
+        if raw_delay is None:
+            raw_delay = body.get("delay_seconds", 0)
+        delay = float(raw_delay)
         if not beat_id:
-            return self._send_json(400, {"error": "missing 'beat'"})
+            return self._send_json(400, {"error": "missing 'beat'/'beat_id'"})
         if delay < 0 or delay > 10:
             return self._send_json(400, {"error": "audio_delay must be 0-10 seconds"})
 
-        def update(state):
-            b = ((state.get("videos") or {}).get("intro") or {}).get("beats", {}).get(beat_id)
+        video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
+
+        def update(state, _role=video_role):
+            b = ((state.get("videos") or {}).get(_role) or {}).get("beats", {}).get(beat_id)
             if not b:
                 return False
             b.setdefault("phase_1", {})["audio_delay"] = round(delay, 2)
@@ -13547,9 +14670,9 @@ body {{padding-top:44px!important;}}
         if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
-        beat_id = body.get("beat")
+        beat_id = body.get("beat") or body.get("beat_id")
         if not beat_id:
-            return self._send_json(400, {"error": "missing 'beat'"})
+            return self._send_json(400, {"error": "missing 'beat'/'beat_id'"})
         trim_start = float(body.get("trim_start", 0))
         trim_end = body.get("trim_end")  # null = use full clip
         if trim_start < 0:
@@ -13559,8 +14682,10 @@ body {{padding-top:44px!important;}}
             if trim_end <= trim_start:
                 return self._send_json(400, {"error": "trim_end must be > trim_start"})
 
-        def update(state):
-            b = ((state.get("videos") or {}).get("intro") or {}).get("beats", {}).get(beat_id)
+        video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
+
+        def update(state, _role=video_role):
+            b = ((state.get("videos") or {}).get(_role) or {}).get("beats", {}).get(beat_id)
             if not b:
                 return False
             p1 = b.setdefault("phase_1", {})
@@ -13862,9 +14987,25 @@ body {{padding-top:44px!important;}}
             while new_bid in beats:
                 new_num += 1
                 new_bid = f"beat_{new_num:02d}"
+            # Inherit speaker from insert_after beat (or last beat in order)
+            _src_bid = _ia if (_ia and _ia in beats) else None
+            if not _src_bid:
+                _cur_order = partition.get("display_order")
+                if isinstance(_cur_order, list) and _cur_order:
+                    _src_bid = _cur_order[-1]
+                elif beats:
+                    _src_bid = max(beats.keys())
+            _inherited_speaker = ""
+            if _src_bid and _src_bid in beats:
+                _inherited_speaker = (
+                    beats[_src_bid].get("speaker")
+                    or (beats[_src_bid].get("phase_1") or {}).get("speaker")
+                    or ""
+                )
             # Minimum scaffold
             beats[new_bid] = {
                 "text": "",
+                "speaker": _inherited_speaker,
                 "phase_1": {"status": "pending", "options": []},
                 "_version": 0,
                 "created_at": datetime.now(timezone.utc).isoformat(),
@@ -13950,6 +15091,57 @@ body {{padding-top:44px!important;}}
         threading.Thread(target=_async_audit, daemon=True).start()
 
         return self._send_json(200, response)
+
+    def _handle_v2_beat_delete(self, body: dict) -> None:
+        """POST /api/v2/beat/delete — remove a beat from production state.
+
+        Body: {"beat_id": str}
+
+        Removes the beat from partition.beats and partition.display_order.
+        Returns 404 if beat not found, 200 on success.
+        Refreshes sidecar after mutation.
+        """
+        try:
+            scope = scope_router.resolve(body, self.app.event_dir.name)
+        except scope_router.ScopeError as e:
+            return self._send_json(e.http_status, {"error": e.code, **e.detail})
+
+        beat_id = body.get("beat_id")
+        if not isinstance(beat_id, str) or not beat_id:
+            return self._send_json(400, {"error": "beat_id required and must be non-empty string"})
+
+        result_out: dict = {}
+
+        def _apply_partition(partition, _bid=beat_id, _out=result_out):
+            beats = partition.get("beats") or {}
+            if _bid not in beats:
+                _out["not_found"] = True
+                return
+            del beats[_bid]
+            order = partition.get("display_order")
+            if isinstance(order, list) and _bid in order:
+                order.remove(_bid)
+            _out["deleted"] = True
+
+        try:
+            self.app.state.mutate_video_state(scope.video_role, _apply_partition)
+        except Exception as exc:  # noqa: BLE001
+            traceback.print_exc()
+            return self._send_json(500, {
+                "error": f"beat delete failed: {type(exc).__name__}: {exc}",
+            })
+
+        if result_out.get("not_found"):
+            return self._send_json(404, {"error": f"beat {beat_id!r} not found"})
+
+        # Sidecar refresh
+        try:
+            fresh = self.app.state.read_state()
+            _write_sidecar_L_json(self.app, fresh)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[v2 beat_delete] sidecar write failed: {exc}")
+
+        return self._send_json(200, {"status": "deleted", "beat_id": beat_id})
 
     def _handle_v2_get(self, path: str) -> None:
         """GET /api/v2/beat/<beat_id>
@@ -14078,6 +15270,28 @@ body {{padding-top:44px!important;}}
             print(f"[scope-guard] WARN: URL parse on {path} raised {exc!r}; "
                   f"falling through to server-pinned event.", flush=True)
         state = self.app.state.read_state()
+        # Project image_path onto beats from image_overrides_abs so v59 Vite
+        # shell clients can render assigned images. The Vite shell has no
+        # embedded gallery — beat.image_path is the client's only render signal.
+        # Computes a relative path from event_dir so the existing /files endpoint
+        # can serve it via its DROPBOX_ROOT-relative resolution path.
+        # DRAG_DROP_V59_GALLERY_V1 fix.
+        try:
+            event_dir_abs = str((DROPBOX_ROOT / self.app.event_dir).resolve())
+            for _role, _part in (state.get("videos") or {}).items():
+                if not isinstance(_part, dict):
+                    continue
+                _abs_map = _part.get("image_overrides_abs") or {}
+                _beats = _part.setdefault("beats", {})
+                for _bid, _ap in _abs_map.items():
+                    _beat = _beats.setdefault(_bid, {})
+                    if not _beat.get("image_path") and _ap and os.path.isfile(_ap):
+                        try:
+                            _beat["image_path"] = os.path.relpath(_ap, event_dir_abs)
+                        except ValueError:
+                            pass  # different drives on Windows; skip
+        except Exception as _exc:
+            print(f"[v2-state] WARN: image_path projection failed: {_exc!r}", flush=True)
         return self._send_json(200, state)
 
     # ------------------------------------------------------------------
@@ -16514,14 +17728,16 @@ body {{padding-top:44px!important;}}
                     f"Stitch editor bake. Job: {job_name}. "
                     f"{len(slots)} slot(s), {sum(len(s.get('sfx_cues') or []) for s in slots)} SFX cues."
                 )
-                # module_id=1 sentinel for non-module-scoped assets (per _MODULE_MAP comment)
+                # module_id resolved via state.event_id -> prod_modules per
+                # LD MODULE_ID_DYNAMIC_RESOLUTION_V1; closes the Rule 19
+                # "module_id=1 sentinel" stub class.
                 # LD-460 — terminal pin check before final asset register.
                 if not self._check_event_pin(_pin, "stitch_bake_register_asset"):
                     return self._send_json(423, {"error": "event_changed_mid_job", "code": "ASYNC_JOB_GENERATION_PIN_V1", "orphaned_bake_path": str(bake_path)})
                 asset_id, _ = register_asset(
                     file_path=str(bake_path),
                     asset_type="final_atomic_mp4",
-                    module_id=1,
+                    module_id=_resolve_module_id_for_state(self.app.state),
                     event_id=None,
                     produced_by_skill="stitch-editor",
                     iteration_notes=iter_notes,
@@ -17543,17 +18759,20 @@ body {{padding-top:44px!important;}}
         })
 
     # Phase B/A preview — composes lipsync video + watercolor cues.
-    # Preflight 135 (2026-04-20): reposition to top-left with reasonable padding.
-    # Canvas is 1280x720. Phase B target: upper-left region with 60px padding
-    # from top+left edges. Tile fits within 440x440 bbox (leaves room for Cedric
-    # on the right + bottom padding). Phase A: top-right symmetric.
-    # Scaled from compose_phase_b_poc.py (800x480 canvas, OVERLAY_X=24, OVERLAY_Y=24, OVERLAY_WIDTH=260).
-    # Canvas here is 1280x720 (ratio 1.6x/1.5x) -> frame_x=40, frame_y=36, frame_max_w=420.
-    # Height 420*1.5=630 portrait bbox for 1096x1608 framed tiles (aspect 0.68).
-    _PHASE_FRAME_X = {"b": 75, "a": 830}
-    _PHASE_FRAME_Y = 50
-    _PHASE_FRAME_MAX_W = {"b": 375, "a": 375}
-    _PHASE_FRAME_MAX_H = {"b": 560, "a": 560}
+    # LD-331 WATERCOLOR_OVERLAY_SCALE_TO_BBOX_NO_PAD_V2 (effective 2026-04-20):
+    #   Phase B LEFT bbox = 600x540 at (frame_x=40, frame_y=180)
+    #   Phase A RIGHT bbox = 480x540 at (frame_x=800, frame_y=180)
+    # Watercolor PNG/MP4 scales via `scale=w=frame_max_w:h=frame_max_h:
+    # force_original_aspect_ratio=decrease` with NO centered-pad step, then
+    # lands at (frame_x, frame_y) at its native scaled size — correctly
+    # fitting LEFT vs RIGHT half of the 1280x720 canvas.
+    # Implementation (ffmpeg_stitch.py _wc_build_cue_prefilter) defaults to
+    # 600x540 for Phase B; these dicts override per-phase for the call site.
+    # Closes inventory v2 PB-17 + PA-19 WIRED-BUT-BROKEN class.
+    _PHASE_FRAME_X = {"b": 40, "a": 800}
+    _PHASE_FRAME_Y = 180
+    _PHASE_FRAME_MAX_W = {"b": 600, "a": 480}
+    _PHASE_FRAME_MAX_H = {"b": 540, "a": 540}
 
     def _handle_phase_b_preview(self, body: dict) -> None:
         """POST /api/phase_b/preview
@@ -17891,6 +19110,35 @@ def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_e
         print(f"[startup:ghost_scrub] WARN: scrub failed (non-fatal): {_gs_exc}")
 
     app = AppContext(event_dir, storyboard_path, event_id, state, client)
+
+    # DIRECTUS_LOCK_WARMUP_V1 (2026-05-14): warm the cross-machine lock
+    # client singleton + JWT auth at startup so the first user-triggered
+    # mutate_state (typically Lipsync or Regen Audio) doesn't pay
+    # JWT-login + Railway-cold-start latency inside its 10s lock budget.
+    # Closes the "Directus lock unreachable" transient that fires on
+    # the FIRST per-process call (Kim hit this on beat_17 2026-05-13).
+    # Failure here is non-fatal — the cold path still works, just may
+    # surface the transient error on first user click. Per Agent B's
+    # b1 recommendation from FULL QA / Tier C lipsync investigation.
+    try:
+        _warm_client = _get_directus_lock_client()
+        if _warm_client is not None:
+            _t0 = time.time()
+            # No-op probe to force JWT auth + first GET to complete now,
+            # not during the user's first mutate. limit=1 keeps payload small.
+            _warm_client.get("prod_locks", filters={
+                "resource_key": {"_eq": "__warmup_probe__"},
+            }, limit=1)
+            print(f"[startup:dlock-warmup] Directus lock client warmed "
+                  f"({(time.time()-_t0)*1000:.0f}ms)")
+        else:
+            print("[startup:dlock-warmup] WARN: lock client unavailable "
+                  "(credentials or import); first mutate will retry path")
+    except Exception as _wexc:  # noqa: BLE001
+        print(f"[startup:dlock-warmup] WARN: warmup probe failed: "
+              f"{type(_wexc).__name__}: {_wexc} — first mutate will hit "
+              f"the lazy path under its own budget")
+
     # BEAT_GRAFT_RECOVERY_MECHANISM_V1 (C-7) — attach source_event_dir for
     # cross-event graft operations. None when --source-event is not passed.
     app.source_event_dir = source_event_dir

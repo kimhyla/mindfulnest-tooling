@@ -22,14 +22,38 @@
 #   bash Production/scripts/deploy_storyboard_v59.sh
 #     (defaults: MN_TOOLING_ROOT = this Mac's tooling checkout;
 #               MN_DROPBOX_ROOT = Dropbox "Claude Mindfulnest Project Files" — overrides per LD-505 / LD-541)
-#     (default event_dir = Production/Event_1; override via MN_EVENT_DIR env)
+#     (default event_dir = Production/Event_1; override via --event flag or MN_EVENT_DIR env)
+#     Event_0 is intentionally excluded from fanout — it is a Milestone (opening_storybook).
 #
-#   MN_EVENT_DIR=Production/Event_2 bash Production/scripts/deploy_storyboard_v59.sh
+#   bash Production/scripts/deploy_storyboard_v59.sh --event Event_2
+#   MN_EVENT_DIR=Production/Event_2 bash Production/scripts/deploy_storyboard_v59.sh  (legacy)
 #
 #   Skip auto-launch (just deploy + verify):
 #   MN_DEPLOY_SKIP_LAUNCH=1 bash Production/scripts/deploy_storyboard_v59.sh
 
 set -euo pipefail
+
+# ----------------------------------------------------------------
+# Argument parsing — --event Event_N overrides the default Event_1 pin.
+# ----------------------------------------------------------------
+_ARG_EVENT_DIR=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --event)
+            _ARG_EVENT_DIR="Production/${2:?'--event requires an event name, e.g. Event_2'}"
+            shift 2
+            ;;
+        --event=*)
+            _ARG_EVENT_DIR="Production/${1#--event=}"
+            shift
+            ;;
+        *)
+            echo "FATAL: unknown argument: $1" >&2
+            echo "Usage: bash deploy_storyboard_v59.sh [--event Event_N]" >&2
+            exit 1
+            ;;
+    esac
+done
 
 # ----------------------------------------------------------------
 # Tree boundaries per LD-505 TOOLING_REPO_CREATED_V1
@@ -161,23 +185,26 @@ if [[ -f "$DIST" ]]; then
     fanout_count=0
     for ev_html in "$DEST_DROPBOX"/Production/Event_*/storyboard_v59_prod.html; do
         # Glob may be literal if no matches; guard with -e.
-        if [[ -e "$ev_html" || -L "$ev_html" ]]; then
-            cp "$DIST" "$ev_html"
-            echo "  fanout: ${ev_html#$DEST_DROPBOX/}"
-            fanout_count=$((fanout_count + 1))
-        fi
+        # Glob may be literal if no matches; guard with -e.
+        [[ -e "$ev_html" || -L "$ev_html" ]] || continue
+        # Event_0 is a Milestone (opening_storybook) — exclude from Event fanout.
+        [[ "$(basename "$(dirname "$ev_html")")" == "Event_0" ]] && continue
+        cp "$DIST" "$ev_html"
+        echo "  fanout: ${ev_html#$DEST_DROPBOX/}"
+        fanout_count=$((fanout_count + 1))
     done
     # Also fan out to any Event_*/storyboard_v59_prod.html that doesn't yet
     # exist but the parent Event_* dir does — first-time deploy of a new event.
     for ev_dir in "$DEST_DROPBOX"/Production/Event_*/; do
         ev_dir="${ev_dir%/}"
-        if [[ -d "$ev_dir" ]]; then
-            target="$ev_dir/storyboard_v59_prod.html"
-            if [[ ! -e "$target" ]]; then
-                cp "$DIST" "$target"
-                echo "  fanout (first-time): ${target#$DEST_DROPBOX/}"
-                fanout_count=$((fanout_count + 1))
-            fi
+        [[ -d "$ev_dir" ]] || continue
+        # Event_0 is a Milestone (opening_storybook) — exclude from Event fanout.
+        [[ "$(basename "$ev_dir")" == "Event_0" ]] && continue
+        target="$ev_dir/storyboard_v59_prod.html"
+        if [[ ! -e "$target" ]]; then
+            cp "$DIST" "$target"
+            echo "  fanout (first-time): ${target#$DEST_DROPBOX/}"
+            fanout_count=$((fanout_count + 1))
         fi
     done
     echo "  total Event_* fanout: $fanout_count file(s)"
@@ -199,6 +226,8 @@ fanout_verify_count=0
 fanout_verify_failed=0
 for fanout in "$DEST_DROPBOX"/Production/Event_*/storyboard_v59_prod.html; do
     [[ -f "$fanout" ]] || continue
+    # Event_0 is a Milestone — excluded from fanout, so skip its SHA check too.
+    [[ "$(basename "$(dirname "$fanout")")" == "Event_0" ]] && continue
     FANOUT_SHA=$(shasum -a 256 "$fanout" | awk '{print $1}')
     if [[ "$FANOUT_SHA" != "$CANONICAL_SHA" ]]; then
         echo "FATAL: ${fanout#$DEST_DROPBOX/} sha256 mismatch" >&2
@@ -264,7 +293,7 @@ if [[ -n "${MN_DEPLOY_SKIP_LAUNCH:-}" ]]; then
     exit 0
 fi
 
-EVENT_DIR="${MN_EVENT_DIR:-Production/Event_1}"
+EVENT_DIR="${_ARG_EVENT_DIR:-${MN_EVENT_DIR:-Production/Event_1}}"
 echo "[deploy] (f) launching production_server.py against $EVENT_DIR ..."
 cd "$DEST_DROPBOX"
 

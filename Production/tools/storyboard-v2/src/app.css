@@ -1210,6 +1210,64 @@
 /* S5.5c Phase C — Cropper canvas + library delete (LD CROPPER_CANVAS_REAL_V1) */
 /* ---------------------------------------------------------------- */
 
+/* Load-from-library strip inside CropperModal (modal backdrop blocks Library panel drag-drop) */
+.mn-cropper-lib-strip {
+  margin-bottom: 8px;
+  border: 1px solid var(--border, #333);
+  border-radius: 4px;
+  background: var(--bg, #111);
+  overflow: hidden;
+}
+.mn-cropper-lib-strip-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border, #333);
+}
+.mn-cropper-lib-search {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 6px;
+  font-size: 11px;
+  border: 1px solid var(--border, #444);
+  border-radius: 3px;
+  background: var(--bg, #1a1a1a);
+  color: var(--text, #ddd);
+}
+.mn-cropper-lib-thumbs {
+  display: flex;
+  flex-direction: row;
+  gap: 4px;
+  padding: 4px 6px;
+  overflow-x: auto;
+  max-height: 72px;
+  align-items: center;
+}
+.mn-cropper-lib-thumb {
+  flex-shrink: 0;
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  border: 1px solid var(--border, #444);
+  border-radius: 3px;
+  background: var(--bg-elevated, #222);
+  cursor: pointer;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.mn-cropper-lib-thumb:hover {
+  border-color: var(--accent, #4a9);
+}
+.mn-cropper-lib-thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
 .mn-cropper-canvas-stage {
   position: relative;
   background: #000;
@@ -1599,6 +1657,17 @@
   padding: 2px 8px;
 }
 
+/* Storyboard tab — insert-after (always visible, no hover-reveal needed). */
+.mn-sb-insert-after {
+  display: flex;
+  justify-content: center;
+  margin: 6px 0 2px;
+}
+.mn-sb-insert-after-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+}
+
 /* BG-34/35 — Modal unset-beat-list. */
 .mn-bg-modal-unset-list {
   margin: 8px 0 0;
@@ -1674,10 +1743,61 @@
   background: var(--bg, #1a1a1a);
   color: var(--text, #ddd);
 }
+/* CC-20 — Add Image upload button. Class-only selector (Rule 36 §36.1). */
+.mn-library-upload-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border, #444);
+  border-radius: 4px;
+  background: var(--bg, #1a1a1a);
+  color: var(--text, #ddd);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+.mn-library-upload-btn:hover:not([aria-disabled]) {
+  border-color: var(--border-strong, #666);
+  background: var(--bg-elevated, #222);
+}
+.mn-library-upload-btn[aria-disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
 /* CC-19 — Library hover/sticky preview overlay. */
 .mn-library-tile-wrap {
   display: contents;
+}
+
+/* ─── Crop button (✂) — hover-revealed on library tiles + BG option tiles ─── */
+/* Library: .mn-asset-tile already has position:relative — crop btn sits top-left
+   (delete btn is top-right) so they don't overlap. */
+.mn-crop-btn {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 0.15s;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 2px 5px;
+  font-size: 12px;
+  cursor: pointer;
+  line-height: 1.2;
+  pointer-events: none;
+}
+.mn-asset-tile:hover .mn-crop-btn,
+.mn-bg-option:hover .mn-crop-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+.mn-crop-btn:hover {
+  background: rgba(0, 0, 0, 0.80);
 }
 .mn-library-preview {
   position: fixed;
@@ -1747,4 +1867,39 @@
   border-top: 1px solid var(--border, #444);
   max-height: 80px;
   overflow-y: auto;
+}
+
+/* ── Preview with Audio ───────────────────────────────────────────── */
+.mn-beat-option-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.mn-preview-btn {
+  background: #1a3a5c;
+  color: #fff;
+  min-width: 28px;
+}
+.mn-preview-btn:hover:not(:disabled) {
+  background: #2a5a8c;
+}
+.mn-preview-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.mn-preview-btn-active {
+  background: #c0392b;
+}
+.mn-preview-btn-active:hover:not(:disabled) {
+  background: #e74c3c;
+}
+.mn-storyboard-preview-video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: 4px;
+  background: #000;
+}
+.mn-storyboard-image-drop-zone.mn-previewing {
+  border-color: #2a5a8c;
 }

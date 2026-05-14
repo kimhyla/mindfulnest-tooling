@@ -97,6 +97,10 @@ export const MUTATION_ENDPOINTS = {
   // S5.5d (v3 architecture revision, 2026-05-03)
   milestones_create: `${SERVER_BASE}/api/milestones/create`,
   milestone_load: `${SERVER_BASE}/api/milestones/load`,
+  // Storyboard-tab beat insert/delete — writes to production state via mutate_video_state.
+  // NOT BG endpoints: use event_id scope key (not scope_event_id).
+  v2_beat_create: `${SERVER_BASE}/api/v2/beat/create`,
+  v2_beat_delete: `${SERVER_BASE}/api/v2/beat/delete`,
   beat_finalize: `${SERVER_BASE}/api/beat/finalize`,
   scene_assemble: `${SERVER_BASE}/api/scene/assemble`,
   admin_drain_start: `${SERVER_BASE}/api/admin/drain_start`,
@@ -114,6 +118,7 @@ export const MUTATION_ENDPOINTS = {
   animate_redo: `${SERVER_BASE}/api/animate/redo`,
   select: `${SERVER_BASE}/api/select`,
   beat_add_options: `${SERVER_BASE}/api/beat/add_options`,
+  beat_swap_to_a: `${SERVER_BASE}/api/beat/swap_to_a`,
   lipsync: `${SERVER_BASE}/api/lipsync`,
   beat_use_as_final: `${SERVER_BASE}/api/beat/use_as_final`,
   beat_delay: `${SERVER_BASE}/api/beat/delay`,
