@@ -165,10 +165,13 @@ def cmd_smoke_test(client, creds):
     print()
 
     # 2. ElevenLabs (check key exists)
+    # CodeQL py/clear-text-logging fix (#124/125/126): do not print key prefixes.
+    # Even a partial key (first 8 chars) is sensitive data; presence-only is
+    # sufficient for a smoke-test of credential availability.
     el_key = creds.get("elevenlabs_key", "")
     print("ElevenLabs TTS:")
     if el_key and len(el_key) > 10:
-        print(f"  API Key: ✅ Present ({el_key[:8]}...)")
+        print(f"  API Key: ✅ Present (length={len(el_key)})")
     else:
         print(f"  API Key: ❌ Missing or too short")
     print()
@@ -177,7 +180,7 @@ def cmd_smoke_test(client, creds):
     bfl_key = creds.get("bfl_key", "")
     print("FLUX Kontext (BFL):")
     if bfl_key and len(bfl_key) > 5:
-        print(f"  API Key: ✅ Present ({bfl_key[:8]}...)")
+        print(f"  API Key: ✅ Present (length={len(bfl_key)})")
     else:
         print(f"  API Key: ❌ Missing")
     print()
@@ -186,7 +189,7 @@ def cmd_smoke_test(client, creds):
     ws_key = creds.get("wavespeed_key", "")
     print("WaveSpeed (Seedance + ByteDance):")
     if ws_key and len(ws_key) > 10:
-        print(f"  API Key: ✅ Present ({ws_key[:8]}...)")
+        print(f"  API Key: ✅ Present (length={len(ws_key)})")
     else:
         print(f"  API Key: ❌ Missing")
     print()

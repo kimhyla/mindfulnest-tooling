@@ -158,7 +158,8 @@ def concat_with_pauses(cue_mp3s: list[tuple[Path, float]], dst: Path) -> None:
 def main() -> int:
     log("=== Phase A TTS (Chipper) ===")
     api_key = load_elevenlabs_key()
-    log(f"  elevenlabs key: ...{api_key[-8:]}")
+    # CodeQL py/clear-text-logging fix (#123): do not log key suffix.
+    log(f"  elevenlabs key loaded (length={len(api_key)})")
 
     results = []
     for cue in CUES:
