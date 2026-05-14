@@ -42,6 +42,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Install pytest
+        run: python3 -m pip install --quiet pytest
       - name: Run unit tests for the check
         run: python3 -m pytest Production/scripts/tests/test_body_key_contract_check.py -v
       - name: Enforce body-key contract (delta vs baseline)
