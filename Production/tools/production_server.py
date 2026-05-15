@@ -5258,6 +5258,58 @@ class AppContext:
                 return src
         return None
 
+    def _library_root_dirs(self) -> list[str]:
+        """Canonical list of approved library roots for image lookups.
+
+        Single source of truth for path-confinement (CodeQL py/path-injection
+        mitigation, LD CODEQL_TOPLEVEL_FAILURE_FIX_PATH_INJECTION_V1). Any
+        client-supplied abs_path MUST resolve under one of these roots before
+        the server reads/opens the file. See is_path_under_library_root().
+
+        Mirrors candidate_dirs in resolve_library_image_path() — keep in sync.
+        """
+        bg = _bg_module()
+        return [
+            os.path.realpath(bg.BG_STILLS_DIR),
+            os.path.realpath(os.path.join(bg.BG_STILLS_DIR, "sources")),
+            os.path.realpath(os.path.join(bg.BG_STILLS_DIR, "crops")),
+            os.path.realpath(os.path.normpath(os.path.join(bg.BG_STILLS_DIR, "..", "Character_Assets"))),
+        ]
+
+    def is_path_under_library_root(self, abs_path: str) -> bool:
+        """Return True iff abs_path resolves under an approved library root.
+
+        Path-confinement gate for client-supplied abs_path values. Resolves
+        symlinks via os.path.realpath then checks os.path.commonpath against
+        each approved root. Rejects:
+        - Non-string / empty input
+        - Paths that resolve outside every approved root
+        - Paths whose resolved form would escape via .. traversal
+
+        Per CLAUDE.md Rule 19 (no error paths): every call site that ingests a
+        client abs_path MUST gate on this before os.path.exists/isfile/PIL.open.
+        Server binds 127.0.0.1 + CORS:* widens threat model to malicious sites
+        Kim visits (PR #8 triage 2026-05-07, prod_blockers row 76).
+        """
+        if not isinstance(abs_path, str) or not abs_path:
+            return False
+        try:
+            resolved = os.path.realpath(abs_path)
+        except (OSError, ValueError):
+            return False
+        for root in self._library_root_dirs():
+            if not root:
+                continue
+            try:
+                common = os.path.commonpath([resolved, root])
+            except ValueError:
+                # Different drives on Windows or mixed absolute/relative — reject
+                continue
+            if common == root:
+                return True
+        return False
+
+
     def resolve_library_image_path(self, image_key: str) -> str | None:
         """Resolve image_key to its absolute on-disk path in library directories.
 
@@ -9980,11 +10032,24 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     # thumb_b64 so BgRefSlot can <img src=...> after refresh.
                     if field in ("reference_image", "bg_ref_image") and isinstance(value, dict):
                         abs_path = value.get("abs_path") or ""
-                        if abs_path and os.path.exists(abs_path) and not value.get("thumb_b64"):
+                        # CodeQL py/path-injection gate (LD CODEQL_PATH_INJECTION_NATIVE_PATTERN_REFACTOR_V1
+                        # — supersedes LD-702/706). Inline realpath + startswith check on the SAME
+                        # dataflow node that feeds os.path.exists / PIL.open. CodeQL's path-injection
+                        # query recognizes realpath + startswith(ROOT + os.sep) as a native sanitizer;
+                        # bool-returning helpers (is_path_under_library_root) get stripped by CodeQL's
+                        # interprocedural analysis. Same safety guarantee, native signal.
+                        _abs_resolved = os.path.realpath(abs_path) if isinstance(abs_path, str) and abs_path else ""
+                        _safe = False
+                        if _abs_resolved:
+                            for _r in self.app._library_root_dirs():
+                                if _r and (_abs_resolved == _r or _abs_resolved.startswith(_r + os.sep)):
+                                    _safe = True
+                                    break
+                        if _safe and os.path.exists(_abs_resolved) and not value.get("thumb_b64"):
                             try:
                                 from PIL import Image as _PILImage
                                 import io as _io_thumb
-                                with _PILImage.open(abs_path) as im:
+                                with _PILImage.open(_abs_resolved) as im:
                                     im.thumbnail((200, 150), _PILImage.LANCZOS)
                                     buf = _io_thumb.BytesIO()
                                     im.convert("RGB").save(buf, "JPEG", quality=72)
@@ -9993,7 +10058,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
                                 value["thumb_b64"] = _t
                                 thumb_b64 = _t
                             except (OSError, ImportError) as _thumb_err:
-                                print(f"[REFDROP] thumbnail skipped for {abs_path!r}: {_thumb_err}", flush=True)
+                                print(f"[REFDROP] thumbnail skipped for {_abs_resolved!r}: {_thumb_err}", flush=True)
                     beat[field] = value
                     written.append(field)
             bg.write_sidecar(sidecar)
@@ -10546,10 +10611,20 @@ class ProductionHandler(BaseHTTPRequestHandler):
             # Mirrors _read_image at production_server.py ~line 6192.
             thumb_b64 = None
             try:
-                if abs_path and os.path.exists(abs_path):
+                # CodeQL py/path-injection gate (LD CODEQL_PATH_INJECTION_NATIVE_PATTERN_REFACTOR_V1
+                # — supersedes LD-702/706). Inline realpath + startswith check on the SAME dataflow
+                # node that feeds os.path.exists / PIL.open. Native CodeQL-recognized sanitizer.
+                _abs_resolved = os.path.realpath(abs_path) if isinstance(abs_path, str) and abs_path else ""
+                _safe = False
+                if _abs_resolved:
+                    for _r in self.app._library_root_dirs():
+                        if _r and (_abs_resolved == _r or _abs_resolved.startswith(_r + os.sep)):
+                            _safe = True
+                            break
+                if _safe and os.path.exists(_abs_resolved):
                     from PIL import Image as _PILImage
                     import io as _io_thumb
-                    with _PILImage.open(abs_path) as im:
+                    with _PILImage.open(_abs_resolved) as im:
                         im.thumbnail((200, 150), _PILImage.LANCZOS)
                         buf = _io_thumb.BytesIO()
                         im.convert("RGB").save(buf, "JPEG", quality=72)
@@ -11409,9 +11484,21 @@ class ProductionHandler(BaseHTTPRequestHandler):
         # Look up full-res gallery image.
         # Prefer abs_path from body if client sent it (R4 guard — avoids key
         # collision when two library dirs contain a same-stem file).
+        # CodeQL py/path-injection gate (LD CODEQL_PATH_INJECTION_NATIVE_PATTERN_REFACTOR_V1
+        # — supersedes LD-702/706). Inline realpath + startswith check on the SAME dataflow
+        # node that feeds os.path.isfile. Native CodeQL-recognized sanitizer. If body_abs_path
+        # does not resolve under an approved root, fall through to server-side resolution
+        # from image_key (trusted lookup).
         body_abs_path = body.get("abs_path")
-        if body_abs_path and os.path.isfile(body_abs_path):
-            abs_path = body_abs_path
+        _body_resolved = os.path.realpath(body_abs_path) if isinstance(body_abs_path, str) and body_abs_path else ""
+        _body_safe = False
+        if _body_resolved:
+            for _r in self.app._library_root_dirs():
+                if _r and (_body_resolved == _r or _body_resolved.startswith(_r + os.sep)):
+                    _body_safe = True
+                    break
+        if _body_safe and os.path.isfile(_body_resolved):
+            abs_path = _body_resolved
         else:
             abs_path = self.app.resolve_library_image_path(image_key)
         fullres = self.app.get_fullres_gallery_image(image_key)
