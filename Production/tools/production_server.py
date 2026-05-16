@@ -6729,14 +6729,33 @@ class ProductionHandler(BaseHTTPRequestHandler):
         return self._send_json(200, {"ok": True, "data_uri": data_uri})
 
     def _handle_cr_library_delete(self, body: dict) -> None:
-        """POST /api/cr/library/delete  body: {key: str}
+        """POST /api/cr/library/delete  body: {key: str, abs_path?: str, force?: bool}
 
-        Hard-deletes a source-tier library image after find_asset.py-style
-        safety check (refuses if key is referenced in prod_assets.file_path).
+        Hard-deletes a library image from sources/ OR crops/ after
+        find_asset.py-style safety check (refuses if key is referenced in
+        prod_assets.file_path unless force=True).
 
-        Per Phase 0 preflight 186 (LD-pending LIB_MTIME_SORT_AND_DELETE_V1).
+        Library at /api/cr/library returns FOUR tiers (per _handle_cr_library):
+          - source           BG_STILLS_DIR + BG_STILLS_DIR/sources/
+          - cropped          BG_STILLS_DIR/crops/
+          - character_master Character_Assets/  (reference-only, 403 here)
+
+        Resolution priority (LIB_DELETE_TIER_PATH_V1):
+          1. If body['abs_path'] supplied AND realpath lives inside one of
+             the registered library tier dirs (sources/, crops/), use it.
+             Skips glob ambiguity. Character_Assets/ rejected at this gate.
+          2. Otherwise multi-tier glob: sources/ first (back-compat), then
+             crops/. Returns 404 with both dirs named on miss.
+
+        Rule 19 compliance: every error path returns explicit JSON. If the
+        filesystem file is missing at unlink time (race / stale Dropbox
+        sync after a prior delete attempt), return 200 with a `warning`
+        field — user-intent ("remove this library entry") is satisfied,
+        audit visibility preserved via prod_activity_log details.warning.
+
+        Per Phase 0 preflight 186 (LD LIB_MTIME_SORT_AND_DELETE_V1) +
+        LD-pending LIB_DELETE_TIER_PATH_V1 (2026-05-16 crop-tier fix).
         Path safety mirrors _handle_cr_full_image L5195-5198.
-        Rule 19 compliance: every error path returns explicit JSON.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
         if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
@@ -6746,38 +6765,78 @@ class ProductionHandler(BaseHTTPRequestHandler):
         key = (body or {}).get("key")
         if not key or not isinstance(key, str):
             return self._send_json(400, {"ok": False, "error": "key required"})
+        abs_path_hint = (body or {}).get("abs_path") or None
 
-        # Safety: glob.escape to prevent metacharacter exploits + handle
-        # legacy space-vs-underscore mismatch (upload converts spaces to _;
-        # sources/ scan may surface either form).
+        # Tier dirs: sources/ AND crops/. Character_Assets/ is NEVER deleted
+        # via this handler (reference assets — protected explicitly below).
         bg = _bg_module()
         sources_dir = os.path.join(bg.BG_STILLS_DIR, "sources")
+        crops_dir = os.path.join(bg.BG_STILLS_DIR, "crops")
         if not os.path.isdir(sources_dir):
             return self._send_json(500, {"ok": False, "error": "sources_dir not found"})
+        # crops/ existence is not strictly required (older deployments may
+        # have only sources/), but if a crop-key lookup falls back to glob
+        # we'll skip the crops/ branch gracefully when the dir is absent.
+        tier_dir_reals = []
+        for td in (sources_dir, crops_dir):
+            if os.path.isdir(td):
+                tier_dir_reals.append(os.path.realpath(td))
 
-        candidates = []
-        for try_key in (key, key.replace("_", " "), key.replace(" ", "_")):
-            pattern = os.path.join(sources_dir, _glob.escape(try_key) + ".*")
-            for path in _glob.glob(pattern):
-                if path not in candidates:
-                    candidates.append(path)
+        def _path_inside_tier_dirs(real: str) -> bool:
+            """Realpath-containment: separator-anchored to defeat
+            sibling-prefix escapes (CodeQL py/path-injection)."""
+            for tier_real in tier_dir_reals:
+                if real == tier_real or real.startswith(tier_real + os.sep):
+                    return True
+            return False
 
-        if not candidates:
-            return self._send_json(404, {"ok": False, "error": f"key '{key}' not found in sources/"})
-
-        # Realpath safety check — must be within project root (mirrors L5195-5198).
-        # Security (CodeQL py/path-injection — separator-anchored containment):
-        # naive startswith(root) lets sibling '<root>_evil/...' slip past.
-        # Compare against `root + os.sep` (or accept exact-equal root).
-        project_root = os.path.realpath(str(DROPBOX_ROOT))
         target = None
-        for path in candidates:
-            real = os.path.realpath(path)
-            if real == project_root or real.startswith(project_root + os.sep):
-                target = real
-                break
-        if not target:
-            return self._send_json(403, {"ok": False, "error": "path outside project"})
+
+        # Path 1: client-supplied abs_path (canonical when present)
+        if abs_path_hint:
+            real_hint = os.path.realpath(abs_path_hint)
+            if not _path_inside_tier_dirs(real_hint):
+                # Could be Character_Assets/ (reference-protected) or an
+                # arbitrary path outside the library tiers. Either way: 403.
+                return self._send_json(403, {
+                    "ok": False,
+                    "error": (
+                        "abs_path outside library tier dirs "
+                        "(sources/, crops/). Character_Assets/ is "
+                        "reference-only — never deleted via this endpoint."
+                    ),
+                })
+            target = real_hint
+
+        # Path 2: multi-tier glob fallback (no abs_path supplied)
+        if target is None:
+            candidates: list[str] = []
+            for tier_dir in (sources_dir, crops_dir):
+                if not os.path.isdir(tier_dir):
+                    continue
+                for try_key in (key, key.replace("_", " "), key.replace(" ", "_")):
+                    pattern = os.path.join(tier_dir, _glob.escape(try_key) + ".*")
+                    for path in _glob.glob(pattern):
+                        if path not in candidates:
+                            candidates.append(path)
+
+            if not candidates:
+                return self._send_json(404, {
+                    "ok": False,
+                    "error": (
+                        f"key '{key}' not found in library tier dirs "
+                        f"(sources/, crops/)"
+                    ),
+                })
+
+            # Pick the first candidate that passes tier-dir containment.
+            for path in candidates:
+                real = os.path.realpath(path)
+                if _path_inside_tier_dirs(real):
+                    target = real
+                    break
+            if not target:
+                return self._send_json(403, {"ok": False, "error": "path outside library tier dirs"})
 
         # find_asset.py-style safety: refuse if registered in prod_assets.
         # file_path in prod_assets is empirically ABSOLUTE (verified preflight 186)
@@ -6816,27 +6875,43 @@ class ProductionHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send_json(500, {"ok": False, "error": f"Directus deregister failed: {e}"})
 
-        # Hard delete with Rule 19 explicit JSON on all error paths
+        # Hard delete. Rule 19 compliance: every error path returns explicit
+        # JSON. LIB_DELETE_TIER_PATH_V1: FileNotFoundError at unlink time is
+        # treated as soft-success because the user-intent ("remove this
+        # library entry") is satisfied — the disk file is gone (race / stale
+        # Dropbox sync / prior force-delete already ran). Audit visibility
+        # preserved via the `warning` field in both response payload and
+        # prod_activity_log details.warning, so weekly_preflight_audit can
+        # surface a pattern of misses without the user seeing a hard error.
+        file_already_gone = False
         try:
             os.remove(target)
         except FileNotFoundError:
-            # Race: file deleted between glob and remove. Return 404 not 500
-            # so client treats it as already-deleted (idempotent) per preflight 186.
-            return self._send_json(404, {"ok": False, "error": "already deleted"})
+            file_already_gone = True
         except OSError as e:
             return self._send_json(500, {"ok": False, "error": f"os.remove failed: {e}"})
 
         # Log to prod_activity_log (best-effort; non-blocking)
+        details: dict = {"key": key, "deleted_path": target}
+        if file_already_gone:
+            details["warning"] = "file_already_gone_at_unlink"
         try:
             from lib.directus import try_post_or_queue
             try_post_or_queue("prod_activity_log", {
                 "action": "library_image_deleted",
                 "performed_by": "claude_lib_delete_handler",
-                "details": {"key": key, "deleted_path": target},
+                "details": details,
             })
         except Exception as e:
             print(f"[lib-delete] WARN: activity log failed: {e}")
 
+        if file_already_gone:
+            print(f"[lib-delete] WARN: target already gone at unlink: {target}", flush=True)
+            return self._send_json(200, {
+                "ok": True,
+                "deleted": target,
+                "warning": "file_already_gone_at_unlink",
+            })
         print(f"[lib-delete] removed {target}", flush=True)
         return self._send_json(200, {"ok": True, "deleted": target})
 
