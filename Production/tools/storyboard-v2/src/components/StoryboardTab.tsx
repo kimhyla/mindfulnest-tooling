@@ -42,7 +42,16 @@ interface BeatState {
   magic_video_path?: string;
   // S5 — preferred video source for magic_video (lipsync, then animation).
   lipsync?: { file?: string; status?: string };
-  phase_1?: { selected_option?: number; options?: Array<{ file?: string; status?: string }> };
+  // phase_1 is the server-canonical persistence root for per-beat animation
+  // state. `audio_delay` (the Video Lead-in slider) lives here — bootstrap
+  // /api/v2/event/<id>/state returns the raw state.json so this is where the
+  // React render path must read from. Spec id=225 §5.1 Edit 4 +
+  // STORYBOARD_AUDIO_DELAY_READ_NESTED_PATH_V2.
+  phase_1?: {
+    selected_option?: number;
+    options?: Array<{ file?: string; status?: string }>;
+    audio_delay?: number;
+  };
   // S5.5e — fields read by the beat-level state machine (LD BEAT_LIFECYCLE_STATE_MACHINE_V1).
   // beat.final block is the "is final?" signal per Cursor v8 (NOT a use_as_final boolean).
   // Server writes this at production_server.py:10733-10747 with shape:
@@ -56,15 +65,20 @@ interface BeatState {
   // Trim/delay (LD-160). Optional — older beats may not carry these.
   trim_in?: number;
   trim_out?: number | string;
-  // Server canonical field is `audio_delay` (production_server.py:14646 writes
-  // to phase_1.audio_delay; status endpoint at :12943 returns it under this
-  // key). `delay_seconds` is kept as a legacy client alias for backwards-
-  // compat with any caller still emitting it. Fixed 2026-05-14 per
-  // BEAT_DELAY_CLIENT_HYDRATION_FIX_V1 — prior code read `beat.delay_seconds`
-  // and slider always re-defaulted to 0.0 on page reload because server only
-  // emits `audio_delay`.
-  audio_delay?: number;
-  delay_seconds?: number;  // legacy alias, deprecated
+  // CANONICAL persistence path is `phase_1.audio_delay` (production_server.py
+  // L14780 `_handle_beat_delay` writes here; ffmpeg_stitch.py L682
+  // `compute_cache_hash` reads here). The bootstrap endpoint
+  // `_handle_v2_event_state` (production_server.py L15411) returns the raw
+  // state.json, so on the React render path `beat.phase_1.audio_delay` is
+  // where the value lives. The top-level `audio_delay` below is the
+  // FLATTENED shape returned only by `_handle_animate_status` polling
+  // (production_server.py L12943) — present on the polling response but
+  // NOT on bootstrap. Read order is therefore:
+  //   beat.phase_1.audio_delay → beat.audio_delay → beat.delay_seconds → 0
+  // Fixed 2026-05-16 per spec id=225 §5.1 + LD
+  // STORYBOARD_AUDIO_DELAY_READ_NESTED_PATH_V2 (supersedes LD-694/695/698).
+  audio_delay?: number;     // flattened shape from polling endpoint only
+  delay_seconds?: number;   // legacy alias, deprecated
 }
 
 interface VideoPartition {
@@ -183,12 +197,22 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
   const [busy, setBusy] = useState<string | null>(null); // which button is in-flight
   const [trimIn, setTrimIn] = useState<string>(String(beat.trim_in ?? '0.0'));
   const [trimOut, setTrimOut] = useState<string>(String(beat.trim_out ?? 'full'));
-  // L6 fix 2026-05-14: server canonical key is `audio_delay`; `delay_seconds`
-  // is a legacy client-side alias kept for backcompat. Previously read only
-  // `beat.delay_seconds` which was undefined → slider always re-rendered as
-  // 0.0 on page reload even when state persisted the user's value.
+  // L5 fix 2026-05-16 per STORYBOARD_AUDIO_DELAY_READ_NESTED_PATH_V2: server
+  // persists at beat.phase_1.audio_delay (nested) and the bootstrap
+  // /api/v2/event/<id>/state response returns the raw state.json — so the
+  // value lives at the nested path on the React render path. The prior fix
+  // (LD-694, 2026-05-14) read the FLATTENED `beat.audio_delay` shape which
+  // is emitted only by /api/animate_status (different endpoint) — undefined
+  // on bootstrap → slider always re-defaulted to 0.0. Read order:
+  // phase_1.audio_delay (canonical) → audio_delay (flattened-poll fallback)
+  // → delay_seconds (legacy) → '0.0'. See spec id=225 §5.1 Edit 1.
   const [delaySec, setDelaySec] = useState<string>(
-    String(beat.audio_delay ?? beat.delay_seconds ?? '0.0'),
+    String(
+      beat.phase_1?.audio_delay
+        ?? beat.audio_delay
+        ?? beat.delay_seconds
+        ?? '0.0',
+    ),
   );
 
   // ----------------------------------------------------------------
@@ -621,13 +645,22 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
     // output video. Playing the TTS audio player simultaneously doubles the dialogue.
     // For lipsync preview, play video only — do NOT start the separate audio element.
     const isLipsyncPreview = previewOptIdx === 0;
-    // L5c fix 2026-05-14 per BEAT_PREVIEW_HONOR_AUDIO_DELAY_V1: read the
-    // persisted audio_delay (Video Lead-in slider) and defer audio.play()
-    // by that many seconds so the preview matches what the rendered MP4
-    // will do (server-side ffmpeg adelay filter bakes the same delay in).
-    // Without this, the per-beat preview ignored Kim's slider value and the
-    // audio always started at t=0 simultaneously with the video.
-    const audioDelaySec = Number(beat.audio_delay ?? beat.delay_seconds ?? 0) || 0;
+    // L5b fix 2026-05-16 per STORYBOARD_AUDIO_DELAY_READ_NESTED_PATH_V2:
+    // read the persisted Video Lead-in from beat.phase_1.audio_delay (nested
+    // canonical path the bootstrap returns) and defer audio.play() by that
+    // many seconds so the preview matches what the rendered MP4 does
+    // (server-side ffmpeg adelay filter bakes the same delay in). The prior
+    // top-level `beat.audio_delay` read (LD-695, 2026-05-14) used the
+    // FLATTENED shape from /api/animate_status — undefined on bootstrap →
+    // audioDelaySec collapsed to 0 → setTimeout branch silently skipped →
+    // audio played at t=0 simultaneously with video. See spec id=225 §5.1
+    // Edit 2.
+    const audioDelaySec = Number(
+      beat.phase_1?.audio_delay
+        ?? beat.audio_delay
+        ?? beat.delay_seconds
+        ?? 0,
+    ) || 0;
     if (!isLipsyncPreview) {
       if (!aud) return;
       aud.currentTime = 0;
@@ -647,7 +680,11 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
       }
       aud.play().catch(() => {});
     }
-  }, [previewOptIdx, beat.audio_delay, beat.delay_seconds]);
+    // Dep array must reference the same path the effect actually reads —
+    // without beat.phase_1?.audio_delay the effect would never re-fire when
+    // Kim presses Delay apply and the parent re-renders with a new beat prop.
+    // See spec id=225 §5.1 Edit 3.
+  }, [previewOptIdx, beat.phase_1?.audio_delay, beat.audio_delay, beat.delay_seconds]);
 
   useEffect(() => {
     return () => {
