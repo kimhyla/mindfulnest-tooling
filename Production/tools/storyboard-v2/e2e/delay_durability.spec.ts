@@ -183,7 +183,12 @@ test.describe('Delay durability — T-5..T-9 (spec id=225)', () => {
     // returns delay=3.0. We swap the route mid-test.
     let phase = 0;
     await page.route('**/api/v2/event/*/state', async (route) => {
-      const delay = phase === 0 ? 1.0 : 3.0;
+      const delay = phase === 0 ? 1.5 : 3.0;
+      // Two options so the test can flip previewOptIdx 1→2 to retrigger the
+      // useEffect after the post-PATCH refetch (clicking the same option
+      // toggles play/pause without dep-array change per handlePreviewOption
+      // L613-625; only an optIdx CHANGE forces previewOptIdx state update +
+      // useEffect re-fire).
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -200,7 +205,10 @@ test.describe('Delay durability — T-5..T-9 (spec id=225)', () => {
                   audio_file: 'audio/beat_dd_07.mp3',
                   phase_1: {
                     audio_delay: delay,
-                    options: [{ file: 'animations/opt1_dd07.mp4' }],
+                    options: [
+                      { file: 'animations/opt1_dd07.mp4' },
+                      { file: 'animations/opt2_dd07.mp4' },
+                    ],
                     selected_option: 0,
                   },
                 },
@@ -224,28 +232,27 @@ test.describe('Delay durability — T-5..T-9 (spec id=225)', () => {
     await stubMediaEndpoints(page);
     await gotoApp(page);
     await page.click('[data-testid="tab-storyboard"]');
-    // First preview at delay=1.0 — captures the baseline setTimeout(1000).
+    // First preview at delay=1.5 — captures the baseline setTimeout(1500).
     // (Used to confirm the spy mechanism is working before the mutation.)
     await clearSetTimeoutSpy(page);
     await page.click('[data-testid="beat-0-preview-option-1"]');
     await page.waitForTimeout(150);
     const beforeMutation = await readSetTimeoutSpy(page);
-    expect(beforeMutation.some((ms) => Math.abs(ms - 1000) < 10)).toBe(true);
+    expect(beforeMutation.some((ms) => Math.abs(ms - 1500) < 10)).toBe(true);
     // Now mutate: fill slider to 3.0, click apply → server responds → refetch
     // → next BeatCard render carries phase_1.audio_delay = 3.0. The dep-array
-    // fix is what makes the preview useEffect re-fire on the new prop value.
+    // fix is what makes the preview useEffect re-fire when previewOptIdx
+    // changes from 1→2 while phase_1.audio_delay also changed from 1.5→3.0.
     await page.fill('[data-testid="beat-0-delay"]', '3.0');
     await page.click('[data-testid="beat-0-delay-apply"]');
-    // Wait for the refetch's effect to land. Re-click PLAY to fire the useEffect
-    // with the new value. The previewOptIdx must change to retrigger; click 0
-    // (no-op since no lipsync) then 1 again. Simpler: cancel preview via
-    // PLAY on option 1 again — Preact toggles previewOptIdx back to null then
-    // 1, which is enough for the dep array to re-evaluate.
-    await page.waitForTimeout(300);
+    // Wait for the refetch's effect to land + new beat prop to propagate.
+    await page.waitForTimeout(400);
     await clearSetTimeoutSpy(page);
-    await page.click('[data-testid="beat-0-preview-option-1"]'); // cancel
-    await page.click('[data-testid="beat-0-preview-option-1"]'); // re-fire
-    await page.waitForTimeout(150);
+    // Click option 2 (not option 1) — previewOptIdx flips 1→2 which is a
+    // genuine state change (not a play/pause toggle). The useEffect re-fires
+    // with the new previewOptIdx + new audio_delay → setTimeout(3000).
+    await page.click('[data-testid="beat-0-preview-option-2"]');
+    await page.waitForTimeout(200);
     const afterMutation = await readSetTimeoutSpy(page);
     // EXPECTED (post-fix): setTimeout scheduled at ~3000ms (the new value).
     // PRE-FIX (with dep array on undefined top-level keys): effect would not
