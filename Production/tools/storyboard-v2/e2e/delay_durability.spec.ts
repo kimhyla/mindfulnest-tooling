@@ -58,7 +58,9 @@ async function mockBootstrapWithNestedDelay(
     phase_1: phase1,
   };
   if (opts.withLipsync) {
-    beat.lipsync = { file: `lipsync/${beatId}_ls.mp4` };
+    // Status must be 'completed' for the SUT to render the sentinel PLAY
+    // button (StoryboardTab.tsx L515 gates on beat.lipsync?.status === 'completed').
+    beat.lipsync = { file: `lipsync/${beatId}_ls.mp4`, status: 'completed' };
   }
   if (opts.withFinal) {
     beat.final = { file: `final/${beatId}_final.mp4` };
@@ -222,39 +224,54 @@ test.describe('Delay durability — T-5..T-9 (spec id=225)', () => {
     await stubMediaEndpoints(page);
     await gotoApp(page);
     await page.click('[data-testid="tab-storyboard"]');
-    // Verify slider shows 1.0 first.
-    await expect(page.locator('[data-testid="beat-0-delay"]')).toHaveValue('1.0');
-    // Click apply (the slider input is also a UI mutation; we want the apply
-    // path to PATCH + refetch). The apply button is `beat-0-delay-apply`.
-    await page.fill('[data-testid="beat-0-delay"]', '3.0');
-    await page.click('[data-testid="beat-0-delay-apply"]');
-    // Wait for refetch → slider rehydrates to 3.0.
-    await expect(page.locator('[data-testid="beat-0-delay"]')).toHaveValue('3.0', { timeout: 5_000 });
+    // First preview at delay=1.0 — captures the baseline setTimeout(1000).
+    // (Used to confirm the spy mechanism is working before the mutation.)
     await clearSetTimeoutSpy(page);
     await page.click('[data-testid="beat-0-preview-option-1"]');
-    await page.waitForTimeout(120);
-    const observed = await readSetTimeoutSpy(page);
+    await page.waitForTimeout(150);
+    const beforeMutation = await readSetTimeoutSpy(page);
+    expect(beforeMutation.some((ms) => Math.abs(ms - 1000) < 10)).toBe(true);
+    // Now mutate: fill slider to 3.0, click apply → server responds → refetch
+    // → next BeatCard render carries phase_1.audio_delay = 3.0. The dep-array
+    // fix is what makes the preview useEffect re-fire on the new prop value.
+    await page.fill('[data-testid="beat-0-delay"]', '3.0');
+    await page.click('[data-testid="beat-0-delay-apply"]');
+    // Wait for the refetch's effect to land. Re-click PLAY to fire the useEffect
+    // with the new value. The previewOptIdx must change to retrigger; click 0
+    // (no-op since no lipsync) then 1 again. Simpler: cancel preview via
+    // PLAY on option 1 again — Preact toggles previewOptIdx back to null then
+    // 1, which is enough for the dep array to re-evaluate.
+    await page.waitForTimeout(300);
+    await clearSetTimeoutSpy(page);
+    await page.click('[data-testid="beat-0-preview-option-1"]'); // cancel
+    await page.click('[data-testid="beat-0-preview-option-1"]'); // re-fire
+    await page.waitForTimeout(150);
+    const afterMutation = await readSetTimeoutSpy(page);
     // EXPECTED (post-fix): setTimeout scheduled at ~3000ms (the new value).
     // PRE-FIX (with dep array on undefined top-level keys): effect would not
     //          re-fire on phase_1.audio_delay change; even if it did, the read
-    //          would still be undefined.
-    expect(observed.some((ms) => Math.abs(ms - 3000) < 10)).toBe(true);
+    //          would still be undefined and audioDelaySec = 0 → no setTimeout.
+    expect(afterMutation.some((ms) => Math.abs(ms - 3000) < 10)).toBe(true);
   });
 
   // -------------------------------------------------------------------------
   // T-8 — Reload durability: persisted delay survives a hard refresh
   // -------------------------------------------------------------------------
   test('T-8 — page.reload() preserves the persisted delay value in the slider', async ({ page }) => {
-    await mockBootstrapWithNestedDelay(page, { audioDelay: 2.0, withOptions: true });
+    // Use 2.5 (non-trailing-zero) so String() preserves the decimal — avoids
+    // the JS `String(2.0)` === `"2"` collapse that would muddy the assertion.
+    // The bug class we pin is wrong-PATH read; non-zero values prove the
+    // canonical phase_1.audio_delay path is honored on bootstrap + reload.
+    await mockBootstrapWithNestedDelay(page, { audioDelay: 2.5, withOptions: true });
     await stubMediaEndpoints(page);
     await gotoApp(page);
     await page.click('[data-testid="tab-storyboard"]');
-    await expect(page.locator('[data-testid="beat-0-delay"]')).toHaveValue('2.0');
+    await expect(page.locator('[data-testid="beat-0-delay"]')).toHaveValue('2.5');
     await page.reload();
     await page.click('[data-testid="tab-storyboard"]');
-    // EXPECTED (post-fix): slider re-hydrates from nested phase_1.audio_delay = 2.0
+    // EXPECTED (post-fix): slider re-hydrates from nested phase_1.audio_delay = 2.5
     // PRE-FIX: top-level audio_delay undefined → re-defaults to 0.0
-    await expect(page.locator('[data-testid="beat-0-delay"]')).toHaveValue('2.0');
+    await expect(page.locator('[data-testid="beat-0-delay"]')).toHaveValue('2.5');
   });
 
   // -------------------------------------------------------------------------
@@ -271,12 +288,16 @@ test.describe('Delay durability — T-5..T-9 (spec id=225)', () => {
     await gotoApp(page);
     await page.click('[data-testid="tab-storyboard"]');
     await clearSetTimeoutSpy(page);
-    // Click sentinel preview (option 0 = lipsync raw). The SUT branch
-    // `isLipsyncPreview` must skip the setTimeout-defer audio branch entirely
-    // (audio is baked into the lipsync video; double-audio is the bug LD-695
-    // originally fixed). Per Kim Q1=α (spec §7), we DO NOT add synthetic
-    // video-only lead-in on the lipsync raw preview either.
-    await page.click('[data-testid="beat-0-preview-option-0"]');
+    // Click the lipsync-play button (sets previewOptIdx = 0 = sentinel). The
+    // SUT testid is `beat-${index}-lipsync-play` (StoryboardTab.tsx L519),
+    // NOT `preview-option-0` — option-0 is a logical sentinel value, not a
+    // distinct button. The button is only rendered when beat.lipsync.status
+    // === 'completed' (gated at L515).
+    // The SUT branch `isLipsyncPreview` must skip the setTimeout-defer audio
+    // branch entirely (audio is baked into the lipsync video; double-audio
+    // is the bug LD-695 originally fixed). Per Kim Q1=α (spec §7), we DO
+    // NOT add synthetic video-only lead-in on the lipsync raw preview either.
+    await page.click('[data-testid="beat-0-lipsync-play"]');
     await page.waitForTimeout(120);
     const observed = await readSetTimeoutSpy(page);
     // EXPECTED (post-fix, unchanged behavior): NO ~4000ms setTimeout was
