@@ -129,6 +129,12 @@ export const MUTATION_ENDPOINTS = {
   beat_use_as_final: `${SERVER_BASE}/api/beat/use_as_final`,
   beat_delay: `${SERVER_BASE}/api/beat/delay`,
   beat_trim: `${SERVER_BASE}/api/beat/trim`,
+  // LD-746 KIM_DONE_CHECKBOX_RESHIPPED_V1 — per-beat "Kim verified" toggle.
+  // Server handler: production_server.py _handle_beat_kim_done_set.
+  // Body: {beat: "beat_NN", kim_done: bool}. Sets top-level `kim_done` +
+  // `kim_done_at` on the beat dict. UI counter at top of storyboard reads
+  // all beats and shows "N/M done".
+  beat_kim_done_set: `${SERVER_BASE}/api/beat/kim_done_set`,
   // Authoring-workflow Pillar 7 cornerstone (C-7) — canonical beat-recovery
   // primitive. COPY default; move=true for cross-event/role moves. Per
   // LD BEAT_GRAFT_RECOVERY_MECHANISM_V1: pre-render-only invariant

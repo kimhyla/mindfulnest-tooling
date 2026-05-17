@@ -5862,6 +5862,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_beat_delay(body)
             if path == "/api/beat/trim":
                 return self._handle_beat_trim(body)
+            if path == "/api/beat/kim_done_set":  # LD-746 re-shipped
+                return self._handle_beat_kim_done_set(body)
             if path == "/api/beat/use_as_final":  # Spec A: no-lipsync final path
                 return self._handle_use_as_final(body)
             if path == "/api/beat/use_still_as_final":  # LD-761: Ken Burns still as final
@@ -15658,6 +15660,53 @@ body {{padding-top:44px!important;}}
         if trim_end is not None:
             result["trim_end"] = round(trim_end, 2)
         self._send_json(200, result)
+
+    def _handle_beat_kim_done_set(self, body: dict) -> None:
+        """LD-746 KIM_DONE_CHECKBOX_RESHIPPED_V1 (2026-05-17): mark a beat as
+        visually verified by Kim. Toggles boolean `kim_done` on the beat at
+        the top level of the beat dict (NOT nested in phase_1 — this is a
+        per-beat Kim signal, not a phase-1 production artifact). Counter at
+        the top of the storyboard ("N/M done") reads this flag across all
+        beats in the active partition.
+
+        POST body: {beat: "beat_03", kim_done: true|false}
+                OR {beat_id: ..., done: true|false}  (back-compat)
+
+        Original LD-746 ship was caught as fabrication during LD-773 audit.
+        This is the real implementation.
+        """
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
+            return
+
+        beat_id = body.get("beat") or body.get("beat_id")
+        # Accept both `kim_done` (canonical) and `done` (back-compat) per
+        # LD BEAT_DELAY_BODY_KEY_BACKCOMPAT_V1 pattern.
+        raw_done = body.get("kim_done")
+        if raw_done is None:
+            raw_done = body.get("done", False)
+        if not isinstance(raw_done, bool):
+            return self._send_json(400, {"error": "kim_done must be a boolean"})
+        done = bool(raw_done)
+        if not beat_id:
+            return self._send_json(400, {"error": "missing 'beat'/'beat_id'"})
+
+        video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
+
+        def update(state, _role=video_role):
+            b = ((state.get("videos") or {}).get(_role) or {}).get("beats", {}).get(beat_id)
+            if not b:
+                return False
+            # Stamp top-level kim_done + an ISO8601 timestamp so consumers can
+            # surface "last marked at" without inferring from mtime.
+            b["kim_done"] = done
+            b["kim_done_at"] = datetime.now(timezone.utc).isoformat() if done else None
+            return True
+
+        found = self.app.state.mutate_state(update)
+        if not found:
+            return self._send_json(404, {"error": f"beat {beat_id} not found"})
+        self._send_json(200, {"beat": beat_id, "kim_done": done})
 
     def _handle_budget_override(self, body: dict) -> None:
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1

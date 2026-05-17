@@ -92,6 +92,14 @@ interface BeatState {
   // STORYBOARD_AUDIO_DELAY_READ_NESTED_PATH_V2 (supersedes LD-694/695/698).
   audio_delay?: number;     // flattened shape from polling endpoint only
   delay_seconds?: number;   // legacy alias, deprecated
+  // LD-746 KIM_DONE_CHECKBOX_RESHIPPED_V1 (2026-05-17): per-beat "Kim
+  // visually verified this beat" toggle. Server handler:
+  // production_server.py _handle_beat_kim_done_set. UI counter at top of
+  // StoryboardTab pane-header reads this across all beats and shows
+  // "N/M done". Original LD-746 ship was caught as fabrication.
+  kim_done?: boolean;
+  // ISO8601 stamp when kim_done was last flipped to true (null on un-toggle).
+  kim_done_at?: string | null;
 }
 
 interface VideoPartition {
@@ -843,6 +851,41 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
     }
   };
 
+  // LD-746 KIM_DONE_CHECKBOX_RESHIPPED_V1 — checkbox change handler.
+  // Posts to /api/beat/kim_done_set via pathappPatch. Optimistic UI:
+  // toast on success/error, parent refresh on success so the top-of-tab
+  // counter ("N/M done") updates synchronously without a separate poll.
+  // INVARIANT (Rule 36 §36.1): server is the canonical truth; the checkbox
+  // `checked` attribute reads beat.kim_done (server state), never local
+  // setState — so on refresh the UI matches what's persisted.
+  const onKimDoneChange = async (e: Event) => {
+    const target = e.target as HTMLInputElement | null;
+    if (!target) return;
+    const next = !!target.checked;
+    const result = await pathappPatch(activeScope.value, 'beat_kim_done_set', {
+      beat: beatId,
+      kim_done: next,
+    });
+    if (result.ok) {
+      onMutated();
+      pushToast({
+        kind: 'info',
+        message: next ? `Marked ${beatId} as Kim done` : `Cleared kim_done on ${beatId}`,
+        source: 'kim-done',
+      });
+    } else {
+      // Roll back the visual checkbox to the server-canonical value by
+      // forcing a parent re-render — since `checked` reads beat.kim_done
+      // and we never changed local state, this naturally restores it.
+      onMutated();
+      pushToast({
+        kind: 'error',
+        message: `Kim-done save failed: ${result.error ?? `HTTP ${result.status}`}`,
+        source: 'kim-done-error',
+      });
+    }
+  };
+
   const onBlur = async () => {
     const next = editRef.current?.innerText ?? '';
     if (next === initialText) {
@@ -928,6 +971,24 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
         >
           {indicatorLabel}
         </span>
+        {/* LD-746 KIM_DONE_CHECKBOX_RESHIPPED_V1 — per-beat "visually verified"
+            toggle. Posts to /api/beat/kim_done_set via pathappPatch. data-testid
+            'kim-done-checkbox-N' is the smoke marker (manifest line 24). */}
+        <label
+          class="mn-kim-done-label"
+          title={beat.kim_done_at ? `Kim verified at ${beat.kim_done_at}` : 'Mark beat as visually verified'}
+        >
+          <input
+            type="checkbox"
+            class="mn-kim-done-checkbox"
+            data-testid={`kim-done-checkbox-${index}`}
+            checked={beat.kim_done === true}
+            onChange={onKimDoneChange}
+            aria-label={`Mark beat ${beatId} as visually verified by Kim`}
+          />
+          <span class="mn-kim-done-glyph">{beat.kim_done ? '✓' : '○'}</span>
+          <span class="mn-kim-done-text">{beat.kim_done ? 'Kim done' : 'Mark done'}</span>
+        </label>
         <button
           type="button"
           class="mn-btn mn-btn-small"
@@ -1396,6 +1457,14 @@ export function StoryboardTab() {
     }
   };
 
+  // LD-746 KIM_DONE_CHECKBOX_RESHIPPED_V1 — counter for "N/M done" surfaced
+  // in the pane header. Reads beat.kim_done across the current beatList.
+  // INVARIANT (Rule 36 §36.1): counter derives from beatList, which derives
+  // from server state.videos[role].beats — same source as the checkbox checked
+  // state. Cannot drift across the two views.
+  const kimDoneTotal = beatList.length;
+  const kimDoneCount = beatList.filter((b) => b.kim_done === true).length;
+
   return (
     <section class="mn-tab-pane mn-storyboard-pane" data-testid="pane-storyboard">
       <header class="mn-pane-header">
@@ -1403,6 +1472,21 @@ export function StoryboardTab() {
         <span class="mn-scope-chip" data-testid="storyboard-scope-chip">
           scope: {scopeKey(activeScope.value)}
         </span>
+        {/* LD-746 — "N/M done" counter. Reads beat.kim_done across beatList.
+            data-testid 'kim-done-counter' is the canonical hook for the
+            counter; the per-beat checkbox testid 'kim-done-checkbox-N' is the
+            smoke marker. */}
+        {kimDoneTotal > 0 ? (
+          <span
+            class={`mn-kim-done-counter${kimDoneCount === kimDoneTotal ? ' mn-kim-done-counter-complete' : ''}`}
+            data-testid="kim-done-counter"
+            data-kim-done-count={kimDoneCount}
+            data-kim-done-total={kimDoneTotal}
+            title={`${kimDoneCount} of ${kimDoneTotal} beats marked Kim-done`}
+          >
+            {kimDoneCount}/{kimDoneTotal} done
+          </span>
+        ) : null}
       </header>
       {/* S5.5d (v3 architecture revision, 2026-05-03):
           Phase A and Phase B are now top-level dedicated tabs (not siblings
