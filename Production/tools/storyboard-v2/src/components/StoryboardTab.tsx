@@ -37,11 +37,24 @@ interface BeatState {
   text_last_updated_at?: string;
   audio_file?: string;
   text_modified_after_tts?: boolean;
+  // F-STALE-LIPSYNC-UI-001 / LD STORYBOARD_LIPSYNC_BUTTON_FRESHNESS_GATE_V1.
+  // ISO8601 timestamp written by the TTS regen path
+  // (production_server.py `_handle_audio_generate_v4`). The ▶ lipsync
+  // freshness gate compares parse(audio_regenerated_at) against
+  // lipsync.file_mtime to decide whether the cached lipsync output is
+  // current versus the audio. Absent on legacy beats (treated as 0).
+  audio_regenerated_at?: string;
+  audio_duration_s?: number;
   // S5 v3.1 — magic trail composite paths (per LD-468/469).
   magic_still_path?: string;
   magic_video_path?: string;
   // S5 — preferred video source for magic_video (lipsync, then animation).
-  lipsync?: { file?: string; status?: string };
+  // file_mtime (epoch seconds, integer) is projected by the bootstrap endpoint
+  // `_handle_v2_event_state` from os.stat(animation_clips/<lipsync.file>).
+  // Compared against audio_regenerated_at to gate the ▶ lipsync play button
+  // per LD STORYBOARD_LIPSYNC_BUTTON_FRESHNESS_GATE_V1. Missing → defensive
+  // "stale" default (older server, or file disappeared mid-render).
+  lipsync?: { file?: string; status?: string; file_mtime?: number };
   // phase_1 is the server-canonical persistence root for per-beat animation
   // state. `audio_delay` (the Video Lead-in slider) lives here — bootstrap
   // /api/v2/event/<id>/state returns the raw state.json so this is where the
@@ -175,6 +188,52 @@ function deriveBeatLifecycle(b: BeatState): BeatLifecycle {
   if (hasOptions) return 'animated';
   if (b.audio_file) return 'audio_generated';
   return 'draft';
+}
+
+// F-STALE-LIPSYNC-UI-001 / LD STORYBOARD_LIPSYNC_BUTTON_FRESHNESS_GATE_V1.
+//
+// Decides whether a completed lipsync output is FRESH (≥ audio_regenerated_at)
+// or STALE (older than the current audio).
+//
+// Return value:
+//   'fresh'  → ▶ lipsync button enabled; click plays the cached output
+//   'stale'  → ▶ lipsync button disabled; label shows "⚠ stale lipsync — re-run"
+//
+// Defensive defaults (Rule 19 — audit-visible degradation, not silent hide):
+//   - lipsync.file_mtime missing (older server hasn't deployed the additive
+//     server field yet, or file disappeared mid-stat) → 'stale'
+//   - audio_regenerated_at missing/unparseable → 'fresh' (we cannot prove
+//     staleness, and refusing to play a known-completed lipsync because of
+//     a missing legacy field would be a regression)
+//
+// The freshness signal is computed every render from the bootstrap response;
+// it does NOT depend on the legacy `lipsync.audio_changed` flag (Decision 181)
+// which has at least one known miss path (beat_08 in Event_1 carries
+// audio_changed=null despite a month-old file vs today's audio_regenerated_at).
+export type LipsyncFreshness = 'fresh' | 'stale';
+
+export function computeLipsyncFreshness(b: BeatState): LipsyncFreshness {
+  const fileMtimeS = b.lipsync?.file_mtime;
+  if (typeof fileMtimeS !== 'number' || !Number.isFinite(fileMtimeS)) {
+    // Defensive: server didn't include file_mtime → treat as stale so Kim
+    // never plays an unverified cache (the audit-visible failure mode is
+    // preferred to a silently-misleading green play button per Rule 19).
+    return 'stale';
+  }
+  const audioRegen = b.audio_regenerated_at;
+  if (!audioRegen) {
+    // Legacy beat with no audio_regenerated_at — we can't prove staleness.
+    // Trust the on-disk artifact rather than block valid playback.
+    return 'fresh';
+  }
+  const audioRegenMs = Date.parse(audioRegen);
+  if (!Number.isFinite(audioRegenMs)) {
+    return 'fresh';
+  }
+  const fileMtimeMs = fileMtimeS * 1000;
+  // Equal mtimes treated as fresh — a regen that landed on the same epoch
+  // second as the lipsync (vanishingly rare in practice) is not stale.
+  return fileMtimeMs >= audioRegenMs ? 'fresh' : 'stale';
 }
 
 const POLL_ANIMATE_MS = 5000;
@@ -513,15 +572,36 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
           </button>
         ) : null}
         {beat.lipsync?.status === 'completed' && beat.lipsync?.file ? (
-          <button
-            type="button"
-            class="mn-btn mn-btn-small"
-            data-testid={`beat-${index}-lipsync-play`}
-            onClick={() => onPreviewOption(0)}
-            title="Preview lipsync result (video has audio baked in)"
-          >
-            {previewOptIdx === 0 ? '⏸ lipsync' : '▶ lipsync'}
-          </button>
+          // F-STALE-LIPSYNC-UI-001 / LD STORYBOARD_LIPSYNC_BUTTON_FRESHNESS_GATE_V1.
+          // The button still renders for any completed lipsync with a file so
+          // Kim can SEE that a stale artifact exists — but it is DISABLED with
+          // a "stale" label when lipsync.file_mtime < audio_regenerated_at.
+          // Audit-visible degradation per Rule 19, not a silent hide.
+          (() => {
+            const freshness = computeLipsyncFreshness(beat);
+            const isStale = freshness === 'stale';
+            return (
+              <button
+                type="button"
+                class={isStale ? 'mn-btn mn-btn-small mn-btn-stale' : 'mn-btn mn-btn-small'}
+                data-testid={`beat-${index}-lipsync-play`}
+                data-stale={isStale ? 'true' : 'false'}
+                onClick={isStale ? undefined : () => onPreviewOption(0)}
+                disabled={isStale}
+                title={
+                  isStale
+                    ? 'Stale lipsync: cached output is older than the current audio. Re-run lipsync to refresh.'
+                    : 'Preview lipsync result (video has audio baked in)'
+                }
+              >
+                {isStale
+                  ? '⚠ stale lipsync — re-run'
+                  : previewOptIdx === 0
+                  ? '⏸ lipsync'
+                  : '▶ lipsync'}
+              </button>
+            );
+          })()
         ) : null}
         {showUseAsFinal ? (
           <button

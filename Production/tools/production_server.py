@@ -15593,6 +15593,47 @@ body {{padding-top:44px!important;}}
                             pass  # different drives on Windows; skip
         except Exception as _exc:
             print(f"[v2-state] WARN: image_path projection failed: {_exc!r}", flush=True)
+
+        # F-STALE-LIPSYNC-UI-001 / LD STORYBOARD_LIPSYNC_BUTTON_FRESHNESS_GATE_V1.
+        # Project lipsync.file_mtime (epoch seconds, int) into each beat whose
+        # lipsync.file exists on disk in animation_clips/. The client uses this
+        # to gate the ▶ lipsync play button: if file_mtime < audio_regenerated_at
+        # epoch, the lipsync output is stale relative to the current audio and
+        # the button renders in a disabled "stale, re-run lipsync" state per
+        # Rule 19 (audit-visible degradation, not silent hide).
+        #
+        # Backwards-compat: field is additive — older clients (pre-fix) ignore
+        # the key and continue to show the play button gated on file existence
+        # alone. The freshness signal is computed every bootstrap, so it stays
+        # accurate even when an audio regen path forgot to set the existing
+        # `lipsync.audio_changed` flag (Decision 181), which is what allowed
+        # beat_08 to slip through with a month-old file.
+        try:
+            clips_dir = self.app.state.clips_dir
+            for _role, _part in (state.get("videos") or {}).items():
+                if not isinstance(_part, dict):
+                    continue
+                for _bid, _beat in (_part.get("beats") or {}).items():
+                    if not isinstance(_beat, dict):
+                        continue
+                    _ls = _beat.get("lipsync")
+                    if not isinstance(_ls, dict):
+                        continue
+                    _fname = _ls.get("file")
+                    if not _fname:
+                        continue
+                    _fp = clips_dir / _fname
+                    try:
+                        if _fp.is_file():
+                            _ls["file_mtime"] = int(_fp.stat().st_mtime)
+                    except OSError:
+                        # Cross-volume / permission edge cases — leave field
+                        # unset so the client falls back to its "missing →
+                        # stale" defensive default.
+                        pass
+        except Exception as _exc:
+            print(f"[v2-state] WARN: lipsync file_mtime projection failed: {_exc!r}", flush=True)
+
         return self._send_json(200, state)
 
     # ------------------------------------------------------------------
