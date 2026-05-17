@@ -60,7 +60,22 @@ async function mockBootstrapWithNestedDelay(
   if (opts.withLipsync) {
     // Status must be 'completed' for the SUT to render the sentinel PLAY
     // button (StoryboardTab.tsx L515 gates on beat.lipsync?.status === 'completed').
-    beat.lipsync = { file: `lipsync/${beatId}_ls.mp4`, status: 'completed' };
+    // Per LD STORYBOARD_LIPSYNC_BUTTON_FRESHNESS_GATE_V1 (2026-05-17): the
+    // button is additionally gated on freshness — lipsync.file_mtime must be
+    // ≥ Date.parse(beat.audio_regenerated_at). When either field is missing,
+    // the new computeLipsyncFreshness() helper has defensive defaults: if
+    // file_mtime is absent it returns 'stale' (button disabled). T-9 clicks
+    // the button, so the mock must include both file_mtime and
+    // audio_regenerated_at with file_mtime >= audio_regenerated_at to keep
+    // T-9 testing the lipsync-sentinel branch (NOT the new stale gate).
+    const audioRegen = '2026-05-01T00:00:00Z';
+    const lipsyncMtimeS = Math.floor(new Date('2026-05-10T00:00:00Z').getTime() / 1000);
+    beat.audio_regenerated_at = audioRegen;
+    beat.lipsync = {
+      file: `lipsync/${beatId}_ls.mp4`,
+      status: 'completed',
+      file_mtime: lipsyncMtimeS,
+    };
   }
   if (opts.withFinal) {
     beat.final = { file: `final/${beatId}_final.mp4` };
