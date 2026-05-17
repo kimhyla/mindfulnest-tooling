@@ -378,4 +378,31 @@ echo "[deploy] (g) curl smoke ok — server serving fresh build (sha=$BUILD_SHA,
 date +%s > "$SRC_TOOLING/.last_deploy"
 echo "[deploy] (h) .last_deploy timestamp written: $(cat "$SRC_TOOLING/.last_deploy")"
 
+# ----------------------------------------------------------------
+# (i) Event smoke test HARD GATE — LD-782 EVENT_SMOKE_TEST_LAYER1_V1
+# Greps the deployed bundle for required feature symbols per
+# Production/smoke_test_manifest.yaml; writes a Directus row per run
+# (read-back-after-write); HARD blocks deploy if any required symbol
+# is missing. Bypass: MN_SKIP_SMOKE_GATE=1 (requires SHORTCUT LD per Rule 19).
+# ----------------------------------------------------------------
+if [[ "${MN_SKIP_SMOKE_GATE:-}" != "1" ]]; then
+    echo "[deploy] (i) event_smoke_test on $(basename "$EVENT_DIR")..."
+    SMOKE_EXIT=0
+    bash "$DEST_DROPBOX/Production/scripts/event_smoke_test.sh" \
+        "$(basename "$EVENT_DIR")" --no-sentinel || SMOKE_EXIT=$?
+    if [[ "$SMOKE_EXIT" -ne 0 ]] && [[ "$SMOKE_EXIT" -ne 4 ]]; then
+        echo "FATAL: event_smoke_test failed (exit=$SMOKE_EXIT) — bundle is missing manifest symbols." >&2
+        echo "  rollback: cp -R $SNAPSHOT_DIR/Production/* $DEST_DROPBOX/Production/" >&2
+        echo "  bypass:   MN_SKIP_SMOKE_GATE=1 bash deploy_storyboard_v59.sh (requires SHORTCUT LD per Rule 19)" >&2
+        exit 1
+    fi
+    if [[ "$SMOKE_EXIT" -eq 4 ]]; then
+        echo "[deploy] (i) event_smoke_test WARN (exit=4: known_red entry now present — manifest stale, allowing deploy)"
+    else
+        echo "[deploy] (i) event_smoke_test GREEN"
+    fi
+else
+    echo "[deploy] (i) MN_SKIP_SMOKE_GATE=1 — smoke gate bypassed (requires SHORTCUT LD per Rule 19)"
+fi
+
 echo "[deploy] complete  snapshot=$SNAPSHOT_DIR  log=$LOG_DIR/server.log"

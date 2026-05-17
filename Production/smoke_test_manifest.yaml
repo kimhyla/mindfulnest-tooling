@@ -1,0 +1,64 @@
+# Production/smoke_test_manifest.yaml
+# Append-only manifest of must-have feature symbols for the storyboard.
+# Per LD-782 EVENT_SMOKE_TEST_LAYER1_V1 (locked 2026-05-17).
+#
+# Each entry (single-line flow YAML):
+#   { ld: <id>, symbol: 'X', kind: <testid|class|fn|prop|attr|label|api>,
+#     [target: <bundle|source|both>,] [status: <active|known_red>,]
+#     [regex: <true|false>,] [min_matches: N,] [event_scope: <all|Event_N>] }
+#
+# Defaults: target=bundle, status=active, regex=false, min_matches=1, event_scope=all.
+# Renames go through "supersedes" + a new entry. NEVER edit history.
+#
+# When a UI-shipping LD lands, append the entry in the same commit
+# (pre-commit hook enforces; bypass via MN_SKIP_MANIFEST_GATE=1).
+
+version: 1
+target_default: bundle
+event_scope_default: all
+
+entries:
+  # ===========================================================================
+  # 3 known regressions (status=known_red) — flip to exit-4 WARN when present
+  # ===========================================================================
+  - { ld: LD-746, symbol: 'kim-done-checkbox', kind: testid, status: known_red }
+  - { ld: LD-767, symbol: 'suggest-parenthetical', kind: testid, status: known_red }
+  - { ld: LD-738, symbol: 'tile-tier.*(master|delivery)', kind: attr, status: known_red, regex: true }
+
+  # ===========================================================================
+  # 21 active load-bearing features (all grep-verified present 2026-05-17)
+  # ===========================================================================
+  # Still-as-final + hold-duration (LD-761/763/777)
+  - { ld: LD-777, symbol: 'still-hold-input', kind: testid }
+  - { ld: LD-761, symbol: 'still-as-final', kind: testid }
+  - { ld: LD-761, symbol: 'still-final-preview', kind: testid }
+  - { ld: LD-761, symbol: 'undo-final', kind: testid }
+
+  # Post-lipsync trim feature suite (LD-749/754/755/756/757)
+  - { ld: LD-756, symbol: 'trim-in', kind: testid }
+  - { ld: LD-756, symbol: 'trim-out', kind: testid }
+  - { ld: LD-755, symbol: 'trim-preview', kind: testid }
+  - { ld: LD-755, symbol: 'trim-apply', kind: testid }
+
+  # Silent-failure-class kills (LD-769/775/778) — function names in source TSX
+  - { ld: LD-769, symbol: 'safePlay', kind: fn, target: source }
+  - { ld: LD-775, symbol: 'awaitPriorPlayWithTimeout', kind: fn, target: source }
+  - { ld: LD-778, symbol: 'runMutation', kind: fn, target: source }
+  - { ld: LD-757, symbol: 'lipsyncMounted', kind: fn, target: source }
+
+  # Stale-lipsync UI gate (LD-765 / PR #56)
+  - { ld: LD-765, symbol: 'beat-stale-tts', kind: testid }
+
+  # Audio regen cache-bust composite seed (LD-770)
+  - { ld: LD-770, symbol: 'audio_regenerated_at', kind: prop }
+
+  # Structural beat-row buttons + speaker dropdown + assembly
+  - { ld: char-dropdown, symbol: 'beat-speaker', kind: testid }
+  - { ld: structural, symbol: 'sb-delete-beat', kind: testid }
+  - { ld: structural, symbol: 'sb-insert-after-btn', kind: testid }
+  - { ld: structural, symbol: 'send-out-mp4', kind: testid }
+
+  # Audio delay + regen + lipsync core controls (LD-723 era)
+  - { ld: LD-723, symbol: 'use-as-final', kind: testid }
+  - { ld: LD-723, symbol: 'regen-audio', kind: testid }
+  - { ld: LD-723, symbol: 'lipsync', kind: testid }
