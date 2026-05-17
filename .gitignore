@@ -130,3 +130,6 @@ archive/
 .state.lock
 *.L.json
 beat_generator_state.json
+
+# Deploy-time sentinel, written by Production/scripts/deploy_storyboard_v59.sh step (h)
+.last_deploy
