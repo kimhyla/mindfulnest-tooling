@@ -103,27 +103,45 @@ BUNDLE_SHA=$(shasum -a 256 "$BUNDLE" | awk '{print $1}')
 MANIFEST_SHA=$(shasum -a 256 "$MANIFEST" | awk '{print $1}')
 
 # ----------------------------------------------------------------
-# Parse manifest entries (flow-style YAML). awk regex extraction.
+# Parse manifest entries (flow-style YAML).
+# Python parser — BSD awk on macOS lacks 3-arg match() (GNU-only).
+# Per DS-22 catch 2026-05-17 (awk parser silently produced 0 entries +
+# false-green). Python is robust + cross-platform + already in dep chain.
 # Each line: - { ld: X, symbol: 'Y', kind: Z, [target: T,] [status: S,] ... }
 # ----------------------------------------------------------------
 parse_entries() {
-    awk '
-    /^[[:space:]]*-[[:space:]]*\{/ {
-        ld=""; sym=""; kind=""; target="bundle"; status="active"; regex_flag="false"; min_matches="1"
-        if (match($0, /ld:[[:space:]]*([^,}]+)/, m)) ld=m[1]
-        if (match($0, /symbol:[[:space:]]*\x27([^\x27]+)\x27/, m)) sym=m[1]
-        if (match($0, /kind:[[:space:]]*([^,}]+)/, m)) kind=m[1]
-        if (match($0, /target:[[:space:]]*([^,}]+)/, m)) target=m[1]
-        if (match($0, /status:[[:space:]]*([^,}]+)/, m)) status=m[1]
-        if (match($0, /regex:[[:space:]]*([^,}]+)/, m)) regex_flag=m[1]
-        if (match($0, /min_matches:[[:space:]]*([^,}]+)/, m)) min_matches=m[1]
-        gsub(/[[:space:]]/, "", ld); gsub(/[[:space:]]/, "", kind)
-        gsub(/[[:space:]]/, "", target); gsub(/[[:space:]]/, "", status)
-        gsub(/[[:space:]]/, "", regex_flag); gsub(/[[:space:]]/, "", min_matches)
-        if (sym == "") next
-        printf "%s|%s|%s|%s|%s|%s|%s\n", ld, sym, kind, target, status, regex_flag, min_matches
-    }
-    ' "$MANIFEST"
+    PARSE_PY="${MN_PYENV_PY:-$HOME/.pyenv/versions/3.12.7/bin/python3}"
+    [[ -x "$PARSE_PY" ]] || PARSE_PY="$(command -v python3)"
+    "$PARSE_PY" - "$MANIFEST" <<'PYEOF'
+import re, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    for line in f:
+        line = line.rstrip("\n")
+        stripped = line.strip()
+        if not stripped.startswith("- {"):
+            continue
+        def get(key, default=""):
+            # Try single-quoted value first; fall back to unquoted
+            m = re.search(rf"\b{key}:\s*'([^']*)'", line)
+            if m:
+                return m.group(1)
+            m = re.search(rf"\b{key}:\s*([^,}}]+)", line)
+            if m:
+                return m.group(1).strip()
+            return default
+        ld = get("ld")
+        sym = get("symbol")
+        kind = get("kind")
+        target = get("target", "bundle")
+        status = get("status", "active")
+        regex_flag = get("regex", "false")
+        min_matches = get("min_matches", "1")
+        if not sym:
+            continue
+        # TAB delimiter — pipe `|` collides with regex patterns like
+        # `tile-tier.*(master|delivery)` (DS-22 catch 2026-05-17).
+        print("\t".join([ld, sym, kind, target, status, regex_flag, min_matches]))
+PYEOF
 }
 
 MISSING=()
@@ -134,7 +152,7 @@ PASSED=0
 echo "[smoke] event=$EVENT bundle=$(basename "$BUNDLE") manifest=$(basename "$MANIFEST")"
 echo "[smoke] bundle_sha=${BUNDLE_SHA:0:12}  manifest_sha=${MANIFEST_SHA:0:12}"
 
-while IFS='|' read -r ld sym kind target status regex_flag min_matches; do
+while IFS=$'\t' read -r ld sym kind target status regex_flag min_matches; do
     [[ -z "$sym" ]] && continue
     CHECKED=$((CHECKED + 1))
 
@@ -143,6 +161,12 @@ while IFS='|' read -r ld sym kind target status regex_flag min_matches; do
         both)   tgt_file="$BUNDLE" ;;
         bundle|*) tgt_file="$BUNDLE" ;;
     esac
+
+    # Defensive guard: min_matches must be numeric (catches IFS-shift bugs).
+    if ! [[ "$min_matches" =~ ^[0-9]+$ ]]; then
+        echo "WARN: $ld $sym min_matches='$min_matches' non-numeric — defaulting to 1" >&2
+        min_matches=1
+    fi
 
     if [[ ! -f "$tgt_file" ]]; then
         echo "  SKIP      $ld $sym (target file missing: $(basename "$tgt_file"))"
