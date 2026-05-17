@@ -402,6 +402,17 @@ jobs:
             e2e/delay_durability.spec.ts \
             --reporter=line
 
+      # F-STALE-LIPSYNC-UI-001 / LD STORYBOARD_LIPSYNC_BUTTON_FRESHNESS_GATE_V1.
+      # Standalone config — spawns its own tiny node http server on :5599
+      # so it doesn't share the :5111 production_server with the suite above.
+      # Mocks all bootstrap endpoints via page.route(), so no Event_e2e_fixture
+      # dependency. Always runs after the main suite to avoid port contention.
+      - name: Playwright e2e — stale-lipsync UI gate (separate config)
+        working-directory: Production/tools/storyboard-v2
+        run: |
+          npx playwright test --config=playwright.stale-lipsync.config.ts \
+            --reporter=line
+
       - name: Upload test artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4
