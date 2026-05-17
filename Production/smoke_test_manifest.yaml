@@ -62,3 +62,17 @@ entries:
   - { ld: LD-723, symbol: 'use-as-final', kind: testid }
   - { ld: LD-723, symbol: 'regen-audio', kind: testid }
   - { ld: LD-723, symbol: 'lipsync', kind: testid }
+
+  # ===========================================================================
+  # OpenAI gpt-image-1 end-frame vendor swap (LD-730)
+  # Cross-thread integration per parent prod_activity_log row 4928 (2026-05-17).
+  # Implementation in production_server.py (dispatcher + key parsing) and
+  # kling_startend_pipeline.py (helper + endpoint). Targets `server` and `kling`
+  # added to event_smoke_test.sh in the same commit. Markers mirror those
+  # asserted by Production/scripts/verify_ld_730_impl.py — both gates remain.
+  # ===========================================================================
+  - { ld: LD-730, symbol: 'openai_image_edit_generate_end_frame', kind: fn, target: server }
+  - { ld: LD-730, symbol: 'MN_END_FRAME_VENDOR', kind: fn, target: server }
+  - { ld: LD-730, symbol: 'def openai_image_edit_generate_end_frame(', kind: fn, target: kling }
+  - { ld: LD-730, symbol: 'gpt-image-1', kind: fn, target: kling }
+  - { ld: LD-730, symbol: '/v1/images/edits', kind: fn, target: kling }

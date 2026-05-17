@@ -54,6 +54,13 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [[ -z "$MANIFEST" ]] && MANIFEST="$PROJECT_ROOT/Production/smoke_test_manifest.yaml"
 [[ -z "$BUNDLE"   ]] && BUNDLE="$PROJECT_ROOT/Production/$EVENT/storyboard_v59_prod.html"
 [[ -z "$SOURCE"   ]] && SOURCE="$PROJECT_ROOT/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx"
+# LD-730 cross-thread integration (2026-05-17): server + kling targets so the
+# OpenAI gpt-image-1 end-frame vendor swap is gated by the same Layer-1 grep
+# manifest. Implementation lives in production_server.py + kling_startend_pipeline.py,
+# not StoryboardTab.tsx, so the existing source target won't reach it. Additive
+# only — does not affect any existing manifest entry.
+SERVER_PY="$PROJECT_ROOT/Production/tools/production_server.py"
+KLING_PY="$PROJECT_ROOT/Production/tools/kling_startend_pipeline.py"
 
 if [[ ! -f "$MANIFEST" ]]; then
     echo "FATAL: manifest not found: $MANIFEST" >&2
@@ -158,6 +165,8 @@ while IFS=$'\t' read -r ld sym kind target status regex_flag min_matches; do
 
     case "$target" in
         source) tgt_file="$SOURCE" ;;
+        server) tgt_file="$SERVER_PY" ;;
+        kling)  tgt_file="$KLING_PY" ;;
         both)   tgt_file="$BUNDLE" ;;
         bundle|*) tgt_file="$BUNDLE" ;;
     esac
