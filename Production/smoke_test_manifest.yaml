@@ -81,3 +81,13 @@ entries:
   - { ld: LD-730, symbol: 'def openai_image_edit_generate_end_frame(', kind: fn, target: kling }
   - { ld: LD-730, symbol: 'gpt-image-1', kind: fn, target: kling }
   - { ld: LD-730, symbol: '/v1/images/edits', kind: fn, target: kling }
+
+  # ===========================================================================
+  # Silent-click-on-busy-button class kill (LD-739/740 GREENFIELD 2026-05-18,
+  # Agent F). Original LDs were FABRICATED (LD-767 audit). guardedClick is the
+  # R1 Alternative 2 design — wraps every soft-disable mutation button in
+  # BeatButtonRow and emits a warning toast when clicked during the busy
+  # window instead of silently swallowing the click. Source-target because
+  # the symbol may minify in the bundle; the source presence is the contract.
+  # ===========================================================================
+  - { ld: LD-739-740, symbol: 'guardedClick', kind: fn, target: source }

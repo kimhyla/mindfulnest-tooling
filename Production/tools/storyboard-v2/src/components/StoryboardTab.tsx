@@ -292,6 +292,68 @@ interface BeatButtonRowProps {
 function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptIdx, onPreviewOption, onEnsureLipsyncMounted }: BeatButtonRowProps) {
   const lifecycle = deriveBeatLifecycle(beat);
   const [busy, setBusy] = useState<string | null>(null); // which button is in-flight
+
+  // LD-739/740 GREENFIELD BUILD 2026-05-18 (Agent F): silent-click-on-busy-button
+  // class kill. Original LD-739 (REGEN_BC_SILENT_FAILURE_FIX_V1) + LD-740
+  // (GUARDORAST_EXTENDED_TO_ALL_MUTATION_BUTTONS_V1) were both flagged as
+  // FABRICATED by LD-767 SESSION_LD_FABRICATION_AUDIT_V1 — zero reflog evidence
+  // of the claimed `guardOrToast` helper across all worktrees. This is the
+  // greenfield ship using R1 research recommendation (Alternative 2):
+  // `guardedClick` + aria-disabled swap + transient warning toast.
+  //
+  // Problem class (real, reproduced 2026-05-16 21:07 EDT by Kim on Luna
+  // beat_16): a mutation button rendered <button disabled={busy !== null}>
+  // swallows onClick at the BROWSER LAYER during an in-flight mutation (e.g.
+  // 4.5s TTS auto-regen window after a text edit). Kim sees "click does
+  // nothing, no toast, no error." `disabled` is the silent-skip bug class.
+  //
+  // Fix: every soft-disable (transient busy) site swaps `disabled={busy !==
+  // null}` for `aria-disabled={busy !== null}` (preserves visual + a11y
+  // signal) + wraps onClick in `guardedClick(label, handler)` which emits an
+  // explicit warning toast naming the in-flight action when clicked during
+  // the busy window. Kim sees feedback within ~16ms (next frame) on EVERY
+  // click. No more silent swallow.
+  //
+  // Hard-disable conditions (`!opt?.file`, `!optReady`, `lifecycle ===
+  // 'lipsync_pending'`) REMAIN on the native `disabled` attribute — these
+  // represent structurally-impossible actions (can't preview a non-existent
+  // file; can't double-trigger lipsync) and silent swallow is correct
+  // semantics there.
+  //
+  // INVARIANTS (Rule 36 §36.1):
+  //   - guardedClick captures `busy` via closure at RENDER time; the closure
+  //     re-binds on every render so the current busy value is always read.
+  //     Do NOT memoize this — stale-closure would re-introduce the bug.
+  //   - The returned function returns void; handler may return a Promise
+  //     (runMutation, onRegenAudio, onAnimate, etc.) which we void-coerce.
+  //   - Toast `source` field uses `beat-${index}-${label}-busy-guard` for
+  //     dedup uniqueness per button per beat.
+  //   - No "working..." pending toast for the success path — runMutation
+  //     already emits success/error toasts; double-toasting would be noisy
+  //     for the common case.
+  //   - aria-disabled MUST coexist with native disabled when a hard-disable
+  //     condition fires — the native disabled wins for the structurally-
+  //     impossible cases. Hybrid sites (preview-option, →A, lipsync) split
+  //     the prior `disabled={busy !== null || hard}` into
+  //     `aria-disabled={busy !== null}` + `disabled={hard}`.
+  //   - CSS (.mn-btn[aria-disabled="true"]) provides the visual disabled
+  //     appearance so Kim sees the disabled state even though the native
+  //     attribute is absent. See app.css companion change.
+  //   - Closure-over-index: the index used in the source field is the
+  //     BeatButtonRow's index prop, not a re-captured local — index is
+  //     stable across renders of this beat row.
+  const guardedClick = (label: string, handler: () => unknown) => () => {
+    if (busy !== null) {
+      pushToast({
+        kind: 'warning',
+        message: `${label}: wait — ${busy} is in-flight.`,
+        source: `beat-${index}-${label}-busy-guard`,
+        ttlMs: 2500,
+      });
+      return;
+    }
+    void handler();
+  };
   // LD-756 TRIM_INPUT_SEMANTICS_SECONDS_FROM_END_V1 (re-shipped 2026-05-17 from
   // stash@{1} 31e1bd292885). UI inputs now express "seconds to trim from
   // front" and "seconds to trim from back". Server-side semantics remain
@@ -916,8 +978,8 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
                   type="button"
                   class={`mn-btn mn-btn-small${selectedOption === oi ? ' is-active' : ''}`}
                   data-testid={`beat-${index}-select-option-${oi}`}
-                  onClick={() => onSelectOption(oi)}
-                  disabled={busy !== null}
+                  onClick={guardedClick('Select option', () => onSelectOption(oi))}
+                  aria-disabled={busy !== null}
                 >
                   opt {oi}{selectedOption === oi ? ' ✓' : ''}
                 </button>
@@ -925,8 +987,9 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
                   type="button"
                   class={`mn-btn mn-btn-small mn-preview-btn${previewOptIdx === oi ? ' mn-preview-btn-active' : ''}`}
                   data-testid={`beat-${index}-preview-option-${oi}`}
-                  onClick={() => onPreviewOption(oi)}
-                  disabled={busy !== null || !opt?.file}
+                  onClick={guardedClick('Preview option', () => onPreviewOption(oi))}
+                  aria-disabled={busy !== null}
+                  disabled={!opt?.file}
                   title={`Preview with audio: opt ${oi}`}
                 >
                   {previewOptIdx === oi ? '⏸' : '▶'}
@@ -936,8 +999,9 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
                     type="button"
                     class="mn-btn mn-btn-small"
                     data-testid={`beat-${index}-swap-to-a-${oi}`}
-                    onClick={() => onSwapToA(oi)}
-                    disabled={busy !== null || !optReady}
+                    onClick={guardedClick('Move to A', () => onSwapToA(oi))}
+                    aria-disabled={busy !== null}
+                    disabled={!optReady}
                     title={optReady ? `Promote opt ${oi} to slot A` : 'Option must finish generating first'}
                   >→A</button>
                 ) : null}
@@ -952,8 +1016,8 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
             type="button"
             class="mn-btn mn-btn-small"
             data-testid={`beat-${index}-add-options`}
-            onClick={onAddOptions}
-            disabled={busy !== null}
+            onClick={guardedClick('Add options', onAddOptions)}
+            aria-disabled={busy !== null}
             title="Keep Option A, generate 2 fresh alternatives (B & C)"
           >
             🔄 Regenerate B + C
@@ -976,8 +1040,8 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
               type="button"
               class="mn-btn mn-btn-small"
               data-testid={`beat-${index}-regen-audio`}
-              onClick={onRegenAudio}
-              disabled={busy !== null}
+              onClick={guardedClick('Regen Audio', onRegenAudio)}
+              aria-disabled={busy !== null}
               title="Re-generate TTS for this beat"
             >
               {busy === 'Regen Audio' ? <><Spinner size="sm" inline /> …</> : '🎙 Regen Audio'}
@@ -990,8 +1054,8 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
             type="button"
             class="mn-btn mn-btn-small"
             data-testid={`beat-${index}-regen-audio`}
-            onClick={onRegenAudio}
-            disabled={busy !== null}
+            onClick={guardedClick('Regen Audio', onRegenAudio)}
+            aria-disabled={busy !== null}
           >
             {busy === 'Regen Audio' ? <><Spinner size="sm" inline /> …</> : '🎙 Regen Audio'}
           </button>
@@ -1006,8 +1070,8 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
             type="button"
             class="mn-btn mn-btn-small"
             data-testid={`beat-${index}-animate`}
-            onClick={onAnimate}
-            disabled={busy !== null}
+            onClick={guardedClick('Animate', onAnimate)}
+            aria-disabled={busy !== null}
             title="Submit to Kling animation (3 options)"
           >
             {busy === 'Animate' ? <><Spinner size="sm" inline /> …</> : '🎬 Animate'}
@@ -1018,8 +1082,9 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
             type="button"
             class="mn-btn mn-btn-small"
             data-testid={`beat-${index}-lipsync`}
-            onClick={onLipsync}
-            disabled={busy !== null || lifecycle === 'lipsync_pending'}
+            onClick={guardedClick('Lipsync', onLipsync)}
+            aria-disabled={busy !== null}
+            disabled={lifecycle === 'lipsync_pending'}
             title="Send selected option for ByteDance lipsync"
           >
             {lifecycle === 'lipsync_pending' ? (
@@ -1072,8 +1137,8 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
             type="button"
             class="mn-btn mn-btn-small mn-btn-primary"
             data-testid={`beat-${index}-use-as-final`}
-            onClick={onUseAsFinal}
-            disabled={busy !== null}
+            onClick={guardedClick('Use as Final', onUseAsFinal)}
+            aria-disabled={busy !== null}
             title="Mark current selection as final without lipsync (Spec A)"
           >
             {busy === 'Use as Final' ? <><Spinner size="sm" inline /> …</> : '✓ Use as Final'}
@@ -1107,8 +1172,8 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
               type="button"
               class="mn-btn mn-btn-small"
               data-testid={`beat-${index}-still-as-final`}
-              onClick={onUseStillAsFinal}
-              disabled={busy !== null}
+              onClick={guardedClick('Still as Final', onUseStillAsFinal)}
+              aria-disabled={busy !== null}
               title={beat.final?.source === 'still_image'
                 ? 'Re-render Ken Burns MP4 with the current Hold (s) value. Replaces existing still_image final.'
                 : 'Render Ken Burns MP4 from the beat\'s still image and mark final (no animation). Hold duration from the input.'}
@@ -1129,8 +1194,8 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
             type="button"
             class="mn-btn mn-btn-small"
             data-testid={`beat-${index}-undo-final`}
-            onClick={onUndoFinal}
-            disabled={busy !== null}
+            onClick={guardedClick('Undo Final', onUndoFinal)}
+            aria-disabled={busy !== null}
             title="Clear the final block (files on disk untouched)"
           >
             {busy === 'Undo Final' ? <><Spinner size="sm" inline /> …</> : '↶ Undo Final'}
@@ -1147,8 +1212,8 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
             type="button"
             class="mn-btn mn-btn-small"
             data-testid={`beat-${index}-still-final-preview`}
-            onClick={() => onPreviewOption(-1)}
-            disabled={busy !== null}
+            onClick={guardedClick('Preview Still', () => onPreviewOption(-1))}
+            aria-disabled={busy !== null}
             title="Preview the rendered Ken Burns still-as-final MP4 (browser playback, no server re-render)"
           >
             {previewOptIdx === -1 ? '⏸ Preview Still' : '▶ Preview Still'}
@@ -1187,8 +1252,8 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
           type="button"
           class="mn-btn mn-btn-small"
           data-testid={`beat-${index}-trim-preview`}
-          onClick={onPreviewTrim}
-          disabled={busy !== null}
+          onClick={guardedClick('Preview Trim', onPreviewTrim)}
+          aria-disabled={busy !== null}
           title="Instant browser preview of trim window (HTML5 seek + pause; no server fetch)"
         >
           preview
@@ -1197,8 +1262,8 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
           type="button"
           class="mn-btn mn-btn-small"
           data-testid={`beat-${index}-trim-apply`}
-          onClick={onApplyTrim}
-          disabled={busy !== null}
+          onClick={guardedClick('Trim', onApplyTrim)}
+          aria-disabled={busy !== null}
           title="Persist trim to state (Stitcher will use these values)"
         >
           apply
@@ -1217,8 +1282,8 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
           type="button"
           class="mn-btn mn-btn-small"
           data-testid={`beat-${index}-delay-apply`}
-          onClick={onApplyDelay}
-          disabled={busy !== null}
+          onClick={guardedClick('Delay', onApplyDelay)}
+          aria-disabled={busy !== null}
         >
           apply
         </button>
