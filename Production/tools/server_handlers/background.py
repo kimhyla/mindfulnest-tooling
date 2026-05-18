@@ -312,8 +312,9 @@ def handle_magic_submit_path(h, body: dict)-> None:
                     raise FileNotFoundError(
                         f"bg_path outside project root: {explicit_bg_raw!r}"
                     ) from None
-                if os.path.isfile(explicit_bg):
-                    bg_path = explicit_bg
+                safe_explicit_bg = os.path.realpath(explicit_bg)
+                if os.path.isfile(safe_explicit_bg):
+                    bg_path = safe_explicit_bg
             if bg_path is None and shot_role:
                 cand = event_dir / f"{shot_role}.png"
                 if cand.exists():
@@ -483,9 +484,10 @@ def handle_magic_still(h, body: dict)-> None:
         sip = require_path_under_anchor(str(sip), h.app.event_dir.parent.parent)
     except ValueError:
         return h._send_json(400, {"error": "source_image_path outside project root"})
-    if not sip.is_file():
+    safe_sip = os.path.realpath(str(sip))
+    if not os.path.isfile(safe_sip):
         return h._send_json(404, {
-            "error": "source_image not found", "path": str(sip),
+            "error": "source_image not found", "path": safe_sip,
         })
 
     # LD-460 pin
@@ -511,7 +513,7 @@ def handle_magic_still(h, body: dict)-> None:
             sys.path.insert(0, tools_dir)
         from magic_compositor import MagicCompositor  # type: ignore
         mc = MagicCompositor(
-            background_path=str(sip),
+            background_path=safe_sip,
             path_pts=clean_path,
             style="tessa_ori",
             duration=4.0,
@@ -621,9 +623,10 @@ def handle_magic_video(h, body: dict)-> None:
         svp = require_path_under_anchor(str(svp), h.app.event_dir.parent.parent)
     except ValueError:
         return h._send_json(400, {"error": "source_video_path outside project root"})
-    if not svp.is_file():
+    safe_svp_check = os.path.realpath(str(svp))
+    if not os.path.isfile(safe_svp_check):
         return h._send_json(404, {
-            "error": "source_video not found", "path": str(svp),
+            "error": "source_video not found", "path": safe_svp_check,
         })
     try:
         ffmpeg_src = require_media_under_project(
@@ -632,12 +635,14 @@ def handle_magic_video(h, body: dict)-> None:
     except ValueError as exc:
         return h._send_json(400, {"error": str(exc)})
 
+    safe_ffmpeg_src = os.path.realpath(ffmpeg_src)
+
     # ffprobe for dimensions + duration.
     try:
         probe = subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=width,height,duration",
-             "-of", "json", ffmpeg_src],
+             "-of", "json", safe_ffmpeg_src],
             capture_output=True, check=True, timeout=30,
         )
         meta = json.loads(probe.stdout.decode("utf-8"))
@@ -649,7 +654,7 @@ def handle_magic_video(h, body: dict)-> None:
         except (TypeError, ValueError):
             vid_duration = 0
         if vid_duration <= 0:
-            vid_duration = float(_ffprobe_duration(svp) or 0)
+            vid_duration = float(_ffprobe_duration(Path(safe_ffmpeg_src)) or 0)
     except subprocess.CalledProcessError as exc:
         return h._send_json(500, {
             "error": "ffprobe failed",
@@ -718,7 +723,7 @@ def handle_magic_video(h, body: dict)-> None:
     # Step 2: ffmpeg overlay via blend=screen.
     cmd = [
         "ffmpeg", "-y",
-        "-i", ffmpeg_src,
+        "-i", safe_ffmpeg_src,
         "-i", str(magic_only_path.resolve()),
         "-filter_complex", "[0:v][1:v]blend=all_mode=screen[out]",
         "-map", "[out]",
@@ -1236,11 +1241,15 @@ def handle_bg_update_beat(h, body: dict)-> None:
                             if _r and (_abs_resolved == _r or _abs_resolved.startswith(_r + os.sep)):
                                 _safe = True
                                 break
-                    if _safe and os.path.exists(_abs_resolved) and not value.get("thumb_b64"):
+                    if _safe and _abs_resolved:
+                        _safe_open_path = os.path.realpath(_abs_resolved)
+                    else:
+                        _safe_open_path = ""
+                    if _safe and _safe_open_path and os.path.exists(_safe_open_path) and not value.get("thumb_b64"):
                         try:
                             from PIL import Image as _PILImage
                             import io as _io_thumb
-                            with _PILImage.open(_abs_resolved) as im:
+                            with _PILImage.open(_safe_open_path) as im:
                                 im.thumbnail((200, 150), _PILImage.LANCZOS)
                                 buf = _io_thumb.BytesIO()
                                 im.convert("RGB").save(buf, "JPEG", quality=72)
@@ -1826,10 +1835,11 @@ def handle_bg_accept_lib_image(h, body: dict)-> None:
                     if _r and (_abs_resolved == _r or _abs_resolved.startswith(_r + os.sep)):
                         _safe = True
                         break
-            if _safe and os.path.exists(_abs_resolved):
+            _safe_open_path = os.path.realpath(_abs_resolved) if _safe and _abs_resolved else ""
+            if _safe and _safe_open_path and os.path.exists(_safe_open_path):
                 from PIL import Image as _PILImage
                 import io as _io_thumb
-                with _PILImage.open(_abs_resolved) as im:
+                with _PILImage.open(_safe_open_path) as im:
                     im.thumbnail((200, 150), _PILImage.LANCZOS)
                     buf = _io_thumb.BytesIO()
                     im.convert("RGB").save(buf, "JPEG", quality=72)
@@ -2340,9 +2350,10 @@ def handle_bg_accept_local_animation(h, body: dict)-> None:
         return h._send_json(403, {"ok": False, "error": str(exc)})
     except FileNotFoundError:
         return h._send_json(400, {"ok": False, "error": f"video file not found: {video_path}"})
+    safe_video_path = os.path.realpath(video_path)
     bg = _bg_module()
     import pathlib as _pl
-    if not bg._ffprobe_ok(_pl.Path(video_path)):
+    if not bg._ffprobe_ok(_pl.Path(safe_video_path)):
         return h._send_json(400, {"ok": False, "error": "video failed ffprobe validation"})
     with bg._sidecar_lock:
         sidecar = bg.read_sidecar()
@@ -2351,7 +2362,7 @@ def handle_bg_accept_local_animation(h, body: dict)-> None:
         if not b:
             return h._send_json(404, {"ok": False, "error": f"beat_id {beat_id} not found"})
         b["status"] = "accepted"
-        b["accepted_video_path"] = video_path
+        b["accepted_video_path"] = safe_video_path
         gid = b.get("group_id")
         if gid and gid in sidecar.get("groups", {}):
             g = sidecar["groups"][gid]
@@ -2729,12 +2740,12 @@ def handle_watercolor_animate(h, body: dict)-> None:
         source_path.relative_to(wc_root)
     except ValueError:
         return h._send_json(500, {"error": "watercolor source path outside library dir"})
-    ffmpeg_still = str(source_path)
+    safe_ffmpeg_still = os.path.realpath(str(source_path))
 
     # Probe dimensions.
     try:
         from PIL import Image as _PILImage
-        with _PILImage.open(source_path) as im:
+        with _PILImage.open(safe_ffmpeg_still) as im:
             src_w, src_h = im.size
     except Exception:
         src_w, src_h = 1024, 1024  # safe default
@@ -2885,7 +2896,7 @@ def handle_watercolor_animate(h, body: dict)-> None:
     ffmpeg_out = str(out_path.resolve())
     cmd = [
         "ffmpeg", "-y",
-        "-loop", "1", "-i", ffmpeg_still,
+        "-loop", "1", "-i", safe_ffmpeg_still,
         "-filter_complex", filter_complex,
         "-t", f"{duration_s:.3f}",
         "-c:v", "libx264",

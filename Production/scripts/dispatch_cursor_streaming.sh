@@ -27,26 +27,28 @@
 #
 # Default: filters to tool_call + assistant + final events.
 
-set -euo pipefail
+# NOTE: stdbuf not available on macOS by default; relying on cursor-agent's
+# own line-buffered streaming via --stream-partial-output. Use `set -uo pipefail`
+# (no -e) so jq parse glitches don't abort the whole pipeline.
+set -uo pipefail
 
 MODE="${1:-filtered}"
 
 # Pipe input (the brief) through cursor-agent with streaming flags.
-# stdbuf -oL to keep line-buffered through pipes (critical for jq).
-stdbuf -oL cursor-agent -p \
+cursor-agent -p \
     --output-format=stream-json \
     --stream-partial-output \
     --model=auto \
-    "$@" 2>&1 | \
+    2>&1 | \
     if [ "$MODE" = "--raw" ]; then
         cat
     elif [ "$MODE" = "--quiet" ]; then
         # Only print the final "result" event (assistant's final answer)
-        jq -r --unbuffered 'select(.type == "result") | .result // ""' 2>/dev/null || cat
+        jq -r 'select(.type == "result") | .result // ""' 2>/dev/null || cat
     else
         # Default: filter to tool_call + thinking-completed + result events
         # showing meaningful progress without flooding.
-        jq -r --unbuffered '
+        jq -r '
             select(
                 (.type == "tool_call" and .subtype == "completed") or
                 (.type == "thinking" and .subtype == "completed") or
@@ -54,7 +56,7 @@ stdbuf -oL cursor-agent -p \
                 (.type == "user" and .subtype == null)
             ) |
             if .type == "tool_call" then
-                "[" + (.tool_call | (.shellToolCall // .editToolCall // .writeToolCall // .readToolCall // .globToolCall // .grepToolCall // {} | (.args.description // .args.command // .args.file_path // .args.path // .args.globPattern // .args.pattern // ""))) + "]"
+                "[" + ((.tool_call | (.shellToolCall // .editToolCall // .writeToolCall // .readToolCall // .globToolCall // .grepToolCall // {} | (.args.description // .args.command // .args.file_path // .args.path // .args.globPattern // .args.pattern // ""))) | tostring) + "]"
             elif .type == "thinking" then
                 "[thinking-step]"
             elif .type == "result" then

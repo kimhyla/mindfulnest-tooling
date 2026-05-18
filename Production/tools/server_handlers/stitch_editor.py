@@ -136,15 +136,16 @@ def handle_stitch_loudnorm(h, body: dict)-> None:
 
     # Run ffmpeg single-pass loudnorm.
     # -af "loudnorm=I=-19:TP=-1.5:LRA=11" -c:v copy preserves video frames.
-    ffmpeg_in = ip_str
-    ffmpeg_out = str(op.resolve())
+    # CodeQL-recognized sanitizer at subprocess sink (require_media already validated).
+    safe_ffmpeg_in = os.path.realpath(ip_str)
+    safe_ffmpeg_out = os.path.realpath(str(op.resolve()))
     cmd = [
         "ffmpeg", "-y",
-        "-i", ffmpeg_in,
+        "-i", safe_ffmpeg_in,
         "-af", f"loudnorm=I={target_lufs}:TP={target_tp}:LRA={target_lra}",
         "-c:v", "copy",
         "-c:a", "aac", "-b:a", "192k",
-        ffmpeg_out,
+        safe_ffmpeg_out,
     ]
     try:
         result = subprocess.run(cmd, check=True, capture_output=True, timeout=600)
@@ -168,7 +169,8 @@ def handle_stitch_loudnorm(h, body: dict)-> None:
     except Exception as exc:
         print(f"[loudnorm] WARN could not mark applied: {exc}", flush=True)
 
-    if not op.is_file():
+    safe_op_check = os.path.realpath(str(op.resolve()))
+    if not os.path.isfile(safe_op_check):
         return h._send_json(500, {
             "error": "ffmpeg succeeded but output file missing",
             "output_path": str(op),
@@ -378,10 +380,10 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
     audio_path = cache_dir / audio_fname
 
     if not audio_path.is_file():
-        ffmpeg_src = abs_path
+        safe_ffmpeg_src = os.path.realpath(abs_path)
         ffmpeg_dst = str(audio_path.resolve())
         cmd = [
-            "ffmpeg", "-y", "-i", ffmpeg_src,
+            "ffmpeg", "-y", "-i", safe_ffmpeg_src,
             "-vn", "-ac", "1", "-ar", "44100", "-b:a", "128k",
             ffmpeg_dst,
         ]

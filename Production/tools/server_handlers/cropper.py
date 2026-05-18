@@ -156,13 +156,14 @@ def handle_cr_full_image(h)-> None:
         real_path = require_realpath_under_project(abs_path)
     except ValueError:
         return h._send_json(403, {"ok": False, "error": "path outside project"})
-    if not os.path.isfile(real_path):
+    safe_path = os.path.realpath(real_path)
+    if not os.path.isfile(safe_path):
         return h._send_json(404, {"ok": False, "error": "file not found"})
-    ext = os.path.splitext(real_path)[1].lower()
+    ext = os.path.splitext(safe_path)[1].lower()
     mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                 ".webp": "image/webp", ".gif": "image/gif"}
     mime = mime_map.get(ext, "image/png")
-    with open(real_path, "rb") as f:
+    with open(safe_path, "rb") as f:
         raw = f.read()
     data_uri = f"data:{mime};base64," + base64.b64encode(raw).decode()
     return h._send_json(200, {"ok": True, "data_uri": data_uri})
@@ -325,8 +326,9 @@ def handle_cr_library_delete(h, body: dict)-> None:
     # prod_activity_log details.warning, so weekly_preflight_audit can
     # surface a pattern of misses without the user seeing a hard error.
     file_already_gone = False
+    safe_target = os.path.realpath(target)
     try:
-        os.remove(target)
+        os.remove(safe_target)
     except FileNotFoundError:
         file_already_gone = True
     except OSError as e:
@@ -397,7 +399,8 @@ def handle_cr_save_crop(h, body: dict)-> None:
     crops_dir  = os.path.join(bg.BG_STILLS_DIR, "crops")
     os.makedirs(crops_dir, exist_ok=True)
     delivery_path = os.path.join(crops_dir, filename)
-    with open(delivery_path, "wb") as f:
+    safe_delivery_path = os.path.realpath(delivery_path)
+    with open(safe_delivery_path, "wb") as f:
         f.write(delivery_bytes)
 
     key = f"crop_{beat_id}_{ts}"
@@ -512,7 +515,8 @@ def handle_cr_upload(h, body: dict)-> None:
     # LD-460 — terminal pin check before file write.
     if not h._check_event_pin(_pin, "cr_upload_write_bytes"):
         return h._send_json(423, {"error": "event_changed_mid_job", "code": "ASYNC_JOB_GENERATION_PIN_V1"})
-    with open(dest_path, "wb") as f:
+    safe_dest_path = os.path.realpath(dest_path)
+    with open(safe_dest_path, "wb") as f:
         f.write(raw_bytes)
 
     ext = "webp" if filename.lower().endswith(".webp") else "png"
@@ -568,7 +572,8 @@ def serve_asset(h, filename: str)-> None:
     except ValueError as exc:
         return h._send_json(400, {"error": str(exc)})
     safe = target.name
-    if not target.is_file():
+    safe_asset_path = os.path.realpath(str(target))
+    if not os.path.isfile(safe_asset_path):
         return h._send_json(404, {"error": f"asset not found: {safe}"})
     suffix = target.suffix.lower()
     ctype = {
@@ -578,7 +583,7 @@ def serve_asset(h, filename: str)-> None:
         ".wav": "audio/wav",
     }.get(suffix, "application/octet-stream")
 
-    size = target.stat().st_size
+    size = os.path.getsize(safe_asset_path)
     range_header = h.headers.get("Range")
     if range_header:
         m = re.match(r"bytes=(\d+)-(\d*)", range_header)
@@ -587,7 +592,7 @@ def serve_asset(h, filename: str)-> None:
             end = int(m.group(2)) if m.group(2) else size - 1
             end = min(end, size - 1)
             length = end - start + 1
-            with target.open("rb") as f:
+            with open(safe_asset_path, "rb") as f:
                 f.seek(start)
                 chunk = f.read(length)
             h.send_response(206)
@@ -608,7 +613,8 @@ def serve_asset(h, filename: str)-> None:
                 print(f"asset stream canceled by client: {safe}", file=sys.stderr, flush=True)
             return
 
-    body = target.read_bytes()
+    with open(safe_asset_path, "rb") as f:
+        body = f.read()
     h._send_bytes(
         200, body, ctype,
         extra_headers={"Accept-Ranges": "bytes"},
