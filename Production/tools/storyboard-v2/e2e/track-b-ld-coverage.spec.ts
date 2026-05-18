@@ -6,6 +6,14 @@ import { test, expect, type Page } from '@playwright/test';
 
 const BEAT_ID = 'beat_track_b_ld';
 
+// All assertions below use `beat-0-*` testids. This is safe because each
+// mockBootstrap() call seeds exactly ONE beat (display_order: [BEAT_ID]),
+// so it always renders at array index 0. If a future mock grows to multiple
+// beats, the index-0 assertions will need to be re-derived from the rendered
+// DOM (e.g. via `await page.locator('[data-testid^="beat-"][data-beat-id="..."]')`).
+// [CONFIRMED against mockBootstrap()'s display_order field — only one entry.]
+const BEAT_INDEX = 0;
+
 interface MockBeatOptions {
   kimDone?: boolean;
   finalFile?: string;

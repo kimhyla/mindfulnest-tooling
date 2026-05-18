@@ -40,7 +40,12 @@ def test_present_marker_passes_and_strips_gate_fields(tooling_root: Path) -> Non
 
 
 def test_absent_marker_raises_fabrication_gate_error(tooling_root: Path) -> None:
-    marker = "__MN_LD_GATE_ABSENT_MARKER_UNIT_TEST_XYZ__"
+    # Runtime-computed marker so the literal can't exist in any committed
+    # source (including this test file). The previous version used a static
+    # __MN_LD_GATE_ABSENT_MARKER_UNIT_TEST_XYZ__ literal which itself ended up
+    # in HEAD via the test file's own commit, breaking the "absent" premise.
+    import uuid as _uuid
+    marker = f"absent-{_uuid.uuid4().hex}"
     payload = {
         "decision_key": "TEST_GATE_ABSENT",
         "marker_string": marker,
@@ -55,7 +60,9 @@ def test_absent_marker_raises_fabrication_gate_error(tooling_root: Path) -> None
 
 
 def test_worktree_only_marker_still_raises(tooling_root: Path) -> None:
-    marker = "__MN_LD_GATE_WORKTREE_ONLY_MARKER_UNIT_TEST__"
+    # Runtime-computed marker — same reason as test_absent_marker_raises.
+    import uuid as _uuid
+    marker = f"worktree-only-{_uuid.uuid4().hex}"
     probe = tooling_root / "Production" / "lib" / "tests" / ".gate_worktree_probe_only"
     probe.parent.mkdir(parents=True, exist_ok=True)
     probe.write_text(f"# probe\n{marker}\n", encoding="utf-8")
