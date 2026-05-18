@@ -9284,6 +9284,10 @@ body {{padding-top:44px!important;}}
         if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
             return
 
+        # BODY_KEY_ALLOW: beat (legacy back-compat alias; v59 client sends beat_id
+        # via runMutation, but pre-v59 callers and tests may send `beat`).
+        # BODY_KEY_ALLOW: hold_duration_s (optional — client omits the key when
+        # the Hold input is blank, which means "use audio_duration_s default").
         beat_id = body.get("beat") or body.get("beat_id")
         if not beat_id:
             return self._send_error_v59(

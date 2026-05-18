@@ -148,8 +148,10 @@ def write_report(event_dir: str, findings: list[dict]) -> Path:
     lines.append(
         "Note: this audit is **dry-run only**. To actually regenerate, "
         "Kim must approve spend and the `--regenerate` path must be "
-        "wired (intentionally left unimplemented in this version to "
-        "prevent accidental burns)."
+        "wired. The wiring is intentionally deferred per Rule 19 governance "
+        "escape hatch: SHORTCUT_REGEN_WIRING_V1 — wiring blocks on Kim's "
+        "explicit spend approval (~$0.20/img × N options) which can only "
+        "happen during a live session, not at script-author time."
     )
     lines.append("")
     if not findings:
