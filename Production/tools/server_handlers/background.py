@@ -35,6 +35,14 @@ from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+# V59 Phase 4 path-depth correction: extracted modules are one level
+# deeper than production_server.py. These constants map original
+# `_PSERVER_TOOLS_DIR[.parent]*` targets correctly.
+_PSERVER_TOOLS_DIR = Path(__file__).resolve().parent.parent  # Production/tools/
+_PSERVER_PRODUCTION_DIR = _PSERVER_TOOLS_DIR.parent  # Production/
+_PSERVER_REPO_ROOT = _PSERVER_PRODUCTION_DIR.parent  # repo root
+
+
 # Project-internal modules imported the same way production_server.py does.
 # Handler bodies may reference any of these by bare name.
 from lib.atomic_json_write import atomic_json_write
@@ -67,7 +75,7 @@ def serve_magic_picker(h)-> None:
 
     """Serve path_picker.html for the /magic route."""
     import urllib.parse as _up
-    picker = Path(__file__).resolve().parent.parent / "path_picker.html"
+    picker = _PSERVER_PRODUCTION_DIR / "path_picker.html"
     if not picker.exists():
         return h._send_json(404, {"error": "path_picker.html not found"})
     html = picker.read_bytes()
@@ -88,7 +96,7 @@ def handle_magic_resolve_bg(h)-> None:
     scene_key = (qs.get("scene_key") or [None])[0]
     if not scene_key:
         return h._send_json(400, {"ok": False, "error": "scene_key required"})
-    reg_path = Path(__file__).resolve().parent.parent / "scene_registry.yaml"
+    reg_path = _PSERVER_PRODUCTION_DIR / "scene_registry.yaml"
     if not reg_path.exists():
         return h._send_json(404, {"ok": False, "error": "scene_registry.yaml not found"})
     registry = _yaml.safe_load(reg_path.read_text()) or {}
@@ -213,7 +221,7 @@ def handle_magic_submit_path(h, body: dict)-> None:
             # ── Step 1: Write to scene_registry.yaml ──────────────
             _MAGIC_JOBS[job_id].update({"status": "writing_registry",
                                         "message": "Saving path to scene registry..."})
-            reg_path = Path(__file__).resolve().parent.parent / "scene_registry.yaml"
+            reg_path = _PSERVER_PRODUCTION_DIR / "scene_registry.yaml"
             bak_path = reg_path.with_suffix(f".yaml.bak_magic_{int(time.time())}")
             shutil.copy2(reg_path, bak_path)
 
@@ -293,7 +301,7 @@ def handle_magic_submit_path(h, body: dict)-> None:
 
             # ── Step 3: Render preview still ──────────────────────
             _MAGIC_JOBS[job_id].update({"message": "Rendering preview still (final frame)..."})
-            sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+            sys.path.insert(0, str(_PSERVER_PRODUCTION_DIR))
             from magic_compositor import MagicCompositor
             out_dir = db / "Production" / "Event_1" / "kling_clips"
             out_dir.mkdir(parents=True, exist_ok=True)
@@ -472,7 +480,7 @@ def handle_magic_still(h, body: dict)-> None:
     out_path = out_dir / f"magic_still_{beat_id}_{ts}.mp4"
 
     try:
-        tools_dir = str(Path(__file__).resolve().parent)
+        tools_dir = str(_PSERVER_TOOLS_DIR)
         if tools_dir not in sys.path:
             sys.path.insert(0, tools_dir)
         from magic_compositor import MagicCompositor  # type: ignore
@@ -651,7 +659,7 @@ def handle_magic_video(h, body: dict)-> None:
         return h._send_json(500, {"error": f"could not create black ref: {exc}"})
 
     try:
-        tools_dir = str(Path(__file__).resolve().parent)
+        tools_dir = str(_PSERVER_TOOLS_DIR)
         if tools_dir not in sys.path:
             sys.path.insert(0, tools_dir)
         from magic_compositor import MagicCompositor  # type: ignore
@@ -2683,7 +2691,7 @@ def handle_watercolor_animate(h, body: dict)-> None:
     if not ok:
         return h._send_json(400, {"error": err})
 
-    wc_dir = Path(__file__).resolve().parent.parent / "assets" / "watercolor_library"
+    wc_dir = _PSERVER_PRODUCTION_DIR / "assets" / "watercolor_library"
     matches = list(wc_dir.glob(f"{watercolor_key}.*"))
     if not matches:
         return h._send_json(404, {
@@ -2715,7 +2723,7 @@ def handle_watercolor_animate(h, body: dict)-> None:
 
     # Resolve Anthropic key.
     try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "lib"))
+        sys.path.insert(0, str(_PSERVER_REPO_ROOT / "lib"))
         from credential_store import get_secret_optional  # type: ignore
         api_key = get_secret_optional("ANTHROPIC_API_KEY")
     except Exception:
