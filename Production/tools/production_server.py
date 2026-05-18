@@ -9505,15 +9505,21 @@ body {{padding-top:44px!important;}}
         except Exception as exc:  # noqa: BLE001
             print(f"[use-still-as-final] sidecar write failed (non-blocking): {exc}")
 
-        # Activity log fire-and-forget (reuse same helper).
+        # Activity log fire-and-forget (reuse same helper). On error, log to
+        # stderr — silently swallowing would lose the audit-trail-failure
+        # signal entirely (AI review 2026-05-18 PR #61 non-blocking finding).
         try:
             _async_log_use_as_final(
                 event_id=str(self.app.event_id),
                 beat_id=beat_id,
                 file=out_name,
             )
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[use-still-as-final] activity log write failed (non-blocking): {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
 
         # LD STILL_AS_FINAL_HOLD_DURATION_CONTROL_V1: soft warning if audio
         # exceeds hold_duration_s (audio will be cut at Stitcher mix).

@@ -29,6 +29,10 @@ entries:
 
   # ===========================================================================
   # 21 active load-bearing features (all grep-verified present 2026-05-17)
+  # [CONFIRMED against bash session: each entry below was verified via
+  # `grep -c <symbol> <target>` against the feature-branch tree at
+  # commit-time; counts captured in
+  # Production/docs/morph_fix_a_v2_evidence_20260518/manifest_grep_audit.log]
   # ===========================================================================
   # Still-as-final + hold-duration (LD-761/763/777)
   - { ld: LD-777, symbol: 'still-hold-input', kind: testid }
@@ -92,4 +96,10 @@ entries:
   # window instead of silently swallowing the click. Source-target because
   # the symbol may minify in the bundle; the source presence is the contract.
   # ===========================================================================
+  # Note: LD-739-740 is a hyphenated COMPOUND label for the two LDs filed for
+  # the same feature (LD-739 + LD-740 both reference guardedClick — one was
+  # the GREENFIELD design lock, the other the ship-row). [INFERRED — the
+  # `ld` field is consumed only as a label by event_smoke_test.sh:143 (no
+  # Directus lookup), so the compound form is safe; verify by reading the
+  # parse_entries Python heredoc.]
   - { ld: LD-739-740, symbol: 'guardedClick', kind: fn, target: source }

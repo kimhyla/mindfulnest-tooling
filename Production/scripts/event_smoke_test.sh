@@ -113,7 +113,11 @@ MANIFEST_SHA=$(shasum -a 256 "$MANIFEST" | awk '{print $1}')
 # Parse manifest entries (flow-style YAML).
 # Python parser — BSD awk on macOS lacks 3-arg match() (GNU-only).
 # Per DS-22 catch 2026-05-17 (awk parser silently produced 0 entries +
-# false-green). Python is robust + cross-platform + already in dep chain.
+# false-green). [CONFIRMED against bash session log
+# Production/docs/morph_fix_a_v2_evidence_20260518/awk_parser_failure.log
+# — the awk version of this loop returned exit 0 with CHECKED=0, masking
+# all marker failures.] Python is robust + cross-platform + already in
+# dep chain.
 # Each line: - { ld: X, symbol: 'Y', kind: Z, [target: T,] [status: S,] ... }
 # ----------------------------------------------------------------
 parse_entries() {

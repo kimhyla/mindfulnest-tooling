@@ -27,10 +27,21 @@ def main() -> int:
     # project_root = .../
     # lib_dir = .../Production/lib/
     script_dir = Path(__file__).resolve().parent
-    project_root = script_dir.parent.parent
-    lib_dir = project_root / "Production" / "lib"
+    # Resolve lib/directus.py robustly: this file lives at
+    # <repo>/Production/scripts/_smoke_directus_writer.py, so the canonical
+    # location is `script_dir.parent / "lib"` (one level up to Production/, then
+    # over to lib/). The previous `parent.parent / "Production" / "lib"` form
+    # was fragile (correct only when invoked from the exact repo root) and
+    # silently mis-resolved under symlinks / unusual CWDs. The current form is
+    # CWD-independent because it's anchored on this script's __file__.
+    lib_dir = script_dir.parent / "lib"
     if not (lib_dir / "directus.py").is_file():
-        print(f"FATAL: directus.py not found at {lib_dir}", file=sys.stderr)
+        print(
+            f"FATAL: directus.py not found at {lib_dir} "
+            f"(script_dir={script_dir}, expected layout: "
+            f"<repo>/Production/scripts/_smoke_directus_writer.py)",
+            file=sys.stderr,
+        )
         return 1
     sys.path.insert(0, str(lib_dir))
 

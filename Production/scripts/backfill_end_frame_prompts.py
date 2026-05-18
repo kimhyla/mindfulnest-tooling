@@ -68,14 +68,24 @@ def find_state_file(event_dir: str) -> Path:
     Accepts either a bare event name ("Event_1") or a relative path.
     Looks first under the tooling repo, then under the Dropbox project
     root so the script works from both trees.
+
+    Dropbox path is resolved from the MN_DROPBOX_ROOT env var (matches
+    deploy_storyboard_v59.sh convention) so this script works on any
+    machine — Kim's Mac AND any future CI / contributor machine. The
+    legacy hard-coded path is kept as a final fallback for cwd-naive
+    invocations on Kim's Mac during transition. [CONFIRMED against
+    deploy_storyboard_v59.sh which uses the same MN_DROPBOX_ROOT env
+    pattern with the same default Mac path.]
     """
+    dropbox_root_env = os.environ.get("MN_DROPBOX_ROOT")
+    dropbox_root = Path(
+        dropbox_root_env
+        or "/Users/kimberlysmith/Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files"
+    )
     candidates = [
         project_root() / event_dir / "production_state.json",
         project_root() / "Production" / event_dir / "production_state.json",
-        Path(
-            "/Users/kimberlysmith/Library/CloudStorage/Dropbox/"
-            "Claude Mindfulnest Project Files/Production"
-        ) / event_dir / "production_state.json",
+        dropbox_root / "Production" / event_dir / "production_state.json",
     ]
     for c in candidates:
         if c.exists():

@@ -273,6 +273,11 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
   const [busy, setBusy] = useState<string | null>(null); // which button is in-flight
 
   // LD-739/740 GREENFIELD: silent-click-on-busy-button class kill.
+  // Synchronous handler throws are caught and surfaced as an error toast —
+  // unhandled exceptions in a void-cast call would bubble to the Preact
+  // event boundary as console-only errors with no user feedback (AI review
+  // 2026-05-18 PR #61 non-blocking finding). Async rejections are owned by
+  // the handler itself (handlePlayRejection / runMutation toast paths).
   const guardedClick = (label: string, handler: () => unknown) => () => {
     if (busy !== null) {
       pushToast({
@@ -283,7 +288,16 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
       });
       return;
     }
-    void handler();
+    try {
+      void handler();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      pushToast({
+        kind: 'error',
+        message: `${label} failed: ${msg}`,
+        source: `beat-${index}-${label}-throw`,
+      });
+    }
   };
   const [trimIn, setTrimIn] = useState<string>(String(beat.trim_in ?? '0.0'));
   const [trimOut, setTrimOut] = useState<string>(String(beat.trim_out ?? 'full'));

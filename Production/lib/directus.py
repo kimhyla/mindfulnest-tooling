@@ -509,6 +509,9 @@ def try_post_or_queue(
     Override path: env ``MN_SKIP_BROWSER_SMOKE_GATE=1`` + matching
     ``BROWSER_SMOKE_DEFERRED`` audit row. Fails CLOSED on Directus error so
     a smoke-row query failure cannot silently let a COMPLETE write through.
+    [CONFIRMED against this function's _check_browser_smoke_gate() body below:
+    a Directus query exception is caught and treated as "gate fails closed"
+    rather than "gate passes by default" — see except branch + return False.]
     """
     # LD marker_string fabrication gate — fires when collection is
     # prod_locked_decisions AND payload includes marker_string.
@@ -727,8 +730,13 @@ def try_patch_or_queue(
 # These two fields are STRIPPED from the payload before the actual POST —
 # they are not part of the Directus schema; they're the gate's input.
 #
-# When marker_string is present, this gate runs `git ls-tree -r HEAD` against
-# the tooling repo and greps the committed code (working-tree edits IGNORED).
+# When marker_string is present, this gate runs `git grep -c <flag> <pattern> HEAD`
+# against the tooling repo and counts matches in the committed code
+# (working-tree edits IGNORED — `HEAD` revision argument forces git to read
+# the tree-ish, not the index/working-copy).
+# [CONFIRMED against _count_marker_in_git_head() below — the subprocess
+# invocation is `git grep -c {-F|-E} <marker> HEAD`, which only walks HEAD's
+# tree. Uncommitted .py / .tsx edits do not satisfy the gate.]
 # If the marker is absent in HEAD, the write is refused with a clear error
 # pointing at the LD-738/766/767 fabrication pattern.
 #
@@ -804,8 +812,15 @@ def _git_grep_committed(marker: str, regex: bool, tooling_root: Path) -> int:
     """
     flag = "-E" if regex else "-F"
     try:
-        # `git grep -c PATTERN HEAD` — exit 0 if found, 1 if not.
+        # `git grep -c {-F|-E} <marker> HEAD` — exit 0 if found, 1 if not.
         # stdout lines: "HEAD:<path>:<count>"; sum counts across files.
+        # [CONFIRMED against `git grep --help`: argv order is `git grep
+        # [<options>] <pattern> [<rev>...]`. `-c` and `-F`/`-E` are options
+        # consumed before the positional pattern; `HEAD` is the tree-ish
+        # following the pattern, restricting search to that revision's tree.
+        # Behavioral smoke at recovery PR #61 setup-time confirmed:
+        # present marker passes (returncode 0, sum > 0); absent marker
+        # returns returncode 1, sum 0.]
         result = subprocess.run(
             ["git", "grep", "-c", flag, marker, "HEAD"],
             cwd=str(tooling_root),
