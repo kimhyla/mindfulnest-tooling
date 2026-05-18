@@ -1,13 +1,12 @@
-// EventSelector — top-of-app dropdown for switching between events.
-// Per LD-467 MULTI_EVENT_SELECTOR_V1.
+// EventSelector — top-right tab-strip dropdown for cross-tab event scope.
+// Per LD-467 MULTI_EVENT_SELECTOR_V1 + D1 tie-all-tabs (supersedes LD-687).
 //
-// Reads /api/event/list, posts /api/event/load on change. Server's
-// event_load_lock + monotonic event_generation guarantee atomic swap;
-// async jobs pinned to old gen are rejected at terminal write per LD-460.
+// Reads /api/event/list, posts /api/event/load on change. Updates activeScope
+// and emits SCOPE_EVENT_CHANGED so all tabs re-fetch (no full page reload).
 
 import { useEffect, useState } from 'preact/hooks';
-import { activeScope, makeScope } from '../state/scope';
-import { apiGet } from '../api/client';
+import { activeScope, activeProjectType, makeScope, scopeKey } from '../state/scope';
+import { apiGet, emitScopeEventChanged } from '../api/client';
 import { MUTATION_ENDPOINTS } from '../api/endpoints';
 
 interface EventListItem {
@@ -30,6 +29,10 @@ export function EventSelector() {
   const [current, setCurrent] = useState<string>(activeScope.value.event_id);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    setCurrent(activeScope.value.event_id);
+  }, [activeScope.value.event_id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -61,26 +64,27 @@ export function EventSelector() {
       if (!res.ok) {
         const txt = await res.text().catch(() => '');
         setErr(`HTTP ${res.status}: ${txt.slice(0, 100)}`);
-        // Revert selection.
         target.value = current;
         return;
       }
       const data = (await res.json()) as { event_id: string; event_generation: number };
       setCurrent(data.event_id);
       activeScope.value = makeScope(data.event_id, null, data.event_generation);
-      // S5.5b Bug 4 fix B: update URL with ?event=<id> BEFORE reload so
-      // ScopeBoundary on next mount reads the correct event from the URL
-      // (its first resolution source). Belt + suspenders with the new
-      // /api/event/current endpoint (fix A).
+      activeProjectType.value = 'event';
       try {
         const url = new URL(window.location.href);
+        url.searchParams.delete('milestone');
         url.searchParams.set('event', data.event_id);
         window.history.replaceState({}, '', url.toString());
       } catch {
         // window.history not available in headless contexts — fall through.
       }
-      // Hard-reload so all v59 stores re-hydrate from the new event.
-      window.location.reload();
+      emitScopeEventChanged({
+        event_id: data.event_id,
+        event_generation: data.event_generation,
+        scope_key: scopeKey(activeScope.value),
+        source: 'scope-event-selector',
+      });
     } catch (e) {
       setErr(String(e));
       target.value = current;
@@ -94,19 +98,26 @@ export function EventSelector() {
       <label class="mn-event-selector-label" for="mn-event-select">Event:</label>
       <select
         id="mn-event-select"
-        data-testid="event-select"
         class="mn-event-select"
+        data-testid="event-select"
+        aria-label="scope-event-selector"
         value={current}
         onChange={onChange}
         disabled={loading}
       >
         {events.length === 0 ? (
-          <option value={current}>{current}</option>
+          <option value={current} data-testid={`scope-event-option-${current}`}>
+            {current}
+          </option>
         ) : (
-          events.map((e) => (
-            <option key={e.event_id} value={e.event_id}>
-              {e.event_id}
-              {e.is_current ? ' (current)' : ''}
+          events.map((ev) => (
+            <option
+              key={ev.event_id}
+              value={ev.event_id}
+              data-testid={`scope-event-option-${ev.event_id}`}
+            >
+              {ev.event_id}
+              {ev.is_current ? ' (current)' : ''}
             </option>
           ))
         )}

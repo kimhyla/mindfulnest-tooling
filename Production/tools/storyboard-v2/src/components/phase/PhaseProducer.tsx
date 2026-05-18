@@ -181,7 +181,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     let cancelled = false;
     (async () => { if (!cancelled) await refreshAll(); })();
     return () => { cancelled = true; };
-  }, [collapsed]);
+  }, [collapsed, activeScope.value.event_id]);
 
   // Listen for "magic or animate complete" postMessage from path_picker.html
   // (S5 LD-468/469/470 — supersedes S4 mn:watercolor-animated).

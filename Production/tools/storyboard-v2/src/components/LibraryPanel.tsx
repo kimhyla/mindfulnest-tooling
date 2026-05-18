@@ -308,7 +308,7 @@ export function LibraryPanel() {
     return () => {
       cancelled = true;
     };
-  }, [refreshTick]);
+  }, [refreshTick, activeScope.value.event_id]);
 
   const onDelete = async (item: LibItem) => {
     const k = item.key ?? item.abs_path;
@@ -494,13 +494,27 @@ export function LibraryPanel() {
           <ul class="mn-library-list" data-testid="library-list">
             {filteredItems.map((it, i) => {
               const libKey = it.key ?? it.abs_path ?? `item-${i}`;
-              const dragPayload: DragPayload = {
-                kind: 'lib-image',
-                lib_key: libKey,
-                tier: it.tier ?? 'unknown',
-                ...(it.abs_path ? { abs_path: it.abs_path } : {}),
-                ...(it.filename ? { filename: it.filename } : {}),
-              };
+              // Wave 5 R2 (Q1 source-side completion): emit lib-sfx for SFX-tier
+              // items so target-context-aware drop predicates (StitcherSlot SFX
+              // strip) can accept them. Images, watercolors, transitions stay as
+              // lib-image so existing image-slot drop targets continue working.
+              // Built as discriminated-union variants (DragPayload requires
+              // source_path on the lib-sfx variant).
+              const isSfxTier = tier === 'sfx' || tier === 'ambient';
+              const dragPayload: DragPayload = isSfxTier
+                ? {
+                    kind: 'lib-sfx',
+                    lib_key: libKey,
+                    tier: it.tier ?? 'unknown',
+                    source_path: it.abs_path ?? libKey,
+                  }
+                : {
+                    kind: 'lib-image',
+                    lib_key: libKey,
+                    tier: it.tier ?? 'unknown',
+                    ...(it.abs_path ? { abs_path: it.abs_path } : {}),
+                    ...(it.filename ? { filename: it.filename } : {}),
+                  };
               const dimsLabel = it.width && it.height ? `${it.width}×${it.height}` : undefined;
               const tileProps: {
                 libKey: string;

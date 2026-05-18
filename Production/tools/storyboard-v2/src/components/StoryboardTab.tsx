@@ -28,6 +28,7 @@ import { Spinner } from './ui/Spinner';
 import { pushToast } from './ui/Toast';
 import { Modal } from './ui/Modal';
 import { BeatAudioPreview } from './BeatAudioPreview';
+import { SuggestParentheticalDropdown } from './SuggestParentheticalDropdown';
 
 interface BeatState {
   speaker?: string;
@@ -92,6 +93,8 @@ interface BeatState {
   // STORYBOARD_AUDIO_DELAY_READ_NESTED_PATH_V2 (supersedes LD-694/695/698).
   audio_delay?: number;     // flattened shape from polling endpoint only
   delay_seconds?: number;   // legacy alias, deprecated
+  // V59 Phase 6 — Kim-reviewed-done flag (spec line 120).
+  kim_done?: boolean;
 }
 
 interface VideoPartition {
@@ -867,6 +870,61 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
     }
   };
 
+  const onParentheticalPick = async (p: string) => {
+    const current = editRef.current?.innerText ?? beat.text ?? '';
+    const newText = current ? `${p} ${current}` : p;
+    if (editRef.current) editRef.current.innerText = newText;
+    writeShadow(eventId, beatId, newText);
+    setStatus('saving');
+    setErrorMsg(null);
+    const result = await pathappPatch(activeScope.value, 'beat_update_text', {
+      beat: beatId,
+      text: newText,
+    });
+    if (result.ok) {
+      setStatus('saved');
+      setSavedAt(new Date().toISOString());
+      clearShadow(eventId, beatId);
+      onMutated();
+      setTimeout(() => setStatus((s) => (s === 'saved' ? 'idle' : s)), 2000);
+    } else {
+      setStatus('error');
+      setErrorMsg(result.error ?? `HTTP ${result.status}`);
+      pushToast({
+        kind: 'error',
+        message: `Parenthetical insert failed: ${result.error ?? 'unknown'}`,
+        source: 'parenthetical-insert',
+      });
+    }
+  };
+
+  const onKimDoneToggle = async () => {
+    const videoRole = activeTargetVideo.value;
+    try {
+      const res = await fetch(`${SERVER_BASE}/api/beat/done_toggle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ beat_id: beatId, video_role: videoRole }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({})) as { error?: string };
+        pushToast({
+          kind: 'error',
+          message: `Kim done toggle failed: ${err.error ?? res.statusText}`,
+          source: 'kim-done-toggle',
+        });
+        return;
+      }
+      onMutated();
+    } catch (e) {
+      pushToast({
+        kind: 'error',
+        message: `Kim done toggle failed: ${e instanceof Error ? e.message : 'network error'}`,
+        source: 'kim-done-toggle',
+      });
+    }
+  };
+
   const indicatorClass =
     status === 'saving'
       ? 'mn-save-indicator mn-save-saving'
@@ -921,6 +979,15 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
             stale TTS
           </span>
         ) : null}
+        <label class="mn-kim-done-wrap" title={beat.kim_done ? 'Kim marked done — uncheck to unset' : 'Click to mark beat as Kim-reviewed-done'}>
+          <input
+            type="checkbox"
+            data-testid={`kim-done-checkbox-${beatId}`}
+            checked={!!beat.kim_done}
+            onChange={() => void onKimDoneToggle()}
+          />
+          <span class="kim-done-label">{beat.kim_done ? '✓ Kim done' : 'Kim done?'}</span>
+        </label>
         <span
           class={indicatorClass}
           data-testid={`beat-save-${index}`}
@@ -957,15 +1024,18 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
         videoRef={videoRef as RefObject<HTMLVideoElement>}
         onPreviewEnded={handlePreviewEnded}
       />
-      <p
-        ref={editRef}
-        class="mn-beat-text mn-beat-editable"
-        data-testid={`beat-text-${index}`}
-        contentEditable
-        spellcheck
-        onInput={onInput}
-        onBlur={onBlur}
-      />
+      <div class="mn-beat-text-row">
+        <SuggestParentheticalDropdown onPick={(p) => void onParentheticalPick(p)} />
+        <p
+          ref={editRef}
+          class="mn-beat-text mn-beat-editable"
+          data-testid={`beat-text-${index}`}
+          contentEditable
+          spellcheck
+          onInput={onInput}
+          onBlur={onBlur}
+        />
+      </div>
       <BeatButtonRow
         index={index}
         beatId={beatId}

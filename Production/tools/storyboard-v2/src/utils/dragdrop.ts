@@ -67,11 +67,22 @@ export interface DropTargetHandlers {
   onDrop: (e: DragEvent) => void;
 }
 
+/** Drop surface kind — drives lib-sfx vs lib-image accept predicate (Q1 Option C). */
+export type DropTargetKind = 'sfx-strip' | 'image-slot';
+
+/** Target-context-aware accept predicate; ambiguous/unknown → lib-sfx only (safe default). */
+export function acceptDragForTarget(targetKind?: DropTargetKind): (payload: DragPayload) => boolean {
+  if (targetKind === 'image-slot') return (p) => p.kind === 'lib-image';
+  if (targetKind === 'sfx-strip') return (p) => p.kind === 'lib-sfx';
+  return (p) => p.kind === 'lib-sfx';
+}
+
 const DRAG_OVER_CLASS = 'is-drag-over';
 
 export function makeDropTarget(
   onDrop: (payload: DragPayload, event: DragEvent) => void,
-  filter?: (payload: DragPayload) => boolean,
+  filter?: (payload: DragPayload, targetKind?: DropTargetKind) => boolean,
+  targetKind?: DropTargetKind,
 ): DropTargetHandlers {
   return {
     onDragOver: (e: DragEvent) => {
@@ -99,7 +110,7 @@ export function makeDropTarget(
       el?.classList.remove(DRAG_OVER_CLASS);
       const payload = getDragData(e);
       if (!payload) return;
-      if (filter && !filter(payload)) return;
+      if (filter && !filter(payload, targetKind)) return;
       onDrop(payload, e);
     },
   };

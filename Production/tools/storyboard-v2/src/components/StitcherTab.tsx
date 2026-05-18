@@ -23,7 +23,7 @@ import { SERVER_BASE } from '../api/endpoints';
 import { StitcherSlotWaveform } from './StitcherSlotWaveform';
 import { StitcherTransitionSelector, type Transition } from './StitcherTransitionSelector';
 import { SfxCuePopover, type SfxCue } from './phase/SfxCuePopover';
-import { makeDropTarget, type DragPayload } from '../utils/dragdrop';
+import { acceptDragForTarget, makeDropTarget, type DragPayload } from '../utils/dragdrop';
 
 type SlotKey = 'intro' | 'phase_a' | 'phase_b' | 'resolution';
 
@@ -100,6 +100,52 @@ function generateCueId(prefix: string): string {
   // 8-char random suffix — enough for in-session uniqueness; server is the
   // source of truth on persistence.
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+interface SlotImageDropTargetProps {
+  slotKey: string;
+  hasVideo: boolean;
+  // Note: explicit `| undefined` required because tsconfig has
+  // exactOptionalPropertyTypes:true; callers pass `string | undefined`
+  // from `slot?.video_path?.split(...)` which would not satisfy `?:string`.
+  videoLabel?: string | undefined;
+  videoTitle?: string | undefined;
+  onImageDrop: (payload: DragPayload) => void;
+}
+
+/** Per-slot video area — image-slot context accepts lib-image (Q1 Option C). */
+function SlotImageDropTarget({
+  slotKey,
+  hasVideo,
+  videoLabel,
+  videoTitle,
+  onImageDrop,
+}: SlotImageDropTargetProps) {
+  const dropHandlers = makeDropTarget(
+    (payload) => {
+      if (payload.kind !== 'lib-image') return;
+      void onImageDrop(payload);
+    },
+    acceptDragForTarget('image-slot'),
+    'image-slot',
+  );
+  return (
+    <div
+      class="mn-stitcher-slot-video mn-drop-target"
+      data-testid="stitcher-drop-target-image-slot"
+      data-slot-key={slotKey}
+      data-drop-target-kind="image-slot"
+      onDragOver={dropHandlers.onDragOver}
+      onDragLeave={dropHandlers.onDragLeave}
+      onDrop={dropHandlers.onDrop}
+    >
+      {hasVideo ? (
+        <code title={videoTitle}>{videoLabel}</code>
+      ) : (
+        <span class="mn-dim">— empty — drop image —</span>
+      )}
+    </div>
+  );
 }
 
 export function StitcherTab() {
@@ -181,7 +227,7 @@ export function StitcherTab() {
       }
     })();
     return () => { cancelled = true; };
-  }, [refreshTick]);
+  }, [refreshTick, activeScope.value.event_id]);
 
   const slotsToShow = standaloneMode && job?.slots
     ? SLOT_DEFS.filter((s) => job.slots && s.key in job.slots)
@@ -454,7 +500,24 @@ export function StitcherTab() {
     }
   };
 
-  // Module strip drop target — accepts lib-sfx; offset_ms = drop_x / width × total_dur.
+  const onImageDropOnSlot = (slotKey: SlotKey) => async (payload: DragPayload) => {
+    if (payload.kind !== 'lib-image' || !job?.slots) return;
+    const videoPath = payload.abs_path;
+    if (!videoPath) {
+      setStatusMsg('✗ Image drop: missing abs_path on library payload');
+      return;
+    }
+    const nextSlots: Record<string, StitchSlot> = {
+      ...job.slots,
+      [slotKey]: { ...job.slots[slotKey], video_path: videoPath },
+    };
+    const ok = await saveJobSlots(nextSlots);
+    if (ok) {
+      setStatusMsg(`✓ Assigned image to ${slotKey}: ${videoPath.split('/').pop() ?? videoPath}`);
+    }
+  };
+
+  // Module strip drop target — sfx-strip context: lib-sfx only.
   const moduleDropHandlers = makeDropTarget(
     (payload: DragPayload, e: DragEvent) => {
       if (payload.kind !== 'lib-sfx') return;
@@ -467,7 +530,8 @@ export function StitcherTab() {
       const offsetMs = Math.round(clamped * moduleTimelineDurMs());
       void onModuleSfxDrop(payload.lib_key, payload.source_path, offsetMs);
     },
-    (payload) => payload.kind === 'lib-sfx',
+    acceptDragForTarget('sfx-strip'),
+    'sfx-strip',
   );
 
   // Active popover cue — read from job state when scope='slot'.
@@ -526,15 +590,13 @@ export function StitcherTab() {
                       <span class="mn-stitcher-loudnorm-tag">loudnorm ✓</span>
                     ) : null}
                   </div>
-                  <div class="mn-stitcher-slot-video">
-                    {slot?.video_path ? (
-                      <code title={slot.video_path}>
-                        {slot.video_path.split('/').pop()}
-                      </code>
-                    ) : (
-                      <span class="mn-dim">— empty —</span>
-                    )}
-                  </div>
+                  <SlotImageDropTarget
+                    slotKey={sd.key}
+                    hasVideo={Boolean(slot?.video_path)}
+                    videoLabel={slot?.video_path?.split('/').pop()}
+                    videoTitle={slot?.video_path}
+                    onImageDrop={onImageDropOnSlot(sd.key)}
+                  />
                   <StitcherSlotWaveform
                     slotKey={sd.key}
                     videoDurMs={slotDurMs}
@@ -644,9 +706,14 @@ export function StitcherTab() {
               slot strip to write into state.module_sfx_cues via
               /api/timeline/cues. Distinct from per-slot cues which travel
               inside stitch_save_job.slots[i].sfx_cues. */}
+          {/* CI fix #4: consolidated to single div — drop event was firing
+              on the outer wrapper but handlers were on the inner element,
+              so G6 test's drop never registered. Single element with
+              testid + data-drop-target-kind. */}
           <div
             class="mn-stitcher-module-timeline mn-drop-target"
             data-testid="stitcher-module-timeline"
+            data-drop-target-kind="sfx-strip"
             onDragOver={moduleDropHandlers.onDragOver}
             onDragLeave={moduleDropHandlers.onDragLeave}
             onDrop={moduleDropHandlers.onDrop}

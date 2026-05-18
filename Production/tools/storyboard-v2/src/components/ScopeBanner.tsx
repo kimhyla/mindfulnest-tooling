@@ -25,13 +25,29 @@ export function ScopeBanner() {
   useEffect(() => {
     const onMismatch = (e: Event) => {
       const detail = (e as CustomEvent).detail ?? {};
-      const got = (detail as Record<string, unknown>)['data'];
+      const detailMap = detail as Record<string, unknown>;
+      // Wave 5 R3: prefer V59 canonical error shape (Phase 7) when present;
+      // fall back to legacy detail.data shape used by LD-456 pre-V59 emitters.
+      const v59Message = detailMap['error_message'];
+      const v59Code = detailMap['error_code'];
+      const v59Hint = detailMap['hint'];
+      if (typeof v59Message === 'string' && v59Code === 'SCOPE_MISMATCH') {
+        const hintText = typeof v59Hint === 'string' && v59Hint ? ` ${v59Hint}` : ' Reload the tab to re-resolve.';
+        banner.value = {
+          kind: 'mismatch',
+          message: `Scope mismatch: ${v59Message}.${hintText}`,
+          detail: detailMap,
+        };
+        return;
+      }
+      // Legacy shape: detail.data.{expected_event_id, got_event_id}
+      const got = detailMap['data'];
       const expected = (got && typeof got === 'object' ? (got as Record<string, unknown>)['expected_event_id'] : undefined) ?? '?';
       const actual = (got && typeof got === 'object' ? (got as Record<string, unknown>)['got_event_id'] : undefined) ?? '?';
       banner.value = {
         kind: 'mismatch',
         message: `Scope mismatch: server is on ${String(expected)} but client sent ${String(actual)}. Reload the tab to re-resolve.`,
-        detail: detail as Record<string, unknown>,
+        detail: detailMap,
       };
     };
     const onChanged = (e: Event) => {

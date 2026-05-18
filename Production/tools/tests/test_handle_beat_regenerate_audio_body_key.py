@@ -132,10 +132,29 @@ class BeatRegenerateAudioBodyKeyContractTests(unittest.TestCase):
             }
 
         _ps._tts_regenerate_for_beat = _fake_tts
+        # V59 Phase 4 (handler split): _handle_beat_regenerate_audio is now a
+        # shim that delegates to server_handlers.beats_legacy.handle_beat_
+        # regenerate_audio. That extracted module imports _tts_regenerate_
+        # for_beat at module load time, creating a LOCAL binding that's not
+        # affected by `_ps._tts_regenerate_for_beat = ...`. Patch the local
+        # binding too so the monkey-patch takes effect.
+        #
+        # CRITICAL: the shim in production_server.py imports via
+        # `from server_handlers.beats_legacy import ...` (no `tools.` prefix
+        # — production_server lives in Production/tools/, which is on sys.path).
+        # Importing here as `tools.server_handlers.beats_legacy` would resolve
+        # to a SEPARATE module object in sys.modules with its own namespace —
+        # patching that wouldn't affect the shim's lookup. So use the SAME
+        # alias path as the shim.
+        import server_handlers.beats_legacy as _bl
+        self._bl_mod = _bl
+        self._original_bl_tts = _bl._tts_regenerate_for_beat
+        _bl._tts_regenerate_for_beat = _fake_tts
 
     def tearDown(self):
         # Restore monkey-patches so other tests aren't affected.
         _ps._tts_regenerate_for_beat = self._original_tts
+        self._bl_mod._tts_regenerate_for_beat = self._original_bl_tts
         if self._original_creds_mod is None:
             sys.modules.pop("credentials", None)
         else:

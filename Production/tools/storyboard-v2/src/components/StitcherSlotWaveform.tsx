@@ -1,25 +1,7 @@
-// StitcherSlotWaveform — per-slot drop target with cue markers for SFX cue
-// authoring. Per S5.5g spec §3.2 + STITCHER_SFX_CUE_UI_V1 (HARD).
-//
-// Why a separate component (not WaveformTimeline reuse):
-//   - WaveformTimeline (S5.5f) is wired tightly to watercolor cues with
-//     `cue.animation_type` + `lib-watercolor` drop kind. Extending it to a
-//     discriminated-union of cue kinds would invade the Phase A/B test
-//     surface. A sibling component for SFX semantics keeps each surface
-//     self-contained and Phase B's risk bounded.
-//   - Stitcher slots are short (intro/resolution ~30s, phase_a/b ~30-60s)
-//     and don't require WaveSurfer's full audio decode + zoom UI; a static
-//     drop-target rectangle with positioned cue markers is sufficient and
-//     stays well under the slot's UI budget.
-//
-// Contract:
-//   - Drop target accepts `lib-sfx` payloads only (filter dropped on other kinds)
-//   - onSfxDrop receives (lib_key, source_path, offset_ms) where offset_ms
-//     is computed from drop_x / wrapper_width × video_dur_ms
-//   - onCueClick fires when a marker is clicked; the parent opens the popover
+// StitcherSlotWaveform — per-slot SFX strip drop target (Q1 Option C: sfx-strip → lib-sfx).
 
 import { useRef } from 'preact/hooks';
-import { makeDropTarget, type DragPayload } from '../utils/dragdrop';
+import { acceptDragForTarget, makeDropTarget, type DragPayload } from '../utils/dragdrop';
 import type { SfxCue } from './phase/SfxCuePopover';
 
 export interface StitcherSlotWaveformProps {
@@ -52,7 +34,8 @@ export function StitcherSlotWaveform({
       const offsetMs = Math.round(clamped * videoDurMs);
       onSfxDrop(payload.lib_key, payload.source_path, offsetMs);
     },
-    (payload) => payload.kind === 'lib-sfx',
+    acceptDragForTarget('sfx-strip'),
+    'sfx-strip',
   );
 
   const cuePctLeft = (cue: SfxCue): number => {
@@ -61,10 +44,17 @@ export function StitcherSlotWaveform({
   };
 
   return (
+    // CI fix #4: consolidated to single div (Q1's outer-wrapper pattern
+    // broke G3 — drops on outer never reached inner-element drop handlers).
+    // Restores the original pre-Q1 DOM shape where slot-waveform testid +
+    // drop handlers + data-drop-target-kind are all on the SAME element.
+    /* eslint-disable-next-line jsx-a11y/no-static-element-interactions */
     <div
       ref={wrapperRef}
       class="mn-stitcher-slot-waveform mn-drop-target"
       data-testid={`stitcher-slot-waveform-${slotKey}`}
+      data-drop-target-kind="sfx-strip"
+      data-slot-key={slotKey}
       data-video-dur-ms={videoDurMs}
       data-cue-count={cues.length}
       onDragOver={dropHandlers.onDragOver}
