@@ -81,19 +81,25 @@ def handle_state_snapshot(h, body: dict) -> None:
 
     state_path = h.app.event_dir / "production_state.json"
     if not state_path.exists():
-        return h._send_json(404, {
-            "error": "production_state.json not found",
-            "hint": f"expected at {state_path}",
-        })
+        return h._send_error_v59(
+                   404,
+                   error_code="PRODUCTION_STATE_JSON_NOT_FOUND",
+                   error_message="production_state.json not found",
+                   retry_safe=False,
+                   extra={"hint": f"expected at {state_path}"},
+               )
 
     backups_dir = h.app.event_dir / ".backups" / "state"
     try:
         backups_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        return h._send_json(500, {
-            "error": f"could not create backups dir: {exc}",
-            "backups_dir": str(backups_dir),
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"could not create backups dir: {exc}",
+                   retry_safe=True,
+                   extra={"backups_dir": str(backups_dir)},
+               )
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%SZ")
     backup_path = backups_dir / f"{ts}.json"
@@ -107,10 +113,13 @@ def handle_state_snapshot(h, body: dict) -> None:
             shutil.copy2(state_path, backup_path)
             method = "copy"
     except OSError as exc:
-        return h._send_json(500, {
-            "error": f"snapshot write failed: {exc}",
-            "backup_path": str(backup_path),
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"snapshot write failed: {exc}",
+                   retry_safe=True,
+                   extra={"backup_path": str(backup_path)},
+               )
 
     # SHA-256 the result so callers can verify integrity.
     try:
@@ -262,8 +271,12 @@ def handle_health(h) -> None:
 
 def serve_storyboard(h) -> None:
     if not h.app.storyboard_path.is_file():
-        return h._send_json(500, {
-            "error": f"storyboard not found: {h.app.storyboard_path}"})
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"storyboard not found: {h.app.storyboard_path}",
+                   retry_safe=True,
+               )
     html = h.app.storyboard_path.read_text(encoding="utf-8")
     nav = h._build_storyboard_nav_html()
     if "</body>" in html:

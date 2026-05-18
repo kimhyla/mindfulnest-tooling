@@ -99,7 +99,12 @@ def serve_magic_picker(h)-> None:
     import urllib.parse as _up
     picker = _PSERVER_PRODUCTION_DIR / "path_picker.html"
     if not picker.exists():
-        return h._send_json(404, {"error": "path_picker.html not found"})
+        return h._send_error_v59(
+                   404,
+                   error_code="PATH_PICKER_HTML_NOT_FOUND",
+                   error_message="path_picker.html not found",
+                   retry_safe=False,
+               )
     html = picker.read_bytes()
     h.send_response(200)
     h.send_header("Content-Type", "text/html; charset=utf-8")
@@ -117,10 +122,22 @@ def handle_magic_resolve_bg(h)-> None:
     qs = _up.parse_qs(_up.urlparse(h.path).query)
     scene_key = (qs.get("scene_key") or [None])[0]
     if not scene_key:
-        return h._send_json(400, {"ok": False, "error": "scene_key required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="SCENE_KEY_REQUIRED",
+                   error_message="scene_key required",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     reg_path = _PSERVER_PRODUCTION_DIR / "scene_registry.yaml"
     if not reg_path.exists():
-        return h._send_json(404, {"ok": False, "error": "scene_registry.yaml not found"})
+        return h._send_error_v59(
+                   404,
+                   error_code="SCENE_REGISTRY_YAML_NOT_FOUND",
+                   error_message="scene_registry.yaml not found",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     registry = _yaml.safe_load(reg_path.read_text()) or {}
     scene = registry.get(scene_key, {})
     # Resolve from well-known paths
@@ -142,7 +159,13 @@ def handle_magic_resolve_bg(h)-> None:
         if c.exists():
             bg_url = f"/files?path={_up.quote(str(c))}"
             return h._send_json(200, {"ok": True, "bg_url": bg_url, "bg_path": str(c)})
-    return h._send_json(404, {"ok": False, "error": f"No background still found for {scene_key}"})
+    return h._send_error_v59(
+               404,
+               error_code="GENERIC_ERROR",
+               error_message=f"No background still found for {scene_key}",
+               retry_safe=False,
+               extra={"ok": False},
+           )
 
 
 def handle_magic_status(h)-> None:
@@ -152,10 +175,22 @@ def handle_magic_status(h)-> None:
     qs = _up.parse_qs(_up.urlparse(h.path).query)
     job_id = (qs.get("job_id") or [None])[0]
     if not job_id:
-        return h._send_json(400, {"ok": False, "error": "job_id required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="JOB_ID_REQUIRED",
+                   error_message="job_id required",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     job = _MAGIC_JOBS.get(job_id)
     if not job:
-        return h._send_json(404, {"ok": False, "error": "job not found"})
+        return h._send_error_v59(
+                   404,
+                   error_code="JOB_NOT_FOUND",
+                   error_message="job not found",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     # Translate file paths to serveable URLs
     import urllib.parse as _up2
     resp = dict(job)
@@ -183,16 +218,15 @@ def handle_magic_submit_path(h, body: dict)-> None:
     # If the event was swapped via /api/event/load between scope-guard
     # and work start, abort BEFORE any expensive work begins.
     if not h._check_event_pin(_pin, '_handle_magic_submit_path_pre_work'):
-        return h._send_json(423, {
-            "error": "event_changed_pre_work",
-            "code": "ASYNC_JOB_GENERATION_PIN_V1",
-            "handler": '_handle_magic_submit_path',
-            "hint": (
-                "Event changed between scope-guard and work start. "
+        return h._send_error_v59(
+                   423,
+                   error_code="EVENT_CHANGED_PRE_WORK",
+                   error_message="event_changed_pre_work",
+                   retry_safe=False,
+                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "handler": '_handle_magic_submit_path', "hint": "Event changed between scope-guard and work start. "
                 "No work was done; no orphan output. Client should "
-                "re-hydrate scope and retry."
-            ),
-        })
+                "re-hydrate scope and retry."},
+               )
 
     import threading as _th
     import traceback as _tb
@@ -205,21 +239,56 @@ def handle_magic_submit_path(h, body: dict)-> None:
 
     # ── Validation ────────────────────────────────────────────────
     if not scene_key:
-        return h._send_json(400, {"ok": False, "error": "scene_key required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="SCENE_KEY_REQUIRED",
+                   error_message="scene_key required",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     if not manual_path or not isinstance(manual_path, list):
-        return h._send_json(400, {"ok": False, "error": "manual_path required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MANUAL_PATH_REQUIRED",
+                   error_message="manual_path required",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     if len(manual_path) < 2:
-        return h._send_json(400, {"ok": False, "error": "manual_path must have ≥ 2 points"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MANUAL_PATH_MUST_HAVE_POINTS",
+                   error_message="manual_path must have ≥ 2 points",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     if len(manual_path) > 20:
-        return h._send_json(400, {"ok": False, "error": "manual_path max 20 points"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MANUAL_PATH_MAX_POINTS",
+                   error_message="manual_path max 20 points",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     for i, pt in enumerate(manual_path):
         try:
             x, y = float(pt[0]), float(pt[1])
         except (TypeError, IndexError, ValueError):
-            return h._send_json(400, {"ok": False, "error": f"point {i} malformed: {pt}"})
+            return h._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"point {i} malformed: {pt}",
+                       retry_safe=False,
+                       extra={"ok": False},
+                   )
         if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
-            return h._send_json(400, {"ok": False,
-                "error": f"point {i} out of range: [{x},{y}] must be in [0,1]"})
+            return h._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"point {i} out of range: [{x},{y}] must be in [0,1]",
+                       retry_safe=False,
+                       extra={"ok": False},
+                   )
 
     # Normalize to list of [float, float]
     path_pts_clean = [[float(pt[0]), float(pt[1])] for pt in manual_path]
@@ -454,12 +523,27 @@ def handle_magic_still(h, body: dict)-> None:
     manual_path = (body or {}).get("manual_path") or []
     source_image_path_raw = (body or {}).get("source_image_path") or ""
     if not beat_id:
-        return h._send_json(400, {"error": "beat_id required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_BEAT_ID",
+                   error_message="beat_id required",
+                   retry_safe=False,
+               )
     if not source_image_path_raw:
-        return h._send_json(400, {"error": "source_image_path required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="SOURCE_IMAGE_PATH_REQUIRED",
+                   error_message="source_image_path required",
+                   retry_safe=False,
+               )
     ok, clean_path, err = h._validate_manual_path(manual_path)
     if not ok:
-        return h._send_json(400, {"error": err})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=err,
+                   retry_safe=False,
+               )
 
     # Resolve absolute path for source image; reject paths outside project.
     # Security (CodeQL py/path-injection — separator-anchored containment +
@@ -476,19 +560,38 @@ def handle_magic_still(h, body: dict)-> None:
     # MED-4 (magic_compositor.py label sanitizer is mooted when callers
     # pass an explicit output_path constructed from raw beat_id).
     if "/" in beat_id or "\\" in beat_id or ".." in beat_id or beat_id.startswith("."):
-        return h._send_json(400, {"error": "invalid beat_id"})
+        return h._send_error_v59(
+                   400,
+                   error_code="INVALID_BEAT_ID",
+                   error_message="invalid beat_id",
+                   retry_safe=False,
+               )
     import re as _re_mid_a
     if not _re_mid_a.match(r"^[A-Za-z0-9][A-Za-z0-9_-]*$", beat_id):
-        return h._send_json(400, {"error": "beat_id must match [A-Za-z0-9_-]+"})
+        return h._send_error_v59(
+                   400,
+                   error_code="INVALID_BEAT_ID",
+                   error_message="beat_id must match [A-Za-z0-9_-]+",
+                   retry_safe=False,
+               )
     try:
         sip = require_path_under_anchor(str(sip), h.app.event_dir.parent.parent)
     except ValueError:
-        return h._send_json(400, {"error": "source_image_path outside project root"})
+        return h._send_error_v59(
+                   400,
+                   error_code="SOURCE_IMAGE_PATH_OUTSIDE_PROJECT",
+                   error_message="source_image_path outside project root",
+                   retry_safe=False,
+               )
     safe_sip = os.path.realpath(str(sip))
     if not os.path.isfile(safe_sip):
-        return h._send_json(404, {
-            "error": "source_image not found", "path": safe_sip,
-        })
+        return h._send_error_v59(
+                   404,
+                   error_code="SOURCE_IMAGE_NOT_FOUND",
+                   error_message="source_image not found",
+                   retry_safe=False,
+                   extra={"path": safe_sip},
+               )
 
     # LD-460 pin
     _pin = {
@@ -498,10 +601,13 @@ def handle_magic_still(h, body: dict)-> None:
         "_handler": "_handle_magic_still",
     }
     if not h._check_event_pin(_pin, "magic_still_pre_work"):
-        return h._send_json(423, {
-            "error": "event_changed_pre_work",
-            "code": "ASYNC_JOB_GENERATION_PIN_V1",
-        })
+        return h._send_error_v59(
+                   423,
+                   error_code="EVENT_CHANGED_PRE_WORK",
+                   error_message="event_changed_pre_work",
+                   retry_safe=False,
+                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1"},
+               )
 
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_dir = h.app.event_dir
@@ -526,16 +632,21 @@ def handle_magic_still(h, body: dict)-> None:
         rendered = mc.render_video(output_path=str(out_path))
     except Exception as exc:
         traceback.print_exc()
-        return h._send_json(500, {
-            "error": f"magic_compositor failed: {type(exc).__name__}: {exc}",
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"magic_compositor failed: {type(exc).__name__}: {exc}",
+                   retry_safe=True,
+               )
 
     if not h._check_event_pin(_pin, "magic_still_terminal"):
-        return h._send_json(423, {
-            "error": "event_changed_mid_job",
-            "code": "ASYNC_JOB_GENERATION_PIN_V1",
-            "orphaned_output": str(rendered),
-        })
+        return h._send_error_v59(
+                   423,
+                   error_code="EVENT_CHANGED_MID_JOB",
+                   error_message="event_changed_mid_job",
+                   retry_safe=False,
+                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "orphaned_output": str(rendered)},
+               )
 
     registered_id: int | None = None
     try:
@@ -598,12 +709,27 @@ def handle_magic_video(h, body: dict)-> None:
     manual_path = (body or {}).get("manual_path") or []
     source_video_path_raw = (body or {}).get("source_video_path") or ""
     if not beat_id:
-        return h._send_json(400, {"error": "beat_id required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_BEAT_ID",
+                   error_message="beat_id required",
+                   retry_safe=False,
+               )
     if not source_video_path_raw:
-        return h._send_json(400, {"error": "source_video_path required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="SOURCE_VIDEO_PATH_REQUIRED",
+                   error_message="source_video_path required",
+                   retry_safe=False,
+               )
     ok, clean_path, err = h._validate_manual_path(manual_path)
     if not ok:
-        return h._send_json(400, {"error": err})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=err,
+                   retry_safe=False,
+               )
 
     svp = Path(source_video_path_raw)
     if not svp.is_absolute():
@@ -615,25 +741,49 @@ def handle_magic_video(h, body: dict)-> None:
     # broken symlinks). Reject in BOTH failure modes; never let a path
     # with unverified containment flow into ffmpeg.
     if "/" in beat_id or "\\" in beat_id or ".." in beat_id or beat_id.startswith("."):
-        return h._send_json(400, {"error": "invalid beat_id"})
+        return h._send_error_v59(
+                   400,
+                   error_code="INVALID_BEAT_ID",
+                   error_message="invalid beat_id",
+                   retry_safe=False,
+               )
     import re as _re_mid_b
     if not _re_mid_b.match(r"^[A-Za-z0-9][A-Za-z0-9_-]*$", beat_id):
-        return h._send_json(400, {"error": "beat_id must match [A-Za-z0-9_-]+"})
+        return h._send_error_v59(
+                   400,
+                   error_code="INVALID_BEAT_ID",
+                   error_message="beat_id must match [A-Za-z0-9_-]+",
+                   retry_safe=False,
+               )
     try:
         svp = require_path_under_anchor(str(svp), h.app.event_dir.parent.parent)
     except ValueError:
-        return h._send_json(400, {"error": "source_video_path outside project root"})
+        return h._send_error_v59(
+                   400,
+                   error_code="SOURCE_VIDEO_PATH_OUTSIDE_PROJECT",
+                   error_message="source_video_path outside project root",
+                   retry_safe=False,
+               )
     safe_svp_check = os.path.realpath(str(svp))
     if not os.path.isfile(safe_svp_check):
-        return h._send_json(404, {
-            "error": "source_video not found", "path": safe_svp_check,
-        })
+        return h._send_error_v59(
+                   404,
+                   error_code="SOURCE_VIDEO_NOT_FOUND",
+                   error_message="source_video not found",
+                   retry_safe=False,
+                   extra={"path": safe_svp_check},
+               )
     try:
         ffmpeg_src = require_media_under_project(
             str(svp), extensions=VIDEO_EXTENSIONS,
         )
     except ValueError as exc:
-        return h._send_json(400, {"error": str(exc)})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=str(exc),
+                   retry_safe=False,
+               )
 
     safe_ffmpeg_src = os.path.realpath(ffmpeg_src)
 
@@ -656,12 +806,20 @@ def handle_magic_video(h, body: dict)-> None:
         if vid_duration <= 0:
             vid_duration = float(_ffprobe_duration(Path(safe_ffmpeg_src)) or 0)
     except subprocess.CalledProcessError as exc:
-        return h._send_json(500, {
-            "error": "ffprobe failed",
-            "stderr": exc.stderr.decode("utf-8", errors="replace")[-500:],
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="FFPROBE_FAILED",
+                   error_message="ffprobe failed",
+                   retry_safe=True,
+                   extra={"stderr": exc.stderr.decode("utf-8", errors="replace")[-500:]},
+               )
     if vid_duration <= 0:
-        return h._send_json(500, {"error": "could not determine source duration"})
+        return h._send_error_v59(
+                   500,
+                   error_code="SOURCE_DURATION_UNAVAILABLE",
+                   error_message="could not determine source duration",
+                   retry_safe=True,
+               )
 
     # LD-460 pin
     _pin = {
@@ -671,10 +829,13 @@ def handle_magic_video(h, body: dict)-> None:
         "_handler": "_handle_magic_video",
     }
     if not h._check_event_pin(_pin, "magic_video_pre_work"):
-        return h._send_json(423, {
-            "error": "event_changed_pre_work",
-            "code": "ASYNC_JOB_GENERATION_PIN_V1",
-        })
+        return h._send_error_v59(
+                   423,
+                   error_code="EVENT_CHANGED_PRE_WORK",
+                   error_message="event_changed_pre_work",
+                   retry_safe=False,
+                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1"},
+               )
 
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_dir = h.app.event_dir
@@ -690,7 +851,12 @@ def handle_magic_video(h, body: dict)-> None:
         black_ref = out_dir / f"_tmp_black_ref_{beat_id}_{ts}.png"
         _PILImage.new("RGB", (width, height), (0, 0, 0)).save(black_ref)
     except Exception as exc:
-        return h._send_json(500, {"error": f"could not create black ref: {exc}"})
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"could not create black ref: {exc}",
+                   retry_safe=True,
+               )
 
     try:
         tools_dir = str(_PSERVER_TOOLS_DIR)
@@ -711,9 +877,12 @@ def handle_magic_video(h, body: dict)-> None:
         mc.render_video(output_path=str(magic_only_path), black_bg=True)
     except Exception as exc:
         traceback.print_exc()
-        return h._send_json(500, {
-            "error": f"magic_compositor (black_bg) failed: {type(exc).__name__}: {exc}",
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"magic_compositor (black_bg) failed: {type(exc).__name__}: {exc}",
+                   retry_safe=True,
+               )
     finally:
         try:
             black_ref.unlink(missing_ok=True)
@@ -736,12 +905,20 @@ def handle_magic_video(h, body: dict)-> None:
     try:
         subprocess.run(cmd, check=True, capture_output=True, timeout=300)
     except subprocess.CalledProcessError as exc:
-        return h._send_json(500, {
-            "error": "ffmpeg blend failed",
-            "stderr": exc.stderr.decode("utf-8", errors="replace")[-1000:],
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="FFMPEG_BLEND_FAILED",
+                   error_message="ffmpeg blend failed",
+                   retry_safe=True,
+                   extra={"stderr": exc.stderr.decode("utf-8", errors="replace")[-1000:]},
+               )
     except subprocess.TimeoutExpired:
-        return h._send_json(504, {"error": "ffmpeg blend timed out (>300s)"})
+        return h._send_error_v59(
+                   504,
+                   error_code="FFMPEG_BLEND_TIMED_OUT",
+                   error_message="ffmpeg blend timed out (>300s)",
+                   retry_safe=True,
+               )
     finally:
         try:
             magic_only_path.unlink(missing_ok=True)
@@ -749,11 +926,13 @@ def handle_magic_video(h, body: dict)-> None:
             pass
 
     if not h._check_event_pin(_pin, "magic_video_terminal"):
-        return h._send_json(423, {
-            "error": "event_changed_mid_job",
-            "code": "ASYNC_JOB_GENERATION_PIN_V1",
-            "orphaned_output": str(out_path),
-        })
+        return h._send_error_v59(
+                   423,
+                   error_code="EVENT_CHANGED_MID_JOB",
+                   error_message="event_changed_mid_job",
+                   retry_safe=False,
+                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "orphaned_output": str(out_path)},
+               )
 
     registered_id: int | None = None
     try:
@@ -813,7 +992,12 @@ def handle_bg_crop_preview(h)-> None:
     raw_keys = (qs.get("keys") or [""])[0]
     keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
     if not keys:
-        return h._send_json(400, {"error": "keys param required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="KEYS_PARAM_REQUIRED",
+                   error_message="keys param required",
+                   retry_safe=False,
+               )
 
     # Security (CodeQL py/path-injection alerts #12, #13): reject any key
     # containing path separators, leading dot, or '..' to prevent traversal
@@ -822,7 +1006,12 @@ def handle_bg_crop_preview(h)-> None:
     _SAFE_KEY = _re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]*$")
     for k in keys:
         if ".." in k or "/" in k or "\\" in k or k.startswith(".") or not _SAFE_KEY.match(k):
-            return h._send_json(400, {"error": f"invalid key: {k!r}"})
+            return h._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"invalid key: {k!r}",
+                       retry_safe=False,
+                   )
 
     bg = _bg_module()
     crops_dir = os.path.join(bg.BG_STILLS_DIR, "crops")
@@ -972,7 +1161,12 @@ def handle_bg_poll_flux(h)-> None:
     qs = urllib.parse.parse_qs(urllib.parse.urlparse(h.path).query)
     raw = (qs.get("request_ids") or [""])[0]
     if not raw:
-        return h._send_json(400, {"error": "request_ids required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="REQUEST_IDS_REQUIRED",
+                   error_message="request_ids required",
+                   retry_safe=False,
+               )
     request_ids = [r.strip() for r in raw.split(",") if r.strip()]
 
     bg = _bg_module()
@@ -1125,7 +1319,12 @@ def handle_bg_inject_beats(h, body: dict)-> None:
     phase      = str(body.get("phase", "full"))
     incoming_beats = body.get("beats", [])
     if not incoming_beats:
-        return h._send_json(400, {"error": "beats array required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_BEATS_ARRAY",
+                   error_message="beats array required",
+                   retry_safe=False,
+               )
     bg = _bg_module()
     beat_ids = []
     # Map incoming skill fields to sidecar beat schema
@@ -1185,7 +1384,12 @@ def handle_bg_update_beat(h, body: dict)-> None:
         return  # LD-461 SCOPE_BODY_HELPER_V1 — migrated from hand-rolled dict
     beat_id = body.get("beat_id")
     if not beat_id:
-        return h._send_json(400, {"error": "beat_id required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_BEAT_ID",
+                   error_message="beat_id required",
+                   retry_safe=False,
+               )
     bg = _bg_module()
     _BG_BEAT_WRITABLE = frozenset({
         "speaker", "dialogue_text", "scene_notes", "emotion",
@@ -1207,8 +1411,13 @@ def handle_bg_update_beat(h, body: dict)-> None:
     })
     unknown = set(body.keys()) - _BG_BEAT_WRITABLE - _BG_BEAT_SCOPE_KEYS
     if unknown:
-        return h._send_json(400, {"ok": False,
-                                      "error": f"Unknown beat fields: {sorted(unknown)}"})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"Unknown beat fields: {sorted(unknown)}",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     # 2026-05-11 Rule 26 fix — when client drops a library image into
     # the Char ref / BG ref slot, server-side PIL thumbnail generation
     # ensures BgRefSlot displays the IMAGE (not the lib_key string).
@@ -1218,7 +1427,12 @@ def handle_bg_update_beat(h, body: dict)-> None:
         sidecar = bg._load_sidecar_migrated()
         _, beat = bg.find_beat(sidecar, beat_id)
         if not beat:
-            return h._send_json(404, {"error": f"beat {beat_id} not found"})
+            return h._send_error_v59(
+                       404,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"beat {beat_id} not found",
+                       retry_safe=False,
+                   )
         written = []
         for field in _BG_BEAT_WRITABLE:
             if field in body:
@@ -1284,7 +1498,12 @@ def handle_bg_reorder_beats(h, body: dict)-> None:
         return  # LD-461 SCOPE_BODY_HELPER_V1 — migrated from hand-rolled dict
     beat_ids = body.get("beat_ids", [])
     if not beat_ids:
-        return h._send_json(400, {"error": "beat_ids required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_BEAT_IDS",
+                   error_message="beat_ids required",
+                   retry_safe=False,
+               )
     bg = _bg_module()
     with bg._sidecar_lock:
         sidecar = bg.read_sidecar()
@@ -1313,7 +1532,12 @@ def handle_bg_reorder_beats(h, body: dict)-> None:
             scope_phase = (ctx.get("phase") if ctx else None) or "full"
 
         if scope_arc is None or scope_event_id is None:
-            return h._send_json(400, {"error": "no scope or active context"})
+            return h._send_error_v59(
+                       400,
+                       error_code="NO_SCOPE_OR_ACTIVE_CONTEXT",
+                       error_message="no scope or active context",
+                       retry_safe=False,
+                   )
 
         scope_active_context = {
             "arc_number": scope_arc,
@@ -1360,7 +1584,12 @@ def handle_bg_delete_beat(h, body: dict)-> None:
 
     beat_id = body.get("beat_id")
     if not beat_id:
-        return h._send_json(400, {"error": "beat_id required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_BEAT_ID",
+                   error_message="beat_id required",
+                   retry_safe=False,
+               )
     bg = _bg_module()
     with bg._sidecar_lock:
         sidecar = bg.read_sidecar()
@@ -1596,7 +1825,12 @@ def handle_bg_submit_flux(h, body: dict)-> None:
 
     beat_ids = body.get("beat_ids", [])
     if not beat_ids:
-        return h._send_json(400, {"error": "beat_ids required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_BEAT_IDS",
+                   error_message="beat_ids required",
+                   retry_safe=False,
+               )
 
     bg = _bg_module()
     with bg._sidecar_lock:
@@ -1657,21 +1891,25 @@ def handle_bg_submit_gpt_batch(h, body: dict)-> None:
     # If the event was swapped via /api/event/load between scope-guard
     # and work start, abort BEFORE any expensive work begins.
     if not h._check_event_pin(_pin, '_handle_bg_submit_gpt_batch_pre_work'):
-        return h._send_json(423, {
-            "error": "event_changed_pre_work",
-            "code": "ASYNC_JOB_GENERATION_PIN_V1",
-            "handler": '_handle_bg_submit_gpt_batch',
-            "hint": (
-                "Event changed between scope-guard and work start. "
+        return h._send_error_v59(
+                   423,
+                   error_code="EVENT_CHANGED_PRE_WORK",
+                   error_message="event_changed_pre_work",
+                   retry_safe=False,
+                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "handler": '_handle_bg_submit_gpt_batch', "hint": "Event changed between scope-guard and work start. "
                 "No work was done; no orphan output. Client should "
-                "re-hydrate scope and retry."
-            ),
-        })
+                "re-hydrate scope and retry."},
+               )
 
     import uuid as _uuid
     beat_ids = body.get("beat_ids", [])
     if not beat_ids:
-        return h._send_json(400, {"error": "beat_ids required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_BEAT_IDS",
+                   error_message="beat_ids required",
+                   retry_safe=False,
+               )
 
     job_id = str(_uuid.uuid4())[:8]
     bg = _bg_module()
@@ -1740,7 +1978,12 @@ def handle_bg_poll_gpt_status(h)-> None:
     qs = urllib.parse.parse_qs(urllib.parse.urlparse(h.path).query)
     job_id = (qs.get("job_id") or [""])[0]
     if not job_id or job_id not in _GPT_JOBS:
-        return h._send_json(404, {"error": f"job {job_id!r} not found"})
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"job {job_id!r} not found",
+                   retry_safe=False,
+               )
 
     job = _GPT_JOBS[job_id]
     return h._send_json(200, {
@@ -1761,14 +2004,24 @@ def handle_bg_accept_option(h, body: dict)-> None:
     beat_id    = body.get("beat_id")
     option_key = body.get("option_key")
     if not beat_id or not option_key:
-        return h._send_json(400, {"error": "beat_id and option_key required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_BEAT_ID_OR_OPTION_KEY",
+                   error_message="beat_id and option_key required",
+                   retry_safe=False,
+               )
     bg = _bg_module()
     with bg._sidecar_lock:
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
         _, beat = bg.find_beat(sidecar, beat_id)
         if not beat:
-            return h._send_json(404, {"error": f"beat {beat_id} not found"})
+            return h._send_error_v59(
+                       404,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"beat {beat_id} not found",
+                       retry_safe=False,
+                   )
         beat["accepted_image_key"] = option_key
         beat["status"] = "still_chosen"
         # Search both gpt_options and flux_options for the chosen key.
@@ -1805,14 +2058,24 @@ def handle_bg_accept_lib_image(h, body: dict)-> None:
     abs_path   = body.get("abs_path", "")
     slot_index = int(body.get("slot_index", 0))
     if not beat_id or not key:
-        return h._send_json(400, {"error": "beat_id and key required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_BEAT_ID_OR_KEY",
+                   error_message="beat_id and key required",
+                   retry_safe=False,
+               )
     bg = _bg_module()
     with bg._sidecar_lock:
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
         _, beat = bg.find_beat(sidecar, beat_id)
         if not beat:
-            return h._send_json(404, {"error": f"beat {beat_id} not found"})
+            return h._send_error_v59(
+                       404,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"beat {beat_id} not found",
+                       retry_safe=False,
+                   )
         beat["accepted_library_ref"] = {
             "key": key, "filename": filename,
             "abs_path": abs_path, "slot_index": slot_index
@@ -1955,16 +2218,16 @@ def handle_bg_add_beat(h, body: dict)-> None:
                 scope.event_id, scope.video_role,
             )
         except ValueError as exc:
-            return h._send_json(400, {
-                "error": "bg_segment_unresolved",
-                "detail": str(exc),
-                "hint": (
-                    "No BG segment could be derived: client did not "
+            return h._send_error_v59(
+                       400,
+                       error_code="BG_SEGMENT_UNRESOLVED",
+                       error_message="bg_segment_unresolved",
+                       retry_safe=False,
+                       extra={"detail": str(exc), "hint": "No BG segment could be derived: client did not "
                     "send `segment` field, sidecar has no active_context, "
                     "and storyboard scope is unparseable. Pick a segment "
-                    "in the BG dropdown before adding a beat."
-                ),
-            })
+                    "in the BG dropdown before adding a beat."},
+                   )
 
     after_beat_id = body.get("after_beat_id", "")
 
@@ -2032,9 +2295,21 @@ def handle_bg_create_group(h, body: dict)-> None:
     arc_n = int(body.get("arc_number", 1))
     beat_ids = body.get("beat_ids", [])
     if not name:
-        return h._send_json(400, {"ok": False, "error": "group_name empty"})
+        return h._send_error_v59(
+                   400,
+                   error_code="GROUP_NAME_EMPTY",
+                   error_message="group_name empty",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     if not beat_ids:
-        return h._send_json(400, {"ok": False, "error": "beat_ids empty"})
+        return h._send_error_v59(
+                   400,
+                   error_code="BEAT_IDS_EMPTY",
+                   error_message="beat_ids empty",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     bg = _bg_module()
     with bg._sidecar_lock:
         sidecar = bg.read_sidecar()
@@ -2042,7 +2317,13 @@ def handle_bg_create_group(h, body: dict)-> None:
         try:
             gid = bg.create_group(sidecar, name, arc_n, beat_ids)
         except ValueError as e:
-            return h._send_json(400, {"ok": False, "error": str(e)})
+            return h._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=str(e),
+                       retry_safe=False,
+                       extra={"ok": False},
+                   )
         bg.write_sidecar(sidecar)
     return h._send_json(200, {"ok": True, "group_id": gid,
                                   "status": sidecar["groups"][gid]["status"]})
@@ -2056,13 +2337,25 @@ def handle_bg_delete_group(h, body: dict)-> None:
 
     gid = body.get("group_id", "")
     if not gid:
-        return h._send_json(400, {"ok": False, "error": "group_id required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="GROUP_ID_REQUIRED",
+                   error_message="group_id required",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     bg = _bg_module()
     with bg._sidecar_lock:
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
         if not bg.delete_group(sidecar, gid):
-            return h._send_json(404, {"ok": False, "error": "group not found"})
+            return h._send_error_v59(
+                       404,
+                       error_code="GROUP_NOT_FOUND",
+                       error_message="group not found",
+                       retry_safe=False,
+                       extra={"ok": False},
+                   )
         bg.write_sidecar(sidecar)
     return h._send_json(200, {"ok": True})
 
@@ -2076,13 +2369,25 @@ def handle_bg_update_group(h, body: dict)-> None:
     gid = body.get("group_id", "")
     ordered = body.get("beat_ids_ordered", [])
     if not gid:
-        return h._send_json(400, {"ok": False, "error": "group_id required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="GROUP_ID_REQUIRED",
+                   error_message="group_id required",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     bg = _bg_module()
     with bg._sidecar_lock:
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
         if gid not in sidecar.get("groups", {}):
-            return h._send_json(404, {"ok": False, "error": "group not found"})
+            return h._send_error_v59(
+                       404,
+                       error_code="GROUP_NOT_FOUND",
+                       error_message="group not found",
+                       retry_safe=False,
+                       extra={"ok": False},
+                   )
         new_status = bg.update_group_order(sidecar, gid, ordered)
         bg.write_sidecar(sidecar)
     return h._send_json(200, {"ok": True, "status": new_status})
@@ -2105,31 +2410,47 @@ def handle_bg_assemble_group(h, body: dict)-> None:
     # If the event was swapped via /api/event/load between scope-guard
     # and work start, abort BEFORE any expensive work begins.
     if not h._check_event_pin(_pin, '_handle_bg_assemble_group_pre_work'):
-        return h._send_json(423, {
-            "error": "event_changed_pre_work",
-            "code": "ASYNC_JOB_GENERATION_PIN_V1",
-            "handler": '_handle_bg_assemble_group',
-            "hint": (
-                "Event changed between scope-guard and work start. "
+        return h._send_error_v59(
+                   423,
+                   error_code="EVENT_CHANGED_PRE_WORK",
+                   error_message="event_changed_pre_work",
+                   retry_safe=False,
+                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "handler": '_handle_bg_assemble_group', "hint": "Event changed between scope-guard and work start. "
                 "No work was done; no orphan output. Client should "
-                "re-hydrate scope and retry."
-            ),
-        })
+                "re-hydrate scope and retry."},
+               )
 
     gid = body.get("group_id", "")
     if not gid:
-        return h._send_json(400, {"ok": False, "error": "group_id required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="GROUP_ID_REQUIRED",
+                   error_message="group_id required",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     bg = _bg_module()
     with bg._sidecar_lock:
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
         g = sidecar.get("groups", {}).get(gid)
         if not g:
-            return h._send_json(404, {"ok": False, "error": "group not found"})
+            return h._send_error_v59(
+                       404,
+                       error_code="GROUP_NOT_FOUND",
+                       error_message="group not found",
+                       retry_safe=False,
+                       extra={"ok": False},
+                   )
         status = bg._compute_group_status(sidecar, g)
         if status != "ready":
-            return h._send_json(400, {"ok": False,
-                                          "error": f"group status is '{status}', must be 'ready'"})
+            return h._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"group status is '{status}', must be 'ready'",
+                       retry_safe=False,
+                       extra={"ok": False},
+                   )
     # Spawn background thread
     import threading as _th
     import pathlib as _pl
@@ -2169,10 +2490,22 @@ def handle_bg_poll_assemble_status(h)-> None:
     qs = urllib.parse.parse_qs(urllib.parse.urlparse(h.path).query)
     gid = (qs.get("group_id") or [None])[0]
     if not gid:
-        return h._send_json(400, {"ok": False, "error": "group_id required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="GROUP_ID_REQUIRED",
+                   error_message="group_id required",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     job = _ASSEMBLE_JOBS.get(gid)
     if not job:
-        return h._send_json(404, {"ok": False, "error": "no assemble job found for group_id"})
+        return h._send_error_v59(
+                   404,
+                   error_code="NO_ASSEMBLE_JOB_FOUND_FOR",
+                   error_message="no assemble job found for group_id",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     return h._send_json(200, {"ok": True, **job})
 
 
@@ -2193,16 +2526,15 @@ def handle_bg_run_local_animation(h, body: dict)-> None:
     # If the event was swapped via /api/event/load between scope-guard
     # and work start, abort BEFORE any expensive work begins.
     if not h._check_event_pin(_pin, '_handle_bg_run_local_animation_pre_work'):
-        return h._send_json(423, {
-            "error": "event_changed_pre_work",
-            "code": "ASYNC_JOB_GENERATION_PIN_V1",
-            "handler": '_handle_bg_run_local_animation',
-            "hint": (
-                "Event changed between scope-guard and work start. "
+        return h._send_error_v59(
+                   423,
+                   error_code="EVENT_CHANGED_PRE_WORK",
+                   error_message="event_changed_pre_work",
+                   retry_safe=False,
+                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "handler": '_handle_bg_run_local_animation', "hint": "Event changed between scope-guard and work start. "
                 "No work was done; no orphan output. Client should "
-                "re-hydrate scope and retry."
-            ),
-        })
+                "re-hydrate scope and retry."},
+               )
 
     beat_id = body.get("beat_id", "")
     method = body.get("method", "")
@@ -2210,8 +2542,13 @@ def handle_bg_run_local_animation(h, body: dict)-> None:
     preview_only = bool(body.get("preview_only", False))
     VALID_METHODS = {"magic_compositor", "ken_burns", "static_hold"}
     if method not in VALID_METHODS:
-        return h._send_json(400, {"ok": False,
-                                      "error": f"method must be one of {sorted(VALID_METHODS)}"})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"method must be one of {sorted(VALID_METHODS)}",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     bg = _bg_module()
     with bg._sidecar_lock:
         sidecar = bg.read_sidecar()
@@ -2244,7 +2581,13 @@ def handle_bg_run_local_animation(h, body: dict)-> None:
         beats_by_id = bg._index_beats(sidecar, arc_n)
         beat = beats_by_id.get(beat_id)
         if not beat:
-            return h._send_json(404, {"ok": False, "error": f"beat_id {beat_id} not found"})
+            return h._send_error_v59(
+                       404,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"beat_id {beat_id} not found",
+                       retry_safe=False,
+                       extra={"ok": False},
+                   )
         try:
             if method == "magic_compositor":
                 bg_path = params.get("background_path", "")
@@ -2252,15 +2595,25 @@ def handle_bg_run_local_animation(h, body: dict)-> None:
                 style = params.get("style", "tessa_ori")
                 duration = float(params.get("duration", 3.5))
                 if not bg_path or not path_pts:
-                    return h._send_json(400, {"ok": False,
-                                                  "error": "params missing background_path or path_pts"})
+                    return h._send_error_v59(
+                               400,
+                               error_code="PARAMS_MISSING_BACKGROUND_PATH_OR",
+                               error_message="params missing background_path or path_pts",
+                               retry_safe=False,
+                               extra={"ok": False},
+                           )
                 if preview_only:
                     import sys as _sys
                     _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
                     from magic_compositor import MagicCompositor, STYLES
                     if style not in STYLES:
-                        return h._send_json(400, {"ok": False,
-                                                      "error": "style not approved"})
+                        return h._send_error_v59(
+                                   400,
+                                   error_code="STYLE_NOT_APPROVED",
+                                   error_message="style not approved",
+                                   retry_safe=False,
+                                   extra={"ok": False},
+                               )
                     import pathlib as _pl
                     out_dir = _pl.Path(bg.BG_STILLS_DIR) / "local_renders"
                     out_dir.mkdir(parents=True, exist_ok=True)
@@ -2277,8 +2630,13 @@ def handle_bg_run_local_animation(h, body: dict)-> None:
             elif method == "ken_burns":
                 still = params.get("still_path", "")
                 if not still:
-                    return h._send_json(400, {"ok": False,
-                                                  "error": "params missing still_path"})
+                    return h._send_error_v59(
+                               400,
+                               error_code="PARAMS_MISSING_STILL_PATH",
+                               error_message="params missing still_path",
+                               retry_safe=False,
+                               extra={"ok": False},
+                           )
                 result = bg.run_ken_burns(
                     beat, still,
                     float(params.get("pan_x_pct", 0)),
@@ -2290,19 +2648,36 @@ def handle_bg_run_local_animation(h, body: dict)-> None:
             elif method == "static_hold":
                 still = params.get("still_path", "")
                 if not still:
-                    return h._send_json(400, {"ok": False,
-                                                  "error": "params missing still_path"})
+                    return h._send_error_v59(
+                               400,
+                               error_code="PARAMS_MISSING_STILL_PATH",
+                               error_message="params missing still_path",
+                               retry_safe=False,
+                               extra={"ok": False},
+                           )
                 result = bg.run_static_hold(
                     beat, still, float(params.get("duration", 4.0))
                 )
             # LD-460 — pin check before sidecar write.
             if not h._check_event_pin(_pin, "bg_run_local_animation_write_sidecar"):
                 print(f"[bg_run_local_animation] event drift; skipping sidecar write", flush=True)
-                return h._send_json(423, {"error": "event_changed_mid_job", "code": "ASYNC_JOB_GENERATION_PIN_V1"})
+                return h._send_error_v59(
+                           423,
+                           error_code="EVENT_CHANGED_MID_JOB",
+                           error_message="event_changed_mid_job",
+                           retry_safe=False,
+                           extra={"code": "ASYNC_JOB_GENERATION_PIN_V1"},
+                       )
             bg.write_sidecar(sidecar)
         except Exception as e:
             traceback.print_exc()
-            return h._send_json(500, {"ok": False, "error": str(e)})
+            return h._send_error_v59(
+                       500,
+                       error_code="GENERIC_ERROR",
+                       error_message=str(e),
+                       retry_safe=True,
+                       extra={"ok": False},
+                   )
     return h._send_json(200, {"ok": True, **result})
 
 
@@ -2316,17 +2691,34 @@ def handle_bg_update_beat_anim_method(h, body: dict)-> None:
     method = body.get("animation_method", "")
     VALID = {"kling", "magic_compositor", "ken_burns", "static_hold"}
     if not beat_id:
-        return h._send_json(400, {"ok": False, "error": "beat_id required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_BEAT_ID",
+                   error_message="beat_id required",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     if method not in VALID:
-        return h._send_json(400, {"ok": False,
-                                      "error": f"invalid method; valid: {sorted(VALID)}"})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"invalid method; valid: {sorted(VALID)}",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     bg = _bg_module()
     with bg._sidecar_lock:
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
         _, b = bg.find_beat(sidecar, beat_id)
         if not b:
-            return h._send_json(404, {"ok": False, "error": f"beat_id {beat_id} not found"})
+            return h._send_error_v59(
+                       404,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"beat_id {beat_id} not found",
+                       retry_safe=False,
+                       extra={"ok": False},
+                   )
         b["animation_method"] = method
         bg.write_sidecar(sidecar)
     return h._send_json(200, {"ok": True})
@@ -2341,26 +2733,56 @@ def handle_bg_accept_local_animation(h, body: dict)-> None:
     beat_id = body.get("beat_id", "")
     video_path = body.get("video_path", "")
     if not beat_id or not video_path:
-        return h._send_json(400, {"ok": False, "error": "beat_id and video_path required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="BEAT_ID_AND_VIDEO_PATH",
+                   error_message="beat_id and video_path required",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     try:
         video_path = require_media_under_project(
             video_path, extensions=VIDEO_EXTENSIONS,
         )
     except ValueError as exc:
-        return h._send_json(403, {"ok": False, "error": str(exc)})
+        return h._send_error_v59(
+                   403,
+                   error_code="GENERIC_ERROR",
+                   error_message=str(exc),
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     except FileNotFoundError:
-        return h._send_json(400, {"ok": False, "error": f"video file not found: {video_path}"})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"video file not found: {video_path}",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     safe_video_path = os.path.realpath(video_path)
     bg = _bg_module()
     import pathlib as _pl
     if not bg._ffprobe_ok(_pl.Path(safe_video_path)):
-        return h._send_json(400, {"ok": False, "error": "video failed ffprobe validation"})
+        return h._send_error_v59(
+                   400,
+                   error_code="VIDEO_FAILED_FFPROBE_VALIDATION",
+                   error_message="video failed ffprobe validation",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     with bg._sidecar_lock:
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
         _, b = bg.find_beat(sidecar, beat_id)
         if not b:
-            return h._send_json(404, {"ok": False, "error": f"beat_id {beat_id} not found"})
+            return h._send_error_v59(
+                       404,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"beat_id {beat_id} not found",
+                       retry_safe=False,
+                       extra={"ok": False},
+                   )
         b["status"] = "accepted"
         b["accepted_video_path"] = safe_video_path
         gid = b.get("group_id")
@@ -2380,13 +2802,23 @@ def handle_bg_stills(h, path: str)-> None:
     filename = urllib.parse.unquote(raw)
     # Reject traversal attempts before resolve
     if not filename or "/" in filename or "\\" in filename or ".." in filename or "\x00" in filename:
-        return h._send_json(400, {"error": "invalid filename"})
+        return h._send_error_v59(
+                   400,
+                   error_code="INVALID_FILENAME",
+                   error_message="invalid filename",
+                   retry_safe=False,
+               )
     bg = _bg_module()
     stills_dir = Path(bg.BG_STILLS_DIR).resolve()
     target = (stills_dir / filename).resolve()
     # Only direct children (not subdirectories like local_renders/)
     if target.parent != stills_dir:
-        return h._send_json(403, {"error": "forbidden"})
+        return h._send_error_v59(
+                   403,
+                   error_code="FORBIDDEN",
+                   error_message="forbidden",
+                   retry_safe=False,
+               )
     if not target.exists():
         # GPT stills are saved as <key>_<timestamp>.ext — try prefix glob
         stem = Path(filename).stem   # key without extension
@@ -2395,7 +2827,12 @@ def handle_bg_stills(h, path: str)-> None:
         if candidates:
             target = candidates[-1]   # most recent by name (timestamps sort lexicographically)
         else:
-            return h._send_json(404, {"error": "not found"})
+            return h._send_error_v59(
+                       404,
+                       error_code="NOT_FOUND",
+                       error_message="not found",
+                       retry_safe=False,
+                   )
     ext = target.suffix.lower()
     ct_map = {".png": "image/png", ".jpg": "image/jpeg",
               ".jpeg": "image/jpeg", ".webp": "image/webp"}
@@ -2418,7 +2855,12 @@ def handle_animate(h, body: dict)-> None:
         return h._send_json(e.http_status, {"error": e.code, **e.detail})
 
     if h.app.client is None:
-        return h._send_json(500, {"error": "WaveSpeed client not configured (missing API key)"})
+        return h._send_error_v59(
+                   500,
+                   error_code="WAVESPEED_NOT_CONFIGURED",
+                   error_message="WaveSpeed client not configured (missing API key)",
+                   retry_safe=True,
+               )
 
     mode = body.get("mode", "all")
     options_per_beat = int(body.get("options_per_beat", 3))
@@ -2436,12 +2878,13 @@ def handle_animate(h, body: dict)-> None:
     spend = h.app.state.read_spend()
     estimated = len(beats) * options_per_beat * COST_PER_CLIP_KLING
     if spend["budget_remaining"] < estimated and spend["overrides"] == 0:
-        return h._send_json(402, {
-            "error": "budget exceeded",
-            "budget_blocked": True,
-            "estimated_cost": estimated,
-            "budget_remaining": spend["budget_remaining"],
-        })
+        return h._send_error_v59(
+                   402,
+                   error_code="BUDGET_EXCEEDED",
+                   error_message="budget exceeded",
+                   retry_safe=False,
+                   extra={"budget_blocked": True, "estimated_cost": estimated, "budget_remaining": spend["budget_remaining"]},
+               )
 
     submitted = 0
     skipped: list[dict] = []
@@ -2651,7 +3094,12 @@ def handle_redo(h, body: dict)-> None:
     beat_id = body.get("beat_id") or body.get("beat")
     options_per_beat = int(body.get("options_per_beat", 3))
     if not beat_id:
-        return h._send_json(400, {"error": "missing 'beat'"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_BEAT",
+                   error_message="missing 'beat'",
+                   retry_safe=False,
+               )
 
     video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
 
@@ -2710,36 +3158,67 @@ def handle_watercolor_animate(h, body: dict)-> None:
     manual_path = (body or {}).get("manual_path") or []
     motion_desc = ((body or {}).get("motion_description") or "").strip()
     if not watercolor_key:
-        return h._send_json(400, {"error": "watercolor_key required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="WATERCOLOR_KEY_REQUIRED",
+                   error_message="watercolor_key required",
+                   retry_safe=False,
+               )
     if not motion_desc:
-        return h._send_json(400, {"error": "motion_description required (non-empty)"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MOTION_DESCRIPTION_REQUIRED_NON_EMPTY",
+                   error_message="motion_description required (non-empty)",
+                   retry_safe=False,
+               )
     if len(motion_desc) > 500:
-        return h._send_json(400, {
-            "error": f"motion_description too long ({len(motion_desc)} > 500)",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"motion_description too long ({len(motion_desc)} > 500)",
+                   retry_safe=False,
+               )
     # Reject obvious shell metacharacters in the description.
     for bad in ("`", "$(", "${", "\\", "\n\n\n"):
         if bad in motion_desc:
-            return h._send_json(400, {"error": f"forbidden substring in motion_description: {bad!r}"})
+            return h._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"forbidden substring in motion_description: {bad!r}",
+                       retry_safe=False,
+                   )
 
     ok, clean_path, err = h._validate_manual_path(manual_path)
     if not ok:
-        return h._send_json(400, {"error": err})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=err,
+                   retry_safe=False,
+               )
 
     wc_dir = _PSERVER_PRODUCTION_DIR / "assets" / "watercolor_library"
     matches = list(wc_dir.glob(f"{watercolor_key}.*"))
     if not matches:
-        return h._send_json(404, {
-            "error": f"no watercolor with key={watercolor_key!r}",
-            "looked_in": str(wc_dir),
-        })
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"no watercolor with key={watercolor_key!r}",
+                   retry_safe=False,
+                   extra={"looked_in": str(wc_dir)},
+               )
     source_path = next((m for m in matches if m.suffix.lower() == ".png"), matches[0])
     try:
         wc_root = wc_dir.resolve()
         source_path = source_path.resolve()
         source_path.relative_to(wc_root)
     except ValueError:
-        return h._send_json(500, {"error": "watercolor source path outside library dir"})
+        return h._send_error_v59(
+                   500,
+                   error_code="WATERCOLOR_SOURCE_PATH_OUTSIDE_LIBRARY",
+                   error_message="watercolor source path outside library dir",
+                   retry_safe=True,
+               )
     safe_ffmpeg_still = os.path.realpath(str(source_path))
 
     # Probe dimensions.
@@ -2758,10 +3237,13 @@ def handle_watercolor_animate(h, body: dict)-> None:
         "_handler": "_handle_watercolor_animate",
     }
     if not h._check_event_pin(_pin, "watercolor_animate_pre_work"):
-        return h._send_json(423, {
-            "error": "event_changed_pre_work",
-            "code": "ASYNC_JOB_GENERATION_PIN_V1",
-        })
+        return h._send_error_v59(
+                   423,
+                   error_code="EVENT_CHANGED_PRE_WORK",
+                   error_message="event_changed_pre_work",
+                   retry_safe=False,
+                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1"},
+               )
 
     # Resolve Anthropic key.
     try:
@@ -2827,12 +3309,20 @@ def handle_watercolor_animate(h, body: dict)-> None:
             resp_data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         err_body = exc.read().decode("utf-8", errors="replace")
-        return h._send_json(502, {
-            "error": f"Anthropic API HTTP {exc.code}",
-            "detail": err_body[:500],
-        })
+        return h._send_error_v59(
+                   502,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"Anthropic API HTTP {exc.code}",
+                   retry_safe=True,
+                   extra={"detail": err_body[:500]},
+               )
     except urllib.error.URLError as exc:
-        return h._send_json(502, {"error": f"Anthropic URL error: {exc}"})
+        return h._send_error_v59(
+                   502,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"Anthropic URL error: {exc}",
+                   retry_safe=True,
+               )
     elapsed_ms = int((time.time() - t0) * 1000)
 
     # Extract JSON from response (model may wrap in code fence; be defensive).
@@ -2844,26 +3334,35 @@ def handle_watercolor_animate(h, body: dict)-> None:
     text = text.strip()
     m = re.search(r'\{[\s\S]*\}', text)
     if not m:
-        return h._send_json(502, {
-            "error": "Claude response had no JSON object",
-            "raw": text[:500],
-        })
+        return h._send_error_v59(
+                   502,
+                   error_code="CLAUDE_RESPONSE_HAD_NO_JSON",
+                   error_message="Claude response had no JSON object",
+                   retry_safe=True,
+                   extra={"raw": text[:500]},
+               )
     try:
         spec = json.loads(m.group(0))
     except json.JSONDecodeError as exc:
-        return h._send_json(502, {
-            "error": f"Claude JSON parse failed: {exc}",
-            "raw": text[:500],
-        })
+        return h._send_error_v59(
+                   502,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"Claude JSON parse failed: {exc}",
+                   retry_safe=True,
+                   extra={"raw": text[:500]},
+               )
 
     filter_complex = spec.get("filter_complex") or ""
     duration_s = float(spec.get("duration_s") or 3.0)
     explanation = (spec.get("explanation") or "")[:300]
 
     if not (0.5 <= duration_s <= 10.0):
-        return h._send_json(400, {
-            "error": f"duration_s={duration_s} outside [0.5, 10]",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"duration_s={duration_s} outside [0.5, 10]",
+                   retry_safe=False,
+               )
 
     # SAFETY GATE.
     ok_filter, gate_err = h._validate_ffmpeg_filter_chain(filter_complex)
@@ -2884,11 +3383,13 @@ def handle_watercolor_animate(h, body: dict)-> None:
             })
         except Exception:
             pass
-        return h._send_json(400, {
-            "error": "unsafe_filter_chain",
-            "details": gate_err,
-            "filter_complex_preview": filter_complex[:200],
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="UNSAFE_FILTER_CHAIN",
+                   error_message="unsafe_filter_chain",
+                   retry_safe=False,
+                   extra={"details": gate_err, "filter_complex_preview": filter_complex[:200]},
+               )
 
     # Execute ffmpeg.
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -2906,20 +3407,29 @@ def handle_watercolor_animate(h, body: dict)-> None:
     try:
         subprocess.run(cmd, check=True, capture_output=True, timeout=60)
     except subprocess.CalledProcessError as exc:
-        return h._send_json(500, {
-            "error": "ffmpeg failed",
-            "filter_complex": filter_complex,
-            "stderr": exc.stderr.decode("utf-8", errors="replace")[-1000:],
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="FFMPEG_FAILED",
+                   error_message="ffmpeg failed",
+                   retry_safe=True,
+                   extra={"filter_complex": filter_complex, "stderr": exc.stderr.decode("utf-8", errors="replace")[-1000:]},
+               )
     except subprocess.TimeoutExpired:
-        return h._send_json(504, {"error": "ffmpeg timed out (>60s)"})
+        return h._send_error_v59(
+                   504,
+                   error_code="FFMPEG_TIMED_OUT",
+                   error_message="ffmpeg timed out (>60s)",
+                   retry_safe=True,
+               )
 
     if not h._check_event_pin(_pin, "watercolor_animate_terminal"):
-        return h._send_json(423, {
-            "error": "event_changed_mid_job",
-            "code": "ASYNC_JOB_GENERATION_PIN_V1",
-            "orphaned_output": str(out_path),
-        })
+        return h._send_error_v59(
+                   423,
+                   error_code="EVENT_CHANGED_MID_JOB",
+                   error_message="event_changed_mid_job",
+                   retry_safe=False,
+                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "orphaned_output": str(out_path)},
+               )
 
     registered_id: int | None = None
     try:

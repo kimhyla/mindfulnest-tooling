@@ -83,46 +83,80 @@ def handle_lipsync_submit(h, body: dict)-> None:
     # If the event was swapped via /api/event/load between scope-guard
     # and work start, abort BEFORE any expensive work begins.
     if not h._check_event_pin(_pin, '_handle_lipsync_submit_pre_work'):
-        return h._send_json(423, {
-            "error": "event_changed_pre_work",
-            "code": "ASYNC_JOB_GENERATION_PIN_V1",
-            "handler": '_handle_lipsync_submit',
-            "hint": (
-                "Event changed between scope-guard and work start. "
+        return h._send_error_v59(
+                   423,
+                   error_code="EVENT_CHANGED_PRE_WORK",
+                   error_message="event_changed_pre_work",
+                   retry_safe=False,
+                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "handler": '_handle_lipsync_submit', "hint": "Event changed between scope-guard and work start. "
                 "No work was done; no orphan output. Client should "
-                "re-hydrate scope and retry."
-            ),
-        })
+                "re-hydrate scope and retry."},
+               )
 
     if h.app.client is None:
-        return h._send_json(500, {"error": "WaveSpeed client not configured (missing API key)"})
+        return h._send_error_v59(
+                   500,
+                   error_code="WAVESPEED_NOT_CONFIGURED",
+                   error_message="WaveSpeed client not configured (missing API key)",
+                   retry_safe=True,
+               )
 
     beat_key = body.get("beat") or body.get("beat_id")
     if not beat_key:
-        return h._send_json(400, {"error": "missing 'beat'/'beat_id' field"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_BEAT_BEAT_ID_FIELD",
+                   error_message="missing 'beat'/'beat_id' field",
+                   retry_safe=False,
+               )
 
     video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
 
     state = h.app.state.read_state()
     beat_state = ((state.get("videos") or {}).get(video_role) or {}).get("beats", {}).get(beat_key)
     if not beat_state:
-        return h._send_json(404, {"error": f"beat '{beat_key}' not found in state"})
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"beat '{beat_key}' not found in state",
+                   retry_safe=False,
+               )
 
     phase1 = beat_state.get("phase_1", {})
     selected = phase1.get("selected_option")
     if not selected:
-        return h._send_json(400, {"error": f"no option selected for {beat_key}"})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"no option selected for {beat_key}",
+                   retry_safe=False,
+               )
 
     options = phase1.get("options", [])
     if selected < 1 or selected > len(options):
-        return h._send_json(400, {"error": f"selected_option {selected} out of range"})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"selected_option {selected} out of range",
+                   retry_safe=False,
+               )
     clip_file = options[selected - 1].get("file")
     if not clip_file:
-        return h._send_json(400, {"error": f"selected option has no file"})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"selected option has no file",
+                   retry_safe=False,
+               )
 
     source_clip_path = h.app.state.clips_dir / clip_file
     if not source_clip_path.is_file():
-        return h._send_json(404, {"error": f"clip file not found: {clip_file}"})
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"clip file not found: {clip_file}",
+                   retry_safe=False,
+               )
 
     # LIPSYNC_TRIM_WINDOW_HONORED_20260419 — read user trim window from
     # storyboard. Absent/null fields collapse to old "whole-clip" behavior.
@@ -132,16 +166,27 @@ def handle_lipsync_submit(h, body: dict)-> None:
         trim_start = float(trim_start_raw) if trim_start_raw is not None else 0.0
         trim_end = float(trim_end_raw) if trim_end_raw is not None else None
     except (TypeError, ValueError):
-        return h._send_json(400, {
-            "error": f"phase_1.trim_start/trim_end must be numeric",
-            "trim_start": trim_start_raw, "trim_end": trim_end_raw,
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"phase_1.trim_start/trim_end must be numeric",
+                   retry_safe=False,
+                   extra={"trim_start": trim_start_raw, "trim_end": trim_end_raw},
+               )
     if trim_start < 0:
-        return h._send_json(400, {"error": f"trim_start must be >= 0 (got {trim_start})"})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"trim_start must be >= 0 (got {trim_start})",
+                   retry_safe=False,
+               )
     if trim_end is not None and trim_end <= trim_start:
-        return h._send_json(400, {
-            "error": f"trim_end ({trim_end}) must be > trim_start ({trim_start})",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"trim_end ({trim_end}) must be > trim_start ({trim_start})",
+                   retry_safe=False,
+               )
 
     beat_num = int(beat_key.split("_")[1])
     source_audio_path = _find_beat_audio(
@@ -149,19 +194,24 @@ def handle_lipsync_submit(h, body: dict)-> None:
         app=h.app,
     )
     if not source_audio_path:
-        return h._send_json(404, {
-            "error": f"no TTS audio found for {beat_key} (line_{beat_num:02d})",
-            "hint": "provide audio_override path or ensure TTS exists in story_scene_tts_v2/",
-        })
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"no TTS audio found for {beat_key} (line_{beat_num:02d})",
+                   retry_safe=False,
+                   extra={"hint": "provide audio_override path or ensure TTS exists in story_scene_tts_v2/"},
+               )
 
     # Budget check BEFORE ffmpeg work.
     spend = h.app.state.read_spend()
     if spend["budget_remaining"] < COST_PER_LIPSYNC:
-        return h._send_json(402, {
-            "error": "budget exceeded for lip sync",
-            "budget_remaining": spend["budget_remaining"],
-            "cost": COST_PER_LIPSYNC,
-        })
+        return h._send_error_v59(
+                   402,
+                   error_code="BUDGET_EXCEEDED_FOR_LIP_SYNC",
+                   error_message="budget exceeded for lip sync",
+                   retry_safe=False,
+                   extra={"budget_remaining": spend["budget_remaining"], "cost": COST_PER_LIPSYNC},
+               )
 
     # ------------------------------------------------------------------
     # §8.4 pre-conditioning (synchronous, fail-loud).
@@ -208,11 +258,13 @@ def handle_lipsync_submit(h, body: dict)-> None:
         # BEFORE spending the ffmpeg trim (fail-loud, explicit numbers).
         raw_dur = _ffprobe_duration(source_clip_path)
         if trim_start >= raw_dur:
-            return h._send_json(400, {
-                "error": f"trim_start={trim_start:.2f}s out of range",
-                "clip_duration_s": round(raw_dur, 3),
-                "beat": beat_key,
-            })
+            return h._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"trim_start={trim_start:.2f}s out of range",
+                       retry_safe=False,
+                       extra={"clip_duration_s": round(raw_dur, 3), "beat": beat_key},
+                   )
         effective_end = trim_end if trim_end is not None else raw_dur
         if effective_end > raw_dur + 0.05:
             print(f"[lipsync] WARN trim_end={effective_end:.2f} exceeds "
@@ -221,35 +273,28 @@ def handle_lipsync_submit(h, body: dict)-> None:
         window_len = effective_end - trim_start
         need = audio_duration + _VIDEO_TRIM_TAILROOM_S
         if need > window_len + 0.01:
-            return h._send_json(400, {
-                "error": "audio exceeds trim window (insufficient video for lipsync)",
-                "beat": beat_key,
-                "audio_duration_s": round(audio_duration, 3),
-                "tailroom_s": _VIDEO_TRIM_TAILROOM_S,
-                "needed_s": round(need, 3),
-                "trim_window_s": round(window_len, 3),
-                "trim_start": round(trim_start, 3),
-                "trim_end": round(effective_end, 3),
-                "hint": "widen trim_end, move trim_start earlier, or shorten the TTS audio",
-            })
+            return h._send_error_v59(
+                       400,
+                       error_code="AUDIO_EXCEEDS_TRIM_WINDOW_INSUFFICIENT",
+                       error_message="audio exceeds trim window (insufficient video for lipsync)",
+                       retry_safe=False,
+                       extra={"beat": beat_key, "audio_duration_s": round(audio_duration, 3), "tailroom_s": _VIDEO_TRIM_TAILROOM_S, "needed_s": round(need, 3), "trim_window_s": round(window_len, 3), "trim_start": round(trim_start, 3), "trim_end": round(effective_end, 3), "hint": "widen trim_end, move trim_start earlier, or shorten the TTS audio"},
+                   )
 
         # LD LIPSYNC_MAX_DURATION_10S_NO_SILENCE_V1 (id=400, CLAUDE.md §8.5):
         # ByteDance LatentSync max training window = 10s. Longer = scene hallucination + watermark.
         _LIPSYNC_MAX_DUR = 10.0
         if audio_duration > _LIPSYNC_MAX_DUR:
-            return h._send_json(400, {
-                "error": "audio_duration exceeds ByteDance max (10s)",
-                "audio_duration_s": round(audio_duration, 3),
-                "max_duration_s": _LIPSYNC_MAX_DUR,
-                "beat": beat_key,
-                "rule": "LIPSYNC_MAX_DURATION_10S_NO_SILENCE_V1 (id=400)",
-                "hint": (
-                    "Use silence-split + passthrough protocol (CLAUDE.md §8.5): "
+            return h._send_error_v59(
+                       400,
+                       error_code="AUDIO_DURATION_EXCEEDS_BYTEDANCE_MAX",
+                       error_message="audio_duration exceeds ByteDance max (10s)",
+                       retry_safe=False,
+                       extra={"audio_duration_s": round(audio_duration, 3), "max_duration_s": _LIPSYNC_MAX_DUR, "beat": beat_key, "rule": "LIPSYNC_MAX_DURATION_10S_NO_SILENCE_V1 (id=400)", "hint": "Use silence-split + passthrough protocol (CLAUDE.md §8.5): "
                     "split at silence boundaries, submit each speaking segment ≤10s "
                     "to ByteDance, passthrough original frames for silent portions, "
-                    "then ffmpeg-concat and dub additional phrases as voice-over."
-                ),
-            })
+                    "then ffmpeg-concat and dub additional phrases as voice-over."},
+                   )
 
         video_for_lipsync, trimmed_to, ts_used, te_used = _trim_video_to_audio(
             source_clip_path, tmp_video_path, audio_duration,
@@ -258,13 +303,13 @@ def handle_lipsync_submit(h, body: dict)-> None:
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
             OSError, ValueError) as exc:
         traceback.print_exc()
-        return h._send_json(500, {
-            "error": "lipsync pre-conditioning failed",
-            "stage": "silcomp_or_trim",
-            "detail": str(exc)[:500],
-            "source_audio": source_audio_path.name,
-            "source_clip": clip_file,
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="LIPSYNC_PRE_CONDITIONING_FAILED",
+                   error_message="lipsync pre-conditioning failed",
+                   retry_safe=True,
+                   extra={"stage": "silcomp_or_trim", "detail": str(exc)[:500], "source_audio": source_audio_path.name, "source_clip": clip_file},
+               )
 
     audio_processing = {
         "method": "silence_compression_auto_applied",
@@ -335,7 +380,13 @@ def handle_lipsync_submit(h, body: dict)-> None:
         ls.pop("last_error", None)
     # LD-460 — terminal pin check before init_lipsync mutate_state.
     if not h._check_event_pin(_pin, "lipsync_submit_init_mutate"):
-        return h._send_json(423, {"error": "event_changed_mid_job", "code": "ASYNC_JOB_GENERATION_PIN_V1"})
+        return h._send_error_v59(
+                   423,
+                   error_code="EVENT_CHANGED_MID_JOB",
+                   error_message="event_changed_mid_job",
+                   retry_safe=False,
+                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1"},
+               )
     h.app.state.mutate_state(init_lipsync)
 
     # Rule 18 submit log.
@@ -460,23 +511,32 @@ def handle_lipsync_submit_legacy(h, body: dict)-> None:
     # If the event was swapped via /api/event/load between scope-guard
     # and work start, abort BEFORE any expensive work begins.
     if not h._check_event_pin(_pin, '_handle_lipsync_submit_legacy_pre_work'):
-        return h._send_json(423, {
-            "error": "event_changed_pre_work",
-            "code": "ASYNC_JOB_GENERATION_PIN_V1",
-            "handler": '_handle_lipsync_submit_legacy',
-            "hint": (
-                "Event changed between scope-guard and work start. "
+        return h._send_error_v59(
+                   423,
+                   error_code="EVENT_CHANGED_PRE_WORK",
+                   error_message="event_changed_pre_work",
+                   retry_safe=False,
+                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "handler": '_handle_lipsync_submit_legacy', "hint": "Event changed between scope-guard and work start. "
                 "No work was done; no orphan output. Client should "
-                "re-hydrate scope and retry."
-            ),
-        })
+                "re-hydrate scope and retry."},
+               )
 
     if h.app.client is None:
-        return h._send_json(500, {"error": "WaveSpeed client not configured (missing API key)"})
+        return h._send_error_v59(
+                   500,
+                   error_code="WAVESPEED_NOT_CONFIGURED",
+                   error_message="WaveSpeed client not configured (missing API key)",
+                   retry_safe=True,
+               )
 
     beat_key = body.get("beat") or body.get("beat_id")
     if not beat_key:
-        return h._send_json(400, {"error": "missing 'beat'/'beat_id' field"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_BEAT_BEAT_ID_FIELD",
+                   error_message="missing 'beat'/'beat_id' field",
+                   retry_safe=False,
+               )
 
     video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
 
@@ -484,24 +544,49 @@ def handle_lipsync_submit_legacy(h, body: dict)-> None:
     state = h.app.state.read_state()
     beat_state = ((state.get("videos") or {}).get(video_role) or {}).get("beats", {}).get(beat_key)
     if not beat_state:
-        return h._send_json(404, {"error": f"beat '{beat_key}' not found in state"})
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"beat '{beat_key}' not found in state",
+                   retry_safe=False,
+               )
 
     phase1 = beat_state.get("phase_1", {})
     selected = phase1.get("selected_option")
     if not selected:
-        return h._send_json(400, {"error": f"no option selected for {beat_key}"})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"no option selected for {beat_key}",
+                   retry_safe=False,
+               )
 
     # Find the selected clip file
     options = phase1.get("options", [])
     if selected < 1 or selected > len(options):
-        return h._send_json(400, {"error": f"selected_option {selected} out of range"})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"selected_option {selected} out of range",
+                   retry_safe=False,
+               )
     clip_file = options[selected - 1].get("file")
     if not clip_file:
-        return h._send_json(400, {"error": f"selected option has no file"})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"selected option has no file",
+                   retry_safe=False,
+               )
 
     clip_path = h.app.state.clips_dir / clip_file
     if not clip_path.is_file():
-        return h._send_json(404, {"error": f"clip file not found: {clip_file}"})
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"clip file not found: {clip_file}",
+                   retry_safe=False,
+               )
 
     # Find TTS audio — uses shared _find_beat_audio helper
     # (extracted April 16 2026 for reuse by animation-duration inference).
@@ -511,19 +596,24 @@ def handle_lipsync_submit_legacy(h, body: dict)-> None:
         app=h.app,
     )
     if not audio_path:
-        return h._send_json(404, {
-            "error": f"no TTS audio found for {beat_key} (line_{beat_num:02d})",
-            "hint": "provide audio_override path or ensure TTS exists in story_scene_tts_v2/",
-        })
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"no TTS audio found for {beat_key} (line_{beat_num:02d})",
+                   retry_safe=False,
+                   extra={"hint": "provide audio_override path or ensure TTS exists in story_scene_tts_v2/"},
+               )
 
     # Budget check
     spend = h.app.state.read_spend()
     if spend["budget_remaining"] < COST_PER_LIPSYNC:
-        return h._send_json(402, {
-            "error": "budget exceeded for lip sync",
-            "budget_remaining": spend["budget_remaining"],
-            "cost": COST_PER_LIPSYNC,
-        })
+        return h._send_error_v59(
+                   402,
+                   error_code="BUDGET_EXCEEDED_FOR_LIP_SYNC",
+                   error_message="budget exceeded for lip sync",
+                   retry_safe=False,
+                   extra={"budget_remaining": spend["budget_remaining"], "cost": COST_PER_LIPSYNC},
+               )
 
     # Initialize lipsync state in production_state.
     # Tier 5 (decision 153 LIPSYNC_UI_MUST_SUPPORT_RERUN, April 17 2026):
@@ -697,29 +787,41 @@ def handle_voice_profile_get(h, pid_raw: str)-> None:
     try:
         pid = int(pid_raw)
     except (TypeError, ValueError):
-        return h._send_json(400, {
-            "error": f"profile id must be integer, got {pid_raw!r}",
-            "hint": "Try /api/voice/profile/2 (Chipper).",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"profile id must be integer, got {pid_raw!r}",
+                   retry_safe=False,
+                   extra={"hint": "Try /api/voice/profile/2 (Chipper)."},
+               )
     if pid not in h._VOICE_PROFILE_GET_ALLOWED_IDS:
-        return h._send_json(403, {
-            "error": f"profile id {pid} not in read allow-list "
+        return h._send_error_v59(
+                   403,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"profile id {pid} not in read allow-list "
                      f"{sorted(h._VOICE_PROFILE_GET_ALLOWED_IDS)}",
-            "hint": "Phase A panel scope: Chipper=2.",
-        })
+                   retry_safe=False,
+                   extra={"hint": "Phase A panel scope: Chipper=2."},
+               )
     try:
         c = _get_voice_directus_client()
         r = c._request("GET", f"/items/prod_voice_profiles/{pid}")
     except Exception as exc:  # noqa: BLE001
-        return h._send_json(502, {
-            "error": f"Directus read failed: {type(exc).__name__}: {exc}",
-            "hint": "Check Directus connectivity / credentials.",
-        })
+        return h._send_error_v59(
+                   502,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"Directus read failed: {type(exc).__name__}: {exc}",
+                   retry_safe=True,
+                   extra={"hint": "Check Directus connectivity / credentials."},
+               )
     data = (r or {}).get("data") or {}
     if not data:
-        return h._send_json(404, {
-            "error": f"prod_voice_profiles id={pid} not found",
-        })
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"prod_voice_profiles id={pid} not found",
+                   retry_safe=False,
+               )
     return h._send_json(200, {
         "id": data.get("id"),
         "character_name": data.get("character_name"),
@@ -745,22 +847,33 @@ def handle_voice_profile_update(h, body: dict)-> None:
     call uses the new settings.
     """
     if not isinstance(body, dict):
-        return h._send_json(400, {"error": "body must be JSON object"})
+        return h._send_error_v59(
+                   400,
+                   error_code="INVALID_REQUEST_BODY",
+                   error_message="body must be JSON object",
+                   retry_safe=False,
+               )
     try:
         pid = int(body.get("id"))
     except (TypeError, ValueError):
-        return h._send_json(400, {
-            "error": f"id required and must be integer; got {body.get('id')!r}",
-            "hint": "Phase A panel posts id=2 (Chipper).",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"id required and must be integer; got {body.get('id')!r}",
+                   retry_safe=False,
+                   extra={"hint": "Phase A panel posts id=2 (Chipper)."},
+               )
     if pid not in h._VOICE_PROFILE_PATCH_ALLOWED_IDS:
-        return h._send_json(403, {
-            "error": f"profile id {pid} not in WRITE allow-list "
+        return h._send_error_v59(
+                   403,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"profile id {pid} not in WRITE allow-list "
                      f"{sorted(h._VOICE_PROFILE_PATCH_ALLOWED_IDS)}",
-            "hint": "Phase A panel writes Chipper (id=2) only. "
+                   retry_safe=False,
+                   extra={"hint": "Phase A panel writes Chipper (id=2) only. "
                     "Cedric (id=1) and Tessa (id=3) are not editable "
-                    "from this route per Phase 0 verdict.",
-        })
+                    "from this route per Phase 0 verdict."},
+               )
     # Build patch payload from whitelisted fields only.
     patch: dict = {}
     for field in h._VOICE_PROFILE_ALLOWED_FIELDS:
@@ -770,24 +883,33 @@ def handle_voice_profile_update(h, body: dict)-> None:
         try:
             v = float(raw)
         except (TypeError, ValueError):
-            return h._send_json(400, {
-                "error": f"{field} must be number, got {raw!r}",
-            })
+            return h._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"{field} must be number, got {raw!r}",
+                       retry_safe=False,
+                   )
         if not (0.0 <= v <= 1.0):
-            return h._send_json(400, {
-                "error": f"{field} out of range [0.0, 1.0]: {v}",
-                "hint": "ElevenLabs voice settings are 0..1 floats.",
-            })
+            return h._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"{field} out of range [0.0, 1.0]: {v}",
+                       retry_safe=False,
+                       extra={"hint": "ElevenLabs voice settings are 0..1 floats."},
+                   )
         # Round to 2 decimals — slider step is 0.01 client-side; round
         # tighter than that and we silently destroy any historical 3+
         # decimal value Kim retunes via Directus UI directly. Counter-
         # agent F6 fix: was round(v, 4), now matches client precision.
         patch[field] = round(v, 2)
     if not patch:
-        return h._send_json(400, {
-            "error": "no whitelisted fields in body",
-            "hint": f"Allowed: {sorted(h._VOICE_PROFILE_ALLOWED_FIELDS)}",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="NO_WHITELISTED_FIELDS_IN_BODY",
+                   error_message="no whitelisted fields in body",
+                   retry_safe=False,
+                   extra={"hint": f"Allowed: {sorted(h._VOICE_PROFILE_ALLOWED_FIELDS)}"},
+               )
     # PATCH Directus via cached client (counter-agent F4 fix: was
     # creating a fresh client + load_credentials() per request, which
     # hammers Doppler/disk on every slider change).
@@ -795,10 +917,13 @@ def handle_voice_profile_update(h, body: dict)-> None:
         c = _get_voice_directus_client()
         r = c._request("PATCH", f"/items/prod_voice_profiles/{pid}", data=patch)
     except Exception as exc:  # noqa: BLE001
-        return h._send_json(502, {
-            "error": f"Directus PATCH failed: {type(exc).__name__}: {exc}",
-            "hint": "Slider value not persisted. Retry; check Directus.",
-        })
+        return h._send_error_v59(
+                   502,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"Directus PATCH failed: {type(exc).__name__}: {exc}",
+                   retry_safe=True,
+                   extra={"hint": "Slider value not persisted. Retry; check Directus."},
+               )
     # Force-refresh the in-process cache so the next regen sees the new
     # values (avoids stale-cache drift; counter Phase 0 C2 mitigation).
     try:

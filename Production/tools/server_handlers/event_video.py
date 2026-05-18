@@ -40,18 +40,33 @@ def handle_event_create(h, body: dict) -> None:
     import re as _re
     new_event_id = (body or {}).get("event_id", "")
     if not new_event_id or not _re.match(r'^[A-Z][A-Za-z0-9_]{2,63}$', new_event_id):
-        return h._send_json(400, {"ok": False, "error":
-            "event_id must match ^[A-Z][A-Za-z0-9_]{2,63}$"})
+        return h._send_error_v59(
+                   400,
+                   error_code="EVENT_ID_MUST_MATCH_A",
+                   error_message="event_id must match ^[A-Z][A-Za-z0-9_]{2,63}$",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     for prefix in ('Test_', '_', 'Tmp_'):
         if new_event_id.startswith(prefix):
-            return h._send_json(400, {"ok": False, "error":
-                f"event_id cannot start with reserved prefix {prefix!r}"})
+            return h._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"event_id cannot start with reserved prefix {prefix!r}",
+                       retry_safe=False,
+                       extra={"ok": False},
+                   )
     # Case-insensitive uniqueness vs siblings.
     parent = h.app.event_dir.parent
     existing_lower = {p.name.lower() for p in parent.iterdir() if p.is_dir() and p.name.startswith("Event_")}
     if new_event_id.lower() in existing_lower:
-        return h._send_json(409, {"ok": False, "error":
-            f"event_id {new_event_id!r} already exists (case-insensitive collision)"})
+        return h._send_error_v59(
+                   409,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"event_id {new_event_id!r} already exists (case-insensitive collision)",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     new_event_dir = parent / new_event_id
     # Create dir + initialize state via StateManager (writes v3-shape state.json).
     new_event_dir.mkdir(parents=True, exist_ok=False)
@@ -103,24 +118,26 @@ def handle_event_load(h, body: dict) -> None:
     # event_id is non-empty + a real directory.
     new_event_id = (body or {}).get("event_id") or (body or {}).get("scope_event_id")
     if not new_event_id:
-        return h._send_json(400, {
-            "error": "event_id required",
-            "code": "EVENT_LOAD_GENERATION_LOCK_V1",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="EVENT_ID_REQUIRED",
+                   error_message="event_id required",
+                   retry_safe=False,
+                   extra={"code": "EVENT_LOAD_GENERATION_LOCK_V1"},
+               )
 
     # event_dir is sibling of current — we do NOT allow arbitrary paths.
     # Pattern: Production/<event_id>/ next to current Production/<current>/.
     new_event_dir = h.app.event_dir.parent / new_event_id
     if not new_event_dir.is_dir():
-        return h._send_json(404, {
-            "error": "event_dir not found",
-            "code": "EVENT_LOAD_GENERATION_LOCK_V1",
-            "expected": str(new_event_dir),
-            "hint": (
-                f"event_id {new_event_id!r} must correspond to an "
-                f"existing directory at {new_event_dir}."
-            ),
-        })
+        return h._send_error_v59(
+                   404,
+                   error_code="EVENT_DIR_NOT_FOUND",
+                   error_message="event_dir not found",
+                   retry_safe=False,
+                   extra={"code": "EVENT_LOAD_GENERATION_LOCK_V1", "expected": str(new_event_dir), "hint": f"event_id {new_event_id!r} must correspond to an "
+                f"existing directory at {new_event_dir}."},
+               )
 
     # Storyboard pick: explicit body['storyboard'], else keep current
     # filename (works if every event uses the same storyboard naming).
@@ -136,19 +153,23 @@ def handle_event_load(h, body: dict) -> None:
             key=lambda p: p.stat().st_mtime, reverse=True,
         )
         if not candidates:
-            return h._send_json(404, {
-                "error": "no storyboard_v*_prod.html in target event_dir",
-                "code": "EVENT_LOAD_GENERATION_LOCK_V1",
-                "event_dir": str(new_event_dir),
-            })
+            return h._send_error_v59(
+                       404,
+                       error_code="NO_STORYBOARD_V_PROD_HTML",
+                       error_message="no storyboard_v*_prod.html in target event_dir",
+                       retry_safe=False,
+                       extra={"code": "EVENT_LOAD_GENERATION_LOCK_V1", "event_dir": str(new_event_dir)},
+                   )
         new_storyboard_path = candidates[0]
 
     if not new_storyboard_path.is_file():
-        return h._send_json(404, {
-            "error": "storyboard file not found",
-            "code": "EVENT_LOAD_GENERATION_LOCK_V1",
-            "expected": str(new_storyboard_path),
-        })
+        return h._send_error_v59(
+                   404,
+                   error_code="STORYBOARD_FILE_NOT_FOUND",
+                   error_message="storyboard file not found",
+                   retry_safe=False,
+                   extra={"code": "EVENT_LOAD_GENERATION_LOCK_V1", "expected": str(new_storyboard_path)},
+               )
 
     # ATOMIC SWAP under lock.
     with h.app.event_load_lock:
@@ -265,10 +286,13 @@ def handle_video_list(h) -> None:
             "videos": videos,
         })
     except Exception as exc:  # noqa: BLE001
-        return h._send_json(500, {
-            "ok": False,
-            "error": f"failed to list videos: {type(exc).__name__}: {exc}",
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"failed to list videos: {type(exc).__name__}: {exc}",
+                   retry_safe=True,
+                   extra={"ok": False},
+               )
 
 
 def handle_video_set_active(h, body: dict) -> None:
@@ -288,21 +312,21 @@ def handle_video_set_active(h, body: dict) -> None:
         return
     video_role = (body or {}).get("video_role")
     if not video_role:
-        return h._send_json(400, {
-            "ok": False,
-            "error": "video_role required",
-            "code": "VIDEO_ROLE_INVALID",
-            "valid": sorted(h.app.state._VALID_VIDEO_ROLES),
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="VIDEO_ROLE_REQUIRED",
+                   error_message="video_role required",
+                   retry_safe=False,
+                   extra={"ok": False, "code": "VIDEO_ROLE_INVALID", "valid": sorted(h.app.state._VALID_VIDEO_ROLES)},
+               )
     if not h.app.state.validate_video_role(video_role):
-        return h._send_json(400, {
-            "ok": False,
-            "error": f"video_role {video_role!r} not valid for this event",
-            "code": "VIDEO_ROLE_INVALID",
-            "got": video_role,
-            "valid": sorted(h.app.state._VALID_VIDEO_ROLES),
-            "hint": "must be in canonical set AND exist in state.videos.",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"video_role {video_role!r} not valid for this event",
+                   retry_safe=False,
+                   extra={"ok": False, "code": "VIDEO_ROLE_INVALID", "got": video_role, "valid": sorted(h.app.state._VALID_VIDEO_ROLES), "hint": "must be in canonical set AND exist in state.videos."},
+               )
 
     # Write state.active_video at the top level (not partition-scoped).
     def _set_active(state, _role=video_role):
@@ -328,27 +352,31 @@ def handle_video_create(h, body: dict) -> None:
     video_role = (body or {}).get("video_role")
     video_label = (body or {}).get("video_label")
     if not video_role:
-        return h._send_json(400, {
-            "ok": False,
-            "error": "video_role required",
-            "code": "VIDEO_ROLE_INVALID",
-            "valid": sorted(h.app.state._VALID_VIDEO_ROLES),
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="VIDEO_ROLE_REQUIRED",
+                   error_message="video_role required",
+                   retry_safe=False,
+                   extra={"ok": False, "code": "VIDEO_ROLE_INVALID", "valid": sorted(h.app.state._VALID_VIDEO_ROLES)},
+               )
     try:
         created = h.app.state.create_video(video_role, video_label)
     except ValueError as exc:
-        return h._send_json(400, {
-            "ok": False,
-            "error": str(exc),
-            "code": "VIDEO_ROLE_INVALID",
-            "valid": sorted(h.app.state._VALID_VIDEO_ROLES),
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=str(exc),
+                   retry_safe=False,
+                   extra={"ok": False, "code": "VIDEO_ROLE_INVALID", "valid": sorted(h.app.state._VALID_VIDEO_ROLES)},
+               )
     if not created:
-        return h._send_json(409, {
-            "ok": False,
-            "error": f"partition {video_role!r} already exists",
-            "code": "VIDEO_ROLE_DUPLICATE",
-        })
+        return h._send_error_v59(
+                   409,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"partition {video_role!r} already exists",
+                   retry_safe=False,
+                   extra={"ok": False, "code": "VIDEO_ROLE_DUPLICATE"},
+               )
     return h._send_json(200, {
         "ok": True,
         "event_id": h.app.event_id,
@@ -400,11 +428,13 @@ def handle_milestones_create(h, body: dict) -> None:
     milestone_label = (body or {}).get("milestone_label")
     ok, err = h._validate_milestone_id(milestone_id)
     if not ok:
-        return h._send_json(400, {
-            "ok": False,
-            "error": err,
-            "code": "MILESTONE_ID_INVALID",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=err,
+                   retry_safe=False,
+                   extra={"ok": False, "code": "MILESTONE_ID_INVALID"},
+               )
 
     root = h._milestones_root()
     root.mkdir(parents=True, exist_ok=True)
@@ -413,11 +443,13 @@ def handle_milestones_create(h, body: dict) -> None:
     target = root / milestone_id
     existing_lower = {p.name.lower() for p in root.iterdir() if p.is_dir()}
     if milestone_id.lower() in existing_lower:
-        return h._send_json(409, {
-            "ok": False,
-            "error": f"milestone {milestone_id!r} already exists (case-insensitive collision)",
-            "code": "MILESTONE_ID_DUPLICATE",
-        })
+        return h._send_error_v59(
+                   409,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"milestone {milestone_id!r} already exists (case-insensitive collision)",
+                   retry_safe=False,
+                   extra={"ok": False, "code": "MILESTONE_ID_DUPLICATE"},
+               )
 
     target.mkdir(parents=True, exist_ok=False)
     # Animation clips dir (mirrors Event_<N> layout).
@@ -471,26 +503,32 @@ def handle_milestone_load(h, body: dict) -> None:
     milestone_id = (body or {}).get("milestone_id")
     ok, err = h._validate_milestone_id(milestone_id)
     if not ok:
-        return h._send_json(400, {
-            "ok": False,
-            "error": err,
-            "code": "MILESTONE_ID_INVALID",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=err,
+                   retry_safe=False,
+                   extra={"ok": False, "code": "MILESTONE_ID_INVALID"},
+               )
 
     target = h._milestones_root() / milestone_id
     if not target.is_dir():
-        return h._send_json(404, {
-            "ok": False,
-            "error": f"milestone {milestone_id!r} not found at {target}",
-            "code": "MILESTONE_NOT_FOUND",
-        })
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"milestone {milestone_id!r} not found at {target}",
+                   retry_safe=False,
+                   extra={"ok": False, "code": "MILESTONE_NOT_FOUND"},
+               )
     state_path = target / "state.json"
     if not state_path.is_file():
-        return h._send_json(404, {
-            "ok": False,
-            "error": f"milestone state.json missing at {state_path}",
-            "code": "MILESTONE_STATE_MISSING",
-        })
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"milestone state.json missing at {state_path}",
+                   retry_safe=False,
+                   extra={"ok": False, "code": "MILESTONE_STATE_MISSING"},
+               )
 
     with h.app.event_load_lock:
         old_gen = h.app.event_generation

@@ -89,7 +89,13 @@ def handle_beat_accepted_bg(h)-> None:
     qs = _up.parse_qs(_up.urlparse(h.path).query)
     beat_id = (qs.get("beat_id") or [None])[0]
     if not beat_id:
-        return h._send_json(400, {"ok": False, "error": "beat_id required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_BEAT_ID",
+                   error_message="beat_id required",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     try:
         import os as _os
         bg = _bg_module()
@@ -98,7 +104,13 @@ def handle_beat_accepted_bg(h)-> None:
             sidecar = bg._migrate_sidecar(sidecar)
             _, beat = bg.find_beat(sidecar, beat_id)
         if not beat:
-            return h._send_json(404, {"ok": False, "error": f"beat {beat_id} not found"})
+            return h._send_error_v59(
+                       404,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"beat {beat_id} not found",
+                       retry_safe=False,
+                       extra={"ok": False},
+                   )
         key = beat.get("accepted_image_key")
         # Fall back to reference_image / bg_ref_image (drag-from-sources path)
         if not key:
@@ -114,8 +126,13 @@ def handle_beat_accepted_bg(h)-> None:
                     key = opt["key"]
                     break
         if not key:
-            return h._send_json(404, {"ok": False,
-                "error": f"No image found for beat {beat_id} — place an image in Option 1 first"})
+            return h._send_error_v59(
+                       404,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"No image found for beat {beat_id} — place an image in Option 1 first",
+                       retry_safe=False,
+                       extra={"ok": False},
+                   )
         # 1. Check flux_options for direct local_path
         abs_path = None
         for opt in beat.get("flux_options", []) or []:
@@ -143,13 +160,24 @@ def handle_beat_accepted_bg(h)-> None:
         if not abs_path and _os.path.isfile(key):
             abs_path = key
         if not abs_path:
-            return h._send_json(404, {"ok": False,
-                "error": f"Image file not found for key={key}"})
+            return h._send_error_v59(
+                       404,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"Image file not found for key={key}",
+                       retry_safe=False,
+                       extra={"ok": False},
+                   )
         import urllib.parse as _up2
         bg_url = f"/files?path={_up2.quote(abs_path)}"
         return h._send_json(200, {"ok": True, "bg_url": bg_url, "bg_path": abs_path})
     except Exception as e:
-        return h._send_json(500, {"ok": False, "error": str(e)})
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=str(e),
+                   retry_safe=True,
+                   extra={"ok": False},
+               )
 
 
 def handle_beat_finalize(h, body: dict)-> None:
@@ -173,21 +201,23 @@ def handle_beat_finalize(h, body: dict)-> None:
 
     scope_target_video = (body or {}).get("scope_target_video")
     if scope_target_video not in h.app.state._VALID_VIDEO_ROLES:
-        return h._send_json(400, {
-            "ok": False,
-            "error": "scope_target_video required + must be intro/resolution/standalone",
-            "code": "VIDEO_ROLE_INVALID",
-            "got": scope_target_video,
-            "valid": sorted(h.app.state._VALID_VIDEO_ROLES),
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="SCOPE_TARGET_VIDEO_REQUIRED_MUST",
+                   error_message="scope_target_video required + must be intro/resolution/standalone",
+                   retry_safe=False,
+                   extra={"ok": False, "code": "VIDEO_ROLE_INVALID", "got": scope_target_video, "valid": sorted(h.app.state._VALID_VIDEO_ROLES)},
+               )
 
     beat_id = (body or {}).get("beat_id")
     if not beat_id:
-        return h._send_json(400, {
-            "ok": False,
-            "error": "beat_id required",
-            "code": "BEAT_ID_MISSING",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_BEAT_ID",
+                   error_message="beat_id required",
+                   retry_safe=False,
+                   extra={"ok": False, "code": "BEAT_ID_MISSING"},
+               )
     force_rebuild = bool((body or {}).get("force_rebuild", False))
 
     # LD-460 pin tuple at entry (v3 spec §3.5).
@@ -198,11 +228,13 @@ def handle_beat_finalize(h, body: dict)-> None:
         "_handler": "beat_finalize",
     }
     if not h._check_event_pin(_pin, "beat_finalize_pre_work"):
-        return h._send_json(423, {
-            "error": "event_changed_pre_work",
-            "code": "ASYNC_JOB_GENERATION_PIN_V1",
-            "handler": "beat_finalize",
-        })
+        return h._send_error_v59(
+                   423,
+                   error_code="EVENT_CHANGED_PRE_WORK",
+                   error_message="event_changed_pre_work",
+                   retry_safe=False,
+                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "handler": "beat_finalize"},
+               )
 
     # Lazy import the lib pipeline.
     try:
@@ -215,10 +247,13 @@ def handle_beat_finalize(h, body: dict)-> None:
             trim_normalized,
         )
     except ImportError as exc:
-        return h._send_json(500, {
-            "ok": False,
-            "error": f"lib/ffmpeg_stitch import failed: {exc}",
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"lib/ffmpeg_stitch import failed: {exc}",
+                   retry_safe=True,
+                   extra={"ok": False},
+               )
 
     # Snapshot state (slim — beats + image_overrides) at entry.
     state = h._read_scope_state(scope_type, scope_root)
@@ -226,10 +261,13 @@ def handle_beat_finalize(h, body: dict)-> None:
     partition = videos.get(scope_target_video) or {}
     beats = partition.get("beats") or {}
     if beat_id not in beats:
-        return h._send_json(400, {
-            "ok": False,
-            "error": f"unknown beat {beat_id!r} in role {scope_target_video!r}",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"unknown beat {beat_id!r} in role {scope_target_video!r}",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     slim = {
         "beats": beats,
         "image_overrides": partition.get("image_overrides") or {},
@@ -245,11 +283,13 @@ def handle_beat_finalize(h, body: dict)-> None:
     try:
         digest, meta = compute_finalize_args_hash(slim, beat_id, clips_dir)
     except FileNotFoundError as exc:
-        return h._send_json(400, {
-            "ok": False,
-            "error": str(exc),
-            "code": "BEAT_SOURCE_MISSING",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=str(exc),
+                   retry_safe=False,
+                   extra={"ok": False, "code": "BEAT_SOURCE_MISSING"},
+               )
 
     # Cache directory + file.
     cache_dir = scope_root / "animation_clips_final"
@@ -323,11 +363,13 @@ def handle_beat_finalize(h, body: dict)-> None:
 
         # Terminal pin check before asset registration.
         if not h._check_event_pin(_pin, "beat_finalize_terminal"):
-            return h._send_json(423, {
-                "error": "event_changed_terminal",
-                "code": "ASYNC_JOB_GENERATION_PIN_V1",
-                "handler": "beat_finalize",
-            })
+            return h._send_error_v59(
+                       423,
+                       error_code="EVENT_CHANGED_TERMINAL",
+                       error_message="event_changed_terminal",
+                       retry_safe=False,
+                       extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "handler": "beat_finalize"},
+                   )
 
         # Register as 'beat_scene' asset (Two-Write Rule: register_asset
         # internally writes both prod_assets and prod_activity_log).
@@ -388,14 +430,22 @@ def serve_beat_audio(h, beat_id: str)-> None:
     # Sanitize beat_id (accept only word chars + underscores, no path traversal).
     import re as _re
     if not _re.match(r"^[a-zA-Z0-9_]+$", beat_id or ""):
-        return h._send_json(400, {"error": f"invalid beat_id: {beat_id!r}"})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"invalid beat_id: {beat_id!r}",
+                   retry_safe=False,
+               )
 
     audio_path = _find_beat_audio(h.app.event_dir, beat_id, app=h.app)
     if not audio_path or not audio_path.is_file():
-        return h._send_json(404, {
-            "error": f"no TTS audio found for {beat_id}",
-            "hint": "regenerate audio via the 🎙 Regen Audio button or edit dialogue",
-        })
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"no TTS audio found for {beat_id}",
+                   retry_safe=False,
+                   extra={"hint": "regenerate audio via the 🎙 Regen Audio button or edit dialogue"},
+               )
 
     suffix = audio_path.suffix.lower()
     ctype = {".mp3": "audio/mpeg", ".wav": "audio/wav"}.get(suffix, "application/octet-stream")
@@ -465,17 +515,37 @@ def handle_beat_update_text(h, body: dict)-> None:
     beat_id = body.get("beat") or scope.beat_id
     new_text = body.get("text")
     if not beat_id or new_text is None:
-        return h._send_json(400, {"error": "missing 'beat' or 'text'"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_BEAT_OR_TEXT",
+                   error_message="missing 'beat' or 'text'",
+                   retry_safe=False,
+               )
     if not isinstance(new_text, str):
-        return h._send_json(400, {"error": "'text' must be a string"})
+        return h._send_error_v59(
+                   400,
+                   error_code="INVALID_TEXT",
+                   error_message="'text' must be a string",
+                   retry_safe=False,
+               )
     # Upper bound to prevent pathological payloads
     if len(new_text) > 5000:
-        return h._send_json(400, {"error": "text exceeds 5000 chars"})
+        return h._send_error_v59(
+                   400,
+                   error_code="TEXT_EXCEEDS_CHARS",
+                   error_message="text exceeds 5000 chars",
+                   retry_safe=False,
+               )
 
     try:
         beat_num = int(beat_id.split("_")[1])
     except (IndexError, ValueError):
-        return h._send_json(400, {"error": f"unparseable beat_id: {beat_id!r}"})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"unparseable beat_id: {beat_id!r}",
+                   retry_safe=False,
+               )
 
     # Step 1: detect if a TTS file exists (for stale-flag logic)
     tts_exists = _find_beat_audio(h.app.event_dir, beat_id, app=h.app) is not None
@@ -559,11 +629,14 @@ def handle_beat_update_text(h, body: dict)-> None:
                 "text_modified_after_tts": tts_exists and old_text != new_text,
             })
         # Real error — return 500 with the detail from the helper.
-        return h._send_json(500, {
-            "error": patch_result.get("error", "unknown HTML patch error"),
-            **{k: v for k, v in patch_result.items()
-               if k in ("escaped_preview",)},
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=patch_result.get("error", "unknown HTML patch error"),
+                   retry_safe=True,
+                   extra={**{k: v for k, v in patch_result.items()
+               if k in ("escaped_preview",)}},
+               )
 
     print(f"[update_text] {beat_id} saved ({len(new_text)} chars) "
           f"html_patched=True tts_exists={tts_exists}")
@@ -708,14 +781,34 @@ def handle_beat_update_speaker(h, body: dict)-> None:
     beat_id = body.get("beat") or body.get("beat_id") or scope.beat_id
     new_speaker_raw = body.get("speaker")
     if not beat_id or new_speaker_raw is None:
-        return h._send_json(400, {"error": "missing 'beat' or 'speaker'"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_BEAT_OR_SPEAKER",
+                   error_message="missing 'beat' or 'speaker'",
+                   retry_safe=False,
+               )
     if not isinstance(new_speaker_raw, str):
-        return h._send_json(400, {"error": "'speaker' must be a string"})
+        return h._send_error_v59(
+                   400,
+                   error_code="INVALID_SPEAKER",
+                   error_message="'speaker' must be a string",
+                   retry_safe=False,
+               )
     new_speaker = new_speaker_raw.strip()
     if not new_speaker:
-        return h._send_json(400, {"error": "'speaker' must be a non-empty string"})
+        return h._send_error_v59(
+                   400,
+                   error_code="INVALID_SPEAKER",
+                   error_message="'speaker' must be a non-empty string",
+                   retry_safe=False,
+               )
     if len(new_speaker) > 100:
-        return h._send_json(400, {"error": "speaker exceeds 100 chars"})
+        return h._send_error_v59(
+                   400,
+                   error_code="SPEAKER_EXCEEDS_CHARS",
+                   error_message="speaker exceeds 100 chars",
+                   retry_safe=False,
+               )
 
     canonical = _canonicalize_speaker(new_speaker) or new_speaker
     tts_exists = _find_beat_audio(h.app.event_dir, beat_id, app=h.app) is not None
@@ -817,18 +910,44 @@ def handle_beat_graft(h, body: dict)-> None:
     mutation_id = body.get("mutation_id")
     speaker_override = body.get("speaker_override")
     if not mutation_id:
-        return h._send_json(400, {"error": "mutation_id_required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MUTATION_ID_REQUIRED",
+                   error_message="mutation_id_required",
+                   retry_safe=False,
+               )
     if not isinstance(src, dict) or not isinstance(tgt, dict):
-        return h._send_json(400, {"error": "source/target must be objects"})
+        return h._send_error_v59(
+                   400,
+                   error_code="SOURCE_TARGET_MUST_BE_OBJECTS",
+                   error_message="source/target must be objects",
+                   retry_safe=False,
+               )
     for fld in ("event_id", "video_role", "beat_id"):
         if not src.get(fld):
-            return h._send_json(400, {"error": f"source.{fld}_required"})
+            return h._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"source.{fld}_required",
+                       retry_safe=False,
+                   )
     for fld in ("event_id", "video_role"):
         if not tgt.get(fld):
-            return h._send_json(400, {"error": f"target.{fld}_required"})
+            return h._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"target.{fld}_required",
+                       retry_safe=False,
+                   )
     for r in (src["video_role"], tgt["video_role"]):
         if r not in {"intro", "resolution", "standalone"}:
-            return h._send_json(400, {"error": "video_role_invalid", "got": r})
+            return h._send_error_v59(
+                       400,
+                       error_code="VIDEO_ROLE_INVALID",
+                       error_message="video_role_invalid",
+                       retry_safe=False,
+                       extra={"got": r},
+                   )
 
     # 2) Idempotency dedup cache (mutation_id replay)
     if mutation_id in _GRAFT_DEDUP:
@@ -839,11 +958,13 @@ def handle_beat_graft(h, body: dict)-> None:
     # 3) Validate target scope (server is write-pinned to its event_dir)
     server_event = h.app.event_dir.name
     if tgt["event_id"] != server_event:
-        return h._send_json(409, {
-            "error": "scope_mismatch",
-            "expected_event_id": server_event,
-            "got": tgt["event_id"],
-        })
+        return h._send_error_v59(
+                   409,
+                   error_code="SCOPE_MISMATCH",
+                   error_message="scope_mismatch",
+                   retry_safe=False,
+                   extra={"expected_event_id": server_event, "got": tgt["event_id"]},
+               )
 
     # 4) Cross-event source: require --source-event CLI flag
     cross_event = (src["event_id"] != tgt["event_id"])
@@ -851,13 +972,14 @@ def handle_beat_graft(h, body: dict)-> None:
     if cross_event:
         seed = getattr(h.app, "source_event_dir", None)
         if seed is None or seed.name != src["event_id"]:
-            return h._send_json(409, {
-                "error": "cross_event_requires_explicit_source",
-                "hint": (
-                    f"Restart server with --source-event Production/{src['event_id']} "
-                    "to enable cross-event graft from this source."
-                ),
-            })
+            return h._send_error_v59(
+                       409,
+                       error_code="CROSS_EVENT_REQUIRES_EXPLICIT_SOURCE",
+                       error_message="cross_event_requires_explicit_source",
+                       retry_safe=False,
+                       extra={"hint": f"Restart server with --source-event Production/{src['event_id']} "
+                    "to enable cross-event graft from this source."},
+                   )
         source_event_dir = seed
     else:
         source_event_dir = h.app.event_dir
@@ -868,8 +990,13 @@ def handle_beat_graft(h, body: dict)-> None:
         with open(source_state_path, "r", encoding="utf-8") as f:
             source_state = json.load(f)
     except FileNotFoundError:
-        return h._send_json(404, {"error": "source_state_not_found",
-                                     "path": str(source_state_path)})
+        return h._send_error_v59(
+                   404,
+                   error_code="SOURCE_STATE_NOT_FOUND",
+                   error_message="source_state_not_found",
+                   retry_safe=False,
+                   extra={"path": str(source_state_path)},
+               )
     src_partition = (source_state.get("videos") or {}).get(src["video_role"], {}) or {}
     src_beats = src_partition.get("beats") or {}
     src_beat = src_beats.get(src["beat_id"])
@@ -881,23 +1008,34 @@ def handle_beat_graft(h, body: dict)-> None:
             "source": src, "target": tgt, "ok": False,
             "reason": "source_beat_not_found",
         })
-        return h._send_json(404, {"error": "source_beat_not_found",
-                                     "source": src})
+        return h._send_error_v59(
+                   404,
+                   error_code="SOURCE_BEAT_NOT_FOUND",
+                   error_message="source_beat_not_found",
+                   retry_safe=False,
+                   extra={"source": src},
+               )
 
     # 6) Pre-render-only invariant (RR-1 mitigation)
     phase_1 = src_beat.get("phase_1") or {}
     if phase_1.get("status") == "completed":
-        return h._send_json(400, {
-            "error": "graft_pre_render_only",
-            "reason": "source.phase_1.status==completed",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GRAFT_PRE_RENDER_ONLY",
+                   error_message="graft_pre_render_only",
+                   retry_safe=False,
+                   extra={"reason": "source.phase_1.status==completed"},
+               )
     for opt in (phase_1.get("options") or []):
         if isinstance(opt, dict):
             if opt.get("file") or opt.get("lipsync_task_id"):
-                return h._send_json(400, {
-                    "error": "graft_pre_render_only",
-                    "reason": "source.phase_1.options[].file or lipsync_task_id non-empty",
-                })
+                return h._send_error_v59(
+                           400,
+                           error_code="GRAFT_PRE_RENDER_ONLY",
+                           error_message="graft_pre_render_only",
+                           retry_safe=False,
+                           extra={"reason": "source.phase_1.options[].file or lipsync_task_id non-empty"},
+                       )
 
     # 7) Pre-image snapshots (atomic copy of full state(s))
     utc = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -917,10 +1055,13 @@ def handle_beat_graft(h, body: dict)-> None:
             atomic_json_write(str(bpath), state_dict)
             pre_image_paths.append(str(bpath))
     except Exception as exc:  # noqa: BLE001
-        return h._send_json(503, {
-            "error": "pre_image_snapshot_failed",
-            "detail": f"{type(exc).__name__}: {exc}",
-        })
+        return h._send_error_v59(
+                   503,
+                   error_code="PRE_IMAGE_SNAPSHOT_FAILED",
+                   error_message="pre_image_snapshot_failed",
+                   retry_safe=True,
+                   extra={"detail": f"{type(exc).__name__}: {exc}"},
+               )
 
     # 8) Speaker resolution (override or canonicalize source)
     raw_speaker = (speaker_override
@@ -942,7 +1083,12 @@ def handle_beat_graft(h, body: dict)-> None:
         with open(target_state_path, "r", encoding="utf-8") as f:
             target_state_pre = json.load(f)
     except FileNotFoundError:
-        return h._send_json(500, {"error": "target_state_not_found"})
+        return h._send_error_v59(
+                   500,
+                   error_code="TARGET_STATE_NOT_FOUND",
+                   error_message="target_state_not_found",
+                   retry_safe=True,
+               )
     tgt_partition_pre = ((target_state_pre.get("videos") or {})
                          .get(tgt["video_role"]) or {})
     tgt_beats_pre = tgt_partition_pre.get("beats") or {}
@@ -989,11 +1135,13 @@ def handle_beat_graft(h, body: dict)-> None:
     try:
         h.app.state.mutate_video_state(tgt["video_role"], _insert_target)
     except Exception as exc:  # noqa: BLE001
-        return h._send_json(500, {
-            "error": "target_write_failed",
-            "detail": f"{type(exc).__name__}: {exc}",
-            "pre_image_paths": pre_image_paths,
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="TARGET_WRITE_FAILED",
+                   error_message="target_write_failed",
+                   retry_safe=True,
+                   extra={"detail": f"{type(exc).__name__}: {exc}", "pre_image_paths": pre_image_paths},
+               )
 
     # 11) Optional move=true: delete source beat
     if move:
@@ -1013,11 +1161,13 @@ def handle_beat_graft(h, body: dict)-> None:
                     src_do.remove(src["beat_id"])
                 atomic_json_write(str(source_state_path), src_state_now)
             except Exception as exc:  # noqa: BLE001
-                return h._send_json(500, {
-                    "error": "source_delete_failed",
-                    "detail": f"{type(exc).__name__}: {exc}",
-                    "pre_image_paths": pre_image_paths,
-                })
+                return h._send_error_v59(
+                           500,
+                           error_code="SOURCE_DELETE_FAILED",
+                           error_message="source_delete_failed",
+                           retry_safe=True,
+                           extra={"detail": f"{type(exc).__name__}: {exc}", "pre_image_paths": pre_image_paths},
+                       )
         else:
             # Same-event delete via the partition router's mutator.
             def _delete_source(partition, _bid=src["beat_id"]):
@@ -1030,11 +1180,13 @@ def handle_beat_graft(h, body: dict)-> None:
             try:
                 h.app.state.mutate_video_state(src["video_role"], _delete_source)
             except Exception as exc:  # noqa: BLE001
-                return h._send_json(500, {
-                    "error": "source_delete_failed_same_event",
-                    "detail": f"{type(exc).__name__}: {exc}",
-                    "pre_image_paths": pre_image_paths,
-                })
+                return h._send_error_v59(
+                           500,
+                           error_code="SOURCE_DELETE_FAILED_SAME_EVENT",
+                           error_message="source_delete_failed_same_event",
+                           retry_safe=True,
+                           extra={"detail": f"{type(exc).__name__}: {exc}", "pre_image_paths": pre_image_paths},
+                       )
 
     # 12) Audit log: file JSONL (durable) + Directus mirror (best-effort)
     target_state_after_path = h.app.event_dir / "production_state.json"
@@ -1116,7 +1268,12 @@ def handle_beat_regenerate_audio(h, body: dict)-> None:
     # {beat_id: ...}; legacy callers send {beat: ...}.
     beat_id = body.get("beat_id") or body.get("beat")
     if not beat_id:
-        return h._send_json(400, {"error": "missing 'beat'"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_BEAT",
+                   error_message="missing 'beat'",
+                   retry_safe=False,
+               )
 
     video_role = body.get("scope_video_role") or body.get("scope_target_video") or "intro"
     state = h.app.state.read_state()
@@ -1153,10 +1310,13 @@ def handle_beat_regenerate_audio(h, body: dict)-> None:
         except Exception as exc:  # noqa: BLE001
             print(f"[regen_audio] {beat_id} storyboard fallback failed: {exc}")
     if not text:
-        return h._send_json(400, {
-            "error": f"beat {beat_id} has no dialogue text in state OR "
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"beat {beat_id} has no dialogue text in state OR "
                      f"storyboard — regen cannot proceed",
-        })
+                   retry_safe=False,
+               )
     # Persist the fallback-sourced text into state so downstream ops
     # (onblur, future regens, lipsync) see a consistent source of truth.
     if not beat_state.get("text"):
@@ -1174,13 +1334,19 @@ def handle_beat_regenerate_audio(h, body: dict)-> None:
         creds = load_credentials()
         el_key = creds.get("elevenlabs_key") or ""
     except Exception as exc:  # noqa: BLE001
-        return h._send_json(500, {
-            "error": f"elevenlabs key load failed: {type(exc).__name__}: {exc}"
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"elevenlabs key load failed: {type(exc).__name__}: {exc}",
+                   retry_safe=True,
+               )
     if not el_key:
-        return h._send_json(500, {
-            "error": "elevenlabs key unavailable — cannot regenerate audio"
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="ELEVENLABS_KEY_UNAVAILABLE_CANNOT_REGENERATE",
+                   error_message="elevenlabs key unavailable — cannot regenerate audio",
+                   retry_safe=True,
+               )
 
     print(f"[regen_audio] {beat_id} explicit button trigger "
           f"({len(text)}c text in state)")
@@ -1188,10 +1354,13 @@ def handle_beat_regenerate_audio(h, body: dict)-> None:
         result = _tts_regenerate_for_beat(h.app, beat_id, text, el_key, video_role=video_role)
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
-        return h._send_json(500, {
-            "error": f"TTS regen failure: {type(exc).__name__}: {exc}",
-            "beat": beat_id,
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"TTS regen failure: {type(exc).__name__}: {exc}",
+                   retry_safe=True,
+                   extra={"beat": beat_id},
+               )
 
     if result.get("ok"):
         print(f"[regen_audio] {beat_id} OK: {result['audio_file']} "
@@ -1260,12 +1429,13 @@ def handle_beat_regenerate_audio(h, body: dict)-> None:
 
     # Fail-loud — surface the error.
     print(f"[regen_audio] {beat_id} FAILED: {result.get('error', 'unknown')}")
-    return h._send_json(500, {
-        "ok": False,
-        "beat": beat_id,
-        "tts_regen": result,
-        "error": result.get("error", "TTS regen failed"),
-    })
+    return h._send_error_v59(
+               500,
+               error_code="GENERIC_ERROR",
+               error_message=result.get("error", "TTS regen failed"),
+               retry_safe=True,
+               extra={"ok": False, "beat": beat_id, "tts_regen": result},
+           )
 
 
 def handle_beat_delay(h, body: dict)-> None:
@@ -1291,9 +1461,19 @@ def handle_beat_delay(h, body: dict)-> None:
         raw_delay = body.get("delay_seconds", 0)
     delay = float(raw_delay)
     if not beat_id:
-        return h._send_json(400, {"error": "missing 'beat'/'beat_id'"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_BEAT_BEAT_ID",
+                   error_message="missing 'beat'/'beat_id'",
+                   retry_safe=False,
+               )
     if delay < 0 or delay > 10:
-        return h._send_json(400, {"error": "audio_delay must be 0-10 seconds"})
+        return h._send_error_v59(
+                   400,
+                   error_code="INVALID_AUDIO_DELAY",
+                   error_message="audio_delay must be 0-10 seconds",
+                   retry_safe=False,
+               )
 
     video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
 
@@ -1306,7 +1486,12 @@ def handle_beat_delay(h, body: dict)-> None:
 
     found = h.app.state.mutate_state(update)
     if not found:
-        return h._send_json(404, {"error": f"beat {beat_id} not found"})
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"beat {beat_id} not found",
+                   retry_safe=False,
+               )
     h._send_json(200, {"beat": beat_id, "audio_delay": round(delay, 2)})
 
 
@@ -1328,7 +1513,12 @@ def handle_beat_trim(h, body: dict)-> None:
 
     beat_id = body.get("beat") or body.get("beat_id")
     if not beat_id:
-        return h._send_json(400, {"error": "missing 'beat'/'beat_id'"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_BEAT_BEAT_ID",
+                   error_message="missing 'beat'/'beat_id'",
+                   retry_safe=False,
+               )
     # BODY_KEY_BACKCOMPAT_TRIM_V1 — accept trim_in/trim_out (client canonical)
     # AND trim_start/trim_end (legacy server keys). Server-key-first precedence
     # matches LD-693 (audio_delay over delay_seconds).
@@ -1341,11 +1531,21 @@ def handle_beat_trim(h, body: dict)-> None:
         raw_trim_end = body.get("trim_out")  # null = use full clip
     trim_end = raw_trim_end
     if trim_start < 0:
-        return h._send_json(400, {"error": "trim_start must be >= 0"})
+        return h._send_error_v59(
+                   400,
+                   error_code="TRIM_START_MUST_BE",
+                   error_message="trim_start must be >= 0",
+                   retry_safe=False,
+               )
     if trim_end is not None:
         trim_end = float(trim_end)
         if trim_end <= trim_start:
-            return h._send_json(400, {"error": "trim_end must be > trim_start"})
+            return h._send_error_v59(
+                       400,
+                       error_code="TRIM_END_MUST_BE_TRIM",
+                       error_message="trim_end must be > trim_start",
+                       retry_safe=False,
+                   )
 
     video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
 
@@ -1360,7 +1560,12 @@ def handle_beat_trim(h, body: dict)-> None:
 
     found = h.app.state.mutate_state(update)
     if not found:
-        return h._send_json(404, {"error": f"beat {beat_id} not found"})
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"beat {beat_id} not found",
+                   retry_safe=False,
+               )
     result = {"beat": beat_id, "trim_start": round(trim_start, 2)}
     if trim_end is not None:
         result["trim_end"] = round(trim_end, 2)

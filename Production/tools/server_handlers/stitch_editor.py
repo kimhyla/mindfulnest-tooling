@@ -87,21 +87,39 @@ def handle_stitch_loudnorm(h, body: dict)-> None:
 
     input_path_raw = (body or {}).get("input_path")
     if not input_path_raw:
-        return h._send_json(400, {"error": "input_path required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_INPUT_PATH",
+                   error_message="input_path required",
+                   retry_safe=False,
+               )
 
     try:
         ip_str = h._stitch_resolve_path(input_path_raw)
     except ValueError:
-        return h._send_json(403, {"error": "input_path outside project root"})
+        return h._send_error_v59(
+                   403,
+                   error_code="INPUT_PATH_OUTSIDE_PROJECT_ROOT",
+                   error_message="input_path outside project root",
+                   retry_safe=False,
+               )
     try:
         ip_str = require_media_under_project(ip_str, extensions=MEDIA_EXTENSIONS)
     except ValueError as exc:
-        return h._send_json(400, {"error": str(exc)})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=str(exc),
+                   retry_safe=False,
+               )
     except FileNotFoundError:
-        return h._send_json(404, {
-            "error": "input file not found",
-            "input_path": input_path_raw,
-        })
+        return h._send_error_v59(
+                   404,
+                   error_code="INPUT_FILE_NOT_FOUND",
+                   error_message="input file not found",
+                   retry_safe=False,
+                   extra={"input_path": input_path_raw},
+               )
     ip = Path(ip_str)
 
     target_lufs = float((body or {}).get("target_lufs", -19.0))
@@ -114,7 +132,12 @@ def handle_stitch_loudnorm(h, body: dict)-> None:
         try:
             op_str = h._stitch_resolve_path(out_raw)
         except ValueError:
-            return h._send_json(403, {"error": "output_path outside project root"})
+            return h._send_error_v59(
+                       403,
+                       error_code="OUTPUT_PATH_OUTSIDE_PROJECT_ROOT",
+                       error_message="output_path outside project root",
+                       retry_safe=False,
+                   )
         op = Path(op_str)
     else:
         op = ip.with_name(f"{ip.stem}_ln{ip.suffix}")
@@ -150,13 +173,20 @@ def handle_stitch_loudnorm(h, body: dict)-> None:
     try:
         result = subprocess.run(cmd, check=True, capture_output=True, timeout=600)
     except subprocess.CalledProcessError as exc:
-        return h._send_json(500, {
-            "error": "ffmpeg loudnorm failed",
-            "returncode": exc.returncode,
-            "stderr": exc.stderr.decode("utf-8", errors="replace")[-2000:],
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="FFMPEG_LOUDNORM_FAILED",
+                   error_message="ffmpeg loudnorm failed",
+                   retry_safe=True,
+                   extra={"returncode": exc.returncode, "stderr": exc.stderr.decode("utf-8", errors="replace")[-2000:]},
+               )
     except subprocess.TimeoutExpired:
-        return h._send_json(504, {"error": "ffmpeg loudnorm timed out (>600s)"})
+        return h._send_error_v59(
+                   504,
+                   error_code="FFMPEG_LOUDNORM_TIMED_OUT",
+                   error_message="ffmpeg loudnorm timed out (>600s)",
+                   retry_safe=True,
+               )
 
     # Mark the OUTPUT as loudnorm_already_applied so a re-run skips it.
     try:
@@ -171,10 +201,13 @@ def handle_stitch_loudnorm(h, body: dict)-> None:
 
     safe_op_check = os.path.realpath(str(op.resolve()))
     if not os.path.isfile(safe_op_check):
-        return h._send_json(500, {
-            "error": "ffmpeg succeeded but output file missing",
-            "output_path": str(op),
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="FFMPEG_SUCCEEDED_BUT_OUTPUT_FILE",
+                   error_message="ffmpeg succeeded but output file missing",
+                   retry_safe=True,
+                   extra={"output_path": str(op)},
+               )
     size_bytes = op.stat().st_size
     return h._send_json(200, {
         "ok": True,
@@ -289,7 +322,12 @@ def handle_stitch_load_job(h, name: str)-> None:
     state = h.app.stitch_state.read_state()
     job = state.get("jobs", {}).get(name)
     if job is None:
-        return h._send_json(404, {"error": f"Job not found: {name!r}"})
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"Job not found: {name!r}",
+                   retry_safe=False,
+               )
     return h._send_json(200, {"job": job, "name": name})
 
 
@@ -302,7 +340,12 @@ def handle_stitch_save_job(h, body: dict)-> None:
 
     name = (body.get("name") or "").strip()
     if not name:
-        return h._send_json(400, {"error": "Job name is required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_JOB_NAME",
+                   error_message="Job name is required",
+                   retry_safe=False,
+               )
 
     slots = body.get("slots", [])
     transitions = body.get("transitions", [])
@@ -313,7 +356,12 @@ def handle_stitch_save_job(h, body: dict)-> None:
             try:
                 h._stitch_resolve_path(vp)
             except ValueError:
-                return h._send_json(403, {"error": f"Slot {i} video_path outside project root"})
+                return h._send_error_v59(
+                           403,
+                           error_code="GENERIC_ERROR",
+                           error_message=f"Slot {i} video_path outside project root",
+                           retry_safe=False,
+                       )
 
     now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -354,20 +402,40 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
     import hashlib as _hl  # noqa: PLC0415
     video_path_str = body.get("video_path", "")
     if not video_path_str:
-        return h._send_json(400, {"error": "video_path required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="VIDEO_PATH_REQUIRED",
+                   error_message="video_path required",
+                   retry_safe=False,
+               )
 
     try:
         abs_path = h._stitch_resolve_path(video_path_str)
     except ValueError:
-        return h._send_json(403, {"error": "video_path outside project root"})
+        return h._send_error_v59(
+                   403,
+                   error_code="VIDEO_PATH_OUTSIDE_PROJECT_ROOT",
+                   error_message="video_path outside project root",
+                   retry_safe=False,
+               )
     try:
         abs_path = require_media_under_project(
             abs_path, extensions=MEDIA_EXTENSIONS,
         )
     except ValueError as exc:
-        return h._send_json(400, {"error": str(exc)})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=str(exc),
+                   retry_safe=False,
+               )
     except FileNotFoundError:
-        return h._send_json(404, {"error": f"File not found: {video_path_str}"})
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"File not found: {video_path_str}",
+                   retry_safe=False,
+               )
 
     # Cache key: md5(path) + mtime — Producer/Consumer drift rule (source identity)
     mtime_ms = int(os.path.getmtime(abs_path) * 1000)
@@ -391,9 +459,20 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
             subprocess.run(cmd, check=True, capture_output=True, timeout=180)
         except subprocess.CalledProcessError as exc:
             stderr = (exc.stderr or b"")[:400].decode("utf-8", errors="replace")
-            return h._send_json(500, {"error": "audio extraction failed", "stderr": stderr})
+            return h._send_error_v59(
+                       500,
+                       error_code="AUDIO_EXTRACTION_FAILED",
+                       error_message="audio extraction failed",
+                       retry_safe=True,
+                       extra={"stderr": stderr},
+                   )
         except subprocess.TimeoutExpired:
-            return h._send_json(504, {"error": "audio extraction timed out"})
+            return h._send_error_v59(
+                       504,
+                       error_code="AUDIO_EXTRACTION_TIMED_OUT",
+                       error_message="audio extraction timed out",
+                       retry_safe=True,
+                   )
 
     duration_ms = h._ffprobe_duration_ms(audio_path)
     return h._send_json(200, {
@@ -417,11 +496,26 @@ def handle_stitch_preview(h, body: dict)-> None:
     try:
         out_path, slot_durations = h._stitch_build_pipeline(body)
     except (ValueError, PermissionError) as exc:
-        return h._send_json(400, {"error": str(exc)})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=str(exc),
+                   retry_safe=False,
+               )
     except FileNotFoundError as exc:
-        return h._send_json(404, {"error": str(exc)})
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=str(exc),
+                   retry_safe=False,
+               )
     except RuntimeError as exc:
-        return h._send_json(500, {"error": str(exc)})
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=str(exc),
+                   retry_safe=True,
+               )
 
     # Strip the stitch_preview_ prefix for the URL hash segment
     hash_id = out_path.stem.replace("stitch_preview_", "")
@@ -455,16 +549,15 @@ def handle_stitch_bake(h, body: dict)-> None:
     # If the event was swapped via /api/event/load between scope-guard
     # and work start, abort BEFORE any expensive work begins.
     if not h._check_event_pin(_pin, '_handle_stitch_bake_pre_work'):
-        return h._send_json(423, {
-            "error": "event_changed_pre_work",
-            "code": "ASYNC_JOB_GENERATION_PIN_V1",
-            "handler": '_handle_stitch_bake',
-            "hint": (
-                "Event changed between scope-guard and work start. "
+        return h._send_error_v59(
+                   423,
+                   error_code="EVENT_CHANGED_PRE_WORK",
+                   error_message="event_changed_pre_work",
+                   retry_safe=False,
+                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "handler": '_handle_stitch_bake', "hint": "Event changed between scope-guard and work start. "
                 "No work was done; no orphan output. Client should "
-                "re-hydrate scope and retry."
-            ),
-        })
+                "re-hydrate scope and retry."},
+               )
 
     import fcntl  # noqa: PLC0415
 
@@ -478,19 +571,44 @@ def handle_stitch_bake(h, body: dict)-> None:
             fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except (BlockingIOError, OSError):
             os.close(fd)
-            return h._send_json(409, {"error": "Bake already in progress"})
+            return h._send_error_v59(
+                       409,
+                       error_code="BAKE_ALREADY_IN_PROGRESS",
+                       error_message="Bake already in progress",
+                       retry_safe=False,
+                   )
     except Exception as exc:
-        return h._send_json(500, {"error": f"Lock setup failed: {exc}"})
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"Lock setup failed: {exc}",
+                   retry_safe=True,
+               )
 
     try:
         try:
             out_path, _durations = h._stitch_build_pipeline(body)
         except (ValueError, PermissionError) as exc:
-            return h._send_json(400, {"error": str(exc)})
+            return h._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=str(exc),
+                       retry_safe=False,
+                   )
         except FileNotFoundError as exc:
-            return h._send_json(404, {"error": str(exc)})
+            return h._send_error_v59(
+                       404,
+                       error_code="GENERIC_ERROR",
+                       error_message=str(exc),
+                       retry_safe=False,
+                   )
         except RuntimeError as exc:
-            return h._send_json(500, {"error": str(exc)})
+            return h._send_error_v59(
+                       500,
+                       error_code="GENERIC_ERROR",
+                       error_message=str(exc),
+                       retry_safe=True,
+                   )
 
         # SIZE_BUDGET_VIDEO_V1: ffprobe bitrate assertion ≤ 1,900,000 bps
         try:
@@ -506,20 +624,26 @@ def handle_stitch_bake(h, body: dict)-> None:
 
         if bitrate > 1_900_000:
             out_path.unlink(missing_ok=True)
-            return h._send_json(422, {
-                "error": f"Video bitrate {bitrate:,} bps exceeds 1,900,000 bps (SIZE_BUDGET_VIDEO_V1)",
-                "actual_bps": bitrate,
-            })
+            return h._send_error_v59(
+                       422,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"Video bitrate {bitrate:,} bps exceeds 1,900,000 bps (SIZE_BUDGET_VIDEO_V1)",
+                       retry_safe=False,
+                       extra={"actual_bps": bitrate},
+                   )
 
         # SIZE_BUDGET_PER_MODULE_V1: ≤ 80 MB
         file_size = out_path.stat().st_size
         size_mb = file_size / (1024 * 1024)
         if size_mb > 80.0:
             out_path.unlink(missing_ok=True)
-            return h._send_json(422, {
-                "error": f"Output {size_mb:.1f} MB exceeds 80 MB ceiling (SIZE_BUDGET_PER_MODULE_V1)",
-                "actual_bytes": file_size,
-            })
+            return h._send_error_v59(
+                       422,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"Output {size_mb:.1f} MB exceeds 80 MB ceiling (SIZE_BUDGET_PER_MODULE_V1)",
+                       retry_safe=False,
+                       extra={"actual_bytes": file_size},
+                   )
 
         # Copy to stable bake path
         job_name = body.get("name") or "untitled"
@@ -544,7 +668,13 @@ def handle_stitch_bake(h, body: dict)-> None:
             # "module_id=1 sentinel" stub class.
             # LD-460 — terminal pin check before final asset register.
             if not h._check_event_pin(_pin, "stitch_bake_register_asset"):
-                return h._send_json(423, {"error": "event_changed_mid_job", "code": "ASYNC_JOB_GENERATION_PIN_V1", "orphaned_bake_path": str(bake_path)})
+                return h._send_error_v59(
+                           423,
+                           error_code="EVENT_CHANGED_MID_JOB",
+                           error_message="event_changed_mid_job",
+                           retry_safe=False,
+                           extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "orphaned_bake_path": str(bake_path)},
+                       )
             asset_id, _ = register_asset(
                 file_path=str(bake_path),
                 asset_type="final_atomic_mp4",
