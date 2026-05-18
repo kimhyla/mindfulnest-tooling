@@ -31,18 +31,29 @@ REPO_ROOT = ROOT.parent
 
 # (kind, target, owning_LD, status)
 # kind: "file" — file existence check
-# kind: "symbol" — git grep across Production/
+# kind: "symbol" — git grep across Production/, excluding the manifest file itself
+#
+# PROMOTED-TO-REAL (removed from MANIFEST 2026-05-18 in V59 overnight Phase 10):
+# - LD-746 kim_done / KimDone / done_toggle — Phase 6 batch A shipped real impl
+#   (storyboard checkbox + /api/beat/done_toggle endpoint). Symbol is now
+#   legitimately present in production_server.py + StoryboardTab.tsx.
+# - LD-767 SuggestParenthetical — Phase 6 batch A shipped real component
+#   (SuggestParentheticalDropdown.tsx + parenthetical_suggestions.ts).
+# These LDs' decision_text was updated PATCH-style in their respective LDs
+# during Phase 6 close to reflect the promotion.
 MANIFEST = [
     ("file",   "Production/tools/teleport_glass_inserter.py",          "LD-741"),
     ("file",   "Production/scripts/check_storyboard_critical_features.sh", "LD-766"),
     ("file",   "Production/scripts/teleport_glass_kling_test.py",      "LD-737"),
     ("symbol", "guardOrToast",        "LD-739"),
     ("symbol", "guardOrToast",        "LD-740"),  # cascade
-    ("symbol", "kim_done",            "LD-746"),
-    ("symbol", "KimDone",             "LD-746"),
-    ("symbol", "done_toggle",         "LD-746"),
-    ("symbol", "SuggestParenthetical", "LD-767"),
 ]
+
+# Files to ignore in symbol grep — script can't search for symbols and miss its
+# own MANIFEST entries. These paths are stripped from git grep results.
+SYMBOL_GREP_EXCLUDE = {
+    "Production/scripts/verify_no_fabrications.py",
+}
 
 # NEVER-DELETE files (these MUST exist when their phase has shipped; verifier
 # does NOT assert on these — that's not its job). Listed for documentation.
@@ -81,7 +92,9 @@ def _symbol_absent(sym: str) -> tuple[bool, str]:
         # git grep exits 1 when no matches found — that's what we want
         return True, "no matches"
     if out:
-        files = out.splitlines()
+        files = [f for f in out.splitlines() if f not in SYMBOL_GREP_EXCLUDE]
+        if not files:
+            return True, "no matches (self-exclusion only)"
         return False, f"hits in {len(files)} file(s): {', '.join(files[:3])}"
     return True, "no matches"
 
