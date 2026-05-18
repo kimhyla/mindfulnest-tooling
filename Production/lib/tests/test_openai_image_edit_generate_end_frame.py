@@ -21,7 +21,10 @@ FAKE_PNG = base64.b64decode(
 )
 INPUT_BYTES = b"\x89PNG\r\n\x1a\nfake-input-bytes"
 END_PROMPT = "owl turns head slightly"
-API_KEY = "sk-test-key"
+# Synthetic fixture token, not a real credential. Avoids `sk-` prefix so
+# secret-scanners + CodeQL don't flag this as a leaked OpenAI key (AI Review
+# 2026-05-18 PR #66 awareness item).
+API_KEY = "fixture-test-key-not-a-real-credential"
 
 
 def _mock_connection(

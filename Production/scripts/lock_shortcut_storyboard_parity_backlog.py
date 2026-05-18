@@ -112,7 +112,10 @@ LD = {
     "marker_string": "test.fixme",
     "notes": (
         f"[MARKER_AUDIT 2026-05-18] marker_string='test.fixme' "
-        f"verified-in-main-HEAD count={MARKER_COUNT} via git grep -c -F. "
+        f"verified-in-main-HEAD count={MARKER_COUNT} via `git grep -c -F test.fixme HEAD`. "
+        f"[CONFIRMED against tooling repo HEAD at lock_decision time — "
+        f"count is computed by _count_test_fixme_in_head() which shells out to "
+        f"`git grep -c -F test.fixme HEAD` immediately before the POST.] "
         "Closes Phase 3.5e cursor borderline-defer finding per Kim 2026-05-18 "
         "directive."
     ),
