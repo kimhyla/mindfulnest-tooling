@@ -127,6 +127,8 @@ export const MUTATION_ENDPOINTS = {
   beat_swap_to_a: `${SERVER_BASE}/api/beat/swap_to_a`,
   lipsync: `${SERVER_BASE}/api/lipsync`,
   beat_use_as_final: `${SERVER_BASE}/api/beat/use_as_final`,
+  // LD-761 STILL_AS_FINAL_FEATURE_SPEC_V1: Ken Burns rendered MP4 as final source.
+  beat_use_still_as_final: `${SERVER_BASE}/api/beat/use_still_as_final`,
   beat_delay: `${SERVER_BASE}/api/beat/delay`,
   beat_trim: `${SERVER_BASE}/api/beat/trim`,
   // Authoring-workflow Pillar 7 cornerstone (C-7) — canonical beat-recovery

@@ -347,6 +347,122 @@ def robust_https_request(
     return last_status or 0, last_body
 
 
+def openai_image_edit_generate_end_frame(
+    start_image_bytes: bytes,
+    end_prompt: str,
+    api_key: str,
+    aspect_ratio: str = "4:3",
+    timeout_s: int = 180,
+) -> bytes:
+    """Call OpenAI gpt-image-1 image-edit with input image + prompt, return PNG bytes.
+
+    Per LD-730 END_FRAME_VIA_OPENAI_IMAGE_EDIT_V1 (locked 2026-05-16, implemented
+    2026-05-17). Default vendor for end-frame generation. Preserves accessories
+    that FLUX Kontext silently strips ("character" loosely interpreted by FLUX —
+    re-stages body composition and drops removable accessories even with tight
+    prompts; visual evidence on beat_14 Luna 2026-05-17 confirmed FLUX dropped
+    glasses + backpack + necklace from a 4:3 owl input).
+
+    Cost: ~$0.20/img (FLUX was ~$0.04). ~5x increase. Kim accepted tradeoff.
+    Latency: ~60s/img (FLUX ~14s). Synchronous (no polling — /v1/images/edits
+    returns the result in the response body).
+
+    Drop-in signature match to flux_kontext_generate_end_frame for transparent
+    dispatcher swap. Returns PNG bytes. SystemExit on failure (so the caller's
+    `except SystemExit` branch fires the same way it does for FLUX).
+    """
+    import http.client as _http
+    import ssl as _ssl
+    import uuid as _uuid
+
+    # gpt-image-1 supported sizes: "auto" | "1024x1024" | "1536x1024" | "1024x1536"
+    # "auto" was tried 2026-05-17 and produced a 2:3 portrait canvas with the
+    # source image DUPLICATED vertically (two stacked copies). Forcing landscape
+    # 1536x1024 (3:2) for production beats which are 4:3-ish landscape. The
+    # 3:2 → 4:3 minor distortion is acceptable; Kling's start-end interpolation
+    # is forgiving on framing. Portrait beats (if any future arc) would need an
+    # aspect-aware branch using the explicit `aspect_ratio` param above.
+    if aspect_ratio in ("3:4", "9:16", "portrait"):
+        size_param = "1024x1536"
+    elif aspect_ratio in ("1:1", "square"):
+        size_param = "1024x1024"
+    else:
+        size_param = "1536x1024"
+
+    boundary = f"----MN-Boundary-{_uuid.uuid4().hex}"
+
+    def _field(name: str, value: str) -> bytes:
+        return (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+            f"{value}\r\n"
+        ).encode("utf-8")
+
+    body_parts = [
+        _field("model", "gpt-image-1"),
+        _field("prompt", end_prompt),
+        _field("quality", "high"),
+        _field("size", size_param),
+        _field("n", "1"),
+        (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="image"; filename="start.png"\r\n'
+            f"Content-Type: image/png\r\n\r\n"
+        ).encode("utf-8"),
+        start_image_bytes,
+        f"\r\n--{boundary}--\r\n".encode("utf-8"),
+    ]
+    body = b"".join(body_parts)
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "Content-Length": str(len(body)),
+    }
+
+    log(f"  → POST api.openai.com/v1/images/edits "
+        f"(input {len(start_image_bytes):,}B, prompt {len(end_prompt)}c, "
+        f"model=gpt-image-1 quality=high size={size_param})")
+
+    # http.client direct call — multipart doesn't fit robust_https_request's
+    # JSON-body shape. Single attempt with explicit timeout. SystemExit on
+    # any failure (caught as SystemExit by caller dispatcher).
+    ctx = _ssl.create_default_context()
+    try:
+        conn = _http.HTTPSConnection("api.openai.com", timeout=timeout_s, context=ctx)
+        conn.request("POST", "/v1/images/edits", body=body, headers=headers)
+        resp = conn.getresponse()
+        status = resp.status
+        raw = resp.read()
+        conn.close()
+    except Exception as exc:
+        sys.exit(f"OpenAI gpt-image-1 connection failed: {type(exc).__name__}: {exc}")
+
+    if status >= 400:
+        sys.exit(f"OpenAI gpt-image-1 HTTP {status}: {raw[:800].decode('utf-8', 'replace')}")
+
+    try:
+        result = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        sys.exit(f"OpenAI gpt-image-1 non-JSON response: {exc} body={raw[:400]!r}")
+
+    data = result.get("data") or []
+    if not data:
+        sys.exit(f"OpenAI gpt-image-1 returned no data: {result}")
+
+    b64 = data[0].get("b64_json")
+    if not b64:
+        sys.exit(f"OpenAI gpt-image-1 returned no b64_json: {data[0]}")
+
+    try:
+        png_bytes = base64.b64decode(b64)
+    except Exception as exc:
+        sys.exit(f"OpenAI gpt-image-1 b64 decode failed: {exc}")
+
+    log(f"  ← OpenAI gpt-image-1 returned {len(png_bytes):,}B PNG")
+    return png_bytes
+
+
 def flux_kontext_generate_end_frame(
     start_image_bytes: bytes,
     end_prompt: str,
@@ -355,6 +471,11 @@ def flux_kontext_generate_end_frame(
     timeout_s: int = 180,
 ) -> bytes:
     """Call FLUX Kontext Pro with input image + prompt, return generated PNG bytes.
+
+    LEGACY VENDOR per LD-730 (2026-05-16). Default end-frame vendor is now
+    OpenAI gpt-image-1 (see openai_image_edit_generate_end_frame above).
+    FLUX Kontext remains the rollback path via MN_END_FRAME_VENDOR=flux env
+    or automatic fallback when OpenAI key is absent.
 
     BFL API flow:
       1. POST /v1/flux-kontext-pro with {prompt, input_image (base64)} → {id, polling_url}

@@ -50,6 +50,7 @@ _HERE = Path(__file__).resolve().parent
 _LIB = _HERE.parent / "lib"
 sys.path.insert(0, str(_LIB.parent))
 from lib.directus_admin_client import DirectusAdminClient, DirectusAdminError  # noqa: E402
+from lib.directus import verify_ld_marker_or_raise, FabricationGateError  # noqa: E402
 
 
 CACHE_DIR = Path(os.path.expanduser("~/.claude/mindfulnest-cache"))
@@ -122,6 +123,28 @@ def cmd_lock(args, client: DirectusAdminClient) -> int:
         "schema_version": CACHE_SCHEMA_VERSION,
         "is_current": True,
     }
+    # LD marker_string fabrication gate — LD CLAIM_TO_COMMIT_ENFORCEMENT_GATE_V1
+    # When the locker supplies --marker-string, verify it exists in
+    # `git ls-tree -r HEAD` BEFORE the POST/PATCH. Strips gate-only fields
+    # from payload regardless of outcome. Bypass: MN_SKIP_LD_MARKER_GATE=1
+    # (audit-only, NOT for normal use — commit the implementing code FIRST).
+    if getattr(args, "marker_string", None):
+        payload["marker_string"] = args.marker_string
+        if getattr(args, "marker_regex", False):
+            payload["marker_regex"] = True
+        try:
+            payload = verify_ld_marker_or_raise(payload)
+        except FabricationGateError as e:
+            print(f"FATAL: {e}", file=sys.stderr)
+            print(
+                "  This LD claims a marker that has not been committed to HEAD.",
+                file=sys.stderr,
+            )
+            print(
+                "  Either commit the implementing code first, or omit --marker-string.",
+                file=sys.stderr,
+            )
+            return 5
     # Idempotent upsert: check if decision_key exists
     existing = client.get_items(
         "prod_locked_decisions",
@@ -301,6 +324,23 @@ def build_parser() -> argparse.ArgumentParser:
     lp.add_argument("--source-document", default=None)
     lp.add_argument("--no-upsert", action="store_true", help="Fail if key exists instead of PATCH")
     lp.add_argument("--no-rebuild-cache", action="store_true")
+    lp.add_argument(
+        "--marker-string",
+        default=None,
+        help=(
+            "Optional code marker the LD claims is present in HEAD "
+            "(e.g. testid 'kim-done-checkbox', function name 'safePlay'). "
+            "When supplied, the LD write is REFUSED unless `git grep` against "
+            "HEAD finds the marker. Bypass: MN_SKIP_LD_MARKER_GATE=1. "
+            "Closes LD-738/766/767 fabrication class per "
+            "LD CLAIM_TO_COMMIT_ENFORCEMENT_GATE_V1."
+        ),
+    )
+    lp.add_argument(
+        "--marker-regex",
+        action="store_true",
+        help="Interpret --marker-string as extended regex (default: literal substring).",
+    )
     lp.set_defaults(func=cmd_lock)
 
     # supersede

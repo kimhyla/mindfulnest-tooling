@@ -72,6 +72,36 @@ if [[ ! -d "$DEST_DROPBOX" ]]; then
     exit 1
 fi
 
+# ----------------------------------------------------------------
+# (pre-A) Pre-deploy git-clean gate — LD CLAIM_TO_COMMIT_ENFORCEMENT_GATE_V1
+# Closes the LD-738/766/767 fabrication class (M1 + M2 per Agent 1 audit
+# 2026-05-17 ~17:30 UTC). Premise: BUILD_SHA at step (g) is derived from
+# `git rev-parse --short HEAD`, which IGNORES uncommitted working-tree
+# changes. A dirty tree deploys files that contain code never committed,
+# under a build-sha that points at a stale HEAD. The pre-commit hook
+# blocks Dropbox-tree edits but does NOT block the deploy from the tooling
+# tree itself; this gate closes that gap.
+#
+# Per CLAUDE.md Rule 19 (no shortcuts): bypass requires MN_ALLOW_DIRTY_DEPLOY=1
+# AND a SHORTCUT LD per the escape-hatch protocol.
+# ----------------------------------------------------------------
+(
+    cd "$SRC_TOOLING"
+    if [[ -n "$(git status --porcelain)" ]]; then
+        echo "FATAL: tooling tree dirty — uncommitted edits will deploy under a stale build-sha" >&2
+        echo "  (build-sha = git rev-parse --short HEAD, which does NOT see working-tree changes)" >&2
+        git status --short >&2
+        echo "  Resolve: commit/stash the listed paths, or set MN_ALLOW_DIRTY_DEPLOY=1" >&2
+        echo "  Bypass requires SHORTCUT LD per CLAUDE.md Rule 19." >&2
+        if [[ "${MN_ALLOW_DIRTY_DEPLOY:-}" == "1" ]]; then
+            echo "[deploy] (pre-A) MN_ALLOW_DIRTY_DEPLOY=1 — gate bypassed (SHORTCUT LD required)" >&2
+            exit 0
+        fi
+        exit 1
+    fi
+) || exit 1
+echo "[deploy] (pre-A) git-clean gate ok — tooling tree clean"
+
 UTC_TS=$(date -u +%Y%m%dT%H%M%SZ)
 SNAPSHOT_DIR="$DEST_DROPBOX/.deploy_backups/$UTC_TS"
 LOG_DIR="$SNAPSHOT_DIR/logs"

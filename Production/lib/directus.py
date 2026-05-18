@@ -22,6 +22,8 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
+import subprocess
 import sys
 import threading
 from dataclasses import dataclass
@@ -507,7 +509,28 @@ def try_post_or_queue(
     Override path: env ``MN_SKIP_BROWSER_SMOKE_GATE=1`` + matching
     ``BROWSER_SMOKE_DEFERRED`` audit row. Fails CLOSED on Directus error so
     a smoke-row query failure cannot silently let a COMPLETE write through.
+    [CONFIRMED against this function's _check_browser_smoke_gate() body below:
+    a Directus query exception is caught and treated as "gate fails closed"
+    rather than "gate passes by default" — see except branch + return False.]
     """
+    # LD marker_string fabrication gate — fires when collection is
+    # prod_locked_decisions AND payload includes marker_string.
+    # Strips gate-only fields and raises FabricationGateError if the marker
+    # is absent from `git ls-tree -r HEAD`. Sentinel-shape return preserves
+    # the never-raises contract of try_post_or_queue.
+    if collection == "prod_locked_decisions" and "marker_string" in payload:
+        try:
+            payload = verify_ld_marker_or_raise(payload)
+        except FabricationGateError as e:
+            return {
+                "queued": False,
+                "fabrication_gate_blocked": True,
+                "decision_key": e.decision_key,
+                "marker": e.marker,
+                "kind": e.kind,
+                "error": str(e),
+            }
+
     if collection == "prod_activity_log":
         action = payload.get("action", "")
         if _is_phase_complete_action(action):
@@ -688,6 +711,207 @@ def try_patch_or_queue(
             reason=f"unexpected_patch: {type(e).__name__}: {e}",
         )
         return {"queued": True, "path": str(path), "error": str(e)}
+
+
+# -----------------------------------------------------------------------------
+# LD marker_string verification gate — LD CLAIM_TO_COMMIT_ENFORCEMENT_GATE_V1
+#
+# Closes the LD-738/766/767 fabrication class (M3 per Agent 1 audit 2026-05-17):
+# LDs auto-register without code verification, so an LD can claim a feature
+# shipped when the underlying code was never committed.
+#
+# Convention: the LD payload may include two OPTIONAL gate-only fields:
+#   - marker_string: a string the LD claims is present in committed code
+#       (e.g. a testid 'kim-done-checkbox', a function name 'safePlay', a
+#       class name 'mn-tile-tier-master', or an `attr=...` substring).
+#   - marker_regex: bool — if True, marker_string is interpreted as an
+#       extended regex; if False/absent, it's a literal substring.
+#
+# These two fields are STRIPPED from the payload before the actual POST —
+# they are not part of the Directus schema; they're the gate's input.
+#
+# When marker_string is present, this gate runs `git grep -c <flag> <pattern> HEAD`
+# against the tooling repo and counts matches in the committed code
+# (working-tree edits IGNORED — `HEAD` revision argument forces git to read
+# the tree-ish, not the index/working-copy).
+# [CONFIRMED against _count_marker_in_git_head() below — the subprocess
+# invocation is `git grep -c {-F|-E} <marker> HEAD`, which only walks HEAD's
+# tree. Uncommitted .py / .tsx edits do not satisfy the gate.]
+# If the marker is absent in HEAD, the write is refused with a clear error
+# pointing at the LD-738/766/767 fabrication pattern.
+#
+# Pair with Layer A (deploy git-clean gate) which closes M1+M2.
+# -----------------------------------------------------------------------------
+
+
+class FabricationGateError(Exception):
+    """Raised when an LD claims a marker_string that is absent from git HEAD.
+
+    This is the primary failure class Layer B of LD
+    CLAIM_TO_COMMIT_ENFORCEMENT_GATE_V1 exists to surface: an LD payload that
+    claims a UI affordance / function / class / attribute shipped, but
+    `git ls-tree -r HEAD` followed by content grep returns zero matches.
+    """
+
+    def __init__(self, decision_key: str, marker: str, kind: str, tooling_root: str):
+        self.decision_key = decision_key
+        self.marker = marker
+        self.kind = kind
+        self.tooling_root = tooling_root
+        super().__init__(
+            f"FabricationGate: LD {decision_key!r} claims marker_string={marker!r} "
+            f"(regex={kind == 'regex'}) but `git ls-tree -r HEAD` at {tooling_root} "
+            f"returned 0 matches. Either commit the implementing code FIRST, or use "
+            f"a SHORTCUT LD per CLAUDE.md Rule 19. Bypass: set "
+            f"MN_SKIP_LD_MARKER_GATE=1 (audit-only, NOT for normal use)."
+        )
+
+
+def _resolve_tooling_root() -> Optional[Path]:
+    """Resolve the tooling repo root for git operations.
+
+    Resolution order:
+    1. MN_TOOLING_ROOT env var (canonical override per LD-505).
+    2. Walk up from this file's parent looking for a `.git` dir — works when
+       lib/directus.py is read from the tooling tree itself.
+    3. Walk up from cwd looking for `.git`.
+
+    Returns None when no git repo is found — callers treat that as "skip gate"
+    (e.g., a test environment, a Dropbox-tree run where no git is present).
+    """
+    override = os.environ.get("MN_TOOLING_ROOT")
+    if override:
+        p = Path(override).expanduser()
+        if (p / ".git").exists():
+            return p
+        return None
+    # Walk up from this file
+    here = Path(__file__).resolve()
+    for parent in [here.parent, *here.parents]:
+        if (parent / ".git").is_dir():
+            return parent
+    # Walk up from cwd
+    cwd = Path.cwd().resolve()
+    for parent in [cwd, *cwd.parents]:
+        if (parent / ".git").is_dir():
+            return parent
+    return None
+
+
+def _git_grep_committed(marker: str, regex: bool, tooling_root: Path) -> int:
+    """Return number of matches for `marker` in `git ls-tree -r HEAD` content.
+
+    Uses `git grep -F` (fixed string) when regex=False, `git grep -E`
+    (extended regex) when regex=True. Both forms are restricted to committed
+    code: `git grep HEAD -- :/` searches the tree referenced by HEAD, NOT the
+    working directory. This is the load-bearing guarantee — working-tree
+    edits cannot satisfy the gate.
+
+    Returns 0 if no matches OR if git is not available. Caller treats 0 as
+    "absent in HEAD" (refuse the write).
+    """
+    flag = "-E" if regex else "-F"
+    try:
+        # `git grep -c {-F|-E} <marker> HEAD` — exit 0 if found, 1 if not.
+        # stdout lines: "HEAD:<path>:<count>"; sum counts across files.
+        # [CONFIRMED against `git grep --help`: argv order is `git grep
+        # [<options>] <pattern> [<rev>...]`. `-c` and `-F`/`-E` are options
+        # consumed before the positional pattern; `HEAD` is the tree-ish
+        # following the pattern, restricting search to that revision's tree.
+        # Behavioral smoke at recovery PR #61 setup-time confirmed:
+        # present marker passes (returncode 0, sum > 0); absent marker
+        # returns returncode 1, sum 0.]
+        result = subprocess.run(
+            ["git", "grep", "-c", flag, marker, "HEAD"],
+            cwd=str(tooling_root),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode == 0:
+            total = 0
+            for line in result.stdout.splitlines():
+                _, _, n = line.rpartition(":")
+                try:
+                    total += int(n)
+                except ValueError:
+                    continue
+            return total
+        if result.returncode == 1:
+            return 0
+        # Some git error — log to stderr but treat as 0 (refuse the write).
+        print(
+            f"[ld_marker_gate] WARN: git grep exited {result.returncode}; "
+            f"stderr={result.stderr.strip()!r}",
+            file=sys.stderr,
+        )
+        return 0
+    except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
+        print(f"[ld_marker_gate] WARN: subprocess error: {e}", file=sys.stderr)
+        return 0
+
+
+def verify_ld_marker_or_raise(payload: dict) -> dict:
+    """Extract + verify marker_string in an LD payload; strip gate-only fields.
+
+    Returns a NEW payload dict with `marker_string` and `marker_regex` removed.
+    These are gate-input fields, not Directus schema fields — sending them
+    through would trigger silent_write_failure on Directus's side.
+
+    If `marker_string` is absent from the payload, this is a no-op (returns
+    payload unchanged). The gate fires only when the locker explicitly opts
+    in by supplying the field — existing LDs without markers are unaffected.
+
+    Raises FabricationGateError if marker_string is present but absent in
+    `git ls-tree -r HEAD`. Bypass via env var MN_SKIP_LD_MARKER_GATE=1
+    (intended for audit-only / emergency paths; normal use should commit the
+    implementing code FIRST or open a SHORTCUT LD per CLAUDE.md Rule 19).
+    """
+    if not isinstance(payload, dict):
+        return payload
+    marker = payload.get("marker_string")
+    if marker is None:
+        return payload
+    # Strip gate-only fields regardless of outcome
+    clean = {k: v for k, v in payload.items() if k not in ("marker_string", "marker_regex")}
+
+    if not isinstance(marker, str) or not marker.strip():
+        # Empty string — treat as opt-out (no gate)
+        return clean
+
+    if os.environ.get("MN_SKIP_LD_MARKER_GATE") == "1":
+        print(
+            f"[ld_marker_gate] BYPASS via MN_SKIP_LD_MARKER_GATE=1 — "
+            f"marker_string={marker!r} not verified (audit trail required)",
+            file=sys.stderr,
+        )
+        return clean
+
+    regex_mode = bool(payload.get("marker_regex"))
+    tooling_root = _resolve_tooling_root()
+    if tooling_root is None:
+        # No git repo discoverable — refuse rather than silently passing.
+        # The gate's whole point is to verify against HEAD; without a repo we cannot.
+        decision_key = str(payload.get("decision_key") or payload.get("key") or "<unknown>")
+        raise FabricationGateError(
+            decision_key=decision_key,
+            marker=marker,
+            kind="regex" if regex_mode else "literal",
+            tooling_root="<no .git found>",
+        )
+
+    matches = _git_grep_committed(marker, regex_mode, tooling_root)
+    if matches < 1:
+        decision_key = str(payload.get("decision_key") or payload.get("key") or "<unknown>")
+        raise FabricationGateError(
+            decision_key=decision_key,
+            marker=marker,
+            kind="regex" if regex_mode else "literal",
+            tooling_root=str(tooling_root),
+        )
+    # Verified — return the gate-stripped payload for the actual write.
+    return clean
 
 
 # -----------------------------------------------------------------------------

@@ -90,6 +90,7 @@ from lipsync_sender import LipSyncClient, COST_PER_LIPSYNC
 # invariants enforced inside those helpers; we don't re-implement them here.
 from kling_startend_pipeline import (
     flux_kontext_generate_end_frame,
+    openai_image_edit_generate_end_frame,
     kling_startend_submit,
     _load_subject_element,
     ensure_min_dimensions as _ksendpipe_ensure_min_dimensions,
@@ -754,6 +755,8 @@ def parse_api_keys(filepath: Path) -> dict:
             ("ElevenLabs", "elevenlabs"),
             ("Directus", "directus"),
             ("EvoLink", "evolink"),
+            ("OpenAI", "openai"),
+            ("BFL", "bfl"),
         ]:
             m = re.search(
                 rf"#+\s*{section}.*?(?:Key|Token):\s*`([^`]+)`",
@@ -775,6 +778,8 @@ def parse_api_keys(filepath: Path) -> dict:
         "elevenlabs": os.environ.get("ELEVENLABS_API_KEY"),
         "evolink":    os.environ.get("EVOLINK_API_KEY"),
         "directus":   os.environ.get("DIRECTUS_ADMIN_PASSWORD"),
+        "openai":     os.environ.get("OPENAI_API_KEY"),
+        "bfl":        os.environ.get("BFL_API_KEY"),
     }
     for k, v in env_overlay.items():
         if v:
@@ -5864,6 +5869,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                                retry_safe=False,
                            )
                 return self._handle_v2_beat_swap_to_a(_beat_id_from_body, body)
+            if path == "/api/beat/use_still_as_final":  # LD-761: Ken Burns still as final
+                return self._handle_use_still_as_final(body)
             if path == "/api/beat/update_text":
                 return self._handle_beat_update_text(body)
             if path == "/api/beat/update_speaker":
@@ -8507,12 +8514,15 @@ body {{padding-top:44px!important;}}
                        retry_safe=True,
                    )
         bfl_key = keys.get("bfl")
+        openai_key = keys.get("openai")
         wavespeed_key = keys.get("wavespeed") or self.app.client.api_key
-        if not bfl_key:
+        # LD-730 END_FRAME_VIA_OPENAI_IMAGE_EDIT_V1 — either vendor's key is
+        # acceptable; the dispatcher below picks at FLUX/OpenAI call site.
+        if not (bfl_key or openai_key):
             return self._send_error_v59(
                        500,
-                       error_code="BFL_FLUX_KEY_UNAVAILABLE_REQUIRED",
-                       error_message="BFL (FLUX) key unavailable — required for start-end pipeline",
+                       error_code="END_FRAME_VENDOR_KEY_UNAVAILABLE",
+                       error_message="No end-frame vendor key available (need OpenAI or BFL/FLUX)",
                        retry_safe=True,
                    )
 
@@ -8551,12 +8561,47 @@ body {{padding-top:44px!important;}}
         # Graceful degradation: empty end_frame_prompt OR missing bfl_key =>
         # explicit single-image mode with an [INFO] log (not an error).
         end_b64_uri: str | None = None
-        if end_frame_prompt and bfl_key:
+        if end_frame_prompt and (openai_key or bfl_key):
+            # LD-730 vendor selection:
+            #   MN_END_FRAME_VENDOR=openai (default) → gpt-image-1
+            #   MN_END_FRAME_VENDOR=flux            → FLUX Kontext (legacy rollback)
+            #   Fallback: if requested vendor's key absent, use the other one.
+            _requested_vendor = os.environ.get(
+                "MN_END_FRAME_VENDOR", "openai"
+            ).strip().lower()
+            if _requested_vendor == "openai" and openai_key:
+                _vendor_used = "openai"
+                _end_frame_fn = openai_image_edit_generate_end_frame
+                _vendor_key = openai_key
+            elif _requested_vendor == "flux" and bfl_key:
+                _vendor_used = "flux"
+                _end_frame_fn = flux_kontext_generate_end_frame
+                _vendor_key = bfl_key
+            elif openai_key:
+                _vendor_used = (
+                    f"openai (fallback — requested={_requested_vendor!r} "
+                    f"but its key absent)"
+                )
+                _end_frame_fn = openai_image_edit_generate_end_frame
+                _vendor_key = openai_key
+            else:
+                _vendor_used = (
+                    f"flux (fallback — requested={_requested_vendor!r} "
+                    f"but its key absent)"
+                )
+                _end_frame_fn = flux_kontext_generate_end_frame
+                _vendor_key = bfl_key
+            print(
+                f"[add_options:startend] {beat_id}: end-frame vendor "
+                f"SELECTED = {_vendor_used} (env MN_END_FRAME_VENDOR="
+                f"{_requested_vendor!r})",
+                flush=True,
+            )
             try:
-                end_frame_bytes = flux_kontext_generate_end_frame(
+                end_frame_bytes = _end_frame_fn(
                     start_image_bytes=start_bytes,
                     end_prompt=end_frame_prompt,
-                    api_key=bfl_key,
+                    api_key=_vendor_key,
                 )
                 # Rule 6: auto-upscale end frame to ≥600px shortest side.
                 end_data_uri = (
@@ -9218,6 +9263,282 @@ body {{padding-top:44px!important;}}
     def _handle_v2_beat_swap_to_a(self, beat_id: str, body: dict) -> None:
         from server_handlers.beats_v2 import handle_v2_beat_swap_to_a
         return handle_v2_beat_swap_to_a(self, beat_id, body)
+
+
+    def _handle_use_still_as_final(self, body: dict) -> None:
+        """POST /api/beat/use_still_as_final {beat, scope_event_id, scope_video_role}
+
+        Renders a Ken Burns MP4 from the beat's image_override_abs (slow
+        center zoom 1.0 -> 1.05 over audio_duration_s) and writes a final
+        block with source='still_image'. SHA-cached: re-click returns the
+        existing MP4 unchanged.
+
+        Output: Production/Event_N/animation_clips/beat_NN_still_final.mp4
+        Stitcher contract unchanged (final.file is an MP4).
+        """
+        import hashlib as _hashlib
+        import json as _json
+        import subprocess as _subprocess
+
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
+            return
+
+        # BODY_KEY_ALLOW: beat (legacy back-compat alias; v59 client sends beat_id
+        # via runMutation, but pre-v59 callers and tests may send `beat`).
+        # BODY_KEY_ALLOW: hold_duration_s (optional — client omits the key when
+        # the Hold input is blank, which means "use audio_duration_s default").
+        beat_id = body.get("beat") or body.get("beat_id")
+        if not beat_id:
+            return self._send_error_v59(
+                       400,
+                       error_code="MISSING_BEAT",
+                       error_message="beat required",
+                       retry_safe=False,
+                   )
+
+        scope_video_role = (body or {}).get("scope_video_role") or "intro"
+        valid_roles = self.app.state._VALID_VIDEO_ROLES
+        if scope_video_role not in valid_roles:
+            return self._send_error_v59(
+                       400,
+                       error_code="VIDEO_ROLE_INVALID",
+                       error_message="video_role_invalid",
+                       retry_safe=False,
+                       extra={"got": scope_video_role, "valid": sorted(valid_roles)},
+                   )
+
+        state = self.app.state.read_state()
+        role_block = (state.get("videos") or {}).get(scope_video_role) or {}
+        beat = (role_block.get("beats") or {}).get(beat_id)
+        if not beat:
+            return self._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"unknown beat: {beat_id} (role={scope_video_role})",
+                       retry_safe=False,
+                   )
+
+        audio_dur = beat.get("audio_duration_s")
+        if not audio_dur or audio_dur <= 0:
+            return self._send_error_v59(
+                       400,
+                       error_code="BEAT_HAS_NO_AUDIO_DURATION",
+                       error_message="beat has no audio_duration_s; regenerate audio first",
+                       retry_safe=False,
+                   )
+
+        # Resolve source still image: image_overrides_abs is canonical.
+        image_abs = (role_block.get("image_overrides_abs") or {}).get(beat_id)
+        if not image_abs or not os.path.isfile(image_abs):
+            return self._send_error_v59(
+                       400,
+                       error_code="NO_RESOLVABLE_STILL_IMAGE",
+                       error_message="no resolvable still image",
+                       retry_safe=False,
+                       extra={"hint": "set image_overrides_abs in storyboard library UI", "image_path": image_abs},
+                   )
+
+        # LD STILL_AS_FINAL_HOLD_DURATION_CONTROL_V1 (2026-05-17): the Ken Burns
+        # clip duration is decoupled from audio_duration_s. Kim's directive:
+        # default 5.0s, user-controllable via "Hold (s)" UI input, so audio
+        # delay (separately controlled at Stitcher mix time via adelay) can
+        # leave room for ambient SFX before the voice fires. If audio is
+        # longer than hold_duration_s, audio gets cut at Stitcher mix —
+        # acceptable per Kim's "user typing is source of truth" rule. We
+        # surface a soft warning in the response so the UI can hint.
+        DEFAULT_HOLD_S = 5.0
+        HOLD_MIN_S = 0.5
+        HOLD_MAX_S = 60.0
+        hold_raw = body.get("hold_duration_s")
+        if hold_raw is None:
+            hold_duration_s = DEFAULT_HOLD_S
+        else:
+            try:
+                hold_duration_s = float(hold_raw)
+            except (TypeError, ValueError):
+                return self._send_error_v59(
+                           400,
+                           error_code="HOLD_DURATION_S_MUST_BE",
+                           error_message="hold_duration_s must be a number",
+                           retry_safe=False,
+                           extra={"got": hold_raw},
+                       )
+            if not (HOLD_MIN_S <= hold_duration_s <= HOLD_MAX_S):
+                return self._send_error_v59(
+                           400,
+                           error_code="GENERIC_ERROR",
+                           error_message=f"hold_duration_s out of range: must be "
+                        f"{HOLD_MIN_S} <= hold <= {HOLD_MAX_S}",
+                           retry_safe=False,
+                           extra={"got": hold_duration_s},
+                       )
+
+        # Ken Burns config (V1 hardcoded zoom/pan; duration_s is now the
+        # user-controlled hold per LD STILL_AS_FINAL_HOLD_DURATION_CONTROL_V1).
+        kb = {
+            "zoom_start": 1.0,
+            "zoom_end": 1.05,
+            "pan_x_start": 0.5,
+            "pan_x_end": 0.5,
+            "pan_y_start": 0.5,
+            "pan_y_end": 0.5,
+            "duration_s": float(hold_duration_s),
+        }
+
+        # Cache key = sha1(first 1MB of image) + duration + sha(kb config).
+        try:
+            with open(image_abs, "rb") as fh:
+                head = fh.read(1024 * 1024)
+            img_sha = _hashlib.sha1(head).hexdigest()
+        except Exception as exc:  # noqa: BLE001
+            return self._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"image read failed: {exc}",
+                       retry_safe=False,
+                   )
+        kb_sha = _hashlib.sha1(
+            _json.dumps(kb, sort_keys=True).encode("utf-8")
+        ).hexdigest()[:8]
+        # LD STILL_AS_FINAL_HOLD_DURATION_CONTROL_V1: cache key uses
+        # hold_duration_s (not audio_dur) so different hold values produce
+        # distinct cache entries. kb_sha already covers duration_s via kb
+        # dict but we keep the duration in the key prefix for grep-ability.
+        cache_key = f"sha1:{img_sha}_{hold_duration_s:.3f}_{kb_sha}"
+
+        # Output path.
+        out_name = f"{beat_id}_still_final.mp4"
+        out_abs = str(self.app.state.clips_dir / out_name)
+
+        # Cache hit: previously-rendered MP4 + state.final.cache_key matches.
+        prev_final = beat.get("final") or {}
+        cache_hit = (
+            prev_final.get("source") == "still_image"
+            and prev_final.get("cache_key") == cache_key
+            and os.path.isfile(out_abs)
+        )
+
+        if not cache_hit:
+            # Render via ffmpeg zoompan. Pre-scale 2x to avoid jitter on
+            # short durations. d = round(dur * 24) frames at 24 fps.
+            # LD STILL_AS_FINAL_HOLD_DURATION_CONTROL_V1: dur is the
+            # user-controlled hold (default 5.0s), NOT audio_duration_s.
+            frames = max(1, int(round(float(hold_duration_s) * 24)))
+            zoom_expr = (
+                f"{kb['zoom_start']:.4f}"
+                f"+({kb['zoom_end']:.4f}-{kb['zoom_start']:.4f})"
+                f"*on/{max(1, frames - 1)}"
+            )
+            vf = (
+                "scale=3840:2160:force_original_aspect_ratio=increase,"
+                "crop=3840:2160,"
+                f"zoompan=z='{zoom_expr}':"
+                "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+                f"d={frames}:s=1920x1080:fps=24"
+            )
+            cmd = [
+                "ffmpeg", "-y",
+                "-loop", "1", "-i", image_abs,
+                "-t", f"{float(hold_duration_s):.3f}",
+                "-vf", vf,
+                "-c:v", "libx264",
+                "-profile:v", "high",
+                "-pix_fmt", "yuv420p",
+                "-r", "24",
+                "-an",
+                "-movflags", "+faststart",
+                out_abs,
+            ]
+            try:
+                proc = _subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=120,
+                )
+            except Exception as exc:  # noqa: BLE001
+                return self._send_error_v59(
+                           500,
+                           error_code="FFMPEG_RENDER_FAILED",
+                           error_message="ffmpeg render failed",
+                           retry_safe=True,
+                           extra={"exception": str(exc)},
+                       )
+            if proc.returncode != 0 or not os.path.isfile(out_abs):
+                return self._send_error_v59(
+                           500,
+                           error_code="FFMPEG_RENDER_FAILED",
+                           error_message="ffmpeg render failed",
+                           retry_safe=True,
+                           extra={"stderr_tail": (proc.stderr or "")[-2000:], "returncode": proc.returncode},
+                       )
+
+        # Build and persist final block.
+        final_block = {
+            "source": "still_image",
+            "image_path": image_abs,
+            "file": out_name,
+            "kenburns": kb,
+            "cache_key": cache_key,
+            "approved_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        def _mutate(s):
+            role_beats = s.setdefault("videos", {}).setdefault(
+                scope_video_role,
+                {"video_role": scope_video_role, "video_label": None,
+                 "beats": {}, "completed_mp4_path": None},
+            ).setdefault("beats", {})
+            if beat_id in role_beats:
+                role_beats[beat_id]["final"] = final_block
+        self.app.state.mutate_state(_mutate)
+
+        # bg sidecar: same pattern as raw_option final.
+        try:
+            bg = _bg_module()
+            with bg._sidecar_lock:
+                sidecar = bg.read_sidecar()
+                sidecar = bg._migrate_sidecar(sidecar)
+                _, b_entry = bg.find_beat(sidecar, beat_id)
+                if b_entry is not None:
+                    b_entry["accepted_video_path"] = out_abs
+                    b_entry["status"] = "accepted"
+                    bg.write_sidecar(sidecar)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[use-still-as-final] sidecar write failed (non-blocking): {exc}")
+
+        # Activity log fire-and-forget (reuse same helper). On error, log to
+        # stderr — silently swallowing would lose the audit-trail-failure
+        # signal entirely (AI review 2026-05-18 PR #61 non-blocking finding).
+        try:
+            _async_log_use_as_final(
+                event_id=str(self.app.event_id),
+                beat_id=beat_id,
+                file=out_name,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[use-still-as-final] activity log write failed (non-blocking): {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        # LD STILL_AS_FINAL_HOLD_DURATION_CONTROL_V1: soft warning if audio
+        # exceeds hold_duration_s (audio will be cut at Stitcher mix).
+        response = {
+            "status": "ok",
+            "beat": beat_id,
+            "file": out_name,
+            "cache_hit": cache_hit,
+            "hold_duration_s": hold_duration_s,
+            "audio_duration_s": float(audio_dur),
+            "final": final_block,
+        }
+        if float(audio_dur) > hold_duration_s:
+            response["warning"] = (
+                f"audio_duration_s ({float(audio_dur):.2f}s) exceeds "
+                f"hold_duration_s ({hold_duration_s:.2f}s); audio will be "
+                f"cut at Stitcher mix"
+            )
+        return self._send_json(200, response)
 
     @with_pin_and_drain('_handle_preview_stitched', track_sync=True)
     def _handle_preview_stitched(self, body: dict) -> None:

@@ -75,6 +75,18 @@ interface BeatState {
     source_option?: number;
     file?: string;
     approved_at?: string;
+    // LD-761 + LD-777: Ken Burns still-as-final config persisted by server.
+    image_path?: string;
+    cache_key?: string;
+    kenburns?: {
+      zoom_start?: number;
+      zoom_end?: number;
+      pan_x_start?: number;
+      pan_x_end?: number;
+      pan_y_start?: number;
+      pan_y_end?: number;
+      duration_s?: number;
+    };
   };
   // Trim/delay (LD-160). Optional — older beats may not carry these.
   trim_in?: number;
@@ -252,11 +264,41 @@ interface BeatButtonRowProps {
   onMutated: () => void;
   previewOptIdx: number | null;
   onPreviewOption: (optIdx: number) => void;
+  /** LD-757: flip parent lipsyncMounted so the lipsync <video> stays mounted. */
+  onEnsureLipsyncMounted: () => void;
 }
 
-function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptIdx, onPreviewOption }: BeatButtonRowProps) {
+function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptIdx, onPreviewOption, onEnsureLipsyncMounted }: BeatButtonRowProps) {
   const lifecycle = deriveBeatLifecycle(beat);
   const [busy, setBusy] = useState<string | null>(null); // which button is in-flight
+
+  // LD-739/740 GREENFIELD: silent-click-on-busy-button class kill.
+  // Synchronous handler throws are caught and surfaced as an error toast —
+  // unhandled exceptions in a void-cast call would bubble to the Preact
+  // event boundary as console-only errors with no user feedback (AI review
+  // 2026-05-18 PR #61 non-blocking finding). Async rejections are owned by
+  // the handler itself (handlePlayRejection / runMutation toast paths).
+  const guardedClick = (label: string, handler: () => unknown) => () => {
+    if (busy !== null) {
+      pushToast({
+        kind: 'warning',
+        message: `${label}: wait — ${busy} is in-flight.`,
+        source: `beat-${index}-${label}-busy-guard`,
+        ttlMs: 2500,
+      });
+      return;
+    }
+    try {
+      void handler();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      pushToast({
+        kind: 'error',
+        message: `${label} failed: ${msg}`,
+        source: `beat-${index}-${label}-throw`,
+      });
+    }
+  };
   const [trimIn, setTrimIn] = useState<string>(String(beat.trim_in ?? '0.0'));
   const [trimOut, setTrimOut] = useState<string>(String(beat.trim_out ?? 'full'));
   // L5 fix 2026-05-16 per STORYBOARD_AUDIO_DELAY_READ_NESTED_PATH_V2: server
@@ -276,6 +318,15 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
         ?? '0.0',
     ),
   );
+  const [holdDuration, setHoldDuration] = useState<string>(
+    String(beat.final?.kenburns?.duration_s ?? ''),
+  );
+  useEffect(() => {
+    const persisted = beat.final?.kenburns?.duration_s;
+    if (persisted !== undefined && persisted !== null) {
+      setHoldDuration(String(persisted));
+    }
+  }, [beat.final?.kenburns?.duration_s]);
 
   // ----------------------------------------------------------------
   // Polling (animate + lipsync)
@@ -411,6 +462,17 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
     runMutation('Move to A', 'beat_swap_to_a', { from_slot: fromSlot });
   const onLipsync = () => runMutation('Lipsync', 'lipsync', {});
   const onUseAsFinal = () => runMutation('Use as Final', 'beat_use_as_final', {});
+  const onUseStillAsFinal = () => {
+    const body: Record<string, unknown> = {};
+    const trimmed = holdDuration.trim();
+    if (trimmed !== '') {
+      const parsed = Number(trimmed);
+      if (Number.isFinite(parsed)) {
+        body['hold_duration_s'] = parsed;
+      }
+    }
+    return runMutation('Still as Final', 'beat_use_still_as_final', body);
+  };
   const onApplyTrim = () => {
     const tIn = parseFloat(trimIn);
     const tOut = trimOut === 'full' ? null : parseFloat(trimOut);
@@ -461,8 +523,8 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
                   type="button"
                   class={`mn-btn mn-btn-small${selectedOption === oi ? ' is-active' : ''}`}
                   data-testid={`beat-${index}-select-option-${oi}`}
-                  onClick={() => onSelectOption(oi)}
-                  disabled={busy !== null}
+                  onClick={guardedClick('Select option', () => onSelectOption(oi))}
+                  aria-disabled={busy !== null}
                 >
                   opt {oi}{selectedOption === oi ? ' ✓' : ''}
                 </button>
@@ -470,8 +532,9 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
                   type="button"
                   class={`mn-btn mn-btn-small mn-preview-btn${previewOptIdx === oi ? ' mn-preview-btn-active' : ''}`}
                   data-testid={`beat-${index}-preview-option-${oi}`}
-                  onClick={() => onPreviewOption(oi)}
-                  disabled={busy !== null || !opt?.file}
+                  onClick={guardedClick('Preview option', () => onPreviewOption(oi))}
+                  aria-disabled={busy !== null}
+                  disabled={!opt?.file}
                   title={`Preview with audio: opt ${oi}`}
                 >
                   {previewOptIdx === oi ? '⏸' : '▶'}
@@ -481,8 +544,9 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
                     type="button"
                     class="mn-btn mn-btn-small"
                     data-testid={`beat-${index}-swap-to-a-${oi}`}
-                    onClick={() => onSwapToA(oi)}
-                    disabled={busy !== null || !optReady}
+                    onClick={guardedClick('Move to A', () => onSwapToA(oi))}
+                    aria-disabled={busy !== null}
+                    disabled={!optReady}
                     title={optReady ? `Promote opt ${oi} to slot A` : 'Option must finish generating first'}
                   >→A</button>
                 ) : null}
@@ -497,8 +561,8 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
             type="button"
             class="mn-btn mn-btn-small"
             data-testid={`beat-${index}-add-options`}
-            onClick={onAddOptions}
-            disabled={busy !== null}
+            onClick={guardedClick('Add options', onAddOptions)}
+            aria-disabled={busy !== null}
             title="Keep Option A, generate 2 fresh alternatives (B & C)"
           >
             🔄 Regenerate B + C
@@ -521,8 +585,8 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
               type="button"
               class="mn-btn mn-btn-small"
               data-testid={`beat-${index}-regen-audio`}
-              onClick={onRegenAudio}
-              disabled={busy !== null}
+              onClick={guardedClick('Regen Audio', onRegenAudio)}
+              aria-disabled={busy !== null}
               title="Re-generate TTS for this beat"
             >
               {busy === 'Regen Audio' ? <><Spinner size="sm" inline /> …</> : '🎙 Regen Audio'}
@@ -535,8 +599,8 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
             type="button"
             class="mn-btn mn-btn-small"
             data-testid={`beat-${index}-regen-audio`}
-            onClick={onRegenAudio}
-            disabled={busy !== null}
+            onClick={guardedClick('Regen Audio', onRegenAudio)}
+            aria-disabled={busy !== null}
           >
             {busy === 'Regen Audio' ? <><Spinner size="sm" inline /> …</> : '🎙 Regen Audio'}
           </button>
@@ -551,8 +615,8 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
             type="button"
             class="mn-btn mn-btn-small"
             data-testid={`beat-${index}-animate`}
-            onClick={onAnimate}
-            disabled={busy !== null}
+            onClick={guardedClick('Animate', onAnimate)}
+            aria-disabled={busy !== null}
             title="Submit to Kling animation (3 options)"
           >
             {busy === 'Animate' ? <><Spinner size="sm" inline /> …</> : '🎬 Animate'}
@@ -563,8 +627,9 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
             type="button"
             class="mn-btn mn-btn-small"
             data-testid={`beat-${index}-lipsync`}
-            onClick={onLipsync}
-            disabled={busy !== null || lifecycle === 'lipsync_pending'}
+            onClick={guardedClick('Lipsync', onLipsync)}
+            aria-disabled={busy !== null}
+            disabled={lifecycle === 'lipsync_pending'}
             title="Send selected option for ByteDance lipsync"
           >
             {lifecycle === 'lipsync_pending' ? (
@@ -589,7 +654,10 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
                 class={isStale ? 'mn-btn mn-btn-small mn-btn-stale' : 'mn-btn mn-btn-small'}
                 data-testid={`beat-${index}-lipsync-play`}
                 data-stale={isStale ? 'true' : 'false'}
-                onClick={isStale ? undefined : () => onPreviewOption(0)}
+                onClick={isStale ? undefined : () => {
+                  onEnsureLipsyncMounted();
+                  onPreviewOption(0);
+                }}
                 disabled={isStale}
                 title={
                   isStale
@@ -611,11 +679,51 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
             type="button"
             class="mn-btn mn-btn-small mn-btn-primary"
             data-testid={`beat-${index}-use-as-final`}
-            onClick={onUseAsFinal}
-            disabled={busy !== null}
+            onClick={guardedClick('Use as Final', onUseAsFinal)}
+            aria-disabled={busy !== null}
             title="Mark current selection as final without lipsync (Spec A)"
           >
             {busy === 'Use as Final' ? <><Spinner size="sm" inline /> …</> : '✓ Use as Final'}
+          </button>
+        ) : null}
+        {(lifecycle !== 'final' || beat.final?.source === 'still_image') ? (
+          <>
+            <input
+              type="text"
+              class="mn-beat-trim-input"
+              data-testid={`beat-${index}-still-hold-input`}
+              value={holdDuration}
+              onInput={(e) => setHoldDuration((e.target as HTMLInputElement).value)}
+              aria-label="Hold seconds for Ken Burns still-as-final"
+              placeholder="5.0"
+              title="Hold (s): Ken Burns clip duration. Default 5.0s."
+              style="width: 4em; margin-right: 4px"
+            />
+            <span class="mn-beat-button-group-label" style="margin-right:6px">Hold (s)</span>
+            <button
+              type="button"
+              class="mn-btn mn-btn-small"
+              data-testid={`beat-${index}-still-as-final`}
+              onClick={guardedClick('Still as Final', onUseStillAsFinal)}
+              aria-disabled={busy !== null}
+              title={beat.final?.source === 'still_image'
+                ? 'Re-render Ken Burns MP4 with the current Hold (s) value.'
+                : 'Render Ken Burns MP4 from the beat still image and mark final.'}
+            >
+              {busy === 'Still as Final' ? <><Spinner size="sm" inline /> …</> : (beat.final?.source === 'still_image' ? '📷 Re-render Still' : '📷 Still as Final')}
+            </button>
+          </>
+        ) : null}
+        {lifecycle === 'final' && beat.final?.source === 'still_image' && beat.final?.file ? (
+          <button
+            type="button"
+            class="mn-btn mn-btn-small"
+            data-testid={`beat-${index}-still-final-preview`}
+            onClick={guardedClick('Preview Still', () => onPreviewOption(-1))}
+            aria-disabled={busy !== null}
+            title="Preview the rendered Ken Burns still-as-final MP4"
+          >
+            {previewOptIdx === -1 ? '⏸ Preview Still' : '▶ Preview Still'}
           </button>
         ) : null}
         {lifecycle === 'final' ? (
@@ -651,8 +759,8 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
           type="button"
           class="mn-btn mn-btn-small"
           data-testid={`beat-${index}-trim-apply`}
-          onClick={onApplyTrim}
-          disabled={busy !== null}
+          onClick={guardedClick('Trim', onApplyTrim)}
+          aria-disabled={busy !== null}
         >
           apply
         </button>
@@ -670,8 +778,8 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
           type="button"
           class="mn-btn mn-btn-small"
           data-testid={`beat-${index}-delay-apply`}
-          onClick={onApplyDelay}
-          disabled={busy !== null}
+          onClick={guardedClick('Delay', onApplyDelay)}
+          aria-disabled={busy !== null}
         >
           apply
         </button>
@@ -707,37 +815,87 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(beat.text_last_updated_at ?? null);
   const [previewOptIdx, setPreviewOptIdx] = useState<number | null>(null);
+  // LD-757: sticky sentinel — once set, lipsync <video> stays mounted across previews.
+  const [lipsyncMounted, setLipsyncMounted] = useState(false);
+  const ensureLipsyncMounted = useCallback(() => setLipsyncMounted(true), []);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  const previewVideoSrc = previewOptIdx !== null
-    ? previewOptIdx === 0
-      // sentinel 0 = preview lipsync result (ByteDance audio baked in, no separate TTS player)
-      ? (beat.lipsync?.file ? `http://localhost:5111/asset/${beat.lipsync.file}?v=${beat._version ?? 0}` : null)
-      : `http://localhost:5111/asset/${beat.phase_1?.options?.[previewOptIdx - 1]?.file}?v=${beat._version ?? 0}`
-    : null;
+  // Preview source: 0 = lipsync, -1 = still-as-final, >0 = animation option.
+  const _isLipsyncShown = previewOptIdx === 0 || lipsyncMounted;
+  const previewVideoSrc = (previewOptIdx !== null && previewOptIdx > 0)
+    ? `http://localhost:5111/asset/${beat.phase_1?.options?.[previewOptIdx - 1]?.file}?v=${beat._version ?? 0}`
+    : (previewOptIdx === -1 && beat.final?.source === 'still_image' && beat.final?.file
+        ? `http://localhost:5111/asset/${beat.final.file}?v=${beat._version ?? 0}`
+        : (_isLipsyncShown && beat.lipsync?.file
+            ? `http://localhost:5111/asset/${beat.lipsync.file}?v=${beat._version ?? 0}`
+            : null));
 
   const previewAudioSrc = `http://localhost:5111/api/beat/audio/${beatId}?event_id=${eventId}`;
+
+  const resetPlayState = useCallback((reason: string, kind: 'error' | 'info' = 'error', ctx: string = 'Playback') => {
+    try { videoRef.current?.pause(); } catch { /* defensive */ }
+    try { audioRef.current?.pause(); } catch { /* defensive */ }
+    setPreviewOptIdx(null);
+    pushToast({ kind, message: `${ctx}: ${reason}`, source: 'sb-playback-fail' });
+  }, []);
+
+  const playPromiseRef = useRef<Promise<void> | null>(null);
+  const lastClickRef = useRef<number>(0);
+
+  // LD-769/775: await prior play() with 500ms cap, then start next play().
+  const awaitPriorPlayWithTimeout = useCallback(async (): Promise<void> => {
+    const prior = playPromiseRef.current;
+    if (!prior) return;
+    let timedOut = false;
+    await Promise.race([
+      prior.catch(() => {}),
+      new Promise<void>((resolve) => setTimeout(() => { timedOut = true; resolve(); }, 500)),
+    ]);
+    if (timedOut && playPromiseRef.current === prior) {
+      playPromiseRef.current = null;
+    }
+  }, []);
+
+  const safePlay = useCallback(async (el: HTMLMediaElement | null | undefined): Promise<void> => {
+    if (!el) return;
+    await awaitPriorPlayWithTimeout();
+    if (el.paused === false) return;
+    const p = el.play();
+    playPromiseRef.current = p;
+    try {
+      await p;
+    } finally {
+      if (playPromiseRef.current === p) playPromiseRef.current = null;
+    }
+  }, [awaitPriorPlayWithTimeout]);
+
+  const safePause = useCallback(async (el: HTMLMediaElement | null | undefined): Promise<void> => {
+    if (!el) return;
+    await awaitPriorPlayWithTimeout();
+    try { el.pause(); } catch { /* defensive */ }
+  }, [awaitPriorPlayWithTimeout]);
+
+  const handlePlayRejection = useCallback((err: unknown, _context: string, toastCtx: string = 'Playback') => {
+    const name = (err as { name?: string } | null)?.name ?? 'unknown';
+    if (name === 'AbortError') return;
+    if (name === 'NotAllowedError') {
+      resetPlayState('browser autoplay blocked — click again to start', 'error', toastCtx);
+      return;
+    }
+    if (name === 'NotSupportedError') {
+      resetPlayState('codec/format not supported', 'error', toastCtx);
+      return;
+    }
+    resetPlayState(`browser refused to start (${name})`, 'error', toastCtx);
+  }, [resetPlayState]);
 
   useEffect(() => {
     if (previewOptIdx === null) return;
     const vid = videoRef.current;
     const aud = audioRef.current;
     if (!vid) return;
-    // previewOptIdx === 0 is the lipsync sentinel: ByteDance bakes AAC audio into the
-    // output video. Playing the TTS audio player simultaneously doubles the dialogue.
-    // For lipsync preview, play video only — do NOT start the separate audio element.
     const isLipsyncPreview = previewOptIdx === 0;
-    // L5b fix 2026-05-16 per STORYBOARD_AUDIO_DELAY_READ_NESTED_PATH_V2:
-    // read the persisted Video Lead-in from beat.phase_1.audio_delay (nested
-    // canonical path the bootstrap returns) and defer audio.play() by that
-    // many seconds so the preview matches what the rendered MP4 does
-    // (server-side ffmpeg adelay filter bakes the same delay in). The prior
-    // top-level `beat.audio_delay` read (LD-695, 2026-05-14) used the
-    // FLATTENED shape from /api/animate_status — undefined on bootstrap →
-    // audioDelaySec collapsed to 0 → setTimeout branch silently skipped →
-    // audio played at t=0 simultaneously with video. See spec id=225 §5.1
-    // Edit 2.
     const audioDelaySec = Number(
       beat.phase_1?.audio_delay
         ?? beat.audio_delay
@@ -748,12 +906,15 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
       if (!aud) return;
       aud.currentTime = 0;
     }
-    vid.play().catch(() => {});
+    const toastCtx = previewOptIdx === 0
+      ? 'Lipsync playback'
+      : previewOptIdx === -1
+        ? 'Still preview'
+        : 'Animation preview';
+    safePlay(vid).catch((err) => handlePlayRejection(err, 'effect-play', toastCtx));
     if (!isLipsyncPreview && aud) {
       if (audioDelaySec > 0) {
         const ms = Math.round(audioDelaySec * 1000);
-        // Hold the audio until the delay elapses; if Kim cancels the preview
-        // (previewOptIdx changes) the effect's cleanup pauses both elements.
         const t = window.setTimeout(() => {
           aud.play().catch(() => {});
         }, ms);
@@ -763,11 +924,7 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
       }
       aud.play().catch(() => {});
     }
-    // Dep array must reference the same path the effect actually reads —
-    // without beat.phase_1?.audio_delay the effect would never re-fire when
-    // Kim presses Delay apply and the parent re-renders with a new beat prop.
-    // See spec id=225 §5.1 Edit 3.
-  }, [previewOptIdx, beat.phase_1?.audio_delay, beat.audio_delay, beat.delay_seconds]);
+  }, [previewOptIdx, beat.phase_1?.audio_delay, beat.audio_delay, beat.delay_seconds, safePlay, handlePlayRejection]);
 
   useEffect(() => {
     return () => {
@@ -777,30 +934,38 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
   }, []);
 
   const handlePreviewOption = useCallback((optIdx: number) => {
-    // Sentinel 0 = preview lipsync result. ByteDance audio is baked in — never touch the TTS audio player.
+    const nowTs = performance.now();
+    if (lastClickRef.current > 0 && nowTs - lastClickRef.current < 250) return;
+    lastClickRef.current = nowTs;
+
     const isLipsyncPreview = optIdx === 0;
-    const file = isLipsyncPreview ? beat.lipsync?.file : beat.phase_1?.options?.[optIdx - 1]?.file;
+    const isStillFinalPreview = optIdx === -1;
+    const file = isLipsyncPreview
+      ? beat.lipsync?.file
+      : (isStillFinalPreview
+          ? beat.final?.file
+          : beat.phase_1?.options?.[optIdx - 1]?.file);
     if (!file) return;
     const vid = videoRef.current;
     const aud = audioRef.current;
     if (previewOptIdx === optIdx) {
-      // Toggle play/pause for the current preview.
       if (vid && !vid.paused) {
-        vid.pause();
-        if (!isLipsyncPreview) aud?.pause();
+        safePause(vid).catch(() => {});
+        if (!isLipsyncPreview) safePause(aud).catch(() => {});
       } else {
-        vid?.play().catch(() => {});
-        if (!isLipsyncPreview) aud?.play().catch(() => {});
+        safePlay(vid).catch((err) => handlePlayRejection(err, 'toggle-play'));
+        if (!isLipsyncPreview) safePlay(aud).catch((err) => handlePlayRejection(err, 'toggle-play-aud'));
       }
       return;
     }
-    vid?.pause();
-    if (!isLipsyncPreview) aud?.pause();
+    safePause(vid).catch(() => {});
+    if (!isLipsyncPreview) safePause(aud).catch(() => {});
     setPreviewOptIdx(optIdx);
-  }, [previewOptIdx, beat.phase_1?.options, beat.lipsync?.file]);
+  }, [previewOptIdx, beat.phase_1?.options, beat.lipsync?.file, beat.final?.file, safePlay, safePause, handlePlayRejection]);
 
   const handlePreviewEnded = useCallback(() => {
     audioRef.current?.pause();
+    // LD-757: reset UI only; lipsyncMounted keeps <video> in DOM.
     setPreviewOptIdx(null);
   }, []);
 
@@ -1044,6 +1209,7 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
         onMutated={onMutated}
         previewOptIdx={previewOptIdx}
         onPreviewOption={handlePreviewOption}
+        onEnsureLipsyncMounted={ensureLipsyncMounted}
       />
       <BeatMagicButtons index={index} beatId={beatId} beat={beat} eventId={eventId} />
       <div class="mn-sb-insert-after" data-testid={`sb-insert-after-${index}`}>

@@ -221,14 +221,19 @@
   font-size: 13px;
   cursor: pointer;
 }
-.mn-btn:hover:not(:disabled) {
+.mn-btn:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--bg-panel);
   border-color: var(--border-strong);
 }
-.mn-btn:disabled {
+.mn-btn:disabled,
+.mn-btn[aria-disabled="true"] {
   opacity: 0.5;
   cursor: not-allowed;
 }
+/* LD-739/740 GREENFIELD: aria-disabled buttons preserve the visual
+   disabled appearance while keeping the native onClick path active so
+   guardedClick can surface a busy-guard toast. See StoryboardTab.tsx
+   BeatButtonRow guardedClick helper. */
 .mn-btn-primary {
   background: var(--accent-bg);
   border-color: var(--accent-border);

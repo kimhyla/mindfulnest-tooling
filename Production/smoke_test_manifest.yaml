@@ -1,0 +1,105 @@
+# Production/smoke_test_manifest.yaml
+# Append-only manifest of must-have feature symbols for the storyboard.
+# Per LD-782 EVENT_SMOKE_TEST_LAYER1_V1 (locked 2026-05-17).
+#
+# Each entry (single-line flow YAML):
+#   { ld: <id>, symbol: 'X', kind: <testid|class|fn|prop|attr|label|api>,
+#     [target: <bundle|source|both>,] [status: <active|known_red>,]
+#     [regex: <true|false>,] [min_matches: N,] [event_scope: <all|Event_N>] }
+#
+# Defaults: target=bundle, status=active, regex=false, min_matches=1, event_scope=all.
+# Renames go through "supersedes" + a new entry. NEVER edit history.
+#
+# When a UI-shipping LD lands, append the entry in the same commit
+# (pre-commit hook enforces; bypass via MN_SKIP_MANIFEST_GATE=1).
+
+version: 1
+target_default: bundle
+event_scope_default: all
+
+entries:
+  # ===========================================================================
+  # 3 formerly-known regressions (status was known_red as of 2026-05-17; all
+  # flipped to active per LDs 784/786/789 once their features re-shipped).
+  # When a future regression is added, restore status=known_red on that entry.
+  # ===========================================================================
+  - { ld: LD-746, symbol: 'kim-done-checkbox', kind: testid, status: active }
+  - { ld: LD-767, symbol: 'suggest-parenthetical', kind: testid, status: active }
+  - { ld: LD-738, symbol: 'tile-tier.*(master|delivery)', kind: attr, status: active, regex: true }
+
+  # ===========================================================================
+  # 21 active load-bearing features (all grep-verified present 2026-05-17)
+  # [CONFIRMED against bash session: each entry below was verified via
+  # `grep -c <symbol> <target>` against the feature-branch tree at
+  # commit-time; counts captured in
+  # Production/docs/morph_fix_a_v2_evidence_20260518/manifest_grep_audit.log]
+  # ===========================================================================
+  # Still-as-final + hold-duration (LD-761/763/777)
+  - { ld: LD-777, symbol: 'still-hold-input', kind: testid }
+  - { ld: LD-761, symbol: 'still-as-final', kind: testid }
+  - { ld: LD-761, symbol: 'still-final-preview', kind: testid }
+  - { ld: LD-761, symbol: 'undo-final', kind: testid }
+
+  # Post-lipsync trim feature suite (LD-749/754/755/756/757)
+  - { ld: LD-756, symbol: 'trim-in', kind: testid }
+  - { ld: LD-756, symbol: 'trim-out', kind: testid }
+  - { ld: LD-755, symbol: 'trim-preview', kind: testid }
+  - { ld: LD-755, symbol: 'trim-apply', kind: testid }
+
+  # Silent-failure-class kills (LD-769/775/778) — function names in source TSX
+  - { ld: LD-769, symbol: 'safePlay', kind: fn, target: source }
+  - { ld: LD-775, symbol: 'awaitPriorPlayWithTimeout', kind: fn, target: source }
+  - { ld: LD-778, symbol: 'runMutation', kind: fn, target: source }
+  # LD-778 re-shipped 2026-05-17: 'expectField' parameter is the unique
+  # symbol of the 4-gate body-validation implementation (not present in the
+  # pre-LD-778 plain HTTP-2xx version). This marker distinguishes "helper
+  # exists by name" from "4-gate version actually shipped."
+  - { ld: LD-778, symbol: 'expectField', kind: fn, target: source }
+  - { ld: LD-757, symbol: 'lipsyncMounted', kind: fn, target: source }
+
+  # Stale-lipsync UI gate (LD-765 / PR #56)
+  - { ld: LD-765, symbol: 'beat-stale-tts', kind: testid }
+
+  # Audio regen cache-bust composite seed (LD-770)
+  - { ld: LD-770, symbol: 'audio_regenerated_at', kind: prop }
+
+  # Structural beat-row buttons + speaker dropdown + assembly
+  - { ld: char-dropdown, symbol: 'beat-speaker', kind: testid }
+  - { ld: structural, symbol: 'sb-delete-beat', kind: testid }
+  - { ld: structural, symbol: 'sb-insert-after-btn', kind: testid }
+  - { ld: structural, symbol: 'send-out-mp4', kind: testid }
+
+  # Audio delay + regen + lipsync core controls (LD-723 era)
+  - { ld: LD-723, symbol: 'use-as-final', kind: testid }
+  - { ld: LD-723, symbol: 'regen-audio', kind: testid }
+  - { ld: LD-723, symbol: 'lipsync', kind: testid }
+
+  # ===========================================================================
+  # OpenAI gpt-image-1 end-frame vendor swap (LD-730)
+  # Cross-thread integration per parent prod_activity_log row 4928 (2026-05-17).
+  # Implementation in production_server.py (dispatcher + key parsing) and
+  # kling_startend_pipeline.py (helper + endpoint). Targets `server` and `kling`
+  # added to event_smoke_test.sh in the same commit. Markers mirror those
+  # asserted by Production/scripts/verify_ld_730_impl.py — both gates remain.
+  # ===========================================================================
+  - { ld: LD-730, symbol: 'openai_image_edit_generate_end_frame', kind: fn, target: server }
+  - { ld: LD-730, symbol: 'MN_END_FRAME_VENDOR', kind: fn, target: server }
+  - { ld: LD-730, symbol: 'def openai_image_edit_generate_end_frame(', kind: fn, target: kling }
+  - { ld: LD-730, symbol: 'gpt-image-1', kind: fn, target: kling }
+  - { ld: LD-730, symbol: '/v1/images/edits', kind: fn, target: kling }
+
+  # ===========================================================================
+  # Silent-click-on-busy-button class kill (LD-739/740 GREENFIELD 2026-05-18,
+  # Agent F). Original LDs were FABRICATED (LD-767 audit). guardedClick is the
+  # R1 Alternative 2 design — wraps every soft-disable mutation button in
+  # BeatButtonRow and emits a warning toast when clicked during the busy
+  # window instead of silently swallowing the click. Source-target because
+  # the symbol may minify in the bundle; the source presence is the contract.
+  # ===========================================================================
+  # Note: LD-739-740 is a hyphenated COMPOUND label for the two LDs filed for
+  # the same feature (LD-739 + LD-740 both reference guardedClick — one was
+  # the GREENFIELD design lock, the other the ship-row). [INFERRED — the
+  # `ld` field is consumed only as a label by event_smoke_test.sh:143 (no
+  # Directus lookup), so the compound form is safe; verify by reading the
+  # parse_entries Python heredoc.]
+  - { ld: LD-739-740, symbol: 'guardedClick', kind: fn, target: source }
