@@ -519,7 +519,7 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
       return;
     }
     if (beat.final?.file) {
-      const finalSrc = `http://localhost:5111/asset/${beat.final.file}?v=${beat._version ?? 0}`;
+      const finalSrc = `${SERVER_BASE}/asset/${beat.final.file}?v=${beat._version ?? 0}`;
       if (video.src !== finalSrc) {
         video.src = finalSrc;
       }
@@ -926,14 +926,14 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
   // Preview source: 0 = lipsync, -1 = still-as-final, >0 = animation option.
   const _isLipsyncShown = previewOptIdx === 0 || lipsyncMounted;
   const _finalFileSrc = beat.final?.file
-    ? `http://localhost:5111/asset/${beat.final.file}?v=${beat._version ?? 0}`
+    ? `${SERVER_BASE}/asset/${beat.final.file}?v=${beat._version ?? 0}`
     : null;
   const previewVideoSrc = (previewOptIdx !== null && previewOptIdx > 0)
-    ? `http://localhost:5111/asset/${beat.phase_1?.options?.[previewOptIdx - 1]?.file}?v=${beat._version ?? 0}`
+    ? `${SERVER_BASE}/asset/${beat.phase_1?.options?.[previewOptIdx - 1]?.file}?v=${beat._version ?? 0}`
     : (previewOptIdx === -1 && beat.final?.source === 'still_image' && beat.final?.file
         ? _finalFileSrc
         : (_isLipsyncShown && beat.lipsync?.file
-            ? `http://localhost:5111/asset/${beat.lipsync.file}?v=${beat._version ?? 0}`
+            ? `${SERVER_BASE}/asset/${beat.lipsync.file}?v=${beat._version ?? 0}`
             : (_finalFileSrc ?? null)));
 
   const previewAudioSrc = `http://localhost:5111/api/beat/audio/${beatId}?event_id=${eventId}`;
