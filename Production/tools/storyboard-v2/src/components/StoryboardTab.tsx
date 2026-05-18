@@ -21,7 +21,7 @@ import {
   activeMilestoneId,
   scopeKey,
 } from '../state/scope';
-import { apiGet, pathappPatch } from '../api/client';
+import { apiGet, expectField, pathappPatch, type ExpectFieldSpec } from '../api/client';
 import { SERVER_BASE } from '../api/endpoints';
 import { makeDropTarget } from '../utils/dragdrop';
 import { Spinner } from './ui/Spinner';
@@ -353,10 +353,26 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
     };
   }, [lifecycle, beatId]);
 
-  const runMutation = async (label: string, endpoint: any, body: Record<string, unknown>) => {
+  const runMutation = async (
+    label: string,
+    endpoint: any,
+    body: Record<string, unknown>,
+    expect?: ExpectFieldSpec[],
+  ) => {
     setBusy(label);
     const result = await pathappPatch(activeScope.value, endpoint, { beat_id: beatId, ...body });
     setBusy(null);
+    if (result.ok && expect) {
+      const check = expectField(result.data, expect);
+      if (!check.ok) {
+        pushToast({
+          kind: 'error',
+          message: `${label}: response missing/invalid field '${check.failing}'`,
+          source: `beat-${label}-expect-fail`,
+        });
+        return false;
+      }
+    }
     if (result.ok) {
       pushToast({ kind: 'success', message: `${label} ok`, source: `beat-${label}` });
       onMutated();
@@ -461,8 +477,16 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
   };
   const onSwapToA = (fromSlot: number) =>
     runMutation('Move to A', 'beat_swap_to_a', { from_slot: fromSlot });
-  const onLipsync = () => runMutation('Lipsync', 'lipsync', {});
-  const onUseAsFinal = () => runMutation('Use as Final', 'beat_use_as_final', {});
+  const onLipsync = () =>
+    runMutation('Lipsync', 'lipsync', {}, [
+      { key: 'status', equals: 'ok' },
+      { key: 'file', type: 'string' },
+    ]);
+  const onUseAsFinal = () =>
+    runMutation('Use as Final', 'beat_use_as_final', {}, [
+      { key: 'status', equals: 'ok' },
+      { key: 'beat', type: 'string' },
+    ]);
   const onUseStillAsFinal = () => {
     const body: Record<string, unknown> = {};
     const trimmed = holdDuration.trim();
@@ -473,6 +497,54 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
       }
     }
     return runMutation('Still as Final', 'beat_use_still_as_final', body);
+  };
+  const onUndoFinal = () => runMutation('Undo Final', 'beat_undo_final', {});
+  const trimPreviewListenerRef = useRef<((this: HTMLVideoElement, ev: Event) => void) | null>(null);
+  const onPreviewTrim = () => {
+    onEnsureLipsyncMounted();
+    const video = document.querySelector(
+      `[data-testid="beat-${index}-lipsync-video"]`,
+    ) as HTMLVideoElement | null;
+    if (!video) {
+      pushToast({
+        kind: 'error',
+        message: 'Preview Trim: video element not found',
+        source: `beat-${index}-trim-preview-missing`,
+      });
+      return;
+    }
+    if (beat.final?.file) {
+      const finalSrc = `http://localhost:5111/asset/${beat.final.file}?v=${beat._version ?? 0}`;
+      if (video.src !== finalSrc) {
+        video.src = finalSrc;
+      }
+    }
+    const tIn = parseFloat(trimIn);
+    const trimInSec = isNaN(tIn) ? 0 : Math.max(0, tIn);
+    const tOut = trimOut === 'full' ? null : parseFloat(trimOut);
+    if (trimPreviewListenerRef.current) {
+      video.removeEventListener('timeupdate', trimPreviewListenerRef.current);
+    }
+    const onTimeUpdate = () => {
+      const end = tOut === null || isNaN(tOut)
+        ? (Number.isFinite(video.duration) ? video.duration : Infinity)
+        : tOut;
+      if (video.currentTime >= end) {
+        video.pause();
+        video.removeEventListener('timeupdate', onTimeUpdate);
+        trimPreviewListenerRef.current = null;
+      }
+    };
+    trimPreviewListenerRef.current = onTimeUpdate;
+    video.currentTime = trimInSec;
+    video.addEventListener('timeupdate', onTimeUpdate);
+    void video.play().catch(() => {
+      pushToast({
+        kind: 'error',
+        message: 'Preview Trim: playback blocked',
+        source: `beat-${index}-trim-preview-play`,
+      });
+    });
   };
   const onApplyTrim = () => {
     const tIn = parseFloat(trimIn);
@@ -713,6 +785,18 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
             >
               {busy === 'Still as Final' ? <><Spinner size="sm" inline /> …</> : (beat.final?.source === 'still_image' ? '📷 Re-render Still' : '📷 Still as Final')}
             </button>
+            {beat.final?.source === 'still_image' ? (
+              <button
+                type="button"
+                class="mn-btn mn-btn-small"
+                data-testid={`beat-${index}-undo-final`}
+                onClick={guardedClick('Undo Final', onUndoFinal)}
+                aria-disabled={busy !== null}
+                title="Clear Ken Burns still-as-final and return beat to non-final state"
+              >
+                {busy === 'Undo Final' ? <><Spinner size="sm" inline /> …</> : '↩ Undo Final'}
+              </button>
+            ) : null}
           </>
         ) : null}
         {lifecycle === 'final' && beat.final?.source === 'still_image' && beat.final?.file ? (
@@ -765,6 +849,18 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
         >
           apply
         </button>
+        {beat.final?.file ? (
+          <button
+            type="button"
+            class="mn-btn mn-btn-small"
+            data-testid={`beat-${index}-trim-preview`}
+            onClick={guardedClick('Preview Trim', onPreviewTrim)}
+            aria-disabled={busy !== null}
+            title="Browser-side seek preview between trim in/out (no server round-trip)"
+          >
+            Preview Trim
+          </button>
+        ) : null}
         <span class="mn-beat-button-group-label" style="margin-left:8px">Delay:</span>
         <input
           type="text"
@@ -824,13 +920,16 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
 
   // Preview source: 0 = lipsync, -1 = still-as-final, >0 = animation option.
   const _isLipsyncShown = previewOptIdx === 0 || lipsyncMounted;
+  const _finalFileSrc = beat.final?.file
+    ? `http://localhost:5111/asset/${beat.final.file}?v=${beat._version ?? 0}`
+    : null;
   const previewVideoSrc = (previewOptIdx !== null && previewOptIdx > 0)
     ? `http://localhost:5111/asset/${beat.phase_1?.options?.[previewOptIdx - 1]?.file}?v=${beat._version ?? 0}`
     : (previewOptIdx === -1 && beat.final?.source === 'still_image' && beat.final?.file
-        ? `http://localhost:5111/asset/${beat.final.file}?v=${beat._version ?? 0}`
+        ? _finalFileSrc
         : (_isLipsyncShown && beat.lipsync?.file
             ? `http://localhost:5111/asset/${beat.lipsync.file}?v=${beat._version ?? 0}`
-            : null));
+            : (_finalFileSrc ?? null)));
 
   const previewAudioSrc = `http://localhost:5111/api/beat/audio/${beatId}?event_id=${eventId}`;
 
@@ -1288,15 +1387,17 @@ function BeatImageHolder({ index, beatId, beat, eventId, onMutated, previewVideo
       onDrop={dropHandlers.onDrop}
     >
       {previewVideoSrc ? (
-        <video
-          {...(videoRef ? { ref: videoRef } : {})}
-          src={previewVideoSrc}
-          class="mn-storyboard-preview-video"
-          playsInline
-          preload="auto"
-          onEnded={onPreviewEnded}
-          data-testid={`beat-preview-video-${index}`}
-        />
+        <div data-testid={`beat-preview-video-${index}`} style={{ display: 'contents' }}>
+          <video
+            {...(videoRef ? { ref: videoRef } : {})}
+            src={previewVideoSrc}
+            class="mn-storyboard-preview-video"
+            playsInline
+            preload="auto"
+            onEnded={onPreviewEnded}
+            data-testid={`beat-${index}-lipsync-video`}
+          />
+        </div>
       ) : hasImage && imgSrc ? (
         <img
           src={imgSrc}

@@ -377,3 +377,42 @@ async function apiPostRaw<T = unknown>(
 export function _currentScopeForTesting(): Scope {
   return activeScope.value;
 }
+
+// ============================================================================
+// LD-778 — expectField 4-gate response body validator for runMutation callers
+// ============================================================================
+
+export type ExpectFieldSpec =
+  | { key: string; type: 'string' | 'number' | 'boolean' | 'object' | 'array' }
+  | { key: string; equals: unknown };
+
+export function expectField(
+  data: unknown,
+  specs: ExpectFieldSpec[],
+): { ok: true } | { ok: false; failing: string } {
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+    return { ok: false, failing: '<root>' };
+  }
+  const obj = data as Record<string, unknown>;
+  for (const spec of specs) {
+    const val = obj[spec.key];
+    if ('equals' in spec) {
+      if (val !== spec.equals) {
+        return { ok: false, failing: spec.key };
+      }
+      continue;
+    }
+    if (spec.type === 'array') {
+      if (!Array.isArray(val)) {
+        return { ok: false, failing: spec.key };
+      }
+    } else if (spec.type === 'object') {
+      if (typeof val !== 'object' || val === null || Array.isArray(val)) {
+        return { ok: false, failing: spec.key };
+      }
+    } else if (typeof val !== spec.type) {
+      return { ok: false, failing: spec.key };
+    }
+  }
+  return { ok: true };
+}

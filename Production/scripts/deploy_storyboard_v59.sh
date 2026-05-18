@@ -196,6 +196,29 @@ for sub in Production/tools Production/lib Production/scripts; do
 done
 
 # ----------------------------------------------------------------
+# (b.2) Per-file sync for Production/ root-level manifests.
+# Blocker #160: smoke_test_manifest.yaml lived at Production/smoke_test_manifest.yaml
+# (root of Production/, not under tools/lib/scripts subtrees) and was therefore
+# silently EXCLUDED from the (b) rsync set. Result: manifest drift between
+# tooling main and Dropbox runtime — event_smoke_test.sh on the Dropbox side
+# would consume a stale manifest after the next tooling-side LD lock.
+#
+# Fix: explicit per-file cp for known Production/ root-level manifests. Add
+# new manifests to this list when they're introduced; same dependency-order
+# rule as the rsync subdirs above.
+# ----------------------------------------------------------------
+for manifest in smoke_test_manifest.yaml; do
+    src="$SRC_TOOLING/Production/$manifest"
+    dest="$DEST_DROPBOX/Production/$manifest"
+    if [[ -f "$src" ]]; then
+        cp "$src" "$dest"
+        echo "  mirrored: Production/$manifest"
+    else
+        echo "  WARN: $src missing in source; skip"
+    fi
+done
+
+# ----------------------------------------------------------------
 # (c) dist/index.html (built v59 client bundle) — copy to TWO destinations:
 #   1. Production/tools/storyboard-v2/dist/index.html (canonical bundle path)
 #   2. Each Production/Event_<N>/storyboard_v59_prod.html (the file

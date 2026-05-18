@@ -5872,6 +5872,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_v2_beat_swap_to_a(_beat_id_from_body, body)
             if path == "/api/beat/use_still_as_final":  # LD-761: Ken Burns still as final
                 return self._handle_use_still_as_final(body)
+            if path == "/api/beat/undo_final":  # LD-761: undo Ken Burns still-as-final
+                return self._handle_beat_undo_final(body)
             if path == "/api/beat/update_text":
                 return self._handle_beat_update_text(body)
             if path == "/api/beat/update_speaker":
@@ -9221,6 +9223,10 @@ body {{padding-top:44px!important;}}
     def _handle_beat_trim(self, body: dict) -> None:
         from server_handlers.beats_legacy import handle_beat_trim
         return handle_beat_trim(self, body)
+
+    def _handle_beat_undo_final(self, body: dict) -> None:
+        from server_handlers.beats_legacy import handle_beat_undo_final
+        return handle_beat_undo_final(self, body)
 
     def _handle_budget_override(self, body: dict) -> None:
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1

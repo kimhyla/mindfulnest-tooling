@@ -43,27 +43,19 @@ entries:
   - { ld: LD-777, symbol: 'still-hold-input', kind: testid }
   - { ld: LD-761, symbol: 'still-as-final', kind: testid }
   - { ld: LD-761, symbol: 'still-final-preview', kind: testid }
-  # undo-final UI deferred per SHORTCUT_UNDO_FINAL_UI_V1 — file LD if absent
-  - { ld: LD-761, symbol: 'undo-final', kind: testid, status: known_red }
+  - { ld: LD-761, symbol: 'undo-final', kind: testid }
 
   # Post-lipsync trim feature suite (LD-749/754/755/756/757)
   - { ld: LD-756, symbol: 'trim-in', kind: testid }
   - { ld: LD-756, symbol: 'trim-out', kind: testid }
-  # trim-preview UI deferred per SHORTCUT_LD_755_TRIM_PREVIEW_UI_V1 — only
-  # trim-in/out/apply controls shipped; preview button needs a separate UI spec.
-  # Flip to active once `data-testid="trim-preview"` lands in StoryboardTab.tsx.
-  - { ld: LD-755, symbol: 'trim-preview', kind: testid, status: known_red }
+  - { ld: LD-755, symbol: 'trim-preview', kind: testid }
   - { ld: LD-755, symbol: 'trim-apply', kind: testid }
 
   # Silent-failure-class kills (LD-769/775/778) — function names in source TSX
   - { ld: LD-769, symbol: 'safePlay', kind: fn, target: source }
   - { ld: LD-775, symbol: 'awaitPriorPlayWithTimeout', kind: fn, target: source }
   - { ld: LD-778, symbol: 'runMutation', kind: fn, target: source }
-  # known_red per SHORTCUT_LD_778_EXPECTFIELD_4GATE_V1 — LD-778 ship row never
-  # landed; manifest entry kept for tracking. expectField 4-gate body validation
-  # not yet in runMutation/pathappPatch. Flip to active once `expectField` is
-  # implemented as a runMutation/pathappPatch helper (or formally retire LD-778).
-  - { ld: LD-778, symbol: 'expectField', kind: fn, target: source, status: known_red }
+  - { ld: LD-778, symbol: 'expectField', kind: fn, target: source }
   - { ld: LD-757, symbol: 'lipsyncMounted', kind: fn, target: source }
 
   # Stale-lipsync UI gate (LD-765 / PR #56)

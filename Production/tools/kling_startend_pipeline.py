@@ -150,27 +150,35 @@ def load_api_keys() -> dict:
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)  # type: ignore
+    # parse_api_keys overlays Doppler env (OPENAI_API_KEY, BFL_API_KEY, …) over file.
     keys = mod.parse_api_keys(PROD_ROOT / "API_KEYS_MASTER.md")
-    # BFL key: parse separately since it's not in parse_api_keys scope
-    import re
-    content = (PROD_ROOT / "API_KEYS_MASTER.md").read_text(encoding="utf-8")
-    m = re.search(
-        r"\|\s*\*+(?:Flux|BFL|Black\s*Forest)[^|]*\*+[^|]*\|\s*`([^`]+)`",
-        content, re.IGNORECASE,
-    )
-    if m:
-        keys["bfl"] = m.group(1).strip()
-    else:
-        # Try lib/credentials (works correctly for BFL — only wavespeed has the bug)
-        sys.path.insert(0, str(HERE / "lib"))
-        from credentials import load_credentials  # type: ignore
-        creds = load_credentials()
-        keys["bfl"] = creds.get("bfl_key", "")
+    # Explicit Doppler-first for end-frame vendors (LD-754 / MN_END_FRAME_VENDOR).
+    openai_env = (os.environ.get("OPENAI_API_KEY") or "").strip()
+    if openai_env:
+        keys["openai"] = openai_env
+    bfl_env = (os.environ.get("BFL_API_KEY") or "").strip()
+    if bfl_env:
+        keys["bfl"] = bfl_env
+    elif not keys.get("bfl"):
+        # BFL file fallback when env unset (legacy direct-invoke path).
+        import re
+        content = (PROD_ROOT / "API_KEYS_MASTER.md").read_text(encoding="utf-8")
+        m = re.search(
+            r"\|\s*\*+(?:Flux|BFL|Black\s*Forest)[^|]*\*+[^|]*\|\s*`([^`]+)`",
+            content, re.IGNORECASE,
+        )
+        if m:
+            keys["bfl"] = m.group(1).strip()
+        else:
+            sys.path.insert(0, str(HERE / "lib"))
+            from credentials import load_credentials  # type: ignore
+            creds = load_credentials()
+            keys["bfl"] = creds.get("bfl_key", "")
 
     if not keys.get("wavespeed"):
         sys.exit("FATAL: no wavespeed key")
-    if not keys.get("bfl"):
-        sys.exit("FATAL: no bfl (FLUX) key — check API_KEYS_MASTER.md")
+    if not keys.get("bfl") and not keys.get("openai"):
+        sys.exit("FATAL: no bfl (FLUX) or openai key — set BFL_API_KEY / OPENAI_API_KEY or check API_KEYS_MASTER.md")
     return keys
 
 
@@ -968,10 +976,53 @@ def main() -> None:
             sys.exit(f"FATAL: --end-image not found: {end_path}")
         end_bytes = end_path.read_bytes()
     else:
-        log(f"\n[2/6] Generate end frame via FLUX Kontext (BFL)")
+        # LD-754 / LD-730: MN_END_FRAME_VENDOR dispatcher (mirrors production_server
+        # _handle_add_options_startend). Default openai; flux = FLUX Kontext rollback.
+        openai_key = keys.get("openai") or os.environ.get("OPENAI_API_KEY")
+        bfl_key = keys.get("bfl") or os.environ.get("BFL_API_KEY")
+        _requested_vendor = os.environ.get(
+            "MN_END_FRAME_VENDOR", "openai"
+        ).strip().lower()
+        if _requested_vendor == "openai" and openai_key:
+            _vendor_used = "openai"
+            _end_frame_fn = openai_image_edit_generate_end_frame
+            _vendor_key = openai_key
+            _key_source = "doppler/env" if os.environ.get("OPENAI_API_KEY") else "file"
+        elif _requested_vendor == "flux" and bfl_key:
+            _vendor_used = "flux"
+            _end_frame_fn = flux_kontext_generate_end_frame
+            _vendor_key = bfl_key
+            _key_source = "doppler/env" if os.environ.get("BFL_API_KEY") else "file"
+        elif openai_key:
+            _vendor_used = (
+                f"openai (fallback — requested={_requested_vendor!r} "
+                f"but its key absent)"
+            )
+            _end_frame_fn = openai_image_edit_generate_end_frame
+            _vendor_key = openai_key
+            _key_source = "doppler/env" if os.environ.get("OPENAI_API_KEY") else "file"
+        elif bfl_key:
+            _vendor_used = (
+                f"flux (fallback — requested={_requested_vendor!r} "
+                f"but its key absent)"
+            )
+            _end_frame_fn = flux_kontext_generate_end_frame
+            _vendor_key = bfl_key
+            _key_source = "doppler/env" if os.environ.get("BFL_API_KEY") else "file"
+        else:
+            sys.exit(
+                "FATAL: no end-frame API key — set OPENAI_API_KEY and/or BFL_API_KEY"
+            )
+        print(
+            f"[kling-startend] {BEAT}: end-frame vendor "
+            f"SELECTED = {_vendor_used} (env MN_END_FRAME_VENDOR="
+            f"{_requested_vendor!r}; key_source={_key_source})",
+            flush=True,
+        )
+        log(f"\n[2/6] Generate end frame via {_vendor_used}")
         log(f"  end_prompt: {end_prompt[:120]}{'...' if len(end_prompt) > 120 else ''}")
-        end_bytes = flux_kontext_generate_end_frame(
-            start_bytes_final, end_prompt, keys["bfl"], aspect_ratio="4:3",
+        end_bytes = _end_frame_fn(
+            start_bytes_final, end_prompt, _vendor_key, aspect_ratio="4:3",
         )
         log(f"  end frame: {len(end_bytes):,} bytes")
 
