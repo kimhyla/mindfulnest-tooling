@@ -44,39 +44,38 @@ export function StitcherSlotWaveform({
   };
 
   return (
+    // CI fix #4: consolidated to single div (Q1's outer-wrapper pattern
+    // broke G3 — drops on outer never reached inner-element drop handlers).
+    // Restores the original pre-Q1 DOM shape where slot-waveform testid +
+    // drop handlers + data-drop-target-kind are all on the SAME element.
+    /* eslint-disable-next-line jsx-a11y/no-static-element-interactions */
     <div
-      class="mn-stitcher-slot-waveform-wrap"
+      ref={wrapperRef}
+      class="mn-stitcher-slot-waveform mn-drop-target"
       data-testid={`stitcher-slot-waveform-${slotKey}`}
+      data-drop-target-kind="sfx-strip"
+      data-slot-key={slotKey}
+      data-video-dur-ms={videoDurMs}
+      data-cue-count={cues.length}
+      onDragOver={dropHandlers.onDragOver}
+      onDragLeave={dropHandlers.onDragLeave}
+      onDrop={dropHandlers.onDrop}
     >
-      {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
-      <div
-        ref={wrapperRef}
-        class="mn-stitcher-slot-waveform mn-drop-target"
-        data-testid="stitcher-drop-target-sfx-strip"
-        data-drop-target-kind="sfx-strip"
-        data-slot-key={slotKey}
-        data-video-dur-ms={videoDurMs}
-        data-cue-count={cues.length}
-        onDragOver={dropHandlers.onDragOver}
-        onDragLeave={dropHandlers.onDragLeave}
-        onDrop={dropHandlers.onDrop}
-      >
-        <div class="mn-stitcher-slot-waveform-canvas" />
-        <div class="mn-stitcher-slot-waveform-cue-overlay">
-          {cues.map((cue) => (
-            <div
-              key={cue.id}
-              data-testid={`stitcher-sfx-cue-marker-${slotKey}-${cue.id}`}
-              data-offset-ms={cue.offset_ms}
-              class="mn-stitcher-sfx-cue-marker"
-              style={{ left: `${cuePctLeft(cue)}%` }}
-              onClick={(e: MouseEvent) =>
-                onCueClick(cue.id, { x: e.clientX, y: e.clientY })
-              }
-              title={`${cue.name ?? cue.source_path.split('/').pop() ?? cue.id} @ ${(cue.offset_ms / 1000).toFixed(1)}s`}
-            />
-          ))}
-        </div>
+      <div class="mn-stitcher-slot-waveform-canvas" />
+      <div class="mn-stitcher-slot-waveform-cue-overlay">
+        {cues.map((cue) => (
+          <div
+            key={cue.id}
+            data-testid={`stitcher-sfx-cue-marker-${slotKey}-${cue.id}`}
+            data-offset-ms={cue.offset_ms}
+            class="mn-stitcher-sfx-cue-marker"
+            style={{ left: `${cuePctLeft(cue)}%` }}
+            onClick={(e: MouseEvent) =>
+              onCueClick(cue.id, { x: e.clientX, y: e.clientY })
+            }
+            title={`${cue.name ?? cue.source_path.split('/').pop() ?? cue.id} @ ${(cue.offset_ms / 1000).toFixed(1)}s`}
+          />
+        ))}
       </div>
     </div>
   );
