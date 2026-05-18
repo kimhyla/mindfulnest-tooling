@@ -1,0 +1,1991 @@
+openapi: 3.0.3
+info:
+  title: MindfulNest Production Server
+  version: V59
+  description: "Auto-generated from production_server.py do_GET/do_POST dispatch (Phase\
+    \ 1 \xA71)"
+servers:
+- url: http://localhost:5111
+paths:
+  /:
+    get:
+      summary: " serve storyboard \u2014 "
+      operationId: get_root
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/admin/drain_end:
+    post:
+      summary: "admin drain end \u2014 drain_end"
+      operationId: post_api_admin_drain_end
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/admin/drain_start:
+    post:
+      summary: "admin drain start \u2014 drain_start"
+      operationId: post_api_admin_drain_start
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/admin/inflight_count:
+    get:
+      summary: "admin inflight count \u2014 inflight_count"
+      operationId: get_api_admin_inflight_count
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/animate:
+    post:
+      summary: "animate \u2014 animate"
+      operationId: post_api_animate
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/animate/redo:
+    post:
+      summary: "redo \u2014 redo"
+      operationId: post_api_animate_redo
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/animate/status:
+    get:
+      summary: "status \u2014 status"
+      operationId: get_api_animate_status
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/assign-image:
+    post:
+      summary: "assign image \u2014 assign-image"
+      operationId: post_api_assign_image
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/beat/accepted-bg:
+    get:
+      summary: "beat accepted bg \u2014 accepted-bg"
+      operationId: get_api_beat_accepted_bg
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/beat/add_options:
+    post:
+      summary: "add options \u2014 add_options"
+      operationId: post_api_beat_add_options
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/beat/audio/{param}:
+    get:
+      summary: " serve beat audio \u2014 {param}"
+      operationId: get_api_beat_audio_param
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/beat/delay:
+    post:
+      summary: "beat delay \u2014 delay"
+      operationId: post_api_beat_delay
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/beat/finalize:
+    post:
+      summary: "beat finalize \u2014 finalize"
+      operationId: post_api_beat_finalize
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/beat/graft:
+    post:
+      summary: "beat graft \u2014 graft"
+      operationId: post_api_beat_graft
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/beat/regenerate_audio:
+    post:
+      summary: "beat regenerate audio \u2014 regenerate_audio"
+      operationId: post_api_beat_regenerate_audio
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/beat/swap_to_a:
+    post:
+      summary: "v2 beat swap to a \u2014 swap_to_a"
+      operationId: post_api_beat_swap_to_a
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/beat/trim:
+    post:
+      summary: "beat trim \u2014 trim"
+      operationId: post_api_beat_trim
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/beat/update_speaker:
+    post:
+      summary: "beat update speaker \u2014 update_speaker"
+      operationId: post_api_beat_update_speaker
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/beat/update_text:
+    post:
+      summary: "beat update text \u2014 update_text"
+      operationId: post_api_beat_update_text
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/beat/use_as_final:
+    post:
+      summary: "use as final \u2014 use_as_final"
+      operationId: post_api_beat_use_as_final
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/bg/accept-beats:
+    post:
+      summary: "bg accept beats \u2014 accept-beats"
+      operationId: post_api_bg_accept_beats
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/bg/accept-lib-image:
+    post:
+      summary: "bg accept lib image \u2014 accept-lib-image"
+      operationId: post_api_bg_accept_lib_image
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/bg/accept-local-animation:
+    post:
+      summary: "bg accept local animation \u2014 accept-local-animation"
+      operationId: post_api_bg_accept_local_animation
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/bg/accept-option:
+    post:
+      summary: "bg accept option \u2014 accept-option"
+      operationId: post_api_bg_accept_option
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/bg/add-beat:
+    post:
+      summary: "bg add beat \u2014 add-beat"
+      operationId: post_api_bg_add_beat
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/bg/assemble-group:
+    post:
+      summary: "bg assemble group \u2014 assemble-group"
+      operationId: post_api_bg_assemble_group
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/bg/create-group:
+    post:
+      summary: "bg create group \u2014 create-group"
+      operationId: post_api_bg_create_group
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/bg/crop-preview:
+    get:
+      summary: "bg crop preview \u2014 crop-preview"
+      operationId: get_api_bg_crop_preview
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/bg/delete-beat:
+    post:
+      summary: "bg delete beat \u2014 delete-beat"
+      operationId: post_api_bg_delete_beat
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/bg/delete-group:
+    post:
+      summary: "bg delete group \u2014 delete-group"
+      operationId: post_api_bg_delete_group
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/bg/extract-beats:
+    post:
+      summary: "bg extract beats \u2014 extract-beats"
+      operationId: post_api_bg_extract_beats
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/bg/groups:
+    get:
+      summary: "bg groups \u2014 groups"
+      operationId: get_api_bg_groups
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/bg/inject-beats:
+    post:
+      summary: "bg inject beats \u2014 inject-beats"
+      operationId: post_api_bg_inject_beats
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/bg/poll-assemble-status:
+    get:
+      summary: "bg poll assemble status \u2014 poll-assemble-status"
+      operationId: get_api_bg_poll_assemble_status
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/bg/poll-flux-status:
+    get:
+      summary: "bg poll flux \u2014 poll-flux-status"
+      operationId: get_api_bg_poll_flux_status
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/bg/poll-gpt-status/{param}:
+    get:
+      summary: "bg poll gpt status \u2014 {param}"
+      operationId: get_api_bg_poll_gpt_status_param
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/bg/reorder-beats:
+    post:
+      summary: "bg reorder beats \u2014 reorder-beats"
+      operationId: post_api_bg_reorder_beats
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/bg/run-local-animation:
+    post:
+      summary: "bg run local animation \u2014 run-local-animation"
+      operationId: post_api_bg_run_local_animation
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/bg/segments:
+    get:
+      summary: "bg segments \u2014 segments"
+      operationId: get_api_bg_segments
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/bg/session-state:
+    get:
+      summary: "bg session state \u2014 session-state"
+      operationId: get_api_bg_session_state
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/bg/set-active-context:
+    post:
+      summary: "bg set active context \u2014 set-active-context"
+      operationId: post_api_bg_set_active_context
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/bg/submit-flux-batch:
+    post:
+      summary: "bg submit flux \u2014 submit-flux-batch"
+      operationId: post_api_bg_submit_flux_batch
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/bg/submit-gpt-batch:
+    post:
+      summary: "bg submit gpt batch \u2014 submit-gpt-batch"
+      operationId: post_api_bg_submit_gpt_batch
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/bg/update-beat:
+    post:
+      summary: "bg update beat \u2014 update-beat"
+      operationId: post_api_bg_update_beat
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/bg/update-beat-animation-method:
+    post:
+      summary: "bg update beat anim method \u2014 update-beat-animation-method"
+      operationId: post_api_bg_update_beat_animation_method
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/bg/update-group:
+    post:
+      summary: "bg update group \u2014 update-group"
+      operationId: post_api_bg_update_group
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/budget/override:
+    post:
+      summary: "budget override \u2014 override"
+      operationId: post_api_budget_override
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/cr/full:
+    get:
+      summary: "cr full image \u2014 full"
+      operationId: get_api_cr_full
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/cr/library:
+    get:
+      summary: "cr library \u2014 library"
+      operationId: get_api_cr_library
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/cr/library/delete:
+    post:
+      summary: "cr library delete \u2014 delete"
+      operationId: post_api_cr_library_delete
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/cr/save-crop:
+    post:
+      summary: "cr save crop \u2014 save-crop"
+      operationId: post_api_cr_save_crop
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/cr/upload:
+    post:
+      summary: "cr upload \u2014 upload"
+      operationId: post_api_cr_upload
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/event/create:
+    post:
+      summary: "event create \u2014 create"
+      operationId: post_api_event_create
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/event/current:
+    get:
+      summary: "event current \u2014 current"
+      operationId: get_api_event_current
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/event/list:
+    get:
+      summary: "event list \u2014 list"
+      operationId: get_api_event_list
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/event/load:
+    post:
+      summary: "event load \u2014 load"
+      operationId: post_api_event_load
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/export:
+    post:
+      summary: "export \u2014 export"
+      operationId: post_api_export
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/health:
+    get:
+      summary: "health \u2014 health"
+      operationId: get_api_health
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/inject-image:
+    post:
+      summary: "inject image \u2014 inject-image"
+      operationId: post_api_inject_image
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/lipsync:
+    post:
+      summary: "lipsync submit \u2014 lipsync"
+      operationId: post_api_lipsync
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/lipsync/status:
+    get:
+      summary: "lipsync status \u2014 status"
+      operationId: get_api_lipsync_status
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/magic/resolve_bg:
+    get:
+      summary: "magic resolve bg \u2014 resolve_bg"
+      operationId: get_api_magic_resolve_bg
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/magic/status:
+    get:
+      summary: "magic status \u2014 status"
+      operationId: get_api_magic_status
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/magic/submit_path:
+    post:
+      summary: "magic submit path \u2014 submit_path"
+      operationId: post_api_magic_submit_path
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/media/timeline_audio_/{param}:
+    get:
+      summary: " serve timeline audio file \u2014 {param}"
+      operationId: get_api_media_timeline_audio_param
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/milestones/create:
+    post:
+      summary: "milestones create \u2014 create"
+      operationId: post_api_milestones_create
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/milestones/list:
+    get:
+      summary: "milestones list \u2014 list"
+      operationId: get_api_milestones_list
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/milestones/load:
+    post:
+      summary: "milestone load \u2014 load"
+      operationId: post_api_milestones_load
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/patch_health:
+    post:
+      summary: "patch health \u2014 patch_health"
+      operationId: post_api_patch_health
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/phase/base_clips_list:
+    get:
+      summary: "phase base clips list \u2014 base_clips_list"
+      operationId: get_api_phase_base_clips_list
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/phase/suggest_script:
+    post:
+      summary: "phase suggest script \u2014 suggest_script"
+      operationId: post_api_phase_suggest_script
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/phase/watercolor_file:
+    get:
+      summary: "phase watercolor file \u2014 watercolor_file"
+      operationId: get_api_phase_watercolor_file
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/phase/watercolor_list:
+    get:
+      summary: "phase watercolor list \u2014 watercolor_list"
+      operationId: get_api_phase_watercolor_list
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/phase_a/lipsync:
+    post:
+      summary: "phase b lipsync \u2014 lipsync"
+      operationId: post_api_phase_a_lipsync
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/phase_a/mix_audio:
+    post:
+      summary: "phase b mix audio \u2014 mix_audio"
+      operationId: post_api_phase_a_mix_audio
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/phase_a/regen_audio:
+    post:
+      summary: "phase b regen audio \u2014 regen_audio"
+      operationId: post_api_phase_a_regen_audio
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/phase_b/ambient_preset_list:
+    get:
+      summary: "phase b ambient preset list \u2014 ambient_preset_list"
+      operationId: get_api_phase_b_ambient_preset_list
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/phase_b/lipsync:
+    post:
+      summary: "phase b lipsync \u2014 lipsync"
+      operationId: post_api_phase_b_lipsync
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/phase_b/media/{param}:
+    get:
+      summary: " serve phase media \u2014 {param}"
+      operationId: get_api_phase_b_media_param
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/phase_b/mix_audio:
+    post:
+      summary: "phase b mix audio \u2014 mix_audio"
+      operationId: post_api_phase_b_mix_audio
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/phase_b/preview:
+    post:
+      summary: "phase b preview \u2014 preview"
+      operationId: post_api_phase_b_preview
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/phase_b/regen_audio:
+    post:
+      summary: "phase b regen audio \u2014 regen_audio"
+      operationId: post_api_phase_b_regen_audio
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/phase_b/watercolor/{param}:
+    get:
+      summary: " serve watercolor \u2014 {param}"
+      operationId: get_api_phase_b_watercolor_param
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/preview_stitched:
+    post:
+      summary: "preview stitched \u2014 preview_stitched"
+      operationId: post_api_preview_stitched
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/production/map:
+    get:
+      summary: "production map \u2014 map"
+      operationId: get_api_production_map
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/project/list:
+    get:
+      summary: "project list \u2014 list"
+      operationId: get_api_project_list
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/scene/assemble:
+    post:
+      summary: "scene assemble \u2014 assemble"
+      operationId: post_api_scene_assemble
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/select:
+    post:
+      summary: "select \u2014 select"
+      operationId: post_api_select
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/server/restart:
+    post:
+      summary: "restart \u2014 restart"
+      operationId: post_api_server_restart
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/state:
+    get:
+      summary: "event current \u2014 state"
+      operationId: get_api_state
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/state/snapshot:
+    post:
+      summary: "state snapshot \u2014 snapshot"
+      operationId: post_api_state_snapshot
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/stitch_editor/audio_extract:
+    post:
+      summary: "stitch audio extract \u2014 audio_extract"
+      operationId: post_api_stitch_editor_audio_extract
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/stitch_editor/audio_file/{param}:
+    get:
+      summary: " serve stitch audio file \u2014 {param}"
+      operationId: get_api_stitch_editor_audio_file_param
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/stitch_editor/bake:
+    post:
+      summary: "stitch bake \u2014 bake"
+      operationId: post_api_stitch_editor_bake
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/stitch_editor/job:
+    post:
+      summary: "stitch save job \u2014 job"
+      operationId: post_api_stitch_editor_job
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/stitch_editor/job/{param}:
+    get:
+      summary: "stitch load job \u2014 {param}"
+      operationId: get_api_stitch_editor_job_param
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/stitch_editor/jobs:
+    get:
+      summary: "stitch list jobs \u2014 jobs"
+      operationId: get_api_stitch_editor_jobs
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/stitch_editor/library:
+    get:
+      summary: "stitch library \u2014 library"
+      operationId: get_api_stitch_editor_library
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/stitch_editor/loudnorm:
+    post:
+      summary: "stitch loudnorm \u2014 loudnorm"
+      operationId: post_api_stitch_editor_loudnorm
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/stitch_editor/preview:
+    post:
+      summary: "stitch preview \u2014 preview"
+      operationId: post_api_stitch_editor_preview
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/stitch_editor/preview_file/{param}:
+    get:
+      summary: " serve stitch preview file \u2014 {param}"
+      operationId: get_api_stitch_editor_preview_file_param
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/storyboard/list/{param}:
+    get:
+      summary: "storyboard list \u2014 {param}"
+      operationId: get_api_storyboard_list_param
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/storyboard/magic_still:
+    post:
+      summary: "magic still \u2014 magic_still"
+      operationId: post_api_storyboard_magic_still
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/storyboard/magic_video:
+    post:
+      summary: "magic video \u2014 magic_video"
+      operationId: post_api_storyboard_magic_video
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/storyboard/switch:
+    post:
+      summary: "storyboard switch \u2014 switch"
+      operationId: post_api_storyboard_switch
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/timeline/audio/{param}:
+    get:
+      summary: "timeline audio \u2014 {param}"
+      operationId: get_api_timeline_audio_param
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/timeline/cues:
+    post:
+      summary: "timeline cue upsert \u2014 cues"
+      operationId: post_api_timeline_cues
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/timeline/cues/bake:
+    post:
+      summary: "timeline bake \u2014 bake"
+      operationId: post_api_timeline_cues_bake
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/timeline/open_in_quicktime:
+    post:
+      summary: "timeline open in quicktime \u2014 open_in_quicktime"
+      operationId: post_api_timeline_open_in_quicktime
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/timeline/preview_with_sfx:
+    post:
+      summary: "timeline preview with sfx \u2014 preview_with_sfx"
+      operationId: post_api_timeline_preview_with_sfx
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/timeline/sfx_library:
+    get:
+      summary: "timeline sfx library \u2014 sfx_library"
+      operationId: get_api_timeline_sfx_library
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/tts:
+    post:
+      summary: "bg set active context \u2014 tts"
+      operationId: post_api_tts
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/v2/beat/create:
+    post:
+      summary: "v2 beat create \u2014 create"
+      operationId: post_api_v2_beat_create
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/v2/beat/delete:
+    post:
+      summary: "v2 beat delete \u2014 delete"
+      operationId: post_api_v2_beat_delete
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/v2/beat/{id}/patch:
+    post:
+      summary: "v2 patch \u2014 patch"
+      operationId: post_api_v2_beat_id_patch
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/v2/beat/{id}/swap_to_a:
+    post:
+      summary: "unknown \u2014 swap_to_a"
+      operationId: post_api_v2_beat_id_swap_to_a
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/v2/beat/{param}:
+    get:
+      summary: "v2 get \u2014 {param}"
+      operationId: get_api_v2_beat_param
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+    post:
+      summary: "v2 patch \u2014 {param}"
+      operationId: post_api_v2_beat_param
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/v2/event/{id}/state:
+    get:
+      summary: "v2 event state \u2014 state"
+      operationId: get_api_v2_event_id_state
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/v2/event/{param}:
+    get:
+      summary: "v2 event state \u2014 {param}"
+      operationId: get_api_v2_event_param
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/v2/module/patch:
+    post:
+      summary: "v2 module patch \u2014 patch"
+      operationId: post_api_v2_module_patch
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/v2/storyboard/L.json:
+    get:
+      summary: "v2 sidecar \u2014 L.json"
+      operationId: get_api_v2_storyboard_L_json
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/video/create:
+    post:
+      summary: "video create \u2014 create"
+      operationId: post_api_video_create
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/video/list:
+    get:
+      summary: "video list \u2014 list"
+      operationId: get_api_video_list
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/video/set_active:
+    post:
+      summary: "video set active \u2014 set_active"
+      operationId: post_api_video_set_active
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/voice/profile/{param}:
+    get:
+      summary: "voice profile get \u2014 {param}"
+      operationId: get_api_voice_profile_param
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /api/voice/profile_update:
+    post:
+      summary: "voice profile update \u2014 profile_update"
+      operationId: post_api_voice_profile_update
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /api/watercolor/animate:
+    post:
+      summary: "watercolor animate \u2014 animate"
+      operationId: post_api_watercolor_animate
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /asset/{param}:
+    get:
+      summary: " serve asset \u2014 {param}"
+      operationId: get_asset_param
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /bg-stills/{param}:
+    get:
+      summary: "bg stills \u2014 {param}"
+      operationId: get_bg_stills_param
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /cropper/{param}:
+    get:
+      summary: " serve cropper \u2014 {param}"
+      operationId: get_cropper_param
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /files:
+    get:
+      summary: "files serve \u2014 files"
+      operationId: get_files
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /magic:
+    get:
+      summary: " serve magic picker \u2014 magic"
+      operationId: get_magic
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /stitch_editor:
+    get:
+      summary: " serve stitch editor \u2014 stitch_editor"
+      operationId: get_stitch_editor
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+  /storyboard:
+    get:
+      summary: " serve storyboard \u2014 storyboard"
+      operationId: get_storyboard
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error

@@ -1,0 +1,975 @@
+{
+  "generated_at": "2026-05-18T06:33:08Z",
+  "generator": "Production/scripts/generate_feature_registry.py",
+  "source_glob": "Production/tools/storyboard-v2/src/components/**/*.tsx",
+  "testids": [
+    {
+      "id": "pane-bg",
+      "file": "Production/tools/storyboard-v2/src/components/BgTab.tsx",
+      "line": 555,
+      "tab": "beat_gen"
+    },
+    {
+      "id": "bg-scope-chip",
+      "file": "Production/tools/storyboard-v2/src/components/BgTab.tsx",
+      "line": 558,
+      "tab": "beat_gen"
+    },
+    {
+      "id": "bg-toolbar",
+      "file": "Production/tools/storyboard-v2/src/components/BgTab.tsx",
+      "line": 563,
+      "tab": "beat_gen"
+    },
+    {
+      "id": "bg-extract-btn",
+      "file": "Production/tools/storyboard-v2/src/components/BgTab.tsx",
+      "line": 595,
+      "tab": "beat_gen"
+    },
+    {
+      "id": "bg-add-empty-btn",
+      "file": "Production/tools/storyboard-v2/src/components/BgTab.tsx",
+      "line": 606,
+      "tab": "beat_gen"
+    },
+    {
+      "id": "bg-cost",
+      "file": "Production/tools/storyboard-v2/src/components/BgTab.tsx",
+      "line": 615,
+      "tab": "beat_gen"
+    },
+    {
+      "id": "bg-empty",
+      "file": "Production/tools/storyboard-v2/src/components/BgTab.tsx",
+      "line": 625,
+      "tab": "beat_gen"
+    },
+    {
+      "id": "bg-beat-list",
+      "file": "Production/tools/storyboard-v2/src/components/BgTab.tsx",
+      "line": 629,
+      "tab": "beat_gen"
+    },
+    {
+      "id": "bg-accept-all-btn",
+      "file": "Production/tools/storyboard-v2/src/components/BgTab.tsx",
+      "line": 691,
+      "tab": "beat_gen"
+    },
+    {
+      "id": "bg-accept-status",
+      "file": "Production/tools/storyboard-v2/src/components/BgTab.tsx",
+      "line": 701,
+      "tab": "beat_gen"
+    },
+    {
+      "id": "bg-delete-cancel",
+      "file": "Production/tools/storyboard-v2/src/components/BgTab.tsx",
+      "line": 716,
+      "tab": "beat_gen"
+    },
+    {
+      "id": "bg-delete-confirm",
+      "file": "Production/tools/storyboard-v2/src/components/BgTab.tsx",
+      "line": 722,
+      "tab": "beat_gen"
+    },
+    {
+      "id": "bg-accept-warn-cancel",
+      "file": "Production/tools/storyboard-v2/src/components/BgTab.tsx",
+      "line": 748,
+      "tab": "beat_gen"
+    },
+    {
+      "id": "bg-accept-warn-continue",
+      "file": "Production/tools/storyboard-v2/src/components/BgTab.tsx",
+      "line": 756,
+      "tab": "beat_gen"
+    },
+    {
+      "id": "bg-accept-warn-list",
+      "file": "Production/tools/storyboard-v2/src/components/BgTab.tsx",
+      "line": 772,
+      "tab": "beat_gen"
+    },
+    {
+      "id": "bg-accept-confirm-cancel",
+      "file": "Production/tools/storyboard-v2/src/components/BgTab.tsx",
+      "line": 792,
+      "tab": "beat_gen"
+    },
+    {
+      "id": "bg-accept-confirm-go",
+      "file": "Production/tools/storyboard-v2/src/components/BgTab.tsx",
+      "line": 800,
+      "tab": "beat_gen"
+    },
+    {
+      "id": "bg-chip-edit-cancel",
+      "file": "Production/tools/storyboard-v2/src/components/BgTab.tsx",
+      "line": 825,
+      "tab": "beat_gen"
+    },
+    {
+      "id": "bg-chip-edit-save",
+      "file": "Production/tools/storyboard-v2/src/components/BgTab.tsx",
+      "line": 831,
+      "tab": "beat_gen"
+    },
+    {
+      "id": "bg-chip-edit-input",
+      "file": "Production/tools/storyboard-v2/src/components/BgTab.tsx",
+      "line": 845,
+      "tab": "beat_gen"
+    },
+    {
+      "id": "bg-remove-ref-cancel",
+      "file": "Production/tools/storyboard-v2/src/components/BgTab.tsx",
+      "line": 867,
+      "tab": "beat_gen"
+    },
+    {
+      "id": "bg-remove-ref-confirm",
+      "file": "Production/tools/storyboard-v2/src/components/BgTab.tsx",
+      "line": 873,
+      "tab": "beat_gen"
+    },
+    {
+      "id": "cropper-canvas-wrap",
+      "file": "Production/tools/storyboard-v2/src/components/CropperCanvas.tsx",
+      "line": 357,
+      "tab": "cropper"
+    },
+    {
+      "id": "cropper-crop-dims",
+      "file": "Production/tools/storyboard-v2/src/components/CropperCanvas.tsx",
+      "line": 373,
+      "tab": "cropper"
+    },
+    {
+      "id": "cropper-canvas",
+      "file": "Production/tools/storyboard-v2/src/components/CropperCanvas.tsx",
+      "line": 382,
+      "tab": "cropper"
+    },
+    {
+      "id": "cropper-image-error",
+      "file": "Production/tools/storyboard-v2/src/components/CropperCanvas.tsx",
+      "line": 390,
+      "tab": "cropper"
+    },
+    {
+      "id": "cropper-save-status",
+      "file": "Production/tools/storyboard-v2/src/components/CropperModal.tsx",
+      "line": 189,
+      "tab": "cropper"
+    },
+    {
+      "id": "cropper-cancel",
+      "file": "Production/tools/storyboard-v2/src/components/CropperModal.tsx",
+      "line": 203,
+      "tab": "cropper"
+    },
+    {
+      "id": "cropper-save-btn",
+      "file": "Production/tools/storyboard-v2/src/components/CropperModal.tsx",
+      "line": 211,
+      "tab": "cropper"
+    },
+    {
+      "id": "cropper-lib-strip",
+      "file": "Production/tools/storyboard-v2/src/components/CropperModal.tsx",
+      "line": 223,
+      "tab": "cropper"
+    },
+    {
+      "id": "cropper-lib-search",
+      "file": "Production/tools/storyboard-v2/src/components/CropperModal.tsx",
+      "line": 232,
+      "tab": "cropper"
+    },
+    {
+      "id": "cropper-lib-thumbs",
+      "file": "Production/tools/storyboard-v2/src/components/CropperModal.tsx",
+      "line": 235,
+      "tab": "cropper"
+    },
+    {
+      "id": "cropper-canvas-drop-target",
+      "file": "Production/tools/storyboard-v2/src/components/CropperModal.tsx",
+      "line": 286,
+      "tab": "cropper"
+    },
+    {
+      "id": "event-selector",
+      "file": "Production/tools/storyboard-v2/src/components/EventSelector.tsx",
+      "line": 93,
+      "tab": "shared"
+    },
+    {
+      "id": "event-select",
+      "file": "Production/tools/storyboard-v2/src/components/EventSelector.tsx",
+      "line": 97,
+      "tab": "shared"
+    },
+    {
+      "id": "event-error",
+      "file": "Production/tools/storyboard-v2/src/components/EventSelector.tsx",
+      "line": 115,
+      "tab": "shared"
+    },
+    {
+      "id": "library-panel",
+      "file": "Production/tools/storyboard-v2/src/components/LibraryPanel.tsx",
+      "line": 421,
+      "tab": "shared"
+    },
+    {
+      "id": "library-count",
+      "file": "Production/tools/storyboard-v2/src/components/LibraryPanel.tsx",
+      "line": 424,
+      "tab": "shared"
+    },
+    {
+      "id": "library-controls",
+      "file": "Production/tools/storyboard-v2/src/components/LibraryPanel.tsx",
+      "line": 429,
+      "tab": "shared"
+    },
+    {
+      "id": "library-search",
+      "file": "Production/tools/storyboard-v2/src/components/LibraryPanel.tsx",
+      "line": 434,
+      "tab": "shared"
+    },
+    {
+      "id": "library-tier-select",
+      "file": "Production/tools/storyboard-v2/src/components/LibraryPanel.tsx",
+      "line": 442,
+      "tab": "shared"
+    },
+    {
+      "id": "library-upload-btn",
+      "file": "Production/tools/storyboard-v2/src/components/LibraryPanel.tsx",
+      "line": 454,
+      "tab": "shared"
+    },
+    {
+      "id": "library-upload-input",
+      "file": "Production/tools/storyboard-v2/src/components/LibraryPanel.tsx",
+      "line": 465,
+      "tab": "shared"
+    },
+    {
+      "id": "library-loading",
+      "file": "Production/tools/storyboard-v2/src/components/LibraryPanel.tsx",
+      "line": 473,
+      "tab": "shared"
+    },
+    {
+      "id": "library-error",
+      "file": "Production/tools/storyboard-v2/src/components/LibraryPanel.tsx",
+      "line": 477,
+      "tab": "shared"
+    },
+    {
+      "id": "library-empty",
+      "file": "Production/tools/storyboard-v2/src/components/LibraryPanel.tsx",
+      "line": 482,
+      "tab": "shared"
+    },
+    {
+      "id": "library-empty-tier",
+      "file": "Production/tools/storyboard-v2/src/components/LibraryPanel.tsx",
+      "line": 488,
+      "tab": "shared"
+    },
+    {
+      "id": "library-list",
+      "file": "Production/tools/storyboard-v2/src/components/LibraryPanel.tsx",
+      "line": 494,
+      "tab": "shared"
+    },
+    {
+      "id": "library-preview",
+      "file": "Production/tools/storyboard-v2/src/components/LibraryPanel.tsx",
+      "line": 575,
+      "tab": "shared"
+    },
+    {
+      "id": "library-preview-close",
+      "file": "Production/tools/storyboard-v2/src/components/LibraryPanel.tsx",
+      "line": 584,
+      "tab": "shared"
+    },
+    {
+      "id": "library-preview-audio",
+      "file": "Production/tools/storyboard-v2/src/components/LibraryPanel.tsx",
+      "line": 599,
+      "tab": "shared"
+    },
+    {
+      "id": "library-preview-video",
+      "file": "Production/tools/storyboard-v2/src/components/LibraryPanel.tsx",
+      "line": 609,
+      "tab": "shared"
+    },
+    {
+      "id": "library-preview-img",
+      "file": "Production/tools/storyboard-v2/src/components/LibraryPanel.tsx",
+      "line": 621,
+      "tab": "shared"
+    },
+    {
+      "id": "pane-map",
+      "file": "Production/tools/storyboard-v2/src/components/ProductionMapTab.tsx",
+      "line": 114,
+      "tab": "production_map"
+    },
+    {
+      "id": "map-scope-chip",
+      "file": "Production/tools/storyboard-v2/src/components/ProductionMapTab.tsx",
+      "line": 117,
+      "tab": "production_map"
+    },
+    {
+      "id": "map-loading",
+      "file": "Production/tools/storyboard-v2/src/components/ProductionMapTab.tsx",
+      "line": 122,
+      "tab": "production_map"
+    },
+    {
+      "id": "map-error",
+      "file": "Production/tools/storyboard-v2/src/components/ProductionMapTab.tsx",
+      "line": 124,
+      "tab": "production_map"
+    },
+    {
+      "id": "map-empty",
+      "file": "Production/tools/storyboard-v2/src/components/ProductionMapTab.tsx",
+      "line": 129,
+      "tab": "production_map"
+    },
+    {
+      "id": "production-map-tbd-note",
+      "file": "Production/tools/storyboard-v2/src/components/ProductionMapTab.tsx",
+      "line": 139,
+      "tab": "production_map"
+    },
+    {
+      "id": "map-table",
+      "file": "Production/tools/storyboard-v2/src/components/ProductionMapTab.tsx",
+      "line": 146,
+      "tab": "production_map"
+    },
+    {
+      "id": "new-event-cancel",
+      "file": "Production/tools/storyboard-v2/src/components/ProjectSelector.tsx",
+      "line": 136,
+      "tab": "shared"
+    },
+    {
+      "id": "new-event-create",
+      "file": "Production/tools/storyboard-v2/src/components/ProjectSelector.tsx",
+      "line": 145,
+      "tab": "shared"
+    },
+    {
+      "id": "new-event-id-input",
+      "file": "Production/tools/storyboard-v2/src/components/ProjectSelector.tsx",
+      "line": 166,
+      "tab": "shared"
+    },
+    {
+      "id": "new-event-id-error",
+      "file": "Production/tools/storyboard-v2/src/components/ProjectSelector.tsx",
+      "line": 175,
+      "tab": "shared"
+    },
+    {
+      "id": "new-event-label-input",
+      "file": "Production/tools/storyboard-v2/src/components/ProjectSelector.tsx",
+      "line": 188,
+      "tab": "shared"
+    },
+    {
+      "id": "new-event-error",
+      "file": "Production/tools/storyboard-v2/src/components/ProjectSelector.tsx",
+      "line": 192,
+      "tab": "shared"
+    },
+    {
+      "id": "new-milestone-cancel",
+      "file": "Production/tools/storyboard-v2/src/components/ProjectSelector.tsx",
+      "line": 252,
+      "tab": "shared"
+    },
+    {
+      "id": "new-milestone-create",
+      "file": "Production/tools/storyboard-v2/src/components/ProjectSelector.tsx",
+      "line": 261,
+      "tab": "shared"
+    },
+    {
+      "id": "new-milestone-id-input",
+      "file": "Production/tools/storyboard-v2/src/components/ProjectSelector.tsx",
+      "line": 282,
+      "tab": "shared"
+    },
+    {
+      "id": "new-milestone-id-error",
+      "file": "Production/tools/storyboard-v2/src/components/ProjectSelector.tsx",
+      "line": 291,
+      "tab": "shared"
+    },
+    {
+      "id": "new-milestone-label-input",
+      "file": "Production/tools/storyboard-v2/src/components/ProjectSelector.tsx",
+      "line": 304,
+      "tab": "shared"
+    },
+    {
+      "id": "new-milestone-error",
+      "file": "Production/tools/storyboard-v2/src/components/ProjectSelector.tsx",
+      "line": 308,
+      "tab": "shared"
+    },
+    {
+      "id": "project-selector",
+      "file": "Production/tools/storyboard-v2/src/components/ProjectSelector.tsx",
+      "line": 442,
+      "tab": "shared"
+    },
+    {
+      "id": "project-selector-error",
+      "file": "Production/tools/storyboard-v2/src/components/ProjectSelector.tsx",
+      "line": 475,
+      "tab": "shared"
+    },
+    {
+      "id": "scope-banner-mismatch",
+      "file": "Production/tools/storyboard-v2/src/components/ScopeBanner.tsx",
+      "line": 78,
+      "tab": "shared"
+    },
+    {
+      "id": "scope-banner-reload",
+      "file": "Production/tools/storyboard-v2/src/components/ScopeBanner.tsx",
+      "line": 85,
+      "tab": "shared"
+    },
+    {
+      "id": "scope-banner-dismiss",
+      "file": "Production/tools/storyboard-v2/src/components/ScopeBanner.tsx",
+      "line": 95,
+      "tab": "shared"
+    },
+    {
+      "id": "scope-boundary-loading",
+      "file": "Production/tools/storyboard-v2/src/components/ScopeBoundary.tsx",
+      "line": 185,
+      "tab": "shared"
+    },
+    {
+      "id": "pane-stitcher",
+      "file": "Production/tools/storyboard-v2/src/components/StitcherTab.tsx",
+      "line": 484,
+      "tab": "stitcher"
+    },
+    {
+      "id": "stitcher-scope-chip",
+      "file": "Production/tools/storyboard-v2/src/components/StitcherTab.tsx",
+      "line": 487,
+      "tab": "stitcher"
+    },
+    {
+      "id": "stitcher-loading",
+      "file": "Production/tools/storyboard-v2/src/components/StitcherTab.tsx",
+      "line": 494,
+      "tab": "stitcher"
+    },
+    {
+      "id": "stitcher-error",
+      "file": "Production/tools/storyboard-v2/src/components/StitcherTab.tsx",
+      "line": 496,
+      "tab": "stitcher"
+    },
+    {
+      "id": "stitcher-no-job",
+      "file": "Production/tools/storyboard-v2/src/components/StitcherTab.tsx",
+      "line": 501,
+      "tab": "stitcher"
+    },
+    {
+      "id": "stitcher-strip",
+      "file": "Production/tools/storyboard-v2/src/components/StitcherTab.tsx",
+      "line": 510,
+      "tab": "stitcher"
+    },
+    {
+      "id": "stitcher-transitions-row",
+      "file": "Production/tools/storyboard-v2/src/components/StitcherTab.tsx",
+      "line": 631,
+      "tab": "stitcher"
+    },
+    {
+      "id": "stitcher-module-timeline",
+      "file": "Production/tools/storyboard-v2/src/components/StitcherTab.tsx",
+      "line": 649,
+      "tab": "stitcher"
+    },
+    {
+      "id": "stitcher-bake-btn",
+      "file": "Production/tools/storyboard-v2/src/components/StitcherTab.tsx",
+      "line": 674,
+      "tab": "stitcher"
+    },
+    {
+      "id": "stitcher-status",
+      "file": "Production/tools/storyboard-v2/src/components/StitcherTab.tsx",
+      "line": 685,
+      "tab": "stitcher"
+    },
+    {
+      "id": "send-out-actions",
+      "file": "Production/tools/storyboard-v2/src/components/StoryboardTab.tsx",
+      "line": 1233,
+      "tab": "storyboard"
+    },
+    {
+      "id": "send-out-mp4-btn",
+      "file": "Production/tools/storyboard-v2/src/components/StoryboardTab.tsx",
+      "line": 1237,
+      "tab": "storyboard"
+    },
+    {
+      "id": "send-out-status",
+      "file": "Production/tools/storyboard-v2/src/components/StoryboardTab.tsx",
+      "line": 1246,
+      "tab": "storyboard"
+    },
+    {
+      "id": "pane-storyboard",
+      "file": "Production/tools/storyboard-v2/src/components/StoryboardTab.tsx",
+      "line": 1400,
+      "tab": "storyboard"
+    },
+    {
+      "id": "storyboard-scope-chip",
+      "file": "Production/tools/storyboard-v2/src/components/StoryboardTab.tsx",
+      "line": 1403,
+      "tab": "storyboard"
+    },
+    {
+      "id": "storyboard-loading",
+      "file": "Production/tools/storyboard-v2/src/components/StoryboardTab.tsx",
+      "line": 1412,
+      "tab": "storyboard"
+    },
+    {
+      "id": "storyboard-error",
+      "file": "Production/tools/storyboard-v2/src/components/StoryboardTab.tsx",
+      "line": 1416,
+      "tab": "storyboard"
+    },
+    {
+      "id": "storyboard-empty",
+      "file": "Production/tools/storyboard-v2/src/components/StoryboardTab.tsx",
+      "line": 1421,
+      "tab": "storyboard"
+    },
+    {
+      "id": "beat-list",
+      "file": "Production/tools/storyboard-v2/src/components/StoryboardTab.tsx",
+      "line": 1425,
+      "tab": "storyboard"
+    },
+    {
+      "id": "storyboard-readonly",
+      "file": "Production/tools/storyboard-v2/src/components/StoryboardTab.tsx",
+      "line": 1442,
+      "tab": "storyboard"
+    },
+    {
+      "id": "sb-delete-beat-confirm",
+      "file": "Production/tools/storyboard-v2/src/components/StoryboardTab.tsx",
+      "line": 1458,
+      "tab": "storyboard"
+    },
+    {
+      "id": "sb-delete-beat-cancel",
+      "file": "Production/tools/storyboard-v2/src/components/StoryboardTab.tsx",
+      "line": 1466,
+      "tab": "storyboard"
+    },
+    {
+      "id": "tab-bar",
+      "file": "Production/tools/storyboard-v2/src/components/TabBar.tsx",
+      "line": 67,
+      "tab": "shared"
+    },
+    {
+      "id": "video-selector",
+      "file": "Production/tools/storyboard-v2/src/components/VideoSelector.tsx",
+      "line": 146,
+      "tab": "shared"
+    },
+    {
+      "id": "video-select",
+      "file": "Production/tools/storyboard-v2/src/components/VideoSelector.tsx",
+      "line": 150,
+      "tab": "shared"
+    },
+    {
+      "id": "video-add-new",
+      "file": "Production/tools/storyboard-v2/src/components/VideoSelector.tsx",
+      "line": 170,
+      "tab": "shared"
+    },
+    {
+      "id": "video-selector-err",
+      "file": "Production/tools/storyboard-v2/src/components/VideoSelector.tsx",
+      "line": 178,
+      "tab": "shared"
+    },
+    {
+      "id": "base-clip-list",
+      "file": "Production/tools/storyboard-v2/src/components/phase/BaseClipPicker.tsx",
+      "line": 50,
+      "tab": "shared"
+    },
+    {
+      "id": "cue-popover",
+      "file": "Production/tools/storyboard-v2/src/components/phase/CuePopover.tsx",
+      "line": 80,
+      "tab": "shared"
+    },
+    {
+      "id": "cue-popover-close",
+      "file": "Production/tools/storyboard-v2/src/components/phase/CuePopover.tsx",
+      "line": 89,
+      "tab": "shared"
+    },
+    {
+      "id": "cue-popover-animation",
+      "file": "Production/tools/storyboard-v2/src/components/phase/CuePopover.tsx",
+      "line": 99,
+      "tab": "shared"
+    },
+    {
+      "id": "cue-popover-duration",
+      "file": "Production/tools/storyboard-v2/src/components/phase/CuePopover.tsx",
+      "line": 112,
+      "tab": "shared"
+    },
+    {
+      "id": "cue-popover-volume",
+      "file": "Production/tools/storyboard-v2/src/components/phase/CuePopover.tsx",
+      "line": 127,
+      "tab": "shared"
+    },
+    {
+      "id": "cue-popover-delete",
+      "file": "Production/tools/storyboard-v2/src/components/phase/CuePopover.tsx",
+      "line": 140,
+      "tab": "shared"
+    },
+    {
+      "id": "cue-popover-done",
+      "file": "Production/tools/storyboard-v2/src/components/phase/CuePopover.tsx",
+      "line": 149,
+      "tab": "shared"
+    },
+    {
+      "id": "cue-delete-cancel",
+      "file": "Production/tools/storyboard-v2/src/components/phase/CuePopover.tsx",
+      "line": 166,
+      "tab": "shared"
+    },
+    {
+      "id": "cue-delete-confirm",
+      "file": "Production/tools/storyboard-v2/src/components/phase/CuePopover.tsx",
+      "line": 174,
+      "tab": "shared"
+    },
+    {
+      "id": "phase-a-clip-section",
+      "file": "Production/tools/storyboard-v2/src/components/phase/PhaseProducer.tsx",
+      "line": 657,
+      "tab": "shared"
+    },
+    {
+      "id": "phase-a-restitch-btn",
+      "file": "Production/tools/storyboard-v2/src/components/phase/PhaseProducer.tsx",
+      "line": 692,
+      "tab": "shared"
+    },
+    {
+      "id": "sfx-cue-popover",
+      "file": "Production/tools/storyboard-v2/src/components/phase/SfxCuePopover.tsx",
+      "line": 74,
+      "tab": "shared"
+    },
+    {
+      "id": "sfx-cue-popover-close",
+      "file": "Production/tools/storyboard-v2/src/components/phase/SfxCuePopover.tsx",
+      "line": 83,
+      "tab": "shared"
+    },
+    {
+      "id": "sfx-cue-popover-volume",
+      "file": "Production/tools/storyboard-v2/src/components/phase/SfxCuePopover.tsx",
+      "line": 94,
+      "tab": "shared"
+    },
+    {
+      "id": "sfx-cue-popover-fadein",
+      "file": "Production/tools/storyboard-v2/src/components/phase/SfxCuePopover.tsx",
+      "line": 107,
+      "tab": "shared"
+    },
+    {
+      "id": "sfx-cue-popover-fadeout",
+      "file": "Production/tools/storyboard-v2/src/components/phase/SfxCuePopover.tsx",
+      "line": 122,
+      "tab": "shared"
+    },
+    {
+      "id": "sfx-cue-popover-delete",
+      "file": "Production/tools/storyboard-v2/src/components/phase/SfxCuePopover.tsx",
+      "line": 141,
+      "tab": "shared"
+    },
+    {
+      "id": "sfx-cue-popover-done",
+      "file": "Production/tools/storyboard-v2/src/components/phase/SfxCuePopover.tsx",
+      "line": 149,
+      "tab": "shared"
+    },
+    {
+      "id": "waveform-timeline-empty",
+      "file": "Production/tools/storyboard-v2/src/components/phase/WaveformTimeline.tsx",
+      "line": 147,
+      "tab": "shared"
+    },
+    {
+      "id": "waveform-timeline",
+      "file": "Production/tools/storyboard-v2/src/components/phase/WaveformTimeline.tsx",
+      "line": 160,
+      "tab": "shared"
+    },
+    {
+      "id": "pane-phase-a",
+      "file": "Production/tools/storyboard-v2/src/components/tabs/PhaseATab.tsx",
+      "line": 16,
+      "tab": "phase_a"
+    },
+    {
+      "id": "pane-phase-a",
+      "file": "Production/tools/storyboard-v2/src/components/tabs/PhaseATab.tsx",
+      "line": 28,
+      "tab": "phase_a"
+    },
+    {
+      "id": "pane-phase-b",
+      "file": "Production/tools/storyboard-v2/src/components/tabs/PhaseBTab.tsx",
+      "line": 16,
+      "tab": "phase_b"
+    },
+    {
+      "id": "pane-phase-b",
+      "file": "Production/tools/storyboard-v2/src/components/tabs/PhaseBTab.tsx",
+      "line": 28,
+      "tab": "phase_b"
+    },
+    {
+      "id": "asset-tile-delete",
+      "file": "Production/tools/storyboard-v2/src/components/ui/AssetTile.tsx",
+      "line": 75,
+      "tab": "shared"
+    },
+    {
+      "id": "modal-cropper",
+      "file": "Production/tools/storyboard-v2/src/components/ui/Modal.tsx",
+      "line": 14,
+      "tab": "shared"
+    },
+    {
+      "id": "spinner",
+      "file": "Production/tools/storyboard-v2/src/components/ui/Spinner.tsx",
+      "line": 17,
+      "tab": "shared"
+    },
+    {
+      "id": "toast-host",
+      "file": "Production/tools/storyboard-v2/src/components/ui/Toast.tsx",
+      "line": 70,
+      "tab": "shared"
+    },
+    {
+      "id": "tooltip-wrap",
+      "file": "Production/tools/storyboard-v2/src/components/ui/Tooltip.tsx",
+      "line": 25,
+      "tab": "shared"
+    },
+    {
+      "id": "tooltip-popover",
+      "file": "Production/tools/storyboard-v2/src/components/ui/Tooltip.tsx",
+      "line": 35,
+      "tab": "shared"
+    }
+  ],
+  "by_tab": {
+    "beat_gen": [
+      "bg-accept-all-btn",
+      "bg-accept-confirm-cancel",
+      "bg-accept-confirm-go",
+      "bg-accept-status",
+      "bg-accept-warn-cancel",
+      "bg-accept-warn-continue",
+      "bg-accept-warn-list",
+      "bg-add-empty-btn",
+      "bg-beat-list",
+      "bg-chip-edit-cancel",
+      "bg-chip-edit-input",
+      "bg-chip-edit-save",
+      "bg-cost",
+      "bg-delete-cancel",
+      "bg-delete-confirm",
+      "bg-empty",
+      "bg-extract-btn",
+      "bg-remove-ref-cancel",
+      "bg-remove-ref-confirm",
+      "bg-scope-chip",
+      "bg-toolbar",
+      "pane-bg"
+    ],
+    "cropper": [
+      "cropper-cancel",
+      "cropper-canvas",
+      "cropper-canvas-drop-target",
+      "cropper-canvas-wrap",
+      "cropper-crop-dims",
+      "cropper-image-error",
+      "cropper-lib-search",
+      "cropper-lib-strip",
+      "cropper-lib-thumbs",
+      "cropper-save-btn",
+      "cropper-save-status"
+    ],
+    "phase_a": [
+      "pane-phase-a"
+    ],
+    "phase_b": [
+      "pane-phase-b"
+    ],
+    "production_map": [
+      "map-empty",
+      "map-error",
+      "map-loading",
+      "map-scope-chip",
+      "map-table",
+      "pane-map",
+      "production-map-tbd-note"
+    ],
+    "shared": [
+      "asset-tile-delete",
+      "base-clip-list",
+      "cue-delete-cancel",
+      "cue-delete-confirm",
+      "cue-popover",
+      "cue-popover-animation",
+      "cue-popover-close",
+      "cue-popover-delete",
+      "cue-popover-done",
+      "cue-popover-duration",
+      "cue-popover-volume",
+      "event-error",
+      "event-select",
+      "event-selector",
+      "library-controls",
+      "library-count",
+      "library-empty",
+      "library-empty-tier",
+      "library-error",
+      "library-list",
+      "library-loading",
+      "library-panel",
+      "library-preview",
+      "library-preview-audio",
+      "library-preview-close",
+      "library-preview-img",
+      "library-preview-video",
+      "library-search",
+      "library-tier-select",
+      "library-upload-btn",
+      "library-upload-input",
+      "modal-cropper",
+      "new-event-cancel",
+      "new-event-create",
+      "new-event-error",
+      "new-event-id-error",
+      "new-event-id-input",
+      "new-event-label-input",
+      "new-milestone-cancel",
+      "new-milestone-create",
+      "new-milestone-error",
+      "new-milestone-id-error",
+      "new-milestone-id-input",
+      "new-milestone-label-input",
+      "phase-a-clip-section",
+      "phase-a-restitch-btn",
+      "project-selector",
+      "project-selector-error",
+      "scope-banner-dismiss",
+      "scope-banner-mismatch",
+      "scope-banner-reload",
+      "scope-boundary-loading",
+      "sfx-cue-popover",
+      "sfx-cue-popover-close",
+      "sfx-cue-popover-delete",
+      "sfx-cue-popover-done",
+      "sfx-cue-popover-fadein",
+      "sfx-cue-popover-fadeout",
+      "sfx-cue-popover-volume",
+      "spinner",
+      "tab-bar",
+      "toast-host",
+      "tooltip-popover",
+      "tooltip-wrap",
+      "video-add-new",
+      "video-select",
+      "video-selector",
+      "video-selector-err",
+      "waveform-timeline",
+      "waveform-timeline-empty"
+    ],
+    "stitcher": [
+      "pane-stitcher",
+      "stitcher-bake-btn",
+      "stitcher-error",
+      "stitcher-loading",
+      "stitcher-module-timeline",
+      "stitcher-no-job",
+      "stitcher-scope-chip",
+      "stitcher-status",
+      "stitcher-strip",
+      "stitcher-transitions-row"
+    ],
+    "storyboard": [
+      "beat-list",
+      "pane-storyboard",
+      "sb-delete-beat-cancel",
+      "sb-delete-beat-confirm",
+      "send-out-actions",
+      "send-out-mp4-btn",
+      "send-out-status",
+      "storyboard-empty",
+      "storyboard-error",
+      "storyboard-loading",
+      "storyboard-readonly",
+      "storyboard-scope-chip"
+    ]
+  }
+}
