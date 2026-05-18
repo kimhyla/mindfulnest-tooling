@@ -15,6 +15,12 @@ from datetime import datetime, timezone
 
 from lib.atomic_json_write import atomic_json_write
 
+# V59 Phase 4 cross-review fix (CI follow-up):
+# StateManager class referenced by event_create body for fresh state init.
+from tools.production_server import (  # noqa: E402
+    StateManager,
+)
+
 
 def handle_event_create(h, body: dict) -> None:
     """POST /api/event/create  body: {event_id, event_label?}

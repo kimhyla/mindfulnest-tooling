@@ -21,6 +21,12 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+# V59 Phase 4 cross-review fix (CI follow-up):
+# missing module-level references from extracted handler bodies.
+from tools.production_server import (  # noqa: E402
+    SERVER_VERSION,
+)
+
 # V59 Phase 4 cross-review fix (body_key_contract CI failure):
 # missing module-level variable references that need re-import.
 from tools.production_server import (  # noqa: E402

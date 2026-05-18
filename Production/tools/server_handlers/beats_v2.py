@@ -15,6 +15,16 @@ from datetime import datetime, timezone
 import scope_router
 from lib.paths import DROPBOX_ROOT
 
+# V59 Phase 4 cross-review fix (CI follow-up):
+# missing module-level references from extracted handler bodies.
+from tools.production_server import (  # noqa: E402
+    TIER1A_ENABLED,
+    _t1_enabled,
+    _v2_read_beat_version,
+    _write_sidecar_L_json,
+    patch_state,
+)
+
 # V59 Phase 4 cross-review fix (body_key_contract CI failure):
 # missing module-level variable references from extracted handler bodies.
 from tools.production_server import (  # noqa: E402

@@ -57,6 +57,13 @@ _PSERVER_REPO_ROOT = _PSERVER_PRODUCTION_DIR.parent  # repo root
 from lib.atomic_json_write import atomic_json_write
 from lib.v3_partition import _iter_v3_beats
 from lib.paths import DROPBOX_ROOT
+
+# V59 Phase 4 cross-review fix (CI follow-up):
+# missing module-level references from extracted handler bodies.
+from tools.production_server import (  # noqa: E402
+    COST_PER_CLIP_KLING,
+    POLL_BATCH_GAP_SEC,
+)
 import scope_router
 from ffmpeg_utils import strip_audio as _strip_clip_audio
 from lipsync_sender import LipSyncClient, COST_PER_LIPSYNC
