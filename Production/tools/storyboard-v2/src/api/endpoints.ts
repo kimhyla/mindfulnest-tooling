@@ -127,8 +127,33 @@ export const MUTATION_ENDPOINTS = {
   beat_swap_to_a: `${SERVER_BASE}/api/beat/swap_to_a`,
   lipsync: `${SERVER_BASE}/api/lipsync`,
   beat_use_as_final: `${SERVER_BASE}/api/beat/use_as_final`,
+  // LD-761 STILL_AS_FINAL_FEATURE_SPEC_V1: Ken Burns rendered MP4 as final source.
+  // Server: production_server.py:12682 _handle_use_still_as_final. Body:
+  //   {beat, scope_event_id, scope_video_role, hold_duration_s?} → returns
+  // 200 {file, kenburns:{...}, cache_key, ...}. UI gates on 'file' (LD-778).
+  beat_use_still_as_final: `${SERVER_BASE}/api/beat/use_still_as_final`,
+  // LD-761: clear the final block; files on disk untouched. Server:
+  // production_server.py:12918 _handle_undo_final. Returns 200 with
+  // {status: "noop"} when no final block existed (legitimate no-op,
+  // not an error — runMutation handles this without expectField).
+  beat_undo_final: `${SERVER_BASE}/api/beat/undo_final`,
   beat_delay: `${SERVER_BASE}/api/beat/delay`,
   beat_trim: `${SERVER_BASE}/api/beat/trim`,
+  // LD-746 KIM_DONE_CHECKBOX_RESHIPPED_V1 — per-beat "Kim verified" toggle.
+  // Server handler: production_server.py _handle_beat_kim_done_set.
+  // Body: {beat: "beat_NN", kim_done: bool}. Sets top-level `kim_done` +
+  // `kim_done_at` on the beat dict. UI counter at top of storyboard reads
+  // all beats and shows "N/M done".
+  beat_kim_done_set: `${SERVER_BASE}/api/beat/kim_done_set`,
+  // LD-729 BEAT_PARENTHETICAL_TRANSLATOR_V1 (Agent E greenfield 2026-05-17).
+  // Server handler: production_server.py _handle_beat_suggest_parenthetical.
+  // Body: {description: str, beat_id?: str, scope_video_role?: str,
+  //        event_id?: str, speaker?: str}. Stateless read-only Haiku call —
+  // does NOT mutate state. UI uses direct fetch() per LD-729 spec ("Stateless
+  // suggestion call — direct fetch, not pathappPatch, since no state mutation
+  // on server side"). Listed here so endpoint catalog is complete + Rule 32
+  // absolute-URL discipline holds.
+  beat_suggest_parenthetical: `${SERVER_BASE}/api/beat/suggest_parenthetical`,
   // Authoring-workflow Pillar 7 cornerstone (C-7) — canonical beat-recovery
   // primitive. COPY default; move=true for cross-event/role moves. Per
   // LD BEAT_GRAFT_RECOVERY_MECHANISM_V1: pre-render-only invariant

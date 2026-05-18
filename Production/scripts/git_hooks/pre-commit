@@ -158,3 +158,49 @@ if [ "$WATCHLIST_FAIL" -eq 1 ]; then
     fi
 fi
 echo "Pre-commit watch list gate: clean."
+
+# ============================================================================
+# Smoke manifest co-location gate (LD-782 EVENT_SMOKE_TEST_LAYER1_V1 §5)
+# When a commit modifies storyboard UI source AND mentions a new LD-XXX in
+# the commit message, require that Production/smoke_test_manifest.yaml is
+# also staged. Catches the fabrication-class commit where an agent claims
+# to ship a UI feature without appending the verification manifest entry.
+# Bypass: MN_SKIP_MANIFEST_GATE=1 (refactor/bugfix commits with no new feature).
+# ============================================================================
+
+MANIFEST_FAIL=0
+COMMIT_MSG_FILE="$TOOLING_ROOT/.git/COMMIT_EDITMSG"
+
+if [[ -f "$COMMIT_MSG_FILE" ]] && [[ -s "$COMMIT_MSG_FILE" ]]; then
+    commit_msg=$(cat "$COMMIT_MSG_FILE")
+    if echo "$commit_msg" | grep -qE 'LD-[0-9]{3,4}'; then
+        ui_files=$(git diff --cached --name-only | grep -E '^Production/tools/storyboard-v2/src/.*\.tsx?$' || true)
+        manifest_staged=$(git diff --cached --name-only | grep -E '^Production/smoke_test_manifest\.yaml$' || true)
+        if [[ -n "$ui_files" ]] && [[ -z "$manifest_staged" ]]; then
+            echo "WARN: commit modifies storyboard UI AND mentions LD-XXX but"
+            echo "  Production/smoke_test_manifest.yaml is NOT staged."
+            echo "  Per LD-782 §5, every UI-shipping LD must append a manifest entry"
+            echo "  in the same commit. Modified UI files:"
+            echo "$ui_files" | sed 's/^/    /'
+            echo ""
+            echo "  If this commit ships a NEW user-visible feature:"
+            echo "    1) add an entry to Production/smoke_test_manifest.yaml"
+            echo "    2) git add Production/smoke_test_manifest.yaml"
+            echo "    3) retry git commit"
+            echo "  If refactor/bugfix only (no new feature surface): bypass with"
+            echo "    MN_SKIP_MANIFEST_GATE=1 git commit ..."
+            if [[ "${MN_SKIP_MANIFEST_GATE:-}" != "1" ]]; then
+                MANIFEST_FAIL=1
+            else
+                echo "  MN_SKIP_MANIFEST_GATE=1 — bypass accepted."
+            fi
+        fi
+    fi
+fi
+
+if [[ "$MANIFEST_FAIL" -eq 1 ]]; then
+    echo ""
+    echo "Pre-commit blocked by manifest co-location gate (LD-782 §5)."
+    exit 1
+fi
+echo "Pre-commit manifest co-location gate: clean."

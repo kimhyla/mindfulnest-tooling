@@ -82,13 +82,26 @@ _MN_REPO_ROOT = Path(__file__).resolve().parents[2]
 # Production/tools/scope_router.py for the contract.
 import scope_router  # noqa: E402 (must follow sys.path insert above)
 from ffmpeg_utils import strip_audio as _strip_clip_audio
-from lipsync_sender import LipSyncClient, COST_PER_LIPSYNC
+from lipsync_sender import (
+    LipSyncClient, COST_PER_LIPSYNC,
+    LIPSYNC_PAD_START as _LS_PAD_START,
+    LIPSYNC_PAD_END as _LS_PAD_END,
+)
+# LD LIPSYNC_AUDIO_VIDEO_DURATION_MISMATCH_FIX_V1: single source of truth for
+# the audio padding lipsync_sender.pad_audio_for_lipsync() adds before
+# submitting to ByteDance. The video trim formula MUST account for this so
+# padded_audio ≤ video. Pre-fix bug (beat_16, 2026-05-17): video was trimmed
+# to audio+0.4s tailroom, but submitted audio was padded to audio+1.0s →
+# +0.6s audio overhang on every beat → ByteDance scene hallucination + audio
+# doubling per CLAUDE.md §8.5 / LD-400.
+_LIPSYNC_AUDIO_PAD_TOTAL_S = _LS_PAD_START + _LS_PAD_END  # 0.5 + 0.5 = 1.0
 # Kling start-end pipeline helpers (decision 172 KLING_STARTEND_V1_CAPABILITY,
 # April 17 2026). Imported here so _handle_add_options can dispatch to the
 # start-end path when a beat has end_frame_prompt configured. Rule 8.3 / §8.4
 # invariants enforced inside those helpers; we don't re-implement them here.
 from kling_startend_pipeline import (
     flux_kontext_generate_end_frame,
+    openai_image_edit_generate_end_frame,
     kling_startend_submit,
     _load_subject_element,
     ensure_min_dimensions as _ksendpipe_ensure_min_dimensions,
@@ -752,6 +765,7 @@ def parse_api_keys(filepath: Path) -> dict:
             ("ElevenLabs", "elevenlabs"),
             ("Directus", "directus"),
             ("EvoLink", "evolink"),
+            ("OpenAI", "openai"),
         ]:
             m = re.search(
                 rf"#+\s*{section}.*?(?:Key|Token):\s*`([^`]+)`",
@@ -773,6 +787,7 @@ def parse_api_keys(filepath: Path) -> dict:
         "elevenlabs": os.environ.get("ELEVENLABS_API_KEY"),
         "evolink":    os.environ.get("EVOLINK_API_KEY"),
         "directus":   os.environ.get("DIRECTUS_ADMIN_PASSWORD"),
+        "openai":     os.environ.get("OPENAI_API_KEY"),
     }
     for k, v in env_overlay.items():
         if v:
@@ -3033,6 +3048,48 @@ def _async_log_text_update(event_id: str, beat_id: str, old_text: str | None,
     threading.Thread(target=_do_write, daemon=True, name=f"dir-text-{beat_id}").start()
 
 
+def _async_log_neutral_fallback_fired(event_id: str, beat_id: str,
+                                       speaker: str, beat_text_excerpt: str) -> None:
+    """Fire-and-forget Directus write — neutral end-frame fallback canary.
+    LD END_FRAME_NEUTRAL_FALLBACK_WARN_V1 (severity LOW): every neutral
+    fallback firing emits one prod_activity_log row with action
+    'END_FRAME_NEUTRAL_FALLBACK_FIRED'. After LDs DISPATCHER_BRACKET_*
+    and EMOTION_MAP_WING_TOKEN_* land, row count should fall as bracket
+    directives + emotion-tagged beats route through real branches.
+    """
+    def _do_write():
+        try:
+            _libdir = os.path.join(os.path.dirname(__file__), "credentials_lib")
+            if _libdir not in sys.path:
+                sys.path.insert(0, _libdir)
+            from credentials import load_credentials  # type: ignore
+            from directus import DirectusClient  # type: ignore
+            creds = load_credentials()
+            c = DirectusClient(
+                creds["directus_url"],
+                creds["directus_email"],
+                creds["directus_password"],
+            )
+            c._request("POST", "/items/prod_activity_log", data={
+                "action": "END_FRAME_NEUTRAL_FALLBACK_FIRED",
+                "module_id": 1,
+                "performed_by": "claude-dispatch-canary",
+                "details": json.dumps({
+                    "event_id": event_id,
+                    "beat_id": beat_id,
+                    "speaker": speaker,
+                    "beat_text_excerpt": beat_text_excerpt,
+                    "ld": "END_FRAME_NEUTRAL_FALLBACK_WARN_V1",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }),
+            })
+        except Exception as exc:  # noqa: BLE001
+            print(f"[neutral-fallback-canary] Directus log failed (non-blocking): {exc}")
+    threading.Thread(
+        target=_do_write, daemon=True, name=f"dir-nfb-{beat_id}",
+    ).start()
+
+
 def _async_log_image_override(event_id: str, beat_id: str, image_key: str) -> None:
     """Fire-and-forget Directus write. Never raises, logs on failure."""
     def _do_write():
@@ -3468,7 +3525,13 @@ def _trim_video_to_audio(source_video: Path, dst: Path,
     effective_end = trim_end if trim_end is not None else raw_dur
     window_len = max(0.0, effective_end - trim_start)
     remaining = max(0.0, raw_dur - trim_start)
-    target = audio_duration_s + _VIDEO_TRIM_TAILROOM_S
+    # LD LIPSYNC_AUDIO_VIDEO_DURATION_MISMATCH_FIX_V1: lipsync_sender pads the
+    # audio by _LIPSYNC_AUDIO_PAD_TOTAL_S (PAD_START + PAD_END) before submit.
+    # Video MUST be at least as long as the padded audio, plus tailroom, else
+    # ByteDance extends the video to match → scene hallucination + audio
+    # doubling (beat_16, 2026-05-17). One source of truth lives in
+    # lipsync_sender.LIPSYNC_PAD_START/END.
+    target = audio_duration_s + _LIPSYNC_AUDIO_PAD_TOTAL_S + _VIDEO_TRIM_TAILROOM_S
     actual = min(target, window_len, remaining)
     print(f"[trim] src={source_video.name} raw={raw_dur:.2f}s "
           f"trim_start={trim_start:.2f} trim_end={effective_end:.2f} "
@@ -5635,6 +5698,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 # base64. Fixes Preview Beat double-audio bug (decision 184).
                 beat_id = path[len("/api/beat/audio/"):]
                 return self._serve_beat_audio(beat_id)
+            if path == "/api/beat/lipsync_trimmed":
+                # LD-749 POST_LIPSYNC_TRIM_FEATURE_SPEC_V1 — ffmpeg-clip an
+                # existing lipsync output MP4 at front/back per the beat's
+                # persisted phase_1.trim_start / trim_end. Lazy on-fetch with
+                # disk cache; no ByteDance re-submit, no $0.15 cost.
+                return self._serve_lipsync_trimmed()
             if path == "/api/lipsync/status":
                 return self._handle_lipsync_status()
             # LD V3 Preview Stitched V3: module-level media + library streams.
@@ -5793,8 +5862,16 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_beat_delay(body)
             if path == "/api/beat/trim":
                 return self._handle_beat_trim(body)
+            if path == "/api/beat/kim_done_set":  # LD-746 re-shipped
+                return self._handle_beat_kim_done_set(body)
+            if path == "/api/beat/suggest_parenthetical":  # LD-729 (Agent E greenfield 2026-05-17)
+                return self._handle_beat_suggest_parenthetical(body)
             if path == "/api/beat/use_as_final":  # Spec A: no-lipsync final path
                 return self._handle_use_as_final(body)
+            if path == "/api/beat/use_still_as_final":  # LD-761: Ken Burns still as final
+                return self._handle_use_still_as_final(body)
+            if path == "/api/beat/undo_final":  # LD-761: clear final block
+                return self._handle_undo_final(body)
             if path == "/api/budget/override":
                 return self._handle_budget_override(body)
             if path == "/api/server/restart":
@@ -8964,6 +9041,290 @@ class ProductionHandler(BaseHTTPRequestHandler):
             "sources_loaded": sources_loaded,
         })
 
+    # =====================================================================
+    # LD-729 BEAT_PARENTHETICAL_TRANSLATOR_V1 (re-shipped 2026-05-17 by
+    # Agent E from spec; greenfield rebuild — no reflog evidence existed.
+    # LD-767 STORYBOARD_UI_RESTORE_SUGGEST_PARENTHETICAL_AND_DONE_V1's
+    # claimed "restoration from .deploy_backups/20260517T040011Z" was
+    # FABRICATED per audit LD SESSION_LD_FABRICATION_AUDIT_V1 — zero hits
+    # for `_handle_beat_suggest_parenthetical` in any worktree. This is
+    # the actual implementation, modeled on _handle_phase_suggest_script
+    # above for Anthropic API call patterns.
+    #
+    # POST /api/beat/suggest_parenthetical
+    #   Body: {description: str, beat_id?: str, scope_video_role?: str,
+    #          event_id?: str, scope_event_id?: str, speaker?: str}
+    #   Returns: {status: 'ok', ok: true, parenthetical, speaker,
+    #            character_type, mouth_anchor, model_used,
+    #            generation_time_ms, tokens_in, tokens_out,
+    #            convention_doc_path}
+    #
+    # Reads Production/docs/BEAT_PARENTHETICAL_CONVENTION_v1.md at request
+    # time as the system prompt — doc updates propagate without code
+    # change. Auto-detects bird vs mammal from the resolved speaker.
+    # =====================================================================
+
+    # Bird/mammal classification per BEAT_PARENTHETICAL_CONVENTION_v1.md §Library:
+    # Birds: Luna, Chipper, Bork (use "beak at rest")
+    # Mammals: Tessa (turtle), Benson (bunny), Ember (fox), Bramble (bear),
+    #          Cedric (wizard), Grizzle (mammal), Oliver (mammal) — use "mouth at rest"
+    _PARENTHETICAL_BIRD_SPEAKERS = frozenset({"luna", "chipper", "bork"})
+
+    def _handle_beat_suggest_parenthetical(self, body: dict) -> None:
+        """LD-729 — Haiku-backed parenthetical suggester for beat.text.
+
+        READ-ONLY: does not mutate state. Returns a §8-safe parenthetical
+        derived from BEAT_PARENTHETICAL_CONVENTION_v1.md applied to the
+        user's natural-language description.
+        """
+        # Read-only probe; scope is optional (allow_missing=True) mirroring
+        # _handle_phase_suggest_script.
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
+        description = (body or {}).get("description")
+        if not isinstance(description, str) or not description.strip():
+            return self._send_json(400, {
+                "ok": False,
+                "status": "error",
+                "error": "missing or empty 'description'",
+                "hint": "Send {description: 'natural language emotion/pose'} body field.",
+            })
+        description = description.strip()
+        if len(description) > 1000:
+            return self._send_json(400, {
+                "ok": False,
+                "status": "error",
+                "error": "description exceeds 1000 chars",
+            })
+
+        # Resolve the speaker → bird vs mammal mouth anchor. Lookup precedence:
+        #   1. Explicit body.speaker (caller may override)
+        #   2. beat_id → state.partition.beats[beat_id].speaker
+        #   3. Default to bird (most common in MindfulNest narrative) with
+        #      mouth anchor "beak at rest"
+        explicit_speaker = (body or {}).get("speaker") or ""
+        beat_id = (body or {}).get("beat_id") or (body or {}).get("beat") or ""
+        scope_video_role = (body or {}).get("scope_video_role") or ""
+        resolved_speaker = (explicit_speaker or "").strip()
+        if not resolved_speaker and beat_id:
+            # Look up the beat's speaker from state. Scope-resolution failures
+            # are non-fatal — we fall through to the default-bird path.
+            try:
+                state = self.app.state.read_state()
+                # Use scope_router to find the partition; if it fails, use
+                # the simplest path through 'videos.intro' as a fallback.
+                try:
+                    scope = scope_router.resolve(body, self.app.event_dir.name)
+                    partition = state.get(scope.partition_path, {}) if hasattr(scope, "partition_path") else {}
+                except Exception:
+                    partition = {}
+                # Last-resort scan: try common partition locations.
+                if not partition:
+                    for role in ("intro", "phase_b", "phase_a"):
+                        v = state.get("videos", {}).get(role) or {}
+                        if not v and role == "intro":
+                            v = state.get(role) or {}
+                        cand = (v.get("beats") or {}).get(beat_id) or {}
+                        if cand:
+                            partition = v
+                            break
+                beat = ((partition.get("beats") or {}).get(beat_id) or {}) if isinstance(partition, dict) else {}
+                resolved_speaker = (beat.get("speaker") or "").strip()
+            except Exception:
+                resolved_speaker = ""
+
+        speaker_norm = (resolved_speaker or "").lower()
+        is_bird = speaker_norm in self._PARENTHETICAL_BIRD_SPEAKERS
+        # If we have a speaker but it's not in the bird set, classify as mammal.
+        # If no speaker at all, default to bird per LD-729 smoke-test "Default bird".
+        if not speaker_norm:
+            is_bird = True
+        character_type = "bird" if is_bird else "mammal"
+        mouth_anchor = "beak at rest" if is_bird else "mouth at rest"
+
+        # Resolve Anthropic API key — same pattern as _handle_phase_suggest_script.
+        try:
+            sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+            from credential_store import get_secret_optional  # type: ignore
+            api_key = get_secret_optional("ANTHROPIC_API_KEY")
+        except Exception:
+            api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            return self._send_json(503, {
+                "ok": False,
+                "status": "error",
+                "code": "ANTHROPIC_API_KEY_MISSING",
+                "message": (
+                    "Anthropic API key not configured. Add ANTHROPIC_API_KEY "
+                    "to Doppler (project=mindfulnest, config=dev) or set the "
+                    "env var and restart the server."
+                ),
+            })
+
+        # Read the canonical convention doc. LD-729: "Reads
+        # BEAT_PARENTHETICAL_CONVENTION_v1.md at request time as system
+        # prompt — doc updates propagate automatically."
+        # Tooling-tree path under Production/docs/.
+        convention_doc_rel = "Production/docs/BEAT_PARENTHETICAL_CONVENTION_v1.md"
+        convention_doc_path = Path(__file__).parent.parent / "docs" / "BEAT_PARENTHETICAL_CONVENTION_v1.md"
+        if not convention_doc_path.exists():
+            # Fall back to the canonical Dropbox-root location which is where
+            # Rule 5 says the source-of-truth lives. Some deploys mirror it to
+            # tooling tree; some don't.
+            dropbox_default = Path(
+                "/Users/kimberlysmith/Library/CloudStorage/Dropbox/"
+                "Claude Mindfulnest Project Files"
+            ) / convention_doc_rel
+            if dropbox_default.exists():
+                convention_doc_path = dropbox_default
+            else:
+                return self._send_json(503, {
+                    "ok": False,
+                    "status": "error",
+                    "code": "CONVENTION_DOC_MISSING",
+                    "message": (
+                        f"Convention doc not found at {convention_doc_rel} "
+                        f"(tooling) or Dropbox canonical path. The translator "
+                        f"requires the convention doc as its prompt template."
+                    ),
+                })
+        try:
+            convention_text = convention_doc_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            return self._send_json(503, {
+                "ok": False,
+                "status": "error",
+                "code": "CONVENTION_DOC_READ_FAILED",
+                "message": f"Failed to read convention doc: {type(exc).__name__}: {exc}",
+            })
+
+        # Build the system + user prompts. System prompt = full convention doc
+        # + explicit output contract. User prompt = the natural-language
+        # description + the resolved character type so Haiku picks the right
+        # mouth anchor without needing to second-guess the classification.
+        system_prompt = (
+            "You are a parenthetical translator for the MindfulNest v59 "
+            "storyboard authoring tool. The canonical convention is below "
+            "verbatim — treat every rule as authoritative. Your job is to "
+            "convert a natural-language emotion/pose description into a "
+            "single §8-safe parenthetical that obeys the three hard rules "
+            "(no jaw/mouth motion, no camera-relative gaze, end-state only) "
+            "and the four-component pattern.\n\n"
+            "OUTPUT CONTRACT — respond with ONLY a valid JSON object, no "
+            "surrounding prose, no markdown fence:\n"
+            "  {\"parenthetical\": \"(...)\"}\n"
+            "The parenthetical MUST start with `(` and end with `)`. It "
+            "MUST end with the appropriate mouth anchor for the character "
+            "type given in the user message. If the user's description "
+            "contains a forbidden word (mouth open, agape, at viewer, "
+            "staring, looking at camera, etc.), DROP that violation from "
+            "your output — never echo it back.\n\n"
+            "===== BEAT_PARENTHETICAL_CONVENTION =====\n"
+            f"{convention_text}\n"
+            "===== END CONVENTION =====\n"
+        )
+        user_prompt = (
+            f"Character type: {character_type}\n"
+            f"Required mouth anchor: {mouth_anchor}\n"
+            f"Speaker (if known): {resolved_speaker or '(unspecified — default bird)'}\n\n"
+            f"Natural-language description from author:\n"
+            f"---\n{description}\n---\n\n"
+            "Produce the §8-safe parenthetical now. Respond with only the "
+            "JSON object {\"parenthetical\": \"(...)\"} — no prose, no fence."
+        )
+
+        # Call Anthropic Messages API via urllib (mirrors _handle_phase_suggest_script).
+        url = "https://api.anthropic.com/v1/messages"
+        req_body = {
+            "model": "claude-haiku-4-5",
+            "max_tokens": 512,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": user_prompt}],
+        }
+        req_data = json.dumps(req_body).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=req_data,
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            method="POST",
+        )
+        t0 = time.time()
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                resp_body = resp.read().decode("utf-8")
+                resp_data = json.loads(resp_body)
+        except urllib.error.HTTPError as exc:
+            err_body = exc.read().decode("utf-8", errors="replace")
+            return self._send_json(502, {
+                "ok": False,
+                "status": "error",
+                "error": f"Anthropic API HTTP {exc.code}",
+                "detail": err_body[:500],
+            })
+        except urllib.error.URLError as exc:
+            return self._send_json(502, {
+                "ok": False,
+                "status": "error",
+                "error": f"Anthropic API URL error: {exc}",
+            })
+        elapsed_ms = int((time.time() - t0) * 1000)
+
+        # Extract text from response shape.
+        content = resp_data.get("content") or []
+        raw_text = ""
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                raw_text += block.get("text", "")
+        raw_text = raw_text.strip()
+
+        # Parse the model's JSON output. Strip optional code fences defensively.
+        parenthetical = ""
+        try:
+            cleaned = raw_text
+            if cleaned.startswith("```"):
+                # Strip leading/trailing fences.
+                cleaned = re.sub(r"^```(?:json)?\s*\n?", "", cleaned)
+                cleaned = re.sub(r"\n?```\s*$", "", cleaned)
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict):
+                parenthetical = str(parsed.get("parenthetical") or "").strip()
+        except json.JSONDecodeError:
+            # Last-resort: extract a parenthesized substring from the raw text.
+            m = re.search(r"\([^)]{3,500}\)", raw_text)
+            if m:
+                parenthetical = m.group(0).strip()
+
+        if not parenthetical or not parenthetical.startswith("(") or not parenthetical.endswith(")"):
+            return self._send_json(502, {
+                "ok": False,
+                "status": "error",
+                "error": "Haiku response did not contain a valid parenthetical",
+                "raw_text": raw_text[:500],
+            })
+
+        usage = resp_data.get("usage") or {}
+        return self._send_json(200, {
+            "ok": True,
+            "status": "ok",
+            "parenthetical": parenthetical,
+            "speaker": resolved_speaker or "",
+            "character_type": character_type,
+            "mouth_anchor": mouth_anchor,
+            "model_used": resp_data.get("model", "claude-haiku-4-5"),
+            "generation_time_ms": elapsed_ms,
+            "tokens_in": usage.get("input_tokens"),
+            "tokens_out": usage.get("output_tokens"),
+            "convention_doc_path": str(convention_doc_path),
+            # Echo back scope context so smoke tests / debugging see what
+            # the server resolved from the request body.
+            "scope_video_role": scope_video_role or None,
+        })
+
     # ============================================================
     # S5 v3.1 — 3 magic/animate workflows (LDs 468/469/470)
     # ============================================================
@@ -11966,24 +12327,14 @@ class ProductionHandler(BaseHTTPRequestHandler):
         if not source_clip_path.is_file():
             return self._send_json(404, {"error": f"clip file not found: {clip_file}"})
 
-        # LIPSYNC_TRIM_WINDOW_HONORED_20260419 — read user trim window from
-        # storyboard. Absent/null fields collapse to old "whole-clip" behavior.
-        trim_start_raw = phase1.get("trim_start")
-        trim_end_raw = phase1.get("trim_end")
-        try:
-            trim_start = float(trim_start_raw) if trim_start_raw is not None else 0.0
-            trim_end = float(trim_end_raw) if trim_end_raw is not None else None
-        except (TypeError, ValueError):
-            return self._send_json(400, {
-                "error": f"phase_1.trim_start/trim_end must be numeric",
-                "trim_start": trim_start_raw, "trim_end": trim_end_raw,
-            })
-        if trim_start < 0:
-            return self._send_json(400, {"error": f"trim_start must be >= 0 (got {trim_start})"})
-        if trim_end is not None and trim_end <= trim_start:
-            return self._send_json(400, {
-                "error": f"trim_end ({trim_end}) must be > trim_start ({trim_start})",
-            })
+        # LD-749 POST_LIPSYNC_TRIM_FEATURE_SPEC_V1 (2026-05-17): phase_1.trim_start
+        # and phase_1.trim_end are no longer applied to the source clip before
+        # ByteDance submission. They now clip the lipsync OUTPUT post-render
+        # via GET /api/beat/lipsync_trimmed. The pre-lipsync read/validate/
+        # window-fit gate previously here (LD-276 LIPSYNC_TRIM_WINDOW_HONORED)
+        # is removed; _trim_video_to_audio is still invoked below with
+        # trim_start=0.0/trim_end=None to enforce the audio+tailroom <= raw_dur
+        # contract that ByteDance needs.
 
         beat_num = int(beat_key.split("_")[1])
         source_audio_path = _find_beat_audio(
@@ -12014,25 +12365,22 @@ class ProductionHandler(BaseHTTPRequestHandler):
         tmp_video_path = self.app.state.clips_dir / f"_tmp_trim_{beat_key}_{ts}.mp4"
 
         try:
-            # Preflight 110 AUTO_PREROLL_V1: enable auto pre-roll ONLY when
-            # user hasn't set a trim_start (Counter Finding 4: preroll
-            # interacts badly with a non-zero trim_start — Kim's intent to
-            # skip settling frames would be undone by the prepended silence).
-            # skip_auto_preroll body flag allows explicit opt-out.
-            auto_preroll_enabled = (
-                trim_start == 0.0
-                and not body.get("skip_auto_preroll", False)
-            )
-            # Compute the caller's max_audio_s for overflow clamping (Counter
-            # Finding 3): the resulting padded audio must fit inside the
-            # window_len minus tail room. window_len is unknown yet but bounded
-            # by raw_dur - trim_start. Pre-compute a conservative ceiling.
+            # Preflight 110 AUTO_PREROLL_V1: enable auto pre-roll by default
+            # (LD-749 removed the user-trim-start gate — trim is no longer
+            # pre-lipsync, so preroll can fire unconditionally unless the
+            # caller explicitly opts out via skip_auto_preroll).
+            auto_preroll_enabled = not body.get("skip_auto_preroll", False)
+            # Pre-compute a conservative max_audio_s ceiling for overflow
+            # clamping in _silcomp_audio. With LD-749 the available video
+            # window is the whole clip minus tailroom.
             _pre_raw_dur = _ffprobe_duration(source_clip_path)
-            _pre_effective_end = trim_end if trim_end is not None else _pre_raw_dur
-            if _pre_effective_end > _pre_raw_dur:
-                _pre_effective_end = _pre_raw_dur
-            _pre_window_len = _pre_effective_end - trim_start
-            _max_audio_for_preroll = max(0.0, _pre_window_len - _VIDEO_TRIM_TAILROOM_S)
+            # LD LIPSYNC_AUDIO_VIDEO_DURATION_MISMATCH_FIX_V1: subtract the
+            # audio pad (PAD_START+PAD_END) in addition to tailroom, because
+            # the padded audio is what must fit inside the trimmed video.
+            _max_audio_for_preroll = max(
+                0.0,
+                _pre_raw_dur - _LIPSYNC_AUDIO_PAD_TOTAL_S - _VIDEO_TRIM_TAILROOM_S,
+            )
             # Preflight 113 LOUDNORM_IN_SILCOMP_V1: enable loudness
             # normalization by default so quiet phrases (e.g. ElevenLabs
             # hesitations at -30 dB) don't get gated as silence by
@@ -12046,39 +12394,29 @@ class ProductionHandler(BaseHTTPRequestHandler):
             )
             audio_duration = audio_proc_meta["compressed_duration_s"]
 
-            # LIPSYNC_TRIM_WINDOW_HONORED_20260419 — validate window fits audio
-            # BEFORE spending the ffmpeg trim (fail-loud, explicit numbers).
+            # LD-749: audio-fits-clip gate (replaces the prior trim-window gate).
+            # LD LIPSYNC_AUDIO_VIDEO_DURATION_MISMATCH_FIX_V1: gate must use the
+            # PADDED audio length (silcomp + PAD_START + PAD_END), not raw audio,
+            # because that is what gets submitted to ByteDance and must fit.
             raw_dur = _ffprobe_duration(source_clip_path)
-            if trim_start >= raw_dur:
+            need = audio_duration + _LIPSYNC_AUDIO_PAD_TOTAL_S + _VIDEO_TRIM_TAILROOM_S
+            if need > raw_dur + 0.01:
                 return self._send_json(400, {
-                    "error": f"trim_start={trim_start:.2f}s out of range",
-                    "clip_duration_s": round(raw_dur, 3),
-                    "beat": beat_key,
-                })
-            effective_end = trim_end if trim_end is not None else raw_dur
-            if effective_end > raw_dur + 0.05:
-                print(f"[lipsync] WARN trim_end={effective_end:.2f} exceeds "
-                      f"raw_dur={raw_dur:.2f} for {beat_key}; clamping")
-                effective_end = raw_dur
-            window_len = effective_end - trim_start
-            need = audio_duration + _VIDEO_TRIM_TAILROOM_S
-            if need > window_len + 0.01:
-                return self._send_json(400, {
-                    "error": "audio exceeds trim window (insufficient video for lipsync)",
+                    "error": "audio exceeds source clip duration (insufficient video for lipsync)",
                     "beat": beat_key,
                     "audio_duration_s": round(audio_duration, 3),
                     "tailroom_s": _VIDEO_TRIM_TAILROOM_S,
                     "needed_s": round(need, 3),
-                    "trim_window_s": round(window_len, 3),
-                    "trim_start": round(trim_start, 3),
-                    "trim_end": round(effective_end, 3),
-                    "hint": "widen trim_end, move trim_start earlier, or shorten the TTS audio",
+                    "clip_duration_s": round(raw_dur, 3),
+                    "hint": "shorten the TTS audio or choose a longer source clip; storyboard Trim is now post-lipsync (LD-749) and does not widen the source video",
                 })
 
             # LD LIPSYNC_MAX_DURATION_10S_NO_SILENCE_V1 (id=400, CLAUDE.md §8.5):
             # ByteDance LatentSync max training window = 10s. Longer = scene hallucination + watermark.
+            # LD LIPSYNC_AUDIO_VIDEO_DURATION_MISMATCH_FIX_V1: test PADDED audio
+            # (silcomp + PAD_START + PAD_END), because that is what hits ByteDance.
             _LIPSYNC_MAX_DUR = 10.0
-            if audio_duration > _LIPSYNC_MAX_DUR:
+            if (audio_duration + _LIPSYNC_AUDIO_PAD_TOTAL_S) > _LIPSYNC_MAX_DUR:
                 return self._send_json(400, {
                     "error": "audio_duration exceeds ByteDance max (10s)",
                     "audio_duration_s": round(audio_duration, 3),
@@ -12093,9 +12431,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     ),
                 })
 
+            # LD-749: _trim_video_to_audio collapses to "fit video to audio + tailroom"
+            # (no user trim). trim_start=0.0, trim_end=None reproduces the
+            # legacy "trim from frame 0" behavior the helper was originally written for.
             video_for_lipsync, trimmed_to, ts_used, te_used = _trim_video_to_audio(
                 source_clip_path, tmp_video_path, audio_duration,
-                trim_start=trim_start, trim_end=effective_end,
+                trim_start=0.0, trim_end=None,
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
                 OSError, ValueError) as exc:
@@ -12126,16 +12467,18 @@ class ProductionHandler(BaseHTTPRequestHandler):
             "loudnorm_target_tp_dbtp": audio_proc_meta.get("loudnorm_target_tp_dbtp"),
             "loudnorm_target_lra_lu": audio_proc_meta.get("loudnorm_target_lra_lu"),
             "video_trimmed_to_s": round(trimmed_to, 3),
+            # LD-749: ts_used is always 0.0, te_used is raw_dur (or audio+tailroom-clamped).
+            # Fields retained for downstream/Directus log shape compatibility.
             "trim_start": round(ts_used, 3),
             "trim_end": round(te_used, 3),
             "trim_window_s": round(te_used - ts_used, 3),
             "applied_by": "_handle_lipsync_submit_v4_loudnorm",
-            "rule_reference": "CLAUDE.md §8.4 + LIPSYNC_TRIM_WINDOW_HONORED_20260419 + AUTO_PREROLL_V1 + LOUDNORM_V1",
+            "rule_reference": "CLAUDE.md §8.4 + POST_LIPSYNC_TRIM_FEATURE_SPEC_V1 (LD-749) + AUTO_PREROLL_V1 + LOUDNORM_V1",
         }
         silcomp_applied = audio_proc_meta["applied"]
         print(f"[lipsync] {beat_key} pre-cond: silcomp={silcomp_applied} "
               f"audio_dur={audio_duration:.2f}s video_trim={trimmed_to:.2f}s "
-              f"trim_start={ts_used:.2f} trim_end={te_used:.2f}")
+              f"(user trim is now post-lipsync per LD-749)")
 
         # Init state — includes audio_processing block. Retry-aware: if a
         # prior lipsync block exists (status in {submitting, polling, failed,
@@ -12619,6 +12962,311 @@ class ProductionHandler(BaseHTTPRequestHandler):
             "final": final_block,
         })
 
+    # ------------------------------------------------------------------
+    # LD-761 STILL_AS_FINAL_FEATURE_SPEC_V1
+    # ------------------------------------------------------------------
+    def _handle_use_still_as_final(self, body: dict) -> None:
+        """POST /api/beat/use_still_as_final {beat, scope_event_id, scope_video_role}
+
+        Renders a Ken Burns MP4 from the beat's image_override_abs (slow
+        center zoom 1.0 -> 1.05 over audio_duration_s) and writes a final
+        block with source='still_image'. SHA-cached: re-click returns the
+        existing MP4 unchanged.
+
+        Output: Production/Event_N/animation_clips/beat_NN_still_final.mp4
+        Stitcher contract unchanged (final.file is an MP4).
+        """
+        import hashlib as _hashlib
+        import json as _json
+        import subprocess as _subprocess
+
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
+            return
+
+        beat_id = body.get("beat") or body.get("beat_id")
+        if not beat_id:
+            return self._send_json(400, {"error": "beat required"})
+
+        scope_video_role = (body or {}).get("scope_video_role") or "intro"
+        valid_roles = self.app.state._VALID_VIDEO_ROLES
+        if scope_video_role not in valid_roles:
+            return self._send_json(400, {
+                "error": "video_role_invalid",
+                "got": scope_video_role,
+                "valid": sorted(valid_roles),
+            })
+
+        state = self.app.state.read_state()
+        role_block = (state.get("videos") or {}).get(scope_video_role) or {}
+        beat = (role_block.get("beats") or {}).get(beat_id)
+        if not beat:
+            return self._send_json(400, {
+                "error": f"unknown beat: {beat_id} (role={scope_video_role})",
+            })
+
+        audio_dur = beat.get("audio_duration_s")
+        if not audio_dur or audio_dur <= 0:
+            return self._send_json(400, {
+                "error": "beat has no audio_duration_s; regenerate audio first",
+            })
+
+        # Resolve source still image: image_overrides_abs is canonical.
+        image_abs = (role_block.get("image_overrides_abs") or {}).get(beat_id)
+        if not image_abs or not os.path.isfile(image_abs):
+            return self._send_json(400, {
+                "error": "no resolvable still image",
+                "hint": "set image_overrides_abs in storyboard library UI",
+                "image_path": image_abs,
+            })
+
+        # LD STILL_AS_FINAL_HOLD_DURATION_CONTROL_V1 (2026-05-17): the Ken Burns
+        # clip duration is decoupled from audio_duration_s. Kim's directive:
+        # default 5.0s, user-controllable via "Hold (s)" UI input, so audio
+        # delay (separately controlled at Stitcher mix time via adelay) can
+        # leave room for ambient SFX before the voice fires. If audio is
+        # longer than hold_duration_s, audio gets cut at Stitcher mix —
+        # acceptable per Kim's "user typing is source of truth" rule. We
+        # surface a soft warning in the response so the UI can hint.
+        DEFAULT_HOLD_S = 5.0
+        HOLD_MIN_S = 0.5
+        HOLD_MAX_S = 60.0
+        hold_raw = body.get("hold_duration_s")
+        if hold_raw is None:
+            hold_duration_s = DEFAULT_HOLD_S
+        else:
+            try:
+                hold_duration_s = float(hold_raw)
+            except (TypeError, ValueError):
+                return self._send_json(400, {
+                    "error": "hold_duration_s must be a number",
+                    "got": hold_raw,
+                })
+            if not (HOLD_MIN_S <= hold_duration_s <= HOLD_MAX_S):
+                return self._send_json(400, {
+                    "error": (
+                        f"hold_duration_s out of range: must be "
+                        f"{HOLD_MIN_S} <= hold <= {HOLD_MAX_S}"
+                    ),
+                    "got": hold_duration_s,
+                })
+
+        # Ken Burns config (V1 hardcoded zoom/pan; duration_s is now the
+        # user-controlled hold per LD STILL_AS_FINAL_HOLD_DURATION_CONTROL_V1).
+        kb = {
+            "zoom_start": 1.0,
+            "zoom_end": 1.05,
+            "pan_x_start": 0.5,
+            "pan_x_end": 0.5,
+            "pan_y_start": 0.5,
+            "pan_y_end": 0.5,
+            "duration_s": float(hold_duration_s),
+        }
+
+        # Cache key = sha1(first 1MB of image) + duration + sha(kb config).
+        try:
+            with open(image_abs, "rb") as fh:
+                head = fh.read(1024 * 1024)
+            img_sha = _hashlib.sha1(head).hexdigest()
+        except Exception as exc:  # noqa: BLE001
+            return self._send_json(400, {"error": f"image read failed: {exc}"})
+        kb_sha = _hashlib.sha1(
+            _json.dumps(kb, sort_keys=True).encode("utf-8")
+        ).hexdigest()[:8]
+        # LD STILL_AS_FINAL_HOLD_DURATION_CONTROL_V1: cache key uses
+        # hold_duration_s (not audio_dur) so different hold values produce
+        # distinct cache entries. kb_sha already covers duration_s via kb
+        # dict but we keep the duration in the key prefix for grep-ability.
+        cache_key = f"sha1:{img_sha}_{hold_duration_s:.3f}_{kb_sha}"
+
+        # Output path.
+        out_name = f"{beat_id}_still_final.mp4"
+        out_abs = str(self.app.state.clips_dir / out_name)
+
+        # Cache hit: previously-rendered MP4 + state.final.cache_key matches.
+        prev_final = beat.get("final") or {}
+        cache_hit = (
+            prev_final.get("source") == "still_image"
+            and prev_final.get("cache_key") == cache_key
+            and os.path.isfile(out_abs)
+        )
+
+        if not cache_hit:
+            # Render via ffmpeg zoompan. Pre-scale 2x to avoid jitter on
+            # short durations. d = round(dur * 24) frames at 24 fps.
+            # LD STILL_AS_FINAL_HOLD_DURATION_CONTROL_V1: dur is the
+            # user-controlled hold (default 5.0s), NOT audio_duration_s.
+            frames = max(1, int(round(float(hold_duration_s) * 24)))
+            zoom_expr = (
+                f"{kb['zoom_start']:.4f}"
+                f"+({kb['zoom_end']:.4f}-{kb['zoom_start']:.4f})"
+                f"*on/{max(1, frames - 1)}"
+            )
+            vf = (
+                "scale=3840:2160:force_original_aspect_ratio=increase,"
+                "crop=3840:2160,"
+                f"zoompan=z='{zoom_expr}':"
+                "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+                f"d={frames}:s=1920x1080:fps=24"
+            )
+            cmd = [
+                "ffmpeg", "-y",
+                "-loop", "1", "-i", image_abs,
+                "-t", f"{float(hold_duration_s):.3f}",
+                "-vf", vf,
+                "-c:v", "libx264",
+                "-profile:v", "high",
+                "-pix_fmt", "yuv420p",
+                "-r", "24",
+                "-an",
+                "-movflags", "+faststart",
+                out_abs,
+            ]
+            try:
+                proc = _subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=120,
+                )
+            except Exception as exc:  # noqa: BLE001
+                return self._send_json(500, {
+                    "error": "ffmpeg render failed",
+                    "exception": str(exc),
+                })
+            if proc.returncode != 0 or not os.path.isfile(out_abs):
+                return self._send_json(500, {
+                    "error": "ffmpeg render failed",
+                    "stderr_tail": (proc.stderr or "")[-2000:],
+                    "returncode": proc.returncode,
+                })
+
+        # Build and persist final block.
+        final_block = {
+            "source": "still_image",
+            "image_path": image_abs,
+            "file": out_name,
+            "kenburns": kb,
+            "cache_key": cache_key,
+            "approved_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        def _mutate(s):
+            role_beats = s.setdefault("videos", {}).setdefault(
+                scope_video_role,
+                {"video_role": scope_video_role, "video_label": None,
+                 "beats": {}, "completed_mp4_path": None},
+            ).setdefault("beats", {})
+            if beat_id in role_beats:
+                role_beats[beat_id]["final"] = final_block
+        self.app.state.mutate_state(_mutate)
+
+        # bg sidecar: same pattern as raw_option final.
+        try:
+            bg = _bg_module()
+            with bg._sidecar_lock:
+                sidecar = bg.read_sidecar()
+                sidecar = bg._migrate_sidecar(sidecar)
+                _, b_entry = bg.find_beat(sidecar, beat_id)
+                if b_entry is not None:
+                    b_entry["accepted_video_path"] = out_abs
+                    b_entry["status"] = "accepted"
+                    bg.write_sidecar(sidecar)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[use-still-as-final] sidecar write failed (non-blocking): {exc}")
+
+        # Activity log fire-and-forget (reuse same helper).
+        try:
+            _async_log_use_as_final(
+                event_id=str(self.app.event_id),
+                beat_id=beat_id,
+                file=out_name,
+            )
+        except Exception:
+            pass
+
+        # LD STILL_AS_FINAL_HOLD_DURATION_CONTROL_V1: soft warning if audio
+        # exceeds hold_duration_s (audio will be cut at Stitcher mix).
+        response = {
+            "status": "ok",
+            "beat": beat_id,
+            "file": out_name,
+            "cache_hit": cache_hit,
+            "hold_duration_s": hold_duration_s,
+            "audio_duration_s": float(audio_dur),
+            "final": final_block,
+        }
+        if float(audio_dur) > hold_duration_s:
+            response["warning"] = (
+                f"audio_duration_s ({float(audio_dur):.2f}s) exceeds "
+                f"hold_duration_s ({hold_duration_s:.2f}s); audio will be "
+                f"cut at Stitcher mix"
+            )
+        return self._send_json(200, response)
+
+    def _handle_undo_final(self, body: dict) -> None:
+        """POST /api/beat/undo_final {beat, scope_event_id, scope_video_role}
+
+        Clears the final block from state. Does NOT touch any clip files
+        on disk (archival is a separate one-shot operation). LD-761.
+        """
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
+            return
+
+        beat_id = body.get("beat") or body.get("beat_id")
+        if not beat_id:
+            return self._send_json(400, {"error": "beat required"})
+
+        scope_video_role = (body or {}).get("scope_video_role") or "intro"
+        valid_roles = self.app.state._VALID_VIDEO_ROLES
+        if scope_video_role not in valid_roles:
+            return self._send_json(400, {
+                "error": "video_role_invalid",
+                "got": scope_video_role,
+                "valid": sorted(valid_roles),
+            })
+
+        state = self.app.state.read_state()
+        beat = (((state.get("videos") or {}).get(scope_video_role) or {})
+                .get("beats", {}).get(beat_id))
+        if not beat:
+            return self._send_json(400, {
+                "error": f"unknown beat: {beat_id} (role={scope_video_role})",
+            })
+
+        prior_final = beat.get("final")
+        if not prior_final:
+            return self._send_json(200, {
+                "status": "noop",
+                "beat": beat_id,
+                "message": "no final block to clear",
+            })
+
+        def _mutate(s):
+            rb = (((s.get("videos") or {}).get(scope_video_role) or {})
+                  .get("beats", {}).get(beat_id))
+            if rb and "final" in rb:
+                del rb["final"]
+        self.app.state.mutate_state(_mutate)
+
+        # bg sidecar: clear accepted_video_path so the beat is no longer
+        # in "accepted" state for the concat pipeline.
+        try:
+            bg = _bg_module()
+            with bg._sidecar_lock:
+                sidecar = bg.read_sidecar()
+                sidecar = bg._migrate_sidecar(sidecar)
+                _, b_entry = bg.find_beat(sidecar, beat_id)
+                if b_entry is not None:
+                    b_entry["accepted_video_path"] = None
+                    b_entry["status"] = "pending"
+                    bg.write_sidecar(sidecar)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[undo-final] sidecar update failed (non-blocking): {exc}")
+
+        return self._send_json(200, {
+            "status": "ok",
+            "beat": beat_id,
+            "cleared": prior_final,
+        })
+
     def _serve_storyboard(self) -> None:
         if not self.app.storyboard_path.is_file():
             return self._send_json(500, {
@@ -12882,6 +13530,139 @@ body {{padding-top:44px!important;}}
                 "X-TTS-File": audio_path.name,  # for client-side diagnostics
             },
         )
+
+    def _serve_lipsync_trimmed(self) -> None:
+        """LD-749 POST_LIPSYNC_TRIM_FEATURE_SPEC_V1.
+
+        GET /api/beat/lipsync_trimmed?beat_id=...&event_id=...&video_role=...&v=...
+
+        Reads beat.phase_1.trim_start/trim_end + beat.lipsync.file. Lazy
+        ffmpeg-clips the existing lipsync MP4 at front/back. Disk cache keyed
+        on (lipsync_filename, trim_start, trim_end, source_mtime, source_sha1mb).
+        On cache hit returns the cached clip directly. On cache miss runs
+        ffmpeg synchronously (~300-800ms for a typical <=10s lipsync) and
+        stores the result. Audio (ByteDance-baked AAC) is preserved through
+        the clip.
+
+        404 cases: beat not found; lipsync not completed or file missing.
+        On no trim set, the client should hit /asset/{lipsync.file} directly —
+        this endpoint will still serve the full clip if called.
+        """
+        import hashlib as _hashlib  # local import; module-level is heavy elsewhere
+
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        beat_id = (qs.get("beat_id") or [None])[0]
+        video_role = (qs.get("video_role") or ["intro"])[0]
+        if not beat_id:
+            return self._send_json(400, {"error": "missing 'beat_id' query param"})
+
+        # Sanitize beat_id (matches _serve_beat_audio pattern).
+        if not re.match(r"^[a-zA-Z0-9_]+$", beat_id):
+            return self._send_json(400, {"error": f"invalid beat_id: {beat_id!r}"})
+
+        state = self.app.state.read_state()
+        beat = ((state.get("videos") or {}).get(video_role) or {}).get("beats", {}).get(beat_id)
+        if not beat:
+            return self._send_json(404, {"error": f"beat {beat_id} not found in role={video_role}"})
+
+        ls = beat.get("lipsync") or {}
+        ls_file = ls.get("file")
+        if ls.get("status") != "completed" or not ls_file:
+            return self._send_json(404, {
+                "error": "lipsync not completed for this beat",
+                "beat_id": beat_id,
+                "lipsync_status": ls.get("status"),
+                "hint": "no trimmed view available until lipsync finishes",
+            })
+
+        source_path = self.app.state.clips_dir / Path(ls_file).name
+        if not source_path.is_file():
+            return self._send_json(404, {
+                "error": f"lipsync file not found on disk: {Path(ls_file).name}",
+                "beat_id": beat_id,
+            })
+
+        phase1 = beat.get("phase_1") or {}
+        trim_start_raw = phase1.get("trim_start")
+        trim_end_raw = phase1.get("trim_end")
+        try:
+            trim_start = float(trim_start_raw) if trim_start_raw is not None else 0.0
+            trim_end = float(trim_end_raw) if trim_end_raw is not None else None
+        except (TypeError, ValueError):
+            return self._send_json(400, {
+                "error": "phase_1.trim_start/trim_end must be numeric",
+                "trim_start": trim_start_raw, "trim_end": trim_end_raw,
+            })
+
+        # If no trim configured, return the canonical lipsync file unchanged —
+        # save the ffmpeg cost.
+        if trim_start <= 0.0 and trim_end is None:
+            return self._serve_asset(Path(ls_file).name)
+
+        raw_dur = _ffprobe_duration(source_path)
+        effective_end = trim_end if trim_end is not None else raw_dur
+        if effective_end > raw_dur + 0.05:
+            effective_end = raw_dur
+        if trim_start >= raw_dur or effective_end <= trim_start:
+            return self._send_json(400, {
+                "error": "invalid trim window for this lipsync",
+                "beat_id": beat_id,
+                "trim_start": round(trim_start, 3),
+                "trim_end": round(effective_end, 3),
+                "lipsync_duration_s": round(raw_dur, 3),
+            })
+
+        # Cache key: filename + trim window + source mtime + SHA of first 1 MB.
+        try:
+            src_mtime = int(source_path.stat().st_mtime)
+            with source_path.open("rb") as _fh:
+                _first_mb = _fh.read(1 * 1024 * 1024)
+            src_sha1mb = _hashlib.sha256(_first_mb).hexdigest()[:8]
+        except OSError as exc:
+            return self._send_json(500, {
+                "error": "could not stat/hash lipsync file",
+                "detail": str(exc)[:200],
+            })
+
+        base_stem = Path(ls_file).stem
+        te_tag = f"{effective_end:.3f}" if trim_end is not None else f"full{raw_dur:.3f}"
+        cache_name = f"_trimmed_{base_stem}__ts{trim_start:.3f}__te{te_tag}__m{src_mtime}__h{src_sha1mb}.mp4"
+        cache_path = self.app.state.clips_dir / cache_name
+
+        if not cache_path.is_file():
+            duration = max(0.0, effective_end - trim_start)
+            print(f"[lipsync-trim] {beat_id} cache miss; ffmpeg-clipping "
+                  f"{ls_file} [{trim_start:.3f}..{effective_end:.3f}] "
+                  f"({duration:.3f}s) -> {cache_name}")
+            try:
+                subprocess.run(
+                    [
+                        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                        "-ss", f"{trim_start:.3f}",
+                        "-i", str(source_path),
+                        "-t", f"{duration:.3f}",
+                        "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                        "-c:a", "aac", "-b:a", "128k",
+                        "-movflags", "+faststart",
+                        str(cache_path),
+                    ],
+                    check=True, capture_output=True, timeout=120,
+                )
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+                stderr_blob = ""
+                if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
+                    stderr_blob = exc.stderr.decode(errors="replace")[:400]
+                return self._send_json(500, {
+                    "error": "ffmpeg clip failed",
+                    "beat_id": beat_id,
+                    "detail": str(exc)[:300],
+                    "stderr": stderr_blob,
+                })
+        else:
+            print(f"[lipsync-trim] {beat_id} cache hit -> {cache_name}")
+
+        # Stream the cached clip via the existing asset path (handles ranges).
+        return self._serve_asset(cache_name)
 
     def _beat_id(self, line_number: int) -> str:
         return f"beat_{line_number:02d}"
@@ -13250,10 +14031,31 @@ body {{padding-top:44px!important;}}
                 "stay pixel-perfect unchanged. Do NOT alter, shift, blur, "
                 "or recompose any background element whatsoever. "
             )
+            # LD END_FRAME_PROMPT_ACCESSORY_LANGUAGE_REMOVED_V1
+            # (supersedes LD-780 conditional + LD-745 explicit listing).
+            # ALL accessory + outfit language removed from the character-lock
+            # tail per Kim 2026-05-17 18:15 UTC: every formulation tried —
+            # explicit ("Backpack, accessories, glasses") AND conditional
+            # ("If the input has X, preserve X") — caused gpt-image-1 to
+            # either invent or erase accessories on the end frame (Chipper
+            # backpack/glasses invention 2026-05-17 morning; Luna accessories
+            # vanishing at tail 2026-05-17 afternoon). Mentioning accessories
+            # at all primes the model to act on them. The body-geometry +
+            # limb + mouth + art-style constraints below already preserve
+            # what's in the input image as long as we don't draw the model's
+            # attention to specific items.
             _MOUTH_TAIL = (
-                " Beak/mouth at rest, natural mouth geometry preserved. "
-                "Same cartoon 3D Pixar-style art, same outfit, same 4:3 "
-                "composition, same lighting on the character."
+                " Keep the character's body geometry, proportions, and "
+                "silhouette COMPLETELY IDENTICAL to the input except for the "
+                "explicitly-described change. "
+                "If the input has limbs or appendages, keep them in the "
+                "same position, same length, and same fold/extension state "
+                "unless explicitly described in the change. Do not add, "
+                "remove, or rearrange limbs that are not described in the "
+                "change. "
+                "Beak/mouth at rest, natural mouth geometry preserved. "
+                "Same cartoon 3D Pixar-style art, same 4:3 composition, "
+                "same lighting."
             )
 
             # Resolve speaker for neutral-fallback pose lookup below.
@@ -13279,6 +14081,16 @@ body {{padding-top:44px!important;}}
                 "shrugs", "shrug", "waves", "wave", "claps", "clap",
                 "places", "place", "grabs", "grab", "drops", "drop",
                 "at", "toward", "forward", "backward", "sideways", "upward", "downward",
+                # Bracket-stage-direction additions per LD
+                # DISPATCHER_BRACKET_STAGE_DIRECTION_BRIDGE_V1 (refs LD-747,
+                # LD-736 convention v1.2). Bracket directives like
+                # "[wings outstretched]" / "[wings folded]" previously
+                # fell through to neutral fallback because the dispatcher
+                # only scanned round parens. These verbs let the bracket
+                # branch route as a true stage direction.
+                "outstretched", "folded", "tucked", "drooped", "drawn",
+                "lifted", "perked", "settled", "settle",
+                "wings", "wing",
             }
             _paren = _re.search(r'\(([^)]{3,})\)', beat_text)
             if _paren:
@@ -13293,9 +14105,39 @@ body {{padding-top:44px!important;}}
                     )
                     print(f"[add_options:dispatch] {beat_id}: end_frame_prompt from (parenthetical) stage direction")
                 else:
-                    print(f"[add_options:dispatch] {beat_id}: (parenthetical) is emotion-only {char_dir!r} — falling through to neutral pose")
+                    print(f"[add_options:dispatch] {beat_id}: (parenthetical) is emotion-only {char_dir!r} — falling through")
 
-            else:
+            # 1b. [bracket stage direction] bridge — LD
+            # DISPATCHER_BRACKET_STAGE_DIRECTION_BRIDGE_V1 (refs LD-747).
+            # The convention doc LD-736 v1.2 added wing-rest tokens that
+            # authors began using inside square brackets
+            # (e.g. "[wings outstretched]"). The original dispatcher only
+            # scanned round parens, so bracket directives bypassed all
+            # wing discipline and silently fell through to the neutral
+            # fallback. This branch scans ALL bracket tags in beat_text
+            # for _STAGE_VERBS overlap; the first match routes through
+            # the same code path as the paren stage direction. Pure
+            # emotion brackets ([excited], [worried]) do NOT match
+            # _STAGE_VERBS and continue to branch (2) below.
+            if not end_frame_prompt:
+                for _br_match in _re.finditer(r'\[([^\]]+)\]', beat_text):
+                    _br_content = _br_match.group(1).strip()
+                    _br_lower = _br_content.lower()
+                    # Skip TTS-only directives outright.
+                    if _br_lower in {"pause", "break", "breath", "sigh", "silence"}:
+                        continue
+                    _br_words = set(_re.findall(r'\w+', _br_lower))
+                    if _br_words & _STAGE_VERBS:
+                        char_dir = _br_content
+                        end_frame_prompt = (
+                            _BG_LOCK
+                            + f"ONLY change the character: {char_dir}."
+                            + _MOUTH_TAIL
+                        )
+                        print(f"[add_options:dispatch] {beat_id}: end_frame_prompt from [bracket] stage direction {char_dir!r}")
+                        break
+
+            if not end_frame_prompt:
                 # 2. [emotion] at start of text → map to expression description.
                 # Exclude TTS directives: [pause], [break], [breath], [sigh].
                 _TTS_TAGS = {"pause", "break", "breath", "sigh", "silence"}
@@ -13314,15 +14156,42 @@ body {{padding-top:44px!important;}}
                     "relieved":   "relieved expression, eyes soft and open, relaxed posture",
                     "neutral":    None,  # → fallback
                 }
+                # Wing-token grounding tier per LD
+                # EMOTION_MAP_WING_TOKEN_PROMOTION_V1 (references LD-736
+                # convention v1.2). The convention doc was authored markdown-
+                # only; dispatcher code never read it. This map promotes the
+                # canonical wing tokens INTO code so winged-speaker emotion
+                # branches carry the same grounding the convention specifies.
+                # Mammals are EXEMPT (Rule 11 source fidelity — they have
+                # arms/paws, not wings).
+                _BIRDS = {"Chipper", "Luna", "Bork"}
+                _WING_TOKEN_BY_EMOTION = {
+                    "curious":    "wings tucked",
+                    "excited":    "wings folded at sides",
+                    "happy":      "soft wing settle",
+                    "delighted":  "soft wing settle",
+                    "sad":        "wings drooped at sides",
+                    "worried":    "wings drawn close",
+                    "scared":     "wings drawn close",
+                    "surprised":  "settled wings",
+                    "determined": "settled wings",
+                    "relieved":   "settled wings",
+                }
                 if _emotion and _emotion not in _TTS_TAGS and _emotion in _EMOTION_MAP:
                     char_dir = _EMOTION_MAP[_emotion]
                     if char_dir:
+                        # Append wing token only when speaker is a winged
+                        # creature — runtime conditional, not a separate map.
+                        if _disp_speaker in _BIRDS:
+                            _wing = _WING_TOKEN_BY_EMOTION.get(_emotion)
+                            if _wing:
+                                char_dir = f"{char_dir}, {_wing}"
                         end_frame_prompt = (
                             _BG_LOCK
                             + f"ONLY change the character: {char_dir}."
                             + _MOUTH_TAIL
                         )
-                        print(f"[add_options:dispatch] {beat_id}: end_frame_prompt from [emotion={_emotion!r}]")
+                        print(f"[add_options:dispatch] {beat_id}: end_frame_prompt from [emotion={_emotion!r}] (winged={_disp_speaker in _BIRDS})")
 
             # 3. Neutral fallback — use safe STATIC geometric pose (small head tilt).
             #    "Same as input" (old) → identical frames → Kling barely moves.
@@ -13331,13 +14200,18 @@ body {{padding-top:44px!important;}}
             #    A simple head tilt is ALWAYS renderable by FLUX Kontext with no
             #    hallucination risk and gives Kling a clear but safe motion target.
             if not end_frame_prompt:
+                # _SAFE_NEUTRAL_POSE — wing tokens appended for winged creatures
+                # per LD EMOTION_MAP_WING_TOKEN_PROMOTION_V1 (promotes LD-736
+                # convention v1.2 grounding tokens INTO the code). Mammals
+                # retain pose-only strings (Rule 11 source fidelity — they
+                # have arms/paws, not wings).
                 _SAFE_NEUTRAL_POSE = {
-                    "Chipper": "head tilted gently to one side, attentive expression",
+                    "Chipper": "head tilted gently to one side, attentive expression, wings folded at sides",
                     "Tessa":   "head tilted gently, quiet attentive expression",
-                    "Luna":    "head turned slightly to one side, alert expression",
+                    "Luna":    "head turned slightly to one side, alert expression, wings folded at sides",
                     "Benson":  "one ear tilted, head turned slightly, quiet attentive expression",
                     "Ember":   "head turned slightly to one side, calm relaxed gaze",
-                    "Bork":    "hovering in a slightly tilted position, calm expression",
+                    "Bork":    "hovering in a slightly tilted position, calm expression, wings still",
                     "Bramble": "head turned slightly, grounded quiet presence",
                 }
                 _safe_pose = _SAFE_NEUTRAL_POSE.get(_disp_speaker, "head tilted gently, attentive expression")
@@ -13346,6 +14220,24 @@ body {{padding-top:44px!important;}}
                     + f"ONLY change the character: {_safe_pose}."
                     + _MOUTH_TAIL
                 )
+                # FAIL-LOUD WARN per LD END_FRAME_NEUTRAL_FALLBACK_WARN_V1 —
+                # neutral fallback firing typically means the beat lacked a
+                # recognized (parenthetical) or [emotion] tag and bypassed
+                # all wing-discipline tokens. The line below + the async
+                # Directus row form the canary that validates LD-{B,C}.
+                _beat_text_for_warn = (beat_state.get("text") or "")[:60]
+                sys.stderr.write(
+                    f"[dispatch:WARN] {beat_id}: neutral fallback triggered "
+                    f"({_disp_speaker!r}, text={_beat_text_for_warn!r}) — "
+                    f"likely missing parenthetical or unrecognized emotion\n"
+                )
+                sys.stderr.flush()
+                try:
+                    _async_log_neutral_fallback_fired(
+                        self.app.event_id, beat_id, _disp_speaker, _beat_text_for_warn,
+                    )
+                except Exception:
+                    pass  # fire-and-forget; never block dispatch on log failure
                 print(f"[add_options:dispatch] {beat_id}: end_frame_prompt neutral fallback — safe static pose")
 
         print(f"[add_options:dispatch] {beat_id}: -> start-end pipeline "
@@ -13546,10 +14438,15 @@ body {{padding-top:44px!important;}}
                 "error": f"API key load failed for start-end path: {exc}"
             })
         bfl_key = keys.get("bfl")
+        openai_key = keys.get("openai")
         wavespeed_key = keys.get("wavespeed") or self.app.client.api_key
-        if not bfl_key:
+        # LD-730 END_FRAME_VIA_OPENAI_IMAGE_EDIT_V1: at least ONE end-frame vendor
+        # key must be present. OpenAI is preferred (preserves accessories); FLUX
+        # is the legacy fallback. Either alone is sufficient.
+        if not (openai_key or bfl_key):
             return self._send_json(500, {
-                "error": "BFL (FLUX) key unavailable — required for start-end pipeline"
+                "error": ("No end-frame vendor key available — need either "
+                          "OpenAI (preferred per LD-730) or BFL/FLUX (legacy)")
             })
 
         # Extract start image raw bytes (beat_image is data:image/...;base64,...).
@@ -13584,12 +14481,47 @@ body {{padding-top:44px!important;}}
         # Graceful degradation: empty end_frame_prompt OR missing bfl_key =>
         # explicit single-image mode with an [INFO] log (not an error).
         end_b64_uri: str | None = None
-        if end_frame_prompt and bfl_key:
+        if end_frame_prompt and (openai_key or bfl_key):
+            # LD-730 vendor selection:
+            #   MN_END_FRAME_VENDOR=openai (default) → gpt-image-1
+            #   MN_END_FRAME_VENDOR=flux            → FLUX Kontext (legacy rollback)
+            #   Fallback: if requested vendor's key absent, use the other one.
+            _requested_vendor = os.environ.get(
+                "MN_END_FRAME_VENDOR", "openai"
+            ).strip().lower()
+            if _requested_vendor == "openai" and openai_key:
+                _vendor_used = "openai"
+                _end_frame_fn = openai_image_edit_generate_end_frame
+                _vendor_key = openai_key
+            elif _requested_vendor == "flux" and bfl_key:
+                _vendor_used = "flux"
+                _end_frame_fn = flux_kontext_generate_end_frame
+                _vendor_key = bfl_key
+            elif openai_key:
+                _vendor_used = (
+                    f"openai (fallback — requested={_requested_vendor!r} "
+                    f"but its key absent)"
+                )
+                _end_frame_fn = openai_image_edit_generate_end_frame
+                _vendor_key = openai_key
+            else:
+                _vendor_used = (
+                    f"flux (fallback — requested={_requested_vendor!r} "
+                    f"but its key absent)"
+                )
+                _end_frame_fn = flux_kontext_generate_end_frame
+                _vendor_key = bfl_key
+            print(
+                f"[add_options:startend] {beat_id}: end-frame vendor "
+                f"SELECTED = {_vendor_used} (env MN_END_FRAME_VENDOR="
+                f"{_requested_vendor!r})",
+                flush=True,
+            )
             try:
-                end_frame_bytes = flux_kontext_generate_end_frame(
+                end_frame_bytes = _end_frame_fn(
                     start_image_bytes=start_bytes,
                     end_prompt=end_frame_prompt,
-                    api_key=bfl_key,
+                    api_key=_vendor_key,
                 )
                 # Rule 6: auto-upscale end frame to ≥600px shortest side.
                 end_data_uri = (
@@ -13607,7 +14539,7 @@ body {{padding-top:44px!important;}}
                         "beat": beat_id,
                     })
                 end_b64_uri = end_data_uri
-                print(f"[add_options:startend] {beat_id}: FLUX Kontext end "
+                print(f"[add_options:startend] {beat_id}: {_vendor_used} end "
                       f"frame generated ({len(end_frame_bytes):,}B)")
                 # Fix 8 (20260513): override motion prompt to natural-interpolation.
                 # Vocabulary action terms fight the frame anchors and produce barely-
@@ -13625,20 +14557,25 @@ body {{padding-top:44px!important;}}
                 print(f"[add_options:startend] {beat_id}: motion prompt -> natural-interpolation (end frame confirmed)")
             except SystemExit as exc:
                 return self._send_json(500, {
-                    "error": f"FLUX Kontext end frame generation failed: {exc}",
+                    "error": (f"end-frame generation failed via "
+                              f"vendor={_vendor_used}: {exc}"),
                     "beat": beat_id,
-                    "hint": ("Check BFL (FLUX) API key or retry — FLUX Kontext "
-                             "is required for start-end pipeline"),
+                    "vendor_attempted": _vendor_used,
+                    "hint": ("Check the vendor's API key in API_KEYS_MASTER.md "
+                             "or env, OR override via MN_END_FRAME_VENDOR=flux "
+                             "to roll back to FLUX Kontext (legacy)."),
                 })
             except Exception as exc:
                 return self._send_json(500, {
-                    "error": (f"FLUX Kontext unexpected error: "
+                    "error": (f"end-frame vendor unexpected error "
+                              f"(vendor={_vendor_used}): "
                               f"{type(exc).__name__}: {exc}"),
                     "beat": beat_id,
+                    "vendor_attempted": _vendor_used,
                 })
         else:
             print(f"[add_options:startend] {beat_id}: no end frame "
-                  f"(end_frame_prompt empty or no bfl_key) — single-image mode")
+                  f"(end_frame_prompt empty or no vendor key) — single-image mode")
 
         # Per-option loop: Kling start-end submit (end frame reused across opts).
         submitted = 0
@@ -14952,11 +15889,19 @@ body {{padding-top:44px!important;}}
         POST {"beat": "beat_07", "trim_start": 0, "trim_end": 3.5}
                           OR {"beat_id": ..., "trim_in": 0, "trim_out": 3.5}
 
-        Per LD `BODY_KEY_BACKCOMPAT_TRIM_V1` (2026-05-14): the v59 client
-        (StoryboardTab.tsx:267-269) sends `trim_in`/`trim_out`; this handler
-        originally read only `trim_start`/`trim_end`. Same key-mismatch class
-        as F-REGEN-AUDIO-001 + LD-693 (delay_slider). Accept both to close
-        the silent no-op surfaced by the CI grep gate (LD-699).
+        Per LD-749 POST_LIPSYNC_TRIM_FEATURE_SPEC_V1 (2026-05-17): trim values
+        now clip the EXISTING lipsynced output MP4 (post-lipsync). They are
+        NOT applied to the source clip before ByteDance submission. The
+        canonical playback path is GET /api/beat/lipsync_trimmed which reads
+        these values and serves an ffmpeg-clipped slice of beat.lipsync.file
+        with a disk cache. Cost per Trim apply is $0 (no re-lipsync). The
+        helper _trim_video_to_audio still exists for the audio+tailroom fit
+        constraint in both lipsync paths, but it no longer receives user
+        trim values.
+
+        Per LD-701 BODY_KEY_BACKCOMPAT_TRIM_V1: the v59 client sends
+        trim_in/trim_out; this handler accepts both that and the legacy
+        trim_start/trim_end server keys. Body-key backcompat preserved.
         """
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
         if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
@@ -15001,6 +15946,53 @@ body {{padding-top:44px!important;}}
         if trim_end is not None:
             result["trim_end"] = round(trim_end, 2)
         self._send_json(200, result)
+
+    def _handle_beat_kim_done_set(self, body: dict) -> None:
+        """LD-746 KIM_DONE_CHECKBOX_RESHIPPED_V1 (2026-05-17): mark a beat as
+        visually verified by Kim. Toggles boolean `kim_done` on the beat at
+        the top level of the beat dict (NOT nested in phase_1 — this is a
+        per-beat Kim signal, not a phase-1 production artifact). Counter at
+        the top of the storyboard ("N/M done") reads this flag across all
+        beats in the active partition.
+
+        POST body: {beat: "beat_03", kim_done: true|false}
+                OR {beat_id: ..., done: true|false}  (back-compat)
+
+        Original LD-746 ship was caught as fabrication during LD-773 audit.
+        This is the real implementation.
+        """
+        # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=False):
+            return
+
+        beat_id = body.get("beat") or body.get("beat_id")
+        # Accept both `kim_done` (canonical) and `done` (back-compat) per
+        # LD BEAT_DELAY_BODY_KEY_BACKCOMPAT_V1 pattern.
+        raw_done = body.get("kim_done")
+        if raw_done is None:
+            raw_done = body.get("done", False)
+        if not isinstance(raw_done, bool):
+            return self._send_json(400, {"error": "kim_done must be a boolean"})
+        done = bool(raw_done)
+        if not beat_id:
+            return self._send_json(400, {"error": "missing 'beat'/'beat_id'"})
+
+        video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
+
+        def update(state, _role=video_role):
+            b = ((state.get("videos") or {}).get(_role) or {}).get("beats", {}).get(beat_id)
+            if not b:
+                return False
+            # Stamp top-level kim_done + an ISO8601 timestamp so consumers can
+            # surface "last marked at" without inferring from mtime.
+            b["kim_done"] = done
+            b["kim_done_at"] = datetime.now(timezone.utc).isoformat() if done else None
+            return True
+
+        found = self.app.state.mutate_state(update)
+        if not found:
+            return self._send_json(404, {"error": f"beat {beat_id} not found"})
+        self._send_json(200, {"beat": beat_id, "kim_done": done})
 
     def _handle_budget_override(self, body: dict) -> None:
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
@@ -18993,11 +19985,17 @@ body {{padding-top:44px!important;}}
             audio_for_lipsync, audio_meta = _silcomp_audio(audio_path, tmp_audio_path)
             audio_duration = audio_meta["compressed_duration_s"]
             raw_dur = _ffprobe_duration(base_path)
-            if raw_dur <= audio_duration:
+            # LD LIPSYNC_AUDIO_VIDEO_DURATION_MISMATCH_FIX_V1: padded audio
+            # (PAD_START+PAD_END = _LIPSYNC_AUDIO_PAD_TOTAL_S) is what's
+            # submitted; gate against the padded length + tailroom.
+            _need = audio_duration + _LIPSYNC_AUDIO_PAD_TOTAL_S + _VIDEO_TRIM_TAILROOM_S
+            if raw_dur < _need:
                 return self._send_json(400, {
-                    "error": "base clip shorter than audio",
+                    "error": "base clip shorter than padded audio (lipsync would overhang)",
                     "base_clip_duration_s": round(raw_dur, 3),
                     "audio_duration_s": round(audio_duration, 3),
+                    "padded_audio_duration_s": round(audio_duration + _LIPSYNC_AUDIO_PAD_TOTAL_S, 3),
+                    "needed_s": round(_need, 3),
                     "hint": "Use a longer base clip or shorten the audio.",
                 })
             video_for_lipsync, trimmed_to, ts_used, te_used = _trim_video_to_audio(

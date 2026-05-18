@@ -141,7 +141,18 @@ test.describe('S3 — StoryboardTab refresh logic beyond R1', () => {
     });
     await page.route('**/api/beat/use_as_final', async (route) => {
       phase = 'final';
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+      // LD-778 FALSE_POSITIVE_SUCCESS_TOAST_CLASS_KILL_V1: runMutation now
+      // validates response body. onUseAsFinal passes expectField='file', so
+      // the mock MUST include {status: 'ok', file: ...} to match the real
+      // server shape (production_server.py _handle_use_as_final line 12672).
+      // Pre-LD-778 mock returned bare {ok:true} and slipped through HTTP-2xx;
+      // post-LD-778 that triggers Gate 4 missing-field error → no onMutated()
+      // → test times out waiting for lifecycle move.
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ status: 'ok', beat: beatId, file: 'final.mp4', final: { source: 'use_as_final', source_option: 1, file: 'final.mp4' } }),
+      });
     });
     await gotoApp(page);
     await page.click('[data-testid="tab-storyboard"]');
