@@ -3,12 +3,13 @@
 
 For every route in openapi yaml, probe with a stub payload and record:
   - status
-  - body sha256
+  - body sha256 (volatile fields stripped before hash)
   - body length
   - content-type
   - latency_ms
 
-Output: Production/tests/handler_replay_baseline.json (single dict keyed by
+Two-pass capture: routes stable across both passes are written to
+Production/tests/handler_replay_baseline.json (single dict keyed by
 'METHOD path'; each value has the response fingerprint).
 
 Used by replay_handler_diff.py to verify byte-equivalence after handler
@@ -35,6 +36,39 @@ OPENAPI_PATH = ROOT / "openapi" / "production_server.yaml"
 BASELINE_PATH = ROOT / "tests" / "handler_replay_baseline.json"
 BASE_URL = "http://localhost:5111"
 PROBE_TIMEOUT_S = 5.0
+PASS2_INTERVAL_S = 3.0
+
+PATH_PARAM_SUBSTITUTIONS = {
+    "{beat_id}": "beat_99",
+    "{id}": "99",
+    "{fname}": "nonexistent.bin",
+    "{param}": "placeholder",
+    "{event_id}": "Event_99",
+    "{video_role}": "intro",
+    "{role}": "intro",
+    "{filename}": "nonexistent.bin",
+    "{file}": "nonexistent.bin",
+}
+
+VOLATILE_KEYS = {
+    "uptime_seconds",
+    "uptime",
+    "served_at",
+    "now",
+    "timestamp",
+    "current_time",
+    "request_id",
+    "trace_id",
+    "audio_regenerated_at",
+    "_volatile_timestamp",
+    "etag",
+    "last_modified",
+    "epoch",
+    "current_epoch",
+    "pid",
+}
+
+_UNSUBSTITUTED_PARAM_RE = re.compile(r"\{[^}]+\}")
 
 POST_PROFILES: dict[str, dict[str, Any]] = {
     "/api/beat/animate": {"beat_id": "beat_99", "audio_delay": 0.0},
@@ -76,6 +110,27 @@ _PATH_BLOCK_RE = re.compile(
     r"^  (/[^\n:]+):\n((?:    [^\n]+\n)*)",
     re.MULTILINE,
 )
+
+
+def _strip_volatile(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        return {k: _strip_volatile(v) for k, v in obj.items() if k not in VOLATILE_KEYS}
+    if isinstance(obj, list):
+        return [_strip_volatile(x) for x in obj]
+    return obj
+
+
+def body_sha256(body: bytes) -> str:
+    try:
+        parsed = json.loads(body)
+        normalized = json.dumps(
+            _strip_volatile(parsed),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return hashlib.sha256(body).hexdigest()
 
 
 def route_key(method: str, path: str) -> str:
@@ -132,12 +187,14 @@ def _parse_routes_regex(text: str) -> list[tuple[str, str]]:
 
 
 def substitute_path_params(path_template: str) -> str:
-    return (
-        path_template.replace("{beat_id}", "beat_99")
-        .replace("{id}", "99")
-        .replace("{fname}", "nonexistent.bin")
-        .replace("{param}", "placeholder")
-    )
+    path = path_template
+    for placeholder, value in PATH_PARAM_SUBSTITUTIONS.items():
+        path = path.replace(placeholder, value)
+    return path
+
+
+def _unsubstituted_params(path: str) -> list[str]:
+    return _UNSUBSTITUTED_PARAM_RE.findall(path)
 
 
 def post_body_for_path(path_template: str) -> dict[str, Any]:
@@ -165,6 +222,14 @@ def probe_route(
         return skipped_fingerprint(skip_reason)
 
     path = substitute_path_params(path_template)
+    remaining = _unsubstituted_params(path)
+    if remaining:
+        print(
+            f"WARN unsubstituted path params in {method} {path_template}: {remaining}",
+            file=sys.stderr,
+        )
+        return skipped_fingerprint(f"unsubstituted path params: {remaining}")
+
     url = f"{base_url.rstrip('/')}{path}"
     started = time.perf_counter()
 
@@ -201,7 +266,7 @@ def probe_route(
         latency_ms = int((time.perf_counter() - started) * 1000)
         return {
             "status": status,
-            "body_sha256": hashlib.sha256(body).hexdigest(),
+            "body_sha256": body_sha256(body),
             "body_len": len(body),
             "content_type": content_type,
             "latency_ms": latency_ms,
@@ -213,6 +278,17 @@ def probe_route(
             "reason": str(exc),
             "latency_ms": latency_ms,
         }
+
+
+def _fingerprint_stable(fp1: dict[str, Any], fp2: dict[str, Any]) -> bool:
+    if fp1.get("status") == "skipped" or fp2.get("status") == "skipped":
+        return False
+    if fp1.get("status") == "error" or fp2.get("status") == "error":
+        return False
+    for field in ("status", "body_sha256", "content_type"):
+        if fp1.get(field) != fp2.get(field):
+            return False
+    return True
 
 
 def collect_fingerprints(
@@ -228,6 +304,47 @@ def collect_fingerprints(
         key = route_key(method, path_template)
         out[key] = probe_route(method, path_template, base_url=base_url, timeout_s=timeout_s)
     return dict(sorted(out.items()))
+
+
+def capture_stable_baseline(
+    routes: list[tuple[str, str]] | None = None,
+    *,
+    base_url: str = BASE_URL,
+    timeout_s: float = PROBE_TIMEOUT_S,
+    pass2_interval_s: float = PASS2_INTERVAL_S,
+) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
+    if routes is None:
+        routes = load_openapi_routes()
+
+    pass1 = collect_fingerprints(routes, base_url=base_url, timeout_s=timeout_s)
+    time.sleep(pass2_interval_s)
+    pass2 = collect_fingerprints(routes, base_url=base_url, timeout_s=timeout_s)
+
+    stable: dict[str, dict[str, Any]] = {}
+    counts = {"stable": 0, "non_deterministic": 0, "skipped": 0, "total": len(routes)}
+
+    for method, path_template in routes:
+        key = route_key(method, path_template)
+        fp1 = pass1[key]
+        fp2 = pass2[key]
+
+        if fp1.get("status") == "skipped":
+            counts["skipped"] += 1
+            continue
+
+        if _fingerprint_stable(fp1, fp2):
+            stable[key] = fp1
+            counts["stable"] += 1
+        else:
+            counts["non_deterministic"] += 1
+            print(
+                f"NON_DETERMINISTIC {key} "
+                f"pass1_status={fp1.get('status')} pass2_status={fp2.get('status')} "
+                f"pass1_sha={fp1.get('body_sha256')} pass2_sha={fp2.get('body_sha256')}",
+                file=sys.stderr,
+            )
+
+    return stable, counts
 
 
 def summarize(fingerprints: dict[str, dict[str, Any]]) -> dict[str, int]:
@@ -261,17 +378,14 @@ def write_baseline(
 
 
 def main() -> int:
-    routes = load_openapi_routes()
-    fingerprints = collect_fingerprints(routes)
-    write_baseline(fingerprints)
-    stats = summarize(fingerprints)
+    stable, counts = capture_stable_baseline()
+    write_baseline(stable)
     print(
         "BASELINE_CAPTURED "
-        f"routes={stats['routes']} "
-        f"2xx={stats['2xx']} "
-        f"4xx={stats['4xx']} "
-        f"5xx={stats['5xx']} "
-        f"errors={stats['errors']}"
+        f"stable={counts['stable']} "
+        f"non_deterministic={counts['non_deterministic']} "
+        f"skipped={counts['skipped']} "
+        f"total={counts['total']}"
     )
     return 0
 

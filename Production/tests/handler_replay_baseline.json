@@ -3,858 +3,651 @@
     "body_len": 238465,
     "body_sha256": "a9eb3db6cde0dc6dfc06d1b3174b1eca8a887c24b6f3831be00a95fb458a1e28",
     "content_type": "text/html; charset=utf-8",
-    "latency_ms": 11,
+    "latency_ms": 14,
     "status": 200
   },
   "GET /api/admin/inflight_count": {
     "body_len": 142,
-    "body_sha256": "cdd1db3a57ea1a228b77e7c2c092ef21184d476c4505df34bfe7f3004af2d225",
+    "body_sha256": "7400c950a382ee2ea0aa4712bb09e1f33eaf4c6155d639a282517f2648d9a597",
     "content_type": "application/json",
-    "latency_ms": 3,
+    "latency_ms": 2,
     "status": 200
   },
   "GET /api/animate/status": {
     "body_len": 337,
-    "body_sha256": "a6c9e2ae2703fe3947eb897e534ec38cdfd38e8abe3ce8b974ebb41dd1fde89d",
+    "body_sha256": "dec1952061908af54fa7c3e7338c8624b50daf35ebb253ba886580566be63b74",
     "content_type": "application/json",
     "latency_ms": 4,
     "status": 200
   },
   "GET /api/beat/accepted-bg": {
     "body_len": 42,
-    "body_sha256": "b818076c0262c7d120a7f129b9735436ba3412f541a8c0503456365513ed6e7e",
+    "body_sha256": "94caa2c703b72b66739590e17c38a2ee62cf56216aa51eba8c35dbfcd7ae68eb",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
   "GET /api/beat/audio/{param}": {
     "body_len": 132,
-    "body_sha256": "370b08ddb6308bdc9e44e542b02814453ab798f5402411193fb0091fdc7503be",
+    "body_sha256": "620707ec2fa9d14f850fce66f71d3b2fa67fd8ed6765e61c1957ebebf76e12f4",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 404
   },
   "GET /api/bg/crop-preview": {
     "body_len": 32,
-    "body_sha256": "36f36569b2809dddee6bab434af79513ae142637671e6beae6acefb4dacf4a4a",
+    "body_sha256": "6c2c63bc1d3eee545826b5c2ec21b1f83bbe66d5db91da7d06330a9a3042e3e4",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 0,
     "status": 400
   },
   "GET /api/bg/groups": {
     "body_len": 26,
-    "body_sha256": "7d8a889f72111bf632ab758bd411c33eaa134faf9d6929936f8458782a5b8b89",
+    "body_sha256": "9a8f57ef7563ff61deba87d7dd51660a77c343acd7bc7760ae09b8426433ef1b",
     "content_type": "application/json",
     "latency_ms": 10,
     "status": 200
   },
   "GET /api/bg/poll-assemble-status": {
     "body_len": 43,
-    "body_sha256": "98792c5f6902e09acf7aa8435f0292a19b5fa5947cf69505afc5711f9b6bdacd",
+    "body_sha256": "b5634a524bc7507aca895213b40f147af6b91c29d3f6296f6864728743bbf51c",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
   "GET /api/bg/poll-flux-status": {
     "body_len": 33,
-    "body_sha256": "7ec22a873db5cd5050696f26192d5510954bb3017923518dc13b5a38b4967ed5",
+    "body_sha256": "bb2192b27ceaf5683a841443c826f1e3775886d0b9470a95227eefa35d84a06e",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 0,
     "status": 400
   },
   "GET /api/bg/poll-gpt-status/{param}": {
     "body_len": 29,
-    "body_sha256": "417bc003ba466faee6b67bb627d36989baaaf779fb163dfec1d3523dcf425551",
+    "body_sha256": "42941cd44aa63d33f959c55cdd48818912c7b29dafa15841cf3f878e3d2f4acd",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 0,
     "status": 404
   },
   "GET /api/bg/segments": {
     "body_len": 33,
-    "body_sha256": "03a29308ff0ca538bf3c8e16928b99bf7f5ec9a818c398a3b0969285bc920e3b",
+    "body_sha256": "ca46a3e843bbffb1242f89a8830378d9aa34386b9c884758a141031d39344672",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 200
   },
   "GET /api/bg/session-state": {
     "body_len": 256,
-    "body_sha256": "b7596791b7fe8bd0c61c65f3dfd471bb1b0fb9de5a982e3543fc2e9be2ecbfb9",
+    "body_sha256": "3d5cfedb9e1b25d1714d347f93129188cf4b3443d1e34e8db03b843c9f18975a",
     "content_type": "application/json",
-    "latency_ms": 256,
+    "latency_ms": 147,
     "status": 200
   },
   "GET /api/cr/full": {
     "body_len": 43,
-    "body_sha256": "e8b3845ea58850d6254060050e7d80e8ce6f32faa7388acd2f3c49cca8b7f884",
+    "body_sha256": "6c96b05e4c4a57a2f64eeb0fbc203a0558cea765e97fd239211ba91b7251cec6",
     "content_type": "application/json",
     "latency_ms": 0,
     "status": 400
   },
   "GET /api/cr/library": {
     "body_len": 14,
-    "body_sha256": "4c3ebb622647036849c52cc87fdc3b16f4188d526f65b8fca277ba9701ac192b",
+    "body_sha256": "fe4c8c54050ff25dafa229c910053f181dd00d69ee04a46bcc078ef400167967",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 200
   },
   "GET /api/event/current": {
     "body_len": 301,
-    "body_sha256": "d9074d096d3dadbf887cae942ac0fef3496e80fb4ac2be6b61d66df33c3570a5",
+    "body_sha256": "5287585cc29ea771e209ec9067d704db1738c4b632b8e05e299c138bb12e5f2a",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 200
   },
   "GET /api/event/list": {
     "body_len": 1845,
-    "body_sha256": "71a2209fcf78665a87d9f210c871f2a7a7e901e35b53bd1667bcf35cb388caf6",
+    "body_sha256": "508c3e8cddf1a404c1129cd7ac5980354b0d7e12d3f5f7d8c8ad2e5b6fd067f1",
     "content_type": "application/json",
-    "latency_ms": 14,
+    "latency_ms": 17,
     "status": 200
   },
   "GET /api/health": {
-    "body_len": 80,
-    "body_sha256": "5fa34fc614150cb5c07556f0121d7f21792aac8f46bb9c547deb083dde1f151b",
+    "body_len": 79,
+    "body_sha256": "76e2eb72e5527ab9b9d597fe555d668b05d95725ae5d224ffeeaa7cdd3a9d3ad",
     "content_type": "application/json",
     "latency_ms": 0,
     "status": 200
   },
   "GET /api/lipsync/status": {
     "body_len": 6470,
-    "body_sha256": "8a710f0a4cd6475d3917a9e91f8ba338a19ba95c3548fcba2d507ef3e66b0aba",
+    "body_sha256": "8060db8afb0a380aa98b11be7d35cd6b32b3953debc925a3c7892ce72a607cb4",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 200
   },
   "GET /api/magic/resolve_bg": {
     "body_len": 35,
-    "body_sha256": "61136dc631ef44c90b8f6d88897dd13ac0e11d273adc2d023d6093f72d058ce1",
+    "body_sha256": "45c956e5f5d4731b62ceb17c0a3067a5ba30b80d764e086ceef12f636e005d2c",
     "content_type": "application/json",
-    "latency_ms": 5,
+    "latency_ms": 1,
     "status": 500
   },
   "GET /api/magic/status": {
     "body_len": 41,
-    "body_sha256": "b9527eac92fbd6db81b9918d248dce8ddddfb27f47b1230470b0843eeeaf2038",
+    "body_sha256": "c4a8b05e0fbb2d9fa02b0a4dfc2f7d66678b16aaec7c63189e066cffbdc0aa03",
     "content_type": "application/json",
     "latency_ms": 0,
     "status": 400
   },
   "GET /api/media/timeline_audio_/{param}": {
     "body_len": 112,
-    "body_sha256": "9870433ebce48af27bf116ebc214ca1d5d31abf99c4a628392a0896ede4630f7",
+    "body_sha256": "bbc7c55a8546fcf906717dee6faa49d9a6718808d219d27eca2ee415d39735f0",
     "content_type": "application/json",
     "latency_ms": 0,
     "status": 400
   },
   "GET /api/milestones/list": {
     "body_len": 1665,
-    "body_sha256": "f6793cd199f2db46913258a833c3d1ca87d488ce24e8e53834d14a36a9a24c10",
-    "content_type": "application/json",
-    "latency_ms": 2,
-    "status": 200
-  },
-  "GET /api/phase/base_clips_list": {
-    "body_len": 37,
-    "body_sha256": "caccca1099e5e5a3feffc595cf02626a7067619c67d424a18acd84e83b62fedc",
+    "body_sha256": "d8d044ca5838bb1880f66778f69f9286443e49b2d84f2024c4a610a2f47b9bff",
     "content_type": "application/json",
     "latency_ms": 3,
     "status": 200
   },
+  "GET /api/phase/base_clips_list": {
+    "body_len": 37,
+    "body_sha256": "704ca3410e268461f23271a944fae9f7912355623142cf1b55646b767ae329a4",
+    "content_type": "application/json",
+    "latency_ms": 2,
+    "status": 200
+  },
   "GET /api/phase/watercolor_file": {
     "body_len": 37,
-    "body_sha256": "5a405b83448a1b45fb88348ed388fbdad45df37ca81eb9f1c030d4905164f217",
+    "body_sha256": "9429787632e5966ebbd12ea469d169d04674e0f5db52e04177287227ea36db85",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
   "GET /api/phase/watercolor_list": {
     "body_len": 142,
-    "body_sha256": "84c78bf044a45a6288459773a897588d3e0273ff47a14c72451b67fd23818e55",
-    "content_type": "application/json",
-    "latency_ms": 2,
-    "status": 200
-  },
-  "GET /api/phase_b/ambient_preset_list": {
-    "body_len": 37,
-    "body_sha256": "caccca1099e5e5a3feffc595cf02626a7067619c67d424a18acd84e83b62fedc",
+    "body_sha256": "fbd89a407bdf0112a00eaf5537e504b79834da2cebddc2d42ed55e7eca1d5df1",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 200
   },
+  "GET /api/phase_b/ambient_preset_list": {
+    "body_len": 37,
+    "body_sha256": "704ca3410e268461f23271a944fae9f7912355623142cf1b55646b767ae329a4",
+    "content_type": "application/json",
+    "latency_ms": 2,
+    "status": 200
+  },
   "GET /api/phase_b/media/{param}": {
     "body_len": 142,
-    "body_sha256": "4c90c1d1e9b6bf310cca39e4a03b596060f77a9909c29187239ea3138868411f",
+    "body_sha256": "820b40460487d91138089194cff2a83b5292feda7a9b098a51667abd08fbe4c4",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
   "GET /api/phase_b/watercolor/{param}": {
     "body_len": 105,
-    "body_sha256": "3c719a40b9a76f60b5e4056656b0c7d68b44232bda3f3ba85887fbb1c98ed51a",
+    "body_sha256": "9740acc739062771feb5096e47ef65f418900e1996ebff717b6e6916f962decc",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
-  "GET /api/production/map": {
-    "body_len": 7978,
-    "body_sha256": "49958598581cae80e324bc6b57622a721a177dd53ce86aee2891da2bb5e7e5cd",
-    "content_type": "application/json",
-    "latency_ms": 1412,
-    "status": 200
-  },
   "GET /api/project/list": {
     "body_len": 1872,
-    "body_sha256": "d2ebb89d1e212591f253147620bfd11f10b9bb7aba55987b3f8776478ed48542",
+    "body_sha256": "66fc38bb3173bfa88f8ed386c6e206389b4b8beba76eea1dd63fcc24476381f4",
     "content_type": "application/json",
-    "latency_ms": 16,
+    "latency_ms": 14,
     "status": 200
   },
   "GET /api/state": {
     "body_len": 79246,
-    "body_sha256": "caf24efd4fbc1e01305f578549790d6a2d52fea05066fd887d84bb8caef13995",
+    "body_sha256": "38a09dc2b83aa4c0e0cdbb3b47f1da3ce5eb349095a41bae24b75924727d9aae",
     "content_type": "application/json",
     "latency_ms": 4,
     "status": 200
   },
   "GET /api/stitch_editor/audio_file/{param}": {
     "body_len": 46,
-    "body_sha256": "f8eb57ff0a3603eaf1910d499b99295783df34afd30858bce04862a86a5c49c7",
+    "body_sha256": "8b3d4eae5ba62db77f7035daec77dd3bf5909099e9400cdc4f0505e6018c554a",
     "content_type": "application/json",
-    "latency_ms": 3,
+    "latency_ms": 2,
     "status": 404
   },
   "GET /api/stitch_editor/job/{param}": {
     "body_len": 41,
-    "body_sha256": "dd0ad9215c0466e8007899c7c1028390fcf5f00ab980595f77fecafedbd7773b",
+    "body_sha256": "ae22188c4097359ac33c53aedab5b507f0b49109a379365981b16ecdf0310d59",
     "content_type": "application/json",
     "latency_ms": 2,
     "status": 404
   },
   "GET /api/stitch_editor/jobs": {
     "body_len": 437,
-    "body_sha256": "37d54a4dd08a35d6b76f00514d9da4ffc0a8e43f6d4a84f664edf3ed309f403b",
+    "body_sha256": "b950dfafe2b422188a893725fe69b40af8bbe5a4bacfaaf14e23fe0045ec4fb0",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 2,
     "status": 200
   },
   "GET /api/stitch_editor/library": {
     "body_len": 4088,
-    "body_sha256": "e2cad4e49dd8b642240c9ff392865b26dd49a84784ed4f93de648366a5c0cf85",
+    "body_sha256": "1a7ea08962824d5f6f785fb758ea51638aab1dd677a261ab3bfd2014ea8cd573",
     "content_type": "application/json",
-    "latency_ms": 431,
+    "latency_ms": 458,
     "status": 200
-  },
-  "GET /api/stitch_editor/preview_file/{param}": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "GET /api/storyboard/list/{param}": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "GET /api/timeline/audio/{param}": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "GET /api/timeline/sfx_library": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "GET /api/v2/beat/{param}": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "GET /api/v2/event/{id}/state": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "GET /api/v2/event/{param}": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "GET /api/v2/storyboard/L.json": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "GET /api/video/list": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "GET /api/voice/profile/{param}": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "GET /asset/{param}": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "GET /bg-stills/{param}": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "GET /cropper/{param}": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "GET /files": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "GET /magic": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "GET /stitch_editor": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "GET /storyboard": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "POST /api/admin/drain_end": {
-    "reason": "flips drain flag",
-    "status": "skipped"
-  },
-  "POST /api/admin/drain_start": {
-    "reason": "flips drain flag (server-wide)",
-    "status": "skipped"
   },
   "POST /api/animate": {
     "body_len": 88,
-    "body_sha256": "90aca9ec823949456571491ca5e3ebc00669bf788f13096f2c09ad5fb8462a46",
+    "body_sha256": "202712cc74c66ac04d8db78322b3b25b185a73dab00308cb0b7eccb013405f3a",
     "content_type": "application/json",
-    "latency_ms": 2,
+    "latency_ms": 1,
     "status": 400
   },
   "POST /api/animate/redo": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 2,
+    "latency_ms": 0,
     "status": 400
   },
   "POST /api/assign-image": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
   "POST /api/beat/add_options": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
   "POST /api/beat/delay": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 0,
     "status": 400
+  },
+  "POST /api/beat/done_toggle": {
+    "body_len": 200,
+    "body_sha256": "bbfb6caed8d43ac39ffa045fb51b92858114cdf5e3785a2c1940d8ce0a9b9aa0",
+    "content_type": "application/json",
+    "latency_ms": 14,
+    "status": 500
   },
   "POST /api/beat/finalize": {
     "body_len": 125,
-    "body_sha256": "f1f59842f8cf6b80e6ce945b6b95de01d1f40420e9e38c1d43b7b2c06c8f29a1",
+    "body_sha256": "2a8c5142ad9b830b74d663a40755b99df38568b1ab07b6069f87bef5ced6ecf6",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
   "POST /api/beat/graft": {
     "body_len": 33,
-    "body_sha256": "704b80eaf769df3fb073e25a403ec227d6c41dc3ab28609536dedd1a69c9ec60",
+    "body_sha256": "7a3432be326192d553a2dd60e0f47253102982cf9a8e1d2737593a45cba7a996",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 0,
     "status": 400
   },
   "POST /api/beat/regenerate_audio": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
   "POST /api/beat/swap_to_a": {
     "body_len": 36,
-    "body_sha256": "c79e5a048e4d986c8d8c88f3e0515d9efbb3c66ba0c4703c13405218f6c26da1",
+    "body_sha256": "dcb6c00643d36f5f263c5837f90c134766a757c7b07cfdef847131e67b1af23c",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
   "POST /api/beat/trim": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
   "POST /api/beat/update_speaker": {
     "body_len": 88,
-    "body_sha256": "90aca9ec823949456571491ca5e3ebc00669bf788f13096f2c09ad5fb8462a46",
+    "body_sha256": "202712cc74c66ac04d8db78322b3b25b185a73dab00308cb0b7eccb013405f3a",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 0,
     "status": 400
   },
   "POST /api/beat/update_text": {
     "body_len": 88,
-    "body_sha256": "90aca9ec823949456571491ca5e3ebc00669bf788f13096f2c09ad5fb8462a46",
+    "body_sha256": "202712cc74c66ac04d8db78322b3b25b185a73dab00308cb0b7eccb013405f3a",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
   "POST /api/beat/use_as_final": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 0,
     "status": 400
   },
   "POST /api/bg/accept-beats": {
     "body_len": 88,
-    "body_sha256": "90aca9ec823949456571491ca5e3ebc00669bf788f13096f2c09ad5fb8462a46",
+    "body_sha256": "202712cc74c66ac04d8db78322b3b25b185a73dab00308cb0b7eccb013405f3a",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 0,
     "status": 400
   },
   "POST /api/bg/accept-lib-image": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
   "POST /api/bg/accept-local-animation": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 0,
     "status": 400
   },
   "POST /api/bg/accept-option": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 0,
     "status": 400
   },
   "POST /api/bg/add-beat": {
     "body_len": 88,
-    "body_sha256": "90aca9ec823949456571491ca5e3ebc00669bf788f13096f2c09ad5fb8462a46",
+    "body_sha256": "202712cc74c66ac04d8db78322b3b25b185a73dab00308cb0b7eccb013405f3a",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 0,
     "status": 400
   },
   "POST /api/bg/assemble-group": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 0,
     "status": 400
   },
   "POST /api/bg/create-group": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 2,
+    "latency_ms": 0,
     "status": 400
   },
   "POST /api/bg/delete-beat": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
   "POST /api/bg/delete-group": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 0,
     "status": 400
   },
   "POST /api/bg/extract-beats": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 0,
     "status": 400
   },
   "POST /api/bg/inject-beats": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
   "POST /api/bg/reorder-beats": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
   "POST /api/bg/run-local-animation": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
   "POST /api/bg/set-active-context": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
   "POST /api/bg/submit-flux-batch": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 0,
     "status": 400
   },
   "POST /api/bg/submit-gpt-batch": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 0,
     "status": 400
   },
   "POST /api/bg/update-beat": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 0,
     "status": 400
   },
   "POST /api/bg/update-beat-animation-method": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 0,
     "status": 400
   },
   "POST /api/bg/update-group": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 0,
     "status": 400
   },
   "POST /api/budget/override": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 0,
     "status": 400
   },
   "POST /api/cr/library/delete": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 0,
     "status": 400
   },
   "POST /api/cr/save-crop": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 0,
     "status": 400
   },
   "POST /api/cr/upload": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 0,
     "status": 400
   },
-  "POST /api/event/create": {
-    "reason": "mutates Event_* directory creation",
-    "status": "skipped"
-  },
-  "POST /api/event/load": {
-    "reason": "switches active event (mutates server state)",
-    "status": "skipped"
-  },
   "POST /api/export": {
     "body_len": 444,
-    "body_sha256": "cfe4f70df471487e90cfa172b736abb052a6d2af3e415817a68314b2fef44c07",
+    "body_sha256": "5d6a4d99c7eb46fc760e55365e51292b2e191f76287f96836197c1ad1f8755c4",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 0,
     "status": 410
   },
   "POST /api/inject-image": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 0,
     "status": 400
   },
   "POST /api/lipsync": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 0,
     "status": 400
   },
   "POST /api/magic/submit_path": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 0,
     "status": 400
   },
   "POST /api/milestones/create": {
     "body_len": 98,
-    "body_sha256": "f6b842435ae522bfdc214a368d37ed215bbec0e0a3a306427572076239a33fb7",
-    "content_type": "application/json",
-    "latency_ms": 0,
-    "status": 400
-  },
-  "POST /api/milestones/load": {
-    "body_len": 98,
-    "body_sha256": "f6b842435ae522bfdc214a368d37ed215bbec0e0a3a306427572076239a33fb7",
+    "body_sha256": "0f014165a80bfb0b447eee47e7dfe16a0d3e0c35e2f1a3707df9106472d6270d",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
+  "POST /api/milestones/load": {
+    "body_len": 98,
+    "body_sha256": "0f014165a80bfb0b447eee47e7dfe16a0d3e0c35e2f1a3707df9106472d6270d",
+    "content_type": "application/json",
+    "latency_ms": 0,
+    "status": 400
+  },
   "POST /api/patch_health": {
     "body_len": 12,
-    "body_sha256": "6bc0da1f42f96fc37b8bd7ed20ba57606d2a0da5cda2b135c7854fbdc985b8a3",
+    "body_sha256": "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
     "content_type": "application/json",
-    "latency_ms": 2523,
+    "latency_ms": 2394,
     "status": 200
   },
   "POST /api/phase/suggest_script": {
     "body_len": 37,
-    "body_sha256": "3f30c02d17f10fbc3970bddbeb287f3b0f7afb701af54e6d60c0826ee7039bbf",
+    "body_sha256": "e5eaa2bc0159e171819257c741321d0fceef5a73a7bbea936f7bdf7d24a5ff42",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
   "POST /api/phase_a/lipsync": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
   "POST /api/phase_a/mix_audio": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
   "POST /api/phase_a/regen_audio": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
   "POST /api/phase_b/lipsync": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 2,
     "status": 400
   },
   "POST /api/phase_b/mix_audio": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
   "POST /api/phase_b/preview": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
   "POST /api/phase_b/regen_audio": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 2,
     "status": 400
   },
   "POST /api/preview_stitched": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 2,
     "status": 400
   },
   "POST /api/scene/assemble": {
     "body_len": 125,
-    "body_sha256": "f1f59842f8cf6b80e6ce945b6b95de01d1f40420e9e38c1d43b7b2c06c8f29a1",
+    "body_sha256": "2a8c5142ad9b830b74d663a40755b99df38568b1ab07b6069f87bef5ced6ecf6",
     "content_type": "application/json",
     "latency_ms": 2,
     "status": 400
   },
   "POST /api/select": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
   "POST /api/server/restart": {
     "body_len": 24,
-    "body_sha256": "0300dc63b93b78ea78fc4dfec382933b15de1fe8762c2e3425c402bf9c33d260",
+    "body_sha256": "d457f7815da8981b272c07378a6841616bd8604fafaced68adc4d2dc4461a568",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 200
   },
-  "POST /api/state/snapshot": {
-    "body_len": 339,
-    "body_sha256": "a2fe6b5ff7f1f2a22aa801750a28711eda79eb5466a6debc08859ee911255ecc",
-    "content_type": "application/json",
-    "latency_ms": 4,
-    "status": 200
-  },
   "POST /api/stitch_editor/audio_extract": {
     "body_len": 32,
-    "body_sha256": "601868e7ce236e5cd66cb385fff94978f8e2a2f2eeace3af53c5a1714f84fb7b",
+    "body_sha256": "0e85a7038650e35aeeeb7b3d308b1e36148e7c488eda0d78728cd6520976601e",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
   "POST /api/stitch_editor/bake": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
   },
   "POST /api/stitch_editor/job": {
     "body_len": 152,
-    "body_sha256": "e4f606b8d840636601dac301774f3e57e7b1e84955bac5ab8e859739b83ae9bd",
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 1,
     "status": 400
-  },
-  "POST /api/stitch_editor/loudnorm": {
-    "latency_ms": 1,
-    "reason": "[Errno 54] Connection reset by peer",
-    "status": "error"
-  },
-  "POST /api/stitch_editor/preview": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "POST /api/storyboard/magic_still": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "POST /api/storyboard/magic_video": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "POST /api/storyboard/switch": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "POST /api/timeline/cues": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "POST /api/timeline/cues/bake": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "POST /api/timeline/open_in_quicktime": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "POST /api/timeline/preview_with_sfx": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "POST /api/tts": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "POST /api/v2/beat/create": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "POST /api/v2/beat/delete": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "POST /api/v2/beat/{id}/patch": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "POST /api/v2/beat/{id}/swap_to_a": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "POST /api/v2/beat/{param}": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "POST /api/v2/module/patch": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "POST /api/video/create": {
-    "reason": "mutates state.json",
-    "status": "skipped"
-  },
-  "POST /api/video/set_active": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "POST /api/voice/profile_update": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
-  },
-  "POST /api/watercolor/animate": {
-    "latency_ms": 0,
-    "reason": "<urlopen error [Errno 61] Connection refused>",
-    "status": "error"
   }
 }

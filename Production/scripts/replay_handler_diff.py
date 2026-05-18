@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Replay handler routes and diff against baseline — V59 Phase 4-prep.
 
-Re-probes every OpenAPI route with the same stub payloads as
-capture_handler_replay_baseline.py and compares fingerprints.
+Re-probes every stable route in handler_replay_baseline.json with the same
+stub payloads as capture_handler_replay_baseline.py and compares fingerprints.
 
-Exit 0 when diffs == 0; exit 1 otherwise.
+Exit 0 when diffs == 0 and errors == 0; exit 1 otherwise.
 """
 from __future__ import annotations
 
@@ -25,6 +25,10 @@ BASELINE_PATH = baseline_mod.BASELINE_PATH
 
 def _is_skipped(fp: dict[str, Any]) -> bool:
     return fp.get("status") == "skipped"
+
+
+def _is_error(fp: dict[str, Any]) -> bool:
+    return fp.get("status") == "error"
 
 
 def _http_status(fp: dict[str, Any]) -> int | None:
@@ -142,36 +146,44 @@ def run_diff(
             raise FileNotFoundError(f"baseline not found: {path}")
         baseline_data = json.loads(path.read_text(encoding="utf-8"))
 
-    routes = baseline_mod.load_openapi_routes()
-    replay_data = baseline_mod.collect_fingerprints(routes)
+    all_routes = baseline_mod.load_openapi_routes()
+    all_keys = {baseline_mod.route_key(m, p) for m, p in all_routes}
+    baseline_keys = set(baseline_data)
+    skipped_nondeterministic = len(all_keys - baseline_keys)
 
-    all_keys = sorted(set(baseline_data) | set(replay_data))
+    replay_data = baseline_mod.collect_fingerprints(all_routes)
+
     diffs_detail: list[dict[str, Any]] = []
     matched = 0
-    skipped = 0
+    errors = 0
 
-    for key in all_keys:
-        method, path = baseline_mod.parse_key(key)
-        b_fp = baseline_data.get(key, {"status": "error", "reason": "missing in baseline"})
+    for key in sorted(baseline_keys):
+        method, route_path = baseline_mod.parse_key(key)
+        b_fp = baseline_data[key]
         r_fp = replay_data.get(key, {"status": "error", "reason": "missing in replay"})
 
-        if _is_skipped(b_fp) or _is_skipped(r_fp):
-            skipped += 1
+        if _is_error(r_fp):
+            errors += 1
             continue
 
-        route_diffs = compare_fingerprints(b_fp, r_fp, method=method, path=path)
+        if _is_skipped(b_fp) or _is_skipped(r_fp):
+            continue
+
+        route_diffs = compare_fingerprints(b_fp, r_fp, method=method, path=route_path)
         if route_diffs:
             diffs_detail.extend(route_diffs)
         else:
             matched += 1
 
     total = len(all_keys)
+    unique_diff_routes = len({(d["method"], d["path"]) for d in diffs_detail})
     result = {
-        "ok": len(diffs_detail) == 0,
+        "ok": unique_diff_routes == 0 and errors == 0,
         "total": total,
         "matched": matched,
-        "diffs": len({(d["method"], d["path"]) for d in diffs_detail}),
-        "skipped": skipped,
+        "diffs": unique_diff_routes,
+        "skipped_nondeterministic": skipped_nondeterministic,
+        "errors": errors,
         "diffs_detail": diffs_detail,
     }
     return result
@@ -184,8 +196,15 @@ def main() -> int:
         print(str(exc), file=sys.stderr)
         return 1
 
-    print(json.dumps(result, indent=2, sort_keys=True))
-    return 0 if result["diffs"] == 0 else 1
+    print(
+        "REPLAY_DIFF_RESULT "
+        f"diffs={result['diffs']} "
+        f"matched={result['matched']} "
+        f"skipped_nondeterministic={result['skipped_nondeterministic']} "
+        f"errors={result['errors']} "
+        f"total={result['total']}"
+    )
+    return 0 if result["ok"] else 1
 
 
 if __name__ == "__main__":
