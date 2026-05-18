@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-18T07:20:17Z",
+  "generated_at": "2026-05-18T12:38:23Z",
   "generator": "Production/scripts/generate_feature_registry.py",
   "source_glob": "Production/tools/storyboard-v2/src/components/**/*.tsx",
   "testids": [
@@ -204,19 +204,19 @@
     {
       "id": "event-selector",
       "file": "Production/tools/storyboard-v2/src/components/EventSelector.tsx",
-      "line": 93,
+      "line": 97,
       "tab": "shared"
     },
     {
       "id": "event-select",
       "file": "Production/tools/storyboard-v2/src/components/EventSelector.tsx",
-      "line": 97,
+      "line": 102,
       "tab": "shared"
     },
     {
       "id": "event-error",
       "file": "Production/tools/storyboard-v2/src/components/EventSelector.tsx",
-      "line": 115,
+      "line": 126,
       "tab": "shared"
     },
     {
@@ -472,63 +472,81 @@
       "tab": "shared"
     },
     {
+      "id": "stitcher-drop-target-sfx-strip",
+      "file": "Production/tools/storyboard-v2/src/components/StitcherSlotWaveform.tsx",
+      "line": 55,
+      "tab": "shared"
+    },
+    {
+      "id": "stitcher-drop-target-image-slot",
+      "file": "Production/tools/storyboard-v2/src/components/StitcherTab.tsx",
+      "line": 135,
+      "tab": "stitcher"
+    },
+    {
       "id": "pane-stitcher",
       "file": "Production/tools/storyboard-v2/src/components/StitcherTab.tsx",
-      "line": 484,
+      "line": 548,
       "tab": "stitcher"
     },
     {
       "id": "stitcher-scope-chip",
       "file": "Production/tools/storyboard-v2/src/components/StitcherTab.tsx",
-      "line": 487,
+      "line": 551,
       "tab": "stitcher"
     },
     {
       "id": "stitcher-loading",
       "file": "Production/tools/storyboard-v2/src/components/StitcherTab.tsx",
-      "line": 494,
+      "line": 558,
       "tab": "stitcher"
     },
     {
       "id": "stitcher-error",
       "file": "Production/tools/storyboard-v2/src/components/StitcherTab.tsx",
-      "line": 496,
+      "line": 560,
       "tab": "stitcher"
     },
     {
       "id": "stitcher-no-job",
       "file": "Production/tools/storyboard-v2/src/components/StitcherTab.tsx",
-      "line": 501,
+      "line": 565,
       "tab": "stitcher"
     },
     {
       "id": "stitcher-strip",
       "file": "Production/tools/storyboard-v2/src/components/StitcherTab.tsx",
-      "line": 510,
+      "line": 574,
       "tab": "stitcher"
     },
     {
       "id": "stitcher-transitions-row",
       "file": "Production/tools/storyboard-v2/src/components/StitcherTab.tsx",
-      "line": 631,
+      "line": 693,
       "tab": "stitcher"
     },
     {
       "id": "stitcher-module-timeline",
       "file": "Production/tools/storyboard-v2/src/components/StitcherTab.tsx",
-      "line": 649,
+      "line": 709,
+      "tab": "stitcher"
+    },
+    {
+      "id": "stitcher-drop-target-sfx-strip",
+      "file": "Production/tools/storyboard-v2/src/components/StitcherTab.tsx",
+      "line": 712,
       "tab": "stitcher"
     },
     {
       "id": "stitcher-bake-btn",
       "file": "Production/tools/storyboard-v2/src/components/StitcherTab.tsx",
-      "line": 674,
+      "line": 739,
       "tab": "stitcher"
     },
     {
       "id": "stitcher-status",
       "file": "Production/tools/storyboard-v2/src/components/StitcherTab.tsx",
-      "line": 685,
+      "line": 750,
       "tab": "stitcher"
     },
     {
@@ -622,9 +640,27 @@
       "tab": "shared"
     },
     {
+      "id": "tab-bar-row",
+      "file": "Production/tools/storyboard-v2/src/components/TabBar.tsx",
+      "line": 68,
+      "tab": "shared"
+    },
+    {
       "id": "tab-bar",
       "file": "Production/tools/storyboard-v2/src/components/TabBar.tsx",
-      "line": 67,
+      "line": 69,
+      "tab": "shared"
+    },
+    {
+      "id": "tab-bar-scope",
+      "file": "Production/tools/storyboard-v2/src/components/TabBar.tsx",
+      "line": 101,
+      "tab": "shared"
+    },
+    {
+      "id": "scope-current-display",
+      "file": "Production/tools/storyboard-v2/src/components/TabBar.tsx",
+      "line": 105,
       "tab": "shared"
     },
     {
@@ -1024,6 +1060,7 @@
       "scope-banner-mismatch",
       "scope-banner-reload",
       "scope-boundary-loading",
+      "scope-current-display",
       "sfx-cue-popover",
       "sfx-cue-popover-close",
       "sfx-cue-popover-delete",
@@ -1032,10 +1069,13 @@
       "sfx-cue-popover-fadeout",
       "sfx-cue-popover-volume",
       "spinner",
+      "stitcher-drop-target-sfx-strip",
       "suggest-parenthetical-button",
       "suggest-parenthetical-menu",
       "suggest-parenthetical-wrapper",
       "tab-bar",
+      "tab-bar-row",
+      "tab-bar-scope",
       "toast-host",
       "tooltip-popover",
       "tooltip-wrap",
@@ -1049,6 +1089,8 @@
     "stitcher": [
       "pane-stitcher",
       "stitcher-bake-btn",
+      "stitcher-drop-target-image-slot",
+      "stitcher-drop-target-sfx-strip",
       "stitcher-error",
       "stitcher-loading",
       "stitcher-module-timeline",
