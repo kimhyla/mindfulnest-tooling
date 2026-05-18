@@ -283,15 +283,29 @@ def parse_server_routes(server_path: Path) -> Dict[str, List[str]]:
         line = src.count("\n", 0, m.start()) + 1
         handler_matches.append((line, "_handle_" + m.group(1)))
 
-    # Pair each path with the FIRST handler call appearing on the next 1-4
-    # lines (typical router pattern: `return self._handle_x(body)`).
-    handler_lines = {hl: hn for hl, hn in handler_matches}
+    # Pair each path with the FIRST handler call appearing in its dispatch
+    # block — i.e. between this `if path == "..."` (or `elif path ==`) and
+    # the next path match in source order. The previous fixed 6-line window
+    # silently dropped routes whose dispatch had inline validation that
+    # exceeded 6 lines (e.g. /api/beat/swap_to_a's V59 multi-line error
+    # return). Block-scoped search degrades gracefully: if no handler call
+    # appears before the next path branch, the route is omitted (same
+    # conservative behavior as before, just with a correct block boundary).
+    handler_matches.sort(key=lambda x: x[0])
+    next_path_line_after: Dict[int, int] = {}
+    last = None
+    for plineno, _ in reversed(path_matches):
+        next_path_line_after[plineno] = last if last is not None else 10**9
+        last = plineno
     for plineno, ppath in path_matches:
-        for offset in range(0, 6):
-            handler = handler_lines.get(plineno + offset)
-            if handler:
-                routes.setdefault(ppath, []).append(handler)
+        block_end = next_path_line_after.get(plineno, 10**9)
+        for hline, hname in handler_matches:
+            if hline <= plineno:
+                continue
+            if hline >= block_end:
                 break
+            routes.setdefault(ppath, []).append(hname)
+            break
     return routes
 
 
