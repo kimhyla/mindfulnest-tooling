@@ -281,13 +281,35 @@ def main() -> int:
         }
         try:
             res = try_post_or_queue("prod_assets", payload)
-            if res.get("ok"):
+            # try_post_or_queue contract: success returns the row dict directly (has 'id');
+            # queued returns {"queued": True, "path": ...}; gate-blocked returns dict with
+            # browser_smoke_missing / silent_write_failure / etc. flags.
+            # Success cases (count as written):
+            # 1. res has 'id' at top level (clean post + verified read-back)
+            # 2. res has 'silent_write_failure' BUT all mismatches are bigInteger int↔str
+            #    equivalence (Directus serializes bigInt as JSON string; we send int).
+            #    The row IS created (item_id present); the mismatch is cosmetic.
+            #    See Rule 35 — verifier intentionally strict; we accept this narrow class.
+            tolerable_silent_failure = False
+            if res.get("silent_write_failure") and res.get("item_id"):
+                mismatches = res.get("mismatches") or []
+                if all(
+                    m.get("field") == "file_size_bytes"
+                    and str(m.get("sent")) == str(m.get("got"))
+                    for m in mismatches
+                ):
+                    tolerable_silent_failure = True
+
+            if res.get("id") or tolerable_silent_failure:
                 written += 1
-                if (i + 1) % 100 == 0:
-                    print(f"  ... {i+1}/{len(classified)} written")
+                if (i + 1) % 10 == 0:
+                    print(f"  ... {i+1}/{len(classified)} written", flush=True)
+            elif res.get("queued"):
+                failed += 1
+                print(f"  ! row {i} queued (network/Directus down): {res.get('path')}", file=sys.stderr)
             else:
                 failed += 1
-                print(f"  ! row {i} failed: {res}", file=sys.stderr)
+                print(f"  ! row {i} unexpected response: {res}", file=sys.stderr)
                 if failed > 5:
                     print(f"FAIL: >5 errors, halting at row {i}", file=sys.stderr)
                     return 1
