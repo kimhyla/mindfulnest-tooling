@@ -22,7 +22,7 @@ entries:
   # 3 known regressions (status=known_red) — flip to exit-4 WARN when present
   # ===========================================================================
   - { ld: LD-746, symbol: 'kim-done-checkbox', kind: testid, status: active }
-  - { ld: LD-767, symbol: 'suggest-parenthetical', kind: testid, status: known_red }
+  - { ld: LD-767, symbol: 'suggest-parenthetical', kind: testid, status: active }
   - { ld: LD-738, symbol: 'tile-tier.*(master|delivery)', kind: attr, status: active, regex: true }
 
   # ===========================================================================

@@ -5864,6 +5864,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_beat_trim(body)
             if path == "/api/beat/kim_done_set":  # LD-746 re-shipped
                 return self._handle_beat_kim_done_set(body)
+            if path == "/api/beat/suggest_parenthetical":  # LD-729 (Agent E greenfield 2026-05-17)
+                return self._handle_beat_suggest_parenthetical(body)
             if path == "/api/beat/use_as_final":  # Spec A: no-lipsync final path
                 return self._handle_use_as_final(body)
             if path == "/api/beat/use_still_as_final":  # LD-761: Ken Burns still as final
@@ -9037,6 +9039,290 @@ class ProductionHandler(BaseHTTPRequestHandler):
             "tokens_in": usage.get("input_tokens"),
             "tokens_out": usage.get("output_tokens"),
             "sources_loaded": sources_loaded,
+        })
+
+    # =====================================================================
+    # LD-729 BEAT_PARENTHETICAL_TRANSLATOR_V1 (re-shipped 2026-05-17 by
+    # Agent E from spec; greenfield rebuild — no reflog evidence existed.
+    # LD-767 STORYBOARD_UI_RESTORE_SUGGEST_PARENTHETICAL_AND_DONE_V1's
+    # claimed "restoration from .deploy_backups/20260517T040011Z" was
+    # FABRICATED per audit LD SESSION_LD_FABRICATION_AUDIT_V1 — zero hits
+    # for `_handle_beat_suggest_parenthetical` in any worktree. This is
+    # the actual implementation, modeled on _handle_phase_suggest_script
+    # above for Anthropic API call patterns.
+    #
+    # POST /api/beat/suggest_parenthetical
+    #   Body: {description: str, beat_id?: str, scope_video_role?: str,
+    #          event_id?: str, scope_event_id?: str, speaker?: str}
+    #   Returns: {status: 'ok', ok: true, parenthetical, speaker,
+    #            character_type, mouth_anchor, model_used,
+    #            generation_time_ms, tokens_in, tokens_out,
+    #            convention_doc_path}
+    #
+    # Reads Production/docs/BEAT_PARENTHETICAL_CONVENTION_v1.md at request
+    # time as the system prompt — doc updates propagate without code
+    # change. Auto-detects bird vs mammal from the resolved speaker.
+    # =====================================================================
+
+    # Bird/mammal classification per BEAT_PARENTHETICAL_CONVENTION_v1.md §Library:
+    # Birds: Luna, Chipper, Bork (use "beak at rest")
+    # Mammals: Tessa (turtle), Benson (bunny), Ember (fox), Bramble (bear),
+    #          Cedric (wizard), Grizzle (mammal), Oliver (mammal) — use "mouth at rest"
+    _PARENTHETICAL_BIRD_SPEAKERS = frozenset({"luna", "chipper", "bork"})
+
+    def _handle_beat_suggest_parenthetical(self, body: dict) -> None:
+        """LD-729 — Haiku-backed parenthetical suggester for beat.text.
+
+        READ-ONLY: does not mutate state. Returns a §8-safe parenthetical
+        derived from BEAT_PARENTHETICAL_CONVENTION_v1.md applied to the
+        user's natural-language description.
+        """
+        # Read-only probe; scope is optional (allow_missing=True) mirroring
+        # _handle_phase_suggest_script.
+        if not self._assert_event_scope(self._scope_body(body), allow_missing=True):
+            return
+
+        description = (body or {}).get("description")
+        if not isinstance(description, str) or not description.strip():
+            return self._send_json(400, {
+                "ok": False,
+                "status": "error",
+                "error": "missing or empty 'description'",
+                "hint": "Send {description: 'natural language emotion/pose'} body field.",
+            })
+        description = description.strip()
+        if len(description) > 1000:
+            return self._send_json(400, {
+                "ok": False,
+                "status": "error",
+                "error": "description exceeds 1000 chars",
+            })
+
+        # Resolve the speaker → bird vs mammal mouth anchor. Lookup precedence:
+        #   1. Explicit body.speaker (caller may override)
+        #   2. beat_id → state.partition.beats[beat_id].speaker
+        #   3. Default to bird (most common in MindfulNest narrative) with
+        #      mouth anchor "beak at rest"
+        explicit_speaker = (body or {}).get("speaker") or ""
+        beat_id = (body or {}).get("beat_id") or (body or {}).get("beat") or ""
+        scope_video_role = (body or {}).get("scope_video_role") or ""
+        resolved_speaker = (explicit_speaker or "").strip()
+        if not resolved_speaker and beat_id:
+            # Look up the beat's speaker from state. Scope-resolution failures
+            # are non-fatal — we fall through to the default-bird path.
+            try:
+                state = self.app.state.read_state()
+                # Use scope_router to find the partition; if it fails, use
+                # the simplest path through 'videos.intro' as a fallback.
+                try:
+                    scope = scope_router.resolve(body, self.app.event_dir.name)
+                    partition = state.get(scope.partition_path, {}) if hasattr(scope, "partition_path") else {}
+                except Exception:
+                    partition = {}
+                # Last-resort scan: try common partition locations.
+                if not partition:
+                    for role in ("intro", "phase_b", "phase_a"):
+                        v = state.get("videos", {}).get(role) or {}
+                        if not v and role == "intro":
+                            v = state.get(role) or {}
+                        cand = (v.get("beats") or {}).get(beat_id) or {}
+                        if cand:
+                            partition = v
+                            break
+                beat = ((partition.get("beats") or {}).get(beat_id) or {}) if isinstance(partition, dict) else {}
+                resolved_speaker = (beat.get("speaker") or "").strip()
+            except Exception:
+                resolved_speaker = ""
+
+        speaker_norm = (resolved_speaker or "").lower()
+        is_bird = speaker_norm in self._PARENTHETICAL_BIRD_SPEAKERS
+        # If we have a speaker but it's not in the bird set, classify as mammal.
+        # If no speaker at all, default to bird per LD-729 smoke-test "Default bird".
+        if not speaker_norm:
+            is_bird = True
+        character_type = "bird" if is_bird else "mammal"
+        mouth_anchor = "beak at rest" if is_bird else "mouth at rest"
+
+        # Resolve Anthropic API key — same pattern as _handle_phase_suggest_script.
+        try:
+            sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+            from credential_store import get_secret_optional  # type: ignore
+            api_key = get_secret_optional("ANTHROPIC_API_KEY")
+        except Exception:
+            api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            return self._send_json(503, {
+                "ok": False,
+                "status": "error",
+                "code": "ANTHROPIC_API_KEY_MISSING",
+                "message": (
+                    "Anthropic API key not configured. Add ANTHROPIC_API_KEY "
+                    "to Doppler (project=mindfulnest, config=dev) or set the "
+                    "env var and restart the server."
+                ),
+            })
+
+        # Read the canonical convention doc. LD-729: "Reads
+        # BEAT_PARENTHETICAL_CONVENTION_v1.md at request time as system
+        # prompt — doc updates propagate automatically."
+        # Tooling-tree path under Production/docs/.
+        convention_doc_rel = "Production/docs/BEAT_PARENTHETICAL_CONVENTION_v1.md"
+        convention_doc_path = Path(__file__).parent.parent / "docs" / "BEAT_PARENTHETICAL_CONVENTION_v1.md"
+        if not convention_doc_path.exists():
+            # Fall back to the canonical Dropbox-root location which is where
+            # Rule 5 says the source-of-truth lives. Some deploys mirror it to
+            # tooling tree; some don't.
+            dropbox_default = Path(
+                "/Users/kimberlysmith/Library/CloudStorage/Dropbox/"
+                "Claude Mindfulnest Project Files"
+            ) / convention_doc_rel
+            if dropbox_default.exists():
+                convention_doc_path = dropbox_default
+            else:
+                return self._send_json(503, {
+                    "ok": False,
+                    "status": "error",
+                    "code": "CONVENTION_DOC_MISSING",
+                    "message": (
+                        f"Convention doc not found at {convention_doc_rel} "
+                        f"(tooling) or Dropbox canonical path. The translator "
+                        f"requires the convention doc as its prompt template."
+                    ),
+                })
+        try:
+            convention_text = convention_doc_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            return self._send_json(503, {
+                "ok": False,
+                "status": "error",
+                "code": "CONVENTION_DOC_READ_FAILED",
+                "message": f"Failed to read convention doc: {type(exc).__name__}: {exc}",
+            })
+
+        # Build the system + user prompts. System prompt = full convention doc
+        # + explicit output contract. User prompt = the natural-language
+        # description + the resolved character type so Haiku picks the right
+        # mouth anchor without needing to second-guess the classification.
+        system_prompt = (
+            "You are a parenthetical translator for the MindfulNest v59 "
+            "storyboard authoring tool. The canonical convention is below "
+            "verbatim — treat every rule as authoritative. Your job is to "
+            "convert a natural-language emotion/pose description into a "
+            "single §8-safe parenthetical that obeys the three hard rules "
+            "(no jaw/mouth motion, no camera-relative gaze, end-state only) "
+            "and the four-component pattern.\n\n"
+            "OUTPUT CONTRACT — respond with ONLY a valid JSON object, no "
+            "surrounding prose, no markdown fence:\n"
+            "  {\"parenthetical\": \"(...)\"}\n"
+            "The parenthetical MUST start with `(` and end with `)`. It "
+            "MUST end with the appropriate mouth anchor for the character "
+            "type given in the user message. If the user's description "
+            "contains a forbidden word (mouth open, agape, at viewer, "
+            "staring, looking at camera, etc.), DROP that violation from "
+            "your output — never echo it back.\n\n"
+            "===== BEAT_PARENTHETICAL_CONVENTION =====\n"
+            f"{convention_text}\n"
+            "===== END CONVENTION =====\n"
+        )
+        user_prompt = (
+            f"Character type: {character_type}\n"
+            f"Required mouth anchor: {mouth_anchor}\n"
+            f"Speaker (if known): {resolved_speaker or '(unspecified — default bird)'}\n\n"
+            f"Natural-language description from author:\n"
+            f"---\n{description}\n---\n\n"
+            "Produce the §8-safe parenthetical now. Respond with only the "
+            "JSON object {\"parenthetical\": \"(...)\"} — no prose, no fence."
+        )
+
+        # Call Anthropic Messages API via urllib (mirrors _handle_phase_suggest_script).
+        url = "https://api.anthropic.com/v1/messages"
+        req_body = {
+            "model": "claude-haiku-4-5",
+            "max_tokens": 512,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": user_prompt}],
+        }
+        req_data = json.dumps(req_body).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=req_data,
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            method="POST",
+        )
+        t0 = time.time()
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                resp_body = resp.read().decode("utf-8")
+                resp_data = json.loads(resp_body)
+        except urllib.error.HTTPError as exc:
+            err_body = exc.read().decode("utf-8", errors="replace")
+            return self._send_json(502, {
+                "ok": False,
+                "status": "error",
+                "error": f"Anthropic API HTTP {exc.code}",
+                "detail": err_body[:500],
+            })
+        except urllib.error.URLError as exc:
+            return self._send_json(502, {
+                "ok": False,
+                "status": "error",
+                "error": f"Anthropic API URL error: {exc}",
+            })
+        elapsed_ms = int((time.time() - t0) * 1000)
+
+        # Extract text from response shape.
+        content = resp_data.get("content") or []
+        raw_text = ""
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                raw_text += block.get("text", "")
+        raw_text = raw_text.strip()
+
+        # Parse the model's JSON output. Strip optional code fences defensively.
+        parenthetical = ""
+        try:
+            cleaned = raw_text
+            if cleaned.startswith("```"):
+                # Strip leading/trailing fences.
+                cleaned = re.sub(r"^```(?:json)?\s*\n?", "", cleaned)
+                cleaned = re.sub(r"\n?```\s*$", "", cleaned)
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict):
+                parenthetical = str(parsed.get("parenthetical") or "").strip()
+        except json.JSONDecodeError:
+            # Last-resort: extract a parenthesized substring from the raw text.
+            m = re.search(r"\([^)]{3,500}\)", raw_text)
+            if m:
+                parenthetical = m.group(0).strip()
+
+        if not parenthetical or not parenthetical.startswith("(") or not parenthetical.endswith(")"):
+            return self._send_json(502, {
+                "ok": False,
+                "status": "error",
+                "error": "Haiku response did not contain a valid parenthetical",
+                "raw_text": raw_text[:500],
+            })
+
+        usage = resp_data.get("usage") or {}
+        return self._send_json(200, {
+            "ok": True,
+            "status": "ok",
+            "parenthetical": parenthetical,
+            "speaker": resolved_speaker or "",
+            "character_type": character_type,
+            "mouth_anchor": mouth_anchor,
+            "model_used": resp_data.get("model", "claude-haiku-4-5"),
+            "generation_time_ms": elapsed_ms,
+            "tokens_in": usage.get("input_tokens"),
+            "tokens_out": usage.get("output_tokens"),
+            "convention_doc_path": str(convention_doc_path),
+            # Echo back scope context so smoke tests / debugging see what
+            # the server resolved from the request body.
+            "scope_video_role": scope_video_role or None,
         })
 
     # ============================================================

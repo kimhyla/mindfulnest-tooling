@@ -1228,6 +1228,438 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
 }
 
 // ----------------------------------------------------------------
+// LD-729 BEAT_PARENTHETICAL_TRANSLATOR_V1 — "💡 Suggest parenthetical"
+// AI-translator UI. Greenfield rebuild by Agent E 2026-05-17 from
+// spec (LD-729 + LD-732 + BEAT_PARENTHETICAL_CONVENTION_v1.md). No
+// reflog evidence existed — LD-767 SESSION_LD_FABRICATION_AUDIT_V1
+// confirmed zero hits in any worktree. This is the actual ship.
+//
+// LD-732 INSERT_PARENTHETICAL_AWAIT_SAVE_V1 race-fix is baked in:
+//   - `inserting` local flag locks Insert/Edit&Insert/Cancel buttons
+//     during the in-flight beat_update_text await window.
+//   - Re-entrancy guard on insert() prevents double-fire.
+//
+// data-testids (manifest LD-767 marker: `beat-N-suggest-parenthetical`):
+//   beat-N-suggest-parenthetical               (entry button — MANIFEST MARKER)
+//   beat-N-suggest-parenthetical-open          (the open input panel)
+//   beat-N-suggest-parenthetical-desc          (the description textarea)
+//   beat-N-suggest-parenthetical-submit        (submit description → Haiku)
+//   beat-N-suggest-parenthetical-cancel        (close panel, drop input)
+//   beat-N-suggest-parenthetical-error         (error message text)
+//   beat-N-suggest-parenthetical-result        (suggestion display)
+//   beat-N-suggest-parenthetical-insert        (Insert button on result)
+//   beat-N-suggest-parenthetical-edit          (Edit & Insert button on result)
+//   beat-N-suggest-parenthetical-dismiss       (Cancel on result phase)
+//   beat-N-suggest-parenthetical-edit-input    (textarea on edit phase)
+//   beat-N-suggest-parenthetical-edit-insert   (Insert button on edit phase)
+//   beat-N-suggest-parenthetical-edit-cancel   (Cancel on edit phase)
+//
+// INVARIANTS (Rule 36 §36.1):
+//   - All selectors are class-only (`.mn-suggest-parenthetical`,
+//     `.mn-suggest-parenthetical-input`, `.mn-suggest-parenthetical-result`)
+//     — no parent-relative selectors, no `body > X`.
+//   - The component holds NO global state; everything is local. Server
+//     suggestion calls are stateless (no pathappPatch, direct fetch).
+//   - applyParenthetical is a pure regex helper — no side effects.
+//   - The actual state mutation (text update) routes through the
+//     existing pathappPatch('beat_update_text', ...) channel that
+//     onBlur already uses, so behavior is identical to a manual edit.
+//   - Rule 32: absolute http://localhost:5111 URL on the suggest call.
+// ----------------------------------------------------------------
+
+/**
+ * applyParenthetical — pure helper. Given existing beat text and a new
+ * parenthetical (already wrapped in parens), return updated text where
+ * the leading `(...)` parenthetical is REPLACED if present, else the
+ * new parenthetical is PREPENDED followed by a single space.
+ *
+ * Examples:
+ *   applyParenthetical('(old) hi there', '(new)')        → '(new) hi there'
+ *   applyParenthetical('hi there', '(new)')              → '(new) hi there'
+ *   applyParenthetical('', '(new)')                      → '(new) '
+ *   applyParenthetical('  (old)   hi', '(new)')          → '(new)   hi'
+ *
+ * Regex: `^\s*\([^)]*\)\s*` matches the leading parenthetical + any
+ * trailing whitespace so we don't double-space.
+ */
+export function applyParenthetical(currentText: string, parenthetical: string): string {
+  const stripped = currentText.replace(/^\s*\([^)]*\)\s*/, '');
+  return `${parenthetical} ${stripped}`;
+}
+
+interface BeatSuggestParentheticalProps {
+  index: number;
+  beatId: string;
+  beat: BeatState;
+  editRef: RefObject<HTMLParagraphElement | null>;
+  onMutated: () => void;
+}
+
+type SuggestPhase =
+  | { kind: 'closed' }
+  | { kind: 'input' }
+  | { kind: 'submitting' }
+  | { kind: 'result'; parenthetical: string; speaker: string; mouth_anchor: string }
+  | { kind: 'edit'; parenthetical: string };
+
+interface SuggestServerResponse {
+  ok?: boolean;
+  status?: string;
+  parenthetical?: string;
+  speaker?: string;
+  character_type?: string;
+  mouth_anchor?: string;
+  model_used?: string;
+  generation_time_ms?: number;
+  tokens_in?: number;
+  tokens_out?: number;
+  convention_doc_path?: string;
+  error?: string;
+  message?: string;
+}
+
+function BeatSuggestParenthetical({ index, beatId, beat, editRef, onMutated }: BeatSuggestParentheticalProps) {
+  const [phase, setPhase] = useState<SuggestPhase>({ kind: 'closed' });
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [description, setDescription] = useState<string>('');
+  const [editText, setEditText] = useState<string>('');
+  const [inserting, setInserting] = useState<boolean>(false);
+  // Re-entrancy guard for the in-flight insert promise (LD-732 race-fix).
+  // The state flag drives UI; this ref prevents two concurrent insert()
+  // calls if a click sneaks through while React is still propagating the
+  // setInserting(true).
+  const insertingRef = useRef<boolean>(false);
+
+  const onOpen = () => {
+    setErrorMsg(null);
+    setDescription('');
+    setPhase({ kind: 'input' });
+  };
+  const onClose = () => {
+    setErrorMsg(null);
+    setDescription('');
+    setEditText('');
+    setPhase({ kind: 'closed' });
+  };
+
+  const onSubmit = async () => {
+    const desc = description.trim();
+    if (!desc) {
+      setErrorMsg('Type a description first (e.g. "shocked at the runestone").');
+      return;
+    }
+    setErrorMsg(null);
+    setPhase({ kind: 'submitting' });
+    try {
+      // Rule 32: absolute http://localhost:5111 URL. LD-729 spec: direct
+      // fetch (not pathappPatch) — server is stateless on this endpoint.
+      const res = await fetch('http://localhost:5111/api/beat/suggest_parenthetical', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          description: desc,
+          beat_id: beatId,
+          // Mirror pathappPatch's auto-injection: scope_video_role from the
+          // activeTargetVideo signal (source of truth for the role channel).
+          scope_video_role: activeTargetVideo.value,
+          event_id: activeScope.value.event_id,
+          speaker: beat.speaker ?? '',
+        }),
+      });
+      const data = (await res.json()) as SuggestServerResponse;
+      if (!res.ok || !data.ok || !data.parenthetical) {
+        const detail = data.error || data.message || `HTTP ${res.status}`;
+        setErrorMsg(`Suggest failed: ${detail}`);
+        setPhase({ kind: 'input' });
+        return;
+      }
+      setPhase({
+        kind: 'result',
+        parenthetical: data.parenthetical,
+        speaker: data.speaker ?? '',
+        mouth_anchor: data.mouth_anchor ?? '',
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setErrorMsg(`Suggest network error: ${msg}`);
+      setPhase({ kind: 'input' });
+    }
+  };
+
+  const insert = async (parentheticalToInsert: string) => {
+    // LD-732 race-fix re-entrancy guard. Both the ref and the state flag
+    // are flipped together: ref blocks a re-enter on the same tick, state
+    // drives UI disable.
+    if (insertingRef.current) return;
+    insertingRef.current = true;
+    setInserting(true);
+    setErrorMsg(null);
+    try {
+      const currentText = editRef.current?.innerText ?? beat.text ?? '';
+      const nextText = applyParenthetical(currentText, parentheticalToInsert);
+      const result = await pathappPatch(activeScope.value, 'beat_update_text', {
+        beat: beatId,
+        text: nextText,
+      });
+      if (!result.ok) {
+        setErrorMsg(`Insert save failed: ${result.error ?? `HTTP ${result.status}`}`);
+        return;
+      }
+      // Update the contenteditable DOM directly (uncontrolled per BeatCard's
+      // pattern) so the visible text matches what the server now persists.
+      if (editRef.current) editRef.current.innerText = nextText;
+      // Refresh parent so derived flags (text_modified_after_tts etc.) update.
+      onMutated();
+      pushToast({
+        kind: 'success',
+        message: 'Parenthetical inserted',
+        source: `beat-${index}-suggest-parenthetical-inserted`,
+      });
+      onClose();
+    } finally {
+      insertingRef.current = false;
+      setInserting(false);
+    }
+  };
+
+  const onInsert = () => {
+    if (phase.kind !== 'result') return;
+    void insert(phase.parenthetical);
+  };
+  const onEdit = () => {
+    if (phase.kind !== 'result') return;
+    setEditText(phase.parenthetical);
+    setPhase({ kind: 'edit', parenthetical: phase.parenthetical });
+  };
+  const onEditInsert = () => {
+    const trimmed = editText.trim();
+    if (!trimmed.startsWith('(') || !trimmed.endsWith(')')) {
+      setErrorMsg('Edited parenthetical must start with `(` and end with `)`.');
+      return;
+    }
+    void insert(trimmed);
+  };
+  const onEditCancel = () => {
+    if (phase.kind === 'edit') {
+      setPhase({
+        kind: 'result',
+        parenthetical: phase.parenthetical,
+        speaker: '',
+        mouth_anchor: '',
+      });
+    }
+  };
+
+  // Closed phase — just the entry button. data-testid is the LD-767 manifest
+  // marker (`beat-N-suggest-parenthetical`).
+  if (phase.kind === 'closed') {
+    return (
+      <div class="mn-suggest-parenthetical mn-suggest-parenthetical-closed">
+        <button
+          type="button"
+          class="mn-btn mn-btn-small"
+          data-testid={`beat-${index}-suggest-parenthetical`}
+          onClick={onOpen}
+          aria-label={`Suggest parenthetical for beat ${beatId}`}
+          title="Get an AI-suggested §8-safe parenthetical from a natural-language description"
+        >
+          💡 Suggest parenthetical
+        </button>
+      </div>
+    );
+  }
+
+  // Submitting — spinner shown alongside the (now-disabled) input row.
+  // We deliberately keep the input field rendered so Kim sees what she
+  // typed; only the buttons are replaced with a spinner.
+  if (phase.kind === 'submitting') {
+    return (
+      <div class="mn-suggest-parenthetical mn-suggest-parenthetical-busy">
+        <textarea
+          class="mn-suggest-parenthetical-desc"
+          data-testid={`beat-${index}-suggest-parenthetical-desc`}
+          value={description}
+          disabled
+          rows={2}
+        />
+        <span class="mn-suggest-parenthetical-spinner" aria-live="polite">
+          Asking Haiku…
+        </span>
+      </div>
+    );
+  }
+
+  // Input phase — description textarea + Enter/Cancel buttons.
+  if (phase.kind === 'input') {
+    return (
+      <div
+        class="mn-suggest-parenthetical mn-suggest-parenthetical-input"
+        data-testid={`beat-${index}-suggest-parenthetical-open`}
+      >
+        <textarea
+          class="mn-suggest-parenthetical-desc"
+          data-testid={`beat-${index}-suggest-parenthetical-desc`}
+          value={description}
+          onInput={(e) => setDescription((e.target as HTMLTextAreaElement).value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              void onSubmit();
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              onClose();
+            }
+          }}
+          placeholder='Describe the end-pose emotion (e.g. "shocked at the runestone")'
+          rows={2}
+          aria-label={`Describe the parenthetical for beat ${beatId}`}
+        />
+        {errorMsg ? (
+          <span
+            class="mn-suggest-parenthetical-error"
+            data-testid={`beat-${index}-suggest-parenthetical-error`}
+            role="alert"
+          >
+            {errorMsg}
+          </span>
+        ) : null}
+        <span class="mn-suggest-parenthetical-actions">
+          <button
+            type="button"
+            class="mn-btn mn-btn-small mn-btn-primary"
+            data-testid={`beat-${index}-suggest-parenthetical-submit`}
+            onClick={() => void onSubmit()}
+            aria-label="Submit description to Haiku"
+          >
+            Suggest →
+          </button>
+          <button
+            type="button"
+            class="mn-btn mn-btn-small"
+            data-testid={`beat-${index}-suggest-parenthetical-cancel`}
+            onClick={onClose}
+            aria-label="Cancel suggest parenthetical"
+          >
+            Cancel
+          </button>
+        </span>
+      </div>
+    );
+  }
+
+  // Result phase — show suggestion + Insert / Edit & Insert / Dismiss.
+  if (phase.kind === 'result') {
+    return (
+      <div class="mn-suggest-parenthetical mn-suggest-parenthetical-result">
+        <code
+          class="mn-suggest-parenthetical-text"
+          data-testid={`beat-${index}-suggest-parenthetical-result`}
+        >
+          {phase.parenthetical}
+        </code>
+        {phase.mouth_anchor ? (
+          <span class="mn-suggest-parenthetical-meta">
+            {phase.speaker ? `${phase.speaker} · ` : ''}{phase.mouth_anchor}
+          </span>
+        ) : null}
+        {errorMsg ? (
+          <span
+            class="mn-suggest-parenthetical-error"
+            data-testid={`beat-${index}-suggest-parenthetical-error`}
+            role="alert"
+          >
+            {errorMsg}
+          </span>
+        ) : null}
+        <span class="mn-suggest-parenthetical-actions">
+          <button
+            type="button"
+            class="mn-btn mn-btn-small mn-btn-primary"
+            data-testid={`beat-${index}-suggest-parenthetical-insert`}
+            onClick={onInsert}
+            disabled={inserting}
+            aria-label="Insert parenthetical into beat text"
+          >
+            {inserting ? 'Saving…' : 'Insert'}
+          </button>
+          <button
+            type="button"
+            class="mn-btn mn-btn-small"
+            data-testid={`beat-${index}-suggest-parenthetical-edit`}
+            onClick={onEdit}
+            disabled={inserting}
+            aria-label="Edit the suggested parenthetical before inserting"
+          >
+            Edit & Insert
+          </button>
+          <button
+            type="button"
+            class="mn-btn mn-btn-small"
+            data-testid={`beat-${index}-suggest-parenthetical-dismiss`}
+            onClick={onClose}
+            disabled={inserting}
+            aria-label="Dismiss suggestion"
+          >
+            Cancel
+          </button>
+        </span>
+      </div>
+    );
+  }
+
+  // Edit phase — editable textarea pre-filled with the suggestion + Insert/Cancel.
+  return (
+    <div class="mn-suggest-parenthetical mn-suggest-parenthetical-edit">
+      <textarea
+        class="mn-suggest-parenthetical-desc"
+        data-testid={`beat-${index}-suggest-parenthetical-edit-input`}
+        value={editText}
+        onInput={(e) => setEditText((e.target as HTMLTextAreaElement).value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            onEditCancel();
+          }
+        }}
+        rows={3}
+        aria-label="Edit suggested parenthetical before inserting"
+      />
+      {errorMsg ? (
+        <span
+          class="mn-suggest-parenthetical-error"
+          data-testid={`beat-${index}-suggest-parenthetical-error`}
+          role="alert"
+        >
+          {errorMsg}
+        </span>
+      ) : null}
+      <span class="mn-suggest-parenthetical-actions">
+        <button
+          type="button"
+          class="mn-btn mn-btn-small mn-btn-primary"
+          data-testid={`beat-${index}-suggest-parenthetical-edit-insert`}
+          onClick={onEditInsert}
+          disabled={inserting}
+          aria-label="Insert edited parenthetical"
+        >
+          {inserting ? 'Saving…' : 'Insert edited'}
+        </button>
+        <button
+          type="button"
+          class="mn-btn mn-btn-small"
+          data-testid={`beat-${index}-suggest-parenthetical-edit-cancel`}
+          onClick={onEditCancel}
+          disabled={inserting}
+          aria-label="Back to suggested parenthetical"
+        >
+          Back
+        </button>
+      </span>
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------
 // Per-beat editable card
 // ----------------------------------------------------------------
 
@@ -1841,6 +2273,17 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
         previewOptIdx={previewOptIdx}
         onPreviewOption={handlePreviewOption}
         onEnsureLipsyncMounted={ensureLipsyncMounted}
+      />
+      {/* LD-729 BEAT_PARENTHETICAL_TRANSLATOR_V1 — "💡 Suggest parenthetical".
+          Mounted between BeatButtonRow and BeatMagicButtons per fabricated-
+          spec ship record row 4612's ui_flow. Greenfield rebuild 2026-05-17
+          (Agent E) — no reflog evidence existed. */}
+      <BeatSuggestParenthetical
+        index={index}
+        beatId={beatId}
+        beat={beat}
+        editRef={editRef}
+        onMutated={onMutated}
       />
       <BeatMagicButtons index={index} beatId={beatId} beat={beat} eventId={eventId} />
       <div class="mn-sb-insert-after" data-testid={`sb-insert-after-${index}`}>

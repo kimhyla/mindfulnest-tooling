@@ -145,6 +145,15 @@ export const MUTATION_ENDPOINTS = {
   // `kim_done_at` on the beat dict. UI counter at top of storyboard reads
   // all beats and shows "N/M done".
   beat_kim_done_set: `${SERVER_BASE}/api/beat/kim_done_set`,
+  // LD-729 BEAT_PARENTHETICAL_TRANSLATOR_V1 (Agent E greenfield 2026-05-17).
+  // Server handler: production_server.py _handle_beat_suggest_parenthetical.
+  // Body: {description: str, beat_id?: str, scope_video_role?: str,
+  //        event_id?: str, speaker?: str}. Stateless read-only Haiku call —
+  // does NOT mutate state. UI uses direct fetch() per LD-729 spec ("Stateless
+  // suggestion call — direct fetch, not pathappPatch, since no state mutation
+  // on server side"). Listed here so endpoint catalog is complete + Rule 32
+  // absolute-URL discipline holds.
+  beat_suggest_parenthetical: `${SERVER_BASE}/api/beat/suggest_parenthetical`,
   // Authoring-workflow Pillar 7 cornerstone (C-7) — canonical beat-recovery
   // primitive. COPY default; move=true for cross-event/role moves. Per
   // LD BEAT_GRAFT_RECOVERY_MECHANISM_V1: pre-render-only invariant
