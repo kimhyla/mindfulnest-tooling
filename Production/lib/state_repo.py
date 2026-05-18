@@ -11,8 +11,10 @@ Per LD-794 V59 spec §Phase A. Authored 2026-05-18.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
+import sqlite3
 import threading
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -138,3 +140,202 @@ class JsonStateRepository:
             return state
 
         self.mutate(_mutator)
+
+
+_SCHEMA_BEATS_PATH = Path(__file__).resolve().parent.parent / "db" / "schema_beats.sql"
+
+
+def _serialize_beat_payload(payload: dict) -> str:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _beat_payload_sha256(serialized: str) -> str:
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+class SqliteBeatRepository:
+    """Beat-level shim for Phase 9 shadow. JSON remains source; SQLite shadows.
+
+    Public API mirrors what a future SqliteStateRepository would provide:
+      - get_beat(event_id, video_role, beat_id) -> dict | None
+      - set_beat(event_id, video_role, beat_id, payload) -> None
+      - mutate_beat(event_id, video_role, beat_id, fn) -> dict
+      - list_beats(event_id, video_role=None) -> list[(role, beat_id, payload)]
+
+    SHADOW DUAL-WRITE: every write hits BOTH the JSON state file (via the
+    wrapped JsonStateRepository) AND the SQLite table. Reads default to
+    JSON. A future cutover phase will flip reads to SQLite + add a
+    drift-detect background job.
+    """
+
+    def __init__(
+        self,
+        event_id: str,
+        json_repo: JsonStateRepository,
+        db_path: Path,
+    ) -> None:
+        self.event_id = event_id
+        self._json = json_repo
+        self.db_path = db_path
+        self._lock = threading.Lock()
+        self._ensure_schema()
+
+    def _conn(self) -> sqlite3.Connection:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(self.db_path), isolation_level=None, timeout=30)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _ensure_schema(self) -> None:
+        with self._lock, self._conn() as conn:
+            conn.executescript(_SCHEMA_BEATS_PATH.read_text(encoding="utf-8"))
+
+    def _write_sqlite(
+        self,
+        video_role: str,
+        beat_id: str,
+        payload: dict,
+        *,
+        operation: str = "mutate",
+        payload_before: str | None = None,
+    ) -> None:
+        serialized = _serialize_beat_payload(payload)
+        sha = _beat_payload_sha256(serialized)
+        with self._lock, self._conn() as conn:
+            conn.execute("BEGIN")
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO beats "
+                    "(event_id, video_role, beat_id, payload, payload_sha256, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                    (self.event_id, video_role, beat_id, serialized, sha),
+                )
+                conn.execute(
+                    "INSERT INTO beats_audit "
+                    "(event_id, video_role, beat_id, operation, payload_before, payload_after) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        self.event_id,
+                        video_role,
+                        beat_id,
+                        operation,
+                        payload_before,
+                        serialized,
+                    ),
+                )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+
+    def _read_json_beat(self, video_role: str, beat_id: str) -> dict | None:
+        state = self._json.read()
+        if video_role == "legacy":
+            beat = (state.get("beats") or {}).get(beat_id)
+        else:
+            videos = state.get("videos") or {}
+            partition = videos.get(video_role) or {}
+            beat = (partition.get("beats") or {}).get(beat_id)
+        return beat if isinstance(beat, dict) else None
+
+    def _mutate_json_beat(
+        self,
+        video_role: str,
+        beat_id: str,
+        fn: Callable[[dict], dict],
+    ) -> dict:
+        def _state_mutator(state: dict) -> dict:
+            if video_role == "legacy":
+                beats = state.setdefault("beats", {})
+                current = beats.get(beat_id)
+                if not isinstance(current, dict):
+                    current = {}
+                beats[beat_id] = fn(current)
+            else:
+                videos = state.setdefault("videos", {})
+                partition = videos.setdefault(video_role, {})
+                if not isinstance(partition, dict):
+                    partition = {}
+                    videos[video_role] = partition
+                beats = partition.setdefault("beats", {})
+                current = beats.get(beat_id)
+                if not isinstance(current, dict):
+                    current = {}
+                beats[beat_id] = fn(current)
+            return state
+
+        new_state = self._json.mutate(_state_mutator)
+        if video_role == "legacy":
+            return (new_state.get("beats") or {})[beat_id]
+        return (new_state["videos"][video_role]["beats"])[beat_id]
+
+    def get_beat(self, event_id: str, video_role: str, beat_id: str) -> dict | None:
+        if event_id != self.event_id:
+            return None
+        return self._read_json_beat(video_role, beat_id)
+
+    def set_beat(
+        self,
+        event_id: str,
+        video_role: str,
+        beat_id: str,
+        payload: dict,
+    ) -> None:
+        if event_id != self.event_id:
+            raise ValueError(f"event_id mismatch: {event_id} != {self.event_id}")
+
+        before = self._read_json_beat(video_role, beat_id)
+        payload_before = _serialize_beat_payload(before) if before is not None else None
+
+        def _replace(_current: dict) -> dict:
+            return payload
+
+        updated = self._mutate_json_beat(video_role, beat_id, _replace)
+        self._write_sqlite(
+            video_role,
+            beat_id,
+            updated,
+            operation="mutate",
+            payload_before=payload_before,
+        )
+
+    def mutate_beat(
+        self,
+        event_id: str,
+        video_role: str,
+        beat_id: str,
+        fn: Callable[[dict], dict],
+    ) -> dict:
+        if event_id != self.event_id:
+            raise ValueError(f"event_id mismatch: {event_id} != {self.event_id}")
+
+        before = self._read_json_beat(video_role, beat_id)
+        payload_before = _serialize_beat_payload(before) if before is not None else None
+        updated = self._mutate_json_beat(video_role, beat_id, fn)
+        self._write_sqlite(
+            video_role,
+            beat_id,
+            updated,
+            operation="mutate",
+            payload_before=payload_before,
+        )
+        return updated
+
+    def list_beats(
+        self,
+        event_id: str,
+        video_role: str | None = None,
+    ) -> list[tuple[str, str, dict]]:
+        if event_id != self.event_id:
+            return []
+        try:
+            from lib.v3_partition import _iter_v3_beats  # type: ignore[import]
+        except ImportError:  # pragma: no cover
+            from Production.lib.v3_partition import _iter_v3_beats
+
+        rows = [
+            (role, bid, beat)
+            for role, bid, beat in _iter_v3_beats(self._json.read())
+            if video_role is None or role == video_role
+        ]
+        return rows
