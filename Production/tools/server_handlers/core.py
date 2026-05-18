@@ -21,6 +21,14 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+# V59 Phase 4 cross-review fix (body_key_contract CI failure):
+# missing module-level variable references that need re-import.
+from tools.production_server import (  # noqa: E402
+    _ASSEMBLE_JOBS,
+    _GPT_JOBS,
+    _MAGIC_JOBS,
+)
+
 
 def handle_patch_health(h, body: dict) -> None:
     """POST /api/patch_health  body: {patch: str, msg: str}

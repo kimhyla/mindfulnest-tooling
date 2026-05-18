@@ -35,6 +35,12 @@ from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+# V59 Phase 4 cross-review fix (body_key_contract CI failure):
+# missing module-level variable references that need re-import.
+from tools.production_server import (  # noqa: E402
+    _VIDEO_TRIM_TAILROOM_S,
+)
+
 # Project-internal modules imported the same way production_server.py does.
 # Handler bodies may reference any of these by bare name.
 from lib.atomic_json_write import atomic_json_write

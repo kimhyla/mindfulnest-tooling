@@ -337,51 +337,75 @@ class HandlerBodyKeyExtractor(ast.NodeVisitor):
 def parse_server_handlers(
     server_path: Path, routes: Dict[str, List[str]]
 ) -> Dict[str, ServerEndpoint]:
-    """handler_name -> ServerEndpoint with body_keys + allowed_keys."""
-    src = server_path.read_text(encoding="utf-8")
-    src_lines = src.splitlines()
-    tree = ast.parse(src, filename=str(server_path))
+    """handler_name -> ServerEndpoint with body_keys + allowed_keys.
 
+    V59 Phase 4 (handler split) update: handlers extracted from
+    production_server.py now live in Production/tools/server_handlers/*.py
+    as free functions named `handle_X` (no leading underscore), while
+    production_server.py keeps a 2-line shim `def _handle_X(self, body):`
+    that delegates. This function walks BOTH locations:
+      1. production_server.py — picks up any handlers still defined there
+         (legacy + non-extracted) AND scans shim sources for BODY_KEY_ALLOW.
+      2. server_handlers/*.py — picks up extracted free functions; matches
+         them to `_handle_X` route entries by name (handle_X → _handle_X).
+    """
     needed_handlers: Set[str] = set()
     for handlers in routes.values():
         needed_handlers.update(handlers)
 
     by_handler: Dict[str, ServerEndpoint] = {}
-    # Reverse-map: handler -> [url_paths].
     handler_to_paths: Dict[str, List[str]] = {}
     for url, hlist in routes.items():
         for h in hlist:
             handler_to_paths.setdefault(h, []).append(url)
 
-    # Walk top-level + nested class methods.
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if node.name not in needed_handlers:
+    def _walk_file(path: Path, name_xform=None):
+        src = path.read_text(encoding="utf-8")
+        src_lines = src.splitlines()
+        tree = ast.parse(src, filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            display_name = node.name
+            if name_xform:
+                display_name = name_xform(node.name)
+            if display_name not in needed_handlers:
                 continue
             extractor = HandlerBodyKeyExtractor()
             extractor.visit(node)
             allowed: Set[str] = set()
-            # Slice the source lines covering this function and grep for the
-            # BODY_KEY_ALLOW comment.
             start = node.lineno - 1
             end = getattr(node, "end_lineno", start + 1)
             for raw in src_lines[start:end]:
                 am = ALLOW_RE.search(raw)
                 if am:
                     allowed.add(am.group(1))
-            ep = by_handler.get(node.name)
+            ep = by_handler.get(display_name)
             if ep is None:
                 ep = ServerEndpoint(
-                    handler_name=node.name,
-                    url_paths=handler_to_paths.get(node.name, []),
+                    handler_name=display_name,
+                    url_paths=handler_to_paths.get(display_name, []),
                     body_keys=set(extractor.keys),
                     allowed_keys=set(allowed),
                     source_line=node.lineno,
                 )
-                by_handler[node.name] = ep
+                by_handler[display_name] = ep
             else:
                 ep.body_keys.update(extractor.keys)
                 ep.allowed_keys.update(allowed)
+
+    # Pass 1: production_server.py (catches non-extracted handlers + shim ALLOW comments)
+    _walk_file(server_path)
+
+    # Pass 2: server_handlers/*.py (catches extracted handler bodies)
+    # Phase 4 free-function names are handle_X → match to route entry _handle_X
+    handlers_dir = server_path.parent / "server_handlers"
+    if handlers_dir.is_dir():
+        for mod_path in sorted(handlers_dir.glob("*.py")):
+            if mod_path.name.startswith("_"):
+                continue  # skip _base.py, __init__.py
+            _walk_file(mod_path, name_xform=lambda n: f"_{n}" if n.startswith("handle_") or n.startswith("serve_") else n)
+
     return by_handler
 
 

@@ -35,6 +35,15 @@ from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+# V59 Phase 4 cross-review fix (body_key_contract CI failure):
+# missing module-level variable references that need re-import.
+from tools.production_server import (  # noqa: E402
+    _ASSEMBLE_JOBS,
+    _GPT_JOBS,
+    _MAGIC_JOBS,
+    _SPEAKER_ALIAS,
+)
+
 # V59 Phase 4 path-depth correction: extracted modules are one level
 # deeper than production_server.py. These constants map original
 # `_PSERVER_TOOLS_DIR[.parent]*` targets correctly.

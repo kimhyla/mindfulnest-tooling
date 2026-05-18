@@ -15,6 +15,16 @@ from datetime import datetime, timezone
 import scope_router
 from lib.paths import DROPBOX_ROOT
 
+# V59 Phase 4 cross-review fix (body_key_contract CI failure):
+# missing module-level variable references from extracted handler bodies.
+from tools.production_server import (  # noqa: E402
+    _FORWARDED_V2_DIALOGUE_FIELDS,
+    _PATCH_STATE_DEDUP,
+    _PATCH_STATE_DEDUP_MAX,
+    _V2_MODULE_ALLOWED_FIELDS,
+    _V2_MODULE_FIELD_VALIDATORS,
+)
+
 
 def handle_v2_patch(h, path: str, body: dict) -> None:
     """POST /api/v2/beat/<beat_id>/patch"""
