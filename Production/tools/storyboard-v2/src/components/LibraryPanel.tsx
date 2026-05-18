@@ -52,6 +52,9 @@ interface LibItem {
   tags?: string[];
   asset_name?: string;
   iteration_notes?: string;
+  // LD-738 LIBRARY_MASTER_ASSET_VISIBILITY_FIX_V1
+  is_master?: boolean;
+  has_crop?: boolean;
 }
 
 interface LibraryResponse {
@@ -74,6 +77,15 @@ function thumbSrc(it: LibItem): string | undefined {
 
 function displayName(it: LibItem): string {
   return it.display_name ?? it.filename ?? it.key ?? '(unnamed)';
+}
+
+/** LD-738 — display name with master crop-status suffix when applicable. */
+function libraryTileLabel(it: LibItem): string {
+  const base = displayName(it);
+  if (it.is_master !== true) return base;
+  return it.has_crop === true
+    ? `${base} (master — crop exists)`
+    : `${base} (uncropped — crop me first)`;
 }
 
 // ----------------------------------------------------------------
@@ -516,6 +528,8 @@ export function LibraryPanel() {
                     ...(it.filename ? { filename: it.filename } : {}),
                   };
               const dimsLabel = it.width && it.height ? `${it.width}×${it.height}` : undefined;
+              const isMaster = it.is_master === true;
+              const tileTier = isMaster ? 'master' : 'delivery';
               const tileProps: {
                 libKey: string;
                 name: string;
@@ -528,7 +542,7 @@ export function LibraryPanel() {
                 onClick?: () => void;
               } = {
                 libKey,
-                name: displayName(it),
+                name: libraryTileLabel(it),
                 testIdSuffix: i,
                 dragPayload,
                 onDelete: () => onDelete(it),
@@ -550,10 +564,17 @@ export function LibraryPanel() {
                   key={libKey}
                   class="mn-library-tile-wrap"
                   data-testid={`library-tile-wrap-${i}`}
+                  data-tile-tier={tileTier}
                   onMouseEnter={() => requestPreview(it)}
                   onMouseLeave={cancelPreviewRequest}
                 >
                   <AssetTile {...tileProps}>
+                    <span
+                      class={`mn-badge ${isMaster ? 'mn-badge-master' : 'mn-badge-delivery'}`}
+                      data-tile-tier={tileTier}
+                    >
+                      {isMaster ? 'MASTER' : 'DELIVERY'}
+                    </span>
                     {cropSrc ? (
                       <button
                         type="button"

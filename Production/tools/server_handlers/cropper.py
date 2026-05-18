@@ -53,6 +53,156 @@ from tools.production_server import (  # noqa: E402
     _resolve_module_id_for_state,
 )
 
+
+def _library_asset_name_from_source_key(source_key: str) -> str | None:
+    """Derive prod_assets.asset_name from cropper source_key (URL, path, or bare key)."""
+    if not source_key or not isinstance(source_key, str):
+        return None
+    if source_key.startswith("data:"):
+        return None
+    if "abs_path=" in source_key:
+        try:
+            parsed = urllib.parse.urlparse(source_key)
+            qs = urllib.parse.parse_qs(parsed.query)
+            abs_path = qs.get("abs_path", [None])[0]
+            if abs_path:
+                fname = os.path.basename(abs_path)
+                return os.path.splitext(fname)[0].replace(" ", "_")
+        except Exception:
+            pass
+    base = os.path.basename(source_key.split("?")[0])
+    if base:
+        return os.path.splitext(base)[0].replace(" ", "_")
+    return source_key.replace(" ", "_") or None
+
+
+def _resolve_parent_asset_id_from_source_key(source_key: str) -> int | None:
+    """Rule 6.2 — link delivery crop to still_master parent via asset_name."""
+    asset_name = _library_asset_name_from_source_key(source_key)
+    if not asset_name:
+        return None
+    try:
+        from lib.directus_admin_client import DirectusAdminClient
+        client = DirectusAdminClient()
+    except Exception as e:
+        print(f"[BG] WARN: parent_asset_id lookup skipped: {e}")
+        return None
+    name_variants = {asset_name, asset_name.replace("_", " "), asset_name.replace(" ", "_")}
+    for name in name_variants:
+        if not name:
+            continue
+        try:
+            rows = client.get_items(
+                "prod_assets",
+                filters={
+                    "_and": [
+                        {"asset_type": {"_eq": "still_master"}},
+                        {"asset_name": {"_eq": name}},
+                    ]
+                },
+                fields=["id"],
+                limit=1,
+            )
+        except Exception as e:
+            print(f"[BG] WARN: parent_asset_id lookup failed for {name!r}: {e}")
+            continue
+        if rows:
+            pid = rows[0].get("id")
+            if isinstance(pid, int) and pid > 0:
+                return pid
+    return None
+
+
+def _enrich_library_items_prod_assets(images: list) -> None:
+    """LD-738 — annotate library items with is_master / has_crop from prod_assets."""
+    for item in images:
+        item["is_master"] = False
+        item["has_crop"] = False
+    if not images:
+        return
+    path_keys: list[str] = []
+    for item in images:
+        fp = item.get("abs_path")
+        if fp:
+            try:
+                path_keys.append(os.path.realpath(fp))
+            except OSError:
+                pass
+    if not path_keys:
+        return
+    try:
+        from lib.directus_admin_client import DirectusAdminClient
+        client = DirectusAdminClient()
+    except Exception as e:
+        print(f"[library] WARN: Directus enrich skipped: {e}")
+        return
+    path_to_row: dict[str, dict] = {}
+    chunk = 80
+    for i in range(0, len(path_keys), chunk):
+        batch = path_keys[i : i + chunk]
+        try:
+            rows = client.get_items(
+                "prod_assets",
+                filters={"file_path": {"_in": batch}},
+                fields=["id", "file_path", "asset_type", "asset_name", "parent_asset_id"],
+                limit=-1,
+            )
+        except Exception as e:
+            print(f"[library] WARN: prod_assets batch lookup failed: {e}")
+            continue
+        for row in rows or []:
+            fp = row.get("file_path")
+            if not fp:
+                continue
+            try:
+                path_to_row[os.path.realpath(fp)] = row
+            except OSError:
+                pass
+    master_ids: list[int] = []
+    for row in path_to_row.values():
+        if row.get("asset_type") == "still_master":
+            mid = row.get("id")
+            if isinstance(mid, int) and mid > 0:
+                master_ids.append(mid)
+    masters_with_crop: set[int] = set()
+    for i in range(0, len(master_ids), chunk):
+        batch_ids = master_ids[i : i + chunk]
+        try:
+            children = client.get_items(
+                "prod_assets",
+                filters={"parent_asset_id": {"_in": batch_ids}},
+                fields=["parent_asset_id"],
+                limit=-1,
+            )
+        except Exception as e:
+            print(f"[library] WARN: parent_asset_id crop lookup failed: {e}")
+            continue
+        for child in children or []:
+            pid = child.get("parent_asset_id")
+            if isinstance(pid, int):
+                masters_with_crop.add(pid)
+    for item in images:
+        fp = item.get("abs_path")
+        if not fp:
+            continue
+        try:
+            real_fp = os.path.realpath(fp)
+        except OSError:
+            continue
+        row = path_to_row.get(real_fp)
+        if not row:
+            continue
+        if row.get("asset_type"):
+            item["asset_type"] = row["asset_type"]
+        if row.get("asset_name"):
+            item["asset_name"] = row["asset_name"]
+        is_master = row.get("asset_type") == "still_master"
+        item["is_master"] = is_master
+        if is_master:
+            mid = row.get("id")
+            item["has_crop"] = isinstance(mid, int) and mid in masters_with_crop
+
+
 def handle_cr_library(h)-> None:
 
     """GET /api/cr/library -> { images: [...] }
@@ -135,6 +285,8 @@ def handle_cr_library(h)-> None:
                     speaker = fname.replace("_reference_master.png", "").capitalize()
                     item["speaker"] = speaker
                     images.append(item)
+
+    _enrich_library_items_prod_assets(images)
 
     print(f"[library] serving {len(images)} images ({sum(1 for i in images if i['tier']=='source')} source, {sum(1 for i in images if i['tier']=='cropped')} cropped)", flush=True)
     return h._send_json(200, {"images": images})
@@ -486,6 +638,7 @@ def handle_cr_save_crop(h, body: dict)-> None:
     # _ACCEPTED_ASSET_TYPES whitelist. Module-agnostic crop registers with
     # module_id=1 + library=True per _MODULE_MAP convention.
     asset_id = None
+    parent_asset_id = _resolve_parent_asset_id_from_source_key(source_key)
     try:
         from registered_write import register_asset as _register_asset
         iteration_notes = (
@@ -497,6 +650,7 @@ def handle_cr_save_crop(h, body: dict)-> None:
             asset_type="still_delivery",
             module_id=_resolve_module_id_for_state(h.app.state),
             beat_id=beat_id or None,
+            parent_asset_id=parent_asset_id,
             produced_by_skill="v59_bg_cropper",
             iteration_notes=iteration_notes,
             tags=["bg_cropper", "crop_4x3", "delivery"],
