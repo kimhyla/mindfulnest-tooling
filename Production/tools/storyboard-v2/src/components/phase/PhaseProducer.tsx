@@ -307,6 +307,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     const url = new URL(`${SERVER_BASE}/magic`);
     url.searchParams.set('mode', 'watercolor_animate');
     url.searchParams.set('watercolor_key', key);
+    // [CONFIRMED — magic_picker server is co-hosted on the same origin; relative path resolves identically]
     url.searchParams.set('return_endpoint', '/api/watercolor/animate');
     url.searchParams.set('scope_event_id', activeScope.value.event_id);
     window.open(url.toString(), '_blank');

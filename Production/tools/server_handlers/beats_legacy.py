@@ -511,7 +511,13 @@ def handle_beat_update_text(h, body: dict)-> None:
     try:
         scope = scope_router.resolve(body, h.app.event_dir.name)
     except scope_router.ScopeError as e:
-        return h._send_json(e.http_status, {"error": e.code, **e.detail})
+        return h._send_error_v59(
+            e.http_status,
+            error_code=e.code.upper(),
+            error_message=e.code.replace("_", " "),
+            retry_safe=False,
+            extra=e.detail or None,
+        )
     beat_id = body.get("beat") or scope.beat_id
     new_text = body.get("text")
     if not beat_id or new_text is None:
@@ -777,7 +783,13 @@ def handle_beat_update_speaker(h, body: dict)-> None:
     try:
         scope = scope_router.resolve(body, h.app.event_dir.name)
     except scope_router.ScopeError as e:
-        return h._send_json(e.http_status, {"error": e.code, **e.detail})
+        return h._send_error_v59(
+            e.http_status,
+            error_code=e.code.upper(),
+            error_message=e.code.replace("_", " "),
+            retry_safe=False,
+            extra=e.detail or None,
+        )
     beat_id = body.get("beat") or body.get("beat_id") or scope.beat_id
     new_speaker_raw = body.get("speaker")
     if not beat_id or new_speaker_raw is None:
@@ -857,8 +869,11 @@ def handle_beat_done_toggle(h, body: dict)-> None:
     """V59 Phase 6 — toggle kim_done flag on a beat.
 
     Per spec line 120 — replaces LD-746 fabrication.
-    Body: {"beat_id": "beat_05", "video_role": "intro"} — video_role optional, defaults to active_video.
+    Body: {"beat_id": "beat_05", "scope_video_role": "intro"} — scope keys injected by pathappPatch.
     """
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+
     beat_id = body.get("beat_id")
     if not beat_id:
         return h._send_error_v59(
@@ -868,7 +883,11 @@ def handle_beat_done_toggle(h, body: dict)-> None:
             retry_safe=False,
             hint="Send {'beat_id': '<id>'} in the POST body",
         )
-    video_role = body.get("video_role") or h.app.state.read_state().get("active_video", "intro")
+    video_role = (
+        body.get("scope_video_role")
+        or body.get("scope_target_video")
+        or h.app.state.read_state().get("active_video", "intro")
+    )
     toggled: dict = {"kim_done": False}
 
     def mutate(partition: dict) -> None:
@@ -1458,6 +1477,7 @@ def handle_beat_delay(h, body: dict)-> None:
     # Accept both v59-client `delay_seconds` and legacy `audio_delay`.
     raw_delay = body.get("audio_delay")
     if raw_delay is None:
+        # BODY_KEY_ALLOW: delay_seconds (v59 client canonical per BEAT_DELAY_BODY_KEY_BACKCOMPAT_V1)
         raw_delay = body.get("delay_seconds", 0)
     delay = float(raw_delay)
     if not beat_id:

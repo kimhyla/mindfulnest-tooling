@@ -1623,7 +1623,13 @@ def handle_bg_accept_beats(h, body: dict)-> None:
     try:
         scope = scope_router.resolve(body, h.app.event_dir.name)
     except scope_router.ScopeError as e:
-        return h._send_json(e.http_status, {"error": e.code, **e.detail})
+        return h._send_error_v59(
+            e.http_status,
+            error_code=e.code.upper(),
+            error_message=e.code.replace("_", " "),
+            retry_safe=False,
+            extra=e.detail or None,
+        )
     beat_ids = [b["beat_id"] for b in body.get("beats", []) if "beat_id" in b]
     bg = _bg_module()
     with bg._sidecar_lock:
@@ -2179,7 +2185,13 @@ def handle_bg_add_beat(h, body: dict)-> None:
     try:
         scope = scope_router.resolve(body, h.app.event_dir.name)
     except scope_router.ScopeError as e:
-        return h._send_json(e.http_status, {"error": e.code, **e.detail})
+        return h._send_error_v59(
+            e.http_status,
+            error_code=e.code.upper(),
+            error_message=e.code.replace("_", " "),
+            retry_safe=False,
+            extra=e.detail or None,
+        )
 
     # Segment derivation — priority 1: client's explicit `segment` field.
     # Format "event_<N>_<phase>" matches what BgTab.tsx sends at line ~303.
@@ -2852,7 +2864,13 @@ def handle_animate(h, body: dict)-> None:
     try:
         scope = scope_router.resolve(body, h.app.event_dir.name)
     except scope_router.ScopeError as e:
-        return h._send_json(e.http_status, {"error": e.code, **e.detail})
+        return h._send_error_v59(
+            e.http_status,
+            error_code=e.code.upper(),
+            error_message=e.code.replace("_", " "),
+            retry_safe=False,
+            extra=e.detail or None,
+        )
 
     if h.app.client is None:
         return h._send_error_v59(

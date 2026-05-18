@@ -108,7 +108,13 @@ def resolve(
         try:
             scope = scope_router.resolve(body, self.app.event_dir.name)
         except scope_router.ScopeError as e:
-            return self._send_json(e.http_status, {"error": e.code, **e.detail})
+            return self._send_error_v59(
+                e.http_status,
+                error_code=e.code.upper(),
+                error_message=e.code.replace("_", " "),
+                retry_safe=False,
+                extra=e.detail or None,
+            )
     """
     body = body or {}
 

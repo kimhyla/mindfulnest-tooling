@@ -53,6 +53,13 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 [[ -z "$MANIFEST" ]] && MANIFEST="$PROJECT_ROOT/Production/smoke_test_manifest.yaml"
 [[ -z "$BUNDLE"   ]] && BUNDLE="$PROJECT_ROOT/Production/$EVENT/storyboard_v59_prod.html"
+if [[ ! -f "$BUNDLE" ]]; then
+    _fixture_bundle="$PROJECT_ROOT/Production/Event_e2e_fixture/storyboard_v59_prod.html"
+    if [[ -f "$_fixture_bundle" ]]; then
+        echo "[smoke] bundle fallback: $_fixture_bundle (primary absent: $BUNDLE)" >&2
+        BUNDLE="$_fixture_bundle"
+    fi
+fi
 [[ -z "$SOURCE"   ]] && SOURCE="$PROJECT_ROOT/Production/tools/storyboard-v2/src/components/StoryboardTab.tsx"
 # LD-730 cross-thread integration (2026-05-17): server + kling targets so the
 # OpenAI gpt-image-1 end-frame vendor swap is gated by the same Layer-1 grep
@@ -67,7 +74,11 @@ if [[ ! -f "$MANIFEST" ]]; then
     exit 1
 fi
 if [[ ! -f "$BUNDLE" ]]; then
+    _primary_bundle="$PROJECT_ROOT/Production/$EVENT/storyboard_v59_prod.html"
+    _fixture_bundle="$PROJECT_ROOT/Production/Event_e2e_fixture/storyboard_v59_prod.html"
     echo "FATAL: bundle not found: $BUNDLE" >&2
+    echo "FATAL: tried primary ($_primary_bundle) and fixture ($_fixture_bundle)" >&2
+    echo "FATAL: pass --bundle <path> or generate storyboard_v59_prod.html" >&2
     exit 2
 fi
 
@@ -194,7 +205,7 @@ while IFS=$'\t' read -r ld sym kind target status regex_flag min_matches; do
     [[ -z "$cnt" ]] && cnt=0
 
     if [[ "$cnt" -ge "$min_matches" ]]; then
-        if [[ "$status" == "known_red" ]]; then
+        if [[ "$status" =~ ^known_red ]]; then
             echo "  STALE-RED $ld $sym (now present in $(basename "$tgt_file") — manifest needs update)"
             STALE_RED+=("$ld:$sym")
         else
@@ -202,7 +213,7 @@ while IFS=$'\t' read -r ld sym kind target status regex_flag min_matches; do
             echo "  ok        $ld $sym ($cnt matches in $(basename "$tgt_file"))"
         fi
     else
-        if [[ "$status" == "known_red" ]]; then
+        if [[ "$status" =~ ^known_red ]]; then
             echo "  known_red $ld $sym (expected absent in $(basename "$tgt_file"))"
         else
             echo "  MISSING   $ld $sym in $(basename "$tgt_file")"

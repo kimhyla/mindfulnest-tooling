@@ -19,7 +19,6 @@
 import { useEffect, useState } from 'preact/hooks';
 import { activeScope, activeProjectType, scopeKey } from '../state/scope';
 import { apiGet, pathappPatch } from '../api/client';
-import { SERVER_BASE } from '../api/endpoints';
 import { StitcherSlotWaveform } from './StitcherSlotWaveform';
 import { StitcherTransitionSelector, type Transition } from './StitcherTransitionSelector';
 import { SfxCuePopover, type SfxCue } from './phase/SfxCuePopover';
@@ -186,17 +185,17 @@ export function StitcherTab() {
         // S5.5b Bug 2 fix: was /library (returns sound library: ambient/sfx/transitions);
         // correct endpoint is /jobs which returns {jobs: [{name, created_at, updated_at, slot_count}]}.
         // After picking active summary, fetch full job via /api/stitch_editor/job/<name> for slots.
-        const res = await fetch(`${SERVER_BASE}/api/stitch_editor/jobs`);
+        const res = await apiGet<StitchLibraryResponse>('stitch_editor_jobs');
         if (cancelled) return;
         if (!res.ok) {
-          setError(`HTTP ${res.status}`);
+          setError(res.error ?? `HTTP ${res.status}`);
           setLoading(false);
           return;
         }
-        const data = (await res.json()) as StitchLibraryResponse;
+        const data = res.data;
         const eventName = activeScope.value.event_id;
         // Pick the active job for this event (name pattern: phase_*_<event>).
-        const jobs = data.jobs ?? [];
+        const jobs = data?.jobs ?? [];
         const eventJobSummary = jobs.find((j) => j.name?.includes(eventName)) ?? jobs[0] ?? null;
         if (!eventJobSummary?.name) {
           setJob(null);
@@ -204,15 +203,20 @@ export function StitcherTab() {
           return;
         }
         // 2nd fetch: full job detail (with slots).
-        const detailRes = await fetch(
-          `${SERVER_BASE}/api/stitch_editor/job/${encodeURIComponent(eventJobSummary.name)}`,
+        const detailRes = await apiGet<{ job?: StitchJob; name?: string }>(
+          'stitch_editor_job',
+          { job_name: eventJobSummary.name },
         );
         if (cancelled) return;
         if (!detailRes.ok) {
-          setError(`HTTP ${detailRes.status} loading job detail`);
+          setError(detailRes.error ?? `HTTP ${detailRes.status} loading job detail`);
           return;
         }
-        const detailData = (await detailRes.json()) as { job?: StitchJob; name?: string };
+        const detailData = detailRes.data;
+        if (!detailData) {
+          setError('job detail response had no body');
+          return;
+        }
         const fullJob: StitchJob | null = detailData.job
           ? { ...detailData.job, name: detailData.name ?? eventJobSummary.name }
           : null;
