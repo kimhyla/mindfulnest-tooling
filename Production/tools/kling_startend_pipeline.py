@@ -402,6 +402,14 @@ def openai_image_edit_generate_end_frame(
         _field("model", "gpt-image-1"),
         _field("prompt", end_prompt),
         _field("quality", "high"),
+        # Fix A v2 — LD-439 carryover (was missing on this end-frame path,
+        # present at beat_generator.py:1176 for still gen). Closes the
+        # background-morph regression diagnosed in prod_reference_docs id=231
+        # (V59_BACKGROUND_MORPH_REGRESSION_DIAGNOSIS_v1 §6). OpenAI documents
+        # input_fidelity={high|low} on /v1/images/edits for gpt-image-1 as
+        # the source-image fidelity control — "make subtle edits without
+        # altering unrelated areas." (Cookbook + Dev Community verified.)
+        _field("input_fidelity", "high"),
         _field("size", size_param),
         _field("n", "1"),
         (
