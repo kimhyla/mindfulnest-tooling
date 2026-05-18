@@ -1142,6 +1142,8 @@ class StateManager:
         self.event_dir = event_dir
         self.event_id = event_id
         self.state_path = event_dir / "production_state.json"
+        from lib.state_repo import JsonStateRepository
+        self.repo = JsonStateRepository(self.state_path)
         self.spend_path = event_dir / "production_spend.json"
         self.spend_ledger_path = event_dir / "spend_ledger.jsonl"  # task_id -> first-charge lockout
         self.clips_dir = event_dir / "animation_clips"
