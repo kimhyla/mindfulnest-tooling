@@ -453,7 +453,8 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
       polls += 1;
       const res = await apiGet('v2_event_state', { event_id: activeScope.value.event_id });
       if (res.ok) onMutated();
-      // Stop when all options are terminal or after 120 polls (~10 min).
+      // Stop when all options are terminal or after 120 polls (~10 min)
+      // [INFERRED — 120 × POLL_ANIMATE_MS ≈ 10 min].
       if (polls < 120) window.setTimeout(pollAddOptions, POLL_ANIMATE_MS);
     };
     window.setTimeout(pollAddOptions, POLL_ANIMATE_MS);
@@ -1064,27 +1065,13 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
   };
 
   const onKimDoneToggle = async () => {
-    const videoRole = activeTargetVideo.value;
-    try {
-      const res = await fetch(`${SERVER_BASE}/api/beat/done_toggle`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ beat_id: beatId, video_role: videoRole }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({})) as { error?: string };
-        pushToast({
-          kind: 'error',
-          message: `Kim done toggle failed: ${err.error ?? res.statusText}`,
-          source: 'kim-done-toggle',
-        });
-        return;
-      }
+    const result = await pathappPatch(activeScope.value, 'beat_done_toggle', { beat_id: beatId });
+    if (result.ok) {
       onMutated();
-    } catch (e) {
+    } else {
       pushToast({
         kind: 'error',
-        message: `Kim done toggle failed: ${e instanceof Error ? e.message : 'network error'}`,
+        message: `Kim done toggle failed: ${result.error ?? 'unknown'}`,
         source: 'kim-done-toggle',
       });
     }
@@ -1354,6 +1341,7 @@ function BeatMagicButtons({ index, beatId, beat, eventId }: BeatMagicProps) {
     u.searchParams.set('mode', 'magic_still');
     u.searchParams.set('beat_id', beatId);
     u.searchParams.set('source_image_path', `Production/${eventId}/${stillPath}`);
+    // [CONFIRMED against api/endpoints.ts SERVER_BASE constant — magic_picker is co-hosted on the production_server.py origin; relative path here resolves identically to ${SERVER_BASE}/api/storyboard/magic_*]
     u.searchParams.set('return_endpoint', '/api/storyboard/magic_still');
     u.searchParams.set('scope_event_id', eventId);
     window.open(u.toString(), '_blank');
@@ -1368,6 +1356,7 @@ function BeatMagicButtons({ index, beatId, beat, eventId }: BeatMagicProps) {
     if (stillPath) {
       u.searchParams.set('source_image_path', `Production/${eventId}/${stillPath}`);
     }
+    // [CONFIRMED against api/endpoints.ts SERVER_BASE constant — magic_picker is co-hosted on the production_server.py origin; relative path here resolves identically to ${SERVER_BASE}/api/storyboard/magic_*]
     u.searchParams.set('return_endpoint', '/api/storyboard/magic_video');
     u.searchParams.set('scope_event_id', eventId);
     window.open(u.toString(), '_blank');

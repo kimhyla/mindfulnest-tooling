@@ -5734,6 +5734,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/v2/beat/"):
                 return self._handle_v2_get(path)
             if path in ("/api/tts", "/api/tts/status"):
+                # LD-281 NO_RUNTIME_TTS_PERSONALIZATION_V1 — intentional 501 (architectural lock, not a deferral)
                 return self._send_error_v59(
                            501,
                            error_code="NOT_IMPLEMENTED_V1_MVP",
@@ -5955,6 +5956,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             if path == "/api/preview_stitched":
                 return self._handle_preview_stitched(body)
             if path == "/api/tts":
+                # LD-281 NO_RUNTIME_TTS_PERSONALIZATION_V1 — intentional 501 (architectural lock, not a deferral)
                 return self._send_error_v59(
                            501,
                            error_code="NOT_IMPLEMENTED_V1_MVP",
@@ -8814,7 +8816,13 @@ body {{padding-top:44px!important;}}
         try:
             scope = scope_router.resolve(body, self.app.event_dir.name)
         except scope_router.ScopeError as e:
-            return self._send_json(e.http_status, {"error": e.code, **e.detail})
+            return self._send_error_v59(
+                e.http_status,
+                error_code=e.code.upper(),
+                error_message=e.code,
+                retry_safe=False,
+                extra=e.detail or None,
+            )
 
         beat_id = body.get("beat_id") or body.get("beat")
         num_new = int(body.get("count", 2))  # default: add 2 (B + C)

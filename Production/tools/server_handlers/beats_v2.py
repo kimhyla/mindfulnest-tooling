@@ -51,7 +51,13 @@ def handle_v2_patch(h, path: str, body: dict) -> None:
     try:
         scope = scope_router.resolve(body, h.app.event_dir.name)
     except scope_router.ScopeError as e:
-        return h._send_json(e.http_status, {"status": "error", "error": e.code, **e.detail})
+        return h._send_error_v59(
+            e.http_status,
+            error_code=e.code.upper(),
+            error_message=e.code,
+            retry_safe=False,
+            extra=e.detail or None,
+        )
 
     parts = [p for p in path.split("/") if p]
     if len(parts) != 5 or parts[0] != "api" or parts[1] != "v2" or parts[2] != "beat" or parts[4] != "patch":
@@ -201,7 +207,13 @@ def handle_v2_beat_create(h, body: dict) -> None:
     try:
         scope = scope_router.resolve(body, h.app.event_dir.name)
     except scope_router.ScopeError as e:
-        return h._send_json(e.http_status, {"error": e.code, **e.detail})
+        return h._send_error_v59(
+            e.http_status,
+            error_code=e.code.upper(),
+            error_message=e.code,
+            retry_safe=False,
+            extra=e.detail or None,
+        )
 
     if os.environ.get("MINDFULNEST_WRITE_PATH", "v2") == "legacy":
         return h._send_error_v59(
@@ -364,7 +376,13 @@ def handle_v2_beat_delete(h, body: dict) -> None:
     try:
         scope = scope_router.resolve(body, h.app.event_dir.name)
     except scope_router.ScopeError as e:
-        return h._send_json(e.http_status, {"error": e.code, **e.detail})
+        return h._send_error_v59(
+            e.http_status,
+            error_code=e.code.upper(),
+            error_message=e.code,
+            retry_safe=False,
+            extra=e.detail or None,
+        )
 
     beat_id = body.get("beat_id")
     if not isinstance(beat_id, str) or not beat_id:
@@ -698,7 +716,13 @@ def handle_v2_beat_swap_to_a(h, beat_id: str, body: dict) -> None:
     try:
         scope = scope_router.resolve(body, h.app.event_dir.name, require_beat_id=False)
     except scope_router.ScopeError as e:
-        return h._send_json(e.http_status, {"error": e.code, **e.detail})
+        return h._send_error_v59(
+            e.http_status,
+            error_code=e.code.upper(),
+            error_message=e.code,
+            retry_safe=False,
+            extra=e.detail or None,
+        )
 
     from_slot = body.get("from_slot")
     if not isinstance(from_slot, int) or isinstance(from_slot, bool):

@@ -207,8 +207,9 @@ def handle_cr_library(h)-> None:
 
     """GET /api/cr/library -> { images: [...] }
     Returns three tiers: source (accepted BG stills + uploaded sources),
-    cropped (crops/ dir), character_master (Character_Assets/).
-    Each item has: key, filename, thumb_b64, gallery_b64, tier, abs_path."""
+    cropped (crops/ dir), character_master (Character_Assets/; reference-only
+    for deletes). Sidecar metadata may accompany items. Each item has: key,
+    filename, thumb_b64, gallery_b64, tier, abs_path."""
     bg = _bg_module()
     images = []
 
@@ -347,10 +348,11 @@ def handle_cr_library_delete(h, body: dict)-> None:
     find_asset.py-style safety check (refuses if key is referenced in
     prod_assets.file_path unless force=True).
 
-    Library at /api/cr/library returns FOUR tiers (per _handle_cr_library):
+    Library at /api/cr/library returns three tiers (per handle_cr_library):
       - source           BG_STILLS_DIR + BG_STILLS_DIR/sources/
       - cropped          BG_STILLS_DIR/crops/
       - character_master Character_Assets/  (reference-only, 403 here)
+    Sidecar metadata may accompany items; not a separate delete tier.
 
     Resolution priority (LIB_DELETE_TIER_PATH_V1):
       1. If body['abs_path'] supplied AND realpath lives inside one of

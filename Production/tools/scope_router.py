@@ -102,13 +102,25 @@ def resolve(
     backward compatibility per LD-461; new clients SHOULD send the
     `scope_event_id` / `scope_target_video` forms.
 
-    Raises `ScopeError` with structured code + HTTP status. Handlers should
-    convert the error to a JSON response via:
+    Raises `ScopeError` with structured code + HTTP status.
 
+    NOTE: the snippet below is DOCSTRING illustration only — not executable
+    at module import time. It is meant to be copy-pasted INSIDE a
+    `def _handle_X(self, body)` method on `ProductionHandler`, where
+    `self._send_error_v59` and `self.app` are bound. Handlers should
+    convert this error to a JSON response via the following pattern::
+
+        # (inside a ProductionHandler method, NOT at module scope)
         try:
             scope = scope_router.resolve(body, self.app.event_dir.name)
         except scope_router.ScopeError as e:
-            return self._send_json(e.http_status, {"error": e.code, **e.detail})
+            return self._send_error_v59(
+                e.http_status,
+                error_code=e.code.upper(),
+                error_message=e.code,
+                retry_safe=False,
+                extra=e.detail or None,
+            )
     """
     body = body or {}
 

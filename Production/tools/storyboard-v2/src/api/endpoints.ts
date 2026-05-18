@@ -41,6 +41,8 @@ export const READ_ENDPOINTS = {
   beat_audio: `${SERVER_BASE}/api/beat/audio/{beat_id}`,
   animate_status: `${SERVER_BASE}/api/animate/status`,
   lipsync_status: `${SERVER_BASE}/api/lipsync/status`,
+  stitch_editor_jobs: `${SERVER_BASE}/api/stitch_editor/jobs`,
+  stitch_editor_job: `${SERVER_BASE}/api/stitch_editor/job/{job_name}`,
 } as const;
 
 // MUTATION endpoints — Session 1 ships ZERO callers of these; they exist
@@ -138,6 +140,7 @@ export const MUTATION_ENDPOINTS = {
   // mutation_id idempotency + content fingerprint, pre-image backups.
   // Cross-event source requires server start with --source-event flag.
   beat_graft: `${SERVER_BASE}/api/beat/graft`,
+  beat_done_toggle: `${SERVER_BASE}/api/beat/done_toggle`,
 } as const;
 
 export type ReadEndpoint = keyof typeof READ_ENDPOINTS;
