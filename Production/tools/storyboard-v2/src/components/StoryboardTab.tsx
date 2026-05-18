@@ -279,9 +279,17 @@ interface BeatButtonRowProps {
   onMutated: () => void;
   previewOptIdx: number | null;
   onPreviewOption: (optIdx: number) => void;
+  /**
+   * LD-757 TRIM_VIDEO_PERSISTENT_MOUNT_AND_AUTOLOAD_V1 (re-shipped 2026-05-17
+   * from stash@{1} 31e1bd292885): flips parent lipsyncMounted state to TRUE
+   * so the lipsync <video> stays in the DOM across Preview cycles. Called
+   * whenever Preview/Apply auto-load fires OR Kim clicks ▶ lipsync. Once
+   * flipped, never flips back this session.
+   */
+  onEnsureLipsyncMounted: () => void;
 }
 
-function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptIdx, onPreviewOption }: BeatButtonRowProps) {
+function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptIdx, onPreviewOption, onEnsureLipsyncMounted }: BeatButtonRowProps) {
   const lifecycle = deriveBeatLifecycle(beat);
   const [busy, setBusy] = useState<string | null>(null); // which button is in-flight
   // LD-756 TRIM_INPUT_SEMANTICS_SECONDS_FROM_END_V1 (re-shipped 2026-05-17 from
@@ -659,6 +667,55 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
   //
   // expectField='beat' per LD-778: _handle_beat_trim returns {beat, trim_start,
   // trim_end?} — the `beat` field is the load-bearing proof the mutation landed.
+
+  // LD-757 TRIM_VIDEO_PERSISTENT_MOUNT_AND_AUTOLOAD_V1 + LD-775
+  // TRIM_AUTO_LOAD_LIPSYNC_ON_PREVIEW_APPLY_V1 (re-shipped 2026-05-17 from
+  // stash@{1} 31e1bd292885):
+  //   ensureLipsyncVideoLoaded() guarantees a playable <video data-testid=
+  //   "beat-preview-video-${index}"> exists with readyState>=1 and a finite
+  //   non-zero duration. Used by onApplyTrim + onPreviewTrim to eliminate the
+  //   prior 2-click warm-up: Kim no longer has to click ▶ lipsync first.
+  //
+  // INVARIANTS (Rule 36 §36.1):
+  //   - Selector class-based on data-testid (not parent-relative) → robust
+  //     against future DOM reorganization.
+  //   - Returns null on timeout (3s) — callers must handle null with the
+  //     LD-756 fail-loud toast guiding manual ▶ lipsync click.
+  //   - Calls onEnsureLipsyncMounted() to flip parent lipsyncMounted=true so
+  //     the <video> persists across previewOptIdx resets (onEnded).
+  //   - Idempotent: if previewOptIdx is already 0, onPreviewOption(0) is a
+  //     no-op (parent's handlePreviewOption has the same-idx toggle guard).
+  //   - 100ms poll cadence balances responsiveness against CPU; 3s ceiling
+  //     matches the spawn brief's "non-blocking UI" constraint.
+  const ensureLipsyncVideoLoaded = (): Promise<HTMLVideoElement | null> => {
+    return new Promise((resolve) => {
+      const sel = `[data-testid="beat-preview-video-${index}"]`;
+      const existing = document.querySelector<HTMLVideoElement>(sel);
+      if (existing && existing.readyState >= 1 && existing.duration > 0 && isFinite(existing.duration)) {
+        resolve(existing);
+        return;
+      }
+      // Trigger the same code path as ▶ lipsync button — mounts the <video>.
+      // Also flip parent lipsyncMounted=true (LD-757 sticky mount).
+      onEnsureLipsyncMounted();
+      onPreviewOption(0);
+      const deadline = Date.now() + 3000;
+      const tick = () => {
+        const el = document.querySelector<HTMLVideoElement>(sel);
+        if (el && el.readyState >= 1 && el.duration > 0 && isFinite(el.duration)) {
+          resolve(el);
+          return;
+        }
+        if (Date.now() >= deadline) {
+          resolve(null);
+          return;
+        }
+        setTimeout(tick, 100);
+      };
+      setTimeout(tick, 100);
+    });
+  };
+
   const onApplyTrim = async () => {
     const front = parseFloat(trimFront);
     const back = parseFloat(trimBack);
@@ -667,15 +724,29 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
 
     let trimEndAbsolute: number | null = null;
     if (backSafe > 0) {
-      const videoEl = document.querySelector<HTMLVideoElement>(
+      let videoEl = document.querySelector<HTMLVideoElement>(
         `[data-testid="beat-preview-video-${index}"]`,
       );
-      const dur = videoEl?.duration;
+      let dur = videoEl?.duration;
       if (!videoEl || !dur || !isFinite(dur) || dur <= 0) {
-        // LD-756 fail-loud requirement: do not silently send nonsense.
+        // LD-757/775 TRIM_AUTO_LOAD_LIPSYNC_ON_PREVIEW_APPLY_V1: auto-trigger
+        // lipsync load instead of failing immediately. Requires lipsync
+        // result to exist on disk; otherwise nothing to load.
+        if (beat.lipsync?.status === 'completed' && beat.lipsync?.file) {
+          pushToast({
+            kind: 'info',
+            message: 'Loading lipsync…',
+            source: `beat-${index}-trim-apply-autoload`,
+          });
+          videoEl = await ensureLipsyncVideoLoaded();
+          dur = videoEl?.duration;
+        }
+      }
+      if (!videoEl || !dur || !isFinite(dur) || dur <= 0) {
+        // LD-756 fail-loud: auto-load timed out or lipsync not completed.
         pushToast({
           kind: 'error',
-          message: 'Lipsync video duration not yet loaded — click ▶ lipsync first, then try Apply again.',
+          message: 'Lipsync video failed to load — try clicking ▶ lipsync manually.',
           source: `beat-${index}-trim-apply-no-duration`,
         });
         return false;
@@ -725,25 +796,40 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
   //   - Reads input values directly from trimFront/trimBack state (not from
   //     beat props) so Kim sees instant feedback on UNSAVED edits before Apply.
   //   - LD-756: inputs are seconds-from-front/back; convert at preview time.
-  const onPreviewTrim = () => {
-    const videoEl = document.querySelector<HTMLVideoElement>(
+  const onPreviewTrim = async () => {
+    let videoEl = document.querySelector<HTMLVideoElement>(
       `[data-testid="beat-preview-video-${index}"]`,
     );
     if (!videoEl || !videoEl.src || videoEl.readyState < 1) {
-      pushToast({
-        kind: 'info',
-        message: 'Click ▶ lipsync first to load the video, then Preview will work.',
-        source: `beat-${index}-trim-preview-no-video`,
-      });
-      return;
+      // LD-757/775 TRIM_AUTO_LOAD_LIPSYNC_ON_PREVIEW_APPLY_V1: auto-trigger
+      // lipsync load instead of failing on a 2-click warm-up. Requires
+      // lipsync result to exist on disk (otherwise nothing to load).
+      if (beat.lipsync?.status === 'completed' && beat.lipsync?.file) {
+        pushToast({
+          kind: 'info',
+          message: 'Loading lipsync…',
+          source: `beat-${index}-trim-preview-autoload`,
+        });
+        videoEl = await ensureLipsyncVideoLoaded();
+      }
+      if (!videoEl || !videoEl.src || videoEl.readyState < 1) {
+        pushToast({
+          kind: 'info',
+          message: 'Lipsync video failed to load — try clicking ▶ lipsync manually.',
+          source: `beat-${index}-trim-preview-no-video`,
+        });
+        return;
+      }
     }
+    // TS narrowing: after the guards above, videoEl is definitely non-null.
+    const video: HTMLVideoElement = videoEl!;
     const front = parseFloat(trimFront);
     const back = parseFloat(trimBack);
     const tInSafe = isNaN(front) || front < 0 ? 0 : front;
     const backSafe = isNaN(back) || back < 0 ? 0 : back;
-    const dur = videoEl.duration;
+    const dur = video.duration;
     if (!dur || !isFinite(dur) || dur <= 0) {
-      // LD-756 fail-loud requirement
+      // LD-756 fail-loud (post-autoload still no duration)
       pushToast({
         kind: 'error',
         message: 'Lipsync video duration not yet loaded — click ▶ lipsync first, then try Preview again.',
@@ -761,27 +847,27 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
       return;
     }
     // Detach any prior preview listener on this element to prevent pile-up.
-    const prevHandler = (videoEl as any).__trimPreviewHandler as
+    const prevHandler = (video as any).__trimPreviewHandler as
       | ((e: Event) => void)
       | undefined;
     if (prevHandler) {
-      videoEl.removeEventListener('timeupdate', prevHandler);
+      video.removeEventListener('timeupdate', prevHandler);
     }
     const handler = () => {
-      if (videoEl.currentTime >= tOutSafe) {
-        videoEl.pause();
-        videoEl.removeEventListener('timeupdate', handler);
-        (videoEl as any).__trimPreviewHandler = undefined;
+      if (video.currentTime >= tOutSafe) {
+        video.pause();
+        video.removeEventListener('timeupdate', handler);
+        (video as any).__trimPreviewHandler = undefined;
       }
     };
-    (videoEl as any).__trimPreviewHandler = handler;
-    videoEl.addEventListener('timeupdate', handler);
+    (video as any).__trimPreviewHandler = handler;
+    video.addEventListener('timeupdate', handler);
     try {
-      videoEl.currentTime = tInSafe;
+      video.currentTime = tInSafe;
     } catch {
       /* seek failure on uninitialised video — handled by readyState check above */
     }
-    videoEl.play().catch(() => {});
+    video.play().catch(() => {});
     pushToast({
       kind: 'info',
       message: `Preview: ${tInSafe.toFixed(2)}s → ${isFinite(tOutSafe) ? tOutSafe.toFixed(2) + 's' : 'end'}`,
@@ -949,6 +1035,9 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
           // Kim can SEE that a stale artifact exists — but it is DISABLED with
           // a "stale" label when lipsync.file_mtime < audio_regenerated_at.
           // Audit-visible degradation per Rule 19, not a silent hide.
+          // LD-757 TRIM_VIDEO_PERSISTENT_MOUNT_AND_AUTOLOAD_V1: fresh-branch
+          // onClick also triggers parent lipsyncMounted=true so Preview
+          // iterations don't unmount the <video> on onEnded.
           (() => {
             const freshness = computeLipsyncFreshness(beat);
             const isStale = freshness === 'stale';
@@ -958,7 +1047,10 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
                 class={isStale ? 'mn-btn mn-btn-small mn-btn-stale' : 'mn-btn mn-btn-small'}
                 data-testid={`beat-${index}-lipsync-play`}
                 data-stale={isStale ? 'true' : 'false'}
-                onClick={isStale ? undefined : () => onPreviewOption(0)}
+                onClick={isStale ? undefined : () => {
+                  onEnsureLipsyncMounted();
+                  onPreviewOption(0);
+                }}
                 disabled={isStale}
                 title={
                   isStale
@@ -1162,6 +1254,21 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(beat.text_last_updated_at ?? null);
   const [previewOptIdx, setPreviewOptIdx] = useState<number | null>(null);
+  // LD-757 TRIM_VIDEO_PERSISTENT_MOUNT_AND_AUTOLOAD_V1 (re-shipped 2026-05-17
+  // from stash@{1} 31e1bd292885):
+  //   lipsyncMounted is a STICKY sentinel: once Kim clicks ▶ lipsync OR
+  //   Apply/Preview Trim auto-loads the lipsync, this flag flips to TRUE and
+  //   never flips back this session. It keeps the lipsync src active in the
+  //   tiered previewVideoSrc below so the <video> element stays in the DOM
+  //   with metadata + buffer intact across iterations (no re-decode hits).
+  // INVARIANTS (Rule 36 §36.1):
+  //   - Sticky: once set to TRUE within a session, never flips back to FALSE.
+  //   - Tier hierarchy in previewVideoSrc below: option-N preview src
+  //     (previewOptIdx 1/2/3) takes precedence; otherwise lipsync src is used
+  //     when previewOptIdx === 0 OR lipsyncMounted is TRUE.
+  //   - Required: beat.lipsync?.file must exist; otherwise nothing to mount.
+  const [lipsyncMounted, setLipsyncMounted] = useState(false);
+  const ensureLipsyncMounted = useCallback(() => setLipsyncMounted(true), []);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -1190,19 +1297,148 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
   const _hasTrim = (typeof _ts === 'number' && _ts > 0)
     || (typeof _te === 'number' && _te > 0);
   const _videoRole = activeTargetVideo.value;
-  const previewVideoSrc = previewOptIdx !== null
-    ? previewOptIdx === 0
-      ? (beat.lipsync?.file
-          ? (_hasTrim
-              ? `http://localhost:5111/api/beat/lipsync_trimmed?beat_id=${beatId}&event_id=${eventId}&video_role=${_videoRole}&v=${beat._version ?? 0}`
-              : `http://localhost:5111/asset/${beat.lipsync.file}?v=${beat._version ?? 0}`)
-          : null)
-      : previewOptIdx === -1
-        ? (beat.final?.file ? `http://localhost:5111/asset/${beat.final.file}?v=${beat._version ?? 0}` : null)
-        : `http://localhost:5111/asset/${beat.phase_1?.options?.[previewOptIdx - 1]?.file}?v=${beat._version ?? 0}`
-    : null;
+  // LD-757 TIERED src:
+  //   Tier 1   (option preview):       previewOptIdx === 1/2/3 → that option's file
+  //   Tier 1.5 (still-final preview):  previewOptIdx === -1     → beat.final.file
+  //   Tier 2   (lipsync sticky):       previewOptIdx === 0 OR lipsyncMounted → lipsync src
+  //   Tier 3   (idle):                 none active → null (no <video> render)
+  // Tier 2 is the persistence path — once lipsyncMounted flips true, the
+  // lipsync src persists even after previewOptIdx resets to null (onEnded),
+  // so the <video> element stays in the DOM and metadata is preserved.
+  const _isLipsyncShown = previewOptIdx === 0 || lipsyncMounted;
+  const previewVideoSrc = (previewOptIdx !== null && previewOptIdx > 0)
+    ? `http://localhost:5111/asset/${beat.phase_1?.options?.[previewOptIdx - 1]?.file}?v=${beat._version ?? 0}`
+    : (previewOptIdx === -1 && beat.final?.source === 'still_image' && beat.final?.file
+        ? `http://localhost:5111/asset/${beat.final.file}?v=${beat._version ?? 0}`
+        : (_isLipsyncShown
+            ? (beat.lipsync?.file
+                ? (_hasTrim
+                    ? `http://localhost:5111/api/beat/lipsync_trimmed?beat_id=${beatId}&event_id=${eventId}&video_role=${_videoRole}&v=${beat._version ?? 0}`
+                    : `http://localhost:5111/asset/${beat.lipsync.file}?v=${beat._version ?? 0}`)
+                : null)
+            : null));
 
   const previewAudioSrc = `http://localhost:5111/api/beat/audio/${beatId}?event_id=${eventId}`;
+
+  // LD-764 LIPSYNC_PLAYBACK_SILENT_FAILURE_CLASS_KILL_V1 (re-shipped 2026-05-17
+  // from stash@{1} 31e1bd292885): structural class-kill of "silent video
+  // playback failure". Symptoms: ▶ button flips to ⏸ but no playback (black
+  // screen), no error feedback, recovery requires page refresh. Mechanism:
+  // native <video> 'error'/'stalled'/'abort' events currently have no handlers;
+  // when src returns 404/JSON/decode-error the browser fires 'error' silently,
+  // React state stays in pseudo-playing state, vid.play() rejects into a
+  // swallowed .catch(()=>{}). Counter-mechanism: handlers below + watchdog.
+  //
+  // INVARIANTS (Rule 36 §36.1):
+  //   - resetPlayState is the sole entrypoint for recovery; toasts route here.
+  //   - Does NOT flip lipsyncMounted — <video> stays in DOM per LD-757 so the
+  //     next click can retry without re-decode.
+  //   - ctx param distinguishes "Lipsync playback" / "Still preview" /
+  //     "Animation preview" so the toast names the preview kind correctly.
+  const resetPlayState = useCallback((reason: string, kind: 'error' | 'info' = 'error', ctx: string = 'Playback') => {
+    try { videoRef.current?.pause(); } catch {}
+    try { audioRef.current?.pause(); } catch {}
+    setPreviewOptIdx(null);
+    pushToast({ kind, message: `${ctx}: ${reason}`, source: 'sb-lipsync-playback-fail' });
+    // eslint-disable-next-line no-console
+    console.warn(`[lipsync] beat_${beatId} resetPlayState ctx=${ctx} reason=${reason}`);
+  }, [beatId]);
+
+  // LD-769 VIDEO_PLAY_ABORTERROR_RACE_CLASS_KILL_V1 (re-shipped 2026-05-17
+  // from stash@{1} 31e1bd292885): structural class-kill of "AbortError
+  // stacked-toast" failure mode. Three compounding bugs (Rule 28):
+  //  (A) No promise-chain discipline. vid.play() returns a Promise that
+  //      resolves AFTER first frame; pause()/src-swap while pending REJECTS
+  //      with AbortError.
+  //  (B) handlePreviewOption synchronously pauses then setState; rapid clicks
+  //      can interrupt a play() that just became pending.
+  //  (C) AbortError surfaced as a toast indistinguishable from real failures.
+  // Counter-mechanism: playPromiseRef holds in-flight play(); safePlay/
+  // safePause await it; lastClickRef debounces; AbortError silenced.
+  //
+  // INVARIANTS (Rule 36 §36.1):
+  //   - playPromiseRef is a ref (no re-renders on update).
+  //   - safePlay/safePause are stable useCallback refs (touch only refs).
+  //   - lastClickRef debouncing operates at click-handler entry only.
+  const playPromiseRef = useRef<Promise<void> | null>(null);
+  const lastClickRef = useRef<number>(0);
+
+  // LD-775 OPT_PREVIEW_SILENT_SWALLOW_POSTREGEN_FIX_V1 (re-shipped 2026-05-17
+  // from stash@{1} 31e1bd292885): cap the prior-play() await with a 500ms
+  // timeout. The original LD-769 await of playPromiseRef.current can hang
+  // FOREVER when the HTMLMediaElement's prior play() promise stays pending
+  // (Regen Audio leaves an audio element mid-load; per HTML spec, the play()
+  // promise resolves "when media has begun playing" — if loading is
+  // abandoned, the promise never settles). 500ms is generous and below
+  // user-perception. Force-clear stale ref and proceed if exceeded.
+  const awaitPriorPlayWithTimeout = useCallback(async (): Promise<void> => {
+    const prior = playPromiseRef.current;
+    if (!prior) return;
+    let timedOut = false;
+    await Promise.race([
+      prior.catch(() => {}),
+      new Promise<void>((resolve) => setTimeout(() => { timedOut = true; resolve(); }, 500)),
+    ]);
+    if (timedOut && playPromiseRef.current === prior) {
+      playPromiseRef.current = null;
+      // eslint-disable-next-line no-console
+      console.warn(`[play-abort] beat_${beatId} ctx=prior-play-timeout cleared stale playPromiseRef @ ${new Date().toISOString()}`);
+    }
+  }, [beatId]);
+
+  const safePlay = useCallback(async (el: HTMLMediaElement | null | undefined): Promise<void> => {
+    if (!el) return;
+    // Await any prior in-flight play() so pause/src-swap can't race it.
+    await awaitPriorPlayWithTimeout();
+    if (el.paused === false) return; // already playing
+    const p = el.play();
+    playPromiseRef.current = p;
+    try {
+      await p;
+    } finally {
+      if (playPromiseRef.current === p) playPromiseRef.current = null;
+    }
+  }, [awaitPriorPlayWithTimeout]);
+
+  const safePause = useCallback(async (el: HTMLMediaElement | null | undefined): Promise<void> => {
+    if (!el) return;
+    // Await any pending play() so pause() can't trigger AbortError on it.
+    await awaitPriorPlayWithTimeout();
+    try { el.pause(); } catch { /* defensive */ }
+  }, [awaitPriorPlayWithTimeout]);
+
+  // AbortError classifier: distinguishes browser-aborted (silent, expected)
+  // from real playback failures (toast-worthy).
+  const handlePlayRejection = useCallback((err: unknown, context: string, toastCtx: string = 'Playback') => {
+    const name = (err as { name?: string } | null)?.name ?? 'unknown';
+    const playState = videoRef.current?.paused === false ? 'playing' : 'paused';
+    // eslint-disable-next-line no-console
+    console.warn(`[play-abort] beat_${beatId} ctx=${context} toastCtx=${toastCtx} cause=${name} playState=${playState} @ ${new Date().toISOString()}`);
+    if (name === 'AbortError') {
+      // Suppressed: AbortError is caused by a legitimate next action (src
+      // swap, pause, unmount). Surfacing produced the 5-stacked-toast UX
+      // failure Kim hit 2026-05-17 10:03. Logged above.
+      return;
+    }
+    if (name === 'NotAllowedError') {
+      resetPlayState('browser autoplay blocked — click again to start', 'error', toastCtx);
+      return;
+    }
+    if (name === 'NotSupportedError') {
+      resetPlayState('codec/format not supported', 'error', toastCtx);
+      return;
+    }
+    // Unknown rejection — preserve LD-764 surfacing behaviour.
+    resetPlayState(`browser refused to start (${name})`, 'error', toastCtx);
+  }, [beatId, resetPlayState]);
+
+  // Diagnostic: log every previewVideoSrc change. Helps debug this class
+  // without needing to instrument at incident time.
+  useEffect(() => {
+    if (!previewVideoSrc) return;
+    // eslint-disable-next-line no-console
+    console.log(`[lipsync] beat_${beatId} src→${previewVideoSrc} @ ${new Date().toISOString()}`);
+  }, [previewVideoSrc, beatId]);
 
   useEffect(() => {
     if (previewOptIdx === null) return;
@@ -1233,7 +1469,38 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
       if (!aud) return;
       aud.currentTime = 0;
     }
-    vid.play().catch(() => {});
+    // LD-771 LIPSYNC_WATCHDOG_FALSE_POSITIVE_CLASS_KILL_V1 (re-shipped 2026-05-17
+    // from stash@{1} 31e1bd292885): the 5s readyState-aware watchdog catches
+    // the "play() resolved but video never decoded" case. Three FP sources
+    // were removed: (1) startedAt anchored AFTER safePlay's internal await,
+    // (2) 5s budget (was 2s), (3) success = readyState>=2 && !paused (was
+    // currentTime > 0.05s, strictly stronger than "decoded first frame").
+    // INVARIANTS (Rule 36): watchdogRef holds timer id; cleanup return paths
+    // always clear it.
+    const toastCtx = previewOptIdx === 0
+      ? 'Lipsync playback'
+      : previewOptIdx === -1
+        ? 'Still preview'
+        : 'Animation preview';
+    const watchdogRef = { current: 0 as number };
+    safePlay(vid).then(() => {
+      // Anchor watchdog AFTER play() has actually been called (not before —
+      // safePlay may have awaited a prior playPromiseRef). 5s is the real
+      // budget for "did the browser start decoding".
+      const startedAt = performance.now();
+      watchdogRef.current = window.setTimeout(() => {
+        const vidNow = videoRef.current;
+        if (!vidNow) return;
+        // Success = readyState>=2 (HAVE_CURRENT_DATA) && !paused.
+        const playing = vidNow.readyState >= 2 && !vidNow.paused;
+        if (!playing) {
+          const elapsed = performance.now() - startedAt;
+          // eslint-disable-next-line no-console
+          console.warn(`[lipsync-watchdog] beat_${beatId} fired after ${elapsed.toFixed(0)}ms readyState=${vidNow.readyState} networkState=${vidNow.networkState} paused=${vidNow.paused} buffered=${vidNow.buffered.length}ranges`);
+          resetPlayState(vidNow.paused ? 'video paused unexpectedly — click ▶ to retry' : 'video slow to load — click ▶ to retry', 'error', toastCtx);
+        }
+      }, 5000);
+    }).catch((err) => handlePlayRejection(err, 'effect-play', toastCtx));
     if (!isLipsyncPreview && aud) {
       if (audioDelaySec > 0) {
         const ms = Math.round(audioDelaySec * 1000);
@@ -1244,15 +1511,19 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
         }, ms);
         return () => {
           window.clearTimeout(t);
+          if (watchdogRef.current) window.clearTimeout(watchdogRef.current);
         };
       }
       aud.play().catch(() => {});
     }
+    return () => {
+      if (watchdogRef.current) window.clearTimeout(watchdogRef.current);
+    };
     // Dep array must reference the same path the effect actually reads —
     // without beat.phase_1?.audio_delay the effect would never re-fire when
     // Kim presses Delay apply and the parent re-renders with a new beat prop.
     // See spec id=225 §5.1 Edit 3.
-  }, [previewOptIdx, beat.phase_1?.audio_delay, beat.audio_delay, beat.delay_seconds]);
+  }, [previewOptIdx, beat.phase_1?.audio_delay, beat.audio_delay, beat.delay_seconds, resetPlayState, safePlay, handlePlayRejection]);
 
   useEffect(() => {
     return () => {
@@ -1265,6 +1536,20 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
     // Sentinel 0  = preview lipsync result. ByteDance audio baked in — never touch TTS player.
     // Sentinel -1 = preview still-as-final (Ken Burns MP4, silent video). TTS audio plays
     //               alongside, same as an option preview. LD STILL_AS_FINAL_PREVIEW_BUTTON_V1.
+
+    // LD-769 VIDEO_PLAY_ABORTERROR_RACE_CLASS_KILL_V1: click debounce.
+    // Rapid double-click on the same ▶ button (or rapid alternation across
+    // opt 1/2/3) was a contributing factor to the 5-stacked-toast AbortError
+    // UX failure. 250ms window ignores the second click if it lands inside
+    // the first click's render/play cycle. Single click still feels instant.
+    const nowTs = performance.now();
+    if (nowTs - lastClickRef.current < 250) {
+      // eslint-disable-next-line no-console
+      console.warn(`[play-abort] beat_${beatId} ctx=debounce dropped opt=${optIdx} dt=${(nowTs - lastClickRef.current).toFixed(0)}ms`);
+      return;
+    }
+    lastClickRef.current = nowTs;
+
     const isLipsyncPreview = optIdx === 0;
     const isStillFinalPreview = optIdx === -1;
     const file = isLipsyncPreview
@@ -1276,23 +1561,40 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
     const vid = videoRef.current;
     const aud = audioRef.current;
     if (previewOptIdx === optIdx) {
-      // Toggle play/pause for the current preview.
+      // Toggle play/pause for the current preview. Use safePlay/safePause so
+      // an in-flight play() promise can't race the toggle into AbortError.
       if (vid && !vid.paused) {
-        vid.pause();
-        if (!isLipsyncPreview) aud?.pause();
+        safePause(vid).catch(() => {});
+        if (!isLipsyncPreview) safePause(aud).catch(() => {});
       } else {
-        vid?.play().catch(() => {});
-        if (!isLipsyncPreview) aud?.play().catch(() => {});
+        safePlay(vid).catch((err) => handlePlayRejection(err, 'toggle-play'));
+        if (!isLipsyncPreview) safePlay(aud).catch((err) => handlePlayRejection(err, 'toggle-play-aud'));
       }
       return;
     }
-    vid?.pause();
-    if (!isLipsyncPreview) aud?.pause();
-    setPreviewOptIdx(optIdx);
-  }, [previewOptIdx, beat.phase_1?.options, beat.lipsync?.file, beat.final?.file]);
+    // src is about to change (previewVideoSrc derives from previewOptIdx).
+    // Per LD-769: await any in-flight play() BEFORE setState, otherwise the
+    // React-driven src swap aborts the pending play and rejects with
+    // AbortError. safePause does exactly this — awaits playPromiseRef, pauses.
+    safePause(vid)
+      .catch(() => {})
+      .then(() => {
+        if (!isLipsyncPreview) return safePause(aud).catch(() => {});
+        return undefined;
+      })
+      .finally(() => {
+        setPreviewOptIdx(optIdx);
+      });
+  }, [previewOptIdx, beat.phase_1?.options, beat.lipsync?.file, beat.final?.file, beatId, safePlay, safePause, handlePlayRejection]);
 
   const handlePreviewEnded = useCallback(() => {
     audioRef.current?.pause();
+    // LD-757 TRIM_VIDEO_PERSISTENT_MOUNT_AND_AUTOLOAD_V1: resetting
+    // previewOptIdx to null used to unmount the <video> because the prior
+    // previewVideoSrc tied src directly to previewOptIdx !== null. The new
+    // tiered logic keeps the lipsync src when lipsyncMounted === true, so
+    // this reset only flips the play/pause UI state — the <video> stays in
+    // the DOM with metadata + buffer intact. Next Preview just seeks.
     setPreviewOptIdx(null);
   }, []);
 
@@ -1504,6 +1806,17 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
         previewVideoSrc={previewVideoSrc}
         videoRef={videoRef as RefObject<HTMLVideoElement>}
         onPreviewEnded={handlePreviewEnded}
+        onPreviewError={(reason) => {
+          // LD-764: derive toast prefix from previewOptIdx so the right
+          // preview kind names itself in the toast.
+          const onErrCtx = previewOptIdx === 0
+            ? 'Lipsync playback'
+            : previewOptIdx === -1
+              ? 'Still preview'
+              : 'Animation preview';
+          if (reason) resetPlayState(reason, 'error', onErrCtx);
+          else { try { videoRef.current?.pause(); } catch {} try { audioRef.current?.pause(); } catch {} setPreviewOptIdx(null); }
+        }}
       />
       <p
         ref={editRef}
@@ -1522,6 +1835,7 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
         onMutated={onMutated}
         previewOptIdx={previewOptIdx}
         onPreviewOption={handlePreviewOption}
+        onEnsureLipsyncMounted={ensureLipsyncMounted}
       />
       <BeatMagicButtons index={index} beatId={beatId} beat={beat} eventId={eventId} />
       <div class="mn-sb-insert-after" data-testid={`sb-insert-after-${index}`}>
@@ -1563,9 +1877,16 @@ interface BeatImageHolderProps {
   previewVideoSrc?: string | null;
   videoRef?: RefObject<HTMLVideoElement>;
   onPreviewEnded?: () => void;
+  /**
+   * LD-764 LIPSYNC_PLAYBACK_SILENT_FAILURE_CLASS_KILL_V1 (re-shipped 2026-05-17
+   * from stash@{1} 31e1bd292885): mandatory error surface. <video> 'error',
+   * 'stalled', 'abort' events route here so the parent can resetPlayState.
+   * Reason='' means "abort with no toast" (rapid src swap case).
+   */
+  onPreviewError?: (reason: string) => void;
 }
 
-function BeatImageHolder({ index, beatId, beat, eventId, onMutated, previewVideoSrc, videoRef, onPreviewEnded }: BeatImageHolderProps) {
+function BeatImageHolder({ index, beatId, beat, eventId, onMutated, previewVideoSrc, videoRef, onPreviewEnded, onPreviewError }: BeatImageHolderProps) {
   const stillPath = beat.image_path;
   const hasImage = !!stillPath;
   const imgSrc = stillPath
@@ -1620,6 +1941,55 @@ function BeatImageHolder({ index, beatId, beat, eventId, onMutated, previewVideo
           playsInline
           preload="auto"
           onEnded={onPreviewEnded}
+          // LD-764 LIPSYNC_PLAYBACK_SILENT_FAILURE_CLASS_KILL_V1 (re-shipped
+          // 2026-05-17 from stash@{1} 31e1bd292885): mandatory error
+          // surface. The browser fires 'error' on src 404, decode failure,
+          // codec issue, network drop, MIME mismatch (e.g. server returns
+          // JSON instead of video/mp4 — the beat_11 root cause). 'stalled'
+          // fires when loading halts > ~3s. 'abort' fires when load is
+          // interrupted (rapid src change). All three route through
+          // onPreviewError → resetPlayState → toast + previewOptIdx reset,
+          // so the ⏸ button doesn't stay stuck.
+          //
+          // INVARIANTS (Rule 36 §36.1):
+          //   - onError reads e.currentTarget.error.code (W3C HTMLMediaError
+          //     codes 1-4). codes 4 (SRC_NOT_SUPPORTED) catches the JSON-
+          //     instead-of-MP4 case.
+          //   - onAbort passes empty reason '' → parent treats as "no
+          //     toast, just reset state" (rapid src swap by tier logic).
+          //   - onLoadedMetadata is diagnostic only — logs duration so
+          //     future debug doesn't need instrumentation.
+          //   - onPreviewError is optional; nullish-optional call (?.) so
+          //     the <video> works in any future caller that doesn't pass it.
+          onError={(e) => {
+            const v = e.currentTarget as HTMLVideoElement;
+            const code = v?.error?.code;
+            const codeName = code === 1 ? 'aborted'
+              : code === 2 ? 'network'
+              : code === 3 ? 'decode'
+              : code === 4 ? 'src not supported (likely 404/JSON)'
+              : `unknown(${code})`;
+            // eslint-disable-next-line no-console
+            console.error(`[lipsync] beat_${beatId} <video> error code=${code} (${codeName}) src=${v?.currentSrc}`);
+            onPreviewError?.(`load failed — ${codeName}`);
+          }}
+          onStalled={() => {
+            // eslint-disable-next-line no-console
+            console.warn(`[lipsync] beat_${beatId} <video> stalled`);
+            onPreviewError?.('network stall — try again');
+          }}
+          onAbort={() => {
+            // eslint-disable-next-line no-console
+            console.warn(`[lipsync] beat_${beatId} <video> abort`);
+            // No toast on abort — typically a rapid src swap by tier logic.
+            // Still want play-state reset so ⏸ doesn't stay stuck.
+            onPreviewError?.('');
+          }}
+          onLoadedMetadata={(e) => {
+            const v = e.currentTarget as HTMLVideoElement;
+            // eslint-disable-next-line no-console
+            console.log(`[lipsync] beat_${beatId} <video> loadedmetadata duration=${v.duration}s readyState=${v.readyState}`);
+          }}
           data-testid={`beat-preview-video-${index}`}
         />
       ) : hasImage && imgSrc ? (
