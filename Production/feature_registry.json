@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-18T07:06:46Z",
+  "generated_at": "2026-05-18T07:20:17Z",
   "generator": "Production/scripts/generate_feature_registry.py",
   "source_glob": "Production/tools/storyboard-v2/src/components/**/*.tsx",
   "testids": [
