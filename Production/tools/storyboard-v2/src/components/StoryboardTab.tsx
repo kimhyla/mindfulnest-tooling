@@ -1543,7 +1543,13 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
     // UX failure. 250ms window ignores the second click if it lands inside
     // the first click's render/play cycle. Single click still feels instant.
     const nowTs = performance.now();
-    if (nowTs - lastClickRef.current < 250) {
+    // Debounce: drop the click if a prior click landed within 250ms. The
+    // sentinel lastClickRef.current === 0 means "no prior click in this
+    // session" — NEVER debounce against it, otherwise the very first click
+    // on a freshly-loaded page (where performance.now() < 250) would be
+    // silently dropped (LD-769 §C). Use a strictly-positive prior-click
+    // timestamp to gate the debounce.
+    if (lastClickRef.current > 0 && nowTs - lastClickRef.current < 250) {
       // eslint-disable-next-line no-console
       console.warn(`[play-abort] beat_${beatId} ctx=debounce dropped opt=${optIdx} dt=${(nowTs - lastClickRef.current).toFixed(0)}ms`);
       return;
