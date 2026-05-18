@@ -13,24 +13,26 @@ import { PhaseProducer } from '../phase/PhaseProducer';
 export function PhaseATab() {
   if (activeProjectType.value === 'milestone') {
     return (
-      <section class="mn-tab-pane mn-phase-a-pane" data-testid="pane-phase-a">
-        <header class="mn-pane-header">
+      <section class="mn-tab-pane mn-phase-a-pane" data-testid="phase-a-tab-root">
+        <header class="mn-pane-header" data-testid="phase-a-pane-header">
           <h2>Phase A</h2>
-          <span class="mn-scope-chip">scope: {scopeKey(activeScope.value)}</span>
+          <span class="mn-scope-chip" data-testid="phase-a-scope-chip">scope: {scopeKey(activeScope.value)}</span>
         </header>
-        <p class="mn-dim">
+        <p class="mn-dim" data-testid="phase-a-milestone-hint">
           Phase A is event-only. Switch to an Event scope to edit Phase A.
         </p>
       </section>
     );
   }
   return (
-    <section class="mn-tab-pane mn-phase-a-pane" data-testid="pane-phase-a">
-      <header class="mn-pane-header">
+    <section class="mn-tab-pane mn-phase-a-pane" data-testid="phase-a-tab-root">
+      <header class="mn-pane-header" data-testid="phase-a-pane-header">
         <h2>Phase A</h2>
-        <span class="mn-scope-chip">scope: {scopeKey(activeScope.value)}</span>
+        <span class="mn-scope-chip" data-testid="phase-a-scope-chip">scope: {scopeKey(activeScope.value)}</span>
       </header>
-      <PhaseProducer phase="a" />
+      <div data-testid="phase-a-producer-panel">
+        <PhaseProducer phase="a" />
+      </div>
     </section>
   );
 }

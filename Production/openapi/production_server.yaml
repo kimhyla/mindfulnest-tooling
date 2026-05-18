@@ -181,6 +181,23 @@ paths:
           application/json:
             schema:
               type: object
+  /api/beat/done_toggle:
+    post:
+      summary: "beat done toggle \u2014 done_toggle"
+      operationId: post_api_beat_done_toggle
+      responses:
+        '200':
+          description: ok
+        4XX:
+          description: client error
+        5XX:
+          description: server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
   /api/beat/finalize:
     post:
       summary: "beat finalize \u2014 finalize"

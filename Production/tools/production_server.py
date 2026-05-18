@@ -5816,6 +5816,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 # through here; BG tab still uses /api/bg/update-beat which
                 # already accepts `speaker` via _BG_BEAT_WRITABLE.
                 return self._handle_beat_update_speaker(body)
+            if path == "/api/beat/done_toggle":
+                return self._handle_beat_done_toggle(body)
             # BEAT_GRAFT_RECOVERY_MECHANISM_V1 (C-7) — Pillar 7 cornerstone.
             # Cross-event/role beat move with audit + idempotency + pre-image.
             if path == "/api/beat/graft":
@@ -14356,6 +14358,31 @@ body {{padding-top:44px!important;}}
             "text_modified_after_tts": (
                 tts_exists and _holder.get("changed", False)
             ),
+        })
+
+    def _handle_beat_done_toggle(self, body: dict) -> None:
+        """V59 Phase 6 — toggle kim_done flag on a beat.
+
+        Per spec line 120 — replaces LD-746 fabrication.
+        Body: {"beat_id": "beat_05", "video_role": "intro"} — video_role optional, defaults to active_video.
+        """
+        beat_id = body.get("beat_id")
+        if not beat_id:
+            return self._send_json(400, {"error": "missing beat_id"})
+        video_role = body.get("video_role") or self.app.state.read_state().get("active_video", "intro")
+        toggled: dict = {"kim_done": False}
+
+        def mutate(partition: dict) -> None:
+            beat = partition.setdefault("beats", {}).setdefault(beat_id, {})
+            beat["kim_done"] = not bool(beat.get("kim_done", False))
+            toggled["kim_done"] = beat["kim_done"]
+
+        self.app.state.mutate_video_state(video_role, mutate)
+        return self._send_json(200, {
+            "ok": True,
+            "beat_id": beat_id,
+            "video_role": video_role,
+            "kim_done": toggled["kim_done"],
         })
 
     # ------------------------------------------------------------------

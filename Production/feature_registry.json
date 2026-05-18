@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-18T06:33:08Z",
+  "generated_at": "2026-05-18T07:06:46Z",
   "generator": "Production/scripts/generate_feature_registry.py",
   "source_glob": "Production/tools/storyboard-v2/src/components/**/*.tsx",
   "testids": [
@@ -534,74 +534,92 @@
     {
       "id": "send-out-actions",
       "file": "Production/tools/storyboard-v2/src/components/StoryboardTab.tsx",
-      "line": 1233,
+      "line": 1303,
       "tab": "storyboard"
     },
     {
       "id": "send-out-mp4-btn",
       "file": "Production/tools/storyboard-v2/src/components/StoryboardTab.tsx",
-      "line": 1237,
+      "line": 1307,
       "tab": "storyboard"
     },
     {
       "id": "send-out-status",
       "file": "Production/tools/storyboard-v2/src/components/StoryboardTab.tsx",
-      "line": 1246,
+      "line": 1316,
       "tab": "storyboard"
     },
     {
       "id": "pane-storyboard",
       "file": "Production/tools/storyboard-v2/src/components/StoryboardTab.tsx",
-      "line": 1400,
+      "line": 1470,
       "tab": "storyboard"
     },
     {
       "id": "storyboard-scope-chip",
       "file": "Production/tools/storyboard-v2/src/components/StoryboardTab.tsx",
-      "line": 1403,
+      "line": 1473,
       "tab": "storyboard"
     },
     {
       "id": "storyboard-loading",
       "file": "Production/tools/storyboard-v2/src/components/StoryboardTab.tsx",
-      "line": 1412,
+      "line": 1482,
       "tab": "storyboard"
     },
     {
       "id": "storyboard-error",
       "file": "Production/tools/storyboard-v2/src/components/StoryboardTab.tsx",
-      "line": 1416,
+      "line": 1486,
       "tab": "storyboard"
     },
     {
       "id": "storyboard-empty",
       "file": "Production/tools/storyboard-v2/src/components/StoryboardTab.tsx",
-      "line": 1421,
+      "line": 1491,
       "tab": "storyboard"
     },
     {
       "id": "beat-list",
       "file": "Production/tools/storyboard-v2/src/components/StoryboardTab.tsx",
-      "line": 1425,
+      "line": 1495,
       "tab": "storyboard"
     },
     {
       "id": "storyboard-readonly",
       "file": "Production/tools/storyboard-v2/src/components/StoryboardTab.tsx",
-      "line": 1442,
+      "line": 1512,
       "tab": "storyboard"
     },
     {
       "id": "sb-delete-beat-confirm",
       "file": "Production/tools/storyboard-v2/src/components/StoryboardTab.tsx",
-      "line": 1458,
+      "line": 1528,
       "tab": "storyboard"
     },
     {
       "id": "sb-delete-beat-cancel",
       "file": "Production/tools/storyboard-v2/src/components/StoryboardTab.tsx",
-      "line": 1466,
+      "line": 1536,
       "tab": "storyboard"
+    },
+    {
+      "id": "suggest-parenthetical-wrapper",
+      "file": "Production/tools/storyboard-v2/src/components/SuggestParentheticalDropdown.tsx",
+      "line": 13,
+      "tab": "shared"
+    },
+    {
+      "id": "suggest-parenthetical-button",
+      "file": "Production/tools/storyboard-v2/src/components/SuggestParentheticalDropdown.tsx",
+      "line": 17,
+      "tab": "shared"
+    },
+    {
+      "id": "suggest-parenthetical-menu",
+      "file": "Production/tools/storyboard-v2/src/components/SuggestParentheticalDropdown.tsx",
+      "line": 23,
+      "tab": "shared"
     },
     {
       "id": "tab-bar",
@@ -760,27 +778,99 @@
       "tab": "shared"
     },
     {
-      "id": "pane-phase-a",
+      "id": "phase-a-tab-root",
       "file": "Production/tools/storyboard-v2/src/components/tabs/PhaseATab.tsx",
       "line": 16,
       "tab": "phase_a"
     },
     {
-      "id": "pane-phase-a",
+      "id": "phase-a-pane-header",
+      "file": "Production/tools/storyboard-v2/src/components/tabs/PhaseATab.tsx",
+      "line": 17,
+      "tab": "phase_a"
+    },
+    {
+      "id": "phase-a-scope-chip",
+      "file": "Production/tools/storyboard-v2/src/components/tabs/PhaseATab.tsx",
+      "line": 19,
+      "tab": "phase_a"
+    },
+    {
+      "id": "phase-a-milestone-hint",
+      "file": "Production/tools/storyboard-v2/src/components/tabs/PhaseATab.tsx",
+      "line": 21,
+      "tab": "phase_a"
+    },
+    {
+      "id": "phase-a-tab-root",
       "file": "Production/tools/storyboard-v2/src/components/tabs/PhaseATab.tsx",
       "line": 28,
       "tab": "phase_a"
     },
     {
-      "id": "pane-phase-b",
+      "id": "phase-a-pane-header",
+      "file": "Production/tools/storyboard-v2/src/components/tabs/PhaseATab.tsx",
+      "line": 29,
+      "tab": "phase_a"
+    },
+    {
+      "id": "phase-a-scope-chip",
+      "file": "Production/tools/storyboard-v2/src/components/tabs/PhaseATab.tsx",
+      "line": 31,
+      "tab": "phase_a"
+    },
+    {
+      "id": "phase-a-producer-panel",
+      "file": "Production/tools/storyboard-v2/src/components/tabs/PhaseATab.tsx",
+      "line": 33,
+      "tab": "phase_a"
+    },
+    {
+      "id": "phase-b-tab-root",
       "file": "Production/tools/storyboard-v2/src/components/tabs/PhaseBTab.tsx",
       "line": 16,
       "tab": "phase_b"
     },
     {
-      "id": "pane-phase-b",
+      "id": "phase-b-pane-header",
+      "file": "Production/tools/storyboard-v2/src/components/tabs/PhaseBTab.tsx",
+      "line": 17,
+      "tab": "phase_b"
+    },
+    {
+      "id": "phase-b-scope-chip",
+      "file": "Production/tools/storyboard-v2/src/components/tabs/PhaseBTab.tsx",
+      "line": 19,
+      "tab": "phase_b"
+    },
+    {
+      "id": "phase-b-milestone-hint",
+      "file": "Production/tools/storyboard-v2/src/components/tabs/PhaseBTab.tsx",
+      "line": 21,
+      "tab": "phase_b"
+    },
+    {
+      "id": "phase-b-tab-root",
       "file": "Production/tools/storyboard-v2/src/components/tabs/PhaseBTab.tsx",
       "line": 28,
+      "tab": "phase_b"
+    },
+    {
+      "id": "phase-b-pane-header",
+      "file": "Production/tools/storyboard-v2/src/components/tabs/PhaseBTab.tsx",
+      "line": 29,
+      "tab": "phase_b"
+    },
+    {
+      "id": "phase-b-scope-chip",
+      "file": "Production/tools/storyboard-v2/src/components/tabs/PhaseBTab.tsx",
+      "line": 31,
+      "tab": "phase_b"
+    },
+    {
+      "id": "phase-b-producer-panel",
+      "file": "Production/tools/storyboard-v2/src/components/tabs/PhaseBTab.tsx",
+      "line": 33,
       "tab": "phase_b"
     },
     {
@@ -859,10 +949,18 @@
       "cropper-save-status"
     ],
     "phase_a": [
-      "pane-phase-a"
+      "phase-a-milestone-hint",
+      "phase-a-pane-header",
+      "phase-a-producer-panel",
+      "phase-a-scope-chip",
+      "phase-a-tab-root"
     ],
     "phase_b": [
-      "pane-phase-b"
+      "phase-b-milestone-hint",
+      "phase-b-pane-header",
+      "phase-b-producer-panel",
+      "phase-b-scope-chip",
+      "phase-b-tab-root"
     ],
     "production_map": [
       "map-empty",
@@ -934,6 +1032,9 @@
       "sfx-cue-popover-fadeout",
       "sfx-cue-popover-volume",
       "spinner",
+      "suggest-parenthetical-button",
+      "suggest-parenthetical-menu",
+      "suggest-parenthetical-wrapper",
       "tab-bar",
       "toast-host",
       "tooltip-popover",
