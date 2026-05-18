@@ -1,6 +1,15 @@
 {
   "generated_by": "Production/scripts/body_key_contract_check.py",
   "ld": "BODY_KEY_CONTRACT_CI_GREP_GATE_V1",
+  "fossil_keys": {
+    "description": "Intentional API-server-payload-extra keys present as fossils (LD-789). These are SERVER_EXTRA entries the client does not consume but server has historically sent; documented here to distinguish from real drift.",
+    "entries": [
+      {"endpoint": "beat_use_still_as_final", "key": "beat", "rationale": "Server echoes beat_id in response for client-side correlation", "added_by_ld": "LD-786"},
+      {"endpoint": "beat_use_still_as_final", "key": "hold_duration_s", "rationale": "Server echoes effective hold duration (may differ from input if clamped)", "added_by_ld": "LD-786"},
+      {"endpoint": "beat_undo_final", "key": "beat", "rationale": "Server echoes beat_id in response for client-side correlation", "added_by_ld": "LD-786"},
+      {"endpoint": "beat_trim", "key": "beat", "rationale": "Server echoes beat_id to confirm which beat was trimmed", "added_by_ld": "LD-787"}
+    ]
+  },
   "mismatches": [
     "CLIENT_EXTRA|bg_accept_beats|/api/bg/accept-beats|segment",
     "CLIENT_EXTRA|bg_add_beat|/api/bg/add-beat|phase",

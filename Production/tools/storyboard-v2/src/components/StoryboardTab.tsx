@@ -1868,6 +1868,17 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
   // promise resolves "when media has begun playing" — if loading is
   // abandoned, the promise never settles). 500ms is generous and below
   // user-perception. Force-clear stale ref and proceed if exceeded.
+  //
+  // INVARIANTS (Rule 36 §36.1):
+  //   - Reads + clears playPromiseRef.current via reference comparison only
+  //     (no setState; no re-render).
+  //   - 500ms timeout is below user-perception threshold; loosening risks
+  //     blocking the next click; tightening risks killing legitimate slow
+  //     play() starts.
+  //   - Force-clear only when the timed-out ref is STILL the one we awaited
+  //     (otherwise a concurrent safePlay already replaced it).
+  //   - useCallback dependency [beatId] keeps the closure stable across
+  //     renders within a beat instance.
   const awaitPriorPlayWithTimeout = useCallback(async (): Promise<void> => {
     const prior = playPromiseRef.current;
     if (!prior) return;
@@ -1906,6 +1917,15 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
 
   // AbortError classifier: distinguishes browser-aborted (silent, expected)
   // from real playback failures (toast-worthy).
+  //
+  // INVARIANTS (Rule 36 §36.1):
+  //   - AbortError is ALWAYS suppressed (logged-only, no toast). Surfacing
+  //     it produced the 2026-05-17 5-stacked-toast UX failure.
+  //   - NotAllowedError and NotSupportedError route through resetPlayState
+  //     (LD-764 surfacing contract); unknown errors preserve LD-764 fallback.
+  //   - Reads videoRef.current.paused defensively (may be null during unmount).
+  //   - useCallback dependencies [beatId, resetPlayState] keep closure stable;
+  //     do NOT add toast helpers to deps (would cause re-creation every render).
   const handlePlayRejection = useCallback((err: unknown, context: string, toastCtx: string = 'Playback') => {
     const name = (err as { name?: string } | null)?.name ?? 'unknown';
     const playState = videoRef.current?.paused === false ? 'playing' : 'paused';

@@ -19,7 +19,9 @@ event_scope_default: all
 
 entries:
   # ===========================================================================
-  # 3 known regressions (status=known_red) — flip to exit-4 WARN when present
+  # 3 formerly-known regressions (status was known_red as of 2026-05-17; all
+  # flipped to active per LDs 784/786/789 once their features re-shipped).
+  # When a future regression is added, restore status=known_red on that entry.
   # ===========================================================================
   - { ld: LD-746, symbol: 'kim-done-checkbox', kind: testid, status: active }
   - { ld: LD-767, symbol: 'suggest-parenthetical', kind: testid, status: active }
