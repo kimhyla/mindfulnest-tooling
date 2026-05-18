@@ -706,17 +706,19 @@ export function StitcherTab() {
               slot strip to write into state.module_sfx_cues via
               /api/timeline/cues. Distinct from per-slot cues which travel
               inside stitch_save_job.slots[i].sfx_cues. */}
-          <div class="mn-stitcher-module-timeline-wrap" data-testid="stitcher-module-timeline">
-            <div
-              class="mn-stitcher-module-timeline mn-drop-target"
-              data-testid="stitcher-drop-target-sfx-strip"
-              data-drop-target-kind="sfx-strip"
-              onDragOver={moduleDropHandlers.onDragOver}
-              onDragLeave={moduleDropHandlers.onDragLeave}
-              onDrop={moduleDropHandlers.onDrop}
-            >
-              <span class="mn-dim">Module SFX cues — drag SFX from the Library here</span>
-            </div>
+          {/* CI fix #4: consolidated to single div — drop event was firing
+              on the outer wrapper but handlers were on the inner element,
+              so G6 test's drop never registered. Single element with
+              testid + data-drop-target-kind. */}
+          <div
+            class="mn-stitcher-module-timeline mn-drop-target"
+            data-testid="stitcher-module-timeline"
+            data-drop-target-kind="sfx-strip"
+            onDragOver={moduleDropHandlers.onDragOver}
+            onDragLeave={moduleDropHandlers.onDragLeave}
+            onDrop={moduleDropHandlers.onDrop}
+          >
+            <span class="mn-dim">Module SFX cues — drag SFX from the Library here</span>
           </div>
         </>
       )}
