@@ -130,3 +130,17 @@ archive/
 .state.lock
 *.L.json
 beat_generator_state.json
+
+# ============ Builder-script outputs with baked-in credentials (CodeQL #96/#97) ============
+# Per Phase 3.5e 2026-05-18.
+# build_image_selector_cropper.py and build_tts_review.py substitute Directus
+# credentials into the generated HTML at build time so the in-browser tool
+# can authenticate against Directus directly. The output is intended for
+# LOCAL dev only — accidentally committing it leaks the user's Directus
+# password. CodeQL flagged this as py/clear-text-storage-sensitive-data.
+# Defense: gitignore the canonical output filenames so `git add` refuses
+# them. The build script itself is repo-tracked + safe (template only).
+image_selector_cropper.html
+image_selector_cropper_*.html
+tts_review.html
+tts_review_*.html
