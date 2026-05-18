@@ -70,6 +70,7 @@ if _TOOLS_DIR_FOR_BOOTSTRAP not in sys.path:
     # `import beat_generator`, etc.
     sys.path.insert(1, _TOOLS_DIR_FOR_BOOTSTRAP)
 from lib.atomic_json_write import atomic_json_write  # noqa: E402 (Windows/Dropbox retry-safe JSON writes per LD-368)
+from lib.v3_partition import _iter_v3_beats  # noqa: E402 V59 Phase 5: walk all v3 partitions + legacy
 from lib.paths import DROPBOX_ROOT  # noqa: E402 LD-505 Phase B: MN_DROPBOX_ROOT, not __file__ chain
 
 # Checkout root (…/mindfulnest-tooling). Resolves /files?path=Production/… when cwd is not Dropbox.
@@ -1944,8 +1945,8 @@ class OrphanSweepThread(threading.Thread):
     def _sweep(self) -> None:
         now = time.time()
         snap = self.state.read_state()
-        recoveries: list[tuple[str, str, str]] = []  # (beat_id, kind, old_state)
-        for beat_id, beat in (snap.get("beats") or {}).items():
+        recoveries: list[tuple[str, str, str, str]] = []  # (video_role, beat_id, kind, old_state)
+        for video_role, beat_id, beat in _iter_v3_beats(snap):
             # (a) Animation options orphaned mid-submit.
             phase1 = beat.get("phase_1") or {}
             for idx, opt in enumerate(phase1.get("options") or []):
@@ -1956,19 +1957,22 @@ class OrphanSweepThread(threading.Thread):
                 age = self._age_seconds(opt, now)
                 if age is None or age < ORPHAN_SUBMIT_THRESHOLD_SEC:
                     continue
-                recoveries.append((beat_id, f"option_{idx+1}", "submitting"))
+                recoveries.append((video_role, beat_id, f"option_{idx+1}", "submitting"))
             # (b) Lipsync orphaned mid-submit.
             ls = beat.get("lipsync") or {}
             if ls.get("status") == "submitting" and not ls.get("task_id"):
                 age = self._age_seconds(ls, now)
                 if age is not None and age >= ORPHAN_SUBMIT_THRESHOLD_SEC:
-                    recoveries.append((beat_id, "lipsync", "submitting"))
+                    recoveries.append((video_role, beat_id, "lipsync", "submitting"))
         if not recoveries:
             return
 
-        # S5.5a2: orphan-sweep operates on the intro partition (legacy beats).
-        def mut(partition):
-            for beat_id, kind, _old in recoveries:
+        by_role: dict[str, list[tuple[str, str, str, str]]] = {}
+        for rec in recoveries:
+            by_role.setdefault(rec[0], []).append(rec)
+
+        def _apply_recoveries(partition, role_recoveries):
+            for _video_role, beat_id, kind, _old in role_recoveries:
                 beat = partition["beats"].get(beat_id) or {}
                 if kind.startswith("option_"):
                     idx = int(kind.split("_", 1)[1]) - 1
@@ -1999,10 +2003,23 @@ class OrphanSweepThread(threading.Thread):
                             f"within {ORPHAN_SUBMIT_THRESHOLD_SEC}s"
                         ),
                     }
-            return None
-        self.state.mutate_video_state("intro", mut)
-        for beat_id, kind, old_state in recoveries:
-            print(f"[orphan-sweep] recovered {beat_id}/{kind}: "
+
+        for video_role, role_recoveries in by_role.items():
+            if video_role == "legacy":
+
+                def _legacy_mut(state, _recs=role_recoveries):
+                    if "beats" not in state:
+                        state["beats"] = {}
+                    _apply_recoveries({"beats": state["beats"]}, _recs)
+
+                self.state.mutate_state(_legacy_mut)
+            else:
+                self.state.mutate_video_state(
+                    video_role,
+                    lambda partition, _recs=role_recoveries: _apply_recoveries(partition, _recs),
+                )
+        for video_role, beat_id, kind, old_state in recoveries:
+            print(f"[orphan-sweep] recovered {video_role}/{beat_id}/{kind}: "
                   f"{old_state} -> cleared (orphan older than "
                   f"{ORPHAN_SUBMIT_THRESHOLD_SEC}s, no task_id)")
 
@@ -2067,13 +2084,12 @@ class LipsyncPollingThread(threading.Thread):
                 time.sleep(1)
 
     def _cycle(self) -> None:
-        # S5.5a2: legacy lipsync poller iterates intro partition beats.
-        beats = self.state.get_beats("intro")
-        candidates: list[tuple[str, str]] = []  # (beat_id, task_id)
-        for beat_id, beat in beats.items():
+        snap = self.state.read_state()
+        candidates: list[tuple[str, str, str]] = []  # (video_role, beat_id, task_id)
+        for video_role, beat_id, beat in _iter_v3_beats(snap):
             ls = beat.get("lipsync") or {}
             if ls.get("status") == "polling" and ls.get("task_id"):
-                candidates.append((beat_id, ls["task_id"]))
+                candidates.append((video_role, beat_id, ls["task_id"]))
         if not candidates:
             return
         # Preflight 111 (2026-04-19): emit a visible heartbeat so the server
@@ -2081,13 +2097,27 @@ class LipsyncPollingThread(threading.Thread):
         # the daemon completed cycles silently, making it impossible to tell
         # if silent meant "no candidates" vs "stuck" vs "crashed thread".
         print(f"[lipsync-poller] cycle: {len(candidates)} candidate(s): "
-              f"{[(b, t[:12]) for b, t in candidates]}", flush=True)
-        for beat_id, task_id in candidates:
+              f"{[(b, t[:12]) for _r, b, t in candidates]}", flush=True)
+        for video_role, beat_id, task_id in candidates:
             if self.stop_event.is_set():
                 return
-            self._poll_one(beat_id, task_id)
+            self._poll_one(video_role, beat_id, task_id)
 
-    def _poll_one(self, beat_id: str, task_id: str) -> None:
+    @staticmethod
+    def _mutate_lipsync(state_mgr: StateManager, video_role: str, mutator_fn) -> None:
+        """Apply a partition-scoped lipsync mutator to v3 or legacy beats."""
+        if video_role == "legacy":
+
+            def _legacy_mut(state):
+                if "beats" not in state:
+                    state["beats"] = {}
+                mutator_fn({"beats": state["beats"]})
+
+            state_mgr.mutate_state(_legacy_mut)
+        else:
+            state_mgr.mutate_video_state(video_role, mutator_fn)
+
+    def _poll_one(self, video_role: str, beat_id: str, task_id: str) -> None:
         try:
             result = self.client.poll(task_id)
         except Exception as exc:  # noqa: BLE001 — transport; retry next cycle
@@ -2100,16 +2130,21 @@ class LipsyncPollingThread(threading.Thread):
         print(f"[lipsync-poller] {beat_id}/{task_id[:12]}…: "
               f"status={status!r} outputs={len(outputs)}", flush=True)
         if status == "completed" and outputs:
-            self._download_and_complete(beat_id, task_id, outputs[0])
+            self._download_and_complete(video_role, beat_id, task_id, outputs[0])
         elif status in ("failed", "error"):
-            self._mark_failed(beat_id, task_id, "vendor reported failure")
+            self._mark_failed(video_role, beat_id, task_id, "vendor reported failure")
         # else: still processing — leave alone, next cycle will re-poll
 
-    def _download_and_complete(self, beat_id: str, task_id: str, url: str) -> None:
+    def _lipsync_entry(self, video_role: str, beat_id: str) -> dict:
+        if video_role == "legacy":
+            snap = self.state.read_state()
+            return (snap.get("beats") or {}).get(beat_id, {}).get("lipsync") or {}
+        beats = self.state.get_beats(video_role)
+        return (beats.get(beat_id) or {}).get("lipsync") or {}
+
+    def _download_and_complete(self, video_role: str, beat_id: str, task_id: str, url: str) -> None:
         print(f"[lipsync-poller] {beat_id}/{task_id[:12]}…: completed, downloading {url[:60]}…", flush=True)
-        # Pre-read to find target filename. S5.5a2: read intro partition beats.
-        beats = self.state.get_beats("intro")
-        ls = (beats.get(beat_id) or {}).get("lipsync") or {}
+        ls = self._lipsync_entry(video_role, beat_id)
         fname = ls.get("file") or f"{beat_id}_lipsync.mp4"
         clips_dir = self.state.clips_dir
         dst = clips_dir / Path(fname).name
@@ -2119,7 +2154,6 @@ class LipsyncPollingThread(threading.Thread):
             print(f"[lipsync-poller] {beat_id}/{task_id[:12]}…: download failed ({exc}); will retry next cycle", flush=True)
             return
 
-        # S5.5a2: legacy lipsync mut → intro partition.
         def mut(partition):
             beat = partition["beats"].get(beat_id) or {}
             ls = beat.get("lipsync") or {}
@@ -2131,11 +2165,11 @@ class LipsyncPollingThread(threading.Thread):
             ls["recovered_at"] = datetime.now(timezone.utc).isoformat()
             beat["lipsync"] = ls
             partition["beats"][beat_id] = beat
-        self.state.mutate_video_state("intro", mut)
+
+        self._mutate_lipsync(self.state, video_role, mut)
         print(f"[lipsync-poller] {beat_id}/{task_id[:12]}…: wrote {size:,} bytes -> {dst.name}", flush=True)
 
-    def _mark_failed(self, beat_id: str, task_id: str, err: str) -> None:
-        # S5.5a2: legacy lipsync mut → intro partition.
+    def _mark_failed(self, video_role: str, beat_id: str, task_id: str, err: str) -> None:
         def mut(partition):
             beat = partition["beats"].get(beat_id) or {}
             ls = beat.get("lipsync") or {}
@@ -2143,7 +2177,8 @@ class LipsyncPollingThread(threading.Thread):
             ls["last_error"] = err
             beat["lipsync"] = ls
             partition["beats"][beat_id] = beat
-        self.state.mutate_video_state("intro", mut)
+
+        self._mutate_lipsync(self.state, video_role, mut)
         print(f"[lipsync-poller] {beat_id}/{task_id[:12]}…: marked failed ({err})", flush=True)
 
 
