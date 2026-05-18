@@ -5430,6 +5430,38 @@ class ProductionHandler(BaseHTTPRequestHandler):
             print("asset stream canceled by client (_send_json)", file=sys.stderr, flush=True)
             return
 
+    def _send_error_v59(
+        self,
+        status: int,
+        *,
+        error_code: str,
+        error_message: str,
+        retry_safe: bool = True,
+        hint: str | None = None,
+        extra: dict | None = None,
+    ) -> None:
+        """V59 Phase 7 canonical error shape.
+
+        Returns JSON {ok: false, error_code, error_message, retry_safe, hint, ...extra}.
+        Existing handlers may continue using _send_json(status, {"error": ...}) — both
+        shapes are accepted by the client's pathappPatch (per V59 Phase 7 spec line 316).
+
+        error_code: stable SCREAMING_SNAKE identifier (e.g. SCOPE_MISMATCH, BEAT_NOT_FOUND).
+        error_message: human-readable, can include specifics.
+        retry_safe: true if client can safely retry same request.
+        hint: optional next-step suggestion for Kim or operator.
+        """
+        payload = {
+            "ok": False,
+            "error_code": error_code,
+            "error_message": error_message,
+            "retry_safe": retry_safe,
+            "hint": hint,
+        }
+        if extra:
+            payload.update(extra)
+        return self._send_json(status, payload)
+
     def _send_bytes(self, status: int, body: bytes, content_type: str, extra_headers: dict | None = None) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)

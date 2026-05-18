@@ -30,12 +30,18 @@ import {
   type ReadEndpoint,
   type MutationEndpoint,
 } from './endpoints';
+import { dispatchV59Error, type V59Error } from './errorBoundary';
 
 export interface ApiResult<T = unknown> {
   ok: boolean;
   status: number;
   data?: T;
   error?: string;
+  /** V59 Phase 7 canonical error fields (when server returns ok:false + error_code). */
+  error_code?: string;
+  error_message?: string;
+  retry_safe?: boolean;
+  hint?: string | null;
 }
 
 // ============================================================================
@@ -64,6 +70,62 @@ function emitEventChanged(detail: Record<string, unknown>): void {
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent(SCOPE_EVENT_CHANGED, { detail }));
   }
+}
+
+/** True when body is V59 Phase 7 canonical error shape (ok:false + error_code). */
+function isV59ErrorBody(d: Record<string, unknown>): boolean {
+  return d['ok'] === false && typeof d['error_code'] === 'string';
+}
+
+function v59ErrorFromBody(d: Record<string, unknown>): V59Error {
+  return {
+    ...d,
+    error_code: String(d['error_code']),
+    error_message: String(d['error_message'] ?? ''),
+    retry_safe: d['retry_safe'] !== false,
+    hint: d['hint'] == null ? null : String(d['hint']),
+  };
+}
+
+/** Parse non-OK JSON: V59 canonical shape first, then legacy {error} / {error_code}. */
+function parseApiError<T>(
+  status: number,
+  data: T | undefined,
+  statusText = '',
+): ApiResult<T> {
+  const d = data as Record<string, unknown> | undefined;
+  if (d && isV59ErrorBody(d)) {
+    const v59 = v59ErrorFromBody(d);
+    if (typeof window !== 'undefined') {
+      dispatchV59Error(v59);
+    }
+    return {
+      ok: false,
+      status,
+      error: v59.error_message,
+      error_code: v59.error_code,
+      error_message: v59.error_message,
+      retry_safe: v59.retry_safe,
+      hint: v59.hint,
+      ...(data === undefined ? {} : { data }),
+    };
+  }
+  const serverMsg = d?.['error'] ?? d?.['message'] ?? d?.['error_code'];
+  return {
+    ok: false,
+    status,
+    error: serverMsg
+      ? String(serverMsg)
+      : statusText
+        ? `${status} ${statusText}`
+        : `${status}`,
+    ...(data === undefined ? {} : { data }),
+  };
+}
+
+/** Cross-tab scope switch (D1 tie-all-tabs). Tabs listen and/or react via activeScope deps. */
+export function emitScopeEventChanged(detail: Record<string, unknown> = {}): void {
+  emitEventChanged(detail);
 }
 
 // ============================================================================
@@ -100,16 +162,7 @@ export async function apiGet<T = unknown>(
       // non-JSON or empty body
     }
     if (!res.ok) {
-      // Prefer the server's own error message over the generic HTTP status line.
-      // All server 400/500 paths write a descriptive `error` field in the JSON body.
-      const _d = data as Record<string, unknown> | undefined;
-      const serverMsg = _d?.['error'] ?? _d?.['message'];
-      return {
-        ok: false,
-        status: res.status,
-        error: serverMsg ? String(serverMsg) : `${res.status} ${res.statusText}`,
-        ...(data === undefined ? {} : { data }),
-      };
+      return parseApiError(res.status, data, res.statusText);
     }
     return {
       ok: true,
@@ -250,12 +303,15 @@ export async function pathappPatch<T = unknown>(
 
   // LD-456 — HTTP 409 scope mismatch. Surface, do not retry.
   if (result.status === 409) {
-    emitScopeMismatch({
-      endpoint,
-      status: 409,
-      data: result.data,
-      hint: 'reload tab to re-resolve scope',
-    });
+    // V59 canonical SCOPE_MISMATCH is dispatched from parseApiError via errorBoundary.
+    if (result.error_code !== 'SCOPE_MISMATCH') {
+      emitScopeMismatch({
+        endpoint,
+        status: 409,
+        data: result.data,
+        hint: 'reload tab to re-resolve scope',
+      });
+    }
     return result;
   }
 
@@ -304,16 +360,7 @@ async function apiPostRaw<T = unknown>(
       // non-JSON body (e.g., 204 No Content)
     }
     if (!res.ok) {
-      // Prefer the server's own error message over the generic HTTP status line.
-      // All server 400/500 paths write a descriptive `error` field in the JSON body.
-      const _d = data as Record<string, unknown> | undefined;
-      const serverMsg = _d?.['error'] ?? _d?.['message'];
-      return {
-        ok: false,
-        status: res.status,
-        error: serverMsg ? String(serverMsg) : `${res.status} ${res.statusText}`,
-        ...(data === undefined ? {} : { data }),
-      };
+      return parseApiError(res.status, data, res.statusText);
     }
     return {
       ok: true,

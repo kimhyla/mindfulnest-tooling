@@ -108,7 +108,7 @@ export function ProductionMapTab() {
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [activeScope.value.event_id]);
 
   return (
     <section class="mn-tab-pane mn-production-map-pane" data-testid="pane-map">

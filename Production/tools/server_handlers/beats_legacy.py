@@ -753,7 +753,13 @@ def handle_beat_done_toggle(h, body: dict)-> None:
     """
     beat_id = body.get("beat_id")
     if not beat_id:
-        return h._send_json(400, {"error": "missing beat_id"})
+        return h._send_error_v59(
+            400,
+            error_code="MISSING_BEAT_ID",
+            error_message="body.beat_id is required",
+            retry_safe=False,
+            hint="Send {'beat_id': '<id>'} in the POST body",
+        )
     video_role = body.get("video_role") or h.app.state.read_state().get("active_video", "intro")
     toggled: dict = {"kim_done": False}
 

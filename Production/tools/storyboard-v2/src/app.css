@@ -21,7 +21,31 @@
   font-size: 12px;
 }
 
-/* Tab bar */
+/* Tab bar + D1 cross-tab scope rail (EventSelector + scope chip) */
+.mn-tab-bar-row {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+.mn-tab-bar-row .mn-tab-bar {
+  flex: 1;
+  border-bottom: none;
+}
+.mn-tab-bar-scope {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  border-left: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.mn-scope-current-display {
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
 .mn-tab-bar {
   display: flex;
   gap: 0;

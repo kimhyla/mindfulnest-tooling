@@ -15,7 +15,8 @@
 
 import type { Signal } from '@preact/signals';
 import { useEffect } from 'preact/hooks';
-import { activeProjectType } from '../state/scope';
+import { activeProjectType, activeScope, scopeKey } from '../state/scope';
+import { EventSelector } from './EventSelector';
 
 export type TabKey =
   | 'storyboard' | 'bg' | 'cropper' | 'stitcher'
@@ -64,37 +65,48 @@ export function TabBar({ activeTab }: TabBarProps) {
   }, [isMilestone, activeTab.value]);
 
   return (
-    <nav class="mn-tab-bar" data-testid="tab-bar">
-      {TABS.map((t) => {
-        const disabled = isMilestone && t.eventOnly === true;
-        return (
-          <button
-            key={t.key}
-            type="button"
-            class={`mn-tab ${activeTab.value === t.key ? 'is-active' : ''} ${disabled ? 'is-disabled' : ''}`}
-            data-testid={t.testid}
-            data-tab-key={t.key}
-            disabled={disabled}
-            title={disabled ? 'Disabled in milestone scope (event-only tab)' : undefined}
-            onClick={() => {
-              if (!disabled) {
-                activeTab.value = t.key;
-                // Cropper is a modal overlay, not a persistent destination —
-                // don't save it so refresh restores the prior real tab.
-                if (t.key !== 'cropper') {
-                  try {
-                    sessionStorage.setItem(ACTIVE_TAB_STORAGE_KEY, t.key);
-                  } catch {
-                    // ignore
+    <div class="mn-tab-bar-row" data-testid="tab-bar-row">
+      <nav class="mn-tab-bar" data-testid="tab-bar">
+        {TABS.map((t) => {
+          const disabled = isMilestone && t.eventOnly === true;
+          return (
+            <button
+              key={t.key}
+              type="button"
+              class={`mn-tab ${activeTab.value === t.key ? 'is-active' : ''} ${disabled ? 'is-disabled' : ''}`}
+              data-testid={t.testid}
+              data-tab-key={t.key}
+              disabled={disabled}
+              title={disabled ? 'Disabled in milestone scope (event-only tab)' : undefined}
+              onClick={() => {
+                if (!disabled) {
+                  activeTab.value = t.key;
+                  // Cropper is a modal overlay, not a persistent destination —
+                  // don't save it so refresh restores the prior real tab.
+                  if (t.key !== 'cropper') {
+                    try {
+                      sessionStorage.setItem(ACTIVE_TAB_STORAGE_KEY, t.key);
+                    } catch {
+                      // ignore
+                    }
                   }
                 }
-              }
-            }}
-          >
-            {t.label}
-          </button>
-        );
-      })}
-    </nav>
+              }}
+            >
+              {t.label}
+            </button>
+          );
+        })}
+      </nav>
+      <div class="mn-tab-bar-scope" data-testid="tab-bar-scope">
+        <EventSelector />
+        <span
+          class="mn-scope-chip mn-scope-current-display"
+          data-testid="scope-current-display"
+        >
+          scope: {scopeKey(activeScope.value)}
+        </span>
+      </div>
+    </div>
   );
 }

@@ -308,7 +308,7 @@ export function LibraryPanel() {
     return () => {
       cancelled = true;
     };
-  }, [refreshTick]);
+  }, [refreshTick, activeScope.value.event_id]);
 
   const onDelete = async (item: LibItem) => {
     const k = item.key ?? item.abs_path;
