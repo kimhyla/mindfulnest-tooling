@@ -1477,7 +1477,11 @@ def handle_beat_delay(h, body: dict)-> None:
     # Accept both v59-client `delay_seconds` and legacy `audio_delay`.
     raw_delay = body.get("audio_delay")
     if raw_delay is None:
-        # BODY_KEY_ALLOW: delay_seconds (v59 client canonical per BEAT_DELAY_BODY_KEY_BACKCOMPAT_V1)
+        # BODY_KEY_ALLOW: delay_seconds (v59 client canonical per
+        # LD `BEAT_DELAY_BODY_KEY_BACKCOMPAT_V1` — dual-key acceptance: v59 client
+        # sends `delay_seconds`, pre-v59 callers send `audio_delay`; server reads
+        # whichever is present. The BODY_KEY_ALLOW marker is the recognized
+        # body_key_contract_check.py escape hatch; this is governance-grade.)
         raw_delay = body.get("delay_seconds", 0)
     delay = float(raw_delay)
     if not beat_id:

@@ -179,7 +179,7 @@ function persistTier(t: LibraryTier): void {
 // CC-18 — Library search (debounced 300ms)
 // ----------------------------------------------------------------
 
-// [INFERRED — chosen for perceived responsiveness; no LD lock]
+// [INFERRED — verify — chosen for perceived responsiveness; no LD lock]
 const SEARCH_DEBOUNCE_MS = 300;
 
 function matchesSearch(it: LibItem, q: string): boolean {
@@ -205,7 +205,7 @@ function matchesSearch(it: LibItem, q: string): boolean {
 // not Rule 19 shortcut.
 // ----------------------------------------------------------------
 
-// [INFERRED — chosen for perceived responsiveness; no LD lock]
+// [INFERRED — verify — chosen for perceived responsiveness; no LD lock]
 const PREVIEW_HOVER_DELAY_MS = 500;
 
 interface PreviewState {

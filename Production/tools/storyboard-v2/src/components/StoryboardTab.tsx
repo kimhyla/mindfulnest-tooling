@@ -1341,7 +1341,7 @@ function BeatMagicButtons({ index, beatId, beat, eventId }: BeatMagicProps) {
     u.searchParams.set('mode', 'magic_still');
     u.searchParams.set('beat_id', beatId);
     u.searchParams.set('source_image_path', `Production/${eventId}/${stillPath}`);
-    // [CONFIRMED — magic_picker server is co-hosted on the same origin; relative path resolves identically]
+    // [CONFIRMED against api/endpoints.ts SERVER_BASE constant — magic_picker is co-hosted on the production_server.py origin; relative path here resolves identically to ${SERVER_BASE}/api/storyboard/magic_*]
     u.searchParams.set('return_endpoint', '/api/storyboard/magic_still');
     u.searchParams.set('scope_event_id', eventId);
     window.open(u.toString(), '_blank');
@@ -1356,7 +1356,7 @@ function BeatMagicButtons({ index, beatId, beat, eventId }: BeatMagicProps) {
     if (stillPath) {
       u.searchParams.set('source_image_path', `Production/${eventId}/${stillPath}`);
     }
-    // [CONFIRMED — magic_picker server is co-hosted on the same origin; relative path resolves identically]
+    // [CONFIRMED against api/endpoints.ts SERVER_BASE constant — magic_picker is co-hosted on the production_server.py origin; relative path here resolves identically to ${SERVER_BASE}/api/storyboard/magic_*]
     u.searchParams.set('return_endpoint', '/api/storyboard/magic_video');
     u.searchParams.set('scope_event_id', eventId);
     window.open(u.toString(), '_blank');
