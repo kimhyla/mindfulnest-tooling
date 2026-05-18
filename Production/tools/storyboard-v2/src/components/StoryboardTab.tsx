@@ -477,14 +477,19 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
   };
   const onSwapToA = (fromSlot: number) =>
     runMutation('Move to A', 'beat_swap_to_a', { from_slot: fromSlot });
+  // LD-778 4-gate body validation: ok==true is the canonical V59 success flag
+  // (set by handlers' explicit response; _send_error_v59 sets ok=false). The
+  // server's lipsync/use_as_final handlers return {"ok": true, "beat": ...,
+  // optional "file"}; status field is NOT in the canonical 200 shape, so the
+  // gate checks ok+beat (mandatory) rather than status (absent).
   const onLipsync = () =>
     runMutation('Lipsync', 'lipsync', {}, [
-      { key: 'status', equals: 'ok' },
-      { key: 'file', type: 'string' },
+      { key: 'ok', equals: true },
+      { key: 'beat', type: 'string' },
     ]);
   const onUseAsFinal = () =>
     runMutation('Use as Final', 'beat_use_as_final', {}, [
-      { key: 'status', equals: 'ok' },
+      { key: 'ok', equals: true },
       { key: 'beat', type: 'string' },
     ]);
   const onUseStillAsFinal = () => {
