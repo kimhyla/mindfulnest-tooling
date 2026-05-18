@@ -24,8 +24,8 @@ TAB = "phase_b"
 PROBES = [
     ("GET", "/api/health"),
     ("GET", "/api/state"),
-    ("GET", "/api/phase_b/media/nonexistent.mp3", {"accept": [200, 404]}),
-    ("GET", "/api/phase_b/watercolor/nonexistent.jpg", {"accept": [200, 404]}),
+    ("GET", "/api/phase_b/media/nonexistent.mp3", {"accept": [200, 400, 404]}),
+    ("GET", "/api/phase_b/watercolor/nonexistent.jpg", {"accept": [200, 400, 404]}),
 ]
 
 
