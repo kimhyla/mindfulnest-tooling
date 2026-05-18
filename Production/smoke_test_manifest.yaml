@@ -44,6 +44,11 @@ entries:
   - { ld: LD-769, symbol: 'safePlay', kind: fn, target: source }
   - { ld: LD-775, symbol: 'awaitPriorPlayWithTimeout', kind: fn, target: source }
   - { ld: LD-778, symbol: 'runMutation', kind: fn, target: source }
+  # LD-778 re-shipped 2026-05-17: 'expectField' parameter is the unique
+  # symbol of the 4-gate body-validation implementation (not present in the
+  # pre-LD-778 plain HTTP-2xx version). This marker distinguishes "helper
+  # exists by name" from "4-gate version actually shipped."
+  - { ld: LD-778, symbol: 'expectField', kind: fn, target: source }
   - { ld: LD-757, symbol: 'lipsyncMounted', kind: fn, target: source }
 
   # Stale-lipsync UI gate (LD-765 / PR #56)

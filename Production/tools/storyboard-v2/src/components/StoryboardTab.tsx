@@ -307,26 +307,89 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
     };
   }, [lifecycle, beatId]);
 
-  const runMutation = async (label: string, endpoint: any, body: Record<string, unknown>) => {
+  // LD-778 FALSE_POSITIVE_SUCCESS_TOAST_CLASS_KILL_V1 (re-shipped 2026-05-17
+  // from stash@{1} 31e1bd292885 after git-reset wipe; line-by-line audited
+  // against Directus LD-778 decision_text).
+  //
+  // Origin: Kim clicked "Still as Final" on beat_07 during a server-restart
+  // race (PID 13331 -> 14611). Toast fired green "Still as Final ok" but
+  // state.final stayed None and beat_07_still_final.mp4 was never written.
+  // Root cause: this helper toasted success purely on HTTP 2xx (`result.ok`)
+  // without inspecting response body. Any 200-with-empty-body (server-restart
+  // race), 200-with-status:"noop" (undo_final), or future 200-with-status:
+  // "error" would lie-toast.
+  //
+  // Class-kill (Rule 28): tighten the shared mutation channel itself rather
+  // than refactor 8 per-button onClicks. Validation:
+  //   (1) `result.ok` must be true (HTTP 2xx).
+  //   (2) `result.data` must be parseable (not undefined/null).
+  //   (3) `result.data.status`, when present, must equal "ok"
+  //       (rejects "noop" / "error" / "warning" / "skipped").
+  //   (4) Caller may pass `expectField` to require a named field in data
+  //       (e.g., "file" for use_as_final — proves the final block wrote).
+  // 'noop' surfaces as info (not error); other non-ok statuses surface as error.
+  // Symmetric tightening applied to onRegenAudio inline below.
+  const runMutation = async (
+    label: string,
+    endpoint: any,
+    body: Record<string, unknown>,
+    expectField?: string,
+  ) => {
     setBusy(label);
-    const result = await pathappPatch(activeScope.value, endpoint, { beat_id: beatId, ...body });
+    const result = await pathappPatch<Record<string, unknown>>(
+      activeScope.value, endpoint, { beat_id: beatId, ...body },
+    );
     setBusy(null);
-    if (result.ok) {
-      pushToast({ kind: 'success', message: `${label} ok`, source: `beat-${label}` });
-      onMutated();
-    } else {
+    if (!result.ok) {
       pushToast({ kind: 'error', message: `${label} failed: ${result.error}`, source: `beat-${label}-error` });
+      return false;
     }
-    return result.ok;
+    if (result.data === undefined || result.data === null) {
+      pushToast({
+        kind: 'error',
+        message: `${label}: server returned no body (HTTP ${result.status}); not verified — retry`,
+        source: `beat-${label}-unverified`,
+      });
+      return false;
+    }
+    const statusField = (result.data as Record<string, unknown>)['status'];
+    if (typeof statusField === 'string' && statusField !== 'ok') {
+      const msgField = (result.data as Record<string, unknown>)['message'];
+      const detail = typeof msgField === 'string' ? msgField : statusField;
+      const kind = statusField === 'noop' ? 'info' : 'error';
+      pushToast({
+        kind,
+        message: `${label}: ${detail}`,
+        source: `beat-${label}-${statusField}`,
+      });
+      if (kind === 'info') onMutated();
+      return kind === 'info';
+    }
+    if (expectField && (result.data as Record<string, unknown>)[expectField] === undefined) {
+      pushToast({
+        kind: 'error',
+        message: `${label}: server response missing '${expectField}' — not verified, retry`,
+        source: `beat-${label}-missing-${expectField}`,
+      });
+      return false;
+    }
+    pushToast({ kind: 'success', message: `${label} ok`, source: `beat-${label}` });
+    onMutated();
+    return true;
   };
 
   const onRegenAudio = async () => {
     setBusy('Regen Audio');
-    const result = await pathappPatch<{ tts_regen?: { audio_duration_s?: number }, duration_warning?: { message?: string; audio_duration_s?: number; kling_max_s?: number } }>(
+    const result = await pathappPatch<{ ok?: boolean; tts_regen?: { audio_duration_s?: number; audio_file?: string }, duration_warning?: { message?: string; audio_duration_s?: number; kling_max_s?: number } }>(
       activeScope.value, 'beat_regenerate_audio', { beat_id: beatId },
     );
     setBusy(null);
-    if (result.ok) {
+    // LD-778 FALSE_POSITIVE_SUCCESS_TOAST_CLASS_KILL_V1: tightened symmetric
+    // with runMutation. Server response uses {ok: true, tts_regen: {...}} on
+    // success (NOT the status: "ok" convention — different shape). Validate:
+    // HTTP 2xx + parseable body + body.ok !== false + tts_regen present
+    // (proves audio file was written).
+    if (result.ok && result.data && result.data.ok !== false && result.data.tts_regen) {
       pushToast({ kind: 'success', message: 'Regen Audio ok', source: 'beat-Regen Audio' });
       // Fix B (client) — surface server-side duration warning when audio
       // exceeds the Kling v3 10s ceiling. Symmetric with Fix A: don't silently
@@ -341,7 +404,16 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
       }
       onMutated();
     } else {
-      pushToast({ kind: 'error', message: `Regen Audio failed: ${result.error}`, source: 'beat-Regen Audio-error' });
+      // LD-778 FALSE_POSITIVE_SUCCESS_TOAST_CLASS_KILL_V1: refined message —
+      // distinguishes network/HTTP failure from 200-with-empty-body case.
+      const detail = !result.ok
+        ? (result.error || `HTTP ${result.status}`)
+        : (result.data === undefined || result.data === null)
+          ? `server returned no body (HTTP ${result.status}); not verified — retry`
+          : (result.data && (result.data as { ok?: boolean }).ok === false)
+            ? 'server reported ok=false'
+            : 'tts_regen missing from response — not verified, retry';
+      pushToast({ kind: 'error', message: `Regen Audio failed: ${detail}`, source: 'beat-Regen Audio-error' });
     }
     return result.ok;
   };
@@ -415,7 +487,11 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
   const onSwapToA = (fromSlot: number) =>
     runMutation('Move to A', 'beat_swap_to_a', { from_slot: fromSlot });
   const onLipsync = () => runMutation('Lipsync', 'lipsync', {});
-  const onUseAsFinal = () => runMutation('Use as Final', 'beat_use_as_final', {});
+  // LD-778 FALSE_POSITIVE_SUCCESS_TOAST_CLASS_KILL_V1: require 'file' in
+  // response body — proves use_as_final actually wrote the final block.
+  // Catches the origin Kim incident class (200 with empty body during
+  // server-restart race).
+  const onUseAsFinal = () => runMutation('Use as Final', 'beat_use_as_final', {}, 'file');
   const onApplyTrim = () => {
     const tIn = parseFloat(trimIn);
     const tOut = trimOut === 'full' ? null : parseFloat(trimOut);
