@@ -66,6 +66,23 @@ VOLATILE_KEYS = {
     "epoch",
     "current_epoch",
     "pid",
+    # Wave 5 cross-review R4: expanded with nested production-state timestamps
+    "created_at",
+    "updated_at",
+    "submitted_at",
+    "completed_at",
+    "started_at",
+    "last_polled_epoch",
+    "last_touched",
+    "session_started_at",
+    "last_activity",
+    "elapsed_seconds",
+    "remaining_seconds",
+    "expires_at",
+    "manifest_published_at",
+    "boot_epoch",
+    "tab_last_active",
+    "queued_at",
 }
 
 _UNSUBSTITUTED_PARAM_RE = re.compile(r"\{[^}]+\}")
@@ -104,6 +121,16 @@ SKIP_ENDPOINTS: dict[tuple[str, str], str] = {
     ("POST", "/api/video/create"): "mutates state.json",
     ("POST", "/api/admin/drain_start"): "flips drain flag (server-wide)",
     ("POST", "/api/admin/drain_end"): "flips drain flag",
+    # Wave 5 cross-review R1: restart kills the process running the replay-diff;
+    # without skipping, baseline captures a SIGKILL+respawn which is by design
+    # non-deterministic and could mask real handler-extraction regressions.
+    ("POST", "/api/server/restart"): "kills + respawns the server process",
+    # Other known-mutating POSTs the cross-review flagged for audit:
+    ("POST", "/api/v2/beat/create"): "creates beat partition entry",
+    ("POST", "/api/v2/beat/delete"): "deletes beat partition entry",
+    ("POST", "/api/v2/beat/swap_to_a"): "swaps option to phase_a",
+    ("POST", "/api/v2/module/patch"): "mutates module-level state",
+    ("POST", "/api/state/snapshot"): "creates new state snapshot row",
 }
 
 _PATH_BLOCK_RE = re.compile(

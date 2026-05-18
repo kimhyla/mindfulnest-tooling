@@ -10,21 +10,21 @@
     "body_len": 142,
     "body_sha256": "7400c950a382ee2ea0aa4712bb09e1f33eaf4c6155d639a282517f2648d9a597",
     "content_type": "application/json",
-    "latency_ms": 2,
+    "latency_ms": 3,
     "status": 200
   },
   "GET /api/animate/status": {
     "body_len": 337,
     "body_sha256": "dec1952061908af54fa7c3e7338c8624b50daf35ebb253ba886580566be63b74",
     "content_type": "application/json",
-    "latency_ms": 4,
+    "latency_ms": 6,
     "status": 200
   },
   "GET /api/beat/accepted-bg": {
     "body_len": 42,
     "body_sha256": "94caa2c703b72b66739590e17c38a2ee62cf56216aa51eba8c35dbfcd7ae68eb",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 2,
     "status": 400
   },
   "GET /api/beat/audio/{param}": {
@@ -38,56 +38,56 @@
     "body_len": 32,
     "body_sha256": "6c2c63bc1d3eee545826b5c2ec21b1f83bbe66d5db91da7d06330a9a3042e3e4",
     "content_type": "application/json",
-    "latency_ms": 0,
+    "latency_ms": 1,
     "status": 400
   },
   "GET /api/bg/groups": {
     "body_len": 26,
     "body_sha256": "9a8f57ef7563ff61deba87d7dd51660a77c343acd7bc7760ae09b8426433ef1b",
     "content_type": "application/json",
-    "latency_ms": 10,
+    "latency_ms": 6,
     "status": 200
   },
   "GET /api/bg/poll-assemble-status": {
     "body_len": 43,
     "body_sha256": "b5634a524bc7507aca895213b40f147af6b91c29d3f6296f6864728743bbf51c",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 0,
     "status": 400
   },
   "GET /api/bg/poll-flux-status": {
     "body_len": 33,
     "body_sha256": "bb2192b27ceaf5683a841443c826f1e3775886d0b9470a95227eefa35d84a06e",
     "content_type": "application/json",
-    "latency_ms": 0,
+    "latency_ms": 1,
     "status": 400
   },
   "GET /api/bg/poll-gpt-status/{param}": {
     "body_len": 29,
     "body_sha256": "42941cd44aa63d33f959c55cdd48818912c7b29dafa15841cf3f878e3d2f4acd",
     "content_type": "application/json",
-    "latency_ms": 0,
+    "latency_ms": 1,
     "status": 404
   },
   "GET /api/bg/segments": {
     "body_len": 33,
     "body_sha256": "ca46a3e843bbffb1242f89a8830378d9aa34386b9c884758a141031d39344672",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 0,
     "status": 200
   },
   "GET /api/bg/session-state": {
     "body_len": 256,
     "body_sha256": "3d5cfedb9e1b25d1714d347f93129188cf4b3443d1e34e8db03b843c9f18975a",
     "content_type": "application/json",
-    "latency_ms": 147,
+    "latency_ms": 107,
     "status": 200
   },
   "GET /api/cr/full": {
     "body_len": 43,
     "body_sha256": "6c96b05e4c4a57a2f64eeb0fbc203a0558cea765e97fd239211ba91b7251cec6",
     "content_type": "application/json",
-    "latency_ms": 0,
+    "latency_ms": 1,
     "status": 400
   },
   "GET /api/cr/library": {
@@ -101,14 +101,14 @@
     "body_len": 301,
     "body_sha256": "5287585cc29ea771e209ec9067d704db1738c4b632b8e05e299c138bb12e5f2a",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 2,
     "status": 200
   },
   "GET /api/event/list": {
     "body_len": 1845,
     "body_sha256": "508c3e8cddf1a404c1129cd7ac5980354b0d7e12d3f5f7d8c8ad2e5b6fd067f1",
     "content_type": "application/json",
-    "latency_ms": 17,
+    "latency_ms": 5,
     "status": 200
   },
   "GET /api/health": {
@@ -129,7 +129,7 @@
     "body_len": 35,
     "body_sha256": "45c956e5f5d4731b62ceb17c0a3067a5ba30b80d764e086ceef12f636e005d2c",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 2,
     "status": 500
   },
   "GET /api/magic/status": {
@@ -148,16 +148,16 @@
   },
   "GET /api/milestones/list": {
     "body_len": 1665,
-    "body_sha256": "d8d044ca5838bb1880f66778f69f9286443e49b2d84f2024c4a610a2f47b9bff",
+    "body_sha256": "a1b3dcc4a5bf3d1070e9310a01882a467d7f6c0f8234d3df0db83f8db7e1652d",
     "content_type": "application/json",
-    "latency_ms": 3,
+    "latency_ms": 2,
     "status": 200
   },
   "GET /api/phase/base_clips_list": {
     "body_len": 37,
     "body_sha256": "704ca3410e268461f23271a944fae9f7912355623142cf1b55646b767ae329a4",
     "content_type": "application/json",
-    "latency_ms": 2,
+    "latency_ms": 4,
     "status": 200
   },
   "GET /api/phase/watercolor_file": {
@@ -171,14 +171,14 @@
     "body_len": 142,
     "body_sha256": "fbd89a407bdf0112a00eaf5537e504b79834da2cebddc2d42ed55e7eca1d5df1",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 2,
     "status": 200
   },
   "GET /api/phase_b/ambient_preset_list": {
     "body_len": 37,
     "body_sha256": "704ca3410e268461f23271a944fae9f7912355623142cf1b55646b767ae329a4",
     "content_type": "application/json",
-    "latency_ms": 2,
+    "latency_ms": 1,
     "status": 200
   },
   "GET /api/phase_b/media/{param}": {
@@ -195,18 +195,25 @@
     "latency_ms": 1,
     "status": 400
   },
+  "GET /api/production/map": {
+    "body_len": 7978,
+    "body_sha256": "63fb3c9215c9e8e0eb15bede2184dea0595d064a725f28b40ee8e5d5abeba929",
+    "content_type": "application/json",
+    "latency_ms": 1111,
+    "status": 200
+  },
   "GET /api/project/list": {
     "body_len": 1872,
     "body_sha256": "66fc38bb3173bfa88f8ed386c6e206389b4b8beba76eea1dd63fcc24476381f4",
     "content_type": "application/json",
-    "latency_ms": 14,
+    "latency_ms": 15,
     "status": 200
   },
   "GET /api/state": {
     "body_len": 79246,
-    "body_sha256": "38a09dc2b83aa4c0e0cdbb3b47f1da3ce5eb349095a41bae24b75924727d9aae",
+    "body_sha256": "4ad33175b590b4415b1aba44a1f8017a414556bccb61c4edfae06682a9ae4f50",
     "content_type": "application/json",
-    "latency_ms": 4,
+    "latency_ms": 3,
     "status": 200
   },
   "GET /api/stitch_editor/audio_file/{param}": {
@@ -220,35 +227,154 @@
     "body_len": 41,
     "body_sha256": "ae22188c4097359ac33c53aedab5b507f0b49109a379365981b16ecdf0310d59",
     "content_type": "application/json",
-    "latency_ms": 2,
+    "latency_ms": 1,
     "status": 404
   },
   "GET /api/stitch_editor/jobs": {
     "body_len": 437,
-    "body_sha256": "b950dfafe2b422188a893725fe69b40af8bbe5a4bacfaaf14e23fe0045ec4fb0",
+    "body_sha256": "bac749f01f429dbdb5c9825573dc72d9191242b15a001280437ff4cadcd5ad9e",
     "content_type": "application/json",
-    "latency_ms": 2,
+    "latency_ms": 1,
     "status": 200
   },
   "GET /api/stitch_editor/library": {
     "body_len": 4088,
     "body_sha256": "1a7ea08962824d5f6f785fb758ea51638aab1dd677a261ab3bfd2014ea8cd573",
     "content_type": "application/json",
-    "latency_ms": 458,
+    "latency_ms": 416,
+    "status": 200
+  },
+  "GET /api/stitch_editor/preview_file/{param}": {
+    "body_len": 48,
+    "body_sha256": "9ff20644de2340e02d179a4af16f93ce99d60b43e889680380b75b25befa6eb3",
+    "content_type": "application/json",
+    "latency_ms": 1,
+    "status": 404
+  },
+  "GET /api/storyboard/list/{param}": {
+    "body_len": 677,
+    "body_sha256": "48e830bc0bd376e434a695775fcac626c4abae08131343a84bca81d3c1be9e1a",
+    "content_type": "application/json",
+    "latency_ms": 245,
+    "status": 200
+  },
+  "GET /api/timeline/audio/{param}": {
+    "body_len": 445,
+    "body_sha256": "47b89c50ac9fd06dd84cb3cdad4999766d0a0f661a6ec3f7dbd7c19c1e2acc5d",
+    "content_type": "application/json",
+    "latency_ms": 3786,
+    "status": 200
+  },
+  "GET /api/timeline/sfx_library": {
+    "body_len": 2109,
+    "body_sha256": "ae50a09b608c372c939181c48ae77bae8a7e066fbc25d7515eb19dcb7624ea79",
+    "content_type": "application/json",
+    "latency_ms": 252,
+    "status": 200
+  },
+  "GET /api/v2/beat/{param}": {
+    "body_len": 41,
+    "body_sha256": "3e3cf733bf04290afe8842409dfb8068d2e36755e428475ef91849cae58309c3",
+    "content_type": "application/json",
+    "latency_ms": 1,
+    "status": 404
+  },
+  "GET /api/v2/event/{id}/state": {
+    "body_len": 248,
+    "body_sha256": "40bdd64353f14c1fee17941e3fb4d6c16f9e3a63dcd9628712a7a16a0cd8f6f0",
+    "content_type": "application/json",
+    "latency_ms": 0,
+    "status": 409
+  },
+  "GET /api/v2/event/{param}": {
+    "body_len": 59,
+    "body_sha256": "cb3c01600853cb5329a2d8a8ee8189e96aa34cecbf0ceaacd791ca9b1226e6bf",
+    "content_type": "application/json",
+    "latency_ms": 1,
+    "status": 404
+  },
+  "GET /api/v2/storyboard/L.json": {
+    "body_len": 435,
+    "body_sha256": "4d6e1ec1fcb1cf2ba97f6f7345de6df63c11315fbdeecf1a50c044eb289134a4",
+    "content_type": "application/json",
+    "latency_ms": 1,
+    "status": 200
+  },
+  "GET /api/video/list": {
+    "body_len": 247,
+    "body_sha256": "1c4cb4212e7aa397a9e877d7b8e62646174333ca0c452c94040091fa0ad861c5",
+    "content_type": "application/json",
+    "latency_ms": 1,
+    "status": 200
+  },
+  "GET /api/voice/profile/{param}": {
+    "body_len": 105,
+    "body_sha256": "a84a9468d496c2f61b9549ddedc8ea8c74586f646b5c0b5e47d53635bccde95e",
+    "content_type": "application/json",
+    "latency_ms": 0,
+    "status": 400
+  },
+  "GET /asset/{param}": {
+    "body_len": 41,
+    "body_sha256": "0341a2538edba5158c99a6e9028cb793a635128c4f6461f57994348b9d03fd46",
+    "content_type": "application/json",
+    "latency_ms": 0,
+    "status": 404
+  },
+  "GET /bg-stills/{param}": {
+    "body_len": 22,
+    "body_sha256": "51d0a9e3bd9ffc25483790aaffe7a3597e642edd040dddb16aafc324e6e922ed",
+    "content_type": "application/json",
+    "latency_ms": 0,
+    "status": 404
+  },
+  "GET /cropper/{param}": {
+    "body_len": 757592,
+    "body_sha256": "b9ff852e37db0e6bb1cc0201fddccc222450cef52aa5d6f8ccd1b59435d708d5",
+    "content_type": "text/html; charset=utf-8",
+    "latency_ms": 2,
+    "status": 200
+  },
+  "GET /files": {
+    "body_len": 27,
+    "body_sha256": "6573f1e9c782a0db8968462c1447fa5f1cd8e66c06adee0b8cc37c5fb9b7549a",
+    "content_type": "application/json",
+    "latency_ms": 0,
+    "status": 404
+  },
+  "GET /magic": {
+    "body_len": 39,
+    "body_sha256": "199447c116ea113567d27b7694aae5cecc5a7929d423eb982bd82bed5b16cec1",
+    "content_type": "application/json",
+    "latency_ms": 0,
+    "status": 404
+  },
+  "GET /stitch_editor": {
+    "body_len": 69166,
+    "body_sha256": "098f82501a6b6c80453234caa433528b5b9a6000154cb44881ddc70498573d4d",
+    "content_type": "text/html; charset=utf-8",
+    "latency_ms": 1,
+    "status": 200
+  },
+  "GET /storyboard": {
+    "body_len": 238465,
+    "body_sha256": "a9eb3db6cde0dc6dfc06d1b3174b1eca8a887c24b6f3831be00a95fb458a1e28",
+    "content_type": "text/html; charset=utf-8",
+    "latency_ms": 2,
     "status": 200
   },
   "POST /api/animate": {
     "body_len": 88,
     "body_sha256": "202712cc74c66ac04d8db78322b3b25b185a73dab00308cb0b7eccb013405f3a",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 12,
     "status": 400
   },
   "POST /api/animate/redo": {
     "body_len": 152,
     "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 0,
+    "latency_ms": 1,
     "status": 400
   },
   "POST /api/assign-image": {
@@ -262,7 +388,7 @@
     "body_len": 152,
     "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 0,
     "status": 400
   },
   "POST /api/beat/delay": {
@@ -276,21 +402,21 @@
     "body_len": 200,
     "body_sha256": "bbfb6caed8d43ac39ffa045fb51b92858114cdf5e3785a2c1940d8ce0a9b9aa0",
     "content_type": "application/json",
-    "latency_ms": 14,
+    "latency_ms": 13,
     "status": 500
   },
   "POST /api/beat/finalize": {
     "body_len": 125,
     "body_sha256": "2a8c5142ad9b830b74d663a40755b99df38568b1ab07b6069f87bef5ced6ecf6",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 2,
     "status": 400
   },
   "POST /api/beat/graft": {
     "body_len": 33,
     "body_sha256": "7a3432be326192d553a2dd60e0f47253102982cf9a8e1d2737593a45cba7a996",
     "content_type": "application/json",
-    "latency_ms": 0,
+    "latency_ms": 1,
     "status": 400
   },
   "POST /api/beat/regenerate_audio": {
@@ -318,14 +444,14 @@
     "body_len": 88,
     "body_sha256": "202712cc74c66ac04d8db78322b3b25b185a73dab00308cb0b7eccb013405f3a",
     "content_type": "application/json",
-    "latency_ms": 0,
+    "latency_ms": 1,
     "status": 400
   },
   "POST /api/beat/update_text": {
     "body_len": 88,
     "body_sha256": "202712cc74c66ac04d8db78322b3b25b185a73dab00308cb0b7eccb013405f3a",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 0,
     "status": 400
   },
   "POST /api/beat/use_as_final": {
@@ -346,7 +472,7 @@
     "body_len": 152,
     "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 0,
     "status": 400
   },
   "POST /api/bg/accept-local-animation": {
@@ -381,7 +507,7 @@
     "body_len": 152,
     "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 0,
+    "latency_ms": 1,
     "status": 400
   },
   "POST /api/bg/delete-beat": {
@@ -395,14 +521,14 @@
     "body_len": 152,
     "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 0,
+    "latency_ms": 1,
     "status": 400
   },
   "POST /api/bg/extract-beats": {
     "body_len": 152,
     "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 0,
+    "latency_ms": 1,
     "status": 400
   },
   "POST /api/bg/inject-beats": {
@@ -423,7 +549,7 @@
     "body_len": 152,
     "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 0,
     "status": 400
   },
   "POST /api/bg/set-active-context": {
@@ -479,14 +605,14 @@
     "body_len": 152,
     "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 0,
+    "latency_ms": 1,
     "status": 400
   },
   "POST /api/cr/save-crop": {
     "body_len": 152,
     "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 0,
+    "latency_ms": 1,
     "status": 400
   },
   "POST /api/cr/upload": {
@@ -500,21 +626,21 @@
     "body_len": 444,
     "body_sha256": "5d6a4d99c7eb46fc760e55365e51292b2e191f76287f96836197c1ad1f8755c4",
     "content_type": "application/json",
-    "latency_ms": 0,
+    "latency_ms": 1,
     "status": 410
   },
   "POST /api/inject-image": {
     "body_len": 152,
     "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 0,
+    "latency_ms": 1,
     "status": 400
   },
   "POST /api/lipsync": {
     "body_len": 152,
     "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 0,
+    "latency_ms": 1,
     "status": 400
   },
   "POST /api/magic/submit_path": {
@@ -528,7 +654,7 @@
     "body_len": 98,
     "body_sha256": "0f014165a80bfb0b447eee47e7dfe16a0d3e0c35e2f1a3707df9106472d6270d",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 0,
     "status": 400
   },
   "POST /api/milestones/load": {
@@ -537,13 +663,6 @@
     "content_type": "application/json",
     "latency_ms": 0,
     "status": 400
-  },
-  "POST /api/patch_health": {
-    "body_len": 12,
-    "body_sha256": "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
-    "content_type": "application/json",
-    "latency_ms": 2394,
-    "status": 200
   },
   "POST /api/phase/suggest_script": {
     "body_len": 37,
@@ -570,14 +689,14 @@
     "body_len": 152,
     "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 2,
     "status": 400
   },
   "POST /api/phase_b/lipsync": {
     "body_len": 152,
     "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 2,
+    "latency_ms": 1,
     "status": 400
   },
   "POST /api/phase_b/mix_audio": {
@@ -598,21 +717,21 @@
     "body_len": 152,
     "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 2,
+    "latency_ms": 1,
     "status": 400
   },
   "POST /api/preview_stitched": {
     "body_len": 152,
     "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 2,
+    "latency_ms": 1,
     "status": 400
   },
   "POST /api/scene/assemble": {
     "body_len": 125,
     "body_sha256": "2a8c5142ad9b830b74d663a40755b99df38568b1ab07b6069f87bef5ced6ecf6",
     "content_type": "application/json",
-    "latency_ms": 2,
+    "latency_ms": 1,
     "status": 400
   },
   "POST /api/select": {
@@ -622,25 +741,18 @@
     "latency_ms": 1,
     "status": 400
   },
-  "POST /api/server/restart": {
-    "body_len": 24,
-    "body_sha256": "d457f7815da8981b272c07378a6841616bd8604fafaced68adc4d2dc4461a568",
-    "content_type": "application/json",
-    "latency_ms": 1,
-    "status": 200
-  },
   "POST /api/stitch_editor/audio_extract": {
     "body_len": 32,
     "body_sha256": "0e85a7038650e35aeeeb7b3d308b1e36148e7c488eda0d78728cd6520976601e",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 4,
     "status": 400
   },
   "POST /api/stitch_editor/bake": {
     "body_len": 152,
     "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
-    "latency_ms": 1,
+    "latency_ms": 2,
     "status": 400
   },
   "POST /api/stitch_editor/job": {
@@ -648,6 +760,118 @@
     "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
     "content_type": "application/json",
     "latency_ms": 1,
+    "status": 400
+  },
+  "POST /api/stitch_editor/loudnorm": {
+    "body_len": 152,
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
+    "content_type": "application/json",
+    "latency_ms": 1,
+    "status": 400
+  },
+  "POST /api/stitch_editor/preview": {
+    "body_len": 152,
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
+    "content_type": "application/json",
+    "latency_ms": 1,
+    "status": 400
+  },
+  "POST /api/storyboard/magic_still": {
+    "body_len": 152,
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
+    "content_type": "application/json",
+    "latency_ms": 1,
+    "status": 400
+  },
+  "POST /api/storyboard/magic_video": {
+    "body_len": 152,
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
+    "content_type": "application/json",
+    "latency_ms": 0,
+    "status": 400
+  },
+  "POST /api/storyboard/switch": {
+    "body_len": 33,
+    "body_sha256": "e4faf682b3d82dfa48429118743c0f5ea9eac62c7230bbb021d54b5020ed32bd",
+    "content_type": "application/json",
+    "latency_ms": 1,
+    "status": 400
+  },
+  "POST /api/timeline/cues": {
+    "body_len": 152,
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
+    "content_type": "application/json",
+    "latency_ms": 4,
+    "status": 400
+  },
+  "POST /api/timeline/cues/bake": {
+    "body_len": 243,
+    "body_sha256": "5482012d2b9628c04a66f55a977e59989cb1908b9f72ce5d70f1e528ae4fc5c3",
+    "content_type": "application/json",
+    "latency_ms": 1,
+    "status": 200
+  },
+  "POST /api/timeline/open_in_quicktime": {
+    "body_len": 33,
+    "body_sha256": "312531778b85d302454d23ed770842cf74ec7750e9366df24e9d96ce82ff7667",
+    "content_type": "application/json",
+    "latency_ms": 0,
+    "status": 400
+  },
+  "POST /api/timeline/preview_with_sfx": {
+    "body_len": 152,
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
+    "content_type": "application/json",
+    "latency_ms": 0,
+    "status": 400
+  },
+  "POST /api/tts": {
+    "body_len": 38,
+    "body_sha256": "c5ff264dd47b43d6c04c72f6ea8562860be95872d80355e62b61dffca2a27e98",
+    "content_type": "application/json",
+    "latency_ms": 2,
+    "status": 501
+  },
+  "POST /api/v2/beat/{id}/patch": {
+    "body_len": 107,
+    "body_sha256": "750eef8256d1559ebffe0d9b67b72c1340195f90bbeff655990a295394fbd214",
+    "content_type": "application/json",
+    "latency_ms": 1,
+    "status": 400
+  },
+  "POST /api/v2/beat/{id}/swap_to_a": {
+    "body_len": 88,
+    "body_sha256": "202712cc74c66ac04d8db78322b3b25b185a73dab00308cb0b7eccb013405f3a",
+    "content_type": "application/json",
+    "latency_ms": 0,
+    "status": 400
+  },
+  "POST /api/v2/beat/{param}": {
+    "body_len": 58,
+    "body_sha256": "dce4ea8f4c43c183acccb3c16b4775e01440640856cda86db23836d02a8cb000",
+    "content_type": "application/json",
+    "latency_ms": 0,
+    "status": 404
+  },
+  "POST /api/video/set_active": {
+    "body_len": 152,
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
+    "content_type": "application/json",
+    "latency_ms": 0,
+    "status": 400
+  },
+  "POST /api/voice/profile_update": {
+    "body_len": 101,
+    "body_sha256": "fb0579649d7a2c64295788eb08ba2ccbd69acbc386a7e634080f97ceb5148f5f",
+    "content_type": "application/json",
+    "latency_ms": 0,
+    "status": 400
+  },
+  "POST /api/watercolor/animate": {
+    "body_len": 152,
+    "body_sha256": "0f8e23a6d839866b426edc5d8d57424c74b0362abb8f49a04c2deba4abd9232b",
+    "content_type": "application/json",
+    "latency_ms": 0,
     "status": 400
   }
 }
