@@ -61,12 +61,20 @@ def handle_timeline_audio(h, event_id: str)-> None:
     try:
         full_mp4, segment_boundaries = h._get_or_build_full_module_mp4()
     except FileNotFoundError as e:
-        return h._send_json(404, {
-            "error": str(e),
-            "hint": "Click 'Preview-Stitched v2' to build the Story Scene preview first.",
-        })
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=str(e),
+                   retry_safe=False,
+                   extra={"hint": "Click 'Preview-Stitched v2' to build the Story Scene preview first."},
+               )
     except Exception as e:
-        return h._send_json(500, {"error": f"full module build failed: {e}"})
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"full module build failed: {e}",
+                   retry_safe=True,
+               )
 
     mtime_ms = int(full_mp4.stat().st_mtime * 1000)
     cache_key = _hl.md5(
@@ -90,12 +98,20 @@ def handle_timeline_audio(h, event_id: str)-> None:
             subprocess.run(cmd, check=True, capture_output=True, timeout=180)
         except subprocess.CalledProcessError as exc:
             stderr = (exc.stderr or b"")[:400].decode("utf-8", errors="replace")
-            return h._send_json(500, {
-                "error": "audio extraction failed",
-                "stderr": stderr,
-            })
+            return h._send_error_v59(
+                       500,
+                       error_code="AUDIO_EXTRACTION_FAILED",
+                       error_message="audio extraction failed",
+                       retry_safe=True,
+                       extra={"stderr": stderr},
+                   )
         except subprocess.TimeoutExpired:
-            return h._send_json(504, {"error": "audio extraction timed out"})
+            return h._send_error_v59(
+                       504,
+                       error_code="AUDIO_EXTRACTION_TIMED_OUT",
+                       error_message="audio extraction timed out",
+                       retry_safe=True,
+                   )
 
     # Total duration
     try:
@@ -165,27 +181,48 @@ def handle_timeline_cue_upsert(h, body: dict)-> None:
 
     cue_id = body.get("id")
     if not cue_id:
-        return h._send_json(400, {"error": "cue id is required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_CUE_ID",
+                   error_message="cue id is required",
+                   retry_safe=False,
+               )
 
     cue_type = body.get("cue_type", "sfx")
     if cue_type not in ("sfx", "ambient_segment"):
-        return h._send_json(400, {
-            "error": f"invalid cue_type: {cue_type!r}",
-            "hint": "Must be 'sfx' or 'ambient_segment'",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"invalid cue_type: {cue_type!r}",
+                   retry_safe=False,
+                   extra={"hint": "Must be 'sfx' or 'ambient_segment'"},
+               )
 
     source_path_str = body.get("source_path", "")
     if not source_path_str:
-        return h._send_json(400, {"error": "source_path is required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_SOURCE_PATH",
+                   error_message="source_path is required",
+                   retry_safe=False,
+               )
     try:
         real_path = require_media_under_project(source_path_str, extensions=MEDIA_EXTENSIONS)
     except ValueError as exc:
-        return h._send_json(403, {"error": str(exc)})
+        return h._send_error_v59(
+                   403,
+                   error_code="GENERIC_ERROR",
+                   error_message=str(exc),
+                   retry_safe=False,
+               )
     except FileNotFoundError:
-        return h._send_json(400, {
-            "error": f"source_path not found: {source_path_str}",
-            "hint": "Ensure the SFX file exists at the given path.",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"source_path not found: {source_path_str}",
+                   retry_safe=False,
+                   extra={"hint": "Ensure the SFX file exists at the given path."},
+               )
     source_path = Path(real_path)
 
     cue = {
@@ -221,7 +258,12 @@ def handle_timeline_delete_cue(h, cue_id: str)-> None:
         return
 
     if not cue_id:
-        return h._send_json(400, {"error": "cue id required in path"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_CUE_ID",
+                   error_message="cue id required in path",
+                   retry_safe=False,
+               )
 
     removed: list[bool] = [False]
 
@@ -234,7 +276,12 @@ def handle_timeline_delete_cue(h, cue_id: str)-> None:
 
     h.app.state.mutate_state(_remove)
     if not removed[0]:
-        return h._send_json(404, {"error": f"cue not found: {cue_id}"})
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"cue not found: {cue_id}",
+                   retry_safe=False,
+               )
     return h._send_json(200, {"ok": True, "deleted": cue_id})
 
 
@@ -257,16 +304,31 @@ def handle_timeline_open_in_quicktime(h, body: dict)-> None:
     """
     mp4_path = body.get("mp4_path", "")
     if not mp4_path:
-        return h._send_json(400, {"error": "mp4_path is required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_MP4_PATH",
+                   error_message="mp4_path is required",
+                   retry_safe=False,
+               )
     try:
         real_path = require_media_under_project(
             mp4_path,
             extensions=frozenset({".mp4", ".mov", ".m4v"}),
         )
     except ValueError as exc:
-        return h._send_json(403, {"error": str(exc)})
+        return h._send_error_v59(
+                   403,
+                   error_code="GENERIC_ERROR",
+                   error_message=str(exc),
+                   retry_safe=False,
+               )
     except FileNotFoundError:
-        return h._send_json(404, {"error": f"file not found: {mp4_path}"})
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"file not found: {mp4_path}",
+                   retry_safe=False,
+               )
     p = Path(real_path)
     try:
         subprocess.run(
@@ -274,7 +336,12 @@ def handle_timeline_open_in_quicktime(h, body: dict)-> None:
             check=True, timeout=10,
         )
     except subprocess.CalledProcessError as exc:
-        return h._send_json(500, {"error": f"open failed: {exc}"})
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"open failed: {exc}",
+                   retry_safe=True,
+               )
     return h._send_json(200, {"ok": True, "opened": str(p)})
 
 
@@ -301,28 +368,35 @@ def handle_timeline_preview_with_sfx(h, body: dict)-> None:
     # If the event was swapped via /api/event/load between scope-guard
     # and work start, abort BEFORE any expensive work begins.
     if not h._check_event_pin(_pin, '_handle_timeline_preview_with_sfx_pre_work'):
-        return h._send_json(423, {
-            "error": "event_changed_pre_work",
-            "code": "ASYNC_JOB_GENERATION_PIN_V1",
-            "handler": '_handle_timeline_preview_with_sfx',
-            "hint": (
-                "Event changed between scope-guard and work start. "
+        return h._send_error_v59(
+                   423,
+                   error_code="EVENT_CHANGED_PRE_WORK",
+                   error_message="event_changed_pre_work",
+                   retry_safe=False,
+                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "handler": '_handle_timeline_preview_with_sfx', "hint": "Event changed between scope-guard and work start. "
                 "No work was done; no orphan output. Client should "
-                "re-hydrate scope and retry."
-            ),
-        })
+                "re-hydrate scope and retry."},
+               )
 
     import hashlib as _hl  # noqa: PLC0415
 
     try:
         preview_mp4, _seg_bounds = h._get_or_build_full_module_mp4()
     except FileNotFoundError as e:
-        return h._send_json(404, {
-            "error": str(e),
-            "hint": "Click 'Preview-Stitched v2' to build the Story Scene preview first.",
-        })
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=str(e),
+                   retry_safe=False,
+                   extra={"hint": "Click 'Preview-Stitched v2' to build the Story Scene preview first."},
+               )
     except Exception as e:
-        return h._send_json(500, {"error": f"full module build failed: {e}"})
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"full module build failed: {e}",
+                   retry_safe=True,
+               )
 
     state = h.app.state.read_state()
     cues = state.get("module_sfx_cues", [])
@@ -347,7 +421,13 @@ def handle_timeline_preview_with_sfx(h, body: dict)-> None:
                 subprocess.run(cmd, check=True, capture_output=True, timeout=60)
             except subprocess.CalledProcessError as exc:
                 stderr = (exc.stderr or b"")[:400].decode("utf-8", errors="replace")
-                return h._send_json(500, {"error": "stream-copy failed", "stderr": stderr})
+                return h._send_error_v59(
+                           500,
+                           error_code="STREAM_COPY_FAILED",
+                           error_message="stream-copy failed",
+                           retry_safe=True,
+                           extra={"stderr": stderr},
+                       )
         return h._send_json(200, {"mp4_path": str(out_path)})
 
     # Validate all cue source paths (stored from body) before ffmpeg argv.
@@ -355,19 +435,31 @@ def handle_timeline_preview_with_sfx(h, body: dict)-> None:
     for cue in cues:
         sp_raw = cue.get("source_path", "")
         if not sp_raw:
-            return h._send_json(400, {
-                "error": "cue missing source_path",
-                "hint": "Remove or update the invalid cue before previewing.",
-            })
+            return h._send_error_v59(
+                       400,
+                       error_code="CUE_MISSING_SOURCE_PATH",
+                       error_message="cue missing source_path",
+                       retry_safe=False,
+                       extra={"hint": "Remove or update the invalid cue before previewing."},
+                   )
         try:
             sp_safe = require_media_under_project(sp_raw, extensions=MEDIA_EXTENSIONS)
         except ValueError as exc:
-            return h._send_json(403, {"error": str(exc), "cue_id": cue.get("id")})
+            return h._send_error_v59(
+                       403,
+                       error_code="GENERIC_ERROR",
+                       error_message=str(exc),
+                       retry_safe=False,
+                       extra={"cue_id": cue.get("id")},
+                   )
         except FileNotFoundError:
-            return h._send_json(400, {
-                "error": f"SFX file not found: {sp_raw}",
-                "hint": "Remove or update the missing cue before previewing.",
-            })
+            return h._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"SFX file not found: {sp_raw}",
+                       retry_safe=False,
+                       extra={"hint": "Remove or update the missing cue before previewing."},
+                   )
         cue = dict(cue)
         cue["source_path"] = sp_safe
         sanitized_cues.append(cue)
@@ -429,18 +521,31 @@ def handle_timeline_preview_with_sfx(h, body: dict)-> None:
 
     # LD-460 — terminal pin check before ffmpeg write of preview mp4.
     if not h._check_event_pin(_pin, "timeline_preview_sfx_ffmpeg_write"):
-        return h._send_json(423, {"error": "event_changed_mid_job", "code": "ASYNC_JOB_GENERATION_PIN_V1"})
+        return h._send_error_v59(
+                   423,
+                   error_code="EVENT_CHANGED_MID_JOB",
+                   error_message="event_changed_mid_job",
+                   retry_safe=False,
+                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1"},
+               )
     try:
         subprocess.run(cmd, check=True, capture_output=True, timeout=300)
     except subprocess.CalledProcessError as exc:
         stderr = (exc.stderr or b"")[:600].decode("utf-8", errors="replace")
-        return h._send_json(500, {
-            "error": "ffmpeg SFX mix failed",
-            "stderr": stderr,
-            "cmd_head": " ".join(cmd[:10]),
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="FFMPEG_SFX_MIX_FAILED",
+                   error_message="ffmpeg SFX mix failed",
+                   retry_safe=True,
+                   extra={"stderr": stderr, "cmd_head": " ".join(cmd[:10])},
+               )
     except subprocess.TimeoutExpired:
-        return h._send_json(504, {"error": "ffmpeg SFX mix timed out"})
+        return h._send_error_v59(
+                   504,
+                   error_code="FFMPEG_SFX_MIX_TIMED_OUT",
+                   error_message="ffmpeg SFX mix timed out",
+                   retry_safe=True,
+               )
 
     # Post-render validation — SIZE_BUDGET_VIDEO_V1 + SIZE_BUDGET_PER_MODULE_V1
     try:
@@ -459,23 +564,25 @@ def handle_timeline_preview_with_sfx(h, body: dict)-> None:
 
     if video_bitrate > 1_900_000:
         out_path.unlink(missing_ok=True)
-        return h._send_json(422, {
-            "error": (
-                f"video bitrate {video_bitrate:,} bps exceeds 1,900,000 bps "
-                "ceiling (SIZE_BUDGET_VIDEO_V1). Do not open in QuickTime."
-            ),
-            "hint": "Source clips may need re-normalization.",
-        })
+        return h._send_error_v59(
+                   422,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"video bitrate {video_bitrate:,} bps exceeds 1,900,000 bps "
+                "ceiling (SIZE_BUDGET_VIDEO_V1). Do not open in QuickTime.",
+                   retry_safe=False,
+                   extra={"hint": "Source clips may need re-normalization."},
+               )
 
     if size_mb > 80.0:
         out_path.unlink(missing_ok=True)
-        return h._send_json(422, {
-            "error": (
-                f"output {size_mb:.1f} MB exceeds 80 MB ceiling "
-                "(SIZE_BUDGET_PER_MODULE_V1). Do not open in QuickTime."
-            ),
-            "hint": "Reduce SFX count or compress source clips.",
-        })
+        return h._send_error_v59(
+                   422,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"output {size_mb:.1f} MB exceeds 80 MB ceiling "
+                "(SIZE_BUDGET_PER_MODULE_V1). Do not open in QuickTime.",
+                   retry_safe=False,
+                   extra={"hint": "Reduce SFX count or compress source clips."},
+               )
 
     return h._send_json(200, {"mp4_path": str(out_path)})
 

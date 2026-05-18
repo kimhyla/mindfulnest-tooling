@@ -121,13 +121,23 @@ def handle_phase_watercolor_file(h)-> None:
         params = urllib.parse.parse_qs(qs)
         key_list = params.get("key")
         if not key_list:
-            return h._send_json(400, {"error": "key query param required"})
+            return h._send_error_v59(
+                       400,
+                       error_code="KEY_QUERY_PARAM_REQUIRED",
+                       error_message="key query param required",
+                       retry_safe=False,
+                   )
         key = key_list[0]
         wc_dir = _PSERVER_PRODUCTION_DIR / "assets" / "watercolor_library"
         # Find the file by stem.
         matches = list(wc_dir.glob(f"{key}.*"))
         if not matches:
-            return h._send_json(404, {"error": f"no watercolor with key={key!r}"})
+            return h._send_error_v59(
+                       404,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"no watercolor with key={key!r}",
+                       retry_safe=False,
+                   )
         f = matches[0]
         data = f.read_bytes()
         ext = f.suffix.lower().lstrip(".")
@@ -137,7 +147,12 @@ def handle_phase_watercolor_file(h)-> None:
         }.get(ext, "application/octet-stream")
         h._send_bytes(200, data, ct)
     except (OSError, KeyError) as exc:
-        return h._send_json(500, {"error": str(exc)})
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=str(exc),
+                   retry_safe=True,
+               )
 
 
 def handle_phase_base_clips_list(h)-> None:
@@ -253,7 +268,12 @@ def handle_phase_suggest_script(h, body: dict)-> None:
         return
     phase = ((body or {}).get("phase") or "").strip().lower()
     if phase not in ("a", "b"):
-        return h._send_json(400, {"error": "phase must be 'a' or 'b'"})
+        return h._send_error_v59(
+                   400,
+                   error_code="PHASE_MUST_BE_A_OR",
+                   error_message="phase must be 'a' or 'b'",
+                   retry_safe=False,
+               )
 
     # Resolve the Anthropic API key.
     try:
@@ -465,16 +485,21 @@ def handle_phase_suggest_script(h, body: dict)-> None:
             resp_data = json.loads(resp_body)
     except urllib.error.HTTPError as exc:
         err_body = exc.read().decode("utf-8", errors="replace")
-        return h._send_json(502, {
-            "ok": False,
-            "error": f"Anthropic API HTTP {exc.code}",
-            "detail": err_body[:500],
-        })
+        return h._send_error_v59(
+                   502,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"Anthropic API HTTP {exc.code}",
+                   retry_safe=True,
+                   extra={"ok": False, "detail": err_body[:500]},
+               )
     except urllib.error.URLError as exc:
-        return h._send_json(502, {
-            "ok": False,
-            "error": f"Anthropic API URL error: {exc}",
-        })
+        return h._send_error_v59(
+                   502,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"Anthropic API URL error: {exc}",
+                   retry_safe=True,
+                   extra={"ok": False},
+               )
     elapsed_ms = int((time.time() - t0) * 1000)
 
     # Extract text from response shape.
@@ -522,43 +547,56 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
     # If the event was swapped via /api/event/load between scope-guard
     # and work start, abort BEFORE any expensive work begins.
     if not h._check_event_pin(_pin, '_handle_phase_b_regen_audio_pre_work'):
-        return h._send_json(423, {
-            "error": "event_changed_pre_work",
-            "code": "ASYNC_JOB_GENERATION_PIN_V1",
-            "handler": '_handle_phase_b_regen_audio',
-            "hint": (
-                "Event changed between scope-guard and work start. "
+        return h._send_error_v59(
+                   423,
+                   error_code="EVENT_CHANGED_PRE_WORK",
+                   error_message="event_changed_pre_work",
+                   retry_safe=False,
+                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "handler": '_handle_phase_b_regen_audio', "hint": "Event changed between scope-guard and work start. "
                 "No work was done; no orphan output. Client should "
-                "re-hydrate scope and retry."
-            ),
-        })
+                "re-hydrate scope and retry."},
+               )
 
     phase = (body.get("phase") or "").strip().lower()
     err = h._phase_check(phase)
     if err:
-        return h._send_json(400, {"error": err,
-                                     "hint": "phase is 'a' (Chipper) or 'b' (Cedric)."})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=err,
+                   retry_safe=False,
+                   extra={"hint": "phase is 'a' (Chipper) or 'b' (Cedric)."},
+               )
     script = body.get("script") or ""
     if not isinstance(script, str) or not script.strip():
-        return h._send_json(400, {
-            "error": "script is required and must be non-empty string",
-            "hint": "Paste the Phase {} script in the panel textarea.".format(phase.upper()),
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="SCRIPT_IS_REQUIRED_AND_MUST",
+                   error_message="script is required and must be non-empty string",
+                   retry_safe=False,
+                   extra={"hint": "Paste the Phase {} script in the panel textarea.".format(phase.upper())},
+               )
     if len(script) > 50_000:
-        return h._send_json(400, {
-            "error": f"script too long ({len(script)} chars, max 50000)",
-            "hint": "Split into shorter segments or edit down.",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"script too long ({len(script)} chars, max 50000)",
+                   retry_safe=False,
+                   extra={"hint": "Split into shorter segments or edit down."},
+               )
 
     # Load ElevenLabs key via parse_api_keys pattern (matches server-wide usage).
     root = h._phase_project_root()
     keys = parse_api_keys(root / "Production" / "API_KEYS_MASTER.md")
     elevenlabs_key = keys.get("elevenlabs")
     if not elevenlabs_key:
-        return h._send_json(500, {
-            "error": "ElevenLabs API key not configured",
-            "hint": "Set ELEVENLABS_API_KEY env var or populate API_KEYS_MASTER.md.",
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="ELEVENLABS_API_KEY_NOT_CONFIGURED",
+                   error_message="ElevenLabs API key not configured",
+                   retry_safe=True,
+                   extra={"hint": "Set ELEVENLABS_API_KEY env var or populate API_KEYS_MASTER.md."},
+               )
 
     voice_id, model_id, voice_settings, speaker = h._phase_resolve_voice_settings(phase)
     # Universal hardening: robust_https_request with 3 retries + 90s timeout.
@@ -582,20 +620,23 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
             max_retries=3,
         )
     except Exception as exc:  # noqa: BLE001
-        return h._send_json(502, {
-            "error": f"ElevenLabs network failure (after retries): "
+        return h._send_error_v59(
+                   502,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"ElevenLabs network failure (after retries): "
                      f"{type(exc).__name__}: {exc}",
-            "speaker": speaker,
-            "voice_id": voice_id,
-            "hint": "Check network / ElevenLabs status. Retry after a minute.",
-        })
+                   retry_safe=True,
+                   extra={"speaker": speaker, "voice_id": voice_id, "hint": "Check network / ElevenLabs status. Retry after a minute."},
+               )
     if status_code >= 400:
         detail = audio_bytes[:400].decode("utf-8", errors="replace")
-        return h._send_json(502, {
-            "error": f"ElevenLabs HTTP {status_code}: {detail}",
-            "speaker": speaker,
-            "hint": "Often: API key expired or voice_id renamed. Check API_KEYS_MASTER.md.",
-        })
+        return h._send_error_v59(
+                   502,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"ElevenLabs HTTP {status_code}: {detail}",
+                   retry_safe=True,
+                   extra={"speaker": speaker, "hint": "Often: API key expired or voice_id renamed. Check API_KEYS_MASTER.md."},
+               )
     elapsed_call = time.time() - t0
 
     # Atomic write to event_dir root.
@@ -605,7 +646,13 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
     tmp = out_path.with_suffix(f".mp3.tmp.{os.getpid()}")
     # LD-460 — terminal pin check before voice-stem file write.
     if not h._check_event_pin(_pin, "phase_b_regen_audio_write_bytes"):
-        return h._send_json(423, {"error": "event_changed_mid_job", "code": "ASYNC_JOB_GENERATION_PIN_V1"})
+        return h._send_error_v59(
+                   423,
+                   error_code="EVENT_CHANGED_MID_JOB",
+                   error_message="event_changed_mid_job",
+                   retry_safe=False,
+                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1"},
+               )
     try:
         tmp.write_bytes(audio_bytes)
         os.replace(tmp, out_path)
@@ -614,10 +661,13 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
             tmp.unlink(missing_ok=True)
         except Exception:  # noqa: BLE001
             pass
-        return h._send_json(500, {
-            "error": f"atomic write failed: {exc}",
-            "hint": "Check event_dir permissions / disk space.",
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"atomic write failed: {exc}",
+                   retry_safe=True,
+                   extra={"hint": "Check event_dir permissions / disk space."},
+               )
     try:
         duration = _ffprobe_duration(out_path)
     except (subprocess.CalledProcessError, ValueError, OSError):
@@ -634,10 +684,13 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
         new_version = h.app.state.mutate_state(_apply)
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
-        return h._send_json(500, {
-            "error": f"mutate_state failed: {type(exc).__name__}: {exc}",
-            "hint": "State.json could not be persisted. File was written to disk.",
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"mutate_state failed: {type(exc).__name__}: {exc}",
+                   retry_safe=True,
+                   extra={"hint": "State.json could not be persisted. File was written to disk."},
+               )
 
     return h._send_json(200, {
         "status": "ok",
@@ -679,47 +732,70 @@ def handle_phase_b_mix_audio(h, body: dict)-> None:
     # If the event was swapped via /api/event/load between scope-guard
     # and work start, abort BEFORE any expensive work begins.
     if not h._check_event_pin(_pin, '_handle_phase_b_mix_audio_pre_work'):
-        return h._send_json(423, {
-            "error": "event_changed_pre_work",
-            "code": "ASYNC_JOB_GENERATION_PIN_V1",
-            "handler": '_handle_phase_b_mix_audio',
-            "hint": (
-                "Event changed between scope-guard and work start. "
+        return h._send_error_v59(
+                   423,
+                   error_code="EVENT_CHANGED_PRE_WORK",
+                   error_message="event_changed_pre_work",
+                   retry_safe=False,
+                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "handler": '_handle_phase_b_mix_audio', "hint": "Event changed between scope-guard and work start. "
                 "No work was done; no orphan output. Client should "
-                "re-hydrate scope and retry."
-            ),
-        })
+                "re-hydrate scope and retry."},
+               )
 
     phase = (body.get("phase") or "").strip().lower()
     err = h._phase_check(phase)
     if err:
-        return h._send_json(400, {"error": err,
-                                     "hint": "phase is 'a' or 'b'."})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=err,
+                   retry_safe=False,
+                   extra={"hint": "phase is 'a' or 'b'."},
+               )
     ambient_preset_id = body.get("ambient_preset_id")
     if not ambient_preset_id or not isinstance(ambient_preset_id, str):
-        return h._send_json(400, {
-            "error": "ambient_preset_id is required (string)",
-            "hint": "Pick from the ambient preset dropdown.",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="AMBIENT_PRESET_ID_IS_REQUIRED",
+                   error_message="ambient_preset_id is required (string)",
+                   retry_safe=False,
+                   extra={"hint": "Pick from the ambient preset dropdown."},
+               )
     if "/" in ambient_preset_id or "\\" in ambient_preset_id or ".." in ambient_preset_id:
-        return h._send_json(400, {"error": "invalid ambient_preset_id"})
+        return h._send_error_v59(
+                   400,
+                   error_code="INVALID_AMBIENT_PRESET_ID",
+                   error_message="invalid ambient_preset_id",
+                   retry_safe=False,
+               )
     # Resolve voice stem from state.
     state = h.app.state.read_state()
     voice_stem_name = state.get(f"phase_{phase}_voice_stem_file")
     if not voice_stem_name:
-        return h._send_json(400, {
-            "error": f"phase_{phase}_voice_stem_file not set in state",
-            "hint": "Run Regen Audio first to produce a voice stem.",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"phase_{phase}_voice_stem_file not set in state",
+                   retry_safe=False,
+                   extra={"hint": "Run Regen Audio first to produce a voice stem."},
+               )
     try:
         voice_stem_path = require_basename_under_dir(voice_stem_name, h.app.event_dir)
     except ValueError as exc:
-        return h._send_json(400, {"error": str(exc)})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=str(exc),
+                   retry_safe=False,
+               )
     if not voice_stem_path.is_file():
-        return h._send_json(404, {
-            "error": f"voice stem file not found: {voice_stem_name}",
-            "hint": "File may have been deleted. Re-run Regen Audio.",
-        })
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"voice stem file not found: {voice_stem_name}",
+                   retry_safe=False,
+                   extra={"hint": "File may have been deleted. Re-run Regen Audio."},
+               )
     # Resolve ambient preset.
     ambient_dir = h._phase_assets_dir("ambient_library")
     try:
@@ -727,13 +803,20 @@ def handle_phase_b_mix_audio(h, body: dict)-> None:
             f"{ambient_preset_id}.mp3", ambient_dir,
         )
     except ValueError as exc:
-        return h._send_json(400, {"error": str(exc)})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=str(exc),
+                   retry_safe=False,
+               )
     if not ambient_path.is_file():
-        return h._send_json(404, {
-            "error": f"ambient preset not found: {ambient_preset_id}.mp3",
-            "hint": f"Check {ambient_dir} for available presets.",
-            "looked_in": str(ambient_dir),
-        })
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"ambient preset not found: {ambient_preset_id}.mp3",
+                   retry_safe=False,
+                   extra={"hint": f"Check {ambient_dir} for available presets.", "looked_in": str(ambient_dir)},
+               )
     # Voice-source selection:
     # If a lipsync video exists, extract its audio track and use THAT as
     # the voice source — it is bit-exact what ByteDance animated against,
@@ -818,20 +901,25 @@ def handle_phase_b_mix_audio(h, body: dict)-> None:
         except Exception:  # noqa: BLE001
             pass
         stderr = (exc.stderr or b"")[:400].decode("utf-8", errors="replace")
-        return h._send_json(500, {
-            "error": f"ffmpeg amix failed (returncode={exc.returncode})",
-            "stderr": stderr,
-            "hint": "Check ambient preset format (expect mp3, 44.1kHz).",
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"ffmpeg amix failed (returncode={exc.returncode})",
+                   retry_safe=True,
+                   extra={"stderr": stderr, "hint": "Check ambient preset format (expect mp3, 44.1kHz)."},
+               )
     except (subprocess.TimeoutExpired, OSError) as exc:
         try:
             tmp.unlink(missing_ok=True)
         except Exception:  # noqa: BLE001
             pass
-        return h._send_json(500, {
-            "error": f"ffmpeg mix error: {type(exc).__name__}: {exc}",
-            "hint": "Try a shorter voice stem or different ambient preset.",
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"ffmpeg mix error: {type(exc).__name__}: {exc}",
+                   retry_safe=True,
+                   extra={"hint": "Try a shorter voice stem or different ambient preset."},
+               )
     finally:
         # Cleanup tmp voice-extract file regardless of outcome.
         try:
@@ -854,10 +942,13 @@ def handle_phase_b_mix_audio(h, body: dict)-> None:
         new_version = h.app.state.mutate_state(_apply)
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
-        return h._send_json(500, {
-            "error": f"mutate_state failed: {type(exc).__name__}: {exc}",
-            "hint": "State.json could not be persisted. File was written to disk.",
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"mutate_state failed: {type(exc).__name__}: {exc}",
+                   retry_safe=True,
+                   extra={"hint": "State.json could not be persisted. File was written to disk."},
+               )
 
     # Auto-remux: if a lipsync video exists for this phase, replace its
     # audio track with the newly mixed (voice + ambient bed) audio so the
@@ -966,35 +1057,53 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
     }
 
     if h.app.client is None:
-        return h._send_json(500, {
-            "error": "WaveSpeed client not configured (missing API key)",
-            "hint": "Populate API_KEYS_MASTER.md wavespeed entry.",
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="WAVESPEED_NOT_CONFIGURED",
+                   error_message="WaveSpeed client not configured (missing API key)",
+                   retry_safe=True,
+                   extra={"hint": "Populate API_KEYS_MASTER.md wavespeed entry."},
+               )
     phase = (body.get("phase") or "").strip().lower()
     err = h._phase_check(phase)
     if err:
-        return h._send_json(400, {"error": err, "hint": "phase is 'a' or 'b'."})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=err,
+                   retry_safe=False,
+                   extra={"hint": "phase is 'a' or 'b'."},
+               )
     base_clip_id = body.get("base_clip_id")
     if not base_clip_id or not isinstance(base_clip_id, str):
-        return h._send_json(400, {
-            "error": "base_clip_id is required (string)",
-            "hint": "Pick from the base-clip dropdown.",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="BASE_CLIP_ID_IS_REQUIRED",
+                   error_message="base_clip_id is required (string)",
+                   retry_safe=False,
+                   extra={"hint": "Pick from the base-clip dropdown."},
+               )
     # Resolve audio source: prefer mixed_audio_file, fallback to voice_stem.
     state = h.app.state.read_state()
     audio_name = (state.get(f"phase_{phase}_mixed_audio_file")
                   or state.get(f"phase_{phase}_voice_stem_file"))
     if not audio_name:
-        return h._send_json(400, {
-            "error": f"phase_{phase}_mixed_audio_file and phase_{phase}_voice_stem_file both unset",
-            "hint": "Run Regen Audio (and optionally Mix Audio) first.",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"phase_{phase}_mixed_audio_file and phase_{phase}_voice_stem_file both unset",
+                   retry_safe=False,
+                   extra={"hint": "Run Regen Audio (and optionally Mix Audio) first."},
+               )
     audio_path = h.app.event_dir / audio_name
     if not audio_path.is_file():
-        return h._send_json(404, {
-            "error": f"audio file not found: {audio_name}",
-            "hint": "File may have been deleted. Re-run Regen Audio.",
-        })
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"audio file not found: {audio_name}",
+                   retry_safe=False,
+                   extra={"hint": "File may have been deleted. Re-run Regen Audio."},
+               )
     # Resolve base clip — auto-detect .mp4 or .mov. Accept raw key if it
     # already includes an extension.
     bases_dir = h._phase_assets_dir("lipsync_bases")
@@ -1009,21 +1118,24 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
                 base_path = candidate
                 break
     if base_path is None:
-        return h._send_json(404, {
-            "error": f"base clip not found: {base_clip_id}",
-            "hint": f"Expected {bases_dir}/{base_clip_id}.mp4 or .mov",
-            "looked_in": str(bases_dir),
-        })
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"base clip not found: {base_clip_id}",
+                   retry_safe=False,
+                   extra={"hint": f"Expected {bases_dir}/{base_clip_id}.mp4 or .mov", "looked_in": str(bases_dir)},
+               )
 
     # Budget check.
     spend = h.app.state.read_spend()
     if spend["budget_remaining"] < COST_PER_LIPSYNC:
-        return h._send_json(402, {
-            "error": "budget exceeded for lip sync",
-            "budget_remaining": spend["budget_remaining"],
-            "cost": COST_PER_LIPSYNC,
-            "hint": "Raise budget via /api/budget/override or ship fewer.",
-        })
+        return h._send_error_v59(
+                   402,
+                   error_code="BUDGET_EXCEEDED_FOR_LIP_SYNC",
+                   error_message="budget exceeded for lip sync",
+                   retry_safe=False,
+                   extra={"budget_remaining": spend["budget_remaining"], "cost": COST_PER_LIPSYNC, "hint": "Raise budget via /api/budget/override or ship fewer."},
+               )
 
     # §8.4 silcomp + video trim to audio_duration + 0.4s tailroom.
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -1034,12 +1146,13 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
         audio_duration = audio_meta["compressed_duration_s"]
         raw_dur = _ffprobe_duration(base_path)
         if raw_dur <= audio_duration:
-            return h._send_json(400, {
-                "error": "base clip shorter than audio",
-                "base_clip_duration_s": round(raw_dur, 3),
-                "audio_duration_s": round(audio_duration, 3),
-                "hint": "Use a longer base clip or shorten the audio.",
-            })
+            return h._send_error_v59(
+                       400,
+                       error_code="BASE_CLIP_SHORTER_THAN_AUDIO",
+                       error_message="base clip shorter than audio",
+                       retry_safe=False,
+                       extra={"base_clip_duration_s": round(raw_dur, 3), "audio_duration_s": round(audio_duration, 3), "hint": "Use a longer base clip or shorten the audio."},
+                   )
         video_for_lipsync, trimmed_to, ts_used, te_used = _trim_video_to_audio(
             base_path, tmp_video_path, audio_duration,
             trim_start=0.0, trim_end=None,
@@ -1047,12 +1160,13 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
             OSError, ValueError) as exc:
         traceback.print_exc()
-        return h._send_json(500, {
-            "error": "lipsync pre-conditioning failed",
-            "stage": "silcomp_or_trim",
-            "detail": str(exc)[:400],
-            "hint": "Check ffmpeg + that base clip is decodable.",
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="LIPSYNC_PRE_CONDITIONING_FAILED",
+                   error_message="lipsync pre-conditioning failed",
+                   retry_safe=True,
+                   extra={"stage": "silcomp_or_trim", "detail": str(exc)[:400], "hint": "Check ffmpeg + that base clip is decodable."},
+               )
 
     # Submit synchronously via LipSyncClient (matches pattern at lines
     # 4651, 4824). h.app.client is a WaveSpeedClient which has no
@@ -1067,15 +1181,16 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
         )
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
-        return h._send_json(502, {
-            "error": f"ByteDance LipSync failed: {type(exc).__name__}: {exc}",
-            "hint": (
-                f"{type(exc).__name__}: {str(exc)[:200]} — "
+        return h._send_error_v59(
+                   502,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"ByteDance LipSync failed: {type(exc).__name__}: {exc}",
+                   retry_safe=True,
+                   extra={"hint": f"{type(exc).__name__}: {str(exc)[:200]} — "
                 "check server stderr for full trace. Likely causes: "
                 "WaveSpeed upstream, DNS resolution, upload host (uguu/catbox), "
-                "or client-class mismatch (must be LipSyncClient)."
-            ),
-        })
+                "or client-class mismatch (must be LipSyncClient)."},
+               )
     finally:
         # Cleanup tmp pre-conditioned files regardless of outcome.
         for tmp in (tmp_audio_path, tmp_video_path):
@@ -1085,11 +1200,13 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
                 pass
 
     if not out_path.is_file():
-        return h._send_json(502, {
-            "error": "LipSync completed but output file missing",
-            "result": result,
-            "hint": "Check LipSyncClient.submit_and_wait return + disk.",
-        })
+        return h._send_error_v59(
+                   502,
+                   error_code="LIPSYNC_COMPLETED_BUT_OUTPUT_FILE",
+                   error_message="LipSync completed but output file missing",
+                   retry_safe=True,
+                   extra={"result": result, "hint": "Check LipSyncClient.submit_and_wait return + disk."},
+               )
     h.app.state.add_spend("lipsync", COST_PER_LIPSYNC)
     mtime = int(os.path.getmtime(str(out_path)))
 
@@ -1106,27 +1223,27 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
     # recoverable per spec §10). Reject the state mutation with HTTP 423
     # so the v59 client can re-hydrate + retry.
     if not h._check_event_pin(_pin, "phase_b_lipsync_terminal_mutate"):
-        return h._send_json(423, {
-            "error": "event_changed_mid_job",
-            "code": "ASYNC_JOB_GENERATION_PIN_V1",
-            "pinned_event": _pin["pinned_event_dir"].name if _pin.get("pinned_event_dir") else None,
-            "current_event": h.app.event_dir.name,
-            "orphaned_output": str(out_path),
-            "hint": (
-                "The active event changed via /api/event/load while this "
+        return h._send_error_v59(
+                   423,
+                   error_code="EVENT_CHANGED_MID_JOB",
+                   error_message="event_changed_mid_job",
+                   retry_safe=False,
+                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "pinned_event": _pin["pinned_event_dir"].name if _pin.get("pinned_event_dir") else None, "current_event": h.app.event_dir.name, "orphaned_output": str(out_path), "hint": "The active event changed via /api/event/load while this "
                 "lipsync job was running. The mp4 IS on disk at the pinned "
                 "event_dir but state was NOT mutated; client should "
-                "re-hydrate scope and retry."
-            ),
-        })
+                "re-hydrate scope and retry."},
+               )
     try:
         new_version = h.app.state.mutate_state(_apply)
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
-        return h._send_json(500, {
-            "error": f"mutate_state failed: {type(exc).__name__}: {exc}",
-            "hint": "LipSync file written to disk; state persist failed.",
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"mutate_state failed: {type(exc).__name__}: {exc}",
+                   retry_safe=True,
+                   extra={"hint": "LipSync file written to disk; state persist failed."},
+               )
 
     return h._send_json(200, {
         "status": "ok",
@@ -1170,48 +1287,79 @@ def handle_phase_b_preview(h, body: dict)-> None:
             lru_cleanup,
         )
     except ImportError as exc:
-        return h._send_json(500, {
-            "error": f"lib/ffmpeg_stitch import failed: {exc}",
-            "hint": "Verify Production/tools/lib/ffmpeg_stitch.py has render_watercolor_overlay.",
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"lib/ffmpeg_stitch import failed: {exc}",
+                   retry_safe=True,
+                   extra={"hint": "Verify Production/tools/lib/ffmpeg_stitch.py has render_watercolor_overlay."},
+               )
 
     phase = (body.get("phase") or "").strip().lower()
     err = h._phase_check(phase)
     if err:
-        return h._send_json(400, {"error": err, "hint": "phase is 'a' or 'b'."})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=err,
+                   retry_safe=False,
+                   extra={"hint": "phase is 'a' or 'b'."},
+               )
 
     state = h.app.state.read_state()
     lipsync_name = state.get(f"phase_{phase}_lipsync_file")
     if not lipsync_name:
-        return h._send_json(400, {
-            "error": f"phase_{phase}_lipsync_file not set in state",
-            "hint": "Run Send for Lipsync first.",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"phase_{phase}_lipsync_file not set in state",
+                   retry_safe=False,
+                   extra={"hint": "Run Send for Lipsync first."},
+               )
     if "/" in lipsync_name or "\\" in lipsync_name or ".." in lipsync_name:
-        return h._send_json(400, {"error": "invalid phase lipsync filename in state"})
+        return h._send_error_v59(
+                   400,
+                   error_code="INVALID_PHASE_LIPSYNC_FILENAME_IN",
+                   error_message="invalid phase lipsync filename in state",
+                   retry_safe=False,
+               )
     try:
         lipsync_path = require_basename_under_dir(lipsync_name, h.app.event_dir)
     except ValueError as exc:
-        return h._send_json(400, {"error": str(exc)})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=str(exc),
+                   retry_safe=False,
+               )
     if not lipsync_path.is_file():
-        return h._send_json(404, {
-            "error": f"lipsync file not found on disk: {lipsync_name}",
-            "hint": "File may have been deleted. Re-run Send for Lipsync.",
-        })
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"lipsync file not found on disk: {lipsync_name}",
+                   retry_safe=False,
+                   extra={"hint": "File may have been deleted. Re-run Send for Lipsync."},
+               )
     lipsync_path = lipsync_path.resolve()
     cues_json = state.get(f"phase_{phase}_watercolor_cues_json") or "[]"
     try:
         cues = json.loads(cues_json)
     except Exception as exc:  # noqa: BLE001
-        return h._send_json(400, {
-            "error": f"phase_{phase}_watercolor_cues_json invalid: {exc}",
-            "hint": "Validator should have caught this -- state.json is corrupt. Reset via /api/v2/module/patch with empty array.",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"phase_{phase}_watercolor_cues_json invalid: {exc}",
+                   retry_safe=False,
+                   extra={"hint": "Validator should have caught this -- state.json is corrupt. Reset via /api/v2/module/patch with empty array."},
+               )
     if not isinstance(cues, list):
-        return h._send_json(400, {
-            "error": f"phase_{phase}_watercolor_cues_json is not a list",
-            "hint": "Reset to [] via /api/v2/module/patch.",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"phase_{phase}_watercolor_cues_json is not a list",
+                   retry_safe=False,
+                   extra={"hint": "Reset to [] via /api/v2/module/patch."},
+               )
 
     # Pre-check watercolor assets exist (HIGH-3 fail-loud).
     library_dir = h._phase_assets_dir("watercolor_library")
@@ -1223,11 +1371,13 @@ def handle_phase_b_preview(h, body: dict)-> None:
         except FileNotFoundError as exc:
             missing_assets.append({"cue_index": i, "error": str(exc)})
     if missing_assets:
-        return h._send_json(400, {
-            "error": "watercolor assets missing for cue(s)",
-            "missing": missing_assets,
-            "hint": f"Drop the asset files into {library_dir} with the exact key names.",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="WATERCOLOR_ASSETS_MISSING_FOR_CUE",
+                   error_message="watercolor assets missing for cue(s)",
+                   retry_safe=False,
+                   extra={"missing": missing_assets, "hint": f"Drop the asset files into {library_dir} with the exact key names."},
+               )
 
     frame_x = h._PHASE_FRAME_X[phase]
     frame_y = h._PHASE_FRAME_Y
@@ -1240,10 +1390,13 @@ def handle_phase_b_preview(h, body: dict)-> None:
     try:
         normalized_cues_json = _v2_validate_watercolor_cues_json(cues_json)
     except ValueError as exc:
-        return h._send_json(400, {
-            "error": f"watercolor_cues_json validation failed: {exc}",
-            "hint": "Re-drag cues to re-save with a valid schema.",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"watercolor_cues_json validation failed: {exc}",
+                   retry_safe=False,
+                   extra={"hint": "Re-drag cues to re-save with a valid schema."},
+               )
     hash_parts = [
         f"recipe:v3",
         f"wc_overlay:{WATERCOLOR_OVERLAY_RECIPE_HASH}",
@@ -1273,10 +1426,13 @@ def handle_phase_b_preview(h, body: dict)-> None:
         try:
             fcntl.lockf(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except (BlockingIOError, OSError):
-            return h._send_json(409, {
-                "error": "another phase preview is generating",
-                "hint": "Wait for the in-flight preview to finish.",
-            })
+            return h._send_error_v59(
+                       409,
+                       error_code="ANOTHER_PHASE_PREVIEW_IS_GENERATING",
+                       error_message="another phase preview is generating",
+                       retry_safe=False,
+                       extra={"hint": "Wait for the in-flight preview to finish."},
+                   )
         # Cache hit.
         if final_path.is_file():
             evicted = lru_cleanup(preview_dir)
@@ -1296,25 +1452,33 @@ def handle_phase_b_preview(h, body: dict)-> None:
                 frame_max_h=frame_max_h,
             )
         except FileNotFoundError as exc:
-            return h._send_json(400, {
-                "error": f"asset resolution failed: {exc}",
-                "hint": "Add the missing watercolor to the library.",
-            })
+            return h._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"asset resolution failed: {exc}",
+                       retry_safe=False,
+                       extra={"hint": "Add the missing watercolor to the library."},
+                   )
         except subprocess.TimeoutExpired as exc:
             if final_path.is_file():
                 evicted = lru_cleanup(preview_dir)
                 return h._stream_preview_mp4(final_path, cache_hash, evicted=evicted)
-            return h._send_json(504, {
-                "error": f"ffmpeg timeout after {exc.timeout}s",
-                "hint": "Try fewer cues or shorter lipsync.",
-            })
+            return h._send_error_v59(
+                       504,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"ffmpeg timeout after {exc.timeout}s",
+                       retry_safe=True,
+                       extra={"hint": "Try fewer cues or shorter lipsync."},
+                   )
         except subprocess.CalledProcessError as exc:
             stderr = (exc.stderr or b"")[:600].decode("utf-8", errors="replace")
-            return h._send_json(500, {
-                "error": f"ffmpeg overlay failed (returncode={exc.returncode})",
-                "stderr": stderr,
-                "hint": "Check stderr; common cause is missing cue asset or corrupt lipsync.",
-            })
+            return h._send_error_v59(
+                       500,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"ffmpeg overlay failed (returncode={exc.returncode})",
+                       retry_safe=True,
+                       extra={"stderr": stderr, "hint": "Check stderr; common cause is missing cue asset or corrupt lipsync."},
+                   )
         evicted = lru_cleanup(preview_dir)
         return h._stream_preview_mp4(final_path, cache_hash, evicted=evicted)
     finally:

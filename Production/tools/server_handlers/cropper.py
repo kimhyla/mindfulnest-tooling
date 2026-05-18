@@ -151,14 +151,32 @@ def handle_cr_full_image(h)-> None:
     params = urllib.parse.parse_qs(parsed.query)
     abs_path = params.get("abs_path", [None])[0]
     if not abs_path:
-        return h._send_json(400, {"ok": False, "error": "abs_path required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="ABS_PATH_REQUIRED",
+                   error_message="abs_path required",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     try:
         real_path = require_realpath_under_project(abs_path)
     except ValueError:
-        return h._send_json(403, {"ok": False, "error": "path outside project"})
+        return h._send_error_v59(
+                   403,
+                   error_code="PATH_OUTSIDE_PROJECT",
+                   error_message="path outside project",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     safe_path = os.path.realpath(real_path)
     if not os.path.isfile(safe_path):
-        return h._send_json(404, {"ok": False, "error": "file not found"})
+        return h._send_error_v59(
+                   404,
+                   error_code="FILE_NOT_FOUND",
+                   error_message="file not found",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     ext = os.path.splitext(safe_path)[1].lower()
     mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                 ".webp": "image/webp", ".gif": "image/gif"}
@@ -206,7 +224,13 @@ def handle_cr_library_delete(h, body: dict)-> None:
     import glob as _glob
     key = (body or {}).get("key")
     if not key or not isinstance(key, str):
-        return h._send_json(400, {"ok": False, "error": "key required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="KEY_REQUIRED",
+                   error_message="key required",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
     abs_path_hint = (body or {}).get("abs_path") or None
 
     # Tier dirs: sources/ AND crops/. Character_Assets/ is NEVER deleted
@@ -215,7 +239,13 @@ def handle_cr_library_delete(h, body: dict)-> None:
     sources_dir = os.path.join(bg.BG_STILLS_DIR, "sources")
     crops_dir = os.path.join(bg.BG_STILLS_DIR, "crops")
     if not os.path.isdir(sources_dir):
-        return h._send_json(500, {"ok": False, "error": "sources_dir not found"})
+        return h._send_error_v59(
+                   500,
+                   error_code="SOURCES_DIR_NOT_FOUND",
+                   error_message="sources_dir not found",
+                   retry_safe=True,
+                   extra={"ok": False},
+               )
     # crops/ existence is not strictly required (older deployments may
     # have only sources/), but if a crop-key lookup falls back to glob
     # we'll skip the crops/ branch gracefully when the dir is absent.
@@ -240,14 +270,15 @@ def handle_cr_library_delete(h, body: dict)-> None:
         if not _path_inside_tier_dirs(real_hint):
             # Could be Character_Assets/ (reference-protected) or an
             # arbitrary path outside the library tiers. Either way: 403.
-            return h._send_json(403, {
-                "ok": False,
-                "error": (
-                    "abs_path outside library tier dirs "
+            return h._send_error_v59(
+                       403,
+                       error_code="ABS_PATH_OUTSIDE_LIBRARY_TIER",
+                       error_message="abs_path outside library tier dirs "
                     "(sources/, crops/). Character_Assets/ is "
-                    "reference-only — never deleted via this endpoint."
-                ),
-            })
+                    "reference-only — never deleted via this endpoint.",
+                       retry_safe=False,
+                       extra={"ok": False},
+                   )
         target = real_hint
 
     # Path 2: multi-tier glob fallback (no abs_path supplied)
@@ -263,13 +294,14 @@ def handle_cr_library_delete(h, body: dict)-> None:
                         candidates.append(path)
 
         if not candidates:
-            return h._send_json(404, {
-                "ok": False,
-                "error": (
-                    f"key '{key}' not found in library tier dirs "
-                    f"(sources/, crops/)"
-                ),
-            })
+            return h._send_error_v59(
+                       404,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"key '{key}' not found in library tier dirs "
+                    f"(sources/, crops/)",
+                       retry_safe=False,
+                       extra={"ok": False},
+                   )
 
         # Pick the first candidate that passes tier-dir containment.
         for path in candidates:
@@ -278,7 +310,13 @@ def handle_cr_library_delete(h, body: dict)-> None:
                 target = real
                 break
         if not target:
-            return h._send_json(403, {"ok": False, "error": "path outside library tier dirs"})
+            return h._send_error_v59(
+                       403,
+                       error_code="PATH_OUTSIDE_LIBRARY_TIER_DIRS",
+                       error_message="path outside library tier dirs",
+                       retry_safe=False,
+                       extra={"ok": False},
+                   )
 
     # find_asset.py-style safety: refuse if registered in prod_assets.
     # file_path in prod_assets is empirically ABSOLUTE (verified preflight 186)
@@ -300,12 +338,13 @@ def handle_cr_library_delete(h, body: dict)-> None:
         if not force:
             # 422 (not 409) so the client doesn't misread this as a scope mismatch.
             # Real reason: this file is registered in prod_assets (Rule 34 / CC-23).
-            return h._send_json(422, {
-                "ok": False,
-                "error": f"'{key}' is registered in prod_assets (id={[r.get('id') for r in referenced]}) — deregister first to delete",
-                "code": "PROD_ASSETS_PROTECTED",
-                "asset_ids": [r.get("id") for r in referenced],
-            })
+            return h._send_error_v59(
+                       422,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"'{key}' is registered in prod_assets (id={[r.get('id') for r in referenced]}) — deregister first to delete",
+                       retry_safe=False,
+                       extra={"ok": False, "code": "PROD_ASSETS_PROTECTED", "asset_ids": [r.get("id") for r in referenced]},
+                   )
         # force=True: soft-deregister each prod_assets row (status→archived) then
         # hard-delete from disk. Audit trail preserved in Directus.
         try:
@@ -315,7 +354,13 @@ def handle_cr_library_delete(h, body: dict)-> None:
                     _c.delete_item("prod_assets", rid)
                     print(f"[lib-delete] deleted prod_assets id={rid} for key '{key}'")
         except Exception as e:
-            return h._send_json(500, {"ok": False, "error": f"Directus deregister failed: {e}"})
+            return h._send_error_v59(
+                       500,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"Directus deregister failed: {e}",
+                       retry_safe=True,
+                       extra={"ok": False},
+                   )
 
     # Hard delete. Rule 19 compliance: every error path returns explicit
     # JSON. LIB_DELETE_TIER_PATH_V1: FileNotFoundError at unlink time is
@@ -332,7 +377,13 @@ def handle_cr_library_delete(h, body: dict)-> None:
     except FileNotFoundError:
         file_already_gone = True
     except OSError as e:
-        return h._send_json(500, {"ok": False, "error": f"os.remove failed: {e}"})
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"os.remove failed: {e}",
+                   retry_safe=True,
+                   extra={"ok": False},
+               )
 
     # Log to prod_activity_log (best-effort; non-blocking)
     details: dict = {"key": key, "deleted_path": target}
@@ -371,7 +422,12 @@ def handle_cr_save_crop(h, body: dict)-> None:
     beat_id    = body.get("beat_id") or ""   # null/absent → "" (library-origin crop)
     source_key = body.get("source_key", "")
     if not crop_b64:
-        return h._send_json(400, {"error": "crop_png_b64 required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_CROP_PNG_B64",
+                   error_message="crop_png_b64 required",
+                   retry_safe=False,
+               )
 
     # Security (CodeQL py/path-injection alert #26): beat_id flows into
     # the on-disk filename via f-string. Validate if provided; fall back
@@ -379,9 +435,19 @@ def handle_cr_save_crop(h, body: dict)-> None:
     import re as _re
     if beat_id:
         if "/" in beat_id or "\\" in beat_id or ".." in beat_id or beat_id.startswith("."):
-            return h._send_json(400, {"error": "invalid beat_id"})
+            return h._send_error_v59(
+                       400,
+                       error_code="INVALID_BEAT_ID",
+                       error_message="invalid beat_id",
+                       retry_safe=False,
+                   )
         if not _re.match(r"^[A-Za-z0-9][A-Za-z0-9_-]*$", beat_id):
-            return h._send_json(400, {"error": "beat_id must match [A-Za-z0-9_-]+"})
+            return h._send_error_v59(
+                       400,
+                       error_code="INVALID_BEAT_ID",
+                       error_message="beat_id must match [A-Za-z0-9_-]+",
+                       retry_safe=False,
+                   )
     else:
         beat_id = "lib"  # library-origin crop; timestamp suffix keeps filename unique
 
@@ -389,7 +455,12 @@ def handle_cr_save_crop(h, body: dict)-> None:
     try:
         crop_bytes = base64.b64decode(crop_b64)
     except Exception as e:
-        return h._send_json(400, {"error": f"base64 decode failed: {e}"})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"base64 decode failed: {e}",
+                   retry_safe=False,
+               )
 
     delivery_bytes, width, height, thumb_b64, gallery_b64 = bg.process_crop(crop_bytes)
 
@@ -471,28 +542,37 @@ def handle_cr_upload(h, body: dict)-> None:
     # If the event was swapped via /api/event/load between scope-guard
     # and work start, abort BEFORE any expensive work begins.
     if not h._check_event_pin(_pin, '_handle_cr_upload_pre_work'):
-        return h._send_json(423, {
-            "error": "event_changed_pre_work",
-            "code": "ASYNC_JOB_GENERATION_PIN_V1",
-            "handler": '_handle_cr_upload',
-            "hint": (
-                "Event changed between scope-guard and work start. "
+        return h._send_error_v59(
+                   423,
+                   error_code="EVENT_CHANGED_PRE_WORK",
+                   error_message="event_changed_pre_work",
+                   retry_safe=False,
+                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "handler": '_handle_cr_upload', "hint": "Event changed between scope-guard and work start. "
                 "No work was done; no orphan output. Client should "
-                "re-hydrate scope and retry."
-            ),
-        })
+                "re-hydrate scope and retry."},
+               )
 
     filename  = body.get("filename", "")
     image_b64 = body.get("image_b64", "")
     tier      = body.get("tier", "cropped")
 
     if not filename or not image_b64:
-        return h._send_json(400, {"error": "filename and image_b64 required"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_FILENAME_OR_IMAGE_B64",
+                   error_message="filename and image_b64 required",
+                   retry_safe=False,
+               )
 
     # Sanitize — basename only, no path traversal, valid extension
     filename = os.path.basename(filename)
     if not filename.lower().endswith((".png", ".webp", ".jpg", ".jpeg")):
-        return h._send_json(400, {"error": "filename must be .png, .webp, .jpg, or .jpeg"})
+        return h._send_error_v59(
+                   400,
+                   error_code="INVALID_FILENAME_EXTENSION",
+                   error_message="filename must be .png, .webp, .jpg, or .jpeg",
+                   retry_safe=False,
+               )
 
     # Decode
     raw_b64 = image_b64
@@ -501,7 +581,12 @@ def handle_cr_upload(h, body: dict)-> None:
     try:
         raw_bytes = base64.b64decode(raw_b64)
     except Exception as e:
-        return h._send_json(400, {"error": f"base64 decode failed: {e}"})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"base64 decode failed: {e}",
+                   retry_safe=False,
+               )
 
     bg = _bg_module()
     if tier == "source":
@@ -514,7 +599,13 @@ def handle_cr_upload(h, body: dict)-> None:
     dest_path = os.path.join(dest_dir, filename)
     # LD-460 — terminal pin check before file write.
     if not h._check_event_pin(_pin, "cr_upload_write_bytes"):
-        return h._send_json(423, {"error": "event_changed_mid_job", "code": "ASYNC_JOB_GENERATION_PIN_V1"})
+        return h._send_error_v59(
+                   423,
+                   error_code="EVENT_CHANGED_MID_JOB",
+                   error_message="event_changed_mid_job",
+                   retry_safe=False,
+                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1"},
+               )
     safe_dest_path = os.path.realpath(dest_path)
     with open(safe_dest_path, "wb") as f:
         f.write(raw_bytes)
@@ -558,7 +649,12 @@ def serve_cropper(h)-> None:
         reverse=True,
     )
     if not croppers:
-        return h._send_json(404, {"error": "no cropper HTML found in event dir"})
+        return h._send_error_v59(
+                   404,
+                   error_code="NO_CROPPER_HTML_FOUND_IN",
+                   error_message="no cropper HTML found in event dir",
+                   retry_safe=False,
+               )
     body = croppers[0].read_bytes()
     print(f"[server] Serving cropper: {croppers[0].name}")
     h._send_bytes(200, body, "text/html; charset=utf-8")
@@ -570,11 +666,21 @@ def serve_asset(h, filename: str)-> None:
     try:
         target = require_basename_under_dir(filename, h.app.state.clips_dir)
     except ValueError as exc:
-        return h._send_json(400, {"error": str(exc)})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=str(exc),
+                   retry_safe=False,
+               )
     safe = target.name
     safe_asset_path = os.path.realpath(str(target))
     if not os.path.isfile(safe_asset_path):
-        return h._send_json(404, {"error": f"asset not found: {safe}"})
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"asset not found: {safe}",
+                   retry_safe=False,
+               )
     suffix = target.suffix.lower()
     ctype = {
         ".mp4": "video/mp4",

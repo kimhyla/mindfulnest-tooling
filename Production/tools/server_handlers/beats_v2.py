@@ -55,7 +55,13 @@ def handle_v2_patch(h, path: str, body: dict) -> None:
 
     parts = [p for p in path.split("/") if p]
     if len(parts) != 5 or parts[0] != "api" or parts[1] != "v2" or parts[2] != "beat" or parts[4] != "patch":
-        return h._send_json(400, {"status": "error", "error": f"malformed path: {path!r}"})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"malformed path: {path!r}",
+                   retry_safe=False,
+                   extra={"status": "error"},
+               )
     beat_id = parts[3]
 
     field = body.get("field")
@@ -64,19 +70,31 @@ def handle_v2_patch(h, path: str, body: dict) -> None:
     expected_version = body.get("expected_version")
 
     if not field:
-        return h._send_json(400, {"status": "error", "error": "missing 'field'"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_FIELD",
+                   error_message="missing 'field'",
+                   retry_safe=False,
+                   extra={"status": "error"},
+               )
 
     if field == "dialogue":
         if os.environ.get("MINDFULNEST_WRITE_PATH", "v2") == "legacy":
-            return h._send_json(503, {
-                "status": "disabled",
-                "error": "v2 write path disabled via MINDFULNEST_WRITE_PATH=legacy",
-            })
+            return h._send_error_v59(
+                       503,
+                       error_code="V2_WRITE_PATH_DISABLED_VIA",
+                       error_message="v2 write path disabled via MINDFULNEST_WRITE_PATH=legacy",
+                       retry_safe=True,
+                       extra={"status": "disabled"},
+                   )
         if not isinstance(value, str):
-            return h._send_json(400, {
-                "status": "error",
-                "error": f"dialogue value must be str, got {type(value).__name__}",
-            })
+            return h._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"dialogue value must be str, got {type(value).__name__}",
+                       retry_safe=False,
+                       extra={"status": "error"},
+                   )
         if mutation_id:
             cached = _PATCH_STATE_DEDUP.get(mutation_id)
             if cached is not None:
@@ -186,22 +204,31 @@ def handle_v2_beat_create(h, body: dict) -> None:
         return h._send_json(e.http_status, {"error": e.code, **e.detail})
 
     if os.environ.get("MINDFULNEST_WRITE_PATH", "v2") == "legacy":
-        return h._send_json(503, {
-            "status": "disabled",
-            "error": "v2 write path disabled via MINDFULNEST_WRITE_PATH=legacy",
-        })
+        return h._send_error_v59(
+                   503,
+                   error_code="V2_WRITE_PATH_DISABLED_VIA",
+                   error_message="v2 write path disabled via MINDFULNEST_WRITE_PATH=legacy",
+                   retry_safe=True,
+                   extra={"status": "disabled"},
+               )
     if not _t1_enabled():
-        return h._send_json(503, {
-            "status": "disabled",
-            "error": "Tier 1 feature flag disabled (MINDFULNEST_T1_ENABLED=0)",
-        })
+        return h._send_error_v59(
+                   503,
+                   error_code="TIER_FEATURE_FLAG_DISABLED_MINDFULNEST",
+                   error_message="Tier 1 feature flag disabled (MINDFULNEST_T1_ENABLED=0)",
+                   retry_safe=True,
+                   extra={"status": "disabled"},
+               )
 
     insert_after = body.get("insert_after")
     if insert_after is not None and not isinstance(insert_after, str):
-        return h._send_json(400, {
-            "status": "error",
-            "error": f"insert_after must be str or null, got {type(insert_after).__name__}",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"insert_after must be str or null, got {type(insert_after).__name__}",
+                   retry_safe=False,
+                   extra={"status": "error"},
+               )
 
     mutation_id = body.get("mutation_id")
     if mutation_id:
@@ -274,10 +301,13 @@ def handle_v2_beat_create(h, body: dict) -> None:
         h.app.state.mutate_video_state(scope.video_role, _apply_partition)
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
-        return h._send_json(500, {
-            "status": "error",
-            "error": f"beat create failed: {type(exc).__name__}: {exc}",
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"beat create failed: {type(exc).__name__}: {exc}",
+                   retry_safe=True,
+                   extra={"status": "error"},
+               )
 
     try:
         fresh = h.app.state.read_state()
@@ -338,7 +368,12 @@ def handle_v2_beat_delete(h, body: dict) -> None:
 
     beat_id = body.get("beat_id")
     if not isinstance(beat_id, str) or not beat_id:
-        return h._send_json(400, {"error": "beat_id required and must be non-empty string"})
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_BEAT_ID",
+                   error_message="beat_id required and must be non-empty string",
+                   retry_safe=False,
+               )
 
     result_out: dict = {}
 
@@ -357,12 +392,20 @@ def handle_v2_beat_delete(h, body: dict) -> None:
         h.app.state.mutate_video_state(scope.video_role, _apply_partition)
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
-        return h._send_json(500, {
-            "error": f"beat delete failed: {type(exc).__name__}: {exc}",
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"beat delete failed: {type(exc).__name__}: {exc}",
+                   retry_safe=True,
+               )
 
     if result_out.get("not_found"):
-        return h._send_json(404, {"error": f"beat {beat_id!r} not found"})
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"beat {beat_id!r} not found",
+                   retry_safe=False,
+               )
 
     try:
         fresh = h.app.state.read_state()
@@ -377,12 +420,22 @@ def handle_v2_get(h, path: str) -> None:
     """GET /api/v2/beat/<beat_id>"""
     parts = [p for p in path.split("/") if p]
     if len(parts) != 4 or parts[0] != "api" or parts[1] != "v2" or parts[2] != "beat":
-        return h._send_json(400, {"error": f"malformed path: {path!r}"})
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"malformed path: {path!r}",
+                   retry_safe=False,
+               )
     beat_id = parts[3]
     state = h.app.state.read_state()
     beat = (((state.get("videos") or {}).get("intro") or {}).get("beats") or {}).get(beat_id)
     if beat is None:
-        return h._send_json(404, {"error": f"beat {beat_id!r} not found"})
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"beat {beat_id!r} not found",
+                   retry_safe=False,
+               )
     image_key = (((state.get("videos") or {}).get("intro") or {}).get("image_overrides") or {}).get(beat_id)
     return h._send_json(200, {
         "beat_id": beat_id,
@@ -412,12 +465,13 @@ def handle_v2_sidecar(h) -> None:
                     f"qs event_id={client_event!r} != server event_id={server_event!r}",
                     flush=True,
                 )
-                return h._send_json(409, {
-                    "error": "scope_mismatch",
-                    "code": "SCOPE_VALIDATION_V1",
-                    "expected_event_id": server_event,
-                    "got_event_id": client_event,
-                })
+                return h._send_error_v59(
+                           409,
+                           error_code="SCOPE_MISMATCH",
+                           error_message="scope_mismatch",
+                           retry_safe=False,
+                           extra={"code": "SCOPE_VALIDATION_V1", "expected_event_id": server_event, "got_event_id": client_event},
+                       )
     except Exception:
         pass
     sidecar_path = h.app.event_dir / (h.app.storyboard_path.stem + ".L.json")
@@ -426,13 +480,29 @@ def handle_v2_sidecar(h) -> None:
             state = h.app.state.read_state()
             _write_sidecar_L_json(h.app, state)
         except Exception as exc:  # noqa: BLE001
-            return h._send_json(404, {"error": "sidecar not yet materialized", "detail": str(exc)})
+            return h._send_error_v59(
+                       404,
+                       error_code="SIDECAR_NOT_YET_MATERIALIZED",
+                       error_message="sidecar not yet materialized",
+                       retry_safe=False,
+                       extra={"detail": str(exc)},
+                   )
     if not sidecar_path.exists():
-        return h._send_json(404, {"error": "sidecar unavailable"})
+        return h._send_error_v59(
+                   404,
+                   error_code="SIDECAR_UNAVAILABLE",
+                   error_message="sidecar unavailable",
+                   retry_safe=False,
+               )
     try:
         body = sidecar_path.read_bytes()
     except OSError as exc:
-        return h._send_json(500, {"error": f"sidecar read failed: {exc}"})
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"sidecar read failed: {exc}",
+                   retry_safe=True,
+               )
     h.send_response(200)
     h._cors_headers()
     h.send_header("Content-Type", "application/json")
@@ -454,17 +524,15 @@ def handle_v2_event_state(h, path: str) -> None:
                     f"url event_id={url_event!r} != server event_id={server_event!r}",
                     flush=True,
                 )
-                return h._send_json(409, {
-                    "error": "scope_mismatch",
-                    "code": "SCOPE_VALIDATION_V1",
-                    "expected_event_id": server_event,
-                    "got_event_id": url_event,
-                    "hint": (
-                        "URL <event_id> path component does not match "
+                return h._send_error_v59(
+                           409,
+                           error_code="SCOPE_MISMATCH",
+                           error_message="scope_mismatch",
+                           retry_safe=False,
+                           extra={"code": "SCOPE_VALIDATION_V1", "expected_event_id": server_event, "got_event_id": url_event, "hint": "URL <event_id> path component does not match "
                         "the event this server is pinned to. Reload your "
-                        "client tab to re-resolve scope."
-                    ),
-                })
+                        "client tab to re-resolve scope."},
+                       )
     except Exception as exc:
         print(f"[scope-guard] WARN: URL parse on {path} raised {exc!r}; "
               f"falling through to server-pinned event.", flush=True)
@@ -530,46 +598,59 @@ def handle_v2_module_patch(h, body: dict) -> None:
         "_handler": "v2_module_patch",
     }
     if not h._check_event_pin(_pin, "v2_module_patch_pre_work"):
-        return h._send_json(423, {
-            "error": "event_changed_pre_work",
-            "code": "ASYNC_JOB_GENERATION_PIN_V1",
-            "handler": "v2_module_patch",
-        })
+        return h._send_error_v59(
+                   423,
+                   error_code="EVENT_CHANGED_PRE_WORK",
+                   error_message="event_changed_pre_work",
+                   retry_safe=False,
+                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "handler": "v2_module_patch"},
+               )
 
     field = body.get("field")
     value = body.get("value")
     if not field:
-        return h._send_json(400, {
-            "status": "error", "error": "missing 'field'",
-            "hint": "Body must include 'field' and 'value'.",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="MISSING_FIELD",
+                   error_message="missing 'field'",
+                   retry_safe=False,
+                   extra={"status": "error", "hint": "Body must include 'field' and 'value'."},
+               )
     if field not in _V2_MODULE_ALLOWED_FIELDS:
-        return h._send_json(400, {
-            "status": "error",
-            "error": f"field {field!r} not in module whitelist",
-            "hint": f"Allowed: {sorted(_V2_MODULE_ALLOWED_FIELDS)}",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"field {field!r} not in module whitelist",
+                   retry_safe=False,
+                   extra={"status": "error", "hint": f"Allowed: {sorted(_V2_MODULE_ALLOWED_FIELDS)}"},
+               )
     validator = _V2_MODULE_FIELD_VALIDATORS.get(field)
     if validator is None:
-        return h._send_json(500, {
-            "status": "error",
-            "error": f"field {field!r} whitelisted but has no validator",
-            "hint": "Internal: add a _V2_MODULE_FIELD_VALIDATORS entry.",
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"field {field!r} whitelisted but has no validator",
+                   retry_safe=True,
+                   extra={"status": "error", "hint": "Internal: add a _V2_MODULE_FIELD_VALIDATORS entry."},
+               )
     try:
         value = validator(value)
     except ValueError as exc:
-        return h._send_json(400, {
-            "status": "error",
-            "error": f"{field}: {exc}",
-            "hint": f"Validator rejected the value. See error detail for the specific constraint.",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"{field}: {exc}",
+                   retry_safe=False,
+                   extra={"status": "error", "hint": f"Validator rejected the value. See error detail for the specific constraint."},
+               )
     except (TypeError, KeyError) as exc:
-        return h._send_json(400, {
-            "status": "error",
-            "error": f"{field}: {type(exc).__name__}: {exc}",
-            "hint": "Value shape does not match field's schema.",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"{field}: {type(exc).__name__}: {exc}",
+                   retry_safe=False,
+                   extra={"status": "error", "hint": "Value shape does not match field's schema."},
+               )
 
     def _apply(state, _f=field, _v=value):
         state[_f] = _v
@@ -577,16 +658,24 @@ def handle_v2_module_patch(h, body: dict) -> None:
         return state["_module_version"]
 
     if not h._check_event_pin(_pin, "phase_b_mix_audio_apply_mutate"):
-        return h._send_json(423, {"error": "event_changed_mid_job", "code": "ASYNC_JOB_GENERATION_PIN_V1", "handler": "phase_b_mix_audio"})
+        return h._send_error_v59(
+                   423,
+                   error_code="EVENT_CHANGED_MID_JOB",
+                   error_message="event_changed_mid_job",
+                   retry_safe=False,
+                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "handler": "phase_b_mix_audio"},
+               )
     try:
         new_version = h.app.state.mutate_state(_apply)
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
-        return h._send_json(500, {
-            "status": "error",
-            "error": f"mutate_state failed: {type(exc).__name__}: {exc}",
-            "hint": "State.json could not be persisted. Check Directus reachability.",
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"mutate_state failed: {type(exc).__name__}: {exc}",
+                   retry_safe=True,
+                   extra={"status": "error", "hint": "State.json could not be persisted. Check Directus reachability."},
+               )
 
     try:
         fresh = h.app.state.read_state()
@@ -613,37 +702,52 @@ def handle_v2_beat_swap_to_a(h, beat_id: str, body: dict) -> None:
 
     from_slot = body.get("from_slot")
     if not isinstance(from_slot, int) or isinstance(from_slot, bool):
-        return h._send_json(400, {
-            "error": f"from_slot must be int >= 2, got {from_slot!r}",
-            "hint": "Body must include {\"from_slot\": N} where N is 2 (Option B), 3 (Option C), 4 (Option D), etc.",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"from_slot must be int >= 2, got {from_slot!r}",
+                   retry_safe=False,
+                   extra={"hint": "Body must include {\"from_slot\": N} where N is 2 (Option B), 3 (Option C), 4 (Option D), etc."},
+               )
     if from_slot < 2:
-        return h._send_json(400, {
-            "error": f"from_slot must be >= 2, got {from_slot}",
-            "hint": "Slot 1 is already A — nothing to swap. Pass 2 (B), 3 (C), 4 (D), etc.",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"from_slot must be >= 2, got {from_slot}",
+                   retry_safe=False,
+                   extra={"hint": "Slot 1 is already A — nothing to swap. Pass 2 (B), 3 (C), 4 (D), etc."},
+               )
 
     pre_state = h.app.state.read_state()
     pre_partition = ((pre_state.get("videos") or {}).get(scope.video_role) or {})
     pre_beat = (pre_partition.get("beats") or {}).get(beat_id)
     if pre_beat is None:
-        return h._send_json(400, {
-            "error": f"beat {beat_id!r} not found in videos.{scope.video_role}.beats",
-            "hint": "Verify beat_id exists in the partition. Check /api/v2/event/<id>/state.",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"beat {beat_id!r} not found in videos.{scope.video_role}.beats",
+                   retry_safe=False,
+                   extra={"hint": "Verify beat_id exists in the partition. Check /api/v2/event/<id>/state."},
+               )
     pre_phase1 = pre_beat.get("phase_1") or {}
     pre_options = pre_phase1.get("options") or []
     if len(pre_options) < from_slot:
-        return h._send_json(400, {
-            "error": f"phase_1 has {len(pre_options)} option(s); cannot swap from slot {from_slot}",
-            "hint": f"Beat must have at least {from_slot} options for from_slot={from_slot}.",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"phase_1 has {len(pre_options)} option(s); cannot swap from slot {from_slot}",
+                   retry_safe=False,
+                   extra={"hint": f"Beat must have at least {from_slot} options for from_slot={from_slot}."},
+               )
     src_option = pre_options[from_slot - 1]
     if not isinstance(src_option, dict) or not src_option.get("file"):
-        return h._send_json(400, {
-            "error": f"option at slot {from_slot} is empty or missing a file",
-            "hint": "Cannot swap an empty/pending option into slot A. Generate it first.",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"option at slot {from_slot} is empty or missing a file",
+                   retry_safe=False,
+                   extra={"hint": "Cannot swap an empty/pending option into slot A. Generate it first."},
+               )
 
     result_out: dict = {}
 
@@ -693,16 +797,22 @@ def handle_v2_beat_swap_to_a(h, beat_id: str, body: dict) -> None:
     try:
         h.app.state.mutate_video_state(scope.video_role, _apply_partition)
     except (KeyError, IndexError) as exc:
-        return h._send_json(400, {
-            "error": f"swap failed: {exc}",
-            "hint": "State changed between pre-flight and mutate. Retry.",
-        })
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"swap failed: {exc}",
+                   retry_safe=False,
+                   extra={"hint": "State changed between pre-flight and mutate. Retry."},
+               )
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
-        return h._send_json(500, {
-            "error": f"mutate_video_state failed: {type(exc).__name__}: {exc}",
-            "hint": "State.json could not be persisted. Check Directus reachability.",
-        })
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"mutate_video_state failed: {type(exc).__name__}: {exc}",
+                   retry_safe=True,
+                   extra={"hint": "State.json could not be persisted. Check Directus reachability."},
+               )
 
     try:
         fresh = h.app.state.read_state()

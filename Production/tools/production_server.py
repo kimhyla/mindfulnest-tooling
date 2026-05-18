@@ -375,12 +375,13 @@ def with_pin_and_drain(handler_name: str, *, track_sync: bool = True):
         def wrapper(self, body=None, *a, **kw):
             # Drain gate — fail-closed if migration is in progress.
             if not getattr(self.app, "accept_new_jobs", True):
-                return self._send_json(503, {
-                    "error": "drain_in_progress",
-                    "code": "ASYNC_QUEUE_DRAIN_PROTOCOL_V1",
-                    "handler": handler_name,
-                    "hint": "Server is draining new work; retry after migration completes.",
-                })
+                return self._send_error_v59(
+                           503,
+                           error_code="DRAIN_IN_PROGRESS",
+                           error_message="drain_in_progress",
+                           retry_safe=True,
+                           extra={"code": "ASYNC_QUEUE_DRAIN_PROTOCOL_V1", "handler": handler_name, "hint": "Server is draining new work; retry after migration completes."},
+                       )
             if track_sync:
                 sync_id = f"{handler_name}:{_stdlib_uuid.uuid4().hex[:8]}"
                 with self.app._sync_inflight_lock:
@@ -5453,6 +5454,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
         """
         payload = {
             "ok": False,
+            # Legacy alias — keep the pre-V59 `error` key populated so existing
+            # clients/tests that read `payload["error"]` continue working. The
+            # canonical V59 fields below are additive, not replacement.
+            "error": error_message,
             "error_code": error_code,
             "error_message": error_message,
             "retry_safe": retry_safe,
@@ -5532,12 +5537,13 @@ class ProductionHandler(BaseHTTPRequestHandler):
         if body_event is None:
             if allow_missing:
                 return True
-            self._send_json(400, {
-                "error": "scope_required",
-                "code": "SCOPE_VALIDATION_V1",
-                "expected_event_id": server_event,
-                "hint": "v59 clients must include event_id in request body.",
-            })
+            self._send_error_v59(
+                400,
+                error_code="SCOPE_REQUIRED",
+                error_message="scope_required",
+                retry_safe=False,
+                extra={"code": "SCOPE_VALIDATION_V1", "expected_event_id": server_event, "hint": "v59 clients must include event_id in request body."},
+            )
             return False
         if body_event != server_event:
             print(
@@ -5545,19 +5551,17 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 f"body event_id={body_event!r} != server event_id={server_event!r}",
                 flush=True,
             )
-            self._send_json(409, {
-                "error": "scope_mismatch",
-                "code": "SCOPE_VALIDATION_V1",
-                "expected_event_id": server_event,
-                "got_event_id": body_event,
-                "hint": (
-                    "The client thinks it is editing a different event than "
+            self._send_error_v59(
+                409,
+                error_code="SCOPE_MISMATCH",
+                error_message="scope_mismatch",
+                retry_safe=False,
+                extra={"code": "SCOPE_VALIDATION_V1", "expected_event_id": server_event, "got_event_id": body_event, "hint": "The client thinks it is editing a different event than "
                     "this server is serving. Restart the client tab so the "
                     "active scope re-resolves, or restart the server with "
                     f"--event-dir Production/{body_event} if the client is "
-                    "correct."
-                ),
-            })
+                    "correct."},
+            )
             return False
         # ---- LD-474 VIDEO_ROLE_PER_REQUEST_V1 (S5.5a2 extension) ----
         # When scope_video_role is present, validate it against the canonical
@@ -5567,24 +5571,23 @@ class ProductionHandler(BaseHTTPRequestHandler):
         if body_video_role is None:
             if allow_missing_video_role:
                 return True
-            self._send_json(400, {
-                "error": "video_role_required",
-                "code": "VIDEO_ROLE_INVALID",
-                "valid": sorted(self.app.state._VALID_VIDEO_ROLES),
-                "hint": "scope_video_role required on this endpoint (LD-474).",
-            })
+            self._send_error_v59(
+                400,
+                error_code="VIDEO_ROLE_REQUIRED",
+                error_message="video_role_required",
+                retry_safe=False,
+                extra={"code": "VIDEO_ROLE_INVALID", "valid": sorted(self.app.state._VALID_VIDEO_ROLES), "hint": "scope_video_role required on this endpoint (LD-474)."},
+            )
             return False
         if not self.app.state.validate_video_role(body_video_role):
-            self._send_json(400, {
-                "error": "video_role_invalid",
-                "code": "VIDEO_ROLE_INVALID",
-                "got": body_video_role,
-                "valid": sorted(self.app.state._VALID_VIDEO_ROLES),
-                "hint": (
-                    "scope_video_role must be one of intro/resolution/"
-                    "standalone AND exist in current state.videos."
-                ),
-            })
+            self._send_error_v59(
+                400,
+                error_code="VIDEO_ROLE_INVALID",
+                error_message="video_role_invalid",
+                retry_safe=False,
+                extra={"code": "VIDEO_ROLE_INVALID", "got": body_video_role, "valid": sorted(self.app.state._VALID_VIDEO_ROLES), "hint": "scope_video_role must be one of intro/resolution/"
+                    "standalone AND exist in current state.videos."},
+            )
             return False
         return True
 
@@ -5726,7 +5729,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/v2/beat/"):
                 return self._handle_v2_get(path)
             if path in ("/api/tts", "/api/tts/status"):
-                return self._send_json(501, {"error": "not implemented in v1 MVP"})
+                return self._send_error_v59(
+                           501,
+                           error_code="NOT_IMPLEMENTED_V1_MVP",
+                           error_message="not implemented in v1 MVP",
+                           retry_safe=True,
+                       )
             # ── Beat Generator tab routes (GET) ──────────────────────────────────
             if path == "/api/bg/segments":
                 return self._handle_bg_segments()
@@ -5811,7 +5819,13 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_milestones_list(None)
             if path == "/api/project/list":
                 return self._handle_project_list(None)
-            return self._send_json(404, {"error": "not found", "path": path})
+            return self._send_error_v59(
+                       404,
+                       error_code="NOT_FOUND",
+                       error_message="not found",
+                       retry_safe=False,
+                       extra={"path": path},
+                   )
         except (BrokenPipeError, ConnectionResetError):
             # LOG_HYGIENE_SUPPRESS_CLIENT_CANCEL_TRACEBACKS (LD 2026-04-18):
             # Defense-in-depth: if any downstream handler re-raises a client
@@ -5821,7 +5835,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
             return
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc()
-            return self._send_json(500, {"error": str(exc)})
+            return self._send_error_v59(
+                       500,
+                       error_code="GENERIC_ERROR",
+                       error_message=str(exc),
+                       retry_safe=True,
+                   )
 
     def do_POST(self):  # noqa: N802
         self.app.touch()
@@ -5838,7 +5857,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 # Flat alias for v2 path-param endpoint so pathappPatch can reach it.
                 _beat_id_from_body = body.get("beat_id") or body.get("beat")
                 if not _beat_id_from_body:
-                    return self._send_json(400, {"error": "missing beat_id in body"})
+                    return self._send_error_v59(
+                               400,
+                               error_code="MISSING_BEAT_ID",
+                               error_message="missing beat_id in body",
+                               retry_safe=False,
+                           )
                 return self._handle_v2_beat_swap_to_a(_beat_id_from_body, body)
             if path == "/api/beat/update_text":
                 return self._handle_beat_update_text(body)
@@ -5891,10 +5915,13 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 parts = [p for p in path.split("/") if p]
                 # Expect: ["api", "v2", "beat", "<beat_id>", "swap_to_a"]
                 if len(parts) != 5:
-                    return self._send_json(400, {
-                        "error": f"malformed path: {path!r}",
-                        "hint": "Expected /api/v2/beat/<beat_id>/swap_to_a",
-                    })
+                    return self._send_error_v59(
+                               400,
+                               error_code="GENERIC_ERROR",
+                               error_message=f"malformed path: {path!r}",
+                               retry_safe=False,
+                               extra={"hint": "Expected /api/v2/beat/<beat_id>/swap_to_a"},
+                           )
                 return self._handle_v2_beat_swap_to_a(parts[3], body)
             # LD-285 Preview Stitched v2 endpoints (April 19 2026)
             if path == "/api/v2/module/patch":
@@ -5921,7 +5948,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
             if path == "/api/preview_stitched":
                 return self._handle_preview_stitched(body)
             if path == "/api/tts":
-                return self._send_json(501, {"error": "not implemented in v1 MVP"})
+                return self._send_error_v59(
+                           501,
+                           error_code="NOT_IMPLEMENTED_V1_MVP",
+                           error_message="not implemented in v1 MVP",
+                           retry_safe=True,
+                       )
             # ── Beat Generator tab routes (POST) ─────────────────────────────────
             if path == "/api/bg/set-active-context":
                 return self._handle_bg_set_active_context(body)
@@ -6031,10 +6063,21 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_beat_finalize(body)
             if path == "/api/scene/assemble":
                 return self._handle_scene_assemble(body)
-            return self._send_json(404, {"error": "not found", "path": path})
+            return self._send_error_v59(
+                       404,
+                       error_code="NOT_FOUND",
+                       error_message="not found",
+                       retry_safe=False,
+                       extra={"path": path},
+                   )
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc()
-            return self._send_json(500, {"error": str(exc)})
+            return self._send_error_v59(
+                       500,
+                       error_code="GENERIC_ERROR",
+                       error_message=str(exc),
+                       retry_safe=True,
+                   )
 
     def do_DELETE(self):  # noqa: N802
         self.app.touch()
@@ -6048,10 +6091,21 @@ class ProductionHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/stitch_editor/job/"):
                 name = urllib.parse.unquote(path[len("/api/stitch_editor/job/"):])
                 return self._handle_stitch_delete_job(name)
-            return self._send_json(404, {"error": "not found", "path": path})
+            return self._send_error_v59(
+                       404,
+                       error_code="NOT_FOUND",
+                       error_message="not found",
+                       retry_safe=False,
+                       extra={"path": path},
+                   )
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc()
-            return self._send_json(500, {"error": str(exc)})
+            return self._send_error_v59(
+                       500,
+                       error_code="GENERIC_ERROR",
+                       error_message=str(exc),
+                       retry_safe=True,
+                   )
 
     # ================================================================
     # Beat Generator tab handlers (§6 of HANDOFF_BEAT_GENERATOR_TAB_COMPLETE.md)
@@ -6358,27 +6412,33 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
         scope_target_video = (body or {}).get("scope_target_video")
         if scope_target_video not in self.app.state._VALID_VIDEO_ROLES:
-            return self._send_json(400, {
-                "ok": False,
-                "error": "scope_target_video required + must be intro/resolution/standalone",
-                "code": "VIDEO_ROLE_INVALID",
-                "got": scope_target_video,
-                "valid": sorted(self.app.state._VALID_VIDEO_ROLES),
-            })
+            return self._send_error_v59(
+                       400,
+                       error_code="SCOPE_TARGET_VIDEO_REQUIRED_MUST",
+                       error_message="scope_target_video required + must be intro/resolution/standalone",
+                       retry_safe=False,
+                       extra={"ok": False, "code": "VIDEO_ROLE_INVALID", "got": scope_target_video, "valid": sorted(self.app.state._VALID_VIDEO_ROLES)},
+                   )
 
         fade_ms_raw = (body or {}).get("fade_between_beats_ms", 0)
         try:
             fade_ms = int(fade_ms_raw) if fade_ms_raw is not None else 0
         except (TypeError, ValueError):
-            return self._send_json(400, {
-                "ok": False,
-                "error": f"fade_between_beats_ms must be int, got {fade_ms_raw!r}",
-            })
+            return self._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"fade_between_beats_ms must be int, got {fade_ms_raw!r}",
+                       retry_safe=False,
+                       extra={"ok": False},
+                   )
         if fade_ms < 0 or fade_ms > _V2_MODULE_FADE_MAX_MS:
-            return self._send_json(400, {
-                "ok": False,
-                "error": f"fade_between_beats_ms out of range: {fade_ms}",
-            })
+            return self._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"fade_between_beats_ms out of range: {fade_ms}",
+                       retry_safe=False,
+                       extra={"ok": False},
+                   )
         force_rebuild = bool((body or {}).get("force_rebuild", False))
 
         # LD-460 pin tuple at entry.
@@ -6389,11 +6449,13 @@ class ProductionHandler(BaseHTTPRequestHandler):
             "_handler": "scene_assemble",
         }
         if not self._check_event_pin(_pin, "scene_assemble_pre_work"):
-            return self._send_json(423, {
-                "error": "event_changed_pre_work",
-                "code": "ASYNC_JOB_GENERATION_PIN_V1",
-                "handler": "scene_assemble",
-            })
+            return self._send_error_v59(
+                       423,
+                       error_code="EVENT_CHANGED_PRE_WORK",
+                       error_message="event_changed_pre_work",
+                       retry_safe=False,
+                       extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "handler": "scene_assemble"},
+                   )
 
         # Lock per scope (event) | (milestone). NB-LOCK_EX → 409 on contention.
         try:
@@ -6415,10 +6477,13 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 trim_normalized,
             )
         except ImportError as exc:
-            return self._send_json(500, {
-                "ok": False,
-                "error": f"lib/ffmpeg_stitch import failed: {exc}",
-            })
+            return self._send_error_v59(
+                       500,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"lib/ffmpeg_stitch import failed: {exc}",
+                       retry_safe=True,
+                       extra={"ok": False},
+                   )
 
         lock_path = _scene_lock_path(scope_type, scope_root, scope_target_video)
         import fcntl  # noqa: PLC0415
@@ -6427,12 +6492,13 @@ class ProductionHandler(BaseHTTPRequestHandler):
             try:
                 fcntl.lockf(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except (BlockingIOError, OSError):
-                return self._send_json(409, {
-                    "ok": False,
-                    "error": "another scene_assemble is in flight on this scope",
-                    "code": "SCENE_ASSEMBLE_LOCK_HELD",
-                    "lock_path": str(lock_path),
-                })
+                return self._send_error_v59(
+                           409,
+                           error_code="ANOTHER_SCENE_ASSEMBLE_IS_IN",
+                           error_message="another scene_assemble is in flight on this scope",
+                           retry_safe=False,
+                           extra={"ok": False, "code": "SCENE_ASSEMBLE_LOCK_HELD", "lock_path": str(lock_path)},
+                       )
 
             # Snapshot at entry (no mid-pipeline re-read per Cursor).
             state = self._read_scope_state(scope_type, scope_root)
@@ -6460,11 +6526,13 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     and (b.get("phase_1") or {}).get("selected_option") is not None
                 )
             if not ordered_beat_ids:
-                return self._send_json(400, {
-                    "ok": False,
-                    "error": "no beats with selected_option in target partition",
-                    "code": "EMPTY_SCENE",
-                })
+                return self._send_error_v59(
+                           400,
+                           error_code="NO_BEATS_WITH_SELECTED_OPTION",
+                           error_message="no beats with selected_option in target partition",
+                           retry_safe=False,
+                           extra={"ok": False, "code": "EMPTY_SCENE"},
+                       )
 
             # Resolve clips_dir per scope.
             if scope_type == "event":
@@ -6494,12 +6562,13 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 try:
                     digest, meta = compute_finalize_args_hash(slim, bid, clips_dir)
                 except FileNotFoundError as exc:
-                    return self._send_json(400, {
-                        "ok": False,
-                        "error": str(exc),
-                        "beat_id": bid,
-                        "code": "BEAT_SOURCE_MISSING",
-                    })
+                    return self._send_error_v59(
+                               400,
+                               error_code="GENERIC_ERROR",
+                               error_message=str(exc),
+                               retry_safe=False,
+                               extra={"ok": False, "beat_id": bid, "code": "BEAT_SOURCE_MISSING"},
+                           )
                 src_path = Path(meta["file"])
                 src_md5 = hashlib.md5(str(src_path.resolve()).encode("utf-8")).hexdigest()[:10]
                 ts_ms = int(round(float(meta["trim_start"]) * 1000))
@@ -6691,11 +6760,13 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
             # Terminal pin check before state write + asset registration.
             if not self._check_event_pin(_pin, "scene_assemble_terminal"):
-                return self._send_json(423, {
-                    "error": "event_changed_terminal",
-                    "code": "ASYNC_JOB_GENERATION_PIN_V1",
-                    "handler": "scene_assemble",
-                })
+                return self._send_error_v59(
+                           423,
+                           error_code="EVENT_CHANGED_TERMINAL",
+                           error_message="event_changed_terminal",
+                           retry_safe=False,
+                           extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "handler": "scene_assemble"},
+                       )
 
             # Write completed_mp4_path.
             self._write_scope_state_field(
@@ -6816,10 +6887,13 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 "current_generation": self.app.event_generation,
             })
         except OSError as exc:
-            return self._send_json(500, {
-                "error": f"could not enumerate events: {exc}",
-                "production_root": str(self.app.event_dir.parent),
-            })
+            return self._send_error_v59(
+                       500,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"could not enumerate events: {exc}",
+                       retry_safe=True,
+                       extra={"production_root": str(self.app.event_dir.parent)},
+                   )
 
     def _handle_phase_watercolor_list(self) -> None:
         from server_handlers.phases import handle_phase_watercolor_list
@@ -6950,9 +7024,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 "/items/prod_modules?fields=id,m_number,creature_name,video_role&sort=m_number&limit=100",
             )
         except Exception as exc:  # noqa: BLE001
-            return self._send_json(500, {
-                "error": f"Directus read failed: {type(exc).__name__}: {exc}",
-            })
+            return self._send_error_v59(
+                       500,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"Directus read failed: {type(exc).__name__}: {exc}",
+                       retry_safe=True,
+                   )
 
         production_root = self.app.event_dir.parent
         rows: list[dict] = []
@@ -7222,7 +7299,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 origin_safe = ""
         origin_ok = bool(origin_safe)
         if origin_in and not origin_ok:
-            return self._send_json(403, {"error": "cross-origin not allowed"})
+            return self._send_error_v59(
+                       403,
+                       error_code="CROSS_ORIGIN_FORBIDDEN",
+                       error_message="cross-origin not allowed",
+                       retry_safe=False,
+                   )
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         file_path = (qs.get("path") or [None])[0]
         resolved: str | None = None
@@ -7238,7 +7320,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     if alt.is_file():
                         resolved = str(alt)
         if not resolved:
-            return self._send_json(404, {"error": "file not found"})
+            return self._send_error_v59(
+                       404,
+                       error_code="FILE_NOT_FOUND",
+                       error_message="file not found",
+                       retry_safe=False,
+                   )
         file_path = resolved
         # 2. Containment — under Dropbox root OR checkout root (CI / Playwright cwd).
         try:
@@ -7248,9 +7335,19 @@ class ProductionHandler(BaseHTTPRequestHandler):
             under_drop = real_path == drop_root or real_path.startswith(drop_root + os.sep)
             under_repo = real_path == repo_root or real_path.startswith(repo_root + os.sep)
             if not (under_drop or under_repo):
-                return self._send_json(403, {"error": "path outside project root"})
+                return self._send_error_v59(
+                           403,
+                           error_code="PATH_OUTSIDE_PROJECT_ROOT",
+                           error_message="path outside project root",
+                           retry_safe=False,
+                       )
         except Exception:
-            return self._send_json(403, {"error": "path validation failed"})
+            return self._send_error_v59(
+                       403,
+                       error_code="PATH_VALIDATION_FAILED",
+                       error_message="path validation failed",
+                       retry_safe=False,
+                   )
         ext = os.path.splitext(file_path)[1].lower()
         content_types = {
             ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
@@ -7311,7 +7408,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
         beat_id = body.get("beat") or body.get("beat_id")
         image_key = body.get("image_key")
         if not beat_id or not image_key:
-            return self._send_json(400, {"error": "missing 'beat'/'beat_id' or 'image_key'"})
+            return self._send_error_v59(
+                       400,
+                       error_code="MISSING_BEAT_OR_IMAGE_KEY",
+                       error_message="missing 'beat'/'beat_id' or 'image_key'",
+                       retry_safe=False,
+                   )
         # S5.5a2: scope_video_role from body (LD-474). Default 'intro' during
         # refactor window; required after all clients pass it explicitly.
         video_role = body.get("scope_video_role", "intro")
@@ -7445,11 +7547,13 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 except Exception as exc:  # noqa: BLE001
                     print(f"[assign-image] rollback state-write also failed: {exc}")
                 self.app.invalidate_beats_cache()
-                return self._send_json(500, {
-                    "error": "storyboard HTML patch failed; override rolled back",
-                    "detail": err,
-                    "beat": beat_id,
-                })
+                return self._send_error_v59(
+                           500,
+                           error_code="STORYBOARD_HTML_PATCH_FAILED_OVERRIDE",
+                           error_message="storyboard HTML patch failed; override rolled back",
+                           retry_safe=True,
+                           extra={"detail": err, "beat": beat_id},
+                       )
 
             # 4. Fire-and-forget Directus write (Rule 18 Two-Write, counter-
             #    agent C4 CRITICAL finding). The drag-drop determines which
@@ -7468,9 +7572,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 "html_patched": html_patched,
             })
         else:
-            return self._send_json(404, {
-                "error": f"image key '{image_key}' not found in gallery or TH"
-            })
+            return self._send_error_v59(
+                       404,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"image key '{image_key}' not found in gallery or TH",
+                       retry_safe=False,
+                   )
 
     def _handle_inject_image(self, body: dict) -> None:
         """Inject an image into the storyboard's image library.
@@ -7513,7 +7620,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
         name = body.get("name", "").strip()
         data_uri = body.get("data", "").strip()
         if not name or not data_uri:
-            return self._send_json(400, {"error": "name and data are required"})
+            return self._send_error_v59(
+                       400,
+                       error_code="MISSING_NAME_OR_DATA",
+                       error_message="name and data are required",
+                       retry_safe=False,
+                   )
 
         # Sanitize key: no extension, spaces->underscores
         key = name.replace(" ", "_")
@@ -7522,7 +7634,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
         sb_path = self.app.storyboard_path
         if not sb_path.is_file():
-            return self._send_json(500, {"error": f"storyboard not found: {sb_path}"})
+            return self._send_error_v59(
+                       500,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"storyboard not found: {sb_path}",
+                       retry_safe=True,
+                   )
 
         html = sb_path.read_text(encoding="utf-8")
 
@@ -7536,7 +7653,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
         ic_positions = [m.end() for m in re.finditer(
             r'<div class="ic"><img[^>]+><p>[^<]+</p></div>', html)]
         if not ic_positions:
-            return self._send_json(500, {"error": "no gallery images found in storyboard"})
+            return self._send_error_v59(
+                       500,
+                       error_code="NO_GALLERY_IMAGES_FOUND_IN",
+                       error_message="no gallery images found in storyboard",
+                       retry_safe=True,
+                   )
         last_ic_end = ic_positions[-1]
 
         display_name = name if name.endswith(".png") else name + ".png"
@@ -7607,7 +7729,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
         for i, orig in enumerate(existing_b64):
             if orig not in html:
                 print(f"[inject-image] CRITICAL: image {i} corrupted — aborting write")
-                return self._send_json(500, {"error": "image corruption detected, write aborted"})
+                return self._send_error_v59(
+                           500,
+                           error_code="IMAGE_CORRUPTION_DETECTED",
+                           error_message="image corruption detected, write aborted",
+                           retry_safe=True,
+                       )
 
         # --- 6. Write to a new version ---
         # Version up: v29 -> v30, etc.
@@ -7692,41 +7819,64 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
         beat_id = body.get("beat") or body.get("beat_id")
         if not beat_id:
-            return self._send_json(400, {"error": "beat required"})
+            return self._send_error_v59(
+                       400,
+                       error_code="MISSING_BEAT",
+                       error_message="beat required",
+                       retry_safe=False,
+                   )
 
         # S5.5d B5: video role from body; default 'intro' for legacy clients.
         scope_video_role = (body or {}).get("scope_video_role") or "intro"
         valid_roles = self.app.state._VALID_VIDEO_ROLES
         if scope_video_role not in valid_roles:
-            return self._send_json(400, {
-                "error": "video_role_invalid",
-                "code": "VIDEO_ROLE_INVALID",
-                "got": scope_video_role,
-                "valid": sorted(valid_roles),
-                "hint": "scope_video_role must be one of intro/resolution/standalone.",
-            })
+            return self._send_error_v59(
+                       400,
+                       error_code="VIDEO_ROLE_INVALID",
+                       error_message="video_role_invalid",
+                       retry_safe=False,
+                       extra={"code": "VIDEO_ROLE_INVALID", "got": scope_video_role, "valid": sorted(valid_roles), "hint": "scope_video_role must be one of intro/resolution/standalone."},
+                   )
 
         state = self.app.state.read_state()
         beat = ((state.get("videos") or {}).get(scope_video_role) or {}).get("beats", {}).get(beat_id)
         if not beat:
-            return self._send_json(400, {"error": f"unknown beat: {beat_id} (role={scope_video_role})"})
+            return self._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"unknown beat: {beat_id} (role={scope_video_role})",
+                       retry_safe=False,
+                   )
 
         p1 = beat.get("phase_1", {})
         opts = p1.get("options", [])
         sel = p1.get("selected_option", 1)
         sel_idx = sel - 1  # selected_option is 1-indexed
         if not opts or not (0 <= sel_idx < len(opts)):
-            return self._send_json(400, {
-                "error": f"no option at index {sel_idx} (selected_option={sel})"
-            })
+            return self._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"no option at index {sel_idx} (selected_option={sel})",
+                       retry_safe=False,
+                   )
 
         opt_file = opts[sel_idx].get("file", "")
         if not opt_file:
-            return self._send_json(400, {"error": "selected option has no file"})
+            return self._send_error_v59(
+                       400,
+                       error_code="SELECTED_OPTION_HAS_NO_FILE",
+                       error_message="selected option has no file",
+                       retry_safe=False,
+                   )
 
         abs_path = str(self.app.state.clips_dir / opt_file)
         if not os.path.isfile(abs_path):
-            return self._send_json(400, {"error": f"clip file not found: {opt_file}"})
+            return self._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"clip file not found: {opt_file}",
+                       retry_safe=False,
+                   )
 
         # 1. Write final block to production_state.json under the requested role
         final_block = {
@@ -7877,7 +8027,12 @@ body {{padding-top:44px!important;}}
         filename = (body.get("filename") or "").strip()
         # Strict basename: storyboard_v<digits>[_<lowercase-suffix>]?.html
         if not re.match(r'^storyboard_v\d+(_[a-z0-9_-]+)?\.html$', filename):
-            return self._send_json(400, {"error": f"invalid filename: {filename!r}"})
+            return self._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"invalid filename: {filename!r}",
+                       retry_safe=False,
+                   )
         target = self.app.event_dir / filename
         # Containment: resolved real path must remain inside event_dir.
         try:
@@ -7885,11 +8040,26 @@ body {{padding-top:44px!important;}}
             target_real = str(target.resolve())
             if not (target_real == event_dir_real
                     or target_real.startswith(event_dir_real + os.sep)):
-                return self._send_json(400, {"error": "filename escapes event_dir"})
+                return self._send_error_v59(
+                           400,
+                           error_code="FILENAME_ESCAPES_EVENT_DIR",
+                           error_message="filename escapes event_dir",
+                           retry_safe=False,
+                       )
         except Exception:
-            return self._send_json(400, {"error": "filename validation failed"})
+            return self._send_error_v59(
+                       400,
+                       error_code="FILENAME_VALIDATION_FAILED",
+                       error_message="filename validation failed",
+                       retry_safe=False,
+                   )
         if not target.is_file():
-            return self._send_json(404, {"error": f"not found: {filename}"})
+            return self._send_error_v59(
+                       404,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"not found: {filename}",
+                       retry_safe=False,
+                   )
         with self.app._storyboard_write_lock:
             result = self.app.switch_storyboard(filename)
         self._send_json(200, result)
@@ -7964,7 +8134,12 @@ body {{padding-top:44px!important;}}
 
         beat_id = body.get("beat_id") or body.get("beat")
         if not beat_id:
-            return self._send_json(400, {"error": "missing 'beat'"})
+            return self._send_error_v59(
+                       400,
+                       error_code="MISSING_BEAT",
+                       error_message="missing 'beat'",
+                       retry_safe=False,
+                   )
 
         # Normalize so sub-handlers can safely subscript body["beat"].
         if "beat" not in body:
@@ -7975,9 +8150,12 @@ body {{padding-top:44px!important;}}
         try:
             state = self.app.state.read_state()
         except Exception as exc:
-            return self._send_json(500, {
-                "error": f"failed to read state for dispatch: {type(exc).__name__}: {exc}"
-            })
+            return self._send_error_v59(
+                       500,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"failed to read state for dispatch: {type(exc).__name__}: {exc}",
+                       retry_safe=True,
+                   )
 
         beat_state = (((state.get("videos") or {}).get(video_role) or {}).get("beats") or {}).get(beat_id) or {}
         force_legacy = bool(beat_state.get("force_legacy"))
@@ -8123,7 +8301,12 @@ body {{padding-top:44px!important;}}
         Rule 18: prod_activity_log write per submit.
         """
         if self.app.client is None:
-            return self._send_json(500, {"error": "WaveSpeed client not configured"})
+            return self._send_error_v59(
+                       500,
+                       error_code="WAVESPEED_NOT_CONFIGURED",
+                       error_message="WaveSpeed client not configured",
+                       retry_safe=True,
+                   )
 
         beat_id = body["beat"]  # validated by dispatcher
         num_new = int(body.get("count", 2))
@@ -8139,15 +8322,21 @@ body {{padding-top:44px!important;}}
             try:
                 duration_raw = int(explicit_duration)
             except (TypeError, ValueError):
-                return self._send_json(400, {
-                    "error": f"invalid duration value: {explicit_duration!r}",
-                    "hint": f"duration must be {KLING_MIN_DURATION_SEC} or {KLING_MAX_DURATION_SEC}",
-                })
+                return self._send_error_v59(
+                           400,
+                           error_code="GENERIC_ERROR",
+                           error_message=f"invalid duration value: {explicit_duration!r}",
+                           retry_safe=False,
+                           extra={"hint": f"duration must be {KLING_MIN_DURATION_SEC} or {KLING_MAX_DURATION_SEC}"},
+                       )
             if duration_raw not in (KLING_MIN_DURATION_SEC, KLING_MAX_DURATION_SEC):
-                return self._send_json(400, {
-                    "error": f"unsupported duration: {duration_raw}s",
-                    "hint": f"Kling v3 supports {KLING_MIN_DURATION_SEC}s or {KLING_MAX_DURATION_SEC}s",
-                })
+                return self._send_error_v59(
+                           400,
+                           error_code="GENERIC_ERROR",
+                           error_message=f"unsupported duration: {duration_raw}s",
+                           retry_safe=False,
+                           extra={"hint": f"Kling v3 supports {KLING_MIN_DURATION_SEC}s or {KLING_MAX_DURATION_SEC}s"},
+                       )
             duration = duration_raw
             duration_reason = f"explicit_client_override_{duration}s"
         else:
@@ -8160,21 +8349,25 @@ body {{padding-top:44px!important;}}
             try:
                 duration, duration_reason = _infer_animation_duration(audio_path)
             except ValueError as exc:
-                return self._send_json(400, {
-                    "error": str(exc),
-                    "hint": "Edit script or split audio into shorter beats",
-                    "beat": beat_id,
-                    "audio_file": audio_path.name if audio_path else "(no audio)",
-                })
+                return self._send_error_v59(
+                           400,
+                           error_code="GENERIC_ERROR",
+                           error_message=str(exc),
+                           retry_safe=False,
+                           extra={"hint": "Edit script or split audio into shorter beats", "beat": beat_id, "audio_file": audio_path.name if audio_path else "(no audio)"},
+                       )
         print(f"[add_options:startend] {beat_id} duration={duration}s reason={duration_reason}")
 
         # Existing-options check + trim B+C (same as legacy).
         phase1 = beat_state.get("phase_1") or {}
         existing_options = phase1.get("options", [])
         if not existing_options:
-            return self._send_json(400, {
-                "error": f"beat {beat_id} has no existing options — use /api/animate"
-            })
+            return self._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"beat {beat_id} has no existing options — use /api/animate",
+                       retry_safe=False,
+                   )
 
         if len(existing_options) > 1:
             old_bc_files = [o.get("file") for o in existing_options[1:] if o.get("file")]
@@ -8197,12 +8390,13 @@ body {{padding-top:44px!important;}}
         per_option_cost = COST_FLUX_KONTEXT + COST_KLING_10S
         estimated = num_new * per_option_cost
         if spend["budget_remaining"] < estimated and spend["overrides"] == 0:
-            return self._send_json(402, {
-                "error": "budget exceeded",
-                "estimated_cost": estimated,
-                "budget_remaining": spend["budget_remaining"],
-                "path": "kling_startend",
-            })
+            return self._send_error_v59(
+                       402,
+                       error_code="BUDGET_EXCEEDED",
+                       error_message="budget exceeded",
+                       retry_safe=False,
+                       extra={"estimated_cost": estimated, "budget_remaining": spend["budget_remaining"], "path": "kling_startend"},
+                   )
 
         # Resolve start image (data URI).
         # S5.5a2: scope_video_role used here — resolved at top of function (see above).
@@ -8212,14 +8406,20 @@ body {{padding-top:44px!important;}}
                 target_beat = b
                 break
         if not target_beat:
-            return self._send_json(400, {
-                "error": f"could not find beat data for {beat_id} in storyboard"
-            })
+            return self._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"could not find beat data for {beat_id} in storyboard",
+                       retry_safe=False,
+                   )
         beat_image = self.app.get_beat_image(beat_id, video_role)
         if not beat_image:
-            return self._send_json(400, {
-                "error": f"could not find image data for {beat_id} — drag-drop an image first"
-            })
+            return self._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"could not find image data for {beat_id} — drag-drop an image first",
+                       retry_safe=False,
+                   )
 
         target_beat = dict(target_beat)
         beat_image, upscale_info = auto_upscale_image(beat_image)
@@ -8228,7 +8428,12 @@ body {{padding-top:44px!important;}}
         target_beat["image"] = beat_image
         ok, info = validate_image_dimensions(beat_image)
         if not ok:
-            return self._send_json(400, {"error": f"image validation failed: {info}"})
+            return self._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"image validation failed: {info}",
+                       retry_safe=False,
+                   )
 
         # Fix 1 (20260513 motion-quality-pipeline): parse Kim's stage direction
         # from beat.text into either a direct motion-override (parenthetical)
@@ -8295,24 +8500,33 @@ body {{padding-top:44px!important;}}
         try:
             keys = _ksendpipe_load_api_keys()
         except SystemExit as exc:
-            return self._send_json(500, {
-                "error": f"API key load failed for start-end path: {exc}"
-            })
+            return self._send_error_v59(
+                       500,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"API key load failed for start-end path: {exc}",
+                       retry_safe=True,
+                   )
         bfl_key = keys.get("bfl")
         wavespeed_key = keys.get("wavespeed") or self.app.client.api_key
         if not bfl_key:
-            return self._send_json(500, {
-                "error": "BFL (FLUX) key unavailable — required for start-end pipeline"
-            })
+            return self._send_error_v59(
+                       500,
+                       error_code="BFL_FLUX_KEY_UNAVAILABLE_REQUIRED",
+                       error_message="BFL (FLUX) key unavailable — required for start-end pipeline",
+                       retry_safe=True,
+                   )
 
         # Extract start image raw bytes (beat_image is data:image/...;base64,...).
         try:
             _hdr, start_b64 = beat_image.split(",", 1)
             start_bytes = base64.b64decode(start_b64)
         except Exception as exc:
-            return self._send_json(500, {
-                "error": f"start image data-URI malformed: {type(exc).__name__}: {exc}"
-            })
+            return self._send_error_v59(
+                       500,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"start image data-URI malformed: {type(exc).__name__}: {exc}",
+                       retry_safe=True,
+                   )
 
         # Mark beat polling — partition-aware (SCOPE_ROUTER_V1 / v3 state).
         def set_polling(st, _bid=beat_id, _role=video_role):
@@ -8355,10 +8569,13 @@ body {{padding-top:44px!important;}}
                           f"{_end_upscale_info}")
                 ok_end, info_end = validate_image_dimensions(end_data_uri)
                 if not ok_end:
-                    return self._send_json(500, {
-                        "error": f"end frame validation failed: {info_end}",
-                        "beat": beat_id,
-                    })
+                    return self._send_error_v59(
+                               500,
+                               error_code="GENERIC_ERROR",
+                               error_message=f"end frame validation failed: {info_end}",
+                               retry_safe=True,
+                               extra={"beat": beat_id},
+                           )
                 end_b64_uri = end_data_uri
                 print(f"[add_options:startend] {beat_id}: FLUX Kontext end "
                       f"frame generated ({len(end_frame_bytes):,}B)")
@@ -8377,18 +8594,23 @@ body {{padding-top:44px!important;}}
                 )
                 print(f"[add_options:startend] {beat_id}: motion prompt -> natural-interpolation (end frame confirmed)")
             except SystemExit as exc:
-                return self._send_json(500, {
-                    "error": f"FLUX Kontext end frame generation failed: {exc}",
-                    "beat": beat_id,
-                    "hint": ("Check BFL (FLUX) API key or retry — FLUX Kontext "
-                             "is required for start-end pipeline"),
-                })
+                return self._send_error_v59(
+                           500,
+                           error_code="GENERIC_ERROR",
+                           error_message=f"FLUX Kontext end frame generation failed: {exc}",
+                           retry_safe=True,
+                           extra={"beat": beat_id, "hint": "Check BFL (FLUX) API key or retry — FLUX Kontext "
+                             "is required for start-end pipeline"},
+                       )
             except Exception as exc:
-                return self._send_json(500, {
-                    "error": (f"FLUX Kontext unexpected error: "
-                              f"{type(exc).__name__}: {exc}"),
-                    "beat": beat_id,
-                })
+                return self._send_error_v59(
+                           500,
+                           error_code="GENERIC_ERROR",
+                           error_message=f"FLUX Kontext unexpected error: "
+                              f"{type(exc).__name__}: {exc}",
+                           retry_safe=True,
+                           extra={"beat": beat_id},
+                       )
         else:
             print(f"[add_options:startend] {beat_id}: no end frame "
                   f"(end_frame_prompt empty or no bfl_key) — single-image mode")
@@ -8500,15 +8722,13 @@ body {{padding-top:44px!important;}}
 
         # Fail-loud total-failure case (Kim design-call 2).
         if submitted == 0 and num_new > 0:
-            return self._send_json(500, {
-                "error": f"All {num_new} start-end submissions failed for {beat_id}",
-                "path": "kling_startend",
-                "beat": beat_id,
-                "existing_options": len(existing_options),
-                "new_submitted": 0,
-                "submit_errors": submit_errors,
-                "hint": "Check FLUX (BFL) key + WaveSpeed Kling. No silent fallback to legacy.",
-            })
+            return self._send_error_v59(
+                       500,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"All {num_new} start-end submissions failed for {beat_id}",
+                       retry_safe=True,
+                       extra={"path": "kling_startend", "beat": beat_id, "existing_options": len(existing_options), "new_submitted": 0, "submit_errors": submit_errors, "hint": "Check FLUX (BFL) key + WaveSpeed Kling. No silent fallback to legacy."},
+                   )
 
         response = {
             "ok": True,
@@ -8539,7 +8759,12 @@ body {{padding-top:44px!important;}}
         handler self-contained.
         """
         if self.app.client is None:
-            return self._send_json(500, {"error": "WaveSpeed client not configured"})
+            return self._send_error_v59(
+                       500,
+                       error_code="WAVESPEED_NOT_CONFIGURED",
+                       error_message="WaveSpeed client not configured",
+                       retry_safe=True,
+                   )
 
         try:
             scope = scope_router.resolve(body, self.app.event_dir.name)
@@ -8549,7 +8774,12 @@ body {{padding-top:44px!important;}}
         beat_id = body.get("beat_id") or body.get("beat")
         num_new = int(body.get("count", 2))  # default: add 2 (B + C)
         if not beat_id:
-            return self._send_json(400, {"error": "missing 'beat'"})
+            return self._send_error_v59(
+                       400,
+                       error_code="MISSING_BEAT",
+                       error_message="missing 'beat'",
+                       retry_safe=False,
+                   )
 
         # Duration: prefer explicit client override, otherwise auto-infer from
         # TTS audio length. ANIMATION_DURATION_MATCHES_AUDIO (decision id=144).
@@ -8561,16 +8791,22 @@ body {{padding-top:44px!important;}}
             try:
                 duration_raw = int(explicit_duration)
             except (TypeError, ValueError):
-                return self._send_json(400, {
-                    "error": f"invalid duration value: {explicit_duration!r}",
-                    "hint": f"duration must be {KLING_MIN_DURATION_SEC} or {KLING_MAX_DURATION_SEC}",
-                })
+                return self._send_error_v59(
+                           400,
+                           error_code="GENERIC_ERROR",
+                           error_message=f"invalid duration value: {explicit_duration!r}",
+                           retry_safe=False,
+                           extra={"hint": f"duration must be {KLING_MIN_DURATION_SEC} or {KLING_MAX_DURATION_SEC}"},
+                       )
             if duration_raw not in (KLING_MIN_DURATION_SEC, KLING_MAX_DURATION_SEC):
-                return self._send_json(400, {
-                    "error": f"unsupported duration: {duration_raw}s",
-                    "hint": f"Kling v3 supports only {KLING_MIN_DURATION_SEC}s or "
-                            f"{KLING_MAX_DURATION_SEC}s; omit the field to auto-infer from audio",
-                })
+                return self._send_error_v59(
+                           400,
+                           error_code="GENERIC_ERROR",
+                           error_message=f"unsupported duration: {duration_raw}s",
+                           retry_safe=False,
+                           extra={"hint": f"Kling v3 supports only {KLING_MIN_DURATION_SEC}s or "
+                            f"{KLING_MAX_DURATION_SEC}s; omit the field to auto-infer from audio"},
+                       )
             duration = duration_raw
             duration_reason = f"explicit_client_override_{duration}s"
         else:
@@ -8584,36 +8820,48 @@ body {{padding-top:44px!important;}}
                     beat_num_str = f"line_{beat_num:02d}"
                 except (IndexError, ValueError):
                     beat_num_str = "(beat number unparseable)"
-                return self._send_json(404, {
-                    "error": f"no TTS audio found for {beat_id} ({beat_num_str})",
-                    "hint": "provide audio_override path or ensure TTS exists in story_scene_tts_v2/; "
-                            "animation duration cannot be inferred without audio",
-                })
+                return self._send_error_v59(
+                           404,
+                           error_code="GENERIC_ERROR",
+                           error_message=f"no TTS audio found for {beat_id} ({beat_num_str})",
+                           retry_safe=False,
+                           extra={"hint": "provide audio_override path or ensure TTS exists in story_scene_tts_v2/; "
+                            "animation duration cannot be inferred without audio"},
+                       )
             try:
                 duration, duration_reason = _infer_animation_duration(audio_path_for_duration)
             except ValueError as exc:
                 # Audio exceeds Kling 10s max — surface cleanly, do NOT truncate
-                return self._send_json(400, {
-                    "error": str(exc),
-                    "hint": "Edit script or split audio into shorter beats; Kling v3 cannot "
-                            "generate clips longer than 10 seconds.",
-                    "beat": beat_id,
-                    "audio_file": audio_path_for_duration.name,
-                })
+                return self._send_error_v59(
+                           400,
+                           error_code="GENERIC_ERROR",
+                           error_message=str(exc),
+                           retry_safe=False,
+                           extra={"hint": "Edit script or split audio into shorter beats; Kling v3 cannot "
+                            "generate clips longer than 10 seconds.", "beat": beat_id, "audio_file": audio_path_for_duration.name},
+                       )
         print(f"[add_options] {beat_id} duration={duration}s reason={duration_reason}")
 
         # Read current state to verify beat exists in scope.video_role partition.
         state = self.app.state.read_state()
         beat_state = ((state.get("videos") or {}).get(scope.video_role) or {}).get("beats", {}).get(beat_id)
         if not beat_state:
-            return self._send_json(404, {"error": f"beat {beat_id} not found in videos.{scope.video_role}.beats"})
+            return self._send_error_v59(
+                       404,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"beat {beat_id} not found in videos.{scope.video_role}.beats",
+                       retry_safe=False,
+                   )
 
         phase1 = beat_state.get("phase_1") or {}
         existing_options = phase1.get("options", [])
         if not existing_options:
-            return self._send_json(400, {
-                "error": f"beat {beat_id} has no existing options — use /api/animate instead"
-            })
+            return self._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"beat {beat_id} has no existing options — use /api/animate instead",
+                       retry_safe=False,
+                   )
 
         # If B+C already exist, remove them first (keep only option A)
         old_bc_files: list[str] = []
@@ -8642,11 +8890,13 @@ body {{padding-top:44px!important;}}
         spend = self.app.state.read_spend()
         estimated = num_new * COST_PER_CLIP_KLING
         if spend["budget_remaining"] < estimated and spend["overrides"] == 0:
-            return self._send_json(402, {
-                "error": "budget exceeded",
-                "estimated_cost": estimated,
-                "budget_remaining": spend["budget_remaining"],
-            })
+            return self._send_error_v59(
+                       402,
+                       error_code="BUDGET_EXCEEDED",
+                       error_message="budget exceeded",
+                       retry_safe=False,
+                       extra={"estimated_cost": estimated, "budget_remaining": spend["budget_remaining"]},
+                   )
 
         # Find the beat data (image + prompt) from the storyboard
         # Check image overrides FIRST (from drag-drop), then fall back to storyboard
@@ -8656,17 +8906,23 @@ body {{padding-top:44px!important;}}
                 target_beat = b
                 break
         if not target_beat:
-            return self._send_json(400, {
-                "error": f"could not find beat data for {beat_id} in storyboard"
-            })
+            return self._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"could not find beat data for {beat_id} in storyboard",
+                       retry_safe=False,
+                   )
 
         # Use image override if available (from drag-drop assignment).
         # video_role resolved by scope_router above.
         beat_image = self.app.get_beat_image(beat_id, scope.video_role)
         if not beat_image:
-            return self._send_json(400, {
-                "error": f"could not find image data for {beat_id} — try drag-dropping an image first"
-            })
+            return self._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"could not find image data for {beat_id} — try drag-dropping an image first",
+                       retry_safe=False,
+                   )
         # Patch the beat dict so prompt builder uses correct context
         target_beat = dict(target_beat)
         # Rule 6 — auto-upscale fallback, then dimension gate
@@ -8677,7 +8933,12 @@ body {{padding-top:44px!important;}}
 
         ok, info = validate_image_dimensions(beat_image)
         if not ok:
-            return self._send_json(400, {"error": f"image validation failed: {info}"})
+            return self._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"image validation failed: {info}",
+                       retry_safe=False,
+                   )
 
         prompt = sanitize_prompt(build_motion_prompt(target_beat))
 
@@ -8726,13 +8987,13 @@ body {{padding-top:44px!important;}}
         # caused the storyboard's Generate B+C button to silently revert after
         # ~15s (pollStatus sees no new options and re-renders default label).
         if submitted == 0 and num_new > 0:
-            return self._send_json(500, {
-                "error": f"All {num_new} WaveSpeed submissions failed for {beat_id}",
-                "beat": beat_id,
-                "existing_options": len(existing_options),
-                "new_submitted": 0,
-                "submit_errors": submit_errors,
-            })
+            return self._send_error_v59(
+                       500,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"All {num_new} WaveSpeed submissions failed for {beat_id}",
+                       retry_safe=True,
+                       extra={"beat": beat_id, "existing_options": len(existing_options), "new_submitted": 0, "submit_errors": submit_errors},
+                   )
 
         response = {
             "ok": True,
@@ -8817,11 +9078,21 @@ body {{padding-top:44px!important;}}
                     if body.get("selected_option") is not None
                     else body.get("option_index"))
         if not beat_id or selected is None:
-            return self._send_json(400, {"error": "missing beat/beat_id or selected_option/option_index"})
+            return self._send_error_v59(
+                       400,
+                       error_code="MISSING_BEAT_BEAT_ID_OR",
+                       error_message="missing beat/beat_id or selected_option/option_index",
+                       retry_safe=False,
+                   )
         try:
             sel_int = int(selected)
         except (TypeError, ValueError):
-            return self._send_json(400, {"error": f"selected_option must be int, got {selected!r}"})
+            return self._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"selected_option must be int, got {selected!r}",
+                       retry_safe=False,
+                   )
 
         video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
 
@@ -8878,19 +9149,17 @@ body {{padding-top:44px!important;}}
 
         Returns HTTP 410 Gone with migration note.
         """
-        return self._send_json(410, {
-            "error": "endpoint_removed",
-            "code": "EXPORT_REMOVED_V3",
-            "removed_in": "S5.5d (2026-05-03)",
-            "replacement": "/api/scene/assemble",
-            "hint": (
-                "POST /api/scene/assemble with body {scope_event_id|scope_milestone_id, "
+        return self._send_error_v59(
+                   410,
+                   error_code="ENDPOINT_REMOVED",
+                   error_message="endpoint_removed",
+                   retry_safe=False,
+                   extra={"code": "EXPORT_REMOVED_V3", "removed_in": "S5.5d (2026-05-03)", "replacement": "/api/scene/assemble", "hint": "POST /api/scene/assemble with body {scope_event_id|scope_milestone_id, "
                 "scope_target_video, fade_between_beats_ms?, force_rebuild?}. "
                 "Stage 1 finalizes each beat (cached); Stage 2 mirrors "
                 "_handle_preview_stitched orchestration to assemble the scene "
-                "and registers the result as a scene_concat_mp4 asset."
-            ),
-        })
+                "and registers the result as a scene_concat_mp4 asset."},
+               )
 
     def _handle_beat_delay(self, body: dict) -> None:
         from server_handlers.beats_legacy import handle_beat_delay
@@ -9001,25 +9270,34 @@ body {{padding-top:44px!important;}}
                 trim_normalized,
             )
         except ImportError as exc:
-            return self._send_json(500, {
-                "error": f"lib/ffmpeg_stitch import failed: {exc}",
-                "hint": "Verify Production/tools/lib/ffmpeg_stitch.py exists.",
-            })
+            return self._send_error_v59(
+                       500,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"lib/ffmpeg_stitch import failed: {exc}",
+                       retry_safe=True,
+                       extra={"hint": "Verify Production/tools/lib/ffmpeg_stitch.py exists."},
+                   )
 
         snapshot = body.get("state_snapshot") or {}
         fade_ms_raw = body.get("fade_between_beats_ms")
         try:
             fade_ms = int(fade_ms_raw) if fade_ms_raw is not None else 0
         except (TypeError, ValueError):
-            return self._send_json(400, {
-                "error": f"fade_between_beats_ms must be int, got {fade_ms_raw!r}",
-                "hint": "Send slider value as integer milliseconds.",
-            })
+            return self._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"fade_between_beats_ms must be int, got {fade_ms_raw!r}",
+                       retry_safe=False,
+                       extra={"hint": "Send slider value as integer milliseconds."},
+                   )
         if fade_ms < 0 or fade_ms > _V2_MODULE_FADE_MAX_MS:
-            return self._send_json(400, {
-                "error": f"fade_between_beats_ms out of range, got {fade_ms}",
-                "hint": f"Range is [0, {_V2_MODULE_FADE_MAX_MS}].",
-            })
+            return self._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"fade_between_beats_ms out of range, got {fade_ms}",
+                       retry_safe=False,
+                       extra={"hint": f"Range is [0, {_V2_MODULE_FADE_MAX_MS}]."},
+                   )
 
         beats = snapshot.get("beats") or {}
         display_order = snapshot.get("display_order") or []
@@ -9031,10 +9309,13 @@ body {{padding-top:44px!important;}}
             and (b.get("phase_1") or {}).get("selected_option") is not None
         )
         if not beat_ids_sorted:
-            return self._send_json(400, {
-                "error": "no beats with selected_option in snapshot",
-                "hint": "Select an animation option for each beat before previewing.",
-            })
+            return self._send_error_v59(
+                       400,
+                       error_code="NO_BEATS_WITH_SELECTED_OPTION",
+                       error_message="no beats with selected_option in snapshot",
+                       retry_safe=False,
+                       extra={"hint": "Select an animation option for each beat before previewing."},
+                   )
 
         # ---- counter (a) HIGH: validate file existence BEFORE hash ----
         clips_dir = self.app.state.clips_dir
@@ -9045,11 +9326,13 @@ body {{padding-top:44px!important;}}
             except FileNotFoundError as exc:
                 missing.append({"beat_id": bid, "error": str(exc)})
         if missing:
-            return self._send_json(400, {
-                "error": "selected files missing for one or more beats",
-                "missing": missing,
-                "hint": "Re-run animation generation for the listed beats, or pick a different option.",
-            })
+            return self._send_error_v59(
+                       400,
+                       error_code="SELECTED_FILES_MISSING_FOR_ONE",
+                       error_message="selected files missing for one or more beats",
+                       retry_safe=False,
+                       extra={"missing": missing, "hint": "Re-run animation generation for the listed beats, or pick a different option."},
+                   )
 
         # ---- compute cache hash ----
         try:
@@ -9058,16 +9341,22 @@ body {{padding-top:44px!important;}}
             )
         except FileNotFoundError as exc:
             # Defense in depth — should have been caught above.
-            return self._send_json(400, {
-                "error": str(exc),
-                "hint": "File disappeared between existence check and hash computation.",
-            })
+            return self._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=str(exc),
+                       retry_safe=False,
+                       extra={"hint": "File disappeared between existence check and hash computation."},
+                   )
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc()
-            return self._send_json(500, {
-                "error": f"cache hash computation failed: {type(exc).__name__}: {exc}",
-                "hint": "Internal — check server logs for the traceback.",
-            })
+            return self._send_error_v59(
+                       500,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"cache hash computation failed: {type(exc).__name__}: {exc}",
+                       retry_safe=True,
+                       extra={"hint": "Internal — check server logs for the traceback."},
+                   )
 
         preview_dir = self.app.event_dir / "preview"
         preview_dir.mkdir(parents=True, exist_ok=True)
@@ -9091,10 +9380,13 @@ body {{padding-top:44px!important;}}
                 # spinning a 30s wait that would race the client timeout.
                 fcntl.lockf(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except (BlockingIOError, OSError):
-                return self._send_json(409, {
-                    "error": "another preview is already generating",
-                    "hint": "Wait for the in-flight preview to finish, then retry.",
-                })
+                return self._send_error_v59(
+                           409,
+                           error_code="ANOTHER_PREVIEW_IS_ALREADY_GENERATING",
+                           error_message="another preview is already generating",
+                           retry_safe=False,
+                           extra={"hint": "Wait for the in-flight preview to finish, then retry."},
+                       )
 
             # ---- cache hit branch ----
             if final_path.is_file():
@@ -9265,18 +9557,22 @@ body {{padding-top:44px!important;}}
                 if final_path.is_file():
                     evicted = lru_cleanup(preview_dir)
                     return self._stream_preview_mp4(final_path, cache_hash, evicted=evicted)
-                return self._send_json(504, {
-                    "error": f"ffmpeg timeout after {exc.timeout}s",
-                    "cmd_summary": " ".join((exc.cmd or [])[:6]) if exc.cmd else "?",
-                    "hint": "Try fewer beats or a shorter fade. If persistent, check ffmpeg in PATH.",
-                })
+                return self._send_error_v59(
+                           504,
+                           error_code="GENERIC_ERROR",
+                           error_message=f"ffmpeg timeout after {exc.timeout}s",
+                           retry_safe=True,
+                           extra={"cmd_summary": " ".join((exc.cmd or [])[:6]) if exc.cmd else "?", "hint": "Try fewer beats or a shorter fade. If persistent, check ffmpeg in PATH."},
+                       )
             except subprocess.CalledProcessError as exc:
                 stderr = (exc.stderr or b"")[:600].decode("utf-8", errors="replace")
-                return self._send_json(500, {
-                    "error": f"ffmpeg subprocess failed (returncode={exc.returncode})",
-                    "stderr": stderr,
-                    "hint": "Check the stderr above; common cause is a corrupt source clip.",
-                })
+                return self._send_error_v59(
+                           500,
+                           error_code="GENERIC_ERROR",
+                           error_message=f"ffmpeg subprocess failed (returncode={exc.returncode})",
+                           retry_safe=True,
+                           extra={"stderr": stderr, "hint": "Check the stderr above; common cause is a corrupt source clip."},
+                       )
             except (BrokenPipeError, ConnectionResetError):
                 # Counter (i) HIGH: BrokenPipe inside the ffmpeg pipeline (rare —
                 # subprocess.run catches its own pipe errors). If the final file
@@ -9284,10 +9580,13 @@ body {{padding-top:44px!important;}}
                 if final_path.is_file():
                     evicted = lru_cleanup(preview_dir)
                     return self._stream_preview_mp4(final_path, cache_hash, evicted=evicted)
-                return self._send_json(500, {
-                    "error": "broken pipe during preview pipeline",
-                    "hint": "Client likely disconnected before pipeline finished.",
-                })
+                return self._send_error_v59(
+                           500,
+                           error_code="BROKEN_PIPE_DURING_PREVIEW_PIPELINE",
+                           error_message="broken pipe during preview pipeline",
+                           retry_safe=True,
+                           extra={"hint": "Client likely disconnected before pipeline finished."},
+                       )
 
             return self._stream_preview_mp4(final_path, cache_hash, evicted=evicted)
         finally:
@@ -9323,10 +9622,13 @@ body {{padding-top:44px!important;}}
         try:
             body = path.read_bytes()
         except OSError as exc:
-            return self._send_json(500, {
-                "error": f"preview file read failed: {exc}",
-                "hint": "Server lost the cached file mid-request — retry once.",
-            })
+            return self._send_error_v59(
+                       500,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"preview file read failed: {exc}",
+                       retry_safe=True,
+                       extra={"hint": "Server lost the cached file mid-request — retry once."},
+                   )
         extra = {
             "Cache-Control": "no-cache",
             "ETag": f'"{cache_hash}"',
@@ -9649,13 +9951,21 @@ body {{padding-top:44px!important;}}
         """GET /api/media/timeline_audio_<hash>.mp3 — serves cached timeline audio."""
         safe = Path(filename).name
         if not (safe.startswith("timeline_audio_") and safe.endswith(".mp3")):
-            return self._send_json(400, {
-                "error": f"timeline audio serve rejects: {safe!r}",
-                "hint": "Only timeline_audio_*.mp3 files served here.",
-            })
+            return self._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"timeline audio serve rejects: {safe!r}",
+                       retry_safe=False,
+                       extra={"hint": "Only timeline_audio_*.mp3 files served here."},
+                   )
         target = self.app.event_dir / "preview" / "timeline_cache" / safe
         if not target.is_file():
-            return self._send_json(404, {"error": f"timeline audio not found: {safe}"})
+            return self._send_error_v59(
+                       404,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"timeline audio not found: {safe}",
+                       retry_safe=False,
+                   )
         body = target.read_bytes()
         self._send_bytes(200, body, "audio/mpeg", extra_headers={
             "Cache-Control": "public, max-age=3600",
@@ -9764,10 +10074,13 @@ body {{padding-top:44px!important;}}
         """GET /stitch_editor — serve the Stitch Editor HTML (Rule 7 builder output)."""
         html_path = Path(__file__).parent / "stitch_editor.html"
         if not html_path.exists():
-            return self._send_json(404, {
-                "error": "stitch_editor.html not found",
-                "hint": "Run: python3 Production/tools/build_stitch_editor.py --output Production/tools/stitch_editor.html",
-            })
+            return self._send_error_v59(
+                       404,
+                       error_code="STITCH_EDITOR_HTML_NOT_FOUND",
+                       error_message="stitch_editor.html not found",
+                       retry_safe=False,
+                       extra={"hint": "Run: python3 Production/tools/build_stitch_editor.py --output Production/tools/stitch_editor.html"},
+                   )
         html = html_path.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -9824,14 +10137,24 @@ body {{padding-top:44px!important;}}
                     "Cache-Control": "public, max-age=3600",
                     "Accept-Ranges": "bytes",
                 })
-        return self._send_json(404, {"error": f"Audio file not found: {safe}"})
+        return self._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"Audio file not found: {safe}",
+                   retry_safe=False,
+               )
 
     def _serve_stitch_preview_file(self, hash_id: str) -> None:
         """GET /api/stitch_editor/preview_file/<hash> — serve preview MP4 with byte-range support."""
         safe = Path(hash_id).name
         target = self._stitch_cache_dir() / f"stitch_preview_{safe}.mp4"
         if not target.is_file():
-            return self._send_json(404, {"error": f"Preview file not found: {safe}"})
+            return self._send_error_v59(
+                       404,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"Preview file not found: {safe}",
+                       retry_safe=False,
+                   )
         self._serve_mp4_with_range(target)
 
     def _serve_finder_video(self) -> None:
@@ -9845,14 +10168,29 @@ body {{padding-top:44px!important;}}
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         path_param = (qs.get("path") or [None])[0]
         if not path_param:
-            return self._send_json(400, {"error": "path query param required"})
+            return self._send_error_v59(
+                       400,
+                       error_code="PATH_QUERY_PARAM_REQUIRED",
+                       error_message="path query param required",
+                       retry_safe=False,
+                   )
 
         try:
             abs_path = self._stitch_resolve_path(path_param)
         except ValueError:
-            return self._send_json(403, {"error": "path outside project root"})
+            return self._send_error_v59(
+                       403,
+                       error_code="PATH_OUTSIDE_PROJECT_ROOT",
+                       error_message="path outside project root",
+                       retry_safe=False,
+                   )
         if not os.path.isfile(abs_path):
-            return self._send_json(404, {"error": f"File not found: {abs_path}"})
+            return self._send_error_v59(
+                       404,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"File not found: {abs_path}",
+                       retry_safe=False,
+                   )
 
         if (qs.get("probe") or ["0"])[0] == "1":
             # Return JSON duration — client uses this to set slot.videoDurMs
@@ -10446,13 +10784,21 @@ body {{padding-top:44px!important;}}
         safe = Path(filename).name
         # Only allow phase_ prefixed module-level files to be served here.
         if not safe.startswith("phase_"):
-            return self._send_json(400, {
-                "error": f"phase media serve rejects non-phase file: {safe!r}",
-                "hint": "Endpoint restricted to phase_*_voice_stem/mixed/lipsync files.",
-            })
+            return self._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"phase media serve rejects non-phase file: {safe!r}",
+                       retry_safe=False,
+                       extra={"hint": "Endpoint restricted to phase_*_voice_stem/mixed/lipsync files."},
+                   )
         target = self.app.event_dir / safe
         if not target.is_file():
-            return self._send_json(404, {"error": f"phase media not found: {safe}"})
+            return self._send_error_v59(
+                       404,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"phase media not found: {safe}",
+                       retry_safe=False,
+                   )
         suffix = target.suffix.lower()
         ctype = {".mp3": "audio/mpeg", ".mp4": "video/mp4",
                  ".wav": "audio/wav"}.get(suffix, "application/octet-stream")
@@ -10471,13 +10817,21 @@ body {{padding-top:44px!important;}}
         safe = Path(filename).name
         # Only allow known watercolor extensions.
         if not safe.lower().endswith((".png", ".mov", ".mp4")):
-            return self._send_json(400, {
-                "error": f"watercolor serve rejects unsupported ext: {safe!r}",
-                "hint": "Allowed: .png, .mov, .mp4",
-            })
+            return self._send_error_v59(
+                       400,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"watercolor serve rejects unsupported ext: {safe!r}",
+                       retry_safe=False,
+                       extra={"hint": "Allowed: .png, .mov, .mp4"},
+                   )
         target = self._phase_assets_dir("watercolor_library") / safe
         if not target.is_file():
-            return self._send_json(404, {"error": f"watercolor not found: {safe}"})
+            return self._send_error_v59(
+                       404,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"watercolor not found: {safe}",
+                       retry_safe=False,
+                   )
         suffix = target.suffix.lower()
         ctype = {".png": "image/png", ".mov": "video/quicktime",
                  ".mp4": "video/mp4"}.get(suffix, "application/octet-stream")
