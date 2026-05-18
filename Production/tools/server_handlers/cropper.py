@@ -39,7 +39,10 @@ from pathlib import Path
 # Handler bodies may reference any of these by bare name.
 from lib.atomic_json_write import atomic_json_write
 from lib.v3_partition import _iter_v3_beats
-from lib.paths import DROPBOX_ROOT
+from server_handlers._path_security import (
+    require_basename_under_dir,
+    require_realpath_under_project,
+)
 import scope_router
 from ffmpeg_utils import strip_audio as _strip_clip_audio
 from lipsync_sender import LipSyncClient, COST_PER_LIPSYNC
@@ -149,13 +152,9 @@ def handle_cr_full_image(h)-> None:
     abs_path = params.get("abs_path", [None])[0]
     if not abs_path:
         return h._send_json(400, {"ok": False, "error": "abs_path required"})
-    # Safety: path must be within project root.
-    # Security (CodeQL py/path-injection — separator-anchored containment):
-    # naive startswith(root) lets sibling '<root>_evil/...' slip past.
-    # Compare against `root + os.sep` (or accept exact-equal root).
-    project_root = os.path.realpath(str(DROPBOX_ROOT))
-    real_path = os.path.realpath(abs_path)
-    if not (real_path == project_root or real_path.startswith(project_root + os.sep)):
+    try:
+        real_path = require_realpath_under_project(abs_path)
+    except ValueError:
         return h._send_json(403, {"ok": False, "error": "path outside project"})
     if not os.path.isfile(real_path):
         return h._send_json(404, {"ok": False, "error": "file not found"})
@@ -563,9 +562,12 @@ def serve_cropper(h)-> None:
 
 def serve_asset(h, filename: str)-> None:
 
-    # Sanitize — only serve files inside clips_dir
-    safe = Path(filename).name
-    target = h.app.state.clips_dir / safe
+    # Sanitize — only serve files inside clips_dir (direct children only).
+    try:
+        target = require_basename_under_dir(filename, h.app.state.clips_dir)
+    except ValueError as exc:
+        return h._send_json(400, {"error": str(exc)})
+    safe = target.name
     if not target.is_file():
         return h._send_json(404, {"error": f"asset not found: {safe}"})
     suffix = target.suffix.lower()

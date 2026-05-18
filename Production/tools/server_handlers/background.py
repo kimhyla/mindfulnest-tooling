@@ -67,6 +67,12 @@ from tools.production_server import (  # noqa: E402
 import scope_router
 from ffmpeg_utils import strip_audio as _strip_clip_audio
 from lipsync_sender import LipSyncClient, COST_PER_LIPSYNC
+from server_handlers._path_security import (
+    VIDEO_EXTENSIONS,
+    require_media_under_project,
+    require_path_under_anchor,
+    require_realpath_under_project,
+)
 
 # Late-resolvable private helpers from the host module.
 from tools.production_server import (  # noqa: E402
@@ -298,9 +304,16 @@ def handle_magic_submit_path(h, body: dict)-> None:
             event_dir = db / "Production" / f"Event_{event_id.replace('e','')}" / "resolution_stills"
             bg_path = None
             # 0. Explicit bg_path from request body (sent by path_picker.html)
-            explicit_bg = body.get("bg_path", "")
-            if explicit_bg and Path(explicit_bg).is_file():
-                bg_path = explicit_bg
+            explicit_bg_raw = body.get("bg_path", "")
+            if explicit_bg_raw:
+                try:
+                    explicit_bg = require_realpath_under_project(explicit_bg_raw)
+                except ValueError:
+                    raise FileNotFoundError(
+                        f"bg_path outside project root: {explicit_bg_raw!r}"
+                    ) from None
+                if os.path.isfile(explicit_bg):
+                    bg_path = explicit_bg
             if bg_path is None and shot_role:
                 cand = event_dir / f"{shot_role}.png"
                 if cand.exists():
@@ -467,12 +480,9 @@ def handle_magic_still(h, body: dict)-> None:
     if not _re_mid_a.match(r"^[A-Za-z0-9][A-Za-z0-9_-]*$", beat_id):
         return h._send_json(400, {"error": "beat_id must match [A-Za-z0-9_-]+"})
     try:
-        project_root = os.path.realpath(str(DROPBOX_ROOT))
-        sip_resolved = str(sip.resolve())
-        if not (sip_resolved == project_root or sip_resolved.startswith(project_root + os.sep)):
-            return h._send_json(400, {"error": "source_image_path outside project root"})
-    except Exception:
-        return h._send_json(400, {"error": "source_image_path validation failed"})
+        sip = require_path_under_anchor(str(sip), h.app.event_dir.parent.parent)
+    except ValueError:
+        return h._send_json(400, {"error": "source_image_path outside project root"})
     if not sip.is_file():
         return h._send_json(404, {
             "error": "source_image not found", "path": str(sip),
@@ -608,23 +618,26 @@ def handle_magic_video(h, body: dict)-> None:
     if not _re_mid_b.match(r"^[A-Za-z0-9][A-Za-z0-9_-]*$", beat_id):
         return h._send_json(400, {"error": "beat_id must match [A-Za-z0-9_-]+"})
     try:
-        project_root = os.path.realpath(str(DROPBOX_ROOT))
-        svp_resolved = str(svp.resolve())
-        if not (svp_resolved == project_root or svp_resolved.startswith(project_root + os.sep)):
-            return h._send_json(400, {"error": "source_video_path outside project root"})
-    except Exception:
-        return h._send_json(400, {"error": "source_video_path validation failed"})
+        svp = require_path_under_anchor(str(svp), h.app.event_dir.parent.parent)
+    except ValueError:
+        return h._send_json(400, {"error": "source_video_path outside project root"})
     if not svp.is_file():
         return h._send_json(404, {
             "error": "source_video not found", "path": str(svp),
         })
+    try:
+        ffmpeg_src = require_media_under_project(
+            str(svp), extensions=VIDEO_EXTENSIONS,
+        )
+    except ValueError as exc:
+        return h._send_json(400, {"error": str(exc)})
 
     # ffprobe for dimensions + duration.
     try:
         probe = subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=width,height,duration",
-             "-of", "json", str(svp)],
+             "-of", "json", ffmpeg_src],
             capture_output=True, check=True, timeout=30,
         )
         meta = json.loads(probe.stdout.decode("utf-8"))
@@ -705,8 +718,8 @@ def handle_magic_video(h, body: dict)-> None:
     # Step 2: ffmpeg overlay via blend=screen.
     cmd = [
         "ffmpeg", "-y",
-        "-i", str(svp),
-        "-i", str(magic_only_path),
+        "-i", ffmpeg_src,
+        "-i", str(magic_only_path.resolve()),
         "-filter_complex", "[0:v][1:v]blend=all_mode=screen[out]",
         "-map", "[out]",
         "-map", "0:a?",
@@ -2319,19 +2332,14 @@ def handle_bg_accept_local_animation(h, body: dict)-> None:
     video_path = body.get("video_path", "")
     if not beat_id or not video_path:
         return h._send_json(400, {"ok": False, "error": "beat_id and video_path required"})
-    if not os.path.exists(video_path):
-        return h._send_json(400, {"ok": False, "error": f"video file not found: {video_path}"})
-    # MED-3: project-root containment. Body-controlled `video_path` flows
-    # to sidecar `accepted_video_path` which is later passed to ffmpeg.
-    # Without this guard, an attacker could store an arbitrary absolute
-    # path (e.g. /etc/passwd) into project state.
     try:
-        project_root = os.path.realpath(str(DROPBOX_ROOT))
-        real_video = os.path.realpath(video_path)
-        if not (real_video == project_root or real_video.startswith(project_root + os.sep)):
-            return h._send_json(403, {"ok": False, "error": "video_path outside project root"})
-    except Exception:
-        return h._send_json(403, {"ok": False, "error": "video_path validation failed"})
+        video_path = require_media_under_project(
+            video_path, extensions=VIDEO_EXTENSIONS,
+        )
+    except ValueError as exc:
+        return h._send_json(403, {"ok": False, "error": str(exc)})
+    except FileNotFoundError:
+        return h._send_json(400, {"ok": False, "error": f"video file not found: {video_path}"})
     bg = _bg_module()
     import pathlib as _pl
     if not bg._ffprobe_ok(_pl.Path(video_path)):
@@ -2715,6 +2723,13 @@ def handle_watercolor_animate(h, body: dict)-> None:
             "looked_in": str(wc_dir),
         })
     source_path = next((m for m in matches if m.suffix.lower() == ".png"), matches[0])
+    try:
+        wc_root = wc_dir.resolve()
+        source_path = source_path.resolve()
+        source_path.relative_to(wc_root)
+    except ValueError:
+        return h._send_json(500, {"error": "watercolor source path outside library dir"})
+    ffmpeg_still = str(source_path)
 
     # Probe dimensions.
     try:
@@ -2867,14 +2882,15 @@ def handle_watercolor_animate(h, body: dict)-> None:
     # Execute ffmpeg.
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_path = wc_dir / f"{watercolor_key}_animated_{ts}.mp4"
+    ffmpeg_out = str(out_path.resolve())
     cmd = [
         "ffmpeg", "-y",
-        "-loop", "1", "-i", str(source_path),
+        "-loop", "1", "-i", ffmpeg_still,
         "-filter_complex", filter_complex,
         "-t", f"{duration_s:.3f}",
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
-        str(out_path),
+        ffmpeg_out,
     ]
     try:
         subprocess.run(cmd, check=True, capture_output=True, timeout=60)

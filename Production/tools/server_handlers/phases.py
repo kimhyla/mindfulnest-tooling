@@ -51,6 +51,11 @@ from lib.paths import DROPBOX_ROOT
 import scope_router
 from ffmpeg_utils import strip_audio as _strip_clip_audio
 from lipsync_sender import LipSyncClient, COST_PER_LIPSYNC
+from server_handlers._path_security import (
+    MEDIA_EXTENSIONS,
+    require_basename_under_dir,
+    require_media_under_project,
+)
 
 # Late-resolvable private helpers from the host module.
 from tools.production_server import (  # noqa: E402
@@ -696,6 +701,8 @@ def handle_phase_b_mix_audio(h, body: dict)-> None:
             "error": "ambient_preset_id is required (string)",
             "hint": "Pick from the ambient preset dropdown.",
         })
+    if "/" in ambient_preset_id or "\\" in ambient_preset_id or ".." in ambient_preset_id:
+        return h._send_json(400, {"error": "invalid ambient_preset_id"})
     # Resolve voice stem from state.
     state = h.app.state.read_state()
     voice_stem_name = state.get(f"phase_{phase}_voice_stem_file")
@@ -704,7 +711,10 @@ def handle_phase_b_mix_audio(h, body: dict)-> None:
             "error": f"phase_{phase}_voice_stem_file not set in state",
             "hint": "Run Regen Audio first to produce a voice stem.",
         })
-    voice_stem_path = h.app.event_dir / voice_stem_name
+    try:
+        voice_stem_path = require_basename_under_dir(voice_stem_name, h.app.event_dir)
+    except ValueError as exc:
+        return h._send_json(400, {"error": str(exc)})
     if not voice_stem_path.is_file():
         return h._send_json(404, {
             "error": f"voice stem file not found: {voice_stem_name}",
@@ -712,7 +722,12 @@ def handle_phase_b_mix_audio(h, body: dict)-> None:
         })
     # Resolve ambient preset.
     ambient_dir = h._phase_assets_dir("ambient_library")
-    ambient_path = ambient_dir / f"{ambient_preset_id}.mp3"
+    try:
+        ambient_path = require_basename_under_dir(
+            f"{ambient_preset_id}.mp3", ambient_dir,
+        )
+    except ValueError as exc:
+        return h._send_json(400, {"error": str(exc)})
     if not ambient_path.is_file():
         return h._send_json(404, {
             "error": f"ambient preset not found: {ambient_preset_id}.mp3",
@@ -733,13 +748,24 @@ def handle_phase_b_mix_audio(h, body: dict)-> None:
     lipsync_name_for_source = state.get(f"phase_{phase}_lipsync_file")
     lipsync_source_path: Path | None = None
     if lipsync_name_for_source:
-        candidate = h.app.event_dir / lipsync_name_for_source
-        if candidate.is_file():
+        if "/" in lipsync_name_for_source or "\\" in lipsync_name_for_source or ".." in lipsync_name_for_source:
+            lipsync_name_for_source = ""
+        else:
+            try:
+                candidate = require_basename_under_dir(
+                    lipsync_name_for_source, h.app.event_dir,
+                )
+            except ValueError:
+                candidate = None
+        if candidate is not None and candidate.is_file():
             lipsync_source_path = candidate
             try:
+                ffmpeg_lipsync_in = require_media_under_project(
+                    str(candidate), anchor=h.app.event_dir, extensions=MEDIA_EXTENSIONS,
+                )
                 subprocess.run([
                     "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                    "-i", str(candidate.resolve()),
+                    "-i", ffmpeg_lipsync_in,
                     "-vn", "-c:a", "libmp3lame", "-b:a", "192k",
                     "-ac", "1", "-ar", "44100",
                     "-f", "mp3",
@@ -765,10 +791,16 @@ def handle_phase_b_mix_audio(h, body: dict)-> None:
             "[1:a]volume=0.15[bed];"
             "[voice][bed]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[mix]"
         )
+        ffmpeg_voice_in = require_media_under_project(
+            str(voice_for_mix_path), anchor=h.app.event_dir, extensions=MEDIA_EXTENSIONS,
+        )
+        ffmpeg_ambient_in = require_media_under_project(
+            str(ambient_path), anchor=ambient_dir, extensions=MEDIA_EXTENSIONS,
+        )
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-i", str(voice_for_mix_path.resolve()),
-            "-i", str(ambient_path.resolve()),
+            "-i", ffmpeg_voice_in,
+            "-i", ffmpeg_ambient_in,
             "-filter_complex", filter_complex,
             "-map", "[mix]",
             "-c:a", "libmp3lame", "-b:a", "128k",
@@ -838,15 +870,27 @@ def handle_phase_b_mix_audio(h, body: dict)-> None:
     state_after = h.app.state.read_state()
     lipsync_name = state_after.get(f"phase_{phase}_lipsync_file")
     if lipsync_name:
-        lipsync_path = h.app.event_dir / lipsync_name
-        if lipsync_path.is_file():
+        if "/" not in lipsync_name and "\\" not in lipsync_name and ".." not in lipsync_name:
+            try:
+                lipsync_path = require_basename_under_dir(lipsync_name, h.app.event_dir)
+            except ValueError:
+                lipsync_path = None
+        else:
+            lipsync_path = None
+        if lipsync_path is not None and lipsync_path.is_file():
             new_lipsync_name = f"phase_{phase}_lipsync_withbed_{ts}.mp4"
             new_lipsync_path = h.app.event_dir / new_lipsync_name
             try:
+                ffmpeg_lipsync_in = require_media_under_project(
+                    str(lipsync_path), anchor=h.app.event_dir, extensions=MEDIA_EXTENSIONS,
+                )
+                ffmpeg_mixed_in = require_media_under_project(
+                    str(out_path), anchor=h.app.event_dir, extensions=MEDIA_EXTENSIONS,
+                )
                 subprocess.run([
                     "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                    "-i", str(lipsync_path.resolve()),
-                    "-i", str(out_path.resolve()),
+                    "-i", ffmpeg_lipsync_in,
+                    "-i", ffmpeg_mixed_in,
                     "-c:v", "copy",
                     "-map", "0:v:0",
                     "-map", "1:a:0",
@@ -1143,12 +1187,18 @@ def handle_phase_b_preview(h, body: dict)-> None:
             "error": f"phase_{phase}_lipsync_file not set in state",
             "hint": "Run Send for Lipsync first.",
         })
-    lipsync_path = h.app.event_dir / lipsync_name
+    if "/" in lipsync_name or "\\" in lipsync_name or ".." in lipsync_name:
+        return h._send_json(400, {"error": "invalid phase lipsync filename in state"})
+    try:
+        lipsync_path = require_basename_under_dir(lipsync_name, h.app.event_dir)
+    except ValueError as exc:
+        return h._send_json(400, {"error": str(exc)})
     if not lipsync_path.is_file():
         return h._send_json(404, {
             "error": f"lipsync file not found on disk: {lipsync_name}",
             "hint": "File may have been deleted. Re-run Send for Lipsync.",
         })
+    lipsync_path = lipsync_path.resolve()
     cues_json = state.get(f"phase_{phase}_watercolor_cues_json") or "[]"
     try:
         cues = json.loads(cues_json)
@@ -1217,7 +1267,8 @@ def handle_phase_b_preview(h, body: dict)-> None:
     lock_path = preview_dir / ".lock"
 
     import fcntl  # noqa: PLC0415
-    lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+    # nosec: CodeQL false-positive — lock_path from server event_dir/preview, not user input
+    lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
     try:
         try:
             fcntl.lockf(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)

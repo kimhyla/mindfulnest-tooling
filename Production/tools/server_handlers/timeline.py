@@ -39,8 +39,12 @@ from pathlib import Path
 # Handler bodies may reference any of these by bare name.
 from lib.atomic_json_write import atomic_json_write
 from lib.v3_partition import _iter_v3_beats
-from lib.paths import DROPBOX_ROOT
 import scope_router
+from server_handlers._path_security import (
+    MEDIA_EXTENSIONS,
+    require_media_under_project,
+    require_realpath_under_project,
+)
 from ffmpeg_utils import strip_audio as _strip_clip_audio
 from lipsync_sender import LipSyncClient, COST_PER_LIPSYNC
 
@@ -75,8 +79,10 @@ def handle_timeline_audio(h, event_id: str)-> None:
     audio_path = cache_dir / audio_fname
 
     if not audio_path.is_file():
+        # nosec: CodeQL false-positive — full_mp4 from server _get_or_build_full_module_mp4
+        ffmpeg_in = str(full_mp4.resolve())
         cmd = [
-            "ffmpeg", "-y", "-i", str(full_mp4),
+            "ffmpeg", "-y", "-i", ffmpeg_in,
             "-vn", "-ac", "1", "-ar", "44100", "-b:a", "128k",
             str(audio_path),
         ]
@@ -169,22 +175,18 @@ def handle_timeline_cue_upsert(h, body: dict)-> None:
         })
 
     source_path_str = body.get("source_path", "")
-    source_path = Path(source_path_str)
-    if not source_path.is_file():
+    if not source_path_str:
+        return h._send_json(400, {"error": "source_path is required"})
+    try:
+        real_path = require_media_under_project(source_path_str, extensions=MEDIA_EXTENSIONS)
+    except ValueError as exc:
+        return h._send_json(403, {"error": str(exc)})
+    except FileNotFoundError:
         return h._send_json(400, {
             "error": f"source_path not found: {source_path_str}",
             "hint": "Ensure the SFX file exists at the given path.",
         })
-    # Security (CodeQL py/path-injection alert #28 follow-up):
-    # source_path is body-controlled and later read by ffmpeg in the
-    # stitcher mix. Reject paths outside the project root.
-    try:
-        project_root = os.path.realpath(str(DROPBOX_ROOT))
-        real_path = os.path.realpath(str(source_path))
-        if not (real_path == project_root or real_path.startswith(project_root + os.sep)):
-            return h._send_json(403, {"error": "source_path outside project root"})
-    except Exception:
-        return h._send_json(403, {"error": "source_path validation failed"})
+    source_path = Path(real_path)
 
     cue = {
         "id": cue_id,
@@ -256,22 +258,19 @@ def handle_timeline_open_in_quicktime(h, body: dict)-> None:
     mp4_path = body.get("mp4_path", "")
     if not mp4_path:
         return h._send_json(400, {"error": "mp4_path is required"})
-    p = Path(mp4_path)
-    if not p.is_file():
-        return h._send_json(404, {"error": f"file not found: {mp4_path}"})
-    if p.suffix.lower() not in (".mp4", ".mov", ".m4v"):
-        return h._send_json(400, {"error": "only .mp4/.mov/.m4v files allowed"})
-    # Project-root containment (separator-anchored)
     try:
-        project_root = os.path.realpath(str(DROPBOX_ROOT))
-        real_path = os.path.realpath(str(p))
-        if not (real_path == project_root or real_path.startswith(project_root + os.sep)):
-            return h._send_json(403, {"error": "path outside project root"})
-    except Exception:
-        return h._send_json(403, {"error": "path validation failed"})
+        real_path = require_media_under_project(
+            mp4_path,
+            extensions=frozenset({".mp4", ".mov", ".m4v"}),
+        )
+    except ValueError as exc:
+        return h._send_json(403, {"error": str(exc)})
+    except FileNotFoundError:
+        return h._send_json(404, {"error": f"file not found: {mp4_path}"})
+    p = Path(real_path)
     try:
         subprocess.run(
-            ["open", "-a", "QuickTime Player", str(p)],
+            ["open", "-a", "QuickTime Player", real_path],
             check=True, timeout=10,
         )
     except subprocess.CalledProcessError as exc:
@@ -337,7 +336,13 @@ def handle_timeline_preview_with_sfx(h, body: dict)-> None:
         out_fname = f"timeline_preview_sfx_{nc_hash}.mp4"
         out_path = exports_dir / out_fname
         if not out_path.is_file():
-            cmd = ["ffmpeg", "-y", "-i", str(preview_mp4), "-c", "copy", str(out_path)]
+            # nosec: CodeQL false-positive — preview_mp4 from server _get_or_build_full_module_mp4
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", str(preview_mp4.resolve()),
+                "-c", "copy",
+                str(out_path.resolve()),
+            ]
             try:
                 subprocess.run(cmd, check=True, capture_output=True, timeout=60)
             except subprocess.CalledProcessError as exc:
@@ -345,13 +350,28 @@ def handle_timeline_preview_with_sfx(h, body: dict)-> None:
                 return h._send_json(500, {"error": "stream-copy failed", "stderr": stderr})
         return h._send_json(200, {"mp4_path": str(out_path)})
 
-    # Validate all source files exist before invoking ffmpeg
+    # Validate all cue source paths (stored from body) before ffmpeg argv.
+    sanitized_cues: list[dict] = []
     for cue in cues:
-        if not Path(cue.get("source_path", "")).is_file():
+        sp_raw = cue.get("source_path", "")
+        if not sp_raw:
             return h._send_json(400, {
-                "error": f"SFX file not found: {cue.get('source_path')}",
+                "error": "cue missing source_path",
+                "hint": "Remove or update the invalid cue before previewing.",
+            })
+        try:
+            sp_safe = require_media_under_project(sp_raw, extensions=MEDIA_EXTENSIONS)
+        except ValueError as exc:
+            return h._send_json(403, {"error": str(exc), "cue_id": cue.get("id")})
+        except FileNotFoundError:
+            return h._send_json(400, {
+                "error": f"SFX file not found: {sp_raw}",
                 "hint": "Remove or update the missing cue before previewing.",
             })
+        cue = dict(cue)
+        cue["source_path"] = sp_safe
+        sanitized_cues.append(cue)
+    cues = sanitized_cues
 
     # Build filter_complex — pattern from LESSONS_LEARNED_April25 §14 verbatim.
     # Each cue lane: aresample=44100 (LD-284), adelay, afade in/out, volume.

@@ -52,6 +52,11 @@ import scope_router
 from ffmpeg_utils import strip_audio as _strip_clip_audio
 from lipsync_sender import LipSyncClient, COST_PER_LIPSYNC
 
+from server_handlers._path_security import (
+    MEDIA_EXTENSIONS,
+    require_media_under_project,
+)
+
 # Late-resolvable private helpers from the host module.
 from tools.production_server import (  # noqa: E402
     _resolve_module_id_for_state,
@@ -84,15 +89,20 @@ def handle_stitch_loudnorm(h, body: dict)-> None:
     if not input_path_raw:
         return h._send_json(400, {"error": "input_path required"})
 
-    # Resolve relative to event_dir if relative.
-    ip = Path(input_path_raw)
-    if not ip.is_absolute():
-        ip = h.app.event_dir / input_path_raw
-    if not ip.is_file():
+    try:
+        ip_str = h._stitch_resolve_path(input_path_raw)
+    except ValueError:
+        return h._send_json(403, {"error": "input_path outside project root"})
+    try:
+        ip_str = require_media_under_project(ip_str, extensions=MEDIA_EXTENSIONS)
+    except ValueError as exc:
+        return h._send_json(400, {"error": str(exc)})
+    except FileNotFoundError:
         return h._send_json(404, {
             "error": "input file not found",
-            "input_path": str(ip),
+            "input_path": input_path_raw,
         })
+    ip = Path(ip_str)
 
     target_lufs = float((body or {}).get("target_lufs", -19.0))
     target_tp = float((body or {}).get("target_tp", -1.5))
@@ -101,9 +111,11 @@ def handle_stitch_loudnorm(h, body: dict)-> None:
     # Output path: default to <input>_ln.<ext> in same dir.
     out_raw = (body or {}).get("output_path")
     if out_raw:
-        op = Path(out_raw)
-        if not op.is_absolute():
-            op = h.app.event_dir / out_raw
+        try:
+            op_str = h._stitch_resolve_path(out_raw)
+        except ValueError:
+            return h._send_json(403, {"error": "output_path outside project root"})
+        op = Path(op_str)
     else:
         op = ip.with_name(f"{ip.stem}_ln{ip.suffix}")
 
@@ -124,13 +136,15 @@ def handle_stitch_loudnorm(h, body: dict)-> None:
 
     # Run ffmpeg single-pass loudnorm.
     # -af "loudnorm=I=-19:TP=-1.5:LRA=11" -c:v copy preserves video frames.
+    ffmpeg_in = ip_str
+    ffmpeg_out = str(op.resolve())
     cmd = [
         "ffmpeg", "-y",
-        "-i", str(ip),
+        "-i", ffmpeg_in,
         "-af", f"loudnorm=I={target_lufs}:TP={target_tp}:LRA={target_lra}",
         "-c:v", "copy",
         "-c:a", "aac", "-b:a", "192k",
-        str(op),
+        ffmpeg_out,
     ]
     try:
         result = subprocess.run(cmd, check=True, capture_output=True, timeout=600)
@@ -344,8 +358,14 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
         abs_path = h._stitch_resolve_path(video_path_str)
     except ValueError:
         return h._send_json(403, {"error": "video_path outside project root"})
-    if not os.path.isfile(abs_path):
-        return h._send_json(404, {"error": f"File not found: {abs_path}"})
+    try:
+        abs_path = require_media_under_project(
+            abs_path, extensions=MEDIA_EXTENSIONS,
+        )
+    except ValueError as exc:
+        return h._send_json(400, {"error": str(exc)})
+    except FileNotFoundError:
+        return h._send_json(404, {"error": f"File not found: {video_path_str}"})
 
     # Cache key: md5(path) + mtime — Producer/Consumer drift rule (source identity)
     mtime_ms = int(os.path.getmtime(abs_path) * 1000)
@@ -358,10 +378,12 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
     audio_path = cache_dir / audio_fname
 
     if not audio_path.is_file():
+        ffmpeg_src = abs_path
+        ffmpeg_dst = str(audio_path.resolve())
         cmd = [
-            "ffmpeg", "-y", "-i", abs_path,
+            "ffmpeg", "-y", "-i", ffmpeg_src,
             "-vn", "-ac", "1", "-ar", "44100", "-b:a", "128k",
-            str(audio_path),
+            ffmpeg_dst,
         ]
         try:
             subprocess.run(cmd, check=True, capture_output=True, timeout=180)
@@ -448,6 +470,7 @@ def handle_stitch_bake(h, body: dict)-> None:
     bake_lock_path.touch(exist_ok=True)
 
     try:
+        # nosec: CodeQL false-positive — lock_path from server stitch cache dir, not user input
         fd = os.open(str(bake_lock_path), os.O_RDWR)
         try:
             fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -469,9 +492,10 @@ def handle_stitch_bake(h, body: dict)-> None:
 
         # SIZE_BUDGET_VIDEO_V1: ffprobe bitrate assertion ≤ 1,900,000 bps
         try:
+            # nosec: CodeQL false-positive — out_path from server _stitch_build_pipeline
             vp = subprocess.run(
                 ["ffprobe", "-v", "error", "-show_entries", "format=bit_rate",
-                 "-of", "json", str(out_path)],
+                 "-of", "json", str(out_path.resolve())],
                 capture_output=True, timeout=10, check=True,
             )
             bitrate = int(json.loads(vp.stdout).get("format", {}).get("bit_rate", 0))
