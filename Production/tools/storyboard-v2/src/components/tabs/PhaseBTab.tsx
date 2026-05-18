@@ -13,7 +13,7 @@ import { PhaseProducer } from '../phase/PhaseProducer';
 export function PhaseBTab() {
   if (activeProjectType.value === 'milestone') {
     return (
-      <section class="mn-tab-pane mn-phase-b-pane" data-testid="phase-b-tab-root">
+      <section class="mn-tab-pane mn-phase-b-pane" data-testid="pane-phase-b">
         <header class="mn-pane-header" data-testid="phase-b-pane-header">
           <h2>Phase B</h2>
           <span class="mn-scope-chip" data-testid="phase-b-scope-chip">scope: {scopeKey(activeScope.value)}</span>
@@ -25,7 +25,7 @@ export function PhaseBTab() {
     );
   }
   return (
-    <section class="mn-tab-pane mn-phase-b-pane" data-testid="phase-b-tab-root">
+    <section class="mn-tab-pane mn-phase-b-pane" data-testid="pane-phase-b">
       <header class="mn-pane-header" data-testid="phase-b-pane-header">
         <h2>Phase B</h2>
         <span class="mn-scope-chip" data-testid="phase-b-scope-chip">scope: {scopeKey(activeScope.value)}</span>

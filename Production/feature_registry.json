@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-18T12:38:23Z",
+  "generated_at": "2026-05-18T13:22:14Z",
   "generator": "Production/scripts/generate_feature_registry.py",
   "source_glob": "Production/tools/storyboard-v2/src/components/**/*.tsx",
   "testids": [
@@ -294,31 +294,31 @@
     {
       "id": "library-preview",
       "file": "Production/tools/storyboard-v2/src/components/LibraryPanel.tsx",
-      "line": 575,
+      "line": 589,
       "tab": "shared"
     },
     {
       "id": "library-preview-close",
       "file": "Production/tools/storyboard-v2/src/components/LibraryPanel.tsx",
-      "line": 584,
+      "line": 598,
       "tab": "shared"
     },
     {
       "id": "library-preview-audio",
       "file": "Production/tools/storyboard-v2/src/components/LibraryPanel.tsx",
-      "line": 599,
+      "line": 613,
       "tab": "shared"
     },
     {
       "id": "library-preview-video",
       "file": "Production/tools/storyboard-v2/src/components/LibraryPanel.tsx",
-      "line": 609,
+      "line": 623,
       "tab": "shared"
     },
     {
       "id": "library-preview-img",
       "file": "Production/tools/storyboard-v2/src/components/LibraryPanel.tsx",
-      "line": 621,
+      "line": 635,
       "tab": "shared"
     },
     {
@@ -450,19 +450,19 @@
     {
       "id": "scope-banner-mismatch",
       "file": "Production/tools/storyboard-v2/src/components/ScopeBanner.tsx",
-      "line": 78,
+      "line": 94,
       "tab": "shared"
     },
     {
       "id": "scope-banner-reload",
       "file": "Production/tools/storyboard-v2/src/components/ScopeBanner.tsx",
-      "line": 85,
+      "line": 101,
       "tab": "shared"
     },
     {
       "id": "scope-banner-dismiss",
       "file": "Production/tools/storyboard-v2/src/components/ScopeBanner.tsx",
-      "line": 95,
+      "line": 111,
       "tab": "shared"
     },
     {
@@ -814,7 +814,7 @@
       "tab": "shared"
     },
     {
-      "id": "phase-a-tab-root",
+      "id": "pane-phase-a",
       "file": "Production/tools/storyboard-v2/src/components/tabs/PhaseATab.tsx",
       "line": 16,
       "tab": "phase_a"
@@ -838,7 +838,7 @@
       "tab": "phase_a"
     },
     {
-      "id": "phase-a-tab-root",
+      "id": "pane-phase-a",
       "file": "Production/tools/storyboard-v2/src/components/tabs/PhaseATab.tsx",
       "line": 28,
       "tab": "phase_a"
@@ -862,7 +862,7 @@
       "tab": "phase_a"
     },
     {
-      "id": "phase-b-tab-root",
+      "id": "pane-phase-b",
       "file": "Production/tools/storyboard-v2/src/components/tabs/PhaseBTab.tsx",
       "line": 16,
       "tab": "phase_b"
@@ -886,7 +886,7 @@
       "tab": "phase_b"
     },
     {
-      "id": "phase-b-tab-root",
+      "id": "pane-phase-b",
       "file": "Production/tools/storyboard-v2/src/components/tabs/PhaseBTab.tsx",
       "line": 28,
       "tab": "phase_b"
@@ -985,18 +985,18 @@
       "cropper-save-status"
     ],
     "phase_a": [
+      "pane-phase-a",
       "phase-a-milestone-hint",
       "phase-a-pane-header",
       "phase-a-producer-panel",
-      "phase-a-scope-chip",
-      "phase-a-tab-root"
+      "phase-a-scope-chip"
     ],
     "phase_b": [
+      "pane-phase-b",
       "phase-b-milestone-hint",
       "phase-b-pane-header",
       "phase-b-producer-panel",
-      "phase-b-scope-chip",
-      "phase-b-tab-root"
+      "phase-b-scope-chip"
     ],
     "production_map": [
       "map-empty",
