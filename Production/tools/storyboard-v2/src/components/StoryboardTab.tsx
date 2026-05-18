@@ -64,6 +64,13 @@ interface BeatState {
     selected_option?: number;
     options?: Array<{ file?: string; status?: string }>;
     audio_delay?: number;
+    // LD-749 POST_LIPSYNC_TRIM_FEATURE_SPEC_V1 (re-shipped 2026-05-17): server-
+    // canonical persistence path for trim window. _handle_beat_trim writes
+    // here; _serve_lipsync_trimmed reads here. Bootstrap returns raw state.json
+    // so React must read trim from nested phase_1 (same as audio_delay per
+    // LD-723). Legacy top-level `trim_in`/`trim_out` (LD-160) kept as fallback.
+    trim_start?: number;
+    trim_end?: number | null;
   };
   // S5.5e — fields read by the beat-level state machine (LD BEAT_LIFECYCLE_STATE_MACHINE_V1).
   // beat.final block is the "is final?" signal per Cursor v8 (NOT a use_as_final boolean).
@@ -277,8 +284,23 @@ interface BeatButtonRowProps {
 function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptIdx, onPreviewOption }: BeatButtonRowProps) {
   const lifecycle = deriveBeatLifecycle(beat);
   const [busy, setBusy] = useState<string | null>(null); // which button is in-flight
-  const [trimIn, setTrimIn] = useState<string>(String(beat.trim_in ?? '0.0'));
-  const [trimOut, setTrimOut] = useState<string>(String(beat.trim_out ?? 'full'));
+  // LD-756 TRIM_INPUT_SEMANTICS_SECONDS_FROM_END_V1 (re-shipped 2026-05-17 from
+  // stash@{1} 31e1bd292885). UI inputs now express "seconds to trim from
+  // front" and "seconds to trim from back". Server-side semantics remain
+  // absolute (LD-749/754/755 unchanged); the conversion happens client-side
+  // at submit + preview + hydration time.
+  //   front_input = trim_start (identical: seconds-from-start == absolute start)
+  //   back_input  = videoEl.duration - trim_end (when trim_end != null)
+  //   back_input  = 0.0 when trim_end is null ("use full clip")
+  // Default 0.0 / 0.0 means no trim. The reverse-conversion is delay-hydrated
+  // by the useEffect below once videoEl.duration is known (loadedmetadata).
+  const [trimFront, setTrimFront] = useState<string>(
+    String(beat.phase_1?.trim_start ?? beat.trim_in ?? '0.0'),
+  );
+  // trimBack starts as 0.0 (no trim) on first render; useEffect below
+  // converts the persisted absolute trim_end to seconds-from-end once the
+  // <video> reports loadedmetadata.
+  const [trimBack, setTrimBack] = useState<string>('0.0');
   // L5 fix 2026-05-16 per STORYBOARD_AUDIO_DELAY_READ_NESTED_PATH_V2: server
   // persists at beat.phase_1.audio_delay (nested) and the bootstrap
   // /api/v2/event/<id>/state response returns the raw state.json — so the
@@ -318,6 +340,71 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
       setHoldDuration(String(persisted));
     }
   }, [beat.final?.kenburns?.duration_s]);
+
+  // LD-756 TRIM_INPUT_SEMANTICS_SECONDS_FROM_END_V1 (re-shipped 2026-05-17):
+  // keep inputs in sync with canonical persisted (absolute) values, performing
+  // the absolute -> seconds-from-end reverse conversion for the back input
+  // using the <video> element's known duration. If duration is not yet known
+  // (e.g., user has not yet loaded the lipsync ▶), we leave trimBack at the
+  // last-known value and re-converting on the duration-load event below.
+  //
+  // INVARIANTS (per CLAUDE.md Rule 36 §36.1):
+  //   - Inputs are CONTROLLED; this updates state only when the persisted
+  //     nested value changes (not on every render).
+  //   - Front input is identical mapping (seconds-from-start == absolute
+  //     start), so it's set unconditionally regardless of duration.
+  //   - Back input requires videoEl.duration; if unavailable we skip
+  //     the back-side update and let the duration-load effect retry.
+  //   - Mid-edit Kim is preserved: onInput already fired set* before the
+  //     apply request lands, so the post-apply re-sync is a no-op (value
+  //     already matches). Last-write-wins matches LD-723 audio_delay pattern.
+  useEffect(() => {
+    const nestedStart = beat.phase_1?.trim_start;
+    if (nestedStart !== undefined && nestedStart !== null) {
+      setTrimFront(String(nestedStart));
+    }
+    const nestedEnd = beat.phase_1?.trim_end;
+    if (nestedEnd === null || nestedEnd === undefined) {
+      setTrimBack('0.0');
+    } else {
+      // Need duration to convert absolute -> seconds-from-end
+      const videoEl = document.querySelector<HTMLVideoElement>(
+        `[data-testid="beat-preview-video-${index}"]`,
+      );
+      const dur = videoEl?.duration;
+      if (dur && isFinite(dur) && dur > 0) {
+        const back = Math.max(0, dur - Number(nestedEnd));
+        setTrimBack(back.toFixed(2));
+      }
+      // else: leave trimBack as-is; will be set on next loadedmetadata
+    }
+  }, [beat.phase_1?.trim_start, beat.phase_1?.trim_end, index]);
+
+  // LD-756: listen for the lipsync <video>'s loadedmetadata so the back-input
+  // can be hydrated from absolute trim_end once duration becomes available.
+  // Without this, a user who opens the storyboard before clicking ▶ lipsync
+  // sees back=0.0 even when state has a non-null trim_end.
+  useEffect(() => {
+    const nestedEnd = beat.phase_1?.trim_end;
+    if (nestedEnd === null || nestedEnd === undefined) return;
+    const videoEl = document.querySelector<HTMLVideoElement>(
+      `[data-testid="beat-preview-video-${index}"]`,
+    );
+    if (!videoEl) return;
+    const sync = () => {
+      const dur = videoEl.duration;
+      if (dur && isFinite(dur) && dur > 0) {
+        const back = Math.max(0, dur - Number(nestedEnd));
+        setTrimBack(back.toFixed(2));
+      }
+    };
+    if (videoEl.readyState >= 1 && videoEl.duration && isFinite(videoEl.duration)) {
+      sync();
+      return;
+    }
+    videoEl.addEventListener('loadedmetadata', sync);
+    return () => videoEl.removeEventListener('loadedmetadata', sync);
+  }, [beat.phase_1?.trim_end, index, beat.lipsync?.file]);
 
   // ----------------------------------------------------------------
   // Polling (animate + lipsync)
@@ -555,12 +642,150 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
   // accepts that as success (no expectField — undo has no load-bearing
   // response field).
   const onUndoFinal = () => runMutation('Undo Final', 'beat_undo_final', {});
-  const onApplyTrim = () => {
-    const tIn = parseFloat(trimIn);
-    const tOut = trimOut === 'full' ? null : parseFloat(trimOut);
-    return runMutation('Trim', 'beat_trim', {
-      trim_in: isNaN(tIn) ? 0 : tIn,
-      trim_out: tOut,
+  // LD-756 TRIM_INPUT_SEMANTICS_SECONDS_FROM_END_V1 (re-shipped 2026-05-17 from
+  // stash@{1} 31e1bd292885): inputs are "seconds to trim from front/back".
+  // Convert to absolute timestamps (the on-disk schema in phase_1.trim_start/
+  // trim_end and the _handle_beat_trim handler expectation) using
+  // videoEl.duration.
+  //
+  // INVARIANTS:
+  //   - Front input == absolute trim_start (identical mapping).
+  //   - Back input is seconds-from-end → absolute trim_end = duration - back.
+  //   - When back == 0.0 (or empty) → send trim_end: null ("use full clip").
+  //   - When duration is not yet loaded and back > 0, FAIL LOUD with a toast
+  //     guiding Kim to click ▶ lipsync manually (LD-756 fail-loud requirement).
+  //   - If back == 0.0, we DO allow apply even with no loaded video — that
+  //     case sends trim_end: null (no duration math required).
+  //
+  // expectField='beat' per LD-778: _handle_beat_trim returns {beat, trim_start,
+  // trim_end?} — the `beat` field is the load-bearing proof the mutation landed.
+  const onApplyTrim = async () => {
+    const front = parseFloat(trimFront);
+    const back = parseFloat(trimBack);
+    const frontSafe = isNaN(front) || front < 0 ? 0 : front;
+    const backSafe = isNaN(back) || back < 0 ? 0 : back;
+
+    let trimEndAbsolute: number | null = null;
+    if (backSafe > 0) {
+      const videoEl = document.querySelector<HTMLVideoElement>(
+        `[data-testid="beat-preview-video-${index}"]`,
+      );
+      const dur = videoEl?.duration;
+      if (!videoEl || !dur || !isFinite(dur) || dur <= 0) {
+        // LD-756 fail-loud requirement: do not silently send nonsense.
+        pushToast({
+          kind: 'error',
+          message: 'Lipsync video duration not yet loaded — click ▶ lipsync first, then try Apply again.',
+          source: `beat-${index}-trim-apply-no-duration`,
+        });
+        return false;
+      }
+      trimEndAbsolute = Math.max(0, dur - backSafe);
+      if (trimEndAbsolute <= frontSafe) {
+        pushToast({
+          kind: 'error',
+          message: `Invalid trim: front (${frontSafe.toFixed(2)}s) + back (${backSafe.toFixed(2)}s) >= duration (${dur.toFixed(2)}s).`,
+          source: `beat-${index}-trim-apply-invalid`,
+        });
+        return false;
+      }
+    }
+
+    const ok = await runMutation('Trim', 'beat_trim', {
+      trim_in: frontSafe,
+      trim_out: trimEndAbsolute,
+    }, 'beat');
+    if (ok && beat.lipsync?.status === 'completed' && beat.lipsync?.file) {
+      pushToast({
+        kind: 'success',
+        message: `Trim saved: ${frontSafe.toFixed(2)}s off front, ${backSafe.toFixed(2)}s off back. Preview to verify.`,
+        source: `beat-${index}-trim-applied`,
+      });
+    }
+    return ok;
+  };
+
+  // LD-755 TRIM_PREVIEW_BROWSER_SIDE_INSTANT_V1 (re-shipped 2026-05-17 from
+  // stash@{1} 31e1bd292885): browser-side instant trim preview. Reads the
+  // CURRENT input values (not persisted state), locates this beat's lipsync
+  // <video> element via data-testid, seeks to absolute_start, attaches a
+  // timeupdate listener that pauses at absolute_end (or video.duration if
+  // back==0), and plays. ZERO server round-trip.
+  //
+  // INVARIANTS (per CLAUDE.md Rule 36 §36.1):
+  //   - Targets the <video data-testid="beat-preview-video-${index}"> rendered
+  //     by BeatImageHolder. If that testid changes, this preview breaks
+  //     silently — keep the testid stable.
+  //   - The video src is set by previewVideoSrc only when previewOptIdx !== null.
+  //     If Kim has never clicked the lipsync ▶ button this session, the <video>
+  //     has no src and the seek is a no-op. We detect this and toast guidance.
+  //   - Listener cleanup: we store the handler reference on the element and
+  //     remove it before attaching the next one — prevents listener pile-up
+  //     across multiple Preview clicks.
+  //   - Reads input values directly from trimFront/trimBack state (not from
+  //     beat props) so Kim sees instant feedback on UNSAVED edits before Apply.
+  //   - LD-756: inputs are seconds-from-front/back; convert at preview time.
+  const onPreviewTrim = () => {
+    const videoEl = document.querySelector<HTMLVideoElement>(
+      `[data-testid="beat-preview-video-${index}"]`,
+    );
+    if (!videoEl || !videoEl.src || videoEl.readyState < 1) {
+      pushToast({
+        kind: 'info',
+        message: 'Click ▶ lipsync first to load the video, then Preview will work.',
+        source: `beat-${index}-trim-preview-no-video`,
+      });
+      return;
+    }
+    const front = parseFloat(trimFront);
+    const back = parseFloat(trimBack);
+    const tInSafe = isNaN(front) || front < 0 ? 0 : front;
+    const backSafe = isNaN(back) || back < 0 ? 0 : back;
+    const dur = videoEl.duration;
+    if (!dur || !isFinite(dur) || dur <= 0) {
+      // LD-756 fail-loud requirement
+      pushToast({
+        kind: 'error',
+        message: 'Lipsync video duration not yet loaded — click ▶ lipsync first, then try Preview again.',
+        source: `beat-${index}-trim-preview-no-duration`,
+      });
+      return;
+    }
+    const tOutSafe = backSafe > 0 ? Math.max(0, dur - backSafe) : dur;
+    if (tOutSafe <= tInSafe) {
+      pushToast({
+        kind: 'error',
+        message: `Invalid trim window: front (${tInSafe.toFixed(2)}s) + back (${backSafe.toFixed(2)}s) leaves nothing in duration (${dur.toFixed(2)}s).`,
+        source: `beat-${index}-trim-preview-invalid`,
+      });
+      return;
+    }
+    // Detach any prior preview listener on this element to prevent pile-up.
+    const prevHandler = (videoEl as any).__trimPreviewHandler as
+      | ((e: Event) => void)
+      | undefined;
+    if (prevHandler) {
+      videoEl.removeEventListener('timeupdate', prevHandler);
+    }
+    const handler = () => {
+      if (videoEl.currentTime >= tOutSafe) {
+        videoEl.pause();
+        videoEl.removeEventListener('timeupdate', handler);
+        (videoEl as any).__trimPreviewHandler = undefined;
+      }
+    };
+    (videoEl as any).__trimPreviewHandler = handler;
+    videoEl.addEventListener('timeupdate', handler);
+    try {
+      videoEl.currentTime = tInSafe;
+    } catch {
+      /* seek failure on uninitialised video — handled by readyState check above */
+    }
+    videoEl.play().catch(() => {});
+    pushToast({
+      kind: 'info',
+      message: `Preview: ${tInSafe.toFixed(2)}s → ${isFinite(tOutSafe) ? tOutSafe.toFixed(2) + 's' : 'end'}`,
+      source: `beat-${index}-trim-preview`,
     });
   };
   const onApplyDelay = () => {
@@ -839,34 +1064,50 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
         ) : null}
       </span>
 
-      {/* Trim / Delay group */}
+      {/* Trim / Delay group — LD-756 TRIM_INPUT_SEMANTICS_SECONDS_FROM_END_V1:
+          inputs are "seconds to trim from front/back". 0.0 = no trim.
+          Conversion to absolute timestamps happens at submit/preview time. */}
       <span class="mn-beat-button-group" data-testid={`beat-trim-group-${index}`}>
-        <span class="mn-beat-button-group-label">Trim:</span>
+        <span class="mn-beat-button-group-label">Trim front (s):</span>
         <input
           type="text"
           class="mn-beat-trim-input"
           data-testid={`beat-${index}-trim-in`}
-          value={trimIn}
-          onInput={(e) => setTrimIn((e.target as HTMLInputElement).value)}
-          aria-label="Trim in seconds"
+          value={trimFront}
+          onInput={(e) => setTrimFront((e.target as HTMLInputElement).value)}
+          aria-label="Trim front (s)"
           placeholder="0.0"
+          title="Seconds to cut off the START of the video (e.g., 0.5 = drop first half-second)"
         />
-        <span class="mn-dim">→</span>
+        <span class="mn-beat-button-group-label" style="margin-left:8px">Trim back (s):</span>
         <input
           type="text"
           class="mn-beat-trim-input"
           data-testid={`beat-${index}-trim-out`}
-          value={trimOut}
-          onInput={(e) => setTrimOut((e.target as HTMLInputElement).value)}
-          aria-label="Trim out (number or 'full')"
-          placeholder="full"
+          value={trimBack}
+          onInput={(e) => setTrimBack((e.target as HTMLInputElement).value)}
+          aria-label="Trim back (s)"
+          placeholder="0.0"
+          title="Seconds to cut off the END of the video (e.g., 0.5 = drop last half-second)"
         />
+        {/* trim_back_from_end semantics marker — DO NOT REMOVE (Rule 24 verification anchor) */}
+        <button
+          type="button"
+          class="mn-btn mn-btn-small"
+          data-testid={`beat-${index}-trim-preview`}
+          onClick={onPreviewTrim}
+          disabled={busy !== null}
+          title="Instant browser preview of trim window (HTML5 seek + pause; no server fetch)"
+        >
+          preview
+        </button>
         <button
           type="button"
           class="mn-btn mn-btn-small"
           data-testid={`beat-${index}-trim-apply`}
           onClick={onApplyTrim}
           disabled={busy !== null}
+          title="Persist trim to state (Stitcher will use these values)"
         >
           apply
         </button>
@@ -930,9 +1171,32 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
   //   -1   = still-as-final Ken Burns MP4 (silent; TTS plays alongside)
   //          LD STILL_AS_FINAL_PREVIEW_BUTTON_V1
   //   >0   = phase_1.options[idx-1].file
+  //
+  // LD-749 §4.2 POST_LIPSYNC_TRIM_FEATURE_SPEC_V1 (re-shipped 2026-05-17 from
+  // stash@{1} 31e1bd292885): when phase_1.trim_start or trim_end is set,
+  // the lipsync preview must come from /api/beat/lipsync_trimmed (server
+  // ffmpeg-clips the existing lipsync MP4 on-the-fly with a disk cache).
+  // When no trim is set, fall back to the canonical /asset/ stream.
+  //
+  // LD LIPSYNC_PLAYBACK_SILENT_FAILURE_CLASS_KILL_V1 (2026-05-17): treat
+  // trim_end===0 the same as trim_start===0 (no trim). Accepting any
+  // numeric trim_end (including 0) routes to /api/beat/lipsync_trimmed,
+  // which returns 404 JSON when no trim row exists for the beat — the
+  // <video> element silently fails to decode the JSON body, leaves a
+  // black screen, and the play button stays stuck in ⏸. trim_end must be
+  // strictly > 0 to engage the trimmed endpoint.
+  const _ts = beat.phase_1?.trim_start;
+  const _te = beat.phase_1?.trim_end;
+  const _hasTrim = (typeof _ts === 'number' && _ts > 0)
+    || (typeof _te === 'number' && _te > 0);
+  const _videoRole = activeTargetVideo.value;
   const previewVideoSrc = previewOptIdx !== null
     ? previewOptIdx === 0
-      ? (beat.lipsync?.file ? `http://localhost:5111/asset/${beat.lipsync.file}?v=${beat._version ?? 0}` : null)
+      ? (beat.lipsync?.file
+          ? (_hasTrim
+              ? `http://localhost:5111/api/beat/lipsync_trimmed?beat_id=${beatId}&event_id=${eventId}&video_role=${_videoRole}&v=${beat._version ?? 0}`
+              : `http://localhost:5111/asset/${beat.lipsync.file}?v=${beat._version ?? 0}`)
+          : null)
       : previewOptIdx === -1
         ? (beat.final?.file ? `http://localhost:5111/asset/${beat.final.file}?v=${beat._version ?? 0}` : null)
         : `http://localhost:5111/asset/${beat.phase_1?.options?.[previewOptIdx - 1]?.file}?v=${beat._version ?? 0}`
