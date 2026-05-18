@@ -1573,18 +1573,17 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
       return;
     }
     // src is about to change (previewVideoSrc derives from previewOptIdx).
-    // Per LD-769: await any in-flight play() BEFORE setState, otherwise the
-    // React-driven src swap aborts the pending play and rejects with
-    // AbortError. safePause does exactly this — awaits playPromiseRef, pauses.
-    safePause(vid)
-      .catch(() => {})
-      .then(() => {
-        if (!isLipsyncPreview) return safePause(aud).catch(() => {});
-        return undefined;
-      })
-      .finally(() => {
-        setPreviewOptIdx(optIdx);
-      });
+    // Per LD-769: pause prior elements + start the safePause cleanup of any
+    // in-flight play() so the React-driven src swap doesn't race a pending
+    // play() (which would reject with AbortError). The setPreviewOptIdx call
+    // stays SYNCHRONOUS so the parent re-renders + useEffect re-fires inside
+    // the same tick — preserving the synchronous setTimeout schedule the
+    // delay_durability e2e tests assert against. safePause's await of
+    // playPromiseRef runs in the microtask queue; AbortError is suppressed
+    // downstream by handlePlayRejection.
+    safePause(vid).catch(() => {});
+    if (!isLipsyncPreview) safePause(aud).catch(() => {});
+    setPreviewOptIdx(optIdx);
   }, [previewOptIdx, beat.phase_1?.options, beat.lipsync?.file, beat.final?.file, beatId, safePlay, safePause, handlePlayRejection]);
 
   const handlePreviewEnded = useCallback(() => {
