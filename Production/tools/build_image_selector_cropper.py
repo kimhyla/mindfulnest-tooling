@@ -2033,6 +2033,14 @@ def build_image_selector_cropper(
     html = html.replace('{{GEMINI_API_KEY}}', gemini_key)
     html = html.replace('{{GENERATION_ENABLED}}', 'true' if generation_enabled and gemini_key else 'false')
     html = html.replace('{{GEN_DISPLAY}}', 'inline-block' if generation_enabled and gemini_key else 'none')
+    # SECURITY (CodeQL py/clear-text-storage-sensitive-data #96):
+    # Below, the user's Directus password is substituted into the generated
+    # HTML so the in-browser tool can authenticate directly. This is by
+    # design for the LOCAL dev workflow (cropper is a single-user authoring
+    # tool, not a shared deploy artifact). Defense layer: .gitignore blocks
+    # the canonical output filenames (image_selector_cropper*.html) so
+    # `git add` refuses them — accidental commit cannot leak the password.
+    # If you change the output filename, ALSO update .gitignore.
     html = html.replace('{{DIRECTUS_EMAIL}}', directus_email)
     html = html.replace('{{DIRECTUS_PASSWORD}}', directus_password)
     html = html.replace('{{DIRECTUS_BASE_URL}}', directus_base_url)
