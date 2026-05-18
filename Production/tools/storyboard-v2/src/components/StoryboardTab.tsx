@@ -74,6 +74,21 @@ interface BeatState {
     source_option?: number;
     file?: string;
     approved_at?: string;
+    // LD-761 + LD-777: Ken Burns still-as-final config persisted by server.
+    // duration_s is the user-controlled hold (default 5.0s server-side,
+    // range 0.5–60). image_path + cache_key written by
+    // production_server.py:12856 _handle_use_still_as_final.
+    image_path?: string;
+    cache_key?: string;
+    kenburns?: {
+      zoom_start?: number;
+      zoom_end?: number;
+      pan_x_start?: number;
+      pan_x_end?: number;
+      pan_y_start?: number;
+      pan_y_end?: number;
+      duration_s?: number;
+    };
   };
   // Trim/delay (LD-160). Optional — older beats may not carry these.
   trim_in?: number;
@@ -281,6 +296,28 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
         ?? '0.0',
     ),
   );
+
+  // LD STILL_AS_FINAL_HOLD_DURATION_CONTROL_V1 (LD-777, 2026-05-17):
+  // user-controlled hold duration for Ken Burns still-as-final renders.
+  // Default 5.0s (server-side default if body omits hold_duration_s).
+  // Hydrates from beat.final.kenburns.duration_s when a still_image final
+  // already exists; otherwise placeholder '5.0' is rendered. Empty input is
+  // legitimate (omits the field; server applies its own default).
+  //
+  // INVARIANTS (per CLAUDE.md Rule 36 §36.1):
+  //   - Input is CONTROLLED; effect updates state only when the persisted
+  //     nested value changes (not on every render).
+  //   - Re-hydrate fires after server PATCH so a re-render with the
+  //     updated final block syncs the input to the persisted value.
+  const [holdDuration, setHoldDuration] = useState<string>(
+    String(beat.final?.kenburns?.duration_s ?? ''),
+  );
+  useEffect(() => {
+    const persisted = beat.final?.kenburns?.duration_s;
+    if (persisted !== undefined && persisted !== null) {
+      setHoldDuration(String(persisted));
+    }
+  }, [beat.final?.kenburns?.duration_s]);
 
   // ----------------------------------------------------------------
   // Polling (animate + lipsync)
@@ -492,6 +529,32 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
   // Catches the origin Kim incident class (200 with empty body during
   // server-restart race).
   const onUseAsFinal = () => runMutation('Use as Final', 'beat_use_as_final', {}, 'file');
+  // LD-761 STILL_AS_FINAL_FEATURE_SPEC_V1: render a Ken Burns MP4 from the
+  // beat's image_override and mark it final (no Kling animation, no lipsync).
+  // Use for beats that are intentionally stills (e.g. ambient establishing
+  // shots, "leaves rustling softly, otherwise still" lines).
+  // LD-777 STILL_AS_FINAL_HOLD_DURATION_CONTROL_V1: forward user-set hold
+  // duration (parsed; empty/invalid → server default 5.0s). Mirrors trim-input
+  // pattern: value consumed only on click, no separate "Apply" button.
+  // LD-778 FALSE_POSITIVE_SUCCESS_TOAST_CLASS_KILL_V1: expectField='file' —
+  // the server returns the rendered MP4 path; absence proves the render
+  // didn't complete.
+  const onUseStillAsFinal = () => {
+    const body: Record<string, unknown> = {};
+    const trimmed = holdDuration.trim();
+    if (trimmed !== '') {
+      const parsed = Number(trimmed);
+      if (Number.isFinite(parsed)) {
+        body['hold_duration_s'] = parsed;
+      }
+    }
+    return runMutation('Still as Final', 'beat_use_still_as_final', body, 'file');
+  };
+  // LD-761: clear the final block (undo finalize). Files on disk untouched.
+  // Server returns {status:"noop"} when no final block existed; runMutation
+  // accepts that as success (no expectField — undo has no load-bearing
+  // response field).
+  const onUndoFinal = () => runMutation('Undo Final', 'beat_undo_final', {});
   const onApplyTrim = () => {
     const tIn = parseFloat(trimIn);
     const tOut = trimOut === 'full' ? null : parseFloat(trimOut);
@@ -699,10 +762,80 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
             {busy === 'Use as Final' ? <><Spinner size="sm" inline /> …</> : '✓ Use as Final'}
           </button>
         ) : null}
+        {/* LD-761 STILL_AS_FINAL_FEATURE_SPEC_V1: Ken Burns still-as-final.
+            LD-777 STILL_AS_FINAL_HOLD_DURATION_CONTROL_V1: inline "Hold (s)"
+            input controls clip duration (default 5.0s, range 0.5-60). Value
+            consumed on button click; mirrors trim-input pattern (no separate
+            Apply button). Audio delay control is a separate concern (Stitcher
+            adelay) already shipped.
+
+            Visibility: (a) beat is NOT finalized (initial path), OR (b) beat
+            IS finalized AS still_image (re-render path — user wants to change
+            Hold value and re-render without going through Undo Final first). */}
+        {(lifecycle !== 'final' || beat.final?.source === 'still_image') ? (
+          <>
+            <input
+              type="text"
+              class="mn-beat-trim-input"
+              data-testid={`beat-${index}-still-hold-input`}
+              value={holdDuration}
+              onInput={(e) => setHoldDuration((e.target as HTMLInputElement).value)}
+              aria-label="Hold seconds for Ken Burns still-as-final"
+              placeholder="5.0"
+              title="Hold (s): how long the Ken Burns clip should last. Default 5.0s. Range 0.5-60. Re-click '📷 Still as Final' to re-render with the new hold value."
+              style="width: 4em; margin-right: 4px"
+            />
+            <span class="mn-beat-button-group-label" style="margin-right:6px">Hold (s)</span>
+            <button
+              type="button"
+              class="mn-btn mn-btn-small"
+              data-testid={`beat-${index}-still-as-final`}
+              onClick={onUseStillAsFinal}
+              disabled={busy !== null}
+              title={beat.final?.source === 'still_image'
+                ? 'Re-render Ken Burns MP4 with the current Hold (s) value. Replaces existing still_image final.'
+                : 'Render Ken Burns MP4 from the beat\'s still image and mark final (no animation). Hold duration from the input.'}
+            >
+              {busy === 'Still as Final' ? <><Spinner size="sm" inline /> …</> : (beat.final?.source === 'still_image' ? '📷 Re-render Still' : '📷 Still as Final')}
+            </button>
+          </>
+        ) : null}
         {lifecycle === 'final' ? (
           <span class="mn-dim" data-testid={`beat-${index}-final-marker`}>
             ✓ final ({beat.final?.source ?? '?'})
           </span>
+        ) : null}
+        {/* LD-761: undo final shown whenever a final block exists. Clears
+            beat.final; files on disk untouched (archival is separate). */}
+        {lifecycle === 'final' ? (
+          <button
+            type="button"
+            class="mn-btn mn-btn-small"
+            data-testid={`beat-${index}-undo-final`}
+            onClick={onUndoFinal}
+            disabled={busy !== null}
+            title="Clear the final block (files on disk untouched)"
+          >
+            {busy === 'Undo Final' ? <><Spinner size="sm" inline /> …</> : '↶ Undo Final'}
+          </button>
+        ) : null}
+        {/* LD STILL_AS_FINAL_PREVIEW_BUTTON_V1: play the rendered Ken Burns MP4
+            (silent video) + TTS audio in the persistent <video> element.
+            Sentinel previewOptIdx === -1 routes to beat.final.file via the
+            previewVideoSrc derivation. Audio path matches option preview
+            (TTS player respected, audio_delay honored).
+            Visible ONLY when final.source === 'still_image'. */}
+        {lifecycle === 'final' && beat.final?.source === 'still_image' && beat.final?.file ? (
+          <button
+            type="button"
+            class="mn-btn mn-btn-small"
+            data-testid={`beat-${index}-still-final-preview`}
+            onClick={() => onPreviewOption(-1)}
+            disabled={busy !== null}
+            title="Preview the rendered Ken Burns still-as-final MP4 (browser playback, no server re-render)"
+          >
+            {previewOptIdx === -1 ? '⏸ Preview Still' : '▶ Preview Still'}
+          </button>
         ) : null}
       </span>
 
@@ -791,11 +924,18 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
+  // Preview source resolution. Sentinel mapping:
+  //   null = no preview active
+  //   0    = lipsync result (ByteDance audio baked in, no separate TTS player)
+  //   -1   = still-as-final Ken Burns MP4 (silent; TTS plays alongside)
+  //          LD STILL_AS_FINAL_PREVIEW_BUTTON_V1
+  //   >0   = phase_1.options[idx-1].file
   const previewVideoSrc = previewOptIdx !== null
     ? previewOptIdx === 0
-      // sentinel 0 = preview lipsync result (ByteDance audio baked in, no separate TTS player)
       ? (beat.lipsync?.file ? `http://localhost:5111/asset/${beat.lipsync.file}?v=${beat._version ?? 0}` : null)
-      : `http://localhost:5111/asset/${beat.phase_1?.options?.[previewOptIdx - 1]?.file}?v=${beat._version ?? 0}`
+      : previewOptIdx === -1
+        ? (beat.final?.file ? `http://localhost:5111/asset/${beat.final.file}?v=${beat._version ?? 0}` : null)
+        : `http://localhost:5111/asset/${beat.phase_1?.options?.[previewOptIdx - 1]?.file}?v=${beat._version ?? 0}`
     : null;
 
   const previewAudioSrc = `http://localhost:5111/api/beat/audio/${beatId}?event_id=${eventId}`;
@@ -858,9 +998,16 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
   }, []);
 
   const handlePreviewOption = useCallback((optIdx: number) => {
-    // Sentinel 0 = preview lipsync result. ByteDance audio is baked in — never touch the TTS audio player.
+    // Sentinel 0  = preview lipsync result. ByteDance audio baked in — never touch TTS player.
+    // Sentinel -1 = preview still-as-final (Ken Burns MP4, silent video). TTS audio plays
+    //               alongside, same as an option preview. LD STILL_AS_FINAL_PREVIEW_BUTTON_V1.
     const isLipsyncPreview = optIdx === 0;
-    const file = isLipsyncPreview ? beat.lipsync?.file : beat.phase_1?.options?.[optIdx - 1]?.file;
+    const isStillFinalPreview = optIdx === -1;
+    const file = isLipsyncPreview
+      ? beat.lipsync?.file
+      : (isStillFinalPreview
+          ? beat.final?.file
+          : beat.phase_1?.options?.[optIdx - 1]?.file);
     if (!file) return;
     const vid = videoRef.current;
     const aud = audioRef.current;
@@ -878,7 +1025,7 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
     vid?.pause();
     if (!isLipsyncPreview) aud?.pause();
     setPreviewOptIdx(optIdx);
-  }, [previewOptIdx, beat.phase_1?.options, beat.lipsync?.file]);
+  }, [previewOptIdx, beat.phase_1?.options, beat.lipsync?.file, beat.final?.file]);
 
   const handlePreviewEnded = useCallback(() => {
     audioRef.current?.pause();

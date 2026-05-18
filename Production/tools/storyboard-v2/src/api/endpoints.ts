@@ -127,6 +127,16 @@ export const MUTATION_ENDPOINTS = {
   beat_swap_to_a: `${SERVER_BASE}/api/beat/swap_to_a`,
   lipsync: `${SERVER_BASE}/api/lipsync`,
   beat_use_as_final: `${SERVER_BASE}/api/beat/use_as_final`,
+  // LD-761 STILL_AS_FINAL_FEATURE_SPEC_V1: Ken Burns rendered MP4 as final source.
+  // Server: production_server.py:12682 _handle_use_still_as_final. Body:
+  //   {beat, scope_event_id, scope_video_role, hold_duration_s?} → returns
+  // 200 {file, kenburns:{...}, cache_key, ...}. UI gates on 'file' (LD-778).
+  beat_use_still_as_final: `${SERVER_BASE}/api/beat/use_still_as_final`,
+  // LD-761: clear the final block; files on disk untouched. Server:
+  // production_server.py:12918 _handle_undo_final. Returns 200 with
+  // {status: "noop"} when no final block existed (legitimate no-op,
+  // not an error — runMutation handles this without expectField).
+  beat_undo_final: `${SERVER_BASE}/api/beat/undo_final`,
   beat_delay: `${SERVER_BASE}/api/beat/delay`,
   beat_trim: `${SERVER_BASE}/api/beat/trim`,
   // LD-746 KIM_DONE_CHECKBOX_RESHIPPED_V1 — per-beat "Kim verified" toggle.
