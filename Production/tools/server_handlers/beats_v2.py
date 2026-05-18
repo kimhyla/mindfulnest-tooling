@@ -54,7 +54,7 @@ def handle_v2_patch(h, path: str, body: dict) -> None:
         return h._send_error_v59(
             e.http_status,
             error_code=e.code.upper(),
-            error_message=e.code.replace("_", " "),
+            error_message=e.code,
             retry_safe=False,
             extra=e.detail or None,
         )
@@ -210,7 +210,7 @@ def handle_v2_beat_create(h, body: dict) -> None:
         return h._send_error_v59(
             e.http_status,
             error_code=e.code.upper(),
-            error_message=e.code.replace("_", " "),
+            error_message=e.code,
             retry_safe=False,
             extra=e.detail or None,
         )
@@ -379,7 +379,7 @@ def handle_v2_beat_delete(h, body: dict) -> None:
         return h._send_error_v59(
             e.http_status,
             error_code=e.code.upper(),
-            error_message=e.code.replace("_", " "),
+            error_message=e.code,
             retry_safe=False,
             extra=e.detail or None,
         )
@@ -719,7 +719,7 @@ def handle_v2_beat_swap_to_a(h, beat_id: str, body: dict) -> None:
         return h._send_error_v59(
             e.http_status,
             error_code=e.code.upper(),
-            error_message=e.code.replace("_", " "),
+            error_message=e.code,
             retry_safe=False,
             extra=e.detail or None,
         )

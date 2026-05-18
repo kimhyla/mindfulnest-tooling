@@ -514,7 +514,7 @@ def handle_beat_update_text(h, body: dict)-> None:
         return h._send_error_v59(
             e.http_status,
             error_code=e.code.upper(),
-            error_message=e.code.replace("_", " "),
+            error_message=e.code,
             retry_safe=False,
             extra=e.detail or None,
         )
@@ -786,7 +786,7 @@ def handle_beat_update_speaker(h, body: dict)-> None:
         return h._send_error_v59(
             e.http_status,
             error_code=e.code.upper(),
-            error_message=e.code.replace("_", " "),
+            error_message=e.code,
             retry_safe=False,
             extra=e.detail or None,
         )

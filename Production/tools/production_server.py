@@ -8819,7 +8819,7 @@ body {{padding-top:44px!important;}}
             return self._send_error_v59(
                 e.http_status,
                 error_code=e.code.upper(),
-                error_message=e.code.replace("_", " "),
+                error_message=e.code,
                 retry_safe=False,
                 extra=e.detail or None,
             )
