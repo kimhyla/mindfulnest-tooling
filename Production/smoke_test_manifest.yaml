@@ -40,18 +40,34 @@ entries:
   # Production/docs/morph_fix_a_v2_evidence_20260518/manifest_grep_audit.log]
   # ===========================================================================
   # Still-as-final + hold-duration (LD-761/763/777)
+  # [CONFIRMED against event_smoke_test.sh:201 — `grep -cF` is fixed-string
+  # SUBSTRING match. Bare manifest symbol 'undo-final' matches the rendered
+  # `data-testid="beat-${index}-undo-final"` because the substring
+  # 'undo-final' is contained within. Local grep -c 'undo-final' against
+  # StoryboardTab.tsx returns 1 (the template-literal source line).
+  # This is the same substring contract that makes 'still-as-final',
+  # 'still-hold-input', etc. work.]
   - { ld: LD-777, symbol: 'still-hold-input', kind: testid }
   - { ld: LD-761, symbol: 'still-as-final', kind: testid }
   - { ld: LD-761, symbol: 'still-final-preview', kind: testid }
   - { ld: LD-761, symbol: 'undo-final', kind: testid }
 
   # Post-lipsync trim feature suite (LD-749/754/755/756/757)
+  # [CONFIRMED — same substring-match contract: bare 'trim-preview' matches
+  # the rendered `data-testid="beat-${index}-trim-preview"`. Local
+  # grep -c 'trim-preview' StoryboardTab.tsx returns 3.]
   - { ld: LD-756, symbol: 'trim-in', kind: testid }
   - { ld: LD-756, symbol: 'trim-out', kind: testid }
   - { ld: LD-755, symbol: 'trim-preview', kind: testid }
   - { ld: LD-755, symbol: 'trim-apply', kind: testid }
 
   # Silent-failure-class kills (LD-769/775/778) — function names in source TSX
+  # [CONFIRMED against event_smoke_test.sh:63 — when `target: source`, the
+  # harness sets `SOURCE=...StoryboardTab.tsx`. expectField is imported into
+  # StoryboardTab.tsx from client.ts (2 references in StoryboardTab.tsx: the
+  # `import` statement + the call inside runMutation). Local grep -c
+  # 'expectField' StoryboardTab.tsx returns 2. Harness target is the file
+  # path, not a glob, so the import statement satisfies the entry.]
   - { ld: LD-769, symbol: 'safePlay', kind: fn, target: source }
   - { ld: LD-775, symbol: 'awaitPriorPlayWithTimeout', kind: fn, target: source }
   - { ld: LD-778, symbol: 'runMutation', kind: fn, target: source }

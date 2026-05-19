@@ -262,16 +262,21 @@ test.describe('S1 — beat lifecycle state machine', () => {
     const useAsFinalReqs: { url: string; body: unknown }[] = [];
     await page.route('**/api/beat/use_as_final', async (route) => {
       const req = route.request();
-      useAsFinalReqs.push({ url: req.url(), body: req.postDataJSON() });
-      // LD-778 expectField gate compliance — see retroactive_s3:142 comment.
+      const reqBody = req.postDataJSON() as { beat_id?: string; beat?: string } | null;
+      useAsFinalReqs.push({ url: req.url(), body: reqBody });
+      // LD-778 expectField gate compliance — echo back the request's beat_id
+      // so the gate sees a `beat: string` matching what the client sent (not
+      // a hardcoded literal that could silently mask a mismatch). See
+      // retroactive_s3:142 comment for the broader rationale.
+      const echoedBeat = reqBody?.beat_id || reqBody?.beat || 'beat_lc_01';
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
           status: 'ok',
-          beat: 'beat_01',
-          file: 'beat_01_opt0.mp4',
-          final: { source: 'raw_option', source_option: 0, file: 'beat_01_opt0.mp4' },
+          beat: echoedBeat,
+          file: `${echoedBeat}_opt0.mp4`,
+          final: { source: 'raw_option', source_option: 0, file: `${echoedBeat}_opt0.mp4` },
         }),
       });
     });

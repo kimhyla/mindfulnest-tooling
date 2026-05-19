@@ -477,8 +477,13 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
   };
   const onSwapToA = (fromSlot: number) =>
     runMutation('Move to A', 'beat_swap_to_a', { from_slot: fromSlot });
-  // LD-778 4-gate body validation. Specs reflect ACTUAL handler response shapes
-  // (verified by reading the server source, not the spec ideal):
+  // LD-778 4-gate body validation. Specs reflect ACTUAL handler response shapes.
+  // [CONFIRMED against production_server.py _handle_use_as_final (`return
+  // self._send_json(200, {"status": "ok", "beat": beat_id, "file": opt_file,
+  // "final": final_block})`), vendor_jobs.handle_lipsync_submit (`_send_json(200,
+  // {"status": "submitted", "beat": beat_key, "clip": clip_file, ...})`), and
+  // beats_legacy.handle_beat_undo_final (`_send_json(200, {"ok": True, "beat":
+  // beat_id})`) — each spec below mirrors its handler's exact return shape.]
   //   - /api/lipsync (vendor_jobs.handle_lipsync_submit) returns
   //     {"status": "submitted", "beat": ..., "clip": ..., "audio": ...,
   //      "audio_processing": ..., "video_trimmed_to_s": ..., "trim_start": ...,
