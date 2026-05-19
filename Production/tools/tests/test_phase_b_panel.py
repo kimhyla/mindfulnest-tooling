@@ -124,7 +124,11 @@ def _find_free_port() -> int:
 def _start_server(event_dir: Path, storyboard: Path, event_id: str, port: int):
     state_mgr = PS.StateManager(event_dir, event_id)
     # Fake wavespeed client — LipSyncClient.submit_and_wait is patched per-test.
+    # P5 (2026-05-19): LipSyncClient ctor now reads .api_key; add the attribute
+    # so handle_phase_b_lipsync (phases.py:1189) doesn't AttributeError.
     class _FakeClient:
+        api_key = "fake_key_for_test"
+
         def submit_and_wait(self, video_path, audio_path, dest):
             # Used only when patched; unreachable default.
             dest.write_bytes(b"\x00lipsync_fake\x00")
@@ -473,15 +477,6 @@ class TestPhaseEndpoints(unittest.TestCase):
                          "meditation_fireplace_v1")
 
     # 11. lipsync accepts base_clip_id (ByteDance mocked)
-    @unittest.skip(
-        "P5 deferral 2026-05-19: test requires deep mock of LipSyncClient + "
-        "ByteDance submit_and_wait pipeline. After fixing the duration-check "
-        "fixture (Kim 2026-05-19: animation > audio for lipsync correctness), "
-        "the test hits AttributeError on _FakeClient.api_key. Test mock surface "
-        "needs reconciliation with current LipSyncClient constructor signature. "
-        "Phase B lipsync isn't on Kim's critical path today. Tracking: "
-        "/tmp/v59_feature_parity_audit_20260519.md."
-    )
     def test_lipsync_accepts_base_clip_id(self):
         # Seed voice stem.
         vs = self.event_dir / "phase_b_voice_stem_test.mp3"
@@ -503,13 +498,15 @@ class TestPhaseEndpoints(unittest.TestCase):
                 stdout = b""
             cmd_str = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
             if "show_entries" in cmd_str:
-                # Base-clip probes target paths containing 'lipsync_bases' or 'base_v1';
-                # voice-stem probes target paths containing 'voice_stem'.
+                # P5 (2026-05-19): audio MUST be ≤10s (LD LIPSYNC_MAX_DURATION_10S
+                # CLAUDE.md §8.5 — ByteDance training window cap) AND base_clip
+                # MUST be longer than audio (Kim 2026-05-19 padding rule). Use
+                # 4s audio, 8s base clip.
                 last_arg = cmd[-1] if isinstance(cmd, list) else ""
                 if isinstance(last_arg, str) and ("lipsync_base" in last_arg or "_base_v1" in last_arg or last_arg.endswith(".mp4")):
-                    _R.stdout = b"25.000\n"
+                    _R.stdout = b"8.000\n"
                 else:
-                    _R.stdout = b"20.000\n"
+                    _R.stdout = b"4.000\n"
             else:
                 out = Path(cmd[-1])
                 out.parent.mkdir(parents=True, exist_ok=True)
@@ -529,9 +526,10 @@ class TestPhaseEndpoints(unittest.TestCase):
         # for BOTH the voice stem and the base clip — side_effect makes
         # the first call (voice stem audio) return 20.0 and the second
         # (base clip) return 25.0.
-        _ffp_durations = [20.0, 25.0, 25.0, 25.0]  # voice, base, base, base
+        # P5 (2026-05-19): updated to LD-400 §8.5 limits — voice 4s, base 8s.
+        _ffp_durations = [4.0, 8.0, 8.0, 8.0]  # voice, base, base, base
         with mock.patch.object(PS.subprocess, "run", side_effect=dispatch), \
-             mock.patch("production_server._ffprobe_duration", side_effect=lambda *a, **kw: _ffp_durations.pop(0) if _ffp_durations else 25.0), \
+             mock.patch("production_server._ffprobe_duration", side_effect=lambda *a, **kw: _ffp_durations.pop(0) if _ffp_durations else 8.0), \
              mock.patch("production_server._silcomp_audio",
                         return_value=(vs, {"applied": False,
                                            "source_duration_s": 4.0,
@@ -539,8 +537,14 @@ class TestPhaseEndpoints(unittest.TestCase):
                                            "silences_compressed": 0})), \
              mock.patch("production_server._trim_video_to_audio",
                         return_value=(Path("/tmp/fake_trim.mp4"), 4.4, 0.0, 4.4)), \
-             mock.patch.object(type(self.app.client), "submit_and_wait",
-                               fake_submit_and_wait, create=True):
+             mock.patch("server_handlers.phases.LipSyncClient",
+                        create=True,
+                        new=lambda *_a, **_kw: type("LSC", (), {
+                            "submit_and_wait": lambda self_, v, a, d: (
+                                d.write_bytes(b"\x00bd_out\x00"),
+                                {"ok": True, "job_id": "fake", "cost": 0.15},
+                            )[1],
+                        })()):
             status, resp, _ = _http_post(
                 self.port, "/api/phase_b/lipsync",
                 {"phase": "b", "base_clip_id": "cedric_base_v1"},

@@ -382,22 +382,25 @@ class TestModulePatchEndpoint(unittest.TestCase):
                                      {"field": "fade_between_beats_ms", "value": 5000})
         self.assertEqual(status, 400, resp)
 
-    @unittest.skip(
-        "P5 deferral 2026-05-19 per Kim: legacy /api/preview_stitched reads "
-        "snapshot.beats (top-level v2) but fixture now writes v3 partition shape "
-        "(videos.intro.beats). Server-side update needed to walk v3 partitions "
-        "in the legacy endpoint, OR test should target the v3-aware "
-        "/api/v2/preview_stitched_role replacement. Preview Stitched is not on "
-        "Kim's critical path today ('didn't get to this stage'). Tracking: feature "
-        "parity audit /tmp/v59_feature_parity_audit_20260519.md."
-    )
     def test_missing_selected_file_returns_400(self):
-        """6. P07 fail-loud: missing selected file => 400 with hint + missing list."""
+        """6. P07 fail-loud: missing selected file => 400 with hint + missing list.
+
+        P5 (2026-05-19): legacy /api/preview_stitched reads snapshot.beats
+        top-level. Fixture now writes v3 partition shape — flatten the
+        snapshot back to a beats-at-top-level shape for the legacy endpoint.
+        Server-side v3 walk for the legacy endpoint is tracked separately.
+        """
         # Snapshot points at clip_a.mp4 / clip_b.mp4 which do not exist on disk.
         snapshot = self.app.state.read_state()
+        # P5: flatten v3 partition → top-level beats + display_order for the
+        # legacy /api/preview_stitched endpoint (server reads both at top level).
+        legacy_snapshot = dict(snapshot)
+        _intro = (snapshot.get("videos") or {}).get("intro", {})
+        legacy_snapshot["beats"] = _intro.get("beats", {})
+        legacy_snapshot["display_order"] = _intro.get("display_order", [])
         status, resp, _ = _http_post(
             self.port, "/api/preview_stitched",
-            {"state_snapshot": snapshot, "fade_between_beats_ms": 200},
+            {"state_snapshot": legacy_snapshot, "fade_between_beats_ms": 200},
         )
         self.assertEqual(status, 400, resp)
         self.assertIn("missing", resp, resp)
