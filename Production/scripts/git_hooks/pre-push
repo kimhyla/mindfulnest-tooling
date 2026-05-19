@@ -74,4 +74,16 @@ else
     echo "    SKIPPED (MN_SKIP_DATA_PATH_LINT=1)."
 fi
 
+echo "==> pre-push: endpoint catalog contract lint"
+if [ -z "$MN_SKIP_ENDPOINT_LINT" ]; then
+    if ! python3 Production/scripts/lint_endpoint_catalog.py; then
+        echo ""
+        echo "ERROR: endpoints.ts catalog drifted from server routes (audit C3-3 class)."
+        echo "Emergency bypass: MN_SKIP_ENDPOINT_LINT=1 git push --no-verify"
+        exit 1
+    fi
+else
+    echo "    SKIPPED (MN_SKIP_ENDPOINT_LINT=1)."
+fi
+
 echo "==> pre-push: all guards passed; proceeding with push."

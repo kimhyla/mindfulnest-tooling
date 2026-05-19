@@ -18,7 +18,9 @@ export const READ_ENDPOINTS = {
   bg_state: `${SERVER_BASE}/api/bg/session-state`,
   bg_session_state: `${SERVER_BASE}/api/bg/session-state`,
   bg_segments: `${SERVER_BASE}/api/bg/segments`,
-  patch_health: `${SERVER_BASE}/api/patch_health`,
+  // patch_health removed from READ_ENDPOINTS 2026-05-19 (P4): server route
+  // is POST-only (CLAUDE.md Rule 36 §36.3 healthcheck violation reporter).
+  // Moved to MUTATION_ENDPOINTS below. Audit C4-9.
   // S3 v3.1
   event_list: `${SERVER_BASE}/api/event/list`,
   phase_watercolor_list: `${SERVER_BASE}/api/phase/watercolor_list`,
@@ -68,7 +70,11 @@ export const MUTATION_ENDPOINTS = {
   inject_image: `${SERVER_BASE}/api/inject-image`,
   cr_save_crop: `${SERVER_BASE}/api/cr/save-crop`,
   cr_library_delete: `${SERVER_BASE}/api/cr/library/delete`,
-  v2_sidecar_write: `${SERVER_BASE}/api/v2/sidecar`,
+  // v2_sidecar_write removed 2026-05-19 (P4): declared with no server
+  // handler, zero callers in the v2 client — latent landmine (audit C3-3).
+  // patch_health moved here from READ_ENDPOINTS 2026-05-19 (P4): POST-only
+  // per CLAUDE.md Rule 36 §36.3 client healthcheck-violation reporter.
+  patch_health: `${SERVER_BASE}/api/patch_health`,
   // Session 1.5 NEW endpoint — state snapshot before every v59 write (M1)
   state_snapshot: `${SERVER_BASE}/api/state/snapshot`,
   // Session 1.5 v3.1 NEW endpoint — atomic event swap + generation bump (LD-458)
