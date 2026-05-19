@@ -1638,6 +1638,18 @@
   height: 24px;
   vertical-align: middle;
 }
+.mn-beat-composite-preview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+.mn-beat-composite-preview-video {
+  max-width: 160px;
+  max-height: 90px;
+  vertical-align: middle;
+}
 
 /* ---------------------------------------------------------------- */
 /* S5.5e Phase B — ProjectSelector header zone                     */

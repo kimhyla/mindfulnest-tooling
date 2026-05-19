@@ -28,6 +28,7 @@ import { Spinner } from './ui/Spinner';
 import { pushToast } from './ui/Toast';
 import { Modal } from './ui/Modal';
 import { BeatAudioPreview } from './BeatAudioPreview';
+import { BeatCompositePreview } from './BeatCompositePreview';
 import { SuggestParentheticalDropdown } from './SuggestParentheticalDropdown';
 
 interface BeatState {
@@ -257,6 +258,7 @@ const POLL_LIPSYNC_MS = 10000;
 interface BeatButtonRowProps {
   index: number;
   beatId: string;
+  eventId: string;
   beat: BeatState;
   /** Bumps when beat fields change (parent's refreshTick). Used as cacheBust for audio preview. */
   cacheBust?: string;
@@ -268,7 +270,7 @@ interface BeatButtonRowProps {
   onEnsureLipsyncMounted: () => void;
 }
 
-function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptIdx, onPreviewOption, onEnsureLipsyncMounted }: BeatButtonRowProps) {
+function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, previewOptIdx, onPreviewOption, onEnsureLipsyncMounted }: BeatButtonRowProps) {
   const lifecycle = deriveBeatLifecycle(beat);
   const [busy, setBusy] = useState<string | null>(null); // which button is in-flight
 
@@ -609,6 +611,13 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
 
   const optionCount = beat.phase_1?.options?.length ?? 0;
   const selectedOption = beat.phase_1?.selected_option ?? null;
+  // F-BEAT-PREVIEW-001: pre-lipsync composite preview only — never on lipsync outputs.
+  const showCompositePreview = (
+    ['animated', 'selected', 'lipsync_pending', 'final'].includes(lifecycle) &&
+    beat.phase_1?.selected_option != null &&
+    !beat.lipsync?.file &&
+    beat.final?.source !== 'lipsync'
+  );
 
   return (
     <div class="mn-beat-button-row" data-testid={`beat-button-row-${index}`} data-lifecycle={lifecycle}>
@@ -657,6 +666,15 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
             );
           })}
         </span>
+      ) : null}
+      {showCompositePreview ? (
+        <BeatCompositePreview
+          index={index}
+          beatId={beatId}
+          eventId={eventId}
+          beat={beat}
+          audioDelay={delaySec}
+        />
       ) : null}
       {showAddOptions ? (
         <span class="mn-beat-button-group" data-testid={`beat-${index}-regen-group`}>
@@ -1320,6 +1338,7 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
       <BeatButtonRow
         index={index}
         beatId={beatId}
+        eventId={eventId}
         beat={beat}
         {...(savedAt ? { cacheBust: savedAt } : {})}
         onMutated={onMutated}
