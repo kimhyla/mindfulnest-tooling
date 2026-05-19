@@ -1717,6 +1717,10 @@ class StitchEditorState:
         self._init_file()
 
     def _init_file(self) -> None:
+        # P1 LD-505 Phase C: state_path is now event_dir.parent/tools/...
+        # On a fresh event_dir (test fixture), the parent dir may not exist.
+        # Pre-create it so atomic_json_write doesn't FileNotFoundError.
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
         if not self.state_path.exists():
             self._atomic_write_json(self.state_path, {"version": 1, "jobs": {}})
         if not self.file_lock_path.exists():

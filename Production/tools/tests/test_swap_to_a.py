@@ -125,6 +125,15 @@ def _start_server(event_dir: Path, storyboard: Path, event_id: str, port: int):
 
 
 def _http_post(port: int, path: str, body: dict, timeout: float = 10.0):
+    # LD-461 SCOPE_BODY_HELPER_V1: v59 mutation endpoints require
+    # scope_event_id + scope_target_video in body. Tests pre-dating LD-461
+    # omitted them. Inject the fixture defaults unless the test explicitly
+    # sets them (P5.2 2026-05-19). Fixture uses legacy v2 state shape
+    # (state["beats"] top-level), so scope_target_video=legacy routes the
+    # mutation through the StateManager._mutate_lipsync legacy branch.
+    body = dict(body)
+    body.setdefault("scope_event_id", "Event_SWAPTEST")
+    body.setdefault("scope_target_video", "legacy")
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}{path}", data=data,

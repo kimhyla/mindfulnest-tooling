@@ -83,15 +83,25 @@ def _make_event_fixture(tmp_path: Path) -> tuple[Path, Path, str]:
         encoding="utf-8",
     )
     state_path = event_dir / "production_state.json"
+    # P5.2 (2026-05-19): migrated to v3 partition shape (videos.intro.beats)
+    # so LD-461 scope_target_video=intro routes correctly. Was legacy v2
+    # top-level state["beats"] which became invalid under LD-461.
+    _beats = {
+        "beat_01": {"text": "one", "phase_1": {}, "_version": 1},
+        "beat_02": {"text": "two", "phase_1": {}, "_version": 1},
+        # Non-standard beat_id that won't affect beat_NN numbering
+        "beat_99_test": {"text": "test fixture", "phase_1": {}, "_version": 1},
+    }
     state_path.write_text(json.dumps({
         "event_id": "Event_TIER3",
-        "beats": {
-            "beat_01": {"text": "one", "phase_1": {}, "_version": 1},
-            "beat_02": {"text": "two", "phase_1": {}, "_version": 1},
-            # Non-standard beat_id that won't affect beat_NN numbering
-            "beat_99_test": {"text": "test fixture", "phase_1": {}, "_version": 1},
+        "version": 3,
+        "videos": {
+            "intro": {
+                "beats": _beats,
+                "display_order": list(_beats.keys()),
+                "image_overrides": {},
+            },
         },
-        "image_overrides": {},
     }, indent=2))
     return event_dir, storyboard_path, "Event_TIER3"
 
@@ -106,7 +116,8 @@ def _start_server(event_dir: Path, storyboard_path: Path, event_id: str,
         state=state_mgr,
         client=None,
     )
-    assert state_mgr.read_state()["beats"]["beat_01"]["text"] == "one"
+    # P5.2: v3 partition shape
+    assert state_mgr.read_state()["videos"]["intro"]["beats"]["beat_01"]["text"] == "one"
     if not hasattr(app, "touch"):
         app.touch = lambda: None  # type: ignore[attr-defined]
     server = PS.ProductionServer(("127.0.0.1", port), app)
@@ -125,6 +136,12 @@ def _start_server(event_dir: Path, storyboard_path: Path, event_id: str,
 
 def _http_post(port: int, path: str, body: dict,
                timeout: float = 5.0) -> tuple[int, dict]:
+    # LD-461 SCOPE_BODY_HELPER_V1: v59 mutation endpoints require
+    # scope_event_id + scope_target_video. Tests pre-dated LD-461 (P5.2
+    # 2026-05-19). Inject defaults unless the test overrides.
+    body = dict(body)
+    body.setdefault("scope_event_id", "Event_TIER3")
+    body.setdefault("scope_target_video", "intro")
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}{path}",
