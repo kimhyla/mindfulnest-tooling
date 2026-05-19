@@ -85,13 +85,23 @@ def _make_event_fixture(tmp_path: Path) -> tuple[Path, Path, str]:
     # Seed production_state.json with the beats so update_text doesn't
     # need to extract from storyboard.
     state_path = event_dir / "production_state.json"
+    # P5 migration (2026-05-19): v3 partition shape so LD-461 video_role
+    # validator accepts scope_target_video=intro.
+    _beats = {
+        "beat_01": {"text": "original text beat 1", "phase_1": {}, "_version": 1},
+        "beat_02": {"text": "original text beat 2", "phase_1": {}, "_version": 1},
+        "beat_03": {"text": "original text beat 3", "phase_1": {}, "_version": 1},
+    }
     state_path.write_text(json.dumps({
-        "beats": {
-            "beat_01": {"text": "original text beat 1", "phase_1": {}, "_version": 1},
-            "beat_02": {"text": "original text beat 2", "phase_1": {}, "_version": 1},
-            "beat_03": {"text": "original text beat 3", "phase_1": {}, "_version": 1},
+        "event_id": "Event_TEST",
+        "version": 3,
+        "videos": {
+            "intro": {
+                "beats": _beats,
+                "display_order": list(_beats.keys()),
+                "image_overrides": {},
+            },
         },
-        "image_overrides": {},
     }, indent=2))
     return event_dir, storyboard_path, "Event_TEST"
 
@@ -161,7 +171,7 @@ def _start_server(event_dir: Path, storyboard_path: Path, event_id: str,
         client=None,
     )
     # AppContext init reads state; verify the seeded beat survived.
-    assert state_mgr.read_state()["beats"]["beat_01"]["text"] == "original text beat 1"
+    assert state_mgr.read_state()["videos"]["intro"]["beats"]["beat_01"]["text"] == "original text beat 1"
 
     # Extend AppContext with .touch() (ProductionHandler uses it on every req)
     if not hasattr(app, "touch"):
@@ -184,6 +194,10 @@ def _start_server(event_dir: Path, storyboard_path: Path, event_id: str,
 
 def _http_post(port: int, path: str, body: dict,
                timeout: float = 5.0) -> tuple[int, dict]:
+    # LD-461 SCOPE_BODY_HELPER_V1 (P5 2026-05-19): inject scope defaults.
+    body = dict(body)
+    body.setdefault("scope_event_id", "Event_TEST")
+    body.setdefault("scope_target_video", "intro")
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}{path}",

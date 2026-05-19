@@ -47,7 +47,18 @@ os.environ.pop("MINDFULNEST_WRITE_PATH", None)
 import production_server as PS  # noqa: E402
 import ffmpeg_stitch as FS  # noqa: E402
 
-PROJECT_ROOT = TOOLS.parent.parent
+# Test-isolation fix (2026-05-19): PROJECT_ROOT used to be TOOLS.parent.parent
+# (tooling repo root). storyboard_v38_prod.html lives ONLY in the Dropbox
+# runtime tree per LD-505 — the tooling-side path doesn't exist. Re-resolve
+# via lib.paths with env saved/restored so we get the real Dropbox path even
+# if test_assemble_module pollutes MN_DROPBOX_ROOT to a tmpdir at module import.
+_saved_mn_root = os.environ.pop("MN_DROPBOX_ROOT", None)
+try:
+    from Production.lib.paths import _resolve_dropbox_root as _rdr
+    PROJECT_ROOT = _rdr()
+finally:
+    if _saved_mn_root is not None:
+        os.environ["MN_DROPBOX_ROOT"] = _saved_mn_root
 
 
 # ---------------------------------------------------------------------------
@@ -80,11 +91,19 @@ def _make_event_fixture(tmp: Path) -> tuple[Path, Path, str]:
         '<body></body></html>\n', encoding="utf-8",
     )
     state = event_dir / "production_state.json"
+    # P5 migration (2026-05-19): legacy state["beats"] shape was invalid
+    # under LD-461 scope_video_role validator (which requires partition to
+    # exist in state.videos). Migrate to v3 partition shape with empty intro.
     state.write_text(json.dumps({
         "event_id": "Event_V3TEST",
-        "beats": {},
-        "display_order": [],
-        "image_overrides": {},
+        "version": 3,
+        "videos": {
+            "intro": {
+                "beats": {},
+                "display_order": [],
+                "image_overrides": {},
+            },
+        },
     }, indent=2))
     # Seed minimal libraries for the panel tests.
     _make_wc_library(proj / "Production" / "assets" / "watercolor_library")
@@ -129,6 +148,12 @@ def _start_server(event_dir: Path, storyboard: Path, event_id: str, port: int):
 
 
 def _http_post(port: int, path: str, body: dict, timeout: float = 15.0):
+    # LD-461 SCOPE_BODY_HELPER_V1 (P5 2026-05-19): v59 mutation endpoints
+    # require event_id + scope_video_role. Tests pre-date LD-461. Fixture's
+    # event_id is "Event_V3TEST"; phase B routes default to "intro" scope.
+    body = dict(body)
+    body.setdefault("event_id", "Event_V3TEST")
+    body.setdefault("scope_video_role", "intro")
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}{path}", data=data,
