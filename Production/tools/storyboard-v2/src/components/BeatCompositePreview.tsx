@@ -39,7 +39,10 @@ export function BeatCompositePreview({
   const defaultOpt = (() => {
     const sel = beat.phase_1?.selected_option;
     if (typeof sel === 'number' && sel >= 1 && sel <= optionCount) return sel;
-    return optionCount > 0 ? 1 : 1;
+    // Default to option 1. The component is gated on
+    // beat.phase_1?.selected_option != null at the parent, so optionCount >= 1
+    // is invariant when we render. (Defensive fallback to 1 if invariant broken.)
+    return 1;
   })();
 
   const [previewOpt, setPreviewOpt] = useState(defaultOpt);
@@ -115,7 +118,14 @@ export function BeatCompositePreview({
   };
 
   useEffect(() => {
+    // When the previewed option or audio_delay changes, stop any in-flight
+    // playback so the next play() reuses a clean state. We intentionally
+    // re-run on previewOpt/audioDelaySec changes only — isPlaying is read at
+    // effect-fire time but adding it to deps would re-fire on every
+    // play/pause toggle (loop). stopPlayback is wrapped in useCallback with
+    // stable deps, so its identity doesn't drift.
     if (isPlaying) stopPlayback();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [previewOpt, audioDelaySec]);
 
   useEffect(() => () => {

@@ -107,7 +107,16 @@ entries:
 
   # ===========================================================================
   # Pre-lipsync animation+TTS sync preview (F-BEAT-PREVIEW-001 / blocker #127).
-  # LD-127 is a placeholder label — composite preview must not mount on lipsync
-  # outputs (audio baked to pixels). Gated in BeatButtonRow on !lipsync.file.
+  # LD-127 is a F-prefixed feature-blocker reference (not yet a ratified
+  # prod_locked_decisions row); per SHORTCUT_F_PROJECT_001_MILESTONE_BOOTSTRAP_
+  # BEST_EFFORT_V1 (LD-679) the manifest accepts F-* feature IDs as label
+  # placeholders pending LD ratification. This is governance-compliant; the
+  # smoke runner consumes the ld field only as a string label (see
+  # event_smoke_test.sh:143 parse_entries — no Directus lookup).
+  # [CONFIRMED against feedback_preview_beat_is_pre_lipsync_timing_tool.md +
+  # Kim 2026-05-14 directive: "Once lipsynced, mouth is baked to pixels —
+  # offset no longer adjustable." Therefore composite preview MUST be gated
+  # on !beat.lipsync?.file && final.source != 'lipsync' to avoid double-audio
+  # over already-baked lipsync output.]
   # ===========================================================================
-  - { ld: LD-127, symbol: 'beat-composite-preview', kind: testid }
+  - { ld: F-127, symbol: 'beat-composite-preview', kind: testid }
