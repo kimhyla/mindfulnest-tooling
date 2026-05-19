@@ -45,11 +45,19 @@ from tools.production_server import (  # noqa: E402
 )
 
 # V59 Phase 4 path-depth correction: extracted modules are one level
-# deeper than production_server.py. These constants map original
-# `_PSERVER_TOOLS_DIR[.parent]*` targets correctly.
+# deeper than production_server.py. _PSERVER_TOOLS_DIR is for CODE-tree
+# lookups (sibling Python modules, sys.path inserts). NOT used for data
+# paths — those come from _data_root(h) per LD-505 Phase C (2026-05-19).
 _PSERVER_TOOLS_DIR = Path(__file__).resolve().parent.parent  # Production/tools/
-_PSERVER_PRODUCTION_DIR = _PSERVER_TOOLS_DIR.parent  # Production/
-_PSERVER_REPO_ROOT = _PSERVER_PRODUCTION_DIR.parent  # repo root
+
+
+def _data_root(h) -> Path:
+    """Runtime ``Production/`` root, anchored on the running server's event_dir.
+
+    Replaces the LD-505-broken `_PSERVER_PRODUCTION_DIR = Path(__file__)...`
+    which resolved to the (empty) tooling tree. Audit C1-1 / C1-2 / C1-7.
+    """
+    return Path(h.app.event_dir).parent
 
 
 # Project-internal modules imported the same way production_server.py does.
@@ -135,7 +143,7 @@ def handle_magic_resolve_bg(h)-> None:
                    retry_safe=False,
                    extra={"ok": False},
                )
-    reg_path = _PSERVER_PRODUCTION_DIR / "scene_registry.yaml"
+    reg_path = _data_root(h) / "scene_registry.yaml"
     if not reg_path.exists():
         return h._send_error_v59(
                    404,
@@ -318,7 +326,7 @@ def handle_magic_submit_path(h, body: dict)-> None:
             # ── Step 1: Write to scene_registry.yaml ──────────────
             _MAGIC_JOBS[job_id].update({"status": "writing_registry",
                                         "message": "Saving path to scene registry..."})
-            reg_path = _PSERVER_PRODUCTION_DIR / "scene_registry.yaml"
+            reg_path = _data_root(h) / "scene_registry.yaml"
             bak_path = reg_path.with_suffix(f".yaml.bak_magic_{int(time.time())}")
             shutil.copy2(reg_path, bak_path)
 
@@ -406,7 +414,10 @@ def handle_magic_submit_path(h, body: dict)-> None:
 
             # ── Step 3: Render preview still ──────────────────────
             _MAGIC_JOBS[job_id].update({"message": "Rendering preview still (final frame)..."})
-            sys.path.insert(0, str(_PSERVER_PRODUCTION_DIR))
+            # magic_compositor lives at Production/tools/magic_compositor.py
+            # (CODE tree). Use _PSERVER_TOOLS_DIR to be explicit about
+            # code-vs-data intent per LD-505 Phase C lint guard.
+            sys.path.insert(0, str(_PSERVER_TOOLS_DIR))
             from magic_compositor import MagicCompositor
             out_dir = db / "Production" / "Event_1" / "kling_clips"
             out_dir.mkdir(parents=True, exist_ok=True)
@@ -3221,7 +3232,7 @@ def handle_watercolor_animate(h, body: dict)-> None:
                    retry_safe=False,
                )
 
-    wc_dir = _PSERVER_PRODUCTION_DIR / "assets" / "watercolor_library"
+    wc_dir = _data_root(h) / "assets" / "watercolor_library"
     matches = list(wc_dir.glob(f"{watercolor_key}.*"))
     if not matches:
         return h._send_error_v59(

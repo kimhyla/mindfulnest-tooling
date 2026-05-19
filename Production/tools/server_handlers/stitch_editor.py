@@ -38,9 +38,9 @@ from pathlib import Path
 # V59 Phase 4 path-depth correction: extracted modules are one level
 # deeper than production_server.py. These constants map original
 # `_PSERVER_TOOLS_DIR[.parent]*` targets correctly.
+# LD-505 Phase C (2026-05-19): _PSERVER_TOOLS_DIR is for CODE-tree only
+# (sys.path inserts to import sibling Python modules). NOT for data paths.
 _PSERVER_TOOLS_DIR = Path(__file__).resolve().parent.parent  # Production/tools/
-_PSERVER_PRODUCTION_DIR = _PSERVER_TOOLS_DIR.parent  # Production/
-_PSERVER_REPO_ROOT = _PSERVER_PRODUCTION_DIR.parent  # repo root
 
 
 # Project-internal modules imported the same way production_server.py does.
@@ -656,7 +656,8 @@ def handle_stitch_bake(h, body: dict)-> None:
         # LD-421: register via registered_write.py two-write rule
         asset_id = -1
         try:
-            sys.path.insert(0, str(_PSERVER_PRODUCTION_DIR))
+            # registered_write lives in Production/tools/ (CODE tree)
+            sys.path.insert(0, str(_PSERVER_TOOLS_DIR))
             from registered_write import register_asset  # noqa: PLC0415
             slots = body.get("slots") or []
             iter_notes = (

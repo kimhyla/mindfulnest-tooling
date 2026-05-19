@@ -31,8 +31,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Paths
+# Paths (LD-505 Phase C — runtime-resolved via init_bg_paths(event_dir))
 # ---------------------------------------------------------------------------
+#
+# These module-level constants are populated at server startup by
+# init_bg_paths(event_dir). Before init runs (e.g. unit tests, module
+# import in isolation), they fall back to __file__-derived values which
+# work for tests using fixtures. The runtime server MUST call init_bg_paths
+# in run_server() before serving requests (see production_server.py:run_server).
+#
+# Pre-Phase-C bug: constants derived from __file__ pointed at the tooling
+# tree when CODE was in tooling and DATA was in Dropbox (LD-505), causing
+# 8 user-visible features to silently fail (audit C1-1..C1-13).
 
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROD_DIR = os.path.normpath(os.path.join(_TOOLS_DIR, ".."))
@@ -41,6 +51,71 @@ _SKELETON_BASE = os.path.join(_PROJECT_DIR, "Arc Skeletons")
 
 BG_SIDECAR_PATH = os.path.join(_PROD_DIR, "beat_generator_state.json")
 BG_STILLS_DIR = os.path.join(_PROD_DIR, "beat_generator_stills")
+
+
+def init_bg_paths(event_dir) -> None:
+    """Rebind every module-level path constant from the runtime event_dir.
+
+    Called by run_server() at startup. Replaces the original PR #73 manual
+    override of just BG_STILLS_DIR + BG_SIDECAR_PATH with a complete pass
+    over all 11 path constants + the two character-pose dicts (which were
+    baked at module-import time).
+
+    See Production/lib/paths.py for the canonical resolver and audit
+    finding C1-5..C1-9 for the bugs this closes.
+    """
+    global _TOOLS_DIR, _PROD_DIR, _PROJECT_DIR, _SKELETON_BASE
+    global BG_SIDECAR_PATH, BG_STILLS_DIR
+    global _PROD_CHARS, _CREATURE_REFS, _CREATURE_REFS_BY_EMOTION
+    global _CANON_BASE, _LOCAL_STILLS_DIR
+
+    # Import here (not at module top) so beat_generator.py can be imported
+    # standalone for tests without requiring lib/paths to be on sys.path.
+    import sys as _sys
+    _lib_parent = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+    if _lib_parent not in _sys.path:
+        _sys.path.insert(0, _lib_parent)
+    from Production.lib.paths import bg_paths as _bg_paths, character_pose_paths as _cpp
+
+    bp = _bg_paths(event_dir)
+    _PROD_DIR = str(bp.prod_root)
+    _PROJECT_DIR = str(bp.project_root)
+    _SKELETON_BASE = str(bp.skeleton_base)
+    BG_SIDECAR_PATH = str(bp.sidecar_path)
+    BG_STILLS_DIR = str(bp.stills_dir)
+    _PROD_CHARS = str(bp.project_root)  # poses live at <project_root>/Production/<Char>/poses/
+    _CANON_BASE = str(bp.canon_base)
+    _LOCAL_STILLS_DIR = Path(bp.local_stills_dir)
+
+    # Rebuild the two character-pose dicts that were baked at import time
+    # with the (now stale) tooling-anchored _PROD_CHARS. Keys + per-emotion
+    # structure preserved exactly per beat_generator.py:127-172.
+    _CREATURE_REFS = _cpp(event_dir)
+
+    # _CREATURE_REFS_BY_EMOTION: rebuild with same per-emotion logic as
+    # original literal (lines 141-172). All Tessa emotion paths reuse the
+    # base creature_ref or a poses/<expr>.png variant; Luna uses single
+    # master for every emotion.
+    tessa_poses = os.path.join(str(bp.prod_root), "Tessa", "poses")
+    luna_master = os.path.join(str(bp.prod_root), "Luna", "Luna v2 Master 4.png")
+    _CREATURE_REFS_BY_EMOTION = {
+        "Tessa": {
+            "default":          os.path.join(tessa_poses, "tessa_neutral.png"),
+            "neutral":          os.path.join(tessa_poses, "tessa_neutral.png"),
+            "happy_excited":    os.path.join(tessa_poses, "tessa_neutral.png"),  # smiling 3/4
+            "sad_disappointed": os.path.join(tessa_poses, "tessa_concerned.png"),
+            "concerned":        os.path.join(tessa_poses, "tessa_concerned.png"),
+            "upset_shocked":    os.path.join(tessa_poses, "tessa_shocked.png"),
+            "shocked":          os.path.join(tessa_poses, "tessa_shocked.png"),
+            "scared":           os.path.join(tessa_poses, "tessa_scared.png"),
+            "afraid":           os.path.join(tessa_poses, "tessa_scared.png"),
+        },
+        "Luna": {k: luna_master for k in (
+            "default", "neutral", "alert", "happy_excited", "explaining",
+            "teaching", "thinking", "curious", "peaceful", "calm",
+            "upset_shocked", "shocked", "surprised", "sad_disappointed",
+        )},
+    }
 
 # ---------------------------------------------------------------------------
 # Constants

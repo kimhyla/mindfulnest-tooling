@@ -36,11 +36,22 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 # V59 Phase 4 path-depth correction: extracted modules are one level
-# deeper than production_server.py. These constants map original
-# `_PSERVER_TOOLS_DIR[.parent]*` targets correctly.
+# deeper than production_server.py. _PSERVER_TOOLS_DIR is for CODE-tree
+# lookups (sibling Python modules + sys.path inserts). It is NOT used for
+# data paths — those come from the runtime event_dir via _data_root(h).
 _PSERVER_TOOLS_DIR = Path(__file__).resolve().parent.parent  # Production/tools/
-_PSERVER_PRODUCTION_DIR = _PSERVER_TOOLS_DIR.parent  # Production/
-_PSERVER_REPO_ROOT = _PSERVER_PRODUCTION_DIR.parent  # repo root
+
+
+def _data_root(h) -> Path:
+    """Runtime ``Production/`` root, anchored on the running server's event_dir.
+
+    LD-505 Phase C (2026-05-19): replaces the old module-level
+    `_PSERVER_PRODUCTION_DIR = Path(__file__).resolve().parent.parent.parent`
+    which pointed at the (empty) tooling-side Production/ when CODE was in
+    tooling and DATA was in Dropbox. See lib/paths.runtime_production_root.
+    Audit C1-2/C1-3/C1-4 (live-confirmed empty libraries).
+    """
+    return Path(h.app.event_dir).parent
 
 
 # Project-internal modules imported the same way production_server.py does.
@@ -81,7 +92,7 @@ def handle_phase_watercolor_list(h)-> None:
     Per LD PHASE_A_PRODUCER_V1 + PHASE_B_PRODUCER_V1 (replaces hardcoded
     JS array in v58).
     """
-    wc_dir = _PSERVER_PRODUCTION_DIR / "assets" / "watercolor_library"
+    wc_dir = _data_root(h) / "assets" / "watercolor_library"
     items: list[dict] = []
     if wc_dir.is_dir():
         for f in sorted(wc_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
@@ -128,7 +139,7 @@ def handle_phase_watercolor_file(h)-> None:
                        retry_safe=False,
                    )
         key = key_list[0]
-        wc_dir = _PSERVER_PRODUCTION_DIR / "assets" / "watercolor_library"
+        wc_dir = _data_root(h) / "assets" / "watercolor_library"
         # Find the file by stem.
         matches = list(wc_dir.glob(f"{key}.*"))
         if not matches:
@@ -164,7 +175,7 @@ def handle_phase_base_clips_list(h)-> None:
 
     Per LDs PHASE_A_PRODUCER_V1 + PHASE_B_PRODUCER_V1.
     """
-    bases_dir = _PSERVER_PRODUCTION_DIR / "assets" / "lipsync_bases"
+    bases_dir = _data_root(h) / "assets" / "lipsync_bases"
     items: list[dict] = []
     if bases_dir.is_dir():
         for f in sorted(bases_dir.iterdir(), key=lambda p: p.name):
@@ -217,7 +228,7 @@ def handle_phase_b_ambient_preset_list(h)-> None:
     a global ambient catalog, not phase-b-specific) but renaming is out of
     scope for this fix per the parent dispatch.
     """
-    ambient_dir = _PSERVER_PRODUCTION_DIR / "assets" / "sound_library" / "ambient"
+    ambient_dir = _data_root(h) / "assets" / "sound_library" / "ambient"
     items: list[dict] = []
     if ambient_dir.is_dir():
         for f in sorted(ambient_dir.iterdir(), key=lambda p: p.name):

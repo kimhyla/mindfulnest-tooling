@@ -605,10 +605,11 @@ def _bg_register_assembled_clip(group_id: str, clip_path: str, file_size_bytes: 
             "notes": f"Assembled group {group_id} -> {clip_path} ({file_size_bytes} bytes)",
         })
     except Exception as e:
-        # Queue for retry
+        # Queue for retry — use the env-aware resolver from lib/directus so
+        # this writer agrees with the replay reader (audit C1-10 split-brain).
         try:
-            queue_path = os.path.join(os.path.dirname(__file__), "..", "pending_directus_writes.json")
-            queue_path = os.path.normpath(queue_path)
+            from lib.directus import _PENDING_QUEUE_PATH as _Q
+            queue_path = str(_Q)
             q = []
             if os.path.exists(queue_path):
                 try:
@@ -5042,8 +5043,12 @@ class AppContext:
         self.client = client
         self.started_at = time.time()
         self.last_request_at = time.time()
-        # Universal stitch editor job store — global, not per-event (STITCH_EDITOR_UNIVERSAL_V1)
-        self.stitch_state = StitchEditorState(Path(__file__).parent / "stitch_editor_state.json")
+        # Universal stitch editor job store — global, not per-event (STITCH_EDITOR_UNIVERSAL_V1).
+        # LD-505 Phase C: anchor on the runtime Production/ root (event_dir.parent)
+        # so cross-machine sync works. Was: Path(__file__).parent → tooling-side
+        # Production/tools/, broken on home Mac vs work PC (audit C1-11).
+        from lib.paths import runtime_production_root as _rpr
+        self.stitch_state = StitchEditorState(_rpr(event_dir) / "tools" / "stitch_editor_state.json")
         self._beats_cache: list[dict] | None = None
         # Storyboard HTML write lock — serializes concurrent patches to the
         # same file (drag-drop image inject, contenteditable text saves).
@@ -11580,19 +11585,14 @@ def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_e
         print(f"ERROR: storyboard not found: {storyboard_path}", file=sys.stderr)
         return 2
 
-    # LD-505 dual-canonical-roots fix (2026-05-19): when this server runs
-    # from the tooling repo (~/Projects/mindfulnest-tooling/) but the event
-    # data lives in the Dropbox runtime tree, beat_generator.BG_STILLS_DIR
-    # and BG_SIDECAR_PATH resolve to the (empty) tooling-side paths because
-    # they are derived from __file__. The cropper library + BG sidecar then
-    # silently scan the wrong directory and return zero items ("library
-    # empty 0/0" Kim hit 2026-05-19). Override these constants to be
-    # anchored on the actual runtime event tree (event_dir's parent IS the
-    # runtime Production/ regardless of where the code lives).
-    _bg_for_paths = _bg_module()
-    _runtime_prod = event_dir.parent
-    _bg_for_paths.BG_STILLS_DIR = str(_runtime_prod / "beat_generator_stills")
-    _bg_for_paths.BG_SIDECAR_PATH = str(_runtime_prod / "beat_generator_state.json")
+    # LD-505 Phase C (2026-05-19): rebind every beat_generator module-level
+    # path constant from the runtime event_dir. Replaces the original
+    # 2-constant override (BG_STILLS_DIR + BG_SIDECAR_PATH) with a complete
+    # pass over all 11 constants + the two character-pose dicts that were
+    # baked at module-import time anchored on the (empty) tooling tree.
+    # Closes audit findings C1-5 / C1-6 / C1-7 / C1-8 / C1-9.
+    # See Production/lib/paths.py for the canonical helpers.
+    _bg_module().init_bg_paths(event_dir)
 
     pid_file = event_dir / "production_server.pid"
     cleanup_stale(pid_file)

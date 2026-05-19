@@ -61,4 +61,17 @@ else
     echo "    SKIPPED — node_modules not present; cannot run tsc locally."
 fi
 
+cd "$REPO_ROOT"
+echo "==> pre-push: LD-505 data-path lint (handler modules)"
+if [ -z "$MN_SKIP_DATA_PATH_LINT" ]; then
+    if ! python3 Production/scripts/lint_data_paths.py; then
+        echo ""
+        echo "ERROR: handler module uses __file__ for a data path (LD-505 Phase C policy)."
+        echo "Emergency bypass: MN_SKIP_DATA_PATH_LINT=1 git push --no-verify"
+        exit 1
+    fi
+else
+    echo "    SKIPPED (MN_SKIP_DATA_PATH_LINT=1)."
+fi
+
 echo "==> pre-push: all guards passed; proceeding with push."

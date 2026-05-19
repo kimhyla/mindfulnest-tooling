@@ -682,7 +682,12 @@ def handle_beat_update_text(h, body: dict)-> None:
     if text_actually_changed and not skip_flag and not debounce_skip:
         # Load ElevenLabs key (cached at first call).
         try:
-            _libdir = os.path.join(os.path.dirname(__file__), "credentials_lib")
+            # CODE tree — credentials_lib is sibling Python code at
+            # Production/tools/credentials_lib/. This handler lives one
+            # level deeper at Production/tools/server_handlers/, so go up
+            # one level first.
+            _libdir = os.path.join(os.path.dirname(__file__), "..", "credentials_lib")
+            _libdir = os.path.normpath(_libdir)
             if _libdir not in sys.path:
                 sys.path.insert(0, _libdir)
             from credentials import load_credentials  # type: ignore
@@ -1344,9 +1349,13 @@ def handle_beat_regenerate_audio(h, body: dict)-> None:
             b["text"] = _t
         h.app.state.mutate_state(_seed_text)
 
-    # Load ElevenLabs key
+    # Load ElevenLabs key — CODE tree (credentials_lib is sibling Python).
+    # Handler lives at Production/tools/server_handlers/, credentials_lib at
+    # Production/tools/credentials_lib/ — go up one level first.
     try:
-        _libdir = os.path.join(os.path.dirname(__file__), "credentials_lib")
+        _libdir = os.path.normpath(
+            os.path.join(os.path.dirname(__file__), "..", "credentials_lib")
+        )
         if _libdir not in sys.path:
             sys.path.insert(0, _libdir)
         from credentials import load_credentials  # type: ignore
