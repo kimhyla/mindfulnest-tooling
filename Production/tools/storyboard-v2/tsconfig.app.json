@@ -34,5 +34,11 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  // Exclude test files from the shipping bundle's type-check + build.
+  // Tests use `node:test` / `node:assert` (built-in Node runtime) which
+  // would require @types/node; not adding that dep just for tests. The
+  // tests run via `node --experimental-strip-types src/**/__tests__/*.test.ts`
+  // (or future Vitest if wired) outside the bundle pipeline.
+  "exclude": ["src/**/__tests__/**", "src/**/*.test.ts", "src/**/*.test.tsx"]
 }

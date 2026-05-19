@@ -46,6 +46,15 @@ export function BeatCompositePreview({
   })();
 
   const [previewOpt, setPreviewOpt] = useState(defaultOpt);
+  // Session-close review F-127 / BeatCompositePreview: resync local preview
+  // option when parent beat refreshes after onSelectOption or poll — without
+  // this, previewOpt stays on the pre-mutation selection.
+  useEffect(() => {
+    const sel = beat.phase_1?.selected_option;
+    if (typeof sel === 'number' && sel >= 1 && sel <= optionCount) {
+      setPreviewOpt(sel);
+    }
+  }, [beat.phase_1?.selected_option, optionCount]);
   const [isPlaying, setIsPlaying] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);

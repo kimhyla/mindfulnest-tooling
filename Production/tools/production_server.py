@@ -8408,16 +8408,44 @@ body {{padding-top:44px!important;}}
                     try: p.unlink()
                     except OSError: pass
 
+        # Load API keys before budget gate — vendor cost must mirror the
+        # dispatcher branch below (LD-730 fallback when requested key absent).
+        try:
+            keys = _ksendpipe_load_api_keys()
+        except SystemExit as exc:
+            return self._send_error_v59(
+                       500,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"API key load failed for start-end path: {exc}",
+                       retry_safe=True,
+                   )
+        bfl_key = keys.get("bfl")
+        openai_key = keys.get("openai")
+        wavespeed_key = keys.get("wavespeed") or self.app.client.api_key
+        if not (bfl_key or openai_key):
+            return self._send_error_v59(
+                       500,
+                       error_code="END_FRAME_VENDOR_KEY_UNAVAILABLE",
+                       error_message="No end-frame vendor key available (need OpenAI or BFL/FLUX)",
+                       retry_safe=True,
+                   )
+
         # Budget — end-frame vendor (LD-730) + Kling per option (#152).
+        # per_option_cost uses the SAME vendor-selection branch as generation
+        # (lines ~8620+) so estimate matches runtime when MN_END_FRAME_VENDOR
+        # disagrees with available keys (session-close review finding #1).
         spend = self.app.state.read_spend()
         _requested_vendor = os.environ.get(
             "MN_END_FRAME_VENDOR", "openai"
         ).strip().lower()
-        _end_frame_unit_cost = (
-            COST_FLUX_KONTEXT
-            if _requested_vendor == "flux"
-            else COST_OPENAI_END_FRAME
-        )
+        if _requested_vendor == "openai" and openai_key:
+            _end_frame_unit_cost = COST_OPENAI_END_FRAME
+        elif _requested_vendor == "flux" and bfl_key:
+            _end_frame_unit_cost = COST_FLUX_KONTEXT
+        elif openai_key:
+            _end_frame_unit_cost = COST_OPENAI_END_FRAME
+        else:
+            _end_frame_unit_cost = COST_FLUX_KONTEXT
         per_option_cost = _end_frame_unit_cost + COST_KLING_10S
         estimated = num_new * per_option_cost
         if spend["budget_remaining"] < estimated and spend["overrides"] == 0:
@@ -8527,28 +8555,7 @@ body {{padding-top:44px!important;}}
             print(f"[add_options:startend] {beat_id}: no subject binding "
                   f"for speaker={_canonical_speaker!r} (pending/not registered)")
 
-        # Load BFL key (not in parse_api_keys scope).
-        try:
-            keys = _ksendpipe_load_api_keys()
-        except SystemExit as exc:
-            return self._send_error_v59(
-                       500,
-                       error_code="GENERIC_ERROR",
-                       error_message=f"API key load failed for start-end path: {exc}",
-                       retry_safe=True,
-                   )
-        bfl_key = keys.get("bfl")
-        openai_key = keys.get("openai")
-        wavespeed_key = keys.get("wavespeed") or self.app.client.api_key
-        # LD-730 END_FRAME_VIA_OPENAI_IMAGE_EDIT_V1 — either vendor's key is
-        # acceptable; the dispatcher below picks at FLUX/OpenAI call site.
-        if not (bfl_key or openai_key):
-            return self._send_error_v59(
-                       500,
-                       error_code="END_FRAME_VENDOR_KEY_UNAVAILABLE",
-                       error_message="No end-frame vendor key available (need OpenAI or BFL/FLUX)",
-                       retry_safe=True,
-                   )
+        # API keys (bfl_key, openai_key, wavespeed_key) loaded before budget gate.
 
         # Extract start image raw bytes (beat_image is data:image/...;base64,...).
         try:
@@ -8576,9 +8583,9 @@ body {{padding-top:44px!important;}}
         # do-not-stack rule. end_frame_prompt is already Rule 8.3 compliant
         # (built by dispatcher at lines ~12605-12667 using _BG_LOCK + char-dir
         # + _MOUTH_TAIL; no motion-lock phrases inside).
-        # Budget at line ~12748 already accounts for COST_FLUX_KONTEXT +
-        # COST_KLING_10S per option (per-option cost), so the spend check
-        # already passed for this generation.
+        # Budget gate (before this block) already accounts for the resolved
+        # end-frame vendor unit cost (COST_OPENAI_END_FRAME or COST_FLUX_KONTEXT
+        # per MN_END_FRAME_VENDOR + key fallback) + COST_KLING_10S per option.
         # Fail-loud per Rule 19: if FLUX errors out, return 500 — no silent
         # fallback to single-image (that masks the failure and Kim never sees
         # the lipsync-pipeline-incompatible motion she's debugging).
@@ -8646,8 +8653,8 @@ body {{padding-top:44px!important;}}
                                extra={"beat": beat_id},
                            )
                 end_b64_uri = end_data_uri
-                print(f"[add_options:startend] {beat_id}: FLUX Kontext end "
-                      f"frame generated ({len(end_frame_bytes):,}B)")
+                print(f"[add_options:startend] {beat_id}: end frame generated "
+                      f"via {_vendor_used} ({len(end_frame_bytes):,}B)")
                 # Fix 8 (20260513): override motion prompt to natural-interpolation.
                 # Vocabulary action terms fight the frame anchors and produce barely-
                 # moving output. Per LD-177 validated pattern (Tessa beat_05):
