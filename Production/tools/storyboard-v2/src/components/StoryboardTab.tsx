@@ -1375,6 +1375,14 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
         previewVideoSrc={previewVideoSrc}
         videoRef={videoRef as RefObject<HTMLVideoElement>}
         onPreviewEnded={handlePreviewEnded}
+        onImageReassigned={() => {
+          // T4-3 (2026-05-19): dismiss lipsync preview on drag-drop image
+          // re-assign so the new image becomes immediately visible.
+          // Without this, lipsync video (LD-757-persistent once mounted)
+          // occludes the IMG element and visually the drop looks like a no-op.
+          setPreviewOptIdx(null);
+          setLipsyncMounted(false);
+        }}
       />
       <div class="mn-beat-text-row">
         <SuggestParentheticalDropdown onPick={(p) => void onParentheticalPick(p)} />
@@ -1439,9 +1447,15 @@ interface BeatImageHolderProps {
   previewVideoSrc?: string | null;
   videoRef?: RefObject<HTMLVideoElement>;
   onPreviewEnded?: () => void;
+  /** T4-3 (2026-05-19): on successful drag-drop image-assign, parent dismisses
+   * lipsync preview so the new image becomes visible. Once `lipsyncMounted`
+   * flips true (LD-757 persistence), the IMG element stops rendering — only
+   * the lipsync VIDEO shows. Drop succeeds in state but visually nothing
+   * changes because the video is occluding. */
+  onImageReassigned?: () => void;
 }
 
-function BeatImageHolder({ index, beatId, beat, eventId, onMutated, previewVideoSrc, videoRef, onPreviewEnded }: BeatImageHolderProps) {
+function BeatImageHolder({ index, beatId, beat, eventId, onMutated, previewVideoSrc, videoRef, onPreviewEnded, onImageReassigned }: BeatImageHolderProps) {
   const stillPath = beat.image_path;
   const hasImage = !!stillPath;
   // Blocker #145 / DS-22: image_override persisted but thumb stayed stale when
@@ -1469,6 +1483,10 @@ function BeatImageHolder({ index, beatId, beat, eventId, onMutated, previewVideo
           message: `Image ${payload.lib_key} assigned to ${beatId}`,
           source: 'sb-image-drop',
         });
+        // T4-3: dismiss lipsync preview so the new image is visible.
+        // Without this, the lipsync video keeps occluding the IMG element
+        // (LD-757 persistence) and the user sees no visual change.
+        onImageReassigned?.();
         onMutated();
       } else {
         pushToast({
