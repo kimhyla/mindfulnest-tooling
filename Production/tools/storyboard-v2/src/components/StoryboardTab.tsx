@@ -64,7 +64,7 @@ interface BeatState {
   // STORYBOARD_AUDIO_DELAY_READ_NESTED_PATH_V2.
   phase_1?: {
     selected_option?: number;
-    options?: Array<{ file?: string; status?: string }>;
+    options?: Array<{ file?: string; status?: string; file_exists?: boolean }>;
     audio_delay?: number;
     trim_start?: number;
     trim_end?: number | null;
@@ -664,7 +664,14 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
           {Array.from({ length: optionCount }).map((_, i) => {
             const oi = i + 1;
             const opt = beat.phase_1?.options?.[i];
-            const optReady = !!(opt?.file && opt?.status !== 'pending' && opt?.status !== 'failed');
+            // Bug fix 2026-05-19: server-enriched `file_exists` reflects
+            // disk reality. If state references an option file Kim has
+            // manually archived (e.g., still-as-final supersession), the
+            // ▶ preview would 404 and the <video> would surface a generic
+            // "codec/format not supported" toast. Treat archived options
+            // as not-ready and disable ▶ + →A with an explicit label.
+            const fileMissing = Boolean(opt?.file) && opt?.file_exists === false;
+            const optReady = !!(opt?.file && !fileMissing && opt?.status !== 'pending' && opt?.status !== 'failed');
             return (
               <span key={oi} class="mn-beat-option-pair">
                 <button
@@ -674,7 +681,7 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
                   onClick={guardedClick('Select option', () => onSelectOption(oi))}
                   aria-disabled={busy !== null}
                 >
-                  opt {oi}{selectedOption === oi ? ' ✓' : ''}
+                  opt {oi}{selectedOption === oi ? ' ✓' : ''}{fileMissing ? ' (archived)' : ''}
                 </button>
                 <button
                   type="button"
@@ -682,8 +689,8 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
                   data-testid={`beat-${index}-preview-option-${oi}`}
                   onClick={guardedClick('Preview option', () => onPreviewOption(oi))}
                   aria-disabled={busy !== null}
-                  disabled={!opt?.file}
-                  title={`Preview with audio: opt ${oi}`}
+                  disabled={!opt?.file || fileMissing}
+                  title={fileMissing ? `opt ${oi} was archived — regenerate to restore` : `Preview with audio: opt ${oi}`}
                 >
                   {previewOptIdx === oi ? '⏸' : '▶'}
                 </button>
@@ -695,7 +702,7 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
                     onClick={guardedClick('Move to A', () => onSwapToA(oi))}
                     aria-disabled={busy !== null}
                     disabled={!optReady}
-                    title={optReady ? `Promote opt ${oi} to slot A` : 'Option must finish generating first'}
+                    title={optReady ? `Promote opt ${oi} to slot A` : fileMissing ? 'Option file was archived' : 'Option must finish generating first'}
                   >→A</button>
                 ) : null}
               </span>

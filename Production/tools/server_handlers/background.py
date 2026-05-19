@@ -95,9 +95,15 @@ from tools.production_server import (  # noqa: E402
 
 def serve_magic_picker(h)-> None:
 
-    """Serve path_picker.html for the /magic route."""
+    """Serve path_picker.html for the /magic route.
+
+    Bug fix 2026-05-19: path_picker.html lives at Production/tools/path_picker.html
+    (NOT Production/path_picker.html). The original constant after the Phase 4
+    handler split was wrong — _PSERVER_PRODUCTION_DIR points to Production/ but
+    the file is one level deeper at Production/tools/. Use _PSERVER_TOOLS_DIR.
+    """
     import urllib.parse as _up
-    picker = _PSERVER_PRODUCTION_DIR / "path_picker.html"
+    picker = _PSERVER_TOOLS_DIR / "path_picker.html"
     if not picker.exists():
         return h._send_error_v59(
                    404,

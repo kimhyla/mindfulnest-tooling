@@ -5694,7 +5694,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             if path == "/api/health":
                 return self._handle_health()
             if path == "/api/state":
-                return self._send_json(200, self.app.state.read_state())
+                return self._send_json(200, self._read_state_with_file_flags())
             # S5.5b new endpoints — Bug 4 fix + VideoSelector data source
             if path == "/api/event/current":
                 return self._handle_event_current()
@@ -8094,6 +8094,58 @@ body {{padding-top:44px!important;}}
     def _serve_asset(self, filename: str) -> None:
         from server_handlers.cropper import serve_asset
         return serve_asset(self, filename)
+
+    def _read_state_with_file_flags(self) -> dict:
+        """Read state and annotate phase_1 options + final with file_exists.
+
+        Bug fix 2026-05-19: phase_1.options[*].file can reference clips that
+        Kim has manually archived (e.g., resolution/beat_01 options moved to
+        _archive_beat_01_animations_*/ after she approved a still-as-final).
+        State still carries the original `selected_option` and the option
+        files appear "completed" — but the ▶ preview asset fetch 404s and
+        the <video> element surfaces a generic "codec/format not supported"
+        toast with no actionable signal.
+
+        Enrich each phase_1.options[*] and the beat-level `final` block with
+        `file_exists: bool` (existence of the named file in clips_dir). The
+        client (StoryboardTab) gates the ▶ button on this flag so abandoned
+        options render as disabled with an "(archived)" label instead of
+        silently failing on click.
+
+        Pure read-only — does NOT mutate persisted state.
+        """
+        state = self.app.state.read_state()
+        clips_dir = self.app.state.clips_dir
+        videos = state.get("videos") if isinstance(state, dict) else None
+        if not isinstance(videos, dict):
+            return state
+        for partition in videos.values():
+            if not isinstance(partition, dict):
+                continue
+            beats = partition.get("beats")
+            if not isinstance(beats, dict):
+                continue
+            for beat in beats.values():
+                if not isinstance(beat, dict):
+                    continue
+                p1 = beat.get("phase_1")
+                if isinstance(p1, dict):
+                    opts = p1.get("options")
+                    if isinstance(opts, list):
+                        for opt in opts:
+                            if not isinstance(opt, dict):
+                                continue
+                            f = opt.get("file")
+                            opt["file_exists"] = bool(
+                                f and (clips_dir / f).is_file()
+                            )
+                final = beat.get("final")
+                if isinstance(final, dict):
+                    f = final.get("file")
+                    final["file_exists"] = bool(
+                        f and (clips_dir / f).is_file()
+                    )
+        return state
 
     def _serve_beat_audio(self, beat_id: str) -> None:
         from server_handlers.beats_legacy import serve_beat_audio
@@ -11527,6 +11579,20 @@ def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_e
     if not storyboard_path.is_file():
         print(f"ERROR: storyboard not found: {storyboard_path}", file=sys.stderr)
         return 2
+
+    # LD-505 dual-canonical-roots fix (2026-05-19): when this server runs
+    # from the tooling repo (~/Projects/mindfulnest-tooling/) but the event
+    # data lives in the Dropbox runtime tree, beat_generator.BG_STILLS_DIR
+    # and BG_SIDECAR_PATH resolve to the (empty) tooling-side paths because
+    # they are derived from __file__. The cropper library + BG sidecar then
+    # silently scan the wrong directory and return zero items ("library
+    # empty 0/0" Kim hit 2026-05-19). Override these constants to be
+    # anchored on the actual runtime event tree (event_dir's parent IS the
+    # runtime Production/ regardless of where the code lives).
+    _bg_for_paths = _bg_module()
+    _runtime_prod = event_dir.parent
+    _bg_for_paths.BG_STILLS_DIR = str(_runtime_prod / "beat_generator_stills")
+    _bg_for_paths.BG_SIDECAR_PATH = str(_runtime_prod / "beat_generator_state.json")
 
     pid_file = event_dir / "production_server.pid"
     cleanup_stale(pid_file)
