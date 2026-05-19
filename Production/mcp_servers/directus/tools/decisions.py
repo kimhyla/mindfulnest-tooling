@@ -17,8 +17,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from lib.directus import (
+    FabricationGateError,
     try_patch_or_queue,
     try_post_or_queue,
+    verify_ld_marker_or_raise,
 )
 from lib.directus_admin_client import DirectusAdminClient, DirectusAdminError
 from lib.payload_validator import (
@@ -62,7 +64,10 @@ def register(mcp: Any) -> None:
             "- governance_file (str), past_failure_prevented (str), "
             "  related_files (list[str]), keyword_synonyms (list[str]), "
             "  enforcement_type (str), enforcement_artifact_ref (str), "
-            "  scope_domain (str), supersedable (bool)\n\n"
+            "  scope_domain (str), supersedable (bool)\n"
+            "- marker_string (str, optional): LD fabrication gate — must exist in "
+            "git HEAD before write (LD-783)\n"
+            "- marker_regex (bool): interpret marker_string as extended regex\n\n"
             "Variants: same as directus_create + {ok: true, upserted: 'patched'|"
             "'created', row, id}."
         ),
@@ -84,6 +89,8 @@ def register(mcp: Any) -> None:
         enforcement_artifact_ref: str | None = None,
         scope_domain: str | None = None,
         supersedable: bool | None = None,
+        marker_string: str | None = None,
+        marker_regex: bool = False,
     ) -> dict:
         payload: dict[str, Any] = {
             "decision_key": decision_key,
@@ -114,6 +121,23 @@ def register(mcp: Any) -> None:
             payload["scope_domain"] = scope_domain
         if supersedable is not None:
             payload["supersedable"] = supersedable
+        if marker_string is not None:
+            payload["marker_string"] = marker_string
+        if marker_regex:
+            payload["marker_regex"] = True
+
+        # LD-783: same gate as lib/directus.try_post_or_queue (not on PATCH path).
+        try:
+            payload = verify_ld_marker_or_raise(payload)
+        except FabricationGateError as e:
+            return {
+                "ok": False,
+                "fabrication_gate_blocked": True,
+                "decision_key": e.decision_key,
+                "marker": e.marker,
+                "kind": e.kind,
+                "error": str(e),
+            }
 
         try:
             validated = validate_payload("prod_locked_decisions", payload, mode="strict")

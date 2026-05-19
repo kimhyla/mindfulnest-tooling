@@ -98,6 +98,7 @@ from kling_startend_pipeline import (
     RULE8_ANTI_LIPSYNC,
     CFG_SCALE_BASELINE as _KSENDPIPE_CFG_SCALE,
     COST_FLUX_KONTEXT,
+    COST_OPENAI_END_FRAME,
     COST_KLING_10S,
     directus_log as _ksendpipe_directus_log,
 )
@@ -7492,6 +7493,17 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 partition.setdefault("image_overrides", {})[_bid] = _key
                 if _ap:
                     partition.setdefault("image_overrides_abs", {})[_bid] = _ap
+                    # Blocker #145: persist beat.image_path + bump _version so
+                    # v59 shell re-fetch and <img cacheBust> see the new crop.
+                    _beat = partition.setdefault("beats", {}).setdefault(_bid, {})
+                    try:
+                        _event_abs = str(
+                            (DROPBOX_ROOT / self.app.event_dir).resolve()
+                        )
+                        _beat["image_path"] = os.path.relpath(_ap, _event_abs)
+                    except ValueError:
+                        _beat["image_path"] = _ap
+                    _beat["_version"] = int(_beat.get("_version", 0) or 0) + 1
                 return None
             self.app.state.mutate_video_state(video_role, _persist)
 
@@ -8396,9 +8408,17 @@ body {{padding-top:44px!important;}}
                     try: p.unlink()
                     except OSError: pass
 
-        # Budget — start-end is FLUX Kontext + Kling per option.
+        # Budget — end-frame vendor (LD-730) + Kling per option (#152).
         spend = self.app.state.read_spend()
-        per_option_cost = COST_FLUX_KONTEXT + COST_KLING_10S
+        _requested_vendor = os.environ.get(
+            "MN_END_FRAME_VENDOR", "openai"
+        ).strip().lower()
+        _end_frame_unit_cost = (
+            COST_FLUX_KONTEXT
+            if _requested_vendor == "flux"
+            else COST_OPENAI_END_FRAME
+        )
+        per_option_cost = _end_frame_unit_cost + COST_KLING_10S
         estimated = num_new * per_option_cost
         if spend["budget_remaining"] < estimated and spend["overrides"] == 0:
             return self._send_error_v59(

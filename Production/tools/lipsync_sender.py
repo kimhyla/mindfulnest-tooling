@@ -208,6 +208,19 @@ def _find_ffmpeg() -> str | None:
     return None
 
 
+def _probe_media_duration_sec(ffmpeg: str, media_path: Path) -> float | None:
+    """Return format duration in seconds via ffprobe, or None on failure."""
+    try:
+        result = subprocess.run(
+            [ffmpeg, "-v", "error", "-i", str(media_path),
+             "-show_entries", "format=duration", "-of", "csv=p=0"],
+            capture_output=True, text=True, timeout=30,
+        )
+        return float(result.stdout.strip() or "0")
+    except (ValueError, subprocess.SubprocessError):
+        return None
+
+
 def pad_audio_for_lipsync(audio_path: Path) -> Path:
     """
     Add silence padding to start and end of audio before lip sync submission.
@@ -218,6 +231,10 @@ def pad_audio_for_lipsync(audio_path: Path) -> Path:
 
     Returns path to padded temp file (caller should clean up after submission).
     If ffmpeg is not available, returns original path (graceful fallback).
+
+    LD-400 (LIPSYNC_MAX_DURATION_10S_NO_SILENCE_V1): duration is enforced on
+    the POST-PAD file. Pre-pad guards elsewhere can pass while padding pushes
+    total past ByteDance's 10s training window (beat_04/06 class, #144).
     """
     ffmpeg = _find_ffmpeg()
     if not ffmpeg:
@@ -260,10 +277,24 @@ def pad_audio_for_lipsync(audio_path: Path) -> Path:
             padded.unlink()
         return audio_path  # fall back to original
 
+    # LD-400 post-padding bypass class (#144): measure AFTER concat, not before.
+    padded_dur = _probe_media_duration_sec(ffmpeg, padded)
+    if padded_dur is not None and padded_dur > LIPSYNC_MAX_DURATION_SEC:
+        if padded.exists():
+            padded.unlink()
+        raise ValueError(
+            f"[lipsync] BLOCKED: padded audio is {padded_dur:.2f}s, exceeds "
+            f"LIPSYNC_MAX_DURATION_SEC={LIPSYNC_MAX_DURATION_SEC}s "
+            f"(LD-400 LIPSYNC_MAX_DURATION_10S_NO_SILENCE_V1). "
+            "Pre-pad duration passed but +padding exceeded ByteDance max — "
+            "trim audio or use silence-split + passthrough (CLAUDE.md §8.5)."
+        )
+
     orig_size = audio_path.stat().st_size
     pad_size = padded.stat().st_size
     print(f"[lipsync] Padded audio: {orig_size} → {pad_size} bytes "
-          f"(+{LIPSYNC_PAD_START}s start, +{LIPSYNC_PAD_END}s end)")
+          f"(+{LIPSYNC_PAD_START}s start, +{LIPSYNC_PAD_END}s end, "
+          f"duration={padded_dur:.2f}s)")
     return padded
 
 

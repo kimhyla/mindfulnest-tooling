@@ -564,7 +564,10 @@ def handle_v2_event_state(h, path: str) -> None:
             _beats = _part.setdefault("beats", {})
             for _bid, _ap in _abs_map.items():
                 _beat = _beats.setdefault(_bid, {})
-                if not _beat.get("image_path") and _ap and os.path.isfile(_ap):
+                # Blocker #145 / DS-22: image_overrides_abs is canonical; always
+                # project image_path so drag-drop crop updates render (old guard
+                # only filled when image_path was absent → stale thumb).
+                if _ap and os.path.isfile(_ap):
                     try:
                         _beat["image_path"] = os.path.relpath(_ap, event_dir_abs)
                     except ValueError:
