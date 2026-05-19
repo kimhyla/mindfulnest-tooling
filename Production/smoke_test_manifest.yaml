@@ -104,3 +104,10 @@ entries:
   # Directus lookup), so the compound form is safe; verify by reading the
   # parse_entries Python heredoc.]
   - { ld: LD-739-740, symbol: 'guardedClick', kind: fn, target: source }
+
+  # ===========================================================================
+  # Pre-lipsync animation+TTS sync preview (F-BEAT-PREVIEW-001 / blocker #127).
+  # LD-127 is a placeholder label — composite preview must not mount on lipsync
+  # outputs (audio baked to pixels). Gated in BeatButtonRow on !lipsync.file.
+  # ===========================================================================
+  - { ld: LD-127, symbol: 'beat-composite-preview', kind: testid }
