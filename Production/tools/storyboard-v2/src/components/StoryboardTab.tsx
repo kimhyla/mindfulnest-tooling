@@ -477,19 +477,37 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
   };
   const onSwapToA = (fromSlot: number) =>
     runMutation('Move to A', 'beat_swap_to_a', { from_slot: fromSlot });
-  // LD-778 4-gate body validation: ok==true is the canonical V59 success flag
-  // (set by handlers' explicit response; _send_error_v59 sets ok=false). The
-  // server's lipsync/use_as_final handlers return {"ok": true, "beat": ...,
-  // optional "file"}; status field is NOT in the canonical 200 shape, so the
-  // gate checks ok+beat (mandatory) rather than status (absent).
+  // LD-778 4-gate body validation. Specs reflect ACTUAL handler response shapes
+  // (verified by reading the server source, not the spec ideal):
+  //   - /api/lipsync (vendor_jobs.handle_lipsync_submit) returns
+  //     {"status": "submitted", "beat": ..., "clip": ..., "audio": ...,
+  //      "audio_processing": ..., "video_trimmed_to_s": ..., "trim_start": ...,
+  //      "trim_end": ..., "cost": ..., "message": ...}
+  //     → gate on {status: string-present, beat: string-present}; don't
+  //       hard-equals 'submitted' because dedup/cached paths may return
+  //       different status strings (status existence + beat existence is enough
+  //       for the 4-gate's purpose: kill silent-success-with-empty-body class).
+  //   - /api/beat/use_as_final (_handle_use_as_final in production_server.py)
+  //     returns {"status": "ok", "beat": ..., "file": ..., "final": ...}
+  //     → gate on {status equals 'ok', beat: string-present}.
+  //   - /api/beat/use_still_as_final returns {"status": "ok", "beat": ...,
+  //     "file": ..., "cache_hit": ..., "hold_duration_s": ...} — same spec as
+  //     use_as_final.
+  //   - /api/beat/undo_final (handle_beat_undo_final in beats_legacy.py — new
+  //     handler I added) returns {"ok": true, "beat": ...} — no status field.
+  //     → gate on {ok equals true, beat: string-present}.
+  //
+  // The earlier "fix" that uniformly used `ok===true` was wrong for the
+  // status-shaped handlers (most of them). This revision matches each
+  // handler's actual response.
   const onLipsync = () =>
     runMutation('Lipsync', 'lipsync', {}, [
-      { key: 'ok', equals: true },
+      { key: 'status', type: 'string' },
       { key: 'beat', type: 'string' },
     ]);
   const onUseAsFinal = () =>
     runMutation('Use as Final', 'beat_use_as_final', {}, [
-      { key: 'ok', equals: true },
+      { key: 'status', equals: 'ok' },
       { key: 'beat', type: 'string' },
     ]);
   const onUseStillAsFinal = () => {
@@ -501,9 +519,16 @@ function BeatButtonRow({ index, beatId, beat, cacheBust, onMutated, previewOptId
         body['hold_duration_s'] = parsed;
       }
     }
-    return runMutation('Still as Final', 'beat_use_still_as_final', body);
+    return runMutation('Still as Final', 'beat_use_still_as_final', body, [
+      { key: 'status', equals: 'ok' },
+      { key: 'beat', type: 'string' },
+    ]);
   };
-  const onUndoFinal = () => runMutation('Undo Final', 'beat_undo_final', {});
+  const onUndoFinal = () =>
+    runMutation('Undo Final', 'beat_undo_final', {}, [
+      { key: 'ok', equals: true },
+      { key: 'beat', type: 'string' },
+    ]);
   const trimPreviewListenerRef = useRef<((this: HTMLVideoElement, ev: Event) => void) | null>(null);
   const onPreviewTrim = () => {
     onEnsureLipsyncMounted();
@@ -936,7 +961,7 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
             ? `${SERVER_BASE}/asset/${beat.lipsync.file}?v=${beat._version ?? 0}`
             : (_finalFileSrc ?? null)));
 
-  const previewAudioSrc = `http://localhost:5111/api/beat/audio/${beatId}?event_id=${eventId}`;
+  const previewAudioSrc = `${SERVER_BASE}/api/beat/audio/${beatId}?event_id=${eventId}`;
 
   const resetPlayState = useCallback((reason: string, kind: 'error' | 'info' = 'error', ctx: string = 'Playback') => {
     try { videoRef.current?.pause(); } catch { /* defensive */ }

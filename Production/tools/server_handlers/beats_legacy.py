@@ -1615,6 +1615,13 @@ def handle_beat_undo_final(h, body: dict) -> None:
             retry_safe=False,
         )
 
+    # [INFERRED — verify] Default video_role 'intro' when neither
+    # scope_video_role nor scope_target_video is supplied. Mirrors the
+    # default used in handle_beat_use_still_as_final, handle_beat_done_toggle,
+    # and handle_beat_trim (beats_legacy.py:1297, 1502, 1574). v59 clients
+    # always inject scope_target_video via pathappPatch; the default is the
+    # legacy/pre-v59 fallback. Most events have 'intro' as their primary
+    # video; resolution + standalone require explicit scope.
     video_role = (
         (body or {}).get("scope_video_role")
         or (body or {}).get("scope_target_video")
