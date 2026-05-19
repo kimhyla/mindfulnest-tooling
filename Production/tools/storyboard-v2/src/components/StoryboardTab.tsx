@@ -1372,8 +1372,10 @@ interface BeatImageHolderProps {
 function BeatImageHolder({ index, beatId, beat, eventId, onMutated, previewVideoSrc, videoRef, onPreviewEnded }: BeatImageHolderProps) {
   const stillPath = beat.image_path;
   const hasImage = !!stillPath;
+  // Blocker #145 / DS-22: image_override persisted but thumb stayed stale when
+  // image_path unchanged or browser cached same URL — bust on beat._version.
   const imgSrc = stillPath
-    ? `${SERVER_BASE}/files?path=${encodeURIComponent(`Production/${eventId}/${stillPath}`)}`
+    ? `${SERVER_BASE}/files?path=${encodeURIComponent(`Production/${eventId}/${stillPath}`)}&v=${beat._version ?? 0}`
     : undefined;
 
   const dropHandlers = makeDropTarget(

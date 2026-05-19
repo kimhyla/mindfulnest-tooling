@@ -27,8 +27,55 @@ from asset_validation import validate_crop_dimensions, register_visual_asset
 
 DEFAULT_CROPPER_DIR = "/sessions/admiring-quirky-noether/mnt/Claude Mindfulnest Project Files/Cropper"
 DIRECTUS_URL = "https://directus-production-3460.up.railway.app"
-DIRECTUS_EMAIL = "kimhyla11@gmail.com"
-DIRECTUS_PASSWORD = "directus11$"
+
+
+def _load_directus_credentials() -> tuple[str, str]:
+    """Doppler-first Directus creds — blocker #97 (no hardcoded secrets).
+
+    Mirrors build_storyboard.py / production_server.parse_api_keys (LD-208):
+    DIRECTUS_ADMIN_* env wins; legacy DIRECTUS_EMAIL/PASSWORD accepted;
+    API_KEYS_MASTER.md table fallback for local python3 runs.
+    """
+    email = (
+        os.environ.get("DIRECTUS_ADMIN_EMAIL")
+        or os.environ.get("DIRECTUS_EMAIL")
+    )
+    password = (
+        os.environ.get("DIRECTUS_ADMIN_PASSWORD")
+        or os.environ.get("DIRECTUS_PASSWORD")
+    )
+    if email and password:
+        return email, password
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    for rel in ("../API_KEYS_MASTER.md", "../../Production/API_KEYS_MASTER.md"):
+        path = os.path.normpath(os.path.join(script_dir, rel))
+        if not os.path.isfile(path):
+            continue
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+        file_email = file_password = None
+        for line in content.split("\n"):
+            if "Directus" in line and "Admin Email" in line:
+                parts = line.split("|")
+                if len(parts) >= 4:
+                    file_email = parts[3].strip().strip("`").strip()
+            elif "Directus" in line and "Admin Password" in line:
+                parts = line.split("|")
+                if len(parts) >= 4:
+                    file_password = parts[3].strip().strip("`").strip()
+        if file_email and file_password:
+            return file_email, file_password
+
+    raise SystemExit(
+        "finalize_crops: missing Directus credentials (blocker #97). "
+        "Set DIRECTUS_ADMIN_EMAIL/DIRECTUS_ADMIN_PASSWORD via Doppler "
+        "(or legacy DIRECTUS_EMAIL/DIRECTUS_PASSWORD), or place "
+        "API_KEYS_MASTER.md under Production/."
+    )
+
+
+DIRECTUS_EMAIL, DIRECTUS_PASSWORD = _load_directus_credentials()
 
 
 # ============================================================================
