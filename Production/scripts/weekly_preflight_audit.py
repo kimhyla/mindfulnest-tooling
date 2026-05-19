@@ -151,25 +151,24 @@ SHORTCUT_LD_CLASSIFICATION = {
     # 199 SHORTCUT_ARCH_WEIGHT_PCT_COLLAPSED_TO_ENUM — closed 2026-05-07 (status=closed); v2 inventory closure trigger met. Removed from active classification dict; status='active' filter excludes it from query. Kept here as a comment for traceability.
     200: "EVENT_DRIVEN",   # SHORTCUT_LD_LINKAGE_SNAPSHOT_ONLY — re-classified 2026-05-07 RARE_NEVER → EVENT_DRIVEN. Trigger events: (a) Stage 4 kickoff OR (b) second contributor added to prod_locked_decisions writes; quarterly audit cadence in LD notes.
     # 201 SHORTCUT_PARTIAL_STATUS_NO_PCT_FIELD — closed 2026-05-07 (status=closed); v2 inventory (5→2 PARTIAL drop) closure trigger met. Removed from active classification dict; status='active' filter excludes it from query. Kept here as a comment for traceability.
-    249: "PERIODIC",       # SHORTCUT_IDENTITY_PLATFORM_EVALUATION_20260418 — PERIODIC class per PERIODIC_CLASS_TECH_SPEC_v3 §B5 (quarterly identity-platform review). Directus MUST set review_cadence + next_review_date; NULL cadence surfaces PERIODIC_INVALID_CONFIGURATION.
-    # 569-575 CodeQL-acceptance SHORTCUTs — re-classified 2026-05-19 from
-    # RARE_NEVER → PERIODIC/annually. Rationale: their closure trigger is
-    # "upstream CodeQL rule update OR code refactor against allowlist" —
-    # neither is a 14-day calendar event. RARE_NEVER + 14-day cap force-fired
-    # the audit forever (cap recurs every 14d from date_locked with no
-    # "satisfied" exit). PERIODIC/annually gives legitimate annual review
-    # cadence (review_cadence + next_review_date=2027-05-19 set on each LD)
-    # without weekly noise. The LDs remain ACTIVE acceptance gates; only the
-    # audit class changed. Resolves prod_blockers #128/129/130/131/132/133/
-    # 134/135/136/137/138/139/151 (auto-surfaced "closure imminent" notices).
-    569: "PERIODIC",       # SHORTCUT_CODEQL_LOCK_FILE_0644_ACCEPT_V1 — "if/when refactored to 0o600 or CodeQL rule changes". Annual review.
-    570: "PERIODIC",       # SHORTCUT_CODEQL_REDOS_BOUNDED_INPUT_ACCEPT_V1 — "if/when regex refactored or CodeQL ReDoS rule gains length modeling". Annual review.
-    571: "PERIODIC",       # SHORTCUT_CODEQL_FILES_EXISTENCE_TEST_ACCEPT_V1 — "if/when endpoints validate against allowlist". Annual review.
-    572: "PERIODIC",       # SHORTCUT_CODEQL_LOCALHOST_FFMPEG_LIST_FORM_ACCEPT_V1 — "if/when ffmpeg paths validated upstream". Annual review.
+    # LD-249 + LD-569/570/571/572/574/575 — re-classified 2026-05-19 to
+    # EVENT_DRIVEN_EXTERNAL per Kim directive "dependency-based not time-based."
+    # ALL closure triggers are EXTERNAL (upstream tool update, threat-model
+    # change, post-launch metric threshold) — none are planned ship events
+    # or refactors under direct control. Audit ignores time for these (no
+    # cap, no backstop, no periodic review). Closure happens organically
+    # when the external trigger surfaces (CodeQL re-scan, MAU threshold, etc).
+    # Event triggers are documented in each LD's notes field — that's the
+    # primary closure path.
+    249: "EVENT_DRIVEN_EXTERNAL",  # SHORTCUT_IDENTITY_PLATFORM_EVALUATION_20260418 — triggers: MAU>10K, MFA-COPPA, SAML-B2B, smart-lockout-abuse.
+    569: "EVENT_DRIVEN_EXTERNAL",  # SHORTCUT_CODEQL_LOCK_FILE_0644_ACCEPT_V1 — triggers: refactor to 0o600 OR CodeQL py/overly-permissive-file rule update.
+    570: "EVENT_DRIVEN_EXTERNAL",  # SHORTCUT_CODEQL_REDOS_BOUNDED_INPUT_ACCEPT_V1 — triggers: regex possessives/length-guards OR CodeQL ReDoS length-modeling.
+    571: "EVENT_DRIVEN_EXTERNAL",  # SHORTCUT_CODEQL_FILES_EXISTENCE_TEST_ACCEPT_V1 — triggers: endpoints allowlist BEFORE existence-test OR CodeQL existence-test-only recognition.
+    572: "EVENT_DRIVEN_EXTERNAL",  # SHORTCUT_CODEQL_LOCALHOST_FFMPEG_LIST_FORM_ACCEPT_V1 — triggers: ffmpeg paths upstream-validated OR CodeQL list-form vs shell=True distinction.
     # 573 SHORTCUT_CODEQL_VITE_BUILD_ARTIFACT_POSTMESSAGE_V1 closed 2026-05-08 (status=superseded);
     #     closure event fired in PR #8 commits f2b8eb7 (origin-allowlist) + b4c199f (bundle rebuild).
-    574: "PERIODIC",       # SHORTCUT_CODEQL_REALPATH_SINK_INSIDE_CHECK_V1 — "if/when CodeQL py/path-injection gains sanitizer-recognition for resolve()-inside-containment-check idiom OR code refactored to helper". Annual review.
-    575: "PERIODIC",       # SHORTCUT_CODEQL_HTTP_RESPONSE_SPLITTING_TYPED_REBUILD_V1 — "if/when CodeQL py/http-response-splitting gains recognition for typed urllib.parse component rebuild OR response uses server-controlled origin". Annual review.
+    574: "EVENT_DRIVEN_EXTERNAL",  # SHORTCUT_CODEQL_REALPATH_SINK_INSIDE_CHECK_V1 — triggers: shared helper refactor OR CodeQL resolve()-inside-containment recognition.
+    575: "EVENT_DRIVEN_EXTERNAL",  # SHORTCUT_CODEQL_HTTP_RESPONSE_SPLITTING_TYPED_REBUILD_V1 — triggers: server-controlled allowlist OR CodeQL typed-rebuild recognition.
 }
 
 RARE_NEVER_CAP_DAYS = 14
@@ -451,6 +450,17 @@ def check_shortcut_ld_closure_dates(client, dry_run=False):
                         f"Once triaged, this finding will not re-fire."
                     ),
                 })
+                continue
+
+            # EVENT_DRIVEN_EXTERNAL — dependency-based ONLY, no calendar fire.
+            # Used for SHORTCUTs whose closure trigger is an EXTERNAL event
+            # (upstream tool update, threat-model change, post-launch metric
+            # threshold) — i.e. neither a planned ship date nor a refactor
+            # under our direct control. Audit ignores time entirely; closure
+            # happens organically when the event surfaces (e.g. CodeQL re-scans
+            # on subsequent PRs, MAU crosses a threshold, B2B demand arrives).
+            # Per Kim 2026-05-19 directive: "dependency-based, not time-based."
+            if classification == "EVENT_DRIVEN_EXTERNAL":
                 continue
 
             cap_days = (
