@@ -56,7 +56,7 @@ interface BeatState {
   // Compared against audio_regenerated_at to gate the ▶ lipsync play button
   // per LD STORYBOARD_LIPSYNC_BUTTON_FRESHNESS_GATE_V1. Missing → defensive
   // "stale" default (older server, or file disappeared mid-render).
-  lipsync?: { file?: string; status?: string; file_mtime?: number };
+  lipsync?: { file?: string; status?: string; file_mtime?: number; file_exists?: boolean };
   // phase_1 is the server-canonical persistence root for per-beat animation
   // state. `audio_delay` (the Video Lead-in slider) lives here — bootstrap
   // /api/v2/event/<id>/state returns the raw state.json so this is where the
@@ -77,9 +77,11 @@ interface BeatState {
     source?: string;
     source_option?: number;
     file?: string;
+    file_exists?: boolean;
     approved_at?: string;
     // LD-761 + LD-777: Ken Burns still-as-final config persisted by server.
     image_path?: string;
+    image_path_exists?: boolean;
     cache_key?: string;
     kenburns?: {
       zoom_start?: number;
@@ -1014,12 +1016,20 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
   const _finalFileSrc = beat.final?.file
     ? `${SERVER_BASE}/asset/${beat.final.file}?v=${beat._version ?? 0}`
     : null;
-  const previewVideoSrc = (previewOptIdx !== null && previewOptIdx > 0)
-    ? `${SERVER_BASE}/asset/${beat.phase_1?.options?.[previewOptIdx - 1]?.file}?v=${beat._version ?? 0}`
-    : (previewOptIdx === -1 && beat.final?.source === 'still_image' && beat.final?.file
+  // P3 LD-505 Phase C: gate every preview src on file_exists !== false
+  // so archived/missing files don't 404 → "codec/format not supported".
+  // Server-side enrichment populates file_exists on options/lipsync/final.
+  const _optChosen = (previewOptIdx !== null && previewOptIdx > 0)
+    ? beat.phase_1?.options?.[previewOptIdx - 1]
+    : null;
+  const _optOk = !!(_optChosen?.file && _optChosen?.file_exists !== false);
+  const _lsOk = !!(beat.lipsync?.file && beat.lipsync?.file_exists !== false);
+  const previewVideoSrc = (previewOptIdx !== null && previewOptIdx > 0 && _optOk)
+    ? `${SERVER_BASE}/asset/${_optChosen!.file}?v=${beat._version ?? 0}`
+    : (previewOptIdx === -1 && beat.final?.source === 'still_image' && beat.final?.file && beat.final?.file_exists !== false
         ? _finalFileSrc
-        : (_isLipsyncShown && beat.lipsync?.file
-            ? `${SERVER_BASE}/asset/${beat.lipsync.file}?v=${beat._version ?? 0}`
+        : (_isLipsyncShown && _lsOk
+            ? `${SERVER_BASE}/asset/${beat.lipsync!.file}?v=${beat._version ?? 0}`
             : (_finalFileSrc ?? null)));
 
   const previewAudioSrc = `${SERVER_BASE}/api/beat/audio/${beatId}?event_id=${eventId}`;

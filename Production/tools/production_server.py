@@ -8101,21 +8101,19 @@ body {{padding-top:44px!important;}}
         return serve_asset(self, filename)
 
     def _read_state_with_file_flags(self) -> dict:
-        """Read state and annotate phase_1 options + final with file_exists.
+        """Read state and annotate every file-reference with file_exists.
 
-        Bug fix 2026-05-19: phase_1.options[*].file can reference clips that
-        Kim has manually archived (e.g., resolution/beat_01 options moved to
-        _archive_beat_01_animations_*/ after she approved a still-as-final).
-        State still carries the original `selected_option` and the option
-        files appear "completed" — but the ▶ preview asset fetch 404s and
-        the <video> element surfaces a generic "codec/format not supported"
-        toast with no actionable signal.
+        Bug fix 2026-05-19 (P3 / LD-505 Phase C, extends PR #73):
+        phase_1.options[*].file, lipsync.file, final.file, final.image_path
+        can all reference clips/images that Kim has manually archived or
+        moved. Without per-field existence annotation, ▶ preview asset
+        fetches 404 and the <video> element surfaces a generic "codec/format
+        not supported" toast with no actionable signal. Audit C2-4 / C2-1.
 
-        Enrich each phase_1.options[*] and the beat-level `final` block with
-        `file_exists: bool` (existence of the named file in clips_dir). The
-        client (StoryboardTab) gates the ▶ button on this flag so abandoned
-        options render as disabled with an "(archived)" label instead of
-        silently failing on click.
+        Annotates EVERY *.file (or *.image_path) field on each beat with
+        `file_exists: bool` so the client can render disabled UI + an
+        "(archived)" label uniformly across slots. Audit C2-4 specifically
+        called out the lipsync.file gap on 14/19 resolution beats.
 
         Pure read-only — does NOT mutate persisted state.
         """
@@ -8124,6 +8122,23 @@ body {{padding-top:44px!important;}}
         videos = state.get("videos") if isinstance(state, dict) else None
         if not isinstance(videos, dict):
             return state
+
+        def _annotate_block(block, file_field: str = "file") -> None:
+            """Set block[file_field + '_exists'] based on disk presence.
+
+            file_field defaults to 'file' (relative to clips_dir); pass
+            'image_path' for absolute paths.
+            """
+            if not isinstance(block, dict):
+                return
+            f = block.get(file_field)
+            if file_field == "image_path":
+                exists_key = "image_path_exists"
+                block[exists_key] = bool(f and isinstance(f, str) and os.path.exists(f))
+            else:
+                exists_key = "file_exists"
+                block[exists_key] = bool(f and (clips_dir / f).is_file())
+
         for partition in videos.values():
             if not isinstance(partition, dict):
                 continue
@@ -8133,23 +8148,24 @@ body {{padding-top:44px!important;}}
             for beat in beats.values():
                 if not isinstance(beat, dict):
                     continue
+                # phase_1.options[*].file
                 p1 = beat.get("phase_1")
                 if isinstance(p1, dict):
-                    opts = p1.get("options")
-                    if isinstance(opts, list):
-                        for opt in opts:
-                            if not isinstance(opt, dict):
-                                continue
-                            f = opt.get("file")
-                            opt["file_exists"] = bool(
-                                f and (clips_dir / f).is_file()
-                            )
+                    for opt in (p1.get("options") or []):
+                        _annotate_block(opt)
+                # phase_2.options[*].file (forward-compat per audit C2-5)
+                p2 = beat.get("phase_2")
+                if isinstance(p2, dict):
+                    for opt in (p2.get("options") or []):
+                        _annotate_block(opt)
+                # beat.lipsync.file (audit C2-4 — 14/19 resolution beats
+                # were unannotated; same Bug 3 class lurked here)
+                _annotate_block(beat.get("lipsync"))
+                # beat.final.file + beat.final.image_path (audit S3-F2)
                 final = beat.get("final")
                 if isinstance(final, dict):
-                    f = final.get("file")
-                    final["file_exists"] = bool(
-                        f and (clips_dir / f).is_file()
-                    )
+                    _annotate_block(final, "file")
+                    _annotate_block(final, "image_path")
         return state
 
     def _serve_beat_audio(self, beat_id: str) -> None:
@@ -11579,6 +11595,69 @@ def inactivity_watchdog(app: AppContext, stop_event: threading.Event, httpd: Pro
             time.sleep(1)
 
 
+def _check_runtime_capabilities() -> None:
+    """Probe every hard-required and feature-degraded runtime dep at startup.
+
+    HARD deps (FATAL on missing): PyYAML, Pillow — break core handlers if absent.
+    SOFT deps (degraded feature): numpy — breaks Magic compositor specifically.
+
+    Emits structured ``[startup:capabilities]`` line that log scrapers + the
+    UI's `/api/bg/session-state.capabilities` reader can parse. Mirrors the
+    existing WaveSpeed smoke pattern at lines 11614–11638.
+
+    Audit C4-1/C4-2/C4-3/C4-4 origin: yaml + numpy were missing in the
+    runtime Python env on 2026-05-19; first user click on Magic surfaced
+    a generic 500. This check fails fast on hard deps and degrades cleanly
+    on soft deps.
+    """
+    hard = {"PyYAML": "yaml", "Pillow": "PIL"}
+    soft = {"numpy": "numpy", "scipy": "scipy"}  # both needed for magic_compositor
+    missing_hard: list[str] = []
+    missing_soft: list[str] = []
+    for label, mod in hard.items():
+        try:
+            __import__(mod)
+        except ImportError:
+            missing_hard.append(label)
+    for label, mod in soft.items():
+        try:
+            __import__(mod)
+        except ImportError:
+            missing_soft.append(label)
+
+    capabilities = {
+        "yaml": "PyYAML" not in missing_hard,
+        "pillow": "Pillow" not in missing_hard,
+        "magic_compositor": not missing_soft,
+    }
+    # Structured single-line capability report (parseable).
+    print(
+        f"[startup:capabilities] {json.dumps(capabilities, sort_keys=True)}",
+        flush=True,
+    )
+
+    if missing_soft:
+        for name in missing_soft:
+            print(
+                f"[startup:degraded] feature 'magic_compositor' disabled — "
+                f"'{name}' not installed. Install via `pip install -r "
+                f"Production/tools/requirements.txt`.",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    if missing_hard:
+        for name in missing_hard:
+            print(
+                f"[startup:FATAL] hard-required runtime dep '{name}' missing. "
+                f"Install via `pip install -r Production/tools/requirements.txt` "
+                f"before starting the server.",
+                file=sys.stderr,
+                flush=True,
+            )
+        sys.exit(4)
+
+
 def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_event_dir: Path | None = None) -> int:
     storyboard_path = event_dir / storyboard_name
     if not storyboard_path.is_file():
@@ -11593,6 +11672,11 @@ def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_e
     # Closes audit findings C1-5 / C1-6 / C1-7 / C1-8 / C1-9.
     # See Production/lib/paths.py for the canonical helpers.
     _bg_module().init_bg_paths(event_dir)
+
+    # P2 / LD-505 Phase C: dependency-presence smoke. Hard deps fail-loud
+    # with [FATAL]; soft deps degrade with structured [startup:capabilities]
+    # line that the UI / log scraper can parse. Audit C4-1/C4-2/C4-3/C4-4.
+    _check_runtime_capabilities()
 
     pid_file = event_dir / "production_server.pid"
     cleanup_stale(pid_file)
@@ -11650,34 +11734,84 @@ def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_e
         except OSError as exc:
             print(f"[startup] WARN: could not remove {orphan.name}: {exc}")
 
-    # BS5: Ghost-file scrub — on every startup, scan all option file references
-    # in state.json and mark any whose file no longer exists on disk as
-    # "ghost_cleaned". Prevents the browser from looping on 404s for options
-    # that were deleted (by a previous B+C clear, crash, or manual cleanup).
-    # Runs before AppContext so the storyboard loads clean state immediately.
+    # BS5 + P3 (LD-505 Phase C): Ghost-file scrub — v3 partition aware.
+    #
+    # Original BS5 (2026-04) walked `state["beats"]` (legacy v2 top-level
+    # shape). After v3 partitions landed (`state.videos.<role>.beats`),
+    # this walk found NOTHING and silently became a no-op for the whole
+    # ghost class — but printed "[startup:ghost_scrub] OK" giving the
+    # impression it worked. Audit C3-1.
+    #
+    # P3 fix: use lib.v3_partition._iter_v3_beats (also imported elsewhere
+    # for orphan-sweep + lipsync polling). Distinguish TRULY orphaned files
+    # (gone from disk + not in any archive dir) from manually archived
+    # files (still recoverable from _archive_*/) — only the former get
+    # status="ghost_cleaned"; archived files retain the option entry so the
+    # PR #73 enrichment (file_exists=false → "(archived)" label) gives Kim
+    # a recovery path. Walks every beat's phase_1.options[*] AND lipsync.file
+    # so the next-archive-event scenario doesn't recur (audit C2-4).
     _ghost_count = 0
+    _archived_count = 0
+    _archive_dirs = sorted(
+        d for d in state.clips_dir.iterdir()
+        if d.is_dir() and d.name.startswith("_archive_")
+    ) if state.clips_dir.exists() else []
+
+    def _is_in_archive(fname: str) -> bool:
+        return any((ad / fname).is_file() for ad in _archive_dirs)
+
     def _scrub_ghost_options(st: dict) -> None:
-        nonlocal _ghost_count
-        for _beat_id, _beat in (st.get("beats") or {}).items():
+        nonlocal _ghost_count, _archived_count
+        for _role, _beat_id, _beat in _iter_v3_beats(st):
+            # phase_1.options[*].file
             _opts = (_beat.get("phase_1") or {}).get("options") or []
             for _opt in _opts:
                 _fname = _opt.get("file")
                 if not _fname:
                     continue
-                _fpath = state.clips_dir / _fname
-                if not _fpath.is_file():
-                    _opt["status"] = "ghost_cleaned"
-                    _opt.pop("file", None)
-                    _ghost_count += 1
-                    print(f"[startup:ghost_scrub] {_beat_id}: cleared missing file {_fname!r}")
+                if (state.clips_dir / _fname).is_file():
+                    continue
+                if _is_in_archive(_fname):
+                    _archived_count += 1
+                    continue  # recoverable — leave entry; enrichment shows "(archived)"
+                _opt["status"] = "ghost_cleaned"
+                _opt.pop("file", None)
+                _ghost_count += 1
+                print(
+                    f"[startup:ghost_scrub] {_role}/{_beat_id}: cleared truly-orphan "
+                    f"option file {_fname!r}",
+                    flush=True,
+                )
+            # beat.lipsync.file
+            _ls = _beat.get("lipsync")
+            if isinstance(_ls, dict):
+                _lsfname = _ls.get("file")
+                if _lsfname and not (state.clips_dir / _lsfname).is_file():
+                    if not _is_in_archive(_lsfname):
+                        _beat["lipsync"] = None  # clear truly-orphan lipsync ref
+                        _ghost_count += 1
+                        print(
+                            f"[startup:ghost_scrub] {_role}/{_beat_id}: cleared "
+                            f"truly-orphan lipsync file {_lsfname!r}",
+                            flush=True,
+                        )
+                    else:
+                        _archived_count += 1
     try:
+        # P3: walk v3 partitions through mutate_state. Note: mutate_state takes
+        # a function that receives full state dict (legacy + v3 partitions);
+        # _iter_v3_beats handles both shapes internally.
         state.mutate_state(_scrub_ghost_options)
-        if _ghost_count:
-            print(f"[startup:ghost_scrub] cleaned {_ghost_count} ghost option(s)")
+        if _ghost_count or _archived_count:
+            print(
+                f"[startup:ghost_scrub] cleaned {_ghost_count} ghost; "
+                f"left {_archived_count} archived (recoverable via _archive_*/) ",
+                flush=True,
+            )
         else:
-            print("[startup:ghost_scrub] OK — no ghost options found")
+            print("[startup:ghost_scrub] OK — no ghost or archived files", flush=True)
     except Exception as _gs_exc:
-        print(f"[startup:ghost_scrub] WARN: scrub failed (non-fatal): {_gs_exc}")
+        print(f"[startup:ghost_scrub] WARN: scrub failed (non-fatal): {_gs_exc}", flush=True)
 
     app = AppContext(event_dir, storyboard_path, event_id, state, client)
 
