@@ -571,7 +571,16 @@
   }
 
   function updateSubmitBtn() {
-    btnSubmit.disabled = !(img && points.length >= 2 && sceneKey);
+    // T4-2 fix (2026-05-19) — accept the S5 v3.1 3-mode dispatch (LD-468/469/470).
+    // Before: gate required legacy `sceneKey` URL param. Modern callers post
+    // `?mode=magic_still&beat_id=...` (no scene_key) → button stayed disabled
+    // forever even after points were placed, blocking the entire magic workflow.
+    // Submit code at submitPath() already handles all 3 modes (line ~646).
+    const modeOk = mode === 'magic_still'
+                || mode === 'magic_video'
+                || mode === 'watercolor_animate'
+                || mode === 'magic_still_legacy';
+    btnSubmit.disabled = !(img && points.length >= 2 && (sceneKey || modeOk));
   }
 
   function updateYAML() {
@@ -622,8 +631,17 @@
 
   async function submitPath() {
     if (points.length < 2) return;
-    if (!animateMode && !sceneKey) {
-      alert('No scene_key or source in URL — cannot submit automatically.\nUse Copy YAML instead.');
+    // T4-2 (2026-05-19): accept the S5 v3.1 3-mode dispatch — submitPath()
+    // below explicitly handles 'magic_still' / 'magic_video' / 'watercolor_animate'
+    // at line ~655. The legacy gate only allowed sceneKey or animateMode, so
+    // mode='magic_still' (Kim's storyboard "Add magic on still" workflow) hit
+    // this alert + bailed before reaching the dispatch.
+    const modeOk = mode === 'magic_still'
+                || mode === 'magic_video'
+                || mode === 'watercolor_animate'
+                || mode === 'magic_still_legacy';
+    if (!animateMode && !sceneKey && !modeOk) {
+      alert('No scene_key, mode, or source in URL — cannot submit automatically.\nUse Copy YAML instead.');
       return;
     }
 
