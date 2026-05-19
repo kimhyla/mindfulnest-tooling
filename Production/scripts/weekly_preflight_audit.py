@@ -152,14 +152,24 @@ SHORTCUT_LD_CLASSIFICATION = {
     200: "EVENT_DRIVEN",   # SHORTCUT_LD_LINKAGE_SNAPSHOT_ONLY — re-classified 2026-05-07 RARE_NEVER → EVENT_DRIVEN. Trigger events: (a) Stage 4 kickoff OR (b) second contributor added to prod_locked_decisions writes; quarterly audit cadence in LD notes.
     # 201 SHORTCUT_PARTIAL_STATUS_NO_PCT_FIELD — closed 2026-05-07 (status=closed); v2 inventory (5→2 PARTIAL drop) closure trigger met. Removed from active classification dict; status='active' filter excludes it from query. Kept here as a comment for traceability.
     249: "PERIODIC",       # SHORTCUT_IDENTITY_PLATFORM_EVALUATION_20260418 — PERIODIC class per PERIODIC_CLASS_TECH_SPEC_v3 §B5 (quarterly identity-platform review). Directus MUST set review_cadence + next_review_date; NULL cadence surfaces PERIODIC_INVALID_CONFIGURATION.
-    569: "RARE_NEVER",     # SHORTCUT_CODEQL_LOCK_FILE_0644_ACCEPT_V1 — "if/when refactored to 0o600 or CodeQL rule changes".
-    570: "RARE_NEVER",     # SHORTCUT_CODEQL_REDOS_BOUNDED_INPUT_ACCEPT_V1 — "if/when regex refactored or CodeQL ReDoS rule gains length modeling".
-    571: "RARE_NEVER",     # SHORTCUT_CODEQL_FILES_EXISTENCE_TEST_ACCEPT_V1 — "if/when endpoints validate against allowlist".
-    572: "RARE_NEVER",     # SHORTCUT_CODEQL_LOCALHOST_FFMPEG_LIST_FORM_ACCEPT_V1 — "if/when ffmpeg paths validated upstream".
+    # 569-575 CodeQL-acceptance SHORTCUTs — re-classified 2026-05-19 from
+    # RARE_NEVER → PERIODIC/annually. Rationale: their closure trigger is
+    # "upstream CodeQL rule update OR code refactor against allowlist" —
+    # neither is a 14-day calendar event. RARE_NEVER + 14-day cap force-fired
+    # the audit forever (cap recurs every 14d from date_locked with no
+    # "satisfied" exit). PERIODIC/annually gives legitimate annual review
+    # cadence (review_cadence + next_review_date=2027-05-19 set on each LD)
+    # without weekly noise. The LDs remain ACTIVE acceptance gates; only the
+    # audit class changed. Resolves prod_blockers #128/129/130/131/132/133/
+    # 134/135/136/137/138/139/151 (auto-surfaced "closure imminent" notices).
+    569: "PERIODIC",       # SHORTCUT_CODEQL_LOCK_FILE_0644_ACCEPT_V1 — "if/when refactored to 0o600 or CodeQL rule changes". Annual review.
+    570: "PERIODIC",       # SHORTCUT_CODEQL_REDOS_BOUNDED_INPUT_ACCEPT_V1 — "if/when regex refactored or CodeQL ReDoS rule gains length modeling". Annual review.
+    571: "PERIODIC",       # SHORTCUT_CODEQL_FILES_EXISTENCE_TEST_ACCEPT_V1 — "if/when endpoints validate against allowlist". Annual review.
+    572: "PERIODIC",       # SHORTCUT_CODEQL_LOCALHOST_FFMPEG_LIST_FORM_ACCEPT_V1 — "if/when ffmpeg paths validated upstream". Annual review.
     # 573 SHORTCUT_CODEQL_VITE_BUILD_ARTIFACT_POSTMESSAGE_V1 closed 2026-05-08 (status=superseded);
     #     closure event fired in PR #8 commits f2b8eb7 (origin-allowlist) + b4c199f (bundle rebuild).
-    574: "RARE_NEVER",     # SHORTCUT_CODEQL_REALPATH_SINK_INSIDE_CHECK_V1 — "if/when CodeQL py/path-injection gains sanitizer-recognition for resolve()-inside-containment-check idiom OR code refactored to helper".
-    575: "RARE_NEVER",     # SHORTCUT_CODEQL_HTTP_RESPONSE_SPLITTING_TYPED_REBUILD_V1 — "if/when CodeQL py/http-response-splitting gains recognition for typed urllib.parse component rebuild OR response uses server-controlled origin".
+    574: "PERIODIC",       # SHORTCUT_CODEQL_REALPATH_SINK_INSIDE_CHECK_V1 — "if/when CodeQL py/path-injection gains sanitizer-recognition for resolve()-inside-containment-check idiom OR code refactored to helper". Annual review.
+    575: "PERIODIC",       # SHORTCUT_CODEQL_HTTP_RESPONSE_SPLITTING_TYPED_REBUILD_V1 — "if/when CodeQL py/http-response-splitting gains recognition for typed urllib.parse component rebuild OR response uses server-controlled origin". Annual review.
 }
 
 RARE_NEVER_CAP_DAYS = 14
