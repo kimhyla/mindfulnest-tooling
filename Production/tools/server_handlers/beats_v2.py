@@ -1,3 +1,8 @@
+# TECHNICAL DEBT: _send_json error paths in this module remain pre-V59
+# Phase 7 (per PR #60 scope). Continued migration tracked under
+# SHORTCUT_V59_PHASE_7_BEATS_V2_MIGRATION_V1 (to be locked in a follow-up
+# pass). The helper docstring documents dual-shape acceptance, so this is
+# not a client-break — only governance hygiene.
 """V2 beat/state handlers — V59 Phase 4 Pass 1 module 3.
 
 Handlers extracted from production_server.py for /api/v2/* routes.
@@ -340,18 +345,8 @@ def handle_v2_beat_create(h, body: dict) -> None:
 
     def _async_audit():
         try:
-            _libdir = os.path.join(os.path.dirname(__file__), os.pardir, "credentials_lib")
-            if _libdir not in sys.path:
-                sys.path.insert(0, _libdir)
-            from credentials import load_credentials  # type: ignore
-            from directus import DirectusClient  # type: ignore
-            creds = load_credentials()
-            dc = DirectusClient(
-                creds["directus_url"],
-                creds["directus_email"],
-                creds["directus_password"],
-            )
-            dc.create("prod_activity_log", {
+            from lib.directus import try_post_or_queue
+            try_post_or_queue("prod_activity_log", {
                 "action": "v2_beat_create",
                 "details": {
                     "task_id": "tier3-server-20260418",
@@ -571,7 +566,14 @@ def handle_v2_event_state(h, path: str) -> None:
                     try:
                         _beat["image_path"] = os.path.relpath(_ap, event_dir_abs)
                     except ValueError:
-                        pass
+                        print(
+                            f"[v2-state] WARN: image_path relpath failed for "
+                            f"beat_id={_bid!r} source={_ap!r} "
+                            f"(outside event dir {event_dir_abs!r}); "
+                            f"keeping prior image_path={_beat.get('image_path')!r}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
     except Exception as _exc:
         print(f"[v2-state] WARN: image_path projection failed: {_exc!r}", flush=True)
 

@@ -183,4 +183,73 @@ test.describe('Track B — LD testid smoke coverage', () => {
     const buttons = page.getByRole('button');
     expect(await buttons.count()).toBeGreaterThan(0);
   });
+
+  test('F-127 — beat-composite-preview visible when animated + selected', async ({
+    page,
+  }) => {
+    await page.route('**/api/v2/event/*/state', async (route) => {
+      const beat: Record<string, unknown> = {
+        speaker: 'Tessa',
+        text: 'F-127 composite preview beat.',
+        audio_file: `audio/${BEAT_ID}.mp3`,
+        kim_done: false,
+        trim_in: 0,
+        trim_out: 'full',
+        phase_1: {
+          audio_delay: 0,
+          options: [
+            { file: 'animations/opt1_f127.mp4', status: 'completed' },
+            { file: 'animations/opt2_f127.mp4', status: 'completed' },
+          ],
+          selected_option: 1,
+        },
+      };
+      const partition = {
+        video_role: 'intro',
+        video_label: 'Intro',
+        beats: { [BEAT_ID]: beat },
+        display_order: [BEAT_ID],
+      };
+      const resPartition = {
+        video_role: 'resolution',
+        video_label: 'Resolution',
+        beats: { [BEAT_ID]: beat },
+        display_order: [BEAT_ID],
+      };
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          _module_version: 1,
+          videos: { intro: partition, resolution: resPartition },
+        }),
+      });
+    });
+    await page.route('**/api/event/list', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          events: [{ event_id: 'Event_track_b_ld', label: 'Track B LD smoke' }],
+        }),
+      });
+    });
+    await page.route('**/api/event/current', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ event_id: 'Event_track_b_ld' }),
+      });
+    });
+    await page.route('**/api/cr/library', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ images: [] }),
+      });
+    });
+    await stubMedia(page);
+    await gotoStoryboard(page);
+    await expect(page.locator(`[data-testid="beat-${BEAT_INDEX}-composite-preview"]`)).toBeVisible();
+  });
 });

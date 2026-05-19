@@ -66,6 +66,8 @@ interface BeatState {
     selected_option?: number;
     options?: Array<{ file?: string; status?: string }>;
     audio_delay?: number;
+    trim_start?: number;
+    trim_end?: number | null;
   };
   // S5.5e — fields read by the beat-level state machine (LD BEAT_LIFECYCLE_STATE_MACHINE_V1).
   // beat.final block is the "is final?" signal per Cursor v8 (NOT a use_as_final boolean).
@@ -329,6 +331,21 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
       setHoldDuration(String(persisted));
     }
   }, [beat.final?.kenburns?.duration_s]);
+  useEffect(() => {
+    setDelaySec(String(
+      beat.phase_1?.audio_delay
+        ?? beat.audio_delay
+        ?? beat.delay_seconds
+        ?? '0.0',
+    ));
+  }, [beat.phase_1?.audio_delay, beat.audio_delay, beat.delay_seconds]);
+  useEffect(() => {
+    setTrimIn(String(beat.phase_1?.trim_start ?? beat.trim_in ?? '0.0'));
+  }, [beat.phase_1?.trim_start, beat.trim_in]);
+  useEffect(() => {
+    const out = beat.phase_1?.trim_end ?? beat.trim_out;
+    setTrimOut(out === null || out === undefined ? 'full' : String(out));
+  }, [beat.phase_1?.trim_end, beat.trim_out]);
 
   // ----------------------------------------------------------------
   // Polling (animate + lipsync)
@@ -458,10 +475,17 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
     window.setTimeout(pollAnim, POLL_ANIMATE_MS);
   };
   const onSelectOption = (optionIndex: number) =>
-    runMutation('Select option', 'select', { option_index: optionIndex });
+    // production_server.py::_handle_select — {"ok": bool, "lipsync_source_changed": ...}
+    runMutation('Select option', 'select', { option_index: optionIndex }, [
+      { key: 'ok', equals: true },
+    ]);
   const onAddOptions = async () => {
     if (lifecycle === 'lipsync_pending' && !window.confirm('This will discard current Options B & C and generate 2 fresh alternatives. Option A is preserved. A lipsync is queued — this may orphan it. Continue?')) return;
-    const ok = await runMutation('Add options', 'beat_add_options', {});
+    // production_server.py::_handle_add_options_startend — ok/beat/path/...
+    const ok = await runMutation('Add options', 'beat_add_options', {}, [
+      { key: 'ok', equals: true },
+      { key: 'beat', type: 'string' },
+    ]);
     if (!ok) return;
     // Poll until all submitted options reach a terminal state (completed/failed).
     // Mirrors the onAnimate poll loop — Kling is async so the initial response
@@ -478,7 +502,11 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
     window.setTimeout(pollAddOptions, POLL_ANIMATE_MS);
   };
   const onSwapToA = (fromSlot: number) =>
-    runMutation('Move to A', 'beat_swap_to_a', { from_slot: fromSlot });
+    // beats_v2.py::handle_v2_beat_swap_to_a — status/beat/from_slot/...
+    runMutation('Move to A', 'beat_swap_to_a', { from_slot: fromSlot }, [
+      { key: 'status', equals: 'swapped' },
+      { key: 'beat', type: 'string' },
+    ]);
   // LD-778 4-gate body validation. Specs reflect ACTUAL handler response shapes
   // (verified by reading the server source, not the spec ideal):
   //   - /api/lipsync (vendor_jobs.handle_lipsync_submit) returns
@@ -581,14 +609,22 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
   const onApplyTrim = () => {
     const tIn = parseFloat(trimIn);
     const tOut = trimOut === 'full' ? null : parseFloat(trimOut);
+    // beats_legacy.py::handle_beat_trim — beat/trim_start[/trim_end]
     return runMutation('Trim', 'beat_trim', {
       trim_in: isNaN(tIn) ? 0 : tIn,
       trim_out: tOut,
-    });
+    }, [
+      { key: 'beat', type: 'string' },
+      { key: 'trim_start', type: 'number' },
+    ]);
   };
   const onApplyDelay = () => {
     const d = parseFloat(delaySec);
-    return runMutation('Delay', 'beat_delay', { delay_seconds: isNaN(d) ? 0 : d });
+    // beats_legacy.py::handle_beat_delay — beat/audio_delay
+    return runMutation('Delay', 'beat_delay', { delay_seconds: isNaN(d) ? 0 : d }, [
+      { key: 'beat', type: 'string' },
+      { key: 'audio_delay', type: 'number' },
+    ]);
   };
 
   // Visibility per state-machine table (S5.5e spec §3.1).
