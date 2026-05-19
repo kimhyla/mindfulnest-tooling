@@ -4397,6 +4397,12 @@ _V2_MODULE_FIELD_VALIDATORS = {
     "phase_a_watercolor_cues_json": _v2_validate_watercolor_cues_json,
     "phase_a_preview_file": _v2_validate_str,
     "phase_a_status": _v2_validate_status,
+    # Phase A stitched outputs (PHASE_A_TOP_LEVEL_STATE_V1): added to
+    # _V2_MODULE_ALLOWED_FIELDS at 4281-4282 but were missing validators —
+    # caught by test_validator_dispatch_covers_all_whitelist_fields. P5
+    # 2026-05-19.
+    "phase_a_stitched_file": _v2_validate_str,
+    "phase_a_stitched_mtime": _v2_validate_mtime,
 }
 
 # Maps v2 field name -> L[] field name for sidecar projection

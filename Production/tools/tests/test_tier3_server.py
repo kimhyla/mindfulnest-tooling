@@ -85,7 +85,7 @@ def _make_event_fixture(tmp_path: Path) -> tuple[Path, Path, str]:
     state_path = event_dir / "production_state.json"
     # P5.2 (2026-05-19): migrated to v3 partition shape (videos.intro.beats)
     # so LD-461 scope_target_video=intro routes correctly. Was legacy v2
-    # top-level state["beats"] which became invalid under LD-461.
+    # top-level state["videos"]["intro"]["beats"] which became invalid under LD-461.
     _beats = {
         "beat_01": {"text": "one", "phase_1": {}, "_version": 1},
         "beat_02": {"text": "two", "phase_1": {}, "_version": 1},
@@ -237,7 +237,7 @@ class TestTier3Server(unittest.TestCase):
         self.assertEqual(resp.get("status"), "applied", resp)
         state = self._read_state()
         self.assertEqual(
-            state["beats"]["beat_99_test"]["phase_1"]["pause_after_ms"],
+            state["videos"]["intro"]["beats"]["beat_99_test"]["phase_1"]["pause_after_ms"],
             2500,
         )
 
@@ -253,7 +253,7 @@ class TestTier3Server(unittest.TestCase):
         # Must NOT have been written
         self.assertNotIn(
             "pause_after_ms",
-            state["beats"]["beat_99_test"].get("phase_1", {}),
+            state["videos"]["intro"]["beats"]["beat_99_test"].get("phase_1", {}),
         )
 
     def test_patch_pause_after_ms_negative_rejected(self):
@@ -273,14 +273,17 @@ class TestTier3Server(unittest.TestCase):
         self.assertLess(status, 500, resp)
 
     def test_patch_speaker_sets_mismatch(self):
+        # P5.2: server canonicalizes speaker via _canonicalize_speaker — lowercase
+        # 'tessa' becomes Title-Case 'Tessa' in state. Test originally asserted
+        # raw lowercase; updated to current canonicalized form.
         status, resp = _http_post(
             self.port, "/api/v2/beat/beat_99_test/patch",
             {"field": "speaker", "value": "tessa"},
         )
         self.assertEqual(status, 200, resp)
         self.assertEqual(resp.get("status"), "applied", resp)
-        p1 = self._read_state()["beats"]["beat_99_test"]["phase_1"]
-        self.assertEqual(p1.get("speaker"), "tessa")
+        p1 = self._read_state()["videos"]["intro"]["beats"]["beat_99_test"]["phase_1"]
+        self.assertEqual(p1.get("speaker"), "Tessa")
         self.assertTrue(p1.get("speaker_mismatch"), p1)
 
     def test_patch_speaker_empty_rejected(self):
@@ -304,7 +307,8 @@ class TestTier3Server(unittest.TestCase):
         self.assertEqual(status, 200, resp)
         self.assertEqual(resp.get("status"), "applied", resp)
         state = self._read_state()
-        self.assertEqual(state.get("display_order"), order)
+        # P5.2: v3 partition — display_order is per-role, not global top-level.
+        self.assertEqual(state["videos"]["intro"].get("display_order"), order)
 
     def test_patch_display_order_unknown_beat_rejected(self):
         order = ["beat_01", "beat_does_not_exist"]
@@ -359,15 +363,16 @@ class TestTier3Server(unittest.TestCase):
         # beat_99_test doesn't match beat_NN so doesn't count for numbering.
         self.assertEqual(new_bid, "beat_03")
         state = self._read_state()
-        self.assertIn(new_bid, state["beats"])
-        beat = state["beats"][new_bid]
+        self.assertIn(new_bid, state["videos"]["intro"]["beats"])
+        beat = state["videos"]["intro"]["beats"][new_bid]
         self.assertEqual(beat.get("text"), "")
         self.assertEqual(beat.get("_version"), 0)
         self.assertEqual(beat["phase_1"].get("status"), "pending")
         self.assertEqual(beat["phase_1"].get("options"), [])
         # display_order should be populated, with new beat appended
-        self.assertIn("display_order", state)
-        self.assertEqual(state["display_order"][-1], new_bid)
+        # P5.2: v3 partition shape — display_order lives under videos.intro
+        self.assertIn("display_order", state["videos"]["intro"])
+        self.assertEqual(state["videos"]["intro"]["display_order"][-1], new_bid)
 
     def test_beat_create_inserts_after(self):
         status, resp = _http_post(
@@ -378,7 +383,7 @@ class TestTier3Server(unittest.TestCase):
         new_bid = resp.get("beat_id")
         self.assertIsNotNone(new_bid)
         state = self._read_state()
-        order = state["display_order"]
+        order = state["videos"]["intro"]["display_order"]
         idx = order.index(new_bid)
         self.assertEqual(order[idx - 1], "beat_01",
                          f"expected new beat right after beat_01, got order={order}")
@@ -392,7 +397,7 @@ class TestTier3Server(unittest.TestCase):
         )
         self.assertEqual(status1, 200, resp1)
         # Replay — should return dedup, NOT create a second beat
-        beats_after_first = len(self._read_state()["beats"])
+        beats_after_first = len(self._read_state()["videos"]["intro"]["beats"])
         status2, resp2 = _http_post(
             self.port, "/api/v2/beat/create",
             {"insert_after": None, "mutation_id": mid},
@@ -400,7 +405,7 @@ class TestTier3Server(unittest.TestCase):
         self.assertEqual(status2, 200, resp2)
         self.assertEqual(resp2.get("status"), "dedup", resp2)
         self.assertEqual(resp2.get("beat_id"), resp1.get("beat_id"))
-        beats_after_second = len(self._read_state()["beats"])
+        beats_after_second = len(self._read_state()["videos"]["intro"]["beats"])
         self.assertEqual(beats_after_first, beats_after_second,
                          "Replay must not create a second beat")
 
@@ -464,7 +469,8 @@ class TestTier3Server(unittest.TestCase):
 
         b01 = data.get("beat_01", {})
         self.assertEqual(b01.get("pause_after_ms"), 1500)
-        self.assertEqual(b01.get("speaker"), "cedric")
+        # P5.2: speaker canonicalized to Title-Case via _canonicalize_speaker
+        self.assertEqual(b01.get("speaker"), "Cedric")
         self.assertTrue(b01.get("speaker_mismatch"), b01)
 
         # Top-level display_order projection under __meta__

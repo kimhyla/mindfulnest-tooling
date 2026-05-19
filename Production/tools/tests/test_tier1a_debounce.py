@@ -221,6 +221,18 @@ def _http_post(port: int, path: str, body: dict,
 # Test class
 # ---------------------------------------------------------------------------
 
+@unittest.skip(
+    "P5 deferral 2026-05-19: Tier 1A debounce tests assert auto-TTS-regen "
+    "behavior of /api/beat/update_text. v59 storyboard intentionally removed "
+    "auto-regen-on-text-edit in favor of an explicit 'Regen Audio' button. "
+    "The legacy handler now returns early in v59-shell mode without invoking "
+    "the TTS regen pipeline (beats_legacy.py:613-626 v59_shell branch). Kim "
+    "2026-05-19 confirmed she'd PREFER this (\"sometimes i edit just for kling "
+    "and dont need a new elevenlabs audio\"). Tests are testing obsolete "
+    "contract. Tracking: /tmp/v59_feature_parity_audit_20260519.md. To re-enable "
+    "either: (a) update fixture to use a non-v59-shell storyboard, OR (b) "
+    "remove auto-regen tests entirely since the feature is intentionally gone."
+)
 class TestTier1ADebounceHTTP(unittest.TestCase):
     """HTTP-based tests per Tier 1A spec."""
 
