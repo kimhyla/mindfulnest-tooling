@@ -1596,3 +1596,85 @@ def handle_beat_trim(h, body: dict)-> None:
     h._send_json(200, result)
 
 
+def handle_beat_undo_final(h, body: dict) -> None:
+    """Clear Ken Burns still-as-final on a beat (LD-761 undo-final v1).
+
+    POST {beat|beat_id, scope_event_id, scope_video_role}
+    Only beats with final.source == 'still_image' are in scope; other final
+    sources return NOTHING_TO_UNDO.
+    """
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+
+    beat_id = body.get("beat") or body.get("beat_id")  # BODY_KEY_ALLOW: beat legacy alias
+    if not beat_id:
+        return h._send_error_v59(
+            400,
+            error_code="MISSING_BEAT",
+            error_message="beat required",
+            retry_safe=False,
+        )
+
+    # [INFERRED — verify] Default video_role 'intro' when neither
+    # scope_video_role nor scope_target_video is supplied. Mirrors the
+    # default used in handle_beat_use_still_as_final, handle_beat_done_toggle,
+    # and handle_beat_trim (beats_legacy.py:1297, 1502, 1574). v59 clients
+    # always inject scope_target_video via pathappPatch; the default is the
+    # legacy/pre-v59 fallback. Most events have 'intro' as their primary
+    # video; resolution + standalone require explicit scope.
+    video_role = (
+        (body or {}).get("scope_video_role")
+        or (body or {}).get("scope_target_video")
+        or "intro"
+    )
+    outcome: dict = {"status": "missing"}
+
+    def mutate(partition: dict) -> None:
+        b = (partition.get("beats") or {}).get(beat_id)
+        if not b:
+            outcome["status"] = "missing"
+            return
+        final = b.get("final") or {}
+        if not final or final.get("source") != "still_image":
+            outcome["status"] = "nothing"
+            return
+        b.pop("final", None)
+        outcome["status"] = "ok"
+
+    h.app.state.mutate_video_state(video_role, mutate)
+    if outcome["status"] == "missing":
+        return h._send_error_v59(
+            404,
+            error_code="GENERIC_ERROR",
+            error_message=f"beat {beat_id} not found",
+            retry_safe=False,
+        )
+    if outcome["status"] == "nothing":
+        return h._send_error_v59(
+            400,
+            error_code="NOTHING_TO_UNDO",
+            error_message="no still_image final to undo",
+            retry_safe=False,
+        )
+
+    try:
+        from lib.directus import try_post_or_queue
+        try_post_or_queue("prod_activity_log", {
+            "action": "BEAT_UNDO_FINAL_V1",
+            "performed_by": "handle_beat_undo_final",
+            "details": {
+                "event_id": str(h.app.event_id),
+                "beat_id": beat_id,
+                "video_role": video_role,
+            },
+        })
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[beat-undo-final] activity log write failed (non-blocking): {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    return h._send_json(200, {"ok": True, "beat": beat_id})
+
+

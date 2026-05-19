@@ -141,7 +141,23 @@ test.describe('S3 — StoryboardTab refresh logic beyond R1', () => {
     });
     await page.route('**/api/beat/use_as_final', async (route) => {
       phase = 'final';
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+      // Mock must mirror the REAL server response so the LD-778 expectField
+      // gate ({status: 'ok', beat: string}) passes. Pre-LD-778 mocks used
+      // minimal {"ok":true} bodies; after the 4-gate validation was added,
+      // those silently fail the gate (no toast, but onMutated() never fires
+      // and lifecycle never flips to 'final'). Real handler:
+      // production_server.py _handle_use_as_final returns
+      // {status: 'ok', beat, file, final}.
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          status: 'ok',
+          beat: 'beat_01',
+          file: 'beat_01_opt0.mp4',
+          final: { source: 'raw_option', source_option: 0, file: 'beat_01_opt0.mp4' },
+        }),
+      });
     });
     await gotoApp(page);
     await page.click('[data-testid="tab-storyboard"]');

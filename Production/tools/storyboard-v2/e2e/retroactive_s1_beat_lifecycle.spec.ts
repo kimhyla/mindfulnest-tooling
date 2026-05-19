@@ -263,7 +263,17 @@ test.describe('S1 — beat lifecycle state machine', () => {
     await page.route('**/api/beat/use_as_final', async (route) => {
       const req = route.request();
       useAsFinalReqs.push({ url: req.url(), body: req.postDataJSON() });
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+      // LD-778 expectField gate compliance — see retroactive_s3:142 comment.
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          status: 'ok',
+          beat: 'beat_01',
+          file: 'beat_01_opt0.mp4',
+          final: { source: 'raw_option', source_option: 0, file: 'beat_01_opt0.mp4' },
+        }),
+      });
     });
     await gotoApp(page);
     await page.click('[data-testid="tab-storyboard"]');
