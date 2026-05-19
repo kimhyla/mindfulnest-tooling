@@ -9,7 +9,7 @@ export interface BeatCompositePreviewBeat {
   _version?: number;
   audio_file?: string;
   phase_1?: {
-    options?: Array<{ file?: string; status?: string }>;
+    options?: Array<{ file?: string; status?: string; file_exists?: boolean }>;
     selected_option?: number;
   };
 }
@@ -63,8 +63,16 @@ export function BeatCompositePreview({
   const audioDelaySec = parseDelaySec(audioDelay);
   const version = beat._version ?? 0;
 
-  const optFile = beat.phase_1?.options?.[previewOpt - 1]?.file;
-  const videoSrc = optFile
+  // T1-5 (2026-05-19): gate URL construction on file_exists !== false so
+  // archived options (resolution/beat_01 phase_1.options[*] post-archive)
+  // don't construct a 404-bound URL that fires <video> 'error' silently.
+  // Without this gate, the play button on archived options silently caught
+  // the play() rejection at the try/catch and left the preview as a black
+  // square with no user feedback. Matches T1-1 gating in StoryboardTab.tsx.
+  const _curOpt = beat.phase_1?.options?.[previewOpt - 1];
+  const optFile = _curOpt?.file;
+  const optFileExists = _curOpt?.file_exists !== false;  // undefined ⇒ assume true (back-compat)
+  const videoSrc = optFile && optFileExists
     ? `${SERVER_BASE}/asset/${optFile}?v=${version}`
     : null;
   const audioSrc = beat.audio_file
@@ -169,10 +177,22 @@ export function BeatCompositePreview({
           {Array.from({ length: optionCount }).map((_, i) => {
             const oi = i + 1;
             const opt = beat.phase_1?.options?.[i];
-            const ready = !!(opt?.file && opt?.status !== 'pending' && opt?.status !== 'failed');
+            const archived = !!(opt?.file && opt?.file_exists === false);
+            const ready = !!(
+              opt?.file
+              && !archived
+              && opt?.status !== 'pending'
+              && opt?.status !== 'failed'
+            );
+            // T1-5: surface archived options explicitly in the dropdown so
+            // user can pick a non-archived one rather than getting a silent
+            // black-square preview.
+            const label = archived
+              ? ` (archived)`
+              : !ready ? ' (pending)' : '';
             return (
               <option key={oi} value={String(oi)} disabled={!ready}>
-                opt {oi}{!ready ? ' (pending)' : ''}
+                opt {oi}{label}
               </option>
             );
           })}

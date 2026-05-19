@@ -11688,9 +11688,16 @@ def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_e
         print(f"ERROR: port {SERVER_PORT} already in use", file=sys.stderr)
         return 3
 
-    # Parse API keys — find repo root by walking up
-    root = Path(__file__).resolve().parents[2]
-    keys = parse_api_keys(root / "Production" / "API_KEYS_MASTER.md")
+    # Parse API keys — LD-505 Phase C (T1-4, 2026-05-19): API_KEYS_MASTER.md
+    # is DATA, not code (.gitignored, Dropbox-only). Was anchored on tooling
+    # repo root via `Path(__file__).resolve().parents[2]` → file MISSING under
+    # LD-505 dual-canonical-roots when server runs from tooling. Result:
+    # parse_api_keys returned empty → no WaveSpeed key → /api/animate 500
+    # ("WaveSpeed client not configured") on every Regenerate B + C click,
+    # even without --doppler-run wrapper. Use lib/paths.API_KEYS_MASTER_PATH
+    # (same canonical resolver credentials.py uses for the Directus + EL keys).
+    from lib.paths import API_KEYS_MASTER_PATH
+    keys = parse_api_keys(API_KEYS_MASTER_PATH)
     client: WaveSpeedClient | None = None
     if keys.get("wavespeed"):
         client = WaveSpeedClient(keys["wavespeed"])
