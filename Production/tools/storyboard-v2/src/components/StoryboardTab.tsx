@@ -312,8 +312,16 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
       });
     }
   };
-  const [trimIn, setTrimIn] = useState<string>(String(beat.trim_in ?? '0.0'));
-  const [trimOut, setTrimOut] = useState<string>(String(beat.trim_out ?? 'full'));
+  // LD-756 TRIM_INPUT_SEMANTICS_SECONDS_FROM_END_V1 (locked 2026-05-17,
+  // shipped 2026-05-20): UI inputs are seconds-FROM-FRONT + seconds-FROM-END
+  // so Kim doesn't have to compute total-duration minus desired-end-time.
+  // Server still stores absolute trim_start + trim_end timestamps. Conversion
+  // happens at 3 client-side points: hydration useEffect (below), onApplyTrim,
+  // onPreviewTrim. Duration source: beat.audio_duration_s (populated after
+  // first TTS regen; lipsync video duration is audio_duration_s + ~0.4s
+  // tailroom per LD-779 — close enough for trim semantics).
+  const [trimFrontSec, setTrimFrontSec] = useState<string>('0.0');
+  const [trimBackSec, setTrimBackSec] = useState<string>('0.0');
   // L5 fix 2026-05-16 per STORYBOARD_AUDIO_DELAY_READ_NESTED_PATH_V2: server
   // persists at beat.phase_1.audio_delay (nested) and the bootstrap
   // /api/v2/event/<id>/state response returns the raw state.json — so the
@@ -348,13 +356,29 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
         ?? '0.0',
     ));
   }, [beat.phase_1?.audio_delay, beat.audio_delay, beat.delay_seconds]);
+  // LD-756 hydration: front_sec = trim_start (absolute = relative-from-start).
   useEffect(() => {
-    setTrimIn(String(beat.phase_1?.trim_start ?? beat.trim_in ?? '0.0'));
+    const start = beat.phase_1?.trim_start ?? beat.trim_in;
+    setTrimFrontSec(start === null || start === undefined ? '0.0' : String(start));
   }, [beat.phase_1?.trim_start, beat.trim_in]);
+  // LD-756 hydration: back_sec = duration - trim_end (when trim_end set), else 0.
   useEffect(() => {
-    const out = beat.phase_1?.trim_end ?? beat.trim_out;
-    setTrimOut(out === null || out === undefined ? 'full' : String(out));
-  }, [beat.phase_1?.trim_end, beat.trim_out]);
+    const trimEnd = beat.phase_1?.trim_end ?? beat.trim_out;
+    if (trimEnd === null || trimEnd === undefined || trimEnd === 'full') {
+      setTrimBackSec('0.0');
+      return;
+    }
+    const dur = beat.audio_duration_s;
+    if (typeof dur === 'number' && Number.isFinite(dur)) {
+      const back = Math.max(0, dur - Number(trimEnd));
+      setTrimBackSec(back.toFixed(2));
+    } else {
+      // Duration not yet known — leave as 0.0 until audio metadata arrives.
+      // (LD-756 fallback: trimBackSec stays 0.0 if duration unknown; apply
+      // will fail loud if user types non-zero back without duration.)
+      setTrimBackSec('0.0');
+    }
+  }, [beat.phase_1?.trim_end, beat.trim_out, beat.audio_duration_s]);
 
   // ----------------------------------------------------------------
   // Polling (animate + lipsync)
@@ -630,14 +654,24 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
         return;
       }
     }
-    const tIn = parseFloat(trimIn);
-    const trimInSec = isNaN(tIn) ? 0 : Math.max(0, tIn);
-    const tOut = trimOut === 'full' ? null : parseFloat(trimOut);
+    // LD-756 conversion: front input is seconds-from-front (= absolute trim_in).
+    // back input is seconds-from-end, so absolute trim_out = duration - back.
+    const frontSec = parseFloat(trimFrontSec);
+    const trimInSec = isNaN(frontSec) ? 0 : Math.max(0, frontSec);
+    const backSec = parseFloat(trimBackSec);
+    const backSecSafe = isNaN(backSec) ? 0 : Math.max(0, backSec);
+    let tOut: number | null = null;
+    if (backSecSafe > 0) {
+      const dur = Number.isFinite(video!.duration) ? video!.duration : (beat.audio_duration_s ?? NaN);
+      if (Number.isFinite(dur)) {
+        tOut = Math.max(trimInSec + 0.01, dur - backSecSafe);
+      }
+    }
     if (trimPreviewListenerRef.current) {
       video.removeEventListener('timeupdate', trimPreviewListenerRef.current);
     }
     const onTimeUpdate = () => {
-      const end = tOut === null || isNaN(tOut)
+      const end = tOut === null
         ? (Number.isFinite(video!.duration) ? video!.duration : Infinity)
         : tOut;
       if (video!.currentTime >= end) {
@@ -660,12 +694,32 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
     }
   };
   const onApplyTrim = () => {
-    const tIn = parseFloat(trimIn);
-    const tOut = trimOut === 'full' ? null : parseFloat(trimOut);
-    // beats_legacy.py::handle_beat_trim — beat/trim_start[/trim_end]
+    // LD-756 conversion: front = absolute trim_in. back > 0 means trim N
+    // seconds from the back → absolute trim_out = duration - back. back == 0
+    // means no end trim → trim_out = null. Fail loud per spec if user typed
+    // back > 0 without a known duration (audio_duration_s populates after
+    // first TTS regen; if missing, prompt for that).
+    const frontSec = parseFloat(trimFrontSec);
+    const front = isNaN(frontSec) ? 0 : Math.max(0, frontSec);
+    const backSec = parseFloat(trimBackSec);
+    const back = isNaN(backSec) ? 0 : Math.max(0, backSec);
+    let trimOutAbsolute: number | null = null;
+    if (back > 0) {
+      const dur = beat.audio_duration_s;
+      if (!Number.isFinite(dur)) {
+        pushToast({
+          kind: 'error',
+          message: 'Trim back > 0 needs known duration — click Regen Audio to populate audio_duration_s first.',
+          source: `beat-${index}-trim-apply-no-duration`,
+        });
+        return Promise.resolve(undefined);
+      }
+      trimOutAbsolute = Math.max(front + 0.01, (dur as number) - back);
+    }
+    // beats_legacy.py::handle_beat_trim — beat/trim_start[/trim_end] (absolute timestamps)
     return runMutation('Trim', 'beat_trim', {
-      trim_in: isNaN(tIn) ? 0 : tIn,
-      trim_out: tOut,
+      trim_in: front,
+      trim_out: trimOutAbsolute,
     }, [
       { key: 'beat', type: 'string' },
       { key: 'trim_start', type: 'number' },
@@ -965,28 +1019,31 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
         ) : null}
       </span>
 
-      {/* Trim / Delay group */}
+      {/* Trim / Delay group — LD-756: seconds-from-front + seconds-from-end */}
       <span class="mn-beat-button-group" data-testid={`beat-trim-group-${index}`}>
-        <span class="mn-beat-button-group-label">Trim:</span>
+        <span class="mn-beat-button-group-label">Trim front:</span>
         <input
           type="text"
           class="mn-beat-trim-input"
-          data-testid={`beat-${index}-trim-in`}
-          value={trimIn}
-          onInput={(e) => setTrimIn((e.target as HTMLInputElement).value)}
-          aria-label="Trim in seconds"
+          data-testid={`beat-${index}-trim-front`}
+          value={trimFrontSec}
+          onInput={(e) => setTrimFrontSec((e.target as HTMLInputElement).value)}
+          aria-label="Seconds to trim from the front (0.0 = no trim)"
           placeholder="0.0"
+          title="Seconds to trim from the front of the clip"
         />
-        <span class="mn-dim">→</span>
+        <span class="mn-dim">s · back:</span>
         <input
           type="text"
           class="mn-beat-trim-input"
-          data-testid={`beat-${index}-trim-out`}
-          value={trimOut}
-          onInput={(e) => setTrimOut((e.target as HTMLInputElement).value)}
-          aria-label="Trim out (number or 'full')"
-          placeholder="full"
+          data-testid={`beat-${index}-trim-back`}
+          value={trimBackSec}
+          onInput={(e) => setTrimBackSec((e.target as HTMLInputElement).value)}
+          aria-label="Seconds to trim from the end (0.0 = no trim)"
+          placeholder="0.0"
+          title="Seconds to trim from the END of the clip (NOT an absolute timestamp)"
         />
+        <span class="mn-dim">s</span>
         <button
           type="button"
           class="mn-btn mn-btn-small"
@@ -1534,14 +1591,24 @@ function BeatImageHolder({ index, beatId, beat, eventId, onMutated, previewVideo
       // commit time; line drifts with file edits.] Coverage:
       // e2e/storyboard_v59_assign_image_drop.spec.ts asserts the drop →
       // PATCH `assign_image` → server-side onMutated() round-trip.
+      // BUG-A UX clarifier (Kim 2026-05-20): if user drops the SAME image
+      // that's already on the beat, the visual won't change because the
+      // assigned image didn't change. Compare prior image_path stem so the
+      // toast tells Kim "no change" instead of misleading "assigned".
+      const priorStem = beat.image_path
+        ? beat.image_path.split('/').pop()?.replace(/\.(webp|png|jpe?g)$/i, '')
+        : undefined;
+      const isSameImage = priorStem === payload.lib_key;
       const result = await pathappPatch(activeScope.value, 'assign_image', {
         beat: beatId,
         image_key: payload.lib_key,
       });
       if (result.ok) {
         pushToast({
-          kind: 'success',
-          message: `Image ${payload.lib_key} assigned to ${beatId}`,
+          kind: isSameImage ? 'info' : 'success',
+          message: isSameImage
+            ? `Image ${payload.lib_key} was already on ${beatId} — no visual change`
+            : `Image ${payload.lib_key} assigned to ${beatId}`,
           source: 'sb-image-drop',
         });
         // T4-3: dismiss lipsync preview so the new image is visible.
