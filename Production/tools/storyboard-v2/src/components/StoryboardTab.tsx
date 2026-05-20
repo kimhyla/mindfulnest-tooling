@@ -343,7 +343,7 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
       }
       pushToast({
         kind: 'success',
-        message: `End frame generated → ${data.end_frame_path} (${data.size_bytes} B)`,
+        message: `End frame ${_endFrameOk ? 'replaced' : 'generated'} → ${data.end_frame_path} (${data.size_bytes} B). Click again to iterate.`,
         source: 'preview-end-frame',
       });
       setEndFrameAddendum('');  // auto-clear per spec §2 T1-Phase 6
@@ -983,9 +983,17 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
             data-testid={`beat-${index}-preview-end-frame`}
             onClick={_onPreviewEndFrame}
             disabled={pendingEndFrameOp || busy !== null}
-            title="Generate the ChatGPT end frame (the 'second image' for Kling). ~$0.04. Click again for a fresh sample if needed."
+            title={
+              _endFrameOk
+                ? "Re-generate the end frame via ChatGPT, REPLACING the current one. If you typed an addendum, it'll be appended to the canonical prompt for this single call. ~$0.04 per click — click as many times as needed."
+                : "Generate the end frame via ChatGPT (the 'second image' Kling animates toward). ~$0.04. If you've typed an addendum, it'll be appended for this call only."
+            }
           >
-            {pendingEndFrameOp ? <><Spinner size="sm" inline /> …</> : '✏ Preview end frame'}
+            {pendingEndFrameOp
+              ? <><Spinner size="sm" inline /> …</>
+              : _endFrameOk
+                  ? '🔄 Re-generate end frame'
+                  : '✏ Generate end frame'}
           </button>
           <button
             type="button"
@@ -1028,7 +1036,7 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
               target="_blank"
               rel="noopener noreferrer"
               data-testid={`beat-${index}-end-frame-thumb-link`}
-              title={`Approved end frame: ${beat.end_frame_path} — hover to enlarge, click to open in new tab.`}
+              title={`Current end frame: ${beat.end_frame_path}\nHover to enlarge · Click to open full-size in a new tab.\nTo replace: edit the addendum field + click '🔄 Re-generate end frame' (or '📤 Upload end frame' to use your own PNG).`}
               style={{
                 position: 'relative',
                 display: 'inline-block',
