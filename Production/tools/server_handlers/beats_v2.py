@@ -607,6 +607,8 @@ def handle_v2_event_state(h, path: str) -> None:
     # Mirrors production_server._read_state_with_file_flags._annotate_block.
     try:
         clips_dir = h.app.state.clips_dir
+        event_dir = h.app.event_dir  # Bug-B3 (spec §2 Topic-2): magic + end_frame
+        end_frames_dir = event_dir / "end_frames"
 
         def _annotate(block, field: str = "file") -> None:
             if not isinstance(block, dict):
@@ -618,6 +620,19 @@ def handle_v2_event_state(h, path: str) -> None:
                 )
             else:
                 block["file_exists"] = bool(f and (clips_dir / f).is_file())
+
+        # Bug-B3 (spec §2 Topic-2, 2026-05-20): annotate magic + end_frame
+        # paths which resolve against EVENT_DIR (not clips_dir). Without these,
+        # orphan references silently 404 on <video src=...>. Mirrors the
+        # production_server._read_state_with_file_flags extension.
+        def _annotate_beat_field(beat: dict, field: str, base_dir) -> None:
+            if not isinstance(beat, dict):
+                return
+            f = beat.get(field)
+            if not (f and isinstance(f, str)):
+                beat[f"{field}_exists"] = False
+                return
+            beat[f"{field}_exists"] = (base_dir / f).is_file()
 
         for _role, _part in (state.get("videos") or {}).items():
             if not isinstance(_part, dict):
@@ -638,6 +653,11 @@ def handle_v2_event_state(h, path: str) -> None:
                 if isinstance(_final, dict):
                     _annotate(_final, "file")
                     _annotate(_final, "image_path")
+                # Bug-B3 — magic_*_path resolves to event_dir
+                _annotate_beat_field(_beat, "magic_still_path", event_dir)
+                _annotate_beat_field(_beat, "magic_video_path", event_dir)
+                # Bug-B3 — end_frame_path resolves to event_dir/end_frames/
+                _annotate_beat_field(_beat, "end_frame_path", end_frames_dir)
     except Exception as _exc:
         print(f"[v2-state] WARN: file_exists enrichment failed: {_exc!r}", flush=True)
 
