@@ -2092,12 +2092,13 @@
 .mn-kim-done-wrap .kim-done-label {
   color: #555;
 }
-/* End-frame thumbnail hover-to-enlarge (T1-Phase 6 follow-up, Kim 2026-05-20 5:05 PM).
-   50x50 thumb in the beat row expands to a 360x360 floating preview when hovered,
-   without affecting layout. Click opens full PNG in a new tab. */
-.mn-end-frame-thumb-wrap:hover .mn-end-frame-large {
-  display: block !important;
-}
+/* End-frame thumbnail hover-to-enlarge (T1-Phase 6 follow-up, Kim 2026-05-20).
+   Revised 7:35 PM after first attempt didn't visually enlarge — switched to
+   position:fixed + opacity/visibility to escape any ancestor overflow:hidden
+   clip and avoid inline-style precedence. 50x50 thumb expands to 400x400
+   viewport-fixed preview on hover. */
+.mn-end-frame-thumb-wrap:hover .mn-end-frame-large,
 .mn-end-frame-thumb-wrap:focus-within .mn-end-frame-large {
-  display: block !important;
+  opacity: 1 !important;
+  visibility: visible !important;
 }

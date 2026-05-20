@@ -1045,18 +1045,27 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
                 aria-hidden="true"
                 class="mn-end-frame-large"
                 style={{
-                  position: 'absolute',
-                  bottom: '60px',
-                  left: '0',
-                  width: '360px',
-                  height: '360px',
+                  // Resting state: invisible + non-interactive + flat scale.
+                  // Hover CSS lifts opacity to 1 (with !important so this inline
+                  // style can't accidentally pin it back to 0). Using opacity
+                  // (not display:none) so the element is always laid out and
+                  // can't be hidden by a parent overflow clip. position:fixed
+                  // attaches to viewport — completely escapes any ancestor
+                  // overflow:hidden, scroll, transform, etc.
+                  position: 'fixed',
+                  top: '80px',
+                  right: '80px',
+                  width: '400px',
+                  height: '400px',
                   objectFit: 'contain',
-                  border: '2px solid #4a8a4a',
+                  border: '3px solid #4a8a4a',
                   background: '#000',
-                  borderRadius: '4px',
-                  boxShadow: '0 8px 24px rgba(0,0,0,0.6)',
-                  display: 'none',
-                  zIndex: 100,
+                  borderRadius: '6px',
+                  boxShadow: '0 12px 32px rgba(0,0,0,0.7)',
+                  opacity: 0,
+                  visibility: 'hidden',
+                  transition: 'opacity 120ms, visibility 120ms',
+                  zIndex: 1000,
                   pointerEvents: 'none',
                 }}
               />
