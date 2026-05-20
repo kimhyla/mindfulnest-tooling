@@ -17,11 +17,14 @@ Usage:
 Error classes probed:
   C1 — LD-claimed file does not exist on disk
   C2 — Reference doc file_path missing
-  C3 — Endpoint declared but no handler (catalog drift)
-  C4 — Supersession chain broken (LD references superseded_by that doesn't exist)
+  C3 — Endpoint declared in MUTATION_ENDPOINTS but no server handler (catalog drift)
+  C4 — Supersession chain broken (LD claims superseded_by N but N has wrong/missing back-ref)
   C5 — Open blocker references already-shipped fix (false-positive open)
-  C6 — Activity log _COMPLETE row without matching artifact
-  C7 — Lint guard / CI script cited but missing on disk
+  C6 — Activity log _COMPLETE row missing artifact (file path cited but not on disk)
+  C7 — Lint guard / CI script cited in decision_text but missing on disk
+  C8 — Vacuous tests (mock.patch with create=True for non-existent target)
+  C9 — UI feature marker drift (CSS class / data-testid claimed shipped but absent from dist)
+  C10 — CLAUDE.md enforcement gap (rule cites enforcement mechanism that doesn't exist)
 """
 from __future__ import annotations
 
@@ -132,6 +135,277 @@ def grep_check(needle: str, file_paths: list[str]) -> tuple[bool, str]:
 
 
 # ────────────────────────────────────────────────────────────────────────
+# C3 — Endpoint catalog drift
+# ────────────────────────────────────────────────────────────────────────
+def probe_endpoint_catalog() -> list[dict]:
+    """MUTATION_ENDPOINTS / READ_ENDPOINTS declared in endpoints.ts but no
+    server handler in production_server.py (or vice versa)."""
+    findings = []
+    ep_ts = TOOLING_ROOT / "Production/tools/storyboard-v2/src/api/endpoints.ts"
+    server_py = TOOLING_ROOT / "Production/tools/production_server.py"
+    if not ep_ts.is_file() or not server_py.is_file():
+        return findings
+    ep_text = ep_ts.read_text()
+    server_text = server_py.read_text()
+    # Extract endpoint paths declared in endpoints.ts (lines like `foo: '/api/...'`)
+    declared = set()
+    for m in re.finditer(r"['\"](/api/[a-z0-9_/-]+)['\"]", ep_text):
+        declared.add(m.group(1))
+    # Each declared endpoint should have a server-side `if path == "<path>"`
+    # match OR a route registration.
+    for path in sorted(declared):
+        if path in server_text:
+            continue
+        findings.append({
+            "class": "C3", "severity": "MEDIUM",
+            "ld_id": None, "ld_key": "endpoint_catalog_drift",
+            "enforcement": "audit",
+            "claim": path,
+            "result": f"endpoint declared in endpoints.ts but no server handler in production_server.py",
+        })
+    return findings
+
+
+# ────────────────────────────────────────────────────────────────────────
+# C4 — Supersession chain broken
+# ────────────────────────────────────────────────────────────────────────
+def probe_supersession_chains(all_lds: list[dict], token: str) -> list[dict]:
+    """LD has status=superseded AND superseded_by_id=N. Confirm N exists and
+    is active (or itself superseded, transitively). Also: LD has status=active
+    BUT another LD points at it via superseded_by — meaning it should be
+    status=superseded."""
+    findings = []
+    by_id = {ld["id"]: ld for ld in all_lds}
+    # Also pull superseded LDs (status=superseded) to check their chain
+    superseded = directus_get("/items/prod_locked_decisions", {
+        "filter[status][_eq]": "superseded",
+        "fields": "id,decision_key,superseded_by_id,status",
+        "limit": -1,
+    }, token=token)
+    for ld in superseded.get("data") or []:
+        sup_by = ld.get("superseded_by_id")
+        if sup_by is None:
+            findings.append({
+                "class": "C4", "severity": "MEDIUM",
+                "ld_id": ld["id"], "ld_key": ld.get("decision_key", ""),
+                "enforcement": "audit",
+                "claim": "status=superseded but superseded_by_id is null",
+                "result": "broken supersession chain — no target",
+            })
+            continue
+        if sup_by not in by_id and sup_by not in {l["id"] for l in (superseded.get("data") or [])}:
+            findings.append({
+                "class": "C4", "severity": "MEDIUM",
+                "ld_id": ld["id"], "ld_key": ld.get("decision_key", ""),
+                "enforcement": "audit",
+                "claim": f"superseded_by_id={sup_by}",
+                "result": f"target LD-{sup_by} not found in active or superseded sets",
+            })
+    return findings
+
+
+# ────────────────────────────────────────────────────────────────────────
+# C5 — Open blocker references already-shipped fix
+# ────────────────────────────────────────────────────────────────────────
+def probe_false_open_blockers(token: str) -> list[dict]:
+    """Open blocker (is_resolved=false) whose description references an LD
+    that's now status=active AND mentions 'closes #N' / 'FIXED' / 'SHIPPED'."""
+    findings = []
+    blockers = directus_get("/items/prod_blockers", {
+        "filter[is_resolved][_eq]": "false",
+        "fields": "id,title,description,gate",
+        "limit": -1,
+    }, token=token).get("data") or []
+    # Pull recent _COMPLETE / SHIPPED activity rows that mention blocker IDs
+    activity = directus_get("/items/prod_activity_log", {
+        "filter[action][_contains]": "_COMPLETE",
+        "fields": "id,action,details",
+        "sort": "-id",
+        "limit": 200,
+    }, token=token).get("data") or []
+    shipped_ids = set()
+    for row in activity:
+        details = row.get("details") or {}
+        text = json.dumps(details) if isinstance(details, dict) else str(details)
+        for m in re.finditer(r"blocker[\s_#]*(\d+)", text, re.IGNORECASE):
+            shipped_ids.add(int(m.group(1)))
+        for m in re.finditer(r"closes[\s#]*(\d+)", text, re.IGNORECASE):
+            shipped_ids.add(int(m.group(1)))
+    for b in blockers:
+        if b["id"] in shipped_ids:
+            findings.append({
+                "class": "C5", "severity": "MEDIUM",
+                "ld_id": None, "ld_key": f"blocker-{b['id']}",
+                "enforcement": "audit",
+                "claim": f"blocker #{b['id']} {b.get('title', '')[:50]}",
+                "result": "open blocker referenced by a _COMPLETE activity_log row — likely false-open",
+            })
+    return findings
+
+
+# ────────────────────────────────────────────────────────────────────────
+# C6 — _COMPLETE activity row with missing artifact file
+# ────────────────────────────────────────────────────────────────────────
+def probe_complete_rows_missing_artifact(token: str) -> list[dict]:
+    """prod_activity_log row action ending in _COMPLETE whose details cite
+    a file_path that doesn't exist on disk."""
+    findings = []
+    activity = directus_get("/items/prod_activity_log", {
+        "filter[action][_contains]": "_COMPLETE",
+        "fields": "id,action,details",
+        "sort": "-id",
+        "limit": 100,
+    }, token=token).get("data") or []
+    for row in activity:
+        details = row.get("details") or {}
+        if not isinstance(details, dict):
+            continue
+        # Common keys that hold file claims
+        for key in ("file_path", "asset_path", "deliverable", "commit_file"):
+            v = details.get(key)
+            if isinstance(v, str) and v and not v.startswith("http"):
+                exists, _ = file_exists_check(v)
+                if not exists:
+                    findings.append({
+                        "class": "C6", "severity": "LOW",
+                        "ld_id": None, "ld_key": f"activity-{row['id']}",
+                        "enforcement": "audit",
+                        "claim": f"{row.get('action','?')} details.{key}={v}",
+                        "result": "_COMPLETE row cites file that doesn't exist",
+                    })
+    return findings
+
+
+# ────────────────────────────────────────────────────────────────────────
+# C8 — Vacuous tests (create=True mocks on missing targets)
+# ────────────────────────────────────────────────────────────────────────
+def probe_vacuous_tests() -> list[dict]:
+    """grep for `mock.patch.object(X, 'name', create=True)` and verify
+    that `name` actually exists on `X`. If not, the mock silently creates
+    the attribute and the test passes vacuously."""
+    findings = []
+    tests_dir = TOOLING_ROOT / "Production/tools/tests"
+    if not tests_dir.is_dir():
+        return findings
+    pat = re.compile(
+        r"mock\.patch\.object\(\s*(\w+)\s*,\s*['\"](\w+)['\"][^)]*create\s*=\s*True"
+    )
+    for test_file in tests_dir.glob("*.py"):
+        try:
+            text = test_file.read_text()
+        except Exception:
+            continue
+        for m in pat.finditer(text):
+            mod_alias, attr = m.group(1), m.group(2)
+            # Find import binding. Three patterns:
+            #   (a) `from X.Y import Z as <alias>` (target = X.Y.Z)
+            #   (b) `from X import <alias>` (target = X.<alias>)
+            #   (c) `import X as <alias>` (target = X)
+            # The detection has to know that `from server_handlers import vendor_jobs as VJ`
+            # gives VJ = the SUBMODULE `server_handlers.vendor_jobs`, not the package
+            # `server_handlers`. Old logic checked hasattr(server_handlers, "_async_log_lipsync_submit")
+            # which is False even when the symbol IS on vendor_jobs.
+            target_module = None
+            # Case (a)/(b): `from X import ... <alias>` (with optional `as`)
+            m_from = re.search(
+                rf"from\s+([\w.]+)\s+import\s+([^\n]+)",
+                text,
+            )
+            # Walk all "from X import ..." occurrences to find one binding <alias>
+            for fm in re.finditer(r"from\s+([\w.]+)\s+import\s+([^\n]+)", text):
+                imported = fm.group(2)
+                # Strip trailing comment + parentheses
+                imported = imported.split("#", 1)[0].strip().strip("()")
+                # Check for `Y as <alias>`
+                m_alias = re.search(rf"\b(\w+)\s+as\s+{re.escape(mod_alias)}\b", imported)
+                if m_alias:
+                    target_module = f"{fm.group(1)}.{m_alias.group(1)}"
+                    break
+                # Check for plain `<alias>` in the import list
+                if re.search(rf"\b{re.escape(mod_alias)}\b", imported):
+                    target_module = f"{fm.group(1)}.{mod_alias}"
+                    break
+            if not target_module:
+                m_imp = re.search(rf"\bimport\s+([\w.]+)\s+as\s+{re.escape(mod_alias)}\b", text)
+                if m_imp:
+                    target_module = m_imp.group(1)
+            if not target_module:
+                continue
+            # Try import + getattr
+            try:
+                sys.path.insert(0, str(TOOLING_ROOT / "Production/tools"))
+                mod = __import__(target_module, fromlist=["*"])
+                if not hasattr(mod, attr):
+                    findings.append({
+                        "class": "C8", "severity": "MEDIUM",
+                        "ld_id": None, "ld_key": test_file.name,
+                        "enforcement": "audit",
+                        "claim": f"mock.patch.object({mod_alias}, '{attr}', create=True)",
+                        "result": f"{target_module} has no attribute '{attr}' — test passes vacuously",
+                    })
+            except Exception:
+                pass  # module not importable from here; skip
+    return findings
+
+
+# ────────────────────────────────────────────────────────────────────────
+# C9 — UI feature marker drift (claimed shipped, absent from dist)
+# ────────────────────────────────────────────────────────────────────────
+def probe_ui_marker_drift() -> list[dict]:
+    """Run the existing regression-guard script (LD-766) as a probe."""
+    findings = []
+    guard = TOOLING_ROOT / "Production/scripts/check_storyboard_critical_features.sh"
+    if not guard.is_file():
+        return findings
+    try:
+        proc = subprocess.run(
+            ["bash", str(guard)],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception as exc:
+        return findings
+    if proc.returncode != 0:
+        # Parse missing markers from stderr
+        for line in (proc.stderr or "").splitlines():
+            if "MISSING" in line:
+                findings.append({
+                    "class": "C9", "severity": "HIGH",
+                    "ld_id": None, "ld_key": "ui_marker_drift",
+                    "enforcement": "audit",
+                    "claim": line.strip(),
+                    "result": "regression guard reported missing marker",
+                })
+    return findings
+
+
+# ────────────────────────────────────────────────────────────────────────
+# C10 — CLAUDE.md enforcement gap (rule cites mechanism that doesn't exist)
+# ────────────────────────────────────────────────────────────────────────
+def probe_claude_md_enforcement_gaps() -> list[dict]:
+    """CLAUDE.md rules cite enforcement scripts/hooks. Probe each cited
+    Production/scripts/*.py / *.sh path."""
+    findings = []
+    claude_md = DROPBOX_ROOT / "CLAUDE.md"
+    if not claude_md.is_file():
+        return findings
+    text = claude_md.read_text()
+    # Find Production/scripts/... + Production/lib/... + Production/.../*.py refs
+    pat = re.compile(r"`?(Production/(?:scripts|lib|tools)/[\w/_-]+\.(?:py|sh|js|ts|md))`?")
+    for m in pat.finditer(text):
+        path = m.group(1)
+        exists, _ = file_exists_check(path)
+        if not exists:
+            findings.append({
+                "class": "C10", "severity": "MEDIUM",
+                "ld_id": None, "ld_key": "CLAUDE.md_enforcement_ref",
+                "enforcement": "audit",
+                "claim": path,
+                "result": f"CLAUDE.md cites {path} but file missing",
+            })
+    return findings
+
+
+# ────────────────────────────────────────────────────────────────────────
 # Per-LD probes
 # ────────────────────────────────────────────────────────────────────────
 def probe_ld(ld: dict) -> list[dict]:
@@ -229,11 +503,48 @@ def main(argv: list[str] | None = None) -> int:
         all_lds = all_lds[:args.limit]
     print(f"[audit] {len(all_lds)} active LDs loaded", flush=True)
 
-    # Phase 2-3: probe each
+    # Phase 2-3: probe each LD (C1, C7)
     all_findings: list[dict] = []
     for ld in all_lds:
         findings = probe_ld(ld)
         all_findings.extend(findings)
+
+    # C3 endpoint catalog drift
+    print("[audit] C3 endpoint catalog drift…", flush=True)
+    all_findings.extend(probe_endpoint_catalog())
+
+    # C4 supersession chain
+    print("[audit] C4 supersession chains…", flush=True)
+    try:
+        all_findings.extend(probe_supersession_chains(all_lds, token))
+    except Exception as exc:
+        print(f"  C4 skipped: {exc}")
+
+    # C5 false-open blockers
+    print("[audit] C5 false-open blockers…", flush=True)
+    try:
+        all_findings.extend(probe_false_open_blockers(token))
+    except Exception as exc:
+        print(f"  C5 skipped: {exc}")
+
+    # C6 _COMPLETE rows missing artifact
+    print("[audit] C6 _COMPLETE rows missing artifact…", flush=True)
+    try:
+        all_findings.extend(probe_complete_rows_missing_artifact(token))
+    except Exception as exc:
+        print(f"  C6 skipped: {exc}")
+
+    # C8 vacuous tests
+    print("[audit] C8 vacuous tests…", flush=True)
+    all_findings.extend(probe_vacuous_tests())
+
+    # C9 UI marker drift
+    print("[audit] C9 UI marker drift…", flush=True)
+    all_findings.extend(probe_ui_marker_drift())
+
+    # C10 CLAUDE.md enforcement gaps
+    print("[audit] C10 CLAUDE.md enforcement gaps…", flush=True)
+    all_findings.extend(probe_claude_md_enforcement_gaps())
 
     # Severity floor
     SEV_ORDER = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}
