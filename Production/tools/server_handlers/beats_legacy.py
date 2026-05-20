@@ -1197,7 +1197,13 @@ def handle_beat_regenerate_audio(h, body: dict)-> None:
     this endpoint ensures audio matches current state.text verbatim.
     """
     # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+    # LD-810 AUDIO_REGEN_SCOPE_AUTODISCOVER_V1 — allow_missing_video_role=True
+    # so the autodiscover branch below (lines ~1225-1253) is reachable when
+    # the caller omits scope_video_role. Without this flag the validator
+    # returns VIDEO_ROLE_REQUIRED before autodiscover can fire, making the
+    # LD-810 logic unreachable dead code.
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False,
+                                 allow_missing_video_role=True):
         return
 
     # F-REGEN-AUDIO-001: v59 client (StoryboardTab.tsx:192) sends

@@ -8302,6 +8302,46 @@ body {{padding-top:44px!important;}}
         beat_state = (((state.get("videos") or {}).get(video_role) or {}).get("beats") or {}).get(beat_id) or {}
         force_legacy = bool(beat_state.get("force_legacy"))
 
+        # LD-807 LIPSYNC_INVALIDATE_ON_REGEN_V1 — Regen B+C on a previously-
+        # lipsynced beat MUST clear stale lipsync state + on-disk file so the
+        # UI doesn't show a stale composite preview (the same invariant that
+        # handle_redo + handle_animate already enforce; the original LD-807
+        # implementation missed this dispatcher, which is the actual endpoint
+        # the "Regenerate B + C" button hits per StoryboardTab.tsx:835).
+        prior_lipsync_existed = bool(beat_state.get("lipsync"))
+        prior_lipsync_file = self.app.event_dir / "animation_clips" / f"{beat_id}_lipsync.mp4"
+        try:
+            if prior_lipsync_file.is_file():
+                prior_lipsync_existed = True
+                prior_lipsync_file.unlink()
+                print(f"[add_options] {beat_id}: unlinked stale lipsync {prior_lipsync_file.name}")
+        except OSError as exc:
+            print(f"[add_options] {beat_id}: lipsync unlink warning (non-fatal): {exc}")
+
+        if prior_lipsync_existed:
+            def _clear_lipsync(partition, _bid=beat_id):
+                pbeats = partition.setdefault("beats", {})
+                if _bid in pbeats and "lipsync" in pbeats[_bid]:
+                    pbeats[_bid]["lipsync"] = None
+            try:
+                self.app.state.mutate_video_state(video_role, _clear_lipsync)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[add_options] {beat_id}: lipsync state-clear warning (non-fatal): {exc}")
+            try:
+                from lib.directus import try_post_or_queue as _tpq
+                _tpq("prod_activity_log", {
+                    "action": "lipsync_invalidated_on_regen",
+                    "performed_by": "_handle_add_options",
+                    "details": {
+                        "event_id": self.app.event_id,
+                        "beat_id": beat_id,
+                        "video_role": video_role,
+                        "removed_file": str(prior_lipsync_file),
+                    },
+                })
+            except Exception as exc:  # noqa: BLE001
+                print(f"[add_options] {beat_id}: lipsync_invalidated_on_regen audit failed (non-fatal): {exc}")
+
         if force_legacy:
             print(f"[add_options:dispatch] {beat_id}: force_legacy=true -> legacy path")
             return self._handle_add_options_legacy(body)
