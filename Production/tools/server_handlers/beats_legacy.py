@@ -665,10 +665,13 @@ def handle_beat_update_text(h, body: dict)-> None:
     # the user-visible signal that audio is out of date and the user
     # should click Regen Audio.
     #
-    # Tier 1A debounce helpers + TIER1A_ENABLED gating are now dead code
-    # (no auto-regen to rate-limit). Removal deferred to follow-up cleanup
-    # per LD-803 SCOPE. skip_tts_regen body flag is also irrelevant —
-    # regen is opt-IN via button, not opt-OUT via flag.
+    # Tier 1A debounce helpers + TIER1A_ENABLED gating remain in
+    # production_server.py (lines ~464-566, 726-736) — they are no longer
+    # invoked from this auto-regen path but are retained because _t1_enabled()
+    # is still consulted at production_server.py:2244 (broader runtime gate
+    # beyond auto-regen) and Tier 3 widgets reference TIER1A_ENABLED via
+    # patch_v38_tier3_widgets.py. The skip_tts_regen body flag is irrelevant
+    # under LD-803 (regen is opt-IN via button, not opt-OUT via flag).
     # ==================================================================
     text_actually_changed = (old_text or "") != new_text
     tts_regen_result = {
