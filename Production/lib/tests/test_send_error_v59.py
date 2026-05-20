@@ -30,8 +30,12 @@ def test_send_error_v59_canonical_shape():
     assert len(h.calls) == 1
     status, payload = h.calls[0]
     assert status == 400
+    # P5.5 (2026-05-19): _send_error_v59 includes `error` (back-compat
+    # mirror of error_message) per V59_ERROR_SHAPE_v2 — test pre-dated
+    # that addition.
     assert payload == {
         "ok": False,
+        "error": "y",
         "error_code": "X",
         "error_message": "y",
         "retry_safe": True,

@@ -508,7 +508,16 @@ def render_magic(scene_key: str, bg_still: str = None, preview_only: bool = Fals
         print(result["preview_path"])
     """
     import yaml as _yaml
-    reg_path = _Path(__file__).parent / "scene_registry.yaml"
+    # LD-505 Phase C: anchor scene_registry.yaml on the runtime DROPBOX_ROOT
+    # via lib/paths (env-aware: MN_DROPBOX_ROOT first, then platform default).
+    # Was `_Path(__file__).parent / ...` which resolved to the tooling tree.
+    # CODE tree — finding Production/lib/paths.py (sibling Python module).
+    import sys as _sys, os as _os
+    _lib_parent = _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", ".."))
+    if _lib_parent not in _sys.path:
+        _sys.path.insert(0, _lib_parent)
+    from Production.lib.paths import DROPBOX_ROOT as _DR
+    reg_path = _DR / "Production" / "tools" / "scene_registry.yaml"
     registry = _yaml.safe_load(reg_path.read_text()) or {}
     scene = registry.get(scene_key)
     if scene is None:

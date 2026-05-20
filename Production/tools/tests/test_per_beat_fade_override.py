@@ -356,15 +356,22 @@ def _make_event_fixture(tmp: Path) -> tuple[Path, Path, str]:
         '<html><head><script>var L = []; var TH = {};</script></head>'
         '<body></body></html>\n', encoding="utf-8",
     )
+    # P5 migration (2026-05-19): v3 partition shape
     state = event_dir / "production_state.json"
+    _beats = {
+        "beat_01": _beat(["clip_a.mp4"]),
+        "beat_02": _beat(["clip_b.mp4"]),
+    }
     state.write_text(json.dumps({
         "event_id": "Event_FADEOVR",
-        "beats": {
-            "beat_01": _beat(["clip_a.mp4"]),
-            "beat_02": _beat(["clip_b.mp4"]),
+        "version": 3,
+        "videos": {
+            "intro": {
+                "beats": _beats,
+                "display_order": ["beat_01", "beat_02"],
+                "image_overrides": {},
+            },
         },
-        "display_order": ["beat_01", "beat_02"],
-        "image_overrides": {},
     }, indent=2))
     return event_dir, storyboard, "Event_FADEOVR"
 
@@ -390,6 +397,10 @@ def _start_server(event_dir: Path, storyboard: Path, event_id: str, port: int):
 
 
 def _http_post(port: int, path: str, body: dict, timeout: float = 10.0):
+    body = dict(body)
+    body.setdefault("scope_event_id", "Event_FADEOVR")
+    body.setdefault("event_id", "Event_FADEOVR")
+    body.setdefault("scope_target_video", "intro")
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}{path}", data=data,
@@ -436,7 +447,7 @@ class TestV2PatchFadeAfterMs(unittest.TestCase):
         self.assertEqual(status, 200, resp)
         self.assertEqual(resp.get("status"), "applied", resp)
         state = self.app.state.read_state()
-        beat = state["beats"]["beat_01"]
+        beat = state["videos"]["intro"]["beats"]["beat_01"]
         self.assertEqual(beat["phase_1"]["fade_after_ms"], 300)
 
     def test_v2_patch_null_clears_fade_after_ms(self):
@@ -456,7 +467,7 @@ class TestV2PatchFadeAfterMs(unittest.TestCase):
         state = self.app.state.read_state()
         # Key popped
         self.assertNotIn("fade_after_ms",
-                         state["beats"]["beat_01"].get("phase_1", {}))
+                         state["videos"]["intro"]["beats"]["beat_01"].get("phase_1", {}))
 
     def test_v2_patch_rejects_fade_after_ms_out_of_range(self):
         """(8) Out-of-range int returns 400 with hint."""

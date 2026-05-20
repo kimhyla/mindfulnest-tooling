@@ -605,10 +605,14 @@ def _bg_register_assembled_clip(group_id: str, clip_path: str, file_size_bytes: 
             "notes": f"Assembled group {group_id} -> {clip_path} ({file_size_bytes} bytes)",
         })
     except Exception as e:
-        # Queue for retry
+        # Queue for retry — use the env-aware resolver from lib/directus so
+        # this writer agrees with the replay reader (audit C1-10 split-brain).
+        # [INFERRED — verify the agreement: `grep -n _PENDING_QUEUE_PATH
+        # Production/lib/directus.py` shows the single source-of-truth; both
+        # this writer and lib.directus.try_replay_pending() read that same path.]
         try:
-            queue_path = os.path.join(os.path.dirname(__file__), "..", "pending_directus_writes.json")
-            queue_path = os.path.normpath(queue_path)
+            from lib.directus import _PENDING_QUEUE_PATH as _Q
+            queue_path = str(_Q)
             q = []
             if os.path.exists(queue_path):
                 try:
@@ -1081,13 +1085,14 @@ def sanitize_prompt(prompt: str) -> str:
 def validate_image_dimensions(data_uri: str) -> tuple[bool, str]:
     """CLAUDE.md Rule 6 — shortest side must be >= 600px.
 
-    Uses PIL if available; if PIL isn't installed, logs a warning and
-    passes (the injection-time validator and Directus gate remain in
-    force as backup layers)."""
-    try:
-        from PIL import Image  # type: ignore
-    except ImportError:
-        return True, "PIL not installed — dimension check skipped"
+    PIL is a HARD startup dependency (see _check_runtime_capabilities at
+    line ~11608 which exits the server with [startup:FATAL] if Pillow is
+    missing). The prior fall-through 'PIL not installed - dimension check
+    skipped' was a Rule 19 silent-bypass that became dead code after the
+    P2 LD-pending DEPENDENCY_STARTUP_CHECK_V1 work. Removed per C5-2 audit
+    finding.
+    """
+    from PIL import Image  # type: ignore
 
     try:
         # data:image/png;base64,XXXX
@@ -1108,13 +1113,12 @@ def auto_upscale_image(data_uri: str, target_min: int = MIN_ANIMATION_SIZE) -> t
     """Auto-upscale an image so its shortest side meets target_min.
 
     Returns (possibly_upscaled_data_uri, info_string).
-    If PIL isn't available or the image already meets the minimum, returns the original.
+    If the image already meets the minimum, returns the original.
+    PIL is a HARD startup dependency (see _check_runtime_capabilities) so the
+    'PIL not installed - no upscale' silent-bypass was removed per C5-2.
     This is the Rule 6 'auto-upscale fallback safety net'.
     """
-    try:
-        from PIL import Image  # type: ignore
-    except ImportError:
-        return data_uri, "PIL not installed — no upscale"
+    from PIL import Image  # type: ignore
 
     try:
         header, b64 = data_uri.split(",", 1)
@@ -1716,6 +1720,10 @@ class StitchEditorState:
         self._init_file()
 
     def _init_file(self) -> None:
+        # P1 LD-505 Phase C: state_path is now event_dir.parent/tools/...
+        # On a fresh event_dir (test fixture), the parent dir may not exist.
+        # Pre-create it so atomic_json_write doesn't FileNotFoundError.
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
         if not self.state_path.exists():
             self._atomic_write_json(self.state_path, {"version": 1, "jobs": {}})
         if not self.file_lock_path.exists():
@@ -3831,10 +3839,27 @@ def _clean_text_for_tts(text: str) -> str:
     at the start of the line).
 
     Rule 11 source fidelity: spoken dialogue is byte-for-byte preserved.
+
+    V3 (LD-733 TTS_STRIP_LEADING_PARENTHETICAL_V3, locked 2026-05-16,
+    SHIPPED 2026-05-20 after fabrication-scan discovered V3 was never
+    actually landed in code): strip the LEADING parenthetical at the
+    start of text. Per LD-728 the leading paren is a VISUAL cue for
+    Kling motion + end-frame, NOT voice direction — but ElevenLabs v3
+    treats it as dramatic prose and inserts multi-second pauses.
+    Empirical 2026-05-16: beat_06 audio 17.66s → 11.539s after this
+    strip (−6.1s of phantom silent pauses removed). Only the FIRST
+    parenthetical at start-of-text is stripped — inline parentheticals
+    later in the dialogue body remain (V2 backward-compat for voice
+    direction). 3+ char minimum so single-letter parens like "(!)"
+    don't accidentally match.
     """
     if not text:
         return text
-    cleaned = TTS_CUE_MARKER_PATTERN.sub(' ... ', text)
+    # V3 leading-paren strip (LD-733). Pattern: optional leading whitespace
+    # + a single (...) of 3+ chars + optional trailing whitespace, anchored
+    # at start of text only.
+    cleaned = re.sub(r'^\s*\([^)]{3,}\)\s*', '', text)
+    cleaned = TTS_CUE_MARKER_PATTERN.sub(' ... ', cleaned)
     # Collapse any whitespace runs created by the substitution.
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     return cleaned
@@ -4392,6 +4417,12 @@ _V2_MODULE_FIELD_VALIDATORS = {
     "phase_a_watercolor_cues_json": _v2_validate_watercolor_cues_json,
     "phase_a_preview_file": _v2_validate_str,
     "phase_a_status": _v2_validate_status,
+    # Phase A stitched outputs (PHASE_A_TOP_LEVEL_STATE_V1): added to
+    # _V2_MODULE_ALLOWED_FIELDS at 4281-4282 but were missing validators —
+    # caught by test_validator_dispatch_covers_all_whitelist_fields. P5
+    # 2026-05-19.
+    "phase_a_stitched_file": _v2_validate_str,
+    "phase_a_stitched_mtime": _v2_validate_mtime,
 }
 
 # Maps v2 field name -> L[] field name for sidecar projection
@@ -5042,8 +5073,12 @@ class AppContext:
         self.client = client
         self.started_at = time.time()
         self.last_request_at = time.time()
-        # Universal stitch editor job store — global, not per-event (STITCH_EDITOR_UNIVERSAL_V1)
-        self.stitch_state = StitchEditorState(Path(__file__).parent / "stitch_editor_state.json")
+        # Universal stitch editor job store — global, not per-event (STITCH_EDITOR_UNIVERSAL_V1).
+        # LD-505 Phase C: anchor on the runtime Production/ root (event_dir.parent)
+        # so cross-machine sync works. Was: Path(__file__).parent → tooling-side
+        # Production/tools/, broken on home Mac vs work PC (audit C1-11).
+        from lib.paths import runtime_production_root as _rpr
+        self.stitch_state = StitchEditorState(_rpr(event_dir) / "tools" / "stitch_editor_state.json")
         self._beats_cache: list[dict] | None = None
         # Storyboard HTML write lock — serializes concurrent patches to the
         # same file (drag-drop image inject, contenteditable text saves).
@@ -5694,7 +5729,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             if path == "/api/health":
                 return self._handle_health()
             if path == "/api/state":
-                return self._send_json(200, self.app.state.read_state())
+                return self._send_json(200, self._read_state_with_file_flags())
             # S5.5b new endpoints — Bug 4 fix + VideoSelector data source
             if path == "/api/event/current":
                 return self._handle_event_current()
@@ -7489,7 +7524,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             #    image_path for v59 shell clients (DRAG_DROP_V59_GALLERY_V1).
             #    S5.5a2: writes to videos[role].image_overrides via
             #    mutate_video_state (BG_VIDEO_PARTITION_V1).
-            def _persist(partition, _bid=beat_id, _key=image_key, _ap=abs_path):
+            def _persist(partition, _bid=beat_id, _key=image_key, _ap=abs_path, _prev_key=prev_override_key):
                 partition.setdefault("image_overrides", {})[_bid] = _key
                 if _ap:
                     partition.setdefault("image_overrides_abs", {})[_bid] = _ap
@@ -7504,6 +7539,22 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     except ValueError:
                         _beat["image_path"] = _ap
                     _beat["_version"] = int(_beat.get("_version", 0) or 0) + 1
+                # T2 (Kim 2026-05-19 LD pending STALE_LIPSYNC_ON_ASSIGN_IMAGE_V1):
+                # If the beat has a completed lipsync AND the image key is
+                # changing, mark lipsync as stale via image_changed=True. The
+                # mp4 stays on disk and continues to play; UI surfaces a badge
+                # so Kim knows to re-lipsync. To revert: drag the old image
+                # back from the library (its key is captured at _prev_key).
+                # Image key unchanged: do nothing (no-op assign-same-image).
+                if _prev_key is not None and _prev_key != _key:
+                    _beat_state = partition.get("beats", {}).get(_bid)
+                    if _beat_state:
+                        _ls = _beat_state.get("lipsync")
+                        if _ls and _ls.get("status") == "completed":
+                            _ls["image_changed"] = True
+                            # Capture the prior key so Kim can revert by
+                            # dragging the old library tile back (no undo btn).
+                            _ls["prior_image_key_for_revert"] = _prev_key
                 return None
             self.app.state.mutate_video_state(video_role, _persist)
 
@@ -8009,7 +8060,7 @@ body {{padding-top:44px!important;}}
     var filename=document.getElementById('sb-select').value;
     if(!filename||(filename.indexOf('storyboard_v')<0))return;
     if(!confirm('Switch to '+filename+'?\\n\\n⚠️ Make sure you have exported any browser edits (drag-drop, dialogue) before switching — unsaved browser edits will be lost.'))return;
-    fetch('/api/storyboard/switch',{{
+    fetch('http://localhost:5111/api/storyboard/switch',{{
       method:'POST',
       headers:{{'Content-Type':'application/json'}},
       body:JSON.stringify({{filename:filename}})
@@ -8094,6 +8145,74 @@ body {{padding-top:44px!important;}}
     def _serve_asset(self, filename: str) -> None:
         from server_handlers.cropper import serve_asset
         return serve_asset(self, filename)
+
+    def _read_state_with_file_flags(self) -> dict:
+        """Read state and annotate every file-reference with file_exists.
+
+        Bug fix 2026-05-19 (P3 / LD-505 Phase C, extends PR #73):
+        phase_1.options[*].file, lipsync.file, final.file, final.image_path
+        can all reference clips/images that Kim has manually archived or
+        moved. Without per-field existence annotation, ▶ preview asset
+        fetches 404 and the <video> element surfaces a generic "codec/format
+        not supported" toast with no actionable signal. Audit C2-4 / C2-1.
+
+        Annotates EVERY *.file (or *.image_path) field on each beat with
+        `file_exists: bool` so the client can render disabled UI + an
+        "(archived)" label uniformly across slots. Audit C2-4 specifically
+        called out the lipsync.file gap on 14/19 resolution beats.
+
+        Pure read-only — does NOT mutate persisted state.
+        """
+        state = self.app.state.read_state()
+        clips_dir = self.app.state.clips_dir
+        videos = state.get("videos") if isinstance(state, dict) else None
+        if not isinstance(videos, dict):
+            return state
+
+        def _annotate_block(block, file_field: str = "file") -> None:
+            """Set block[file_field + '_exists'] based on disk presence.
+
+            file_field defaults to 'file' (relative to clips_dir); pass
+            'image_path' for absolute paths.
+            """
+            if not isinstance(block, dict):
+                return
+            f = block.get(file_field)
+            if file_field == "image_path":
+                exists_key = "image_path_exists"
+                block[exists_key] = bool(f and isinstance(f, str) and os.path.exists(f))
+            else:
+                exists_key = "file_exists"
+                block[exists_key] = bool(f and (clips_dir / f).is_file())
+
+        for partition in videos.values():
+            if not isinstance(partition, dict):
+                continue
+            beats = partition.get("beats")
+            if not isinstance(beats, dict):
+                continue
+            for beat in beats.values():
+                if not isinstance(beat, dict):
+                    continue
+                # phase_1.options[*].file
+                p1 = beat.get("phase_1")
+                if isinstance(p1, dict):
+                    for opt in (p1.get("options") or []):
+                        _annotate_block(opt)
+                # phase_2.options[*].file (forward-compat per audit C2-5)
+                p2 = beat.get("phase_2")
+                if isinstance(p2, dict):
+                    for opt in (p2.get("options") or []):
+                        _annotate_block(opt)
+                # beat.lipsync.file (audit C2-4 — 14/19 resolution beats
+                # were unannotated; same Bug 3 class lurked here)
+                _annotate_block(beat.get("lipsync"))
+                # beat.final.file + beat.final.image_path (audit S3-F2)
+                final = beat.get("final")
+                if isinstance(final, dict):
+                    _annotate_block(final, "file")
+                    _annotate_block(final, "image_path")
+        return state
 
     def _serve_beat_audio(self, beat_id: str) -> None:
         from server_handlers.beats_legacy import serve_beat_audio
@@ -11522,11 +11641,88 @@ def inactivity_watchdog(app: AppContext, stop_event: threading.Event, httpd: Pro
             time.sleep(1)
 
 
+def _check_runtime_capabilities() -> None:
+    """Probe every hard-required and feature-degraded runtime dep at startup.
+
+    HARD deps (FATAL on missing): PyYAML, Pillow — break core handlers if absent.
+    SOFT deps (degraded feature): numpy — breaks Magic compositor specifically.
+
+    Emits structured ``[startup:capabilities]`` line that log scrapers + the
+    UI's `/api/bg/session-state.capabilities` reader can parse. Mirrors the
+    existing WaveSpeed smoke pattern at lines 11614–11638.
+
+    Audit C4-1/C4-2/C4-3/C4-4 origin: yaml + numpy were missing in the
+    runtime Python env on 2026-05-19; first user click on Magic surfaced
+    a generic 500. This check fails fast on hard deps and degrades cleanly
+    on soft deps.
+    """
+    hard = {"PyYAML": "yaml", "Pillow": "PIL"}
+    soft = {"numpy": "numpy", "scipy": "scipy"}  # both needed for magic_compositor [INFERRED — verify via grep -rn "import numpy\|import scipy" Production/tools/magic_compositor.py: both imports present at module top.]
+    missing_hard: list[str] = []
+    missing_soft: list[str] = []
+    for label, mod in hard.items():
+        try:
+            __import__(mod)
+        except ImportError:
+            missing_hard.append(label)
+    for label, mod in soft.items():
+        try:
+            __import__(mod)
+        except ImportError:
+            missing_soft.append(label)
+
+    capabilities = {
+        "yaml": "PyYAML" not in missing_hard,
+        "pillow": "Pillow" not in missing_hard,
+        "magic_compositor": not missing_soft,
+    }
+    # Structured single-line capability report (parseable).
+    print(
+        f"[startup:capabilities] {json.dumps(capabilities, sort_keys=True)}",
+        flush=True,
+    )
+
+    if missing_soft:
+        for name in missing_soft:
+            print(
+                f"[startup:degraded] feature 'magic_compositor' disabled — "
+                f"'{name}' not installed. Install via `pip install -r "
+                f"Production/tools/requirements.txt`.",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    if missing_hard:
+        for name in missing_hard:
+            print(
+                f"[startup:FATAL] hard-required runtime dep '{name}' missing. "
+                f"Install via `pip install -r Production/tools/requirements.txt` "
+                f"before starting the server.",
+                file=sys.stderr,
+                flush=True,
+            )
+        sys.exit(4)
+
+
 def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_event_dir: Path | None = None) -> int:
     storyboard_path = event_dir / storyboard_name
     if not storyboard_path.is_file():
         print(f"ERROR: storyboard not found: {storyboard_path}", file=sys.stderr)
         return 2
+
+    # LD-505 Phase C (2026-05-19): rebind every beat_generator module-level
+    # path constant from the runtime event_dir. Replaces the original
+    # 2-constant override (BG_STILLS_DIR + BG_SIDECAR_PATH) with a complete
+    # pass over all 11 constants + the two character-pose dicts that were
+    # baked at module-import time anchored on the (empty) tooling tree.
+    # Closes audit findings C1-5 / C1-6 / C1-7 / C1-8 / C1-9.
+    # See Production/lib/paths.py for the canonical helpers.
+    _bg_module().init_bg_paths(event_dir)
+
+    # P2 / LD-505 Phase C: dependency-presence smoke. Hard deps fail-loud
+    # with [FATAL]; soft deps degrade with structured [startup:capabilities]
+    # line that the UI / log scraper can parse. Audit C4-1/C4-2/C4-3/C4-4.
+    _check_runtime_capabilities()
 
     pid_file = event_dir / "production_server.pid"
     cleanup_stale(pid_file)
@@ -11534,9 +11730,16 @@ def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_e
         print(f"ERROR: port {SERVER_PORT} already in use", file=sys.stderr)
         return 3
 
-    # Parse API keys — find repo root by walking up
-    root = Path(__file__).resolve().parents[2]
-    keys = parse_api_keys(root / "Production" / "API_KEYS_MASTER.md")
+    # Parse API keys — LD-505 Phase C (T1-4, 2026-05-19): API_KEYS_MASTER.md
+    # is DATA, not code (.gitignored, Dropbox-only). Was anchored on tooling
+    # repo root via `Path(__file__).resolve().parents[2]` → file MISSING under
+    # LD-505 dual-canonical-roots when server runs from tooling. Result:
+    # parse_api_keys returned empty → no WaveSpeed key → /api/animate 500
+    # ("WaveSpeed client not configured") on every Regenerate B + C click,
+    # even without --doppler-run wrapper. Use lib/paths.API_KEYS_MASTER_PATH
+    # (same canonical resolver credentials.py uses for the Directus + EL keys).
+    from lib.paths import API_KEYS_MASTER_PATH
+    keys = parse_api_keys(API_KEYS_MASTER_PATH)
     client: WaveSpeedClient | None = None
     if keys.get("wavespeed"):
         client = WaveSpeedClient(keys["wavespeed"])
@@ -11584,34 +11787,112 @@ def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_e
         except OSError as exc:
             print(f"[startup] WARN: could not remove {orphan.name}: {exc}")
 
-    # BS5: Ghost-file scrub — on every startup, scan all option file references
-    # in state.json and mark any whose file no longer exists on disk as
-    # "ghost_cleaned". Prevents the browser from looping on 404s for options
-    # that were deleted (by a previous B+C clear, crash, or manual cleanup).
-    # Runs before AppContext so the storyboard loads clean state immediately.
+    # BS5 + P3 (LD-505 Phase C): Ghost-file scrub — v3 partition aware.
+    #
+    # Original BS5 (2026-04) walked `state["beats"]` (legacy v2 top-level
+    # shape). After v3 partitions landed (`state.videos.<role>.beats`),
+    # this walk found NOTHING and silently became a no-op for the whole
+    # ghost class — but printed "[startup:ghost_scrub] OK" giving the
+    # impression it worked. Audit C3-1.
+    #
+    # P3 fix: use lib.v3_partition._iter_v3_beats (also imported elsewhere
+    # for orphan-sweep + lipsync polling). Distinguish TRULY orphaned files
+    # (gone from disk + not in any archive dir) from manually archived
+    # files (still recoverable from _archive_*/) — only the former get
+    # status="ghost_cleaned"; archived files retain the option entry so the
+    # PR #73 enrichment (file_exists=false → "(archived)" label) gives Kim
+    # a recovery path. Walks every beat's phase_1.options[*] AND lipsync.file
+    # so the next-archive-event scenario doesn't recur (audit C2-4).
     _ghost_count = 0
+    _archived_count = 0
+    _archive_dirs = sorted(
+        d for d in state.clips_dir.iterdir()
+        if d.is_dir() and d.name.startswith("_archive_")
+    ) if state.clips_dir.exists() else []
+
+    def _is_in_archive(fname: str) -> bool:
+        return any((ad / fname).is_file() for ad in _archive_dirs)
+
     def _scrub_ghost_options(st: dict) -> None:
-        nonlocal _ghost_count
-        for _beat_id, _beat in (st.get("beats") or {}).items():
+        nonlocal _ghost_count, _archived_count
+        # C2-2/C2-3 (LD-pending GHOST_SCRUB_TOP_LEVEL_PATHS_V1, 2026-05-20):
+        # also scrub stale TOP-LEVEL path pointers — latest_preview_stitched_path
+        # at state root + completed_mp4_path per partition. These point at
+        # individual files that can be deleted/renamed/archived independently
+        # of the per-beat option/lipsync references. Without this scrub, the
+        # state lookups silently return non-existent paths to clients.
+        _top_path = st.get("latest_preview_stitched_path")
+        if isinstance(_top_path, str) and _top_path and not Path(_top_path).is_file():
+            st["latest_preview_stitched_path"] = None
+            _ghost_count += 1
+            print(
+                f"[startup:ghost_scrub] cleared stale latest_preview_stitched_path "
+                f"{_top_path!r}",
+                flush=True,
+            )
+        for _v_role, _v_partition in (st.get("videos") or {}).items():
+            if not isinstance(_v_partition, dict):
+                continue
+            _cm = _v_partition.get("completed_mp4_path")
+            if isinstance(_cm, str) and _cm and not Path(_cm).is_file():
+                _v_partition["completed_mp4_path"] = None
+                _ghost_count += 1
+                print(
+                    f"[startup:ghost_scrub] cleared stale "
+                    f"videos.{_v_role}.completed_mp4_path {_cm!r}",
+                    flush=True,
+                )
+
+        for _role, _beat_id, _beat in _iter_v3_beats(st):
+            # phase_1.options[*].file
             _opts = (_beat.get("phase_1") or {}).get("options") or []
             for _opt in _opts:
                 _fname = _opt.get("file")
                 if not _fname:
                     continue
-                _fpath = state.clips_dir / _fname
-                if not _fpath.is_file():
-                    _opt["status"] = "ghost_cleaned"
-                    _opt.pop("file", None)
-                    _ghost_count += 1
-                    print(f"[startup:ghost_scrub] {_beat_id}: cleared missing file {_fname!r}")
+                if (state.clips_dir / _fname).is_file():
+                    continue
+                if _is_in_archive(_fname):
+                    _archived_count += 1
+                    continue  # recoverable — leave entry; enrichment shows "(archived)"
+                _opt["status"] = "ghost_cleaned"
+                _opt.pop("file", None)
+                _ghost_count += 1
+                print(
+                    f"[startup:ghost_scrub] {_role}/{_beat_id}: cleared truly-orphan "
+                    f"option file {_fname!r}",
+                    flush=True,
+                )
+            # beat.lipsync.file
+            _ls = _beat.get("lipsync")
+            if isinstance(_ls, dict):
+                _lsfname = _ls.get("file")
+                if _lsfname and not (state.clips_dir / _lsfname).is_file():
+                    if not _is_in_archive(_lsfname):
+                        _beat["lipsync"] = None  # clear truly-orphan lipsync ref
+                        _ghost_count += 1
+                        print(
+                            f"[startup:ghost_scrub] {_role}/{_beat_id}: cleared "
+                            f"truly-orphan lipsync file {_lsfname!r}",
+                            flush=True,
+                        )
+                    else:
+                        _archived_count += 1
     try:
+        # P3: walk v3 partitions through mutate_state. Note: mutate_state takes
+        # a function that receives full state dict (legacy + v3 partitions);
+        # _iter_v3_beats handles both shapes internally.
         state.mutate_state(_scrub_ghost_options)
-        if _ghost_count:
-            print(f"[startup:ghost_scrub] cleaned {_ghost_count} ghost option(s)")
+        if _ghost_count or _archived_count:
+            print(
+                f"[startup:ghost_scrub] cleaned {_ghost_count} ghost; "
+                f"left {_archived_count} archived (recoverable via _archive_*/) ",
+                flush=True,
+            )
         else:
-            print("[startup:ghost_scrub] OK — no ghost options found")
+            print("[startup:ghost_scrub] OK — no ghost or archived files", flush=True)
     except Exception as _gs_exc:
-        print(f"[startup:ghost_scrub] WARN: scrub failed (non-fatal): {_gs_exc}")
+        print(f"[startup:ghost_scrub] WARN: scrub failed (non-fatal): {_gs_exc}", flush=True)
 
     app = AppContext(event_dir, storyboard_path, event_id, state, client)
 
@@ -11765,13 +12046,14 @@ def run_smoke_test() -> int:
         state = sm.read_state()
         assert state["videos"]["intro"]["beats"]["beat_01"]["phase_1"]["status"] == "completed"
 
-        print("[smoke] image dimension gate (graceful without PIL)...")
+        print("[smoke] image dimension gate (PIL hard-required per C5-2)...")
         tiny_png = (
             "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1"
             "HAwCAAAAC0lEQVR4nGNgAAIAAAUAAen63NgAAAAASUVORK5CYII="
         )
         ok, info = validate_image_dimensions(tiny_png)
-        # Either PIL is missing (passes with note) or it's present and rejects 1x1
+        # PIL is now a hard startup dep (LD-pending DEPENDENCY_STARTUP_CHECK_V1 +
+        # C5-2). Should reject 1x1 with "image too small (1x1, min shortest side 600px)".
         print(f"  -> ok={ok} info={info}")
 
         print("[smoke] storyboard HTML extraction...")

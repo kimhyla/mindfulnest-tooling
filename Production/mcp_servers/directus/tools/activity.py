@@ -72,6 +72,10 @@ def register(mcp: Any) -> None:
         if asset_id is not None:
             payload["asset_id"] = asset_id
 
+        # LD-760: sanitize XML-leak tokens BEFORE schema validation.
+        from tools.sanitize import sanitize_payload  # noqa: PLC0415 — late import to avoid cycle
+        payload = sanitize_payload(payload, field_prefix="prod_activity_log")
+
         try:
             validated = validate_payload("prod_activity_log", payload, mode="strict")
             payload = validated["payload"]
@@ -142,6 +146,10 @@ def register(mcp: Any) -> None:
             payload["approved_at"] = approved_at
         if related_activity_log_id is not None:
             payload["related_activity_log_id"] = related_activity_log_id
+
+        # LD-760: sanitize XML-leak tokens BEFORE schema validation.
+        from tools.sanitize import sanitize_payload  # noqa: PLC0415 — late import to avoid cycle
+        payload = sanitize_payload(payload, field_prefix="prod_preflight_reviews")
 
         try:
             validated = validate_payload("prod_preflight_reviews", payload, mode="strict")

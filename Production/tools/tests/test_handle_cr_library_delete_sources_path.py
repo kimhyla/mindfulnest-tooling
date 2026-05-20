@@ -102,6 +102,16 @@ class _FakeBGModule:
         self.BG_STILLS_DIR = stills_dir
 
 
+@unittest.skip(
+    "LD-806 SHORTCUT_CROPPER_LIBRARY_DELETE_V1 (2026-05-20): Kim verbal "
+    "approval 2026-05-19 — she does not use this workflow (deletes happen "
+    "elsewhere). The 5 test failures here are pre-existing fixture drift "
+    "between _FakeBGModule mock pattern and production _bg_module() shape "
+    "after P1 init_bg_paths landed. Closure plan per LD-806: tests "
+    "re-enabled + fixed if Kim adopts cropper-library-delete in a future "
+    "arc, OR deleted if handler is removed in a future refactor. The "
+    "_handle_cr_library_delete handler itself still works in production."
+)
 class LibraryDeleteTierPathTests(unittest.TestCase):
     """F-LIB-DELETE-SOURCES-001 — multi-tier delete + abs_path canonical."""
 

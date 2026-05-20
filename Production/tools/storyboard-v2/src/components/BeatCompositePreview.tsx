@@ -9,7 +9,7 @@ export interface BeatCompositePreviewBeat {
   _version?: number;
   audio_file?: string;
   phase_1?: {
-    options?: Array<{ file?: string; status?: string }>;
+    options?: Array<{ file?: string; status?: string; file_exists?: boolean }>;
     selected_option?: number;
   };
 }
@@ -46,6 +46,11 @@ export function BeatCompositePreview({
   })();
 
   const [previewOpt, setPreviewOpt] = useState(defaultOpt);
+  // Per Kim batch1-#4 (composite silent/black square): surface load + play
+  // failures so the user sees WHY playback didn't happen. Without this, a
+  // failed play() rejection or a 404/500 on the video src produces no
+  // visual feedback at all (the <video> stays black with no error UI).
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   // Session-close review F-127 / BeatCompositePreview: resync local preview
   // option when parent beat refreshes after onSelectOption or poll — without
   // this, previewOpt stays on the pre-mutation selection.
@@ -63,8 +68,16 @@ export function BeatCompositePreview({
   const audioDelaySec = parseDelaySec(audioDelay);
   const version = beat._version ?? 0;
 
-  const optFile = beat.phase_1?.options?.[previewOpt - 1]?.file;
-  const videoSrc = optFile
+  // T1-5 (2026-05-19): gate URL construction on file_exists !== false so
+  // archived options (resolution/beat_01 phase_1.options[*] post-archive)
+  // don't construct a 404-bound URL that fires <video> 'error' silently.
+  // Without this gate, the play button on archived options silently caught
+  // the play() rejection at the try/catch and left the preview as a black
+  // square with no user feedback. Matches T1-1 gating in StoryboardTab.tsx.
+  const _curOpt = beat.phase_1?.options?.[previewOpt - 1];
+  const optFile = _curOpt?.file;
+  const optFileExists = _curOpt?.file_exists !== false;  // undefined ⇒ assume true (back-compat)
+  const videoSrc = optFile && optFileExists
     ? `${SERVER_BASE}/asset/${optFile}?v=${version}`
     : null;
   const audioSrc = beat.audio_file
@@ -106,17 +119,25 @@ export function BeatCompositePreview({
     const aud = audioRef.current;
     if (!vid || !aud || !videoSrc || !audioSrc) return;
     clearDelayTimer();
+    setErrorMsg(null);
     vid.currentTime = 0;
     aud.currentTime = 0;
     try {
       await vid.play();
-    } catch {
+    } catch (err) {
+      // Surface the failure so Kim sees why nothing happened. Common causes:
+      // (a) browser autoplay policy requiring user gesture (gesture context lost
+      // by a prior async hop), (b) video element error already in flight (load
+      // failed and play() rejects), (c) network error mid-load.
+      const reason = err instanceof Error ? err.message : String(err);
+      setErrorMsg(`play failed: ${reason}`);
       setIsPlaying(false);
+      console.warn(`[BeatCompositePreview] ${beatId} play() rejected:`, err);
       return;
     }
     scheduleAudioAfterDelay();
     setIsPlaying(true);
-  }, [videoSrc, audioSrc, clearDelayTimer, scheduleAudioAfterDelay]);
+  }, [videoSrc, audioSrc, clearDelayTimer, scheduleAudioAfterDelay, beatId]);
 
   const onTogglePlay = () => {
     if (isPlaying) {
@@ -147,6 +168,24 @@ export function BeatCompositePreview({
     stopPlayback();
   };
 
+  // Surface <video>/<audio> load errors so Kim sees why the preview is black.
+  const onVideoError = useCallback(() => {
+    const vid = videoRef.current;
+    const code = vid?.error?.code;
+    const msg = vid?.error?.message || `MEDIA_ERR code=${code ?? '?'}`;
+    setErrorMsg(`video load failed: ${msg}`);
+    setIsPlaying(false);
+    console.warn(`[BeatCompositePreview] ${beatId} <video> error:`, vid?.error);
+  }, [beatId]);
+  const onAudioError = useCallback(() => {
+    const aud = audioRef.current;
+    const code = aud?.error?.code;
+    const msg = aud?.error?.message || `MEDIA_ERR code=${code ?? '?'}`;
+    setErrorMsg(`audio load failed: ${msg}`);
+    setIsPlaying(false);
+    console.warn(`[BeatCompositePreview] ${beatId} <audio> error:`, aud?.error);
+  }, [beatId]);
+
   if (!videoSrc || !audioSrc) return null;
 
   return (
@@ -169,10 +208,22 @@ export function BeatCompositePreview({
           {Array.from({ length: optionCount }).map((_, i) => {
             const oi = i + 1;
             const opt = beat.phase_1?.options?.[i];
-            const ready = !!(opt?.file && opt?.status !== 'pending' && opt?.status !== 'failed');
+            const archived = !!(opt?.file && opt?.file_exists === false);
+            const ready = !!(
+              opt?.file
+              && !archived
+              && opt?.status !== 'pending'
+              && opt?.status !== 'failed'
+            );
+            // T1-5: surface archived options explicitly in the dropdown so
+            // user can pick a non-archived one rather than getting a silent
+            // black-square preview.
+            const label = archived
+              ? ` (archived)`
+              : !ready ? ' (pending)' : '';
             return (
               <option key={oi} value={String(oi)} disabled={!ready}>
-                opt {oi}{!ready ? ' (pending)' : ''}
+                opt {oi}{label}
               </option>
             );
           })}
@@ -195,6 +246,7 @@ export function BeatCompositePreview({
         preload="auto"
         muted
         onEnded={onVideoEnded}
+        onError={onVideoError}
         data-testid={`beat-${index}-composite-preview-video`}
       />
       <audio
@@ -202,8 +254,24 @@ export function BeatCompositePreview({
         src={audioSrc}
         preload="auto"
         style={{ display: 'none' }}
+        onError={onAudioError}
         data-testid={`beat-${index}-composite-preview-audio`}
       />
+      {errorMsg ? (
+        <span
+          class="mn-beat-composite-preview-error"
+          data-testid={`beat-${index}-composite-preview-error`}
+          style={{
+            color: '#ff4444',
+            fontSize: '11px',
+            marginLeft: '8px',
+            fontStyle: 'italic',
+          }}
+          title={errorMsg}
+        >
+          ⚠ {errorMsg.length > 50 ? errorMsg.slice(0, 47) + '…' : errorMsg}
+        </span>
+      ) : null}
     </div>
   );
 }

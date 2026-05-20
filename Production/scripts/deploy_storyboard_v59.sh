@@ -163,6 +163,28 @@ fi
 echo "[deploy] (a-pre.5) stale-build check ok ($TSX_COUNT .tsx/.ts source file(s) all older than dist/index.html)"
 
 # ----------------------------------------------------------------
+# (a-pre.6) Storyboard UI Feature Regression Guard — LD-766
+# Greps dist/index.html for critical-feature markers before deploy.
+# Fails loud (exit 1) if any feature regressed silently.
+# Set MN_SKIP_REGRESSION_GUARD=1 to bypass (audit-trail only, NOT for normal use).
+# ----------------------------------------------------------------
+if [[ "${MN_SKIP_REGRESSION_GUARD:-0}" != "1" ]]; then
+    GUARD_SCRIPT="$SRC_TOOLING/Production/scripts/check_storyboard_critical_features.sh"
+    if [[ -x "$GUARD_SCRIPT" ]]; then
+        if ! bash "$GUARD_SCRIPT"; then
+            echo "[deploy] FATAL: regression guard failed — refusing to deploy." >&2
+            echo "[deploy] Fix the missing marker(s) above OR set MN_SKIP_REGRESSION_GUARD=1 with audit reason." >&2
+            exit 1
+        fi
+        echo "[deploy] (a-pre.6) LD-766 regression guard ok"
+    else
+        echo "[deploy] WARN: regression guard script missing at $GUARD_SCRIPT — skipping" >&2
+    fi
+else
+    echo "[deploy] (a-pre.6) LD-766 regression guard SKIPPED (MN_SKIP_REGRESSION_GUARD=1)"
+fi
+
+# ----------------------------------------------------------------
 # (a) Pre-deploy snapshot — rollback safety net
 # ----------------------------------------------------------------
 mkdir -p "$LOG_DIR"

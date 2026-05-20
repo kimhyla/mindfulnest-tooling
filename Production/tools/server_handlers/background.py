@@ -45,11 +45,19 @@ from tools.production_server import (  # noqa: E402
 )
 
 # V59 Phase 4 path-depth correction: extracted modules are one level
-# deeper than production_server.py. These constants map original
-# `_PSERVER_TOOLS_DIR[.parent]*` targets correctly.
+# deeper than production_server.py. _PSERVER_TOOLS_DIR is for CODE-tree
+# lookups (sibling Python modules, sys.path inserts). NOT used for data
+# paths — those come from _data_root(h) per LD-505 Phase C (2026-05-19).
 _PSERVER_TOOLS_DIR = Path(__file__).resolve().parent.parent  # Production/tools/
-_PSERVER_PRODUCTION_DIR = _PSERVER_TOOLS_DIR.parent  # Production/
-_PSERVER_REPO_ROOT = _PSERVER_PRODUCTION_DIR.parent  # repo root
+
+
+def _data_root(h) -> Path:
+    """Runtime ``Production/`` root, anchored on the running server's event_dir.
+
+    Replaces the LD-505-broken `_PSERVER_PRODUCTION_DIR = Path(__file__)...`
+    which resolved to the (empty) tooling tree. Audit C1-1 / C1-2 / C1-7.
+    """
+    return Path(h.app.event_dir).parent
 
 
 # Project-internal modules imported the same way production_server.py does.
@@ -95,9 +103,15 @@ from tools.production_server import (  # noqa: E402
 
 def serve_magic_picker(h)-> None:
 
-    """Serve path_picker.html for the /magic route."""
+    """Serve path_picker.html for the /magic route.
+
+    Bug fix 2026-05-19: path_picker.html lives at Production/tools/path_picker.html
+    (NOT Production/path_picker.html). The original constant after the Phase 4
+    handler split was wrong — _PSERVER_PRODUCTION_DIR points to Production/ but
+    the file is one level deeper at Production/tools/. Use _PSERVER_TOOLS_DIR.
+    """
     import urllib.parse as _up
-    picker = _PSERVER_PRODUCTION_DIR / "path_picker.html"
+    picker = _PSERVER_TOOLS_DIR / "path_picker.html"
     if not picker.exists():
         return h._send_error_v59(
                    404,
@@ -129,7 +143,7 @@ def handle_magic_resolve_bg(h)-> None:
                    retry_safe=False,
                    extra={"ok": False},
                )
-    reg_path = _PSERVER_PRODUCTION_DIR / "scene_registry.yaml"
+    reg_path = _data_root(h) / "scene_registry.yaml"
     if not reg_path.exists():
         return h._send_error_v59(
                    404,
@@ -312,7 +326,7 @@ def handle_magic_submit_path(h, body: dict)-> None:
             # ── Step 1: Write to scene_registry.yaml ──────────────
             _MAGIC_JOBS[job_id].update({"status": "writing_registry",
                                         "message": "Saving path to scene registry..."})
-            reg_path = _PSERVER_PRODUCTION_DIR / "scene_registry.yaml"
+            reg_path = _data_root(h) / "scene_registry.yaml"
             bak_path = reg_path.with_suffix(f".yaml.bak_magic_{int(time.time())}")
             shutil.copy2(reg_path, bak_path)
 
@@ -400,9 +414,17 @@ def handle_magic_submit_path(h, body: dict)-> None:
 
             # ── Step 3: Render preview still ──────────────────────
             _MAGIC_JOBS[job_id].update({"message": "Rendering preview still (final frame)..."})
-            sys.path.insert(0, str(_PSERVER_PRODUCTION_DIR))
+            # magic_compositor lives at Production/tools/magic_compositor.py
+            # (CODE tree). Use _PSERVER_TOOLS_DIR to be explicit about
+            # code-vs-data intent per LD-505 Phase C lint guard.
+            sys.path.insert(0, str(_PSERVER_TOOLS_DIR))
             from magic_compositor import MagicCompositor
-            out_dir = db / "Production" / "Event_1" / "kling_clips"
+            # LD-505 Phase C anchor — derive kling_clips dir from the scene's
+            # event_id (resolved above from scene_registry.yaml), not the
+            # legacy hardcoded "Event_1". Same idiom as event_dir on line 387.
+            # [CONFIRMED against this function: event_id is set on line 386
+            # from reg2 scene metadata; event_dir already uses this pattern.]
+            out_dir = db / "Production" / f"Event_{event_id.replace('e','')}" / "kling_clips"
             out_dir.mkdir(parents=True, exist_ok=True)
             path_pts_tuples = [tuple(pt) for pt in path_pts_clean]
             mc = MagicCompositor(
@@ -2947,6 +2969,24 @@ def handle_animate(h, body: dict)-> None:
         print(f"[animate] {beat_id} duration={beat_duration}s reason={duration_reason}")
 
         # Initialize beat state via partition router (was videos.intro hardcode).
+        # Blocker #146 (LD-pending LIPSYNC_INVALIDATE_ON_REGEN_V1): also clear
+        # any prior `beat.lipsync` state AND unlink the on-disk
+        # {beat_id}_lipsync.mp4 file. Stale lipsync MP4 from a prior regen
+        # cycle creates a "partial-lipsync perception bug" (#147) — the
+        # beat looks lipsynced even though state.lipsync is null and the
+        # video has just been regenerated. Cleanup is best-effort on the
+        # disk file (file may not exist; unlink races with concurrent
+        # readers are tolerated since the next lipsync will overwrite).
+        prior_lipsync_file = h.app.event_dir / "animation_clips" / f"{beat_id}_lipsync.mp4"
+        prior_lipsync_existed = False
+        try:
+            if prior_lipsync_file.is_file():
+                prior_lipsync_existed = True
+                prior_lipsync_file.unlink()
+                print(f"[animate] {beat_id}: unlinked stale lipsync {prior_lipsync_file.name}")
+        except OSError as exc:  # noqa: BLE001
+            print(f"[animate] {beat_id}: lipsync unlink warning (non-fatal): {exc}")
+
         def init_beat_partition(partition, _beat_id=beat_id, _beat=beat):
             pbeats = partition.setdefault("beats", {})
             pbeats.setdefault(_beat_id, {
@@ -2960,7 +3000,30 @@ def handle_animate(h, body: dict)-> None:
                 "options": [],
                 "selected_option": None,
             }
+            # Clear lipsync state (Blocker #146) — paired with the disk
+            # unlink above. Setting to None rather than deleting the key so
+            # downstream code can still distinguish "explicitly cleared" from
+            # "never existed".
+            if "lipsync" in pbeats[_beat_id]:
+                pbeats[_beat_id]["lipsync"] = None
         h.app.state.mutate_video_state(scope.video_role, init_beat_partition)
+
+        # Best-effort Directus audit log of the invalidation. Fire-and-forget.
+        if prior_lipsync_existed:
+            try:
+                from lib.directus import try_post_or_queue as _tpq
+                _tpq("prod_activity_log", {
+                    "action": "lipsync_invalidated_on_regen",
+                    "performed_by": "handle_animate",
+                    "details": {
+                        "event_id": h.app.event_id,
+                        "beat_id": beat_id,
+                        "video_role": scope.video_role,
+                        "removed_file": str(prior_lipsync_file),
+                    },
+                })
+            except Exception as exc:  # noqa: BLE001
+                print(f"[animate] {beat_id}: lipsync_invalidated_on_regen audit failed (non-fatal): {exc}")
 
         # Submit options_per_beat jobs, staggered
         for opt_idx in range(options_per_beat):
@@ -3122,8 +3185,13 @@ def handle_redo(h, body: dict)-> None:
     video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
 
     # Acquire lock -> clear state -> list old files -> release -> delete -> resubmit
+    # Blocker #146 (LIPSYNC_INVALIDATE_ON_REGEN_V1): also clear b["lipsync"]
+    # and stage its file for unlink, so handle_redo + handle_animate both
+    # share the same invalidation semantics (idempotent if both fire).
     old_files: list[str] = []
+    prior_lipsync_existed = False
     def clear(state, _role=video_role):
+        nonlocal prior_lipsync_existed
         b = ((state.get("videos") or {}).get(_role) or {}).get("beats", {}).get(beat_id)
         if not b:
             return
@@ -3131,6 +3199,9 @@ def handle_redo(h, body: dict)-> None:
             if opt.get("file"):
                 old_files.append(opt["file"])
         b["phase_1"] = {"status": "polling", "options": [], "selected_option": None}
+        if b.get("lipsync"):
+            prior_lipsync_existed = True
+            b["lipsync"] = None
     h.app.state.mutate_state(clear)
 
     for fname in old_files:
@@ -3140,6 +3211,33 @@ def handle_redo(h, body: dict)-> None:
                 p.unlink()
             except OSError:
                 pass
+
+    # Blocker #146: unlink stale {beat_id}_lipsync.mp4 (paired with the
+    # state-clear above).
+    prior_lipsync_file = h.app.event_dir / "animation_clips" / f"{beat_id}_lipsync.mp4"
+    try:
+        if prior_lipsync_file.is_file():
+            prior_lipsync_existed = True
+            prior_lipsync_file.unlink()
+            print(f"[redo] {beat_id}: unlinked stale lipsync {prior_lipsync_file.name}")
+    except OSError as exc:
+        print(f"[redo] {beat_id}: lipsync unlink warning (non-fatal): {exc}")
+
+    if prior_lipsync_existed:
+        try:
+            from lib.directus import try_post_or_queue as _tpq
+            _tpq("prod_activity_log", {
+                "action": "lipsync_invalidated_on_regen",
+                "performed_by": "handle_redo",
+                "details": {
+                    "event_id": h.app.event_id,
+                    "beat_id": beat_id,
+                    "video_role": video_role,
+                    "removed_file": str(prior_lipsync_file),
+                },
+            })
+        except Exception as exc:  # noqa: BLE001
+            print(f"[redo] {beat_id}: lipsync_invalidated_on_regen audit failed (non-fatal): {exc}")
 
     # Resubmit via the existing /api/animate path, but scoped to this beat.
     # Forward scope_video_role/scope_target_video so the resubmit hits the
@@ -3215,7 +3313,7 @@ def handle_watercolor_animate(h, body: dict)-> None:
                    retry_safe=False,
                )
 
-    wc_dir = _PSERVER_PRODUCTION_DIR / "assets" / "watercolor_library"
+    wc_dir = _data_root(h) / "assets" / "watercolor_library"
     matches = list(wc_dir.glob(f"{watercolor_key}.*"))
     if not matches:
         return h._send_error_v59(

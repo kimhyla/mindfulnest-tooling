@@ -656,113 +656,30 @@ def handle_beat_update_text(h, body: dict)-> None:
         pass  # fire-and-forget
 
     # ==================================================================
-    # Decision 181 TTS_AUTO_REGEN_ON_TEXT_EDIT (April 17 2026):
-    # After a successful text save, synchronously regenerate TTS audio
-    # using the beat's speaker voice profile. Client waits ~5-8s.
-    # On failure we return 200 with tts_regen.ok=false so the text save
-    # is preserved and the user gets a clear error to retry.
-    # Caller can pass {"skip_tts_regen": true} to opt out (e.g., internal
-    # batch text updates that don't need audio regen yet).
+    # LD-803 TTS_NO_AUTO_REGEN_EXPLICIT_BUTTON_ONLY_V1 (2026-05-20):
+    # TTS NEVER auto-regenerates on text edit. Regeneration fires
+    # EXCLUSIVELY via the explicit Regen Audio button
+    # (_handle_beat_regenerate_audio). This block formerly hosted the
+    # synchronous Decision 181 auto-regen (hoisted by LD-734); both LDs
+    # are superseded. The stale-TTS badge (text_modified_after_tts) is
+    # the user-visible signal that audio is out of date and the user
+    # should click Regen Audio.
+    #
+    # Tier 1A debounce helpers + TIER1A_ENABLED gating remain in
+    # production_server.py (lines ~464-566, 726-736) — they are no longer
+    # invoked from this auto-regen path but are retained because _t1_enabled()
+    # is still consulted at production_server.py:2244 (broader runtime gate
+    # beyond auto-regen) and Tier 3 widgets reference TIER1A_ENABLED via
+    # patch_v38_tier3_widgets.py. The skip_tts_regen body flag is irrelevant
+    # under LD-803 (regen is opt-IN via button, not opt-OUT via flag).
     # ==================================================================
-    tts_regen_result = {"ok": False, "skipped": True, "reason": "no_text_change"}
     text_actually_changed = (old_text or "") != new_text
-    skip_flag = bool(body.get("skip_tts_regen"))
-
-    # Tier 1A: 60s-per-beat debounce of AUTO-regen (LD
-    # TTS_REGEN_DEBOUNCE_60S_WINDOW_PER_BEAT). The explicit "🎙 Regen Audio"
-    # button is a SEPARATE handler (_handle_beat_regenerate_audio) and is
-    # intentionally NOT debounced — it's user-initiated opt-in. The
-    # skip_tts_regen body flag remains a client-side force-skip (checked
-    # first below); debounce is a server-side rate limiter that kicks in
-    # only when neither of those apply.
-    debounce_skip, debounce_elapsed = (False, 0.0)
-    if TIER1A_ENABLED and text_actually_changed and not skip_flag:
-        debounce_skip, debounce_elapsed = _tier1a_debounce_should_skip(beat_id)
-
-    if text_actually_changed and not skip_flag and not debounce_skip:
-        # Load ElevenLabs key (cached at first call).
-        try:
-            _libdir = os.path.join(os.path.dirname(__file__), "credentials_lib")
-            if _libdir not in sys.path:
-                sys.path.insert(0, _libdir)
-            from credentials import load_credentials  # type: ignore
-            creds = load_credentials()
-            el_key = creds.get("elevenlabs_key") or ""
-        except Exception as exc:  # noqa: BLE001
-            el_key = ""
-            print(f"[update_text] elevenlabs key load failed: {exc}")
-
-        if not el_key:
-            tts_regen_result = {
-                "ok": False,
-                "error": "elevenlabs key unavailable — TTS regen skipped",
-                "skipped": True,
-                "reason": "no_api_key",
-            }
-        else:
-            print(f"[update_text] {beat_id} firing sync TTS regen (Rule 11 source fidelity)")
-            try:
-                tts_regen_result = _tts_regenerate_for_beat(
-                    h.app, beat_id, new_text, el_key,
-                )
-            except Exception as exc:  # noqa: BLE001
-                traceback.print_exc()
-                tts_regen_result = {
-                    "ok": False,
-                    "error": f"unexpected TTS regen failure: {type(exc).__name__}: {exc}",
-                    "skipped": False,
-                }
-            # Tier 1A: record regen attempt (success OR failure) so the
-            # next keystroke falls inside the debounce window. Rate-limits
-            # retry stampede on failing ElevenLabs calls.
-            # Tier 3 (April 18 2026): when regen_ok, also clears
-            # phase_1.speaker_mismatch because the audio now matches the
-            # speaker. Gated on _t1_enabled() so the rollback flag
-            # MINDFULNEST_T1_ENABLED=0 reverts to pre-Tier-3 behavior too.
-            if TIER1A_ENABLED:
-                _regen_ok = bool(tts_regen_result.get("ok")) and _t1_enabled()
-                _tier1a_mark_regen_fired(
-                    beat_id, app=h.app, regen_ok=_regen_ok,
-                )
-
-        if tts_regen_result.get("ok"):
-            print(f"[update_text] {beat_id} TTS regen OK: "
-                  f"{tts_regen_result['audio_file']} "
-                  f"({tts_regen_result['audio_duration_s']:.2f}s, "
-                  f"{tts_regen_result['elapsed_s']:.1f}s call)")
-        else:
-            print(f"[update_text] {beat_id} TTS regen failed: "
-                  f"{tts_regen_result.get('error', 'unknown')}")
-    elif skip_flag:
-        tts_regen_result = {"ok": False, "skipped": True, "reason": "skip_tts_regen_flag"}
-        print(f"[update_text] {beat_id} TTS regen skipped (skip_tts_regen)")
-    elif debounce_skip:
-        # Tier 1A debounce path. Text save already completed above; we
-        # only skip the downstream TTS render to protect the rate budget.
-        _elapsed_round = round(debounce_elapsed, 2) if debounce_elapsed != float("inf") else None
-        tts_regen_result = {
-            "ok": False,
-            "skipped": True,
-            "reason": "debounced",
-            "elapsed_since_last_s": _elapsed_round,
-            "window_s": TIER1A_DEBOUNCE_WINDOW_SEC,
-        }
-        # Structured [T1] log to stdout for greppability.
-        _iso = datetime.now(timezone.utc).isoformat()
-        print(
-            f"[T1] {_iso} beat={beat_id} action=tts_regen_skipped "
-            f"reason=debounced elapsed_since_last_s={_elapsed_round}",
-            flush=True,
-        )
-        # Directus audit — rate-limited to 1/beat/60s to avoid spam
-        if _tier1a_should_audit(beat_id):
-            try:
-                _tier1a_async_log_debounce(
-                    h.app.event_id, beat_id, debounce_elapsed,
-                )
-            except Exception:  # noqa: BLE001
-                pass  # fire-and-forget
-    # else: text unchanged, skipped message stays as 'no_text_change'
+    tts_regen_result = {
+        "ok": False,
+        "skipped": True,
+        "reason": "no_auto_regen_per_LD_803",
+        "hint": "click 🎙 Regen Audio button to regenerate TTS",
+    }
 
     h._send_json(200, {
         "ok": True,
@@ -770,7 +687,7 @@ def handle_beat_update_text(h, body: dict)-> None:
         "saved_at": now_iso,
         "html_patched": True,
         "text_modified_after_tts": (
-            tts_exists and text_actually_changed and not tts_regen_result.get("ok")
+            tts_exists and text_actually_changed
         ),
         "old_text_preview": (old_text or "")[:100],
         "tts_regen": tts_regen_result,
@@ -1294,9 +1211,46 @@ def handle_beat_regenerate_audio(h, body: dict)-> None:
                    retry_safe=False,
                )
 
-    video_role = body.get("scope_video_role") or body.get("scope_target_video") or "intro"
+    # Blocker #148 fix (LD pending AUDIO_REGEN_SCOPE_AUTODISCOVER_V1, 2026-05-20):
+    # If the caller didn't pass scope_video_role/scope_target_video, AND the
+    # beat is not present in 'intro' (the legacy default), auto-discover by
+    # scanning all video_roles. If found in exactly one, use that. If found
+    # in zero or multiple, surface explicit 400 (ambiguous beat across
+    # partitions) rather than silent failure with the legacy 'intro' default.
     state = h.app.state.read_state()
-    beat_state = (((state.get("videos") or {}).get(video_role) or {}).get("beats") or {}).get(beat_id) or {}
+    _explicit_role = body.get("scope_video_role") or body.get("scope_target_video")
+    if _explicit_role:
+        video_role = _explicit_role
+        beat_state = (((state.get("videos") or {}).get(video_role) or {}).get("beats") or {}).get(beat_id) or {}
+    else:
+        # No explicit scope. Try 'intro' first (legacy default); fall back
+        # to autodiscovery across all roles.
+        _intro_beats = ((state.get("videos") or {}).get("intro") or {}).get("beats") or {}
+        if beat_id in _intro_beats:
+            video_role = "intro"
+            beat_state = _intro_beats[beat_id]
+        else:
+            _matching_roles = [
+                r for r, partition in (state.get("videos") or {}).items()
+                if beat_id in ((partition or {}).get("beats") or {})
+            ]
+            if len(_matching_roles) == 1:
+                video_role = _matching_roles[0]
+                beat_state = ((state.get("videos") or {}).get(video_role) or {}).get("beats", {}).get(beat_id, {})
+                print(f"[regen_audio] {beat_id} scope_video_role autodiscovered: {video_role}")
+            elif len(_matching_roles) > 1:
+                return h._send_error_v59(
+                           400,
+                           error_code="AMBIGUOUS_BEAT_SCOPE",
+                           error_message=f"beat {beat_id} exists in multiple partitions ({_matching_roles}); pass scope_video_role explicitly",
+                           retry_safe=False,
+                       )
+            else:
+                # Beat not found anywhere; default to 'intro' so downstream
+                # error reporting stays consistent with the legacy path
+                # (will hit 'no dialogue text in state OR storyboard' below).
+                video_role = "intro"
+                beat_state = {}
     text = (beat_state.get("text") or "").strip()
     # Fallback: if state has no text yet (beat never edited+blurred),
     # parse the storyboard L[] t: field. Same pattern
@@ -1344,9 +1298,13 @@ def handle_beat_regenerate_audio(h, body: dict)-> None:
             b["text"] = _t
         h.app.state.mutate_state(_seed_text)
 
-    # Load ElevenLabs key
+    # Load ElevenLabs key — CODE tree (credentials_lib is sibling Python).
+    # Handler lives at Production/tools/server_handlers/, credentials_lib at
+    # Production/tools/credentials_lib/ — go up one level first.
     try:
-        _libdir = os.path.join(os.path.dirname(__file__), "credentials_lib")
+        _libdir = os.path.normpath(
+            os.path.join(os.path.dirname(__file__), "..", "credentials_lib")
+        )
         if _libdir not in sys.path:
             sys.path.insert(0, _libdir)
         from credentials import load_credentials  # type: ignore

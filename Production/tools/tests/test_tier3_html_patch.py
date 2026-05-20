@@ -20,9 +20,19 @@ import unittest
 _REPO = pathlib.Path(__file__).resolve().parents[3]
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
-from Production.lib.paths import DROPBOX_ROOT  # noqa: E402
-
-PROJECT_ROOT = DROPBOX_ROOT
+# Test-isolation fix (2026-05-19): lib.paths.DROPBOX_ROOT captures
+# MN_DROPBOX_ROOT at module-import time. test_assemble_module.py sets that
+# env var to a tmpdir as a module-import side effect (intentional for its
+# scope, leaks for ours). Re-resolve from the canonical resolver with env
+# saved/restored so we get the REAL Dropbox path regardless of pollution.
+import os as _os  # noqa: E402
+from Production.lib.paths import _resolve_dropbox_root  # noqa: E402
+_saved_mn_root = _os.environ.pop("MN_DROPBOX_ROOT", None)
+try:
+    PROJECT_ROOT = _resolve_dropbox_root()
+finally:
+    if _saved_mn_root is not None:
+        _os.environ["MN_DROPBOX_ROOT"] = _saved_mn_root
 TARGET = PROJECT_ROOT / "Production" / "Event_1" / "storyboard_v38_prod.html"
 
 
