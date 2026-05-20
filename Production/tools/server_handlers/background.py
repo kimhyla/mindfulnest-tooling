@@ -143,14 +143,18 @@ def handle_magic_resolve_bg(h)-> None:
                    retry_safe=False,
                    extra={"ok": False},
                )
-    reg_path = _data_root(h) / "scene_registry.yaml"
+    # Canonical location is Production/tools/scene_registry.yaml per
+    # VISIBLE_MAGIC_TECH_SPEC_v1.md + magic_compositor.py:520 — NOT
+    # Production/scene_registry.yaml. _data_root(h) is event_dir.parent =
+    # Production/, so the subdir 'tools' is required.
+    reg_path = _data_root(h) / "tools" / "scene_registry.yaml"
     if not reg_path.exists():
         return h._send_error_v59(
                    404,
                    error_code="SCENE_REGISTRY_YAML_NOT_FOUND",
                    error_message="scene_registry.yaml not found",
                    retry_safe=False,
-                   extra={"ok": False},
+                   extra={"ok": False, "expected_path": str(reg_path)},
                )
     registry = _yaml.safe_load(reg_path.read_text()) or {}
     scene = registry.get(scene_key, {})
@@ -326,7 +330,9 @@ def handle_magic_submit_path(h, body: dict)-> None:
             # ── Step 1: Write to scene_registry.yaml ──────────────
             _MAGIC_JOBS[job_id].update({"status": "writing_registry",
                                         "message": "Saving path to scene registry..."})
-            reg_path = _data_root(h) / "scene_registry.yaml"
+            # Canonical location is Production/tools/scene_registry.yaml
+            # (see VISIBLE_MAGIC_TECH_SPEC_v1.md + magic_compositor.py:520).
+            reg_path = _data_root(h) / "tools" / "scene_registry.yaml"
             bak_path = reg_path.with_suffix(f".yaml.bak_magic_{int(time.time())}")
             shutil.copy2(reg_path, bak_path)
 
