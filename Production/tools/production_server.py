@@ -12029,13 +12029,14 @@ def run_smoke_test() -> int:
         state = sm.read_state()
         assert state["videos"]["intro"]["beats"]["beat_01"]["phase_1"]["status"] == "completed"
 
-        print("[smoke] image dimension gate (graceful without PIL)...")
+        print("[smoke] image dimension gate (PIL hard-required per C5-2)...")
         tiny_png = (
             "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1"
             "HAwCAAAAC0lEQVR4nGNgAAIAAAUAAen63NgAAAAASUVORK5CYII="
         )
         ok, info = validate_image_dimensions(tiny_png)
-        # Either PIL is missing (passes with note) or it's present and rejects 1x1
+        # PIL is now a hard startup dep (LD-pending DEPENDENCY_STARTUP_CHECK_V1 +
+        # C5-2). Should reject 1x1 with "image too small (1x1, min shortest side 600px)".
         print(f"  -> ok={ok} info={info}")
 
         print("[smoke] storyboard HTML extraction...")
