@@ -2092,3 +2092,12 @@
 .mn-kim-done-wrap .kim-done-label {
   color: #555;
 }
+/* End-frame thumbnail hover-to-enlarge (T1-Phase 6 follow-up, Kim 2026-05-20 5:05 PM).
+   50x50 thumb in the beat row expands to a 360x360 floating preview when hovered,
+   without affecting layout. Click opens full PNG in a new tab. */
+.mn-end-frame-thumb-wrap:hover .mn-end-frame-large {
+  display: block !important;
+}
+.mn-end-frame-thumb-wrap:focus-within .mn-end-frame-large {
+  display: block !important;
+}

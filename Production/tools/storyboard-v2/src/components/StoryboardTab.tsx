@@ -1006,20 +1006,61 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
             style={{ minWidth: '320px', marginLeft: '4px' }}
           />
           {_endFrameOk && _endFrameThumbUrl ? (
-            <img
-              src={_endFrameThumbUrl}
-              alt={`end frame for ${beatId}`}
-              data-testid={`beat-${index}-end-frame-thumb`}
-              title={`Approved end frame: ${beat.end_frame_path}`}
+            // Kim 2026-05-20 follow-up: hover-to-enlarge so the 50x50 thumb
+            // can be inspected at a useful size. wrapper.hover triggers the
+            // child .mn-end-frame-large to render at 360x360 fixed-position
+            // overlay. Click thumb in a new tab is the fallback for an even
+            // bigger view (browser handles via target="_blank").
+            <a
+              class="mn-end-frame-thumb-wrap"
+              href={_endFrameThumbUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              data-testid={`beat-${index}-end-frame-thumb-link`}
+              title={`Approved end frame: ${beat.end_frame_path} — hover to enlarge, click to open in new tab.`}
               style={{
-                width: '50px',
-                height: '50px',
-                objectFit: 'cover',
-                border: '1px solid #4a8a4a',
+                position: 'relative',
+                display: 'inline-block',
                 marginLeft: '4px',
                 verticalAlign: 'middle',
+                lineHeight: 0,
               }}
-            />
+            >
+              <img
+                src={_endFrameThumbUrl}
+                alt={`end frame for ${beatId}`}
+                data-testid={`beat-${index}-end-frame-thumb`}
+                class="mn-end-frame-thumb"
+                style={{
+                  width: '50px',
+                  height: '50px',
+                  objectFit: 'cover',
+                  border: '1px solid #4a8a4a',
+                  display: 'block',
+                }}
+              />
+              <img
+                src={_endFrameThumbUrl}
+                alt=""
+                aria-hidden="true"
+                class="mn-end-frame-large"
+                style={{
+                  position: 'absolute',
+                  bottom: '60px',
+                  left: '0',
+                  width: '360px',
+                  height: '360px',
+                  objectFit: 'contain',
+                  border: '2px solid #4a8a4a',
+                  background: '#000',
+                  borderRadius: '4px',
+                  boxShadow: '0 8px 24px rgba(0,0,0,0.6)',
+                  display: 'none',
+                  zIndex: 100,
+                  pointerEvents: 'none',
+                }}
+              />
+            </a>
           ) : (
             <span
               class="mn-dim"
