@@ -791,7 +791,13 @@
 
     let jobId;
     try {
-      const resp = await fetch('/api/magic/submit_path', {
+      // C7-4 fix (LD-pending C7_ABSOLUTE_URLS_RULE_32, 2026-05-20): Rule 32
+      // requires absolute http://localhost:5111 URLs in production tool fetch
+      // calls. Relative '/api/magic/submit_path' broke when path_picker.html
+      // was opened from a different origin (file://, browser cache origin,
+      // proxy port). Matches the existing pattern at lines 382/389/721 in
+      // this file.
+      const resp = await fetch('http://localhost:5111/api/magic/submit_path', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),

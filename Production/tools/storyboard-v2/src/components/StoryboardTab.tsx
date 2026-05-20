@@ -233,6 +233,13 @@ function deriveBeatLifecycle(b: BeatState): BeatLifecycle {
 export type LipsyncFreshness = 'fresh' | 'stale';
 
 export function computeLipsyncFreshness(b: BeatState): LipsyncFreshness {
+  // T2 (LD STALE_LIPSYNC_ON_ASSIGN_IMAGE_V1, 2026-05-20): if the server flagged
+  // lipsync.image_changed=true (drag-drop re-assigned image while completed
+  // lipsync exists), surface as stale. Kim drags the old library tile back
+  // to revert — no undo button by design.
+  if ((b.lipsync as { image_changed?: boolean } | undefined)?.image_changed) {
+    return 'stale';
+  }
   const fileMtimeS = b.lipsync?.file_mtime;
   if (typeof fileMtimeS !== 'number' || !Number.isFinite(fileMtimeS)) {
     // Defensive: server didn't include file_mtime → treat as stale so Kim

@@ -1085,13 +1085,14 @@ def sanitize_prompt(prompt: str) -> str:
 def validate_image_dimensions(data_uri: str) -> tuple[bool, str]:
     """CLAUDE.md Rule 6 — shortest side must be >= 600px.
 
-    Uses PIL if available; if PIL isn't installed, logs a warning and
-    passes (the injection-time validator and Directus gate remain in
-    force as backup layers)."""
-    try:
-        from PIL import Image  # type: ignore
-    except ImportError:
-        return True, "PIL not installed — dimension check skipped"
+    PIL is a HARD startup dependency (see _check_runtime_capabilities at
+    line ~11608 which exits the server with [startup:FATAL] if Pillow is
+    missing). The prior fall-through 'PIL not installed - dimension check
+    skipped' was a Rule 19 silent-bypass that became dead code after the
+    P2 LD-pending DEPENDENCY_STARTUP_CHECK_V1 work. Removed per C5-2 audit
+    finding.
+    """
+    from PIL import Image  # type: ignore
 
     try:
         # data:image/png;base64,XXXX
@@ -1112,13 +1113,12 @@ def auto_upscale_image(data_uri: str, target_min: int = MIN_ANIMATION_SIZE) -> t
     """Auto-upscale an image so its shortest side meets target_min.
 
     Returns (possibly_upscaled_data_uri, info_string).
-    If PIL isn't available or the image already meets the minimum, returns the original.
+    If the image already meets the minimum, returns the original.
+    PIL is a HARD startup dependency (see _check_runtime_capabilities) so the
+    'PIL not installed - no upscale' silent-bypass was removed per C5-2.
     This is the Rule 6 'auto-upscale fallback safety net'.
     """
-    try:
-        from PIL import Image  # type: ignore
-    except ImportError:
-        return data_uri, "PIL not installed — no upscale"
+    from PIL import Image  # type: ignore
 
     try:
         header, b64 = data_uri.split(",", 1)
@@ -7507,7 +7507,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             #    image_path for v59 shell clients (DRAG_DROP_V59_GALLERY_V1).
             #    S5.5a2: writes to videos[role].image_overrides via
             #    mutate_video_state (BG_VIDEO_PARTITION_V1).
-            def _persist(partition, _bid=beat_id, _key=image_key, _ap=abs_path):
+            def _persist(partition, _bid=beat_id, _key=image_key, _ap=abs_path, _prev_key=prev_override_key):
                 partition.setdefault("image_overrides", {})[_bid] = _key
                 if _ap:
                     partition.setdefault("image_overrides_abs", {})[_bid] = _ap
@@ -7522,6 +7522,22 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     except ValueError:
                         _beat["image_path"] = _ap
                     _beat["_version"] = int(_beat.get("_version", 0) or 0) + 1
+                # T2 (Kim 2026-05-19 LD pending STALE_LIPSYNC_ON_ASSIGN_IMAGE_V1):
+                # If the beat has a completed lipsync AND the image key is
+                # changing, mark lipsync as stale via image_changed=True. The
+                # mp4 stays on disk and continues to play; UI surfaces a badge
+                # so Kim knows to re-lipsync. To revert: drag the old image
+                # back from the library (its key is captured at _prev_key).
+                # Image key unchanged: do nothing (no-op assign-same-image).
+                if _prev_key is not None and _prev_key != _key:
+                    _beat_state = partition.get("beats", {}).get(_bid)
+                    if _beat_state:
+                        _ls = _beat_state.get("lipsync")
+                        if _ls and _ls.get("status") == "completed":
+                            _ls["image_changed"] = True
+                            # Capture the prior key so Kim can revert by
+                            # dragging the old library tile back (no undo btn).
+                            _ls["prior_image_key_for_revert"] = _prev_key
                 return None
             self.app.state.mutate_video_state(video_role, _persist)
 
@@ -8027,7 +8043,7 @@ body {{padding-top:44px!important;}}
     var filename=document.getElementById('sb-select').value;
     if(!filename||(filename.indexOf('storyboard_v')<0))return;
     if(!confirm('Switch to '+filename+'?\\n\\n⚠️ Make sure you have exported any browser edits (drag-drop, dialogue) before switching — unsaved browser edits will be lost.'))return;
-    fetch('/api/storyboard/switch',{{
+    fetch('http://localhost:5111/api/storyboard/switch',{{
       method:'POST',
       headers:{{'Content-Type':'application/json'}},
       body:JSON.stringify({{filename:filename}})
@@ -11782,6 +11798,34 @@ def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_e
 
     def _scrub_ghost_options(st: dict) -> None:
         nonlocal _ghost_count, _archived_count
+        # C2-2/C2-3 (LD-pending GHOST_SCRUB_TOP_LEVEL_PATHS_V1, 2026-05-20):
+        # also scrub stale TOP-LEVEL path pointers — latest_preview_stitched_path
+        # at state root + completed_mp4_path per partition. These point at
+        # individual files that can be deleted/renamed/archived independently
+        # of the per-beat option/lipsync references. Without this scrub, the
+        # state lookups silently return non-existent paths to clients.
+        _top_path = st.get("latest_preview_stitched_path")
+        if isinstance(_top_path, str) and _top_path and not Path(_top_path).is_file():
+            st["latest_preview_stitched_path"] = None
+            _ghost_count += 1
+            print(
+                f"[startup:ghost_scrub] cleared stale latest_preview_stitched_path "
+                f"{_top_path!r}",
+                flush=True,
+            )
+        for _v_role, _v_partition in (st.get("videos") or {}).items():
+            if not isinstance(_v_partition, dict):
+                continue
+            _cm = _v_partition.get("completed_mp4_path")
+            if isinstance(_cm, str) and _cm and not Path(_cm).is_file():
+                _v_partition["completed_mp4_path"] = None
+                _ghost_count += 1
+                print(
+                    f"[startup:ghost_scrub] cleared stale "
+                    f"videos.{_v_role}.completed_mp4_path {_cm!r}",
+                    flush=True,
+                )
+
         for _role, _beat_id, _beat in _iter_v3_beats(st):
             # phase_1.options[*].file
             _opts = (_beat.get("phase_1") or {}).get("options") or []

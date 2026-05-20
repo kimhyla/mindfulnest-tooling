@@ -14,8 +14,7 @@ import { useEffect, useState } from 'preact/hooks';
 import {
   activeScope, makeScope, activeProjectType, activeMilestoneId,
 } from '../state/scope';
-import { apiGet, pathappPatch } from '../api/client';
-import { MUTATION_ENDPOINTS } from '../api/endpoints';
+import { apiGet, pathappPatch, loadEvent } from '../api/client';
 import { Modal } from './ui/Modal';
 import { Select } from './ui/Select';
 import { pushToast } from './ui/Toast';
@@ -384,21 +383,25 @@ export function ProjectSelector() {
 
     if (next.startsWith('event:')) {
       const newEventId = next.slice('event:'.length);
-      const res = await fetch(MUTATION_ENDPOINTS.event_load, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ event_id: newEventId }),
-      });
-      if (!res.ok) {
-        const txt = await res.text().catch(() => '');
+      // Wave 3 (blocker #50 F-S2-003a): loadEvent client helper.
+      const result = await loadEvent(newEventId);
+      if (!result.ok) {
         pushToast({
           kind: 'error',
-          message: `Event load failed: HTTP ${res.status}: ${txt.slice(0, 80)}`,
+          message: `Event load failed: HTTP ${result.status}: ${(result.error ?? '').slice(0, 80)}`,
           source: 'project-selector-event-load-error',
         });
         return;
       }
-      const data = (await res.json()) as { event_id: string; event_generation: number };
+      const data = result.data;
+      if (!data) {
+        pushToast({
+          kind: 'error',
+          message: 'event_load returned no data',
+          source: 'project-selector-event-load-error',
+        });
+        return;
+      }
       activeScope.value = makeScope(data.event_id, null, data.event_generation);
       activeProjectType.value = 'event';
       activeMilestoneId.value = null;
@@ -506,13 +509,10 @@ export function ProjectSelector() {
           // it (mirrors R1.2 milestone pattern).
           setShowNewEvent(false);
           setRefreshTick((n) => n + 1);
-          const loadRes = await fetch(MUTATION_ENDPOINTS.event_load, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ event_id: id }),
-          });
-          if (loadRes.ok) {
-            const data = (await loadRes.json()) as { event_id: string; event_generation: number };
+          // Wave 3 (blocker #51 F-S2-003b): loadEvent client helper.
+          const loadRes = await loadEvent(id);
+          if (loadRes.ok && loadRes.data) {
+            const data = loadRes.data;
             activeScope.value = makeScope(data.event_id, null, data.event_generation);
             activeProjectType.value = 'event';
             activeMilestoneId.value = null;

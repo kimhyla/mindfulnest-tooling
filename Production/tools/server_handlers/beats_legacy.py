@@ -1211,9 +1211,46 @@ def handle_beat_regenerate_audio(h, body: dict)-> None:
                    retry_safe=False,
                )
 
-    video_role = body.get("scope_video_role") or body.get("scope_target_video") or "intro"
+    # Blocker #148 fix (LD pending AUDIO_REGEN_SCOPE_AUTODISCOVER_V1, 2026-05-20):
+    # If the caller didn't pass scope_video_role/scope_target_video, AND the
+    # beat is not present in 'intro' (the legacy default), auto-discover by
+    # scanning all video_roles. If found in exactly one, use that. If found
+    # in zero or multiple, surface explicit 400 (ambiguous beat across
+    # partitions) rather than silent failure with the legacy 'intro' default.
     state = h.app.state.read_state()
-    beat_state = (((state.get("videos") or {}).get(video_role) or {}).get("beats") or {}).get(beat_id) or {}
+    _explicit_role = body.get("scope_video_role") or body.get("scope_target_video")
+    if _explicit_role:
+        video_role = _explicit_role
+        beat_state = (((state.get("videos") or {}).get(video_role) or {}).get("beats") or {}).get(beat_id) or {}
+    else:
+        # No explicit scope. Try 'intro' first (legacy default); fall back
+        # to autodiscovery across all roles.
+        _intro_beats = ((state.get("videos") or {}).get("intro") or {}).get("beats") or {}
+        if beat_id in _intro_beats:
+            video_role = "intro"
+            beat_state = _intro_beats[beat_id]
+        else:
+            _matching_roles = [
+                r for r, partition in (state.get("videos") or {}).items()
+                if beat_id in ((partition or {}).get("beats") or {})
+            ]
+            if len(_matching_roles) == 1:
+                video_role = _matching_roles[0]
+                beat_state = ((state.get("videos") or {}).get(video_role) or {}).get("beats", {}).get(beat_id, {})
+                print(f"[regen_audio] {beat_id} scope_video_role autodiscovered: {video_role}")
+            elif len(_matching_roles) > 1:
+                return h._send_error_v59(
+                           400,
+                           error_code="AMBIGUOUS_BEAT_SCOPE",
+                           error_message=f"beat {beat_id} exists in multiple partitions ({_matching_roles}); pass scope_video_role explicitly",
+                           retry_safe=False,
+                       )
+            else:
+                # Beat not found anywhere; default to 'intro' so downstream
+                # error reporting stays consistent with the legacy path
+                # (will hit 'no dialogue text in state OR storyboard' below).
+                video_role = "intro"
+                beat_state = {}
     text = (beat_state.get("text") or "").strip()
     # Fallback: if state has no text yet (beat never edited+blurred),
     # parse the storyboard L[] t: field. Same pattern

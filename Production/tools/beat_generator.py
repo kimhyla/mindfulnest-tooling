@@ -1682,7 +1682,29 @@ def _migrate_sidecar(sidecar: dict) -> dict:
                         if not beat.get("accepted_video_path"):
                             migration_warnings.append(f"{beat.get('beat_id','?')}: accepted but no video path found")
     if migration_warnings:
-        sidecar.setdefault("migration_warnings", []).extend(migration_warnings)
+        # C4-10 fix (LD-pending MIGRATION_WARNINGS_DEDUP_V1, 2026-05-20):
+        # _migrate_sidecar runs on EVERY sidecar read, and each run appended
+        # duplicate warnings to the list. Pre-fix, the field had grown to
+        # 4,125 entries with only 19 unique values. Use a stable order-
+        # preserving dedup so the new warnings join the existing set without
+        # introducing duplicates.
+        _existing = sidecar.setdefault("migration_warnings", [])
+        _seen = set(_existing)
+        for _w in migration_warnings:
+            if _w not in _seen:
+                _existing.append(_w)
+                _seen.add(_w)
+        # Self-heal pre-existing duplicate bloat from prior versions of this
+        # function: rebuild _existing as a unique-stable list if any dupes
+        # remain after the additive merge above.
+        if len(_existing) != len(set(_existing)):
+            _uniq: list[str] = []
+            _seen2: set[str] = set()
+            for _w in _existing:
+                if _w not in _seen2:
+                    _uniq.append(_w)
+                    _seen2.add(_w)
+            sidecar["migration_warnings"] = _uniq
     return sidecar
 
 
