@@ -5895,6 +5895,16 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_redo(body)
             if path == "/api/beat/add_options":
                 return self._handle_add_options(body)
+            # T1-Phase 2 + 3 (spec MAGIC_AND_ENDFRAME_FIXES_20260520_v1, LD-814):
+            # end-frame iteration endpoints — Kim previews/uploads end frame
+            # BEFORE Regen B+C spends Kling $. _handle_add_options_startend
+            # then refuses to run without an approved end_frame_path (P4).
+            if path == "/api/beat/preview_end_frame":
+                from server_handlers.background import handle_preview_end_frame
+                return handle_preview_end_frame(self, body)
+            if path == "/api/beat/upload_end_frame":
+                from server_handlers.background import handle_upload_end_frame
+                return handle_upload_end_frame(self, body)
             if path == "/api/beat/swap_to_a":
                 # Flat alias for v2 path-param endpoint so pathappPatch can reach it.
                 _beat_id_from_body = body.get("beat_id") or body.get("beat")
@@ -8368,121 +8378,14 @@ body {{padding-top:44px!important;}}
             print(f"[add_options:dispatch] {beat_id}: force_legacy=true -> legacy path")
             return self._handle_add_options_legacy(body)
 
-        # Default = start-end. Use configured end_frame_prompt if present,
-        # else synthesize a generic one from the beat's speaker so new beats
-        # added later still route start-end without manual config.
-        end_frame_prompt = (beat_state.get("end_frame_prompt") or "").strip()
-        if not end_frame_prompt:
-            # Derive end-frame prompt from Kim's creative cues in beat text.
-            # Priority: (parenthetical) > [emotion_at_start] > neutral fallback.
-            # Never synthesize from speaker name — that was invented without Kim's input.
-            import re as _re
-            beat_text = (beat_state.get("text") or "").strip()
-
-            _BG_LOCK = (
-                "Keep the background COMPLETELY IDENTICAL to the input — "
-                "every tree, leaf, light ray, and environment element must "
-                "stay pixel-perfect unchanged. Do NOT alter, shift, blur, "
-                "or recompose any background element whatsoever. "
-            )
-            _MOUTH_TAIL = (
-                " Beak/mouth at rest, natural mouth geometry preserved. "
-                "Same cartoon 3D Pixar-style art, same outfit, same 4:3 "
-                "composition, same lighting on the character."
-            )
-
-            # Resolve speaker for neutral-fallback pose lookup below.
-            _disp_speaker = _canonicalize_speaker(beat_state.get("speaker", "") or "")
-
-            # 1. (parenthetical) anywhere → stage direction only.
-            #    Emotion-only annotations like "(happy, friendly)" must NOT be sent
-            #    to FLUX Kontext verbatim — the character already looks happy/friendly
-            #    in the start frame, so FLUX generates a nearly-identical end frame,
-            #    and Kling barely moves (super-still symptom).
-            #    Stage directions contain physical action verbs and give FLUX a clear
-            #    geometric target (e.g. "looks at viewer" → head turns to camera).
-            #    Emotion-only parentheticals fall through to the safe neutral pose (path 3).
-            _STAGE_VERBS = {
-                "looks", "look", "looking", "glances", "glance", "faces", "face",
-                "turns", "turn", "turns to", "tilts", "tilt", "leans", "lean",
-                "reaches", "reach", "points", "point", "raises", "raise",
-                "walks", "walk", "steps", "step", "moves", "move",
-                "holds", "hold", "gestures", "gesture", "nods", "nod",
-                "bows", "bow", "crouches", "crouch", "stands", "stand",
-                "sits", "sit", "jumps", "jump", "lands", "land",
-                "extends", "extend", "lowers", "lower", "lifts", "lift",
-                "shrugs", "shrug", "waves", "wave", "claps", "clap",
-                "places", "place", "grabs", "grab", "drops", "drop",
-                "at", "toward", "forward", "backward", "sideways", "upward", "downward",
-            }
-            _paren = _re.search(r'\(([^)]{3,})\)', beat_text)
-            if _paren:
-                char_dir = _paren.group(1).strip()
-                _paren_words = set(_re.findall(r'\w+', char_dir.lower()))
-                _is_stage_direction = bool(_paren_words & _STAGE_VERBS)
-                if _is_stage_direction:
-                    end_frame_prompt = (
-                        _BG_LOCK
-                        + f"ONLY change the character: {char_dir}."
-                        + _MOUTH_TAIL
-                    )
-                    print(f"[add_options:dispatch] {beat_id}: end_frame_prompt from (parenthetical) stage direction")
-                else:
-                    print(f"[add_options:dispatch] {beat_id}: (parenthetical) is emotion-only {char_dir!r} — falling through to neutral pose")
-
-            else:
-                # 2. [emotion] at start of text → map to expression description.
-                # Exclude TTS directives: [pause], [break], [breath], [sigh].
-                _TTS_TAGS = {"pause", "break", "breath", "sigh", "silence"}
-                _start_tag = _re.match(r'^\[([^\]]+)\]', beat_text)
-                _emotion = _start_tag.group(1).lower().strip() if _start_tag else ""
-                _EMOTION_MAP = {
-                    "curious":    "curious expression, eyes wide and alert, slight questioning head tilt",
-                    "excited":    "excited expression, eyes bright and wide, alert eager posture",
-                    "happy":      "warm happy expression, eyes open and bright",
-                    "delighted":  "delighted expression, eyes open and bright, gentle smile",
-                    "sad":        "gentle sad expression, soft downward gaze, eyes half-lidded",
-                    "worried":    "worried expression, eyes wide, slight brow tension",
-                    "scared":     "scared expression, eyes wide, slight lean back",
-                    "surprised":  "surprised expression, eyes wide, slight lean back",
-                    "determined": "determined expression, eyes steady and focused",
-                    "relieved":   "relieved expression, eyes soft and open, relaxed posture",
-                    "neutral":    None,  # → fallback
-                }
-                if _emotion and _emotion not in _TTS_TAGS and _emotion in _EMOTION_MAP:
-                    char_dir = _EMOTION_MAP[_emotion]
-                    if char_dir:
-                        end_frame_prompt = (
-                            _BG_LOCK
-                            + f"ONLY change the character: {char_dir}."
-                            + _MOUTH_TAIL
-                        )
-                        print(f"[add_options:dispatch] {beat_id}: end_frame_prompt from [emotion={_emotion!r}]")
-
-            # 3. Neutral fallback — use safe STATIC geometric pose (small head tilt).
-            #    "Same as input" (old) → identical frames → Kling barely moves.
-            #    SPEAKER_MOTION_PROFILES vocab (Fix 7 mistake) → FLUX Kontext
-            #    hallucinates objects from motion words → Kling produces chaos.
-            #    A simple head tilt is ALWAYS renderable by FLUX Kontext with no
-            #    hallucination risk and gives Kling a clear but safe motion target.
-            if not end_frame_prompt:
-                _SAFE_NEUTRAL_POSE = {
-                    "Chipper": "head tilted gently to one side, attentive expression",
-                    "Tessa":   "head tilted gently, quiet attentive expression",
-                    "Luna":    "head turned slightly to one side, alert expression",
-                    "Benson":  "one ear tilted, head turned slightly, quiet attentive expression",
-                    "Ember":   "head turned slightly to one side, calm relaxed gaze",
-                    "Bork":    "hovering in a slightly tilted position, calm expression",
-                    "Bramble": "head turned slightly, grounded quiet presence",
-                }
-                _safe_pose = _SAFE_NEUTRAL_POSE.get(_disp_speaker, "head tilted gently, attentive expression")
-                end_frame_prompt = (
-                    _BG_LOCK
-                    + f"ONLY change the character: {_safe_pose}."
-                    + _MOUTH_TAIL
-                )
-                print(f"[add_options:dispatch] {beat_id}: end_frame_prompt neutral fallback — safe static pose")
-
+        # T1-Phase 1 (spec §2): prompt logic extracted to lib/end_frame_prompt.py.
+        # No imports from production_server.py inside the helper (cycle risk per
+        # cursor R1 review); caller resolves speaker_canonical here.
+        from lib.end_frame_prompt import build_end_frame_prompt as _build_end_frame_prompt
+        _disp_speaker = _canonicalize_speaker(beat_state.get("speaker", "") or "")
+        end_frame_prompt = _build_end_frame_prompt(
+            beat_state, _disp_speaker, addendum=None
+        )
         print(f"[add_options:dispatch] {beat_id}: -> start-end pipeline "
               f"(decision 180 universal default; prompt {len(end_frame_prompt)}c)")
         return self._handle_add_options_startend(body, beat_state, end_frame_prompt)
@@ -8519,6 +8422,32 @@ body {{padding-top:44px!important;}}
         # here prevents UnboundLocalError when Python sees the later assignment and
         # treats video_role as a local for the entire function scope.
         video_role = body.get("scope_video_role") or body.get("scope_target_video") or "intro"
+
+        # T1-Phase 4 (spec MAGIC_AND_ENDFRAME_FIXES_20260520_v1, LD-814):
+        # REFUSE Regen B+C unless an approved end_frame_path exists on disk.
+        # Kim's flow: she clicks "✏ Preview end frame" (or "📤 Upload end frame")
+        # FIRST to generate/upload + approve an end frame, THEN clicks Regen B+C.
+        # NO GRANDFATHERING — even when phase_1.options already exist, the next
+        # Regen B+C still requires a fresh end_frame_path. This server-side
+        # check is the source-of-truth gate; the client also disables the
+        # button when end_frame_path is missing (UI Phase 6).
+        _end_frame_path = beat_state.get("end_frame_path")
+        _end_frames_dir = self.app.event_dir / "end_frames"
+        _end_frame_disk_path = _end_frames_dir / _end_frame_path if _end_frame_path else None
+        if not _end_frame_path or not (_end_frame_disk_path and _end_frame_disk_path.is_file()):
+            return self._send_error_v59(
+                       400,
+                       error_code="END_FRAME_REQUIRED",
+                       error_message="Approved end_frame_path required — click 'Preview end frame' or 'Upload end frame' first.",
+                       retry_safe=False,
+                       extra={
+                           "beat_id": beat_id,
+                           "video_role": video_role,
+                           "end_frame_path": _end_frame_path,
+                           "end_frame_path_exists": bool(_end_frame_disk_path and _end_frame_disk_path.is_file()),
+                           "hint": "Per LD-814 / spec MAGIC_AND_ENDFRAME_FIXES_20260520_v1: Regen B+C reads a Kim-approved end frame from disk; OpenAI/FLUX is no longer called from this endpoint.",
+                       },
+                   )
 
         # Duration resolution — identical to legacy, repeated for independence.
         explicit_duration = body.get("duration")
@@ -8757,120 +8686,59 @@ body {{padding-top:44px!important;}}
                 b["phase_1"]["status"] = "polling"
         self.app.state.mutate_state(set_polling)
 
-        # Fix 3 (20260513 motion-quality-pipeline): generate end frame via FLUX
-        # Kontext ONCE per beat and reuse for all num_new Kling options.
-        # Rule 8.3: end frame provides pixel-level gaze/pose anchoring without
-        # positive-prompt motion-lock — the one allowed exception to §8.2's
-        # do-not-stack rule. end_frame_prompt is already Rule 8.3 compliant
-        # (built by dispatcher at lines ~12605-12667 using _BG_LOCK + char-dir
-        # + _MOUTH_TAIL; no motion-lock phrases inside).
-        # Budget gate (before this block) already accounts for the resolved
-        # end-frame vendor unit cost (COST_OPENAI_END_FRAME or COST_FLUX_KONTEXT
-        # per MN_END_FRAME_VENDOR + key fallback) + COST_KLING_10S per option.
-        # Fail-loud per Rule 19: if FLUX errors out, return 500 — no silent
-        # fallback to single-image (that masks the failure and Kim never sees
-        # the lipsync-pipeline-incompatible motion she's debugging).
-        # Graceful degradation: empty end_frame_prompt OR missing bfl_key =>
-        # explicit single-image mode with an [INFO] log (not an error).
+        # T1-Phase 4 (spec MAGIC_AND_ENDFRAME_FIXES_20260520_v1, LD-814):
+        # READ approved end-frame PNG from disk; do NOT call OpenAI/FLUX here.
+        # End-frame generation has moved to /api/beat/preview_end_frame +
+        # /api/beat/upload_end_frame which Kim invokes BEFORE Regen B+C.
+        # The early REFUSE check above already guaranteed _end_frame_disk_path
+        # exists, but we re-verify here (defense-in-depth — file could be
+        # unlinked between the early check and this read, e.g. by a concurrent
+        # pruning op or manual delete).
         end_b64_uri: str | None = None
-        if end_frame_prompt and (openai_key or bfl_key):
-            # LD-730 vendor selection:
-            #   MN_END_FRAME_VENDOR=openai (default) → gpt-image-1
-            #   MN_END_FRAME_VENDOR=flux            → FLUX Kontext (legacy rollback)
-            #   Fallback: if requested vendor's key absent, use the other one.
-            _requested_vendor = os.environ.get(
-                "MN_END_FRAME_VENDOR", "openai"
-            ).strip().lower()
-            if _requested_vendor == "openai" and openai_key:
-                _vendor_used = "openai"
-                _end_frame_fn = openai_image_edit_generate_end_frame
-                _vendor_key = openai_key
-            elif _requested_vendor == "flux" and bfl_key:
-                _vendor_used = "flux"
-                _end_frame_fn = flux_kontext_generate_end_frame
-                _vendor_key = bfl_key
-            elif openai_key:
-                _vendor_used = (
-                    f"openai (fallback — requested={_requested_vendor!r} "
-                    f"but its key absent)"
-                )
-                _end_frame_fn = openai_image_edit_generate_end_frame
-                _vendor_key = openai_key
-            else:
-                _vendor_used = (
-                    f"flux (fallback — requested={_requested_vendor!r} "
-                    f"but its key absent)"
-                )
-                _end_frame_fn = flux_kontext_generate_end_frame
-                _vendor_key = bfl_key
-            print(
-                f"[add_options:startend] {beat_id}: end-frame vendor "
-                f"SELECTED = {_vendor_used} (env MN_END_FRAME_VENDOR="
-                f"{_requested_vendor!r})",
-                flush=True,
-            )
-            try:
-                end_frame_bytes = _end_frame_fn(
-                    start_image_bytes=start_bytes,
-                    end_prompt=end_frame_prompt,
-                    api_key=_vendor_key,
-                )
-                # Rule 6: auto-upscale end frame to ≥600px shortest side.
-                end_data_uri = (
-                    "data:image/png;base64,"
-                    + base64.b64encode(end_frame_bytes).decode("ascii")
-                )
-                end_data_uri, _end_upscale_info = auto_upscale_image(end_data_uri)
-                if "upscaled" in _end_upscale_info:
-                    print(f"[add_options:startend] {beat_id} end frame: "
-                          f"{_end_upscale_info}")
-                ok_end, info_end = validate_image_dimensions(end_data_uri)
-                if not ok_end:
-                    return self._send_error_v59(
-                               500,
-                               error_code="GENERIC_ERROR",
-                               error_message=f"end frame validation failed: {info_end}",
-                               retry_safe=True,
-                               extra={"beat": beat_id},
-                           )
-                end_b64_uri = end_data_uri
-                print(f"[add_options:startend] {beat_id}: end frame generated "
-                      f"via {_vendor_used} ({len(end_frame_bytes):,}B)")
-                # Fix 8 (20260513): override motion prompt to natural-interpolation.
-                # Vocabulary action terms fight the frame anchors and produce barely-
-                # moving output. Per LD-177 validated pattern (Tessa beat_05):
-                # minimal prompt + specific end frame > vocabulary prompt in start-end mode.
-                # The docstring above says "Gaze anchor comes from end-frame pixel geometry,
-                # not prompt words" — this makes the motion prompt honour that design intent.
-                _in_birds_8 = _canonical_speaker in BIRD_SPEAKERS
-                _cstr_8 = "Beak closed, no speech, no lip movement." if _in_birds_8 else "Mouth closed, no speech."
-                _tail_8 = LIPSYNC_SAFE_TAIL if target_beat.get("lipsync_targeted", True) else SPRITE_IDLE_TAIL
-                _hdr_8 = f"Cartoon {_canonical_speaker} character" if _canonical_speaker else "Cartoon character"
-                positive_prompt = sanitize_prompt(
-                    f"{_hdr_8}, natural motion between start and end frames. {_cstr_8} {_tail_8}"
-                )
-                print(f"[add_options:startend] {beat_id}: motion prompt -> natural-interpolation (end frame confirmed)")
-            except SystemExit as exc:
-                return self._send_error_v59(
-                           500,
-                           error_code="GENERIC_ERROR",
-                           error_message=f"FLUX Kontext end frame generation failed: {exc}",
-                           retry_safe=True,
-                           extra={"beat": beat_id, "hint": "Check BFL (FLUX) API key or retry — FLUX Kontext "
-                             "is required for start-end pipeline"},
-                       )
-            except Exception as exc:
-                return self._send_error_v59(
-                           500,
-                           error_code="GENERIC_ERROR",
-                           error_message=f"FLUX Kontext unexpected error: "
-                              f"{type(exc).__name__}: {exc}",
-                           retry_safe=True,
-                           extra={"beat": beat_id},
-                       )
-        else:
-            print(f"[add_options:startend] {beat_id}: no end frame "
-                  f"(end_frame_prompt empty or no bfl_key) — single-image mode")
+        try:
+            _end_frame_bytes_disk = _end_frame_disk_path.read_bytes()
+        except (OSError, AttributeError) as exc:
+            return self._send_error_v59(
+                       500,
+                       error_code="END_FRAME_READ_FAILED",
+                       error_message=f"approved end frame disappeared from disk: {type(exc).__name__}: {exc}",
+                       retry_safe=True,
+                       extra={"beat": beat_id, "end_frame_path": _end_frame_path,
+                              "hint": "Re-click 'Preview end frame' to regenerate."},
+                   )
+        print(f"[add_options:startend] {beat_id}: reading saved end_frame_path={_end_frame_path} ({len(_end_frame_bytes_disk):,}B from disk) — NOT calling OpenAI/FLUX (T1-Phase 4)", flush=True)
+        # Auto-upscale already happened at preview/upload time, but re-run as
+        # defense-in-depth in case the saved PNG is below the 600px floor.
+        end_data_uri = (
+            "data:image/png;base64,"
+            + base64.b64encode(_end_frame_bytes_disk).decode("ascii")
+        )
+        end_data_uri, _end_upscale_info = auto_upscale_image(end_data_uri)
+        if "upscaled" in _end_upscale_info:
+            print(f"[add_options:startend] {beat_id} end frame (from disk): {_end_upscale_info}", flush=True)
+        ok_end, info_end = validate_image_dimensions(end_data_uri)
+        if not ok_end:
+            return self._send_error_v59(
+                       500,
+                       error_code="END_FRAME_INVALID",
+                       error_message=f"approved end frame failed dim validation: {info_end}",
+                       retry_safe=True,
+                       extra={"beat": beat_id, "end_frame_path": _end_frame_path,
+                              "hint": "Re-click 'Preview end frame' to regenerate."},
+                   )
+        end_b64_uri = end_data_uri
+
+        # Natural-interpolation motion prompt (kept verbatim — applies whether
+        # end frame came from live API or disk, since end frame still anchors
+        # gaze per Rule 8.3).
+        _in_birds_8 = _canonical_speaker in BIRD_SPEAKERS
+        _cstr_8 = "Beak closed, no speech, no lip movement." if _in_birds_8 else "Mouth closed, no speech."
+        _tail_8 = LIPSYNC_SAFE_TAIL if target_beat.get("lipsync_targeted", True) else SPRITE_IDLE_TAIL
+        _hdr_8 = f"Cartoon {_canonical_speaker} character" if _canonical_speaker else "Cartoon character"
+        positive_prompt = sanitize_prompt(
+            f"{_hdr_8}, natural motion between start and end frames. {_cstr_8} {_tail_8}"
+        )
+        print(f"[add_options:startend] {beat_id}: motion prompt -> natural-interpolation (end frame confirmed from disk)", flush=True)
 
         # Per-option loop: Kling start-end submit (end frame reused across opts).
         submitted = 0

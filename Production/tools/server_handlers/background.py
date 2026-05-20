@@ -3701,3 +3701,345 @@ def handle_watercolor_animate(h, body: dict)-> None:
     })
 
 
+
+
+# ============================================================================
+# Topic 1: End-frame iteration UI (spec MAGIC_AND_ENDFRAME_FIXES_20260520_v1)
+# LD-814 governs.
+# ============================================================================
+
+def _prune_end_frames(beat_dir: Path, beat_id: str, keep: int = 3) -> list[Path]:
+    """T1-Phase 5: keep only the `keep` most-recent {beat_id}_endframe_*.png
+    files in beat_dir; unlink the rest.
+
+    Returns list of pruned paths for logging. Errors during unlink are
+    swallowed individually (best-effort cleanup) but the pattern itself is
+    deterministic — sort by mtime desc, drop after `keep`.
+    """
+    if not beat_dir.is_dir():
+        return []
+    candidates = sorted(
+        beat_dir.glob(f"{beat_id}_endframe_*.png"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    pruned: list[Path] = []
+    for p in candidates[keep:]:
+        try:
+            p.unlink()
+            pruned.append(p)
+        except OSError as exc:
+            print(f"[prune_end_frames] {beat_id}: warning unlinking {p.name}: {exc}", flush=True)
+    return pruned
+
+
+def _save_end_frame_and_persist(
+    h,
+    body: dict,
+    beat_id: str,
+    video_role: str,
+    end_frame_bytes: bytes,
+    log_tag: str,
+) -> dict:
+    """Shared finisher for both preview_end_frame + upload_end_frame.
+
+    Writes PNG to event_dir/end_frames/, mutates state with end_frame_path,
+    DS-22 read-back verify, prunes oldest beyond keep=3.
+
+    Returns dict to send to client (NOT yet sent — caller wraps).
+    Raises Exception on hard failure (caller handles).
+    """
+    from datetime import datetime as _dt
+
+    # Auto-upscale + validate (mirror _handle_add_options_startend pattern)
+    from production_server import (  # type: ignore
+        auto_upscale_image,
+        validate_image_dimensions,
+    )
+    end_data_uri = (
+        "data:image/png;base64,"
+        + base64.b64encode(end_frame_bytes).decode("ascii")
+    )
+    end_data_uri, _upscale_info = auto_upscale_image(end_data_uri)
+    if "upscaled" in _upscale_info:
+        print(f"[{log_tag}] {beat_id} end frame: {_upscale_info}", flush=True)
+    ok_dim, info_dim = validate_image_dimensions(end_data_uri)
+    if not ok_dim:
+        raise ValueError(f"end frame validation failed: {info_dim}")
+
+    # Decode the final (possibly-upscaled) PNG bytes from data URI back out.
+    _hdr, _b64 = end_data_uri.split(",", 1)
+    final_png_bytes = base64.b64decode(_b64)
+
+    # Save to event_dir/end_frames/
+    end_frames_dir = h.app.event_dir / "end_frames"
+    end_frames_dir.mkdir(parents=True, exist_ok=True)
+    ts = _dt.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    filename = f"{beat_id}_endframe_{ts}.png"
+    out_path = end_frames_dir / filename
+    out_path.write_bytes(final_png_bytes)
+    print(f"[{log_tag}] {beat_id}: end frame saved -> {out_path.name} ({len(final_png_bytes):,}B)", flush=True)
+
+    # Mutate state.end_frame_path via scope_router (partition-aware).
+    scope = None
+    try:
+        scope = scope_router.resolve(body, h.app.event_dir.name)
+
+        def _set_end_frame(partition: dict) -> None:
+            beats = partition.setdefault("beats", {})
+            beat = beats.setdefault(beat_id, {})
+            beat["end_frame_path"] = filename
+
+        scope_router.mutate_partition(h.app.state, scope, _set_end_frame)
+    except Exception as exc:  # noqa: BLE001
+        # Mirror magic_still pattern: log + continue, but DS-22 verify below
+        # OUTSIDE this catch will propagate state failures.
+        print(f"[{log_tag}] {beat_id}: state writeback WARN: {exc}", flush=True)
+
+    # DS-22 read-back verify (spec Bug-A4 pattern — OUTSIDE swallow-all).
+    partition_written: str | None = None
+    if scope is not None:
+        _video_role_written = getattr(scope, "video_role", None)
+        if _video_role_written:
+            _state_after = h.app.state.read_state()
+            _beat_after = (((_state_after.get("videos") or {}).get(_video_role_written) or {})
+                          .get("beats") or {}).get(beat_id) or {}
+            if _beat_after.get("end_frame_path") == filename:
+                partition_written = _video_role_written
+                print(f"[{log_tag}] {beat_id}: state verified videos.{_video_role_written}.beats.{beat_id}.end_frame_path={filename}", flush=True)
+            else:
+                # Cleanup the orphan PNG we just wrote (state didn't persist).
+                try:
+                    out_path.unlink()
+                except OSError:
+                    pass
+                raise RuntimeError(
+                    f"STATE_WRITEBACK_VERIFY_FAILED: expected videos.{_video_role_written}.beats.{beat_id}.end_frame_path={filename!r}, got {_beat_after.get('end_frame_path')!r}"
+                )
+
+    # Prune: keep last 3.
+    pruned = _prune_end_frames(end_frames_dir, beat_id, keep=3)
+    if pruned:
+        print(f"[{log_tag}] {beat_id}: pruned {len(pruned)} old end_frame(s): {[p.name for p in pruned]}", flush=True)
+
+    end_frame_url = (
+        f"/files?path=Production/{h.app.event_dir.name}/end_frames/"
+        + urllib.parse.quote(filename)
+    )
+    return {
+        "ok": True,
+        "beat_id": beat_id,
+        "end_frame_path": filename,
+        "end_frame_url": end_frame_url,
+        "partition_written": partition_written,
+        "size_bytes": len(final_png_bytes),
+        "pruned_count": len(pruned),
+    }
+
+
+def handle_preview_end_frame(h, body: dict) -> None:
+    """POST /api/beat/preview_end_frame
+    Body: {scope_event_id, scope_video_role, beat_id, prompt_addendum?}
+
+    T1-Phase 2 of spec MAGIC_AND_ENDFRAME_FIXES_20260520_v1.
+
+    Generates a single end-frame image via OpenAI gpt-image-1 (or FLUX per
+    LD-730 vendor selection) and saves to event_dir/end_frames/. Sets
+    beat.end_frame_path. Idempotent: each call OVERWRITES end_frame_path
+    with the new filename; the previous PNG is retained per keep-last-3
+    pruning policy.
+
+    Required: scope_video_role (no 'intro' default — same Bug-A3 discipline).
+    """
+    import urllib.parse as _up_local  # noqa: F401 — imported for shared finisher
+    # Scope validation (no scope_video_role default).
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+
+    beat_id = (body or {}).get("beat_id") or (body or {}).get("beat")
+    if not beat_id:
+        return h._send_error_v59(400, error_code="MISSING_BEAT_ID",
+                                 error_message="beat_id required", retry_safe=False)
+    # Same beat_id discipline as magic_still (line ~584).
+    import re as _re_pre
+    if "/" in beat_id or "\\" in beat_id or ".." in beat_id or beat_id.startswith("."):
+        return h._send_error_v59(400, error_code="INVALID_BEAT_ID",
+                                 error_message="invalid beat_id", retry_safe=False)
+    if not _re_pre.match(r"^[A-Za-z0-9][A-Za-z0-9_-]*$", beat_id):
+        return h._send_error_v59(400, error_code="INVALID_BEAT_ID",
+                                 error_message="beat_id must match [A-Za-z0-9_-]+", retry_safe=False)
+
+    video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video")
+    if not video_role:
+        return h._send_error_v59(400, error_code="VIDEO_ROLE_REQUIRED",
+                                 error_message="scope_video_role required", retry_safe=False)
+
+    prompt_addendum = (body or {}).get("prompt_addendum") or None
+
+    # Resolve beat state + speaker for prompt build.
+    state = h.app.state.read_state()
+    beat_state = (((state.get("videos") or {}).get(video_role) or {}).get("beats") or {}).get(beat_id) or {}
+    if not beat_state:
+        return h._send_error_v59(404, error_code="BEAT_NOT_FOUND",
+                                 error_message=f"beat {beat_id} not found in videos.{video_role}.beats",
+                                 retry_safe=False)
+
+    # Resolve start image — needed by both OpenAI + FLUX (start_image_bytes input).
+    beat_image = h.app.get_beat_image(beat_id, video_role)
+    if not beat_image:
+        return h._send_error_v59(400, error_code="START_IMAGE_REQUIRED",
+                                 error_message=f"beat {beat_id} has no assigned image — drag-drop a start image first",
+                                 retry_safe=False)
+
+    # beat_image is data:image/...;base64,...
+    try:
+        _hdr, start_b64 = beat_image.split(",", 1)
+        start_bytes = base64.b64decode(start_b64)
+    except Exception as exc:
+        return h._send_error_v59(500, error_code="START_IMAGE_MALFORMED",
+                                 error_message=f"start image data-URI malformed: {type(exc).__name__}: {exc}",
+                                 retry_safe=True)
+
+    # Build prompt via shared helper (caller canonicalizes speaker — no
+    # production_server.py imports inside lib helper per cursor R1).
+    from production_server import _canonicalize_speaker as _cs  # type: ignore
+    from lib.end_frame_prompt import build_end_frame_prompt
+    speaker_canonical = _cs(beat_state.get("speaker", "") or "")
+    end_frame_prompt = build_end_frame_prompt(beat_state, speaker_canonical, addendum=prompt_addendum)
+    print(f"[preview_end_frame] {beat_id} prompt ({len(end_frame_prompt)} chars): {end_frame_prompt[:160]!r}...", flush=True)
+
+    # Vendor selection (mirror _handle_add_options_startend logic).
+    import os as _os
+    from production_server import parse_api_keys  # type: ignore
+    from lib.paths import API_KEYS_MASTER_PATH
+    keys = parse_api_keys(API_KEYS_MASTER_PATH)
+    bfl_key = keys.get("bfl")
+    openai_key = keys.get("openai")
+    if not (bfl_key or openai_key):
+        return h._send_error_v59(500, error_code="END_FRAME_VENDOR_KEY_UNAVAILABLE",
+                                 error_message="No end-frame vendor key available (need OpenAI or BFL/FLUX)",
+                                 retry_safe=True)
+
+    _requested = _os.environ.get("MN_END_FRAME_VENDOR", "openai").strip().lower()
+    from kling_startend_pipeline import (  # type: ignore
+        openai_image_edit_generate_end_frame as _openai_fn,
+        flux_kontext_generate_end_frame as _flux_fn,
+    )
+    if _requested == "openai" and openai_key:
+        _vendor_used = "openai"; _fn = _openai_fn; _key = openai_key
+    elif _requested == "flux" and bfl_key:
+        _vendor_used = "flux"; _fn = _flux_fn; _key = bfl_key
+    elif openai_key:
+        _vendor_used = "openai (fallback)"; _fn = _openai_fn; _key = openai_key
+    else:
+        _vendor_used = "flux (fallback)"; _fn = _flux_fn; _key = bfl_key
+    print(f"[preview_end_frame] {beat_id}: vendor={_vendor_used}", flush=True)
+
+    try:
+        end_bytes = _fn(start_image_bytes=start_bytes, end_prompt=end_frame_prompt, api_key=_key)
+    except SystemExit as exc:
+        return h._send_error_v59(500, error_code="END_FRAME_GENERATION_FAILED",
+                                 error_message=f"end-frame vendor SystemExit: {exc}",
+                                 retry_safe=True, extra={"beat": beat_id})
+    except Exception as exc:
+        return h._send_error_v59(500, error_code="END_FRAME_GENERATION_FAILED",
+                                 error_message=f"end-frame generation failed: {type(exc).__name__}: {exc}",
+                                 retry_safe=True, extra={"beat": beat_id})
+
+    try:
+        resp = _save_end_frame_and_persist(h, body, beat_id, video_role, end_bytes, log_tag="preview_end_frame")
+    except RuntimeError as exc:
+        # State writeback verify failure surfaces here.
+        return h._send_error_v59(500, error_code="STATE_WRITEBACK_VERIFY_FAILED",
+                                 error_message=str(exc), retry_safe=True,
+                                 extra={"beat": beat_id, "video_role": video_role})
+    except Exception as exc:
+        return h._send_error_v59(500, error_code="GENERIC_ERROR",
+                                 error_message=f"end-frame save failed: {type(exc).__name__}: {exc}",
+                                 retry_safe=True, extra={"beat": beat_id})
+
+    return h._send_json(200, resp)
+
+
+def handle_upload_end_frame(h, body: dict) -> None:
+    """POST /api/beat/upload_end_frame
+    Body: {scope_event_id, scope_video_role, beat_id, file_b64, mime}
+
+    T1-Phase 3 of spec MAGIC_AND_ENDFRAME_FIXES_20260520_v1.
+
+    Accepts a base64-encoded PNG/JPG/WEBP that Kim manually downloaded from
+    chatgpt.com (or anywhere). Decodes, converts to PNG via PIL if not
+    already, and saves as the beat's end_frame_path. No OpenAI/FLUX call.
+    """
+    # Scope validation.
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+
+    beat_id = (body or {}).get("beat_id") or (body or {}).get("beat")
+    if not beat_id:
+        return h._send_error_v59(400, error_code="MISSING_BEAT_ID",
+                                 error_message="beat_id required", retry_safe=False)
+    import re as _re_up
+    if "/" in beat_id or "\\" in beat_id or ".." in beat_id or beat_id.startswith("."):
+        return h._send_error_v59(400, error_code="INVALID_BEAT_ID",
+                                 error_message="invalid beat_id", retry_safe=False)
+    if not _re_up.match(r"^[A-Za-z0-9][A-Za-z0-9_-]*$", beat_id):
+        return h._send_error_v59(400, error_code="INVALID_BEAT_ID",
+                                 error_message="beat_id must match [A-Za-z0-9_-]+", retry_safe=False)
+
+    video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video")
+    if not video_role:
+        return h._send_error_v59(400, error_code="VIDEO_ROLE_REQUIRED",
+                                 error_message="scope_video_role required", retry_safe=False)
+
+    file_b64 = (body or {}).get("file_b64") or ""
+    mime = ((body or {}).get("mime") or "image/png").lower()
+    if not file_b64:
+        return h._send_error_v59(400, error_code="FILE_REQUIRED",
+                                 error_message="file_b64 required (base64-encoded image bytes)", retry_safe=False)
+    if mime not in ("image/png", "image/jpeg", "image/jpg", "image/webp"):
+        return h._send_error_v59(400, error_code="INVALID_MIME",
+                                 error_message=f"mime must be image/png|jpeg|webp; got {mime!r}",
+                                 retry_safe=False)
+
+    try:
+        raw_bytes = base64.b64decode(file_b64)
+    except Exception as exc:
+        return h._send_error_v59(400, error_code="INVALID_BASE64",
+                                 error_message=f"file_b64 not valid base64: {type(exc).__name__}",
+                                 retry_safe=False)
+    if len(raw_bytes) < 100:
+        return h._send_error_v59(400, error_code="FILE_TOO_SMALL",
+                                 error_message=f"decoded file is only {len(raw_bytes)}B — looks like an empty upload",
+                                 retry_safe=False)
+
+    # Convert non-PNG to PNG via PIL.
+    png_bytes: bytes
+    if mime == "image/png":
+        png_bytes = raw_bytes
+    else:
+        try:
+            from PIL import Image
+            import io
+            _img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+            _out = io.BytesIO()
+            _img.save(_out, format="PNG")
+            png_bytes = _out.getvalue()
+            print(f"[upload_end_frame] {beat_id}: converted {mime} -> PNG ({len(raw_bytes):,}B -> {len(png_bytes):,}B)", flush=True)
+        except Exception as exc:
+            return h._send_error_v59(500, error_code="IMAGE_CONVERSION_FAILED",
+                                     error_message=f"PIL conversion failed: {type(exc).__name__}: {exc}",
+                                     retry_safe=False)
+
+    try:
+        resp = _save_end_frame_and_persist(h, body, beat_id, video_role, png_bytes, log_tag="upload_end_frame")
+    except RuntimeError as exc:
+        return h._send_error_v59(500, error_code="STATE_WRITEBACK_VERIFY_FAILED",
+                                 error_message=str(exc), retry_safe=True,
+                                 extra={"beat": beat_id, "video_role": video_role})
+    except Exception as exc:
+        return h._send_error_v59(500, error_code="GENERIC_ERROR",
+                                 error_message=f"end-frame save failed: {type(exc).__name__}: {exc}",
+                                 retry_safe=True, extra={"beat": beat_id})
+
+    return h._send_json(200, resp)
