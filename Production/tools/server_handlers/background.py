@@ -419,7 +419,12 @@ def handle_magic_submit_path(h, body: dict)-> None:
             # code-vs-data intent per LD-505 Phase C lint guard.
             sys.path.insert(0, str(_PSERVER_TOOLS_DIR))
             from magic_compositor import MagicCompositor
-            out_dir = db / "Production" / "Event_1" / "kling_clips"
+            # LD-505 Phase C anchor — derive kling_clips dir from the scene's
+            # event_id (resolved above from scene_registry.yaml), not the
+            # legacy hardcoded "Event_1". Same idiom as event_dir on line 387.
+            # [CONFIRMED against this function: event_id is set on line 386
+            # from reg2 scene metadata; event_dir already uses this pattern.]
+            out_dir = db / "Production" / f"Event_{event_id.replace('e','')}" / "kling_clips"
             out_dir.mkdir(parents=True, exist_ok=True)
             path_pts_tuples = [tuple(pt) for pt in path_pts_clean]
             mc = MagicCompositor(
