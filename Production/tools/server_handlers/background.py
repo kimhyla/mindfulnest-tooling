@@ -3184,6 +3184,21 @@ def handle_redo(h, body: dict)-> None:
 
     video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
 
+    # Bug-2 hardening (Kim 2026-05-20): if the downstream Kling submit would
+    # FAIL (e.g. WaveSpeed client missing keys, scenario that surfaced when
+    # kling_startend_pipeline.py:155 was looking up the wrong API_KEYS_MASTER
+    # path), do NOT clear existing phase_1.options first — that produces
+    # data loss with no recovery. Pre-flight check: if h.app.client is None
+    # or no scope-event-id, bail BEFORE mutating state.
+    if h.app.client is None:
+        return h._send_error_v59(
+                   500,
+                   error_code="WAVESPEED_NOT_CONFIGURED",
+                   error_message="WaveSpeed client not configured (API key missing or load failed)",
+                   retry_safe=True,
+                   extra={"hint": "Check API_KEYS_MASTER.md is reachable; restart server if path drift fixed since startup."},
+               )
+
     # Acquire lock -> clear state -> list old files -> release -> delete -> resubmit
     # Blocker #146 (LIPSYNC_INVALIDATE_ON_REGEN_V1): also clear b["lipsync"]
     # and stage its file for unlink, so handle_redo + handle_animate both

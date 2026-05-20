@@ -1846,27 +1846,47 @@
   display: contents;
 }
 
-/* BUG-A in-use highlight (Kim 2026-05-20). Tile rim glows + badge appears
-   so Kim can see which library crop is CURRENTLY assigned to one or more
-   beats in the active video — distinguishes master vs delivery instantly. */
+/* BUG-A in-use highlight (Kim 2026-05-20, softened 2026-05-20 per Bug-4).
+   Kim feedback: glowing rim + large badge blocked thumbnail view. Replaced
+   with a small unobtrusive corner dot — distinguishes in-use crops without
+   obscuring the image. Master vs delivery is still readable from the dot. */
 .mn-library-tile-wrap.mn-library-tile-in-use .mn-asset-tile {
-  outline: 2px solid #4ade80;
-  outline-offset: -2px;
-  box-shadow: 0 0 0 1px rgba(74, 222, 128, 0.5), 0 0 12px rgba(74, 222, 128, 0.35);
+  /* no outline, no box-shadow — thumbnail is unobstructed */
 }
 .mn-badge-in-use {
   background: #16a34a;
   color: #fff;
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  padding: 1px 6px;
-  border-radius: 3px;
+  font-size: 0;            /* text hidden; tile-corner dot only */
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
   position: absolute;
-  bottom: 4px;
+  top: 4px;
   right: 4px;
   z-index: 3;
   pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.7);
+}
+.mn-badge-in-use::after {
+  /* tooltip on hover so Kim can still read 'IN USE' explicitly */
+  content: "IN USE";
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  background: rgba(22, 163, 74, 0.95);
+  color: #fff;
+  padding: 2px 6px;
+  border-radius: 3px;
+  position: absolute;
+  top: 12px;
+  right: 0;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 120ms;
+  pointer-events: none;
+}
+.mn-library-tile-wrap:hover .mn-badge-in-use::after {
+  opacity: 1;
 }
 
 /* ─── Crop button (✂) — hover-revealed on library tiles + BG option tiles ─── */
