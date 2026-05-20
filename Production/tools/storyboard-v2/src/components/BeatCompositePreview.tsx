@@ -8,6 +8,7 @@ import { SERVER_BASE } from '../api/endpoints';
 export interface BeatCompositePreviewBeat {
   _version?: number;
   audio_file?: string;
+  image_path?: string;
   phase_1?: {
     options?: Array<{ file?: string; status?: string; file_exists?: boolean }>;
     selected_option?: number;
@@ -83,6 +84,14 @@ export function BeatCompositePreview({
   const audioSrc = beat.audio_file
     ? `${SERVER_BASE}/api/beat/audio/${encodeURIComponent(beatId)}?event_id=${encodeURIComponent(eventId)}&v=${version}`
     : null;
+  // Kim 2026-05-20: when the option's video was rendered before the current
+  // image_path was assigned, the <video>'s default first-frame poster shows
+  // an OLD generation (stale visual). Use the CURRENT image_path as poster
+  // so the still matches the beat's current assigned image; only on ▶ click
+  // does the actual (possibly-stale) video play.
+  const posterSrc = beat.image_path
+    ? `${SERVER_BASE}/files?path=${encodeURIComponent(`Production/${eventId}/${beat.image_path}`)}&v=${version}`
+    : undefined;
 
   const clearDelayTimer = useCallback(() => {
     if (delayTimerRef.current !== null) {
@@ -241,6 +250,7 @@ export function BeatCompositePreview({
       <video
         ref={videoRef}
         src={videoSrc}
+        poster={posterSrc}
         class="mn-storyboard-preview-video mn-beat-composite-preview-video"
         playsInline
         preload="auto"
