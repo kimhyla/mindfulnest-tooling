@@ -46,6 +46,11 @@ export function BeatCompositePreview({
   })();
 
   const [previewOpt, setPreviewOpt] = useState(defaultOpt);
+  // Per Kim batch1-#4 (composite silent/black square): surface load + play
+  // failures so the user sees WHY playback didn't happen. Without this, a
+  // failed play() rejection or a 404/500 on the video src produces no
+  // visual feedback at all (the <video> stays black with no error UI).
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   // Session-close review F-127 / BeatCompositePreview: resync local preview
   // option when parent beat refreshes after onSelectOption or poll — without
   // this, previewOpt stays on the pre-mutation selection.
@@ -114,17 +119,25 @@ export function BeatCompositePreview({
     const aud = audioRef.current;
     if (!vid || !aud || !videoSrc || !audioSrc) return;
     clearDelayTimer();
+    setErrorMsg(null);
     vid.currentTime = 0;
     aud.currentTime = 0;
     try {
       await vid.play();
-    } catch {
+    } catch (err) {
+      // Surface the failure so Kim sees why nothing happened. Common causes:
+      // (a) browser autoplay policy requiring user gesture (gesture context lost
+      // by a prior async hop), (b) video element error already in flight (load
+      // failed and play() rejects), (c) network error mid-load.
+      const reason = err instanceof Error ? err.message : String(err);
+      setErrorMsg(`play failed: ${reason}`);
       setIsPlaying(false);
+      console.warn(`[BeatCompositePreview] ${beatId} play() rejected:`, err);
       return;
     }
     scheduleAudioAfterDelay();
     setIsPlaying(true);
-  }, [videoSrc, audioSrc, clearDelayTimer, scheduleAudioAfterDelay]);
+  }, [videoSrc, audioSrc, clearDelayTimer, scheduleAudioAfterDelay, beatId]);
 
   const onTogglePlay = () => {
     if (isPlaying) {
@@ -154,6 +167,24 @@ export function BeatCompositePreview({
   const onVideoEnded = () => {
     stopPlayback();
   };
+
+  // Surface <video>/<audio> load errors so Kim sees why the preview is black.
+  const onVideoError = useCallback(() => {
+    const vid = videoRef.current;
+    const code = vid?.error?.code;
+    const msg = vid?.error?.message || `MEDIA_ERR code=${code ?? '?'}`;
+    setErrorMsg(`video load failed: ${msg}`);
+    setIsPlaying(false);
+    console.warn(`[BeatCompositePreview] ${beatId} <video> error:`, vid?.error);
+  }, [beatId]);
+  const onAudioError = useCallback(() => {
+    const aud = audioRef.current;
+    const code = aud?.error?.code;
+    const msg = aud?.error?.message || `MEDIA_ERR code=${code ?? '?'}`;
+    setErrorMsg(`audio load failed: ${msg}`);
+    setIsPlaying(false);
+    console.warn(`[BeatCompositePreview] ${beatId} <audio> error:`, aud?.error);
+  }, [beatId]);
 
   if (!videoSrc || !audioSrc) return null;
 
@@ -215,6 +246,7 @@ export function BeatCompositePreview({
         preload="auto"
         muted
         onEnded={onVideoEnded}
+        onError={onVideoError}
         data-testid={`beat-${index}-composite-preview-video`}
       />
       <audio
@@ -222,8 +254,24 @@ export function BeatCompositePreview({
         src={audioSrc}
         preload="auto"
         style={{ display: 'none' }}
+        onError={onAudioError}
         data-testid={`beat-${index}-composite-preview-audio`}
       />
+      {errorMsg ? (
+        <span
+          class="mn-beat-composite-preview-error"
+          data-testid={`beat-${index}-composite-preview-error`}
+          style={{
+            color: '#ff4444',
+            fontSize: '11px',
+            marginLeft: '8px',
+            fontStyle: 'italic',
+          }}
+          title={errorMsg}
+        >
+          ⚠ {errorMsg.length > 50 ? errorMsg.slice(0, 47) + '…' : errorMsg}
+        </span>
+      ) : null}
     </div>
   );
 }

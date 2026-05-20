@@ -411,6 +411,18 @@ def openai_image_edit_generate_end_frame(
         _field("model", "gpt-image-1"),
         _field("prompt", end_prompt),
         _field("quality", "high"),
+        # input_fidelity:high preserves accessories + character details from the
+        # input image (LD-730 + LD-pending BG_MORPH_FIX_V1, ref_doc 231). Without
+        # this, gpt-image-1 re-stages the body composition and silently drops
+        # removable accessories (glasses, backpack, necklace) — same regression
+        # class that LD-730 fixed for FLUX → OpenAI swap, but the
+        # input_fidelity carryover from LD-439 still-gen was missed in the
+        # initial implementation. beat_generator.py:1251 uses it for the
+        # Responses-API still-gen path; this is the matching /v1/images/edits
+        # multipart-form equivalent. [INFERRED — verify against OpenAI docs
+        # https://platform.openai.com/docs/api-reference/images/createEdit;
+        # at write time the parameter is documented as multipart field].
+        _field("input_fidelity", "high"),
         _field("size", size_param),
         _field("n", "1"),
         (
