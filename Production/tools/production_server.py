@@ -8548,6 +8548,13 @@ body {{padding-top:44px!important;}}
         _requested_vendor = os.environ.get(
             "MN_END_FRAME_VENDOR", "openai"
         ).strip().lower()
+        # T1-Phase 4 (spec MAGIC_AND_ENDFRAME_FIXES_20260520_v1, LD-814): the
+        # end-frame OpenAI/FLUX cost is now charged separately at
+        # /api/beat/preview_end_frame (Phase 2) or /api/beat/upload_end_frame
+        # (Phase 3, $0). This handler READS the approved PNG from disk; no
+        # OpenAI/FLUX call here. So per-option budget is JUST Kling.
+        # _end_frame_unit_cost is preserved as a local for symmetry/log clarity
+        # but NOT added to per_option_cost. (Cursor R-final 2026-05-20 finding.)
         if _requested_vendor == "openai" and openai_key:
             _end_frame_unit_cost = COST_OPENAI_END_FRAME
         elif _requested_vendor == "flux" and bfl_key:
@@ -8556,7 +8563,7 @@ body {{padding-top:44px!important;}}
             _end_frame_unit_cost = COST_OPENAI_END_FRAME
         else:
             _end_frame_unit_cost = COST_FLUX_KONTEXT
-        per_option_cost = _end_frame_unit_cost + COST_KLING_10S
+        per_option_cost = COST_KLING_10S  # T1-Phase 4: no end-frame cost added here
         estimated = num_new * per_option_cost
         if spend["budget_remaining"] < estimated and spend["overrides"] == 0:
             return self._send_error_v59(

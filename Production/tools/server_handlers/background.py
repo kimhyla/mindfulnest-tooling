@@ -730,31 +730,41 @@ def handle_magic_still(h, body: dict)-> None:
     # confirm the magic_still_path landed at the expected partition. If not,
     # return 500 STATE_WRITEBACK_VERIFY_FAILED (NOT silent 200). Lives OUTSIDE
     # the swallow-all try/except above so exceptions propagate.
+    # Cursor R-final 2026-05-20 fix: if scope is None (resolve failed up there),
+    # treat as STATE_WRITEBACK_VERIFY_FAILED — we CANNOT confirm writeback
+    # succeeded, so the only safe response is 500 (NOT 200 with null partition).
     partition_written: str | None = None
+    if scope is None:
+        return h._send_error_v59(
+                   500,
+                   error_code="STATE_WRITEBACK_VERIFY_FAILED",
+                   error_message="scope_router.resolve failed before mutate_partition; cannot verify writeback",
+                   retry_safe=True,
+                   extra={"hint": "Check server log [magic_still] WARN state writeback failed message."},
+               )
     try:
-        if scope is not None:
-            _state_after = h.app.state.read_state()
-            _video_role_written = getattr(scope, "video_role", None)
-            if _video_role_written:
-                _beat_after = (((_state_after.get("videos") or {}).get(_video_role_written) or {})
-                              .get("beats") or {}).get(beat_id) or {}
-                if _beat_after.get("magic_still_path") == magic_filename:
-                    partition_written = _video_role_written
-                    print(f"[magic_still] state writeback verified: videos.{_video_role_written}.beats.{beat_id}.magic_still_path={magic_filename}", flush=True)
-                else:
-                    print(f"[magic_still] STATE_WRITEBACK_VERIFY_FAILED: expected videos.{_video_role_written}.beats.{beat_id}.magic_still_path={magic_filename!r}, got {_beat_after.get('magic_still_path')!r}", flush=True)
-                    return h._send_error_v59(
-                               500,
-                               error_code="STATE_WRITEBACK_VERIFY_FAILED",
-                               error_message="magic_still_path was not persisted at the expected partition",
-                               retry_safe=True,
-                               extra={
-                                   "expected_partition": _video_role_written,
-                                   "expected_beat_id": beat_id,
-                                   "expected_magic_still_path": magic_filename,
-                                   "got_magic_still_path": _beat_after.get("magic_still_path"),
-                               },
-                           )
+        _state_after = h.app.state.read_state()
+        _video_role_written = getattr(scope, "video_role", None)
+        if _video_role_written:
+            _beat_after = (((_state_after.get("videos") or {}).get(_video_role_written) or {})
+                          .get("beats") or {}).get(beat_id) or {}
+            if _beat_after.get("magic_still_path") == magic_filename:
+                partition_written = _video_role_written
+                print(f"[magic_still] state writeback verified: videos.{_video_role_written}.beats.{beat_id}.magic_still_path={magic_filename}", flush=True)
+            else:
+                print(f"[magic_still] STATE_WRITEBACK_VERIFY_FAILED: expected videos.{_video_role_written}.beats.{beat_id}.magic_still_path={magic_filename!r}, got {_beat_after.get('magic_still_path')!r}", flush=True)
+                return h._send_error_v59(
+                           500,
+                           error_code="STATE_WRITEBACK_VERIFY_FAILED",
+                           error_message="magic_still_path was not persisted at the expected partition",
+                           retry_safe=True,
+                           extra={
+                               "expected_partition": _video_role_written,
+                               "expected_beat_id": beat_id,
+                               "expected_magic_still_path": magic_filename,
+                               "got_magic_still_path": _beat_after.get("magic_still_path"),
+                           },
+                       )
     except Exception as exc:  # noqa: BLE001
         # Verify itself crashed — surface loud rather than 200 silently.
         print(f"[magic_still] STATE_WRITEBACK_VERIFY_CRASHED: {type(exc).__name__}: {exc}", flush=True)
@@ -1063,32 +1073,41 @@ def handle_magic_video(h, body: dict)-> None:
 
     # Bug-A4 (spec §2 Topic-2, 2026-05-20): DS-22 read-back verify — mirror of
     # the magic_still path above. Returns 500 STATE_WRITEBACK_VERIFY_FAILED
-    # if partition mismatch detected.
+    # if partition mismatch detected OR if scope_router.resolve failed up there
+    # (cursor R-final 2026-05-20 — can't claim writeback ok if we never even
+    # resolved scope).
     partition_written: str | None = None
+    if scope is None:
+        return h._send_error_v59(
+                   500,
+                   error_code="STATE_WRITEBACK_VERIFY_FAILED",
+                   error_message="scope_router.resolve failed before mutate_partition; cannot verify writeback",
+                   retry_safe=True,
+                   extra={"hint": "Check server log [magic_video] WARN state writeback failed message."},
+               )
     try:
-        if scope is not None:
-            _state_after = h.app.state.read_state()
-            _video_role_written = getattr(scope, "video_role", None)
-            if _video_role_written:
-                _beat_after = (((_state_after.get("videos") or {}).get(_video_role_written) or {})
-                              .get("beats") or {}).get(beat_id) or {}
-                if _beat_after.get("magic_video_path") == magic_filename:
-                    partition_written = _video_role_written
-                    print(f"[magic_video] state writeback verified: videos.{_video_role_written}.beats.{beat_id}.magic_video_path={magic_filename}", flush=True)
-                else:
-                    print(f"[magic_video] STATE_WRITEBACK_VERIFY_FAILED: expected videos.{_video_role_written}.beats.{beat_id}.magic_video_path={magic_filename!r}, got {_beat_after.get('magic_video_path')!r}", flush=True)
-                    return h._send_error_v59(
-                               500,
-                               error_code="STATE_WRITEBACK_VERIFY_FAILED",
-                               error_message="magic_video_path was not persisted at the expected partition",
-                               retry_safe=True,
-                               extra={
-                                   "expected_partition": _video_role_written,
-                                   "expected_beat_id": beat_id,
-                                   "expected_magic_video_path": magic_filename,
-                                   "got_magic_video_path": _beat_after.get("magic_video_path"),
-                               },
-                           )
+        _state_after = h.app.state.read_state()
+        _video_role_written = getattr(scope, "video_role", None)
+        if _video_role_written:
+            _beat_after = (((_state_after.get("videos") or {}).get(_video_role_written) or {})
+                          .get("beats") or {}).get(beat_id) or {}
+            if _beat_after.get("magic_video_path") == magic_filename:
+                partition_written = _video_role_written
+                print(f"[magic_video] state writeback verified: videos.{_video_role_written}.beats.{beat_id}.magic_video_path={magic_filename}", flush=True)
+            else:
+                print(f"[magic_video] STATE_WRITEBACK_VERIFY_FAILED: expected videos.{_video_role_written}.beats.{beat_id}.magic_video_path={magic_filename!r}, got {_beat_after.get('magic_video_path')!r}", flush=True)
+                return h._send_error_v59(
+                           500,
+                           error_code="STATE_WRITEBACK_VERIFY_FAILED",
+                           error_message="magic_video_path was not persisted at the expected partition",
+                           retry_safe=True,
+                           extra={
+                               "expected_partition": _video_role_written,
+                               "expected_beat_id": beat_id,
+                               "expected_magic_video_path": magic_filename,
+                               "got_magic_video_path": _beat_after.get("magic_video_path"),
+                           },
+                       )
     except Exception as exc:  # noqa: BLE001
         print(f"[magic_video] STATE_WRITEBACK_VERIFY_CRASHED: {type(exc).__name__}: {exc}", flush=True)
         return h._send_error_v59(
