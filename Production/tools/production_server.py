@@ -607,6 +607,9 @@ def _bg_register_assembled_clip(group_id: str, clip_path: str, file_size_bytes: 
     except Exception as e:
         # Queue for retry — use the env-aware resolver from lib/directus so
         # this writer agrees with the replay reader (audit C1-10 split-brain).
+        # [INFERRED — verify the agreement: `grep -n _PENDING_QUEUE_PATH
+        # Production/lib/directus.py` shows the single source-of-truth; both
+        # this writer and lib.directus.try_replay_pending() read that same path.]
         try:
             from lib.directus import _PENDING_QUEUE_PATH as _Q
             queue_path = str(_Q)
@@ -11621,7 +11624,7 @@ def _check_runtime_capabilities() -> None:
     on soft deps.
     """
     hard = {"PyYAML": "yaml", "Pillow": "PIL"}
-    soft = {"numpy": "numpy", "scipy": "scipy"}  # both needed for magic_compositor
+    soft = {"numpy": "numpy", "scipy": "scipy"}  # both needed for magic_compositor [INFERRED — verify via grep -rn "import numpy\|import scipy" Production/tools/magic_compositor.py: both imports present at module top.]
     missing_hard: list[str] = []
     missing_soft: list[str] = []
     for label, mod in hard.items():

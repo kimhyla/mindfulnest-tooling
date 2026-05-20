@@ -130,6 +130,8 @@ def character_pose_paths(event_dir: Path | str) -> dict[str, str]:
     `_PROD_CHARS` derived from `__file__`.
 
     NOTE: Keys mirror beat_generator.py:127-134 exactly. Do not rename.
+    [INFERRED — verify line numbers may drift as beat_generator.py evolves;
+    keep symbol-grep `_PROD_CHARS` in beat_generator.py as the durable check.]
     """
     bp = bg_paths(event_dir)
     return {
