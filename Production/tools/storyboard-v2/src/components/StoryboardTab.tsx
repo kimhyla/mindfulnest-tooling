@@ -50,6 +50,17 @@ interface BeatState {
   // S5 v3.1 — magic trail composite paths (per LD-468/469).
   magic_still_path?: string;
   magic_video_path?: string;
+  // Bug-B3 (spec §2 Topic-2, 2026-05-20): file_exists enrichment for orphan-
+  // reference detection. Set by server-side _read_state_with_file_flags to
+  // false when state references a magic_*_path file that no longer exists on
+  // disk. UI gates playback on these so we don't 404 silently.
+  magic_still_path_exists?: boolean;
+  magic_video_path_exists?: boolean;
+  // Topic 1 (spec §2): approved end-frame PNG for Kling start-end pipeline.
+  // Set by /api/beat/preview_end_frame or /api/beat/upload_end_frame.
+  // Consumed by _handle_add_options_startend (refuses if absent/missing).
+  end_frame_path?: string;
+  end_frame_path_exists?: boolean;
   // S5 — preferred video source for magic_video (lipsync, then animation).
   // file_mtime (epoch seconds, integer) is projected by the bootstrap endpoint
   // `_handle_v2_event_state` from os.stat(animation_clips/<lipsync.file>).
@@ -284,6 +295,11 @@ interface BeatButtonRowProps {
 function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, previewOptIdx, onPreviewOption, onEnsureLipsyncMounted }: BeatButtonRowProps) {
   const lifecycle = deriveBeatLifecycle(beat);
   const [busy, setBusy] = useState<string | null>(null); // which button is in-flight
+  // Bug-B2 (spec §2 Topic-2, 2026-05-20): gate the ✨ magic badges on
+  // file_exists enrichment (Bug-B3 server-side) so orphan references don't
+  // show a misleading "magic" indicator.
+  const _magicStillOk = !!(beat.magic_still_path && beat.magic_still_path_exists !== false);
+  const _magicVideoOk = !!(beat.magic_video_path && beat.magic_video_path_exists !== false);
 
   // LD-739/740 GREENFIELD: silent-click-on-busy-button class kill.
   // Synchronous handler throws are caught and surfaced as an error toast —
@@ -1007,10 +1023,55 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
             data-testid={`beat-${index}-still-final-preview`}
             onClick={guardedClick('Preview Still', () => onPreviewOption(-1))}
             aria-disabled={busy !== null}
-            title="Preview the rendered Ken Burns still-as-final MP4"
+            title={_magicStillOk
+              ? "Preview the magic-on-still composite (✨ magic_still_path)"
+              : "Preview the rendered Ken Burns still-as-final MP4"}
           >
             {previewOptIdx === -1 ? '⏸ Preview Still' : '▶ Preview Still'}
           </button>
+        ) : null}
+        {/* Bug-B2 (spec §2 Topic-2): ✨ magic badge — appears next to Preview Still
+            when a magic_still_path is set + file exists on disk. Mirrors the
+            magic_video case below. No new button (Kim already has many). */}
+        {_magicStillOk ? (
+          <span
+            class="mn-magic-badge"
+            data-testid={`beat-${index}-magic-still-badge`}
+            title={`magic_still_path: ${beat.magic_still_path}`}
+            style={{
+              display: 'inline-block',
+              marginLeft: '4px',
+              padding: '0 4px',
+              borderRadius: '3px',
+              background: 'rgba(180, 130, 220, 0.25)',
+              color: '#d8b8ee',
+              fontSize: '10px',
+              fontWeight: 700,
+              pointerEvents: 'none',
+            }}
+          >
+            ✨ magic
+          </span>
+        ) : null}
+        {_magicVideoOk ? (
+          <span
+            class="mn-magic-badge"
+            data-testid={`beat-${index}-magic-video-badge`}
+            title={`magic_video_path: ${beat.magic_video_path}`}
+            style={{
+              display: 'inline-block',
+              marginLeft: '4px',
+              padding: '0 4px',
+              borderRadius: '3px',
+              background: 'rgba(180, 130, 220, 0.25)',
+              color: '#d8b8ee',
+              fontSize: '10px',
+              fontWeight: 700,
+              pointerEvents: 'none',
+            }}
+          >
+            ✨ magic·v
+          </span>
         ) : null}
         {lifecycle === 'final' ? (
           <span class="mn-dim" data-testid={`beat-${index}-final-marker`}>
@@ -1098,12 +1159,13 @@ interface BeatCardProps {
   beatId: string;
   beat: BeatState;
   eventId: string;
+  videoRole: string;  // Bug-A1 (spec §2 Topic-2): scope_video_role threaded to magic URL builders
   onMutated: () => void;
   onInsertAfter: () => void;
   onDeleteBeat: () => void;
 }
 
-function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDeleteBeat }: BeatCardProps) {
+function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsertAfter, onDeleteBeat }: BeatCardProps) {
   const initialText = beat.text ?? '';
   // CRITICAL: contenteditable must be UNCONTROLLED. State-driven children on a
   // contenteditable trigger a re-render on every keystroke, which clobbers
@@ -1135,6 +1197,19 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
     : null;
   const _optOk = !!(_optChosen?.file && _optChosen?.file_exists !== false);
   const _lsOk = !!(beat.lipsync?.file && beat.lipsync?.file_exists !== false);
+  // Bug-B1 (spec §2 Topic-2, 2026-05-20): magic preview must take priority
+  // over still-as-final on Preview Still click. magic outputs are written to
+  // event_dir/ (NOT clips_dir/), so they're served via /files?path=... NOT
+  // /asset/ (which only serves clips_dir). Gate on magic_*_path_exists
+  // (Bug-B3 enrichment) to avoid orphan-reference 404s.
+  const _magicStillOk = !!(beat.magic_still_path && beat.magic_still_path_exists !== false);
+  const _magicVideoOk = !!(beat.magic_video_path && beat.magic_video_path_exists !== false);
+  const _magicStillSrc = _magicStillOk
+    ? `${SERVER_BASE}/files?path=${encodeURIComponent(`Production/${eventId}/${beat.magic_still_path}`)}&v=${beat._version ?? 0}`
+    : null;
+  const _magicVideoSrc = _magicVideoOk
+    ? `${SERVER_BASE}/files?path=${encodeURIComponent(`Production/${eventId}/${beat.magic_video_path}`)}&v=${beat._version ?? 0}`
+    : null;
   // BUG-A fix (Kim 2026-05-20): the prior fallback `(_finalFileSrc ?? null)`
   // made <video> render by default whenever beat.final.file existed,
   // occluding the <img> element. Result: drag-drop landed on server but
@@ -1142,10 +1217,21 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
   // The fix: default to null — <video> only renders on EXPLICIT user
   // action (▶ opt N, ▶ Preview Still, ▶ lipsync, Preview Trim). The IMG
   // is the resting display.
+  //
+  // Bug-B1 priority chain at previewOptIdx === -1 (Preview Still button):
+  //   1. magic_still_path (if still_image final + magic applied)
+  //   2. magic_video_path (if video-based final + magic applied)
+  //   3. beat.final.file (still_image OR raw_option fallback)
+  //   4. null (no preview available)
+  // magic_* served via /files NOT /asset (writes to event_dir, not clips_dir).
   const previewVideoSrc = (previewOptIdx !== null && previewOptIdx > 0 && _optOk)
     ? `${SERVER_BASE}/asset/${_optChosen!.file}?v=${beat._version ?? 0}`
-    : (previewOptIdx === -1 && beat.final?.source === 'still_image' && beat.final?.file && beat.final?.file_exists !== false
-        ? _finalFileSrc
+    : (previewOptIdx === -1
+        ? (_magicStillSrc       // Bug-B1.1: magic on still
+            ?? _magicVideoSrc   // Bug-B1.2: magic on video
+            ?? (beat.final?.source === 'still_image' && beat.final?.file && beat.final?.file_exists !== false
+                ? _finalFileSrc
+                : null))
         : (_isLipsyncShown && _lsOk
             ? `${SERVER_BASE}/asset/${beat.lipsync!.file}?v=${beat._version ?? 0}`
             : null));
@@ -1525,7 +1611,7 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
         onPreviewOption={handlePreviewOption}
         onEnsureLipsyncMounted={ensureLipsyncMounted}
       />
-      <BeatMagicButtons index={index} beatId={beatId} beat={beat} eventId={eventId} />
+      <BeatMagicButtons index={index} beatId={beatId} beat={beat} eventId={eventId} videoRole={videoRole} />
       <div class="mn-sb-insert-after" data-testid={`sb-insert-after-${index}`}>
         <button
           class="mn-btn mn-btn-small mn-sb-insert-after-btn"
@@ -1676,9 +1762,10 @@ interface BeatMagicProps {
   beatId: string;
   beat: BeatState;
   eventId: string;
+  videoRole: string;  // Bug-A1 (spec §2 Topic-2): pinned to active partition for magic_*_path writeback
 }
 
-function BeatMagicButtons({ index, beatId, beat, eventId }: BeatMagicProps) {
+function BeatMagicButtons({ index, beatId, beat, eventId, videoRole }: BeatMagicProps) {
   const stillPath = beat.image_path;
   // Pick primary video: lipsync preferred, else selected animation option.
   let videoPath: string | undefined;
@@ -1697,9 +1784,14 @@ function BeatMagicButtons({ index, beatId, beat, eventId }: BeatMagicProps) {
     u.searchParams.set('mode', 'magic_still');
     u.searchParams.set('beat_id', beatId);
     u.searchParams.set('source_image_path', `Production/${eventId}/${stillPath}`);
-    // [CONFIRMED against api/endpoints.ts SERVER_BASE constant — magic_picker is co-hosted on the production_server.py origin; relative path here resolves identically to ${SERVER_BASE}/api/storyboard/magic_*]
     u.searchParams.set('return_endpoint', '/api/storyboard/magic_still');
     u.searchParams.set('scope_event_id', eventId);
+    // Bug-A1 (spec §2 Topic-2): scope_video_role MUST be in the URL — server-side
+    // handler now refuses (400 VIDEO_ROLE_REQUIRED) on missing role. Without this,
+    // path_picker would default to 'intro' and magic_still_path lands on the wrong
+    // partition (the bug Kim hit 2026-05-20 — magic_still_path written to
+    // videos.intro.beats.beat_01 instead of videos.resolution.beats.beat_01).
+    u.searchParams.set('scope_video_role', videoRole);
     window.open(u.toString(), '_blank');
   };
 
@@ -1712,9 +1804,10 @@ function BeatMagicButtons({ index, beatId, beat, eventId }: BeatMagicProps) {
     if (stillPath) {
       u.searchParams.set('source_image_path', `Production/${eventId}/${stillPath}`);
     }
-    // [CONFIRMED against api/endpoints.ts SERVER_BASE constant — magic_picker is co-hosted on the production_server.py origin; relative path here resolves identically to ${SERVER_BASE}/api/storyboard/magic_*]
     u.searchParams.set('return_endpoint', '/api/storyboard/magic_video');
     u.searchParams.set('scope_event_id', eventId);
+    // Bug-A1 (spec §2 Topic-2): same as openMagicStill above.
+    u.searchParams.set('scope_video_role', videoRole);
     window.open(u.toString(), '_blank');
   };
 
@@ -2011,6 +2104,7 @@ export function StoryboardTab() {
               beatId={b.beat_id}
               beat={b}
               eventId={eventId}
+              videoRole={activeTargetVideo.value}
               onMutated={() => setRefreshTick((n) => n + 1)}
               onInsertAfter={() => void onAddBeat(b.beat_id)}
               onDeleteBeat={() => setDeleteConfirmBeatId(b.beat_id)}

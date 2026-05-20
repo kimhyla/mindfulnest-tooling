@@ -8165,6 +8165,7 @@ body {{padding-top:44px!important;}}
         """
         state = self.app.state.read_state()
         clips_dir = self.app.state.clips_dir
+        event_dir = self.app.event_dir  # Bug-B3 (spec §2 Topic-2): magic + end_frame paths
         videos = state.get("videos") if isinstance(state, dict) else None
         if not isinstance(videos, dict):
             return state
@@ -8184,6 +8185,22 @@ body {{padding-top:44px!important;}}
             else:
                 exists_key = "file_exists"
                 block[exists_key] = bool(f and (clips_dir / f).is_file())
+
+        # Bug-B3 (spec §2 Topic-2, 2026-05-20): annotate magic + end_frame
+        # paths which resolve against EVENT_DIR (not clips_dir). Without these,
+        # orphan references (state.json points at a file that's been deleted
+        # from disk) produce silent 404s exactly like the LD-807 case we just
+        # hit on beat_03 earlier today.
+        def _annotate_beat_field(beat: dict, field: str, base_dir) -> None:
+            if not isinstance(beat, dict):
+                return
+            f = beat.get(field)
+            if not (f and isinstance(f, str)):
+                beat[f"{field}_exists"] = False
+                return
+            beat[f"{field}_exists"] = (base_dir / f).is_file()
+
+        end_frames_dir = event_dir / "end_frames"
 
         for partition in videos.values():
             if not isinstance(partition, dict):
@@ -8212,6 +8229,11 @@ body {{padding-top:44px!important;}}
                 if isinstance(final, dict):
                     _annotate_block(final, "file")
                     _annotate_block(final, "image_path")
+                # Bug-B3 — magic_*_path resolves to event_dir (NOT clips_dir).
+                _annotate_beat_field(beat, "magic_still_path", event_dir)
+                _annotate_beat_field(beat, "magic_video_path", event_dir)
+                # Bug-B3 — end_frame_path resolves to event_dir/end_frames/.
+                _annotate_beat_field(beat, "end_frame_path", end_frames_dir)
         return state
 
     def _serve_beat_audio(self, beat_id: str) -> None:

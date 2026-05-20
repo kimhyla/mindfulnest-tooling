@@ -539,12 +539,17 @@ def handle_magic_submit_path(h, body: dict)-> None:
 
 def handle_magic_still(h, body: dict)-> None:
 
-    """POST /api/storyboard/magic_still {beat_id, manual_path, source_image_path, scope_event_id}
+    """POST /api/storyboard/magic_still {beat_id, manual_path, source_image_path, scope_event_id, scope_video_role}
 
     Per LD-468 MAGIC_TRAIL_ON_STILL_V1. Invokes magic_compositor with the
     still as background; renders animated mp4 of magic forming on the
     still.
     """
+    # Bug-A3 (spec §2 Topic-2, 2026-05-20): scope_video_role REQUIRED. The
+    # previous default-to-'intro' silently wrote magic_still_path to the wrong
+    # partition (Kim hit this on resolution beat_01 — magic_still_path landed
+    # on videos.intro.beats.beat_01 instead). _assert_event_scope's default
+    # allow_missing_video_role=False already returns 400 VIDEO_ROLE_REQUIRED.
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
         return
     beat_id = (body or {}).get("beat_id")
@@ -622,10 +627,14 @@ def handle_magic_still(h, body: dict)-> None:
                )
 
     # LD-460 pin
+    # Bug-A3 (spec §2 Topic-2, 2026-05-20): NO 'intro' default — _assert_event_scope
+    # at line 548 already enforced presence of scope_video_role; if we get here
+    # without it, something has gone deeply wrong upstream and we surface it
+    # (rather than silently writing to wrong partition).
     _pin = {
         "pinned_generation": h.app.event_generation,
         "pinned_event_dir": h.app.event_dir,
-        "pinned_video_role": (body or {}).get("scope_video_role", "intro"),
+        "pinned_video_role": (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video"),
         "_handler": "_handle_magic_still",
     }
     if not h._check_event_pin(_pin, "magic_still_pre_work"):
@@ -700,6 +709,7 @@ def handle_magic_still(h, body: dict)-> None:
     # the client UI can render the "has magic" indicator + serve the
     # composite on next page load. Idempotent — re-rendering overwrites.
     magic_filename = Path(rendered).name
+    scope = None  # captured below for Bug-A4 read-back verify
     try:
         scope = scope_router.resolve(body, h.app.event_dir.name)
 
@@ -710,13 +720,57 @@ def handle_magic_still(h, body: dict)-> None:
 
         scope_router.mutate_partition(h.app.state, scope, _set_magic_still)
     except Exception as exc:
+        # Bug-A4 (spec §2 Topic-2, 2026-05-20): this swallow-all is the bug we
+        # fixed Kim's wrong-partition issue on top of — but we keep it here so
+        # the existing pattern's lenience is preserved. The read-back verify
+        # BELOW lives OUTSIDE this try/except so it CANNOT be swallowed.
         print(f"[magic_still] WARN state writeback failed: {exc}", flush=True)
+
+    # Bug-A4 (spec §2 Topic-2): DS-22 read-back verify — re-read state and
+    # confirm the magic_still_path landed at the expected partition. If not,
+    # return 500 STATE_WRITEBACK_VERIFY_FAILED (NOT silent 200). Lives OUTSIDE
+    # the swallow-all try/except above so exceptions propagate.
+    partition_written: str | None = None
+    try:
+        if scope is not None:
+            _state_after = h.app.state.read_state()
+            _video_role_written = getattr(scope, "video_role", None)
+            if _video_role_written:
+                _beat_after = (((_state_after.get("videos") or {}).get(_video_role_written) or {})
+                              .get("beats") or {}).get(beat_id) or {}
+                if _beat_after.get("magic_still_path") == magic_filename:
+                    partition_written = _video_role_written
+                    print(f"[magic_still] state writeback verified: videos.{_video_role_written}.beats.{beat_id}.magic_still_path={magic_filename}", flush=True)
+                else:
+                    print(f"[magic_still] STATE_WRITEBACK_VERIFY_FAILED: expected videos.{_video_role_written}.beats.{beat_id}.magic_still_path={magic_filename!r}, got {_beat_after.get('magic_still_path')!r}", flush=True)
+                    return h._send_error_v59(
+                               500,
+                               error_code="STATE_WRITEBACK_VERIFY_FAILED",
+                               error_message="magic_still_path was not persisted at the expected partition",
+                               retry_safe=True,
+                               extra={
+                                   "expected_partition": _video_role_written,
+                                   "expected_beat_id": beat_id,
+                                   "expected_magic_still_path": magic_filename,
+                                   "got_magic_still_path": _beat_after.get("magic_still_path"),
+                               },
+                           )
+    except Exception as exc:  # noqa: BLE001
+        # Verify itself crashed — surface loud rather than 200 silently.
+        print(f"[magic_still] STATE_WRITEBACK_VERIFY_CRASHED: {type(exc).__name__}: {exc}", flush=True)
+        return h._send_error_v59(
+                   500,
+                   error_code="STATE_WRITEBACK_VERIFY_FAILED",
+                   error_message=f"state writeback verify crashed: {type(exc).__name__}: {exc}",
+                   retry_safe=True,
+               )
 
     return h._send_json(200, {
         "ok": True,
         "beat_id": beat_id,
         "composite_path": str(rendered),
         "magic_still_path": magic_filename,
+        "partition_written": partition_written,
         "asset_id": registered_id,
         "manual_path_points": len(clean_path),
     })
@@ -724,13 +778,15 @@ def handle_magic_still(h, body: dict)-> None:
 
 def handle_magic_video(h, body: dict)-> None:
 
-    """POST /api/storyboard/magic_video {beat_id, manual_path, source_video_path, scope_event_id}
+    """POST /api/storyboard/magic_video {beat_id, manual_path, source_video_path, scope_event_id, scope_video_role}
 
     Per LD-469 MAGIC_TRAIL_ON_VIDEO_V1. Generates magic-on-black via
     magic_compositor.render_video(black_bg=True), then ffmpeg overlays
     onto the source video via blend=mode=screen (black pixels become
     transparent in screen blend; magic pixels shine through additively).
     """
+    # Bug-A3 (spec §2 Topic-2, 2026-05-20): scope_video_role REQUIRED.
+    # _assert_event_scope default allow_missing_video_role=False enforces 400 on missing.
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
         return
     beat_id = (body or {}).get("beat_id")
@@ -850,10 +906,13 @@ def handle_magic_video(h, body: dict)-> None:
                )
 
     # LD-460 pin
+    # Bug-A3 (spec §2 Topic-2, 2026-05-20): NO 'intro' default — handle_magic_video
+    # also requires scope_video_role explicit at the route boundary (same bug
+    # class as magic_still).
     _pin = {
         "pinned_generation": h.app.event_generation,
         "pinned_event_dir": h.app.event_dir,
-        "pinned_video_role": (body or {}).get("scope_video_role", "intro"),
+        "pinned_video_role": (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video"),
         "_handler": "_handle_magic_video",
     }
     if not h._check_event_pin(_pin, "magic_video_pre_work"):
@@ -987,6 +1046,7 @@ def handle_magic_video(h, body: dict)-> None:
     # MAG-1 fix: write magic_video_path back into state.beats[beat_id].
     # Same pattern as magic_still — see _handle_magic_still for rationale.
     magic_filename = Path(out_path).name
+    scope = None  # captured below for Bug-A4 read-back verify
     try:
         scope = scope_router.resolve(body, h.app.event_dir.name)
 
@@ -997,13 +1057,53 @@ def handle_magic_video(h, body: dict)-> None:
 
         scope_router.mutate_partition(h.app.state, scope, _set_magic_video)
     except Exception as exc:
+        # Bug-A4 (spec §2 Topic-2): swallow-all preserved here for legacy
+        # lenience; verify BELOW is OUTSIDE this try/except so it propagates.
         print(f"[magic_video] WARN state writeback failed: {exc}", flush=True)
+
+    # Bug-A4 (spec §2 Topic-2, 2026-05-20): DS-22 read-back verify — mirror of
+    # the magic_still path above. Returns 500 STATE_WRITEBACK_VERIFY_FAILED
+    # if partition mismatch detected.
+    partition_written: str | None = None
+    try:
+        if scope is not None:
+            _state_after = h.app.state.read_state()
+            _video_role_written = getattr(scope, "video_role", None)
+            if _video_role_written:
+                _beat_after = (((_state_after.get("videos") or {}).get(_video_role_written) or {})
+                              .get("beats") or {}).get(beat_id) or {}
+                if _beat_after.get("magic_video_path") == magic_filename:
+                    partition_written = _video_role_written
+                    print(f"[magic_video] state writeback verified: videos.{_video_role_written}.beats.{beat_id}.magic_video_path={magic_filename}", flush=True)
+                else:
+                    print(f"[magic_video] STATE_WRITEBACK_VERIFY_FAILED: expected videos.{_video_role_written}.beats.{beat_id}.magic_video_path={magic_filename!r}, got {_beat_after.get('magic_video_path')!r}", flush=True)
+                    return h._send_error_v59(
+                               500,
+                               error_code="STATE_WRITEBACK_VERIFY_FAILED",
+                               error_message="magic_video_path was not persisted at the expected partition",
+                               retry_safe=True,
+                               extra={
+                                   "expected_partition": _video_role_written,
+                                   "expected_beat_id": beat_id,
+                                   "expected_magic_video_path": magic_filename,
+                                   "got_magic_video_path": _beat_after.get("magic_video_path"),
+                               },
+                           )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[magic_video] STATE_WRITEBACK_VERIFY_CRASHED: {type(exc).__name__}: {exc}", flush=True)
+        return h._send_error_v59(
+                   500,
+                   error_code="STATE_WRITEBACK_VERIFY_FAILED",
+                   error_message=f"state writeback verify crashed: {type(exc).__name__}: {exc}",
+                   retry_safe=True,
+               )
 
     return h._send_json(200, {
         "ok": True,
         "beat_id": beat_id,
         "composite_path": str(out_path),
         "magic_video_path": magic_filename,
+        "partition_written": partition_written,
         "asset_id": registered_id,
         "source_dims": [width, height],
         "duration_s": vid_duration,

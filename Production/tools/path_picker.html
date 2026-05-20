@@ -277,13 +277,31 @@
   const scopeEventId     = params.get('scope_event_id') || params.get('event_id') || '';
   // S5.5b Bug 3 fix: source scope_video_role for magic POSTs (LD-474).
   // Priority: URL param 'video_role' → URL param 'scope_video_role' →
-  // window.__MN_VIDEO_ROLE__ (set by host page) → 'intro' default.
-  // No reliance on state.active_video — that field is server-side display
-  // hint only (LD-474 forbids using it for partition selection).
+  // window.__MN_VIDEO_ROLE__ (set by host page) → window.opener URL fallback.
+  // Bug-A2 (spec §2 Topic-2, 2026-05-20): NO 'intro' default. If neither own
+  // URL nor opener URL provides scope_video_role, leave scopeVideoRole as the
+  // empty string and let the server return 400 VIDEO_ROLE_REQUIRED. This
+  // prevents the silent wrong-partition writeback Kim hit on resolution beat_01.
+  // The opener fallback covers manually-typed URLs that omit the param —
+  // ordinary "Add magic on still" flow gets the param via Bug-A1 in
+  // StoryboardTab.tsx::openMagicStill.
+  function _readOpenerScopeVideoRole() {
+    try {
+      if (typeof window === 'undefined' || !window.opener || window.opener.closed) return null;
+      const openerUrl = new URL(window.opener.location.href);
+      return openerUrl.searchParams.get('scope_video_role')
+          || openerUrl.searchParams.get('video_role')
+          || null;
+    } catch (_) {
+      // cross-origin or null opener — cannot read; fall through to ''.
+      return null;
+    }
+  }
   const scopeVideoRole   = params.get('video_role')
                         || params.get('scope_video_role')
                         || (typeof window !== 'undefined' && window.__MN_VIDEO_ROLE__)
-                        || 'intro';
+                        || _readOpenerScopeVideoRole()
+                        || '';
 
   // Resolve effective mode (explicit → inferred → legacy → manual).
   let mode = explicitMode;
