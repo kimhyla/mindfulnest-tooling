@@ -304,6 +304,40 @@ export function LibraryPanel() {
     return () => window.removeEventListener('mn:library-refresh', onLibRefresh);
   }, []);
 
+  // BUG-A real UX fix (Kim 2026-05-20): track which library tiles are
+  // CURRENTLY assigned to any beat in the active video scope, so Kim can
+  // see at a glance which crops are "in use" — distinguishing master vs
+  // delivery of the same crop becomes trivial when only one of them is
+  // highlighted. Set rebuilds from /api/v2/event/<id>/state's
+  // image_overrides per video_role. Refresh whenever scope changes OR
+  // assignment events fire elsewhere.
+  const [inUseKeys, setInUseKeys] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const res = await apiGet<{
+        videos?: Record<string, { image_overrides?: Record<string, string> }>;
+      }>('v2_event_state', { event_id: activeScope.value.event_id });
+      if (cancelled || !res.ok || !res.data) return;
+      const keys = new Set<string>();
+      for (const partition of Object.values(res.data.videos ?? {})) {
+        for (const v of Object.values(partition?.image_overrides ?? {})) {
+          if (typeof v === 'string' && v) keys.add(v);
+        }
+      }
+      setInUseKeys(keys);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshTick, activeScope.value.event_id]);
+  // Listen for assign-image refreshes from other parts of the app.
+  useEffect(() => {
+    const onAssign = () => setRefreshTick((n) => n + 1);
+    window.addEventListener('mn:image-assigned', onAssign);
+    return () => window.removeEventListener('mn:image-assigned', onAssign);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -561,12 +595,14 @@ export function LibraryPanel() {
                   : it.thumb_b64
                     ? (it.thumb_b64.startsWith('data:') ? it.thumb_b64 : `data:image/webp;base64,${it.thumb_b64}`)
                     : (it.thumb_url ?? '');
+              const inUse = inUseKeys.has(libKey);
               return (
                 <div
                   key={libKey}
-                  class="mn-library-tile-wrap"
+                  class={`mn-library-tile-wrap${inUse ? ' mn-library-tile-in-use' : ''}`}
                   data-testid={`library-tile-wrap-${i}`}
                   data-tile-tier={tileTier}
+                  data-in-use={inUse ? 'true' : 'false'}
                   onMouseEnter={() => requestPreview(it)}
                   onMouseLeave={cancelPreviewRequest}
                 >
@@ -577,6 +613,13 @@ export function LibraryPanel() {
                     >
                       {isMaster ? 'MASTER' : 'DELIVERY'}
                     </span>
+                    {inUse ? (
+                      <span
+                        class="mn-badge mn-badge-in-use"
+                        title="This image is currently assigned to one or more beats in this video"
+                        data-testid={`library-tile-in-use-${i}`}
+                      >● IN USE</span>
+                    ) : null}
                     {cropSrc ? (
                       <button
                         type="button"

@@ -3839,10 +3839,27 @@ def _clean_text_for_tts(text: str) -> str:
     at the start of the line).
 
     Rule 11 source fidelity: spoken dialogue is byte-for-byte preserved.
+
+    V3 (LD-733 TTS_STRIP_LEADING_PARENTHETICAL_V3, locked 2026-05-16,
+    SHIPPED 2026-05-20 after fabrication-scan discovered V3 was never
+    actually landed in code): strip the LEADING parenthetical at the
+    start of text. Per LD-728 the leading paren is a VISUAL cue for
+    Kling motion + end-frame, NOT voice direction — but ElevenLabs v3
+    treats it as dramatic prose and inserts multi-second pauses.
+    Empirical 2026-05-16: beat_06 audio 17.66s → 11.539s after this
+    strip (−6.1s of phantom silent pauses removed). Only the FIRST
+    parenthetical at start-of-text is stripped — inline parentheticals
+    later in the dialogue body remain (V2 backward-compat for voice
+    direction). 3+ char minimum so single-letter parens like "(!)"
+    don't accidentally match.
     """
     if not text:
         return text
-    cleaned = TTS_CUE_MARKER_PATTERN.sub(' ... ', text)
+    # V3 leading-paren strip (LD-733). Pattern: optional leading whitespace
+    # + a single (...) of 3+ chars + optional trailing whitespace, anchored
+    # at start of text only.
+    cleaned = re.sub(r'^\s*\([^)]{3,}\)\s*', '', text)
+    cleaned = TTS_CUE_MARKER_PATTERN.sub(' ... ', cleaned)
     # Collapse any whitespace runs created by the substitution.
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     return cleaned

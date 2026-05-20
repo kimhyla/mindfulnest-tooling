@@ -1846,6 +1846,29 @@
   display: contents;
 }
 
+/* BUG-A in-use highlight (Kim 2026-05-20). Tile rim glows + badge appears
+   so Kim can see which library crop is CURRENTLY assigned to one or more
+   beats in the active video — distinguishes master vs delivery instantly. */
+.mn-library-tile-wrap.mn-library-tile-in-use .mn-asset-tile {
+  outline: 2px solid #4ade80;
+  outline-offset: -2px;
+  box-shadow: 0 0 0 1px rgba(74, 222, 128, 0.5), 0 0 12px rgba(74, 222, 128, 0.35);
+}
+.mn-badge-in-use {
+  background: #16a34a;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  z-index: 3;
+  pointer-events: none;
+}
+
 /* ─── Crop button (✂) — hover-revealed on library tiles + BG option tiles ─── */
 /* Library: .mn-asset-tile already has position:relative — crop btn sits top-left
    (delete btn is top-right) so they don't overlap. */

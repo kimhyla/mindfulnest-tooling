@@ -1615,6 +1615,11 @@ function BeatImageHolder({ index, beatId, beat, eventId, onMutated, previewVideo
         // Without this, the lipsync video keeps occluding the IMG element
         // (LD-757 persistence) and the user sees no visual change.
         onImageReassigned?.();
+        // BUG-A in-use highlight refresh: fire global event so LibraryPanel
+        // re-fetches its in-use set + highlights the now-active tile.
+        window.dispatchEvent(new CustomEvent('mn:image-assigned', {
+          detail: { beat_id: beatId, image_key: payload.lib_key },
+        }));
         onMutated();
       } else {
         pushToast({
