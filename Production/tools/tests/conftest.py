@@ -26,3 +26,12 @@ for p in (_TOOLS_DIR, _PROD_DIR, _REPO_ROOT, _CRED_LIB):
 
 # Test-safe env defaults (existing per-file inserts override if needed).
 os.environ.setdefault("PRODUCTION_SERVER_SINGLE_MACHINE", "1")
+
+# Ignore script-mode browser E2E runner. test_tier3_browser_e2e.py has its
+# own `if __name__ == "__main__": sys.exit(main())` orchestrator and passes
+# Playwright `browser` as a function parameter, NOT a pytest fixture. Pytest
+# collection of this file produces 13 spurious "fixture 'browser' not found"
+# errors. Run via: python3 Production/tools/tests/test_tier3_browser_e2e.py
+collect_ignore = [
+    "test_tier3_browser_e2e.py",
+]
