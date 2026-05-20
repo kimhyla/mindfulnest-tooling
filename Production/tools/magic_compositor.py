@@ -222,6 +222,19 @@ class MagicCompositor:
 
         print(f"Loading background: {os.path.basename(background_path)}", flush=True)
         self.bg_img = Image.open(background_path).convert("RGB")
+        _orig_w, _orig_h = self.bg_img.size
+        # libx264 in yuv420p (the default for codec="h264") requires both
+        # width AND height to be EVEN — chroma subsampling math. Odd-dim
+        # inputs explode with avcodec_open2("libx264", {}) ExternalError 542398533.
+        # Crop 1 px off the right/bottom if needed; visually imperceptible
+        # vs the alternative (silent black-square preview from a 500 error).
+        # Failure mode observed 2026-05-20 on still_3_body_stone_glow_v9.png (1677x938)
+        # and on 22 of 36 generator crops.
+        if _orig_w % 2 or _orig_h % 2:
+            _new_w = _orig_w - (_orig_w % 2)
+            _new_h = _orig_h - (_orig_h % 2)
+            self.bg_img = self.bg_img.crop((0, 0, _new_w, _new_h))
+            print(f"  cropped odd dims {_orig_w}x{_orig_h} -> {_new_w}x{_new_h} (libx264 even-dim requirement)", flush=True)
         self.W, self.H = self.bg_img.size
         print(f"  {self.W}x{self.H}", flush=True)
 
