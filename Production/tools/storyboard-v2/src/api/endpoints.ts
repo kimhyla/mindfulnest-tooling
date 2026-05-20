@@ -132,6 +132,11 @@ export const MUTATION_ENDPOINTS = {
   animate_redo: `${SERVER_BASE}/api/animate/redo`,
   select: `${SERVER_BASE}/api/select`,
   beat_add_options: `${SERVER_BASE}/api/beat/add_options`,
+  // T1-Phase 2 + 3 (spec MAGIC_AND_ENDFRAME_FIXES_20260520_v1, LD-814):
+  // end-frame iteration endpoints. Kim previews/uploads end frame BEFORE
+  // Regen B+C; Regen B+C then REFUSES without an approved end_frame_path.
+  beat_preview_end_frame: `${SERVER_BASE}/api/beat/preview_end_frame`,
+  beat_upload_end_frame: `${SERVER_BASE}/api/beat/upload_end_frame`,
   beat_swap_to_a: `${SERVER_BASE}/api/beat/swap_to_a`,
   lipsync: `${SERVER_BASE}/api/lipsync`,
   beat_use_as_final: `${SERVER_BASE}/api/beat/use_as_final`,

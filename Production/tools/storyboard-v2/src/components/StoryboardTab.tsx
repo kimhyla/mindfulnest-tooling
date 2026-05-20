@@ -22,7 +22,7 @@ import {
   scopeKey,
 } from '../state/scope';
 import { apiGet, expectField, pathappPatch, type ExpectFieldSpec } from '../api/client';
-import { SERVER_BASE } from '../api/endpoints';
+import { SERVER_BASE, MUTATION_ENDPOINTS as ENDPOINTS } from '../api/endpoints';
 import { makeDropTarget } from '../utils/dragdrop';
 import { Spinner } from './ui/Spinner';
 import { pushToast } from './ui/Toast';
@@ -290,9 +290,11 @@ interface BeatButtonRowProps {
   onPreviewOption: (optIdx: number) => void;
   /** LD-757: flip parent lipsyncMounted so the lipsync <video> stays mounted. */
   onEnsureLipsyncMounted: () => void;
+  /** T1-Phase 6: active video role for preview_end_frame + upload_end_frame POST bodies. */
+  videoRole: string;
 }
 
-function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, previewOptIdx, onPreviewOption, onEnsureLipsyncMounted }: BeatButtonRowProps) {
+function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, previewOptIdx, onPreviewOption, onEnsureLipsyncMounted, videoRole }: BeatButtonRowProps) {
   const lifecycle = deriveBeatLifecycle(beat);
   const [busy, setBusy] = useState<string | null>(null); // which button is in-flight
   // Bug-B2 (spec §2 Topic-2, 2026-05-20): gate the ✨ magic badges on
@@ -300,6 +302,123 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
   // show a misleading "magic" indicator.
   const _magicStillOk = !!(beat.magic_still_path && beat.magic_still_path_exists !== false);
   const _magicVideoOk = !!(beat.magic_video_path && beat.magic_video_path_exists !== false);
+
+  // T1-Phase 6 (spec MAGIC_AND_ENDFRAME_FIXES_20260520_v1, LD-814) — end-frame UI:
+  // Kim previews/uploads the ChatGPT end frame here BEFORE Regen B+C; the
+  // server-side Phase 4 refuses Regen B+C unless an approved end_frame_path
+  // exists on disk. Addendum textarea is one-shot per click (auto-clears).
+  const [endFrameAddendum, setEndFrameAddendum] = useState<string>('');
+  // pendingEndFrameOp keyed by beat_id per cursor R2 (multiple beats may be
+  // in-flight simultaneously; using boolean only-while-this-beat-pending).
+  const [pendingEndFrameOp, setPendingEndFrameOp] = useState<boolean>(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const _endFrameOk = !!(beat.end_frame_path && beat.end_frame_path_exists !== false);
+  const _endFrameThumbUrl = _endFrameOk
+    ? `${SERVER_BASE}/files?path=${encodeURIComponent(`Production/${eventId}/end_frames/${beat.end_frame_path}`)}&v=${beat._version ?? 0}`
+    : null;
+
+  const _onPreviewEndFrame = async () => {
+    if (pendingEndFrameOp) return;
+    setPendingEndFrameOp(true);
+    try {
+      const url = ENDPOINTS.beat_preview_end_frame;
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          scope_event_id: eventId,
+          scope_video_role: videoRole,  // best-effort; server enforces
+          beat_id: beatId,
+          ...(endFrameAddendum.trim() ? { prompt_addendum: endFrameAddendum.trim() } : {}),
+        }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || !data?.ok) {
+        pushToast({
+          kind: 'error',
+          message: `Preview end frame failed: ${data?.error_message || data?.error || `HTTP ${resp.status}`}`,
+          source: 'preview-end-frame',
+        });
+        return;
+      }
+      pushToast({
+        kind: 'success',
+        message: `End frame generated → ${data.end_frame_path} (${data.size_bytes} B)`,
+        source: 'preview-end-frame',
+      });
+      setEndFrameAddendum('');  // auto-clear per spec §2 T1-Phase 6
+      onMutated();
+    } catch (e) {
+      pushToast({
+        kind: 'error',
+        message: `Preview end frame: ${(e as Error).message}`,
+        source: 'preview-end-frame',
+      });
+    } finally {
+      setPendingEndFrameOp(false);
+    }
+  };
+
+  const _onUploadEndFrame = () => {
+    fileInputRef.current?.click();
+  };
+
+  const _onUploadFileChange = async (e: Event) => {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    if (pendingEndFrameOp) return;
+    // Reset input value so picking the same file twice still triggers change
+    input.value = '';
+    setPendingEndFrameOp(true);
+    try {
+      const dataUrl: string = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => reject(new Error('FileReader failed'));
+        reader.readAsDataURL(file);
+      });
+      // Strip data:image/...;base64, prefix
+      const commaIdx = dataUrl.indexOf(',');
+      const fileB64 = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl;
+      const mime = file.type || 'image/png';
+      const resp = await fetch(ENDPOINTS.beat_upload_end_frame, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          scope_event_id: eventId,
+          scope_video_role: videoRole,
+          beat_id: beatId,
+          file_b64: fileB64,
+          mime,
+        }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || !data?.ok) {
+        pushToast({
+          kind: 'error',
+          message: `Upload end frame failed: ${data?.error_message || data?.error || `HTTP ${resp.status}`}`,
+          source: 'upload-end-frame',
+        });
+        return;
+      }
+      pushToast({
+        kind: 'success',
+        message: `End frame uploaded → ${data.end_frame_path} (${data.size_bytes} B)`,
+        source: 'upload-end-frame',
+      });
+      setEndFrameAddendum('');
+      onMutated();
+    } catch (err) {
+      pushToast({
+        kind: 'error',
+        message: `Upload end frame: ${(err as Error).message}`,
+        source: 'upload-end-frame',
+      });
+    } finally {
+      setPendingEndFrameOp(false);
+    }
+  };
 
   // LD-739/740 GREENFIELD: silent-click-on-busy-button class kill.
   // Synchronous handler throws are caught and surfaced as an error toast —
@@ -844,13 +963,82 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
       ) : null}
       {showAddOptions ? (
         <span class="mn-beat-button-group" data-testid={`beat-${index}-regen-group`}>
+          {/* T1-Phase 6 — end-frame iteration controls. Kim previews/uploads
+              an end frame FIRST, then clicks Regen B+C. Server (Phase 4)
+              refuses Regen B+C unless approved end_frame_path exists. */}
+          <button
+            type="button"
+            class="mn-btn mn-btn-small"
+            data-testid={`beat-${index}-preview-end-frame`}
+            onClick={_onPreviewEndFrame}
+            disabled={pendingEndFrameOp || busy !== null}
+            title="Generate the ChatGPT end frame (the 'second image' for Kling). ~$0.04. Click again for a fresh sample if needed."
+          >
+            {pendingEndFrameOp ? <><Spinner size="sm" inline /> …</> : '✏ Preview end frame'}
+          </button>
+          <button
+            type="button"
+            class="mn-btn mn-btn-small"
+            data-testid={`beat-${index}-upload-end-frame`}
+            onClick={_onUploadEndFrame}
+            disabled={pendingEndFrameOp || busy !== null}
+            title="Upload your own end frame PNG (from chatgpt.com or anywhere). Free."
+          >
+            📤 Upload end frame
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/jpg,image/webp"
+            style={{ display: 'none' }}
+            onChange={_onUploadFileChange}
+            data-testid={`beat-${index}-end-frame-file-input`}
+          />
+          <input
+            type="text"
+            class="mn-beat-trim-input"
+            data-testid={`beat-${index}-end-frame-addendum`}
+            value={endFrameAddendum}
+            onInput={(e) => setEndFrameAddendum((e.target as HTMLInputElement).value)}
+            disabled={pendingEndFrameOp || busy !== null}
+            placeholder="e.g. ensure all accessories remain (glasses, backpack)"
+            title="One-shot prompt addendum sent to ChatGPT. Clears after each Preview click."
+            style={{ minWidth: '320px', marginLeft: '4px' }}
+          />
+          {_endFrameOk && _endFrameThumbUrl ? (
+            <img
+              src={_endFrameThumbUrl}
+              alt={`end frame for ${beatId}`}
+              data-testid={`beat-${index}-end-frame-thumb`}
+              title={`Approved end frame: ${beat.end_frame_path}`}
+              style={{
+                width: '50px',
+                height: '50px',
+                objectFit: 'cover',
+                border: '1px solid #4a8a4a',
+                marginLeft: '4px',
+                verticalAlign: 'middle',
+              }}
+            />
+          ) : (
+            <span
+              class="mn-dim"
+              data-testid={`beat-${index}-end-frame-empty`}
+              style={{ fontSize: '10px', marginLeft: '4px', fontStyle: 'italic' }}
+            >
+              (no end frame yet)
+            </span>
+          )}
           <button
             type="button"
             class="mn-btn mn-btn-small"
             data-testid={`beat-${index}-add-options`}
             onClick={guardedClick('Add options', onAddOptions)}
-            aria-disabled={busy !== null}
-            title="Keep Option A, generate 2 fresh alternatives (B & C)"
+            disabled={pendingEndFrameOp || !_endFrameOk}
+            aria-disabled={busy !== null || pendingEndFrameOp || !_endFrameOk}
+            title={_endFrameOk
+              ? "Keep Option A, generate 2 fresh alternatives (B & C) using approved end frame. ~$0.90"
+              : "Preview or upload an end frame first (T1-Phase 4 server refuses without one)"}
           >
             🔄 Regenerate B + C
           </button>
@@ -1605,6 +1793,7 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
         beatId={beatId}
         eventId={eventId}
         beat={beat}
+        videoRole={videoRole}
         {...(savedAt ? { cacheBust: savedAt } : {})}
         onMutated={onMutated}
         previewOptIdx={previewOptIdx}
