@@ -54,7 +54,13 @@ BANNED_MOTION_WORDS = (
 # Speaker → required mouth/beak clamp (§8.1)
 # ────────────────────────────────────────────────────────────────────────
 # Birds: beak; turtles/mammals: mouth.
-BIRD_SPEAKERS = {"Chipper", "Cedric", "Guide Bird", "Bork"}  # bird-bodied speakers
+# HARMONIZED 2026-05-20 with production_server.py:423 to prevent
+# validator-disagreement (cursor-review finding #6). Luna inclusion
+# is a known anatomical mismatch (turtle, not bird) but production_server
+# treats Luna as bird-class for Kling beak-clamp purposes. See
+# DEVIATION_SYSTEMIC_AUDIT_LUNA_BIRD_CLASSIFICATION_20260520 for
+# Kim-workflow question on whether to reclassify.
+BIRD_SPEAKERS = {"Guide Bird", "Luna", "Chipper"}
 # All others default to "mouth closed".
 
 REQUIRED_TRAILER_OPTIONS = (
