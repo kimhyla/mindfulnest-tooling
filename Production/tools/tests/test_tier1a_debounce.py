@@ -222,16 +222,16 @@ def _http_post(port: int, path: str, body: dict,
 # ---------------------------------------------------------------------------
 
 @unittest.skip(
-    "P5 deferral 2026-05-19: Tier 1A debounce tests assert auto-TTS-regen "
-    "behavior of /api/beat/update_text. v59 storyboard intentionally removed "
-    "auto-regen-on-text-edit in favor of an explicit 'Regen Audio' button. "
-    "The legacy handler now returns early in v59-shell mode without invoking "
-    "the TTS regen pipeline (beats_legacy.py:613-626 v59_shell branch). Kim "
-    "2026-05-19 confirmed she'd PREFER this (\"sometimes i edit just for kling "
-    "and dont need a new elevenlabs audio\"). Tests are testing obsolete "
-    "contract. Tracking: /tmp/v59_feature_parity_audit_20260519.md. To re-enable "
-    "either: (a) update fixture to use a non-v59-shell storyboard, OR (b) "
-    "remove auto-regen tests entirely since the feature is intentionally gone."
+    "LD-803 TTS_NO_AUTO_REGEN_EXPLICIT_BUTTON_ONLY_V1 (2026-05-20): TTS "
+    "auto-regen on text edit is REVERSED — both LD-181 (original contract) "
+    "and LD-734 (v59 reachability hoist) are superseded. Regen fires "
+    "EXCLUSIVELY via the explicit 'Regen Audio' button "
+    "(_handle_beat_regenerate_audio). Tier 1A debounce helpers become dead "
+    "code (no auto-regen to rate-limit). These tests assert obsolete "
+    "auto-regen + debounce contract and are correctly skipped. The "
+    "_handle_beat_regenerate_audio handler is covered by its own tests. "
+    "Removal of this test file is appropriate follow-up cleanup once "
+    "TIER1A_* helpers are pruned from beats_legacy.py per LD-803 SCOPE."
 )
 class TestTier1ADebounceHTTP(unittest.TestCase):
     """HTTP-based tests per Tier 1A spec."""
