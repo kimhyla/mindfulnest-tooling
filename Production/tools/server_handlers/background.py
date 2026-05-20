@@ -229,7 +229,7 @@ def handle_magic_submit_path(h, body: dict)-> None:
     _pin = {
         "pinned_generation": h.app.event_generation,
         "pinned_event_dir": h.app.event_dir,
-        "pinned_video_role": (body or {}).get("scope_video_role", "intro"),
+        "pinned_video_role": (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video"),
         "_handler": '_handle_magic_submit_path',
     }
     # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — pre-work pin check (S2).
@@ -1972,7 +1972,7 @@ def handle_bg_submit_flux(h, body: dict)-> None:
     _pin = {
         "pinned_generation": h.app.event_generation,
         "pinned_event_dir": h.app.event_dir,
-        "pinned_video_role": (body or {}).get("scope_video_role", "intro"),
+        "pinned_video_role": (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video"),
         "_handler": '_handle_bg_submit_flux',
     }
 
@@ -2037,7 +2037,7 @@ def handle_bg_submit_gpt_batch(h, body: dict)-> None:
     _pin = {
         "pinned_generation": h.app.event_generation,
         "pinned_event_dir": h.app.event_dir,
-        "pinned_video_role": (body or {}).get("scope_video_role", "intro"),
+        "pinned_video_role": (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video"),
         "_handler": '_handle_bg_submit_gpt_batch',
     }
     # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — pre-work pin check (S2).
@@ -2562,7 +2562,7 @@ def handle_bg_assemble_group(h, body: dict)-> None:
     _pin = {
         "pinned_generation": h.app.event_generation,
         "pinned_event_dir": h.app.event_dir,
-        "pinned_video_role": (body or {}).get("scope_video_role", "intro"),
+        "pinned_video_role": (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video"),
         "_handler": '_handle_bg_assemble_group',
     }
     # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — pre-work pin check (S2).
@@ -2678,7 +2678,7 @@ def handle_bg_run_local_animation(h, body: dict)-> None:
     _pin = {
         "pinned_generation": h.app.event_generation,
         "pinned_event_dir": h.app.event_dir,
-        "pinned_video_role": (body or {}).get("scope_video_role", "intro"),
+        "pinned_video_role": (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video"),
         "_handler": '_handle_bg_run_local_animation',
     }
     # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — pre-work pin check (S2).
@@ -3489,7 +3489,7 @@ def handle_watercolor_animate(h, body: dict)-> None:
     _pin = {
         "pinned_generation": h.app.event_generation,
         "pinned_event_dir": h.app.event_dir,
-        "pinned_video_role": (body or {}).get("scope_video_role", "intro"),
+        "pinned_video_role": (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video"),
         "_handler": "_handle_watercolor_animate",
     }
     if not h._check_event_pin(_pin, "watercolor_animate_pre_work"):

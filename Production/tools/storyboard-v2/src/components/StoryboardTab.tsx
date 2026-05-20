@@ -877,13 +877,24 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
   // count=2 is product-locked per server default; label reflects this.
   const showAddOptions = ['animated', 'selected', 'lipsync_pending', 'final'].includes(lifecycle);
   const showSelectedOptionRadios = ['animated', 'selected', 'lipsync_pending', 'final'].includes(lifecycle);
-  // In final state: only show Lipsync if the beat was finalised via lipsync
-  // (not use-as-final) AND an option is selected. Loose != null catches both
-  // null and undefined (server may write either for unset selected_option).
+  // Kim 2026-05-20 follow-up: previous gate hid the lipsync button whenever
+  // lifecycle was 'final' AND final.source != 'lipsync' (e.g. raw_option from
+  // a →A swap, OR still_image from Use-as-Final Ken Burns). That blocked the
+  // legitimate workflow of UPGRADING a finalized raw beat into a lipsync.
+  //
+  // New gate: show whenever ANY animation option is selected. The button's
+  // label adapts to state (Send for Lipsync vs ▶ lipsync vs ▶ ⚠ stale lipsync)
+  // so it surfaces the right action regardless of whether the beat is pre-
+  // lipsync, mid-lipsync, or already lipsynced. The only hide cases now are:
+  //   - lifecycle 'draft' / 'audio_generated' / 'animated' (nothing selected yet)
+  //   - selected_option not set (defensive — shouldn't happen for selected+)
+  //
+  // Loose != null catches both null and undefined (server may write either
+  // for unset selected_option).
   const showLipsync = (
-    ['selected', 'lipsync_pending'].includes(lifecycle) ||
-    (lifecycle === 'final' && beat.final?.source === 'lipsync')
-  ) && beat.phase_1?.selected_option != null;
+    beat.phase_1?.selected_option != null &&
+    ['selected', 'lipsync_pending', 'final'].includes(lifecycle)
+  );
   const showUseAsFinal = ['audio_generated', 'animated', 'selected'].includes(lifecycle);
   const showPreview = lifecycle !== 'draft';
 
