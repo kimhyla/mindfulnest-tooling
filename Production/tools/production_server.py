@@ -8807,17 +8807,37 @@ body {{padding-top:44px!important;}}
                    )
         end_b64_uri = end_data_uri
 
-        # Natural-interpolation motion prompt (kept verbatim — applies whether
-        # end frame came from live API or disk, since end frame still anchors
-        # gaze per Rule 8.3).
+        # Motion prompt: combine per-creature motion vocabulary (action verbs,
+        # not motion-locks — safe per §8.2) with the start-end interpolation
+        # hint. Kim 2026-05-21 observed Luna beats returning with virtually
+        # no movement; root cause was the prior prompt stripped ALL motion
+        # description ("natural motion between start and end frames" is
+        # generic and cfg_scale=0.5 left Kling nothing to interpolate when
+        # end frame was visually close to start). Restoring the rich
+        # SPEAKER_MOTION_PROFILES vocabulary used by the legacy single-image
+        # path while preserving the start-end gaze anchor.
         _in_birds_8 = _canonical_speaker in BIRD_SPEAKERS
         _cstr_8 = "Beak closed, no speech, no lip movement." if _in_birds_8 else "Mouth closed, no speech."
         _tail_8 = LIPSYNC_SAFE_TAIL if target_beat.get("lipsync_targeted", True) else SPRITE_IDLE_TAIL
         _hdr_8 = f"Cartoon {_canonical_speaker} character" if _canonical_speaker else "Cartoon character"
+        # Resolve per-creature action verbs using same emotion lookup as
+        # build_motion_prompt. _motion_override (stage-direction from beat
+        # text) wins over the lookup table when present.
+        _emotion_8 = target_beat.get("emotion", "neutral") or "neutral"
+        if _emotion_8 not in VALID_EMOTIONS:
+            _emotion_8 = "neutral"
+        _override_8 = target_beat.get("_motion_override")
+        _profile_8 = SPEAKER_MOTION_PROFILES.get(_canonical_speaker)
+        if _override_8:
+            _action_8 = _override_8
+        elif _profile_8:
+            _action_8 = _profile_8.get(_emotion_8) or _profile_8["neutral"]
+        else:
+            _action_8 = SECTION_ACTIONS.get(target_beat.get("section", "") or "", DEFAULT_ACTION)
         positive_prompt = sanitize_prompt(
-            f"{_hdr_8}, natural motion between start and end frames. {_cstr_8} {_tail_8}"
+            f"{_hdr_8}, {_action_8}, natural interpolation between start and end frames. {_cstr_8} {_tail_8}"
         )
-        print(f"[add_options:startend] {beat_id}: motion prompt -> natural-interpolation (end frame confirmed from disk)", flush=True)
+        print(f"[add_options:startend] {beat_id}: motion prompt -> {positive_prompt[:160]!r}", flush=True)
 
         # Per-option loop: Kling start-end submit (end frame reused across opts).
         submitted = 0
