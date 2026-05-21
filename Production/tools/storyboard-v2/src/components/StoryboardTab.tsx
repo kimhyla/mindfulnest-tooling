@@ -1778,10 +1778,15 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
       if (backOffsetSec > 0) {
         const computeAndApplyBack = () => {
           const dur = Number(vid.duration);
-          if (!Number.isFinite(dur) || dur <= 0) return;
+          if (!Number.isFinite(dur) || dur <= 0) {
+            console.warn(`[lipsync-trim] ${beatId}: vid.duration not ready (${vid.duration}); back-trim NOT applied`);
+            return;
+          }
           const pauseAt = Math.max(trimStartSec + 0.01, dur - backOffsetSec);
+          console.log(`[lipsync-trim] ${beatId}: audioDur=${audioDur} trimEnd=${trimEndSec} back_offset=${backOffsetSec.toFixed(3)}s lipsync_dur=${dur.toFixed(3)}s pause_at=${pauseAt.toFixed(3)}s`);
           trimTimeUpdateHandler = () => {
             if (vid.currentTime >= pauseAt) {
+              console.log(`[lipsync-trim] ${beatId}: pausing at ${vid.currentTime.toFixed(3)}s (target ${pauseAt.toFixed(3)}s)`);
               try { vid.pause(); } catch { /* defensive */ }
               if (trimTimeUpdateHandler) {
                 vid.removeEventListener('timeupdate', trimTimeUpdateHandler);
@@ -1796,6 +1801,8 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
         } else {
           vid.addEventListener('loadedmetadata', computeAndApplyBack, { once: true });
         }
+      } else {
+        console.log(`[lipsync-trim] ${beatId}: no back trim (audioDur=${audioDur} trimEnd=${trimEndSec})`);
       }
     }
     safePlay(vid).catch((err) => handlePlayRejection(err, 'effect-play', toastCtx));
