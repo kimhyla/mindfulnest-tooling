@@ -3137,7 +3137,14 @@ _SILCOMP_NOISE_DB = "-32dB"
 _SILCOMP_MIN_DURATION_S = 0.150    # silencedetect threshold (150ms)
 _SILCOMP_TRIGGER_S = 1.0           # silences longer than this get compressed
 _SILCOMP_TARGET_S = 0.8            # compress target duration
-_VIDEO_TRIM_TAILROOM_S = 0.4       # audio_duration + 0.4s tail room
+_VIDEO_TRIM_TAILROOM_S = 0.4       # MIN tail-room — validation floor (CLAUDE.md §8.4)
+# Kim 2026-05-21: 0.4s is too tight visually — the last Kling frame is often
+# mid-articulation/mid-blink and the freeze pose at the end looks wrong. Target
+# 1.5s of trailing video when the trim window allows, so the character has
+# time to settle naturally after the last phoneme. Clamp via min() to whatever
+# the [trim_start, trim_end] window actually accommodates — beats with audio
+# near the 10s ceiling still get only the residual tail (no silent failure).
+_VIDEO_TRIM_TAILROOM_TARGET_S = 1.5
 # Auto pre-roll (Preflight 110 LD AUTO_PREROLL_V1): when source TTS audio has
 # insufficient leading silence, LatentSync can't lock mouth landmarks and the
 # first phoneme's mouth movement is missing. Fold detection + padding into the
@@ -3520,7 +3527,11 @@ def _trim_video_to_audio(source_video: Path, dst: Path,
     effective_end = trim_end if trim_end is not None else raw_dur
     window_len = max(0.0, effective_end - trim_start)
     remaining = max(0.0, raw_dur - trim_start)
-    target = audio_duration_s + _VIDEO_TRIM_TAILROOM_S
+    # Target the generous 1.5s tail (Kim 2026-05-21); clamp by window + raw.
+    # Beats with audio close to the trim_end ceiling fall back to whatever
+    # residual tail remains. The validation in handle_lipsync_submit_v4
+    # enforces the 0.4s MINIMUM tail before this function runs.
+    target = audio_duration_s + _VIDEO_TRIM_TAILROOM_TARGET_S
     actual = min(target, window_len, remaining)
     print(f"[trim] src={source_video.name} raw={raw_dur:.2f}s "
           f"trim_start={trim_start:.2f} trim_end={effective_end:.2f} "
