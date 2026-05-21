@@ -7565,6 +7565,26 @@ class ProductionHandler(BaseHTTPRequestHandler):
                             # Capture the prior key so Kim can revert by
                             # dragging the old library tile back (no undo btn).
                             _ls["prior_image_key_for_revert"] = _prev_key
+                        # Kim 2026-05-20 10:38 PM: magic_still_path /
+                        # magic_video_path were rendered FROM the prior image.
+                        # When image_path changes, the rendered magic is no
+                        # longer valid for the new image (Preview Still would
+                        # play stale magic over a new image). Clear those refs
+                        # so the priority chain at StoryboardTab.tsx falls
+                        # through to beat.final.file (which Re-render Still
+                        # will update). The .mp4 file on disk is preserved
+                        # in case Kim drags the old image back — but state
+                        # no longer points at it.
+                        if _beat_state.get("magic_still_path"):
+                            _beat_state["magic_still_path"] = None
+                        if _beat_state.get("magic_video_path"):
+                            _beat_state["magic_video_path"] = None
+                        # Same pattern for end_frame_path: was generated using
+                        # the prior start image as OpenAI input. New image
+                        # means the saved end frame is no longer the right
+                        # second image for Kling. Force re-Preview end frame.
+                        if _beat_state.get("end_frame_path"):
+                            _beat_state["end_frame_path"] = None
                 return None
             self.app.state.mutate_video_state(video_role, _persist)
 
