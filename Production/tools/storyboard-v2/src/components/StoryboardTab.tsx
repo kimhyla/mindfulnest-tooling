@@ -208,11 +208,18 @@ type BeatLifecycle =
   | 'final';             // beat.final block present (lipsync done OR use-as-final)
 
 function deriveBeatLifecycle(b: BeatState): BeatLifecycle {
-  // Cursor v8: beat.final block presence IS the "final" signal.
-  if (b.final && b.final.file) return 'final';
+  // Kim 2026-05-20: lipsync_pending MUST take precedence over final. A beat
+  // can have an old final (raw_option from a prior session) while a new
+  // lipsync is in flight — if we return 'final' first, the polling effect
+  // never fires (it's gated on lifecycle === 'lipsync_pending') and the UI
+  // never refetches state to discover the lipsync completed. Symptom: Kim
+  // submits Send for Lipsync, lipsync completes server-side, but no "▶
+  // lipsync" button appears in the UI until manual hard-refresh.
   if (['pending', 'submitted', 'submitting', 'polling'].includes(b.lipsync?.status ?? '')) {
     return 'lipsync_pending';
   }
+  // Cursor v8: beat.final block presence IS the "final" signal.
+  if (b.final && b.final.file) return 'final';
   const hasOptions = !!(b.phase_1?.options && b.phase_1.options.length > 0);
   const hasSelected = b.phase_1?.selected_option !== undefined && hasOptions;
   if (hasSelected) return 'selected';
