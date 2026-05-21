@@ -2717,8 +2717,15 @@ def _directus_lock_acquire(resource_key: str, reason: str = "mutate_state") -> d
                 limit=1,
             )
         except Exception as exc:  # noqa: BLE001
-            print(f"[dlock] WARN lookup failed: {exc}")
-            return None  # Directus unreachable
+            # Kim 2026-05-21: transient API hiccup shouldn't fail the whole
+            # mutate. Retry-until-deadline instead of immediate None — Railway
+            # free-tier Directus regularly takes 3+s on cold reads and a
+            # single dropped lookup was raising "lock unreachable" in the UI.
+            print(f"[dlock] WARN lookup failed (will retry until deadline): {exc}")
+            if time.time() >= deadline:
+                return None
+            time.sleep(DIRECTUS_LOCK_POLL_INTERVAL)
+            continue
 
         if existing:
             row = existing[0]
@@ -2741,8 +2748,11 @@ def _directus_lock_acquire(resource_key: str, reason: str = "mutate_state") -> d
                     })
                     return {"id": row["id"], "resource_key": resource_key, "reused": True}
                 except Exception as exc:  # noqa: BLE001
-                    print(f"[dlock] WARN reentrant heartbeat failed: {exc}")
-                    return None
+                    print(f"[dlock] WARN reentrant heartbeat failed (will retry): {exc}")
+                    if time.time() >= deadline:
+                        return None
+                    time.sleep(DIRECTUS_LOCK_POLL_INTERVAL)
+                    continue
 
             # Held by different machine — wait for expiry or timeout
             if exp > now_utc:
@@ -2766,8 +2776,11 @@ def _directus_lock_acquire(resource_key: str, reason: str = "mutate_state") -> d
                 })
                 return {"id": row["id"], "resource_key": resource_key, "stolen_from": row.get("holder_machine_id")}
             except Exception as exc:  # noqa: BLE001
-                print(f"[dlock] WARN steal-expired failed: {exc}")
-                return None
+                print(f"[dlock] WARN steal-expired failed (will retry): {exc}")
+                if time.time() >= deadline:
+                    return None
+                time.sleep(DIRECTUS_LOCK_POLL_INTERVAL)
+                continue
 
         # No existing row — POST new
         new_exp = now_utc + timedelta(seconds=DIRECTUS_LOCK_TTL_SEC)
@@ -2789,8 +2802,11 @@ def _directus_lock_acquire(resource_key: str, reason: str = "mutate_state") -> d
             msg = str(exc).lower()
             if "unique" in msg or "conflict" in msg or "duplicate" in msg:
                 continue
-            print(f"[dlock] WARN create failed: {exc}")
-            return None
+            print(f"[dlock] WARN create failed (will retry): {exc}")
+            if time.time() >= deadline:
+                return None
+            time.sleep(DIRECTUS_LOCK_POLL_INTERVAL)
+            continue
 
 
 def _directus_lock_release(lock: dict | None) -> None:
