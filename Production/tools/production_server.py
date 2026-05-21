@@ -2668,6 +2668,17 @@ _DIRECTUS_LOCK_CLIENT_SINGLETON: object = None  # lazy-init cache
 _DIRECTUS_LOCK_CLIENT_LOCK = threading.Lock()
 
 
+def _reset_directus_lock_client():
+    """Force the next _get_directus_lock_client() call to rebuild the
+    singleton. Called from _directus_lock_acquire's exception path when the
+    cached client persistently fails (stale auth token, killed connection,
+    etc.) — without reset the retry loop hits the same broken client every
+    iteration and runs out the deadline."""
+    global _DIRECTUS_LOCK_CLIENT_SINGLETON
+    with _DIRECTUS_LOCK_CLIENT_LOCK:
+        _DIRECTUS_LOCK_CLIENT_SINGLETON = None
+
+
 def _get_directus_lock_client():
     """Lazy-create a DirectusClient for lock operations. Returns None on
     failure so callers can degrade (FAIL CLOSED in mutate paths)."""
@@ -2721,10 +2732,17 @@ def _directus_lock_acquire(resource_key: str, reason: str = "mutate_state") -> d
             # mutate. Retry-until-deadline instead of immediate None — Railway
             # free-tier Directus regularly takes 3+s on cold reads and a
             # single dropped lookup was raising "lock unreachable" in the UI.
-            print(f"[dlock] WARN lookup failed (will retry until deadline): {exc}")
+            # Also nuke the singleton — a stale auth token or broken socket on
+            # the cached client would otherwise make every retry hit the same
+            # error and burn the deadline pointlessly.
+            print(f"[dlock] WARN lookup failed (resetting singleton + retrying until deadline): {exc}")
+            _reset_directus_lock_client()
             if time.time() >= deadline:
                 return None
             time.sleep(DIRECTUS_LOCK_POLL_INTERVAL)
+            client = _get_directus_lock_client()
+            if client is None:
+                continue
             continue
 
         if existing:
@@ -2748,10 +2766,14 @@ def _directus_lock_acquire(resource_key: str, reason: str = "mutate_state") -> d
                     })
                     return {"id": row["id"], "resource_key": resource_key, "reused": True}
                 except Exception as exc:  # noqa: BLE001
-                    print(f"[dlock] WARN reentrant heartbeat failed (will retry): {exc}")
+                    print(f"[dlock] WARN reentrant heartbeat failed (resetting + retrying): {exc}")
+                    _reset_directus_lock_client()
                     if time.time() >= deadline:
                         return None
                     time.sleep(DIRECTUS_LOCK_POLL_INTERVAL)
+                    client = _get_directus_lock_client()
+                    if client is None:
+                        continue
                     continue
 
             # Held by different machine — wait for expiry or timeout
@@ -2776,10 +2798,14 @@ def _directus_lock_acquire(resource_key: str, reason: str = "mutate_state") -> d
                 })
                 return {"id": row["id"], "resource_key": resource_key, "stolen_from": row.get("holder_machine_id")}
             except Exception as exc:  # noqa: BLE001
-                print(f"[dlock] WARN steal-expired failed (will retry): {exc}")
+                print(f"[dlock] WARN steal-expired failed (resetting + retrying): {exc}")
+                _reset_directus_lock_client()
                 if time.time() >= deadline:
                     return None
                 time.sleep(DIRECTUS_LOCK_POLL_INTERVAL)
+                client = _get_directus_lock_client()
+                if client is None:
+                    continue
                 continue
 
         # No existing row — POST new
@@ -2802,10 +2828,14 @@ def _directus_lock_acquire(resource_key: str, reason: str = "mutate_state") -> d
             msg = str(exc).lower()
             if "unique" in msg or "conflict" in msg or "duplicate" in msg:
                 continue
-            print(f"[dlock] WARN create failed (will retry): {exc}")
+            print(f"[dlock] WARN create failed (resetting + retrying): {exc}")
+            _reset_directus_lock_client()
             if time.time() >= deadline:
                 return None
             time.sleep(DIRECTUS_LOCK_POLL_INTERVAL)
+            client = _get_directus_lock_client()
+            if client is None:
+                continue
             continue
 
 
