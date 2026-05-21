@@ -286,6 +286,65 @@ def normalize_for_concat(src: Path, dst: Path,
 # ---------------------------------------------------------------------------
 # Trim
 # ---------------------------------------------------------------------------
+def translate_trim_for_source(
+    beat: dict,
+    source_file_name: str,
+    source_file_path: Path,
+    trim_start: float | None,
+    trim_end: float | None,
+) -> tuple[float | None, float | None]:
+    """Translate phase_1 trim_start/trim_end from the ORIGINAL TTS timeline
+    into the ACTUAL source file's timeline.
+
+    Why: trim_start/trim_end were authored against the original Kling clip
+    (5s or 10s duration matching trim window). After lipsync, the source file
+    becomes the lipsync mp4, which has a DIFFERENT timeline — ByteDance
+    prepends preroll and we extend the tail by 1.5s. Applying the absolute
+    trim_end directly to the lipsync mp4 cuts off speech mid-word (Kim
+    symptom 2026-05-21 on beat_05: trim_end=3.35 hit '...mindfuln-' instead
+    of '...mindfulnest' because lipsync mp4 was 4.36s long and speech ran
+    ~0.4s → ~3.76s within the mp4 timeline).
+
+    Translation rules (lipsync mp4 case ONLY — raw_option / still_image
+    finals keep their original timeline since trim_end was authored against
+    the same source):
+
+      back_offset_s = audio_duration_s - trim_end_absolute     # user input
+      new_trim_end  = lipsync_mp4_duration - back_offset_s
+      trim_start stays as-is (front offset semantics match the mp4's
+      leading edge well enough; if Kim ever needs front-trim translation
+      we can add it under the same code path).
+
+    Returns (trim_start, translated_trim_end). When translation isn't
+    applicable (no lipsync, missing audio_duration_s, source isn't the
+    lipsync mp4), returns the inputs unchanged.
+    """
+    if trim_end is None:
+        return (trim_start, None)
+    lipsync_block = (beat or {}).get("lipsync") or {}
+    lipsync_file = lipsync_block.get("file")
+    if not lipsync_file:
+        return (trim_start, trim_end)
+    if Path(source_file_name).name != Path(lipsync_file).name:
+        return (trim_start, trim_end)
+    if lipsync_block.get("status") != "completed":
+        return (trim_start, trim_end)
+    audio_dur = beat.get("audio_duration_s")
+    try:
+        audio_dur_f = float(audio_dur) if audio_dur is not None else None
+    except (TypeError, ValueError):
+        audio_dur_f = None
+    if audio_dur_f is None or audio_dur_f <= 0:
+        return (trim_start, trim_end)
+    try:
+        lipsync_dur = ffprobe_duration(source_file_path)
+    except Exception:
+        return (trim_start, trim_end)
+    back_offset = max(0.0, audio_dur_f - float(trim_end))
+    new_end = max(float(trim_start or 0.0) + 0.01, lipsync_dur - back_offset)
+    return (trim_start, new_end)
+
+
 def trim_normalized(src: Path, dst: Path,
                     trim_start: float | None,
                     trim_end: float | None,

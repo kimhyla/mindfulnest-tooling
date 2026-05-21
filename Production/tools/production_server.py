@@ -6557,6 +6557,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 normalize_for_concat,
                 render_xfade_pair,
                 resolve_pair_fades,
+                translate_trim_for_source,
                 trim_body,
                 trim_normalized,
             )
@@ -6682,9 +6683,19 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     if (not norm_path.is_file()
                         or src_path.stat().st_mtime > norm_path.stat().st_mtime):
                         normalize_for_concat(src_path, norm_path)
+                    # Kim 2026-05-21: when src is a lipsync mp4, absolute
+                    # trim_end (authored on original audio timeline) cuts off
+                    # mid-word because the lipsync timeline includes preroll
+                    # + extended tail. Translate back-trim into the lipsync
+                    # mp4's timeline before trimming.
+                    _ts_xlat, _te_xlat = translate_trim_for_source(
+                        beats.get(bid) or {},
+                        src_path.name, src_path,
+                        meta.get("trim_start"), meta.get("trim_end"),
+                    )
                     trim_normalized(
                         norm_path, fpath,
-                        meta.get("trim_start"), meta.get("trim_end"),
+                        _ts_xlat, _te_xlat,
                         audio_delay=float(meta.get("audio_delay") or 0.0),
                     )
                     sidecar_payload = {
@@ -9792,6 +9803,7 @@ body {{padding-top:44px!important;}}
                 render_xfade_pair,
                 resolve_beat_file,
                 resolve_pair_fades,
+                translate_trim_for_source,
                 trim_body,
                 trim_normalized,
             )
@@ -9965,9 +9977,16 @@ body {{padding-top:44px!important;}}
                     trimmed = trimmed_dir / (
                         f"{bid}_trimmed_{src_key}_{ts_ms}_{te_ms}_ad{ad_ms}_{_recipe6}.mp4"
                     )
+                    # Kim 2026-05-21 — translate lipsync absolute trim_end
+                    # into the lipsync mp4's timeline (see translate_trim_for_source).
+                    _ts_xlat, _te_xlat = translate_trim_for_source(
+                        beats.get(bid) or {},
+                        src.name, src,
+                        meta.get("trim_start"), meta.get("trim_end"),
+                    )
                     duration = trim_normalized(
                         norm, trimmed,
-                        meta.get("trim_start"), meta.get("trim_end"),
+                        _ts_xlat, _te_xlat,
                         audio_delay=ad_s,
                     )
                     trimmed_files[bid] = trimmed
