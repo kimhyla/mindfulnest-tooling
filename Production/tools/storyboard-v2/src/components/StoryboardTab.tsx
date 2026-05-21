@@ -1764,7 +1764,14 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
     // Apply trim to lipsync preview only (audio+video baked into one file).
     // For opt N + still previews, audio and video are separate elements and
     // the existing aud.currentTime=0 reset path doesn't carry trim semantics.
-    let trimTimeUpdateHandler: (() => void) | null = null;
+    //
+    // Kim 2026-05-21: switched from `timeupdate` listener to RAF polling.
+    // `timeupdate` fires only every 200-500ms per browser spec, so back-trim
+    // values <200ms slip past — we'd hit the natural file end before the
+    // listener fired. RAF runs at display refresh (~16ms), so sub-100ms
+    // back-trim windows are honored precisely.
+    let rafId: number | null = null;
+    let onPlayListener: (() => void) | null = null;
     if (isLipsyncPreview) {
       if (trimStartSec > 0) {
         try { vid.currentTime = trimStartSec; } catch { /* defensive */ }
@@ -1784,17 +1791,27 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
           }
           const pauseAt = Math.max(trimStartSec + 0.01, dur - backOffsetSec);
           console.log(`[lipsync-trim] ${beatId}: audioDur=${audioDur} trimEnd=${trimEndSec} back_offset=${backOffsetSec.toFixed(3)}s lipsync_dur=${dur.toFixed(3)}s pause_at=${pauseAt.toFixed(3)}s`);
-          trimTimeUpdateHandler = () => {
+          const tick = () => {
+            if (!vid || vid.paused || vid.ended) {
+              rafId = null;
+              return;
+            }
             if (vid.currentTime >= pauseAt) {
               console.log(`[lipsync-trim] ${beatId}: pausing at ${vid.currentTime.toFixed(3)}s (target ${pauseAt.toFixed(3)}s)`);
               try { vid.pause(); } catch { /* defensive */ }
-              if (trimTimeUpdateHandler) {
-                vid.removeEventListener('timeupdate', trimTimeUpdateHandler);
-                trimTimeUpdateHandler = null;
-              }
+              rafId = null;
+              return;
             }
+            rafId = requestAnimationFrame(tick);
           };
-          vid.addEventListener('timeupdate', trimTimeUpdateHandler);
+          onPlayListener = () => {
+            if (rafId === null) rafId = requestAnimationFrame(tick);
+          };
+          vid.addEventListener('play', onPlayListener);
+          // Kick off immediately if already playing (race with safePlay).
+          if (!vid.paused) {
+            if (rafId === null) rafId = requestAnimationFrame(tick);
+          }
         };
         if (Number.isFinite(vid.duration) && vid.duration > 0) {
           computeAndApplyBack();
@@ -1814,13 +1831,15 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
         }, ms);
         return () => {
           window.clearTimeout(t);
-          if (trimTimeUpdateHandler) vid.removeEventListener('timeupdate', trimTimeUpdateHandler);
+          if (rafId !== null) cancelAnimationFrame(rafId);
+          if (onPlayListener) vid.removeEventListener('play', onPlayListener);
         };
       }
       aud.play().catch(() => {});
     }
     return () => {
-      if (trimTimeUpdateHandler) vid.removeEventListener('timeupdate', trimTimeUpdateHandler);
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      if (onPlayListener) vid.removeEventListener('play', onPlayListener);
     };
   }, [previewOptIdx, beat.phase_1?.audio_delay, beat.audio_delay, beat.delay_seconds, beat.phase_1?.trim_start, beat.phase_1?.trim_end, beat.trim_in, beat.trim_out, beat.audio_duration_s, safePlay, handlePlayRejection]);
 
