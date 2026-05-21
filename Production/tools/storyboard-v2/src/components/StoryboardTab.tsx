@@ -1671,6 +1671,16 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
         ?? beat.delay_seconds
         ?? 0,
     ) || 0;
+    // Kim 2026-05-21: trim must apply on lipsync playback — Kim's mental model
+    // is that ▶ lipsync plays the canonical Stitcher output. Stored as absolute
+    // trim_start (seek-to) + trim_end (pause-at) in seconds. Match the
+    // Preview Trim handler's semantics for consistency.
+    const trimStartSec = Number(beat.phase_1?.trim_start ?? beat.trim_in ?? 0) || 0;
+    const trimEndRaw = beat.phase_1?.trim_end ?? beat.trim_out;
+    const trimEndSec: number | null =
+      trimEndRaw === null || trimEndRaw === undefined
+        ? null
+        : (Number.isFinite(Number(trimEndRaw)) ? Number(trimEndRaw) : null);
     if (!isLipsyncPreview) {
       if (!aud) return;
       aud.currentTime = 0;
@@ -1680,6 +1690,29 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
       : previewOptIdx === -1
         ? 'Still preview'
         : 'Animation preview';
+    // Apply trim to lipsync preview only (audio+video baked into one file).
+    // For opt N + still previews, audio and video are separate elements and
+    // the existing aud.currentTime=0 reset path doesn't carry trim semantics.
+    let trimTimeUpdateHandler: (() => void) | null = null;
+    if (isLipsyncPreview) {
+      if (trimStartSec > 0) {
+        try { vid.currentTime = trimStartSec; } catch { /* defensive */ }
+      } else {
+        try { vid.currentTime = 0; } catch { /* defensive */ }
+      }
+      if (trimEndSec !== null && trimEndSec > trimStartSec) {
+        trimTimeUpdateHandler = () => {
+          if (vid.currentTime >= trimEndSec) {
+            try { vid.pause(); } catch { /* defensive */ }
+            if (trimTimeUpdateHandler) {
+              vid.removeEventListener('timeupdate', trimTimeUpdateHandler);
+              trimTimeUpdateHandler = null;
+            }
+          }
+        };
+        vid.addEventListener('timeupdate', trimTimeUpdateHandler);
+      }
+    }
     safePlay(vid).catch((err) => handlePlayRejection(err, 'effect-play', toastCtx));
     if (!isLipsyncPreview && aud) {
       if (audioDelaySec > 0) {
@@ -1689,11 +1722,15 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
         }, ms);
         return () => {
           window.clearTimeout(t);
+          if (trimTimeUpdateHandler) vid.removeEventListener('timeupdate', trimTimeUpdateHandler);
         };
       }
       aud.play().catch(() => {});
     }
-  }, [previewOptIdx, beat.phase_1?.audio_delay, beat.audio_delay, beat.delay_seconds, safePlay, handlePlayRejection]);
+    return () => {
+      if (trimTimeUpdateHandler) vid.removeEventListener('timeupdate', trimTimeUpdateHandler);
+    };
+  }, [previewOptIdx, beat.phase_1?.audio_delay, beat.audio_delay, beat.delay_seconds, beat.phase_1?.trim_start, beat.phase_1?.trim_end, beat.trim_in, beat.trim_out, safePlay, handlePlayRejection]);
 
   useEffect(() => {
     return () => {
