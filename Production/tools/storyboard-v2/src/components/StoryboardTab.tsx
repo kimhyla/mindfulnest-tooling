@@ -370,21 +370,14 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
   // bypassed the cropping step — Kim's flow requires the source to be
   // 4:3 cropped first (in Cropper / library). Now Kim uploads to library →
   // crops → drags the cropped tile here.
-  const _uploadEndFrameBytes = async (
-    bytes: Uint8Array,
+  const _uploadEndFrameFromB64 = async (
+    fileB64: string,
     mime: string,
     sourceLabel: string,
   ) => {
     if (pendingEndFrameOp) return;
     setPendingEndFrameOp(true);
     try {
-      // Base64 encode (chunked to avoid stack overflow on big buffers).
-      let binary = '';
-      const chunkSize = 0x8000;
-      for (let i = 0; i < bytes.length; i += chunkSize) {
-        binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunkSize)));
-      }
-      const fileB64 = btoa(binary);
       const resp = await fetch(ENDPOINTS.beat_upload_end_frame, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -436,6 +429,8 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
         return;
       }
       try {
+        // /api/cr/full returns JSON {ok, data_uri: "data:image/webp;base64,<...>"}
+        // — NOT raw binary. Parse the data URI to extract mime + base64.
         const resp = await fetch(
           `${SERVER_BASE}/api/cr/full?abs_path=${encodeURIComponent(absPath)}`,
         );
@@ -447,10 +442,30 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
           });
           return;
         }
-        const blob = await resp.blob();
-        const mime = blob.type || 'image/webp';
-        const buf = new Uint8Array(await blob.arrayBuffer());
-        await _uploadEndFrameBytes(buf, mime, payload.lib_key);
+        const data = await resp.json().catch(() => ({}));
+        const dataUri: string | undefined = data?.data_uri;
+        if (!dataUri || !dataUri.startsWith('data:')) {
+          pushToast({
+            kind: 'error',
+            message: `Library tile fetch returned unexpected payload (no data_uri).`,
+            source: 'end-frame-drop-noduri',
+          });
+          return;
+        }
+        // Format: "data:image/webp;base64,<b64>"
+        const commaIdx = dataUri.indexOf(',');
+        const headerPart = commaIdx >= 0 ? dataUri.slice(5, commaIdx) : 'image/webp;base64';
+        const fileB64 = commaIdx >= 0 ? dataUri.slice(commaIdx + 1) : '';
+        const mime = headerPart.split(';')[0] || 'image/webp';
+        if (!fileB64) {
+          pushToast({
+            kind: 'error',
+            message: 'Library tile data_uri had no base64 body.',
+            source: 'end-frame-drop-empty',
+          });
+          return;
+        }
+        await _uploadEndFrameFromB64(fileB64, mime, payload.lib_key);
       } catch (err) {
         pushToast({
           kind: 'error',
