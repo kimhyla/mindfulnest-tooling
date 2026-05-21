@@ -1561,11 +1561,14 @@ def handle_beat_trim(h, body: dict)-> None:
 
 
 def handle_beat_undo_final(h, body: dict) -> None:
-    """Clear Ken Burns still-as-final on a beat (LD-761 undo-final v1).
+    """Clear the `final` block on a beat regardless of source type.
 
     POST {beat|beat_id, scope_event_id, scope_video_role}
-    Only beats with final.source == 'still_image' are in scope; other final
-    sources return NOTHING_TO_UNDO.
+    Kim 2026-05-20 follow-up: originally LD-761 only allowed undo for
+    still_image finals. Broadened to all source types (raw_option, lipsync,
+    still_image) so Kim can un-finalize ANY beat and re-pick. The underlying
+    media files (option mp4s, lipsync mp4, still mp4) stay on disk; only the
+    `final` block on the beat is removed.
     """
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
         return
@@ -1599,11 +1602,15 @@ def handle_beat_undo_final(h, body: dict) -> None:
             outcome["status"] = "missing"
             return
         final = b.get("final") or {}
-        if not final or final.get("source") != "still_image":
+        if not final:
             outcome["status"] = "nothing"
             return
+        # Kim 2026-05-20 follow-up: broadened from still_image-only to all
+        # source types. raw_option / lipsync / still_image — any final can
+        # be undone (the underlying mp4 stays on disk).
         b.pop("final", None)
         outcome["status"] = "ok"
+        outcome["prior_source"] = final.get("source")
 
     h.app.state.mutate_video_state(video_role, mutate)
     if outcome["status"] == "missing":

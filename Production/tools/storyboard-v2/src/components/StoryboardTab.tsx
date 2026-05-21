@@ -708,6 +708,14 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
       { key: 'status', equals: 'ok' },
       { key: 'beat', type: 'string' },
     ]);
+  // Kim 2026-05-20 follow-up: explicit "Use Lipsync as Final" — sets
+  // final.source = 'lipsync', final.file = lipsync.file. Server-side support
+  // added in _handle_use_as_final via body.source='lipsync'.
+  const onUseLipsyncAsFinal = () =>
+    runMutation('Use Lipsync as Final', 'beat_use_as_final', { source: 'lipsync' }, [
+      { key: 'status', equals: 'ok' },
+      { key: 'beat', type: 'string' },
+    ]);
   const onUseStillAsFinal = () => {
     const body: Record<string, unknown> = {};
     const trimmed = holdDuration.trim();
@@ -934,7 +942,15 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
                   onClick={guardedClick('Select option', () => onSelectOption(oi))}
                   aria-disabled={busy !== null}
                 >
-                  opt {oi}{selectedOption === oi ? ' ✓' : ''}{fileMissing ? ' (archived)' : ''}
+                  opt {oi}{selectedOption === oi ? ' ✓' : ''}{fileMissing ? ' (archived)' : ''}{
+                    /* Kim 2026-05-20 follow-up: 🏁 FINAL badge next to the
+                       option that is currently the Stitcher's source video
+                       for this beat. final.source must be raw_option AND
+                       final.source_option === oi. */
+                    beat.final?.source === 'raw_option' && beat.final?.source_option === oi
+                      ? ' 🏁 FINAL'
+                      : ''
+                  }
                 </button>
                 <button
                   type="button"
@@ -1226,7 +1242,13 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
                   ? (previewOptIdx === 0 ? '⏸ ⚠ stale lipsync' : '▶ ⚠ stale lipsync')
                   : previewOptIdx === 0
                   ? '⏸ lipsync'
-                  : '▶ lipsync'}
+                  : '▶ lipsync'}{
+                  /* Kim 2026-05-20: 🏁 FINAL badge when the Stitcher's
+                     final source is this lipsync mp4. */
+                  beat.final?.source === 'lipsync' && beat.final?.file === beat.lipsync?.file
+                    ? ' 🏁 FINAL'
+                    : ''
+                }
               </button>
             );
           })()
@@ -1241,6 +1263,39 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
             title="Mark current selection as final without lipsync (Spec A)"
           >
             {busy === 'Use as Final' ? <><Spinner size="sm" inline /> …</> : '✓ Use as Final'}
+          </button>
+        ) : null}
+        {/* Kim 2026-05-20 follow-up: "Use Lipsync as Final" button — appears
+            whenever a completed lipsync exists AND final isn't already lipsync.
+            Lets Kim promote the lipsync mp4 to be the canonical final video
+            for the Stitcher (was previously not possible — Use as Final
+            always picked the selected raw_option). */}
+        {beat.lipsync?.status === 'completed' && beat.lipsync?.file && beat.final?.source !== 'lipsync' ? (
+          <button
+            type="button"
+            class="mn-btn mn-btn-small mn-btn-primary"
+            data-testid={`beat-${index}-use-lipsync-as-final`}
+            onClick={guardedClick('Use Lipsync as Final', onUseLipsyncAsFinal)}
+            aria-disabled={busy !== null}
+            title="Promote the lipsync mp4 to be the Stitcher's final source for this beat (overwrites any raw_option/still_image final)."
+          >
+            {busy === 'Use Lipsync as Final' ? <><Spinner size="sm" inline /> …</> : '👄 Use Lipsync as Final'}
+          </button>
+        ) : null}
+        {/* Kim 2026-05-20 follow-up: Undo Final is now allowed for ALL final
+            source types (raw_option / lipsync / still_image), not just still.
+            Server endpoint broadened to match. The underlying mp4 stays on
+            disk; only the beat.final block is cleared. */}
+        {lifecycle === 'final' && beat.final?.source !== 'still_image' ? (
+          <button
+            type="button"
+            class="mn-btn mn-btn-small"
+            data-testid={`beat-${index}-undo-final-generic`}
+            onClick={guardedClick('Undo Final', onUndoFinal)}
+            aria-disabled={busy !== null}
+            title={`Clear the final block (current source: ${beat.final?.source ?? '?'}). The mp4 stays on disk — you can re-finalize via Use as Final / Use Lipsync as Final / Still as Final.`}
+          >
+            {busy === 'Undo Final' ? <><Spinner size="sm" inline /> …</> : '↩ Undo Final'}
           </button>
         ) : null}
         {(lifecycle !== 'final' || beat.final?.source === 'still_image') ? (

@@ -7952,43 +7952,84 @@ class ProductionHandler(BaseHTTPRequestHandler):
                        retry_safe=False,
                    )
 
-        p1 = beat.get("phase_1", {})
-        opts = p1.get("options", [])
-        sel = p1.get("selected_option", 1)
-        sel_idx = sel - 1  # selected_option is 1-indexed
-        if not opts or not (0 <= sel_idx < len(opts)):
+        # Kim 2026-05-20 follow-up: add explicit source mode so Kim can promote
+        # the LIPSYNC mp4 as the final (was previously hardcoded to raw_option).
+        # source='raw_option' (default) — finalize the currently selected_option
+        # source='lipsync'              — finalize beat.lipsync.file
+        requested_source = (body.get("source") or "raw_option").strip().lower()
+        if requested_source not in ("raw_option", "lipsync"):
             return self._send_error_v59(
                        400,
-                       error_code="GENERIC_ERROR",
-                       error_message=f"no option at index {sel_idx} (selected_option={sel})",
+                       error_code="INVALID_SOURCE",
+                       error_message=f"source must be 'raw_option' or 'lipsync', got {requested_source!r}",
                        retry_safe=False,
                    )
 
-        opt_file = opts[sel_idx].get("file", "")
-        if not opt_file:
-            return self._send_error_v59(
-                       400,
-                       error_code="SELECTED_OPTION_HAS_NO_FILE",
-                       error_message="selected option has no file",
-                       retry_safe=False,
-                   )
+        if requested_source == "lipsync":
+            ls = beat.get("lipsync") or {}
+            ls_file = ls.get("file") or ""
+            if ls.get("status") != "completed" or not ls_file:
+                return self._send_error_v59(
+                           400,
+                           error_code="LIPSYNC_NOT_AVAILABLE",
+                           error_message="cannot use lipsync as final — no completed lipsync.file on this beat",
+                           retry_safe=False,
+                       )
+            # lipsync mp4 lives in event_dir/animation_clips/ NOT clips_dir
+            abs_path = str(self.app.event_dir / "animation_clips" / ls_file)
+            if not os.path.isfile(abs_path):
+                return self._send_error_v59(
+                           400,
+                           error_code="LIPSYNC_FILE_MISSING",
+                           error_message=f"lipsync file not found on disk: {ls_file}",
+                           retry_safe=False,
+                       )
+            final_block = {
+                "source": "lipsync",
+                "source_option": ls.get("source_option"),
+                "file": ls_file,
+                "approved_at": datetime.now(timezone.utc).isoformat(),
+            }
+            opt_file = ls_file  # for the sidecar/log path below
+        else:
+            p1 = beat.get("phase_1", {})
+            opts = p1.get("options", [])
+            sel = p1.get("selected_option", 1)
+            sel_idx = sel - 1  # selected_option is 1-indexed
+            if not opts or not (0 <= sel_idx < len(opts)):
+                return self._send_error_v59(
+                           400,
+                           error_code="GENERIC_ERROR",
+                           error_message=f"no option at index {sel_idx} (selected_option={sel})",
+                           retry_safe=False,
+                       )
 
-        abs_path = str(self.app.state.clips_dir / opt_file)
-        if not os.path.isfile(abs_path):
-            return self._send_error_v59(
-                       400,
-                       error_code="GENERIC_ERROR",
-                       error_message=f"clip file not found: {opt_file}",
-                       retry_safe=False,
-                   )
+            opt_file = opts[sel_idx].get("file", "")
+            if not opt_file:
+                return self._send_error_v59(
+                           400,
+                           error_code="SELECTED_OPTION_HAS_NO_FILE",
+                           error_message="selected option has no file",
+                           retry_safe=False,
+                       )
 
-        # 1. Write final block to production_state.json under the requested role
-        final_block = {
-            "source": "raw_option",
-            "source_option": sel,
-            "file": opt_file,
-            "approved_at": datetime.now(timezone.utc).isoformat(),
-        }
+            abs_path = str(self.app.state.clips_dir / opt_file)
+            if not os.path.isfile(abs_path):
+                return self._send_error_v59(
+                           400,
+                           error_code="GENERIC_ERROR",
+                           error_message=f"clip file not found: {opt_file}",
+                           retry_safe=False,
+                       )
+
+            # 1. Write final block to production_state.json under the requested role
+            final_block = {
+                "source": "raw_option",
+                "source_option": sel,
+                "file": opt_file,
+                "approved_at": datetime.now(timezone.utc).isoformat(),
+            }
+
         # S5.5d: writes to videos[scope_video_role].beats[bid].final.
         def _mutate(s):
             role_beats = s.setdefault("videos", {}).setdefault(
