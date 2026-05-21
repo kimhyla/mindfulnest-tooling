@@ -1356,7 +1356,12 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
               ? "Preview the magic-on-still composite (✨ magic_still_path)"
               : "Preview the rendered Ken Burns still-as-final MP4"}
           >
-            {previewOptIdx === -1 ? '⏸ Preview Still' : '▶ Preview Still'}
+            {previewOptIdx === -1 ? '⏸ Preview Still' : '▶ Preview Still'}{
+              /* Kim 2026-05-20: 🏁 FINAL badge when the Stitcher's final source
+                 is this still-image render. Parity with raw_option + lipsync
+                 cases above — every final source type shows the badge. */
+              beat.final?.source === 'still_image' ? ' 🏁 FINAL' : ''
+            }
           </button>
         ) : null}
         {/* Bug-B2 (spec §2 Topic-2): ✨ magic badge — appears next to Preview Still
