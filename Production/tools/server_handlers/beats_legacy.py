@@ -1624,7 +1624,7 @@ def handle_beat_undo_final(h, body: dict) -> None:
         return h._send_error_v59(
             400,
             error_code="NOTHING_TO_UNDO",
-            error_message="no still_image final to undo",
+            error_message="beat has no final block to undo",
             retry_safe=False,
         )
 
