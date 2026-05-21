@@ -318,7 +318,6 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
   // pendingEndFrameOp keyed by beat_id per cursor R2 (multiple beats may be
   // in-flight simultaneously; using boolean only-while-this-beat-pending).
   const [pendingEndFrameOp, setPendingEndFrameOp] = useState<boolean>(false);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const _endFrameOk = !!(beat.end_frame_path && beat.end_frame_path_exists !== false);
   const _endFrameThumbUrl = _endFrameOk
     ? `${SERVER_BASE}/files?path=${encodeURIComponent(`Production/${eventId}/end_frames/${beat.end_frame_path}`)}&v=${beat._version ?? 0}`
@@ -366,29 +365,26 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
     }
   };
 
-  const _onUploadEndFrame = () => {
-    fileInputRef.current?.click();
-  };
-
-  const _onUploadFileChange = async (e: Event) => {
-    const input = e.target as HTMLInputElement;
-    const file = input.files?.[0];
-    if (!file) return;
+  // Kim 2026-05-21: end-frame upload moved from a file-picker button to a
+  // drop zone that ONLY accepts library tiles. The prior file-picker
+  // bypassed the cropping step — Kim's flow requires the source to be
+  // 4:3 cropped first (in Cropper / library). Now Kim uploads to library →
+  // crops → drags the cropped tile here.
+  const _uploadEndFrameBytes = async (
+    bytes: Uint8Array,
+    mime: string,
+    sourceLabel: string,
+  ) => {
     if (pendingEndFrameOp) return;
-    // Reset input value so picking the same file twice still triggers change
-    input.value = '';
     setPendingEndFrameOp(true);
     try {
-      const dataUrl: string = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result as string);
-        reader.onerror = () => reject(new Error('FileReader failed'));
-        reader.readAsDataURL(file);
-      });
-      // Strip data:image/...;base64, prefix
-      const commaIdx = dataUrl.indexOf(',');
-      const fileB64 = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl;
-      const mime = file.type || 'image/png';
+      // Base64 encode (chunked to avoid stack overflow on big buffers).
+      let binary = '';
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunkSize)));
+      }
+      const fileB64 = btoa(binary);
       const resp = await fetch(ENDPOINTS.beat_upload_end_frame, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -411,7 +407,7 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
       }
       pushToast({
         kind: 'success',
-        message: `End frame uploaded → ${data.end_frame_path} (${data.size_bytes} B)`,
+        message: `End frame ← ${sourceLabel} (${data.size_bytes} B)`,
         source: 'upload-end-frame',
       });
       setEndFrameAddendum('');
@@ -426,6 +422,45 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
       setPendingEndFrameOp(false);
     }
   };
+
+  const _endFrameDropHandlers = makeDropTarget(
+    async (payload) => {
+      if (payload.kind !== 'lib-image') return;
+      const absPath = payload.abs_path;
+      if (!absPath) {
+        pushToast({
+          kind: 'error',
+          message: 'Drop a cropped library tile (master tiles aren\'t cropped to 4:3).',
+          source: 'end-frame-drop-no-path',
+        });
+        return;
+      }
+      try {
+        const resp = await fetch(
+          `${SERVER_BASE}/api/cr/full?abs_path=${encodeURIComponent(absPath)}`,
+        );
+        if (!resp.ok) {
+          pushToast({
+            kind: 'error',
+            message: `Couldn't read library tile (HTTP ${resp.status})`,
+            source: 'end-frame-drop-fetch',
+          });
+          return;
+        }
+        const blob = await resp.blob();
+        const mime = blob.type || 'image/webp';
+        const buf = new Uint8Array(await blob.arrayBuffer());
+        await _uploadEndFrameBytes(buf, mime, payload.lib_key);
+      } catch (err) {
+        pushToast({
+          kind: 'error',
+          message: `End-frame drop failed: ${(err as Error).message}`,
+          source: 'end-frame-drop-error',
+        });
+      }
+    },
+    (p) => p.kind === 'lib-image',
+  );
 
   // LD-739/740 GREENFIELD: silent-click-on-busy-button class kill.
   // Synchronous handler throws are caught and surfaced as an error toast —
@@ -1018,24 +1053,33 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
                   ? '🔄 Re-generate end frame'
                   : '✏ Generate end frame'}
           </button>
-          <button
-            type="button"
-            class="mn-btn mn-btn-small"
-            data-testid={`beat-${index}-upload-end-frame`}
-            onClick={_onUploadEndFrame}
-            disabled={pendingEndFrameOp || busy !== null}
-            title="Upload your own end frame PNG (from chatgpt.com or anywhere). Free."
+          <div
+            class={`mn-end-frame-drop mn-drop-target${pendingEndFrameOp ? ' is-busy' : ''}`}
+            data-testid={`beat-${index}-end-frame-drop`}
+            title="Drag a 4:3-cropped library tile here to use it as the end frame. (Upload to Library → Crop in Cropper → drag the cropped tile here.) Free."
+            onDragOver={_endFrameDropHandlers.onDragOver}
+            onDragLeave={_endFrameDropHandlers.onDragLeave}
+            onDrop={_endFrameDropHandlers.onDrop}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              minWidth: '140px',
+              padding: '6px 10px',
+              border: '1.5px dashed #4a8a4a',
+              borderRadius: '4px',
+              fontSize: '11px',
+              color: '#a8d8a8',
+              background: 'rgba(74, 138, 74, 0.08)',
+              cursor: 'copy',
+            }}
           >
-            📤 Upload end frame
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/png,image/jpeg,image/jpg,image/webp"
-            style={{ display: 'none' }}
-            onChange={_onUploadFileChange}
-            data-testid={`beat-${index}-end-frame-file-input`}
-          />
+            {pendingEndFrameOp ? (
+              <><Spinner size="sm" inline /> …</>
+            ) : (
+              '📥 Drop library tile (4:3) here'
+            )}
+          </div>
           <input
             type="text"
             class="mn-beat-trim-input"
@@ -1059,7 +1103,7 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
               target="_blank"
               rel="noopener noreferrer"
               data-testid={`beat-${index}-end-frame-thumb-link`}
-              title={`Current end frame: ${beat.end_frame_path}\nHover to enlarge · Click to open full-size in a new tab.\nTo replace: edit the addendum field + click '🔄 Re-generate end frame' (or '📤 Upload end frame' to use your own PNG).`}
+              title={`Current end frame: ${beat.end_frame_path}\nHover to enlarge · Click to open full-size in a new tab.\nTo replace: edit the addendum field + click '🔄 Re-generate end frame' (or drag a 4:3-cropped library tile onto the drop zone to use your own).`}
               style={{
                 position: 'relative',
                 display: 'inline-block',
