@@ -1174,12 +1174,22 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
             onClick={guardedClick('Lipsync', onLipsync)}
             aria-disabled={busy !== null}
             disabled={lifecycle === 'lipsync_pending'}
-            title="Send selected option for ByteDance lipsync"
+            title={
+              beat.lipsync?.file
+                ? "Re-send the selected option to ByteDance lipsync (replaces the current lipsync render)"
+                : "Send the selected option to ByteDance lipsync (generates the first lipsync mp4 for this beat)"
+            }
           >
             {lifecycle === 'lipsync_pending' ? (
               <><Spinner size="sm" inline /> in progress</>
             ) : (
-              busy === 'Lipsync' ? <><Spinner size="sm" inline /> …</> : (lifecycle === 'final' ? '👄 Resend Lipsync' : '👄 Lipsync')
+              busy === 'Lipsync' ? <><Spinner size="sm" inline /> …</> : (
+                // Kim 2026-05-20 follow-up: label based on lipsync.file existence,
+                // NOT lifecycle === 'final'. A beat can be in 'final' state via
+                // raw_option without ever having been lipsynced (Kim's beat_03
+                // case). Old logic showed "Resend Lipsync" misleadingly.
+                beat.lipsync?.file ? '👄 Resend Lipsync' : '👄 Send for Lipsync'
+              )
             )}
           </button>
         ) : null}
@@ -1330,11 +1340,41 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
             ✨ magic·v
           </span>
         ) : null}
-        {lifecycle === 'final' ? (
-          <span class="mn-dim" data-testid={`beat-${index}-final-marker`}>
-            ✓ final ({beat.final?.source ?? '?'})
-          </span>
-        ) : null}
+        {lifecycle === 'final' ? (() => {
+          // Kim 2026-05-20 follow-up: when a beat's image_path changes via
+          // drag-drop AFTER a still_image final was rendered, the final.image_path
+          // still points at the OLD image — final.file is now STALE relative
+          // to the assigned image. Surface that explicitly so Kim knows to click
+          // Re-render Still. Path-stem comparison (both sides are .png base names).
+          const _stemOf = (p?: string) => p ? (p.split('/').pop() || '').replace(/\.(png|webp|jpe?g)$/i, '') : '';
+          const _currentStem = _stemOf(beat.image_path);
+          const _finalStem = _stemOf(beat.final?.image_path);
+          const _finalIsStillImageStale = (
+            beat.final?.source === 'still_image' &&
+            _finalStem && _currentStem && _finalStem !== _currentStem
+          );
+          // Magic_still goes stale by the same mechanism — the magic was rendered
+          // from a specific start image. If image changed, magic is stale.
+          // (We don't have the exact reference, but if magic_still_path exists
+          // AND final is still_image stale, the magic was rendered from the
+          // same prior image — same staleness window.)
+          return (
+            <span
+              class="mn-dim"
+              data-testid={`beat-${index}-final-marker`}
+              title={
+                _finalIsStillImageStale
+                  ? `STALE: the rendered final mp4 was made from "${_finalStem}.png" but the current assigned image is "${_currentStem}". Click Re-render Still to refresh. This file (beat.final.file) is what the Stitcher will compose into the video — refresh before stitching.`
+                  : `This is what the Stitcher will compose into the video. Source: ${beat.final?.source ?? '?'}. File: ${beat.final?.file ?? '?'}.`
+              }
+              style={_finalIsStillImageStale ? { color: '#d8a020', fontWeight: 'bold' } : undefined}
+            >
+              {_finalIsStillImageStale
+                ? `⚠ stale final (${beat.final?.source ?? '?'} — re-render)`
+                : `✓ final (${beat.final?.source ?? '?'})`}
+            </span>
+          );
+        })() : null}
       </span>
 
       {/* Trim / Delay group — LD-756: seconds-from-front + seconds-from-end */}
