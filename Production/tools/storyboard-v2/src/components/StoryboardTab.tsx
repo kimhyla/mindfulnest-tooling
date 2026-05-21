@@ -1673,14 +1673,26 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
     ) || 0;
     // Kim 2026-05-21: trim must apply on lipsync playback — Kim's mental model
     // is that ▶ lipsync plays the canonical Stitcher output. Stored as absolute
-    // trim_start (seek-to) + trim_end (pause-at) in seconds. Match the
-    // Preview Trim handler's semantics for consistency.
+    // trim_start (seek-to) + trim_end (pause-at) in the ORIGINAL audio
+    // timeline. The lipsync mp4 has a DIFFERENT timeline (ByteDance preroll
+    // padding + our 1.5s tail extension), so absolute trim_end can't be
+    // applied directly to vid.currentTime — that cuts off mid-word.
+    //
+    // For lipsync we translate back-trim into the lipsync mp4 timeline:
+    //   back_offset = audio_duration - trim_end   (what user typed in s·back)
+    //   pause_at    = lipsync_mp4.duration - back_offset
+    // Front-trim stays as a direct currentTime seek (skips leading lipsync
+    // preroll/garbage — Kim's intent matches the mp4 timeline there).
     const trimStartSec = Number(beat.phase_1?.trim_start ?? beat.trim_in ?? 0) || 0;
     const trimEndRaw = beat.phase_1?.trim_end ?? beat.trim_out;
     const trimEndSec: number | null =
       trimEndRaw === null || trimEndRaw === undefined
         ? null
         : (Number.isFinite(Number(trimEndRaw)) ? Number(trimEndRaw) : null);
+    const audioDur = Number(beat.audio_duration_s ?? 0) || 0;
+    const backOffsetSec = (trimEndSec !== null && audioDur > 0)
+      ? Math.max(0, audioDur - trimEndSec)
+      : 0;
     if (!isLipsyncPreview) {
       if (!aud) return;
       aud.currentTime = 0;
@@ -1700,17 +1712,31 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
       } else {
         try { vid.currentTime = 0; } catch { /* defensive */ }
       }
-      if (trimEndSec !== null && trimEndSec > trimStartSec) {
-        trimTimeUpdateHandler = () => {
-          if (vid.currentTime >= trimEndSec) {
-            try { vid.pause(); } catch { /* defensive */ }
-            if (trimTimeUpdateHandler) {
-              vid.removeEventListener('timeupdate', trimTimeUpdateHandler);
-              trimTimeUpdateHandler = null;
+      // Translate back-trim into lipsync-mp4 timeline. vid.duration is only
+      // valid after loadedmetadata fires; gate accordingly. If we never see
+      // a finite duration, fall back to NO back-trim (don't truncate the
+      // speech) — safer than cutting mid-word per Kim's symptom.
+      if (backOffsetSec > 0) {
+        const computeAndApplyBack = () => {
+          const dur = Number(vid.duration);
+          if (!Number.isFinite(dur) || dur <= 0) return;
+          const pauseAt = Math.max(trimStartSec + 0.01, dur - backOffsetSec);
+          trimTimeUpdateHandler = () => {
+            if (vid.currentTime >= pauseAt) {
+              try { vid.pause(); } catch { /* defensive */ }
+              if (trimTimeUpdateHandler) {
+                vid.removeEventListener('timeupdate', trimTimeUpdateHandler);
+                trimTimeUpdateHandler = null;
+              }
             }
-          }
+          };
+          vid.addEventListener('timeupdate', trimTimeUpdateHandler);
         };
-        vid.addEventListener('timeupdate', trimTimeUpdateHandler);
+        if (Number.isFinite(vid.duration) && vid.duration > 0) {
+          computeAndApplyBack();
+        } else {
+          vid.addEventListener('loadedmetadata', computeAndApplyBack, { once: true });
+        }
       }
     }
     safePlay(vid).catch((err) => handlePlayRejection(err, 'effect-play', toastCtx));
@@ -1730,7 +1756,7 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
     return () => {
       if (trimTimeUpdateHandler) vid.removeEventListener('timeupdate', trimTimeUpdateHandler);
     };
-  }, [previewOptIdx, beat.phase_1?.audio_delay, beat.audio_delay, beat.delay_seconds, beat.phase_1?.trim_start, beat.phase_1?.trim_end, beat.trim_in, beat.trim_out, safePlay, handlePlayRejection]);
+  }, [previewOptIdx, beat.phase_1?.audio_delay, beat.audio_delay, beat.delay_seconds, beat.phase_1?.trim_start, beat.phase_1?.trim_end, beat.trim_in, beat.trim_out, beat.audio_duration_s, safePlay, handlePlayRejection]);
 
   useEffect(() => {
     return () => {
