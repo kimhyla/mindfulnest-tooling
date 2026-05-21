@@ -436,6 +436,21 @@ def handle_lipsync_submit(h, body: dict)-> None:
                             ls["source_changed"] = (int(sel_now) != int(src_opt))
                         except (TypeError, ValueError):
                             pass
+                    # Auto-promote 🏁 FINAL to lipsync: lipsync IS the canonical
+                    # stitcher source once it completes. Preserve prior final in
+                    # auto_promoted_from for audit/undo trail.
+                    prior_final = beat.get("final") or {}
+                    if prior_final.get("source") != "lipsync":
+                        beat["final"] = {
+                            "source": "lipsync",
+                            "source_option": src_opt,
+                            "file": _fn,
+                            "approved_at": datetime.now(timezone.utc).isoformat(),
+                            "auto_promoted_from": (
+                                {k: prior_final.get(k) for k in ("source", "source_option", "file", "image_path")}
+                                if prior_final else None
+                            ),
+                        }
                 h.app.state.mutate_state(mark_done)
                 h.app.state.add_spend("lipsync", COST_PER_LIPSYNC)
                 print(f"[lipsync] {beat_key} COMPLETED -> {dest_name} ({size} bytes)")
@@ -692,6 +707,19 @@ def handle_lipsync_submit_legacy(h, body: dict)-> None:
                             ls["source_changed"] = (int(sel_now) != int(src_opt))
                         except (TypeError, ValueError):
                             pass
+                    # Auto-promote 🏁 FINAL to lipsync (legacy path parity).
+                    prior_final = beat.get("final") or {}
+                    if prior_final.get("source") != "lipsync":
+                        beat["final"] = {
+                            "source": "lipsync",
+                            "source_option": src_opt,
+                            "file": _fn,
+                            "approved_at": datetime.now(timezone.utc).isoformat(),
+                            "auto_promoted_from": (
+                                {k: prior_final.get(k) for k in ("source", "source_option", "file", "image_path")}
+                                if prior_final else None
+                            ),
+                        }
                 h.app.state.mutate_state(mark_done)
                 h.app.state.add_spend("lipsync", COST_PER_LIPSYNC)
                 print(f"[lipsync] {beat_key} COMPLETED -> {dest_name} ({size} bytes)")
