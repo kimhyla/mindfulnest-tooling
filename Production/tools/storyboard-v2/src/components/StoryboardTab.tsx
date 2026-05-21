@@ -2193,6 +2193,10 @@ export function StoryboardTab() {
   const [loading, setLoading] = useState(true);
   const [refreshTick, setRefreshTick] = useState(0);
   const [deleteConfirmBeatId, setDeleteConfirmBeatId] = useState<string | null>(null);
+  // Batch end-frame generator state (spec BATCH_END_FRAME_GENERATE_20260520_v1, LD-815)
+  const [batchInFlight, setBatchInFlight] = useState<boolean>(false);
+  const [batchProgress, setBatchProgress] = useState<{ done: number; total: number; failed: number; skipped: number } | null>(null);
+  const batchCancelRef = useRef<boolean>(false);
 
   // R1 fix per spec §5 Phase 3.1 — explicit scope signals in dep array,
   // first-run-sync via prevDepsRef, 200ms debounce on subsequent runs (Q6).
@@ -2301,6 +2305,120 @@ export function StoryboardTab() {
 
   const eventId = activeScope.value.event_id;
 
+  // Batch end-frame generator (spec BATCH_END_FRAME_GENERATE_20260520_v1, LD-815).
+  // Filter: beats in CURRENT activeTargetVideo partition with selected_option set,
+  // image_path set+exists, and end_frame_path missing/non-existent. Excludes
+  // image-missing beats (cursor R1 — else wasted START_IMAGE_REQUIRED toasts).
+  const batchEligibleBeats = useMemo(() => {
+    if (!state) return [] as Array<{ beat_id: string }>;
+    const role = activeTargetVideo.value;
+    const beats = (state.videos as any)?.[role]?.beats || {};
+    const result: Array<{ beat_id: string }> = [];
+    for (const [bid, b] of Object.entries(beats) as Array<[string, any]>) {
+      if (b?.phase_1?.selected_option == null) continue;
+      if (!b?.image_path || b?.image_path_exists === false) continue;
+      if (b?.end_frame_path && b?.end_frame_path_exists !== false) continue;
+      result.push({ beat_id: bid });
+    }
+    return result;
+  }, [state, activeTargetVideo.value, refreshTick]);
+
+  const onBatchEndFrames = async () => {
+    if (batchInFlight) return;
+    const candidateList = [...batchEligibleBeats];  // freeze list at click time
+    if (candidateList.length === 0) return;
+    // Freeze scope at batch start — cursor R1 defense vs stale React closure
+    // mid-loop. Even if Kim somehow changes VideoSelector via keyboard during
+    // the loop, this iteration uses the role she clicked Batch in.
+    const frozenRole = activeTargetVideo.value;
+    const frozenEventId = activeScope.value.event_id;
+
+    if (candidateList.length > 5) {
+      const cost = (candidateList.length * 0.04).toFixed(2);
+      const ok = window.confirm(
+        `This will generate end frames for ${candidateList.length} beats via OpenAI gpt-image-1.\n\n` +
+        `Estimated cost: ~$${cost} (${candidateList.length} × $0.04).\n\n` +
+        `Sequential, ~5–15 sec per beat. Keep this tab open until the batch completes — closing/navigating away stops the loop.\n\n` +
+        `Continue?`
+      );
+      if (!ok) return;
+    }
+
+    batchCancelRef.current = false;
+    setBatchInFlight(true);
+    setBatchProgress({ done: 0, total: candidateList.length, failed: 0, skipped: 0 });
+
+    let done = 0;
+    let failed = 0;
+    let skipped = 0;
+    for (const item of candidateList) {
+      if (batchCancelRef.current) {
+        pushToast({ kind: 'info', message: `Batch cancelled. Processed ${done}/${candidateList.length}.`, source: 'batch-endframe' });
+        break;
+      }
+      // Per-iteration freshness re-read — someone else may have generated
+      // this beat's end_frame_path between batch-start and this iteration.
+      try {
+        const freshRes = await apiGet<EventState>('v2_event_state', { event_id: frozenEventId });
+        if (freshRes.ok && freshRes.data) {
+          const freshBeat = (freshRes.data.videos as any)?.[frozenRole]?.beats?.[item.beat_id];
+          if (freshBeat?.end_frame_path && freshBeat?.end_frame_path_exists !== false) {
+            skipped += 1;
+            setBatchProgress({ done, total: candidateList.length, failed, skipped });
+            continue;
+          }
+        }
+      } catch {
+        // Freshness fetch failure is non-fatal — proceed with click-time decision.
+      }
+      try {
+        const resp = await fetch(ENDPOINTS.beat_preview_end_frame, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            scope_event_id: frozenEventId,
+            scope_video_role: frozenRole,
+            beat_id: item.beat_id,
+          }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data?.ok) {
+          failed += 1;
+          pushToast({
+            kind: 'error',
+            message: `Batch ${item.beat_id} failed: ${data?.error_message || data?.error || `HTTP ${resp.status}`}`,
+            source: 'batch-endframe',
+          });
+        } else {
+          done += 1;
+          // Live thumbnail refresh — per-iteration onMutated equivalent.
+          setRefreshTick((n) => n + 1);
+        }
+      } catch (e) {
+        failed += 1;
+        pushToast({
+          kind: 'error',
+          message: `Batch ${item.beat_id}: ${(e as Error).message}`,
+          source: 'batch-endframe',
+        });
+      }
+      setBatchProgress({ done, total: candidateList.length, failed, skipped });
+    }
+
+    setBatchInFlight(false);
+    setBatchProgress(null);
+    batchCancelRef.current = false;
+    pushToast({
+      kind: failed === 0 ? 'success' : 'warning',
+      message: `Batch end frames complete: ✓ ${done} · ✗ ${failed} · ⏭ ${skipped} (of ${candidateList.length})`,
+      source: 'batch-endframe',
+    });
+  };
+
+  const onCancelBatch = () => {
+    batchCancelRef.current = true;
+  };
+
   const executeDeleteBeat = async () => {
     const beatId = deleteConfirmBeatId;
     if (!beatId) return;
@@ -2354,21 +2472,74 @@ export function StoryboardTab() {
           <p>No beats in this event yet.</p>
         </div>
       ) : (
-        <ol class="mn-beat-list" data-testid="beat-list">
-          {beatList.map((b, i) => (
-            <BeatCard
-              key={b.beat_id}
-              index={i}
-              beatId={b.beat_id}
-              beat={b}
-              eventId={eventId}
-              videoRole={activeTargetVideo.value}
-              onMutated={() => setRefreshTick((n) => n + 1)}
-              onInsertAfter={() => void onAddBeat(b.beat_id)}
-              onDeleteBeat={() => setDeleteConfirmBeatId(b.beat_id)}
-            />
-          ))}
-        </ol>
+        <>
+          {/* Batch end-frame generator (spec BATCH_END_FRAME_GENERATE_20260520_v1, LD-815).
+              Single click → loops over every beat in current video role that
+              has selected_option + image but no end_frame_path. */}
+          <div
+            class="mn-batch-endframe-bar"
+            data-testid="batch-endframe-bar"
+            style={{
+              padding: '8px 12px',
+              marginBottom: '8px',
+              background: 'rgba(74, 138, 138, 0.08)',
+              border: '1px solid rgba(74, 138, 138, 0.3)',
+              borderRadius: '4px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '12px',
+            }}
+          >
+            {batchInFlight && batchProgress ? (
+              <>
+                <span style={{ fontSize: '12px' }}>
+                  <Spinner size="sm" inline /> Batch end frames: {batchProgress.done} of {batchProgress.total}
+                  {batchProgress.failed > 0 ? ` · ✗ ${batchProgress.failed}` : ''}
+                  {batchProgress.skipped > 0 ? ` · ⏭ ${batchProgress.skipped}` : ''}
+                </span>
+                <button
+                  type="button"
+                  class="mn-btn mn-btn-small"
+                  data-testid="batch-endframe-cancel"
+                  onClick={onCancelBatch}
+                  title="Stop submitting new beats. Any OpenAI call already in flight will complete."
+                >
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                class="mn-btn mn-btn-small"
+                data-testid="batch-endframe-button"
+                onClick={onBatchEndFrames}
+                disabled={batchEligibleBeats.length === 0}
+                title={
+                  batchEligibleBeats.length === 0
+                    ? 'All beats in this video already have an end frame, or no beats have a selected option + start image.'
+                    : `Generate end frames via ChatGPT for ${batchEligibleBeats.length} beat(s) sequentially. ~$0.04 × ${batchEligibleBeats.length} = ~$${(batchEligibleBeats.length * 0.04).toFixed(2)}. Keep this tab open until complete. Each iteration re-reads state for freshness.`
+                }
+              >
+                ✏ Batch end frames ({batchEligibleBeats.length} beat{batchEligibleBeats.length === 1 ? '' : 's'})
+              </button>
+            )}
+          </div>
+          <ol class="mn-beat-list" data-testid="beat-list">
+            {beatList.map((b, i) => (
+              <BeatCard
+                key={b.beat_id}
+                index={i}
+                beatId={b.beat_id}
+                beat={b}
+                eventId={eventId}
+                videoRole={activeTargetVideo.value}
+                onMutated={() => setRefreshTick((n) => n + 1)}
+                onInsertAfter={() => void onAddBeat(b.beat_id)}
+                onDeleteBeat={() => setDeleteConfirmBeatId(b.beat_id)}
+              />
+            ))}
+          </ol>
+        </>
       )}
       <footer class="mn-pane-footer">
         <SendOutButton />
