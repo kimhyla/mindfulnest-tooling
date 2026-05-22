@@ -2919,7 +2919,12 @@ def _pre_fail_cdn_check(poller, beat_id: str, opt_idx: int, task_id: str) -> Non
 
 KLING_MAX_DURATION_SEC = 10
 KLING_MIN_DURATION_SEC = 5
-_AUDIO_SHORT_THRESHOLD_SEC = 4.5  # audio <= this -> 5s animation; > -> 10s
+_AUDIO_SHORT_THRESHOLD_SEC = 3.5  # audio <= this -> 5s animation; > -> 10s
+# 3.5 = KLING_MIN_DURATION_SEC(5) - _VIDEO_TRIM_TAILROOM_TARGET_S(1.5).
+# Guarantees every 5s Kling clip has ≥1.5s tail after the last phoneme so the
+# character can settle before lipsync freezes the last frame. Old value of 4.5
+# left clips with 3.5–4.5s audio only 0.5–1.5s of tail — often not enough
+# (Kim observed "frozen mid-move squint" 2026-05-22).
 
 
 def _find_beat_audio(event_dir: Path, beat_key: str, audio_override: str | None = None, app=None) -> Path | None:
