@@ -1874,6 +1874,11 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
         safePause(vid).catch(() => {});
         if (!isLipsyncPreview) safePause(aud).catch(() => {});
       } else {
+        // BUG FIX: if the video has ended, currentTime is at duration — play() immediately
+        // re-fires 'ended' with no visible frames. Reset to 0 first so replay works.
+        if (vid?.ended) {
+          try { vid.currentTime = 0; } catch { /* defensive — some browsers throw on seeks */ }
+        }
         safePlay(vid).catch((err) => handlePlayRejection(err, 'toggle-play'));
         if (!isLipsyncPreview) safePlay(aud).catch((err) => handlePlayRejection(err, 'toggle-play-aud'));
       }

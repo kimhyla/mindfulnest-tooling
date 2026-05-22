@@ -12,6 +12,10 @@ export interface BeatCompositePreviewBeat {
   phase_1?: {
     options?: Array<{ file?: string; status?: string; file_exists?: boolean }>;
     selected_option?: number;
+    /** Absolute seek-to offset (seconds from start) — mirrors server trim_start field. */
+    trim_start?: number | null;
+    /** Absolute pause-at position (seconds from start) — mirrors server trim_end field. */
+    trim_end?: number | null;
   };
 }
 
@@ -65,6 +69,8 @@ export function BeatCompositePreview({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const delayTimerRef = useRef<number | null>(null);
+  // trim_end pause-at listener — stored so stopPlayback can remove it cleanly.
+  const trimEndListenerRef = useRef<(() => void) | null>(null);
 
   const audioDelaySec = parseDelaySec(audioDelay);
   const version = beat._version ?? 0;
@@ -102,6 +108,11 @@ export function BeatCompositePreview({
 
   const stopPlayback = useCallback(() => {
     clearDelayTimer();
+    // Remove any active trim_end timeupdate listener before pausing.
+    if (trimEndListenerRef.current && videoRef.current) {
+      videoRef.current.removeEventListener('timeupdate', trimEndListenerRef.current);
+      trimEndListenerRef.current = null;
+    }
     try { videoRef.current?.pause(); } catch { /* defensive */ }
     try { audioRef.current?.pause(); } catch { /* defensive */ }
     setIsPlaying(false);
@@ -128,9 +139,33 @@ export function BeatCompositePreview({
     const aud = audioRef.current;
     if (!vid || !aud || !videoSrc || !audioSrc) return;
     clearDelayTimer();
+
+    // Remove any leftover trim_end listener from a prior play.
+    if (trimEndListenerRef.current) {
+      vid.removeEventListener('timeupdate', trimEndListenerRef.current);
+      trimEndListenerRef.current = null;
+    }
+
     setErrorMsg(null);
-    vid.currentTime = 0;
+
+    // TRIM_FIX_20260522: apply phase_1.trim_start so composite preview honours
+    // the "Trim front" value the user set. Previously always started at 0.
+    const trimStartSec = Number(beat.phase_1?.trim_start ?? 0) || 0;
+    vid.currentTime = trimStartSec;
     aud.currentTime = 0;
+
+    // If trim_end is set, pause the video (and stop audio) when we reach it.
+    const trimEndSec = beat.phase_1?.trim_end;
+    if (typeof trimEndSec === 'number' && Number.isFinite(trimEndSec) && trimEndSec > trimStartSec) {
+      const onTimeUpdate = () => {
+        if (vid.currentTime >= trimEndSec) {
+          stopPlayback();
+        }
+      };
+      trimEndListenerRef.current = onTimeUpdate;
+      vid.addEventListener('timeupdate', onTimeUpdate);
+    }
+
     try {
       await vid.play();
     } catch (err) {
@@ -146,7 +181,7 @@ export function BeatCompositePreview({
     }
     scheduleAudioAfterDelay();
     setIsPlaying(true);
-  }, [videoSrc, audioSrc, clearDelayTimer, scheduleAudioAfterDelay, beatId]);
+  }, [videoSrc, audioSrc, beat.phase_1?.trim_start, beat.phase_1?.trim_end, clearDelayTimer, scheduleAudioAfterDelay, stopPlayback, beatId]);
 
   const onTogglePlay = () => {
     if (isPlaying) {
@@ -169,6 +204,10 @@ export function BeatCompositePreview({
 
   useEffect(() => () => {
     clearDelayTimer();
+    if (trimEndListenerRef.current && videoRef.current) {
+      videoRef.current.removeEventListener('timeupdate', trimEndListenerRef.current);
+      trimEndListenerRef.current = null;
+    }
     try { videoRef.current?.pause(); } catch { /* defensive */ }
     try { audioRef.current?.pause(); } catch { /* defensive */ }
   }, [clearDelayTimer]);

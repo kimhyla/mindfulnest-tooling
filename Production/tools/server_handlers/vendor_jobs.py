@@ -160,7 +160,12 @@ def handle_lipsync_submit(h, body: dict)-> None:
 
     # LIPSYNC_TRIM_WINDOW_HONORED_20260419 — read user trim window from
     # storyboard. Absent/null fields collapse to old "whole-clip" behavior.
-    trim_start_raw = phase1.get("trim_start")
+    # DELAY_FIX_20260522: UI "Delay" button writes phase_1.audio_delay, but
+    # lipsync was only reading phase_1.trim_start — these map to the same
+    # concept (video offset before audio starts). Fall back to audio_delay
+    # so the delay is honoured at lipsync submission time.
+    trim_start_raw = phase1.get("trim_start") if phase1.get("trim_start") is not None \
+                     else phase1.get("audio_delay")
     trim_end_raw = phase1.get("trim_end")
     try:
         trim_start = float(trim_start_raw) if trim_start_raw is not None else 0.0
@@ -272,7 +277,7 @@ def handle_lipsync_submit(h, body: dict)-> None:
             effective_end = raw_dur
         window_len = effective_end - trim_start
         need = audio_duration + _VIDEO_TRIM_TAILROOM_S
-        if need > window_len + 0.01:
+        if need > window_len + 0.10:  # 100ms tolerance: Kling clips encode at ~10.042s not exactly 10.000s
             return h._send_error_v59(
                        400,
                        error_code="AUDIO_EXCEEDS_TRIM_WINDOW_INSUFFICIENT",
@@ -422,6 +427,51 @@ def handle_lipsync_submit(h, body: dict)-> None:
                 dest_name = f"{beat_key}_lipsync.mp4"
                 dest = h.app.state.clips_dir / dest_name
                 size = lipsync_client.download(url, dest)
+
+                # TAIL-APPEND: preserve original Kling animation frames that
+                # come after the lipsync trim window. Without this, the
+                # character freezes on the last lipsync frame for the
+                # remainder of the beat's hold duration.
+                # e.g. 1.52s audio + 1.5s trim target = 3.02s sent to
+                # ByteDance; original clip is 5.04s → 2.02s of natural
+                # Kling motion was discarded. We concat it back on.
+                _tail_start_s = trimmed_to
+                _tail_avail_s = raw_dur - _tail_start_s
+                if _tail_avail_s > 0.15:
+                    _tail_tmp = h.app.state.clips_dir / f"_tmp_{beat_key}_tail_{ts}.mp4"
+                    _concat_txt = h.app.state.clips_dir / f"_tmp_{beat_key}_clist_{ts}.txt"
+                    _ls_ext = h.app.state.clips_dir / f"_tmp_{beat_key}_ls_ext_{ts}.mp4"
+                    try:
+                        # 1. Extract tail from original Kling clip
+                        subprocess.run([
+                            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                            "-ss", f"{_tail_start_s:.3f}", "-i", str(source_clip_path),
+                            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                            "-pix_fmt", "yuv420p",
+                            "-c:a", "aac", "-b:a", "128k", "-ac", "1", "-ar", "44100",
+                            str(_tail_tmp),
+                        ], check=True, capture_output=True, timeout=60)
+                        # 2. Write concat list
+                        _concat_txt.write_text(
+                            f"file '{dest.resolve()}'\nfile '{_tail_tmp.resolve()}'\n"
+                        )
+                        # 3. Concat (copy — ByteDance output is H.264/AAC compatible)
+                        subprocess.run([
+                            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                            "-f", "concat", "-safe", "0", "-i", str(_concat_txt),
+                            "-c", "copy", str(_ls_ext),
+                        ], check=True, capture_output=True, timeout=120)
+                        # 4. Replace lipsync dest with extended version
+                        _ls_ext.replace(dest)
+                        size = dest.stat().st_size
+                        print(f"[lipsync] {beat_key} tail-append OK: "
+                              f"+{_tail_avail_s:.2f}s → total {_ffprobe_duration(dest):.2f}s")
+                    except Exception as _te:
+                        print(f"[lipsync] {beat_key} tail-append skipped (non-fatal): {_te}")
+                    finally:
+                        for _f in (_tail_tmp, _concat_txt, _ls_ext):
+                            try: _f.unlink()
+                            except OSError: pass
 
                 def mark_done(st, _bk=beat_key, _fn=dest_name, _sz=size, _role=video_role):
                     beat = ((st.get("videos") or {}).get(_role) or {}).get("beats", {})[_bk]
