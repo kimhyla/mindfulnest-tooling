@@ -3057,6 +3057,20 @@ def handle_animate(h, body: dict)-> None:
     # video_role resolved by scope_router; image override lookup is
     # partition-aware via the get_beat_image(_, video_role) helper.
     video_role = scope.video_role
+
+    # Read state snapshot once for per-beat end_frame_path lookups.
+    # When a beat has an approved end frame on disk, the first Animate uses
+    # kling_startend_submit (start+end) instead of legacy single-image Kling,
+    # matching what Regen B+C does (Rule 8.3 §8.3 universal default).
+    try:
+        _animate_full_state = h.app.state.read_state()
+    except Exception:
+        _animate_full_state = {}
+    _animate_state_beats: dict = (
+        ((_animate_full_state.get("videos") or {}).get(video_role) or {}).get("beats") or {}
+    )
+    _animate_end_frames_dir = h.app.event_dir / "end_frames"
+
     for beat in beats:
         beat_id = h._beat_id(beat.get("line_number", -1))
         # Check image overrides first (from drag-drop), then storyboard
@@ -3150,19 +3164,107 @@ def handle_animate(h, body: dict)-> None:
             except Exception as exc:  # noqa: BLE001
                 print(f"[animate] {beat_id}: lipsync_invalidated_on_regen audit failed (non-fatal): {exc}")
 
+        # Check if this beat has an approved end_frame_path on disk.
+        # If yes, route through kling_startend_submit (Rule 8.3) so the first
+        # Animate click honours Kim's chosen second image, same as Regen B+C.
+        _state_beat = _animate_state_beats.get(beat_id) or {}
+        _end_frame_path = _state_beat.get("end_frame_path")
+        _end_frame_disk = _animate_end_frames_dir / _end_frame_path if _end_frame_path else None
+        _use_startend = bool(
+            _end_frame_path and _end_frame_disk and _end_frame_disk.is_file()
+        )
+        if _use_startend:
+            print(f"[animate] {beat_id}: end_frame found ({_end_frame_path}) → start-end pipeline")
+        else:
+            print(f"[animate] {beat_id}: no end_frame → legacy single-image Kling")
+
         # Submit options_per_beat jobs, staggered
         for opt_idx in range(options_per_beat):
-            try:
-                task_id = h.app.client.submit_animation(
-                    image, prompt, duration=beat_duration,
-                )
-            except Exception as exc:  # noqa: BLE001
-                print(f"[ERR] submit failed for {beat_id} opt{opt_idx + 1}: {exc}")
-                skipped.append({"beat": beat_id, "opt": opt_idx + 1, "reason": str(exc)})
-                continue
+            if _use_startend:
+                # ── Start-end path (Rule 8.3) ──────────────────────────────
+                # Uses the pre-approved end_frame PNG from disk + kling_startend_submit,
+                # identical to _handle_add_options_startend.
+                try:
+                    from kling_startend_pipeline import kling_startend_submit as _ks_submit  # type: ignore
+                    from tools.production_server import (  # type: ignore
+                        RULE8_ANTI_LIPSYNC,
+                        SPEAKER_MOTION_PROFILES,
+                        VALID_EMOTIONS,
+                        LIPSYNC_SAFE_TAIL,
+                        BIRD_SPEAKERS,
+                        SECTION_ACTIONS,
+                        DEFAULT_ACTION,
+                        _load_subject_element,
+                    )
+                    # Build start URI — normalize to PNG (WebP from crop-lib would fail WaveSpeed)
+                    _start_hdr, _start_b64 = image.split(",", 1)
+                    _start_bytes = base64.b64decode(_start_b64)
+                    if "image/png" not in _start_hdr:
+                        from PIL import Image as _PilImg  # type: ignore
+                        _pbuf = io.BytesIO()
+                        _PilImg.open(io.BytesIO(_start_bytes)).save(_pbuf, format="PNG")
+                        _start_bytes = _pbuf.getvalue()
+                    start_uri = (
+                        f"data:image/png;base64,{base64.b64encode(_start_bytes).decode('ascii')}"
+                    )
+                    # Build end URI from approved disk PNG
+                    _end_bytes = _end_frame_disk.read_bytes()  # type: ignore[union-attr]
+                    end_uri = (
+                        f"data:image/png;base64,{base64.b64encode(_end_bytes).decode('ascii')}"
+                    )
+                    # Build motion prompt (mirrors _handle_add_options_startend logic)
+                    _canonical = _canonicalize_speaker(beat.get("speaker", "") or "")
+                    _in_birds = _canonical in BIRD_SPEAKERS
+                    _cstr = (
+                        "Beak closed, no speech, no lip movement."
+                        if _in_birds else "Mouth closed, no speech."
+                    )
+                    _hdr_p = f"Cartoon {_canonical} character" if _canonical else "Cartoon character"
+                    _emotion = beat.get("emotion", "neutral") or "neutral"
+                    if _emotion not in VALID_EMOTIONS:
+                        _emotion = "neutral"
+                    _profile = SPEAKER_MOTION_PROFILES.get(_canonical)
+                    if _profile:
+                        _action = _profile.get(_emotion) or _profile["neutral"]
+                    else:
+                        _action = SECTION_ACTIONS.get(beat.get("section", "") or "", DEFAULT_ACTION)
+                    _se_prompt = sanitize_prompt(
+                        f"{_hdr_p}, {_action}, natural interpolation between start and end frames."
+                        f" {_cstr} {LIPSYNC_SAFE_TAIL}"
+                    )
+                    _elem = _load_subject_element(_canonical)
+                    task_id = _ks_submit(
+                        start_b64_uri=start_uri,
+                        end_b64_uri=end_uri,
+                        prompt=_se_prompt,
+                        negative_prompt=RULE8_ANTI_LIPSYNC,
+                        duration=beat_duration,
+                        api_key=h.app.client.api_key,
+                        element_entry=_elem,
+                    )
+                    _source_tag = "kling_startend"
+                    print(
+                        f"[animate] {beat_id} opt{opt_idx + 1}: start-end submitted "
+                        f"task_id={task_id} end_frame={_end_frame_path}"
+                    )
+                except (SystemExit, Exception) as exc:  # noqa: BLE001
+                    print(f"[ERR] animate start-end failed for {beat_id} opt{opt_idx + 1}: {exc}")
+                    skipped.append({"beat": beat_id, "opt": opt_idx + 1, "reason": f"start-end: {exc}"})
+                    continue
+            else:
+                # ── Legacy single-image path ───────────────────────────────
+                try:
+                    task_id = h.app.client.submit_animation(
+                        image, prompt, duration=beat_duration,
+                    )
+                    _source_tag = "kling"
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[ERR] submit failed for {beat_id} opt{opt_idx + 1}: {exc}")
+                    skipped.append({"beat": beat_id, "opt": opt_idx + 1, "reason": str(exc)})
+                    continue
 
             # Append option via partition router (was videos.intro hardcode).
-            def add_option_partition(partition, _bid=beat_id, _tid=task_id):
+            def add_option_partition(partition, _bid=beat_id, _tid=task_id, _src=_source_tag):
                 pbeats = partition.setdefault("beats", {})
                 pbeats[_bid]["phase_1"]["options"].append({
                     "task_id": _tid,
@@ -3170,7 +3272,7 @@ def handle_animate(h, body: dict)-> None:
                     "file": None,
                     "submitted_at": datetime.now(timezone.utc).isoformat(),
                     "submitted_at_epoch": int(time.time()),  # Tier 1B timeout
-                    "source": "kling",  # Tier 1B threshold lookup
+                    "source": _src,  # Tier 1B threshold lookup; "kling_startend" when end frame used
                     "retries": 0,
                     "last_error": None,
                 })
