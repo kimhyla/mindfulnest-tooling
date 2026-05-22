@@ -944,7 +944,7 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
   // button are available BEFORE the first Animate click — lets Kim pre-load an
   // end frame and have it used on the very first generation (fresh beats after
   // storyboard reset land at audio_generated, not animated).
-  const showAddOptions = ['audio_generated', 'animated', 'selected', 'lipsync_pending', 'final'].includes(lifecycle);
+  const showAddOptions = ['draft', 'audio_generated', 'animated', 'selected', 'lipsync_pending', 'final'].includes(lifecycle);
   const showSelectedOptionRadios = ['animated', 'selected', 'lipsync_pending', 'final'].includes(lifecycle);
   // Kim 2026-05-20 follow-up: previous gate hid the lipsync button whenever
   // lifecycle was 'final' AND final.source != 'lipsync' (e.g. raw_option from
