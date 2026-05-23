@@ -454,6 +454,13 @@ def handle_lipsync_submit(h, body: dict)-> None:
                 # e.g. 1.52s audio + 1.5s trim target = 3.02s sent to
                 # ByteDance; original clip is 5.04s → 2.02s of natural
                 # Kling motion was discarded. We concat it back on.
+                #
+                # FIX 2026-05-23: ByteDance downscales the video (e.g. 1660×1244
+                # Kling → 720×544 ByteDance) and outputs 25fps not 24fps. The tail
+                # extracted from the Kling source must be scaled+fps-matched to the
+                # ByteDance output params, and a silent stereo audio track added
+                # (Kling clips are video-only; ByteDance output has stereo AAC).
+                # Without this, the concat demuxer fails on stream-param mismatch.
                 _tail_start_s = trimmed_to
                 _tail_avail_s = raw_dur - _tail_start_s
                 if _tail_avail_s > 0.15:
@@ -461,20 +468,55 @@ def handle_lipsync_submit(h, body: dict)-> None:
                     _concat_txt = h.app.state.clips_dir / f"_tmp_{beat_key}_clist_{ts}.txt"
                     _ls_ext = h.app.state.clips_dir / f"_tmp_{beat_key}_ls_ext_{ts}.mp4"
                     try:
-                        # 1. Extract tail from original Kling clip
+                        # 0. Probe ByteDance output for its actual width/height/fps
+                        #    so the tail is encoded to exactly matching params.
+                        _ls_probe = subprocess.run(
+                            ["ffprobe", "-v", "error",
+                             "-select_streams", "v:0",
+                             "-show_entries", "stream=width,height,r_frame_rate",
+                             "-of", "csv=p=0",
+                             str(dest)],
+                            capture_output=True, text=True, timeout=10,
+                        )
+                        _ls_w, _ls_h, _ls_fps_str = 720, 544, "25"
+                        _probe_parts = _ls_probe.stdout.strip().split(",")
+                        if len(_probe_parts) >= 3:
+                            try:
+                                _ls_w = int(_probe_parts[0])
+                                _ls_h = int(_probe_parts[1])
+                                # r_frame_rate is "25/1" or "3097600/119173" — convert to decimal
+                                _fps_frac = _probe_parts[2].strip()
+                                if "/" in _fps_frac:
+                                    _n, _d = _fps_frac.split("/", 1)
+                                    _ls_fps_str = f"{int(_n)/max(int(_d),1):.6f}"
+                                else:
+                                    _ls_fps_str = _fps_frac
+                            except (ValueError, ZeroDivisionError):
+                                pass  # fall back to 720×544 25fps defaults
+                        # 1. Extract tail from original Kling clip, scaled to match
+                        #    ByteDance output dimensions + fps. Add silent stereo
+                        #    audio (anullsrc) because Kling clips are video-only but
+                        #    ByteDance output carries stereo AAC.
                         subprocess.run([
                             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                            "-ss", f"{_tail_start_s:.3f}", "-i", str(source_clip_path),
+                            "-ss", f"{_tail_start_s:.3f}",
+                            "-i", str(source_clip_path),
+                            "-f", "lavfi", "-t", f"{_tail_avail_s + 0.1:.3f}",
+                            "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+                            "-filter_complex",
+                            f"[0:v]scale={_ls_w}:{_ls_h}:flags=lanczos,"
+                            f"fps={_ls_fps_str},format=yuv420p[vout]",
+                            "-map", "[vout]", "-map", "1:a",
                             "-c:v", "libx264", "-preset", "fast", "-crf", "18",
-                            "-pix_fmt", "yuv420p",
-                            "-c:a", "aac", "-b:a", "128k", "-ac", "1", "-ar", "44100",
+                            "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-ar", "44100",
+                            "-shortest",
                             str(_tail_tmp),
                         ], check=True, capture_output=True, timeout=60)
                         # 2. Write concat list
                         _concat_txt.write_text(
                             f"file '{dest.resolve()}'\nfile '{_tail_tmp.resolve()}'\n"
                         )
-                        # 3. Concat (copy — ByteDance output is H.264/AAC compatible)
+                        # 3. Concat (copy — streams now have matching params)
                         subprocess.run([
                             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
                             "-f", "concat", "-safe", "0", "-i", str(_concat_txt),
@@ -484,9 +526,12 @@ def handle_lipsync_submit(h, body: dict)-> None:
                         _ls_ext.replace(dest)
                         size = dest.stat().st_size
                         print(f"[lipsync] {beat_key} tail-append OK: "
-                              f"+{_tail_avail_s:.2f}s → total {_ffprobe_duration(dest):.2f}s")
+                              f"+{_tail_avail_s:.2f}s "
+                              f"(scaled {_ls_w}×{_ls_h}@{_ls_fps_str}fps) "
+                              f"→ total {_ffprobe_duration(dest):.2f}s")
                     except Exception as _te:
-                        print(f"[lipsync] {beat_key} tail-append skipped (non-fatal): {_te}")
+                        print(f"[lipsync] {beat_key} tail-append FAILED (non-fatal): {_te}")
+                        import traceback as _tb; _tb.print_exc()
                     finally:
                         for _f in (_tail_tmp, _concat_txt, _ls_ext):
                             try: _f.unlink()
