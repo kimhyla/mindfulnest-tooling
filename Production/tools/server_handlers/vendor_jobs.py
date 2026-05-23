@@ -494,11 +494,16 @@ def handle_lipsync_submit(h, body: dict)-> None:
                             _fc_cy_p = float(_face_mask_cfg.get("cy", 0.42))
                             _fc_rx_p = float(_face_mask_cfg.get("rx", 0.28))
                             _fc_ry_p = float(_face_mask_cfg.get("ry", 0.26))
-                            _fc_blur = int(_face_mask_cfg.get("blur_px", 40))
+                            _fc_blur = int(_face_mask_cfg.get("blur_px", 6))
                         else:
-                            _fc_cx_p, _fc_cy_p = 0.50, 0.42
-                            _fc_rx_p, _fc_ry_p = 0.28, 0.26
-                            _fc_blur = 40
+                            # Tight beak-only mask. cx/cy = lower-face center (beak).
+                            # rx/ry deliberately small so arm/wing area is pure-source
+                            # (black mask = 0 blending = no ghost). Large blur radius was
+                            # the cause of the "ghost arm + wing" artifact — the 40px
+                            # gaussian bleed zone overlapped the wing position.
+                            _fc_cx_p, _fc_cy_p = 0.50, 0.52
+                            _fc_rx_p, _fc_ry_p = 0.12, 0.10
+                            _fc_blur = 6
                         _fc_cx = int(_fc_cx_p * _fc_w)
                         _fc_cy = int(_fc_cy_p * _fc_h)
                         _fc_rx = int(_fc_rx_p * _fc_w)
