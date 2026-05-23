@@ -447,6 +447,111 @@ def handle_lipsync_submit(h, body: dict)-> None:
                 dest = h.app.state.clips_dir / dest_name
                 size = lipsync_client.download(url, dest)
 
+                # FACE-COMPOSITE: blend ByteDance output (face/beak lipsync region only)
+                # with the original Kling source (clean wings/body). ByteDance LatentSync
+                # was trained on human anatomy — cartoon wings in gesture poses get
+                # "corrected" to look like human arms/hands. Masking the composite to the
+                # face ellipse preserves lipsync where it matters and keeps wings clean.
+                #
+                # Enabled by default. Disable per beat: phase_1.lipsync_face_mask = false
+                # Override mask (fraction of frame): phase_1.lipsync_face_mask =
+                #   {"cx": 0.50, "cy": 0.42, "rx": 0.28, "ry": 0.26, "blur_px": 40}
+                #
+                # maskedmerge semantics: mask=255 (white) → use ByteDance pixel (face);
+                #                        mask=0   (black) → use source pixel (wings/body)
+                _face_mask_cfg = phase1.get("lipsync_face_mask", True)  # ON by default
+                if _face_mask_cfg is not False:
+                    _fc_src_tmp  = h.app.state.clips_dir / f"_tmp_{beat_key}_fc_src_{ts}.mp4"
+                    _fc_out_tmp  = h.app.state.clips_dir / f"_tmp_{beat_key}_fc_out_{ts}.mp4"
+                    _fc_mask_png = h.app.state.clips_dir / f"_tmp_{beat_key}_fc_mask_{ts}.png"
+                    try:
+                        from PIL import Image, ImageFilter, ImageDraw
+                        # Probe ByteDance output for exact dimensions + fps
+                        _fc_probe = subprocess.run(
+                            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                             "-show_entries", "stream=width,height,r_frame_rate",
+                             "-of", "csv=p=0", str(dest)],
+                            capture_output=True, text=True, timeout=10,
+                        )
+                        _fc_w, _fc_h, _fc_fps_str = 720, 544, "25"
+                        _fc_dur = _ffprobe_duration(dest)
+                        _fc_pparts = _fc_probe.stdout.strip().split(",")
+                        if len(_fc_pparts) >= 3:
+                            try:
+                                _fc_w = int(_fc_pparts[0])
+                                _fc_h = int(_fc_pparts[1])
+                                _frac = _fc_pparts[2].strip()
+                                if "/" in _frac:
+                                    _n, _d = _frac.split("/", 1)
+                                    _fc_fps_str = f"{int(_n)/max(int(_d),1):.6f}"
+                                else:
+                                    _fc_fps_str = _frac
+                            except (ValueError, ZeroDivisionError):
+                                pass
+                        # Read mask config (per-beat override or defaults for Chipper)
+                        if isinstance(_face_mask_cfg, dict):
+                            _fc_cx_p = float(_face_mask_cfg.get("cx", 0.50))
+                            _fc_cy_p = float(_face_mask_cfg.get("cy", 0.42))
+                            _fc_rx_p = float(_face_mask_cfg.get("rx", 0.28))
+                            _fc_ry_p = float(_face_mask_cfg.get("ry", 0.26))
+                            _fc_blur = int(_face_mask_cfg.get("blur_px", 40))
+                        else:
+                            _fc_cx_p, _fc_cy_p = 0.50, 0.42
+                            _fc_rx_p, _fc_ry_p = 0.28, 0.26
+                            _fc_blur = 40
+                        _fc_cx = int(_fc_cx_p * _fc_w)
+                        _fc_cy = int(_fc_cy_p * _fc_h)
+                        _fc_rx = int(_fc_rx_p * _fc_w)
+                        _fc_ry = int(_fc_ry_p * _fc_h)
+                        # Build soft elliptical face mask image
+                        _fc_mask_img = Image.new("L", (_fc_w, _fc_h), 0)
+                        _fc_mask_draw = ImageDraw.Draw(_fc_mask_img)
+                        _fc_mask_draw.ellipse(
+                            [_fc_cx - _fc_rx, _fc_cy - _fc_ry,
+                             _fc_cx + _fc_rx, _fc_cy + _fc_ry], fill=255)
+                        _fc_mask_img = _fc_mask_img.filter(
+                            ImageFilter.GaussianBlur(radius=_fc_blur))
+                        _fc_mask_img.save(str(_fc_mask_png))
+                        # Scale original source to ByteDance dimensions + fps, video-only
+                        subprocess.run([
+                            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                            "-ss", "0", "-t", f"{_fc_dur:.3f}",
+                            "-i", str(source_clip_path),
+                            "-vf", (f"scale={_fc_w}:{_fc_h}:flags=lanczos,"
+                                    f"fps={_fc_fps_str},format=yuv420p"),
+                            "-an",
+                            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                            str(_fc_src_tmp),
+                        ], check=True, capture_output=True, timeout=120)
+                        # Composite: source wings + ByteDance face, audio from ByteDance
+                        subprocess.run([
+                            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                            "-i", str(_fc_src_tmp),            # [0] base: clean source
+                            "-i", str(dest),                   # [1] overlay: ByteDance
+                            "-loop", "1", "-i", str(_fc_mask_png),  # [2] static mask
+                            "-filter_complex",
+                            f"[2:v]scale={_fc_w}:{_fc_h}[msk];"
+                            "[0:v][1:v][msk]maskedmerge[v]",
+                            "-map", "[v]", "-map", "1:a",
+                            "-t", f"{_fc_dur:.3f}",
+                            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                            "-pix_fmt", "yuv420p", "-c:a", "copy",
+                            str(_fc_out_tmp),
+                        ], check=True, capture_output=True, timeout=120)
+                        _fc_out_tmp.replace(dest)
+                        size = dest.stat().st_size
+                        print(f"[lipsync] {beat_key} face-composite OK: "
+                              f"cx={_fc_cx_p:.2f} cy={_fc_cy_p:.2f} "
+                              f"rx={_fc_rx_p:.2f} ry={_fc_ry_p:.2f} "
+                              f"blur={_fc_blur}px @ {_fc_w}×{_fc_h}")
+                    except Exception as _fce:
+                        print(f"[lipsync] {beat_key} face-composite FAILED (non-fatal): {_fce}")
+                        import traceback as _tb2; _tb2.print_exc()
+                    finally:
+                        for _f in (_fc_src_tmp, _fc_out_tmp, _fc_mask_png):
+                            try: _f.unlink()
+                            except (OSError, UnboundLocalError): pass
+
                 # TAIL-APPEND: preserve original Kling animation frames that
                 # come after the lipsync trim window. Without this, the
                 # character freezes on the last lipsync frame for the
