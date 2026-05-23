@@ -271,7 +271,14 @@ def handle_lipsync_submit(h, body: dict)-> None:
                        extra={"clip_duration_s": round(raw_dur, 3), "beat": beat_key},
                    )
         effective_end = trim_end if trim_end is not None else raw_dur
-        if effective_end > raw_dur + 0.05:
+        # BUG FIX (2026-05-23): trim_back (relative seconds from end) overrides trim_end.
+        # Client stores trim_back = user's typed value; server computes correct absolute end.
+        trim_back_sec = phase1.get("trim_back")
+        if trim_back_sec is not None:
+            effective_end = max(trim_start + 0.01, raw_dur - float(trim_back_sec))
+            print(f"[lipsync] trim_back={trim_back_sec:.2f}→effective_end={effective_end:.2f} "
+                  f"(raw_dur={raw_dur:.2f})")
+        elif effective_end > raw_dur + 0.05:
             print(f"[lipsync] WARN trim_end={effective_end:.2f} exceeds "
                   f"raw_dur={raw_dur:.2f} for {beat_key}; clamping")
             effective_end = raw_dur

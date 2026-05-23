@@ -79,6 +79,7 @@ interface BeatState {
     audio_delay?: number;
     trim_start?: number;
     trim_end?: number | null;
+    trim_back?: number | null;  // Relative back-trim (seconds from end). Server computes effective_end = raw_dur - trim_back. Added 2026-05-23.
   };
   // S5.5e — fields read by the beat-level state machine (LD BEAT_LIFECYCLE_STATE_MACHINE_V1).
   // beat.final block is the "is final?" signal per Cursor v8 (NOT a use_as_final boolean).
@@ -553,8 +554,15 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
     const start = beat.phase_1?.trim_start ?? beat.trim_in;
     setTrimFrontSec(start === null || start === undefined ? '0.0' : String(start));
   }, [beat.phase_1?.trim_start, beat.trim_in]);
-  // LD-756 hydration: back_sec = duration - trim_end (when trim_end set), else 0.
+  // LD-756 hydration: back_sec from trim_back (new canonical, relative) or duration - trim_end (legacy absolute).
   useEffect(() => {
+    // New canonical path: trim_back is stored directly as relative seconds — no reverse-calculation.
+    const trimBack = beat.phase_1?.trim_back;
+    if (typeof trimBack === 'number' && Number.isFinite(trimBack) && trimBack > 0) {
+      setTrimBackSec(trimBack.toFixed(2));
+      return;
+    }
+    // Legacy fallback: trim_end is absolute timestamp; reverse-calculate back offset.
     const trimEnd = beat.phase_1?.trim_end ?? beat.trim_out;
     if (trimEnd === null || trimEnd === undefined || trimEnd === 'full') {
       setTrimBackSec('0.0');
@@ -566,11 +574,9 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
       setTrimBackSec(back.toFixed(2));
     } else {
       // Duration not yet known — leave as 0.0 until audio metadata arrives.
-      // (LD-756 fallback: trimBackSec stays 0.0 if duration unknown; apply
-      // will fail loud if user types non-zero back without duration.)
       setTrimBackSec('0.0');
     }
-  }, [beat.phase_1?.trim_end, beat.trim_out, beat.audio_duration_s]);
+  }, [beat.phase_1?.trim_back, beat.phase_1?.trim_end, beat.trim_out, beat.audio_duration_s]);
 
   // ----------------------------------------------------------------
   // Polling (animate + lipsync)
@@ -903,23 +909,18 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
     const front = isNaN(frontSec) ? 0 : Math.max(0, frontSec);
     const backSec = parseFloat(trimBackSec);
     const back = isNaN(backSec) ? 0 : Math.max(0, backSec);
-    let trimOutAbsolute: number | null = null;
-    if (back > 0) {
-      const dur = beat.audio_duration_s;
-      if (!Number.isFinite(dur)) {
-        pushToast({
-          kind: 'error',
-          message: 'Trim back > 0 needs known duration — click Regen Audio to populate audio_duration_s first.',
-          source: `beat-${index}-trim-apply-no-duration`,
-        });
-        return Promise.resolve(undefined);
-      }
-      trimOutAbsolute = Math.max(front + 0.01, (dur as number) - back);
-    }
-    // beats_legacy.py::handle_beat_trim — beat/trim_start[/trim_end] (absolute timestamps)
+    // BUG FIX (2026-05-23): previously computed trim_out = audio_duration_s - back, which is
+    // WRONG because audio_duration_s ≠ video clip duration. For beats with short audio on a long
+    // clip (e.g. 1.52s audio on 5s clip, back=1.01 → trim_out=0.51), the server received an
+    // absurdly small trim window and either errored or silently dropped the back-trim intent.
+    //
+    // Fix: send trim_back (relative seconds from end) so the server computes
+    // effective_end = raw_dur - trim_back using ffprobe — no video duration needed here.
+    // beats_legacy.py::handle_beat_trim stores trim_back + clears stale trim_end.
+    // vendor_jobs.py reads trim_back to set correct effective_end for lipsync submission.
     return runMutation('Trim', 'beat_trim', {
       trim_in: front,
-      trim_out: trimOutAbsolute,
+      trim_back: back,  // 0 = no back trim; server clears stale trim_end
     }, [
       { key: 'beat', type: 'string' },
       { key: 'trim_start', type: 'number' },
@@ -1758,15 +1759,20 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
     // Front-trim stays as a direct currentTime seek (skips leading lipsync
     // preroll/garbage — Kim's intent matches the mp4 timeline there).
     const trimStartSec = Number(beat.phase_1?.trim_start ?? beat.trim_in ?? 0) || 0;
+    // New canonical: trim_back is stored directly as relative seconds (2026-05-23 fix).
+    // Legacy fallback: derive from audio_duration - trim_end (for old beats without trim_back).
+    const trimBackDirect = beat.phase_1?.trim_back;
     const trimEndRaw = beat.phase_1?.trim_end ?? beat.trim_out;
     const trimEndSec: number | null =
       trimEndRaw === null || trimEndRaw === undefined
         ? null
         : (Number.isFinite(Number(trimEndRaw)) ? Number(trimEndRaw) : null);
     const audioDur = Number(beat.audio_duration_s ?? 0) || 0;
-    const backOffsetSec = (trimEndSec !== null && audioDur > 0)
-      ? Math.max(0, audioDur - trimEndSec)
-      : 0;
+    const backOffsetSec = (typeof trimBackDirect === 'number' && trimBackDirect > 0)
+      ? trimBackDirect  // New: trim_back IS the offset — no calculation needed
+      : (trimEndSec !== null && audioDur > 0)
+        ? Math.max(0, audioDur - trimEndSec)  // Legacy: reverse-calculate from audio_duration - trim_end
+        : 0;
     if (!isLipsyncPreview) {
       if (!aud) return;
       aud.currentTime = 0;
@@ -1860,7 +1866,7 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
       if (rafId !== null) cancelAnimationFrame(rafId);
       if (onPlayListener) vid.removeEventListener('play', onPlayListener);
     };
-  }, [previewOptIdx, beat.phase_1?.audio_delay, beat.audio_delay, beat.delay_seconds, beat.phase_1?.trim_start, beat.phase_1?.trim_end, beat.trim_in, beat.trim_out, beat.audio_duration_s, safePlay, handlePlayRejection]);
+  }, [previewOptIdx, beat.phase_1?.audio_delay, beat.audio_delay, beat.delay_seconds, beat.phase_1?.trim_start, beat.phase_1?.trim_end, beat.phase_1?.trim_back, beat.trim_in, beat.trim_out, beat.audio_duration_s, safePlay, handlePlayRejection]);
 
   useEffect(() => {
     return () => {

@@ -1518,6 +1518,12 @@ def handle_beat_trim(h, body: dict)-> None:
     if raw_trim_end is None:
         raw_trim_end = body.get("trim_out")  # null = use full clip
     trim_end = raw_trim_end
+    # BUG FIX (2026-05-23): trim_back (relative seconds from end) replaces the client-side
+    # trim_out computation which was wrong (used audio_duration instead of video_duration).
+    # When trim_back is present it takes precedence and clears stale trim_end.
+    # vendor_jobs.py reads trim_back and computes effective_end = raw_dur - trim_back.
+    raw_trim_back = body.get("trim_back")  # BODY_KEY_ALLOW: trim_back (2026-05-23 back-trim fix)
+    trim_back = float(raw_trim_back) if raw_trim_back is not None else None
     if trim_start < 0:
         return h._send_error_v59(
                    400,
@@ -1525,7 +1531,14 @@ def handle_beat_trim(h, body: dict)-> None:
                    error_message="trim_start must be >= 0",
                    retry_safe=False,
                )
-    if trim_end is not None:
+    if trim_back is not None and trim_back < 0:
+        return h._send_error_v59(
+                   400,
+                   error_code="TRIM_BACK_MUST_BE",
+                   error_message="trim_back must be >= 0",
+                   retry_safe=False,
+               )
+    if trim_back is None and trim_end is not None:
         trim_end = float(trim_end)
         if trim_end <= trim_start:
             return h._send_error_v59(
@@ -1537,13 +1550,18 @@ def handle_beat_trim(h, body: dict)-> None:
 
     video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
 
-    def update(state, _role=video_role):
+    def update(state, _role=video_role, _trim_back=trim_back):
         b = ((state.get("videos") or {}).get(_role) or {}).get("beats", {}).get(beat_id)
         if not b:
             return False
         p1 = b.setdefault("phase_1", {})
         p1["trim_start"] = round(trim_start, 2)
-        p1["trim_end"] = round(trim_end, 2) if trim_end is not None else None
+        if _trim_back is not None:
+            # New canonical path: store relative back-trim; clear stale absolute trim_end.
+            p1["trim_back"] = round(_trim_back, 2) if _trim_back > 0 else None
+            p1["trim_end"] = None  # clear wrong absolute value from old client bug
+        else:
+            p1["trim_end"] = round(trim_end, 2) if trim_end is not None else None
         return True
 
     found = h.app.state.mutate_state(update)
@@ -1555,7 +1573,9 @@ def handle_beat_trim(h, body: dict)-> None:
                    retry_safe=False,
                )
     result = {"beat": beat_id, "trim_start": round(trim_start, 2)}
-    if trim_end is not None:
+    if trim_back is not None:
+        result["trim_back"] = round(trim_back, 2) if trim_back > 0 else None
+    elif trim_end is not None:
         result["trim_end"] = round(trim_end, 2)
     h._send_json(200, result)
 
