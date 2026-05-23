@@ -1651,17 +1651,28 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
   //   3. beat.final.file (still_image OR raw_option fallback)
   //   4. null (no preview available)
   // magic_* served via /files NOT /asset (writes to event_dir, not clips_dir).
-  const previewVideoSrc = (previewOptIdx !== null && previewOptIdx > 0 && _optOk)
-    ? `${SERVER_BASE}/asset/${_optChosen!.file}?v=${beat._version ?? 0}`
-    : (previewOptIdx === -1
-        ? (_magicStillSrc       // Bug-B1.1: magic on still
-            ?? _magicVideoSrc   // Bug-B1.2: magic on video
-            ?? (beat.final?.source === 'still_image' && beat.final?.file && beat.final?.file_exists !== false
-                ? _finalFileSrc
-                : null))
-        : (_isLipsyncShown && _lsOk
-            ? `${SERVER_BASE}/asset/${beat.lipsync!.file}?v=${beat._version ?? 0}`
-            : null));
+  // previewVideoSrc is ONLY non-null when there is an ACTIVE preview (previewOptIdx !== null).
+  // This ensures the still image always shows when not actively previewing, even when
+  // lipsyncMounted=true (LD-757). The LD-757 buffer lives in lipsyncBufferSrc below.
+  const previewVideoSrc = previewOptIdx === null
+    ? null
+    : (previewOptIdx > 0 && _optOk)
+        ? `${SERVER_BASE}/asset/${_optChosen!.file}?v=${beat._version ?? 0}`
+        : (previewOptIdx === -1
+            ? (_magicStillSrc       // Bug-B1.1: magic on still
+                ?? _magicVideoSrc   // Bug-B1.2: magic on video
+                ?? (beat.final?.source === 'still_image' && beat.final?.file && beat.final?.file_exists !== false
+                    ? _finalFileSrc
+                    : null))
+            : (_lsOk
+                ? `${SERVER_BASE}/asset/${beat.lipsync!.file}?v=${beat._version ?? 0}`
+                : null));
+
+  // LD-757: when lipsyncMounted=true but no active preview, keep the lipsync <video>
+  // in DOM as display:none so decoded frames stay buffered for instant replay.
+  const lipsyncBufferSrc = (_isLipsyncShown && _lsOk && previewVideoSrc === null)
+    ? `${SERVER_BASE}/asset/${beat.lipsync!.file}?v=${beat._version ?? 0}`
+    : null;
 
   const previewAudioSrc = `${SERVER_BASE}/api/beat/audio/${beatId}?event_id=${eventId}`;
 
@@ -1803,6 +1814,10 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
             if (vid.currentTime >= pauseAt) {
               console.log(`[lipsync-trim] ${beatId}: pausing at ${vid.currentTime.toFixed(3)}s (target ${pauseAt.toFixed(3)}s)`);
               try { vid.pause(); } catch { /* defensive */ }
+              // BUG FIX: reset to 0 so next play starts from the beginning, not the trim
+              // endpoint. Also reset previewOptIdx so the button shows ▶ (ready to play).
+              try { vid.currentTime = 0; } catch { /* defensive */ }
+              setPreviewOptIdx(null);
               rafId = null;
               return;
             }
@@ -1891,6 +1906,12 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
 
   const handlePreviewEnded = useCallback(() => {
     audioRef.current?.pause();
+    // BUG FIX: reset currentTime so next play() starts from beginning, not the end.
+    // If the video stays mounted (LD-757 lipsyncMounted), play() on currentTime=duration
+    // immediately re-fires 'ended' with no visible frames.
+    if (videoRef.current) {
+      try { videoRef.current.currentTime = 0; } catch { /* defensive */ }
+    }
     // LD-757: reset UI only; lipsyncMounted keeps <video> in DOM.
     setPreviewOptIdx(null);
   }, []);
@@ -2098,6 +2119,7 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
         eventId={eventId}
         onMutated={onMutated}
         previewVideoSrc={previewVideoSrc}
+        lipsyncBufferSrc={lipsyncBufferSrc}
         videoRef={videoRef as RefObject<HTMLVideoElement>}
         onPreviewEnded={handlePreviewEnded}
         onImageReassigned={() => {
@@ -2179,9 +2201,12 @@ interface BeatImageHolderProps {
    * the lipsync VIDEO shows. Drop succeeds in state but visually nothing
    * changes because the video is occluding. */
   onImageReassigned?: () => void;
+  /** LD-757: lipsync URL to keep buffered in a hidden <video> when no preview is active.
+   * Non-null only when lipsyncMounted=true && previewVideoSrc===null. */
+  lipsyncBufferSrc?: string | null;
 }
 
-function BeatImageHolder({ index, beatId, beat, eventId, onMutated, previewVideoSrc, videoRef, onPreviewEnded, onImageReassigned }: BeatImageHolderProps) {
+function BeatImageHolder({ index, beatId, beat, eventId, onMutated, previewVideoSrc, lipsyncBufferSrc, videoRef, onPreviewEnded, onImageReassigned }: BeatImageHolderProps) {
   const stillPath = beat.image_path;
   const hasImage = !!stillPath;
   // Blocker #145 / DS-22: image_override persisted but thumb stayed stale when
@@ -2249,17 +2274,30 @@ function BeatImageHolder({ index, beatId, beat, eventId, onMutated, previewVideo
       onDragLeave={dropHandlers.onDragLeave}
       onDrop={dropHandlers.onDrop}
     >
-      {previewVideoSrc ? (
+      {(previewVideoSrc || lipsyncBufferSrc) ? (
         <div data-testid={`beat-preview-video-${index}`} style={{ display: 'contents' }}>
+          {/* Single video element: visible when actively previewing (previewVideoSrc),
+              display:none when only buffering (lipsyncBufferSrc). LD-757 keeps decoded
+              frames in browser memory for instant replay without file reload. */}
           <video
             {...(videoRef ? { ref: videoRef } : {})}
-            src={previewVideoSrc}
+            src={previewVideoSrc ?? lipsyncBufferSrc!}
             class="mn-storyboard-preview-video"
+            style={previewVideoSrc ? undefined : { display: 'none' }}
             playsInline
             preload="auto"
             onEnded={onPreviewEnded}
             data-testid={`beat-${index}-lipsync-video`}
           />
+          {/* Show still image when video is in buffer-only mode (hidden) */}
+          {!previewVideoSrc && hasImage && imgSrc && (
+            <img
+              src={imgSrc}
+              alt={`beat ${beatId} image`}
+              class="mn-storyboard-image-thumb"
+              loading="lazy"
+            />
+          )}
         </div>
       ) : hasImage && imgSrc ? (
         <img
