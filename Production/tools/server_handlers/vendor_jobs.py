@@ -537,6 +537,34 @@ def handle_lipsync_submit(h, body: dict)-> None:
                             try: _f.unlink()
                             except OSError: pass
 
+                # HOLD-LAST-FRAME: if phase_1.lipsync_hold_tail_s is set, freeze
+                # the last video frame for that many seconds after the tail ends.
+                # Use case: explosion/whiteout clips where the final frame should
+                # linger visually (e.g. beat_11 whiteout — set hold=2.5 so the
+                # full-screen burst is held for 2.5s before cut).
+                _hold_s = phase1.get("lipsync_hold_tail_s")
+                if _hold_s and float(_hold_s) > 0.05:
+                    _held_out = h.app.state.clips_dir / f"_tmp_{beat_key}_held_{ts}.mp4"
+                    try:
+                        subprocess.run([
+                            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                            "-i", str(dest),
+                            "-vf", f"tpad=stop_mode=clone:stop_duration={float(_hold_s):.2f}",
+                            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                            "-pix_fmt", "yuv420p",
+                            "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-ar", "44100",
+                            str(_held_out),
+                        ], check=True, capture_output=True, timeout=120)
+                        _held_out.replace(dest)
+                        size = dest.stat().st_size
+                        print(f"[lipsync] {beat_key} hold-last-frame OK: "
+                              f"+{float(_hold_s):.1f}s → total {_ffprobe_duration(dest):.2f}s")
+                    except Exception as _he:
+                        print(f"[lipsync] {beat_key} hold-last-frame FAILED (non-fatal): {_he}")
+                    finally:
+                        try: _held_out.unlink()
+                        except (OSError, UnboundLocalError): pass
+
                 def mark_done(st, _bk=beat_key, _fn=dest_name, _sz=size, _role=video_role):
                     beat = ((st.get("videos") or {}).get(_role) or {}).get("beats", {})[_bk]
                     ls = beat["lipsync"]
