@@ -275,8 +275,20 @@ def handle_lipsync_submit(h, body: dict)-> None:
             print(f"[lipsync] WARN trim_end={effective_end:.2f} exceeds "
                   f"raw_dur={raw_dur:.2f} for {beat_key}; clamping")
             effective_end = raw_dur
-        window_len = effective_end - trim_start
         need = audio_duration + _VIDEO_TRIM_TAILROOM_S
+        # BUG FIX (2026-05-23): the client computes trim_end = audio_duration - back_trim
+        # instead of video_duration - back_trim. When audio is short relative to the
+        # video clip (e.g. 6.88s audio on a 10s clip), this makes trim_end smaller than
+        # audio_duration + tailroom and causes a spurious AUDIO_EXCEEDS_TRIM_WINDOW error.
+        # Auto-extend effective_end to fit the audio when the RAW video has enough room.
+        # Only fails now if the SOURCE VIDEO itself is too short for the audio.
+        if need > effective_end - trim_start + 0.10:
+            extended = trim_start + need
+            if extended <= raw_dur + 0.10:
+                print(f"[lipsync] auto-extending trim_end {effective_end:.2f}→{extended:.2f} "
+                      f"(client trim_end too tight; raw_dur={raw_dur:.2f}, need={need:.2f})")
+                effective_end = min(extended, raw_dur)
+        window_len = effective_end - trim_start
         if need > window_len + 0.10:  # 100ms tolerance: Kling clips encode at ~10.042s not exactly 10.000s
             return h._send_error_v59(
                        400,
