@@ -6728,7 +6728,15 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 te_ms = int(round(te_raw * 1000)) if te_raw is not None else -1
                 tb_raw = meta.get("trim_back")
                 tb_ms = int(round(float(tb_raw) * 1000)) if tb_raw is not None else 0
-                ad_ms = int(round(float(meta["audio_delay"]) * 1000))
+                # Use effective delay for the cache filename so lipsync beats
+                # (where ByteDance already baked the delay in) produce a
+                # distinct cache key from raw-option beats.  Lipsync beats get
+                # ad_ms=0; raw-option beats get the original authored value.
+                # _is_raw_option_src is already resolved above (line ~6703).
+                ad_ms = (
+                    int(round(float(meta.get("audio_delay") or 0.0) * 1000))
+                    if _is_raw_option_src else 0
+                )
                 fname = (
                     f"{bid}_final_{src_md5}_{recipe6}_{ts_ms}_{te_ms}"
                     f"_tb{tb_ms}_{ad_ms}.mp4"
@@ -6764,16 +6772,11 @@ class ProductionHandler(BaseHTTPRequestHandler):
                         meta.get("trim_start"), meta.get("trim_end"),
                         trim_back=meta.get("trim_back"),
                     )
-                    # For lipsync-sourced beats, audio_delay is already baked
-                    # into the lipsync mp4 (ByteDance received audio with the
-                    # silence/delay at authoring time). Re-applying adelay here
-                    # would double-delay the speech → mouth moves without audio.
-                    # For raw-option beats, audio_delay controls when the mixed-in
-                    # TTS mp3 starts relative to the video.
-                    _effective_audio_delay = (
-                        float(meta.get("audio_delay") or 0.0)
-                        if _is_raw_option_src else 0.0
-                    )
+                    # _effective_audio_delay is consistent with ad_ms used in
+                    # the cache filename above: 0.0 for lipsync beats (delay
+                    # already baked into the ByteDance output), original
+                    # authored value for raw-option beats.
+                    _effective_audio_delay = ad_ms / 1000.0
                     trim_normalized(
                         norm_path, fpath,
                         _ts_xlat, _te_xlat,
@@ -10107,7 +10110,19 @@ body {{padding-top:44px!important;}}
                     ts_ms = int(round((meta.get("trim_start") or 0.0) * 1000))
                     te_raw = meta.get("trim_end")
                     te_ms = int(round(te_raw * 1000)) if te_raw is not None else -1
-                    ad_s = float(meta.get("audio_delay") or 0.0)
+                    # DOUBLE-DELAY FIX (mirrors _handle_scene_assemble line ~6703):
+                    # Lipsync beats already have the delay baked into the ByteDance
+                    # output — do NOT re-apply audio_delay. Only raw-option beats
+                    # (no completed lipsync, or final.source=="raw_option") need
+                    # the authored audio_delay applied here.
+                    _beat_dict = beats.get(bid) or {}
+                    _beat_lipsync = _beat_dict.get("lipsync") or {}
+                    _beat_final_src = (_beat_dict.get("final") or {}).get("source")
+                    _is_raw_option_src = (
+                        _beat_lipsync.get("status") != "completed"
+                        or _beat_final_src == "raw_option"
+                    )
+                    ad_s = float(meta.get("audio_delay") or 0.0) if _is_raw_option_src else 0.0
                     ad_ms = int(round(ad_s * 1000))
                     trimmed = trimmed_dir / (
                         f"{bid}_trimmed_{src_key}_{ts_ms}_{te_ms}_ad{ad_ms}_{_recipe6}.mp4"
