@@ -166,17 +166,33 @@ export function BeatCompositePreview({
     // trim_end (legacy absolute) is still honored but floored at audio completion.
     // Neither set → natural end (onVideoEnded handles stop).
     const trimEndRaw = beat.phase_1?.trim_end;
+    const trimBackRaw = beat.phase_1?.trim_back;
     const computeAndApplyTrimEnd = () => {
       let pauseAt: number | null = null;
-      // trim_back intentionally NOT enforced here (COMPOSITE_NO_TRIMBACK_20260524).
-      if (typeof trimEndRaw === 'number' && Number.isFinite(trimEndRaw) && trimEndRaw > trimStartSec) {
-        // AUDIO_FLOOR_FIX_20260524: legacy trim_end must not fire before audio
-        // completes — floor at audioDelaySec + audio.duration + 0.3 s tail.
-        const aud = audioRef.current;
-        const audDur = aud && Number.isFinite(aud.duration) && aud.duration > 0
-          ? aud.duration : 0;
-        const audioFloor = audDur > 0 ? audioDelaySec + audDur + 0.3 : 0;
-        pauseAt = Math.max(trimEndRaw, audioFloor);
+      const aud = audioRef.current;
+      const audDur = aud && Number.isFinite(aud.duration) && aud.duration > 0
+        ? aud.duration : 0;
+      const audioFloor = audDur > 0 ? audioDelaySec + audDur + 0.3 : 0;
+      // COMPOSITE_TRIMBACK_ENFORCE_20260524: trim_back is now enforced in the
+      // composite preview so Kim can visually verify the trim window before
+      // lipsync submission. Reverses COMPOSITE_NO_TRIMBACK_20260524 (which
+      // left Kim unable to see whether trim would take effect before submitting).
+      // trim_back takes priority over trim_end (mirrors server translate_trim_for_source
+      // logic per BeatCompositePreviewBeat interface comment).
+      // Audio floor prevents stopping before speech ends.
+      if (typeof trimBackRaw === 'number' && Number.isFinite(trimBackRaw) && trimBackRaw > 0) {
+        const vidDur = Number.isFinite(vid.duration) ? vid.duration : null;
+        if (vidDur !== null && vidDur > 0) {
+          const trimBackPauseAt = vidDur - trimBackRaw;
+          if (trimBackPauseAt > trimStartSec) {
+            pauseAt = audioFloor > 0 ? Math.max(trimBackPauseAt, audioFloor) : trimBackPauseAt;
+            if (pauseAt >= vidDur) pauseAt = null; // near-end: let natural end handle it
+          }
+        }
+        // If vid.duration not yet available, fall through to natural end.
+      } else if (typeof trimEndRaw === 'number' && Number.isFinite(trimEndRaw) && trimEndRaw > trimStartSec) {
+        // AUDIO_FLOOR_FIX_20260524: legacy trim_end must not fire before audio completes.
+        pauseAt = audioFloor > 0 ? Math.max(trimEndRaw, audioFloor) : trimEndRaw;
         const vidDur = Number.isFinite(vid.duration) ? vid.duration : Infinity;
         if (pauseAt >= vidDur) pauseAt = null; // let natural end handle it
       }
@@ -190,7 +206,7 @@ export function BeatCompositePreview({
         vid.addEventListener('timeupdate', onTimeUpdate);
       }
     };
-    // trim_back no longer needs vid.duration; call immediately.
+    // Requires vid.duration for trim_back enforcement; available after preload="auto" metadata load.
     computeAndApplyTrimEnd();
 
     try {
