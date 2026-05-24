@@ -979,11 +979,25 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
   const optionCount = beat.phase_1?.options?.length ?? 0;
   const selectedOption = beat.phase_1?.selected_option ?? null;
   // F-BEAT-PREVIEW-001: pre-lipsync composite preview only — never on lipsync outputs.
+  // ASSEMBLY-MATCH FIX (2026-05-24): showCompositePreview must track what
+  // _handle_scene_assemble will actually produce, not what lipsync.file existence
+  // implies. The previous guard `!beat.lipsync?.file` caused the storyboard to
+  // show lipsync playback for beats where final.source === 'raw_option' — i.e.
+  // Kim approved the animation option (not lipsync), but the storyboard showed
+  // the lipsync anyway. Assembly used raw_option animation + TTS with audio_delay,
+  // so Kim saw completely different timing than what got assembled.
+  //
+  // New rule mirrors _is_raw_option_src in production_server.py:
+  //   • final.source === 'raw_option'  → show BeatCompositePreview (animation + delayed TTS)
+  //   • no lipsync AND not lipsync/still_image final → show composite (pre-lipsync timing tool)
+  //   • final.source === 'lipsync' or 'still_image' → show lipsync / still player (not composite)
   const showCompositePreview = (
     ['animated', 'selected', 'lipsync_pending', 'final'].includes(lifecycle) &&
     beat.phase_1?.selected_option != null &&
-    !beat.lipsync?.file &&
-    beat.final?.source !== 'lipsync'
+    (
+      beat.final?.source === 'raw_option' ||
+      (!beat.lipsync?.file && beat.final?.source !== 'lipsync' && beat.final?.source !== 'still_image')
+    )
   );
 
   return (

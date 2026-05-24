@@ -16,6 +16,9 @@ export interface BeatCompositePreviewBeat {
     trim_start?: number | null;
     /** Absolute pause-at position (seconds from start) — mirrors server trim_end field. */
     trim_end?: number | null;
+    /** Relative back-trim: seconds to remove from the end of the clip (2026-05-23 canonical).
+     * Takes priority over trim_end when set (matches server translate_trim_for_source logic). */
+    trim_back?: number | null;
   };
 }
 
@@ -154,16 +157,40 @@ export function BeatCompositePreview({
     vid.currentTime = trimStartSec;
     aud.currentTime = 0;
 
-    // If trim_end is set, pause the video (and stop audio) when we reach it.
-    const trimEndSec = beat.phase_1?.trim_end;
-    if (typeof trimEndSec === 'number' && Number.isFinite(trimEndSec) && trimEndSec > trimStartSec) {
-      const onTimeUpdate = () => {
-        if (vid.currentTime >= trimEndSec) {
-          stopPlayback();
+    // Compute effective trim_end (pause-at point):
+    // 1. trim_back (canonical, 2026-05-23): compute from video.duration - trim_back.
+    //    Video.duration must be finite; gate on loadedmetadata if not ready yet.
+    //    This mirrors server translate_trim_for_source: effective_end = src_dur - trim_back.
+    // 2. trim_end (legacy absolute): use directly if no trim_back.
+    // 3. Neither: let the video play to its natural end.
+    const trimBackSec = beat.phase_1?.trim_back;
+    const trimEndRaw = beat.phase_1?.trim_end;
+    const computeAndApplyTrimEnd = () => {
+      let pauseAt: number | null = null;
+      if (typeof trimBackSec === 'number' && trimBackSec > 0) {
+        const dur = Number.isFinite(vid.duration) ? vid.duration : null;
+        if (dur !== null && dur > 0) {
+          pauseAt = Math.max(trimStartSec + 0.05, dur - trimBackSec);
         }
-      };
-      trimEndListenerRef.current = onTimeUpdate;
-      vid.addEventListener('timeupdate', onTimeUpdate);
+      } else if (typeof trimEndRaw === 'number' && Number.isFinite(trimEndRaw) && trimEndRaw > trimStartSec) {
+        pauseAt = trimEndRaw;
+      }
+      if (pauseAt !== null) {
+        const onTimeUpdate = () => {
+          if (vid.currentTime >= pauseAt!) {
+            stopPlayback();
+          }
+        };
+        trimEndListenerRef.current = onTimeUpdate;
+        vid.addEventListener('timeupdate', onTimeUpdate);
+      }
+    };
+    // Apply immediately if video duration is already known; otherwise wait for metadata.
+    if (typeof trimBackSec === 'number' && trimBackSec > 0 &&
+        (!Number.isFinite(vid.duration) || vid.duration <= 0)) {
+      vid.addEventListener('loadedmetadata', computeAndApplyTrimEnd, { once: true });
+    } else {
+      computeAndApplyTrimEnd();
     }
 
     try {
@@ -181,7 +208,7 @@ export function BeatCompositePreview({
     }
     scheduleAudioAfterDelay();
     setIsPlaying(true);
-  }, [videoSrc, audioSrc, beat.phase_1?.trim_start, beat.phase_1?.trim_end, clearDelayTimer, scheduleAudioAfterDelay, stopPlayback, beatId]);
+  }, [videoSrc, audioSrc, beat.phase_1?.trim_start, beat.phase_1?.trim_end, beat.phase_1?.trim_back, clearDelayTimer, scheduleAudioAfterDelay, stopPlayback, beatId]);
 
   const onTogglePlay = () => {
     if (isPlaying) {
