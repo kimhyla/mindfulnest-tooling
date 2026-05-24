@@ -158,22 +158,27 @@ export function BeatCompositePreview({
     aud.currentTime = 0;
 
     // Compute effective trim_end (pause-at point):
-    // 1. trim_back (canonical, 2026-05-23): compute from video.duration - trim_back.
-    //    Video.duration must be finite; gate on loadedmetadata if not ready yet.
-    //    This mirrors server translate_trim_for_source: effective_end = src_dur - trim_back.
-    // 2. trim_end (legacy absolute): use directly if no trim_back.
-    // 3. Neither: let the video play to its natural end.
-    const trimBackSec = beat.phase_1?.trim_back;
+    // COMPOSITE_NO_TRIMBACK_20260524: trim_back is a server-side lipsync concept
+    // (controls ByteDance submission window). Enforcing it in the composite preview
+    // was cutting the animation mid-motion (e.g. mid-blink) and — when audio_delay
+    // was large — cutting audio before it finished. The composite preview's only job
+    // is to let Kim dial in audio_delay; it plays the full animation to natural end.
+    // trim_end (legacy absolute) is still honored but floored at audio completion.
+    // Neither set → natural end (onVideoEnded handles stop).
     const trimEndRaw = beat.phase_1?.trim_end;
     const computeAndApplyTrimEnd = () => {
       let pauseAt: number | null = null;
-      if (typeof trimBackSec === 'number' && trimBackSec > 0) {
-        const dur = Number.isFinite(vid.duration) ? vid.duration : null;
-        if (dur !== null && dur > 0) {
-          pauseAt = Math.max(trimStartSec + 0.05, dur - trimBackSec);
-        }
-      } else if (typeof trimEndRaw === 'number' && Number.isFinite(trimEndRaw) && trimEndRaw > trimStartSec) {
-        pauseAt = trimEndRaw;
+      // trim_back intentionally NOT enforced here (COMPOSITE_NO_TRIMBACK_20260524).
+      if (typeof trimEndRaw === 'number' && Number.isFinite(trimEndRaw) && trimEndRaw > trimStartSec) {
+        // AUDIO_FLOOR_FIX_20260524: legacy trim_end must not fire before audio
+        // completes — floor at audioDelaySec + audio.duration + 0.3 s tail.
+        const aud = audioRef.current;
+        const audDur = aud && Number.isFinite(aud.duration) && aud.duration > 0
+          ? aud.duration : 0;
+        const audioFloor = audDur > 0 ? audioDelaySec + audDur + 0.3 : 0;
+        pauseAt = Math.max(trimEndRaw, audioFloor);
+        const vidDur = Number.isFinite(vid.duration) ? vid.duration : Infinity;
+        if (pauseAt >= vidDur) pauseAt = null; // let natural end handle it
       }
       if (pauseAt !== null) {
         const onTimeUpdate = () => {
@@ -185,13 +190,8 @@ export function BeatCompositePreview({
         vid.addEventListener('timeupdate', onTimeUpdate);
       }
     };
-    // Apply immediately if video duration is already known; otherwise wait for metadata.
-    if (typeof trimBackSec === 'number' && trimBackSec > 0 &&
-        (!Number.isFinite(vid.duration) || vid.duration <= 0)) {
-      vid.addEventListener('loadedmetadata', computeAndApplyTrimEnd, { once: true });
-    } else {
-      computeAndApplyTrimEnd();
-    }
+    // trim_back no longer needs vid.duration; call immediately.
+    computeAndApplyTrimEnd();
 
     try {
       await vid.play();
