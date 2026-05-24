@@ -6764,10 +6764,20 @@ class ProductionHandler(BaseHTTPRequestHandler):
                         meta.get("trim_start"), meta.get("trim_end"),
                         trim_back=meta.get("trim_back"),
                     )
+                    # For lipsync-sourced beats, audio_delay is already baked
+                    # into the lipsync mp4 (ByteDance received audio with the
+                    # silence/delay at authoring time). Re-applying adelay here
+                    # would double-delay the speech → mouth moves without audio.
+                    # For raw-option beats, audio_delay controls when the mixed-in
+                    # TTS mp3 starts relative to the video.
+                    _effective_audio_delay = (
+                        float(meta.get("audio_delay") or 0.0)
+                        if _is_raw_option_src else 0.0
+                    )
                     trim_normalized(
                         norm_path, fpath,
                         _ts_xlat, _te_xlat,
-                        audio_delay=float(meta.get("audio_delay") or 0.0),
+                        audio_delay=_effective_audio_delay,
                         mix_audio_path=_speech_mp3,
                     )
                     sidecar_payload = {
