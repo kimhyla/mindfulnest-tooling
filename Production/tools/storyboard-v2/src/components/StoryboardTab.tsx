@@ -22,6 +22,7 @@ import {
   scopeKey,
 } from '../state/scope';
 import { apiGet, expectField, pathappPatch, type ExpectFieldSpec } from '../api/client';
+import { stitcherRefreshTick } from '../app';
 import { SERVER_BASE, MUTATION_ENDPOINTS as ENDPOINTS } from '../api/endpoints';
 import { makeDropTarget } from '../utils/dragdrop';
 import { Spinner } from './ui/Spinner';
@@ -67,7 +68,7 @@ interface BeatState {
   // Compared against audio_regenerated_at to gate the ▶ lipsync play button
   // per LD STORYBOARD_LIPSYNC_BUTTON_FRESHNESS_GATE_V1. Missing → defensive
   // "stale" default (older server, or file disappeared mid-render).
-  lipsync?: { file?: string; status?: string; file_mtime?: number; file_exists?: boolean };
+  lipsync?: { file?: string; status?: string; file_mtime?: number; file_exists?: boolean; method?: string; task_id?: string };
   // phase_1 is the server-canonical persistence root for per-beat animation
   // state. `audio_delay` (the Video Lead-in slider) lives here — bootstrap
   // /api/v2/event/<id>/state returns the raw state.json so this is where the
@@ -766,6 +767,13 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
       { key: 'status', type: 'string' },
       { key: 'beat', type: 'string' },
     ]);
+  // 🐦 Idle LipSync — Kling i2v idle (same start+end frame) → Kling LipSync.
+  // Avoids ByteDance hallucinated arm-gestures on cartoon bird wings.
+  // Server: /api/lipsync_idle → vendor_jobs.handle_lipsync_idle (async, fires + returns).
+  const onLipsyncIdle = () =>
+    runMutation('Idle LipSync', 'lipsync_idle', {}, [
+      { key: 'status', type: 'string' },
+    ]);
   const onUseAsFinal = () =>
     runMutation('Use as Final', 'beat_use_as_final', {}, [
       { key: 'status', equals: 'ok' },
@@ -1277,6 +1285,25 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
                 // case). Old logic showed "Resend Lipsync" misleadingly.
                 beat.lipsync?.file ? '👄 Resend Lipsync' : '👄 Send for Lipsync'
               )
+            )}
+          </button>
+        ) : null}
+        {/* 🐦 Idle LipSync — only show when beat has an image override set.
+            Runs Kling i2v (same start+end = idle) → Kling LipSync.
+            Avoids ByteDance hallucinated arm-gestures on cartoon bird wings.
+            Show for Chipper beats (speaker=Chipper) or when lipsync.method=idle_kling_lipsync. */}
+        {(beat.speaker?.toLowerCase() === 'chipper' || beat.lipsync?.method === 'idle_kling_lipsync') && lifecycle !== 'lipsync_pending' ? (
+          <button
+            type="button"
+            class="mn-btn mn-btn-small"
+            style="background:#1a6b5c;color:#fff"
+            data-testid={`beat-${index}-lipsync-idle`}
+            onClick={guardedClick('Idle LipSync', onLipsyncIdle)}
+            aria-disabled={busy !== null}
+            title="Kling idle animation (same start+end frame) → Kling LipSync. Avoids ByteDance arm/wing hallucinations on Chipper."
+          >
+            {busy === 'Idle LipSync' ? <><Spinner size="sm" inline /> …</> : (
+              beat.lipsync?.method === 'idle_kling_lipsync' ? '🐦 Re-Idle LipSync' : '🐦 Idle LipSync'
             )}
           </button>
         ) : null}
@@ -2451,6 +2478,7 @@ function SendOutButton() {
     const data = result.data ?? {};
     if (result.ok && data.ok) {
       setStatus('ok');
+      stitcherRefreshTick.value += 1; // notify StitcherTab to re-fetch after auto-populate
       const stats = data.cache_stats ?? {};
       const statsStr = Object.entries(stats)
         .filter(([_, v]) => v !== 0)

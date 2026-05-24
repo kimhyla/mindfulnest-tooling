@@ -292,6 +292,7 @@ def translate_trim_for_source(
     source_file_path: Path,
     trim_start: float | None,
     trim_end: float | None,
+    trim_back: float | None = None,
 ) -> tuple[float | None, float | None]:
     """Translate phase_1 trim_start/trim_end from the ORIGINAL TTS timeline
     into the ACTUAL source file's timeline.
@@ -320,6 +321,21 @@ def translate_trim_for_source(
     lipsync mp4), returns the inputs unchanged.
     """
     if trim_end is None:
+        # trim_back support: "remove N seconds from the end of the source file".
+        # trim_back is ALWAYS relative to the resolved source file's own timeline
+        # (whether raw Kling clip or lipsync mp4 — it was authored while Kim
+        # watched that specific file). So no lipsync-timeline translation is
+        # needed here; we just compute effective_trim_end = src_dur - trim_back.
+        if trim_back is not None and float(trim_back) > 0:
+            try:
+                src_dur = ffprobe_duration(source_file_path)
+            except Exception:
+                return (trim_start, None)
+            effective_end = max(
+                float(trim_start or 0.0) + 0.01,
+                src_dur - float(trim_back),
+            )
+            return (trim_start, effective_end)
         return (trim_start, None)
     lipsync_block = (beat or {}).get("lipsync") or {}
     lipsync_file = lipsync_block.get("file")
@@ -349,6 +365,7 @@ def trim_normalized(src: Path, dst: Path,
                     trim_start: float | None,
                     trim_end: float | None,
                     audio_delay: float = 0.0,
+                    mix_audio_path: "Path | None" = None,
                     timeout_s: int = DEFAULT_FFMPEG_TIMEOUT_S) -> float:
     """Trim src to [trim_start, trim_end] window at dst. Returns effective duration.
 
@@ -381,20 +398,43 @@ def trim_normalized(src: Path, dst: Path,
     duration = end - start
     tmp = dst.parent / f"{dst.stem}.tmp.{os.getpid()}{dst.suffix}"
     try:
-        cmd = [
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-ss", f"{start:.3f}",
-            "-i", str(src.resolve()),
-            "-t", f"{duration:.3f}",
-        ]
-        if audio_delay and audio_delay > 0:
+        if mix_audio_path is not None and mix_audio_path.is_file():
+            # Raw-option beat: the source clip has no audio (generated with
+            # sound: false per CLAUDE.md §8.1). Mix the speech MP3 in place
+            # of the silent anullsrc, offset to audio_delay seconds into the
+            # output clip. apad pads the audio stream to the full output
+            # duration so the codec doesn't truncate early.
+            # Note: -vf cannot coexist with -map when using -filter_complex;
+            # src is already at canonical codec from normalize_for_concat so
+            # we skip the VF re-pass and use NORMALIZATION_ENCODER_ARGS only.
             delay_ms = int(round(float(audio_delay) * 1000))
-            # adelay=ms:all=1 delays every audio channel uniformly. Mono
-            # output (-ac 1 in NORMALIZATION_FFMPEG_ARGS) means one channel
-            # but :all=1 is a safe no-op on mono and future-proofs against
-            # a stereo bump.
-            cmd += ["-af", f"adelay={delay_ms}:all=1"]
-        cmd += [*NORMALIZATION_FFMPEG_ARGS, str(tmp)]
+            cmd = [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-ss", f"{start:.3f}",
+                "-i", str(src.resolve()),
+                "-i", str(mix_audio_path.resolve()),
+                "-t", f"{duration:.3f}",
+                "-map", "0:v:0",
+                "-map", "1:a:0",
+                "-af", f"adelay={delay_ms}:all=1,apad",
+                *NORMALIZATION_ENCODER_ARGS,
+                str(tmp),
+            ]
+        else:
+            cmd = [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-ss", f"{start:.3f}",
+                "-i", str(src.resolve()),
+                "-t", f"{duration:.3f}",
+            ]
+            if audio_delay and audio_delay > 0:
+                delay_ms = int(round(float(audio_delay) * 1000))
+                # adelay=ms:all=1 delays every audio channel uniformly. Mono
+                # output (-ac 1 in NORMALIZATION_FFMPEG_ARGS) means one channel
+                # but :all=1 is a safe no-op on mono and future-proofs against
+                # a stereo bump.
+                cmd += ["-af", f"adelay={delay_ms}:all=1"]
+            cmd += [*NORMALIZATION_FFMPEG_ARGS, str(tmp)]
         subprocess.run(cmd, check=True, capture_output=True, timeout=timeout_s)
         os.replace(tmp, dst)
     finally:
@@ -724,6 +764,7 @@ def compute_cache_hash(state_snapshot: dict, fade_ms: int,
         mtime = os.path.getmtime(str(path))  # safe — existence already verified
         trim_start = phase1.get("trim_start", 0.0)
         trim_end = phase1.get("trim_end")  # None == no trim
+        trim_back = phase1.get("trim_back")  # back-trim (None = not set)
         pause_after_ms = phase1.get("pause_after_ms", 0)
         selected = phase1.get("selected_option")
         # Per-item fade override (PER_ITEM_FADE_AFTER_OVERRIDE_V1, April 19 2026).
@@ -741,7 +782,7 @@ def compute_cache_hash(state_snapshot: dict, fade_ms: int,
         audio_delay = phase1.get("audio_delay", 0.0) or 0.0
         parts.append(
             f"{beat_id}:{path}:{mtime:.6f}:{trim_start}:{trim_end}:{pause_after_ms}:"
-            f"fade_after:{fade_after_ms}:audio_delay:{audio_delay}",
+            f"fade_after:{fade_after_ms}:audio_delay:{audio_delay}:trim_back:{trim_back}",
         )
         metadata.append({
             "beat_id": beat_id,
@@ -749,6 +790,7 @@ def compute_cache_hash(state_snapshot: dict, fade_ms: int,
             "mtime": mtime,
             "trim_start": trim_start,
             "trim_end": trim_end,
+            "trim_back": trim_back,
             "pause_after_ms": pause_after_ms,
             "selected_option": selected,
             "fade_after_ms": fade_after_ms,
@@ -1103,6 +1145,7 @@ def compute_finalize_args_hash(slim_snapshot: dict, beat_id: str,
     mtime = os.path.getmtime(str(path))
     trim_start = phase1.get("trim_start", 0.0) or 0.0
     trim_end = phase1.get("trim_end")
+    trim_back = phase1.get("trim_back")  # relative back-trim (None = not set)
     audio_delay = phase1.get("audio_delay", 0.0) or 0.0
     selected_option = phase1.get("selected_option")
     lipsync = beat.get("lipsync") or {}
@@ -1122,6 +1165,8 @@ def compute_finalize_args_hash(slim_snapshot: dict, beat_id: str,
         f"mtime:{mtime:.6f}",
         f"trim_start:{trim_start}",
         f"trim_end:{trim_end}",
+        f"trim_back:{trim_back}",  # back-trim (None = not set); included so cache
+        # invalidates when Kim adjusts the trim-back slider (split-brain fix).
         f"audio_delay:{audio_delay}",
         f"selected_option:{selected_option}",
         f"lipsync_path:{lipsync_path}",
@@ -1134,6 +1179,7 @@ def compute_finalize_args_hash(slim_snapshot: dict, beat_id: str,
         "mtime": mtime,
         "trim_start": trim_start,
         "trim_end": trim_end,
+        "trim_back": trim_back,
         "audio_delay": audio_delay,
         "selected_option": selected_option,
         "lipsync_path": lipsync_path,

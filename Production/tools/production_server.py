@@ -6014,6 +6014,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_restart()
             if path == "/api/lipsync":
                 return self._handle_lipsync_submit(body)
+            if path == "/api/lipsync_idle":
+                return self._handle_lipsync_idle(body)
             if path == "/api/inject-image":
                 return self._handle_inject_image(body)
             if path == "/api/assign-image":
@@ -6690,13 +6692,46 @@ class ProductionHandler(BaseHTTPRequestHandler):
                                extra={"ok": False, "beat_id": bid, "code": "BEAT_SOURCE_MISSING"},
                            )
                 src_path = Path(meta["file"])
+
+                # Resolve speech MP3 for raw-option beats (Kling clips generated
+                # with sound: false have no audio; the TTS MP3 must be mixed in).
+                # A beat is "raw_option source" when it has no completed lipsync
+                # OR when beat.final.source explicitly names raw_option.
+                _beat_dict = beats.get(bid) or {}
+                _beat_lipsync = _beat_dict.get("lipsync") or {}
+                _beat_final_src = (_beat_dict.get("final") or {}).get("source")
+                _is_raw_option_src = (
+                    _beat_lipsync.get("status") != "completed"
+                    or _beat_final_src == "raw_option"
+                )
+                _speech_mp3: "Path | None" = None
+                if _is_raw_option_src:
+                    _speech_mp3 = _find_beat_audio(
+                        self.app.event_dir, bid, app=self.app
+                    )
+                    if _speech_mp3 is not None and _speech_mp3.is_file():
+                        # Extend finalize_args_hash to include speech MP3 mtime
+                        # so the cache invalidates when the MP3 is regenerated.
+                        _mp3_extra = (
+                            f"|speech:{_speech_mp3.name}:"
+                            f"{_speech_mp3.stat().st_mtime:.6f}"
+                        )
+                        digest = hashlib.md5(
+                            (digest + _mp3_extra).encode("utf-8")
+                        ).hexdigest()
+                    else:
+                        _speech_mp3 = None  # not found; proceed with silent audio
+
                 src_md5 = hashlib.md5(str(src_path.resolve()).encode("utf-8")).hexdigest()[:10]
                 ts_ms = int(round(float(meta["trim_start"]) * 1000))
                 te_raw = meta["trim_end"]
                 te_ms = int(round(te_raw * 1000)) if te_raw is not None else -1
+                tb_raw = meta.get("trim_back")
+                tb_ms = int(round(float(tb_raw) * 1000)) if tb_raw is not None else 0
                 ad_ms = int(round(float(meta["audio_delay"]) * 1000))
                 fname = (
-                    f"{bid}_final_{src_md5}_{recipe6}_{ts_ms}_{te_ms}_{ad_ms}.mp4"
+                    f"{bid}_final_{src_md5}_{recipe6}_{ts_ms}_{te_ms}"
+                    f"_tb{tb_ms}_{ad_ms}.mp4"
                 )
                 fpath = cache_dir / fname
                 sidecar_path = fpath.with_suffix(".mp4.meta.json")
@@ -6721,17 +6756,19 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     # Kim 2026-05-21: when src is a lipsync mp4, absolute
                     # trim_end (authored on original audio timeline) cuts off
                     # mid-word because the lipsync timeline includes preroll
-                    # + extended tail. Translate back-trim into the lipsync
-                    # mp4's timeline before trimming.
+                    # + extended tail. Translate back-trim / trim_back into the
+                    # source file's timeline before trimming.
                     _ts_xlat, _te_xlat = translate_trim_for_source(
-                        beats.get(bid) or {},
+                        _beat_dict,
                         src_path.name, src_path,
                         meta.get("trim_start"), meta.get("trim_end"),
+                        trim_back=meta.get("trim_back"),
                     )
                     trim_normalized(
                         norm_path, fpath,
                         _ts_xlat, _te_xlat,
                         audio_delay=float(meta.get("audio_delay") or 0.0),
+                        mix_audio_path=_speech_mp3,
                     )
                     sidecar_payload = {
                         "finalize_args_hash": digest,
@@ -6903,6 +6940,41 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 scope_type, scope_root, scope_target_video,
                 "completed_mp4_path", str(scene_path),
             )
+
+            # Auto-populate the Stitcher's intro slot (or whichever slot matches
+            # scope_target_video) so "Send Out as MP4" → Stitcher is seamless.
+            # Uses mutate_state to upsert the most-recently-updated job, or
+            # creates a "default" job if no jobs exist yet.
+            try:
+                _scene_path_str = str(scene_path)
+                _slot_key = scope_target_video  # e.g. "intro"
+                _auto_job_name = f"auto_{_slot_key}"  # e.g. "auto_intro"
+                def _upsert_stitcher_slot(st: dict) -> None:
+                    jobs = st.setdefault("jobs", {})
+                    # Always use the deterministic auto_<slot> job so the client
+                    # can find it via startsWith('auto_') prefix match.
+                    # Never fall back into existing named jobs (probe_test,
+                    # phase7_final, etc.) — that misfires when those jobs'
+                    # names don't contain the event_id the client searches for.
+                    job_name = _auto_job_name
+                    if job_name not in jobs:
+                        jobs[job_name] = {
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                            "slots": {},
+                            "transitions": [],
+                        }
+                    _job = jobs[job_name]
+                    # Fix: existing jobs may have "slots": [] (list). Normalize to dict.
+                    if not isinstance(_job.get("slots"), dict):
+                        _job["slots"] = {}
+                    _job["slots"].setdefault(_slot_key, {})
+                    _job["slots"][_slot_key]["video_path"] = _scene_path_str
+                    _job["updated_at"] = datetime.now(timezone.utc).isoformat()
+                self.app.stitch_state.mutate_state(_upsert_stitcher_slot)
+                print(f"[scene_assemble] stitcher {_auto_job_name} slot auto-populated → {_scene_path_str}", flush=True)
+            except Exception as _ss_exc:
+                print(f"[scene_assemble] stitcher slot auto-populate failed (non-fatal): {_ss_exc}", flush=True)
 
             # Register as scene_concat_mp4 asset.
             asset_id = -1
@@ -7972,6 +8044,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_lipsync_submit(self, body: dict) -> None:
         from server_handlers.vendor_jobs import handle_lipsync_submit
         return handle_lipsync_submit(self, body)
+
+    def _handle_lipsync_idle(self, body: dict) -> None:
+        from server_handlers.vendor_jobs import handle_lipsync_idle
+        return handle_lipsync_idle(self, body)
 
     def _handle_lipsync_submit_legacy(self, body: dict) -> None:
         from server_handlers.vendor_jobs import handle_lipsync_submit_legacy
@@ -10014,10 +10090,12 @@ body {{padding-top:44px!important;}}
                     )
                     # Kim 2026-05-21 — translate lipsync absolute trim_end
                     # into the lipsync mp4's timeline (see translate_trim_for_source).
+                    # Also handles trim_back (relative back-trim) for all sources.
                     _ts_xlat, _te_xlat = translate_trim_for_source(
                         beats.get(bid) or {},
                         src.name, src,
                         meta.get("trim_start"), meta.get("trim_end"),
+                        trim_back=meta.get("trim_back"),
                     )
                     duration = trim_normalized(
                         norm, trimmed,

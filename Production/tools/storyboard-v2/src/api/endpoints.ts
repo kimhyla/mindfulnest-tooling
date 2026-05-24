@@ -139,6 +139,7 @@ export const MUTATION_ENDPOINTS = {
   beat_upload_end_frame: `${SERVER_BASE}/api/beat/upload_end_frame`,
   beat_swap_to_a: `${SERVER_BASE}/api/beat/swap_to_a`,
   lipsync: `${SERVER_BASE}/api/lipsync`,
+  lipsync_idle: `${SERVER_BASE}/api/lipsync_idle`,
   beat_use_as_final: `${SERVER_BASE}/api/beat/use_as_final`,
   // LD-761 STILL_AS_FINAL_FEATURE_SPEC_V1: Ken Burns rendered MP4 as final source.
   beat_use_still_as_final: `${SERVER_BASE}/api/beat/use_still_as_final`,

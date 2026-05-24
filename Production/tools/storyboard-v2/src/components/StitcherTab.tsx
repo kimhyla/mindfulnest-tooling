@@ -18,6 +18,7 @@
 
 import { useEffect, useState } from 'preact/hooks';
 import { activeScope, activeProjectType, scopeKey } from '../state/scope';
+import { stitcherRefreshTick } from '../app';
 import { apiGet, pathappPatch } from '../api/client';
 import { StitcherSlotWaveform } from './StitcherSlotWaveform';
 import { StitcherTransitionSelector, type Transition } from './StitcherTransitionSelector';
@@ -153,6 +154,9 @@ export function StitcherTab() {
   const [error, setError] = useState<string | null>(null);
   const [busySlot, setBusySlot] = useState<{ slot: SlotKey; action: string } | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  // Per-slot preview URL — set after a successful Preview call. Renders as a
+  // visible "▶ Watch" link directly in the slot so popup-blocker doesn't swallow it.
+  const [previewUrls, setPreviewUrls] = useState<Partial<Record<SlotKey, string>>>({});
   const [refreshTick, setRefreshTick] = useState(0);
   // ST-14: derive standaloneMode from canonical activeProjectType signal —
   // reactive on signal change. Milestone scope is always 1-slot standalone
@@ -163,6 +167,13 @@ export function StitcherTab() {
   // Pattern lifted from PhaseProducer.tsx:154-176 so Phase A, Phase B, and
   // Stitcher all consume the same catalog via the same single endpoint.
   const [ambientPresets, setAmbientPresets] = useState<AmbientPreset[]>([]);
+
+  // Re-fetch whenever SendOutButton completes a scene_assemble (cross-tab signal).
+  // This ensures the intro slot auto-populated by scene_assemble becomes visible
+  // without requiring Kim to manually refresh the Stitcher tab.
+  useEffect(() => {
+    setRefreshTick((n) => n + 1);
+  }, [stitcherRefreshTick.value]);
 
   // One-shot fetch of the ambient catalog. The catalog is module-level static
   // (filesystem inventory of Production/assets/sound_library/ambient/), not
@@ -194,9 +205,21 @@ export function StitcherTab() {
         }
         const data = res.data;
         const eventName = activeScope.value.event_id;
-        // Pick the active job for this event (name pattern: phase_*_<event>).
+        // Pick the active job for this event.
+        // Priority: (1) job name contains event_id (legacy named jobs like "phase7_Event_1"),
+        // (2) auto_<slot> job created by scene_assemble Send Out path,
+        // (3) most-recently-updated job (by updated_at),
+        // (4) jobs[0] as last resort.
         const jobs = data?.jobs ?? [];
-        const eventJobSummary = jobs.find((j) => j.name?.includes(eventName)) ?? jobs[0] ?? null;
+        const eventJobSummary =
+          jobs.find((j) => j.name?.includes(eventName)) ??
+          jobs.find((j) => j.name?.startsWith('auto_')) ??
+          (jobs.length > 1
+            ? jobs.reduce((a, b) =>
+                ((a as any).updated_at ?? '') >= ((b as any).updated_at ?? '') ? a : b
+              )
+            : null) ??
+          jobs[0] ?? null;
         if (!eventJobSummary?.name) {
           setJob(null);
           setError(null);
@@ -289,18 +312,30 @@ export function StitcherTab() {
   };
 
   const onPreviewSlot = async (slot: SlotKey) => {
+    const slotData = job?.slots?.[slot];
+    if (!slotData?.video_path) {
+      setStatusMsg(`Slot ${slot} has no video assigned.`);
+      return;
+    }
     setBusySlot({ slot, action: 'preview' });
     setStatusMsg(null);
-    // V59 architectural-fix (Wave 1, F-S2-001): mutation routes through
-    // pathappPatch so M1 snapshot fires + scope keys auto-inject + 409/423
-    // surface per LD-461 / LD-456 / LD-458/460. event_id is auto-injected.
+    // _stitch_build_pipeline expects a `slots` list of slot objects each with
+    // video_path. The client was only sending the slot key — server returned
+    // "No slots provided". Also open the returned preview_url in a new tab.
     const res = await pathappPatch(activeScope.value, 'stitch_preview', {
       name: job?.name,
       slot,
+      slots: [slotData],   // single-slot preview — server builds just this clip
     });
     setBusySlot(null);
     if (res.ok) {
-      setStatusMsg(`✓ Preview ${slot} ready`);
+      const data = res.data as { preview_url?: string } | undefined;
+      if (data?.preview_url) {
+        // Store URL for inline "▶ Watch" link — window.open is blocked by Chrome
+        // after async/await (breaks trusted-event chain). Rendered link is user-clicked.
+        setPreviewUrls((prev) => ({ ...prev, [slot]: data.preview_url }));
+      }
+      setStatusMsg(`✓ Preview ${slot} ready — click ▶ Watch below`);
     } else {
       const data = res.data as { error?: string } | undefined;
       setStatusMsg(`✗ Preview HTTP ${res.status}: ${data?.error ?? res.error ?? ''}`);
@@ -672,8 +707,18 @@ export function StitcherTab() {
                       onClick={() => onPreviewSlot(sd.key)}
                       disabled={busy || !slot?.video_path}
                     >
-                      Preview
+                      {busySlot?.slot === sd.key && busySlot.action === 'preview' ? '…' : 'Preview'}
                     </button>
+                    {previewUrls[sd.key] ? (
+                      <a
+                        href={previewUrls[sd.key]}
+                        target="_blank"
+                        rel="noreferrer"
+                        class="mn-btn mn-btn-small"
+                        style="background:#1a6b5c;color:#fff;text-decoration:none"
+                        data-testid={`stitcher-watch-${sd.key}`}
+                      >▶ Watch</a>
+                    ) : null}
                     <button
                       type="button"
                       class="mn-btn mn-btn-small"
