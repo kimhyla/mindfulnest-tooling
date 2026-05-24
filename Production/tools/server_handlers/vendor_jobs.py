@@ -1041,6 +1041,8 @@ def handle_lipsync_idle(h, body: dict) -> None:
             "submitted_at_epoch": None,
             "audio_file": _audio_name,
             "source": "idle_lipsync",
+            # method field drives UI label: 'idle_kling_lipsync' → '🐦 Re-Idle LipSync'
+            "method": "idle_kling_lipsync",
         })
         ls.pop("last_error", None)
     h.app.state.mutate_state(_init_lipsync_idle)
@@ -1117,9 +1119,13 @@ def handle_lipsync_idle(h, body: dict) -> None:
             _tmp_audio = _clips_dir / f"_tmp_{beat_key}_idle_audio_{ts}.mp3"
             _tmp_video = _clips_dir / f"_tmp_{beat_key}_idle_vtrim_{ts}.mp4"
             try:
+                # IDLE_LIPSYNC_SILCOMP_FIX_20260524: _silcomp_audio does NOT accept
+                # event_dir or beat_key — those were spurious kwargs causing every
+                # idle lipsync to fail at this step. Also enable loudnorm (same as
+                # regular lipsync path at line ~282).
                 audio_for_lipsync, audio_proc_meta = _silcomp_audio(
                     source_audio_path, _tmp_audio,
-                    event_dir=_event_dir, beat_key=beat_key,
+                    loudnorm=True,
                 )
                 _audio_dur_actual = float(audio_proc_meta.get("compressed_duration_s") or audio_duration)
                 video_for_lipsync, trimmed_to, ts_used, te_used = _trim_video_to_audio(
@@ -1247,6 +1253,7 @@ def handle_lipsync_idle(h, body: dict) -> None:
                     "size_bytes": _sz,
                     "audio_file": _aname,
                     "source": "idle_lipsync",
+                    "method": "idle_kling_lipsync",  # drives UI label → '🐦 Re-Idle LipSync'
                     "completed_at": datetime.now(timezone.utc).isoformat(),
                 })
                 ls.pop("last_error", None)
