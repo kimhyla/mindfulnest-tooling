@@ -504,9 +504,13 @@ def handle_lipsync_submit(h, body: dict)-> None:
                 #
                 # maskedmerge semantics: mask=255 (white) → use ByteDance pixel (face);
                 #                        mask=0   (black) → use source pixel (wings/body)
-                _beat_speaker = (beat_state.get("speaker") or "").lower()
-                _is_chipper = _beat_speaker == "chipper"
-                _face_mask_cfg = phase1.get("lipsync_face_mask", _is_chipper)  # default ON only for Chipper
+                # FACE_MASK_OBSOLETE_20260524: the wing-hallucination problem this
+                # solved for Chipper was superseded by the Idle LipSync approach
+                # (same start+end frame → no dramatic wing motion → ByteDance has
+                # nothing to hallucinate hands from). Face-composite is dead code
+                # for the normal lipsync path. Default OFF for all speakers.
+                # Explicit opt-in only: phase_1.lipsync_face_mask = true or dict.
+                _face_mask_cfg = phase1.get("lipsync_face_mask", False)  # default OFF
                 if _face_mask_cfg is not False:
                     _fc_src_tmp  = h.app.state.clips_dir / f"_tmp_{beat_key}_fc_src_{ts}.mp4"
                     _fc_out_tmp  = h.app.state.clips_dir / f"_tmp_{beat_key}_fc_out_{ts}.mp4"
