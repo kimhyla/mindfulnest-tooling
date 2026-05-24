@@ -3362,7 +3362,8 @@ def _detect_head_silence_s(audio_path: Path,
 def _silcomp_audio(source_audio: Path, dst: Path,
                    auto_preroll: bool = False,
                    max_audio_s: float | None = None,
-                   loudnorm: bool = False) -> tuple[Path, dict]:
+                   loudnorm: bool = False,
+                   preroll_s: float = 0.0) -> tuple[Path, dict]:
     """Compress silences >1.0s down to 0.8s. Pass-through if no qualifying
     silences. Returns (path_to_use, metadata_dict).
 
@@ -3379,12 +3380,20 @@ def _silcomp_audio(source_audio: Path, dst: Path,
     Finding 4: preroll interacts weirdly with a non-zero trim_start (Kim
     intended to skip settling frames; preroll would undo that). When in
     doubt, leave auto_preroll=False.
+
+    preroll_s: explicit silence (seconds) to prepend BEFORE the TTS audio,
+    independent of auto_preroll. Used by the lipsync submission path to honour
+    phase_1.audio_delay (DELAY_FIX_20260524): the UI "Delay" slider means
+    "let N seconds of animation play silently before speech starts." This
+    bakes the delay into the audio bytes sent to ByteDance so LatentSync
+    receives [silence][speech] and stamps mouths correctly from N seconds in.
+    Takes priority over auto_preroll when both are non-zero.
     """
     src_dur = _ffprobe_duration(source_audio)
     silences = _detect_silences(source_audio)
     to_compress = [(s, e) for (s, e) in silences if (e - s) > _SILCOMP_TRIGGER_S]
 
-    # --- Auto pre-roll probe (Preflight 110) ---
+    # --- Pre-roll computation (explicit preroll_s takes priority over auto) ---
     preroll_meta = {
         "applied": False,
         "reason": "disabled_by_caller",
@@ -3394,7 +3403,16 @@ def _silcomp_audio(source_audio: Path, dst: Path,
         "min_threshold_s": _AUTO_PREROLL_MIN_S,
     }
     preroll_add_s = 0.0
-    if auto_preroll:
+    if preroll_s > 0.0:
+        # DELAY_FIX_20260524: explicit user-specified audio_delay. Prepend
+        # exactly preroll_s seconds of silence regardless of existing head
+        # silence — ByteDance will see [silence][speech] and stamp mouths
+        # starting at preroll_s seconds into the clip.
+        preroll_add_s = preroll_s
+        preroll_meta["applied"] = True
+        preroll_meta["reason"] = "explicit_audio_delay"
+        preroll_meta["preroll_added_s"] = round(preroll_add_s, 3)
+    elif auto_preroll:
         head = _detect_head_silence_s(source_audio)
         preroll_meta["detected_leading_silence_s"] = head
         if head >= _AUTO_PREROLL_MIN_S:

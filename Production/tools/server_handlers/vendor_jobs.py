@@ -160,16 +160,27 @@ def handle_lipsync_submit(h, body: dict)-> None:
 
     # LIPSYNC_TRIM_WINDOW_HONORED_20260419 — read user trim window from
     # storyboard. Absent/null fields collapse to old "whole-clip" behavior.
-    # DELAY_FIX_20260522: UI "Delay" button writes phase_1.audio_delay, but
-    # lipsync was only reading phase_1.trim_start — these map to the same
-    # concept (video offset before audio starts). Fall back to audio_delay
-    # so the delay is honoured at lipsync submission time.
-    trim_start_raw = phase1.get("trim_start") if phase1.get("trim_start") is not None \
-                     else phase1.get("audio_delay")
+    # DELAY_FIX_20260522_CORRECTED (2026-05-24): trim_start and audio_delay are
+    # DIFFERENT concepts and MUST NOT be aliased.
+    #   trim_start   = video seek offset — skip N seconds of Kling before
+    #                  ByteDance sees the clip (lets the settling frames play
+    #                  out before mouth-stamping begins).
+    #   audio_delay  = TTS timing offset — prepend N seconds of silence to the
+    #                  TTS audio so speech starts N seconds into the lipsync
+    #                  window. Passed to _silcomp_audio as explicit preroll_s.
+    # The original DELAY_FIX_20260522 fallback (alias audio_delay → trim_start)
+    # was architecturally wrong: it seeked the video instead of padding the
+    # audio, which (a) cut the beginning of the dialogue (video advanced past
+    # the opening frames) and (b) produced 3-4 extra seconds of silent
+    # animation at the tail (tail-append saw a short lipsync window and pulled
+    # too much raw Kling). Removed. audio_delay now correctly prepends silence.
+    trim_start_raw = phase1.get("trim_start")
+    audio_delay_raw = phase1.get("audio_delay")
     trim_end_raw = phase1.get("trim_end")
     try:
         trim_start = float(trim_start_raw) if trim_start_raw is not None else 0.0
         trim_end = float(trim_end_raw) if trim_end_raw is not None else None
+        audio_delay_sec = max(0.0, float(audio_delay_raw)) if audio_delay_raw is not None else 0.0
     except (TypeError, ValueError):
         return h._send_error_v59(
                    400,
@@ -192,6 +203,14 @@ def handle_lipsync_submit(h, body: dict)-> None:
                    error_message=f"trim_end ({trim_end}) must be > trim_start ({trim_start})",
                    retry_safe=False,
                )
+
+    # AUDIO_DELAY_PASSTHROUGH_20260524: lipsync_start is where ByteDance
+    # submission actually begins. Raw Kling frames [trim_start, lipsync_start]
+    # are extracted as a silent passthrough segment that plays before the
+    # lipsync output — matching the composite preview's audio delay behavior
+    # (CLAUDE.md Rule 8.5 silence-passthrough protocol). When audio_delay_sec
+    # is 0, lipsync_start == trim_start and behavior is unchanged.
+    lipsync_start = trim_start + audio_delay_sec
 
     beat_num = int(beat_key.split("_")[1])
     source_audio_path = _find_beat_audio(
@@ -233,7 +252,7 @@ def handle_lipsync_submit(h, body: dict)-> None:
         # skip settling frames would be undone by the prepended silence).
         # skip_auto_preroll body flag allows explicit opt-out.
         auto_preroll_enabled = (
-            trim_start == 0.0
+            lipsync_start == 0.0  # gate on effective ByteDance start, not trim_start
             and not body.get("skip_auto_preroll", False)
         )
         # Compute the caller's max_audio_s for overflow clamping (Counter
@@ -244,13 +263,22 @@ def handle_lipsync_submit(h, body: dict)-> None:
         _pre_effective_end = trim_end if trim_end is not None else _pre_raw_dur
         if _pre_effective_end > _pre_raw_dur:
             _pre_effective_end = _pre_raw_dur
-        _pre_window_len = _pre_effective_end - trim_start
+        _pre_window_len = _pre_effective_end - lipsync_start
         _max_audio_for_preroll = max(0.0, _pre_window_len - _VIDEO_TRIM_TAILROOM_S)
         # Preflight 113 LOUDNORM_IN_SILCOMP_V1: enable loudness
         # normalization by default so quiet phrases (e.g. ElevenLabs
         # hesitations at -30 dB) don't get gated as silence by
         # LatentSync. skip_loudnorm body flag allows opt-out.
         loudnorm_enabled = not body.get("skip_loudnorm", False)
+        # NOTE: audio_delay_sec is NOT passed as preroll here (DELAY_FIX_20260524
+        # PARTIAL REVERT). Prepending >~0.8s of silence to audio causes ByteDance
+        # LatentSync to hallucinate (Rule 8.5: scene replacement + watermark on
+        # silence gaps). The correct architecture is the silence-passthrough
+        # protocol: submit ONLY the speech segment to ByteDance, and concat
+        # raw Kling frames for the audio_delay window separately. This requires
+        # a separate architectural pass. For now, audio_delay controls the
+        # composite preview timing only; lipsync submission uses the full speech
+        # segment starting from video frame 0 of the trimmed window.
         audio_for_lipsync, audio_proc_meta = _silcomp_audio(
             source_audio_path, tmp_audio_path,
             auto_preroll=auto_preroll_enabled,
@@ -289,13 +317,16 @@ def handle_lipsync_submit(h, body: dict)-> None:
         # audio_duration + tailroom and causes a spurious AUDIO_EXCEEDS_TRIM_WINDOW error.
         # Auto-extend effective_end to fit the audio when the RAW video has enough room.
         # Only fails now if the SOURCE VIDEO itself is too short for the audio.
-        if need > effective_end - trim_start + 0.10:
-            extended = trim_start + need
+        # Auto-extend uses lipsync_start (= trim_start + audio_delay_sec) as the
+        # ByteDance window origin — the passthrough segment doesn't count toward
+        # the required audio duration window.
+        if need > effective_end - lipsync_start + 0.10:
+            extended = lipsync_start + need
             if extended <= raw_dur + 0.10:
                 print(f"[lipsync] auto-extending trim_end {effective_end:.2f}→{extended:.2f} "
                       f"(client trim_end too tight; raw_dur={raw_dur:.2f}, need={need:.2f})")
                 effective_end = min(extended, raw_dur)
-        window_len = effective_end - trim_start
+        window_len = effective_end - lipsync_start  # ByteDance window (excludes passthrough)
         if need > window_len + 0.10:  # 100ms tolerance: Kling clips encode at ~10.042s not exactly 10.000s
             return h._send_error_v59(
                        400,
@@ -307,8 +338,9 @@ def handle_lipsync_submit(h, body: dict)-> None:
 
         # LD LIPSYNC_MAX_DURATION_10S_NO_SILENCE_V1 (id=400, CLAUDE.md §8.5):
         # ByteDance LatentSync max training window = 10s. Longer = scene hallucination + watermark.
+        # ByteDance receives only the speech segment (from lipsync_start); check only audio_duration.
         _LIPSYNC_MAX_DUR = 10.0
-        if audio_duration > _LIPSYNC_MAX_DUR:
+        if audio_duration > _LIPSYNC_MAX_DUR:  # passthrough handled separately, only speech to ByteDance
             return h._send_error_v59(
                        400,
                        error_code="AUDIO_DURATION_EXCEEDS_BYTEDANCE_MAX",
@@ -320,9 +352,14 @@ def handle_lipsync_submit(h, body: dict)-> None:
                     "then ffmpeg-concat and dub additional phrases as voice-over."},
                    )
 
+        # PASSTHROUGH_FIX_20260524: ByteDance receives only the speech segment
+        # starting at lipsync_start (= trim_start + audio_delay_sec). The
+        # audio_delay window [trim_start, lipsync_start) is extracted separately
+        # as raw Kling frames and prepended after ByteDance returns (see
+        # PASSTHROUGH-PREPEND block in tail-append section below).
         video_for_lipsync, trimmed_to, ts_used, te_used = _trim_video_to_audio(
             source_clip_path, tmp_video_path, audio_duration,
-            trim_start=trim_start, trim_end=effective_end,
+            trim_start=lipsync_start, trim_end=effective_end,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
             OSError, ValueError) as exc:
@@ -557,6 +594,85 @@ def handle_lipsync_submit(h, body: dict)-> None:
                             try: _f.unlink()
                             except (OSError, UnboundLocalError): pass
 
+                # PASSTHROUGH-PREPEND (CLAUDE.md Rule 8.5 silence-passthrough protocol):
+                # When audio_delay_sec > 0, ByteDance received only the speech segment
+                # starting at lipsync_start = trim_start + audio_delay_sec.
+                # The animation window [trim_start, lipsync_start) was NEVER sent to
+                # ByteDance — it must be prepended as raw Kling frames so the final
+                # clip matches the composite preview (video plays silently for
+                # audio_delay_sec, then speech+lipsync begins).
+                # This runs BEFORE tail-append so dest → [passthrough + lipsync];
+                # tail-append then appends any remaining Kling frames after that.
+                if audio_delay_sec > 0.01:
+                    _pre_seg  = h.app.state.clips_dir / f"_tmp_{beat_key}_pre_{ts}.mp4"
+                    _pre_ctxt = h.app.state.clips_dir / f"_tmp_{beat_key}_prec_{ts}.txt"
+                    _pre_out  = h.app.state.clips_dir / f"_tmp_{beat_key}_preo_{ts}.mp4"
+                    try:
+                        _pre_avail_s = audio_delay_sec  # == lipsync_start - trim_start
+                        # Probe ByteDance output for exact dimensions + fps so the
+                        # passthrough segment has matching stream params for concat-copy.
+                        _pp_probe = subprocess.run(
+                            ["ffprobe", "-v", "error",
+                             "-select_streams", "v:0",
+                             "-show_entries", "stream=width,height,r_frame_rate",
+                             "-of", "csv=p=0", str(dest)],
+                            capture_output=True, text=True, timeout=10,
+                        )
+                        _pp_w, _pp_h, _pp_fps_str = 720, 544, "25"
+                        _pp_parts = _pp_probe.stdout.strip().split(",")
+                        if len(_pp_parts) >= 3:
+                            try:
+                                _pp_w = int(_pp_parts[0])
+                                _pp_h = int(_pp_parts[1])
+                                _pp_frac = _pp_parts[2].strip()
+                                if "/" in _pp_frac:
+                                    _pn, _pd = _pp_frac.split("/", 1)
+                                    _pp_fps_str = f"{int(_pn)/max(int(_pd),1):.6f}"
+                                else:
+                                    _pp_fps_str = _pp_frac
+                            except (ValueError, ZeroDivisionError):
+                                pass
+                        # Extract raw Kling frames for the delay window, scaled to
+                        # ByteDance output dimensions. Silent stereo audio track added
+                        # (anullsrc) — this is the "mute" window before speech starts.
+                        subprocess.run([
+                            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                            "-ss", f"{trim_start:.3f}",
+                            "-i", str(source_clip_path),
+                            "-f", "lavfi",
+                            "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+                            "-filter_complex",
+                            f"[0:v]scale={_pp_w}:{_pp_h}:flags=lanczos,"
+                            f"fps={_pp_fps_str},format=yuv420p[vout]",
+                            "-map", "[vout]", "-map", "1:a",
+                            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                            "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-ar", "44100",
+                            "-t", f"{_pre_avail_s:.3f}",
+                            str(_pre_seg),
+                        ], check=True, capture_output=True, timeout=60)
+                        # Concat: [passthrough] + [ByteDance lipsync] → replace dest
+                        _pre_ctxt.write_text(
+                            f"file '{_pre_seg.resolve()}'\nfile '{dest.resolve()}'\n"
+                        )
+                        subprocess.run([
+                            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                            "-f", "concat", "-safe", "0", "-i", str(_pre_ctxt),
+                            "-c", "copy", str(_pre_out),
+                        ], check=True, capture_output=True, timeout=120)
+                        _pre_out.replace(dest)
+                        size = dest.stat().st_size
+                        print(f"[lipsync] {beat_key} passthrough-prepend OK: "
+                              f"{trim_start:.3f}s–{lipsync_start:.3f}s "
+                              f"({_pre_avail_s:.3f}s raw Kling) + lipsync "
+                              f"→ total {_ffprobe_duration(dest):.2f}s")
+                    except Exception as _pe:
+                        print(f"[lipsync] {beat_key} passthrough-prepend FAILED (non-fatal): {_pe}")
+                        import traceback as _tb0; _tb0.print_exc()
+                    finally:
+                        for _f in (_pre_seg, _pre_ctxt, _pre_out):
+                            try: _f.unlink()
+                            except (OSError, UnboundLocalError): pass
+
                 # TAIL-APPEND: preserve original Kling animation frames that
                 # come after the lipsync trim window. Without this, the
                 # character freezes on the last lipsync frame for the
@@ -571,7 +687,15 @@ def handle_lipsync_submit(h, body: dict)-> None:
                 # ByteDance output params, and a silent stereo audio track added
                 # (Kling clips are video-only; ByteDance output has stereo AAC).
                 # Without this, the concat demuxer fails on stream-param mismatch.
-                _tail_start_s = trimmed_to
+                # TAIL_OFFSET_FIX_20260524: trimmed_to is the DURATION of the
+                # lipsync output clip (measured from the start of the trimmed
+                # window). The source clip starts at trim_start seconds in the
+                # original Kling file. So the tail in the original source starts
+                # at trim_start + trimmed_to, not trimmed_to. The old code used
+                # trimmed_to as a raw seek position, which extracted the tail
+                # 2.5s too early when trim_start > 0, producing 3-4 extra
+                # seconds of silent animation after the lipsync ended.
+                _tail_start_s = lipsync_start + trimmed_to
                 _tail_avail_s = raw_dur - _tail_start_s
                 if _tail_avail_s > 0.15:
                     _tail_tmp = h.app.state.clips_dir / f"_tmp_{beat_key}_tail_{ts}.mp4"
