@@ -1302,11 +1302,12 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
             )}
           </button>
         ) : null}
-        {/* 🐦 Idle LipSync — only show when beat has an image override set.
-            Runs Kling i2v (same start+end = idle) → Kling LipSync.
-            Avoids ByteDance hallucinated arm-gestures on cartoon bird wings.
-            Show for Chipper beats (speaker=Chipper) or when lipsync.method=idle_kling_lipsync. */}
-        {(beat.speaker?.toLowerCase() === 'chipper' || beat.lipsync?.method === 'idle_kling_lipsync') && lifecycle !== 'lipsync_pending' ? (
+        {/* 🐦 Idle LipSync — available on ALL beats.
+            Runs Kling i2v (same start+end = idle) → ByteDance LipSync.
+            Useful for any beat where you want minimal animation + clean lipsync
+            (originally designed for Chipper wing/arm hallucination avoidance,
+            but equally valid for Tessa or any creature). */}
+        {lifecycle !== 'lipsync_pending' ? (
           <button
             type="button"
             class="mn-btn mn-btn-small"
@@ -1314,7 +1315,7 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
             data-testid={`beat-${index}-lipsync-idle`}
             onClick={guardedClick('Idle LipSync', onLipsyncIdle)}
             aria-disabled={busy !== null}
-            title="Kling idle animation (same start+end frame) → Kling LipSync. Avoids ByteDance arm/wing hallucinations on Chipper."
+            title="Kling idle animation (same start+end frame) → ByteDance LipSync. Minimal head motion, clean mouth sync."
           >
             {busy === 'Idle LipSync' ? <><Spinner size="sm" inline /> …</> : (
               beat.lipsync?.method === 'idle_kling_lipsync' ? '🐦 Re-Idle LipSync' : '🐦 Idle LipSync'
