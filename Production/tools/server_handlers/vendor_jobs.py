@@ -1238,9 +1238,33 @@ def handle_lipsync_idle(h, body: dict) -> None:
             except Exception as _te2:
                 print(f"[idle_lipsync] {beat_key}: tail probe failed (non-fatal): {_te2}")
 
-            # ── Step 9: Write completed lipsync state ──
+            # ── Step 9: Remux with faststart so Chrome can seek immediately ──
+            # IDLE_LIPSYNC_FASTSTART_20260524: without faststart the moov atom is at
+            # the END of the file. Chrome cannot seek (e.g. to currentTime=0) until
+            # the full file is buffered, causing play() to throw NotSupportedError on
+            # a freshly-mounted <video> element. -c copy is zero-quality-loss.
+            _faststart_tmp = _clips_dir / f"_tmp_{beat_key}_idle_fs_{ts}.mp4"
+            try:
+                subprocess.run([
+                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-i", str(dest),
+                    "-c", "copy",
+                    "-movflags", "+faststart",
+                    str(_faststart_tmp),
+                ], check=True, capture_output=True, timeout=60)
+                _faststart_tmp.replace(dest)
+                size = dest.stat().st_size
+                print(f"[idle_lipsync] {beat_key}: faststart OK → {size:,}B")
+            except Exception as _fse:
+                print(f"[idle_lipsync] {beat_key}: faststart failed (non-fatal): {_fse}")
+                try: _faststart_tmp.unlink()
+                except (OSError, NameError): pass
+
+            # ── Step 10: Write completed lipsync state ──
             def _mark_done(st, _bk=beat_key, _f=dest_name, _sz=size, _role=video_role,
-                           _aname=audio_for_lipsync.name):
+                           _aname=audio_for_lipsync.name,
+                           _ts_used=float(ts_used), _te_used=float(te_used),
+                           _adur=float(_audio_dur_actual)):
                 beat = ((st.get("videos") or {}).get(_role) or {}).get("beats", {}).get(_bk)
                 if not beat:
                     return
@@ -1256,6 +1280,18 @@ def handle_lipsync_idle(h, body: dict) -> None:
                     "method": "idle_kling_lipsync",  # drives UI label → '🐦 Re-Idle LipSync'
                     "completed_at": datetime.now(timezone.utc).isoformat(),
                 })
+                # IDLE_LIPSYNC_AUDIO_PROC_20260524: write audio_processing so the UI
+                # seek formula (max(0, currentLipsyncStart - genLipsyncStart)) has
+                # accurate data. For idle lipsync: ts_used=0 (no trim), audio_delay=0
+                # (not applied at submission). audio_delay is excluded from
+                # currentLipsyncStart on the UI side via isIdleLipsync check, so
+                # genLipsyncStart=0 + seekTo=0 is the correct outcome.
+                ls["audio_processing"] = {
+                    "trim_start": _ts_used,          # always 0.0 for idle (hardcoded in Step 4)
+                    "trim_end": _te_used,
+                    "audio_delay_sec": 0.0,           # NOT applied for idle lipsync
+                    "compressed_duration_s": _adur,
+                }
                 ls.pop("last_error", None)
             _state_obj.mutate_state(_mark_done)
             print(f"[idle_lipsync] {beat_key}: DONE — {dest_name} ({size:,}B)")
@@ -1264,7 +1300,8 @@ def handle_lipsync_idle(h, body: dict) -> None:
             # Clean up temp files.
             for _tf in (_idle_clip,
                         _clips_dir / f"_tmp_{beat_key}_idle_audio_{ts}.mp3",
-                        _clips_dir / f"_tmp_{beat_key}_idle_vtrim_{ts}.mp4"):
+                        _clips_dir / f"_tmp_{beat_key}_idle_vtrim_{ts}.mp4",
+                        _clips_dir / f"_tmp_{beat_key}_idle_fs_{ts}.mp4"):
                 try: _tf.unlink()
                 except (OSError, NameError): pass
 

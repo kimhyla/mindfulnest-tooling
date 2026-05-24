@@ -1851,10 +1851,22 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
       //
       // Old files without audio_processing: genLipsyncStart defaults to 0,
       // seekTo = currentLipsyncStart (same as pre-TRIM_SEEK_FIX behavior).
+      //
+      // IDLE_LIPSYNC_SEEK_FIX_20260524: idle lipsync files are generated with
+      // audio_delay=0 — the ByteDance job receives TTS starting at t=0 of the
+      // idle Kling clip. audio_delay (beat.phase_1.audio_delay) is a COMPOSITE
+      // PREVIEW parameter only and is NOT baked into the idle file. Including it
+      // in currentLipsyncStart would seek to t=N on a freshly-mounted video that
+      // has no buffered data there, causing NotSupportedError from play().
       {
+        const isIdleLipsync = (beat.lipsync as { source?: string } | undefined)?.source === 'idle_lipsync';
         const genLipsyncStart = Number(beat.lipsync?.audio_processing?.trim_start ?? 0) || 0;
         const currentTrimStart = Number(beat.phase_1?.trim_start ?? beat.trim_in ?? 0) || 0;
-        const currentLipsyncStart = currentTrimStart + audioDelaySec;
+        // For idle lipsync: audio_delay is NOT in the file — always start at trim_start only.
+        // For regular lipsync: audio_delay is baked in at submission time.
+        const currentLipsyncStart = isIdleLipsync
+          ? currentTrimStart
+          : currentTrimStart + audioDelaySec;
         const lipsyncSeekTo = Math.max(0, currentLipsyncStart - genLipsyncStart);
         try { vid.currentTime = lipsyncSeekTo; } catch { /* defensive */ }
       }
