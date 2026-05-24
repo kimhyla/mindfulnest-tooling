@@ -715,7 +715,16 @@ def handle_lipsync_submit(h, body: dict)-> None:
                 # 2.5s too early when trim_start > 0, producing 3-4 extra
                 # seconds of silent animation after the lipsync ended.
                 _tail_start_s = lipsync_start + trimmed_to
-                _tail_avail_s = raw_dur - _tail_start_s
+                # TAIL_TRIM_BACK_FIX_20260524: cap tail at effective_end (not raw_dur).
+                # When trim_back is set, effective_end = raw_dur - trim_back.  The old
+                # code always ran the tail to raw_dur, meaning wing-wrap frames (past the
+                # trim_back point) still appeared in the lipsync output even when
+                # trim_back was correctly applied to the ByteDance input window.
+                # Fix: tail stops at effective_end so the final clip respects the user's
+                # back-trim intent. When trim_back is None, effective_end == raw_dur and
+                # behavior is unchanged.
+                _tail_clip_end = effective_end if effective_end < raw_dur - 0.05 else raw_dur
+                _tail_avail_s = _tail_clip_end - _tail_start_s
                 if _tail_avail_s > 0.15:
                     _tail_tmp = h.app.state.clips_dir / f"_tmp_{beat_key}_tail_{ts}.mp4"
                     _concat_txt = h.app.state.clips_dir / f"_tmp_{beat_key}_clist_{ts}.txt"
