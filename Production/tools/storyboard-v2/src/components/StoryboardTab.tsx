@@ -68,7 +68,9 @@ interface BeatState {
   // Compared against audio_regenerated_at to gate the ▶ lipsync play button
   // per LD STORYBOARD_LIPSYNC_BUTTON_FRESHNESS_GATE_V1. Missing → defensive
   // "stale" default (older server, or file disappeared mid-render).
-  lipsync?: { file?: string; status?: string; file_mtime?: number; file_exists?: boolean; method?: string; task_id?: string };
+  lipsync?: { file?: string; status?: string; file_mtime?: number; file_exists?: boolean; method?: string; task_id?: string;
+    /** audio_processing block from server — trim_start here is lipsync_start at generation (ts_used). */
+    audio_processing?: { trim_start?: number; audio_delay?: number; [key: string]: unknown } };
   // phase_1 is the server-canonical persistence root for per-beat animation
   // state. `audio_delay` (the Video Lead-in slider) lives here — bootstrap
   // /api/v2/event/<id>/state returns the raw state.json so this is where the
@@ -1833,14 +1835,28 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
     let rafId: number | null = null;
     let onPlayListener: (() => void) | null = null;
     if (isLipsyncPreview) {
-      // TRIM_SEEK_FIX_20260524: server applies trim_start BEFORE submitting to
-      // ByteDance (lipsync_start = trim_start + audio_delay_sec, used as ffmpeg
-      // -ss offset). The lipsync file therefore STARTS at trim_start. Re-seeking
-      // to trimStartSec here double-applies the front trim — e.g. trim_start=1
-      // seeks to second 1 of an already-trimmed file, skipping 2s total.
-      // Always seek to 0: the lipsync file's first frame is already the intended
-      // start frame. (Back-trim via RAF is still correct — see below.)
-      try { vid.currentTime = 0; } catch { /* defensive */ }
+      // LIPSYNC_SEEK_FIX_20260524: seek to max(0, currentLipsyncStart - genLipsyncStart).
+      // genLipsyncStart = beat.lipsync.audio_processing.trim_start (lipsync_start at generation
+      // = trim_start + audio_delay at submit time, stored by server as ts_used).
+      // currentLipsyncStart = current trim_start + current audio_delay.
+      // Delta = how far to seek into the existing file to honor current trim settings.
+      //
+      // Why not always 0: if Kim generated lipsync at trim_start=0 and later changes
+      // trim_start=3, the file is NOT pre-trimmed — seeking to 0 shows 3s of unwanted
+      // animation before speech. Seeking to 3 shows the correct start.
+      //
+      // Why not always trim_start: if Kim re-sent lipsync WITH trim baked in (lipsync_start=1.5)
+      // and current trim_start=1.5, seekTo = 1.5-1.5 = 0. Correct.
+      //
+      // Old files without audio_processing: genLipsyncStart defaults to 0,
+      // seekTo = currentLipsyncStart (same as pre-TRIM_SEEK_FIX behavior).
+      {
+        const genLipsyncStart = Number(beat.lipsync?.audio_processing?.trim_start ?? 0) || 0;
+        const currentTrimStart = Number(beat.phase_1?.trim_start ?? beat.trim_in ?? 0) || 0;
+        const currentLipsyncStart = currentTrimStart + audioDelaySec;
+        const lipsyncSeekTo = Math.max(0, currentLipsyncStart - genLipsyncStart);
+        try { vid.currentTime = lipsyncSeekTo; } catch { /* defensive */ }
+      }
       // Translate back-trim into lipsync-mp4 timeline. vid.duration is only
       // valid after loadedmetadata fires; gate accordingly. If we never see
       // a finite duration, fall back to NO back-trim (don't truncate the
