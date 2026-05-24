@@ -10821,7 +10821,7 @@ body {{padding-top:44px!important;}}
         import re as _re
         clips_dir = self.app.event_dir / "animation_clips_final"
         if not clips_dir.exists():
-            self._send_json_response({"ok": True, "beats": [], "total_ms": 0})
+            self._send_json(200, {"ok": True, "beats": [], "total_ms": 0})
             return
 
         pattern = _re.compile(r"beat_(\d+)_final_.*\.mp4$")
@@ -10839,7 +10839,7 @@ body {{padding-top:44px!important;}}
             return
 
         if not beat_files:
-            self._send_json_response({"ok": True, "beats": [], "total_ms": 0})
+            self._send_json(200, {"ok": True, "beats": [], "total_ms": 0})
             return
 
         boundaries = []
@@ -10859,7 +10859,7 @@ body {{padding-top:44px!important;}}
             })
             cursor_ms += dur_ms
 
-        self._send_json_response({"ok": True, "beats": boundaries, "total_ms": cursor_ms})
+        self._send_json(200, {"ok": True, "beats": boundaries, "total_ms": cursor_ms})
 
     def _serve_stitch_preview_file(self, hash_id: str) -> None:
         """GET /api/stitch_editor/preview_file/<hash> — serve preview MP4 with byte-range support."""
