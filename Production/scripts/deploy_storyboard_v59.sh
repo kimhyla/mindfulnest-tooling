@@ -392,7 +392,7 @@ fi
 # Event id derives from event_dir name (e.g. Event_1 → Event_1).
 event_id="$(basename "$EVENT_DIR")"
 
-nohup python3 "$DEST_DROPBOX/Production/tools/production_server.py" \
+nohup env PRODUCTION_SERVER_SINGLE_MACHINE=1 python3 "$DEST_DROPBOX/Production/tools/production_server.py" \
     --event-dir "$EVENT_DIR" \
     --storyboard "$storyboard_html" \
     --event-id "$event_id" \
