@@ -978,26 +978,24 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
 
   const optionCount = beat.phase_1?.options?.length ?? 0;
   const selectedOption = beat.phase_1?.selected_option ?? null;
-  // F-BEAT-PREVIEW-001: pre-lipsync composite preview only — never on lipsync outputs.
-  // ASSEMBLY-MATCH FIX (2026-05-24): showCompositePreview must track what
-  // _handle_scene_assemble will actually produce, not what lipsync.file existence
-  // implies. The previous guard `!beat.lipsync?.file` caused the storyboard to
-  // show lipsync playback for beats where final.source === 'raw_option' — i.e.
-  // Kim approved the animation option (not lipsync), but the storyboard showed
-  // the lipsync anyway. Assembly used raw_option animation + TTS with audio_delay,
-  // so Kim saw completely different timing than what got assembled.
+  // F-BEAT-PREVIEW-001 / COMPOSITE_PREVIEW_PERSISTENT_20260524:
+  // Show composite preview (animation + delayed TTS) whenever a selected animation
+  // option exists — regardless of whether lipsync.file is present.
+  // Kim uses the composite preview as a timing reference tool BEFORE resending
+  // lipsync, including when reviewing an existing lipsync to decide if delay needs
+  // adjusting. Hiding it once lipsync.file exists breaks this workflow.
   //
-  // New rule mirrors _is_raw_option_src in production_server.py:
-  //   • final.source === 'raw_option'  → show BeatCompositePreview (animation + delayed TTS)
-  //   • no lipsync AND not lipsync/still_image final → show composite (pre-lipsync timing tool)
-  //   • final.source === 'lipsync' or 'still_image' → show lipsync / still player (not composite)
+  // Rule: show composite preview if:
+  //   • lifecycle is past 'selected' (animation options exist)
+  //   • selected_option is set (there is a clip to preview)
+  //   • final.source is NOT 'still_image' (still-as-final has no animation to preview)
+  //
+  // The BeatCompositePreview component itself returns null when videoSrc/audioSrc
+  // are missing, so no additional guard needed here.
   const showCompositePreview = (
     ['animated', 'selected', 'lipsync_pending', 'final'].includes(lifecycle) &&
     beat.phase_1?.selected_option != null &&
-    (
-      beat.final?.source === 'raw_option' ||
-      (!beat.lipsync?.file && beat.final?.source !== 'lipsync' && beat.final?.source !== 'still_image')
-    )
+    beat.final?.source !== 'still_image'
   );
 
   return (
@@ -1797,9 +1795,9 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
     // For lipsync we translate back-trim into the lipsync mp4 timeline:
     //   back_offset = audio_duration - trim_end   (what user typed in s·back)
     //   pause_at    = lipsync_mp4.duration - back_offset
-    // Front-trim stays as a direct currentTime seek (skips leading lipsync
-    // preroll/garbage — Kim's intent matches the mp4 timeline there).
-    const trimStartSec = Number(beat.phase_1?.trim_start ?? beat.trim_in ?? 0) || 0;
+    // TRIM_SEEK_FIX_20260524: front-trim is now applied server-side (lipsync_start =
+    // trim_start + audio_delay in vendor_jobs.py). We no longer seek the lipsync <video>
+    // to trim_start — removed trimStartSec. Back-trim (RAF-based pauseAt) is unchanged.
     // New canonical: trim_back is stored directly as relative seconds (2026-05-23 fix).
     // Legacy fallback: derive from audio_duration - trim_end (for old beats without trim_back).
     const trimBackDirect = beat.phase_1?.trim_back;
@@ -1835,11 +1833,14 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
     let rafId: number | null = null;
     let onPlayListener: (() => void) | null = null;
     if (isLipsyncPreview) {
-      if (trimStartSec > 0) {
-        try { vid.currentTime = trimStartSec; } catch { /* defensive */ }
-      } else {
-        try { vid.currentTime = 0; } catch { /* defensive */ }
-      }
+      // TRIM_SEEK_FIX_20260524: server applies trim_start BEFORE submitting to
+      // ByteDance (lipsync_start = trim_start + audio_delay_sec, used as ffmpeg
+      // -ss offset). The lipsync file therefore STARTS at trim_start. Re-seeking
+      // to trimStartSec here double-applies the front trim — e.g. trim_start=1
+      // seeks to second 1 of an already-trimmed file, skipping 2s total.
+      // Always seek to 0: the lipsync file's first frame is already the intended
+      // start frame. (Back-trim via RAF is still correct — see below.)
+      try { vid.currentTime = 0; } catch { /* defensive */ }
       // Translate back-trim into lipsync-mp4 timeline. vid.duration is only
       // valid after loadedmetadata fires; gate accordingly. If we never see
       // a finite duration, fall back to NO back-trim (don't truncate the
@@ -1851,7 +1852,7 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
             console.warn(`[lipsync-trim] ${beatId}: vid.duration not ready (${vid.duration}); back-trim NOT applied`);
             return;
           }
-          const pauseAt = Math.max(trimStartSec + 0.01, dur - backOffsetSec);
+          const pauseAt = Math.max(0.01, dur - backOffsetSec);
           console.log(`[lipsync-trim] ${beatId}: audioDur=${audioDur} trimEnd=${trimEndSec} back_offset=${backOffsetSec.toFixed(3)}s lipsync_dur=${dur.toFixed(3)}s pause_at=${pauseAt.toFixed(3)}s`);
           const tick = () => {
             if (!vid || vid.paused || vid.ended) {
@@ -1935,6 +1936,12 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
       if (vid && !vid.paused) {
         safePause(vid).catch(() => {});
         if (!isLipsyncPreview) safePause(aud).catch(() => {});
+        // LIPSYNC_PLAY_STOP_20260524: always reset to ▶ state on explicit user
+        // stop click. Prior code left previewOptIdx=0 (pause-to-resume intent) but
+        // a stalled video has vid.paused===false yet never advances — user sees ⏸
+        // with nothing playing and no escape. Resetting to null here makes ⏸
+        // a reliable "stop" button: next ▶ click always restarts cleanly.
+        setPreviewOptIdx(null);
       } else {
         // BUG FIX: if the video has ended, currentTime is at duration — play() immediately
         // re-fires 'ended' with no visible frames. Reset to 0 first so replay works.
@@ -1962,6 +1969,18 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
     // LD-757: reset UI only; lipsyncMounted keeps <video> in DOM.
     setPreviewOptIdx(null);
   }, []);
+
+  // LIPSYNC_PLAY_STOP_20260524: reset play state when the <video> element fires
+  // an error event. Without this, a 404 / codec decode error fires 'error' but
+  // nothing handles it — previewOptIdx stays 0 and the button is permanently
+  // stuck as ⏸. Surface the error message via resetPlayState (toast + null reset).
+  const onPreviewVideoError = useCallback(() => {
+    const vid = videoRef.current;
+    const code = vid?.error?.code;
+    const msg = vid?.error?.message || `MEDIA_ERR code=${code ?? '?'}`;
+    console.warn(`[StoryboardTab] ${beatId} <video> error:`, vid?.error);
+    resetPlayState(`video load failed: ${msg}`, 'error', 'Lipsync playback');
+  }, [resetPlayState, beatId]);
 
   // Hydrate the ref's initial text + recover from localStorage if a fresher draft.
   useEffect(() => {
@@ -2169,6 +2188,7 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
         lipsyncBufferSrc={lipsyncBufferSrc}
         videoRef={videoRef as RefObject<HTMLVideoElement>}
         onPreviewEnded={handlePreviewEnded}
+        onPreviewVideoError={onPreviewVideoError}
         onImageReassigned={() => {
           // T4-3 (2026-05-19): dismiss lipsync preview on drag-drop image
           // re-assign so the new image becomes immediately visible.
@@ -2242,6 +2262,9 @@ interface BeatImageHolderProps {
   previewVideoSrc?: string | null;
   videoRef?: RefObject<HTMLVideoElement>;
   onPreviewEnded?: () => void;
+  /** LIPSYNC_PLAY_STOP_20260524: called when the <video> element fires an error
+   * event (404, codec failure) so BeatCard can reset previewOptIdx to null. */
+  onPreviewVideoError?: () => void;
   /** T4-3 (2026-05-19): on successful drag-drop image-assign, parent dismisses
    * lipsync preview so the new image becomes visible. Once `lipsyncMounted`
    * flips true (LD-757 persistence), the IMG element stops rendering — only
@@ -2253,7 +2276,7 @@ interface BeatImageHolderProps {
   lipsyncBufferSrc?: string | null;
 }
 
-function BeatImageHolder({ index, beatId, beat, eventId, onMutated, previewVideoSrc, lipsyncBufferSrc, videoRef, onPreviewEnded, onImageReassigned }: BeatImageHolderProps) {
+function BeatImageHolder({ index, beatId, beat, eventId, onMutated, previewVideoSrc, lipsyncBufferSrc, videoRef, onPreviewEnded, onPreviewVideoError, onImageReassigned }: BeatImageHolderProps) {
   const stillPath = beat.image_path;
   const hasImage = !!stillPath;
   // Blocker #145 / DS-22: image_override persisted but thumb stayed stale when
@@ -2334,6 +2357,7 @@ function BeatImageHolder({ index, beatId, beat, eventId, onMutated, previewVideo
             playsInline
             preload="auto"
             onEnded={onPreviewEnded}
+            onError={onPreviewVideoError}
             data-testid={`beat-${index}-lipsync-video`}
           />
           {/* Show still image when video is in buffer-only mode (hidden) */}

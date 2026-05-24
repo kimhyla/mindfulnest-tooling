@@ -511,7 +511,7 @@ def handle_lipsync_submit(h, body: dict)-> None:
                 # for the normal lipsync path. Default OFF for all speakers.
                 # Explicit opt-in only: phase_1.lipsync_face_mask = true or dict.
                 _face_mask_cfg = phase1.get("lipsync_face_mask", False)  # default OFF
-                if _face_mask_cfg is not False:
+                if _face_mask_cfg:  # None/False/0 all skip; only True or dict enables
                     _fc_src_tmp  = h.app.state.clips_dir / f"_tmp_{beat_key}_fc_src_{ts}.mp4"
                     _fc_out_tmp  = h.app.state.clips_dir / f"_tmp_{beat_key}_fc_out_{ts}.mp4"
                     _fc_mask_png = h.app.state.clips_dir / f"_tmp_{beat_key}_fc_mask_{ts}.png"
@@ -896,6 +896,389 @@ def handle_lipsync_submit(h, body: dict)-> None:
                     f"(silcomp {'applied' if silcomp_applied else 'no-op'}, "
                     f"video trimmed to {trimmed_to:.2f}s "
                     f"from [{ts_used:.2f}, {te_used:.2f}])."),
+    })
+
+
+def handle_lipsync_idle(h, body: dict) -> None:
+    """Idle LipSync: same image → idle Kling animation → ByteDance lipsync.
+
+    CLAUDE.md §8.3 idle pattern: same start+end frame → Kling produces subtle
+    idle oscillation (no dramatic wing motion) → clean ByteDance lipsync without
+    hallucinated arms. Avoids face-composite masking entirely.
+
+    Flow (all in background thread — returns immediately):
+      1. Load beat.image_path as base64 (used for BOTH start and end frame)
+      2. Submit to Kling (idle = same image twice → near-still animation)
+      3. Poll Kling until complete, download clip
+      4. Run silcomp + _trim_video_to_audio (same §8.4 conditioning as normal lipsync)
+      5. Submit to ByteDance LatentSync
+      6. Poll ByteDance until complete, download result
+      7. Tail-append remaining idle Kling frames (same as normal lipsync)
+      8. Write lipsync state (same schema as handle_lipsync_submit)
+
+    No passthrough prepend: idle lipsync has audio_delay=0 (speech starts with video).
+
+    Body: {"beat_id": "beat_NN"} (+ scope fields)
+    Returns: {"status": "ok", "beat": beat_key}
+    """
+    from kling_startend_pipeline import kling_startend_submit, RULE8_ANTI_LIPSYNC
+    from tools.production_server import (
+        KLING_MAX_DURATION_SEC, KLING_MIN_DURATION_SEC, _AUDIO_SHORT_THRESHOLD_SEC,
+    )
+
+    # Scope guard
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+
+    if h.app.client is None:
+        return h._send_error_v59(
+            500, error_code="WAVESPEED_NOT_CONFIGURED",
+            error_message="WaveSpeed client not configured (missing API key)",
+            retry_safe=True,
+        )
+
+    beat_key = body.get("beat") or body.get("beat_id")
+    if not beat_key:
+        return h._send_error_v59(
+            400, error_code="MISSING_BEAT_BEAT_ID_FIELD",
+            error_message="missing 'beat'/'beat_id' field", retry_safe=False,
+        )
+
+    video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
+
+    state = h.app.state.read_state()
+    beat_state = ((state.get("videos") or {}).get(video_role) or {}).get("beats", {}).get(beat_key)
+    if not beat_state:
+        return h._send_error_v59(
+            404, error_code="GENERIC_ERROR",
+            error_message=f"beat '{beat_key}' not found in state", retry_safe=False,
+        )
+
+    # Resolve image_path to absolute disk path.
+    image_path_raw = beat_state.get("image_path")
+    if not image_path_raw:
+        return h._send_error_v59(
+            400, error_code="GENERIC_ERROR",
+            error_message=f"beat '{beat_key}' has no image_path — assign an image first",
+            retry_safe=False,
+        )
+    if os.path.isabs(image_path_raw):
+        image_abs = Path(image_path_raw)
+    else:
+        image_abs = (h.app.event_dir / image_path_raw).resolve()
+    if not image_abs.is_file():
+        alt = h.app.resolve_library_image_path(image_path_raw)
+        if alt:
+            image_abs = Path(alt)
+        else:
+            return h._send_error_v59(
+                404, error_code="GENERIC_ERROR",
+                error_message=f"image file not found: {image_path_raw}", retry_safe=False,
+            )
+
+    # Find TTS audio for this beat.
+    source_audio_path = _find_beat_audio(h.app.event_dir, beat_key, app=h.app)
+    if not source_audio_path:
+        return h._send_error_v59(
+            404, error_code="GENERIC_ERROR",
+            error_message=f"no audio found for {beat_key} — regenerate audio first",
+            retry_safe=False,
+        )
+
+    # Determine Kling duration from audio (same logic as add_options).
+    audio_duration = float(beat_state.get("audio_duration_s") or 0) or 5.0
+    kling_duration = KLING_MIN_DURATION_SEC if audio_duration <= _AUDIO_SHORT_THRESHOLD_SEC else KLING_MAX_DURATION_SEC
+
+    # Load image as base64 PNG data URI (same for start AND end = idle animation).
+    try:
+        img_bytes = image_abs.read_bytes()
+        ext = image_abs.suffix.lower()
+        if ext in (".webp", ".jpg", ".jpeg"):
+            try:
+                from PIL import Image as _PILImage
+                import io as _io
+                _img = _PILImage.open(_io.BytesIO(img_bytes)).convert("RGB")
+                _buf = _io.BytesIO()
+                _img.save(_buf, format="PNG")
+                img_bytes = _buf.getvalue()
+            except Exception as _conv_exc:
+                print(f"[idle_lipsync] {beat_key}: PNG conversion failed ({_conv_exc}), using raw bytes")
+        img_b64_uri = f"data:image/png;base64,{base64.b64encode(img_bytes).decode('ascii')}"
+    except Exception as exc:
+        return h._send_error_v59(
+            500, error_code="GENERIC_ERROR",
+            error_message=f"failed to load image {image_path_raw}: {exc}", retry_safe=False,
+        )
+
+    # Snapshot app-level handles for the background thread.
+    _client     = h.app.client
+    _state_obj  = h.app.state
+    _clips_dir  = h.app.state.clips_dir
+    _event_dir  = h.app.event_dir
+    _api_key    = _client.api_key
+
+    # Mark lipsync as "submitting" in state so the UI shows activity.
+    def _init_lipsync_idle(st, _bk=beat_key, _audio_name=source_audio_path.name, _role=video_role):
+        beat = ((st.get("videos") or {}).get(_role) or {}).get("beats", {}).get(_bk)
+        if not beat:
+            return
+        existing = beat.get("lipsync")
+        if not isinstance(existing, dict):
+            beat["lipsync"] = {
+                "status": "submitting", "task_id": None, "file": None,
+                "audio_file": None, "submitted_at": None, "retries": 0,
+            }
+        ls = beat["lipsync"]
+        prior_task = ls.get("task_id")
+        if prior_task:
+            superseded = ls.setdefault("superseded_task_ids", [])
+            if prior_task not in superseded:
+                superseded.append(prior_task)
+        ls.update({
+            "status": "submitting",
+            "task_id": None,
+            "submitted_at": None,
+            "submitted_at_epoch": None,
+            "audio_file": _audio_name,
+            "source": "idle_lipsync",
+        })
+        ls.pop("last_error", None)
+    h.app.state.mutate_state(_init_lipsync_idle)
+
+    def _do_idle_lipsync():
+        ts = int(time.time())
+        _idle_clip = _clips_dir / f"_tmp_{beat_key}_idle_kling_{ts}.mp4"
+        try:
+            # ── Step 1: Submit idle Kling (same image for start AND end) ──
+            print(f"[idle_lipsync] {beat_key}: submitting idle Kling "
+                  f"(duration={kling_duration}s, image={image_abs.name})")
+            try:
+                task_id = kling_startend_submit(
+                    start_b64_uri=img_b64_uri,
+                    end_b64_uri=img_b64_uri,   # SAME image → idle (minimal motion)
+                    prompt=(
+                        "Subtle idle breathing animation, gentle head sway, "
+                        "beak closed, no speech, no lip movement, "
+                        "silent subtle idle movement only"
+                    ),
+                    negative_prompt=RULE8_ANTI_LIPSYNC,
+                    duration=kling_duration,
+                    api_key=_api_key,
+                    element_entry=None,
+                )
+            except Exception as exc:
+                _fail(f"kling_submit: {exc}")
+                return
+
+            # Update state: task submitted, now polling.
+            def _set_kling_polling(st, _bk=beat_key, _tid=task_id, _role=video_role):
+                _ls = (((st.get("videos") or {}).get(_role) or {}).get("beats", {}).get(_bk) or {}).get("lipsync") or {}
+                _ls["status"] = "submitting"
+                _ls["idle_kling_task_id"] = _tid
+            _state_obj.mutate_state(_set_kling_polling)
+
+            # ── Step 2: Poll Kling until complete (max 900s = 15min) ──
+            print(f"[idle_lipsync] {beat_key}: Kling task_id={task_id}, polling...")
+            kling_url = None
+            deadline = time.time() + 900
+            while time.time() < deadline:
+                time.sleep(10)
+                try:
+                    result = _client.poll(task_id)
+                except Exception as exc:
+                    print(f"[idle_lipsync] {beat_key}: Kling poll error (retrying): {exc}")
+                    continue
+                status = (result.get("status") or "").lower()
+                if status == "completed":
+                    outputs = result.get("outputs") or []
+                    if outputs:
+                        kling_url = outputs[0]
+                        break
+                elif status in ("failed", "error"):
+                    _fail(f"kling_poll: {result.get('error','Kling reported failure')}")
+                    return
+            if not kling_url:
+                _fail("kling_timeout: Kling did not complete within 15 minutes")
+                return
+
+            # ── Step 3: Download idle Kling clip ──
+            print(f"[idle_lipsync] {beat_key}: Kling complete, downloading...")
+            try:
+                _client.download(kling_url, _idle_clip)
+            except Exception as exc:
+                _fail(f"kling_download: {exc}")
+                return
+            print(f"[idle_lipsync] {beat_key}: idle clip downloaded "
+                  f"({_idle_clip.stat().st_size:,}B)")
+
+            # ── Step 4: §8.4 pre-conditioning (silcomp + trim) ──
+            # For idle lipsync: audio_delay=0, trim_start=0, lipsync_start=0.
+            # No passthrough prepend needed.
+            _tmp_audio = _clips_dir / f"_tmp_{beat_key}_idle_audio_{ts}.mp3"
+            _tmp_video = _clips_dir / f"_tmp_{beat_key}_idle_vtrim_{ts}.mp4"
+            try:
+                audio_for_lipsync, audio_proc_meta = _silcomp_audio(
+                    source_audio_path, _tmp_audio,
+                    event_dir=_event_dir, beat_key=beat_key,
+                )
+                _audio_dur_actual = float(audio_proc_meta.get("compressed_duration_s") or audio_duration)
+                video_for_lipsync, trimmed_to, ts_used, te_used = _trim_video_to_audio(
+                    _idle_clip, _tmp_video, _audio_dur_actual,
+                    trim_start=0.0, trim_end=None,
+                )
+            except Exception as exc:
+                traceback.print_exc()
+                _fail(f"precond: {exc}")
+                return
+
+            # ── Step 5: Submit to ByteDance LatentSync ──
+            print(f"[idle_lipsync] {beat_key}: submitting to ByteDance "
+                  f"(video={trimmed_to:.2f}s, audio={_audio_dur_actual:.2f}s)")
+            lipsync_client = LipSyncClient(_api_key)
+            try:
+                bd_task_id = lipsync_client.submit(video_for_lipsync, audio_for_lipsync)
+            except Exception as exc:
+                _fail(f"bytedance_submit: {exc}")
+                return
+
+            def _set_bd_polling(st, _bk=beat_key, _tid=bd_task_id, _role=video_role,
+                                _aname=audio_for_lipsync.name):
+                _ls = (((st.get("videos") or {}).get(_role) or {}).get("beats", {}).get(_bk) or {}).get("lipsync") or {}
+                _ls["status"] = "polling"
+                _ls["task_id"] = _tid
+                _ls["submitted_at"] = datetime.now(timezone.utc).isoformat()
+                _ls["submitted_at_epoch"] = int(time.time())
+                _ls["audio_file"] = _aname
+            _state_obj.mutate_state(_set_bd_polling)
+
+            # ── Step 6: Poll ByteDance until complete ──
+            bd_result = lipsync_client.poll_until_done(bd_task_id)
+            bd_status = (bd_result.get("status") or "").lower()
+            if not (bd_status == "completed" and bd_result.get("outputs")):
+                _fail(f"bytedance_poll: status={bd_status} error={bd_result.get('error','')}")
+                return
+
+            # ── Step 7: Download ByteDance result ──
+            dest_name = f"{beat_key}_lipsync.mp4"
+            dest = _clips_dir / dest_name
+            url = bd_result["outputs"][0]
+            size = lipsync_client.download(url, dest)
+            print(f"[idle_lipsync] {beat_key}: ByteDance download OK ({size:,}B)")
+
+            # ── Step 8: Tail-append (same as handle_lipsync_submit) ──
+            # Appends remaining idle Kling frames after lipsync window ends,
+            # preventing the character freezing on the last lipsync frame.
+            try:
+                raw_dur = _ffprobe_duration(str(_idle_clip))
+                _tail_start_s = trimmed_to  # lipsync_start=0, so tail starts at trimmed_to
+                _tail_avail_s = raw_dur - _tail_start_s
+                if _tail_avail_s > 0.15:
+                    _tail_tmp   = _clips_dir / f"_tmp_{beat_key}_idle_tail_{ts}.mp4"
+                    _concat_txt = _clips_dir / f"_tmp_{beat_key}_idle_clist_{ts}.txt"
+                    _ls_ext     = _clips_dir / f"_tmp_{beat_key}_idle_lsext_{ts}.mp4"
+                    try:
+                        # Probe ByteDance output dimensions/fps for matching params.
+                        _probe = subprocess.run(
+                            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                             "-show_entries", "stream=width,height,r_frame_rate",
+                             "-of", "csv=p=0", str(dest)],
+                            capture_output=True, text=True, timeout=10,
+                        )
+                        _ls_w, _ls_h, _ls_fps_str = 720, 544, "25"
+                        _pp = _probe.stdout.strip().split(",")
+                        if len(_pp) >= 3:
+                            try:
+                                _ls_w = int(_pp[0]); _ls_h = int(_pp[1])
+                                _fps_frac = _pp[2].strip()
+                                if "/" in _fps_frac:
+                                    _n, _d = _fps_frac.split("/", 1)
+                                    _ls_fps_str = f"{int(_n)/max(int(_d),1):.6f}"
+                                else:
+                                    _ls_fps_str = _fps_frac
+                            except (ValueError, ZeroDivisionError):
+                                pass
+                        subprocess.run([
+                            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                            "-ss", f"{_tail_start_s:.3f}",
+                            "-i", str(_idle_clip),
+                            "-f", "lavfi", "-t", f"{_tail_avail_s + 0.1:.3f}",
+                            "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+                            "-filter_complex",
+                            f"[0:v]scale={_ls_w}:{_ls_h}:flags=lanczos,"
+                            f"fps={_ls_fps_str},format=yuv420p[vout]",
+                            "-map", "[vout]", "-map", "1:a",
+                            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                            "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-ar", "44100",
+                            "-shortest", str(_tail_tmp),
+                        ], check=True, capture_output=True, timeout=60)
+                        _concat_txt.write_text(
+                            f"file '{dest.resolve()}'\nfile '{_tail_tmp.resolve()}'\n"
+                        )
+                        subprocess.run([
+                            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                            "-f", "concat", "-safe", "0", "-i", str(_concat_txt),
+                            "-c", "copy", str(_ls_ext),
+                        ], check=True, capture_output=True, timeout=120)
+                        _ls_ext.replace(dest)
+                        size = dest.stat().st_size
+                        print(f"[idle_lipsync] {beat_key}: tail-append OK "
+                              f"+{_tail_avail_s:.2f}s → {size:,}B")
+                    except Exception as _te:
+                        print(f"[idle_lipsync] {beat_key}: tail-append failed (non-fatal): {_te}")
+                    finally:
+                        for _tf in (_tail_tmp, _concat_txt, _ls_ext):
+                            try: _tf.unlink()
+                            except (OSError, UnboundLocalError): pass
+            except Exception as _te2:
+                print(f"[idle_lipsync] {beat_key}: tail probe failed (non-fatal): {_te2}")
+
+            # ── Step 9: Write completed lipsync state ──
+            def _mark_done(st, _bk=beat_key, _f=dest_name, _sz=size, _role=video_role,
+                           _aname=audio_for_lipsync.name):
+                beat = ((st.get("videos") or {}).get(_role) or {}).get("beats", {}).get(_bk)
+                if not beat:
+                    return
+                if not isinstance(beat.get("lipsync"), dict):
+                    beat["lipsync"] = {}
+                ls = beat["lipsync"]
+                ls.update({
+                    "status": "completed",
+                    "file": _f,
+                    "size_bytes": _sz,
+                    "audio_file": _aname,
+                    "source": "idle_lipsync",
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                })
+                ls.pop("last_error", None)
+            _state_obj.mutate_state(_mark_done)
+            print(f"[idle_lipsync] {beat_key}: DONE — {dest_name} ({size:,}B)")
+
+        finally:
+            # Clean up temp files.
+            for _tf in (_idle_clip,
+                        _clips_dir / f"_tmp_{beat_key}_idle_audio_{ts}.mp3",
+                        _clips_dir / f"_tmp_{beat_key}_idle_vtrim_{ts}.mp4"):
+                try: _tf.unlink()
+                except (OSError, NameError): pass
+
+    def _fail(reason: str) -> None:
+        """Write failed lipsync state and log."""
+        print(f"[idle_lipsync] {beat_key}: FAILED — {reason}")
+        def _mark_fail(st, _bk=beat_key, _r=reason, _role=video_role):
+            _ls = (((st.get("videos") or {}).get(_role) or {}).get("beats", {}).get(_bk) or {}).get("lipsync") or {}
+            _ls["status"] = "failed"
+            _ls["last_error"] = _r[:500]
+        _state_obj.mutate_state(_mark_fail)
+
+    threading.Thread(
+        target=_do_idle_lipsync, daemon=True, name=f"lipsync-idle-{beat_key}",
+    ).start()
+
+    h._send_json(200, {
+        "status": "ok",
+        "beat": beat_key,
+        "message": (f"Idle LipSync started for {beat_key}: "
+                    f"same-frame Kling ({kling_duration}s) → ByteDance in background."),
     })
 
 
