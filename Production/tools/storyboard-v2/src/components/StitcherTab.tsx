@@ -16,7 +16,7 @@
 //
 // All actions go through pathappPatch so scope guards + snapshot fire.
 
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { activeScope, activeProjectType, scopeKey } from '../state/scope';
 import { stitcherRefreshTick } from '../app';
 import { apiGet, pathappPatch } from '../api/client';
@@ -96,6 +96,13 @@ interface PopoverState {
   anchor: { x: number; y: number };
 }
 
+interface BeatBoundary {
+  beat_id: string;
+  start_ms: number;
+  end_ms: number;
+  duration_ms: number;
+}
+
 function generateCueId(prefix: string): string {
   // 8-char random suffix — enough for in-session uniqueness; server is the
   // source of truth on persistence.
@@ -167,6 +174,12 @@ export function StitcherTab() {
   // Pattern lifted from PhaseProducer.tsx:154-176 so Phase A, Phase B, and
   // Stitcher all consume the same catalog via the same single endpoint.
   const [ambientPresets, setAmbientPresets] = useState<AmbientPreset[]>([]);
+
+  // Inline preview player state
+  const [activePreviewSlot, setActivePreviewSlot] = useState<SlotKey | null>(null);
+  const [beatBoundaries, setBeatBoundaries] = useState<BeatBoundary[]>([]);
+  const [beatBoundariesLoading, setBeatBoundariesLoading] = useState(false);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
 
   // Re-fetch whenever SendOutButton completes a scene_assemble (cross-tab signal).
   // This ensures the intro slot auto-populated by scene_assemble becomes visible
@@ -311,6 +324,32 @@ export function StitcherTab() {
     return t ?? null;
   };
 
+  const fetchBeatBoundaries = async () => {
+    setBeatBoundariesLoading(true);
+    setBeatBoundaries([]);
+    const res = await apiGet<{ ok: boolean; beats?: BeatBoundary[] }>(
+      'stitch_editor_beat_boundaries',
+      { event_id: activeScope.value.event_id },
+    );
+    setBeatBoundariesLoading(false);
+    if (res.ok && res.data?.beats?.length) {
+      setBeatBoundaries(res.data.beats);
+    }
+  };
+
+  const onTimelineClick = (e: MouseEvent) => {
+    const video = videoRef.current;
+    if (!video) return;
+    const el = e.currentTarget as HTMLElement;
+    const box = el.getBoundingClientRect();
+    if (box.width <= 0) return;
+    const ratio = Math.max(0, Math.min(1, (e.clientX - box.left) / box.width));
+    const totalMs = beatBoundaries.length > 0
+      ? beatBoundaries[beatBoundaries.length - 1].end_ms
+      : video.duration * 1000;
+    video.currentTime = (ratio * totalMs) / 1000;
+  };
+
   const onPreviewSlot = async (slot: SlotKey) => {
     const slotData = job?.slots?.[slot];
     if (!slotData?.video_path) {
@@ -334,8 +373,10 @@ export function StitcherTab() {
         // Store URL for inline "▶ Watch" link — window.open is blocked by Chrome
         // after async/await (breaks trusted-event chain). Rendered link is user-clicked.
         setPreviewUrls((prev) => ({ ...prev, [slot]: data.preview_url }));
+        setActivePreviewSlot(slot);
+        void fetchBeatBoundaries();
       }
-      setStatusMsg(`✓ Preview ${slot} ready — click ▶ Watch below`);
+      setStatusMsg(`✓ Preview ${slot} ready`);
     } else {
       const data = res.data as { error?: string } | undefined;
       setStatusMsg(`✗ Preview HTTP ${res.status}: ${data?.error ?? res.error ?? ''}`);
@@ -709,16 +750,6 @@ export function StitcherTab() {
                     >
                       {busySlot?.slot === sd.key && busySlot.action === 'preview' ? '…' : 'Preview'}
                     </button>
-                    {previewUrls[sd.key] ? (
-                      <a
-                        href={previewUrls[sd.key]}
-                        target="_blank"
-                        rel="noreferrer"
-                        class="mn-btn mn-btn-small"
-                        style="background:#1a6b5c;color:#fff;text-decoration:none"
-                        data-testid={`stitcher-watch-${sd.key}`}
-                      >▶ Watch</a>
-                    ) : null}
                     <button
                       type="button"
                       class="mn-btn mn-btn-small"
@@ -733,6 +764,58 @@ export function StitcherTab() {
               );
             })}
           </div>
+
+          {/* Inline preview player + beat timeline.
+              Shows below the slot strip when any slot's Preview is active.
+              Full-width to give proper NLE-style viewing context. */}
+          {activePreviewSlot && previewUrls[activePreviewSlot] ? (
+            <div class="mn-stitcher-preview-area" data-testid="stitcher-preview-area">
+              <div class="mn-stitcher-preview-header">
+                <span class="mn-dim">Preview: <strong>{activePreviewSlot}</strong></span>
+                <button
+                  type="button"
+                  class="mn-btn mn-btn-small"
+                  onClick={() => { setActivePreviewSlot(null); setBeatBoundaries([]); }}
+                  data-testid="stitcher-preview-close"
+                >✕ Close</button>
+              </div>
+              <video
+                ref={videoRef}
+                controls
+                src={previewUrls[activePreviewSlot]}
+                class="mn-stitcher-video-player"
+                data-testid="stitcher-video-player"
+              />
+              <div
+                class={`mn-beat-timeline${beatBoundariesLoading ? ' mn-beat-timeline-loading' : ''}`}
+                data-testid="mn-beat-timeline"
+                onClick={onTimelineClick}
+                title="Click to seek"
+              >
+                {beatBoundaries.length > 0 ? (() => {
+                  const totalMs = beatBoundaries[beatBoundaries.length - 1].end_ms;
+                  return beatBoundaries.map((b, i) => {
+                    const leftPct = (b.start_ms / totalMs) * 100;
+                    const widthPct = (b.duration_ms / totalMs) * 100;
+                    return (
+                      <div
+                        key={b.beat_id}
+                        class={`mn-beat-segment ${i % 2 === 0 ? 'mn-beat-even' : 'mn-beat-odd'}`}
+                        style={`left:${leftPct.toFixed(2)}%;width:${widthPct.toFixed(2)}%`}
+                        title={`${b.beat_id}: ${(b.start_ms / 1000).toFixed(1)}s – ${(b.end_ms / 1000).toFixed(1)}s`}
+                      >
+                        <span class="mn-beat-segment-label">{b.beat_id.replace('beat_', '')}</span>
+                      </div>
+                    );
+                  });
+                })() : (
+                  <span class="mn-dim" style="padding:0 8px">
+                    {beatBoundariesLoading ? 'Loading beat markers…' : 'No beat markers (non-assembled slot)'}
+                  </span>
+                )}
+              </div>
+            </div>
+          ) : null}
 
           {/* Per-boundary transitions (G7-G8). 3 selectors for 4 slots:
               after_slot=0 (intro→phase_a), 1 (phase_a→phase_b),

@@ -45,6 +45,7 @@ export const READ_ENDPOINTS = {
   lipsync_status: `${SERVER_BASE}/api/lipsync/status`,
   stitch_editor_jobs: `${SERVER_BASE}/api/stitch_editor/jobs`,
   stitch_editor_job: `${SERVER_BASE}/api/stitch_editor/job/{job_name}`,
+  stitch_editor_beat_boundaries: `${SERVER_BASE}/api/stitch_editor/beat_boundaries`,
 } as const;
 
 // MUTATION endpoints — Session 1 ships ZERO callers of these; they exist
