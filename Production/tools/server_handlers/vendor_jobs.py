@@ -490,13 +490,23 @@ def handle_lipsync_submit(h, body: dict)-> None:
                 # "corrected" to look like human arms/hands. Masking the composite to the
                 # face ellipse preserves lipsync where it matters and keeps wings clean.
                 #
-                # Enabled by default. Disable per beat: phase_1.lipsync_face_mask = false
-                # Override mask (fraction of frame): phase_1.lipsync_face_mask =
+                # FACE_MASK_DEFAULT_CHIPPER_ONLY_20260524: the mask params were
+                # calibrated for Chipper's beak (cy=0.52, small ry=0.10).
+                # Applying it to Tessa/other creatures puts the mask on the
+                # wrong face region → ByteDance mouth movement is masked OUT
+                # (original Kling = no movement shows through instead) AND the
+                # blur-edge blending creates a faint ghost. Default is now OFF
+                # for non-Chipper speakers; ON only for Chipper (bird wings).
+                # Enable per beat: phase_1.lipsync_face_mask = true  (or dict)
+                # Disable per beat: phase_1.lipsync_face_mask = false
+                # Override mask:    phase_1.lipsync_face_mask =
                 #   {"cx": 0.50, "cy": 0.42, "rx": 0.28, "ry": 0.26, "blur_px": 40}
                 #
                 # maskedmerge semantics: mask=255 (white) → use ByteDance pixel (face);
                 #                        mask=0   (black) → use source pixel (wings/body)
-                _face_mask_cfg = phase1.get("lipsync_face_mask", True)  # ON by default
+                _beat_speaker = (beat_state.get("speaker") or "").lower()
+                _is_chipper = _beat_speaker == "chipper"
+                _face_mask_cfg = phase1.get("lipsync_face_mask", _is_chipper)  # default ON only for Chipper
                 if _face_mask_cfg is not False:
                     _fc_src_tmp  = h.app.state.clips_dir / f"_tmp_{beat_key}_fc_src_{ts}.mp4"
                     _fc_out_tmp  = h.app.state.clips_dir / f"_tmp_{beat_key}_fc_out_{ts}.mp4"
