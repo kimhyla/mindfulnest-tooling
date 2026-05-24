@@ -310,14 +310,22 @@ def translate_trim_for_source(
     finals keep their original timeline since trim_end was authored against
     the same source):
 
-      back_offset_s = audio_duration_s - trim_end_absolute     # user input
-      new_trim_end  = lipsync_mp4_duration - back_offset_s
-      trim_start stays as-is (front offset semantics match the mp4's
-      leading edge well enough; if Kim ever needs front-trim translation
-      we can add it under the same code path).
+      back_offset_s   = audio_duration_s - trim_end_absolute     # user input
+      new_trim_end    = lipsync_mp4_duration - back_offset_s
+      gen_ls_start    = lipsync.audio_processing.trim_start      # ts_used at generation
+      new_trim_start  = max(0, trim_start - gen_ls_start)
 
-    Returns (trim_start, translated_trim_end). When translation isn't
-    applicable (no lipsync, missing audio_duration_s, source isn't the
+    STITCH_FRONT_TRIM_FIX_20260524: trim_start is now also translated into
+    the lipsync file's timeline using the same delta used by the UI preview
+    (LIPSYNC_SEEK_FIX_20260524). gen_ls_start = the lipsync_start at
+    generation time (ts_used = trim_start + audio_delay_sec), stored as
+    beat.lipsync.audio_processing.trim_start. Examples:
+      beat_09: gen=0, current=3  → new_trim_start=3  (trims 3s off existing file)
+      beat_03: gen=1.5, current=1.5 → new_trim_start=0 (no double-trim after resend)
+      old files (no audio_processing): gen=0 → new_trim_start=current_trim_start (unchanged)
+
+    Returns (translated_trim_start, translated_trim_end). When translation
+    isn't applicable (no lipsync, missing audio_duration_s, source isn't the
     lipsync mp4), returns the inputs unchanged.
     """
     if trim_end is None:
@@ -356,9 +364,20 @@ def translate_trim_for_source(
         lipsync_dur = ffprobe_duration(source_file_path)
     except Exception:
         return (trim_start, trim_end)
+    # STITCH_FRONT_TRIM_FIX_20260524: translate trim_start into lipsync timeline.
+    # gen_ls_start = lipsync_start at generation time (ts_used, stored as
+    # audio_processing.trim_start by vendor_jobs.py mark_done).
+    gen_ls_start = float(
+        (lipsync_block.get("audio_processing") or {}).get("trim_start") or 0
+    )
+    new_trim_start: float | None
+    if trim_start is None:
+        new_trim_start = None
+    else:
+        new_trim_start = max(0.0, float(trim_start) - gen_ls_start)
     back_offset = max(0.0, audio_dur_f - float(trim_end))
-    new_end = max(float(trim_start or 0.0) + 0.01, lipsync_dur - back_offset)
-    return (trim_start, new_end)
+    new_end = max(float(new_trim_start or 0.0) + 0.01, lipsync_dur - back_offset)
+    return (new_trim_start, new_end)
 
 
 def trim_normalized(src: Path, dst: Path,
