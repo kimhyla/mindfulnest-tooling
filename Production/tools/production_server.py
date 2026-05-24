@@ -5911,6 +5911,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/stitch_editor/preview_file/"):
                 hash_id = path[len("/api/stitch_editor/preview_file/"):]
                 return self._serve_stitch_preview_file(hash_id)
+            if path == "/api/stitch_editor/beat_boundaries":
+                return self._handle_stitch_beat_boundaries()
             if path.startswith("/api/stitch_editor/audio_file/"):
                 fname = path[len("/api/stitch_editor/audio_file/"):]
                 return self._serve_stitch_audio_file(fname)
@@ -10811,6 +10813,53 @@ body {{padding-top:44px!important;}}
                    error_message=f"Audio file not found: {safe}",
                    retry_safe=False,
                )
+
+    def _handle_stitch_beat_boundaries(self) -> None:
+        """GET /api/stitch_editor/beat_boundaries
+        Returns beat boundary timecodes by probing animation_clips_final/*.
+        Used by StitcherTab to render beat markers on the inline timeline."""
+        import re as _re
+        clips_dir = self.app.event_dir / "animation_clips_final"
+        if not clips_dir.exists():
+            self._send_json_response({"ok": True, "beats": [], "total_ms": 0})
+            return
+
+        pattern = _re.compile(r"beat_(\d+)_final_.*\.mp4$")
+        beat_files: dict[int, Path] = {}
+        try:
+            for f in clips_dir.iterdir():
+                m = pattern.match(f.name)
+                if m:
+                    beat_num = int(m.group(1))
+                    existing = beat_files.get(beat_num)
+                    if existing is None or f.stat().st_mtime > existing.stat().st_mtime:
+                        beat_files[beat_num] = f
+        except OSError as exc:
+            self._send_error_v59(500, "FS_ERROR", str(exc), retry_safe=True)
+            return
+
+        if not beat_files:
+            self._send_json_response({"ok": True, "beats": [], "total_ms": 0})
+            return
+
+        boundaries = []
+        cursor_ms = 0
+        for beat_num in sorted(beat_files):
+            fpath = beat_files[beat_num]
+            try:
+                dur_s = _ffprobe_duration(fpath)
+                dur_ms = round(dur_s * 1000)
+            except Exception:  # noqa: BLE001
+                dur_ms = 3000  # fallback 3s if probe fails
+            boundaries.append({
+                "beat_id": f"beat_{beat_num:02d}",
+                "start_ms": cursor_ms,
+                "end_ms": cursor_ms + dur_ms,
+                "duration_ms": dur_ms,
+            })
+            cursor_ms += dur_ms
+
+        self._send_json_response({"ok": True, "beats": boundaries, "total_ms": cursor_ms})
 
     def _serve_stitch_preview_file(self, hash_id: str) -> None:
         """GET /api/stitch_editor/preview_file/<hash> — serve preview MP4 with byte-range support."""
