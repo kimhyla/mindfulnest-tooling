@@ -554,10 +554,15 @@ def handle_lipsync_submit(h, body: dict)-> None:
                         _fc_mask_img = _fc_mask_img.filter(
                             ImageFilter.GaussianBlur(radius=_fc_blur))
                         _fc_mask_img.save(str(_fc_mask_png))
-                        # Scale original source to ByteDance dimensions + fps, video-only
+                        # Scale original source to ByteDance dimensions + fps, video-only.
+                        # FACE_COMPOSITE_SEEK_FIX_20260524: must start at lipsync_start,
+                        # NOT at 0. ByteDance received the clip starting at lipsync_start;
+                        # frame 0 of ByteDance output = frame lipsync_start of source.
+                        # Reading source from 0 when lipsync_start > 0 produces a
+                        # "ghost Tessa" — two misaligned versions blended by maskedmerge.
                         subprocess.run([
                             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                            "-ss", "0", "-t", f"{_fc_dur:.3f}",
+                            "-ss", f"{lipsync_start:.3f}", "-t", f"{_fc_dur:.3f}",
                             "-i", str(source_clip_path),
                             "-vf", (f"scale={_fc_w}:{_fc_h}:flags=lanczos,"
                                     f"fps={_fc_fps_str},format=yuv420p"),
