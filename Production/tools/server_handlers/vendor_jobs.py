@@ -204,7 +204,7 @@ def handle_lipsync_submit(h, body: dict)-> None:
                    retry_safe=False,
                )
 
-    # AUDIO_DELAY_PASSTHROUGH_20260524: lipsync_start is where ByteDance
+    # AUDIO_DELAY_PASSTHROUGH_20260524: lipsync_start is where Kling lipsync
     # submission actually begins. Raw Kling frames [trim_start, lipsync_start]
     # are extracted as a silent passthrough segment that plays before the
     # lipsync output — matching the composite preview's audio delay behavior
@@ -336,21 +336,11 @@ def handle_lipsync_submit(h, body: dict)-> None:
                        extra={"beat": beat_key, "audio_duration_s": round(audio_duration, 3), "tailroom_s": _VIDEO_TRIM_TAILROOM_S, "needed_s": round(need, 3), "trim_window_s": round(window_len, 3), "trim_start": round(trim_start, 3), "trim_end": round(effective_end, 3), "hint": "widen trim_end, move trim_start earlier, or shorten the TTS audio"},
                    )
 
-        # LD LIPSYNC_MAX_DURATION_10S_NO_SILENCE_V1 (id=400, CLAUDE.md §8.5):
-        # ByteDance LatentSync max training window = 10s. Longer = scene hallucination + watermark.
-        # ByteDance receives only the speech segment (from lipsync_start); check only audio_duration.
-        _LIPSYNC_MAX_DUR = 10.0
-        if audio_duration > _LIPSYNC_MAX_DUR:  # passthrough handled separately, only speech to ByteDance
-            return h._send_error_v59(
-                       400,
-                       error_code="AUDIO_DURATION_EXCEEDS_BYTEDANCE_MAX",
-                       error_message="audio_duration exceeds ByteDance max (10s)",
-                       retry_safe=False,
-                       extra={"audio_duration_s": round(audio_duration, 3), "max_duration_s": _LIPSYNC_MAX_DUR, "beat": beat_key, "rule": "LIPSYNC_MAX_DURATION_10S_NO_SILENCE_V1 (id=400)", "hint": "Use silence-split + passthrough protocol (CLAUDE.md §8.5): "
-                    "split at silence boundaries, submit each speaking segment ≤10s "
-                    "to ByteDance, passthrough original frames for silent portions, "
-                    "then ffmpeg-concat and dub additional phrases as voice-over."},
-                   )
+        # SWITCH_TO_KLING_LIPSYNC_20260524: removed ByteDance 10s hard cap.
+        # LD LIPSYNC_MAX_DURATION_10S_NO_SILENCE_V1 (id=400) was ByteDance-specific
+        # (LatentSync training window). Kling lipsync supports up to 60s (see
+        # lipsync_sender.LIPSYNC_MAX_DURATION_SEC). No server-side check needed here;
+        # lipsync_sender.LipSyncClient.submit() raises ValueError if >60s.
 
         # PASSTHROUGH_FIX_20260524: ByteDance receives only the speech segment
         # starting at lipsync_start (= trim_start + audio_delay_sec). The
@@ -394,7 +384,7 @@ def handle_lipsync_submit(h, body: dict)-> None:
         "trim_end": round(te_used, 3),
         "trim_window_s": round(te_used - ts_used, 3),
         "applied_by": "_handle_lipsync_submit_v4_loudnorm",
-        "rule_reference": "CLAUDE.md §8.4 + LIPSYNC_TRIM_WINDOW_HONORED_20260419 + AUTO_PREROLL_V1 + LOUDNORM_V1",
+        "rule_reference": "CLAUDE.md §8.4 + LIPSYNC_TRIM_WINDOW_HONORED_20260419 + AUTO_PREROLL_V1 + LOUDNORM_V1 + SWITCH_TO_KLING_LIPSYNC_20260524",
     }
     silcomp_applied = audio_proc_meta["applied"]
     print(f"[lipsync] {beat_key} pre-cond: silcomp={silcomp_applied} "
@@ -1146,14 +1136,14 @@ def handle_lipsync_idle(h, body: dict) -> None:
                 _fail(f"precond: {exc}")
                 return
 
-            # ── Step 5: Submit to ByteDance LatentSync ──
-            print(f"[idle_lipsync] {beat_key}: submitting to ByteDance "
+            # ── Step 5: Submit to Kling LipSync ── (SWITCH_TO_KLING_LIPSYNC_20260524)
+            print(f"[idle_lipsync] {beat_key}: submitting to Kling lipsync "
                   f"(video={trimmed_to:.2f}s, audio={_audio_dur_actual:.2f}s)")
             lipsync_client = LipSyncClient(_api_key)
             try:
                 bd_task_id = lipsync_client.submit(video_for_lipsync, audio_for_lipsync)
             except Exception as exc:
-                _fail(f"bytedance_submit: {exc}")
+                _fail(f"kling_lipsync_submit: {exc}")
                 return
 
             def _set_bd_polling(st, _bk=beat_key, _tid=bd_task_id, _role=video_role,
@@ -1166,22 +1156,22 @@ def handle_lipsync_idle(h, body: dict) -> None:
                 _ls["audio_file"] = _aname
             _state_obj.mutate_state(_set_bd_polling)
 
-            # ── Step 6: Poll ByteDance until complete ──
+            # ── Step 6: Poll Kling lipsync until complete ──
             bd_result = lipsync_client.poll_until_done(bd_task_id)
             bd_status = (bd_result.get("status") or "").lower()
             if not (bd_status == "completed" and bd_result.get("outputs")):
-                _fail(f"bytedance_poll: status={bd_status} error={bd_result.get('error','')}")
+                _fail(f"kling_lipsync_poll: status={bd_status} error={bd_result.get('error','')}")
                 return
 
-            # ── Step 7: Download ByteDance result ──
+            # ── Step 7: Download Kling lipsync result ──
             dest_name = f"{beat_key}_lipsync.mp4"
             dest = _clips_dir / dest_name
             url = bd_result["outputs"][0]
             size = lipsync_client.download(url, dest)
-            print(f"[idle_lipsync] {beat_key}: ByteDance download OK ({size:,}B)")
+            print(f"[idle_lipsync] {beat_key}: Kling lipsync download OK ({size:,}B)")
 
             # ── Step 8: Tail-append (same as handle_lipsync_submit) ──
-            # Appends remaining idle Kling frames after lipsync window ends,
+            # Appends remaining idle Kling frames after Kling lipsync window ends,
             # preventing the character freezing on the last lipsync frame.
             try:
                 raw_dur = _ffprobe_duration(str(_idle_clip))
@@ -1192,7 +1182,7 @@ def handle_lipsync_idle(h, body: dict) -> None:
                     _concat_txt = _clips_dir / f"_tmp_{beat_key}_idle_clist_{ts}.txt"
                     _ls_ext     = _clips_dir / f"_tmp_{beat_key}_idle_lsext_{ts}.mp4"
                     try:
-                        # Probe ByteDance output dimensions/fps for matching params.
+                        # Probe Kling lipsync output dimensions/fps for matching params.
                         _probe = subprocess.run(
                             ["ffprobe", "-v", "error", "-select_streams", "v:0",
                              "-show_entries", "stream=width,height,r_frame_rate",

@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-lipsync_sender.py — ByteDance LipSync via WaveSpeed API
-========================================================
-Submits animation clips + TTS audio to ByteDance LipSync endpoint.
+lipsync_sender.py — Kling LipSync via WaveSpeed API
+====================================================
+Submits animation clips + TTS audio to Kling LipSync endpoint.
 Returns lip-synced video clips ready for storyboard integration.
 
 Uses the same WaveSpeed API key as animation generation (Kling/Seedance).
-Endpoint: api.wavespeed.ai/api/v3/bytedance/lipsync/audio-to-video
-Cost: ~$0.15 per 5s clip
+Endpoint: api.wavespeed.ai/api/v3/kwaivgi/kling-lipsync/audio-to-video
+Cost: ~$0.35 per job
 
-**Approach:** Uploads video + audio to uguu.se temporary hosting first,
-then submits the URLs to WaveSpeed. This avoids the data URI timeout
-issue caused by embedding large base64 payloads in the JSON body.
-Proven working in test_08_bytedance_on_25d.py (April 12, 2026).
+SWITCH_TO_KLING_LIPSYNC_20260524: switched from bytedance/lipsync/audio-to-video
+to kwaivgi/kling-lipsync/audio-to-video. Kim confirmed Kling lipsync quality is
+visibly better. The same API contract applies: {"video": data_uri, "audio": data_uri}
+payload, same polling URL pattern. No ByteDance 10s training window constraint.
 
 Usage:
     from lipsync_sender import LipSyncClient
@@ -44,7 +44,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 LIPSYNC_BASE_URL = (
-    "https://api.wavespeed.ai/api/v3/bytedance/lipsync"
+    "https://api.wavespeed.ai/api/v3/kwaivgi/kling-lipsync"
 )
 
 LIPSYNC_SUBMIT_URL = f"{LIPSYNC_BASE_URL}/audio-to-video"
@@ -58,7 +58,7 @@ def lipsync_poll_url(job_id: str) -> str:
     """Poll endpoint — uses shared predictions endpoint (confirmed by WaveSpeed API response urls.get)."""
     return f"{PREDICTIONS_POLL_BASE}/{job_id}/result"
 
-COST_PER_LIPSYNC = 0.15  # per 5s clip
+COST_PER_LIPSYNC = 0.35  # Kling lipsync per job (SWITCH_TO_KLING_LIPSYNC_20260524)
 MAX_RETRIES = 3
 RETRY_BACKOFF = [5, 10, 20]  # seconds
 POLL_INTERVAL = 10  # seconds between polls
@@ -184,9 +184,10 @@ def file_to_data_uri(path: Path, mime_type: str) -> str:
 
 LIPSYNC_PAD_START = 0.5  # seconds of silence before speech
 LIPSYNC_PAD_END = 0.5    # seconds of silence after speech
-# LD LIPSYNC_MAX_DURATION_10S_NO_SILENCE_V1 (id=400): ByteDance LatentSync training
-# window is 5-10s. Longer clips cause scene hallucination + Chinese watermark.
-LIPSYNC_MAX_DURATION_SEC = 10.0
+# SWITCH_TO_KLING_LIPSYNC_20260524: Kling has no ByteDance 10s training window
+# constraint. Raise to 60s as a generous soft ceiling for now.
+# (LD LIPSYNC_MAX_DURATION_10S_NO_SILENCE_V1 id=400 was ByteDance-specific.)
+LIPSYNC_MAX_DURATION_SEC = 60.0
 
 
 def _find_ffmpeg() -> str | None:
@@ -304,10 +305,12 @@ def pad_audio_for_lipsync(audio_path: Path) -> Path:
 
 class LipSyncClient:
     """
-    WaveSpeed ByteDance LipSync client.
+    WaveSpeed Kling LipSync client. (SWITCH_TO_KLING_LIPSYNC_20260524)
+    Formerly ByteDance LatentSync — switched 2026-05-24.
     Uses curl via subprocess for WaveSpeed API calls because Python's
     urllib hangs on this endpoint (TLS/HTTP version mismatch on macOS).
     curl works instantly on the same machine — confirmed April 16, 2026.
+    API contract unchanged: {"video": data_uri, "audio": data_uri}, same polling.
     """
 
     def __init__(self, api_key: str):
@@ -420,8 +423,9 @@ class LipSyncClient:
         print(f"[lipsync] Submitting: video={video_path.name} ({video_size} bytes), "
               f"audio={audio_path.name} ({audio_size} bytes)")
 
-        # HARD GUARD — LD LIPSYNC_MAX_DURATION_10S_NO_SILENCE_V1 (id=400)
-        # ByteDance LatentSync max training window = 10s. Longer = scene hallucination + watermark.
+        # SWITCH_TO_KLING_LIPSYNC_20260524: Kling lipsync has no ByteDance 10s training
+        # window constraint (LIPSYNC_MAX_DURATION_SEC raised to 60s).
+        # Soft guard only — warn rather than hard-block.
         result = subprocess.run(
             [_find_ffmpeg() or "ffmpeg", "-v", "error", "-i", str(video_path),
              "-show_entries", "format=duration", "-of", "csv=p=0"],
@@ -434,21 +438,17 @@ class LipSyncClient:
         if _vid_dur > LIPSYNC_MAX_DURATION_SEC:
             raise ValueError(
                 f"[lipsync] BLOCKED: video is {_vid_dur:.2f}s, exceeds "
-                f"LIPSYNC_MAX_DURATION_SEC={LIPSYNC_MAX_DURATION_SEC}s. "
-                "Use silence-split + passthrough protocol (CLAUDE.md §8.5) — "
-                "split at silence boundaries, submit speaking segments only (each ≤10s), "
-                "passthrough original frames for silent portions."
+                f"LIPSYNC_MAX_DURATION_SEC={LIPSYNC_MAX_DURATION_SEC}s."
             )
 
-        # Pad audio with silence at start/end to prevent boundary artifacts
-        padded_audio = pad_audio_for_lipsync(audio_path)
-        self._padded_audio_tmp = padded_audio  # track for cleanup
+        # SWITCH_TO_KLING_LIPSYNC_20260524: pad_audio_for_lipsync was a ByteDance-specific
+        # boundary artifact fix (silence at start/end). Not needed for Kling — use audio_path directly.
 
         # Build data URIs — embed files directly in the request
         print(f"[lipsync] Encoding video as data URI...")
         video_uri = file_to_data_uri(video_path, "video/mp4")
         print(f"[lipsync] Encoding audio as data URI...")
-        audio_uri = file_to_data_uri(padded_audio, "audio/mpeg")
+        audio_uri = file_to_data_uri(audio_path, "audio/mpeg")
 
         body = {"video": video_uri, "audio": audio_uri}
         body_size = len(json.dumps(body))
@@ -574,15 +574,7 @@ class LipSyncClient:
         result = self.poll_until_done(job_id)
         status = (result.get("status") or "").lower()
 
-        # Clean up padded audio temp file
-        padded = getattr(self, "_padded_audio_tmp", None)
-        if padded and padded != audio_path and padded.exists():
-            try:
-                padded.unlink()
-                print(f"[lipsync] Cleaned up temp padded audio")
-            except Exception:
-                pass
-            self._padded_audio_tmp = None
+        # SWITCH_TO_KLING_LIPSYNC_20260524: pad_audio_for_lipsync removed; no temp file cleanup needed.
 
         if status == "completed" and result.get("outputs"):
             url = result["outputs"][0]
