@@ -5964,11 +5964,9 @@ class ProductionHandler(BaseHTTPRequestHandler):
             # BEFORE Regen B+C spends Kling $. _handle_add_options_startend
             # then refuses to run without an approved end_frame_path (P4).
             if path == "/api/beat/preview_end_frame":
-                from server_handlers.background import handle_preview_end_frame
-                return handle_preview_end_frame(self, body)
+                return self._handle_preview_end_frame(body)
             if path == "/api/beat/upload_end_frame":
-                from server_handlers.background import handle_upload_end_frame
-                return handle_upload_end_frame(self, body)
+                return self._handle_upload_end_frame(body)
             if path == "/api/beat/swap_to_a":
                 # Flat alias for v2 path-param endpoint so pathappPatch can reach it.
                 _beat_id_from_body = body.get("beat_id") or body.get("beat")
@@ -8522,6 +8520,20 @@ body {{padding-top:44px!important;}}
     # Fail-loud on start-end errors per design-call 2 (April 17, 2026):
     # no silent fallback to legacy. Each path surfaces errors directly.
     # ========================================================================
+
+    # T1-Phase 2+3 end-frame iteration wrappers (spec MAGIC_AND_ENDFRAME_FIXES_20260520_v1, LD-814).
+    # The actual logic lives in server_handlers.background to keep this file lean.
+    # Wrappers use self._handle_*() naming so body_key_contract_check.parse_server_routes()
+    # can detect them — the bare `handle_*(self, body)` pattern is invisible to the
+    # regex-based parser (HANDLER_CALL_RE = r"self\._handle_*").
+    def _handle_preview_end_frame(self, body: dict) -> None:
+        from server_handlers.background import handle_preview_end_frame
+        return handle_preview_end_frame(self, body)
+
+    def _handle_upload_end_frame(self, body: dict) -> None:
+        from server_handlers.background import handle_upload_end_frame
+        return handle_upload_end_frame(self, body)
+
     def _handle_add_options(self, body: dict) -> None:
         """Dispatch Generate B+C to start-end (default) unless force_legacy."""
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
