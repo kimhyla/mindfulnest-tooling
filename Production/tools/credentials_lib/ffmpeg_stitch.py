@@ -46,12 +46,6 @@ from pathlib import Path
 # - NORMALIZATION_FFMPEG_ARGS: canonical form for simple call sites = -vf
 #   prefix + ENCODER_ARGS. Preserved for existing simple call sites.
 NORMALIZATION_VF_EXPR: str = (
-    # SETPTS_ZERO_START_20260525: reset video PTS to 0 before fps=24 so
-    # sources with non-zero video.start_time (e.g. ByteDance lipsync outputs
-    # which have video.start_time≈22ms) don't produce a 41ms A/V desync in
-    # finalized clips. fps=24 snaps PTS to 24fps grid; without this reset,
-    # it snaps 22ms → 42ms (nearest grid point), creating a 1-frame offset.
-    "setpts=PTS-STARTPTS,"
     "scale=1280:720:force_original_aspect_ratio=decrease,"
     "pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1:1,fps=24"
 )
@@ -70,7 +64,7 @@ NORMALIZATION_FFMPEG_ARGS: tuple[str, ...] = (
 # *_normalized.mp4 in normalized_segments/, _normalized_phase_a/, etc.
 # Next /api/scene/assemble + preview-stitched paths re-encode from source.
 # LD-284 itself unchanged; this is a CODE-ALIGNMENT, not a spec change.
-NORMALIZATION_RECIPE_VERSION: str = "v4"  # SETPTS_ZERO_START_20260525: added setpts=PTS-STARTPTS
+NORMALIZATION_RECIPE_VERSION: str = "v5"  # AV_FUSE_SS_20260525: revert broken setpts; fuse via -ss in normalize_for_concat
 NORMALIZATION_RECIPE_HASH: str = hashlib.sha256(
     (f"{NORMALIZATION_RECIPE_VERSION}:" + NORMALIZATION_VF_EXPR + "|"
      + " ".join(NORMALIZATION_ENCODER_ARGS)).encode("utf-8"),
@@ -268,9 +262,29 @@ def normalize_for_concat(src: Path, dst: Path,
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.parent / f"{dst.stem}.tmp.{os.getpid()}{dst.suffix}"
     has_audio = _has_audio_stream(src)
+    # AV_FUSE_SS_20260525: fuse A/V at the demuxer level.
+    # ByteDance lipsync outputs have video.start_time≈22ms with
+    # audio.start_time=0.000. If we don't account for this, fps=24 snaps the
+    # 22ms video PTS to the nearest 24fps grid point (41ms), producing a 41ms
+    # A/V desync in every finalized clip. Applying setpts=PTS-STARTPTS in the
+    # video filter only makes things worse (shortens video duration relative to
+    # audio, causing catastrophic truncation on beats with trim_start > 0).
+    #
+    # The correct "fuse before importation" fix: detect video.start_time > 5ms
+    # and prepend -ss {video_start_s} BEFORE -i src. This seeks BOTH the video
+    # and audio streams in src to the same start point simultaneously, so both
+    # enter the normalization pipeline already fused. fps=24 then sees a video
+    # stream starting at PTS≈0, snaps to 0, and the desync never forms.
+    # The tiny audio trim (≈22ms) is imperceptible and correct — it aligns
+    # the audio channel to the first actual video frame.
+    video_start_s = ffprobe_video_start_time(src)
+    fuse_ss_args: list[str] = []
+    if video_start_s > 0.005:
+        fuse_ss_args = ["-ss", f"{video_start_s:.3f}"]
     try:
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            *fuse_ss_args,
             "-i", str(src.resolve()),
         ]
         if not has_audio:
@@ -764,6 +778,32 @@ def ffprobe_duration(path: Path) -> float:
         return float(raw)
     except ValueError:
         raise RuntimeError(f"ffprobe returned non-numeric duration {raw!r} for {path}")
+
+
+def ffprobe_video_start_time(path: Path) -> float:
+    """Return the PTS start_time of the first video stream in seconds, or 0.0.
+
+    AV_FUSE_SS_20260525: ByteDance lipsync outputs have video.start_time≈22ms
+    with audio.start_time=0.000. Used by normalize_for_concat() to detect this
+    offset so it can fuse A/V streams at the demuxer level via -ss before -i.
+
+    Returns 0.0 on any error (N/A, missing stream, timeout) so callers can
+    treat 0 as "no offset needed" without special-casing exceptions.
+    """
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error",
+             "-select_streams", "v:0",
+             "-show_entries", "stream=start_time",
+             "-of", "default=noprint_wrappers=1:nokey=1",
+             str(path.resolve())],
+            capture_output=True, timeout=10,
+        )
+        raw = out.stdout.decode("utf-8", errors="replace").strip()
+        val = float(raw)
+        return val if val > 0 else 0.0
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+        return 0.0
 
 
 # ---------------------------------------------------------------------------
