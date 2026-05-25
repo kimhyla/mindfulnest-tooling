@@ -1669,3 +1669,163 @@ def handle_beat_undo_final(h, body: dict) -> None:
     return h._send_json(200, {"ok": True, "beat": beat_id})
 
 
+def handle_beat_zoom(h, body: dict) -> None:
+    """POST /api/beat/zoom — toggle slow Ken Burns zoom on a beat's final clip.
+
+    Apply:  reads final.file, ffmpeg zoompan 1.0->1.15x center-zoom over full
+            clip, writes {stem}_zoom.mp4, updates final.file + stores original
+            in final.pre_zoom_file + sets final.zoom_applied = True.
+    Undo:   if final.zoom_applied is True, restores final.file from pre_zoom_file.
+
+    Body: { beat_id (or beat), scope_event_id (or event_id), scope_video_role }
+    """
+    import subprocess, pathlib
+
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+
+    beat_id = body.get("beat_id") or body.get("beat")
+    if not beat_id:
+        return h._send_error_v59(400, error_code="MISSING_BEAT_ID",
+                                  error_message="beat_id required", retry_safe=False)
+
+    video_role = (
+        (body or {}).get("scope_video_role")
+        or (body or {}).get("scope_target_video")
+        or "intro"
+    )
+
+    event_dir = h.app.event_dir
+    clips_dir = event_dir / "animation_clips"
+
+    # --- read current final block (read-only snapshot) ---
+    outcome: dict = {"status": "pending"}
+
+    def _read(partition):
+        b = (partition.get("beats") or {}).get(beat_id)
+        if not b:
+            outcome["status"] = "beat_missing"
+            return
+        outcome["final"] = dict(b.get("final") or {})
+        outcome["status"] = "read_ok"
+
+    h.app.state.mutate_video_state(video_role, _read)
+
+    if outcome["status"] == "beat_missing":
+        return h._send_error_v59(404, error_code="BEAT_NOT_FOUND",
+                                  error_message=f"beat {beat_id!r} not found in {video_role}",
+                                  retry_safe=False)
+
+    final = outcome.get("final", {})
+    zoom_applied = bool(final.get("zoom_applied"))
+
+    # --- UNDO path ---
+    if zoom_applied:
+        pre_zoom = final.get("pre_zoom_file")
+        if not pre_zoom:
+            return h._send_error_v59(409, error_code="NO_PRE_ZOOM_FILE",
+                                      error_message="zoom_applied=true but pre_zoom_file missing",
+                                      retry_safe=False)
+
+        def _undo(partition):
+            b = (partition.get("beats") or {}).get(beat_id)
+            if not b:
+                return
+            f = b.setdefault("final", {})
+            f["file"] = pre_zoom
+            f.pop("zoom_applied", None)
+            f.pop("pre_zoom_file", None)
+            f["file_exists"] = (clips_dir / pre_zoom).is_file()
+
+        h.app.state.mutate_video_state(video_role, _undo)
+        return h._send_json(200, {"ok": True, "action": "zoom_removed",
+                                   "beat_id": beat_id, "final_file": pre_zoom})
+
+    # --- APPLY path ---
+    current_file = final.get("file")
+    if not current_file:
+        return h._send_error_v59(409, error_code="NO_FINAL_FILE",
+                                  error_message="beat has no final.file to zoom",
+                                  retry_safe=False)
+
+    src_path = clips_dir / current_file
+    if not src_path.is_file():
+        return h._send_error_v59(404, error_code="FINAL_FILE_MISSING",
+                                  error_message=f"{current_file} not on disk", retry_safe=False)
+
+    # e.g. beat_03_lipsync.mp4 -> beat_03_lipsync_zoom.mp4
+    stem = src_path.stem
+    zoom_filename = f"{stem}_zoom.mp4"
+    dst_path = clips_dir / zoom_filename
+    tmp_path = dst_path.with_suffix(".tmp.mp4")
+
+    # Get duration for per-clip zoom speed
+    try:
+        probe = subprocess.check_output(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(src_path)],
+            stderr=subprocess.DEVNULL
+        )
+        duration_s = float(probe.decode().strip())
+    except Exception as e:
+        return h._send_error_v59(500, error_code="FFPROBE_FAILED",
+                                  error_message=str(e), retry_safe=True)
+
+    fps = 24
+    total_frames = max(int(duration_s * fps), 1)
+    # Zoom 1.0 -> 1.15 over full clip
+    zoom_step = 0.15 / total_frames
+
+    vf = (
+        f"fps={fps},"
+        f"zoompan=z='min(zoom+{zoom_step:.8f},1.15)':d=1"
+        f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)',"
+        f"scale=1280:720"
+    )
+
+    cmd = [
+        "ffmpeg", "-y", "-i", str(src_path),
+        "-vf", vf,
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "copy",
+        str(tmp_path),
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=120)
+        if result.returncode != 0:
+            err_tail = result.stderr.decode(errors="replace")[-600:]
+            if tmp_path.exists():
+                tmp_path.unlink()
+            return h._send_error_v59(500, error_code="FFMPEG_FAILED",
+                                      error_message=err_tail, retry_safe=True)
+        tmp_path.rename(dst_path)
+    except subprocess.TimeoutExpired:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        return h._send_error_v59(500, error_code="FFMPEG_TIMEOUT",
+                                  error_message="ffmpeg timed out after 120s", retry_safe=True)
+    except Exception as e:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        return h._send_error_v59(500, error_code="FFMPEG_ERROR",
+                                  error_message=str(e), retry_safe=True)
+
+    # Update state
+    def _apply(partition):
+        b = (partition.get("beats") or {}).get(beat_id)
+        if not b:
+            return
+        f = b.setdefault("final", {})
+        f["pre_zoom_file"] = current_file
+        f["file"] = zoom_filename
+        f["zoom_applied"] = True
+        f["file_exists"] = dst_path.is_file()
+
+    h.app.state.mutate_video_state(video_role, _apply)
+    return h._send_json(200, {"ok": True, "action": "zoom_applied",
+                               "beat_id": beat_id, "zoom_file": zoom_filename,
+                               "duration_s": round(duration_s, 2)})
+
+

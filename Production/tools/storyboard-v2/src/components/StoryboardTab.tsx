@@ -109,6 +109,8 @@ interface BeatState {
       pan_y_end?: number;
       duration_s?: number;
     };
+    zoom_applied?: boolean;
+    pre_zoom_file?: string;
   };
   // Trim/delay (LD-160). Optional — older beats may not carry these.
   trim_in?: number;
@@ -810,6 +812,13 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
       { key: 'ok', equals: true },
       { key: 'beat', type: 'string' },
     ]);
+  const onToggleZoom = () => {
+    runMutation(
+      beat.final?.zoom_applied ? 'Remove Zoom' : 'Apply Zoom',
+      'beat_zoom',
+      {},
+    );
+  };
   const trimPreviewListenerRef = useRef<((this: HTMLVideoElement, ev: Event) => void) | null>(null);
   const onPreviewTrim = async () => {
     // BUG-D fix (Kim 2026-05-20): Preview Trim was racing — calling
@@ -1413,6 +1422,20 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
             {busy === 'Undo Final' ? <><Spinner size="sm" inline /> …</> : '↩ Undo Final'}
           </button>
         ) : null}
+        {beat.final?.file && (
+          <button
+            type="button"
+            class="mn-btn mn-btn-small"
+            onClick={guardedClick(beat.final?.zoom_applied ? 'Remove Zoom' : 'Apply Zoom', onToggleZoom)}
+            aria-disabled={busy !== null}
+            title={beat.final?.zoom_applied
+              ? 'Remove zoom — restore original final clip'
+              : 'Apply slow Ken Burns zoom (1.0→1.15×) to final clip — $0, ~15–30s per beat'}
+            data-testid={`beat-${index}-zoom-toggle`}
+          >
+            {busy === 'Apply Zoom' || busy === 'Remove Zoom' ? <><Spinner size="sm" inline /> …</> : (beat.final?.zoom_applied ? '✕ zoom' : '↑ zoom')}
+          </button>
+        )}
         {(lifecycle !== 'final' || beat.final?.source === 'still_image') ? (
           <>
             <input

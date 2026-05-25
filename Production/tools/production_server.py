@@ -6029,6 +6029,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_beat_delay(body)
             if path == "/api/beat/trim":
                 return self._handle_beat_trim(body)
+            if path == "/api/beat/zoom":
+                return self._handle_beat_zoom(body)
             if path == "/api/beat/use_as_final":  # Spec A: no-lipsync final path
                 return self._handle_use_as_final(body)
             if path == "/api/budget/override":
@@ -9586,6 +9588,10 @@ body {{padding-top:44px!important;}}
     def _handle_beat_trim(self, body: dict) -> None:
         from server_handlers.beats_legacy import handle_beat_trim
         return handle_beat_trim(self, body)
+
+    def _handle_beat_zoom(self, body: dict) -> None:
+        from server_handlers.beats_legacy import handle_beat_zoom
+        return handle_beat_zoom(self, body)
 
     def _handle_beat_undo_final(self, body: dict) -> None:
         from server_handlers.beats_legacy import handle_beat_undo_final

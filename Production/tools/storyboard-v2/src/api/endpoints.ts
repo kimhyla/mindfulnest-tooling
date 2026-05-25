@@ -147,6 +147,7 @@ export const MUTATION_ENDPOINTS = {
   beat_undo_final: `${SERVER_BASE}/api/beat/undo_final`,
   beat_delay: `${SERVER_BASE}/api/beat/delay`,
   beat_trim: `${SERVER_BASE}/api/beat/trim`,
+  beat_zoom: `${SERVER_BASE}/api/beat/zoom`,
   // Authoring-workflow Pillar 7 cornerstone (C-7) — canonical beat-recovery
   // primitive. COPY default; move=true for cross-event/role moves. Per
   // LD BEAT_GRAFT_RECOVERY_MECHANISM_V1: pre-render-only invariant
