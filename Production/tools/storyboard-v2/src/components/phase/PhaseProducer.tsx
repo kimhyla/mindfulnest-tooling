@@ -74,6 +74,7 @@ interface PhaseStateSlice {
   mixed_audio_mtime?: number;
   lipsync_file?: string;
   lipsync_mtime?: number;
+  lipsync_status?: string;   // "polling" | "done" | "error: ..." from background thread
   stitched_file?: string;        // phase A only
   stitched_mtime?: number;
   script?: string;
@@ -104,6 +105,7 @@ function pickPhaseSlice(state: EventStateResponse, phase: 'a' | 'b'): PhaseState
   const mxm = get<number>('mixed_audio_mtime');        if (mxm) slice.mixed_audio_mtime = mxm;
   const ls = get<string>('lipsync_file');              if (ls) slice.lipsync_file = ls;
   const lsm = get<number>('lipsync_mtime');            if (lsm) slice.lipsync_mtime = lsm;
+  const lst = get<string>('lipsync_status');           if (lst) slice.lipsync_status = lst;
   const st = get<string>('stitched_file');             if (st) slice.stitched_file = st;
   const stm = get<number>('stitched_mtime');           if (stm) slice.stitched_mtime = stm;
   const sc = get<string>('script');                    if (sc) slice.script = sc;
@@ -200,16 +202,24 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     return () => clearInterval(id);
   }, [lipsyncing]);
 
-  // Detect when lipsync_mtime changes after submission → job landed.
+  // Detect when lipsync_mtime changes (success) OR lipsync_status = "error:…" (failure).
   useEffect(() => {
     if (!lipsyncing) return;
+    // Error path: background thread wrote "error: <reason>" to state.
+    const status = stateSlice.lipsync_status;
+    if (status && status.startsWith('error:')) {
+      setLipsyncing(false);
+      setStatusMsg(`✗ Lipsync failed: ${status.replace(/^error:\s*/, '')}`);
+      return;
+    }
+    // Success path: mtime changed → new file landed.
     const currentMtime = stateSlice.lipsync_mtime ?? null;
     const before = lipsyncMtimeBefore.current;
     if (currentMtime !== null && currentMtime !== before) {
       setLipsyncing(false);
       setStatusMsg('✓ Lipsync complete — video ready.');
     }
-  }, [stateSlice.lipsync_mtime, lipsyncing]);
+  }, [stateSlice.lipsync_mtime, stateSlice.lipsync_status, lipsyncing]);
 
   // Listen for "magic or animate complete" postMessage from path_picker.html
   // (S5 LD-468/469/470 — supersedes S4 mn:watercolor-animated).

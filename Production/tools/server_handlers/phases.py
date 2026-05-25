@@ -1341,18 +1341,22 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
                    extra={"budget_remaining": spend["budget_remaining"], "cost": COST_PER_LIPSYNC, "hint": "Raise budget via /api/budget/override or ship fewer."},
                )
 
-    # §8.4 silcomp + video trim/loop to audio_duration + 0.4s tailroom.
-    # Phase B meditations can be 90-150s; base clips are typically 10-30s.
-    # When base clip is shorter than audio we LOOP it (ffmpeg stream_loop -1)
-    # rather than rejecting. Kling Sync (not ByteDance) is the lipsync vendor
-    # for all paths since SWITCH_TO_KLING_LIPSYNC_20260524 — no 10s cap.
+    # Kling Sync handles the full audio including meditation silences — do NOT
+    # apply silcomp (§8.4 silence compression was designed for ByteDance's 10s
+    # cap; SWITCH_TO_KLING_LIPSYNC_20260524 eliminated that vendor).
+    # Compressing silences would shorten Phase B meditation lipsync from ~132s
+    # to ~76s, stripping the intentional breath-pause timing the script author
+    # crafted. Pass the raw audio to Kling and loop the base clip accordingly.
     _VIDEO_TAILROOM_S = 0.4
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     tmp_audio_path = h.app.event_dir / f"_tmp_silcomp_phase_{phase}_{ts}.mp3"
     tmp_video_path = h.app.state.clips_dir / f"_tmp_trim_phase_{phase}_{ts}.mp4"
     try:
-        audio_for_lipsync, audio_meta = _silcomp_audio(audio_path, tmp_audio_path)
-        audio_duration = audio_meta["compressed_duration_s"]
+        # Use raw audio (no silcomp). tmp_audio_path is only created if Kling
+        # requires a separate file (e.g., format conversion); for now audio_path
+        # (the mixed MP3) is passed directly.
+        audio_for_lipsync = audio_path
+        audio_duration = _ffprobe_duration(audio_path)
         raw_dur = _ffprobe_duration(base_path)
         target_video_s = audio_duration + _VIDEO_TAILROOM_S
         if raw_dur < target_video_s:
