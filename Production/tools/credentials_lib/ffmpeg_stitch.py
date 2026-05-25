@@ -46,6 +46,12 @@ from pathlib import Path
 # - NORMALIZATION_FFMPEG_ARGS: canonical form for simple call sites = -vf
 #   prefix + ENCODER_ARGS. Preserved for existing simple call sites.
 NORMALIZATION_VF_EXPR: str = (
+    # SETPTS_ZERO_START_20260525: reset video PTS to 0 before fps=24 so
+    # sources with non-zero video.start_time (e.g. ByteDance lipsync outputs
+    # which have video.start_time≈22ms) don't produce a 41ms A/V desync in
+    # finalized clips. fps=24 snaps PTS to 24fps grid; without this reset,
+    # it snaps 22ms → 42ms (nearest grid point), creating a 1-frame offset.
+    "setpts=PTS-STARTPTS,"
     "scale=1280:720:force_original_aspect_ratio=decrease,"
     "pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1:1,fps=24"
 )
@@ -64,7 +70,7 @@ NORMALIZATION_FFMPEG_ARGS: tuple[str, ...] = (
 # *_normalized.mp4 in normalized_segments/, _normalized_phase_a/, etc.
 # Next /api/scene/assemble + preview-stitched paths re-encode from source.
 # LD-284 itself unchanged; this is a CODE-ALIGNMENT, not a spec change.
-NORMALIZATION_RECIPE_VERSION: str = "v3"
+NORMALIZATION_RECIPE_VERSION: str = "v4"  # SETPTS_ZERO_START_20260525: added setpts=PTS-STARTPTS
 NORMALIZATION_RECIPE_HASH: str = hashlib.sha256(
     (f"{NORMALIZATION_RECIPE_VERSION}:" + NORMALIZATION_VF_EXPR + "|"
      + " ".join(NORMALIZATION_ENCODER_ARGS)).encode("utf-8"),
