@@ -152,6 +152,42 @@
   border-radius: 4px;
   padding: 10px 12px;
 }
+
+/* Fade divider between beats */
+.mn-beat-fade-divider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 18px;
+  margin: 2px 0;
+  border-radius: 3px;
+  opacity: 0.4;
+  transition: opacity 0.15s, background 0.15s;
+  list-style: none;
+  background: transparent;
+  border: 1px dashed transparent;
+}
+.mn-beat-fade-divider:hover {
+  opacity: 1;
+  background: rgba(100, 180, 255, 0.08);
+  border-color: rgba(100, 180, 255, 0.3);
+}
+.mn-beat-fade-divider--active {
+  opacity: 1;
+  background: linear-gradient(90deg, transparent 0%, rgba(100, 180, 255, 0.18) 50%, transparent 100%);
+  border-color: rgba(100, 180, 255, 0.4);
+}
+.mn-beat-fade-divider--active:hover {
+  background: linear-gradient(90deg, transparent 0%, rgba(100, 180, 255, 0.28) 50%, transparent 100%);
+}
+.mn-beat-fade-label {
+  font-size: 10px;
+  color: rgba(150, 200, 255, 0.8);
+  pointer-events: none;
+  user-select: none;
+  letter-spacing: 0.03em;
+}
+
 .mn-beat-meta {
   display: flex;
   gap: 12px;

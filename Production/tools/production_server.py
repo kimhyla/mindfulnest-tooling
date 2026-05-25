@@ -3188,7 +3188,12 @@ _SILCOMP_NOISE_DB = "-32dB"
 _SILCOMP_MIN_DURATION_S = 0.150    # silencedetect threshold (150ms)
 _SILCOMP_TRIGGER_S = 1.0           # silences longer than this get compressed
 _SILCOMP_TARGET_S = 0.8            # compress target duration
-_VIDEO_TRIM_TAILROOM_S = 0.4       # MIN tail-room — validation floor (CLAUDE.md §8.4)
+_VIDEO_TRIM_TAILROOM_S = 0.0       # SWITCH_TO_KLING_LIPSYNC_20260524: Kling lipsync closes
+# the mouth naturally at audio end — no extra tail video needed (was 0.4s for ByteDance
+# LatentSync which required extra frames to close mouth after audio stopped).
+# The 1.5s TARGET below still guides how much tail we try to append for natural settling,
+# but the MINIMUM validation floor is now 0 — beats with audio filling the full trim window
+# (e.g. beat_03: 9.68s audio / 10.04s clip) are now valid.
 # Kim 2026-05-21: 0.4s is too tight visually — the last Kling frame is often
 # mid-articulation/mid-blink and the freeze pose at the end looks wrong. Target
 # 1.5s of trailing video when the trim window allows, so the character has

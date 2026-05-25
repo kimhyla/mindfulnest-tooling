@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { RefObject } from 'preact';
+import { Fragment } from 'preact';
 import {
   activeScope,
   activeTargetVideo,
@@ -83,6 +84,7 @@ interface BeatState {
     trim_start?: number;
     trim_end?: number | null;
     trim_back?: number | null;  // Relative back-trim (seconds from end). Server computes effective_end = raw_dur - trim_back. Added 2026-05-23.
+    fade_after_ms?: number | null;
   };
   // S5.5e — fields read by the beat-level state machine (LD BEAT_LIFECYCLE_STATE_MACHINE_V1).
   // beat.final block is the "is final?" signal per Cursor v8 (NOT a use_as_final boolean).
@@ -2587,6 +2589,66 @@ function SendOutButton() {
 }
 
 // ----------------------------------------------------------------
+// FadeDivider — crossfade control between beats
+// ----------------------------------------------------------------
+
+function FadeDivider({
+  beatId,
+  eventId,
+  videoRole,
+  fadeMs,
+  onMutated,
+}: {
+  beatId: string;
+  eventId: string;
+  videoRole: string;
+  fadeMs: number | null | undefined;
+  onMutated: () => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const effectiveFade = fadeMs ?? 0;
+
+  const handleClick = async () => {
+    if (saving) return;
+    const next = effectiveFade === 0 ? 500 : 0;
+    setSaving(true);
+    try {
+      await fetch('http://localhost:5111/api/beat/field', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          beat_id: beatId,
+          event_id: eventId,
+          video_role: videoRole,
+          field: 'fade_after_ms',
+          value: next === 0 ? null : next,
+        }),
+      });
+      onMutated();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const hasFade = effectiveFade > 0;
+
+  return (
+    <li
+      class={'mn-beat-fade-divider' + (hasFade ? ' mn-beat-fade-divider--active' : '')}
+      onClick={handleClick}
+      title={hasFade ? effectiveFade + 'ms crossfade — click to remove' : 'Click to add 500ms crossfade'}
+      role="button"
+      aria-label={hasFade ? effectiveFade + 'ms crossfade active' : 'No fade — click to add'}
+      style={{ cursor: saving ? 'wait' : 'pointer' }}
+    >
+      <span class="mn-beat-fade-label">
+        {saving ? '…' : hasFade ? '↔ ' + effectiveFade + 'ms fade' : '+ fade'}
+      </span>
+    </li>
+  );
+}
+
+// ----------------------------------------------------------------
 // Main tab
 // ----------------------------------------------------------------
 
@@ -2929,17 +2991,27 @@ export function StoryboardTab() {
           </div>
           <ol class="mn-beat-list" data-testid="beat-list">
             {beatList.map((b, i) => (
-              <BeatCard
-                key={b.beat_id}
-                index={i}
-                beatId={b.beat_id}
-                beat={b}
-                eventId={eventId}
-                videoRole={activeTargetVideo.value}
-                onMutated={() => setRefreshTick((n) => n + 1)}
-                onInsertAfter={() => void onAddBeat(b.beat_id)}
-                onDeleteBeat={() => setDeleteConfirmBeatId(b.beat_id)}
-              />
+              <Fragment key={b.beat_id}>
+                <BeatCard
+                  index={i}
+                  beatId={b.beat_id}
+                  beat={b}
+                  eventId={eventId}
+                  videoRole={activeTargetVideo.value}
+                  onMutated={() => setRefreshTick((n) => n + 1)}
+                  onInsertAfter={() => void onAddBeat(b.beat_id)}
+                  onDeleteBeat={() => setDeleteConfirmBeatId(b.beat_id)}
+                />
+                {i < beatList.length - 1 && (
+                  <FadeDivider
+                    beatId={b.beat_id}
+                    eventId={eventId}
+                    videoRole={activeTargetVideo.value}
+                    fadeMs={b.phase_1 ? b.phase_1.fade_after_ms : null}
+                    onMutated={() => setRefreshTick((n) => n + 1)}
+                  />
+                )}
+              </Fragment>
             ))}
           </ol>
         </>
