@@ -2613,13 +2613,17 @@ function FadeDivider({
     const next = effectiveFade === 0 ? 500 : 0;
     setSaving(true);
     try {
-      await fetch('http://localhost:5111/api/beat/field', {
+      // Endpoint: /api/v2/beat/<beat_id>/patch — handles _V2_ALLOWED_FIELDS including fade_after_ms.
+      // Scope keys: event_id (legacy alias for scope_event_id per scope_router.py:129) +
+      //             scope_video_role / scope_target_video (LD-461 canonical pair).
+      // Rule 32: absolute URL required (file:// launch context).
+      await fetch(`http://localhost:5111/api/v2/beat/${encodeURIComponent(beatId)}/patch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          beat_id: beatId,
           event_id: eventId,
-          video_role: videoRole,
+          scope_video_role: videoRole,
+          scope_target_video: videoRole,
           field: 'fade_after_ms',
           value: next === 0 ? null : next,
         }),
