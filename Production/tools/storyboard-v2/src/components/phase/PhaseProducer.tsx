@@ -596,18 +596,24 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           ) : null}
         </div>
 
-        {/* Lipsync video player */}
-        {lipsyncFile ? (
-          <div class="mn-phase-lipsync" data-testid={`phase-${phase}-lipsync-player`}>
-            <strong>Lipsync video:</strong>
-            <video
-              controls
-              src={fileUrl(lipsyncFile)}
-              style={{ maxHeight: '40vh', display: 'block' }}
-            />
-            <span class="mn-dim">{lipsyncFile}</span>
-          </div>
-        ) : null}
+        {/* Lipsync video player — shows approved video after Send for Lipsync completes */}
+        <div class="mn-phase-lipsync" data-testid={`phase-${phase}-lipsync-player`}>
+          {lipsyncFile ? (
+            <>
+              <strong>Lipsync video:</strong>
+              <video
+                controls
+                src={fileUrl(lipsyncFile)}
+                style={{ maxHeight: '40vh', display: 'block' }}
+              />
+              <span class="mn-dim">{lipsyncFile}</span>
+            </>
+          ) : (
+            <div class="mn-phase-lipsync-placeholder mn-dim" data-testid={`phase-${phase}-lipsync-placeholder`}>
+              Lipsync video will appear here after "Send for Lipsync" completes.
+            </div>
+          )}
+        </div>
 
         {/* Action row: Base clip select + Send for Lipsync + Mix Audio + Export */}
         <div class="mn-phase-row">

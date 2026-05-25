@@ -57,6 +57,8 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   const [durationMs, setDurationMs] = useState<number | null>(null);
   const [currentMs, setCurrentMs] = useState<number>(0);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [isPlaying, setIsPlaying] = useState<boolean>(false);
+  const [isReady, setIsReady] = useState<boolean>(false);
 
   // (re)mount WaveSurfer whenever audioSrc changes.
   useEffect(() => {
@@ -64,6 +66,8 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     setLoadError(null);
     setDurationMs(null);
     setCurrentMs(0);
+    setIsPlaying(false);
+    setIsReady(false);
 
     const ws = WaveSurfer.create({
       container: containerRef.current,
@@ -80,6 +84,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     const onReadyHandler = () => {
       const d = ws.getDuration() * 1000;
       setDurationMs(d);
+      setIsReady(true);
       onReady?.(d);
     };
     const onAudioProcess = () => {
@@ -99,6 +104,9 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     ws.on('audioprocess', onAudioProcess);
     ws.on('seeking', onAudioProcess);
     ws.on('click', onWsClick);
+    ws.on('play', () => setIsPlaying(true));
+    ws.on('pause', () => setIsPlaying(false));
+    ws.on('finish', () => setIsPlaying(false));
 
     ws.load(audioSrc).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
@@ -168,8 +176,21 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       onDrop={dropHandlers.onDrop}
     >
       <div class="mn-waveform-source-label">
+        <button
+          type="button"
+          class="mn-btn mn-btn-play"
+          data-testid="waveform-play-btn"
+          disabled={!isReady}
+          onClick={() => wsRef.current?.playPause()}
+          title={isPlaying ? 'Pause' : 'Play'}
+        >
+          {isPlaying ? '⏸ Pause' : '▶ Play'}
+        </button>
         <strong>Audio ({sourceLabel ?? '—'}):</strong>{' '}
         <span class="mn-dim">{sourceFilename ?? ''}</span>
+        {durationMs ? (
+          <span class="mn-dim"> · {(currentMs / 1000).toFixed(1)}s / {(durationMs / 1000).toFixed(1)}s</span>
+        ) : null}
       </div>
       <div ref={containerRef} class="mn-waveform-canvas" />
       <div class="mn-waveform-cue-overlay">
