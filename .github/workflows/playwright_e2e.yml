@@ -20,8 +20,11 @@ name: Playwright e2e
 # deferred existing scaffold which requires fuller fixture data). Per
 # §19.6.1 maintainability trigger: when count exceeds 15, migrate to a
 # Playwright project/tag-based grouping in playwright.config.ts. Current
-# count after V59 gap-fix Phase E = 14 (12 prior + 2 new), still under
-# threshold. DEFERRED specs (behavioral-parity / rollback / smoke /
+# count after 2026-05-25 CI inclusion sprint = 24 (21 prior + 3 new:
+# layer_b_option_b_bg_session_state / divergence_residuals_6_layer /
+# track-b-ld-coverage). EXCEEDS 15 threshold — Playwright project/tag-based
+# grouping migration is deferred (tracked as prod_blockers). Current explicit
+# list is still serviceable and fully auditable. DEFERRED specs (behavioral-parity / rollback / smoke /
 # touchpoint-a) reference Event_1 fixtures (sources/, cropped/) that
 # Event_e2e_fixture does not provide — tracked as SPEC_BLOCKED_ON_FIXTURE
 # activity log rows, NOT silently mocked (Rule 19).
@@ -400,6 +403,9 @@ jobs:
             e2e/f_phase_a_001_routing.spec.ts \
             e2e/f_phase_b_001_files_serve.spec.ts \
             e2e/delay_durability.spec.ts \
+            e2e/layer_b_option_b_bg_session_state.spec.ts \
+            e2e/divergence_residuals_6_layer.spec.ts \
+            e2e/track-b-ld-coverage.spec.ts \
             --reporter=line
 
       # F-STALE-LIPSYNC-UI-001 / LD STORYBOARD_LIPSYNC_BUTTON_FRESHNESS_GATE_V1.

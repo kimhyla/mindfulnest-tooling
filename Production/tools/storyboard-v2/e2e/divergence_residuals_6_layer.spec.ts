@@ -87,8 +87,11 @@ test.describe('Track A residual #3 — BeatImageHolder assign_image drop wiring'
         body: JSON.stringify({
           _module_version: 1,
           videos: {
-            'phase_a': {
-              video_role: 'phase_a',
+            // activeTargetVideo defaults to 'intro' (scope.ts L56) so the
+            // storyboard renders from state.videos['intro']. Using 'phase_a'
+            // here caused the beats to never render — beat-image-zone-0 not found.
+            'intro': {
+              video_role: 'intro',
               beats: {
                 'beat_pa_01': {
                   speaker: 'Tessa',
@@ -171,8 +174,9 @@ test.describe('Track A residual #3 — BeatImageHolder assign_image drop wiring'
         body: JSON.stringify({
           _module_version: 1,
           videos: {
-            'phase_a': {
-              video_role: 'phase_a',
+            // Must be 'intro' — activeTargetVideo defaults to 'intro' (scope.ts L56).
+            'intro': {
+              video_role: 'intro',
               beats: { 'beat_x': { speaker: 'Tessa', text: 'x' } },
               display_order: ['beat_x'],
             },
