@@ -539,6 +539,12 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     if (res.ok) {
       setStatusMsg('✓ Stem generated');
       await refreshAll();
+      // Phase B only: auto-submit for lipsync — cedric_idle_study_v1 is already
+      // auto-selected. stream_loop on the server stretches it to match audio duration.
+      if (phase === 'b' && selectedBaseClip) {
+        setStatusMsg('✓ Stem generated — auto-sending for lipsync…');
+        await onSendForLipsync();
+      }
     } else {
       setStatusMsg(`✗ Stem HTTP ${res.status}: ${res.error ?? ''}`);
     }
