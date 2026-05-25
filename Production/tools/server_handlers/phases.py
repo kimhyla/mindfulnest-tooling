@@ -728,6 +728,27 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
                    retry_safe=True,
                    extra={"hint": "Check event_dir permissions / disk space."},
                )
+    # Apply atempo=0.75 (25% slowdown) matching render_phase_b_v9_meditation.py pipeline.
+    _slow_tmp = out_path.with_suffix(f".slow.{os.getpid()}.mp3")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+             "-i", str(out_path),
+             "-filter:a", "atempo=0.75",
+             "-c:a", "libmp3lame", "-b:a", "192k",
+             str(_slow_tmp)],
+            check=True,
+        )
+        os.replace(_slow_tmp, out_path)
+    except Exception as exc:  # noqa: BLE001
+        _slow_tmp.unlink(missing_ok=True)
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"atempo slowdown failed: {type(exc).__name__}: {exc}",
+                   retry_safe=True,
+                   extra={"hint": "ffmpeg atempo=0.75 post-processing failed. Raw ElevenLabs file on disk at: " + str(out_path)},
+               )
     try:
         duration = _ffprobe_duration(out_path)
     except (subprocess.CalledProcessError, ValueError, OSError):
@@ -758,7 +779,8 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
         "file": out_name,
         "mtime": mtime,
         "duration_s": round(duration, 3),
-        "size_bytes": len(audio_bytes),
+        "size_bytes": out_path.stat().st_size,
+        "atempo": 0.75,
         "voice_id": voice_id,
         "speaker": speaker,
         "elapsed_s": round(elapsed_call, 2),
