@@ -90,6 +90,15 @@ interface EventStateResponse {
   beats?: Record<string, unknown>;
   [key: string]: unknown;
 }
+/** Therapeutic brief generated server-side alongside the script suggestion.
+ *  Per Kim 2026-05-25: goal = experience + clinical end; must_hits = ordered
+ *  steps; what_to_evoke = internal state/feeling; watch_outs = contraindications. */
+interface TherapeuticBrief {
+  goal: string;
+  must_hits: string[];
+  what_to_evoke: string[];
+  watch_outs: string[];
+}
 
 export interface PhaseProducerProps {
   phase: 'a' | 'b';
@@ -150,6 +159,8 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const [stateSlice, setStateSlice] = useState<PhaseStateSlice>({});
   const [scriptDraft, setScriptDraft] = useState<string>('');
   const [suggesting, setSuggesting] = useState(false);
+  const [therapeuticBrief, setTherapeuticBrief] = useState<TherapeuticBrief | null>(null);
+  const [showBrief, setShowBrief] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [saveBtnLabel, setSaveBtnLabel] = useState<string>('Save Script');
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -163,6 +174,9 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   // Mtime of lipsync_file at the moment we submitted — used to detect when
   // a NEW lipsync result lands (mtime changes → job done).
   const lipsyncMtimeBefore = useRef<number | null>(null);
+  // Ref to the lipsync <video> element so WaveformTimeline can sync seek/play/pause.
+  // The <video> is muted; WaveSurfer owns the audio output.
+  const videoRef = useRef<HTMLVideoElement>(null);
 
   const refreshAll = async () => {
     const [wc, bc, st, ap] = await Promise.all([
@@ -247,7 +261,12 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     const res = await pathappPatch(activeScope.value, 'phase_suggest_script', { phase });
     setSuggesting(false);
     if (res.ok && res.data) {
-      const data = res.data as { script?: string; tokens_in?: number; tokens_out?: number };
+      const data = res.data as {
+        script?: string;
+        therapeutic_brief?: TherapeuticBrief;
+        tokens_in?: number;
+        tokens_out?: number;
+      };
       if (data.script) {
         setScriptDraft(data.script);
         setStatusMsg(
@@ -255,6 +274,10 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
         );
       } else {
         setStatusMsg('Script suggestion empty — server returned no text');
+      }
+      if (data.therapeutic_brief) {
+        setTherapeuticBrief(data.therapeutic_brief);
+        setShowBrief(true);   // auto-open on first suggest
       }
     } else {
       const data = res.data as { code?: string; message?: string } | undefined;
@@ -604,6 +627,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           cues={stateSlice.watercolor_cues ?? []}
           onCueClick={onCueClick}
           onWatercolorDrop={onWatercolorDrop}
+          linkedVideo={videoRef}
         />
         {activeCue && popoverAnchor ? (
           <CuePopover
@@ -655,12 +679,18 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           ) : null}
         </div>
 
-        {/* Lipsync video player — shows approved video after Send for Lipsync completes */}
+        {/* Lipsync video player — shows approved video after Send for Lipsync completes.
+            Muted: WaveSurfer (above) owns audio playback and is the master clock.
+            videoRef is passed to WaveformTimeline as linkedVideo so seek/play/pause
+            from the waveform drive the video position — this is how watercolor cue
+            placement timestamps (offset_ms) map to visible video frames. */}
         <div class="mn-phase-lipsync" data-testid={`phase-${phase}-lipsync-player`}>
           {lipsyncFile ? (
             <>
               <strong>Lipsync video:</strong>
               <video
+                ref={videoRef}
+                muted
                 controls
                 src={fileUrl(lipsyncFile)}
                 style={{ maxHeight: '40vh', display: 'block' }}

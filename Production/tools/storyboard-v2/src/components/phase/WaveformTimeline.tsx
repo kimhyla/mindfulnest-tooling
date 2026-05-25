@@ -37,6 +37,12 @@ export interface WaveformTimelineProps {
   onReady?: (durationMs: number) => void;
   /** Phase C — drop watercolor tile to create a cue at offset_ms = dropX/width × duration. */
   onWatercolorDrop?: (lib_key: string, offset_ms: number) => void;
+  /**
+   * Optional video element to keep in sync with waveform playback.
+   * The caller should mute the <video> to avoid double audio (WaveSurfer plays audio).
+   * WaveformTimeline drives the video: play/pause/seek mirror WaveSurfer state.
+   */
+  linkedVideo?: { current: HTMLVideoElement | null };
 }
 
 export function WaveformTimeline(props: WaveformTimelineProps) {
@@ -49,6 +55,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     onWaveformClick,
     onReady,
     onWatercolorDrop,
+    linkedVideo,
   } = props;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -112,6 +119,40 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     ws.on('play', () => setIsPlaying(true));
     ws.on('pause', () => setIsPlaying(false));
     ws.on('finish', () => setIsPlaying(false));
+
+    // ── Linked video sync ────────────────────────────────────────────────────
+    // When a <video> ref is passed (linkedVideo), WaveSurfer is the master clock.
+    // The video is muted by the caller; WaveSurfer's WebAudio provides the audio.
+    // Access linkedVideo.current inside callbacks so we always get the live element
+    // (refs don't trigger re-renders, so captured-at-effect-time is safe).
+    ws.on('play', () => {
+      const lv = linkedVideo?.current;
+      if (!lv) return;
+      lv.currentTime = ws.getCurrentTime();
+      lv.play().catch(() => {}); // silent: autoplay policy may block until user gesture
+    });
+    ws.on('pause', () => {
+      linkedVideo?.current?.pause();
+    });
+    ws.on('finish', () => {
+      const lv = linkedVideo?.current;
+      if (!lv) return;
+      lv.pause();
+      lv.currentTime = 0;
+    });
+    ws.on('seeking', () => {
+      const lv = linkedVideo?.current;
+      if (!lv) return;
+      lv.currentTime = ws.getCurrentTime();
+    });
+    ws.on('audioprocess', () => {
+      const lv = linkedVideo?.current;
+      if (!lv) return;
+      // Correct drift >0.3s to avoid fighting over tiny float jitter.
+      const drift = Math.abs(lv.currentTime - ws.getCurrentTime());
+      if (drift > 0.3) lv.currentTime = ws.getCurrentTime();
+    });
+    // ─────────────────────────────────────────────────────────────────────────
 
     ws.load(audioSrc).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
