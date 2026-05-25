@@ -78,6 +78,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       normalize: true,
       barWidth: 2,
       barGap: 1,
+      dragToSeek: true,
     });
     wsRef.current = ws;
 
