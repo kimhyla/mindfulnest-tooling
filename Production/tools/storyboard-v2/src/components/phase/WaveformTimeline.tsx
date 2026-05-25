@@ -59,6 +59,9 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isReady, setIsReady] = useState<boolean>(false);
+  // Ref mirror of isReady so pointer-event closures always see the current value
+  // without needing to be in the useEffect dependency array.
+  const isReadyRef = useRef<boolean>(false);
 
   // (re)mount WaveSurfer whenever audioSrc changes.
   useEffect(() => {
@@ -78,7 +81,13 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       normalize: true,
       barWidth: 2,
       barGap: 1,
-      dragToSeek: true,
+      // interact:false disables WaveSurfer's built-in click/drag-to-seek handlers.
+      // We own all seek logic below via native pointer events, which lets us do
+      // smooth drag-seek without WaveSurfer resetting the playhead on mouseup
+      // (the dragToSeek:true bug — WaveSurfer v7 fires 'click' with the
+      // drag-START relativeX on release, which is 0 when dragging from the left,
+      // causing the playhead to snap back to 0:00).
+      interact: false,
     });
     wsRef.current = ws;
 
@@ -86,25 +95,13 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       const d = ws.getDuration() * 1000;
       setDurationMs(d);
       setIsReady(true);
+      isReadyRef.current = true;
       onReady?.(d);
     };
     const onAudioProcess = () => {
       setCurrentMs(ws.getCurrentTime() * 1000);
     };
-    // 'click' fires with relativeX 0..1 (WaveSurfer v7).
-    // IMPORTANT: do NOT call ws.seekTo() here. With dragToSeek:true, WaveSurfer
-    // already sought to the correct position internally before firing 'click'.
-    // Calling ws.seekTo() again — especially if relativeX is 0 due to WaveSurfer
-    // firing click at drag-start position on release — resets the playhead to 0:00.
-    // The 'seeking' event listener below picks up the final position accurately.
-    const onWsClick = (relativeX: number) => {
-      if (!Number.isFinite(relativeX) || relativeX === 0) return;
-      const total = ws.getDuration() * 1000;
-      const t = relativeX * total;
-      setCurrentMs(t);
-      onWaveformClick?.(t);
-    };
-    // 'seeking' fires after every seek (click, drag, seekTo) with the real position.
+    // 'seeking' fires after every ws.seekTo() call with the real committed position.
     const onSeeking = () => {
       setCurrentMs(ws.getCurrentTime() * 1000);
     };
@@ -112,7 +109,6 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     ws.on('ready', onReadyHandler);
     ws.on('audioprocess', onAudioProcess);
     ws.on('seeking', onSeeking);
-    ws.on('click', onWsClick);
     ws.on('play', () => setIsPlaying(true));
     ws.on('pause', () => setIsPlaying(false));
     ws.on('finish', () => setIsPlaying(false));
@@ -122,7 +118,50 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       setLoadError(msg);
     });
 
+    // Custom pointer-based seek — replaces WaveSurfer's built-in dragToSeek.
+    // Works on mouse, touch (pointer events unify both), and stylus.
+    // setPointerCapture() keeps pointermove firing even when the cursor leaves
+    // the element mid-drag, so fast drags don't lose tracking.
+    const canvas = containerRef.current;
+    let isDragging = false;
+
+    const getRelX = (e: PointerEvent): number => {
+      const box = canvas.getBoundingClientRect();
+      return Math.max(0, Math.min(1, (e.clientX - box.left) / box.width));
+    };
+
+    const onPointerDown = (e: PointerEvent) => {
+      if (!isReadyRef.current) return;
+      isDragging = true;
+      canvas.setPointerCapture(e.pointerId);
+      ws.seekTo(getRelX(e));
+    };
+    const onPointerMove = (e: PointerEvent) => {
+      if (!isDragging) return;
+      ws.seekTo(getRelX(e));
+    };
+    const onPointerUp = (e: PointerEvent) => {
+      if (!isDragging) return;
+      isDragging = false;
+      const rel = getRelX(e);
+      ws.seekTo(rel);
+      onWaveformClick?.(rel * ws.getDuration() * 1000);
+    };
+    const onPointerCancel = () => {
+      isDragging = false;
+    };
+
+    canvas.addEventListener('pointerdown', onPointerDown);
+    canvas.addEventListener('pointermove', onPointerMove);
+    canvas.addEventListener('pointerup', onPointerUp);
+    canvas.addEventListener('pointercancel', onPointerCancel);
+
     return () => {
+      canvas.removeEventListener('pointerdown', onPointerDown);
+      canvas.removeEventListener('pointermove', onPointerMove);
+      canvas.removeEventListener('pointerup', onPointerUp);
+      canvas.removeEventListener('pointercancel', onPointerCancel);
+      isReadyRef.current = false;
       try {
         ws.destroy();
       } catch {
