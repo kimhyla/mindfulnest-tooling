@@ -1461,17 +1461,45 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
         audio_duration = _ffprobe_duration(audio_path)
         raw_dur = _ffprobe_duration(base_path)
         target_video_s = audio_duration + _VIDEO_TAILROOM_S
+        # WaveSpeed enforces a 30MB cap on the base64-encoded 'video' field.
+        # base64 adds ~33% overhead, so raw files > ~22MB will exceed the cap.
+        # Re-encode oversized clips at 2 Mbps H.264 (sufficient quality for
+        # lipsync input — Kling generates fresh output anyway).
+        _WAVESPEED_RAW_MB_CEILING = 22.0
+        raw_size_mb = base_path.stat().st_size / 1024 / 1024
+
         if raw_dur < target_video_s:
-            # Base clip is shorter than audio — send it raw.
-            # Kling Lipsync handles shorter videos internally (loops them).
-            # DO NOT pre-loop: WaveSpeed enforces a 30MB video payload cap, and
-            # looping a 28MB 10s clip to 76s produces ~165MB → instant 400 rejection.
-            print(
-                f"[phase_b_lipsync] base clip {raw_dur:.2f}s < audio {audio_duration:.2f}s "
-                f"— sending raw clip; Kling handles looping internally",
-                flush=True,
-            )
-            video_for_lipsync = base_path
+            # Base clip is shorter than audio — Kling loops internally.
+            # DO NOT pre-loop: looping a 28MB clip to 76s → 165MB, instant reject.
+            if raw_size_mb > _WAVESPEED_RAW_MB_CEILING:
+                # File too large for data URI submission — re-encode at 2 Mbps.
+                print(
+                    f"[phase_b_lipsync] base clip {raw_size_mb:.1f}MB > "
+                    f"{_WAVESPEED_RAW_MB_CEILING}MB ceiling — re-encoding at 2Mbps for API",
+                    flush=True,
+                )
+                subprocess.run(
+                    [
+                        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                        "-i", str(base_path),
+                        "-c:v", "libx264", "-preset", "fast",
+                        "-b:v", "2000k", "-maxrate", "2000k", "-bufsize", "4000k",
+                        "-an",
+                        "-movflags", "+faststart",
+                        str(tmp_video_path),
+                    ],
+                    check=True, capture_output=True, timeout=120,
+                )
+                reenc_mb = tmp_video_path.stat().st_size / 1024 / 1024
+                print(f"[phase_b_lipsync] re-encoded: {reenc_mb:.1f}MB → base64 ~{reenc_mb*1.34:.1f}MB", flush=True)
+                video_for_lipsync = tmp_video_path
+            else:
+                print(
+                    f"[phase_b_lipsync] base clip {raw_dur:.2f}s < audio {audio_duration:.2f}s, "
+                    f"{raw_size_mb:.1f}MB — sending raw; Kling loops internally",
+                    flush=True,
+                )
+                video_for_lipsync = base_path
         else:
             # Base clip is longer than audio — trim to avoid sending excess data.
             video_for_lipsync, _, _, _ = _trim_video_to_audio(
