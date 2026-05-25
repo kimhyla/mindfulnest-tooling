@@ -510,6 +510,18 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           onBlur={onScriptBlur}
           placeholder={`Phase ${phase.toUpperCase()} script…`}
         />
+        {/* Explicit save — onBlur only fires on focus-leave; this lets Kim
+            paste a script and commit it without clicking elsewhere. */}
+        <div class="mn-phase-row">
+          <button
+            type="button"
+            class="mn-btn"
+            data-testid={`phase-${phase}-save-script-btn`}
+            onClick={onScriptBlur}
+          >
+            Save Script
+          </button>
+        </div>
 
         {/* Audio waveform — WaveSurfer v7 timeline (LD-330 / LD-472).
             Priority: lipsync > mixed > stem (resolved by priorityAudioFile). */}
