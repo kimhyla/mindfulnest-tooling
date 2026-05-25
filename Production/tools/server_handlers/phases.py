@@ -582,11 +582,54 @@ def handle_phase_suggest_script(h, body: dict)-> None:
     })
 
 
+def _parse_silence_segments(script: str):
+    """Split script on [silence:Ns] tags.
+
+    Returns list of ('text', str) | ('silence', float) tuples.
+    Strips whitespace from text segments; preserves order.
+    """
+    import re as _re
+    _PAT = _re.compile(r'\[silence:\s*(\d+(?:\.\d+)?)\s*s?\]', _re.IGNORECASE)
+    parts = []
+    last = 0
+    for m in _PAT.finditer(script):
+        chunk = script[last:m.start()].strip()
+        if chunk:
+            parts.append(('text', chunk))
+        parts.append(('silence', float(m.group(1))))
+        last = m.end()
+    tail = script[last:].strip()
+    if tail:
+        parts.append(('text', tail))
+    return parts
+
+
+def _build_silence_mp3(duration_s: float, out_path) -> None:
+    """Write a silent MP3 of exact duration using ffmpeg anullsrc."""
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi",
+            "-i", f"anullsrc=r=44100:cl=mono",
+            "-t", str(duration_s),
+            "-acodec", "libmp3lame",
+            "-b:a", "128k",
+            str(out_path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
 def handle_phase_b_regen_audio(h, body: dict)-> None:
 
     """POST /api/phase_b/regen_audio
 
     Body: {"phase": "a"|"b", "script": "text"}
+
+    Supports [silence:Ns] tags in script for exact server-side silence injection.
+    Splits script at markers, calls ElevenLabs per segment, ffmpeg-concats with
+    real silence between segments.  Single-segment scripts use the fast single-call path.
 
     Writes phase_{phase}_voice_stem_<TS>.mp3 to event_dir root.
     Patches state phase_X_voice_stem_file + phase_X_voice_stem_mtime via mutate_state.
@@ -661,42 +704,125 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
     voice_id, model_id, voice_settings, speaker = h._phase_resolve_voice_settings(phase)
     # Universal hardening: robust_https_request with 3 retries + 90s timeout.
     from kling_startend_pipeline import robust_https_request  # noqa: PLC0415
-    tts_body = json.dumps({
-        "text": script,
-        "model_id": model_id,
-        "voice_settings": voice_settings,
-    }).encode("utf-8")
-    t0 = time.time()
-    try:
-        status_code, audio_bytes = robust_https_request(
+
+    def _tts_call(text_segment: str):
+        """Single ElevenLabs TTS call; returns (status_code, bytes)."""
+        body_bytes = json.dumps({
+            "text": text_segment,
+            "model_id": model_id,
+            "voice_settings": voice_settings,
+        }).encode("utf-8")
+        return robust_https_request(
             host="api.elevenlabs.io",
             path=f"/v1/text-to-speech/{voice_id}",
             method="POST",
             headers={"xi-api-key": elevenlabs_key,
                      "Content-Type": "application/json",
                      "Accept": "audio/mpeg"},
-            body=tts_body,
+            body=body_bytes,
             timeout=90,
             max_retries=3,
         )
-    except Exception as exc:  # noqa: BLE001
-        return h._send_error_v59(
-                   502,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"ElevenLabs network failure (after retries): "
-                     f"{type(exc).__name__}: {exc}",
-                   retry_safe=True,
-                   extra={"speaker": speaker, "voice_id": voice_id, "hint": "Check network / ElevenLabs status. Retry after a minute."},
-               )
-    if status_code >= 400:
-        detail = audio_bytes[:400].decode("utf-8", errors="replace")
-        return h._send_error_v59(
-                   502,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"ElevenLabs HTTP {status_code}: {detail}",
-                   retry_safe=True,
-                   extra={"speaker": speaker, "hint": "Often: API key expired or voice_id renamed. Check API_KEYS_MASTER.md."},
-               )
+
+    segments = _parse_silence_segments(script)
+    # Fast path: no [silence:Ns] tags → single TTS call (original behaviour).
+    use_multi = any(kind == 'silence' for kind, _ in segments)
+
+    t0 = time.time()
+    if not use_multi:
+        try:
+            status_code, audio_bytes = _tts_call(script)
+        except Exception as exc:  # noqa: BLE001
+            return h._send_error_v59(
+                       502,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"ElevenLabs network failure (after retries): "
+                         f"{type(exc).__name__}: {exc}",
+                       retry_safe=True,
+                       extra={"speaker": speaker, "voice_id": voice_id,
+                              "hint": "Check network / ElevenLabs status. Retry after a minute."},
+                   )
+        if status_code >= 400:
+            detail = audio_bytes[:400].decode("utf-8", errors="replace")
+            return h._send_error_v59(
+                       502,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"ElevenLabs HTTP {status_code}: {detail}",
+                       retry_safe=True,
+                       extra={"speaker": speaker,
+                              "hint": "Often: API key expired or voice_id renamed. Check API_KEYS_MASTER.md."},
+                   )
+    else:
+        # Multi-segment path: call ElevenLabs per text segment, inject real silence.
+        import tempfile as _tempfile
+        tmp_dir = Path(_tempfile.mkdtemp(prefix="mn_regen_audio_"))
+        concat_parts = []  # list of pathlib.Path in order
+        try:
+            seg_idx = 0
+            for kind, value in segments:
+                if kind == 'text':
+                    seg_path = tmp_dir / f"seg_{seg_idx:03d}_speech.mp3"
+                    try:
+                        sc, seg_bytes = _tts_call(value)
+                    except Exception as exc:  # noqa: BLE001
+                        return h._send_error_v59(
+                                   502,
+                                   error_code="GENERIC_ERROR",
+                                   error_message=f"ElevenLabs segment {seg_idx} network failure: "
+                                     f"{type(exc).__name__}: {exc}",
+                                   retry_safe=True,
+                                   extra={"segment_index": seg_idx, "speaker": speaker},
+                               )
+                    if sc >= 400:
+                        detail = seg_bytes[:400].decode("utf-8", errors="replace")
+                        return h._send_error_v59(
+                                   502,
+                                   error_code="GENERIC_ERROR",
+                                   error_message=f"ElevenLabs segment {seg_idx} HTTP {sc}: {detail}",
+                                   retry_safe=True,
+                                   extra={"segment_index": seg_idx, "speaker": speaker},
+                               )
+                    seg_path.write_bytes(seg_bytes)
+                    concat_parts.append(seg_path)
+                    seg_idx += 1
+                else:  # silence
+                    sil_path = tmp_dir / f"seg_{seg_idx:03d}_silence_{value}s.mp3"
+                    try:
+                        _build_silence_mp3(value, sil_path)
+                    except subprocess.CalledProcessError as exc:
+                        return h._send_error_v59(
+                                   500,
+                                   error_code="GENERIC_ERROR",
+                                   error_message=f"ffmpeg silence generation failed for {value}s: {exc}",
+                                   retry_safe=True,
+                               )
+                    concat_parts.append(sil_path)
+                    seg_idx += 1
+
+            # ffmpeg concat all parts into final bytes.
+            list_file = tmp_dir / "concat_list.txt"
+            list_file.write_text(
+                "\n".join(f"file '{p}'" for p in concat_parts),
+                encoding="utf-8",
+            )
+            concat_out = tmp_dir / "concat_out.mp3"
+            subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-f", "concat", "-safe", "0",
+                    "-i", str(list_file),
+                    "-acodec", "libmp3lame", "-b:a", "128k",
+                    str(concat_out),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            audio_bytes = concat_out.read_bytes()
+        finally:
+            # Clean up temp dir regardless of success/failure.
+            import shutil as _shutil
+            _shutil.rmtree(tmp_dir, ignore_errors=True)
+
     elapsed_call = time.time() - t0
 
     # Atomic write to event_dir root.

@@ -92,18 +92,26 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       setCurrentMs(ws.getCurrentTime() * 1000);
     };
     // 'click' fires with relativeX 0..1 (WaveSurfer v7).
+    // IMPORTANT: do NOT call ws.seekTo() here. With dragToSeek:true, WaveSurfer
+    // already sought to the correct position internally before firing 'click'.
+    // Calling ws.seekTo() again — especially if relativeX is 0 due to WaveSurfer
+    // firing click at drag-start position on release — resets the playhead to 0:00.
+    // The 'seeking' event listener below picks up the final position accurately.
     const onWsClick = (relativeX: number) => {
-      if (!Number.isFinite(relativeX)) return;
-      ws.seekTo(relativeX);
+      if (!Number.isFinite(relativeX) || relativeX === 0) return;
       const total = ws.getDuration() * 1000;
       const t = relativeX * total;
       setCurrentMs(t);
       onWaveformClick?.(t);
     };
+    // 'seeking' fires after every seek (click, drag, seekTo) with the real position.
+    const onSeeking = () => {
+      setCurrentMs(ws.getCurrentTime() * 1000);
+    };
 
     ws.on('ready', onReadyHandler);
     ws.on('audioprocess', onAudioProcess);
-    ws.on('seeking', onAudioProcess);
+    ws.on('seeking', onSeeking);
     ws.on('click', onWsClick);
     ws.on('play', () => setIsPlaying(true));
     ws.on('pause', () => setIsPlaying(false));
