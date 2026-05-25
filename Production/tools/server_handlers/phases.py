@@ -1392,93 +1392,161 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
                    extra={"stage": "silcomp_or_trim", "detail": str(exc)[:400], "hint": "Check ffmpeg + that base clip is decodable."},
                )
 
-    # Submit synchronously via LipSyncClient (matches pattern at lines
-    # 4651, 4824). h.app.client is a WaveSpeedClient which has no
-    # submit_and_wait method — must wrap in LipSyncClient. Bug fixed
-    # 2026-04-21 after it silently surfaced as "WaveSpeed upstream" errors.
+    # Submit to Kling Sync (POST only — returns task_id in a few seconds).
+    # Poll + download run in a background thread so the HTTP response returns
+    # immediately (HTTP 202). Phase B meditations are 90-150s; Kling takes
+    # 2-10 minutes to process — a synchronous submit_and_wait would always
+    # time out in the browser ("Failed to fetch" / HTTP 0).
+    import threading as _threading
+
     out_name = f"phase_{phase}_lipsync_{ts}.mp4"
     out_path = h.app.event_dir / out_name
+    lipsync_client = LipSyncClient(h.app.client.api_key)
     try:
-        lipsync_client = LipSyncClient(h.app.client.api_key)
-        result = lipsync_client.submit_and_wait(
-            video_for_lipsync, audio_for_lipsync, out_path,
-        )
+        task_id = lipsync_client.submit(video_for_lipsync, audio_for_lipsync)
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
-        return h._send_error_v59(
-                   502,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"ByteDance LipSync failed: {type(exc).__name__}: {exc}",
-                   retry_safe=True,
-                   extra={"hint": f"{type(exc).__name__}: {str(exc)[:200]} — "
-                "check server stderr for full trace. Likely causes: "
-                "WaveSpeed upstream, DNS resolution, upload host (uguu/catbox), "
-                "or client-class mismatch (must be LipSyncClient)."},
-               )
-    finally:
-        # Cleanup tmp pre-conditioned files regardless of outcome.
         for tmp in (tmp_audio_path, tmp_video_path):
             try:
                 tmp.unlink(missing_ok=True)
             except Exception:  # noqa: BLE001
                 pass
-
-    if not out_path.is_file():
         return h._send_error_v59(
                    502,
-                   error_code="LIPSYNC_COMPLETED_BUT_OUTPUT_FILE",
-                   error_message="LipSync completed but output file missing",
+                   error_code="GENERIC_ERROR",
+                   error_message=f"Kling LipSync submit failed: {type(exc).__name__}: {exc}",
                    retry_safe=True,
-                   extra={"result": result, "hint": "Check LipSyncClient.submit_and_wait return + disk."},
+                   extra={"hint": f"{str(exc)[:200]} — check server stderr. "
+                "Likely: WaveSpeed API key, DNS, or oversized payload."},
                )
-    h.app.state.add_spend("lipsync", COST_PER_LIPSYNC)
-    mtime = int(os.path.getmtime(str(out_path)))
 
-    def _apply(state, _p=phase, _n=out_name, _m=mtime, _bid=base_clip_id):
-        state[f"phase_{_p}_lipsync_file"] = _n
-        state[f"phase_{_p}_lipsync_mtime"] = _m
-        state[f"phase_{_p}_cedric_base_clip_id" if _p == "b"
-              else f"phase_{_p}_empty_desk_bg_id"] = _bid
+    # Mark state as polling so UI can reflect in-progress status.
+    def _apply_polling(state, _p=phase, _tid=task_id):
+        state[f"phase_{_p}_lipsync_status"] = "polling"
+        state[f"phase_{_p}_lipsync_task_id"] = _tid
         state["_module_version"] = int(state.get("_module_version", 0) or 0) + 1
         return state["_module_version"]
-    # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — terminal-write pin check.
-    # If the event was swapped via /api/event/load mid-job, this lipsync
-    # output is now orphaned at _pin["pinned_event_dir"] (NOT deleted —
-    # recoverable per spec §10). Reject the state mutation with HTTP 423
-    # so the v59 client can re-hydrate + retry.
-    if not h._check_event_pin(_pin, "phase_b_lipsync_terminal_mutate"):
-        return h._send_error_v59(
-                   423,
-                   error_code="EVENT_CHANGED_MID_JOB",
-                   error_message="event_changed_mid_job",
-                   retry_safe=False,
-                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "pinned_event": _pin["pinned_event_dir"].name if _pin.get("pinned_event_dir") else None, "current_event": h.app.event_dir.name, "orphaned_output": str(out_path), "hint": "The active event changed via /api/event/load while this "
-                "lipsync job was running. The mp4 IS on disk at the pinned "
-                "event_dir but state was NOT mutated; client should "
-                "re-hydrate scope and retry."},
-               )
     try:
-        new_version = h.app.state.mutate_state(_apply)
-    except Exception as exc:  # noqa: BLE001
-        traceback.print_exc()
-        return h._send_error_v59(
-                   500,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"mutate_state failed: {type(exc).__name__}: {exc}",
-                   retry_safe=True,
-                   extra={"hint": "LipSync file written to disk; state persist failed."},
-               )
+        h.app.state.mutate_state(_apply_polling)
+    except Exception:  # noqa: BLE001
+        pass  # non-fatal — polling state is cosmetic
 
-    return h._send_json(200, {
-        "status": "ok",
+    # Background thread: poll Kling → download → write final state.
+    # Captures everything it needs from the enclosing scope; does NOT use h
+    # after the HTTP response is sent (h.wfile may be closed).
+    _app = h.app
+    _pin_captured = dict(_pin)
+
+    def _bg_poll_and_write(
+        _task_id=task_id,
+        _out_path=out_path,
+        _out_name=out_name,
+        _phase=phase,
+        _base_clip_id=base_clip_id,
+        _audio_dur=audio_duration,
+        _tmp_audio=tmp_audio_path,
+        _tmp_video=tmp_video_path,
+    ):
+        try:
+            result = lipsync_client.poll_until_done(_task_id)
+            status = (result.get("status") or "").lower()
+            if status == "completed" and result.get("outputs"):
+                url = result["outputs"][0]
+                lipsync_client.download(url, _out_path)
+                if not _out_path.is_file():
+                    raise RuntimeError(
+                        f"Kling reported completed but output not on disk: {_out_path}"
+                    )
+                _app.state.add_spend("lipsync", COST_PER_LIPSYNC)
+                mtime = int(os.path.getmtime(str(_out_path)))
+
+                # LD-460 pin check before terminal state write — inline
+                # (can't call h._check_event_pin from bg thread; h is the
+                # HTTP handler whose socket may be closed).
+                _cur_gen = getattr(_app, "event_generation", None)
+                _pin_gen = _pin_captured.get("pinned_generation")
+                _cur_dir = getattr(_app, "event_dir", None)
+                _pin_dir = _pin_captured.get("pinned_event_dir")
+                if (_pin_gen is not None and _cur_gen != _pin_gen) or \
+                   (_pin_dir is not None and _cur_dir != _pin_dir):
+                    print(
+                        f"[phase_b_lipsync] pin mismatch after poll — "
+                        f"output on disk at {_out_path} but state NOT mutated "
+                        f"(event changed mid-job)",
+                        flush=True,
+                    )
+                    return
+
+                def _apply(state,
+                           _p=_phase, _n=_out_name, _m=mtime,
+                           _bid=_base_clip_id):
+                    state[f"phase_{_p}_lipsync_file"] = _n
+                    state[f"phase_{_p}_lipsync_mtime"] = _m
+                    state[f"phase_{_p}_lipsync_status"] = "done"
+                    state.pop(f"phase_{_p}_lipsync_task_id", None)
+                    state[f"phase_{_p}_cedric_base_clip_id" if _p == "b"
+                          else f"phase_{_p}_empty_desk_bg_id"] = _bid
+                    state["_module_version"] = (
+                        int(state.get("_module_version", 0) or 0) + 1
+                    )
+                    return state["_module_version"]
+                _app.state.mutate_state(_apply)
+                print(
+                    f"[phase_b_lipsync] ✓ complete → {_out_name} "
+                    f"({_out_path.stat().st_size} bytes)",
+                    flush=True,
+                )
+            else:
+                err = result.get("raw", {}).get("error", "unknown")
+                def _apply_err(state, _p=_phase, _e=err):
+                    state[f"phase_{_p}_lipsync_status"] = f"error: {str(_e)[:120]}"
+                    state.pop(f"phase_{_p}_lipsync_task_id", None)
+                    return state
+                _app.state.mutate_state(_apply_err)
+                print(
+                    f"[phase_b_lipsync] ✗ Kling returned status={status!r} "
+                    f"error={err}",
+                    flush=True,
+                )
+        except Exception as exc:  # noqa: BLE001
+            traceback.print_exc()
+            def _apply_exc(state, _p=_phase, _exc=exc):
+                state[f"phase_{_p}_lipsync_status"] = (
+                    f"error: {type(_exc).__name__}: {str(_exc)[:100]}"
+                )
+                state.pop(f"phase_{_p}_lipsync_task_id", None)
+                return state
+            try:
+                _app.state.mutate_state(_apply_exc)
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            for tmp in (_tmp_audio, _tmp_video):
+                try:
+                    tmp.unlink(missing_ok=True)
+                except Exception:  # noqa: BLE001
+                    pass
+
+    t = _threading.Thread(target=_bg_poll_and_write, daemon=True)
+    t.start()
+    print(
+        f"[phase_b_lipsync] submitted task_id={task_id} — "
+        f"polling in background thread {t.name}",
+        flush=True,
+    )
+
+    return h._send_json(202, {
+        "ok": True,
+        "status": "submitted",
+        "task_id": task_id,
         "phase": phase,
-        "file": out_name,
-        "mtime": mtime,
         "audio_duration_s": round(audio_duration, 3),
-        "video_trimmed_to_s": round(trimmed_to, 3),
         "base_clip_id": base_clip_id,
-        "result": result,
-        "module_version": new_version,
+        "message": (
+            "Kling Sync is processing — this takes 2-10 minutes for long audio. "
+            "The lipsync video will appear automatically when done. "
+            "You can keep working; refresh the page to check."
+        ),
     })
 
 

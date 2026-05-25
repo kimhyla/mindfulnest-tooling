@@ -258,8 +258,13 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     });
     setBusyAction(null);
     if (res.ok) {
-      setStatusMsg('✓ Lipsync complete');
-      await refreshAll();
+      if (res.status === 202) {
+        // Kling is processing in the background — job submitted, not yet done.
+        setStatusMsg('⏳ Lipsync submitted — Kling is processing (2-10 min). Refresh when ready.');
+      } else {
+        setStatusMsg('✓ Lipsync complete');
+        await refreshAll();
+      }
     } else {
       const data = res.data as { hint?: string } | undefined;
       setStatusMsg(`✗ Lipsync HTTP ${res.status}: ${data?.hint ?? res.error ?? ''}`);
