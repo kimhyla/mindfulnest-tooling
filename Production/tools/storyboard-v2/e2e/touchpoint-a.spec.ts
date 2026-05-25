@@ -55,9 +55,11 @@ test.describe('§6A — read-only verification', () => {
   test('§6A.4 — Cropper opens as modal overlay; close buttons work', async ({ page }) => {
     await gotoApp(page);
     await page.click('[data-testid="tab-cropper"]');
-    await expect(page.locator('[data-testid="cropper-modal"]')).toBeVisible();
-    await page.click('[data-testid="cropper-close"]');
-    await expect(page.locator('[data-testid="cropper-modal"]')).toHaveCount(0);
+    // [CONFIRMED against src/components/ui/Modal.tsx L49+63] Modal renders
+    // data-testid="modal-{id}"; CropperModal passes id="cropper".
+    await expect(page.locator('[data-testid="modal-cropper"]')).toBeVisible();
+    await page.click('[data-testid="modal-close-cropper"]');
+    await expect(page.locator('[data-testid="modal-cropper"]')).toHaveCount(0);
   });
 
   test('§6A.5 — library renders real Event_1 items with thumbnails', async ({ page }) => {
