@@ -2159,8 +2159,12 @@ class LipsyncPollingThread(threading.Thread):
 
     def _download_and_complete(self, video_role: str, beat_id: str, task_id: str, url: str) -> None:
         print(f"[lipsync-poller] {beat_id}/{task_id[:12]}…: completed, downloading {url[:60]}…", flush=True)
-        ls = self._lipsync_entry(video_role, beat_id)
-        fname = ls.get("file") or f"{beat_id}_lipsync.mp4"
+        # LIPSYNC_UNIQUE_FNAME_20260525: always generate a unique timestamp-based filename
+        # so the browser URL changes completely on each new lipsync — no reliance on
+        # query-param (?v=N) cache-busting, which Safari's media buffer ignores for
+        # video elements even after Cmd+Shift+R hard refresh.
+        _lipsync_ts = hex(int(time.time()))[2:]
+        fname = f"{beat_id}_lipsync_{_lipsync_ts}.mp4"
         clips_dir = self.state.clips_dir
         dst = clips_dir / Path(fname).name
         try:
@@ -2179,6 +2183,12 @@ class LipsyncPollingThread(threading.Thread):
             ls["recovered_by"] = "lipsync_poller_persistent"
             ls["recovered_at"] = datetime.now(timezone.utc).isoformat()
             beat["lipsync"] = ls
+            # LIPSYNC_VERSION_BUMP_20260524: bump _version so the browser URL
+            # (beat_NN_lipsync.mp4?v=N) changes, forcing a re-fetch of the new file.
+            # Without this, lipsyncMounted (LD-757) keeps the OLD file buffered in
+            # <video> even after the lipsync on disk is overwritten (same filename,
+            # same URL). The result: browser plays stale content, back-trim misbehaves.
+            beat["_version"] = int(beat.get("_version", 0) or 0) + 1
             partition["beats"][beat_id] = beat
 
         self._mutate_lipsync(self.state, video_role, mut)
@@ -6621,6 +6631,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 resolve_pair_fades,
                 translate_trim_for_source,
                 trim_body,
+                trim_body_with_fade,
                 trim_normalized,
             )
         except ImportError as exc:
@@ -6857,23 +6868,62 @@ class ProductionHandler(BaseHTTPRequestHandler):
             else:
                 for i, m in enumerate(beat_metas):
                     bid = m["beat_id"]
+
+                    # FADE_THROUGH_BLACK_20260525: when a beat pair has both
+                    # pause_after_ms>0 AND a non-zero fade value, use
+                    # fade-to/from-black instead of xfade dissolve.
+                    # xfade overlaps both clips simultaneously — during the
+                    # pause you see ghost frames from the OTHER beat.
+                    # Fade-through-black fades each body independently so
+                    # the pause is pure black with no double-exposure.
+                    curr_pause_fade_s = (
+                        clamped_pair_fades[i] / 1000.0
+                        if i < N - 1
+                           and m["pause_after_ms"] > 0
+                           and clamped_pair_fades[i] > 0
+                        else 0.0
+                    )
+                    prev_pause_fade_s = (
+                        clamped_pair_fades[i - 1] / 1000.0
+                        if i > 0
+                           and beat_metas[i - 1]["pause_after_ms"] > 0
+                           and clamped_pair_fades[i - 1] > 0
+                        else 0.0
+                    )
+
+                    # Normal xfade head/tail trims — skipped for pause-fade pairs.
                     head_s = (clamped_pair_fades[i - 1] / 1000.0
-                              if i > 0 and clamped_pair_fades[i - 1] > 0 else 0.0)
+                              if i > 0 and clamped_pair_fades[i - 1] > 0
+                                 and prev_pause_fade_s == 0.0
+                              else 0.0)
                     tail_s = (clamped_pair_fades[i] / 1000.0
-                              if i < N - 1 and clamped_pair_fades[i] > 0 else 0.0)
-                    if head_s == 0.0 and tail_s == 0.0:
+                              if i < N - 1 and clamped_pair_fades[i] > 0
+                                 and curr_pause_fade_s == 0.0
+                              else 0.0)
+
+                    needs_body = (head_s > 0 or tail_s > 0
+                                  or prev_pause_fade_s > 0 or curr_pause_fade_s > 0)
+                    if not needs_body:
                         parts.append(beat_final[bid])
                     else:
                         head_ms = int(round(head_s * 1000))
                         tail_ms = int(round(tail_s * 1000))
+                        fi_ms = int(round(prev_pause_fade_s * 1000))
+                        fo_ms = int(round(curr_pause_fade_s * 1000))
                         body_path = body_dir / (
-                            f"{bid}_body_{m['finalize_args_hash'][:10]}_{head_ms}_{tail_ms}_{recipe6}.mp4"
+                            f"{bid}_body_{m['finalize_args_hash'][:10]}"
+                            f"_{head_ms}_{tail_ms}_fi{fi_ms}_fo{fo_ms}_{recipe6}.mp4"
                         )
                         if body_path.is_file() and not force_rebuild:
                             cache_stats["body_hits"] += 1
                         else:
                             cache_stats["body_misses"] += 1
-                            trim_body(beat_final[bid], body_path, head_s, tail_s)
+                            trim_body_with_fade(
+                                beat_final[bid], body_path,
+                                head_s, tail_s,
+                                fade_in_s=prev_pause_fade_s,
+                                fade_out_s=curr_pause_fade_s,
+                            )
                         parts.append(body_path)
 
                     # NEW per Agent A finding: pause_after_ms wiring.
@@ -6900,8 +6950,11 @@ class ProductionHandler(BaseHTTPRequestHandler):
                             subprocess.run(cmd, check=True, capture_output=True, timeout=120)
                         parts.append(pause_path)
 
-                    # XFade pair clip if next pair has fade>0.
-                    if i < N - 1 and clamped_pair_fades[i] > 0:
+                    # XFade pair clip if next pair has fade>0 AND is NOT using
+                    # pause-fade. (pause-fade handles the transition via
+                    # fade-to/from-black on the body clips + pause clip, so no
+                    # xfade overlap clip is needed for that pair.)
+                    if i < N - 1 and clamped_pair_fades[i] > 0 and curr_pause_fade_s == 0.0:
                         next_bid = beat_metas[i + 1]["beat_id"]
                         next_fade_ms = int(clamped_pair_fades[i])
                         pair_key = hashlib.md5(

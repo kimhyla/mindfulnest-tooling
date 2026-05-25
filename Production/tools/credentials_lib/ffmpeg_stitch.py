@@ -77,7 +77,7 @@ NORMALIZATION_RECIPE_HASH: str = hashlib.sha256(
 # orchestration to assemble the scene + register scene_concat_mp4 asset.
 # ---------------------------------------------------------------------------
 FINALIZE_RECIPE_VERSION: str = "v1"
-ASSEMBLE_RECIPE_VERSION: str = "v1"
+ASSEMBLE_RECIPE_VERSION: str = "v2"  # FADE_THROUGH_BLACK_20260525: bumped to invalidate
 
 # ---------------------------------------------------------------------------
 # Watercolor overlay recipe version (V3 MEDIUM-6 fix from preflight 102).
@@ -501,6 +501,76 @@ def trim_body(src: Path, dst: Path,
             *NORMALIZATION_FFMPEG_ARGS,
             str(tmp),
         ]
+        subprocess.run(cmd, check=True, capture_output=True, timeout=timeout_s)
+        os.replace(tmp, dst)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+    return new_dur
+
+
+def trim_body_with_fade(
+    src: Path, dst: Path,
+    head_remove_s: float, tail_remove_s: float,
+    fade_in_s: float = 0.0, fade_out_s: float = 0.0,
+    timeout_s: int = DEFAULT_FFMPEG_TIMEOUT_S,
+) -> float:
+    """Trim head/tail AND apply fade-through-black filters in one ffmpeg pass.
+
+    FADE_THROUGH_BLACK_20260525: handles the "fade through black" transition
+    pattern where pause_after_ms>0 is combined with a per-pair crossfade value.
+    Unlike xfade (which overlaps both clips simultaneously and shows ghost frames
+    during the pause), this fades each beat's body independently to/from black so
+    the pause clip is pure black with no double-exposure artifacts.
+
+    head_remove_s / tail_remove_s: same semantics as trim_body() — can be 0
+    fade_in_s:  fade-from-black on the trimmed clip's START  (0 = skip)
+    fade_out_s: fade-to-black   on the trimmed clip's END    (0 = skip)
+    Returns new duration after trimming (fade filters do not remove frames).
+    """
+    src_dur = ffprobe_duration(src)
+    new_start = max(0.0, float(head_remove_s))
+    new_end = max(new_start, src_dur - max(0.0, float(tail_remove_s)))
+    new_dur = new_end - new_start
+    if new_dur <= 0:
+        raise ValueError(
+            f"trim_body_with_fade({src.name}): head={head_remove_s}s "
+            f"tail={tail_remove_s}s would empty the clip (src_dur={src_dur:.3f})",
+        )
+
+    vf_parts: list[str] = []
+    af_parts: list[str] = []
+    if fade_in_s > 0:
+        vf_parts.append(f"fade=t=in:st=0:d={fade_in_s:.3f}")
+        af_parts.append(f"afade=t=in:st=0:d={fade_in_s:.3f}")
+    if fade_out_s > 0:
+        # fade_out_start is relative to the OUTPUT (trimmed) timeline.
+        fade_out_start = max(0.0, new_dur - fade_out_s)
+        vf_parts.append(f"fade=t=out:st={fade_out_start:.3f}:d={fade_out_s:.3f}")
+        af_parts.append(f"afade=t=out:st={fade_out_start:.3f}:d={fade_out_s:.3f}")
+
+    # Chain fade filters before normalization (scale/pad/fps/setsar).
+    vf_chain = (
+        ",".join(vf_parts + [NORMALIZATION_VF_EXPR])
+        if vf_parts else NORMALIZATION_VF_EXPR
+    )
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.parent / f"{dst.stem}.tmp.{os.getpid()}{dst.suffix}"
+    try:
+        cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-ss", f"{new_start:.3f}",
+            "-i", str(src.resolve()),
+            "-t", f"{new_dur:.3f}",
+            "-vf", vf_chain,
+        ]
+        if af_parts:
+            cmd += ["-af", ",".join(af_parts)]
+        cmd += [*NORMALIZATION_ENCODER_ARGS, str(tmp)]
         subprocess.run(cmd, check=True, capture_output=True, timeout=timeout_s)
         os.replace(tmp, dst)
     finally:
