@@ -185,9 +185,10 @@ def file_to_data_uri(path: Path, mime_type: str) -> str:
 LIPSYNC_PAD_START = 0.5  # seconds of silence before speech
 LIPSYNC_PAD_END = 0.5    # seconds of silence after speech
 # SWITCH_TO_KLING_LIPSYNC_20260524: Kling has no ByteDance 10s training window
-# constraint. Raise to 60s as a generous soft ceiling for now.
+# constraint. Raised from 60s to 180s to support Phase B module-level lipsync
+# (full meditations can be 90-150s after silcomp).
 # (LD LIPSYNC_MAX_DURATION_10S_NO_SILENCE_V1 id=400 was ByteDance-specific.)
-LIPSYNC_MAX_DURATION_SEC = 60.0
+LIPSYNC_MAX_DURATION_SEC = 180.0
 
 
 def _find_ffmpeg() -> str | None:
@@ -436,9 +437,14 @@ class LipSyncClient:
         except ValueError:
             _vid_dur = 0.0
         if _vid_dur > LIPSYNC_MAX_DURATION_SEC:
-            raise ValueError(
-                f"[lipsync] BLOCKED: video is {_vid_dur:.2f}s, exceeds "
-                f"LIPSYNC_MAX_DURATION_SEC={LIPSYNC_MAX_DURATION_SEC}s."
+            # Log a warning but don't hard-block — Kling's API enforces its
+            # own duration limit. Our LIPSYNC_MAX_DURATION_SEC is a soft
+            # ceiling; if Kling rejects it, the caller gets a real API error.
+            print(
+                f"[lipsync] WARN: video is {_vid_dur:.2f}s, exceeds soft ceiling "
+                f"LIPSYNC_MAX_DURATION_SEC={LIPSYNC_MAX_DURATION_SEC}s — "
+                "submitting anyway; Kling will enforce its own limit.",
+                flush=True,
             )
 
         # SWITCH_TO_KLING_LIPSYNC_20260524: pad_audio_for_lipsync was a ByteDance-specific

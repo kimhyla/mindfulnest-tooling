@@ -1330,7 +1330,12 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
                    extra={"budget_remaining": spend["budget_remaining"], "cost": COST_PER_LIPSYNC, "hint": "Raise budget via /api/budget/override or ship fewer."},
                )
 
-    # §8.4 silcomp + video trim to audio_duration + 0.4s tailroom.
+    # §8.4 silcomp + video trim/loop to audio_duration + 0.4s tailroom.
+    # Phase B meditations can be 90-150s; base clips are typically 10-30s.
+    # When base clip is shorter than audio we LOOP it (ffmpeg stream_loop -1)
+    # rather than rejecting. Kling Sync (not ByteDance) is the lipsync vendor
+    # for all paths since SWITCH_TO_KLING_LIPSYNC_20260524 — no 10s cap.
+    _VIDEO_TAILROOM_S = 0.4
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     tmp_audio_path = h.app.event_dir / f"_tmp_silcomp_phase_{phase}_{ts}.mp3"
     tmp_video_path = h.app.state.clips_dir / f"_tmp_trim_phase_{phase}_{ts}.mp4"
@@ -1338,18 +1343,33 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
         audio_for_lipsync, audio_meta = _silcomp_audio(audio_path, tmp_audio_path)
         audio_duration = audio_meta["compressed_duration_s"]
         raw_dur = _ffprobe_duration(base_path)
-        if raw_dur <= audio_duration:
-            return h._send_error_v59(
-                       400,
-                       error_code="BASE_CLIP_SHORTER_THAN_AUDIO",
-                       error_message="base clip shorter than audio",
-                       retry_safe=False,
-                       extra={"base_clip_duration_s": round(raw_dur, 3), "audio_duration_s": round(audio_duration, 3), "hint": "Use a longer base clip or shorten the audio."},
-                   )
-        video_for_lipsync, trimmed_to, ts_used, te_used = _trim_video_to_audio(
-            base_path, tmp_video_path, audio_duration,
-            trim_start=0.0, trim_end=None,
-        )
+        target_video_s = audio_duration + _VIDEO_TAILROOM_S
+        if raw_dur < target_video_s:
+            # Base clip is shorter than audio — loop it to cover the full duration.
+            print(
+                f"[phase_b_lipsync] base clip {raw_dur:.2f}s < target {target_video_s:.2f}s "
+                f"— looping via stream_loop -1",
+                flush=True,
+            )
+            subprocess.run(
+                [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-stream_loop", "-1",
+                    "-i", str(base_path),
+                    "-t", f"{target_video_s:.3f}",
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                    "-an",  # strip audio; lipsync supplies its own
+                    "-movflags", "+faststart",
+                    str(tmp_video_path),
+                ],
+                check=True, capture_output=True, timeout=300,
+            )
+            video_for_lipsync = tmp_video_path
+        else:
+            video_for_lipsync, _, _, _ = _trim_video_to_audio(
+                base_path, tmp_video_path, audio_duration,
+                trim_start=0.0, trim_end=None,
+            )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
             OSError, ValueError) as exc:
         traceback.print_exc()
