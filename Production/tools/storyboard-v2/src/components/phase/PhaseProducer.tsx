@@ -149,6 +149,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const [scriptDraft, setScriptDraft] = useState<string>('');
   const [suggesting, setSuggesting] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const [saveBtnLabel, setSaveBtnLabel] = useState<string>('Save Script');
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [selectedBaseClip, setSelectedBaseClip] = useState<string>('');
   const [activeCueId, setActiveCueId] = useState<string | null>(null);
@@ -416,19 +417,29 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   // Server whitelist accepts phase_a_script + phase_b_script via
   // v2_module_patch (production_server.py:4035, 4048, 4157, 4170).
   // Closes inventory v2 PB-1 + PA-1 WIRED-BUT-BROKEN class.
+  const flashSaveBtn = (label: string) => {
+    setSaveBtnLabel(label);
+    setTimeout(() => setSaveBtnLabel('Save Script'), 2000);
+  };
+
   const onScriptBlur = async () => {
     const currentServer = stateSlice.script ?? '';
-    if (scriptDraft === currentServer) return; // no-op
+    if (scriptDraft === currentServer) {
+      flashSaveBtn('✓ Already saved');
+      return;
+    }
+    flashSaveBtn('Saving…');
     const field = `phase_${phase}_script`;
     const res = await pathappPatch(activeScope.value, 'v2_module_patch', {
       field,
       value: scriptDraft,
     });
     if (res.ok) {
-      // Reflect saved value into stateSlice so subsequent blurs don't re-fire.
       setStateSlice((s) => ({ ...s, script: scriptDraft }));
+      flashSaveBtn('✓ Saved');
       setStatusMsg('✓ Script saved');
     } else {
+      flashSaveBtn(`✗ Error ${res.status}`);
       setStatusMsg(`✗ Script save HTTP ${res.status}: ${res.error ?? ''}`);
     }
   };
@@ -511,15 +522,17 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           placeholder={`Phase ${phase.toUpperCase()} script…`}
         />
         {/* Explicit save — onBlur only fires on focus-leave; this lets Kim
-            paste a script and commit it without clicking elsewhere. */}
+            paste a script and commit it without clicking elsewhere.
+            Button label self-reports: Saving… → ✓ Saved / ✗ Error / ✓ Already saved */}
         <div class="mn-phase-row">
           <button
             type="button"
             class="mn-btn"
             data-testid={`phase-${phase}-save-script-btn`}
             onClick={onScriptBlur}
+            disabled={saveBtnLabel === 'Saving…'}
           >
-            Save Script
+            {saveBtnLabel}
           </button>
         </div>
 
