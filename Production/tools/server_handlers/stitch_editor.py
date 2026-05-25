@@ -586,8 +586,48 @@ def handle_stitch_bake(h, body: dict)-> None:
                )
 
     try:
+        # Hydrate slots from job state when the client sends only {name, …}.
+        # The preview path sends slots inline (one slot at a time); the bake
+        # path historically sent only the job name, which caused
+        # _stitch_build_pipeline to always raise "No slots provided".
+        # Fix: if body has no "slots", load them from stitch_state by job name
+        # and convert the dict-keyed slots into the ordered list the pipeline
+        # expects. Transitions are also hydrated so crossfade settings survive.
+        _SLOT_ORDER = ["intro", "phase_a", "phase_b", "resolution"]
+        _body = dict(body)
+        if not _body.get("slots"):
+            _bake_job_name = _body.get("name") or ""
+            if _bake_job_name:
+                try:
+                    _st = h.app.stitch_state.read_state()
+                    _bake_job = (_st.get("jobs") or {}).get(_bake_job_name)
+                    if _bake_job:
+                        _slots_dict = _bake_job.get("slots") or {}
+                        # Normalize: stitch_state may store slots as list (legacy)
+                        # or dict (current). Gracefully handle both.
+                        if isinstance(_slots_dict, dict):
+                            _slots_list = [
+                                _slots_dict[k]
+                                for k in _SLOT_ORDER
+                                if k in _slots_dict
+                                and (_slots_dict[k] or {}).get("video_path")
+                            ]
+                        else:
+                            _slots_list = [
+                                s for s in (_slots_dict or [])
+                                if isinstance(s, dict) and s.get("video_path")
+                            ]
+                        if _slots_list:
+                            _body["slots"] = _slots_list
+                            if "transitions" not in _body:
+                                _body["transitions"] = _bake_job.get("transitions") or []
+                except Exception as _hydrate_exc:
+                    # Non-fatal: if state read fails, fall through to
+                    # "No slots provided" which gives the user a clear message.
+                    print(f"[stitch-bake] WARN: slot hydration failed: {_hydrate_exc}")
+
         try:
-            out_path, _durations = h._stitch_build_pipeline(body)
+            out_path, _durations = h._stitch_build_pipeline(_body)
         except (ValueError, PermissionError) as exc:
             return h._send_error_v59(
                        400,
@@ -659,7 +699,7 @@ def handle_stitch_bake(h, body: dict)-> None:
             # registered_write lives in Production/tools/ (CODE tree)
             sys.path.insert(0, str(_PSERVER_TOOLS_DIR))
             from registered_write import register_asset  # noqa: PLC0415
-            slots = body.get("slots") or []
+            slots = _body.get("slots") or []
             iter_notes = (
                 f"Stitch editor bake. Job: {job_name}. "
                 f"{len(slots)} slot(s), {sum(len(s.get('sfx_cues') or []) for s in slots)} SFX cues."
