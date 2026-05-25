@@ -12,7 +12,7 @@
 // The button-based flow ships in S4; Kim can use it end-to-end now;
 // timeline-as-direct-manipulation lands in S5.
 
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { apiGet, pathappPatch } from '../../api/client';
 import { activeScope } from '../../state/scope';
 import { SERVER_BASE } from '../../api/endpoints';
@@ -156,6 +156,11 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const [popoverAnchor, setPopoverAnchor] = useState<{ x: number; y: number } | null>(null);
   const [pickerPosition, setPickerPosition] = useState<PhaseAClipPosition | null>(null);
   const [ambientPresets, setAmbientPresets] = useState<AmbientPreset[]>([]);
+  // True while Kling lipsync is processing in the background (202 submitted).
+  const [lipsyncing, setLipsyncing] = useState(false);
+  // Mtime of lipsync_file at the moment we submitted — used to detect when
+  // a NEW lipsync result lands (mtime changes → job done).
+  const lipsyncMtimeBefore = useRef<number | null>(null);
 
   const refreshAll = async () => {
     const [wc, bc, st, ap] = await Promise.all([
@@ -185,6 +190,26 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     (async () => { if (!cancelled) await refreshAll(); })();
     return () => { cancelled = true; };
   }, [activeScope.value.event_id, phase]);
+
+  // Auto-poll every 30s while Kling lipsync is processing in background.
+  useEffect(() => {
+    if (!lipsyncing) return;
+    const id = setInterval(async () => {
+      await refreshAll();
+    }, 30_000);
+    return () => clearInterval(id);
+  }, [lipsyncing]);
+
+  // Detect when lipsync_mtime changes after submission → job landed.
+  useEffect(() => {
+    if (!lipsyncing) return;
+    const currentMtime = stateSlice.lipsync_mtime ?? null;
+    const before = lipsyncMtimeBefore.current;
+    if (currentMtime !== null && currentMtime !== before) {
+      setLipsyncing(false);
+      setStatusMsg('✓ Lipsync complete — video ready.');
+    }
+  }, [stateSlice.lipsync_mtime, lipsyncing]);
 
   // Listen for "magic or animate complete" postMessage from path_picker.html
   // (S5 LD-468/469/470 — supersedes S4 mn:watercolor-animated).
@@ -259,8 +284,11 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     setBusyAction(null);
     if (res.ok) {
       if (res.status === 202) {
-        // Kling is processing in the background — job submitted, not yet done.
-        setStatusMsg('⏳ Lipsync submitted — Kling is processing (2-10 min). Refresh when ready.');
+        // Kling is processing in the background — record mtime before submit
+        // so we can detect when the new file lands, then start polling.
+        lipsyncMtimeBefore.current = stateSlice.lipsync_mtime ?? null;
+        setLipsyncing(true);
+        setStatusMsg('⏳ Lipsync submitted — Kling processing (~1-4 min). Will auto-update when done.');
       } else {
         setStatusMsg('✓ Lipsync complete');
         await refreshAll();

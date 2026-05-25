@@ -1543,9 +1543,8 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
         "audio_duration_s": round(audio_duration, 3),
         "base_clip_id": base_clip_id,
         "message": (
-            "Kling Sync is processing — this takes 2-10 minutes for long audio. "
-            "The lipsync video will appear automatically when done. "
-            "You can keep working; refresh the page to check."
+            "Kling Sync is processing (~1-4 min). "
+            "The storyboard will auto-update when done."
         ),
     })
 
