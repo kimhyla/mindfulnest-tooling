@@ -447,6 +447,22 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   // ── Voice stem (Phase E) — Cursor v8 Q5: misnamed regen_audio writes voice_stem files.
   const onGenerateStem = async () => {
     setBusyAction('stem');
+    // Save scriptDraft to server BEFORE generating — prevents refreshAll() from
+    // overwriting the textarea with the stale server version (race: blur-save and
+    // refreshAll compete; generation wins and resets scriptDraft to old script).
+    const currentServer = stateSlice.script ?? '';
+    if (scriptDraft !== currentServer) {
+      setStatusMsg('Saving script…');
+      const field = `phase_${phase}_script`;
+      const saveRes = await pathappPatch(activeScope.value, 'v2_module_patch', {
+        field,
+        value: scriptDraft,
+      });
+      if (saveRes.ok) {
+        setStateSlice((s) => ({ ...s, script: scriptDraft }));
+      }
+      // Continue even if save fails — generation uses scriptDraft directly.
+    }
     setStatusMsg('Generating stem from script…');
     const regenEp = phase === 'a' ? 'phase_a_regen_audio' : 'phase_b_regen_audio';
     const res = await pathappPatch(activeScope.value, regenEp, {
