@@ -173,7 +173,7 @@ test.describe('Stale-Lipsync UI Gate — F-STALE-LIPSYNC-UI-001', () => {
     await expect(playBtn).not.toContainText('stale');
   });
 
-  test('T-2 STALE — file_mtime < audio_regenerated_at → disabled stale button', async ({ page }) => {
+  test('T-2 STALE — file_mtime < audio_regenerated_at → enabled stale button (BUG-C: still playable)', async ({ page }) => {
     // Mirrors beat_08: lipsync rendered April 18, audio regenerated May 17.
     const audioRegen = '2026-05-17T03:19:59+00:00';
     const lipsyncMtime = Math.floor(new Date('2026-04-18T12:00:00Z').getTime() / 1000);
@@ -186,11 +186,15 @@ test.describe('Stale-Lipsync UI Gate — F-STALE-LIPSYNC-UI-001', () => {
     await page.click('[data-testid="tab-storyboard"]');
 
     const playBtn = page.locator('[data-testid="beat-0-lipsync-play"]');
-    // Audit-visible: button STILL renders so Kim can see the stale artifact
-    // exists, but it is DISABLED with a "stale" label per Rule 19 chosen UX.
+    // BUG-C fix (Kim 2026-05-20): stale lipsync must STILL be playable so
+    // Kim can review prior work. Stale affects only the LABEL and class
+    // (mn-btn-stale), NOT the disabled state. Audit-visible via text label.
+    // StoryboardTab.tsx BUG-C comment: "Stale only affects the LABEL (warning
+    // prefix), not the disabled state."
     await expect(playBtn).toBeVisible();
-    await expect(playBtn).toBeDisabled();
+    await expect(playBtn).toBeEnabled();
     await expect(playBtn).toContainText('stale');
+    await expect(playBtn).toHaveAttribute('data-stale', 'true');
   });
 
   test('T-3 ABSENT — lipsync.file undefined → button hidden (regression guard)', async ({ page }) => {
@@ -207,9 +211,10 @@ test.describe('Stale-Lipsync UI Gate — F-STALE-LIPSYNC-UI-001', () => {
     await expect(playBtn).toHaveCount(0);
   });
 
-  test('T-4 MISSING — file_mtime missing → disabled stale button (defensive default)', async ({ page }) => {
+  test('T-4 MISSING — file_mtime missing → enabled stale button (BUG-C: still playable, defensive default)', async ({ page }) => {
     // Server returned lipsync.file but no file_mtime — older server, or
     // file disappeared mid-render. Treat as stale (safe default per Rule 19).
+    // Per BUG-C (Kim 2026-05-20): stale = enabled-but-labelled, not disabled.
     await mockBootstrap(page, {
       audioRegeneratedAt: '2026-05-17T03:19:59+00:00',
       lipsyncFileMtime: undefined, // key omitted from response
@@ -220,7 +225,8 @@ test.describe('Stale-Lipsync UI Gate — F-STALE-LIPSYNC-UI-001', () => {
 
     const playBtn = page.locator('[data-testid="beat-0-lipsync-play"]');
     await expect(playBtn).toBeVisible();
-    await expect(playBtn).toBeDisabled();
+    await expect(playBtn).toBeEnabled();
     await expect(playBtn).toContainText('stale');
+    await expect(playBtn).toHaveAttribute('data-stale', 'true');
   });
 });
