@@ -494,6 +494,57 @@
   margin: 8px 0;
 }
 .mn-phase-script-editor:focus { border-color: var(--accent); outline: none; }
+
+/* Therapeutic brief panel — shown/hidden via 📋 toggle button.
+   Warm amber tint distinguishes it from regular panel chrome. */
+.mn-brief-toggle-btn {
+  font-size: 12px;
+  padding: 3px 10px;
+  opacity: 0.8;
+}
+.mn-brief-toggle-btn--active {
+  opacity: 1;
+  border-color: rgba(245, 176, 66, 0.5);
+  color: var(--text-warn);
+}
+.mn-brief-panel {
+  background: rgba(245, 176, 66, 0.06);
+  border: 1px solid rgba(245, 176, 66, 0.22);
+  border-radius: 5px;
+  padding: 12px 14px 10px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.mn-brief-section {
+  margin-bottom: 10px;
+}
+.mn-brief-section:last-child {
+  margin-bottom: 0;
+}
+.mn-brief-title {
+  display: block;
+  font-weight: 600;
+  font-size: 11px;
+  color: var(--text-warn);
+  margin-bottom: 4px;
+  letter-spacing: 0.02em;
+}
+.mn-brief-goal {
+  margin: 0;
+  color: var(--text);
+}
+.mn-brief-list {
+  margin: 0;
+  padding-left: 16px;
+  color: var(--text);
+}
+.mn-brief-list li {
+  margin-bottom: 3px;
+}
+.mn-brief-list li:last-child {
+  margin-bottom: 0;
+}
 .mn-phase-status-tag { font-size: 11px; font-style: italic; }
 .mn-phase-status-line {
   margin-top: 8px;

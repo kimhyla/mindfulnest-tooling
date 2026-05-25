@@ -243,6 +243,113 @@ def handle_phase_b_ambient_preset_list(h)-> None:
     return h._send_json(200, {"ok": True, "items": items, "count": len(items)})
 
 
+# ---------------------------------------------------------------------------
+# Anthropic helper — shared by suggest_script + brief generation
+# ---------------------------------------------------------------------------
+
+def _call_anthropic_urllib(api_key: str, req_body: dict, timeout: int = 60) -> tuple:
+    """Make a single Anthropic Messages API call.
+    Returns (resp_data_dict, elapsed_ms_int).
+    Raises urllib.error.HTTPError or urllib.error.URLError on failure.
+    """
+    import urllib.request as _ur
+    url = "https://api.anthropic.com/v1/messages"
+    req_data = json.dumps(req_body).encode("utf-8")
+    req = _ur.Request(
+        url, data=req_data,
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        method="POST",
+    )
+    t0 = time.time()
+    with _ur.urlopen(req, timeout=timeout) as resp:
+        resp_data = json.loads(resp.read().decode("utf-8"))
+    return resp_data, int((time.time() - t0) * 1000)
+
+
+def _build_therapeutic_brief(
+    api_key: str,
+    module_meta: dict,
+    therapeutic_note: str,
+    technique_inventory: str,
+) -> dict | None:
+    """Generate a structured therapeutic brief via a separate Haiku call.
+
+    Returns dict with {goal, must_hits, what_to_evoke, watch_outs} or None on
+    any failure. Never raises — brief is non-critical; script generation is the
+    primary payload.
+
+    Brief content spec (per Kim 2026-05-25):
+      goal        — what the child will EXPERIENCE and to what clinical end
+      must_hits   — ordered steps the exercise structurally requires
+      what_to_evoke — internal state/feeling/insight/body-sensation
+      watch_outs  — contraindications for children, clinical caveats
+    """
+    creature = module_meta.get('creature_name', '')
+    technique = module_meta.get('technique_name', '') or '(see Therapeutic Note)'
+
+    system_prompt = (
+        "You generate tightly structured clinical guidance briefs for CRI-framework "
+        "script writers (MindfulNest therapeutic app, ages 7–11). "
+        "Return ONLY a valid JSON object — no preamble, no explanation, no markdown fences."
+    )
+    user_prompt = (
+        f"Creature: {creature}\nTechnique: {technique}\n\n"
+        f"Therapeutic Note:\n---\n{therapeutic_note or '(not available)'}\n---\n\n"
+        "Return this exact JSON object and nothing else:\n"
+        "{\n"
+        '  "goal": "<one sentence: what the child will EXPERIENCE, and to what clinical end>",\n'
+        '  "must_hits": ["<ordered step 1 the technique structurally requires>", "<step 2>", "..."],\n'
+        '  "what_to_evoke": ["<internal state / feeling / insight / body-sensation bullet>", "..."],\n'
+        '  "watch_outs": ["<contraindication for children OR clinical caveat OR thing to avoid>", "..."]\n'
+        "}\n\n"
+        "Rules:\n"
+        "  - goal: exactly ONE sentence, clinically precise\n"
+        "  - must_hits: 2–4 bullets, ORDERED (step 1 then step 2 etc.), structural requirements of the technique\n"
+        "  - what_to_evoke: 2–4 bullets — the internal state/insight/realization/body-feeling the child reaches\n"
+        "    (child-accessible language — what the child actually notices, not clinical terminology)\n"
+        "  - watch_outs: 2–4 bullets — contraindications for children, clinical caveats, things to avoid;\n"
+        "    clinical precision OK here (Kim is the therapist)\n"
+        "  - ONLY the JSON object. No extra text, no markdown fences."
+    )
+    req_body = {
+        "model": "claude-haiku-4-5",
+        "max_tokens": 512,
+        "system": system_prompt,
+        "messages": [{"role": "user", "content": user_prompt}],
+    }
+    try:
+        resp_data, _ = _call_anthropic_urllib(api_key, req_body, timeout=30)
+        content = resp_data.get("content") or []
+        raw = ""
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                raw += block.get("text", "")
+        raw = raw.strip()
+        # Strip markdown fences if model ignores instructions
+        if raw.startswith("```"):
+            lines = raw.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            raw = "\n".join(lines).strip()
+        brief = json.loads(raw)
+        # Validate expected keys are present
+        required = ("goal", "must_hits", "what_to_evoke", "watch_outs")
+        for k in required:
+            if k not in brief:
+                print(f"[suggest_script] brief missing key {k!r} — dropping brief")
+                return None
+        return brief
+    except Exception as exc:
+        print(f"[suggest_script] therapeutic brief generation failed (non-fatal): {exc}")
+        return None
+
+
 def handle_phase_suggest_script(h, body: dict)-> None:
 
     """POST /api/phase/suggest_script {phase, event_id?, scope_event_id?}
@@ -527,53 +634,47 @@ def handle_phase_suggest_script(h, body: dict)-> None:
             "structural constants, and cue markers exactly as provided."
         )
 
-    # Call Anthropic Messages API via urllib (no SDK dependency).
-    url = "https://api.anthropic.com/v1/messages"
-    req_body = {
+    # Call Anthropic in PARALLEL: (1) script generation, (2) therapeutic brief.
+    # Both use Haiku. Brief failure is non-fatal — returns null in the response.
+    # Using _cf (concurrent.futures) already imported at module top.
+    script_req = {
         "model": "claude-haiku-4-5",
         "max_tokens": 2048,
         "system": system_prompt,
-        "messages": [
-            {"role": "user", "content": user_prompt},
-        ],
+        "messages": [{"role": "user", "content": user_prompt}],
     }
-    req_data = json.dumps(req_body).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=req_data,
-        headers={
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
-        method="POST",
-    )
-    t0 = time.time()
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            resp_body = resp.read().decode("utf-8")
-            resp_data = json.loads(resp_body)
-    except urllib.error.HTTPError as exc:
-        err_body = exc.read().decode("utf-8", errors="replace")
-        return h._send_error_v59(
-                   502,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"Anthropic API HTTP {exc.code}",
-                   retry_safe=True,
-                   extra={"ok": False, "detail": err_body[:500]},
-               )
-    except urllib.error.URLError as exc:
-        return h._send_error_v59(
-                   502,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"Anthropic API URL error: {exc}",
-                   retry_safe=True,
-                   extra={"ok": False},
-               )
-    elapsed_ms = int((time.time() - t0) * 1000)
+    with _cf.ThreadPoolExecutor(max_workers=2) as pool:
+        script_future = pool.submit(_call_anthropic_urllib, api_key, script_req, 60)
+        brief_future = pool.submit(
+            _build_therapeutic_brief,
+            api_key, module_meta, therapeutic_note, technique_inventory,
+        )
+        # Script result — errors are fatal, returned as HTTP error response
+        try:
+            resp_data, elapsed_ms = script_future.result()
+        except urllib.error.HTTPError as exc:
+            err_body = exc.read().decode("utf-8", errors="replace")
+            return h._send_error_v59(
+                502, error_code="GENERIC_ERROR",
+                error_message=f"Anthropic API HTTP {exc.code}",
+                retry_safe=True,
+                extra={"ok": False, "detail": err_body[:500]},
+            )
+        except urllib.error.URLError as exc:
+            return h._send_error_v59(
+                502, error_code="GENERIC_ERROR",
+                error_message=f"Anthropic API URL error: {exc}",
+                retry_safe=True,
+                extra={"ok": False},
+            )
+        # Brief result — non-fatal
+        try:
+            therapeutic_brief = brief_future.result()
+        except Exception as exc:
+            print(f"[suggest_script] brief future error (non-fatal): {exc}")
+            therapeutic_brief = None
 
-    # Extract text from response shape.
-    # Response: {content: [{type:'text', text:'...'}], model: '...', usage: {input_tokens, output_tokens}}
+    # Extract text from script response.
     content = resp_data.get("content") or []
     script_text = ""
     for block in content:
@@ -584,6 +685,7 @@ def handle_phase_suggest_script(h, body: dict)-> None:
         "ok": True,
         "phase": phase,
         "script": script_text,
+        "therapeutic_brief": therapeutic_brief,
         "model_used": resp_data.get("model", "claude-haiku-4-5"),
         "generation_time_ms": elapsed_ms,
         "tokens_in": usage.get("input_tokens"),

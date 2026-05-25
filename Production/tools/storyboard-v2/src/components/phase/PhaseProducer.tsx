@@ -590,10 +590,54 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           >
             {suggesting ? 'Suggesting…' : 'Suggest Script'}
           </button>
+          {therapeuticBrief && (
+            <button
+              type="button"
+              class={`mn-btn mn-brief-toggle-btn${showBrief ? ' mn-brief-toggle-btn--active' : ''}`}
+              data-testid={`phase-${phase}-brief-toggle-btn`}
+              onClick={() => setShowBrief(v => !v)}
+              title="Toggle therapeutic brief"
+            >
+              📋 {showBrief ? 'Hide Brief' : 'Brief'}
+            </button>
+          )}
           <span class="mn-dim">
             {phase === 'a' ? 'reads Phase B + module context' : 'reads arc skeleton + therapeutic'}
           </span>
         </div>
+        {/* Therapeutic brief panel — persists in state, toggled by 📋 button */}
+        {therapeuticBrief && showBrief && (
+          <div class="mn-brief-panel" data-testid={`phase-${phase}-brief-panel`}>
+            <div class="mn-brief-section">
+              <span class="mn-brief-title">🎯 Therapeutic goal</span>
+              <p class="mn-brief-goal">{therapeuticBrief.goal}</p>
+            </div>
+            <div class="mn-brief-section">
+              <span class="mn-brief-title">✅ Must-hits</span>
+              <ul class="mn-brief-list">
+                {therapeuticBrief.must_hits.map((item, i) => (
+                  <li key={i}>{item}</li>
+                ))}
+              </ul>
+            </div>
+            <div class="mn-brief-section">
+              <span class="mn-brief-title">💡 What to evoke</span>
+              <ul class="mn-brief-list">
+                {therapeuticBrief.what_to_evoke.map((item, i) => (
+                  <li key={i}>{item}</li>
+                ))}
+              </ul>
+            </div>
+            <div class="mn-brief-section">
+              <span class="mn-brief-title">⚠️ Watch-outs</span>
+              <ul class="mn-brief-list">
+                {therapeuticBrief.watch_outs.map((item, i) => (
+                  <li key={i}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
         <textarea
           class="mn-phase-script-editor"
           data-testid={`phase-${phase}-script-editor`}
