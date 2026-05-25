@@ -474,6 +474,50 @@ def handle_lipsync_submit(h, body: dict)-> None:
                 dest = h.app.state.clips_dir / dest_name
                 size = lipsync_client.download(url, dest)
 
+                # AV_PTS_ALIGN_FIX (2026-05-25): ByteDance H.264 encoder introduces a
+                # ~1-frame video PTS delay — video stream start_time > 0 (typically 40ms
+                # at 25fps) while audio stream start_time = 0. This means the first ~40ms
+                # of audio plays with no video, so audio LEADS the mouth by one frame.
+                # The zoompan zoom step and normalize_for_concat both reset PTS to 0 via
+                # re-encode, which hides the offset at the container level but does NOT
+                # fix the content misalignment: audio[0ms] still corresponds to TTS speech
+                # while video[0ms] is the ByteDance frame that was originally at 40ms.
+                # Fix: probe video start_time immediately after download, then use ffmpeg
+                # -ss (stream-copy, no re-encode) to skip the pre-video audio lead.
+                # After this, both streams start at t=0 with content-aligned samples.
+                _av_probe = subprocess.run(
+                    ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                     "-show_entries", "stream=start_time",
+                     "-of", "csv=p=0", str(dest)],
+                    capture_output=True, text=True, timeout=10,
+                )
+                try:
+                    _v_start = float(_av_probe.stdout.strip())
+                except (ValueError, TypeError):
+                    _v_start = 0.0
+                if _v_start > 0.005:  # >5ms — worth fixing
+                    _av_fixed = dest.with_suffix(".tmp_avfix.mp4")
+                    try:
+                        subprocess.run([
+                            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                            "-ss", f"{_v_start:.6f}",
+                            "-i", str(dest),
+                            "-c", "copy",
+                            str(_av_fixed),
+                        ], check=True, capture_output=True, timeout=60)
+                        _av_fixed.replace(dest)
+                        size = dest.stat().st_size
+                        print(f"[lipsync] {beat_key} AV-PTS-align: stripped "
+                              f"{_v_start * 1000:.1f}ms audio lead; both streams "
+                              f"now content-aligned at t=0")
+                    except Exception as _avfix_exc:
+                        print(f"[lipsync] {beat_key} AV-PTS-align FAILED "
+                              f"(non-fatal): {_avfix_exc}")
+                        try:
+                            _av_fixed.unlink()
+                        except (OSError, UnboundLocalError):
+                            pass
+
                 # FACE-COMPOSITE: blend ByteDance output (face/beak lipsync region only)
                 # with the original Kling source (clean wings/body). ByteDance LatentSync
                 # was trained on human anatomy — cartoon wings in gesture poses get
