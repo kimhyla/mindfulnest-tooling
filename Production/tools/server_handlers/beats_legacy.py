@@ -1776,11 +1776,17 @@ def handle_beat_zoom(h, body: dict) -> None:
     # Zoom 1.0 -> 1.15 over full clip
     zoom_step = 0.15 / total_frames
 
+    # Normalize to 1280x720 FIRST (same as NORMALIZATION_VF_EXPR in ffmpeg_stitch.py)
+    # using force_original_aspect_ratio=decrease + pad so non-16:9 sources
+    # (e.g. 720x544 ByteDance lipsync output) are letterboxed, not stretched.
+    # Prior: scale=1280:720 with no AR guard → horizontal stretch on 720x544.
     vf = (
+        f"scale=1280:720:force_original_aspect_ratio=decrease,"
+        f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,"
+        f"setsar=1:1,"
         f"fps={fps},"
         f"zoompan=z='min(zoom+{zoom_step:.8f},1.15)':d=1"
-        f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)',"
-        f"scale=1280:720"
+        f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
     )
 
     cmd = [

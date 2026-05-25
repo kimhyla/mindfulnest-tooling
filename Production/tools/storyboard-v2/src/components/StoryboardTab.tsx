@@ -991,6 +991,11 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
 
   const optionCount = beat.phase_1?.options?.length ?? 0;
   const selectedOption = beat.phase_1?.selected_option ?? null;
+  // Which file will be submitted to lipsync (needed for button tooltip + label).
+  const selectedOptFile: string | null =
+    selectedOption !== null && beat.phase_1?.options?.[selectedOption - 1]?.file
+      ? (beat.phase_1!.options![selectedOption - 1].file ?? null)
+      : null;
   // F-BEAT-PREVIEW-001 / COMPOSITE_PREVIEW_PERSISTENT_20260524:
   // Show composite preview (animation + delayed TTS) whenever a selected animation
   // option exists — regardless of whether lipsync.file is present.
@@ -1295,20 +1300,26 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
             aria-disabled={busy !== null}
             disabled={lifecycle === 'lipsync_pending'}
             title={
+              // Always show which option + filename will be submitted — prevents
+              // the "lipsynced wrong option after regen" class of errors (Kim 2026-05-24).
               beat.lipsync?.file
-                ? "Re-send the selected option to ByteDance lipsync (replaces the current lipsync render)"
-                : "Send the selected option to ByteDance lipsync (generates the first lipsync mp4 for this beat)"
+                ? selectedOptFile
+                    ? `Re-send to Kling lipsync using opt ${selectedOption} (${selectedOptFile}) — replaces current lipsync`
+                    : "Re-send the selected option to Kling lipsync (replaces the current lipsync render)"
+                : selectedOptFile
+                    ? `Send to Kling lipsync using opt ${selectedOption} (${selectedOptFile})`
+                    : "Send the selected option to Kling lipsync (generates the first lipsync mp4 for this beat)"
             }
           >
             {lifecycle === 'lipsync_pending' ? (
               <><Spinner size="sm" inline /> in progress</>
             ) : (
               busy === 'Lipsync' ? <><Spinner size="sm" inline /> …</> : (
-                // Kim 2026-05-20 follow-up: label based on lipsync.file existence,
-                // NOT lifecycle === 'final'. A beat can be in 'final' state via
-                // raw_option without ever having been lipsynced (Kim's beat_03
-                // case). Old logic showed "Resend Lipsync" misleadingly.
-                beat.lipsync?.file ? '👄 Resend Lipsync' : '👄 Send for Lipsync'
+                // Always include which option number in Resend label so Kim can see
+                // at a glance if she needs to select a different option first.
+                beat.lipsync?.file
+                  ? `👄 Resend Lipsync${selectedOption !== null ? ` (opt ${selectedOption})` : ''}`
+                  : '👄 Send for Lipsync'
               )
             )}
           </button>

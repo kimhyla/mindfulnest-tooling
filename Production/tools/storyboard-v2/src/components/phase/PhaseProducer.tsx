@@ -138,8 +138,11 @@ function fileUrl(name: string): string {
   return `${SERVER_BASE}/files?path=${encodeURIComponent(`Production/${eventId}/${name}`)}`;
 }
 
+// NOTE: PhaseProducer always renders its full content without collapse.
+// Phase B and Phase A each own an entire tab — collapsing the full tab body
+// is wrong UX. <details>/<summary> removed 2026-05-25. Do NOT re-introduce
+// a collapsed-by-default wrapper here.
 export function PhaseProducer({ phase }: PhaseProducerProps) {
-  const [collapsed, setCollapsed] = useState(true);
   const [watercolors, setWatercolors] = useState<WatercolorItem[]>([]);
   const [baseClips, setBaseClips] = useState<BaseClipItem[]>([]);
   const [stateSlice, setStateSlice] = useState<PhaseStateSlice>({});
@@ -177,11 +180,10 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   };
 
   useEffect(() => {
-    if (collapsed) return;
     let cancelled = false;
     (async () => { if (!cancelled) await refreshAll(); })();
     return () => { cancelled = true; };
-  }, [collapsed, activeScope.value.event_id]);
+  }, [activeScope.value.event_id, phase]);
 
   // Listen for "magic or animate complete" postMessage from path_picker.html
   // (S5 LD-468/469/470 — supersedes S4 mn:watercolor-animated).
@@ -202,8 +204,6 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     window.addEventListener('message', onMsg);
     return () => window.removeEventListener('message', onMsg);
   }, [phase]);
-
-  const phaseLabel = phase === 'a' ? 'Phase A (Chipper)' : 'Phase B (Cedric)';
 
   const onSuggest = async () => {
     setSuggesting(true);
@@ -477,22 +477,13 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       : null;
 
   return (
-    <details
-      class={`mn-phase-producer mn-phase-${phase}`}
-      data-testid={`phase-producer-${phase}`}
-      open={!collapsed}
-      onToggle={(e: Event) => {
-        const t = e.target as HTMLDetailsElement;
-        setCollapsed(!t.open);
-      }}
-    >
-      <summary class="mn-phase-summary">
-        {phaseLabel}
-        <span class="mn-dim mn-phase-status-tag">
+    <div class={`mn-phase-producer mn-phase-${phase}`} data-testid={`phase-producer-${phase}`}>
+      <div class='mn-phase-status-header'>
+        <span class='mn-dim mn-phase-status-tag' data-testid={`phase-${phase}-status-header`}>
           {audioFile ? `audio: ${audioFile.label}` : 'no audio yet'}
           {lipsyncFile ? ' · lipsync ✓' : ''}
         </span>
-      </summary>
+      </div>
 
       <div class="mn-phase-body">
         {/* Script editor + Suggest */}
@@ -756,6 +747,6 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           watercolor onto timeline = S5 polish.
         </p>
       </div>
-    </details>
+    </div>
   );
 }

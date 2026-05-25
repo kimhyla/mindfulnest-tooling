@@ -1164,7 +1164,11 @@ def handle_lipsync_idle(h, body: dict) -> None:
                 return
 
             # ── Step 7: Download Kling lipsync result ──
-            dest_name = f"{beat_key}_lipsync.mp4"
+            # LIPSYNC_UNIQUE_FNAME_20260525: use timestamp-based unique filename so
+            # the browser URL changes completely on each new lipsync — no reliance on
+            # query-param (?v=N) cache-busting, which Safari's media buffer ignores.
+            _lipsync_ts = hex(int(time.time()))[2:]
+            dest_name = f"{beat_key}_lipsync_idle_{_lipsync_ts}.mp4"
             dest = _clips_dir / dest_name
             url = bd_result["outputs"][0]
             size = lipsync_client.download(url, dest)
@@ -1261,7 +1265,7 @@ def handle_lipsync_idle(h, body: dict) -> None:
 
             # ── Step 10: Write completed lipsync state ──
             def _mark_done(st, _bk=beat_key, _f=dest_name, _sz=size, _role=video_role,
-                           _aname=audio_for_lipsync.name,
+                           _aname=source_audio_path.name,  # AUDIO_FILE_FIX_20260524: store original TTS filename, not temp silcomp path
                            _ts_used=float(ts_used), _te_used=float(te_used),
                            _adur=float(_audio_dur_actual)):
                 beat = ((st.get("videos") or {}).get(_role) or {}).get("beats", {}).get(_bk)
@@ -1292,6 +1296,9 @@ def handle_lipsync_idle(h, body: dict) -> None:
                     "compressed_duration_s": _adur,
                 }
                 ls.pop("last_error", None)
+                # LIPSYNC_VERSION_BUMP_20260524: bump _version so browser re-fetches new file.
+                # Same logic as _download_and_complete in production_server.py.
+                beat["_version"] = int(beat.get("_version", 0) or 0) + 1
             _state_obj.mutate_state(_mark_done)
             print(f"[idle_lipsync] {beat_key}: DONE — {dest_name} ({size:,}B)")
 
@@ -1504,7 +1511,10 @@ def handle_lipsync_submit_legacy(h, body: dict)-> None:
 
             if status == "completed" and result.get("outputs"):
                 url = result["outputs"][0]
-                dest_name = f"{beat_key}_lipsync.mp4"
+                # LIPSYNC_UNIQUE_FNAME_20260525: timestamp suffix prevents browser
+                # media cache from serving the old file when the lipsync is regenerated.
+                _lipsync_ts2 = hex(int(time.time()))[2:]
+                dest_name = f"{beat_key}_lipsync_{_lipsync_ts2}.mp4"
                 dest = h.app.state.clips_dir / dest_name
                 size = lipsync_client.download(url, dest)
 
