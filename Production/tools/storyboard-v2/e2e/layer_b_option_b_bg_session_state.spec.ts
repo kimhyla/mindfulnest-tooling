@@ -186,10 +186,15 @@ test.describe('Layer B Option B — bg_session_state scope-canonical contract', 
     await expect(page.locator('[data-testid="pane-bg"], [data-testid="bg-pane"]').first()).toBeVisible({
       timeout: 5_000,
     });
-    // The beat dialogue text rendering somewhere inside the BG tab is
-    // sufficient evidence the response was consumed without throwing.
+    // The beat rendered — check the delete button for beat #0 is visible.
+    // dialogue_text is rendered inside a <textarea> (data-testid="bg-beat-text-0"),
+    // not as a text node, so locator('text=...') would miss it.
+    // [CONFIRMED against BgTab.tsx L1010-1018] BgBeatRow renders dialogue_text
+    // into <textarea data-testid="bg-beat-text-{index}" value={localText} />.
+    // Checking bg-beat-delete-0 is sufficient evidence the beat rendered from
+    // the session-state response without throwing on migration_warnings.
     await expect(
-      page.locator('text=Layer B Option B regression guard beat.').first(),
+      page.locator('[data-testid="bg-beat-delete-0"]'),
     ).toBeVisible({ timeout: 5_000 });
   });
 });

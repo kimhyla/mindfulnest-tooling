@@ -175,7 +175,11 @@ export function BgTab() {
       const segs = segRes.data?.segments ?? [];
       setSegments(segs);
 
-      const stateRes = await apiGet<BgSessionState>('bg_session_state');
+      // LD-545 Option B — pass scope_event_id so the server derives the
+      // active segment from the scope's event, not the sidecar's active_context.
+      const stateRes = await apiGet<BgSessionState>('bg_session_state', {
+        scope_event_id: activeScope.value.event_id,
+      });
       if (cancelled) return;
       const ctx = stateRes.data?.active_context;
       if (ctx) {
@@ -265,7 +269,10 @@ export function BgTab() {
   }, [activeJobId]);
 
   const refreshState = async () => {
-    const stateRes = await apiGet<BgSessionState>('bg_session_state');
+    // LD-545 Option B — include scope_event_id on refresh fetches too.
+    const stateRes = await apiGet<BgSessionState>('bg_session_state', {
+      scope_event_id: activeScope.value.event_id,
+    });
     if (stateRes.ok && stateRes.data) {
       setBeats(stateRes.data.beats ?? []);
     }
