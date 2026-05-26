@@ -50,7 +50,10 @@ interface WatercolorItem {
   filename: string;
   ext: string;
   kind: 'static' | 'animation' | string;
+  /** Always an image URL (static PNG or base PNG for animations) — safe for <img>. */
   thumb_url: string;
+  /** For animations: the actual MP4/MOV URL (black-bg, use mix-blend-mode:screen). */
+  animation_url?: string | null;
   mtime: number;
   size_bytes: number;
 }
@@ -784,10 +787,12 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             <>
               <strong>Lipsync video:</strong>
               <div class="mn-lipsync-video-wrapper">
-                <video
+                {/* muted: WaveSurfer owns audio. controls REMOVED intentionally:
+                  native controls let Kim pause video without WaveSurfer knowing → desync.
+                  WaveformTimeline ⏸/▶ is the single control point. */}
+              <video
                   ref={videoRef}
                   muted
-                  controls
                   src={fileUrl(lipsyncFile)}
                   style={{ maxHeight: '20vh', display: 'block' }}
                 />
@@ -798,24 +803,30 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                       currentTimeMs < cue.offset_ms + (cue.duration_ms ?? 3000),
                   )
                   .map((cue) => {
-                    const wcKind = watercolors.find((w) => w.key === cue.watercolor_key)?.kind ?? 'static';
-                    const wcSrc = `http://localhost:5111/api/phase_b/watercolor/${cue.watercolor_key}`;
-                    return wcKind === 'animation' ? (
-                      /* Animated watercolor — server returns video/mp4; must use <video> not <img> */
+                    const wcItem = watercolors.find((w) => w.key === cue.watercolor_key);
+                    const isAnim = wcItem?.kind === 'animation';
+                    // For animations: use animation_url (the actual MP4) with mix-blend-mode:screen
+                    // so the black background becomes transparent (screen blending: black=0 → invisible).
+                    // For statics: use the standard watercolor endpoint with <img>.
+                    const animSrc = isAnim
+                      ? (wcItem?.animation_url ?? `http://localhost:5111/api/phase_b/watercolor/${cue.watercolor_key}`)
+                      : `http://localhost:5111/api/phase_b/watercolor/${cue.watercolor_key}`;
+                    return isAnim ? (
                       <video
                         key={cue.id}
                         class="mn-lipsync-watercolor-overlay"
-                        src={wcSrc}
+                        src={animSrc}
                         muted
                         autoPlay
                         loop
                         playsInline
+                        style={{ mixBlendMode: 'screen' }}
                       />
                     ) : (
                       <img
                         key={cue.id}
                         class="mn-lipsync-watercolor-overlay"
-                        src={wcSrc}
+                        src={animSrc}
                         alt=""
                       />
                     );
@@ -961,24 +972,14 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
               >
                 {/* LD-203 — white interior wraps the centered art. */}
                 <div class="mn-phase-watercolor-thumb-wrap">
-                  {wc.kind === 'animation' ? (
-                    /* MP4 animated watercolor — <img> cannot display video/mp4; use <video> */
-                    <video
-                      src={wc.thumb_url}
-                      muted
-                      autoPlay
-                      loop
-                      playsInline
-                      class="mn-phase-watercolor-thumb"
-                    />
-                  ) : (
-                    <img
-                      src={wc.thumb_url}
-                      alt={wc.filename}
-                      class="mn-phase-watercolor-thumb"
-                      loading="lazy"
-                    />
-                  )}
+                  {/* thumb_url is always a static PNG image (server resolves base PNG for animations).
+                      This avoids the black-first-frame problem with animation MP4s in thumbnails. */}
+                  <img
+                    src={wc.thumb_url}
+                    alt={wc.filename}
+                    class="mn-phase-watercolor-thumb"
+                    loading="lazy"
+                  />
                 </div>
                 <span class="mn-phase-watercolor-name">{wc.key}</span>
                 {wc.kind === 'animation' ? (

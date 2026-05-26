@@ -142,20 +142,44 @@ def handle_phase_watercolor_list(h)-> None:
     wc_dir = _data_root(h) / "assets" / "watercolor_library"
     items: list[dict] = []
     if wc_dir.is_dir():
+        # Build a set of static PNG/WebP stems for animation→base lookup below.
+        static_stems = {
+            p.stem for p in wc_dir.iterdir()
+            if p.is_file() and p.suffix.lower().lstrip(".") in ("png", "webp")
+        }
         for f in sorted(wc_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
             if not f.is_file():
                 continue
             ext = f.suffix.lower().lstrip(".")
             if ext not in ("png", "webp", "mov", "mp4"):
                 continue
+            # Skip 0-byte files — render likely failed mid-write; browser cannot decode them.
+            if f.stat().st_size == 0:
+                continue
             key = f.stem
             kind = "animation" if ext in ("mov", "mp4") else "static"
+            # For animations, thumb_url points to the base static PNG so the tile
+            # shows the actual watercolor art rather than a black first-frame.
+            # Pattern: "hands_rubbing_animated_20260526-011128" → base "hands_rubbing"
+            # (strip _animated_YYYYMMDD-HHMMSS suffix).
+            thumb_key = key
+            if kind == "animation":
+                import re as _re
+                base = _re.sub(r"_animated_\d{8}-\d{6}$", "", key)
+                if base in static_stems:
+                    thumb_key = base
             items.append({
                 "key": key,
                 "filename": f.name,
                 "ext": ext,
                 "kind": kind,
-                "thumb_url": f"http://localhost:5111/api/phase/watercolor_file?key={key}",
+                "thumb_url": f"http://localhost:5111/api/phase/watercolor_file?key={thumb_key}",
+                # animation_url: the actual MP4/MOV for overlay compositing (always black-bg,
+                # rendered with mix-blend-mode:screen in the cue overlay).
+                "animation_url": (
+                    f"http://localhost:5111/api/phase_b/watercolor/{key}"
+                    if kind == "animation" else None
+                ),
                 "mtime": int(f.stat().st_mtime),
                 "size_bytes": f.stat().st_size,
             })
