@@ -3758,8 +3758,7 @@ def handle_watercolor_animate(h, body: dict)-> None:
         "asset_id": registered_id,
         "explanation": explanation,
         "duration_s": duration_s,
-        "filter_complex": filter_complex,
-        "claude_ms": elapsed_ms,
+        "renderer": "pil_fade_sweep",
     })
 
 
