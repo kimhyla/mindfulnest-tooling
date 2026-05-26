@@ -860,10 +860,18 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                           key={cue.id}
                           class="mn-lipsync-watercolor-overlay"
                           src={wcItem.animation_url}
-                          autoPlay
                           loop
-                          muted
                           playsInline
+                          ref={(el: HTMLVideoElement | null) => {
+                            // Preact/React known bug: `muted` prop is not reliably
+                            // applied as a DOM property via JSX — Chrome's autoplay
+                            // policy silently blocks unmuted autoplay. Fix: set
+                            // muted imperatively, then call play() if still paused.
+                            if (el) {
+                              el.muted = true;
+                              if (el.paused) el.play().catch(() => {});
+                            }
+                          }}
                           style={{ opacity, mixBlendMode: 'screen' as const }}
                         />
                       );
