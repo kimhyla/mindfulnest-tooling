@@ -1496,7 +1496,7 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
     # Compressing silences would shorten Phase B meditation lipsync from ~132s
     # to ~76s, stripping the intentional breath-pause timing the script author
     # crafted. Pass the raw audio to Kling and loop the base clip accordingly.
-    _VIDEO_TAILROOM_S = 0.4
+    _VIDEO_TAILROOM_S = 2.0  # Kim: "1.5–2s tail so cut-off after speaking isn't sudden"
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     tmp_audio_path = h.app.event_dir / f"_tmp_silcomp_phase_{phase}_{ts}.mp3"
     tmp_video_path = h.app.state.clips_dir / f"_tmp_trim_phase_{phase}_{ts}.mp4"

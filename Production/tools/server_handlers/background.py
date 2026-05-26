@@ -3523,7 +3523,14 @@ def handle_watercolor_animate(h, body: dict)-> None:
     Server validates against safe-filter allowlist BEFORE executing
     ffmpeg.
     """
-    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+    # Watercolor animation is a Phase B asset — it is NOT partitioned by
+    # intro/resolution/standalone video role.  Requiring scope_video_role here
+    # caused video_role_invalid when Kim's event uses the 'resolution' role
+    # (no 'intro' partition in state.videos) and the magic picker URL omitted
+    # the param.  allow_missing_video_role=True keeps event-scope enforcement
+    # while dropping the video-role gate for this endpoint.
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False,
+                                 allow_missing_video_role=True):
         return
     # Accept both `watercolor_key` (S5 spec) and `source_key` (S4 alias).
     watercolor_key = ((body or {}).get("watercolor_key")
