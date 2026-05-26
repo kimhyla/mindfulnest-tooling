@@ -2025,7 +2025,7 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
     safePause(vid).catch(() => {});
     if (!isLipsyncPreview) safePause(aud).catch(() => {});
     setPreviewOptIdx(optIdx);
-  }, [previewOptIdx, beat.phase_1?.options, beat.lipsync?.file, beat.final?.file, safePlay, safePause, handlePlayRejection]);
+  }, [previewOptIdx, beat.phase_1?.options, beat.lipsync?.file, beat.final?.file, beat.magic_still_path, beat.magic_video_path, safePlay, safePause, handlePlayRejection]);
 
   const handlePreviewEnded = useCallback(() => {
     audioRef.current?.pause();
