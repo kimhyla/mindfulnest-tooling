@@ -327,6 +327,13 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     }
   }, [stateSlice.lipsync_mtime, stateSlice.lipsync_status, lipsyncing]);
 
+  // Track latest watercolor cues in a ref so the postMessage handler can read
+  // current cue state without stale closure (handler deps = [phase] only).
+  const latestCuesRef = useRef<WatercolorCue[]>([]);
+  useEffect(() => {
+    latestCuesRef.current = stateSlice.watercolor_cues ?? [];
+  }, [stateSlice.watercolor_cues]);
+
   // Listen for "magic or animate complete" postMessage from path_picker.html
   // (S5 LD-468/469/470 — supersedes S4 mn:watercolor-animated).
   // Security (CodeQL js/missing-origin-check alert #2, real source line):
@@ -340,7 +347,32 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       if (e.origin !== window.location.origin) return;
       const t = e.data?.type;
       if (t === 'mn-magic-or-animate-complete' || t === 'mn:watercolor-animated') {
-        refreshAll();
+        // RC1 fix: after animation completes, update any existing cue that used
+        // the original static key to point at the new animated key, THEN refresh.
+        const result = (e.data?.payload?.result ?? {}) as {
+          watercolor_key?: string;  // original static key (e.g. "hands_rubbing")
+          animated_path?: string;   // full server path to new MP4
+        };
+        const originalKey = result.watercolor_key ?? null;
+        // Derive new key: strip directory + extension from server path
+        const animatedKey = result.animated_path
+          ? result.animated_path.split('/').pop()?.replace(/\.[^.]+$/, '') ?? null
+          : null;
+        void (async () => {
+          // 1. Update cue keys first so server state is correct before refreshAll reads it back.
+          if (originalKey && animatedKey && animatedKey !== originalKey) {
+            const updatedCues = latestCuesRef.current.map((cue) =>
+              cue.watercolor_key === originalKey
+                ? { ...cue, watercolor_key: animatedKey }
+                : cue,
+            );
+            if (updatedCues.some((c, i) => c !== latestCuesRef.current[i])) {
+              await persistCues(updatedCues);
+            }
+          }
+          // 2. Refresh watercolors library (always).
+          await refreshAll();
+        })();
       }
     };
     window.addEventListener('message', onMsg);
@@ -497,11 +529,15 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   };
 
   const onWatercolorDrop = (lib_key: string, offset_ms: number) => {
+    // RC3 fix: animated watercolors need a longer default duration so they are
+    // visible for a useful window. Static images keep the 3s default.
+    const wcItem = watercolors.find((w) => w.key === lib_key);
+    const defaultDurationMs = wcItem?.kind === 'animation' ? 10000 : 3000;
     const newCue: WatercolorCue = {
       id: `cue_${Math.random().toString(36).slice(2, 10)}`,
       watercolor_key: lib_key,
       offset_ms,
-      duration_ms: 3000,
+      duration_ms: defaultDurationMs,
       animation_type: 'fade_in',
       volume: 1.0,
     };

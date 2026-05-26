@@ -11704,7 +11704,11 @@ body {{padding-top:44px!important;}}
                            retry_safe=False,
                            extra={"hint": "Ensure the asset exists in watercolor_library/ with a .png, .mov, or .mp4 extension."},
                        )
-            target = next((m for m in matches if m.suffix.lower() == ".png"), matches[0])
+            # RC2 fix: prefer the animated MP4/MOV over a static PNG when multiple
+            # extensions share the same stem (e.g., a thumbnail alongside a video).
+            mp4_match = next((m for m in matches if m.suffix.lower() in (".mp4", ".mov")), None)
+            png_match = next((m for m in matches if m.suffix.lower() == ".png"), None)
+            target = mp4_match or png_match or matches[0]
         else:
             target = wc_dir / safe
         if not target.is_file():
