@@ -2287,7 +2287,7 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
         onPreviewOption={handlePreviewOption}
         onEnsureLipsyncMounted={ensureLipsyncMounted}
       />
-      <BeatMagicButtons index={index} beatId={beatId} beat={beat} eventId={eventId} videoRole={videoRole} />
+      <BeatMagicButtons index={index} beatId={beatId} beat={beat} eventId={eventId} videoRole={videoRole} onPreviewOption={handlePreviewOption} />
       <div class="mn-sb-insert-after" data-testid={`sb-insert-after-${index}`}>
         <button
           class="mn-btn mn-btn-small mn-sb-insert-after-btn"
@@ -2459,9 +2459,12 @@ interface BeatMagicProps {
   beat: BeatState;
   eventId: string;
   videoRole: string;  // Bug-A1 (spec §2 Topic-2): pinned to active partition for magic_*_path writeback
+  // When provided, ▶ Preview magic button calls onPreviewOption(-1) which
+  // resolves via Bug-B1 priority chain: magic_still_path → magic_video_path → final.
+  onPreviewOption?: (idx: number) => void;
 }
 
-function BeatMagicButtons({ index, beatId, beat, eventId, videoRole }: BeatMagicProps) {
+function BeatMagicButtons({ index, beatId, beat, eventId, videoRole, onPreviewOption }: BeatMagicProps) {
   const stillPath = beat.image_path;
   // Pick primary video: lipsync preferred, else selected animation option.
   let videoPath: string | undefined;
@@ -2510,28 +2513,54 @@ function BeatMagicButtons({ index, beatId, beat, eventId, videoRole }: BeatMagic
   return (
     <div class="mn-beat-magic-row" data-testid={`beat-magic-row-${index}`}>
       {stillPath ? (
-        <button
-          type="button"
-          class="mn-btn mn-btn-small"
-          data-testid={`beat-magic-still-${index}`}
-          onClick={openMagicStill}
-          disabled={hasMagicStill}
-          title={hasMagicStill ? 'magic on still already exists' : 'Add magic trail on still (LD-468)'}
-        >
-          {hasMagicStill ? '✓ magic on still' : '🌟 Add magic on still'}
-        </button>
+        <>
+          <button
+            type="button"
+            class="mn-btn mn-btn-small"
+            data-testid={`beat-magic-still-${index}`}
+            onClick={hasMagicStill ? undefined : openMagicStill}
+            disabled={hasMagicStill}
+            title={hasMagicStill ? 'magic on still already rendered — use ▶ Preview magic to watch it' : 'Add magic trail on still (LD-468)'}
+          >
+            {hasMagicStill ? '✓ magic on still' : '🌟 Add magic on still'}
+          </button>
+          {hasMagicStill && onPreviewOption ? (
+            <button
+              type="button"
+              class="mn-btn mn-btn-small"
+              data-testid={`beat-magic-still-preview-${index}`}
+              onClick={() => onPreviewOption(-1)}
+              title="Preview the magic-on-still composite video inline"
+            >
+              ▶ Preview magic
+            </button>
+          ) : null}
+        </>
       ) : null}
       {videoPath ? (
-        <button
-          type="button"
-          class="mn-btn mn-btn-small"
-          data-testid={`beat-magic-video-${index}`}
-          onClick={openMagicVideo}
-          disabled={hasMagicVideo}
-          title={hasMagicVideo ? 'magic on video already exists' : 'Add magic trail on video (LD-469)'}
-        >
-          {hasMagicVideo ? '✓ magic on video' : '🎬 Add magic on video'}
-        </button>
+        <>
+          <button
+            type="button"
+            class="mn-btn mn-btn-small"
+            data-testid={`beat-magic-video-${index}`}
+            onClick={hasMagicVideo ? undefined : openMagicVideo}
+            disabled={hasMagicVideo}
+            title={hasMagicVideo ? 'magic on video already rendered — use ▶ Preview magic·v to watch it' : 'Add magic trail on video (LD-469)'}
+          >
+            {hasMagicVideo ? '✓ magic on video' : '🎬 Add magic on video'}
+          </button>
+          {hasMagicVideo && onPreviewOption ? (
+            <button
+              type="button"
+              class="mn-btn mn-btn-small"
+              data-testid={`beat-magic-video-preview-${index}`}
+              onClick={() => onPreviewOption(-1)}
+              title="Preview the magic-on-video composite inline (uses magic_video_path when no magic_still_path)"
+            >
+              ▶ Preview magic·v
+            </button>
+          ) : null}
+        </>
       ) : null}
     </div>
   );
