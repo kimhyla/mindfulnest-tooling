@@ -170,6 +170,50 @@ function priorityAudioFile(
   return null;
 }
 
+// ── Watercolor animation overlay ──────────────────────────────────────────
+// Extracted as its own component so useEffect([], []) fires ONCE on mount,
+// not on every currentTimeMs tick. The inline-arrow-function ref approach
+// (previous attempt) re-fired on every 50ms audioprocess render and each
+// firing's play() call aborted the previous one's pending Promise → video
+// never actually played despite play() "resolving ok".
+function WatercolorAnimOverlay({
+  src,
+  opacity,
+}: {
+  src: string;
+  opacity: number;
+}) {
+  const ref = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    // Imperatively set muted (Preact JSX `muted` prop not reliably wired to
+    // the DOM .muted property in all Chrome versions — same root cause as the
+    // lipsync video fix in WaveformTimeline.tsx lv_play helper).
+    el.muted = true;
+    el.loop = true;
+    el.playsInline = true;
+    el.play().catch(() => {
+      // Single rAF retry: by the next frame Chrome's policy check has settled
+      // and the muted flag is visible to the autoplay engine.
+      requestAnimationFrame(() => {
+        if (el.paused) { el.muted = true; el.play().catch(() => {}); }
+      });
+    });
+    // No cleanup needed: when cue leaves window Preact unmounts the element
+    // and the browser stops playback automatically.
+  }, []); // intentionally empty: play once on mount, opacity updates don't re-fire
+  return (
+    <video
+      ref={ref}
+      class="mn-lipsync-watercolor-overlay"
+      src={src}
+      style={{ opacity, mixBlendMode: 'screen' as const }}
+    />
+  );
+}
+// ─────────────────────────────────────────────────────────────────────────
+
 function fileUrl(name: string): string {
   // Server's /files endpoint serves arbitrary event_dir files via ?path=.
   // Path is scope-bound: derived from activeScope.value.event_id so the same
@@ -856,23 +900,10 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                     // Static watercolors: render <img> using thumb_url (PNG has alpha — no blend needed).
                     if (wcItem?.kind === 'animation' && wcItem.animation_url) {
                       return (
-                        <video
+                        <WatercolorAnimOverlay
                           key={cue.id}
-                          class="mn-lipsync-watercolor-overlay"
                           src={wcItem.animation_url}
-                          loop
-                          playsInline
-                          ref={(el: HTMLVideoElement | null) => {
-                            // Preact/React known bug: `muted` prop is not reliably
-                            // applied as a DOM property via JSX — Chrome's autoplay
-                            // policy silently blocks unmuted autoplay. Fix: set
-                            // muted imperatively, then call play() if still paused.
-                            if (el) {
-                              el.muted = true;
-                              if (el.paused) el.play().catch(() => {});
-                            }
-                          }}
-                          style={{ opacity, mixBlendMode: 'screen' as const }}
+                          opacity={opacity}
                         />
                       );
                     }
