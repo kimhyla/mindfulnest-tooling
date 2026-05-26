@@ -797,14 +797,29 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                       currentTimeMs >= cue.offset_ms &&
                       currentTimeMs < cue.offset_ms + (cue.duration_ms ?? 3000),
                   )
-                  .map((cue) => (
-                    <img
-                      key={cue.id}
-                      class="mn-lipsync-watercolor-overlay"
-                      src={`http://localhost:5111/api/phase_b/watercolor/${cue.watercolor_key}`}
-                      alt=""
-                    />
-                  ))}
+                  .map((cue) => {
+                    const wcKind = watercolors.find((w) => w.key === cue.watercolor_key)?.kind ?? 'static';
+                    const wcSrc = `http://localhost:5111/api/phase_b/watercolor/${cue.watercolor_key}`;
+                    return wcKind === 'animation' ? (
+                      /* Animated watercolor — server returns video/mp4; must use <video> not <img> */
+                      <video
+                        key={cue.id}
+                        class="mn-lipsync-watercolor-overlay"
+                        src={wcSrc}
+                        muted
+                        autoPlay
+                        loop
+                        playsInline
+                      />
+                    ) : (
+                      <img
+                        key={cue.id}
+                        class="mn-lipsync-watercolor-overlay"
+                        src={wcSrc}
+                        alt=""
+                      />
+                    );
+                  })}
               </div>
               <span class="mn-dim">{lipsyncFile}</span>
             </>
@@ -946,12 +961,24 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
               >
                 {/* LD-203 — white interior wraps the centered art. */}
                 <div class="mn-phase-watercolor-thumb-wrap">
-                  <img
-                    src={wc.thumb_url}
-                    alt={wc.filename}
-                    class="mn-phase-watercolor-thumb"
-                    loading="lazy"
-                  />
+                  {wc.kind === 'animation' ? (
+                    /* MP4 animated watercolor — <img> cannot display video/mp4; use <video> */
+                    <video
+                      src={wc.thumb_url}
+                      muted
+                      autoPlay
+                      loop
+                      playsInline
+                      class="mn-phase-watercolor-thumb"
+                    />
+                  ) : (
+                    <img
+                      src={wc.thumb_url}
+                      alt={wc.filename}
+                      class="mn-phase-watercolor-thumb"
+                      loading="lazy"
+                    />
+                  )}
                 </div>
                 <span class="mn-phase-watercolor-name">{wc.key}</span>
                 {wc.kind === 'animation' ? (
