@@ -2264,26 +2264,34 @@ def handle_bg_accept_lib_image(h, body: dict)-> None:
             print(f"[LIBDROP] thumbnail skipped for {abs_path!r}: {_thumb_err}", flush=True)
             thumb_b64 = None
 
+        # ALWAYS write to gpt_options[slot_index] — even when thumb_b64 is None.
+        # Previously this was inside `if thumb_b64:`, which meant that when
+        # thumbnail generation failed (bad abs_path, PIL unavailable, path-safety
+        # check failed), gpt_options was never updated. The client's optimistic
+        # onPatchOptionTile state would then be overwritten by the follow-up
+        # refreshState() GET, causing the slot to revert to "(empty)" even though
+        # the toast said "Option N set". Fix: always write the entry; thumb_b64
+        # is an optional field on the option_entry dict.
+        opts = beat.get("gpt_options") or []
+        option_entry: dict = {
+            "key": key,
+            "source": "library_drop",
+            "local_path": abs_path,
+            "filename": filename,
+        }
         if thumb_b64:
-            opts = beat.get("gpt_options") or []
-            option_entry = {
-                "key": key,
-                "thumb_b64": thumb_b64,
-                "source": "library_drop",
-                "local_path": abs_path,
-                "filename": filename,
-            }
-            if slot_index < len(opts) and isinstance(opts[slot_index], dict):
-                opts[slot_index].update(option_entry)
+            option_entry["thumb_b64"] = thumb_b64
+        if slot_index < len(opts) and isinstance(opts[slot_index], dict):
+            opts[slot_index].update(option_entry)
+        else:
+            # Pad with None up to slot_index, then place the entry.
+            while len(opts) < slot_index:
+                opts.append(None)
+            if slot_index < len(opts):
+                opts[slot_index] = option_entry
             else:
-                # Pad with None up to slot_index, then place the entry.
-                while len(opts) < slot_index:
-                    opts.append(None)
-                if slot_index < len(opts):
-                    opts[slot_index] = option_entry
-                else:
-                    opts.append(option_entry)
-            beat["gpt_options"] = opts
+                opts.append(option_entry)
+        beat["gpt_options"] = opts
 
         bg.write_sidecar(sidecar)
     print(f"[LIBDROP] accepted library image {key!r} -> beat {beat_id} (thumb={'yes' if thumb_b64 else 'no'})", flush=True)
