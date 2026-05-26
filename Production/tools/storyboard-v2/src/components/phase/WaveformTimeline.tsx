@@ -37,6 +37,10 @@ export interface WaveformTimelineProps {
   onReady?: (durationMs: number) => void;
   /** Phase C — drop watercolor tile to create a cue at offset_ms = dropX/width × duration. */
   onWatercolorDrop?: (lib_key: string, offset_ms: number) => void;
+  /** Called on audioprocess + seeking so the parent can track playback position (ms). */
+  onTimeUpdate?: (currentMs: number) => void;
+  /** Called when the user drags the right edge of a cue block to resize it. */
+  onCueResize?: (cueId: string, newDurationMs: number) => void;
   /**
    * Optional video element to keep in sync with waveform playback.
    * The caller should mute the <video> to avoid double audio (WaveSurfer plays audio).
@@ -55,6 +59,8 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     onWaveformClick,
     onReady,
     onWatercolorDrop,
+    onTimeUpdate,
+    onCueResize,
     linkedVideo,
   } = props;
 
@@ -106,11 +112,15 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       onReady?.(d);
     };
     const onAudioProcess = () => {
-      setCurrentMs(ws.getCurrentTime() * 1000);
+      const ms = ws.getCurrentTime() * 1000;
+      setCurrentMs(ms);
+      onTimeUpdate?.(ms);
     };
     // 'seeking' fires after every ws.seekTo() call with the real committed position.
     const onSeeking = () => {
-      setCurrentMs(ws.getCurrentTime() * 1000);
+      const ms = ws.getCurrentTime() * 1000;
+      setCurrentMs(ms);
+      onTimeUpdate?.(ms);
     };
 
     ws.on('ready', onReadyHandler);
@@ -214,10 +224,53 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioSrc]);
 
-  // Cue marker horizontal position (% of timeline width).
+  // Cue block horizontal position (% of timeline width).
   const cuePctLeft = (cue: WatercolorCue): number => {
     if (!durationMs || durationMs <= 0) return 0;
     return Math.max(0, Math.min(100, (cue.offset_ms / durationMs) * 100));
+  };
+
+  // Cue block width (% of timeline width). Min 4px enforced via CSS min-width.
+  const cuePctWidth = (cue: WatercolorCue): number => {
+    if (!durationMs || durationMs <= 0) return 0;
+    const durMs = cue.duration_ms ?? 3000;
+    return Math.max(0, Math.min(100 - cuePctLeft(cue), (durMs / durationMs) * 100));
+  };
+
+  // Resize handle: pointer capture drag on the right edge of a cue block.
+  // INVARIANTS: wrapperRef must be mounted; durationMs must be non-null and > 0.
+  const onHandlePointerDown = (
+    e: PointerEvent,
+    cue: WatercolorCue,
+  ) => {
+    e.stopPropagation(); // do NOT let the waveform seek handler see this event
+    if (!durationMs || durationMs <= 0) return;
+    const handle = e.currentTarget as HTMLDivElement;
+    handle.setPointerCapture(e.pointerId);
+
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+
+    const onMove = (moveEvt: PointerEvent) => {
+      const box = wrapper.getBoundingClientRect();
+      const relX = Math.max(0, Math.min(1, (moveEvt.clientX - box.left) / box.width));
+      const endMs = relX * durationMs;
+      const newDuration = Math.max(0, endMs - cue.offset_ms);
+      onCueResize?.(cue.id, Math.round(newDuration));
+    };
+
+    const onUp = (upEvt: PointerEvent) => {
+      const box = wrapper.getBoundingClientRect();
+      const relX = Math.max(0, Math.min(1, (upEvt.clientX - box.left) / box.width));
+      const endMs = relX * durationMs;
+      const newDuration = Math.max(0, endMs - cue.offset_ms);
+      onCueResize?.(cue.id, Math.round(newDuration));
+      handle.removeEventListener('pointermove', onMove);
+      handle.removeEventListener('pointerup', onUp);
+    };
+
+    handle.addEventListener('pointermove', onMove);
+    handle.addEventListener('pointerup', onUp);
   };
 
   // Drop target — `kind: 'lib-watercolor'` payloads land here and become cues.
@@ -288,13 +341,25 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
             key={cue.id}
             data-testid={`cue-marker-${cue.id}`}
             data-offset-ms={cue.offset_ms}
-            class="mn-waveform-cue-marker"
-            style={{ left: `${cuePctLeft(cue)}%` }}
-            onClick={(e: MouseEvent) =>
-              onCueClick?.(cue.id, { x: e.clientX, y: e.clientY })
-            }
-            title={`${cue.watercolor_key} @ ${(cue.offset_ms / 1000).toFixed(1)}s`}
-          />
+            data-duration-ms={cue.duration_ms ?? 3000}
+            class="mn-waveform-cue-block"
+            style={{
+              left: `${cuePctLeft(cue)}%`,
+              width: `${cuePctWidth(cue)}%`,
+            }}
+            onClick={(e: MouseEvent) => {
+              // Only fire cueClick when clicking the block body, not the handle.
+              const target = e.target as HTMLElement;
+              if (target.classList.contains('mn-waveform-cue-block-handle')) return;
+              onCueClick?.(cue.id, { x: e.clientX, y: e.clientY });
+            }}
+            title={`${cue.watercolor_key} @ ${(cue.offset_ms / 1000).toFixed(1)}s · ${((cue.duration_ms ?? 3000) / 1000).toFixed(1)}s`}
+          >
+            <div
+              class="mn-waveform-cue-block-handle"
+              onPointerDown={(e: PointerEvent) => onHandlePointerDown(e, cue)}
+            />
+          </div>
         ))}
       </div>
       {loadError ? (

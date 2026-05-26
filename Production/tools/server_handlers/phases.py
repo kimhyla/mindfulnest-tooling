@@ -79,6 +79,53 @@ from tools.production_server import (  # noqa: E402
     parse_api_keys,
 )
 
+# ---------------------------------------------------------------------------
+# White-out fade — standardized Phase B ending transition
+# ---------------------------------------------------------------------------
+# Locked: every Phase B lipsync output gets a white fade-out at the tail.
+# Duration is constant (PHASE_B_WHITEOUT_DURATION_SEC). Applied in-place
+# on the downloaded mp4 before state is written; fully transparent to callers.
+PHASE_B_WHITEOUT_DURATION_SEC: float = 1.5  # seconds of fade-to-white at end
+
+
+def _apply_whiteout_fade(video_path: Path, fade_dur: float = PHASE_B_WHITEOUT_DURATION_SEC) -> None:
+    """Add a fade-to-white at the tail of *video_path*. Modifies file in-place.
+
+    Uses ffprobe to get duration, then ffmpeg vf/af fade filters. Writes to a
+    temp file then renames over the original (atomic on POSIX).
+    """
+    # Probe duration
+    probe = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(video_path),
+        ],
+        capture_output=True, text=True, check=True,
+    )
+    duration = float(probe.stdout.strip())
+    fade_start = max(0.0, duration - fade_dur)
+
+    tmp = video_path.with_suffix(".whiteout_tmp.mp4")
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-i", str(video_path),
+            "-vf", f"fade=out:st={fade_start:.3f}:d={fade_dur:.3f}:color=white",
+            "-af", f"afade=out:st={fade_start:.3f}:d={fade_dur:.3f}",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+            "-c:a", "aac", "-b:a", "128k",
+            str(tmp),
+        ],
+        check=True, capture_output=True,
+    )
+    tmp.rename(video_path)
+    print(
+        f"[phase_b_whiteout] ✓ {fade_dur}s white fade applied "
+        f"(fade_start={fade_start:.2f}s, total={duration:.2f}s)",
+        flush=True,
+    )
+
 def handle_phase_watercolor_list(h)-> None:
 
     """GET /api/phase/watercolor_list — inventory of watercolor library.
@@ -1581,6 +1628,16 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
                 if not _out_path.is_file():
                     raise RuntimeError(
                         f"Kling reported completed but output not on disk: {_out_path}"
+                    )
+                # Standardized white-out transition at end of Phase B lipsync.
+                # Applied to EVERY lipsync output before state is written.
+                try:
+                    _apply_whiteout_fade(_out_path)
+                except Exception as _fade_exc:  # noqa: BLE001
+                    print(
+                        f"[phase_b_whiteout] WARNING: fade failed ({_fade_exc!r}) "
+                        f"— keeping raw download, proceeding without fade",
+                        flush=True,
                     )
                 _app.state.add_spend("lipsync", COST_PER_LIPSYNC)
                 mtime = int(os.path.getmtime(str(_out_path)))

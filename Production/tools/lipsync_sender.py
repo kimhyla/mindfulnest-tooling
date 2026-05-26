@@ -62,7 +62,7 @@ COST_PER_LIPSYNC = 0.35  # Kling lipsync per job (SWITCH_TO_KLING_LIPSYNC_202605
 MAX_RETRIES = 3
 RETRY_BACKOFF = [5, 10, 20]  # seconds
 POLL_INTERVAL = 10  # seconds between polls
-POLL_TIMEOUT = 1200  # max seconds to wait for completion (20 min — Phase B audio can be 2+ min)
+POLL_TIMEOUT = 1800  # max seconds to wait for completion (30 min — Phase B 132s audio took 22.5 min)
 UGUU_UPLOAD_TIMEOUT = 60  # seconds per file upload
 
 

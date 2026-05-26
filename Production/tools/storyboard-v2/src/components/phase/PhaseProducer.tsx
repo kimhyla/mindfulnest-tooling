@@ -18,6 +18,31 @@ import { activeScope } from '../../state/scope';
 import { SERVER_BASE } from '../../api/endpoints';
 import { WaveformTimeline, type WatercolorCue } from './WaveformTimeline';
 import { CuePopover } from './CuePopover';
+
+// ── Schema translation: frontend ↔ server ───────────────────────────────────
+// Server (bake pipeline) expects: {timestamp_ms, key, animation, duration_ms, cue_type}
+// Frontend uses:                  {id, watercolor_key, offset_ms, duration_ms, animation_type, volume}
+function toServerSchema(c: WatercolorCue): Record<string, unknown> {
+  return {
+    id: c.id,
+    timestamp_ms: c.offset_ms,
+    key: c.watercolor_key,
+    animation: c.animation_type ?? 'fade_in',
+    duration_ms: c.duration_ms ?? 3000,
+    cue_type: 'png',
+    volume: c.volume ?? 1.0,
+  };
+}
+function fromServerSchema(raw: Record<string, unknown>): WatercolorCue {
+  return {
+    id: String(raw['id'] ?? `cue_${Math.random().toString(36).slice(2, 10)}`),
+    watercolor_key: String(raw['key'] ?? raw['watercolor_key'] ?? ''),
+    offset_ms: Number(raw['timestamp_ms'] ?? raw['offset_ms'] ?? 0),
+    duration_ms: Number(raw['duration_ms'] ?? 3000),
+    animation_type: String(raw['animation'] ?? raw['animation_type'] ?? 'fade_in'),
+    volume: Number(raw['volume'] ?? 1.0),
+  };
+}
 import { BaseClipPicker } from './BaseClipPicker';
 import { setDragData, type DragPayload } from '../../utils/dragdrop';
 
@@ -118,8 +143,19 @@ function pickPhaseSlice(state: EventStateResponse, phase: 'a' | 'b'): PhaseState
   const st = get<string>('stitched_file');             if (st) slice.stitched_file = st;
   const stm = get<number>('stitched_mtime');           if (stm) slice.stitched_mtime = stm;
   const sc = get<string>('script');                    if (sc) slice.script = sc;
-  const cues = get<WatercolorCue[]>('watercolor_cues_json');
-  if (Array.isArray(cues)) slice.watercolor_cues = cues;
+  // phase_b_watercolor_cues_json is stored on the server as a JSON STRING.
+  // get<> returns it as a string (or sometimes a pre-parsed array if state
+  // was written locally). Parse + translate schema in either case.
+  const rawCues = get<unknown>('watercolor_cues_json');
+  let cuesArr: WatercolorCue[] | undefined;
+  try {
+    const parsed: unknown = typeof rawCues === 'string' ? JSON.parse(rawCues)
+      : Array.isArray(rawCues) ? rawCues : undefined;
+    if (Array.isArray(parsed)) {
+      cuesArr = (parsed as Record<string, unknown>[]).map(fromServerSchema);
+    }
+  } catch { /* malformed JSON — treat as no cues */ }
+  if (cuesArr) slice.watercolor_cues = cuesArr;
   if (phase === 'a') {
     const fi = get<string>('chipper_flyin_clip_id');   if (fi) slice.chipper_flyin_clip_id = fi;
     const si = get<string>('chipper_sitting_clip_id'); if (si) slice.chipper_sitting_clip_id = si;
@@ -169,6 +205,8 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const [popoverAnchor, setPopoverAnchor] = useState<{ x: number; y: number } | null>(null);
   const [pickerPosition, setPickerPosition] = useState<PhaseAClipPosition | null>(null);
   const [ambientPresets, setAmbientPresets] = useState<AmbientPreset[]>([]);
+  // Playback position in ms — updated by WaveformTimeline via onTimeUpdate.
+  const [currentTimeMs, setCurrentTimeMs] = useState(0);
   // True while Kling lipsync is processing in the background (202 submitted).
   const [lipsyncing, setLipsyncing] = useState(false);
   // Mtime of lipsync_file at the moment we submitted — used to detect when
@@ -388,9 +426,11 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
 
   const persistCues = async (next: WatercolorCue[]) => {
     setStateSlice((s) => ({ ...s, watercolor_cues: next }));
+    // Server requires phase_b_watercolor_cues_json to be a JSON STRING
+    // (not a JS array). Translate to server schema before serialising.
     const res = await pathappPatch(activeScope.value, 'v2_module_patch', {
       field: cueField,
-      value: next,
+      value: JSON.stringify(next.map(toServerSchema)),
     });
     if (!res.ok) {
       setStatusMsg(`✗ cue patch HTTP ${res.status}: ${res.error ?? ''}`);
@@ -418,6 +458,13 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const onCuePatch = (updated: WatercolorCue) => {
     const next = (stateSlice.watercolor_cues ?? []).map((c) =>
       c.id === updated.id ? updated : c,
+    );
+    void persistCues(next);
+  };
+
+  const onCueResize = (cueId: string, newDurationMs: number) => {
+    const next = (stateSlice.watercolor_cues ?? []).map((c) =>
+      c.id === cueId ? { ...c, duration_ms: newDurationMs } : c,
     );
     void persistCues(next);
   };
@@ -677,6 +724,8 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           cues={stateSlice.watercolor_cues ?? []}
           onCueClick={onCueClick}
           onWatercolorDrop={onWatercolorDrop}
+          onTimeUpdate={(ms) => setCurrentTimeMs(ms)}
+          onCueResize={onCueResize}
           linkedVideo={videoRef}
         />
         {activeCue && popoverAnchor ? (
@@ -738,13 +787,29 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           {lipsyncFile ? (
             <>
               <strong>Lipsync video:</strong>
-              <video
-                ref={videoRef}
-                muted
-                controls
-                src={fileUrl(lipsyncFile)}
-                style={{ maxHeight: '40vh', display: 'block' }}
-              />
+              <div class="mn-lipsync-video-wrapper">
+                <video
+                  ref={videoRef}
+                  muted
+                  controls
+                  src={fileUrl(lipsyncFile)}
+                  style={{ maxHeight: '40vh', display: 'block' }}
+                />
+                {(stateSlice.watercolor_cues ?? [])
+                  .filter(
+                    (cue) =>
+                      currentTimeMs >= cue.offset_ms &&
+                      currentTimeMs < cue.offset_ms + (cue.duration_ms ?? 3000),
+                  )
+                  .map((cue) => (
+                    <img
+                      key={cue.id}
+                      class="mn-lipsync-watercolor-overlay"
+                      src={`http://localhost:5111/api/phase_b/watercolor/${cue.watercolor_key}`}
+                      alt=""
+                    />
+                  ))}
+              </div>
               <span class="mn-dim">{lipsyncFile}</span>
             </>
           ) : (
