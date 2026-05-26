@@ -1992,7 +1992,11 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
     const file = isLipsyncPreview
       ? beat.lipsync?.file
       : (isStillFinalPreview
-          ? beat.final?.file
+          // Bug-B1 fix: magic_still_path / magic_video_path satisfy the guard
+          // even when beat.final?.file is absent (e.g. beat not yet in 'final'
+          // lifecycle). previewVideoSrc resolves magic_*_path via the priority
+          // chain; we just need a truthy value here to avoid the early return.
+          ? (beat.magic_still_path || beat.magic_video_path || beat.final?.file)
           : beat.phase_1?.options?.[optIdx - 1]?.file);
     if (!file) return;
     const vid = videoRef.current;
