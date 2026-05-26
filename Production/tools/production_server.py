@@ -11671,18 +11671,31 @@ body {{padding-top:44px!important;}}
 
         Streams Production/assets/watercolor_library/<filename> thumbnails and
         video cue assets to the timeline widget's library panel.
+
+        Accepts both a bare key (e.g. "hands_rubbing") and a full filename with
+        extension (e.g. "hands_rubbing.png").  When the client sends a bare key
+        (which is how the Phase B cue overlay builds its src URL), the handler
+        resolves the extension via glob — same strategy as handle_watercolor_animate.
+        Prefers .png over .mov/.mp4 when multiple matches exist.
         """
         safe = Path(filename).name
-        # Only allow known watercolor extensions.
-        if not safe.lower().endswith((".png", ".mov", ".mp4")):
-            return self._send_error_v59(
-                       400,
-                       error_code="GENERIC_ERROR",
-                       error_message=f"watercolor serve rejects unsupported ext: {safe!r}",
-                       retry_safe=False,
-                       extra={"hint": "Allowed: .png, .mov, .mp4"},
-                   )
-        target = self._phase_assets_dir("watercolor_library") / safe
+        _ALLOWED_EXTS = (".png", ".mov", ".mp4")
+        wc_dir = self._phase_assets_dir("watercolor_library")
+        # Bare key path — no valid extension provided by the caller.
+        if not safe.lower().endswith(_ALLOWED_EXTS):
+            matches = [m for m in wc_dir.glob(f"{safe}.*")
+                       if m.suffix.lower() in _ALLOWED_EXTS]
+            if not matches:
+                return self._send_error_v59(
+                           400,
+                           error_code="GENERIC_ERROR",
+                           error_message=f"watercolor not found: {safe!r} (no .png/.mov/.mp4 in library)",
+                           retry_safe=False,
+                           extra={"hint": "Ensure the asset exists in watercolor_library/ with a .png, .mov, or .mp4 extension."},
+                       )
+            target = next((m for m in matches if m.suffix.lower() == ".png"), matches[0])
+        else:
+            target = wc_dir / safe
         if not target.is_file():
             return self._send_error_v59(
                        404,

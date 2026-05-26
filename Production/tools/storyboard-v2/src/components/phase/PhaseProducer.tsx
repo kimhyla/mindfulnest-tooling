@@ -14,7 +14,7 @@
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { apiGet, pathappPatch } from '../../api/client';
-import { activeScope } from '../../state/scope';
+import { activeScope, activeVideoRole } from '../../state/scope';
 import { SERVER_BASE } from '../../api/endpoints';
 import { WaveformTimeline, type WatercolorCue } from './WaveformTimeline';
 import { CuePopover } from './CuePopover';
@@ -406,6 +406,9 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     // [CONFIRMED against api/endpoints.ts SERVER_BASE constant — magic_picker is co-hosted on the production_server.py origin; relative path here resolves identically to ${SERVER_BASE}/api/watercolor/animate]
     url.searchParams.set('return_endpoint', '/api/watercolor/animate');
     url.searchParams.set('scope_event_id', activeScope.value.event_id);
+    // scope_video_role is required by /api/watercolor/animate (LD-474 VIDEO_ROLE_PER_REQUEST_V1).
+    // path_picker.html reads it from the URL param; without it the POST returns video_role_invalid.
+    url.searchParams.set('scope_video_role', activeVideoRole.value);
     window.open(url.toString(), '_blank');
   };
 

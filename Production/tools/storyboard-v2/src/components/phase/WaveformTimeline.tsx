@@ -154,6 +154,15 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       const lv = linkedVideo?.current;
       if (!lv) return;
       lv.currentTime = ws.getCurrentTime();
+      // If WaveSurfer is playing, ensure the video resumes after the seek.
+      // WaveSurfer v7 may fire 'pause' + 'play' around an internal seek; the
+      // 'play' handler re-syncs too, but seeking while paused then resuming
+      // via the play button can leave the video stuck — this catches that gap.
+      if (!ws.isPlaying()) return;
+      lv.play().catch(() => {
+        // Autoplay policy may block the first call; audioprocess loop below
+        // retries every ~100ms so the video self-heals within one tick.
+      });
     });
     ws.on('audioprocess', () => {
       const lv = linkedVideo?.current;
@@ -161,6 +170,11 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       // Correct drift >0.3s to avoid fighting over tiny float jitter.
       const drift = Math.abs(lv.currentTime - ws.getCurrentTime());
       if (drift > 0.3) lv.currentTime = ws.getCurrentTime();
+      // Self-healing play state: if WaveSurfer is playing but video accidentally
+      // paused (autoplay policy rejection, mid-seek race, etc.) — restart it.
+      if (lv.paused) {
+        lv.play().catch(() => {});
+      }
     });
     // ─────────────────────────────────────────────────────────────────────────
 
