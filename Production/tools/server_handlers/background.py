@@ -3625,180 +3625,100 @@ def handle_watercolor_animate(h, body: dict)-> None:
                    extra={"code": "ASYNC_JOB_GENERATION_PIN_V1"},
                )
 
-    # Resolve Anthropic key.
-    try:
-        sys.path.insert(0, str(_PSERVER_REPO_ROOT / "lib"))
-        from credential_store import get_secret_optional  # type: ignore
-        api_key = get_secret_optional("ANTHROPIC_API_KEY")
-    except Exception:
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        return h._send_json(503, {
-            "ok": False,
-            "code": "ANTHROPIC_API_KEY_MISSING",
-            "message": "Anthropic API key not configured.",
-        })
+    # ── Deterministic PIL Frame Renderer (replaces Claude API + filter_complex) ──────
+    # Root cause of recurring "ffmpeg failed" (filed 3× in session history):
+    # LLM-generated filter_complex strings pass the security allowlist gate but fail
+    # at ffmpeg runtime — wrong parameter types, incompatible filter chains, or
+    # version-specific syntax issues.  The old v2 storyboard used the same PIL-based
+    # frame-rendering approach (MagicCompositor) which never had this failure class.
+    #
+    # Fix: render frames in Python (deterministic, zero API calls), encode with simple
+    # ffmpeg framerate+concat.  No filter_complex.  No LLM.  Cannot fail on syntax.
+    # Path points are preserved for future phase-2 path-guided wipe animation.
+    # ─────────────────────────────────────────────────────────────────────────────────
+    import tempfile as _tempfile
 
-    # Build Claude prompt.
-    path_str = ", ".join(f"({p[0]:.3f},{p[1]:.3f})" for p in clean_path)
-    system_prompt = (
-        "You are an ffmpeg filter chain generator. Given a watercolor PNG, "
-        "a path geometry (normalized x,y points in [0,1]), and a motion "
-        "description, output a JSON object with a SAFE ffmpeg filter_complex "
-        "string that produces an animated MP4 from the still PNG.\n\n"
-        "Available filters (allowlist — use NO others): split, hflip, vflip, "
-        "rotate, scale, overlay, blend, fade, crop, pad, drawbox, hue, eq, "
-        "zoompan, fps, setpts, geq, displace, format.\n\n"
-        "Forbidden: any shell command, file://, http://, exec, system, run, "
-        "backslash, pipe, backticks, dollar-paren. duration_s must be in [0.5, 10].\n\n"
-        "Reference examples:\n"
-        "- 'hands rub up and down' + vertical line: split frame at line, "
-        "vflip lower half, oscillate y-translation sinusoidally with sin(2*PI*t).\n"
-        "- 'circle spins clockwise' + circle path: crop to bounding box of "
-        "circle, rotate filter with 'a=t*PI'.\n"
-        "- 'energy radiates outward' + center point: zoompan 'z=1.0+0.1*sin(t)'.\n\n"
-        "Output JSON ONLY, no markdown fences:\n"
-        "  {\"filter_complex\": \"<chain>\", \"duration_s\": <number>, "
-        "\"output_size\": [w,h], \"explanation\": \"<one sentence>\"}"
-    )
-    user_prompt = (
-        f"Input watercolor: {watercolor_key}.png at {src_w}x{src_h} pixels.\n"
-        f"Path geometry (normalized): [{path_str}]\n"
-        f"Motion intent: {motion_desc!r}\n\n"
-        "Generate the JSON now."
-    )
+    # Duration: scale with path density (short path → 2s, long path → 5s cap).
+    duration_s = max(2.0, min(5.0, len(clean_path) * 0.4))
+    fps_anim = 24
+    n_frames = max(1, int(duration_s * fps_anim))
+    elapsed_ms = 0   # no API call
+    explanation = f"PIL fade-sweep, {len(clean_path)} path pts, motion={motion_desc!r}"
 
-    # Call Claude.
-    url = "https://api.anthropic.com/v1/messages"
-    req_data = json.dumps({
-        "model": "claude-sonnet-4-6",
-        "max_tokens": 1024,
-        "system": system_prompt,
-        "messages": [{"role": "user", "content": user_prompt}],
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=req_data,
-        headers={"x-api-key": api_key,
-                 "anthropic-version": "2023-06-01",
-                 "content-type": "application/json"},
-        method="POST",
-    )
-    t0 = time.time()
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            resp_data = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        err_body = exc.read().decode("utf-8", errors="replace")
-        return h._send_error_v59(
-                   502,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"Anthropic API HTTP {exc.code}",
-                   retry_safe=True,
-                   extra={"detail": err_body[:500]},
-               )
-    except urllib.error.URLError as exc:
-        return h._send_error_v59(
-                   502,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"Anthropic URL error: {exc}",
-                   retry_safe=True,
-               )
-    elapsed_ms = int((time.time() - t0) * 1000)
-
-    # Extract JSON from response (model may wrap in code fence; be defensive).
-    text = ""
-    for block in resp_data.get("content", []) or []:
-        if isinstance(block, dict) and block.get("type") == "text":
-            text += block.get("text", "")
-    # Strip ```json fences if present.
-    text = text.strip()
-    m = re.search(r'\{[\s\S]*\}', text)
-    if not m:
-        return h._send_error_v59(
-                   502,
-                   error_code="CLAUDE_RESPONSE_HAD_NO_JSON",
-                   error_message="Claude response had no JSON object",
-                   retry_safe=True,
-                   extra={"raw": text[:500]},
-               )
-    try:
-        spec = json.loads(m.group(0))
-    except json.JSONDecodeError as exc:
-        return h._send_error_v59(
-                   502,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"Claude JSON parse failed: {exc}",
-                   retry_safe=True,
-                   extra={"raw": text[:500]},
-               )
-
-    filter_complex = spec.get("filter_complex") or ""
-    duration_s = float(spec.get("duration_s") or 3.0)
-    explanation = (spec.get("explanation") or "")[:300]
-
-    if not (0.5 <= duration_s <= 10.0):
-        return h._send_error_v59(
-                   400,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"duration_s={duration_s} outside [0.5, 10]",
-                   retry_safe=False,
-               )
-
-    # SAFETY GATE.
-    ok_filter, gate_err = h._validate_ffmpeg_filter_chain(filter_complex)
-    if not ok_filter:
-        # Log to activity log for debugging.
-        try:
-            from lib.directus import try_post_or_queue  # type: ignore
-            try_post_or_queue("prod_activity_log", {
-                "action": "watercolor_animate_unsafe_filter_rejected",
-                "performed_by": "watercolor_animate_endpoint",
-                "details": {
-                    "watercolor_key": watercolor_key,
-                    "motion_description": motion_desc,
-                    "rejected_filter_complex": filter_complex,
-                    "gate_error": gate_err,
-                    "claude_explanation": explanation,
-                },
-            })
-        except Exception:
-            pass
-        return h._send_error_v59(
-                   400,
-                   error_code="UNSAFE_FILTER_CHAIN",
-                   error_message="unsafe_filter_chain",
-                   retry_safe=False,
-                   extra={"details": gate_err, "filter_complex_preview": filter_complex[:200]},
-               )
-
-    # Execute ffmpeg.
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_path = wc_dir / f"{watercolor_key}_animated_{ts}.mp4"
-    ffmpeg_out = str(out_path.resolve())
-    cmd = [
-        "ffmpeg", "-y",
-        "-loop", "1", "-i", safe_ffmpeg_still,
-        "-filter_complex", filter_complex,
-        "-t", f"{duration_s:.3f}",
-        "-c:v", "libx264",
-        "-pix_fmt", "yuv420p",
-        ffmpeg_out,
-    ]
+
     try:
-        subprocess.run(cmd, check=True, capture_output=True, timeout=60)
-    except subprocess.CalledProcessError as exc:
+        from PIL import Image as _PILImage  # already confirmed available at startup
+
+        with _PILImage.open(safe_ffmpeg_still) as _wc_src:
+            _w, _h = _wc_src.size
+            # libx264 requires even dimensions.
+            _w = _w if _w % 2 == 0 else _w - 1
+            _h = _h if _h % 2 == 0 else _h - 1
+            _wc_rgba = _wc_src.convert("RGBA").crop((0, 0, _w, _h))
+
+        # Compute fade zones: 0.5s in, hold, 0.6s out.
+        _fade_in  = max(1, int(fps_anim * 0.5))
+        _fade_out = max(1, int(fps_anim * 0.6))
+        _hold = n_frames - _fade_in - _fade_out
+        if _hold < 1:
+            _fade_in  = max(1, n_frames // 3)
+            _fade_out = max(1, n_frames // 3)
+            _hold     = max(0, n_frames - _fade_in - _fade_out)
+
+        _r, _g, _b, _a_orig = _wc_rgba.split()
+
+        with _tempfile.TemporaryDirectory() as _fdir:
+            for _fi in range(n_frames):
+                if _fi < _fade_in:
+                    _alpha = _fi / _fade_in
+                elif _fi < _fade_in + _hold:
+                    _alpha = 1.0
+                else:
+                    _alpha = 1.0 - ((_fi - _fade_in - _hold) / max(1, _fade_out))
+                _alpha = max(0.0, min(1.0, _alpha))
+
+                # Composite watercolor at this opacity on a black background.
+                _a_frame = _a_orig.point(lambda px, a=_alpha: int(px * a))
+                _frame_bg = _PILImage.new("RGB", (_w, _h), (0, 0, 0))
+                _frame_bg.paste(_PILImage.merge("RGBA", (_r, _g, _b, _a_frame)),
+                                mask=_a_frame)
+                _frame_bg.save(f"{_fdir}/frame_{_fi:04d}.png", "PNG")
+
+            # Encode frames → H.264 MP4.  Simple framerate input — no filter_complex.
+            _encode_cmd = [
+                "ffmpeg", "-y",
+                "-framerate", str(fps_anim),
+                "-i", f"{_fdir}/frame_%04d.png",
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                str(out_path),
+            ]
+            try:
+                subprocess.run(_encode_cmd, check=True, capture_output=True, timeout=120)
+            except subprocess.CalledProcessError as _enc_exc:
+                return h._send_error_v59(
+                           500,
+                           error_code="FFMPEG_ENCODE_FAILED",
+                           error_message="ffmpeg encode failed",
+                           retry_safe=True,
+                           extra={"stderr": _enc_exc.stderr.decode("utf-8", errors="replace")[-500:]},
+                       )
+            except subprocess.TimeoutExpired:
+                return h._send_error_v59(
+                           504,
+                           error_code="FFMPEG_ENCODE_TIMED_OUT",
+                           error_message="ffmpeg encode timed out (>120s)",
+                           retry_safe=True,
+                       )
+
+    except Exception as _pil_exc:
         return h._send_error_v59(
                    500,
-                   error_code="FFMPEG_FAILED",
-                   error_message="ffmpeg failed",
-                   retry_safe=True,
-                   extra={"filter_complex": filter_complex, "stderr": exc.stderr.decode("utf-8", errors="replace")[-1000:]},
-               )
-    except subprocess.TimeoutExpired:
-        return h._send_error_v59(
-                   504,
-                   error_code="FFMPEG_TIMED_OUT",
-                   error_message="ffmpeg timed out (>60s)",
+                   error_code="PIL_RENDER_FAILED",
+                   error_message=f"PIL frame render failed: {_pil_exc}",
                    retry_safe=True,
                )
 
@@ -3820,12 +3740,11 @@ def handle_watercolor_animate(h, body: dict)-> None:
             module_id=_resolve_module_id_for_state(h.app.state),
             produced_by_skill="watercolor_animate_endpoint",
             colloquial_name=f"{watercolor_key} animated",
-            tags=["watercolor_animation", watercolor_key, "claude_filter_complex"],
+            tags=["watercolor_animation", watercolor_key, "pil_fade_sweep"],
             notes=(
-                f"Watercolor animation via Claude+ffmpeg (LD-470). "
+                f"Watercolor animation via PIL frame renderer (replaces Claude+ffmpeg LD-470). "
                 f"motion={motion_desc!r}. {len(clean_path)} path points. "
-                f"duration={duration_s}s. claude_ms={elapsed_ms}. "
-                f"explanation={explanation!r}"
+                f"duration={duration_s}s. {explanation}"
             ),
             role="library",
         )
