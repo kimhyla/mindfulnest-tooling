@@ -181,7 +181,13 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       if (drift > 0.3) lv.currentTime = ws.getCurrentTime();
       // Self-healing: if WaveSurfer is playing but video is still paused
       // (e.g. autoplay rejected on first try), restart it.
-      if (lv.paused) lv_play(lv);
+      // Guard: only self-heal if WaveSurfer is genuinely still playing.
+      // Without this, 'audioprocess' fires during the pause flush ticks
+      // (WebAudio buffer drain after ws.pause()), sees lv.paused===true,
+      // and re-starts the video — causing the desync Kim reported.
+      // ws.isPlaying() returns false synchronously after ws.pause(), so
+      // this guard makes the healer a no-op during teardown.
+      if (lv.paused && ws.isPlaying()) lv_play(lv);
     });
     // ─────────────────────────────────────────────────────────────────────────
 

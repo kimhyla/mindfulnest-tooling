@@ -153,6 +153,11 @@ def handle_phase_watercolor_list(h)-> None:
             ext = f.suffix.lower().lstrip(".")
             if ext not in ("png", "webp", "mov", "mp4"):
                 continue
+            # Test isolation: never surface smoke-test artifacts in the live library.
+            # Files starting with _smoketest_ are test-only and may not have been
+            # cleaned up by teardown. Filter here so UI never shows them.
+            if f.name.startswith("_smoketest_"):
+                continue
             # Skip 0-byte files — render likely failed mid-write; browser cannot decode them.
             if f.stat().st_size == 0:
                 continue
@@ -227,7 +232,8 @@ def handle_phase_watercolor_file(h)-> None:
             "png": "image/png", "webp": "image/webp",
             "mov": "video/quicktime", "mp4": "video/mp4",
         }.get(ext, "application/octet-stream")
-        h._send_bytes(200, data, ct)
+        h._send_bytes(200, data, ct,
+                      extra_headers={"Cache-Control": "public, max-age=600"})
     except (OSError, KeyError) as exc:
         return h._send_error_v59(
                    500,

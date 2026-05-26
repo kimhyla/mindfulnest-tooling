@@ -52,7 +52,7 @@ interface WatercolorItem {
   kind: 'static' | 'animation' | string;
   /** Always an image URL (static PNG or base PNG for animations) — safe for <img>. */
   thumb_url: string;
-  /** For animations: the actual MP4/MOV URL (black-bg, use mix-blend-mode:screen). */
+  /** For animations: the actual MP4/MOV URL (black-bg, Stitcher use only — NOT used for browser overlay per LD-821). */
   animation_url?: string | null;
   mtime: number;
   size_bytes: number;
@@ -217,7 +217,23 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       apiGet<EventStateResponse>('v2_event_state', { event_id: activeScope.value.event_id }),
       apiGet<AmbientPresetListResponse>('phase_b_ambient_preset_list'),
     ]);
-    if (wc.ok && wc.data?.items) setWatercolors(wc.data.items);
+    if (wc.ok && wc.data?.items) {
+      const next = wc.data.items as WatercolorItem[];
+      setWatercolors((prev) => {
+        // Skip the state swap when the library hasn't changed — prevents the
+        // thumbnail blink caused by Preact reconciling a fresh-identity array
+        // on every 30s lipsync poll. Compare by key+mtime (cheap; server sends
+        // mtime from f.stat().st_mtime). A new animation landing changes mtime,
+        // so real updates still trigger a re-render.
+        if (
+          prev.length === next.length &&
+          prev.every((p, i) => p.key === next[i].key && p.mtime === next[i].mtime)
+        ) {
+          return prev; // Same reference → Preact bails out of reconcile
+        }
+        return next;
+      });
+    }
     if (bc.ok && bc.data?.items) {
       setBaseClips(bc.data.items);
       // Auto-select character match for the active phase.
@@ -803,31 +819,41 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                       currentTimeMs < cue.offset_ms + (cue.duration_ms ?? 3000),
                   )
                   .map((cue) => {
+                    // PNG+JS-opacity overlay (LD-821 WATERCOLOR_OVERLAY_PNG_CSS_ARCHITECTURE_V1).
+                    // We use the source PNG (not the MP4) so there is no black-background /
+                    // mix-blend-mode hack. The server's thumb_url already resolves animated keys
+                    // to their base PNG — no new endpoint needed.
                     const wcItem = watercolors.find((w) => w.key === cue.watercolor_key);
-                    const isAnim = wcItem?.kind === 'animation';
-                    // For animations: use animation_url (the actual MP4) with mix-blend-mode:screen
-                    // so the black background becomes transparent (screen blending: black=0 → invisible).
-                    // For statics: use the standard watercolor endpoint with <img>.
-                    const animSrc = isAnim
-                      ? (wcItem?.animation_url ?? `http://localhost:5111/api/phase_b/watercolor/${cue.watercolor_key}`)
-                      : `http://localhost:5111/api/phase_b/watercolor/${cue.watercolor_key}`;
-                    return isAnim ? (
-                      <video
-                        key={cue.id}
-                        class="mn-lipsync-watercolor-overlay"
-                        src={animSrc}
-                        muted
-                        autoPlay
-                        loop
-                        playsInline
-                        style={{ mixBlendMode: 'screen' }}
-                      />
-                    ) : (
+                    // Resolve PNG source: prefer server-provided thumb_url (handles animated→base
+                    // resolution server-side). Fallback to direct watercolor endpoint for any cue
+                    // whose key isn't yet in the loaded list (e.g. freshly animated, list not
+                    // yet refreshed).
+                    const pngSrc =
+                      wcItem?.thumb_url ??
+                      `${SERVER_BASE}/api/phase_b/watercolor/${encodeURIComponent(cue.watercolor_key)}`;
+
+                    // JS-computed opacity: fade-in 500ms, hold, fade-out 600ms.
+                    // currentTimeMs updates ~100ms via audioprocess — smooth enough for a fade.
+                    const elapsed = currentTimeMs - cue.offset_ms;
+                    const FADE_IN_MS = 500;
+                    const FADE_OUT_MS = 600;
+                    const MAX_OPACITY = 0.88;
+                    let opacity: number;
+                    if (elapsed < FADE_IN_MS) {
+                      opacity = (elapsed / FADE_IN_MS) * MAX_OPACITY;
+                    } else if (elapsed > (cue.duration_ms ?? 3000) - FADE_OUT_MS) {
+                      opacity = Math.max(0, (((cue.duration_ms ?? 3000) - elapsed) / FADE_OUT_MS) * MAX_OPACITY);
+                    } else {
+                      opacity = MAX_OPACITY;
+                    }
+
+                    return (
                       <img
                         key={cue.id}
                         class="mn-lipsync-watercolor-overlay"
-                        src={animSrc}
+                        src={pngSrc}
                         alt=""
+                        style={{ opacity, mixBlendMode: 'multiply' as const }}
                       />
                     );
                   })}

@@ -580,7 +580,6 @@
   object-fit: contain;
   object-position: top left;
   pointer-events: none;
-  opacity: 0.88;
 }
 
 /* WaveformTimeline — S5.5f / WAVESURFER_TIMELINE_INTEGRATION_V1 */
