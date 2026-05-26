@@ -6750,7 +6750,9 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
             for bid in ordered_beat_ids:
                 try:
-                    digest, meta = compute_finalize_args_hash(slim, bid, clips_dir)
+                    digest, meta = compute_finalize_args_hash(
+                        slim, bid, clips_dir, event_dir=self.app.event_dir,
+                    )
                 except FileNotFoundError as exc:
                     return self._send_error_v59(
                                400,
@@ -6765,11 +6767,15 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 # with sound: false have no audio; the TTS MP3 must be mixed in).
                 # A beat is "raw_option source" when it has no completed lipsync
                 # OR when beat.final.source explicitly names raw_option.
+                # Magic sources are ALWAYS treated as raw_option: magic_compositor
+                # writes video-only; magic_video blend maps 0:a? from a silent
+                # Kling clip. TTS must be mixed in regardless of lipsync state.
                 _beat_dict = beats.get(bid) or {}
                 _beat_lipsync = _beat_dict.get("lipsync") or {}
                 _beat_final_src = (_beat_dict.get("final") or {}).get("source")
                 _is_raw_option_src = (
-                    _beat_lipsync.get("status") != "completed"
+                    bool(meta.get("is_magic_source"))  # magic output is always silent
+                    or _beat_lipsync.get("status") != "completed"
                     or _beat_final_src == "raw_option"
                 )
                 _speech_mp3: "Path | None" = None
@@ -7257,7 +7263,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         "\\", "|", "`", "$(", "${",
     )
 
-    def _validate_manual_path(self, manual_path: list, max_pts: int = 20) -> tuple[bool, list, str]:
+    def _validate_manual_path(self, manual_path: list, max_pts: int = 100) -> tuple[bool, list, str]:
         """Validate manual_path = [[x,y],...] in [0,1]. Returns (ok, clean_path, err)."""
         if not isinstance(manual_path, list) or len(manual_path) < 2:
             return False, [], "manual_path must be a list of [x,y] pairs (>=2 points)"

@@ -1248,7 +1248,8 @@ def render_watercolor_overlay(
 # BEAT_FINALIZE_ENDPOINT_V1 + SCENE_ASSEMBLE_ENDPOINT_V1.
 # ---------------------------------------------------------------------------
 def compute_finalize_args_hash(slim_snapshot: dict, beat_id: str,
-                               clips_dir: Path) -> tuple[str, dict]:
+                               clips_dir: Path,
+                               event_dir: "Path | None" = None) -> tuple[str, dict]:
     """Compute the per-beat finalize cache hash + per-beat resolution metadata.
 
     Per Cursor Q1 (v3 spec §3.5 Stage 1): excludes fade_after_ms +
@@ -1257,26 +1258,57 @@ def compute_finalize_args_hash(slim_snapshot: dict, beat_id: str,
 
     Hash inputs:
       - beat_id
-      - resolved input file abs path (via resolve_beat_file)
+      - resolved input file abs path (via resolve_beat_file, or magic path)
       - resolved input file mtime
       - phase_1.selected_option
       - phase_1.trim_start, trim_end
       - phase_1.audio_delay
       - image_overrides[<role>][<beat_id>] — deterministic JSON
       - selected_lipsync_path if beat.lipsync.status == "completed", else None
+      - magic_still_path / magic_video_path (None when not set)
+      - is_magic_source flag
       - NORMALIZATION_RECIPE_HASH (per-codec)
       - FINALIZE_RECIPE_VERSION
 
     Returns:
         (hex_sha256, {beat_id, file, mtime, trim_start, trim_end,
                       audio_delay, selected_option, lipsync_path,
-                      image_override})
+                      image_override, is_magic_source})
+
+    Magic source priority (highest):
+      When beat.magic_still_path or beat.magic_video_path is set AND the file
+      exists in event_dir, the magic composite is used as the video source
+      instead of the regular priority chain (final → lipsync → phase_1 option).
+      Magic outputs are always SILENT (magic_compositor writes video-only;
+      magic_video ffmpeg blend maps 0:a? from a sound:false Kling clip).
+      The caller MUST mix in TTS audio when is_magic_source=True — this is
+      enforced by the _is_raw_option_src override in _handle_scene_assemble.
     """
     beats = slim_snapshot.get("beats") or {}
     image_overrides = slim_snapshot.get("image_overrides") or {}
     beat = beats.get(beat_id) or {}
     phase1 = beat.get("phase_1") or {}
-    path = resolve_beat_file(beat_id, slim_snapshot, clips_dir)  # raises FNF
+
+    # Priority 0a: magic composite (highest priority).
+    # magic_still_path and magic_video_path live in event_dir (not clips_dir).
+    # Both are SILENT; is_magic_source=True signals the caller to mix TTS in.
+    magic_still = beat.get("magic_still_path")
+    magic_video = beat.get("magic_video_path")
+    is_magic_source = False
+    magic_path_used: "str | None" = None
+    if event_dir:
+        for mpath in [magic_still, magic_video]:
+            if mpath:
+                candidate = Path(event_dir) / mpath
+                if candidate.is_file():
+                    path: Path = candidate
+                    is_magic_source = True
+                    magic_path_used = mpath
+                    break
+
+    if not is_magic_source:
+        path = resolve_beat_file(beat_id, slim_snapshot, clips_dir)  # raises FNF
+
     mtime = os.path.getmtime(str(path))
     trim_start = phase1.get("trim_start", 0.0) or 0.0
     trim_end = phase1.get("trim_end")
@@ -1306,6 +1338,9 @@ def compute_finalize_args_hash(slim_snapshot: dict, beat_id: str,
         f"selected_option:{selected_option}",
         f"lipsync_path:{lipsync_path}",
         f"image_override:{image_override_json}",
+        f"magic_still:{magic_still}",    # cache invalidates when magic applied/removed
+        f"magic_video:{magic_video}",
+        f"is_magic_source:{is_magic_source}",
     ]
     digest = hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
     metadata = {
@@ -1319,6 +1354,8 @@ def compute_finalize_args_hash(slim_snapshot: dict, beat_id: str,
         "selected_option": selected_option,
         "lipsync_path": lipsync_path,
         "image_override": image_override,
+        "is_magic_source": is_magic_source,
+        "magic_path_used": magic_path_used,
     }
     return digest, metadata
 
