@@ -1223,6 +1223,10 @@ def handle_bg_session_state(h)-> None:
     scope_phase = _q("scope_phase")  # may be None — derived from video role
 
     bg = _bg_module()
+    # Normalize: storyboard sends "Event_1" (scope format); sidecar keys use "1" (numeric).
+    # Strip the "Event_" prefix so get_seg_entry looks up "event_1_post" not "event_Event_1_post".
+    if scope_event_id is not None:
+        scope_event_id = bg.normalize_bg_event_id(scope_event_id)
     with bg._sidecar_lock:
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
@@ -1661,6 +1665,9 @@ def handle_bg_reorder_beats(h, body: dict)-> None:
         scope_event_id = body.get("scope_event_id")
         if scope_event_id is None:
             scope_event_id = body.get("event_id")
+        # Normalize: storyboard sends "Event_1" (scope format); sidecar keys use "1" (numeric).
+        if scope_event_id is not None:
+            scope_event_id = bg.normalize_bg_event_id(scope_event_id)
         scope_arc_raw = body.get("scope_arc_number")
         if scope_arc_raw is None:
             scope_arc_raw = body.get("arc_number")

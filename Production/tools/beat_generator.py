@@ -399,6 +399,23 @@ def write_sidecar(data):
         os.replace(tmp, path)
 
 
+def normalize_bg_event_id(event_id: str) -> str:
+    """Strip storyboard-scope prefix from event_id so it matches sidecar segment keys.
+
+    The storyboard passes scope as "Event_1" (from activeScope.value.event_id) while
+    the BG sidecar stores segments under keys like "event_1_post" (numeric id only).
+    This mismatch caused get_seg_entry to create ghost key "event_Event_1_post" instead
+    of looking up the real "event_1_post" segment.
+
+    Examples:
+        normalize_bg_event_id("Event_1")  -> "1"
+        normalize_bg_event_id("event_2")  -> "2"
+        normalize_bg_event_id("1")        -> "1"
+    """
+    import re as _re
+    return _re.sub(r'^event_', '', str(event_id), flags=_re.IGNORECASE)
+
+
 def get_seg_entry(sidecar, arc_number, event_id, phase="full"):
     """Return (and create if missing) the segment dict for arc_N/event_{id}_{phase}."""
     arc_key = f"arc_{arc_number}"
