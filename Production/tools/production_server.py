@@ -4436,44 +4436,76 @@ def _v2_validate_status(v):
 
 
 def _v2_validate_watercolor_cues_json(v):
-    """Validate watercolor cues JSON; re-emit with sort_keys=True for cache-hash stability (MEDIUM-5)."""
-    if not isinstance(v, str):
-        raise ValueError(f"must be JSON string, got {type(v).__name__}")
-    if len(v) > 200_000:
-        raise ValueError(f"cues JSON too long ({len(v)} chars, max 200000)")
-    try:
-        parsed = json.loads(v)
-    except Exception as exc:
-        raise ValueError(f"invalid JSON: {exc}")
+    """Validate watercolor cues; accept JSON string or raw list (frontend schema or server schema).
+
+    Frontend sends raw arrays with keys {id, watercolor_key, offset_ms, animation_type, duration_ms,
+    volume}. Server schema uses {key, timestamp_ms, animation, duration_ms, cue_type}. Both are
+    accepted here and normalized to server schema before storage so the bake pipeline always sees
+    a consistent shape. Stores as a JSON string with sort_keys=True for cache-hash stability (MEDIUM-5).
+    """
+    # Accept list directly (client sends raw array per F7-F9 contract).
+    if isinstance(v, list):
+        parsed = v
+    elif isinstance(v, str):
+        if len(v) > 200_000:
+            raise ValueError(f"cues JSON too long ({len(v)} chars, max 200000)")
+        try:
+            parsed = json.loads(v)
+        except Exception as exc:
+            raise ValueError(f"invalid JSON: {exc}")
+    else:
+        raise ValueError(f"must be JSON string or list, got {type(v).__name__}")
     if not isinstance(parsed, list):
         raise ValueError(f"watercolor cues must be a list, got {type(parsed).__name__}")
-    required_keys = ("timestamp_ms", "key", "animation", "duration_ms", "cue_type")
+    normalized = []
     for i, cue in enumerate(parsed):
         if not isinstance(cue, dict):
             raise ValueError(f"cue {i} must be dict, got {type(cue).__name__}")
-        for key in required_keys:
-            if key not in cue:
-                raise ValueError(f"cue {i} missing {key!r}")
-        if not isinstance(cue["timestamp_ms"], int) or cue["timestamp_ms"] < 0:
+        # Resolve key: accept server 'key' or frontend 'watercolor_key'.
+        key_val = cue.get("key") or cue.get("watercolor_key") or ""
+        if not isinstance(key_val, str) or not key_val:
+            raise ValueError(f"cue {i} missing 'key'/'watercolor_key'")
+        # Resolve timestamp: accept server 'timestamp_ms' or frontend 'offset_ms'.
+        ts_raw = cue.get("timestamp_ms") if "timestamp_ms" in cue else cue.get("offset_ms", 0)
+        try:
+            ts = int(ts_raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"cue {i} timestamp_ms/offset_ms must be integer, got {ts_raw!r}")
+        if ts < 0:
             raise ValueError(f"cue {i} timestamp_ms must be non-negative int")
-        if not isinstance(cue["duration_ms"], int) or cue["duration_ms"] < 0:
-            raise ValueError(f"cue {i} duration_ms must be non-negative int")
-        if cue["cue_type"] not in _V2_CUE_TYPES:
-            raise ValueError(
-                f"cue {i} cue_type must be one of {sorted(_V2_CUE_TYPES)}, "
-                f"got {cue['cue_type']!r}"
-            )
-        if cue["animation"] not in _V2_CUE_ANIMATIONS:
+        # Resolve animation: accept server 'animation' or frontend 'animation_type'.
+        anim = cue.get("animation") or cue.get("animation_type") or "fade_in"
+        if anim not in _V2_CUE_ANIMATIONS:
             raise ValueError(
                 f"cue {i} animation must be one of {sorted(_V2_CUE_ANIMATIONS)}, "
-                f"got {cue['animation']!r}"
+                f"got {anim!r}"
             )
-        if not isinstance(cue["key"], str) or not cue["key"]:
-            raise ValueError(f"cue {i} key must be non-empty string")
+        dur_raw = cue.get("duration_ms", 3000)
+        try:
+            dur = int(dur_raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"cue {i} duration_ms must be integer, got {dur_raw!r}")
+        if dur < 0:
+            raise ValueError(f"cue {i} duration_ms must be non-negative int")
+        cue_type = cue.get("cue_type") or "png"
+        if cue_type not in _V2_CUE_TYPES:
+            raise ValueError(
+                f"cue {i} cue_type must be one of {sorted(_V2_CUE_TYPES)}, "
+                f"got {cue_type!r}"
+            )
+        normalized.append({
+            "id": str(cue.get("id") or f"cue_{i}"),
+            "key": key_val,
+            "timestamp_ms": ts,
+            "animation": anim,
+            "duration_ms": dur,
+            "cue_type": cue_type,
+            "volume": float(cue.get("volume", 1.0)),
+        })
     # Sort cues by timestamp_ms for stable rendering order.
-    parsed.sort(key=lambda c: c["timestamp_ms"])
+    normalized.sort(key=lambda c: c["timestamp_ms"])
     # Re-emit with sort_keys=True so hash is stable across client JS key ordering.
-    return json.dumps(parsed, sort_keys=True, separators=(",", ":"))
+    return json.dumps(normalized, sort_keys=True, separators=(",", ":"))
 
 
 # Per-field validator dispatch (V3 HIGH-1 fix — counter preflight 102).

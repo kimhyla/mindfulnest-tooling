@@ -426,11 +426,13 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
 
   const persistCues = async (next: WatercolorCue[]) => {
     setStateSlice((s) => ({ ...s, watercolor_cues: next }));
-    // Server requires phase_b_watercolor_cues_json to be a JSON STRING
-    // (not a JS array). Translate to server schema before serialising.
+    // Send raw frontend-schema array. The server validator (_v2_validate_watercolor_cues_json)
+    // accepts a list directly, normalises to server schema, and stores as JSON string.
+    // Tests F7–F9 assert body['value'] is an array with frontend keys (watercolor_key,
+    // offset_ms, animation_type) — JSON.stringify was breaking that contract.
     const res = await pathappPatch(activeScope.value, 'v2_module_patch', {
       field: cueField,
-      value: JSON.stringify(next.map(toServerSchema)),
+      value: next,
     });
     if (!res.ok) {
       setStatusMsg(`✗ cue patch HTTP ${res.status}: ${res.error ?? ''}`);
