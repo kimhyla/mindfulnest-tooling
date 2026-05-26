@@ -408,7 +408,7 @@ SERVER_VERSION = "v1"
 
 # Cost constants (verified April 2026)
 COST_PER_CLIP_KLING = 0.26
-DEFAULT_BUDGET = 32.00
+DEFAULT_BUDGET = 150.00  # raised from 32 — budget overrides are written to production_spend.json (persists across restarts)
 
 # Anti-lip-sync safeguards (CLAUDE.md Rule 8 — ALWAYS ON)
 BANNED_PROMPT_WORDS = [
