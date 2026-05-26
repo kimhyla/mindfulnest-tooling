@@ -135,11 +135,27 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     // The video is muted by the caller; WaveSurfer's WebAudio provides the audio.
     // Access linkedVideo.current inside callbacks so we always get the live element
     // (refs don't trigger re-renders, so captured-at-effect-time is safe).
+    // ── lv_play helper ───────────────────────────────────────────────────────
+    // Force .muted = true before EVERY play() call.
+    // Root cause of the sync bug: WaveSurfer fires 'play' after its internal
+    // WebAudio Promise resolves, outside the original user-gesture window.
+    // Chrome's autoplay policy blocks video.play() on an unmuted element from
+    // an async callback — the Promise is rejected silently because we used
+    // .catch(() => {}).  Setting .muted = true imperatively bypasses the policy
+    // entirely (muted elements can always autoplay regardless of gesture timing).
+    // The JSX `muted` attribute on <video> is insufficient: Preact does not
+    // reliably reflect it to the DOM .muted property in all Chrome versions.
+    const lv_play = (lv: HTMLVideoElement) => {
+      lv.muted = true;
+      return lv.play().catch(() => {});
+    };
+    // ─────────────────────────────────────────────────────────────────────────
+
     ws.on('play', () => {
       const lv = linkedVideo?.current;
       if (!lv) return;
       lv.currentTime = ws.getCurrentTime();
-      lv.play().catch(() => {}); // silent: autoplay policy may block until user gesture
+      lv_play(lv);
     });
     ws.on('pause', () => {
       linkedVideo?.current?.pause();
@@ -154,15 +170,8 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       const lv = linkedVideo?.current;
       if (!lv) return;
       lv.currentTime = ws.getCurrentTime();
-      // If WaveSurfer is playing, ensure the video resumes after the seek.
-      // WaveSurfer v7 may fire 'pause' + 'play' around an internal seek; the
-      // 'play' handler re-syncs too, but seeking while paused then resuming
-      // via the play button can leave the video stuck — this catches that gap.
       if (!ws.isPlaying()) return;
-      lv.play().catch(() => {
-        // Autoplay policy may block the first call; audioprocess loop below
-        // retries every ~100ms so the video self-heals within one tick.
-      });
+      lv_play(lv);
     });
     ws.on('audioprocess', () => {
       const lv = linkedVideo?.current;
@@ -170,11 +179,9 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       // Correct drift >0.3s to avoid fighting over tiny float jitter.
       const drift = Math.abs(lv.currentTime - ws.getCurrentTime());
       if (drift > 0.3) lv.currentTime = ws.getCurrentTime();
-      // Self-healing play state: if WaveSurfer is playing but video accidentally
-      // paused (autoplay policy rejection, mid-seek race, etc.) — restart it.
-      if (lv.paused) {
-        lv.play().catch(() => {});
-      }
+      // Self-healing: if WaveSurfer is playing but video is still paused
+      // (e.g. autoplay rejected on first try), restart it.
+      if (lv.paused) lv_play(lv);
     });
     // ─────────────────────────────────────────────────────────────────────────
 
