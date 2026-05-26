@@ -344,7 +344,27 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
           class="mn-btn mn-btn-play"
           data-testid="waveform-play-btn"
           disabled={!isReady}
-          onClick={() => wsRef.current?.playPause()}
+          onClick={() => {
+            const ws = wsRef.current;
+            if (!ws) return;
+            if (ws.isPlaying()) {
+              // Pause: WaveSurfer drives; 'pause' event handler mirrors to video.
+              ws.pause();
+            } else {
+              // Play: call lv.play() SYNCHRONOUSLY in the user-gesture stack
+              // BEFORE ws.play() so Chrome's autoplay policy never blocks it.
+              // WaveSurfer fires 'play' async (after AudioContext.resume()) —
+              // by then we're outside the gesture window and Chrome may block
+              // lv.play() even with lv.muted=true (browser-version quirk).
+              const lv = linkedVideo?.current;
+              if (lv) {
+                lv.muted = true;
+                lv.currentTime = ws.getCurrentTime();
+                lv.play().catch(() => {});
+              }
+              ws.play();
+            }
+          }}
           title={isPlaying ? 'Pause' : 'Play'}
         >
           {isPlaying ? '⏸ Pause' : '▶ Play'}

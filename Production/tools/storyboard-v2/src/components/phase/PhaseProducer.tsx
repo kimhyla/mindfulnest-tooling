@@ -789,7 +789,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                   muted
                   controls
                   src={fileUrl(lipsyncFile)}
-                  style={{ maxHeight: '40vh', display: 'block' }}
+                  style={{ maxHeight: '20vh', display: 'block' }}
                 />
                 {(stateSlice.watercolor_cues ?? [])
                   .filter(
