@@ -147,14 +147,30 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     // reliably reflect it to the DOM .muted property in all Chrome versions.
     const lv_play = (lv: HTMLVideoElement) => {
       lv.muted = true;
-      return lv.play().catch(() => {});
+      lv.play().catch(() => {
+        // Chrome rejects play() with AbortError when:
+        //   (a) lv.currentTime is set while a play() Promise is in-flight
+        //   (b) "video-only background media paused to save power" power-saving policy
+        // Retry once via rAF — by then the Promise chain is settled and the
+        // browser has processed the muted-video policy check.
+        if (lv.paused) {
+          requestAnimationFrame(() => {
+            lv.muted = true;
+            lv.play().catch(() => {});
+          });
+        }
+      });
     };
     // ─────────────────────────────────────────────────────────────────────────
 
     ws.on('play', () => {
       const lv = linkedVideo?.current;
       if (!lv) return;
-      lv.currentTime = ws.getCurrentTime();
+      // Do NOT set lv.currentTime here. The play button already sets it
+      // synchronously in the user-gesture handler before calling ws.play().
+      // Setting currentTime here interrupts the in-flight lv.play() Promise
+      // (Chrome AbortError: "play() request was interrupted"). The audioprocess
+      // drift corrector (below) catches any minor float skew on subsequent ticks.
       lv_play(lv);
     });
     ws.on('pause', () => {
@@ -177,8 +193,14 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       const lv = linkedVideo?.current;
       if (!lv) return;
       // Correct drift >0.3s to avoid fighting over tiny float jitter.
+      // GUARD: only set currentTime when the video is already playing (not paused).
+      // Setting currentTime while lv.play() is in-flight (lv.paused=true with a
+      // pending Promise) aborts the Promise, which triggers the self-healer below,
+      // which calls lv_play() again — creating a loop that keeps the video at 0.
+      // When lv.paused=true the self-healer below will call lv_play(); once play()
+      // resolves the next audioprocess tick sees paused=false and corrects drift then.
       const drift = Math.abs(lv.currentTime - ws.getCurrentTime());
-      if (drift > 0.3) lv.currentTime = ws.getCurrentTime();
+      if (!lv.paused && drift > 0.3) lv.currentTime = ws.getCurrentTime();
       // Self-healing: if WaveSurfer is playing but video is still paused
       // (e.g. autoplay rejected on first try), restart it.
       // Guard: only self-heal if WaveSurfer is genuinely still playing.

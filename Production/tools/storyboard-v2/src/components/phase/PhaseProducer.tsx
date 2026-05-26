@@ -832,12 +832,13 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                       wcItem?.thumb_url ??
                       `${SERVER_BASE}/api/phase_b/watercolor/${encodeURIComponent(cue.watercolor_key)}`;
 
-                    // JS-computed opacity: fade-in 500ms, hold, fade-out 600ms.
-                    // currentTimeMs updates ~100ms via audioprocess — smooth enough for a fade.
+                    // JS-computed opacity: fade-in 500ms, hold at full, fade-out 600ms.
+                    // MAX_OPACITY = 1.0 — the PNG/video's own alpha channel handles artistic
+                    // transparency; we don't dim on top of that.
                     const elapsed = currentTimeMs - cue.offset_ms;
                     const FADE_IN_MS = 500;
                     const FADE_OUT_MS = 600;
-                    const MAX_OPACITY = 0.88;
+                    const MAX_OPACITY = 1.0;
                     let opacity: number;
                     if (elapsed < FADE_IN_MS) {
                       opacity = (elapsed / FADE_IN_MS) * MAX_OPACITY;
@@ -847,13 +848,30 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                       opacity = MAX_OPACITY;
                     }
 
+                    // Animated watercolors: render <video autoPlay loop> using animation_url.
+                    // Static watercolors: render <img> using thumb_url / fallback PNG endpoint.
+                    if (wcItem?.kind === 'animation' && wcItem.animation_url) {
+                      return (
+                        <video
+                          key={cue.id}
+                          class="mn-lipsync-watercolor-overlay"
+                          src={wcItem.animation_url}
+                          autoPlay
+                          loop
+                          muted
+                          playsInline
+                          style={{ opacity }}
+                        />
+                      );
+                    }
+
                     return (
                       <img
                         key={cue.id}
                         class="mn-lipsync-watercolor-overlay"
                         src={pngSrc}
                         alt=""
-                        style={{ opacity, mixBlendMode: 'multiply' as const }}
+                        style={{ opacity }}
                       />
                     );
                   })}

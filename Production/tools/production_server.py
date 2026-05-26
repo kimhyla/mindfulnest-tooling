@@ -7685,6 +7685,11 @@ class ProductionHandler(BaseHTTPRequestHandler):
             ".webp": "image/webp", ".gif": "image/gif",
             ".mp4": "video/mp4", ".mov": "video/quicktime",
         }
+        # Video files require byte-range (Accept-Ranges/206) support so that
+        # browser <video> elements can seek (e.g. after pause+resume).
+        # _serve_mp4_with_range handles Range headers → 206 responses properly.
+        if ext in (".mp4", ".mov"):
+            return self._serve_mp4_with_range(Path(file_path))
         ct = content_types.get(ext, "application/octet-stream")
         with open(file_path, "rb") as _f:
             data = _f.read()
