@@ -841,7 +841,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                     let opacity: number;
                     if (elapsed < FADE_IN_MS) {
                       opacity = (elapsed / FADE_IN_MS) * MAX_OPACITY;
-                    } else if (elapsed > (cue.duration_ms ?? 3000) - FADE_OUT_MS) {
+                    } else if (elapsed >= FADE_IN_MS && elapsed > (cue.duration_ms ?? 3000) - FADE_OUT_MS) {
                       opacity = Math.max(0, (((cue.duration_ms ?? 3000) - elapsed) / FADE_OUT_MS) * MAX_OPACITY);
                     } else {
                       opacity = MAX_OPACITY;
