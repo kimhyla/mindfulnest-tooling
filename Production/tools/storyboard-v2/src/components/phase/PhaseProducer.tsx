@@ -849,7 +849,11 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                     }
 
                     // Animated watercolors: render <video autoPlay loop> using animation_url.
-                    // Static watercolors: render <img> using thumb_url / fallback PNG endpoint.
+                    // The animation MP4 is composited on a BLACK background (see
+                    // background.py handle_watercolor_animate line ~3684). mix-blend-mode:screen
+                    // makes black pixels transparent so the lipsync video shows through;
+                    // only the colored watercolor content is visible on top.
+                    // Static watercolors: render <img> using thumb_url (PNG has alpha — no blend needed).
                     if (wcItem?.kind === 'animation' && wcItem.animation_url) {
                       return (
                         <video
@@ -860,7 +864,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                           loop
                           muted
                           playsInline
-                          style={{ opacity }}
+                          style={{ opacity, mixBlendMode: 'screen' as const }}
                         />
                       );
                     }
