@@ -20,19 +20,10 @@ import { WaveformTimeline, type WatercolorCue } from './WaveformTimeline';
 import { CuePopover } from './CuePopover';
 
 // ── Schema translation: frontend ↔ server ───────────────────────────────────
-// Server (bake pipeline) expects: {timestamp_ms, key, animation, duration_ms, cue_type}
+// Server (bake pipeline) expects: {id, key, timestamp_ms, animation, duration_ms, cue_type, volume}
 // Frontend uses:                  {id, watercolor_key, offset_ms, duration_ms, animation_type, volume}
-function toServerSchema(c: WatercolorCue): Record<string, unknown> {
-  return {
-    id: c.id,
-    timestamp_ms: c.offset_ms,
-    key: c.watercolor_key,
-    animation: c.animation_type ?? 'fade_in',
-    duration_ms: c.duration_ms ?? 3000,
-    cue_type: 'png',
-    volume: c.volume ?? 1.0,
-  };
-}
+// Schema translation is performed server-side by _v2_validate_watercolor_cues_json so the
+// client sends the raw frontend array and the validator normalises before storage.
 function fromServerSchema(raw: Record<string, unknown>): WatercolorCue {
   return {
     id: String(raw['id'] ?? `cue_${Math.random().toString(36).slice(2, 10)}`),
