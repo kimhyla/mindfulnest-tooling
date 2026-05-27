@@ -2054,10 +2054,14 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
   // magic_still video. handlePreviewEnded returned early to let audio continue;
   // now that audio has finished naturally, reset play state.
   const handleAudioEnded = useCallback(() => {
-    if (videoRef.current) {
-      try { videoRef.current.currentTime = 0; } catch { /* defensive */ }
-    }
-    setPreviewOptIdx(null);
+    // Hold the still frame for 2s after audio ends, then reset UI.
+    // Gives the viewer a moment to "land" on the final frame before it disappears.
+    window.setTimeout(() => {
+      if (videoRef.current) {
+        try { videoRef.current.currentTime = 0; } catch { /* defensive */ }
+      }
+      setPreviewOptIdx(null);
+    }, 2000);
   }, []);
 
   // LIPSYNC_PLAY_STOP_20260524: reset play state when the <video> element fires
