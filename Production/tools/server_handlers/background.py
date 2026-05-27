@@ -3665,6 +3665,10 @@ def handle_watercolor_animate(h, body: dict)-> None:
 
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_path = wc_dir / f"{watercolor_key}_animated_{ts}.mp4"
+    # Atomic write: encode to .tmp.mp4, rename when complete.
+    # Prevents corrupt MP4 from appearing in the library if the server restarts
+    # or the encode errors mid-write. (2026-05-27: LOW fix from audit)
+    out_path_tmp = out_path.with_suffix(".tmp.mp4")
 
     try:
         from PIL import Image as _PILImage  # already confirmed available at startup
@@ -3745,11 +3749,19 @@ def handle_watercolor_animate(h, body: dict)-> None:
                 "-c:v", "libx264",
                 "-pix_fmt", "yuv420p",
                 "-movflags", "+faststart",
-                str(out_path),
+                str(out_path_tmp),
             ]
             try:
                 subprocess.run(_encode_cmd, check=True, capture_output=True, timeout=120)
+                # Atomic rename: only appears as a valid MP4 once fully written.
+                import os as _os
+                _os.rename(str(out_path_tmp), str(out_path))
             except subprocess.CalledProcessError as _enc_exc:
+                # Clean up partial tmp file on encode failure.
+                try:
+                    out_path_tmp.unlink(missing_ok=True)
+                except Exception:
+                    pass
                 return h._send_error_v59(
                            500,
                            error_code="FFMPEG_ENCODE_FAILED",
@@ -3758,6 +3770,10 @@ def handle_watercolor_animate(h, body: dict)-> None:
                            extra={"stderr": _enc_exc.stderr.decode("utf-8", errors="replace")[-500:]},
                        )
             except subprocess.TimeoutExpired:
+                try:
+                    out_path_tmp.unlink(missing_ok=True)
+                except Exception:
+                    pass
                 return h._send_error_v59(
                            504,
                            error_code="FFMPEG_ENCODE_TIMED_OUT",

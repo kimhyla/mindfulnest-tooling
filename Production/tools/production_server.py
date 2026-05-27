@@ -7278,12 +7278,31 @@ class ProductionHandler(BaseHTTPRequestHandler):
         "\\", "|", "`", "$(", "${",
     )
 
+    # Safe zone for path coordinates on the 2× canvas.
+    # The canvas is 2× the source PNG dimensions. At point (x=0, y=0), the
+    # paste position is (-png_w/2, -png_h/2) — completely off-screen. To keep
+    # hands fully visible, coordinates must stay in [SAFE_MIN, SAFE_MAX].
+    # For a 1096×1608 hands PNG on a 2192×3216 canvas this means ≥0.25 from
+    # each edge. (2026-05-27: added after [0,0] bug caused 4+ hours of invisible overlay.)
+    _PATH_SAFE_MIN = 0.15
+    _PATH_SAFE_MAX = 0.85
+
     def _validate_manual_path(self, manual_path: list, max_pts: int = 100) -> tuple[bool, list, str]:
-        """Validate manual_path = [[x,y],...] in [0,1]. Returns (ok, clean_path, err)."""
+        """Validate manual_path = [[x,y],...] in safe zone [0.15, 0.85].
+
+        Returns (ok, clean_path, err).
+
+        Constraint: coordinates must be in [_PATH_SAFE_MIN, _PATH_SAFE_MAX].
+        The PIL renderer uses a 2× canvas; at coordinate (0,0) the paste
+        position is (-png_w/2, -png_h/2) — the asset is completely off-screen.
+        The safe zone ensures the full asset remains visible at all path points.
+        """
         if not isinstance(manual_path, list) or len(manual_path) < 2:
             return False, [], "manual_path must be a list of [x,y] pairs (>=2 points)"
         if len(manual_path) > max_pts:
             return False, [], f"manual_path has {len(manual_path)} points (>{max_pts} max)"
+        safe_min = self._PATH_SAFE_MIN
+        safe_max = self._PATH_SAFE_MAX
         clean: list[list[float]] = []
         for i, pt in enumerate(manual_path):
             if not (isinstance(pt, list) and len(pt) == 2):
@@ -7294,6 +7313,13 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return False, [], f"manual_path[{i}] coords must be numeric"
             if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
                 return False, [], f"manual_path[{i}] = ({x}, {y}) out of [0,1] range"
+            if not (safe_min <= x <= safe_max and safe_min <= y <= safe_max):
+                return False, [], (
+                    f"manual_path[{i}] = ({x:.3f}, {y:.3f}) is outside the safe zone "
+                    f"[{safe_min}, {safe_max}]. Points near (0,0) or (1,1) place the "
+                    f"asset off-canvas on the 2× rendering canvas. Use values in "
+                    f"[{safe_min}, {safe_max}] to keep the asset fully visible."
+                )
             clean.append([x, y])
         return True, clean, ""
 

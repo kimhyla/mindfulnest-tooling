@@ -85,7 +85,15 @@ ASSEMBLE_RECIPE_VERSION: str = "v2"  # FADE_THROUGH_BLACK_20260525: bumped to in
 # Bump whenever the overlay filter construction in render_watercolor_overlay
 # changes semantics (animation preset easing, chromakey params, scale behavior).
 # ---------------------------------------------------------------------------
-WATERCOLOR_OVERLAY_RECIPE_VERSION = "wc_v2_native_aspect"
+WATERCOLOR_OVERLAY_RECIPE_VERSION = "wc_v3_cue_hold_fix"
+# v3 (2026-05-27): Root-cause fix for invisible overlay. ffmpeg overlay filter
+# advances BOTH input streams in parallel regardless of `enable` condition.
+# If cue input was limited to -t {dur_s} (e.g. 10.0s), [cN] reached EOF at t=10.0
+# BEFORE the enable window opened at t=11.341, making the overlay permanently
+# invisible. Fix: cue_hold_s = ts_s + dur_s + 2.0 ensures frames always exist
+# at any point in the enable window. Also: switched between() -> gte()*lte()
+# for unambiguous inclusive-on-both-ends semantics; added setpts=PTS-STARTPTS
+# on base to anchor PTS to zero; fixed ffmpeg fade st= to ts_s not 0.
 # v2 (preflight 134, 2026-04-20): scale-to-bbox (no pad), overlay at native aspect.
 # Prior v1 padded every cue to 1280x720 centered, which made a 400x400 PNG render
 # center-of-frame regardless of frame_x. v2 scales to (frame_max_w, frame_max_h)
@@ -1135,14 +1143,21 @@ def _wc_build_cue_prefilter(input_idx: int, cue: dict,
     # Apply animation preset's entrance effect (0.3s fade-in for fade_in and
     # slide_in; gentle_pan layers a slow x oscillation).
     # Use st=ts_s so the fade fires at the cue's global start time, not t=0.
+    # IMPORTANT: skip ffmpeg fade for cue_type=="video" — the PIL renderer
+    # already bakes a 0.5s opacity ramp into the MP4 frames. Applying a
+    # second ffmpeg alpha fade multiplies the two opacities (PIL_alpha *
+    # ffmpeg_alpha), producing near-invisible onset for the first 0.3s.
     animation = cue.get("animation") or "fade_in"
-    if animation == "fade_in":
-        chain.append(f"fade=t=in:st={ts_s:.3f}:d=0.3:alpha=1")
-    elif animation == "slide_in":
-        # Short fade so opacity isn't binary.
-        chain.append(f"fade=t=in:st={ts_s:.3f}:d=0.15:alpha=1")
-    elif animation == "gentle_pan":
-        chain.append(f"fade=t=in:st={ts_s:.3f}:d=0.5:alpha=1")
+    if cue_type != "video":
+        # Image/PNG cues: apply ffmpeg entrance fade (PIL baking doesn't apply)
+        if animation == "fade_in":
+            chain.append(f"fade=t=in:st={ts_s:.3f}:d=0.3:alpha=1")
+        elif animation == "slide_in":
+            # Short fade so opacity isn't binary.
+            chain.append(f"fade=t=in:st={ts_s:.3f}:d=0.15:alpha=1")
+        elif animation == "gentle_pan":
+            chain.append(f"fade=t=in:st={ts_s:.3f}:d=0.5:alpha=1")
+    # For cue_type=="video": PIL-baked fade handles opacity; no ffmpeg fade needed.
     joined = ",".join(chain)
     return f"[{input_idx}:v]{joined}[{label}]"
 
@@ -1210,6 +1225,21 @@ def render_watercolor_overlay(
             cue.get("cue_type") or "png",
         )
         cue_paths.append(path)
+
+    # Validate cue timestamps against base video duration (LOW fix, 2026-05-27).
+    # A cue at ts > video_duration silently never appears — no ffmpeg error,
+    # no output error, overlay just absent. Fail loudly instead.
+    base_video_duration = ffprobe_duration(base_video_path)
+    if base_video_duration > 0:
+        for cue in cues_sorted:
+            ts_s = float(cue.get("timestamp_ms") or 0) / 1000.0
+            if ts_s >= base_video_duration:
+                raise ValueError(
+                    f"Cue timestamp {ts_s:.3f}s (id={cue.get('id')!r}) exceeds "
+                    f"base video duration {base_video_duration:.3f}s. "
+                    f"The overlay would never appear. Check production_state.json "
+                    f"phase_b_watercolor_cues_json timestamp_ms values."
+                )
 
     # Build ffmpeg command.
     cmd: list[str] = [
@@ -1291,10 +1321,12 @@ def render_watercolor_overlay(
             # Use gte()*lte() instead of between(): between() exclusivity
             # semantics vary by ffmpeg version and fail at exact boundary frames.
             # gte/lte are unambiguously inclusive on both sides.
-            # Root-cause fix for invisible overlay: between(t,11.341,21.341)
-            # evaluated FALSE because [cN] was limited to -t 10.0 (EOF at
-            # t=10.0 before the enable window opened at t=11.341). Input is
-            # now -t 3600 so frames always exist at any cue timestamp.
+            # Root-cause fix for invisible overlay (v3, 2026-05-27):
+            # between(t,11.341,21.341) silently failed because [cN] was limited
+            # to -t {dur_s} (10.0s), reaching EOF at t=10.0 BEFORE the enable
+            # window opened at t=11.341. Fix: cue input uses
+            # cue_hold_s = ts_s + dur_s + 2.0 (see input construction above),
+            # ensuring frames exist at any point in the enable window.
             overlays.append(
                 f"[{prev_label}][c{input_idx}]overlay="
                 f"x={x_expr}:y={frame_y}:"
