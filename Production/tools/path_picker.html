@@ -400,10 +400,18 @@
       const url = `http://localhost:5111/api/phase/watercolor_file?key=${encodeURIComponent(watercolorKey)}`;
       loadImageFromURL(url);
     } else if (mode === 'magic_still' || mode === 'magic_video') {
-      // S5 — fetch the still reference image via /files endpoint.
-      // For magic_video, source_image_path is the visual reference (caller
-      // typically passes the beat's still / poster frame).
-      if (sourceImagePath) {
+      if (mode === 'magic_video' && sourceVideoPath) {
+        // CANVAS_MISMATCH_FIX (Kim 2026-05-27): magic_video must draw on a frame
+        // from the SOURCE VIDEO (lipsync clip), NOT the reference still.
+        // Drawing on the still caused a coordinate mismatch — the still crop has
+        // different framing than the lipsync video — so the rendered trail appeared
+        // in completely wrong positions on the final video (flooding the frame pink).
+        // Fix: extract frame 0 from source_video_path client-side via hidden <video>
+        // + canvas.drawImage(), then use that as the canvas background.
+        // Falls back to source_image_path if video fails to load.
+        loadVideoFrameAsBackground(sourceVideoPath);
+      } else if (sourceImagePath) {
+        // magic_still mode, or magic_video fallback when no video path
         loadImageFromURL(`http://localhost:5111/files?path=${encodeURIComponent(sourceImagePath)}`);
       } else {
         setDropText([
@@ -451,6 +459,86 @@
       ]);
     };
     image.src = url;
+  }
+
+  // CANVAS_MISMATCH_FIX (Kim 2026-05-27): extract frame 0 from a video file and
+  // use it as the canvas background. Ensures magic_video draw-surface matches
+  // the actual lipsync video frame, not a differently-framed reference still.
+  function loadVideoFrameAsBackground(videoPath) {
+    setDropText([
+      { text: 'Loading frame from lipsync video…' },
+      { tag: 'br' },
+      { tag: 'small', style: 'color:#888', text: 'Draw your path on the actual video frame below.' },
+    ]);
+
+    const vid = document.createElement('video');
+    vid.style.cssText = 'position:absolute;left:-9999px;visibility:hidden;';
+    vid.muted = true;
+    vid.preload = 'auto';
+    vid.src = `http://localhost:5111/files?path=${encodeURIComponent(videoPath)}`;
+    document.body.appendChild(vid);
+
+    let settled = false;
+
+    function captureFrame() {
+      if (settled) return;
+      settled = true;
+      try {
+        const w = vid.videoWidth;
+        const h = vid.videoHeight;
+        if (!w || !h) { fallbackToStill('Video has no dimensions'); return; }
+        // Draw video frame into a temp offscreen canvas, then store canvas as img.
+        const tmp = document.createElement('canvas');
+        tmp.width = w;
+        tmp.height = h;
+        const tmpCtx = tmp.getContext('2d');
+        tmpCtx.drawImage(vid, 0, 0, w, h);
+        // tmp is now a frozen snapshot of frame 0. Use it as the draw surface.
+        img = tmp;
+        canvas.width  = w;
+        canvas.height = h;
+        canvas.style.display = 'block';
+        document.getElementById('drop-text').style.display = 'none';
+        points = [];
+        redraw();
+        updateYAML();
+        updateCount();
+        updateSubmitBtn();
+      } catch (e) {
+        fallbackToStill('Frame capture failed: ' + e.message);
+      } finally {
+        try { document.body.removeChild(vid); } catch (_) {}
+      }
+    }
+
+    function fallbackToStill(reason) {
+      try { document.body.removeChild(vid); } catch (_) {}
+      if (sourceImagePath) {
+        console.warn('[path_picker] Video frame load failed (' + reason + '), falling back to still image');
+        loadImageFromURL(`http://localhost:5111/files?path=${encodeURIComponent(sourceImagePath)}`);
+      } else {
+        setDropText([
+          { text: 'Could not load video frame.' },
+          { tag: 'br' },
+          { tag: 'small', style: 'color:#555', text: 'Drag a PNG/JPEG instead.' },
+        ]);
+      }
+    }
+
+    // Seek to frame 0 once metadata is known, then capture on seeked
+    vid.addEventListener('loadedmetadata', () => { vid.currentTime = 0.0; }, { once: true });
+    vid.addEventListener('seeked', captureFrame, { once: true });
+    // Some browsers fire canplaythrough without seeked when currentTime=0
+    vid.addEventListener('canplaythrough', () => {
+      if (!settled && vid.currentTime <= 0.1) captureFrame();
+    }, { once: true });
+    vid.addEventListener('error', () => {
+      if (!settled) { settled = true; fallbackToStill('video load error'); }
+    }, { once: true });
+    // Timeout safety net: 8s
+    setTimeout(() => {
+      if (!settled) { settled = true; fallbackToStill('timeout after 8s'); }
+    }, 8000);
   }
 
   function loadImageFromFile(file) {
