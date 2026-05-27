@@ -542,12 +542,17 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     // visible for a useful window. Static images keep the 3s default.
     const wcItem = watercolors.find((w) => w.key === lib_key);
     const defaultDurationMs = wcItem?.kind === 'animation' ? 10000 : 3000;
-    const newCue: WatercolorCue = {
+    // cue_type fix: server validator defaults cue_type to "png" when not sent.
+    // Animated files are MP4s — must send cue_type:"video" so resolve_watercolor_asset
+    // tries .mp4/.mov extensions instead of .png (which doesn't exist for animated keys).
+    const cueType: string = wcItem?.kind === 'animation' ? 'video' : 'png';
+    const newCue: WatercolorCue & { cue_type: string } = {
       id: `cue_${Math.random().toString(36).slice(2, 10)}`,
       watercolor_key: lib_key,
       offset_ms,
       duration_ms: defaultDurationMs,
       animation_type: 'fade_in',
+      cue_type: cueType,
       volume: 1.0,
     };
     const next = [...(stateSlice.watercolor_cues ?? []), newCue];

@@ -1084,9 +1084,17 @@ def resolve_watercolor_asset(library_dir: Path, key: str, cue_type: str) -> Path
         candidate = library_dir / f"{key}{ext}"
         if candidate.is_file():
             return candidate
+    # Fallback: if the primary extension set didn't match, try the other set.
+    # This handles stale cue_type="png" for keys that only have an MP4 on disk
+    # (animated keys stored before the validator auto-correct was added).
+    fallback_exts = _WC_VIDEO_EXTS if cue_type == "png" else _WC_PNG_EXTS
+    for ext in fallback_exts:
+        candidate = library_dir / f"{key}{ext}"
+        if candidate.is_file():
+            return candidate
     raise FileNotFoundError(
         f"watercolor asset not found for key={key!r} cue_type={cue_type!r}; "
-        f"tried: {[str(library_dir / (key + e)) for e in exts]}",
+        f"tried: {[str(library_dir / (key + e)) for e in exts + list(fallback_exts)]}",
     )
 
 

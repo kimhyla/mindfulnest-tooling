@@ -4487,7 +4487,15 @@ def _v2_validate_watercolor_cues_json(v):
             raise ValueError(f"cue {i} duration_ms must be integer, got {dur_raw!r}")
         if dur < 0:
             raise ValueError(f"cue {i} duration_ms must be non-negative int")
-        cue_type = cue.get("cue_type") or "png"
+        raw_cue_type = cue.get("cue_type") or ""
+        # Auto-correct stale cue_type: animated keys always map to MP4/MOV (video),
+        # not PNG. A key containing "_animated_" was produced by the animation
+        # pipeline and will never have a .png sibling. Correcting here means
+        # existing cues stored with cue_type="png" before this fix still work.
+        if not raw_cue_type or raw_cue_type == "png" and "_animated_" in key_val:
+            cue_type = "video" if "_animated_" in key_val else (raw_cue_type or "png")
+        else:
+            cue_type = raw_cue_type
         if cue_type not in _V2_CUE_TYPES:
             raise ValueError(
                 f"cue {i} cue_type must be one of {sorted(_V2_CUE_TYPES)}, "
