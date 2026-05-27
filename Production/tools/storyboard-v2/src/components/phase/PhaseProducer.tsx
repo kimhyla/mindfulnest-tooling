@@ -170,56 +170,6 @@ function priorityAudioFile(
   return null;
 }
 
-// ── Watercolor animation overlay ──────────────────────────────────────────
-// Fix: use isWavePlaying prop (authoritative WaveSurfer state) instead of
-// listening to sibling mainVid 'play' events (derived, unreliable under
-// Chrome's AudioContext suspension policy).
-//
-// Chrome fires browser-level 'pause' on all media ~267ms after AudioContext
-// resume. The old DOM-traversal approach created a 50ms blink loop because
-// WaveformTimeline's audioprocess self-healer re-fired mainVid 'play' every
-// 50ms, triggering overlay.play() each time, then Chrome paused again.
-//
-// isWavePlaying is fed by the new onPlayStateChange callback in WaveformTimeline.
-// useEffect([isWavePlaying]) gives explicit, authoritative play/pause control.
-function WatercolorAnimOverlay({ src, isWavePlaying }: { src: string; isWavePlaying: boolean }) {
-  const ref = useRef<HTMLVideoElement>(null);
-  useEffect(() => {
-    const el = ref.current;
-    console.log('[WC-DIAG] WatercolorAnimOverlay useEffect isWavePlaying=', isWavePlaying, 'el=', !!el, 'src=', src);
-    if (!el) return;
-    el.muted = true; // imperative: JSX muted prop unreliable in Chrome/Preact
-    if (isWavePlaying) {
-      console.log('[WC-DIAG] calling el.play() on video src=', src.slice(-40));
-      el.play().catch((err) => {
-        console.warn('[WC-DIAG] el.play() rejected:', err);
-        // AbortError can occur when AudioContext is mid-resume or when a prior
-        // play() Promise is still in-flight. One rAF retry is enough — by the
-        // next frame the Promise chain has settled and the AudioContext is ready.
-        requestAnimationFrame(() => {
-          const e = ref.current;
-          if (!e) return;
-          e.muted = true;
-          e.play().catch(() => {});
-        });
-      });
-    } else {
-      el.pause();
-    }
-  }, [isWavePlaying]);
-  return (
-    <video
-      ref={ref}
-      class="mn-lipsync-watercolor-overlay"
-      src={src}
-      loop
-      muted
-      playsInline
-      preload="auto"
-      style={{ opacity: 1 }}
-    />
-  );
-}
 // ─────────────────────────────────────────────────────────────────────────
 
 function fileUrl(name: string): string {
@@ -253,9 +203,6 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const [ambientPresets, setAmbientPresets] = useState<AmbientPreset[]>([]);
   // Playback position in ms — updated by WaveformTimeline via onTimeUpdate.
   const [currentTimeMs, setCurrentTimeMs] = useState(0);
-  // WaveSurfer play/pause state — fed by onPlayStateChange callback below.
-  // Used to drive WatercolorAnimOverlay's video play/pause authoritatively.
-  const [waveIsPlaying, setWaveIsPlaying] = useState(false);
   // True while Kling lipsync is processing in the background (202 submitted).
   const [lipsyncing, setLipsyncing] = useState(false);
   // Mtime of lipsync_file at the moment we submitted — used to detect when
@@ -832,7 +779,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           onWatercolorDrop={onWatercolorDrop}
           onTimeUpdate={(ms) => setCurrentTimeMs(ms)}
           onCueResize={onCueResize}
-          onPlayStateChange={setWaveIsPlaying}
+
           linkedVideo={videoRef}
         />
         {activeCue && popoverAnchor ? (
@@ -924,38 +871,16 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                       wcItem?.thumb_url ??
                       `${SERVER_BASE}/api/phase_b/watercolor/${encodeURIComponent(cue.watercolor_key)}`;
 
-                    // JS-computed opacity: fade-in 500ms, hold at full, fade-out 600ms.
-                    // MAX_OPACITY = 1.0 — the PNG/video's own alpha channel handles artistic
-                    // transparency; we don't dim on top of that.
+                    // PNG overlay — always use the base PNG (thumb_url resolves
+                    // animated keys → base PNG server-side). mix-blend-mode:multiply
+                    // in CSS makes white paper background transparent, leaving only
+                    // the watercolor pigment visible over the lipsync video.
+                    // Opacity: 300ms fade-in (matches server-side 0.3s ffmpeg fade),
+                    // then solid hold at 1.0. No fade-out — cue disappears when its
+                    // time window ends (filter condition above removes from DOM).
                     const elapsed = currentTimeMs - cue.offset_ms;
-                    const FADE_IN_MS = 500;
-                    const FADE_OUT_MS = 600;
-                    const MAX_OPACITY = 1.0;
-                    let opacity: number;
-                    if (elapsed < FADE_IN_MS) {
-                      opacity = (elapsed / FADE_IN_MS) * MAX_OPACITY;
-                    } else if (elapsed >= FADE_IN_MS && elapsed > (cue.duration_ms ?? 3000) - FADE_OUT_MS) {
-                      opacity = Math.max(0, (((cue.duration_ms ?? 3000) - elapsed) / FADE_OUT_MS) * MAX_OPACITY);
-                    } else {
-                      opacity = MAX_OPACITY;
-                    }
+                    const opacity = Math.min(1.0, elapsed / 300);
 
-                    // Animated watercolors: render <video autoPlay loop muted playsInline>.
-                    // Solid overlay — opacity always 1 for the full cue duration.
-                    // The Kling MP4 content IS the animation (e.g. hands moving);
-                    // no blend mode or opacity tricks needed.
-                    console.log('[WC-DIAG] cue', cue.id, 'key=', cue.watercolor_key, 'wcItem=', wcItem, 'kind=', wcItem?.kind, 'anim_url=', wcItem?.animation_url, 'waveIsPlaying=', waveIsPlaying);
-                    if (wcItem?.kind === 'animation' && wcItem.animation_url) {
-                      return (
-                        <WatercolorAnimOverlay
-                          key={cue.id}
-                          src={wcItem.animation_url}
-                          isWavePlaying={waveIsPlaying}
-                        />
-                      );
-                    }
-
-                    console.log('[WC-DIAG] FALLBACK to <img> — wcItem undefined or not animation', {wcItem, watercolorsLen: watercolors.length});
                     return (
                       <img
                         key={cue.id}

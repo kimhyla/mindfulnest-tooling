@@ -580,6 +580,9 @@
   height: auto;
   object-fit: contain;
   pointer-events: none;
+  /* multiply blend: white paper background → transparent, watercolor
+     pigment visible over the lipsync video. Matches V2 watercolor aesthetic. */
+  mix-blend-mode: multiply;
 }
 
 /* WaveformTimeline — S5.5f / WAVESURFER_TIMELINE_INTEGRATION_V1 */

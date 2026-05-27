@@ -130,17 +130,14 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     ws.on('audioprocess', onAudioProcess);
     ws.on('seeking', onSeeking);
     ws.on('play', () => {
-      console.log('[WC-DIAG] WaveSurfer play → onPlayStateChange(true)');
       setIsPlaying(true);
       onPlayStateChange?.(true);
     });
     ws.on('pause', () => {
-      console.log('[WC-DIAG] WaveSurfer pause → onPlayStateChange(false)');
       setIsPlaying(false);
       onPlayStateChange?.(false);
     });
     ws.on('finish', () => {
-      console.log('[WC-DIAG] WaveSurfer finish → onPlayStateChange(false)');
       setIsPlaying(false);
       onPlayStateChange?.(false);
     });
