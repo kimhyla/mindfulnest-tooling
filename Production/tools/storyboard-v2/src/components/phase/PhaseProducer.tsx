@@ -186,10 +186,13 @@ function WatercolorAnimOverlay({ src, isWavePlaying }: { src: string; isWavePlay
   const ref = useRef<HTMLVideoElement>(null);
   useEffect(() => {
     const el = ref.current;
+    console.log('[WC-DIAG] WatercolorAnimOverlay useEffect isWavePlaying=', isWavePlaying, 'el=', !!el, 'src=', src);
     if (!el) return;
     el.muted = true; // imperative: JSX muted prop unreliable in Chrome/Preact
     if (isWavePlaying) {
-      el.play().catch(() => {
+      console.log('[WC-DIAG] calling el.play() on video src=', src.slice(-40));
+      el.play().catch((err) => {
+        console.warn('[WC-DIAG] el.play() rejected:', err);
         // AbortError can occur when AudioContext is mid-resume or when a prior
         // play() Promise is still in-flight. One rAF retry is enough — by the
         // next frame the Promise chain has settled and the AudioContext is ready.
@@ -941,6 +944,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                     // Solid overlay — opacity always 1 for the full cue duration.
                     // The Kling MP4 content IS the animation (e.g. hands moving);
                     // no blend mode or opacity tricks needed.
+                    console.log('[WC-DIAG] cue', cue.id, 'key=', cue.watercolor_key, 'wcItem=', wcItem, 'kind=', wcItem?.kind, 'anim_url=', wcItem?.animation_url, 'waveIsPlaying=', waveIsPlaying);
                     if (wcItem?.kind === 'animation' && wcItem.animation_url) {
                       return (
                         <WatercolorAnimOverlay
@@ -951,6 +955,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                       );
                     }
 
+                    console.log('[WC-DIAG] FALLBACK to <img> — wcItem undefined or not animation', {wcItem, watercolorsLen: watercolors.length});
                     return (
                       <img
                         key={cue.id}
