@@ -203,6 +203,8 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const [ambientPresets, setAmbientPresets] = useState<AmbientPreset[]>([]);
   // Playback position in ms — updated by WaveformTimeline via onTimeUpdate.
   const [currentTimeMs, setCurrentTimeMs] = useState(0);
+  // Server-composed preview: URL of the mp4 returned by /api/phase_b/preview.
+  const [previewOverlayUrl, setPreviewOverlayUrl] = useState<string | null>(null);
   // True while Kling lipsync is processing in the background (202 submitted).
   const [lipsyncing, setLipsyncing] = useState(false);
   // Mtime of lipsync_file at the moment we submitted — used to detect when
@@ -426,6 +428,55 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     } else {
       setStatusMsg(`✗ Mix HTTP ${res.status}: ${res.error ?? ''}`);
     }
+  };
+
+  // ── Preview with Overlay ─────────────────────────────────────────────────
+  // Calls /api/phase_b/preview which ffmpeg-composites the watercolor PNG cues
+  // onto the lipsync video server-side and streams back the composed MP4.
+  // This is the V2 approach — the composed result is shown inline so Kim can
+  // see exactly how the overlay looks over the video without scrubbing/playing.
+  const onPreviewOverlay = async () => {
+    if (!lipsyncFile) {
+      setStatusMsg('No lipsync video yet — run Send for Lipsync first.');
+      return;
+    }
+    if (!(stateSlice.watercolor_cues ?? []).length) {
+      setStatusMsg('No watercolor cues — drag a cue onto the waveform first.');
+      return;
+    }
+    setBusyAction('preview');
+    setStatusMsg('Compositing overlay preview… (may take 10–30s)');
+    // Revoke any previous blob URL to avoid memory leak.
+    if (previewOverlayUrl) URL.revokeObjectURL(previewOverlayUrl);
+    setPreviewOverlayUrl(null);
+    try {
+      const resp = await fetch(`${SERVER_BASE}/api/phase_b/preview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phase,
+          scope_event_id: activeScope.value.event_id,
+          scope_video_role: activeVideoRole.value,
+        }),
+      });
+      if (!resp.ok) {
+        let hint = '';
+        try {
+          const j = await resp.json() as { error_message?: string; hint?: string };
+          hint = j.error_message ?? j.hint ?? '';
+        } catch { /* ignore */ }
+        setStatusMsg(`✗ Preview HTTP ${resp.status}${hint ? ': ' + hint : ''}`);
+        setBusyAction(null);
+        return;
+      }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      setPreviewOverlayUrl(url);
+      setStatusMsg('✓ Preview ready — watercolor overlay composited below.');
+    } catch (err) {
+      setStatusMsg(`✗ Preview fetch error: ${String(err)}`);
+    }
+    setBusyAction(null);
   };
 
   const onExportToStitcher = async () => {
@@ -948,7 +999,39 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           >
             {busyAction === 'export' ? 'Exporting…' : 'Export to Stitcher'}
           </button>
+          <button
+            type="button"
+            class="mn-btn mn-btn-preview-overlay"
+            data-testid={`phase-${phase}-preview-overlay-btn`}
+            onClick={onPreviewOverlay}
+            disabled={busyAction !== null}
+            title="Server-composes the watercolor PNG onto the lipsync video so you can see exactly how the overlay looks"
+          >
+            {busyAction === 'preview' ? '⏳ Compositing…' : '🎨 Preview with Overlay'}
+          </button>
         </div>
+
+        {/* Composed overlay preview — shown after clicking "Preview with Overlay".
+            Server has ffmpeg-baked the watercolor PNG into the lipsync video so
+            the result shows the REAL composited output, not a live CSS overlay. */}
+        {previewOverlayUrl && (
+          <div class="mn-phase-overlay-preview" data-testid={`phase-${phase}-overlay-preview`}>
+            <strong>🎨 Overlay preview (server-composited):</strong>
+            <video
+              controls
+              src={previewOverlayUrl}
+              style={{ display: 'block', maxWidth: '100%', marginTop: '8px', borderRadius: '4px' }}
+            />
+            <button
+              type="button"
+              class="mn-btn mn-btn-small"
+              style={{ marginTop: '6px' }}
+              onClick={() => { URL.revokeObjectURL(previewOverlayUrl); setPreviewOverlayUrl(null); }}
+            >
+              ✕ Close preview
+            </button>
+          </div>
+        )}
 
         {/* Status line */}
         {statusMsg ? (

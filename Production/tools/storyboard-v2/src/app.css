@@ -580,9 +580,23 @@
   height: auto;
   object-fit: contain;
   pointer-events: none;
-  /* multiply blend: white paper background → transparent, watercolor
-     pigment visible over the lipsync video. Matches V2 watercolor aesthetic. */
-  mix-blend-mode: multiply;
+}
+
+/* Overlay preview panel — shown after "Preview with Overlay" compositing */
+.mn-phase-overlay-preview {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: var(--code-bg);
+  border-radius: 4px;
+  border: 1px solid var(--border-color, #444);
+}
+.mn-btn-preview-overlay {
+  background: #2a5a2a;
+  color: #e8f5e8;
+  border-color: #3a7a3a;
+}
+.mn-btn-preview-overlay:hover:not(:disabled) {
+  background: #3a7a3a;
 }
 
 /* WaveformTimeline — S5.5f / WAVESURFER_TIMELINE_INTEGRATION_V1 */
