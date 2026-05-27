@@ -1116,6 +1116,11 @@ def _wc_build_cue_prefilter(input_idx: int, cue: dict,
     """
     cue_type = cue.get("cue_type") or "png"
     label = f"c{input_idx}"
+    # ts_s needed so fade-in starts at the cue's absolute time (not t=0).
+    # If fade st=0, the fade fires at global t=0 and is long gone by the time
+    # the overlay enable window opens at ts_s — the overlay would appear with
+    # no entrance animation. Using st=ts_s ties the fade to the enable window.
+    ts_s = float(cue.get("timestamp_ms") or 0) / 1000.0
     chain = []
     if cue_type == "video" and chromakey_for_video:
         # 0x00FF00 green, 0.1 similarity, 0.0 blend — leaves clean edges
@@ -1129,14 +1134,15 @@ def _wc_build_cue_prefilter(input_idx: int, cue: dict,
     )
     # Apply animation preset's entrance effect (0.3s fade-in for fade_in and
     # slide_in; gentle_pan layers a slow x oscillation).
+    # Use st=ts_s so the fade fires at the cue's global start time, not t=0.
     animation = cue.get("animation") or "fade_in"
     if animation == "fade_in":
-        chain.append("fade=t=in:st=0:d=0.3:alpha=1")
+        chain.append(f"fade=t=in:st={ts_s:.3f}:d=0.3:alpha=1")
     elif animation == "slide_in":
         # Short fade so opacity isn't binary.
-        chain.append("fade=t=in:st=0:d=0.15:alpha=1")
+        chain.append(f"fade=t=in:st={ts_s:.3f}:d=0.15:alpha=1")
     elif animation == "gentle_pan":
-        chain.append("fade=t=in:st=0:d=0.5:alpha=1")
+        chain.append(f"fade=t=in:st={ts_s:.3f}:d=0.5:alpha=1")
     joined = ",".join(chain)
     return f"[{input_idx}:v]{joined}[{label}]"
 
@@ -1223,16 +1229,24 @@ def render_watercolor_overlay(
         effective_cue = dict(cue)
         effective_cue["cue_type"] = "png" if is_image_input else "video"
         effective_cues.append(effective_cue)
+        # cue_hold_s: how long the looped input must run so its frames exist
+        # at the cue's enable-window start (ts_s). With just -t dur_s, the
+        # stream was exhausted at t=dur_s — before the enable window opened
+        # at ts_s. ffmpeg overlay filter advances both input streams in
+        # parallel regardless of the enable condition, so [cN] is at EOF by
+        # the time the first overlay frame is requested at t=ts_s.
+        # Fix: hold for ts_s + dur_s + 2.0s (2s safety margin for stream-end
+        # lag).  Bounded by ~(ts_s+dur_s+2), typically <30s, not 3600s.
+        _cue_ts_s = float(cue.get("timestamp_ms") or 0) / 1000.0
+        _cue_dur_s = float(cue.get("duration_ms") or 1000) / 1000.0
+        cue_hold_s = _cue_ts_s + _cue_dur_s + 2.0
         if is_image_input:
             cmd.extend(["-loop", "1",
-                        "-t", f"{float(cue.get('duration_ms') or 1000)/1000.0:.3f}",
+                        "-t", f"{cue_hold_s:.3f}",
                         "-i", str(cue_path.resolve())])
         else:
-            # For video inputs, -stream_loop -1 loops the clip to fill the cue
-            # window. -t limits to the cue duration so the overlay doesn't run long.
-            dur_s = float(cue.get("duration_ms") or 1000) / 1000.0
             cmd.extend(["-stream_loop", "-1",
-                        "-t", f"{dur_s:.3f}",
+                        "-t", f"{cue_hold_s:.3f}",
                         "-i", str(cue_path.resolve())])
 
     # Tmp target computed once (counter 102 LOW fix).
@@ -1258,7 +1272,11 @@ def render_watercolor_overlay(
         ])
     else:
         # Normalize the base input first, then chain overlays off [base].
-        prefilters: list[str] = [f"[0:v]{NORMALIZATION_VF_EXPR}[base]"]
+        # setpts=PTS-STARTPTS ensures base PTS starts at 0 regardless of any
+        # CTTS offset or edit-list atom in the source MP4. Required so that
+        # the cue enable condition (gte(t,ts_s)*lte(t,...)) evaluates against
+        # a zero-anchored timeline matching the cue timestamps_ms values.
+        prefilters: list[str] = [f"[0:v]{NORMALIZATION_VF_EXPR},setpts=PTS-STARTPTS[base]"]
         overlays: list[str] = []
         prev_label = "base"
         for i, cue in enumerate(effective_cues):
@@ -1270,10 +1288,17 @@ def render_watercolor_overlay(
             ts_s = float(cue.get("timestamp_ms") or 0) / 1000.0
             dur_s = float(cue.get("duration_ms") or 1000) / 1000.0
             out_label = f"v{i+1}"
+            # Use gte()*lte() instead of between(): between() exclusivity
+            # semantics vary by ffmpeg version and fail at exact boundary frames.
+            # gte/lte are unambiguously inclusive on both sides.
+            # Root-cause fix for invisible overlay: between(t,11.341,21.341)
+            # evaluated FALSE because [cN] was limited to -t 10.0 (EOF at
+            # t=10.0 before the enable window opened at t=11.341). Input is
+            # now -t 3600 so frames always exist at any cue timestamp.
             overlays.append(
                 f"[{prev_label}][c{input_idx}]overlay="
                 f"x={x_expr}:y={frame_y}:"
-                f"enable='between(t,{ts_s:.3f},{ts_s + dur_s:.3f})'"
+                f"enable='gte(t,{ts_s:.3f})*lte(t,{ts_s + dur_s:.3f})'"
                 f"[{out_label}]"
             )
             prev_label = out_label
