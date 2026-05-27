@@ -85,7 +85,12 @@ ASSEMBLE_RECIPE_VERSION: str = "v2"  # FADE_THROUGH_BLACK_20260525: bumped to in
 # Bump whenever the overlay filter construction in render_watercolor_overlay
 # changes semantics (animation preset easing, chromakey params, scale behavior).
 # ---------------------------------------------------------------------------
-WATERCOLOR_OVERLAY_RECIPE_VERSION = "wc_v3_cue_hold_fix"
+WATERCOLOR_OVERLAY_RECIPE_VERSION = "wc_v4_magenta_canvas"
+# v4 (2026-05-27): Switch PIL canvas and chromakey from green (0x00FF00) to
+# magenta (0xFF00FF). Green caused edge-eating during fade-in: semi-transparent
+# pixels blended toward green and were partially removed by chromakey. Magenta
+# doesn't appear in skin tones or watercolor art. Also: safe zone validation is
+# now enforce_safe_zone=True ONLY in watercolor animate, not magic trail.
 # v3 (2026-05-27): Root-cause fix for invisible overlay. ffmpeg overlay filter
 # advances BOTH input streams in parallel regardless of `enable` condition.
 # If cue input was limited to -t {dur_s} (e.g. 10.0s), [cN] reached EOF at t=10.0
@@ -102,7 +107,7 @@ WATERCOLOR_OVERLAY_RECIPE_VERSION = "wc_v3_cue_hold_fix"
 # frame. Supersedes LD 304 semantics for overlay placement.
 WATERCOLOR_OVERLAY_RECIPE_HASH: str = hashlib.sha256(
     f"{WATERCOLOR_OVERLAY_RECIPE_VERSION}:fade_in=0.3s|slide_in=0.5s|"
-    f"gentle_pan=5px_sin|chromakey=0x00FF00:0.1:0.0|scale=bbox_no_pad".encode("utf-8"),
+    f"gentle_pan=5px_sin|chromakey=0xFF00FF:0.1:0.0|scale=bbox_no_pad".encode("utf-8"),
 ).hexdigest()[:16]
 
 # Watercolor cue animation presets and allowed cue types (mirror the
@@ -1131,10 +1136,13 @@ def _wc_build_cue_prefilter(input_idx: int, cue: dict,
     ts_s = float(cue.get("timestamp_ms") or 0) / 1000.0
     chain = []
     if cue_type == "video" and chromakey_for_video:
-        # 0x00FF00 green, 0.1 similarity, 0.0 blend — leaves clean edges
-        # when Chipper flyin/flyout ships as green-screen MP4 (Kling
-        # fallback path when native alpha channel unavailable).
-        chain.append("chromakey=0x00FF00:0.1:0.0")
+        # 0xFF00FF magenta, 0.1 similarity, 0.0 blend — leaves clean edges.
+        # WHY MAGENTA: green (0x00FF00) caused edge-eating during fade-in because
+        # semi-transparent hand pixels blended toward green and were partially
+        # removed by chromakey. Magenta doesn't appear in skin tones or watercolor
+        # art, so blended fade pixels are never falsely keyed out. (2026-05-27)
+        # PIL canvas color matches — both changed together.
+        chain.append("chromakey=0xFF00FF:0.1:0.0")
     # Scale-to-bbox with aspect preserved. No pad -> overlay is native-aspect
     # sized image, placed at (frame_x, frame_y) directly by the overlay filter.
     chain.append(
@@ -1172,10 +1180,16 @@ def _wc_overlay_x_expr(cue: dict, frame_x: int) -> str:
     animation = cue.get("animation") or "fade_in"
     timestamp_s = float(cue.get("timestamp_ms") or 0) / 1000.0
     if animation == "slide_in":
-        # t_rel = t - timestamp_s; slide over 0.5s
+        # Slide in from off-screen LEFT (negative x) to frame_x over 0.5s.
+        # slide_start = -(frame_max_w + 50) ensures the asset starts fully
+        # off the left edge before sweeping to its resting position at frame_x.
+        # Prior code used frame_x - 300, meaning the asset started on-screen
+        # and appeared to barely move — not a real slide-in. (2026-05-27 fix)
+        # We use -700 as a safe off-left value for any reasonable frame_max_w.
+        slide_start = -700
         return (
             f"'if(lt(t,{timestamp_s + 0.5:.3f}),"
-            f"{frame_x}-300*(1-(t-{timestamp_s:.3f})/0.5),"
+            f"{slide_start}+({frame_x}-({slide_start}))*(t-{timestamp_s:.3f})/0.5,"
             f"{frame_x})'"
         )
     if animation == "gentle_pan":

@@ -3586,7 +3586,9 @@ def handle_watercolor_animate(h, body: dict)-> None:
                        retry_safe=False,
                    )
 
-    ok, clean_path, err = h._validate_manual_path(manual_path)
+    # enforce_safe_zone=True: watercolor uses a 2× PIL canvas where edge coords
+    # map the asset completely off-screen. Magic trail callers do NOT use this flag.
+    ok, clean_path, err = h._validate_manual_path(manual_path, enforce_safe_zone=True)
     if not ok:
         return h._send_error_v59(
                    400,
@@ -3661,7 +3663,7 @@ def handle_watercolor_animate(h, body: dict)-> None:
     fps_anim = 24
     n_frames = max(1, int(duration_s * fps_anim))
     elapsed_ms = 0   # no API call
-    explanation = f"PIL path-motion + fade, {len(clean_path)} path pts, motion={motion_desc!r}, green-screen canvas 2x"
+    explanation = f"PIL path-motion + fade, {len(clean_path)} path pts, motion={motion_desc!r}, magenta-screen canvas 2x"
 
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_path = wc_dir / f"{watercolor_key}_animated_{ts}.mp4"
@@ -3692,8 +3694,13 @@ def handle_watercolor_animate(h, body: dict)-> None:
         _r, _g, _b, _a_orig = _wc_rgba.split()
 
         # Canvas is 2× the source PNG so the hands have room to travel the
-        # drawn path without clipping.  Green background (0x00FF00) is removed
-        # by chromakey_for_video=True in render_watercolor_overlay / phase_b_preview.
+        # drawn path without clipping.  Magenta background (0xFF00FF) is removed
+        # by chromakey in render_watercolor_overlay / phase_b_preview.
+        # WHY MAGENTA not green: during fade-in, semi-transparent hand pixels blend
+        # toward the background color. Green (0,255,0) produces pixels that look like
+        # skin-tone-near-green and get partially eaten by the chromakey filter, giving
+        # ragged hand edges. Magenta (255,0,255) doesn't appear in skin tones or
+        # watercolor washes, so blended pixels are not falsely keyed out. (2026-05-27)
         _canvas_w = _w * 2
         _canvas_h = _h * 2
         # libx264 requires even dimensions.
@@ -3732,8 +3739,8 @@ def handle_watercolor_animate(h, body: dict)-> None:
                 # Apply opacity to alpha channel.
                 _a_frame = _a_orig.point(lambda v, a=_alpha: int(v * a))
 
-                # Composite on green-screen canvas (chromakey removes green background).
-                _frame_bg = _PILImage.new("RGB", (_canvas_w, _canvas_h), (0, 255, 0))
+                # Composite on magenta-screen canvas (chromakey removes magenta background).
+                _frame_bg = _PILImage.new("RGB", (_canvas_w, _canvas_h), (255, 0, 255))
                 _frame_bg.paste(
                     _PILImage.merge("RGBA", (_r, _g, _b, _a_frame)),
                     (_paste_x, _paste_y),

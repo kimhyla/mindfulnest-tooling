@@ -7287,22 +7287,23 @@ class ProductionHandler(BaseHTTPRequestHandler):
     _PATH_SAFE_MIN = 0.15
     _PATH_SAFE_MAX = 0.85
 
-    def _validate_manual_path(self, manual_path: list, max_pts: int = 100) -> tuple[bool, list, str]:
-        """Validate manual_path = [[x,y],...] in safe zone [0.15, 0.85].
+    def _validate_manual_path(self, manual_path: list, max_pts: int = 100,
+                              enforce_safe_zone: bool = False) -> tuple[bool, list, str]:
+        """Validate manual_path = [[x,y],...] in [0,1]. Returns (ok, clean_path, err).
 
-        Returns (ok, clean_path, err).
+        enforce_safe_zone=True: additionally restricts to [_PATH_SAFE_MIN, _PATH_SAFE_MAX].
+        This MUST be True only for the watercolor animator, where coordinates are used
+        on a 2× PIL canvas — at (0,0) the paste position is (-png_w/2, -png_h/2),
+        completely off-screen.
 
-        Constraint: coordinates must be in [_PATH_SAFE_MIN, _PATH_SAFE_MAX].
-        The PIL renderer uses a 2× canvas; at coordinate (0,0) the paste
-        position is (-png_w/2, -png_h/2) — the asset is completely off-screen.
-        The safe zone ensures the full asset remains visible at all path points.
+        DO NOT pass enforce_safe_zone=True for the magic trail tool — magic trail
+        coordinates are relative to the scene image viewport where (0.84, 0.86) is a
+        perfectly valid bottom-right corner point.
         """
         if not isinstance(manual_path, list) or len(manual_path) < 2:
             return False, [], "manual_path must be a list of [x,y] pairs (>=2 points)"
         if len(manual_path) > max_pts:
             return False, [], f"manual_path has {len(manual_path)} points (>{max_pts} max)"
-        safe_min = self._PATH_SAFE_MIN
-        safe_max = self._PATH_SAFE_MAX
         clean: list[list[float]] = []
         for i, pt in enumerate(manual_path):
             if not (isinstance(pt, list) and len(pt) == 2):
@@ -7313,13 +7314,16 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return False, [], f"manual_path[{i}] coords must be numeric"
             if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
                 return False, [], f"manual_path[{i}] = ({x}, {y}) out of [0,1] range"
-            if not (safe_min <= x <= safe_max and safe_min <= y <= safe_max):
-                return False, [], (
-                    f"manual_path[{i}] = ({x:.3f}, {y:.3f}) is outside the safe zone "
-                    f"[{safe_min}, {safe_max}]. Points near (0,0) or (1,1) place the "
-                    f"asset off-canvas on the 2× rendering canvas. Use values in "
-                    f"[{safe_min}, {safe_max}] to keep the asset fully visible."
-                )
+            if enforce_safe_zone:
+                safe_min = self._PATH_SAFE_MIN
+                safe_max = self._PATH_SAFE_MAX
+                if not (safe_min <= x <= safe_max and safe_min <= y <= safe_max):
+                    return False, [], (
+                        f"manual_path[{i}] = ({x:.3f}, {y:.3f}) is outside the safe zone "
+                        f"[{safe_min}, {safe_max}]. Points near (0,0) or (1,1) place the "
+                        f"asset off-canvas on the 2× watercolor rendering canvas. Use values "
+                        f"in [{safe_min}, {safe_max}] to keep the asset fully visible."
+                    )
             clean.append([x, y])
         return True, clean, ""
 
