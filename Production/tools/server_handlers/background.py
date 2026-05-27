@@ -3749,9 +3749,36 @@ def handle_watercolor_animate(h, body: dict)-> None:
     # Duration: scale with path density (short path → 2s, long path → 5s cap).
     duration_s = max(2.0, min(5.0, len(clean_path) * 0.4))
     fps_anim = 24
+
+    # ── Oscillation frequency from motion description ────────────────────────
+    # motion_desc drives animation style: fast rubbing, gentle drift, or default.
+    # Kim's description is READ HERE — this is what drives the animation logic.
+    import math as _math
+    _motion_lower = motion_desc.lower()
+    if any(w in _motion_lower for w in [
+        "rub", "friction", "heat", "warm", "brisk", "quick", "fast",
+        "opposite", "back and forth", "back-and-forth", "reverse",
+        "up and down", "up-and-down", "to and fro", "rapidly", "briskly",
+    ]):
+        _osc_freq = 2.5   # brisk rubbing: ~5 full cycles per 2s
+    elif any(w in _motion_lower for w in [
+        "gentle", "slow", "soft", "drift", "float", "sway",
+        "pulse", "breathe", "subtle", "calm", "easy",
+    ]):
+        _osc_freq = 0.75  # gentle drift: ~1.5 cycles per 2s
+    else:
+        _osc_freq = 1.5   # moderate default oscillation
+
+    # Ensure at least 3 full oscillation cycles; extend duration if needed.
+    duration_s = max(duration_s, min(5.0, 3.0 / _osc_freq))
+
     n_frames = max(1, int(duration_s * fps_anim))
     elapsed_ms = 0   # no API call
-    explanation = f"PIL path-motion + fade, {len(clean_path)} path pts, motion={motion_desc!r}, magenta-screen canvas 2x"
+    explanation = (
+        f"PIL oscillating-path-motion ({_osc_freq}Hz) + fade, "
+        f"{len(clean_path)} path pts, motion={motion_desc!r}, "
+        f"magenta-screen canvas 2x"
+    )
 
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_path = wc_dir / f"{watercolor_key}_animated_{ts}.mp4"
@@ -3808,9 +3835,12 @@ def handle_watercolor_animate(h, body: dict)-> None:
                     _alpha = 1.0 - ((_fi - _fade_in - _hold) / max(1, _fade_out))
                 _alpha = max(0.0, min(1.0, _alpha))
 
-                # ── Path interpolation: hands follow drawn trajectory ─────────
-                # t = 0..1 distributed evenly across all frames.
-                _t = _fi / max(1, n_frames - 1)
+                # ── Path interpolation: oscillating back-and-forth along path ──
+                # t oscillates 0→1→0→1… at _osc_freq Hz.
+                # t=0: hands at path start; t=1: hands at path end.
+                # This produces back-and-forth rubbing motion along the drawn path.
+                _time_s = _fi / fps_anim
+                _t = 0.5 - 0.5 * _math.cos(2 * _math.pi * _osc_freq * _time_s)
                 _pidx_f = _t * (_n_pts - 1)
                 _lo = int(_pidx_f)
                 _hi = min(_lo + 1, _n_pts - 1)
@@ -3902,7 +3932,7 @@ def handle_watercolor_animate(h, body: dict)-> None:
             module_id=_resolve_module_id_for_state(h.app.state),
             produced_by_skill="watercolor_animate_endpoint",
             colloquial_name=f"{watercolor_key} animated",
-            tags=["watercolor_animation", watercolor_key, "pil_fade_sweep"],
+            tags=["watercolor_animation", watercolor_key, "pil_oscillate"],
             notes=(
                 f"Watercolor animation via PIL frame renderer (replaces Claude+ffmpeg LD-470). "
                 f"motion={motion_desc!r}. {len(clean_path)} path points. "
@@ -3920,7 +3950,8 @@ def handle_watercolor_animate(h, body: dict)-> None:
         "asset_id": registered_id,
         "explanation": explanation,
         "duration_s": duration_s,
-        "renderer": "pil_fade_sweep",
+        "renderer": "pil_oscillate",
+        "osc_freq_hz": _osc_freq,
     })
 
 

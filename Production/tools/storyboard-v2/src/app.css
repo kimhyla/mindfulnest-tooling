@@ -580,11 +580,11 @@
   height: auto;
   object-fit: contain;
   pointer-events: none;
-  /* WATERCOLOR_BLEND_FIX (Kim 2026-05-27): multiply makes the PNG's white paper
-     background transparent — white × any color = that color (i.e. white disappears).
-     Only the colored watercolor pigment remains visible over the lipsync video.
-     Without this, the full-opacity PNG floods its area with opaque white+pink. */
-  mix-blend-mode: multiply;
+  /* WATERCOLOR_BLEND_FIX_V2 (2026-05-27): use normal blend so the white paper
+     background of the watercolor painting remains visible ("white background remains
+     untouched" — Kim's requirement). multiply was eating the white; normal shows
+     the full watercolor painting on its paper background over the video. */
+  mix-blend-mode: normal;
 }
 
 /* Overlay preview panel — shown after "Preview with Overlay" compositing */
