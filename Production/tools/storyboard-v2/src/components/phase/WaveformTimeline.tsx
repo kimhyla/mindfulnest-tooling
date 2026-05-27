@@ -41,6 +41,8 @@ export interface WaveformTimelineProps {
   onTimeUpdate?: (currentMs: number) => void;
   /** Called when the user drags the right edge of a cue block to resize it. */
   onCueResize?: (cueId: string, newDurationMs: number) => void;
+  /** Called whenever WaveSurfer's play/pause state changes (authoritative source). */
+  onPlayStateChange?: (playing: boolean) => void;
   /**
    * Optional video element to keep in sync with waveform playback.
    * The caller should mute the <video> to avoid double audio (WaveSurfer plays audio).
@@ -61,6 +63,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     onWatercolorDrop,
     onTimeUpdate,
     onCueResize,
+    onPlayStateChange,
     linkedVideo,
   } = props;
 
@@ -126,9 +129,18 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     ws.on('ready', onReadyHandler);
     ws.on('audioprocess', onAudioProcess);
     ws.on('seeking', onSeeking);
-    ws.on('play', () => setIsPlaying(true));
-    ws.on('pause', () => setIsPlaying(false));
-    ws.on('finish', () => setIsPlaying(false));
+    ws.on('play', () => {
+      setIsPlaying(true);
+      onPlayStateChange?.(true);
+    });
+    ws.on('pause', () => {
+      setIsPlaying(false);
+      onPlayStateChange?.(false);
+    });
+    ws.on('finish', () => {
+      setIsPlaying(false);
+      onPlayStateChange?.(false);
+    });
 
     // ── Linked video sync ────────────────────────────────────────────────────
     // When a <video> ref is passed (linkedVideo), WaveSurfer is the master clock.

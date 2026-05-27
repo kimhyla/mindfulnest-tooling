@@ -171,43 +171,39 @@ function priorityAudioFile(
 }
 
 // ── Watercolor animation overlay ──────────────────────────────────────────
-// Root cause (diagnosed 2026-05-27 via browser spy): Chrome suspends ALL
-// media on the page when WaveSurfer's AudioContext suspends (user hits
-// Pause). The overlay video is muted but Chrome still fires a browser-level
-// 'pause' at the SAME currentTime as 'play', so keepPlaying loops never
-// advance the video.
+// Fix: use isWavePlaying prop (authoritative WaveSurfer state) instead of
+// listening to sibling mainVid 'play' events (derived, unreliable under
+// Chrome's AudioContext suspension policy).
 //
-// Fix: synchronize with the sibling lipsync video (the master clock for the
-// preview). When the lipsync video fires 'play' (AudioContext resumed, user
-// hit Play), we play too. We stop fighting the AudioContext and let Chrome's
-// media policy govern pause state — overlay pauses with audio, resumes with
-// audio, exactly as expected in a storyboard preview.
-function WatercolorAnimOverlay({ src }: { src: string }) {
+// Chrome fires browser-level 'pause' on all media ~267ms after AudioContext
+// resume. The old DOM-traversal approach created a 50ms blink loop because
+// WaveformTimeline's audioprocess self-healer re-fired mainVid 'play' every
+// 50ms, triggering overlay.play() each time, then Chrome paused again.
+//
+// isWavePlaying is fed by the new onPlayStateChange callback in WaveformTimeline.
+// useEffect([isWavePlaying]) gives explicit, authoritative play/pause control.
+function WatercolorAnimOverlay({ src, isWavePlaying }: { src: string; isWavePlaying: boolean }) {
   const ref = useRef<HTMLVideoElement>(null);
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
     el.muted = true; // imperative: JSX muted prop unreliable in Chrome/Preact
-
-    // Find the sibling lipsync video (non-overlay video in the same wrapper).
-    const wrapper = el.closest('.mn-lipsync-video-wrapper');
-    const mainVid = wrapper
-      ? (wrapper.querySelector('video:not(.mn-lipsync-watercolor-overlay)') as HTMLVideoElement | null)
-      : null;
-
-    const startPlaying = () => {
-      el.muted = true;
-      if (el.paused) el.play().catch(() => {});
-    };
-
-    // If main audio is already playing when the cue enters the window, start immediately.
-    if (mainVid && !mainVid.paused) startPlaying();
-
-    // Re-play whenever the main video resumes (catches every Play button press).
-    mainVid?.addEventListener('play', startPlaying);
-    return () => mainVid?.removeEventListener('play', startPlaying);
-  }, []); // fire once on mount
-
+    if (isWavePlaying) {
+      el.play().catch(() => {
+        // AbortError can occur when AudioContext is mid-resume or when a prior
+        // play() Promise is still in-flight. One rAF retry is enough — by the
+        // next frame the Promise chain has settled and the AudioContext is ready.
+        requestAnimationFrame(() => {
+          const e = ref.current;
+          if (!e) return;
+          e.muted = true;
+          e.play().catch(() => {});
+        });
+      });
+    } else {
+      el.pause();
+    }
+  }, [isWavePlaying]);
   return (
     <video
       ref={ref}
@@ -254,6 +250,9 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const [ambientPresets, setAmbientPresets] = useState<AmbientPreset[]>([]);
   // Playback position in ms — updated by WaveformTimeline via onTimeUpdate.
   const [currentTimeMs, setCurrentTimeMs] = useState(0);
+  // WaveSurfer play/pause state — fed by onPlayStateChange callback below.
+  // Used to drive WatercolorAnimOverlay's video play/pause authoritatively.
+  const [waveIsPlaying, setWaveIsPlaying] = useState(false);
   // True while Kling lipsync is processing in the background (202 submitted).
   const [lipsyncing, setLipsyncing] = useState(false);
   // Mtime of lipsync_file at the moment we submitted — used to detect when
@@ -830,6 +829,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           onWatercolorDrop={onWatercolorDrop}
           onTimeUpdate={(ms) => setCurrentTimeMs(ms)}
           onCueResize={onCueResize}
+          onPlayStateChange={setWaveIsPlaying}
           linkedVideo={videoRef}
         />
         {activeCue && popoverAnchor ? (
@@ -946,6 +946,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                         <WatercolorAnimOverlay
                           key={cue.id}
                           src={wcItem.animation_url}
+                          isWavePlaying={waveIsPlaying}
                         />
                       );
                     }
