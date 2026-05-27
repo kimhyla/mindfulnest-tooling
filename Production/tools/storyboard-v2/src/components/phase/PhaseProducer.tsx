@@ -171,17 +171,38 @@ function priorityAudioFile(
 }
 
 // ── Watercolor animation overlay ──────────────────────────────────────────
-// Extracted as its own component so useEffect([], []) fires ONCE on mount,
-// not on every currentTimeMs tick. The inline-arrow-function ref approach
-// (previous attempt) re-fired on every 50ms audioprocess render and each
-// firing's play() call aborted the previous one's pending Promise → video
-// never actually played despite play() "resolving ok".
+// Root cause (diagnosed 2026-05-27): Chrome suspends the overlay video's
+// AudioContext when WaveSurfer pauses. Even though the overlay is muted,
+// Chrome fires a browser-level 'pause' event on the video element at the
+// same timestamp as 'play', creating a play→pause loop that keeps the video
+// frozen on its first frame.
+//
+// Fix: useEffect fires once on mount. It (a) imperatively sets el.muted=true
+// (JSX muted prop is unreliable in Preact/Chrome), (b) calls play(), and
+// (c) attaches a 'pause' listener that immediately re-calls play() whenever
+// Chrome or any other code pauses the element — keeping it looping for the
+// full cue duration regardless of WaveSurfer state.
 function WatercolorAnimOverlay({ src }: { src: string }) {
+  const ref = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.muted = true; // imperative: JSX muted prop unreliable in Chrome/Preact
+    const keepPlaying = () => {
+      if (el.isConnected && el.paused) {
+        el.muted = true;
+        el.play().catch(() => {});
+      }
+    };
+    keepPlaying();
+    el.addEventListener('pause', keepPlaying);
+    return () => el.removeEventListener('pause', keepPlaying);
+  }, []); // fire once on mount; cleanup on unmount
   return (
     <video
+      ref={ref}
       class="mn-lipsync-watercolor-overlay"
       src={src}
-      autoPlay
       loop
       muted
       playsInline
