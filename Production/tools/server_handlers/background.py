@@ -3661,7 +3661,7 @@ def handle_watercolor_animate(h, body: dict)-> None:
     fps_anim = 24
     n_frames = max(1, int(duration_s * fps_anim))
     elapsed_ms = 0   # no API call
-    explanation = f"PIL fade-sweep, {len(clean_path)} path pts, motion={motion_desc!r}"
+    explanation = f"PIL path-motion + fade, {len(clean_path)} path pts, motion={motion_desc!r}, green-screen canvas 2x"
 
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_path = wc_dir / f"{watercolor_key}_animated_{ts}.mp4"
@@ -3687,8 +3687,20 @@ def handle_watercolor_animate(h, body: dict)-> None:
 
         _r, _g, _b, _a_orig = _wc_rgba.split()
 
+        # Canvas is 2× the source PNG so the hands have room to travel the
+        # drawn path without clipping.  Green background (0x00FF00) is removed
+        # by chromakey_for_video=True in render_watercolor_overlay / phase_b_preview.
+        _canvas_w = _w * 2
+        _canvas_h = _h * 2
+        # libx264 requires even dimensions.
+        _canvas_w = _canvas_w if _canvas_w % 2 == 0 else _canvas_w - 1
+        _canvas_h = _canvas_h if _canvas_h % 2 == 0 else _canvas_h - 1
+
+        _n_pts = len(clean_path)
+
         with _tempfile.TemporaryDirectory() as _fdir:
             for _fi in range(n_frames):
+                # ── Opacity envelope: fade-in / hold / fade-out ──────────────
                 if _fi < _fade_in:
                     _alpha = _fi / _fade_in
                 elif _fi < _fade_in + _hold:
@@ -3697,11 +3709,32 @@ def handle_watercolor_animate(h, body: dict)-> None:
                     _alpha = 1.0 - ((_fi - _fade_in - _hold) / max(1, _fade_out))
                 _alpha = max(0.0, min(1.0, _alpha))
 
-                # Composite watercolor at this opacity on a black background.
-                _a_frame = _a_orig.point(lambda px, a=_alpha: int(px * a))
-                _frame_bg = _PILImage.new("RGB", (_w, _h), (0, 0, 0))
-                _frame_bg.paste(_PILImage.merge("RGBA", (_r, _g, _b, _a_frame)),
-                                mask=_a_frame)
+                # ── Path interpolation: hands follow drawn trajectory ─────────
+                # t = 0..1 distributed evenly across all frames.
+                _t = _fi / max(1, n_frames - 1)
+                _pidx_f = _t * (_n_pts - 1)
+                _lo = int(_pidx_f)
+                _hi = min(_lo + 1, _n_pts - 1)
+                _seg_t = _pidx_f - _lo
+                _path_x = clean_path[_lo][0] * (1 - _seg_t) + clean_path[_hi][0] * _seg_t
+                _path_y = clean_path[_lo][1] * (1 - _seg_t) + clean_path[_hi][1] * _seg_t
+
+                # Map [0,1] path position → canvas pixel; center hands PNG there.
+                _cx = int(_path_x * _canvas_w)
+                _cy = int(_path_y * _canvas_h)
+                _paste_x = _cx - _w // 2
+                _paste_y = _cy - _h // 2
+
+                # Apply opacity to alpha channel.
+                _a_frame = _a_orig.point(lambda v, a=_alpha: int(v * a))
+
+                # Composite on green-screen canvas (chromakey removes green background).
+                _frame_bg = _PILImage.new("RGB", (_canvas_w, _canvas_h), (0, 255, 0))
+                _frame_bg.paste(
+                    _PILImage.merge("RGBA", (_r, _g, _b, _a_frame)),
+                    (_paste_x, _paste_y),
+                    mask=_a_frame,
+                )
                 _frame_bg.save(f"{_fdir}/frame_{_fi:04d}.png", "PNG")
 
             # Encode frames → H.264 MP4.  Simple framerate input — no filter_complex.
