@@ -1210,17 +1210,30 @@ def render_watercolor_overlay(
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
         "-i", str(base_video_path.resolve()),
     ]
+    effective_cues: list[dict] = []
     for cue_path, cue in zip(cue_paths, cues_sorted):
-        # For PNG inputs, -loop 1 -t <duration> would be needed to extend;
-        # for overlay with enable='between', a still image as a single frame
-        # is reused across the enable window. Use -loop 1 for PNGs so ffmpeg
-        # doesn't complain about single-frame consumption.
-        if cue.get("cue_type") == "png":
+        # Decide input flags by ACTUAL FILE EXTENSION, not stored cue_type.
+        # cue_type in the dict may be stale (e.g., "png" for a key that resolved
+        # via fallback to an .mp4). -loop 1 is valid ONLY for image demuxers
+        # (png/jpg/gif). Applying it to an .mp4 input causes ffmpeg to exit with
+        # "Option not found" (observed: returncode=8 on macOS ARM).
+        is_image_input = cue_path.suffix.lower() in (".png", ".jpg", ".jpeg", ".gif", ".webp")
+        # Patch the in-memory cue dict so downstream filter builders
+        # (_wc_build_cue_prefilter) see the correct effective type.
+        effective_cue = dict(cue)
+        effective_cue["cue_type"] = "png" if is_image_input else "video"
+        effective_cues.append(effective_cue)
+        if is_image_input:
             cmd.extend(["-loop", "1",
                         "-t", f"{float(cue.get('duration_ms') or 1000)/1000.0:.3f}",
                         "-i", str(cue_path.resolve())])
         else:
-            cmd.extend(["-i", str(cue_path.resolve())])
+            # For video inputs, -stream_loop -1 loops the clip to fill the cue
+            # window. -t limits to the cue duration so the overlay doesn't run long.
+            dur_s = float(cue.get("duration_ms") or 1000) / 1000.0
+            cmd.extend(["-stream_loop", "-1",
+                        "-t", f"{dur_s:.3f}",
+                        "-i", str(cue_path.resolve())])
 
     # Tmp target computed once (counter 102 LOW fix).
     tmp = output_path.parent / f"{output_path.stem}.tmp.{os.getpid()}{output_path.suffix}"
@@ -1248,7 +1261,7 @@ def render_watercolor_overlay(
         prefilters: list[str] = [f"[0:v]{NORMALIZATION_VF_EXPR}[base]"]
         overlays: list[str] = []
         prev_label = "base"
-        for i, cue in enumerate(cues_sorted):
+        for i, cue in enumerate(effective_cues):
             input_idx = i + 1  # base video is 0
             prefilters.append(_wc_build_cue_prefilter(
                 input_idx, cue, chromakey_for_video,
