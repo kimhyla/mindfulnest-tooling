@@ -171,33 +171,43 @@ function priorityAudioFile(
 }
 
 // ── Watercolor animation overlay ──────────────────────────────────────────
-// Root cause (diagnosed 2026-05-27): Chrome suspends the overlay video's
-// AudioContext when WaveSurfer pauses. Even though the overlay is muted,
-// Chrome fires a browser-level 'pause' event on the video element at the
-// same timestamp as 'play', creating a play→pause loop that keeps the video
-// frozen on its first frame.
+// Root cause (diagnosed 2026-05-27 via browser spy): Chrome suspends ALL
+// media on the page when WaveSurfer's AudioContext suspends (user hits
+// Pause). The overlay video is muted but Chrome still fires a browser-level
+// 'pause' at the SAME currentTime as 'play', so keepPlaying loops never
+// advance the video.
 //
-// Fix: useEffect fires once on mount. It (a) imperatively sets el.muted=true
-// (JSX muted prop is unreliable in Preact/Chrome), (b) calls play(), and
-// (c) attaches a 'pause' listener that immediately re-calls play() whenever
-// Chrome or any other code pauses the element — keeping it looping for the
-// full cue duration regardless of WaveSurfer state.
+// Fix: synchronize with the sibling lipsync video (the master clock for the
+// preview). When the lipsync video fires 'play' (AudioContext resumed, user
+// hit Play), we play too. We stop fighting the AudioContext and let Chrome's
+// media policy govern pause state — overlay pauses with audio, resumes with
+// audio, exactly as expected in a storyboard preview.
 function WatercolorAnimOverlay({ src }: { src: string }) {
   const ref = useRef<HTMLVideoElement>(null);
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
     el.muted = true; // imperative: JSX muted prop unreliable in Chrome/Preact
-    const keepPlaying = () => {
-      if (el.isConnected && el.paused) {
-        el.muted = true;
-        el.play().catch(() => {});
-      }
+
+    // Find the sibling lipsync video (non-overlay video in the same wrapper).
+    const wrapper = el.closest('.mn-lipsync-video-wrapper');
+    const mainVid = wrapper
+      ? (wrapper.querySelector('video:not(.mn-lipsync-watercolor-overlay)') as HTMLVideoElement | null)
+      : null;
+
+    const startPlaying = () => {
+      el.muted = true;
+      if (el.paused) el.play().catch(() => {});
     };
-    keepPlaying();
-    el.addEventListener('pause', keepPlaying);
-    return () => el.removeEventListener('pause', keepPlaying);
-  }, []); // fire once on mount; cleanup on unmount
+
+    // If main audio is already playing when the cue enters the window, start immediately.
+    if (mainVid && !mainVid.paused) startPlaying();
+
+    // Re-play whenever the main video resumes (catches every Play button press).
+    mainVid?.addEventListener('play', startPlaying);
+    return () => mainVid?.removeEventListener('play', startPlaying);
+  }, []); // fire once on mount
+
   return (
     <video
       ref={ref}
