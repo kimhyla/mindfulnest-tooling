@@ -2529,7 +2529,10 @@ function BeatMagicButtons({ index, beatId, beat, eventId, videoRole, onPreviewOp
     const u = new URL(`${SERVER_BASE}/magic`);
     u.searchParams.set('mode', 'magic_video');
     u.searchParams.set('beat_id', beatId);
-    u.searchParams.set('source_video_path', `Production/${eventId}/${videoPath}`);
+    // animation_clips/ is the canonical storage dir for all beat video files
+    // (lipsync + animation options) per AppState.clips_dir = event_dir/animation_clips/.
+    // Bug: prior path omitted animation_clips/ → "source_video not found" 404.
+    u.searchParams.set('source_video_path', `Production/${eventId}/animation_clips/${videoPath}`);
     if (stillPath) {
       u.searchParams.set('source_image_path', `Production/${eventId}/${stillPath}`);
     }
