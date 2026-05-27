@@ -208,7 +208,7 @@ function WatercolorAnimOverlay({
       ref={ref}
       class="mn-lipsync-watercolor-overlay"
       src={src}
-      style={{ opacity, mixBlendMode: 'screen' as const }}
+      style={{ opacity }}
     />
   );
 }

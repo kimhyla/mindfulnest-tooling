@@ -572,15 +572,13 @@
 }
 .mn-lipsync-watercolor-overlay {
   position: absolute;
-  /* Fill the video wrapper so the overlay is a full-frame browser preview.
-     The PNG/video's own alpha channel creates the artistic transparency —
-     no JS-level opacity-based sizing needed here. object-fit:cover ensures
-     the watercolor fills without distortion regardless of aspect ratio. */
-  left: 0;
-  top: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
+  /* Top-left corner inset: ~25% of the video width, auto height preserves
+     the animation's aspect ratio. Positioned over the fireplace area. */
+  left: 2%;
+  top: 4%;
+  width: 25%;
+  height: auto;
+  object-fit: contain;
   pointer-events: none;
 }
 
