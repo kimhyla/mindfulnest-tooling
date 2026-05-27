@@ -176,39 +176,17 @@ function priorityAudioFile(
 // (previous attempt) re-fired on every 50ms audioprocess render and each
 // firing's play() call aborted the previous one's pending Promise → video
 // never actually played despite play() "resolving ok".
-function WatercolorAnimOverlay({
-  src,
-  opacity,
-}: {
-  src: string;
-  opacity: number;
-}) {
-  const ref = useRef<HTMLVideoElement>(null);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    // Imperatively set muted (Preact JSX `muted` prop not reliably wired to
-    // the DOM .muted property in all Chrome versions — same root cause as the
-    // lipsync video fix in WaveformTimeline.tsx lv_play helper).
-    el.muted = true;
-    el.loop = true;
-    el.playsInline = true;
-    el.play().catch(() => {
-      // Single rAF retry: by the next frame Chrome's policy check has settled
-      // and the muted flag is visible to the autoplay engine.
-      requestAnimationFrame(() => {
-        if (el.paused) { el.muted = true; el.play().catch(() => {}); }
-      });
-    });
-    // No cleanup needed: when cue leaves window Preact unmounts the element
-    // and the browser stops playback automatically.
-  }, []); // intentionally empty: play once on mount, opacity updates don't re-fire
+function WatercolorAnimOverlay({ src }: { src: string }) {
   return (
     <video
-      ref={ref}
       class="mn-lipsync-watercolor-overlay"
       src={src}
-      style={{ opacity }}
+      autoPlay
+      loop
+      muted
+      playsInline
+      preload="auto"
+      style={{ opacity: 1 }}
     />
   );
 }
@@ -928,18 +906,15 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                       opacity = MAX_OPACITY;
                     }
 
-                    // Animated watercolors: render <video autoPlay loop> using animation_url.
-                    // The animation MP4 is composited on a BLACK background (see
-                    // background.py handle_watercolor_animate line ~3684). mix-blend-mode:screen
-                    // makes black pixels transparent so the lipsync video shows through;
-                    // only the colored watercolor content is visible on top.
-                    // Static watercolors: render <img> using thumb_url (PNG has alpha — no blend needed).
+                    // Animated watercolors: render <video autoPlay loop muted playsInline>.
+                    // Solid overlay — opacity always 1 for the full cue duration.
+                    // The Kling MP4 content IS the animation (e.g. hands moving);
+                    // no blend mode or opacity tricks needed.
                     if (wcItem?.kind === 'animation' && wcItem.animation_url) {
                       return (
                         <WatercolorAnimOverlay
                           key={cue.id}
                           src={wcItem.animation_url}
-                          opacity={opacity}
                         />
                       );
                     }
