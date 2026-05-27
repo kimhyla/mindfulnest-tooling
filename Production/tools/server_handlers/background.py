@@ -650,6 +650,24 @@ def handle_magic_still(h, body: dict)-> None:
     out_dir = h.app.event_dir
     out_path = out_dir / f"magic_still_{beat_id}_{ts}.mp4"
 
+    # Dynamic duration: ensure magic_still video covers audio + 2.5s tail so
+    # the still holds on screen after speech ends (Kim 2026-05-27).
+    # Fallback to 4.0s when audio_duration_s is unknown.
+    _MAGIC_STILL_TAIL_S = 2.5
+    _magic_audio_dur = 0.0
+    try:
+        _video_role = (body or {}).get("scope_video_role") or "intro"
+        _st = h.app.state.read_state()
+        _beat_st = (((_st.get("videos") or {}).get(_video_role) or {})
+                    .get("beats", {}).get(beat_id) or {})
+        _magic_audio_dur = float(_beat_st.get("audio_duration_s") or 0)
+    except Exception:
+        pass
+    magic_still_duration = (
+        max(4.0, _magic_audio_dur + _MAGIC_STILL_TAIL_S)
+        if _magic_audio_dur > 0 else 4.0
+    )
+
     try:
         tools_dir = str(_PSERVER_TOOLS_DIR)
         if tools_dir not in sys.path:
@@ -659,7 +677,7 @@ def handle_magic_still(h, body: dict)-> None:
             background_path=safe_sip,
             path_pts=clean_path,
             style="tessa_ori",
-            duration=4.0,
+            duration=magic_still_duration,
             fps=24,
             output_dir=str(out_dir),
             label=f"magic_still_{beat_id}_{ts}",

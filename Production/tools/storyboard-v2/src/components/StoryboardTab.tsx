@@ -2028,7 +2028,18 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
   }, [previewOptIdx, beat.phase_1?.options, beat.lipsync?.file, beat.final?.file, beat.magic_still_path, beat.magic_video_path, safePlay, safePause, handlePlayRejection]);
 
   const handlePreviewEnded = useCallback(() => {
-    audioRef.current?.pause();
+    // MAGIC_STILL_AUDIO_TAIL_FIX (Kim 2026-05-27): magic_still video (previewOptIdx === -1)
+    // may be shorter than the beat audio (e.g. 4.0s video vs 4.24s TTS).
+    // When video ends before audio, DO NOT stop the audio — freeze at last frame
+    // and let audio run to its natural end. Audio's 'ended' event (handleAudioEnded)
+    // will reset the UI once audio completes.
+    const aud = audioRef.current;
+    if (previewOptIdx === -1 && aud && !aud.ended && !aud.paused) {
+      // Video ended early; audio still playing — keep playing state, return early.
+      // Browser already paused the <video> at its last frame automatically.
+      return;
+    }
+    aud?.pause();
     // BUG FIX: reset currentTime so next play() starts from beginning, not the end.
     // If the video stays mounted (LD-757 lipsyncMounted), play() on currentTime=duration
     // immediately re-fires 'ended' with no visible frames.
@@ -2036,6 +2047,16 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
       try { videoRef.current.currentTime = 0; } catch { /* defensive */ }
     }
     // LD-757: reset UI only; lipsyncMounted keeps <video> in DOM.
+    setPreviewOptIdx(null);
+  }, [previewOptIdx]);
+
+  // MAGIC_STILL_AUDIO_TAIL_FIX (Kim 2026-05-27): fires when audio outlasts the
+  // magic_still video. handlePreviewEnded returned early to let audio continue;
+  // now that audio has finished naturally, reset play state.
+  const handleAudioEnded = useCallback(() => {
+    if (videoRef.current) {
+      try { videoRef.current.currentTime = 0; } catch { /* defensive */ }
+    }
     setPreviewOptIdx(null);
   }, []);
 
@@ -2246,6 +2267,7 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
         preload="auto"
         style={{ display: 'none' }}
         data-testid={`beat-audio-hidden-${index}`}
+        onEnded={handleAudioEnded}
       />
       <BeatImageHolder
         index={index}

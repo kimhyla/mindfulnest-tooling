@@ -183,7 +183,7 @@ def file_to_data_uri(path: Path, mime_type: str) -> str:
 # ---------------------------------------------------------------------------
 
 LIPSYNC_PAD_START = 0.5  # seconds of silence before speech
-LIPSYNC_PAD_END = 0.5    # seconds of silence after speech
+LIPSYNC_PAD_END = 2.5    # seconds of silence after speech (face-return tail, Kim 2026-05-27)
 # SWITCH_TO_KLING_LIPSYNC_20260524: Kling has no ByteDance 10s training window
 # constraint. Raised from 60s to 180s to support Phase B module-level lipsync
 # (full meditations can be 90-150s after silcomp).

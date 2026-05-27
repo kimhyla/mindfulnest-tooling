@@ -2929,12 +2929,12 @@ def _pre_fail_cdn_check(poller, beat_id: str, opt_idx: int, task_id: str) -> Non
 
 KLING_MAX_DURATION_SEC = 10
 KLING_MIN_DURATION_SEC = 5
-_AUDIO_SHORT_THRESHOLD_SEC = 3.5  # audio <= this -> 5s animation; > -> 10s
-# 3.5 = KLING_MIN_DURATION_SEC(5) - _VIDEO_TRIM_TAILROOM_TARGET_S(1.5).
-# Guarantees every 5s Kling clip has ≥1.5s tail after the last phoneme so the
-# character can settle before lipsync freezes the last frame. Old value of 4.5
-# left clips with 3.5–4.5s audio only 0.5–1.5s of tail — often not enough
-# (Kim observed "frozen mid-move squint" 2026-05-22).
+_AUDIO_SHORT_THRESHOLD_SEC = 2.0  # audio <= this -> 5s animation; > -> 10s
+# 2.0 = KLING_MIN_DURATION_SEC(5) - _VIDEO_TRIM_TAILROOM_TARGET_S(3.0).
+# Bumped from 3.5→2.0 (2026-05-27) because LIPSYNC_PAD_END was extended to 2.5s
+# and _VIDEO_TRIM_TAILROOM_TARGET_S was raised to match. With 3.5s threshold,
+# audio in the 2.0–3.5s range still chose 5s Kling but only left 1.5s tail —
+# not enough to cover a 2.5s face-return animation.
 
 
 def _find_beat_audio(event_dir: Path, beat_key: str, audio_override: str | None = None, app=None) -> Path | None:
@@ -3210,7 +3210,7 @@ _VIDEO_TRIM_TAILROOM_S = 0.0       # SWITCH_TO_KLING_LIPSYNC_20260524: Kling lip
 # time to settle naturally after the last phoneme. Clamp via min() to whatever
 # the [trim_start, trim_end] window actually accommodates — beats with audio
 # near the 10s ceiling still get only the residual tail (no silent failure).
-_VIDEO_TRIM_TAILROOM_TARGET_S = 1.5
+_VIDEO_TRIM_TAILROOM_TARGET_S = 3.0  # bumped 2026-05-27: covers LIPSYNC_PAD_END=2.5 + 0.5s margin
 # Auto pre-roll (Preflight 110 LD AUTO_PREROLL_V1): when source TTS audio has
 # insufficient leading silence, LatentSync can't lock mouth landmarks and the
 # first phoneme's mouth movement is missing. Fold detection + padding into the
@@ -6851,11 +6851,18 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     # already baked into the ByteDance output), original
                     # authored value for raw-option beats.
                     _effective_audio_delay = ad_ms / 1000.0
+                    # Magic-still beats need an extra tail so the still image
+                    # holds after the last phoneme (face-return + 2.5s pause).
+                    # Non-magic beats get 0 (no change from prior behaviour).
+                    _magic_freeze_tail = (
+                        2.5 if bool(meta.get("is_magic_source")) else 0.0
+                    )
                     trim_normalized(
                         norm_path, fpath,
                         _ts_xlat, _te_xlat,
                         audio_delay=_effective_audio_delay,
                         mix_audio_path=_speech_mp3,
+                        freeze_tail_s=_magic_freeze_tail,
                     )
                     sidecar_payload = {
                         "finalize_args_hash": digest,

@@ -76,7 +76,7 @@ NORMALIZATION_RECIPE_HASH: str = hashlib.sha256(
 # Stage 1 finalizes each beat (cached); Stage 2 mirrors preview-stitched
 # orchestration to assemble the scene + register scene_concat_mp4 asset.
 # ---------------------------------------------------------------------------
-FINALIZE_RECIPE_VERSION: str = "v1"
+FINALIZE_RECIPE_VERSION: str = "v2"  # bumped 2026-05-27: magic_still freeze_tail_s support
 ASSEMBLE_RECIPE_VERSION: str = "v2"  # FADE_THROUGH_BLACK_20260525: bumped to invalidate
 
 # ---------------------------------------------------------------------------
@@ -405,6 +405,7 @@ def trim_normalized(src: Path, dst: Path,
                     trim_end: float | None,
                     audio_delay: float = 0.0,
                     mix_audio_path: "Path | None" = None,
+                    freeze_tail_s: float = 0.0,
                     timeout_s: int = DEFAULT_FFMPEG_TIMEOUT_S) -> float:
     """Trim src to [trim_start, trim_end] window at dst. Returns effective duration.
 
@@ -420,6 +421,13 @@ def trim_normalized(src: Path, dst: Path,
     storyboard_v46_prod.html where vid plays muted while audio is delayed
     by setTimeout. Audio that extends past the trim window is naturally
     clipped by ffmpeg's -t duration cap (mp4 ends when video ends).
+
+    freeze_tail_s (2026-05-27 — magic_still tail fix): when > 0 and
+    mix_audio_path is provided, probes the audio duration and ensures the
+    output is at least audio_dur + freeze_tail_s long. If the source video
+    is shorter than that target, freeze-extends the last frame via tpad.
+    Used for magic_still beats (is_magic_source=True) so the still image
+    holds on screen for freeze_tail_s seconds after speech ends.
     """
     dst.parent.mkdir(parents=True, exist_ok=True)
     src_dur = ffprobe_duration(src)
@@ -447,18 +455,46 @@ def trim_normalized(src: Path, dst: Path,
             # src is already at canonical codec from normalize_for_concat so
             # we skip the VF re-pass and use NORMALIZATION_ENCODER_ARGS only.
             delay_ms = int(round(float(audio_delay) * 1000))
-            cmd = [
-                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                "-ss", f"{start:.3f}",
-                "-i", str(src.resolve()),
-                "-i", str(mix_audio_path.resolve()),
-                "-t", f"{duration:.3f}",
-                "-map", "0:v:0",
-                "-map", "1:a:0",
-                "-af", f"adelay={delay_ms}:all=1,apad",
-                *NORMALIZATION_ENCODER_ARGS,
-                str(tmp),
-            ]
+
+            # freeze_tail_s: for magic_still beats, ensure output covers
+            # audio_dur + freeze_tail_s. If source video is too short, tpad
+            # freezes the last frame to fill the gap.
+            target_duration = duration
+            extra_freeze = 0.0
+            if freeze_tail_s > 0:
+                audio_dur = ffprobe_duration(mix_audio_path)
+                target_duration = max(duration, audio_dur + float(freeze_tail_s))
+                extra_freeze = max(0.0, target_duration - duration)
+
+            if extra_freeze > 0.01:
+                # One-pass: freeze-extend video + mix audio, all in filter_complex.
+                cmd = [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-ss", f"{start:.3f}",
+                    "-i", str(src.resolve()),
+                    "-i", str(mix_audio_path.resolve()),
+                    "-filter_complex",
+                    f"[0:v]tpad=stop_mode=clone:stop_duration={extra_freeze:.3f}[v];"
+                    f"[1:a]adelay={delay_ms}:all=1,apad[a]",
+                    "-map", "[v]",
+                    "-map", "[a]",
+                    "-t", f"{target_duration:.3f}",
+                    *NORMALIZATION_ENCODER_ARGS,
+                    str(tmp),
+                ]
+            else:
+                cmd = [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-ss", f"{start:.3f}",
+                    "-i", str(src.resolve()),
+                    "-i", str(mix_audio_path.resolve()),
+                    "-t", f"{target_duration:.3f}",
+                    "-map", "0:v:0",
+                    "-map", "1:a:0",
+                    "-af", f"adelay={delay_ms}:all=1,apad",
+                    *NORMALIZATION_ENCODER_ARGS,
+                    str(tmp),
+                ]
         else:
             cmd = [
                 "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
