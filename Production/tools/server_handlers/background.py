@@ -954,15 +954,17 @@ def handle_magic_video(h, body: dict)-> None:
 
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_dir = h.app.event_dir
-    magic_only_path = out_dir / f"_tmp_magic_only_{beat_id}_{ts}.mp4"
+    # NOTE: magic_only_path is no longer written to disk — compositing is done
+    # entirely in Python/numpy to avoid ffmpeg yuv420p blend color corruption
+    # (ffmpeg blend=screen on YUV chroma channels Cb/Cr produces magenta artifacts
+    # because neutral black has Cb=128,Cr=128 in YUV, not 0,0 as screen blend assumes).
     out_path = out_dir / f"magic_video_{beat_id}_{ts}.mp4"
 
-    # Step 1: generate magic-on-black via magic_compositor.
-    # We need a reference image of the right dimensions; since
-    # MagicCompositor requires a background_path, write a tiny black PNG
-    # of (width, height) first.
+    # Step 1: build MagicCompositor (no render to disk).
+    # We still need a black PNG ref so MagicCompositor can read image dimensions.
     try:
         from PIL import Image as _PILImage
+        import numpy as _np_mv  # avoid clobbering outer np imports
         black_ref = out_dir / f"_tmp_black_ref_{beat_id}_{ts}.png"
         _PILImage.new("RGB", (width, height), (0, 0, 0)).save(black_ref)
     except Exception as exc:
@@ -973,6 +975,7 @@ def handle_magic_video(h, body: dict)-> None:
                    retry_safe=True,
                )
 
+    mc = None
     try:
         tools_dir = str(_PSERVER_TOOLS_DIR)
         if tools_dir not in sys.path:
@@ -989,13 +992,13 @@ def handle_magic_video(h, body: dict)-> None:
             beat_id=beat_id,
             tags=["magic", "magic_video", "tessa_ori"],
         )
-        mc.render_video(output_path=str(magic_only_path), black_bg=True)
+        # DO NOT call mc.render_video() — we composite directly in Step 2.
     except Exception as exc:
         traceback.print_exc()
         return h._send_error_v59(
                    500,
                    error_code="GENERIC_ERROR",
-                   error_message=f"magic_compositor (black_bg) failed: {type(exc).__name__}: {exc}",
+                   error_message=f"magic_compositor init failed: {type(exc).__name__}: {exc}",
                    retry_safe=True,
                )
     finally:
@@ -1004,41 +1007,126 @@ def handle_magic_video(h, body: dict)-> None:
         except Exception:
             pass
 
-    # Step 2: ffmpeg overlay via blend=screen.
-    cmd = [
-        "ffmpeg", "-y",
+    # Step 2: Python-numpy additive composite piped to ffmpeg for h264 encoding.
+    #
+    # Root cause of the old ffmpeg blend=screen approach: ffmpeg blend operates on
+    # raw YUV pixel values.  A black background in RGB is Y=16, Cb=128, Cr=128 in
+    # YUV (limited range).  screen(Cb_amber=99, Cb_black=128) = 177 instead of 99,
+    # shifting chroma dramatically and producing magenta output.  Converting to
+    # format=rgb24 in the filter graph does NOT fix this — the decode path still
+    # applies YUV→RGB colour matrix internally.  The fix: decode lipsync to raw
+    # RGB24 via a pipe, composite in Python numpy (correct RGB maths), encode back
+    # via a second ffmpeg pipe that handles audio copy.
+    #
+    # INVARIANTS:
+    #   - decode_proc reads safe_ffmpeg_src → raw RGB24 bytes on stdout
+    #   - encode_proc reads raw RGB24 on stdin → h264 yuv420p + audio from lipsync
+    #   - mc._make_trail(frame_idx) returns float32 (H,W,3) trail in [0,255]
+    #   - additive blend: clip(bg + trail, 0, 255).astype(uint8)
+    frame_size = width * height * 3  # bytes per RGB24 frame
+
+    mc_n_frames = mc.n_frames  # set by MagicCompositor.__init__ from duration*fps
+
+    decode_cmd = [
+        "ffmpeg",
         "-i", safe_ffmpeg_src,
-        "-i", str(magic_only_path.resolve()),
-        "-filter_complex", "[0:v][1:v]blend=all_mode=screen[out]",
-        "-map", "[out]",
-        "-map", "0:a?",
+        "-vf", f"scale={width}:{height},format=rgb24",
+        "-f", "rawvideo", "-pix_fmt", "rgb24",
+        "-vcodec", "rawvideo",
+        "-an",                              # no audio in decode stream
+        "-t", str(min(vid_duration, 10.0)),
+        "pipe:1",
+    ]
+    encode_cmd = [
+        "ffmpeg", "-y",
+        "-f", "rawvideo", "-vcodec", "rawvideo",
+        "-s", f"{width}x{height}", "-r", "24", "-pix_fmt", "rgb24",
+        "-i", "pipe:0",                     # composited RGB frames on stdin
+        "-i", safe_ffmpeg_src,              # original source for audio
+        "-map", "0:v",
+        "-map", "1:a?",
         "-c:v", "libx264", "-pix_fmt", "yuv420p",
         "-c:a", "copy",
         "-t", str(min(vid_duration, 10.0)),
         str(out_path),
     ]
+    decode_proc = None
+    encode_proc = None
     try:
-        subprocess.run(cmd, check=True, capture_output=True, timeout=300)
+        decode_proc = subprocess.Popen(
+            decode_cmd,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        encode_proc = subprocess.Popen(
+            encode_cmd,
+            stdin=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+
+        frame_idx = 0
+        while True:
+            raw = decode_proc.stdout.read(frame_size)
+            if len(raw) < frame_size:
+                break
+            bg_arr = _np_mv.frombuffer(raw, dtype=_np_mv.uint8).reshape(height, width, 3).astype(_np_mv.float32)
+
+            # Map lipsync frame_idx → magic compositor frame (same fps+duration, so 1:1)
+            mc_frame_idx = min(frame_idx, mc_n_frames - 1)
+            trail = mc._make_trail(mc_frame_idx)
+
+            # Additive blend (tessa_ori style = "additive"; black background pixels
+            # have trail≈0, sparkle pixels add brightness — never darkens).
+            result = _np_mv.clip(bg_arr + trail, 0, 255).astype(_np_mv.uint8)
+            encode_proc.stdin.write(result.tobytes())
+            frame_idx += 1
+
+        # Signal end-of-stream to encoder
+        encode_proc.stdin.close()
+        # Drain + wait for both processes
+        decode_proc.stdout.close()
+        _, decode_stderr = decode_proc.communicate(timeout=60)
+        _, encode_stderr = encode_proc.communicate(timeout=300)
+
+        if decode_proc.returncode not in (0, None):
+            print(f"[magic_video] decode stderr: {decode_stderr.decode('utf-8', errors='replace')[-500:]}", flush=True)
+            raise subprocess.CalledProcessError(decode_proc.returncode, decode_cmd, stderr=decode_stderr)
+        if encode_proc.returncode not in (0, None):
+            raise subprocess.CalledProcessError(encode_proc.returncode, encode_cmd, stderr=encode_stderr)
+
+        print(f"[magic_video] composite OK: {frame_idx} frames, out={out_path.name}", flush=True)
+
     except subprocess.CalledProcessError as exc:
         return h._send_error_v59(
                    500,
                    error_code="FFMPEG_BLEND_FAILED",
-                   error_message="ffmpeg blend failed",
+                   error_message="magic_video composite+encode failed",
                    retry_safe=True,
-                   extra={"stderr": exc.stderr.decode("utf-8", errors="replace")[-1000:]},
+                   extra={"stderr": (exc.stderr or b"").decode("utf-8", errors="replace")[-1000:]},
                )
     except subprocess.TimeoutExpired:
         return h._send_error_v59(
                    504,
                    error_code="FFMPEG_BLEND_TIMED_OUT",
-                   error_message="ffmpeg blend timed out (>300s)",
+                   error_message="magic_video composite+encode timed out (>300s)",
+                   retry_safe=True,
+               )
+    except Exception as exc:
+        traceback.print_exc()
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"magic_video composite failed: {type(exc).__name__}: {exc}",
                    retry_safe=True,
                )
     finally:
-        try:
-            magic_only_path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        # Kill subprocesses if still running (e.g. early-return paths above)
+        for proc in (decode_proc, encode_proc):
+            if proc is not None:
+                try:
+                    if proc.returncode is None:
+                        proc.kill()
+                        proc.wait()
+                except Exception:
+                    pass
 
     if not h._check_event_pin(_pin, "magic_video_terminal"):
         return h._send_error_v59(
