@@ -1030,7 +1030,12 @@ def handle_magic_video(h, body: dict)-> None:
     decode_cmd = [
         "ffmpeg",
         "-i", safe_ffmpeg_src,
-        "-vf", f"scale={width}:{height},format=rgb24",
+        # fps=24 normalises source frame-rate to exactly match encode_cmd's -r 24.
+        # Without this, a 25fps source produces floor(duration*25)=172 frames while
+        # encode_cmd's -t duration @ 24fps only consumes floor(duration*24)=165 frames,
+        # causing encode_proc to close stdin early and raising BrokenPipeError on
+        # the 166th encode_proc.stdin.write() call.
+        "-vf", f"scale={width}:{height},fps=24,format=rgb24",
         "-f", "rawvideo", "-pix_fmt", "rgb24",
         "-vcodec", "rawvideo",
         "-an",                              # no audio in decode stream
@@ -1094,6 +1099,47 @@ def handle_magic_video(h, body: dict)-> None:
 
         print(f"[magic_video] composite OK: {frame_idx} frames, out={out_path.name}", flush=True)
 
+    except BrokenPipeError:
+        # encode_proc closed its stdin (exited after its -t limit).
+        # This normally means the fps=24 normalisation above wasn't in place OR
+        # decode produced a few extra frames past the encode window.
+        # IMPORTANT: encode_proc may have already written a complete valid MP4.
+        # Try to recover by waiting for encode_proc to exit and checking the file.
+        traceback.print_exc()
+        enc_stderr_broken = b""
+        if encode_proc is not None:
+            try:
+                encode_proc.stdin.close()
+            except Exception:
+                pass
+            try:
+                _, enc_stderr_broken = encode_proc.communicate(timeout=30)
+            except Exception:
+                pass
+        file_ok = out_path.exists() and out_path.stat().st_size > 1024
+        if file_ok:
+            print(
+                f"[magic_video] BrokenPipeError after {frame_idx} frames but "
+                f"out_path exists ({out_path.stat().st_size} bytes) — treating as success.",
+                flush=True,
+            )
+            # Fall through to normal success path (post-except block).
+            # We need to let the finally block run, then continue. Use a flag.
+        else:
+            return h._send_error_v59(
+                       500,
+                       error_code="ENCODE_EXITED_EARLY",
+                       error_message=(
+                           f"encode_proc exited after {frame_idx} frames "
+                           f"(fps mismatch? source fps != 24fps). "
+                           f"Check fps=24 filter in decode_cmd."
+                       ),
+                       retry_safe=True,
+                       extra={
+                           "encode_stderr": enc_stderr_broken.decode("utf-8", errors="replace")[-500:],
+                           "frames_written": frame_idx,
+                       },
+                   )
     except subprocess.CalledProcessError as exc:
         return h._send_error_v59(
                    500,
@@ -1111,11 +1157,21 @@ def handle_magic_video(h, body: dict)-> None:
                )
     except Exception as exc:
         traceback.print_exc()
+        # Read encode_proc stderr to diagnose why it may have exited early.
+        enc_stderr_generic = b""
+        if encode_proc is not None and encode_proc.returncode is not None:
+            try:
+                enc_stderr_generic = encode_proc.stderr.read()
+            except Exception:
+                pass
         return h._send_error_v59(
                    500,
                    error_code="GENERIC_ERROR",
                    error_message=f"magic_video composite failed: {type(exc).__name__}: {exc}",
                    retry_safe=True,
+                   extra={
+                       "encode_stderr_snippet": enc_stderr_generic.decode("utf-8", errors="replace")[-500:] if enc_stderr_generic else "",
+                   },
                )
     finally:
         # Kill subprocesses if still running (e.g. early-return paths above)
