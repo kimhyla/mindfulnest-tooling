@@ -820,6 +820,7 @@ def handle_magic_video(h, body: dict)-> None:
     beat_id = (body or {}).get("beat_id")
     manual_path = (body or {}).get("manual_path") or []
     source_video_path_raw = (body or {}).get("source_video_path") or ""
+    path_authored_against = (body or {}).get("path_authored_against") or None
     if not beat_id:
         return h._send_error_v59(
                    400,
@@ -992,6 +993,7 @@ def handle_magic_video(h, body: dict)-> None:
             label=f"magic_only_{beat_id}_{ts}",
             beat_id=beat_id,
             tags=["magic", "magic_video", "tessa_ori"],
+            path_authored_against=path_authored_against,
         )
         # DO NOT call mc.render_video() — we composite directly in Step 2.
     except Exception as exc:
@@ -1315,6 +1317,52 @@ def handle_magic_video(h, body: dict)-> None:
         "duration_s": vid_duration,
         "manual_path_points": len(clean_path),
     })
+
+
+def handle_storyboard_video_frame(h, query: dict) -> None:
+    """GET /api/storyboard/video_frame?path=<encoded>&t=0
+    Returns PNG bytes of frame at time t of the given video using server-side ffmpeg.
+    """
+    import subprocess as _sp
+    raw_path = query.get("path", "")
+    if isinstance(raw_path, list):
+        raw_path = raw_path[0] if raw_path else ""
+    if not raw_path:
+        return h._send_error_v59(400, error_code="PATH_REQUIRED",
+                                 error_message="path required", retry_safe=False)
+    p = Path(raw_path)
+    if not p.is_absolute():
+        p = Path(h.app.event_dir).parent.parent / raw_path
+    safe = os.path.realpath(str(p))
+    project_root = os.path.realpath(str(Path(h.app.event_dir).parent.parent))
+    if not safe.startswith(project_root):
+        return h._send_error_v59(403, error_code="PATH_OUT_OF_ROOT",
+                                 error_message="path outside project root", retry_safe=False)
+    t_raw = query.get("t", "0")
+    if isinstance(t_raw, list):
+        t_raw = t_raw[0] if t_raw else "0"
+    try:
+        t = float(t_raw or 0)
+    except (ValueError, TypeError):
+        t = 0.0
+    cmd = ["ffmpeg", "-y", "-ss", str(t), "-i", safe,
+           "-vframes", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1"]
+    try:
+        result = _sp.run(cmd, capture_output=True, timeout=10, check=False)
+        if result.returncode != 0 or not result.stdout:
+            return h._send_error_v59(500, error_code="FFMPEG_FRAME_EXTRACT_FAILED",
+                                     error_message=result.stderr.decode('utf-8', errors='replace')[-500:],
+                                     retry_safe=True)
+        h.send_response(200)
+        h.send_header("Content-Type", "image/png")
+        h.send_header("Content-Length", str(len(result.stdout)))
+        h.send_header("Cache-Control", "no-store")
+        h.end_headers()
+        h.wfile.write(result.stdout)
+    except _sp.TimeoutExpired:
+        return h._send_error_v59(504, error_code="FFMPEG_FRAME_EXTRACT_TIMEOUT",
+                                 error_message="ffmpeg timed out extracting frame",
+                                 retry_safe=True)
 
 
 def handle_bg_crop_preview(h)-> None:
@@ -4023,6 +4071,49 @@ def handle_watercolor_animate(h, body: dict)-> None:
         )
     except Exception as exc:
         print(f"[watercolor/animate] WARN registered_write failed: {exc}", flush=True)
+
+    # State writeback — phase_b is TOP-LEVEL state, use mutate_state (not scope_router.mutate_partition).
+    animated_filename = Path(out_path).name
+
+    def _set_watercolor_animated(state):
+        phase_b = state.setdefault("phase_b", {})
+        cues = phase_b.setdefault("cues", [])
+        matched_any = False
+        for cue in cues:
+            if cue.get("watercolor_key") == watercolor_key:
+                cue["watercolor_animated_path"] = animated_filename
+                cue["watercolor_animated_asset_id"] = registered_id
+                matched_any = True
+        if not matched_any:
+            ani_map = phase_b.setdefault("animated_watercolors", {})
+            ani_map[watercolor_key] = {"path": animated_filename, "asset_id": registered_id}
+
+    try:
+        h.app.state.mutate_state(_set_watercolor_animated)
+    except Exception as exc:
+        print(f"[watercolor/animate] WARN state writeback failed: {exc}", flush=True)
+        return h._send_error_v59(500, error_code="STATE_WRITEBACK_FAILED",
+                                 error_message=f"animated OK but state writeback failed: {exc}",
+                                 retry_safe=True,
+                                 extra={"animated_path": str(out_path), "asset_id": registered_id})
+
+    # DS-22 read-back verify
+    try:
+        _state_after = h.app.state.read_state()
+        _phase_b_after = _state_after.get("phase_b") or {}
+        _hit_cue = any(c.get("watercolor_key") == watercolor_key and c.get("watercolor_animated_path") == animated_filename
+                       for c in (_phase_b_after.get("cues") or []))
+        _ani_map = (_phase_b_after.get("animated_watercolors") or {})
+        _hit_map = (_ani_map.get(watercolor_key) or {}).get("path") == animated_filename
+        if not (_hit_cue or _hit_map):
+            return h._send_error_v59(500, error_code="STATE_WRITEBACK_VERIFY_FAILED",
+                                     error_message="watercolor_animated_path not visible after writeback",
+                                     retry_safe=True,
+                                     extra={"expected_path": animated_filename, "expected_key": watercolor_key})
+        print(f"[watercolor/animate] state writeback verified for key={watercolor_key}: {animated_filename}", flush=True)
+    except Exception as exc:
+        return h._send_error_v59(500, error_code="STATE_WRITEBACK_VERIFY_FAILED",
+                                 error_message=f"verify crashed: {type(exc).__name__}: {exc}", retry_safe=True)
 
     return h._send_json(200, {
         "ok": True,

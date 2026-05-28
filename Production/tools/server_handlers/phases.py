@@ -215,6 +215,27 @@ def handle_phase_watercolor_file(h)-> None:
                        retry_safe=False,
                    )
         key = key_list[0]
+        try:
+            state = h.app.state.read_state()
+            phase_b = state.get("phase_b") or {}
+            animated_filename = None
+            for cue in (phase_b.get("cues") or []):
+                if cue.get("watercolor_key") == key and cue.get("watercolor_animated_path"):
+                    animated_filename = cue["watercolor_animated_path"]
+                    break
+            if not animated_filename:
+                ani_map = (phase_b.get("animated_watercolors") or {})
+                if key in ani_map:
+                    animated_filename = (ani_map[key] or {}).get("path")
+            if animated_filename:
+                wc_dir_anim = _data_root(h) / "assets" / "watercolor_library"
+                full_anim = wc_dir_anim / animated_filename
+                if full_anim.exists():
+                    data = full_anim.read_bytes()
+                    h._send_bytes(200, data, "video/mp4", extra_headers={"Cache-Control": "no-store"})
+                    return
+        except Exception:
+            pass  # fall through to static lookup
         wc_dir = _data_root(h) / "assets" / "watercolor_library"
         # Find the file by stem.
         matches = list(wc_dir.glob(f"{key}.*"))

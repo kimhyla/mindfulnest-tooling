@@ -465,80 +465,29 @@
   // use it as the canvas background. Ensures magic_video draw-surface matches
   // the actual lipsync video frame, not a differently-framed reference still.
   function loadVideoFrameAsBackground(videoPath) {
+    // v2: server-side ffmpeg frame extraction — no browser <video> seek timeout.
+    // HARD ERROR if server fails — Rule 19: no silent correctness-degrading fallbacks.
     setDropText([
       { text: 'Loading frame from lipsync video…' },
       { tag: 'br' },
       { tag: 'small', style: 'color:#888', text: 'Draw your path on the actual video frame below.' },
     ]);
-
-    const vid = document.createElement('video');
-    vid.style.cssText = 'position:absolute;left:-9999px;visibility:hidden;';
-    vid.muted = true;
-    vid.preload = 'auto';
-    vid.src = `http://localhost:5111/files?path=${encodeURIComponent(videoPath)}`;
-    document.body.appendChild(vid);
-
-    let settled = false;
-
-    function captureFrame() {
-      if (settled) return;
-      settled = true;
-      try {
-        const w = vid.videoWidth;
-        const h = vid.videoHeight;
-        if (!w || !h) { fallbackToStill('Video has no dimensions'); return; }
-        // Draw video frame into a temp offscreen canvas, then store canvas as img.
-        const tmp = document.createElement('canvas');
-        tmp.width = w;
-        tmp.height = h;
-        const tmpCtx = tmp.getContext('2d');
-        tmpCtx.drawImage(vid, 0, 0, w, h);
-        // tmp is now a frozen snapshot of frame 0. Use it as the draw surface.
-        img = tmp;
-        canvas.width  = w;
-        canvas.height = h;
-        canvas.style.display = 'block';
-        document.getElementById('drop-text').style.display = 'none';
-        points = [];
-        redraw();
-        updateYAML();
-        updateCount();
-        updateSubmitBtn();
-      } catch (e) {
-        fallbackToStill('Frame capture failed: ' + e.message);
-      } finally {
-        try { document.body.removeChild(vid); } catch (_) {}
-      }
-    }
-
-    function fallbackToStill(reason) {
-      try { document.body.removeChild(vid); } catch (_) {}
-      if (sourceImagePath) {
-        console.warn('[path_picker] Video frame load failed (' + reason + '), falling back to still image');
-        loadImageFromURL(`http://localhost:5111/files?path=${encodeURIComponent(sourceImagePath)}`);
-      } else {
+    const url = `http://localhost:5111/api/storyboard/video_frame?path=${encodeURIComponent(videoPath)}&t=0`;
+    const image = new Image();
+    image.onload = () => {
+        applyImage(image);
+        window.__pathAuthoredAgainst = { width: image.naturalWidth, height: image.naturalHeight };
+    };
+    image.onerror = () => {
+        console.error('[path_picker] Server-side frame extract failed — refusing to fall back to still (would cause coordinate mismatch).');
         setDropText([
-          { text: 'Could not load video frame.' },
+          { text: '⚠️ Could not extract video frame from server.' },
           { tag: 'br' },
-          { tag: 'small', style: 'color:#555', text: 'Drag a PNG/JPEG instead.' },
+          { tag: 'small', style: 'color:#f88',
+            text: 'Cannot fall back to still image — different aspect ratio would cause wrong trail position. Check server log.' },
         ]);
-      }
-    }
-
-    // Seek to frame 0 once metadata is known, then capture on seeked
-    vid.addEventListener('loadedmetadata', () => { vid.currentTime = 0.0; }, { once: true });
-    vid.addEventListener('seeked', captureFrame, { once: true });
-    // Some browsers fire canplaythrough without seeked when currentTime=0
-    vid.addEventListener('canplaythrough', () => {
-      if (!settled && vid.currentTime <= 0.1) captureFrame();
-    }, { once: true });
-    vid.addEventListener('error', () => {
-      if (!settled) { settled = true; fallbackToStill('video load error'); }
-    }, { once: true });
-    // Timeout safety net: 8s
-    setTimeout(() => {
-      if (!settled) { settled = true; fallbackToStill('timeout after 8s'); }
-    }, 8000);
+    };
+    image.src = url;
   }
 
   function loadImageFromFile(file) {
@@ -777,6 +726,7 @@
           source_image_path: sourceImagePath,
           scope_event_id: scopeEventId || 'Event_1',
           scope_video_role: scopeVideoRole,  // S5.5b Bug 3 fix (LD-474)
+          path_authored_against: window.__pathAuthoredAgainst || null,
         };
       } else if (mode === 'magic_video') {
         body = {
@@ -786,6 +736,7 @@
           source_image_path: sourceImagePath,  // drawing reference
           scope_event_id: scopeEventId || 'Event_1',
           scope_video_role: scopeVideoRole,  // S5.5b Bug 3 fix (LD-474)
+          path_authored_against: window.__pathAuthoredAgainst || null,
         };
       } else {  // watercolor_animate
         const motionDesc = (document.getElementById('motion-desc-input').value || '').trim();
@@ -799,6 +750,7 @@
           motion_description: motionDesc,
           scope_event_id: scopeEventId || 'Event_1',
           scope_video_role: scopeVideoRole,  // S5.5b Bug 3 fix (LD-474)
+          path_authored_against: window.__pathAuthoredAgainst || null,
         };
       }
 
@@ -839,7 +791,7 @@
               type: 'mn-magic-or-animate-complete',
               mode: mode,
               payload: { ...body, result: data },
-            }, '*');
+            }, window.opener.location.origin);
           } catch (_) { /* cross-origin — ignore */ }
         }
         videoPath = data.composite_path || data.animated_path || data.output_path || '';

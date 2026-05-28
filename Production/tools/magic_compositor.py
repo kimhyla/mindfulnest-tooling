@@ -182,12 +182,14 @@ class MagicCompositor:
         parent_asset_id: int = None,
         tags: list = None,
         scene_key: str = None,
+        path_authored_against: dict = None,
     ):
         if style not in STYLES:
             raise ValueError(f"Unknown style '{style}'. Available: {list(STYLES)}")
 
         self.bg_path  = background_path
         self.path_pts = path_pts
+        self.path_pts = self._aspect_correct(self.path_pts, path_authored_against)
         self.style    = style
         self.s        = STYLES[style]
         self.duration = duration
@@ -451,6 +453,29 @@ class MagicCompositor:
             p = [(p[i][0]*(1-t)+p[i+1][0]*t,
                   p[i][1]*(1-t)+p[i+1][1]*t) for i in range(len(p)-1)]
         return p[0]
+
+    def _aspect_correct(self, path_pts, authored):
+        """Correct path_pts if authored against different aspect ratio than compositor canvas."""
+        if not authored or "width" not in authored or "height" not in authored:
+            return path_pts
+        pw, ph = float(authored.get("width", 0)), float(authored.get("height", 0))
+        if pw <= 0 or ph <= 0:
+            return path_pts
+        src_ar = pw / ph
+        dst_ar = self.W / self.H
+        if abs(src_ar - dst_ar) <= 0.01:
+            return path_pts
+        corrected = []
+        for (fx, fy) in path_pts:
+            if src_ar > dst_ar:
+                scale = dst_ar / src_ar
+                fy = (fy - 0.5) * scale + 0.5
+            else:
+                scale = src_ar / dst_ar
+                fx = (fx - 0.5) * scale + 0.5
+            corrected.append((fx, fy))
+        print(f"  [aspect_correct] authored {pw:.0f}x{ph:.0f} (ar={src_ar:.3f}) -> compositor {self.W}x{self.H} (ar={dst_ar:.3f}): corrected {len(corrected)} pts", flush=True)
+        return corrected
 
     def _path_width(self, y_frac: float) -> int:
         y_near = max(p[1] for p in self.path_pts)

@@ -5935,6 +5935,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_cr_library()
             if path == "/api/cr/full":
                 return self._handle_cr_full_image()
+            if path == "/api/storyboard/video_frame":
+                from server_handlers.background import handle_storyboard_video_frame
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                return handle_storyboard_video_frame(self, qs)
             if path.startswith("/api/storyboard/list"):
                 return self._handle_storyboard_list()
             # S3 v3.1 GET endpoints — LDs 462-467.
