@@ -4072,21 +4072,22 @@ def handle_watercolor_animate(h, body: dict)-> None:
     except Exception as exc:
         print(f"[watercolor/animate] WARN registered_write failed: {exc}", flush=True)
 
-    # State writeback — phase_b is TOP-LEVEL state, use mutate_state (not scope_router.mutate_partition).
+    # State writeback — record animated override at top-level state key
+    # "watercolor_animated_overrides" (a flat dict: {key: filename}).
+    # NOTE: actual watercolor cues live at
+    #   state["phase_b"]["phase_b_watercolor_cues_json"] (JSON string, see phases.py).
+    # The consumer (handle_phase_watercolor_file) uses a disk glob for
+    # {key}_animated_*.mp4 (newest by mtime) — no state dependency needed there.
+    # This writeback is supplementary: lets assembly/rendering scripts find the
+    # canonical animated file without a disk glob.
     animated_filename = Path(out_path).name
 
     def _set_watercolor_animated(state):
-        phase_b = state.setdefault("phase_b", {})
-        cues = phase_b.setdefault("cues", [])
-        matched_any = False
-        for cue in cues:
-            if cue.get("watercolor_key") == watercolor_key:
-                cue["watercolor_animated_path"] = animated_filename
-                cue["watercolor_animated_asset_id"] = registered_id
-                matched_any = True
-        if not matched_any:
-            ani_map = phase_b.setdefault("animated_watercolors", {})
-            ani_map[watercolor_key] = {"path": animated_filename, "asset_id": registered_id}
+        overrides = state.setdefault("watercolor_animated_overrides", {})
+        overrides[watercolor_key] = {
+            "path": animated_filename,
+            "asset_id": registered_id,
+        }
 
     try:
         h.app.state.mutate_state(_set_watercolor_animated)
@@ -4100,14 +4101,11 @@ def handle_watercolor_animate(h, body: dict)-> None:
     # DS-22 read-back verify
     try:
         _state_after = h.app.state.read_state()
-        _phase_b_after = _state_after.get("phase_b") or {}
-        _hit_cue = any(c.get("watercolor_key") == watercolor_key and c.get("watercolor_animated_path") == animated_filename
-                       for c in (_phase_b_after.get("cues") or []))
-        _ani_map = (_phase_b_after.get("animated_watercolors") or {})
-        _hit_map = (_ani_map.get(watercolor_key) or {}).get("path") == animated_filename
-        if not (_hit_cue or _hit_map):
+        _overrides_after = _state_after.get("watercolor_animated_overrides") or {}
+        _hit = (_overrides_after.get(watercolor_key) or {}).get("path") == animated_filename
+        if not _hit:
             return h._send_error_v59(500, error_code="STATE_WRITEBACK_VERIFY_FAILED",
-                                     error_message="watercolor_animated_path not visible after writeback",
+                                     error_message="watercolor_animated_overrides not visible after writeback",
                                      retry_safe=True,
                                      extra={"expected_path": animated_filename, "expected_key": watercolor_key})
         print(f"[watercolor/animate] state writeback verified for key={watercolor_key}: {animated_filename}", flush=True)
