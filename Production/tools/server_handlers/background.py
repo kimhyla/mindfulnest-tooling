@@ -1084,9 +1084,11 @@ def handle_magic_video(h, body: dict)-> None:
             encode_proc.stdin.write(result.tobytes())
             frame_idx += 1
 
-        # Signal end-of-stream to encoder
-        encode_proc.stdin.close()
-        # Drain + wait for both processes
+        # Drain + wait for both processes.
+        # IMPORTANT (Python 3.12): Do NOT explicitly close encode_proc.stdin before
+        # calling communicate(). communicate() internally calls self.stdin.flush() then
+        # self.stdin.close() (subprocess.py:2067). If stdin is already closed, flush()
+        # raises ValueError: flush of closed file. Let communicate() own the close.
         decode_proc.stdout.close()
         _, decode_stderr = decode_proc.communicate(timeout=60)
         _, encode_stderr = encode_proc.communicate(timeout=300)
@@ -1113,7 +1115,11 @@ def handle_magic_video(h, body: dict)-> None:
             except Exception:
                 pass
             try:
-                _, enc_stderr_broken = encode_proc.communicate(timeout=30)
+                # Do NOT call communicate() here — stdin was just explicitly closed,
+                # so communicate()'s internal flush() would raise ValueError (Python 3.12).
+                # Use wait() + stderr.read() instead.
+                encode_proc.wait(timeout=10)
+                enc_stderr_broken = encode_proc.stderr.read() if encode_proc.stderr else b""
             except Exception:
                 pass
         file_ok = out_path.exists() and out_path.stat().st_size > 1024
