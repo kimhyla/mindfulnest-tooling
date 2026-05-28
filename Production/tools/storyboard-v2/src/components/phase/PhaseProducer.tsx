@@ -1123,7 +1123,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           <div class="mn-phase-watercolor-grid">
             {watercolors.map((wc) => (
               <div
-                class="mn-phase-watercolor-tile"
+                class={`mn-phase-watercolor-tile${wc.kind === 'animation' ? ' mn-phase-watercolor-tile--animation' : ''}`}
                 key={wc.key}
                 data-testid={`phase-${phase}-watercolor-tile-${wc.key}`}
                 draggable

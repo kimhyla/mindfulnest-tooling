@@ -454,7 +454,12 @@
   flex-direction: column;
   gap: 4px;
   align-items: stretch;
+  position: relative;
 }
+/* Same hover-delete UX as main Library AssetTile (LD UI_PRIMITIVES_SHARED_V1). */
+.mn-phase-watercolor-tile:hover .mn-asset-tile-delete { opacity: 1; }
+/* Animation tiles: delete always visible — many are stale test encodes. */
+.mn-phase-watercolor-tile--animation .mn-asset-tile-delete { opacity: 0.92; }
 /* White interior — wraps the thumb so the cream mat shows around the white. */
 .mn-phase-watercolor-tile .mn-phase-watercolor-thumb-wrap {
   background: #ffffff;

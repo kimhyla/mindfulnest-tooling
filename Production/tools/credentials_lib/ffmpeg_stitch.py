@@ -85,7 +85,15 @@ ASSEMBLE_RECIPE_VERSION: str = "v2"  # FADE_THROUGH_BLACK_20260525: bumped to in
 # Bump whenever the overlay filter construction in render_watercolor_overlay
 # changes semantics (animation preset easing, chromakey params, scale behavior).
 # ---------------------------------------------------------------------------
-WATERCOLOR_OVERLAY_RECIPE_VERSION = "wc_v5_chromakey_and_loop_fix"
+WATERCOLOR_OVERLAY_RECIPE_VERSION = "wc_v13_hand_only_split"
+# v13 (2026-05-28): Split rub applies to hand pigment only — cream paper +
+# black border stay fixed. Fixes v2-class "frame sliced in half" shear.
+# v7 (2026-05-28): tpad start alignment + cue_hold_s-derived stop_duration.
+#   (1) tpad stop_duration: was hardcoded 300 (→ 7200 frames → 504 timeout).
+#       Now passes cue_hold_s = ts_s + dur_s + 2.0 (typically 10-25s) +5s margin.
+#   (2) Frame constants in production_server.py corrected for 720×544 lipsync base
+#       video → letterboxed to 953×720 in 1280×720 canvas (content x_offset=164).
+#       frame_x["b"]: 40→185, frame_y: 180→30, frame_max_w["b"]: 600→340.
 # v5 (2026-05-28): Two fixes:
 #   (1) chromakey similarity 0.1 → 0.25 — handles YUV quantisation of magenta.
 #   (2) Remove -stream_loop -1 for video inputs; add tpad=stop_mode=clone in
@@ -1118,7 +1126,8 @@ def resolve_watercolor_asset(library_dir: Path, key: str, cue_type: str) -> Path
 def _wc_build_cue_prefilter(input_idx: int, cue: dict,
                             chromakey_for_video: bool,
                             frame_max_w: int = 600,
-                            frame_max_h: int = 540) -> str:
+                            frame_max_h: int = 540,
+                            cue_hold_s: float = 20.0) -> str:
     """Return the pre-overlay filter fragment for a cue, producing label [cN].
 
     Counter HIGH-4 resolution: chromakey only applied when cue_type=="video"
@@ -1140,16 +1149,6 @@ def _wc_build_cue_prefilter(input_idx: int, cue: dict,
     ts_s = float(cue.get("timestamp_ms") or 0) / 1000.0
     chain = []
     if cue_type == "video" and chromakey_for_video:
-        # 0xFF00FF magenta, 0.25 similarity, 0.0 blend — leaves clean edges.
-        # WHY MAGENTA: green (0x00FF00) caused edge-eating during fade-in because
-        # semi-transparent hand pixels blended toward green and were partially
-        # removed by chromakey. Magenta doesn't appear in skin tones or watercolor
-        # art, so blended fade pixels are never falsely keyed out. (2026-05-27)
-        # PIL canvas color matches — both changed together.
-        # similarity 0.1 → 0.25 (wc_v5): YUV encoding of magenta (255,0,255) can
-        # round to slightly off-spec values. 0.1 was too tight → magenta leaked
-        # through as pink fringe. 0.25 handles YUV quantisation without eating
-        # genuine skin-tone pixels (which stay well outside the magenta gamut).
         chain.append("chromakey=0xFF00FF:0.25:0.0")
     # Scale-to-bbox with aspect preserved. No pad -> overlay is native-aspect
     # sized image, placed at (frame_x, frame_y) directly by the overlay filter.
@@ -1177,16 +1176,9 @@ def _wc_build_cue_prefilter(input_idx: int, cue: dict,
         elif animation == "gentle_pan":
             chain.append(f"fade=t=in:st={ts_s:.3f}:d=0.5:alpha=1")
     else:
-        # wc_v5: video cues use one-shot playback + tpad instead of -stream_loop.
-        # The animated MP4 has a baked PIL fade envelope (opacity ramp via magenta
-        # blending). With -stream_loop -1, this envelope cycled every 2s — the
-        # "fade cycling" bug. Fix: remove the loop (input construction change) and
-        # extend the stream with tpad=stop_mode=clone, which repeats the last frame
-        # (near-transparent, post-chromakey) for the rest of the enable window.
-        # The 2s animation plays once (fade-in → rub motion → fade-out) then the
-        # overlay is transparent until the enable window closes.
-        chain.append("tpad=stop_mode=clone:stop_duration=300")
-    # For cue_type=="video": PIL-baked fade handles opacity; no ffmpeg fade needed.
+        # wc_v8: loop the baked rub clip for the full enable window. Motion is in
+        # the MP4 pixels — no tpad alignment, no ffmpeg fade (loop-friendly encode).
+        pass
     joined = ",".join(chain)
     return f"[{input_idx}:v]{joined}[{label}]"
 
@@ -1196,8 +1188,14 @@ def _wc_overlay_x_expr(cue: dict, frame_x: int) -> str:
 
     fade_in    -> static x = frame_x
     slide_in   -> x slides from -W to frame_x over 0.5s relative to cue start
-    gentle_pan -> x = frame_x + 5*sin(2*PI*t_rel) for micro-motion
+    gentle_pan -> x = frame_x + 5*sin(2*PI*t_rel) for micro-motion (PNG only)
     """
+    cue_type = cue.get("cue_type") or "png"
+    # wc_v8: animated video cues bake motion in PIL — panning the whole tile made
+    # the magenta bounding box bounce while hands looked static inside it.
+    if cue_type == "video":
+        return str(frame_x)
+
     animation = cue.get("animation") or "fade_in"
     timestamp_s = float(cue.get("timestamp_ms") or 0) / 1000.0
     if animation == "slide_in":
@@ -1310,12 +1308,9 @@ def render_watercolor_overlay(
                         "-t", f"{cue_hold_s:.3f}",
                         "-i", str(cue_path.resolve())])
         else:
-            # wc_v5: no -stream_loop. The animated MP4 plays once; tpad in the
-            # prefilter (added to _wc_build_cue_prefilter for video cues) holds
-            # the last frame for 300s so the overlay filter has frames through
-            # the full enable window. -stream_loop -1 caused the baked PIL fade
-            # envelope to cycle every ~2s ("fade cycling" bug).
-            cmd.extend(["-t", f"{cue_hold_s:.3f}",
+            # wc_v8: loop tight alpha MP4 for full enable window (rub repeats).
+            cmd.extend(["-stream_loop", "-1",
+                        "-t", f"{cue_hold_s:.3f}",
                         "-i", str(cue_path.resolve())])
 
     # Tmp target computed once (counter 102 LOW fix).
@@ -1350,12 +1345,16 @@ def render_watercolor_overlay(
         prev_label = "base"
         for i, cue in enumerate(effective_cues):
             input_idx = i + 1  # base video is 0
-            prefilters.append(_wc_build_cue_prefilter(
-                input_idx, cue, chromakey_for_video,
-                frame_max_w=frame_max_w, frame_max_h=frame_max_h))
-            x_expr = _wc_overlay_x_expr(cue, frame_x)
+            # Hoist ts_s/dur_s before prefilter call so cue_hold_s can be passed.
+            # (wc_v6: tpad stop_duration is derived from cue_hold_s, not hardcoded 300.)
             ts_s = float(cue.get("timestamp_ms") or 0) / 1000.0
             dur_s = float(cue.get("duration_ms") or 1000) / 1000.0
+            cue_hold_s = ts_s + dur_s + 2.0
+            prefilters.append(_wc_build_cue_prefilter(
+                input_idx, cue, chromakey_for_video,
+                frame_max_w=frame_max_w, frame_max_h=frame_max_h,
+                cue_hold_s=cue_hold_s))
+            x_expr = _wc_overlay_x_expr(cue, frame_x)
             out_label = f"v{i+1}"
             # Use gte()*lte() instead of between(): between() exclusivity
             # semantics vary by ffmpeg version and fail at exact boundary frames.

@@ -218,7 +218,7 @@
     maxlength="500"
   ></textarea>
   <small style="color:#7a8aa0">
-    The drawing tool below captures WHERE the motion happens; this text captures WHAT KIND of motion. Used by Claude API to generate ffmpeg filter chain.
+    The drawing tool captures WHERE the motion happens (path points). This text captures WHAT KIND of motion (rub speed, gentle drift, etc.). The server reads it deterministically in the PIL animate renderer — not sent to Claude.
   </small>
 </div>
 

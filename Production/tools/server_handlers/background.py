@@ -3752,11 +3752,14 @@ def handle_watercolor_animate(h, body: dict)-> None:
 
     """POST /api/watercolor/animate {watercolor_key, manual_path, motion_description, scope_event_id}
 
-    Per LD-470 WATERCOLOR_ANIMATE_PROCEDURAL_V1. SUPERSEDES the S4 magic-
-    compositor-based implementation. Claude API generates an ffmpeg
-    filter_complex spec given watercolor + path geometry + motion intent.
-    Server validates against safe-filter allowlist BEFORE executing
-    ffmpeg.
+    Per WATERCOLOR_ANIMATE_PIL_RENDERER_V1 + WATERCOLOR_ANIMATE_PROCEDURAL_TECH_SPEC_v2.
+    Deterministic PIL frame renderer (supersedes Claude+ffmpeg LD-470).
+
+    motion_description: parsed server-side for oscillation frequency/style (NOT Claude).
+    manual_path: rub axis + compositor placement reference (normalized 0-1).
+
+    Encode: fixed white frame + center-split hand pigment rub (wc_v13).
+    See LESSONS_LEARNED_20260528_PHASE_B_WATERCOLOR_ANIMATE_V1.md.
     """
     # Watercolor animation is a Phase B asset — it is NOT partitioned by
     # intro/resolution/standalone video role.  Requiring scope_video_role here
@@ -3803,9 +3806,9 @@ def handle_watercolor_animate(h, body: dict)-> None:
                        retry_safe=False,
                    )
 
-    # enforce_safe_zone=True: watercolor uses a 2× PIL canvas where edge coords
-    # map the asset completely off-screen. Magic trail callers do NOT use this flag.
-    ok, clean_path, err = h._validate_manual_path(manual_path, enforce_safe_zone=True)
+    # wc_v8: tight-crop encode auto-expands canvas to fit the path — only reject
+    # coordinates that are literally out of [0,1]. Magic trail callers do NOT use this flag.
+    ok, clean_path, err = h._validate_manual_path(manual_path, enforce_safe_zone=False)
     if not ok:
         return h._send_error_v59(
                    400,
@@ -3863,15 +3866,10 @@ def handle_watercolor_animate(h, body: dict)-> None:
                )
 
     # ── Deterministic PIL Frame Renderer (replaces Claude API + filter_complex) ──────
-    # Root cause of recurring "ffmpeg failed" (filed 3× in session history):
-    # LLM-generated filter_complex strings pass the security allowlist gate but fail
-    # at ffmpeg runtime — wrong parameter types, incompatible filter chains, or
-    # version-specific syntax issues.  The old v2 storyboard used the same PIL-based
-    # frame-rendering approach (MagicCompositor) which never had this failure class.
-    #
-    # Fix: render frames in Python (deterministic, zero API calls), encode with simple
-    # ffmpeg framerate+concat.  No filter_complex.  No LLM.  Cannot fail on syntax.
-    # Path points are preserved for future phase-2 path-guided wipe animation.
+    # May 27 regression (169d570): replaced LD-470 Claude+ffmpeg with whole-PNG
+    # path translation — lost the center-split opposite rub that LD-470 specified.
+    # wc_v11: bake LD-470 semantics directly — fixed paper layer + split hand halves
+    # oscillating in opposite directions along the path axis.
     # ─────────────────────────────────────────────────────────────────────────────────
     import tempfile as _tempfile
 
@@ -3904,9 +3902,9 @@ def handle_watercolor_animate(h, body: dict)-> None:
     n_frames = max(1, int(duration_s * fps_anim))
     elapsed_ms = 0   # no API call
     explanation = (
-        f"PIL oscillating-path-motion ({_osc_freq}Hz) + fade, "
+        f"PIL center-split rub ({_osc_freq}Hz), "
         f"{len(clean_path)} path pts, motion={motion_desc!r}, "
-        f"magenta-screen canvas 2x"
+        f"fixed frame + hand-pigment split rub (LD-470 wc_v13)"
     )
 
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -3926,76 +3924,141 @@ def handle_watercolor_animate(h, body: dict)-> None:
             _h = _h if _h % 2 == 0 else _h - 1
             _wc_rgba = _wc_src.convert("RGBA").crop((0, 0, _w, _h))
 
-        # Compute fade zones: 0.5s in, hold, 0.6s out.
-        _fade_in  = max(1, int(fps_anim * 0.5))
-        _fade_out = max(1, int(fps_anim * 0.6))
-        _hold = n_frames - _fade_in - _fade_out
-        if _hold < 1:
-            _fade_in  = max(1, n_frames // 3)
-            _fade_out = max(1, n_frames // 3)
-            _hold     = max(0, n_frames - _fade_in - _fade_out)
-
         _r, _g, _b, _a_orig = _wc_rgba.split()
 
-        # Canvas is 2× the source PNG so the hands have room to travel the
-        # drawn path without clipping.  Magenta background (0xFF00FF) is removed
-        # by chromakey in render_watercolor_overlay / phase_b_preview.
-        # WHY MAGENTA not green: during fade-in, semi-transparent hand pixels blend
-        # toward the background color. Green (0,255,0) produces pixels that look like
-        # skin-tone-near-green and get partially eaten by the chromakey filter, giving
-        # ragged hand edges. Magenta (255,0,255) doesn't appear in skin tones or
-        # watercolor washes, so blended pixels are not falsely keyed out. (2026-05-27)
-        _canvas_w = _w * 2
-        _canvas_h = _h * 2
-        # libx264 requires even dimensions.
-        _canvas_w = _canvas_w if _canvas_w % 2 == 0 else _canvas_w - 1
-        _canvas_h = _canvas_h if _canvas_h % 2 == 0 else _canvas_h - 1
+        # LD-470 center-split rub (deterministic replacement for Claude+ffmpeg).
+        # Original spec: split at center seam, oscillate halves in opposite
+        # directions along the path axis — NOT translate the whole PNG blob.
+        _dir_x = float(clean_path[-1][0]) - float(clean_path[0][0])
+        _dir_y = float(clean_path[-1][1]) - float(clean_path[0][1])
+        _dir_len = _math.hypot(_dir_x, _dir_y) or 1.0
+        _dir_x /= _dir_len
+        _dir_y /= _dir_len
+        _rub_px = max(16, min(int(_h * 0.05), int(_w * 0.05), 56))
+        _pad = max(8, _w // 32)
+        _crop_w = (_w + 2 * _rub_px + 2 * _pad) // 2 * 2 or 2
+        _crop_h = (_h + 2 * _rub_px + 2 * _pad) // 2 * 2 or 2
+        _base_x = _pad + _rub_px
+        _base_y = _pad + _rub_px
 
-        _n_pts = len(clean_path)
+        # Pixel classification — only true hand pigment may move.
+        # wc_v13: prior logic used "not pure white (>245)" as hand, which swept
+        # in cream paper texture + black border (~222k px). Splitting those with
+        # the hand halves sheared the entire white card (v2-class "frame slice").
+        _hand_mask = _PILImage.new("L", (_w, _h), 0)
+        _fixed_mask = _PILImage.new("L", (_w, _h), 0)
+        _src_px = _wc_rgba.load()
+        _hb_min_x, _hb_min_y, _hb_max_x, _hb_max_y = _w, _h, 0, 0
+        _hand_px = _hand_mask.load()
+        _fixed_px = _fixed_mask.load()
+        for _yy in range(_h):
+            for _xx in range(_w):
+                _pr, _pg, _pb, _pa = _src_px[_xx, _yy]
+                if _pa < 20:
+                    continue
+                _hb_min_x = min(_hb_min_x, _xx)
+                _hb_min_y = min(_hb_min_y, _yy)
+                _hb_max_x = max(_hb_max_x, _xx)
+                _hb_max_y = max(_hb_max_y, _yy)
+                _is_border = _pr < 80 and _pg < 80 and _pb < 80
+                _is_white = _pr > 245 and _pg > 245 and _pb > 245
+                _is_cream = (
+                    (_pr + _pg + _pb) > 700
+                    and (max(_pr, _pg, _pb) - min(_pr, _pg, _pb)) < 35
+                )
+                if _is_border or _is_white or _is_cream:
+                    _fixed_px[_xx, _yy] = _pa
+                else:
+                    _hand_px[_xx, _yy] = _pa
+        _fixed_rgba = _PILImage.new("RGBA", (_w, _h), (0, 0, 0, 0))
+        _fixed_rgba.paste(_wc_rgba, mask=_fixed_mask)
+
+        # Solid white underlay for hand-rub gaps (under pigment only).
+        _matte_x0 = max(0, _hb_min_x - 2)
+        _matte_y0 = max(0, _hb_min_y - 2)
+        _matte_x1 = min(_w - 1, _hb_max_x + 2)
+        _matte_y1 = min(_h - 1, _hb_max_y + 2)
+        _matte_w = (_matte_x1 - _matte_x0 + 1) // 2 * 2 or 2
+        _matte_h = (_matte_y1 - _matte_y0 + 1) // 2 * 2 or 2
+        _white_underlay = _PILImage.new("RGB", (_matte_w, _matte_h), (255, 255, 255))
+        _underlay_x = _base_x + _matte_x0
+        _underlay_y = _base_y + _matte_y0
+
+        # Split ONLY hand pigment at prayer-hands seam (hand bbox center).
+        _hand_min_x, _hand_min_y, _hand_max_x, _hand_max_y = _w, _h, 0, 0
+        for _yy in range(_h):
+            for _xx in range(_w):
+                if _hand_px[_xx, _yy]:
+                    _hand_min_x = min(_hand_min_x, _xx)
+                    _hand_min_y = min(_hand_min_y, _yy)
+                    _hand_max_x = max(_hand_max_x, _xx)
+                    _hand_max_y = max(_hand_max_y, _yy)
+        _split_vertical = abs(_dir_y) >= abs(_dir_x)
+        if _split_vertical:
+            _split_at = max(
+                _hand_min_x + 1,
+                min((_hand_min_x + _hand_max_x) // 2, _hand_max_x - 1),
+            )
+        else:
+            _split_at = max(
+                _hand_min_y + 1,
+                min((_hand_min_y + _hand_max_y) // 2, _hand_max_y - 1),
+            )
+
+        _half_a_mask = _PILImage.new("L", (_w, _h), 0)
+        _half_b_mask = _PILImage.new("L", (_w, _h), 0)
+        _ha_px = _half_a_mask.load()
+        _hb_px = _half_b_mask.load()
+        for _yy in range(_h):
+            for _xx in range(_w):
+                _a = _hand_px[_xx, _yy]
+                if not _a:
+                    continue
+                if _split_vertical:
+                    if _xx < _split_at:
+                        _ha_px[_xx, _yy] = _a
+                    else:
+                        _hb_px[_xx, _yy] = _a
+                elif _yy < _split_at:
+                    _ha_px[_xx, _yy] = _a
+                else:
+                    _hb_px[_xx, _yy] = _a
+
+        _half_a_rgba = _PILImage.new("RGBA", (_w, _h), (0, 0, 0, 0))
+        _half_a_rgba.paste(_wc_rgba, mask=_half_a_mask)
+        _half_b_rgba = _PILImage.new("RGBA", (_w, _h), (0, 0, 0, 0))
+        _half_b_rgba.paste(_wc_rgba, mask=_half_b_mask)
 
         with _tempfile.TemporaryDirectory() as _fdir:
             for _fi in range(n_frames):
-                # ── Opacity envelope: fade-in / hold / fade-out ──────────────
-                if _fi < _fade_in:
-                    _alpha = _fi / _fade_in
-                elif _fi < _fade_in + _hold:
-                    _alpha = 1.0
-                else:
-                    _alpha = 1.0 - ((_fi - _fade_in - _hold) / max(1, _fade_out))
-                _alpha = max(0.0, min(1.0, _alpha))
-
-                # ── Path interpolation: oscillating back-and-forth along path ──
-                # t oscillates 0→1→0→1… at _osc_freq Hz.
-                # t=0: hands at path start; t=1: hands at path end.
-                # This produces back-and-forth rubbing motion along the drawn path.
                 _time_s = _fi / fps_anim
                 _t = 0.5 - 0.5 * _math.cos(2 * _math.pi * _osc_freq * _time_s)
-                _pidx_f = _t * (_n_pts - 1)
-                _lo = int(_pidx_f)
-                _hi = min(_lo + 1, _n_pts - 1)
-                _seg_t = _pidx_f - _lo
-                _path_x = clean_path[_lo][0] * (1 - _seg_t) + clean_path[_hi][0] * _seg_t
-                _path_y = clean_path[_lo][1] * (1 - _seg_t) + clean_path[_hi][1] * _seg_t
+                _offset = (_t - 0.5) * 2.0 * _rub_px
+                _dx_a = int(_dir_x * _offset)
+                _dy_a = int(_dir_y * _offset)
+                _dx_b = -_dx_a
+                _dy_b = -_dy_a
 
-                # Map [0,1] path position → canvas pixel; center hands PNG there.
-                _cx = int(_path_x * _canvas_w)
-                _cy = int(_path_y * _canvas_h)
-                _paste_x = _cx - _w // 2
-                _paste_y = _cy - _h // 2
-
-                # Apply opacity to alpha channel.
-                _a_frame = _a_orig.point(lambda v, a=_alpha: int(v * a))
-
-                # Composite on magenta-screen canvas (chromakey removes magenta background).
-                _frame_bg = _PILImage.new("RGB", (_canvas_w, _canvas_h), (255, 0, 255))
+                _frame_bg = _PILImage.new(
+                    "RGB", (_crop_w, _crop_h), (255, 0, 255),
+                )
+                # Layer 1: solid white under hand-rub gaps.
+                _frame_bg.paste(_white_underlay, (_underlay_x, _underlay_y))
+                # Layer 2: fixed paper + cream texture + border (never moves).
+                _frame_bg.paste(_fixed_rgba, (_base_x, _base_y), mask=_fixed_mask)
+                # Layer 3+4: hand pigment halves rub in opposite directions.
                 _frame_bg.paste(
-                    _PILImage.merge("RGBA", (_r, _g, _b, _a_frame)),
-                    (_paste_x, _paste_y),
-                    mask=_a_frame,
+                    _half_a_rgba,
+                    (_base_x + _dx_a, _base_y + _dy_a),
+                    mask=_half_a_mask,
+                )
+                _frame_bg.paste(
+                    _half_b_rgba,
+                    (_base_x + _dx_b, _base_y + _dy_b),
+                    mask=_half_b_mask,
                 )
                 _frame_bg.save(f"{_fdir}/frame_{_fi:04d}.png", "PNG")
 
-            # Encode frames → H.264 MP4.  Simple framerate input — no filter_complex.
             _encode_cmd = [
                 "ffmpeg", "-y",
                 "-framerate", str(fps_anim),
@@ -4061,7 +4124,7 @@ def handle_watercolor_animate(h, body: dict)-> None:
             module_id=_resolve_module_id_for_state(h.app.state),
             produced_by_skill="watercolor_animate_endpoint",
             colloquial_name=f"{watercolor_key} animated",
-            tags=["watercolor_animation", watercolor_key, "pil_oscillate"],
+            tags=["watercolor_animation", watercolor_key, "pil_center_split_rub"],
             notes=(
                 f"Watercolor animation via PIL frame renderer (replaces Claude+ffmpeg LD-470). "
                 f"motion={motion_desc!r}. {len(clean_path)} path points. "
@@ -4120,7 +4183,7 @@ def handle_watercolor_animate(h, body: dict)-> None:
         "asset_id": registered_id,
         "explanation": explanation,
         "duration_s": duration_s,
-        "renderer": "pil_oscillate",
+        "renderer": "pil_center_split_rub",
         "osc_freq_hz": _osc_freq,
     })
 

@@ -12051,9 +12051,19 @@ body {{padding-top:44px!important;}}
     # Implementation (ffmpeg_stitch.py _wc_build_cue_prefilter) defaults to
     # 600x540 for Phase B; these dicts override per-phase for the call site.
     # Closes inventory v2 PB-17 + PA-19 WIRED-BUT-BROKEN class.
-    _PHASE_FRAME_X = {"b": 40, "a": 800}
-    _PHASE_FRAME_Y = 180
-    _PHASE_FRAME_MAX_W = {"b": 600, "a": 480}
+    #
+    # wc_v6 position fix (2026-05-28): Phase B lipsync base is 720×544.
+    # NORMALIZATION_VF_EXPR scales it to 953×720 within the 1280×720 canvas,
+    # centering the content with x_offset=164px on each side (black letterbox).
+    # Old frame_x["b"]=40 fell inside the left black bar → overlay never visible
+    # on the actual content. Corrected values match the CSS overlay at left=2%,
+    # top=4%, width=35% of the video (LD-821 CSS overlay architecture):
+    #   frame_x["b"] = 164 (content_left) + round(2% × 953) = 183 → 185
+    #   frame_y       = round(4% × 720) = 29 → 30
+    #   frame_max_w["b"] = round(35% × 953) = 334 → 340
+    _PHASE_FRAME_X = {"b": 185, "a": 800}
+    _PHASE_FRAME_Y = 30
+    _PHASE_FRAME_MAX_W = {"b": 340, "a": 480}
     _PHASE_FRAME_MAX_H = {"b": 540, "a": 540}
 
     def _handle_phase_b_preview(self, body: dict) -> None:

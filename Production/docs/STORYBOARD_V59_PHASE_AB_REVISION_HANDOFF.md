@@ -391,6 +391,8 @@ Phase G closeout complete.
 
 **S6 (parallel-run + cutover):** This revision MUST land before S6 starts.
 
+**Phase B watercolor animate (2026-05-28 addendum):** Kim-verified fix locked as **LD-823** `WATERCOLOR_ANIMATE_PIL_RENDERER_V1`. LD-470 superseded for implementation. Canonical docs in Directus `prod_reference_docs` ids **235–236**. See `STORYBOARD_V59_S5_5_F_SPEC_v1.md` §15 and `WATERCOLOR_ANIMATE_PROCEDURAL_TECH_SPEC_v2.md`. Re-animate after any handler/compositor deploy.
+
 ---
 
 **End of handoff (v3).**
