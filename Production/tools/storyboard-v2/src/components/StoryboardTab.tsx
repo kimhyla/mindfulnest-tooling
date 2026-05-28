@@ -1851,7 +1851,13 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
       : (trimEndSec !== null && audioDur > 0)
         ? Math.max(0, audioDur - trimEndSec)  // Legacy: reverse-calculate from audio_duration - trim_end
         : 0;
-    if (!isLipsyncPreview) {
+    // MAGIC_VIDEO_AUDIO_GUARD (Bug 2 fix 2026-05-28): magic_video has lipsync
+    // audio baked in. Playing TTS audio on top doubles the dialogue.
+    // Guard matches the lipsync guard pattern: if the video being previewed
+    // already carries its own audio (optIdx === -1 AND magic_video_path valid),
+    // suppress the separate TTS audio element entirely.
+    const hasMagicVideoAudio = previewOptIdx === -1 && _magicVideoOk;
+    if (!isLipsyncPreview && !hasMagicVideoAudio) {
       if (!aud) return;
       aud.currentTime = 0;
     }
@@ -1955,7 +1961,7 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
       }
     }
     safePlay(vid).catch((err) => handlePlayRejection(err, 'effect-play', toastCtx));
-    if (!isLipsyncPreview && aud) {
+    if (!isLipsyncPreview && !hasMagicVideoAudio && aud) {
       if (audioDelaySec > 0) {
         const ms = Math.round(audioDelaySec * 1000);
         const t = window.setTimeout(() => {
@@ -1973,7 +1979,7 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
       if (rafId !== null) cancelAnimationFrame(rafId);
       if (onPlayListener) vid.removeEventListener('play', onPlayListener);
     };
-  }, [previewOptIdx, beat.phase_1?.audio_delay, beat.audio_delay, beat.delay_seconds, beat.phase_1?.trim_start, beat.phase_1?.trim_end, beat.phase_1?.trim_back, beat.trim_in, beat.trim_out, beat.audio_duration_s, safePlay, handlePlayRejection]);
+  }, [previewOptIdx, beat.phase_1?.audio_delay, beat.audio_delay, beat.delay_seconds, beat.phase_1?.trim_start, beat.phase_1?.trim_end, beat.phase_1?.trim_back, beat.trim_in, beat.trim_out, beat.audio_duration_s, _magicVideoOk, safePlay, handlePlayRejection]);
 
   useEffect(() => {
     return () => {
@@ -1989,6 +1995,9 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
 
     const isLipsyncPreview = optIdx === 0;
     const isStillFinalPreview = optIdx === -1;
+    // MAGIC_VIDEO_AUDIO_GUARD (Bug 2 fix 2026-05-28): suppress TTS audio when
+    // the preview video already has baked-in lipsync audio (magic_video case).
+    const hasMagicVideoAudio = isStillFinalPreview && _magicVideoOk;
     const file = isLipsyncPreview
       ? beat.lipsync?.file
       : (isStillFinalPreview
@@ -2004,7 +2013,7 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
     if (previewOptIdx === optIdx) {
       if (vid && !vid.paused) {
         safePause(vid).catch(() => {});
-        if (!isLipsyncPreview) safePause(aud).catch(() => {});
+        if (!isLipsyncPreview && !hasMagicVideoAudio) safePause(aud).catch(() => {});
         // LIPSYNC_PLAY_STOP_20260524: always reset to ▶ state on explicit user
         // stop click. Prior code left previewOptIdx=0 (pause-to-resume intent) but
         // a stalled video has vid.paused===false yet never advances — user sees ⏸
@@ -2018,14 +2027,14 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
           try { vid.currentTime = 0; } catch { /* defensive — some browsers throw on seeks */ }
         }
         safePlay(vid).catch((err) => handlePlayRejection(err, 'toggle-play'));
-        if (!isLipsyncPreview) safePlay(aud).catch((err) => handlePlayRejection(err, 'toggle-play-aud'));
+        if (!isLipsyncPreview && !hasMagicVideoAudio) safePlay(aud).catch((err) => handlePlayRejection(err, 'toggle-play-aud'));
       }
       return;
     }
     safePause(vid).catch(() => {});
-    if (!isLipsyncPreview) safePause(aud).catch(() => {});
+    if (!isLipsyncPreview && !hasMagicVideoAudio) safePause(aud).catch(() => {});
     setPreviewOptIdx(optIdx);
-  }, [previewOptIdx, beat.phase_1?.options, beat.lipsync?.file, beat.final?.file, beat.magic_still_path, beat.magic_video_path, safePlay, safePause, handlePlayRejection]);
+  }, [previewOptIdx, beat.phase_1?.options, beat.lipsync?.file, beat.final?.file, beat.magic_still_path, beat.magic_video_path, beat.magic_video_path_exists, safePlay, safePause, handlePlayRejection]);
 
   const handlePreviewEnded = useCallback(() => {
     // MAGIC_STILL_AUDIO_TAIL_FIX (Kim 2026-05-27): magic_still video (previewOptIdx === -1)
