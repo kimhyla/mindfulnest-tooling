@@ -252,6 +252,36 @@ def handle_phase_watercolor_file(h)-> None:
                )
 
 
+def handle_phase_watercolor_delete(h, body: dict) -> None:
+    """POST /api/phase/watercolor_delete — delete a watercolor file from the library.
+
+    Body: {"key": "<stem>"}   e.g. "hands_rubbing" or "hands_rubbing_animated_20260527-223413"
+
+    Deletes every file in watercolor_library/ whose stem matches key (normally one
+    file, but handles rare sidecar cases). Returns 404 when key not found.
+    """
+    key = (body or {}).get("key")
+    if not key:
+        return h._send_error_v59(
+            400,
+            error_code="MISSING_KEY",
+            error_message="'key' is required",
+            retry_safe=False,
+        )
+    wc_dir = _data_root(h) / "assets" / "watercolor_library"
+    matches = list(wc_dir.glob(f"{key}.*"))
+    if not matches:
+        return h._send_error_v59(
+            404,
+            error_code="NOT_FOUND",
+            error_message=f"no watercolor with key={key!r}",
+            retry_safe=False,
+        )
+    for f in matches:
+        f.unlink()
+    return h._send_json(200, {"status": "deleted", "key": key, "count": len(matches)})
+
+
 def handle_phase_base_clips_list(h)-> None:
 
     """GET /api/phase/base_clips_list — inventory of lipsync base clips.

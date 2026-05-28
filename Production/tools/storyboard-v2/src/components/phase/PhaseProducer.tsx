@@ -502,6 +502,17 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     }
   };
 
+  const onDeleteWatercolor = async (key: string) => {
+    if (!window.confirm(`Delete "${key}" from watercolor library?`)) return;
+    const res = await pathappPatch(activeScope.value, 'phase_watercolor_delete', { key });
+    if (res.ok) {
+      setStatusMsg(`✓ Deleted "${key}"`);
+      await refreshAll();
+    } else {
+      setStatusMsg(`✗ Delete failed: ${res.error ?? res.status}`);
+    }
+  };
+
   const onAnimateThis = (key: string) => {
     // S5 v3.1 — explicit mode=watercolor_animate (LD-470).
     const url = new URL(`${SERVER_BASE}/magic`);
@@ -1142,6 +1153,18 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                   title={wc.kind === 'animation' ? 'already animated' : 'open path-picker to animate'}
                 >
                   {wc.kind === 'animation' ? '✓ animated' : 'Animate this'}
+                </button>
+                <button
+                  type="button"
+                  class="mn-asset-tile-delete"
+                  data-testid={`phase-${phase}-watercolor-delete-${wc.key}`}
+                  aria-label={`Delete ${wc.key}`}
+                  onClick={(e: MouseEvent) => {
+                    e.stopPropagation();
+                    void onDeleteWatercolor(wc.key);
+                  }}
+                >
+                  &times;
                 </button>
               </div>
             ))}

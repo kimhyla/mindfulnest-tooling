@@ -6220,6 +6220,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_phase_suggest_script(body)
             if path == "/api/watercolor/animate":
                 return self._handle_watercolor_animate(body)
+            if path == "/api/phase/watercolor_delete":
+                return self._handle_phase_watercolor_delete(body)
             if path == "/api/stitch_editor/loudnorm":
                 return self._handle_stitch_loudnorm(body)
             # S5 v3.1 endpoints — LDs 468 + 469.
@@ -7252,6 +7254,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_phase_watercolor_file(self) -> None:
         from server_handlers.phases import handle_phase_watercolor_file
         return handle_phase_watercolor_file(self)
+
+    def _handle_phase_watercolor_delete(self, body: dict) -> None:
+        from server_handlers.phases import handle_phase_watercolor_delete
+        return handle_phase_watercolor_delete(self, body)
 
     def _handle_phase_base_clips_list(self) -> None:
         from server_handlers.phases import handle_phase_base_clips_list
