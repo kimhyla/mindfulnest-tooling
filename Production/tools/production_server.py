@@ -8637,6 +8637,31 @@ body {{padding-top:44px!important;}}
                 _annotate_beat_field(beat, "magic_video_path", event_dir)
                 # Bug-B3 — end_frame_path resolves to event_dir/end_frames/.
                 _annotate_beat_field(beat, "end_frame_path", end_frames_dir)
+
+        # Phase sub-object backward-compat flatten (2026-05-28, RC1-cue fix).
+        # Legacy state writes stored phase_b/phase_a fields in a nested
+        # sub-object (state['phase_b']['phase_b_watercolor_cues_json']), while
+        # current code (v2_module_patch, pickPhaseSlice in the React storyboard)
+        # expects flat top-level keys (state['phase_b_watercolor_cues_json']).
+        # Root cause: Kim's production state has real cues at the nested path
+        # (written by a pre-v3-arch path) while the top-level key = "[]"
+        # (never updated). pickPhaseSlice reads top-level → gets "[]" →
+        # latestCuesRef.current = [] → persistCues/RC1 update never fires.
+        # Fix: promote nested → top-level ONLY when top-level is absent or
+        # the sentinel empty "[]". Never overrides real top-level data.
+        # Pure read transform — does NOT write to disk. (DS-22 verified by
+        # smoke agent a86a7aaa0474ae564, Directus row id=6790.)
+        for _ph in ("phase_b", "phase_a"):
+            _sub = state.get(_ph)
+            if not isinstance(_sub, dict):
+                continue
+            for _sub_k, _sub_v in _sub.items():
+                if not _sub_k.startswith("phase_"):
+                    continue
+                _top_v = state.get(_sub_k)
+                if _top_v is None or _top_v == "[]" or _top_v == []:
+                    state[_sub_k] = _sub_v
+
         return state
 
     def _serve_beat_audio(self, beat_id: str) -> None:
