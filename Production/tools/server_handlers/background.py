@@ -965,7 +965,8 @@ def handle_magic_video(h, body: dict)-> None:
     try:
         from PIL import Image as _PILImage
         import numpy as _np_mv  # avoid clobbering outer np imports
-        black_ref = out_dir / f"_tmp_black_ref_{beat_id}_{ts}.png"
+        _req_id = _stdlib_uuid.uuid4().hex[:8]
+        black_ref = out_dir / f"_tmp_black_ref_{beat_id}_{ts}_{_req_id}.png"
         _PILImage.new("RGB", (width, height), (0, 0, 0)).save(black_ref)
     except Exception as exc:
         return h._send_error_v59(
