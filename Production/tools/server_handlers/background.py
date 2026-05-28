@@ -1035,11 +1035,20 @@ def handle_magic_video(h, body: dict)-> None:
         # encode_cmd's -t duration @ 24fps only consumes floor(duration*24)=165 frames,
         # causing encode_proc to close stdin early and raising BrokenPipeError on
         # the 166th encode_proc.stdin.write() call.
+        #
+        # VFR safety (cursor review finding — HIGH severity): fps=24 alone is not
+        # sufficient for variable-framerate sources (Kling / ByteDance LipSync outputs
+        # are often VFR). The fps filter with VFR input can over- or under-count frames
+        # relative to the -t boundary. Adding -frames:v as a hard frame-count cap
+        # guarantees the decode side emits exactly floor(duration*24) frames regardless
+        # of source framerate type (CFR or VFR), eliminating residual BrokenPipeError
+        # risk on VFR inputs.
         "-vf", f"scale={width}:{height},fps=24,format=rgb24",
         "-f", "rawvideo", "-pix_fmt", "rgb24",
         "-vcodec", "rawvideo",
         "-an",                              # no audio in decode stream
         "-t", str(min(vid_duration, 10.0)),
+        "-frames:v", str(int(min(vid_duration, 10.0) * 24)),  # hard cap: exact frame count
         "pipe:1",
     ]
     encode_cmd = [
@@ -1118,7 +1127,16 @@ def handle_magic_video(h, body: dict)-> None:
                 # Do NOT call communicate() here — stdin was just explicitly closed,
                 # so communicate()'s internal flush() would raise ValueError (Python 3.12).
                 # Use wait() + stderr.read() instead.
-                encode_proc.wait(timeout=10)
+                #
+                # Deadlock fix (cursor review finding — MEDIUM severity): if wait()
+                # raises TimeoutExpired and the broad except swallows it, stderr.read()
+                # then blocks forever (process still running, pipe write-end still open).
+                # Fix: catch TimeoutExpired specifically, kill the process, then read.
+                try:
+                    encode_proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    encode_proc.kill()
+                    encode_proc.wait()  # reap after kill (no timeout needed — SIGKILL is unconditional)
                 enc_stderr_broken = encode_proc.stderr.read() if encode_proc.stderr else b""
             except Exception:
                 pass
