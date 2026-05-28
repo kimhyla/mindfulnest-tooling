@@ -216,21 +216,15 @@ def handle_phase_watercolor_file(h)-> None:
                    )
         key = key_list[0]
         wc_dir = _data_root(h) / "assets" / "watercolor_library"
-        # Prefer the newest animated MP4 if one exists.
-        # Animated files are named {key}_animated_{ts}.mp4 (background.py line 3865).
-        # The static glob {key}.* would NOT match these (underscore, not dot, after key).
-        try:
-            animated_candidates = sorted(
-                wc_dir.glob(f"{key}_animated_*.mp4"),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
-            )
-            if animated_candidates:
-                data = animated_candidates[0].read_bytes()
-                h._send_bytes(200, data, "video/mp4", extra_headers={"Cache-Control": "no-store"})
-                return
-        except Exception:
-            pass  # fall through to static lookup
+        # Direct stem lookup only. watercolor_list strips _animated_* from the
+        # thumb_key so thumbnail requests always arrive with the BASE static key
+        # (e.g. "hands_rubbing") — the {key}.* glob correctly returns the PNG.
+        # Stitcher requests arrive with the FULL animated key
+        # (e.g. "hands_rubbing_animated_20260527-223413") after the RC1 cue
+        # update fires — {key}.* returns the MP4. No guessing needed.
+        # (Reverted 2026-05-28: prior animated-glob-first approach broke
+        # thumbnail display because base-key requests began returning MP4,
+        # which <img> cannot render.)
         # Find the file by stem.
         matches = list(wc_dir.glob(f"{key}.*"))
         if not matches:
