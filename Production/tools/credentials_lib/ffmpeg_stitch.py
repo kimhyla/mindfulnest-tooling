@@ -85,7 +85,11 @@ ASSEMBLE_RECIPE_VERSION: str = "v2"  # FADE_THROUGH_BLACK_20260525: bumped to in
 # Bump whenever the overlay filter construction in render_watercolor_overlay
 # changes semantics (animation preset easing, chromakey params, scale behavior).
 # ---------------------------------------------------------------------------
-WATERCOLOR_OVERLAY_RECIPE_VERSION = "wc_v4_magenta_canvas"
+WATERCOLOR_OVERLAY_RECIPE_VERSION = "wc_v5_chromakey_and_loop_fix"
+# v5 (2026-05-28): Two fixes:
+#   (1) chromakey similarity 0.1 → 0.25 — handles YUV quantisation of magenta.
+#   (2) Remove -stream_loop -1 for video inputs; add tpad=stop_mode=clone in
+#       prefilter — stops baked PIL fade envelope from cycling every 2s.
 # v4 (2026-05-27): Switch PIL canvas and chromakey from green (0x00FF00) to
 # magenta (0xFF00FF). Green caused edge-eating during fade-in: semi-transparent
 # pixels blended toward green and were partially removed by chromakey. Magenta
@@ -1136,15 +1140,22 @@ def _wc_build_cue_prefilter(input_idx: int, cue: dict,
     ts_s = float(cue.get("timestamp_ms") or 0) / 1000.0
     chain = []
     if cue_type == "video" and chromakey_for_video:
-        # 0xFF00FF magenta, 0.1 similarity, 0.0 blend — leaves clean edges.
+        # 0xFF00FF magenta, 0.25 similarity, 0.0 blend — leaves clean edges.
         # WHY MAGENTA: green (0x00FF00) caused edge-eating during fade-in because
         # semi-transparent hand pixels blended toward green and were partially
         # removed by chromakey. Magenta doesn't appear in skin tones or watercolor
         # art, so blended fade pixels are never falsely keyed out. (2026-05-27)
         # PIL canvas color matches — both changed together.
-        chain.append("chromakey=0xFF00FF:0.1:0.0")
+        # similarity 0.1 → 0.25 (wc_v5): YUV encoding of magenta (255,0,255) can
+        # round to slightly off-spec values. 0.1 was too tight → magenta leaked
+        # through as pink fringe. 0.25 handles YUV quantisation without eating
+        # genuine skin-tone pixels (which stay well outside the magenta gamut).
+        chain.append("chromakey=0xFF00FF:0.25:0.0")
     # Scale-to-bbox with aspect preserved. No pad -> overlay is native-aspect
     # sized image, placed at (frame_x, frame_y) directly by the overlay filter.
+    # NOTE: the 2× canvas has the SAME aspect ratio as the source PNG, so the
+    # scale-to-bbox result is the same size as the PNG would produce, and the
+    # path position mapping is correct (canvas [0,1] ≡ PNG [0,1]).
     chain.append(
         f"scale=w={frame_max_w}:h={frame_max_h}:force_original_aspect_ratio=decrease"
     )
@@ -1165,6 +1176,16 @@ def _wc_build_cue_prefilter(input_idx: int, cue: dict,
             chain.append(f"fade=t=in:st={ts_s:.3f}:d=0.15:alpha=1")
         elif animation == "gentle_pan":
             chain.append(f"fade=t=in:st={ts_s:.3f}:d=0.5:alpha=1")
+    else:
+        # wc_v5: video cues use one-shot playback + tpad instead of -stream_loop.
+        # The animated MP4 has a baked PIL fade envelope (opacity ramp via magenta
+        # blending). With -stream_loop -1, this envelope cycled every 2s — the
+        # "fade cycling" bug. Fix: remove the loop (input construction change) and
+        # extend the stream with tpad=stop_mode=clone, which repeats the last frame
+        # (near-transparent, post-chromakey) for the rest of the enable window.
+        # The 2s animation plays once (fade-in → rub motion → fade-out) then the
+        # overlay is transparent until the enable window closes.
+        chain.append("tpad=stop_mode=clone:stop_duration=300")
     # For cue_type=="video": PIL-baked fade handles opacity; no ffmpeg fade needed.
     joined = ",".join(chain)
     return f"[{input_idx}:v]{joined}[{label}]"
@@ -1289,8 +1310,12 @@ def render_watercolor_overlay(
                         "-t", f"{cue_hold_s:.3f}",
                         "-i", str(cue_path.resolve())])
         else:
-            cmd.extend(["-stream_loop", "-1",
-                        "-t", f"{cue_hold_s:.3f}",
+            # wc_v5: no -stream_loop. The animated MP4 plays once; tpad in the
+            # prefilter (added to _wc_build_cue_prefilter for video cues) holds
+            # the last frame for 300s so the overlay filter has frames through
+            # the full enable window. -stream_loop -1 caused the baked PIL fade
+            # envelope to cycle every ~2s ("fade cycling" bug).
+            cmd.extend(["-t", f"{cue_hold_s:.3f}",
                         "-i", str(cue_path.resolve())])
 
     # Tmp target computed once (counter 102 LOW fix).
