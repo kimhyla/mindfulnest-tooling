@@ -862,6 +862,11 @@ def serve_asset(h, filename: str)-> None:
             h.send_header("Content-Range", f"bytes {start}-{end}/{size}")
             h.send_header("Accept-Ranges", "bytes")
             h.send_header("Content-Length", str(length))
+            # ASSET_NO_STORE_20260524: prevent browser from serving stale video
+            # content when lipsync files are overwritten in-place (same filename,
+            # same ?v= param). Without no-store, lipsyncMounted (LD-757) keeps the
+            # old buffered file alive indefinitely, causing trim to misbehave.
+            h.send_header("Cache-Control", "no-store")
             # LOG_HYGIENE_SUPPRESS_CLIENT_CANCEL_TRACEBACKS (LD 2026-04-18):
             # Chrome cancels preloaded <video> range requests aggressively
             # (element not .play()'d, scrolled out of view, etc.). This is
@@ -879,7 +884,7 @@ def serve_asset(h, filename: str)-> None:
         body = f.read()
     h._send_bytes(
         200, body, ctype,
-        extra_headers={"Accept-Ranges": "bytes"},
+        extra_headers={"Accept-Ranges": "bytes", "Cache-Control": "no-store"},
     )
 
 

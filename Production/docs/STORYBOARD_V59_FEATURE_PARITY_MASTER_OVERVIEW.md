@@ -125,6 +125,7 @@ Verified by direct code inspection 2026-05-03 (Agent B's report had errors; cros
 - WaveSurfer.js v7 waveform display (per LD-472)
 - Watercolor library drag-drop onto timeline (currently opens new tab via `/magic`)
 - Cue popover (animation type / duration / Delete) per LD-470 procedural watercolor
+- **Phase B watercolor animate:** `WATERCOLOR_ANIMATE_PIL_RENDERER_V1` (LD-823, 2026-05-28) — deterministic PIL center-split rub; tech spec v2 + lessons learned filed in Directus (ref docs 235–236). Supersedes Claude+ffmpeg LD-470 implementation.
 - Voice stem upload UI (no `<input type="file">` anywhere in PhaseProducer)
 - Ambient preset selector inside producer (currently only in Stitcher slots)
 - Phase A 3-clip handling (fly-in / sitting / fly-out — currently only handles ONE base clip)

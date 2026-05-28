@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { RefObject } from 'preact';
+import { Fragment } from 'preact';
 import {
   activeScope,
   activeTargetVideo,
@@ -22,7 +23,8 @@ import {
   scopeKey,
 } from '../state/scope';
 import { apiGet, expectField, pathappPatch, type ExpectFieldSpec } from '../api/client';
-import { SERVER_BASE } from '../api/endpoints';
+import { stitcherRefreshTick } from '../app';
+import { SERVER_BASE, MUTATION_ENDPOINTS as ENDPOINTS } from '../api/endpoints';
 import { makeDropTarget } from '../utils/dragdrop';
 import { Spinner } from './ui/Spinner';
 import { pushToast } from './ui/Toast';
@@ -50,13 +52,26 @@ interface BeatState {
   // S5 v3.1 — magic trail composite paths (per LD-468/469).
   magic_still_path?: string;
   magic_video_path?: string;
+  // Bug-B3 (spec §2 Topic-2, 2026-05-20): file_exists enrichment for orphan-
+  // reference detection. Set by server-side _read_state_with_file_flags to
+  // false when state references a magic_*_path file that no longer exists on
+  // disk. UI gates playback on these so we don't 404 silently.
+  magic_still_path_exists?: boolean;
+  magic_video_path_exists?: boolean;
+  // Topic 1 (spec §2): approved end-frame PNG for Kling start-end pipeline.
+  // Set by /api/beat/preview_end_frame or /api/beat/upload_end_frame.
+  // Consumed by _handle_add_options_startend (refuses if absent/missing).
+  end_frame_path?: string;
+  end_frame_path_exists?: boolean;
   // S5 — preferred video source for magic_video (lipsync, then animation).
   // file_mtime (epoch seconds, integer) is projected by the bootstrap endpoint
   // `_handle_v2_event_state` from os.stat(animation_clips/<lipsync.file>).
   // Compared against audio_regenerated_at to gate the ▶ lipsync play button
   // per LD STORYBOARD_LIPSYNC_BUTTON_FRESHNESS_GATE_V1. Missing → defensive
   // "stale" default (older server, or file disappeared mid-render).
-  lipsync?: { file?: string; status?: string; file_mtime?: number };
+  lipsync?: { file?: string; status?: string; file_mtime?: number; file_exists?: boolean; method?: string; task_id?: string;
+    /** audio_processing block from server — trim_start here is lipsync_start at generation (ts_used). */
+    audio_processing?: { trim_start?: number; audio_delay?: number; [key: string]: unknown } };
   // phase_1 is the server-canonical persistence root for per-beat animation
   // state. `audio_delay` (the Video Lead-in slider) lives here — bootstrap
   // /api/v2/event/<id>/state returns the raw state.json so this is where the
@@ -64,10 +79,12 @@ interface BeatState {
   // STORYBOARD_AUDIO_DELAY_READ_NESTED_PATH_V2.
   phase_1?: {
     selected_option?: number;
-    options?: Array<{ file?: string; status?: string }>;
+    options?: Array<{ file?: string; status?: string; file_exists?: boolean }>;
     audio_delay?: number;
     trim_start?: number;
     trim_end?: number | null;
+    trim_back?: number | null;  // Relative back-trim (seconds from end). Server computes effective_end = raw_dur - trim_back. Added 2026-05-23.
+    fade_after_ms?: number | null;
   };
   // S5.5e — fields read by the beat-level state machine (LD BEAT_LIFECYCLE_STATE_MACHINE_V1).
   // beat.final block is the "is final?" signal per Cursor v8 (NOT a use_as_final boolean).
@@ -77,9 +94,11 @@ interface BeatState {
     source?: string;
     source_option?: number;
     file?: string;
+    file_exists?: boolean;
     approved_at?: string;
     // LD-761 + LD-777: Ken Burns still-as-final config persisted by server.
     image_path?: string;
+    image_path_exists?: boolean;
     cache_key?: string;
     kenburns?: {
       zoom_start?: number;
@@ -90,6 +109,8 @@ interface BeatState {
       pan_y_end?: number;
       duration_s?: number;
     };
+    zoom_applied?: boolean;
+    pre_zoom_file?: string;
   };
   // Trim/delay (LD-160). Optional — older beats may not carry these.
   trim_in?: number;
@@ -195,11 +216,18 @@ type BeatLifecycle =
   | 'final';             // beat.final block present (lipsync done OR use-as-final)
 
 function deriveBeatLifecycle(b: BeatState): BeatLifecycle {
-  // Cursor v8: beat.final block presence IS the "final" signal.
-  if (b.final && b.final.file) return 'final';
+  // Kim 2026-05-20: lipsync_pending MUST take precedence over final. A beat
+  // can have an old final (raw_option from a prior session) while a new
+  // lipsync is in flight — if we return 'final' first, the polling effect
+  // never fires (it's gated on lifecycle === 'lipsync_pending') and the UI
+  // never refetches state to discover the lipsync completed. Symptom: Kim
+  // submits Send for Lipsync, lipsync completes server-side, but no "▶
+  // lipsync" button appears in the UI until manual hard-refresh.
   if (['pending', 'submitted', 'submitting', 'polling'].includes(b.lipsync?.status ?? '')) {
     return 'lipsync_pending';
   }
+  // Cursor v8: beat.final block presence IS the "final" signal.
+  if (b.final && b.final.file) return 'final';
   const hasOptions = !!(b.phase_1?.options && b.phase_1.options.length > 0);
   const hasSelected = b.phase_1?.selected_option !== undefined && hasOptions;
   if (hasSelected) return 'selected';
@@ -231,6 +259,13 @@ function deriveBeatLifecycle(b: BeatState): BeatLifecycle {
 export type LipsyncFreshness = 'fresh' | 'stale';
 
 export function computeLipsyncFreshness(b: BeatState): LipsyncFreshness {
+  // T2 (LD STALE_LIPSYNC_ON_ASSIGN_IMAGE_V1, 2026-05-20): if the server flagged
+  // lipsync.image_changed=true (drag-drop re-assigned image while completed
+  // lipsync exists), surface as stale. Kim drags the old library tile back
+  // to revert — no undo button by design.
+  if ((b.lipsync as { image_changed?: boolean } | undefined)?.image_changed) {
+    return 'stale';
+  }
   const fileMtimeS = b.lipsync?.file_mtime;
   if (typeof fileMtimeS !== 'number' || !Number.isFinite(fileMtimeS)) {
     // Defensive: server didn't include file_mtime → treat as stale so Kim
@@ -270,11 +305,185 @@ interface BeatButtonRowProps {
   onPreviewOption: (optIdx: number) => void;
   /** LD-757: flip parent lipsyncMounted so the lipsync <video> stays mounted. */
   onEnsureLipsyncMounted: () => void;
+  /** T1-Phase 6: active video role for preview_end_frame + upload_end_frame POST bodies. */
+  videoRole: string;
 }
 
-function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, previewOptIdx, onPreviewOption, onEnsureLipsyncMounted }: BeatButtonRowProps) {
+function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, previewOptIdx, onPreviewOption, onEnsureLipsyncMounted, videoRole }: BeatButtonRowProps) {
   const lifecycle = deriveBeatLifecycle(beat);
   const [busy, setBusy] = useState<string | null>(null); // which button is in-flight
+  // Bug-B2 (spec §2 Topic-2, 2026-05-20): gate the ✨ magic badges on
+  // file_exists enrichment (Bug-B3 server-side) so orphan references don't
+  // show a misleading "magic" indicator.
+  const _magicStillOk = !!(beat.magic_still_path && beat.magic_still_path_exists !== false);
+  const _magicVideoOk = !!(beat.magic_video_path && beat.magic_video_path_exists !== false);
+
+  // T1-Phase 6 (spec MAGIC_AND_ENDFRAME_FIXES_20260520_v1, LD-814) — end-frame UI:
+  // Kim previews/uploads the ChatGPT end frame here BEFORE Regen B+C; the
+  // server-side Phase 4 refuses Regen B+C unless an approved end_frame_path
+  // exists on disk. Addendum textarea is one-shot per click (auto-clears).
+  const [endFrameAddendum, setEndFrameAddendum] = useState<string>('');
+  // pendingEndFrameOp keyed by beat_id per cursor R2 (multiple beats may be
+  // in-flight simultaneously; using boolean only-while-this-beat-pending).
+  const [pendingEndFrameOp, setPendingEndFrameOp] = useState<boolean>(false);
+  const _endFrameOk = !!(beat.end_frame_path && beat.end_frame_path_exists !== false);
+  const _endFrameThumbUrl = _endFrameOk
+    ? `${SERVER_BASE}/files?path=${encodeURIComponent(`Production/${eventId}/end_frames/${beat.end_frame_path}`)}&v=${beat._version ?? 0}`
+    : null;
+
+  const _onPreviewEndFrame = async () => {
+    if (pendingEndFrameOp) return;
+    setPendingEndFrameOp(true);
+    try {
+      const url = ENDPOINTS.beat_preview_end_frame;
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          scope_event_id: eventId,
+          scope_video_role: videoRole,  // best-effort; server enforces
+          beat_id: beatId,
+          ...(endFrameAddendum.trim() ? { prompt_addendum: endFrameAddendum.trim() } : {}),
+        }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || !data?.ok) {
+        pushToast({
+          kind: 'error',
+          message: `Preview end frame failed: ${data?.error_message || data?.error || `HTTP ${resp.status}`}`,
+          source: 'preview-end-frame',
+        });
+        return;
+      }
+      pushToast({
+        kind: 'success',
+        message: `End frame ${_endFrameOk ? 'replaced' : 'generated'} → ${data.end_frame_path} (${data.size_bytes} B). Click again to iterate.`,
+        source: 'preview-end-frame',
+      });
+      setEndFrameAddendum('');  // auto-clear per spec §2 T1-Phase 6
+      onMutated();
+    } catch (e) {
+      pushToast({
+        kind: 'error',
+        message: `Preview end frame: ${(e as Error).message}`,
+        source: 'preview-end-frame',
+      });
+    } finally {
+      setPendingEndFrameOp(false);
+    }
+  };
+
+  // Kim 2026-05-21: end-frame upload moved from a file-picker button to a
+  // drop zone that ONLY accepts library tiles. The prior file-picker
+  // bypassed the cropping step — Kim's flow requires the source to be
+  // 4:3 cropped first (in Cropper / library). Now Kim uploads to library →
+  // crops → drags the cropped tile here.
+  const _uploadEndFrameFromB64 = async (
+    fileB64: string,
+    mime: string,
+    sourceLabel: string,
+  ) => {
+    if (pendingEndFrameOp) return;
+    setPendingEndFrameOp(true);
+    try {
+      const resp = await fetch(ENDPOINTS.beat_upload_end_frame, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          scope_event_id: eventId,
+          scope_video_role: videoRole,
+          beat_id: beatId,
+          file_b64: fileB64,
+          mime,
+        }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || !data?.ok) {
+        pushToast({
+          kind: 'error',
+          message: `Upload end frame failed: ${data?.error_message || data?.error || `HTTP ${resp.status}`}`,
+          source: 'upload-end-frame',
+        });
+        return;
+      }
+      pushToast({
+        kind: 'success',
+        message: `End frame ← ${sourceLabel} (${data.size_bytes} B)`,
+        source: 'upload-end-frame',
+      });
+      setEndFrameAddendum('');
+      onMutated();
+    } catch (err) {
+      pushToast({
+        kind: 'error',
+        message: `Upload end frame: ${(err as Error).message}`,
+        source: 'upload-end-frame',
+      });
+    } finally {
+      setPendingEndFrameOp(false);
+    }
+  };
+
+  const _endFrameDropHandlers = makeDropTarget(
+    async (payload) => {
+      if (payload.kind !== 'lib-image') return;
+      const absPath = payload.abs_path;
+      if (!absPath) {
+        pushToast({
+          kind: 'error',
+          message: 'Drop a cropped library tile (master tiles aren\'t cropped to 4:3).',
+          source: 'end-frame-drop-no-path',
+        });
+        return;
+      }
+      try {
+        // /api/cr/full returns JSON {ok, data_uri: "data:image/webp;base64,<...>"}
+        // — NOT raw binary. Parse the data URI to extract mime + base64.
+        const resp = await fetch(
+          `${SERVER_BASE}/api/cr/full?abs_path=${encodeURIComponent(absPath)}`,
+        );
+        if (!resp.ok) {
+          pushToast({
+            kind: 'error',
+            message: `Couldn't read library tile (HTTP ${resp.status})`,
+            source: 'end-frame-drop-fetch',
+          });
+          return;
+        }
+        const data = await resp.json().catch(() => ({}));
+        const dataUri: string | undefined = data?.data_uri;
+        if (!dataUri || !dataUri.startsWith('data:')) {
+          pushToast({
+            kind: 'error',
+            message: `Library tile fetch returned unexpected payload (no data_uri).`,
+            source: 'end-frame-drop-noduri',
+          });
+          return;
+        }
+        // Format: "data:image/webp;base64,<b64>"
+        const commaIdx = dataUri.indexOf(',');
+        const headerPart = commaIdx >= 0 ? dataUri.slice(5, commaIdx) : 'image/webp;base64';
+        const fileB64 = commaIdx >= 0 ? dataUri.slice(commaIdx + 1) : '';
+        const mime = headerPart.split(';')[0] || 'image/webp';
+        if (!fileB64) {
+          pushToast({
+            kind: 'error',
+            message: 'Library tile data_uri had no base64 body.',
+            source: 'end-frame-drop-empty',
+          });
+          return;
+        }
+        await _uploadEndFrameFromB64(fileB64, mime, payload.lib_key);
+      } catch (err) {
+        pushToast({
+          kind: 'error',
+          message: `End-frame drop failed: ${(err as Error).message}`,
+          source: 'end-frame-drop-error',
+        });
+      }
+    },
+    (p) => p.kind === 'lib-image',
+  );
 
   // LD-739/740 GREENFIELD: silent-click-on-busy-button class kill.
   // Synchronous handler throws are caught and surfaced as an error toast —
@@ -303,8 +512,16 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
       });
     }
   };
-  const [trimIn, setTrimIn] = useState<string>(String(beat.trim_in ?? '0.0'));
-  const [trimOut, setTrimOut] = useState<string>(String(beat.trim_out ?? 'full'));
+  // LD-756 TRIM_INPUT_SEMANTICS_SECONDS_FROM_END_V1 (locked 2026-05-17,
+  // shipped 2026-05-20): UI inputs are seconds-FROM-FRONT + seconds-FROM-END
+  // so Kim doesn't have to compute total-duration minus desired-end-time.
+  // Server still stores absolute trim_start + trim_end timestamps. Conversion
+  // happens at 3 client-side points: hydration useEffect (below), onApplyTrim,
+  // onPreviewTrim. Duration source: beat.audio_duration_s (populated after
+  // first TTS regen; lipsync video duration is audio_duration_s + ~0.4s
+  // tailroom per LD-779 — close enough for trim semantics).
+  const [trimFrontSec, setTrimFrontSec] = useState<string>('0.0');
+  const [trimBackSec, setTrimBackSec] = useState<string>('0.0');
   // L5 fix 2026-05-16 per STORYBOARD_AUDIO_DELAY_READ_NESTED_PATH_V2: server
   // persists at beat.phase_1.audio_delay (nested) and the bootstrap
   // /api/v2/event/<id>/state response returns the raw state.json — so the
@@ -339,13 +556,34 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
         ?? '0.0',
     ));
   }, [beat.phase_1?.audio_delay, beat.audio_delay, beat.delay_seconds]);
+  // LD-756 hydration: front_sec = trim_start (absolute = relative-from-start).
   useEffect(() => {
-    setTrimIn(String(beat.phase_1?.trim_start ?? beat.trim_in ?? '0.0'));
+    const start = beat.phase_1?.trim_start ?? beat.trim_in;
+    setTrimFrontSec(start === null || start === undefined ? '0.0' : String(start));
   }, [beat.phase_1?.trim_start, beat.trim_in]);
+  // LD-756 hydration: back_sec from trim_back (new canonical, relative) or duration - trim_end (legacy absolute).
   useEffect(() => {
-    const out = beat.phase_1?.trim_end ?? beat.trim_out;
-    setTrimOut(out === null || out === undefined ? 'full' : String(out));
-  }, [beat.phase_1?.trim_end, beat.trim_out]);
+    // New canonical path: trim_back is stored directly as relative seconds — no reverse-calculation.
+    const trimBack = beat.phase_1?.trim_back;
+    if (typeof trimBack === 'number' && Number.isFinite(trimBack) && trimBack > 0) {
+      setTrimBackSec(trimBack.toFixed(2));
+      return;
+    }
+    // Legacy fallback: trim_end is absolute timestamp; reverse-calculate back offset.
+    const trimEnd = beat.phase_1?.trim_end ?? beat.trim_out;
+    if (trimEnd === null || trimEnd === undefined || trimEnd === 'full') {
+      setTrimBackSec('0.0');
+      return;
+    }
+    const dur = beat.audio_duration_s;
+    if (typeof dur === 'number' && Number.isFinite(dur)) {
+      const back = Math.max(0, dur - Number(trimEnd));
+      setTrimBackSec(back.toFixed(2));
+    } else {
+      // Duration not yet known — leave as 0.0 until audio metadata arrives.
+      setTrimBackSec('0.0');
+    }
+  }, [beat.phase_1?.trim_back, beat.phase_1?.trim_end, beat.trim_out, beat.audio_duration_s]);
 
   // ----------------------------------------------------------------
   // Polling (animate + lipsync)
@@ -535,8 +773,23 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
       { key: 'status', type: 'string' },
       { key: 'beat', type: 'string' },
     ]);
+  // 🐦 Idle LipSync — Kling i2v idle (same start+end frame) → Kling LipSync.
+  // Avoids ByteDance hallucinated arm-gestures on cartoon bird wings.
+  // Server: /api/lipsync_idle → vendor_jobs.handle_lipsync_idle (async, fires + returns).
+  const onLipsyncIdle = () =>
+    runMutation('Idle LipSync', 'lipsync_idle', {}, [
+      { key: 'status', type: 'string' },
+    ]);
   const onUseAsFinal = () =>
     runMutation('Use as Final', 'beat_use_as_final', {}, [
+      { key: 'status', equals: 'ok' },
+      { key: 'beat', type: 'string' },
+    ]);
+  // Kim 2026-05-20 follow-up: explicit "Use Lipsync as Final" — sets
+  // final.source = 'lipsync', final.file = lipsync.file. Server-side support
+  // added in _handle_use_as_final via body.source='lipsync'.
+  const onUseLipsyncAsFinal = () =>
+    runMutation('Use Lipsync as Final', 'beat_use_as_final', { source: 'lipsync' }, [
       { key: 'status', equals: 'ok' },
       { key: 'beat', type: 'string' },
     ]);
@@ -559,60 +812,136 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
       { key: 'ok', equals: true },
       { key: 'beat', type: 'string' },
     ]);
+  const onToggleZoom = () => {
+    runMutation(
+      beat.final?.zoom_applied ? 'Remove Zoom' : 'Apply Zoom',
+      'beat_zoom',
+      {},
+    );
+  };
   const trimPreviewListenerRef = useRef<((this: HTMLVideoElement, ev: Event) => void) | null>(null);
-  const onPreviewTrim = () => {
+  const onPreviewTrim = async () => {
+    // BUG-D fix (Kim 2026-05-20): Preview Trim was racing — calling
+    // ensureLipsyncMounted (setState, async) then immediately querySelector
+    // (DOM not yet updated). Also wrong source: per LD-749 trim is
+    // post-lipsync, so video.src must be lipsync.file not final.file.
+    // Lipsync existence is the precondition; surfaces a clear error toast
+    // if missing rather than silent "playback blocked".
+    if (!beat.lipsync?.file || beat.lipsync.file_exists === false) {
+      pushToast({
+        kind: 'error',
+        message: 'Preview Trim needs a completed lipsync — click Send for Lipsync first',
+        source: `beat-${index}-trim-preview-no-lipsync`,
+      });
+      return;
+    }
     onEnsureLipsyncMounted();
-    const video = document.querySelector(
-      `[data-testid="beat-${index}-lipsync-video"]`,
-    ) as HTMLVideoElement | null;
+    // Wait for the lipsync <video> to mount in the DOM (setLipsyncMounted
+    // triggers re-render asynchronously). Poll up to 500ms.
+    const findVideo = (): HTMLVideoElement | null =>
+      document.querySelector(`[data-testid="beat-${index}-lipsync-video"]`) as HTMLVideoElement | null;
+    let video = findVideo();
+    if (!video) {
+      const deadline = Date.now() + 500;
+      while (Date.now() < deadline) {
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+        video = findVideo();
+        if (video) break;
+      }
+    }
     if (!video) {
       pushToast({
         kind: 'error',
-        message: 'Preview Trim: video element not found',
+        message: 'Preview Trim: video element did not mount within 500ms',
         source: `beat-${index}-trim-preview-missing`,
       });
       return;
     }
-    if (beat.final?.file) {
-      const finalSrc = `${SERVER_BASE}/asset/${beat.final.file}?v=${beat._version ?? 0}`;
-      if (video.src !== finalSrc) {
-        video.src = finalSrc;
+    // LD-749 post-lipsync trim: source is lipsync.file (NOT final.file).
+    const lipsyncSrc = `${SERVER_BASE}/asset/${beat.lipsync.file}?v=${beat._version ?? 0}`;
+    const needsSrcSwap = video.src !== lipsyncSrc;
+    if (needsSrcSwap) {
+      video.src = lipsyncSrc;
+      // Wait for the new src to reach loadedmetadata before seeking + playing.
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const onReady = () => { video!.removeEventListener('loadedmetadata', onReady); video!.removeEventListener('error', onErr); resolve(); };
+          const onErr = () => { video!.removeEventListener('loadedmetadata', onReady); video!.removeEventListener('error', onErr); reject(new Error('lipsync video load error')); };
+          video.addEventListener('loadedmetadata', onReady, { once: true });
+          video.addEventListener('error', onErr, { once: true });
+          // Defensive timeout — don't hang the click handler indefinitely.
+          setTimeout(() => { video!.removeEventListener('loadedmetadata', onReady); video!.removeEventListener('error', onErr); reject(new Error('lipsync video load timeout')); }, 5000);
+        });
+      } catch (err) {
+        pushToast({
+          kind: 'error',
+          message: `Preview Trim: ${err instanceof Error ? err.message : String(err)}`,
+          source: `beat-${index}-trim-preview-load`,
+        });
+        return;
       }
     }
-    const tIn = parseFloat(trimIn);
-    const trimInSec = isNaN(tIn) ? 0 : Math.max(0, tIn);
-    const tOut = trimOut === 'full' ? null : parseFloat(trimOut);
+    // LD-756 conversion: front input is seconds-from-front (= absolute trim_in).
+    // back input is seconds-from-end, so absolute trim_out = duration - back.
+    const frontSec = parseFloat(trimFrontSec);
+    const trimInSec = isNaN(frontSec) ? 0 : Math.max(0, frontSec);
+    const backSec = parseFloat(trimBackSec);
+    const backSecSafe = isNaN(backSec) ? 0 : Math.max(0, backSec);
+    let tOut: number | null = null;
+    if (backSecSafe > 0) {
+      const dur = Number.isFinite(video!.duration) ? video!.duration : (beat.audio_duration_s ?? NaN);
+      if (Number.isFinite(dur)) {
+        tOut = Math.max(trimInSec + 0.01, dur - backSecSafe);
+      }
+    }
     if (trimPreviewListenerRef.current) {
       video.removeEventListener('timeupdate', trimPreviewListenerRef.current);
     }
     const onTimeUpdate = () => {
-      const end = tOut === null || isNaN(tOut)
-        ? (Number.isFinite(video.duration) ? video.duration : Infinity)
+      const end = tOut === null
+        ? (Number.isFinite(video!.duration) ? video!.duration : Infinity)
         : tOut;
-      if (video.currentTime >= end) {
-        video.pause();
-        video.removeEventListener('timeupdate', onTimeUpdate);
+      if (video!.currentTime >= end) {
+        video!.pause();
+        video!.removeEventListener('timeupdate', onTimeUpdate);
         trimPreviewListenerRef.current = null;
       }
     };
     trimPreviewListenerRef.current = onTimeUpdate;
     video.currentTime = trimInSec;
     video.addEventListener('timeupdate', onTimeUpdate);
-    void video.play().catch(() => {
+    try {
+      await video.play();
+    } catch (err) {
       pushToast({
         kind: 'error',
-        message: 'Preview Trim: playback blocked',
+        message: `Preview Trim: ${err instanceof Error ? err.message : 'playback blocked'}`,
         source: `beat-${index}-trim-preview-play`,
       });
-    });
+    }
   };
   const onApplyTrim = () => {
-    const tIn = parseFloat(trimIn);
-    const tOut = trimOut === 'full' ? null : parseFloat(trimOut);
-    // beats_legacy.py::handle_beat_trim — beat/trim_start[/trim_end]
+    // LD-756 conversion: front = absolute trim_in. back > 0 means trim N
+    // seconds from the back → absolute trim_out = duration - back. back == 0
+    // means no end trim → trim_out = null. Fail loud per spec if user typed
+    // back > 0 without a known duration (audio_duration_s populates after
+    // first TTS regen; if missing, prompt for that).
+    const frontSec = parseFloat(trimFrontSec);
+    const front = isNaN(frontSec) ? 0 : Math.max(0, frontSec);
+    const backSec = parseFloat(trimBackSec);
+    const back = isNaN(backSec) ? 0 : Math.max(0, backSec);
+    // BUG FIX (2026-05-23): previously computed trim_out = audio_duration_s - back, which is
+    // WRONG because audio_duration_s ≠ video clip duration. For beats with short audio on a long
+    // clip (e.g. 1.52s audio on 5s clip, back=1.01 → trim_out=0.51), the server received an
+    // absurdly small trim window and either errored or silently dropped the back-trim intent.
+    //
+    // Fix: send trim_back (relative seconds from end) so the server computes
+    // effective_end = raw_dur - trim_back using ffprobe — no video duration needed here.
+    // beats_legacy.py::handle_beat_trim stores trim_back + clears stale trim_end.
+    // vendor_jobs.py reads trim_back to set correct effective_end for lipsync submission.
     return runMutation('Trim', 'beat_trim', {
-      trim_in: isNaN(tIn) ? 0 : tIn,
-      trim_out: tOut,
+      trim_in: front,
+      trim_back: back,  // 0 = no back trim; server clears stale trim_end
     }, [
       { key: 'beat', type: 'string' },
       { key: 'trim_start', type: 'number' },
@@ -633,26 +962,58 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
   // without audio yet (resolution/Kling image-first pipeline per Rule 8.3).
   const showAnimate = lifecycle === 'audio_generated' || (lifecycle === 'draft' && !!beat.image_path);
   // count=2 is product-locked per server default; label reflects this.
-  const showAddOptions = ['animated', 'selected', 'lipsync_pending', 'final'].includes(lifecycle);
+  // Include 'audio_generated' so the end-frame drop zone + Generate end frame
+  // button are available BEFORE the first Animate click — lets Kim pre-load an
+  // end frame and have it used on the very first generation (fresh beats after
+  // storyboard reset land at audio_generated, not animated).
+  const showAddOptions = ['draft', 'audio_generated', 'animated', 'selected', 'lipsync_pending', 'final'].includes(lifecycle);
   const showSelectedOptionRadios = ['animated', 'selected', 'lipsync_pending', 'final'].includes(lifecycle);
-  // In final state: only show Lipsync if the beat was finalised via lipsync
-  // (not use-as-final) AND an option is selected. Loose != null catches both
-  // null and undefined (server may write either for unset selected_option).
+  // Kim 2026-05-20 follow-up: previous gate hid the lipsync button whenever
+  // lifecycle was 'final' AND final.source != 'lipsync' (e.g. raw_option from
+  // a →A swap, OR still_image from Use-as-Final Ken Burns). That blocked the
+  // legitimate workflow of UPGRADING a finalized raw beat into a lipsync.
+  //
+  // New gate: show whenever ANY animation option is selected. The button's
+  // label adapts to state (Send for Lipsync vs ▶ lipsync vs ▶ ⚠ stale lipsync)
+  // so it surfaces the right action regardless of whether the beat is pre-
+  // lipsync, mid-lipsync, or already lipsynced. The only hide cases now are:
+  //   - lifecycle 'draft' / 'audio_generated' / 'animated' (nothing selected yet)
+  //   - selected_option not set (defensive — shouldn't happen for selected+)
+  //
+  // Loose != null catches both null and undefined (server may write either
+  // for unset selected_option).
   const showLipsync = (
-    ['selected', 'lipsync_pending'].includes(lifecycle) ||
-    (lifecycle === 'final' && beat.final?.source === 'lipsync')
-  ) && beat.phase_1?.selected_option != null;
+    beat.phase_1?.selected_option != null &&
+    ['selected', 'lipsync_pending', 'final'].includes(lifecycle)
+  );
   const showUseAsFinal = ['audio_generated', 'animated', 'selected'].includes(lifecycle);
   const showPreview = lifecycle !== 'draft';
 
   const optionCount = beat.phase_1?.options?.length ?? 0;
   const selectedOption = beat.phase_1?.selected_option ?? null;
-  // F-BEAT-PREVIEW-001: pre-lipsync composite preview only — never on lipsync outputs.
+  // Which file will be submitted to lipsync (needed for button tooltip + label).
+  const selectedOptFile: string | null =
+    selectedOption !== null && beat.phase_1?.options?.[selectedOption - 1]?.file
+      ? (beat.phase_1!.options![selectedOption - 1].file ?? null)
+      : null;
+  // F-BEAT-PREVIEW-001 / COMPOSITE_PREVIEW_PERSISTENT_20260524:
+  // Show composite preview (animation + delayed TTS) whenever a selected animation
+  // option exists — regardless of whether lipsync.file is present.
+  // Kim uses the composite preview as a timing reference tool BEFORE resending
+  // lipsync, including when reviewing an existing lipsync to decide if delay needs
+  // adjusting. Hiding it once lipsync.file exists breaks this workflow.
+  //
+  // Rule: show composite preview if:
+  //   • lifecycle is past 'selected' (animation options exist)
+  //   • selected_option is set (there is a clip to preview)
+  //   • final.source is NOT 'still_image' (still-as-final has no animation to preview)
+  //
+  // The BeatCompositePreview component itself returns null when videoSrc/audioSrc
+  // are missing, so no additional guard needed here.
   const showCompositePreview = (
     ['animated', 'selected', 'lipsync_pending', 'final'].includes(lifecycle) &&
     beat.phase_1?.selected_option != null &&
-    !beat.lipsync?.file &&
-    beat.final?.source !== 'lipsync'
+    beat.final?.source !== 'still_image'
   );
 
   return (
@@ -664,7 +1025,14 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
           {Array.from({ length: optionCount }).map((_, i) => {
             const oi = i + 1;
             const opt = beat.phase_1?.options?.[i];
-            const optReady = !!(opt?.file && opt?.status !== 'pending' && opt?.status !== 'failed');
+            // Bug fix 2026-05-19: server-enriched `file_exists` reflects
+            // disk reality. If state references an option file Kim has
+            // manually archived (e.g., still-as-final supersession), the
+            // ▶ preview would 404 and the <video> would surface a generic
+            // "codec/format not supported" toast. Treat archived options
+            // as not-ready and disable ▶ + →A with an explicit label.
+            const fileMissing = Boolean(opt?.file) && opt?.file_exists === false;
+            const optReady = !!(opt?.file && !fileMissing && opt?.status !== 'pending' && opt?.status !== 'failed');
             return (
               <span key={oi} class="mn-beat-option-pair">
                 <button
@@ -674,7 +1042,15 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
                   onClick={guardedClick('Select option', () => onSelectOption(oi))}
                   aria-disabled={busy !== null}
                 >
-                  opt {oi}{selectedOption === oi ? ' ✓' : ''}
+                  opt {oi}{selectedOption === oi ? ' ✓' : ''}{fileMissing ? ' (archived)' : ''}{
+                    /* Kim 2026-05-20 follow-up: 🏁 FINAL badge next to the
+                       option that is currently the Stitcher's source video
+                       for this beat. final.source must be raw_option AND
+                       final.source_option === oi. */
+                    beat.final?.source === 'raw_option' && beat.final?.source_option === oi
+                      ? ' 🏁 FINAL'
+                      : ''
+                  }
                 </button>
                 <button
                   type="button"
@@ -682,8 +1058,8 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
                   data-testid={`beat-${index}-preview-option-${oi}`}
                   onClick={guardedClick('Preview option', () => onPreviewOption(oi))}
                   aria-disabled={busy !== null}
-                  disabled={!opt?.file}
-                  title={`Preview with audio: opt ${oi}`}
+                  disabled={!opt?.file || fileMissing}
+                  title={fileMissing ? `opt ${oi} was archived — regenerate to restore` : `Preview with audio: opt ${oi}`}
                 >
                   {previewOptIdx === oi ? '⏸' : '▶'}
                 </button>
@@ -695,7 +1071,7 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
                     onClick={guardedClick('Move to A', () => onSwapToA(oi))}
                     aria-disabled={busy !== null}
                     disabled={!optReady}
-                    title={optReady ? `Promote opt ${oi} to slot A` : 'Option must finish generating first'}
+                    title={optReady ? `Promote opt ${oi} to slot A` : fileMissing ? 'Option file was archived' : 'Option must finish generating first'}
                   >→A</button>
                 ) : null}
               </span>
@@ -714,13 +1090,149 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
       ) : null}
       {showAddOptions ? (
         <span class="mn-beat-button-group" data-testid={`beat-${index}-regen-group`}>
+          {/* T1-Phase 6 — end-frame iteration controls. Kim previews/uploads
+              an end frame FIRST, then clicks Regen B+C. Server (Phase 4)
+              refuses Regen B+C unless approved end_frame_path exists. */}
+          <button
+            type="button"
+            class="mn-btn mn-btn-small"
+            data-testid={`beat-${index}-preview-end-frame`}
+            onClick={_onPreviewEndFrame}
+            disabled={pendingEndFrameOp || busy !== null}
+            title={
+              _endFrameOk
+                ? "Re-generate the end frame via ChatGPT, REPLACING the current one. If you typed an addendum, it'll be appended to the canonical prompt for this single call. ~$0.04 per click — click as many times as needed."
+                : "Generate the end frame via ChatGPT (the 'second image' Kling animates toward). ~$0.04. If you've typed an addendum, it'll be appended for this call only."
+            }
+          >
+            {pendingEndFrameOp
+              ? <><Spinner size="sm" inline /> …</>
+              : _endFrameOk
+                  ? '🔄 Re-generate end frame'
+                  : '✏ Generate end frame'}
+          </button>
+          <div
+            class={`mn-end-frame-drop mn-drop-target${pendingEndFrameOp ? ' is-busy' : ''}`}
+            data-testid={`beat-${index}-end-frame-drop`}
+            title="Drag a 4:3-cropped library tile here to use it as the end frame. (Upload to Library → Crop in Cropper → drag the cropped tile here.) Free."
+            onDragOver={_endFrameDropHandlers.onDragOver}
+            onDragLeave={_endFrameDropHandlers.onDragLeave}
+            onDrop={_endFrameDropHandlers.onDrop}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              minWidth: '140px',
+              padding: '6px 10px',
+              border: '1.5px dashed #4a8a4a',
+              borderRadius: '4px',
+              fontSize: '11px',
+              color: '#a8d8a8',
+              background: 'rgba(74, 138, 74, 0.08)',
+              cursor: 'copy',
+            }}
+          >
+            {pendingEndFrameOp ? (
+              <><Spinner size="sm" inline /> …</>
+            ) : (
+              '📥 Drop library tile (4:3) here'
+            )}
+          </div>
+          <input
+            type="text"
+            class="mn-beat-trim-input"
+            data-testid={`beat-${index}-end-frame-addendum`}
+            value={endFrameAddendum}
+            onInput={(e) => setEndFrameAddendum((e.target as HTMLInputElement).value)}
+            disabled={pendingEndFrameOp || busy !== null}
+            placeholder="e.g. ensure all accessories remain (glasses, backpack)"
+            title="One-shot prompt addendum sent to ChatGPT. Clears after each Preview click."
+            style={{ minWidth: '320px', marginLeft: '4px' }}
+          />
+          {_endFrameOk && _endFrameThumbUrl ? (
+            // Kim 2026-05-20 follow-up: hover-to-enlarge so the 50x50 thumb
+            // can be inspected at a useful size. wrapper.hover triggers the
+            // child .mn-end-frame-large to render at 360x360 fixed-position
+            // overlay. Click thumb in a new tab is the fallback for an even
+            // bigger view (browser handles via target="_blank").
+            <a
+              class="mn-end-frame-thumb-wrap"
+              href={_endFrameThumbUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              data-testid={`beat-${index}-end-frame-thumb-link`}
+              title={`Current end frame: ${beat.end_frame_path}\nHover to enlarge · Click to open full-size in a new tab.\nTo replace: edit the addendum field + click '🔄 Re-generate end frame' (or drag a 4:3-cropped library tile onto the drop zone to use your own).`}
+              style={{
+                position: 'relative',
+                display: 'inline-block',
+                marginLeft: '4px',
+                verticalAlign: 'middle',
+                lineHeight: 0,
+              }}
+            >
+              <img
+                src={_endFrameThumbUrl}
+                alt={`end frame for ${beatId}`}
+                data-testid={`beat-${index}-end-frame-thumb`}
+                class="mn-end-frame-thumb"
+                style={{
+                  width: '50px',
+                  height: '50px',
+                  objectFit: 'cover',
+                  border: '1px solid #4a8a4a',
+                  display: 'block',
+                }}
+              />
+              <img
+                src={_endFrameThumbUrl}
+                alt=""
+                aria-hidden="true"
+                class="mn-end-frame-large"
+                style={{
+                  // Resting state: invisible + non-interactive + flat scale.
+                  // Hover CSS lifts opacity to 1 (with !important so this inline
+                  // style can't accidentally pin it back to 0). Using opacity
+                  // (not display:none) so the element is always laid out and
+                  // can't be hidden by a parent overflow clip. position:fixed
+                  // attaches to viewport — completely escapes any ancestor
+                  // overflow:hidden, scroll, transform, etc.
+                  position: 'fixed',
+                  top: '80px',
+                  right: '80px',
+                  width: '400px',
+                  height: '400px',
+                  objectFit: 'contain',
+                  border: '3px solid #4a8a4a',
+                  background: '#000',
+                  borderRadius: '6px',
+                  boxShadow: '0 12px 32px rgba(0,0,0,0.7)',
+                  opacity: 0,
+                  visibility: 'hidden',
+                  transition: 'opacity 120ms, visibility 120ms',
+                  zIndex: 1000,
+                  pointerEvents: 'none',
+                }}
+              />
+            </a>
+          ) : (
+            <span
+              class="mn-dim"
+              data-testid={`beat-${index}-end-frame-empty`}
+              style={{ fontSize: '10px', marginLeft: '4px', fontStyle: 'italic' }}
+            >
+              (no end frame yet)
+            </span>
+          )}
           <button
             type="button"
             class="mn-btn mn-btn-small"
             data-testid={`beat-${index}-add-options`}
             onClick={guardedClick('Add options', onAddOptions)}
-            aria-disabled={busy !== null}
-            title="Keep Option A, generate 2 fresh alternatives (B & C)"
+            disabled={pendingEndFrameOp || !_endFrameOk}
+            aria-disabled={busy !== null || pendingEndFrameOp || !_endFrameOk}
+            title={_endFrameOk
+              ? "Keep Option A, generate 2 fresh alternatives (B & C) using approved end frame. ~$0.90"
+              : "Preview or upload an end frame first (T1-Phase 4 server refuses without one)"}
           >
             🔄 Regenerate B + C
           </button>
@@ -787,12 +1299,48 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
             onClick={guardedClick('Lipsync', onLipsync)}
             aria-disabled={busy !== null}
             disabled={lifecycle === 'lipsync_pending'}
-            title="Send selected option for ByteDance lipsync"
+            title={
+              // Always show which option + filename will be submitted — prevents
+              // the "lipsynced wrong option after regen" class of errors (Kim 2026-05-24).
+              beat.lipsync?.file
+                ? selectedOptFile
+                    ? `Re-send to Kling lipsync using opt ${selectedOption} (${selectedOptFile}) — replaces current lipsync`
+                    : "Re-send the selected option to Kling lipsync (replaces the current lipsync render)"
+                : selectedOptFile
+                    ? `Send to Kling lipsync using opt ${selectedOption} (${selectedOptFile})`
+                    : "Send the selected option to Kling lipsync (generates the first lipsync mp4 for this beat)"
+            }
           >
             {lifecycle === 'lipsync_pending' ? (
               <><Spinner size="sm" inline /> in progress</>
             ) : (
-              busy === 'Lipsync' ? <><Spinner size="sm" inline /> …</> : (lifecycle === 'final' ? '👄 Resend Lipsync' : '👄 Lipsync')
+              busy === 'Lipsync' ? <><Spinner size="sm" inline /> …</> : (
+                // Always include which option number in Resend label so Kim can see
+                // at a glance if she needs to select a different option first.
+                beat.lipsync?.file
+                  ? `👄 Resend Lipsync${selectedOption !== null ? ` (opt ${selectedOption})` : ''}`
+                  : '👄 Send for Lipsync'
+              )
+            )}
+          </button>
+        ) : null}
+        {/* 🐦 Idle LipSync — available on ALL beats.
+            Runs Kling i2v (same start+end = idle) → ByteDance LipSync.
+            Useful for any beat where you want minimal animation + clean lipsync
+            (originally designed for Chipper wing/arm hallucination avoidance,
+            but equally valid for Tessa or any creature). */}
+        {lifecycle !== 'lipsync_pending' ? (
+          <button
+            type="button"
+            class="mn-btn mn-btn-small"
+            style="background:#1a6b5c;color:#fff"
+            data-testid={`beat-${index}-lipsync-idle`}
+            onClick={guardedClick('Idle LipSync', onLipsyncIdle)}
+            aria-disabled={busy !== null}
+            title="Kling idle animation (same start+end frame) → ByteDance LipSync. Minimal head motion, clean mouth sync."
+          >
+            {busy === 'Idle LipSync' ? <><Spinner size="sm" inline /> …</> : (
+              beat.lipsync?.method === 'idle_kling_lipsync' ? '🐦 Re-Idle LipSync' : '🐦 Idle LipSync'
             )}
           </button>
         ) : null}
@@ -805,28 +1353,37 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
           (() => {
             const freshness = computeLipsyncFreshness(beat);
             const isStale = freshness === 'stale';
+            // BUG-C fix (Kim 2026-05-20): stale lipsync should STILL be
+            // playable — Kim wants to see prior work even when an image
+            // was reassigned or audio was regenerated. Stale only affects
+            // the LABEL (warning prefix), not the disabled state.
             return (
               <button
                 type="button"
                 class={isStale ? 'mn-btn mn-btn-small mn-btn-stale' : 'mn-btn mn-btn-small'}
                 data-testid={`beat-${index}-lipsync-play`}
                 data-stale={isStale ? 'true' : 'false'}
-                onClick={isStale ? undefined : () => {
+                onClick={() => {
                   onEnsureLipsyncMounted();
                   onPreviewOption(0);
                 }}
-                disabled={isStale}
                 title={
                   isStale
-                    ? 'Stale lipsync: cached output is older than the current audio. Re-run lipsync to refresh.'
+                    ? 'Stale lipsync: cached output may not match the current image/audio. Click to play the prior render anyway; click Regen B+C → Send for Lipsync to refresh.'
                     : 'Preview lipsync result (video has audio baked in)'
                 }
               >
                 {isStale
-                  ? '⚠ stale lipsync — re-run'
+                  ? (previewOptIdx === 0 ? '⏸ ⚠ stale lipsync' : '▶ ⚠ stale lipsync')
                   : previewOptIdx === 0
                   ? '⏸ lipsync'
-                  : '▶ lipsync'}
+                  : '▶ lipsync'}{
+                  /* Kim 2026-05-20: 🏁 FINAL badge when the Stitcher's
+                     final source is this lipsync mp4. */
+                  beat.final?.source === 'lipsync' && beat.final?.file === beat.lipsync?.file
+                    ? ' 🏁 FINAL'
+                    : ''
+                }
               </button>
             );
           })()
@@ -843,6 +1400,53 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
             {busy === 'Use as Final' ? <><Spinner size="sm" inline /> …</> : '✓ Use as Final'}
           </button>
         ) : null}
+        {/* Kim 2026-05-20 follow-up: "Use Lipsync as Final" button — appears
+            whenever a completed lipsync exists AND final isn't already lipsync.
+            Lets Kim promote the lipsync mp4 to be the canonical final video
+            for the Stitcher (was previously not possible — Use as Final
+            always picked the selected raw_option). */}
+        {beat.lipsync?.status === 'completed' && beat.lipsync?.file && beat.final?.source !== 'lipsync' ? (
+          <button
+            type="button"
+            class="mn-btn mn-btn-small mn-btn-primary"
+            data-testid={`beat-${index}-use-lipsync-as-final`}
+            onClick={guardedClick('Use Lipsync as Final', onUseLipsyncAsFinal)}
+            aria-disabled={busy !== null}
+            title="Promote the lipsync mp4 to be the Stitcher's final source for this beat (overwrites any raw_option/still_image final)."
+          >
+            {busy === 'Use Lipsync as Final' ? <><Spinner size="sm" inline /> …</> : '👄 Use Lipsync as Final'}
+          </button>
+        ) : null}
+        {/* Kim 2026-05-20 follow-up: Undo Final is now allowed for ALL final
+            source types (raw_option / lipsync / still_image), not just still.
+            Server endpoint broadened to match. The underlying mp4 stays on
+            disk; only the beat.final block is cleared. */}
+        {lifecycle === 'final' && beat.final?.source !== 'still_image' ? (
+          <button
+            type="button"
+            class="mn-btn mn-btn-small"
+            data-testid={`beat-${index}-undo-final-generic`}
+            onClick={guardedClick('Undo Final', onUndoFinal)}
+            aria-disabled={busy !== null}
+            title={`Clear the final block (current source: ${beat.final?.source ?? '?'}). The mp4 stays on disk — you can re-finalize via Use as Final / Use Lipsync as Final / Still as Final.`}
+          >
+            {busy === 'Undo Final' ? <><Spinner size="sm" inline /> …</> : '↩ Undo Final'}
+          </button>
+        ) : null}
+        {beat.final?.file && (
+          <button
+            type="button"
+            class="mn-btn mn-btn-small"
+            onClick={guardedClick(beat.final?.zoom_applied ? 'Remove Zoom' : 'Apply Zoom', onToggleZoom)}
+            aria-disabled={busy !== null}
+            title={beat.final?.zoom_applied
+              ? 'Remove zoom — restore original final clip'
+              : 'Apply slow Ken Burns zoom (1.0→1.15×) to final clip — $0, ~15–30s per beat'}
+            data-testid={`beat-${index}-zoom-toggle`}
+          >
+            {busy === 'Apply Zoom' || busy === 'Remove Zoom' ? <><Spinner size="sm" inline /> …</> : (beat.final?.zoom_applied ? '✕ zoom' : '↑ zoom')}
+          </button>
+        )}
         {(lifecycle !== 'final' || beat.final?.source === 'still_image') ? (
           <>
             <input
@@ -890,40 +1494,123 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
             data-testid={`beat-${index}-still-final-preview`}
             onClick={guardedClick('Preview Still', () => onPreviewOption(-1))}
             aria-disabled={busy !== null}
-            title="Preview the rendered Ken Burns still-as-final MP4"
+            title={_magicStillOk
+              ? "Preview the magic-on-still composite (✨ magic_still_path)"
+              : "Preview the rendered Ken Burns still-as-final MP4"}
           >
-            {previewOptIdx === -1 ? '⏸ Preview Still' : '▶ Preview Still'}
+            {previewOptIdx === -1 ? '⏸ Preview Still' : '▶ Preview Still'}{
+              /* Kim 2026-05-20: 🏁 FINAL badge when the Stitcher's final source
+                 is this still-image render. Parity with raw_option + lipsync
+                 cases above — every final source type shows the badge. */
+              beat.final?.source === 'still_image' ? ' 🏁 FINAL' : ''
+            }
           </button>
         ) : null}
-        {lifecycle === 'final' ? (
-          <span class="mn-dim" data-testid={`beat-${index}-final-marker`}>
-            ✓ final ({beat.final?.source ?? '?'})
+        {/* Bug-B2 (spec §2 Topic-2): ✨ magic badge — appears next to Preview Still
+            when a magic_still_path is set + file exists on disk. Mirrors the
+            magic_video case below. No new button (Kim already has many). */}
+        {_magicStillOk ? (
+          <span
+            class="mn-magic-badge"
+            data-testid={`beat-${index}-magic-still-badge`}
+            title={`magic_still_path: ${beat.magic_still_path}`}
+            style={{
+              display: 'inline-block',
+              marginLeft: '4px',
+              padding: '0 4px',
+              borderRadius: '3px',
+              background: 'rgba(180, 130, 220, 0.25)',
+              color: '#d8b8ee',
+              fontSize: '10px',
+              fontWeight: 700,
+              pointerEvents: 'none',
+            }}
+          >
+            ✨ magic
           </span>
         ) : null}
+        {_magicVideoOk ? (
+          <span
+            class="mn-magic-badge"
+            data-testid={`beat-${index}-magic-video-badge`}
+            title={`magic_video_path: ${beat.magic_video_path}`}
+            style={{
+              display: 'inline-block',
+              marginLeft: '4px',
+              padding: '0 4px',
+              borderRadius: '3px',
+              background: 'rgba(180, 130, 220, 0.25)',
+              color: '#d8b8ee',
+              fontSize: '10px',
+              fontWeight: 700,
+              pointerEvents: 'none',
+            }}
+          >
+            ✨ magic·v
+          </span>
+        ) : null}
+        {lifecycle === 'final' ? (() => {
+          // Kim 2026-05-20 follow-up: when a beat's image_path changes via
+          // drag-drop AFTER a still_image final was rendered, the final.image_path
+          // still points at the OLD image — final.file is now STALE relative
+          // to the assigned image. Surface that explicitly so Kim knows to click
+          // Re-render Still. Path-stem comparison (both sides are .png base names).
+          const _stemOf = (p?: string) => p ? (p.split('/').pop() || '').replace(/\.(png|webp|jpe?g)$/i, '') : '';
+          const _currentStem = _stemOf(beat.image_path);
+          const _finalStem = _stemOf(beat.final?.image_path);
+          const _finalIsStillImageStale = (
+            beat.final?.source === 'still_image' &&
+            _finalStem && _currentStem && _finalStem !== _currentStem
+          );
+          // Magic_still goes stale by the same mechanism — the magic was rendered
+          // from a specific start image. If image changed, magic is stale.
+          // (We don't have the exact reference, but if magic_still_path exists
+          // AND final is still_image stale, the magic was rendered from the
+          // same prior image — same staleness window.)
+          return (
+            <span
+              class="mn-dim"
+              data-testid={`beat-${index}-final-marker`}
+              title={
+                _finalIsStillImageStale
+                  ? `STALE: the rendered final mp4 was made from "${_finalStem}.png" but the current assigned image is "${_currentStem}". Click Re-render Still to refresh. This file (beat.final.file) is what the Stitcher will compose into the video — refresh before stitching.`
+                  : `This is what the Stitcher will compose into the video. Source: ${beat.final?.source ?? '?'}. File: ${beat.final?.file ?? '?'}.`
+              }
+              style={_finalIsStillImageStale ? { color: '#d8a020', fontWeight: 'bold' } : undefined}
+            >
+              {_finalIsStillImageStale
+                ? `⚠ stale final (${beat.final?.source ?? '?'} — re-render)`
+                : `✓ final (${beat.final?.source ?? '?'})`}
+            </span>
+          );
+        })() : null}
       </span>
 
-      {/* Trim / Delay group */}
+      {/* Trim / Delay group — LD-756: seconds-from-front + seconds-from-end */}
       <span class="mn-beat-button-group" data-testid={`beat-trim-group-${index}`}>
-        <span class="mn-beat-button-group-label">Trim:</span>
+        <span class="mn-beat-button-group-label">Trim front:</span>
         <input
           type="text"
           class="mn-beat-trim-input"
-          data-testid={`beat-${index}-trim-in`}
-          value={trimIn}
-          onInput={(e) => setTrimIn((e.target as HTMLInputElement).value)}
-          aria-label="Trim in seconds"
+          data-testid={`beat-${index}-trim-front`}
+          value={trimFrontSec}
+          onInput={(e) => setTrimFrontSec((e.target as HTMLInputElement).value)}
+          aria-label="Seconds to trim from the front (0.0 = no trim)"
           placeholder="0.0"
+          title="Seconds to trim from the front of the clip"
         />
-        <span class="mn-dim">→</span>
+        <span class="mn-dim">s · back:</span>
         <input
           type="text"
           class="mn-beat-trim-input"
-          data-testid={`beat-${index}-trim-out`}
-          value={trimOut}
-          onInput={(e) => setTrimOut((e.target as HTMLInputElement).value)}
-          aria-label="Trim out (number or 'full')"
-          placeholder="full"
+          data-testid={`beat-${index}-trim-back`}
+          value={trimBackSec}
+          onInput={(e) => setTrimBackSec((e.target as HTMLInputElement).value)}
+          aria-label="Seconds to trim from the end (0.0 = no trim)"
+          placeholder="0.0"
+          title="Seconds to trim from the END of the clip (NOT an absolute timestamp)"
         />
+        <span class="mn-dim">s</span>
         <button
           type="button"
           class="mn-btn mn-btn-small"
@@ -978,12 +1665,13 @@ interface BeatCardProps {
   beatId: string;
   beat: BeatState;
   eventId: string;
+  videoRole: string;  // Bug-A1 (spec §2 Topic-2): scope_video_role threaded to magic URL builders
   onMutated: () => void;
   onInsertAfter: () => void;
   onDeleteBeat: () => void;
 }
 
-function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDeleteBeat }: BeatCardProps) {
+function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsertAfter, onDeleteBeat }: BeatCardProps) {
   const initialText = beat.text ?? '';
   // CRITICAL: contenteditable must be UNCONTROLLED. State-driven children on a
   // contenteditable trigger a re-render on every keystroke, which clobbers
@@ -1007,13 +1695,63 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
   const _finalFileSrc = beat.final?.file
     ? `${SERVER_BASE}/asset/${beat.final.file}?v=${beat._version ?? 0}`
     : null;
-  const previewVideoSrc = (previewOptIdx !== null && previewOptIdx > 0)
-    ? `${SERVER_BASE}/asset/${beat.phase_1?.options?.[previewOptIdx - 1]?.file}?v=${beat._version ?? 0}`
-    : (previewOptIdx === -1 && beat.final?.source === 'still_image' && beat.final?.file
-        ? _finalFileSrc
-        : (_isLipsyncShown && beat.lipsync?.file
-            ? `${SERVER_BASE}/asset/${beat.lipsync.file}?v=${beat._version ?? 0}`
-            : (_finalFileSrc ?? null)));
+  // P3 LD-505 Phase C: gate every preview src on file_exists !== false
+  // so archived/missing files don't 404 → "codec/format not supported".
+  // Server-side enrichment populates file_exists on options/lipsync/final.
+  const _optChosen = (previewOptIdx !== null && previewOptIdx > 0)
+    ? beat.phase_1?.options?.[previewOptIdx - 1]
+    : null;
+  const _optOk = !!(_optChosen?.file && _optChosen?.file_exists !== false);
+  const _lsOk = !!(beat.lipsync?.file && beat.lipsync?.file_exists !== false);
+  // Bug-B1 (spec §2 Topic-2, 2026-05-20): magic preview must take priority
+  // over still-as-final on Preview Still click. magic outputs are written to
+  // event_dir/ (NOT clips_dir/), so they're served via /files?path=... NOT
+  // /asset/ (which only serves clips_dir). Gate on magic_*_path_exists
+  // (Bug-B3 enrichment) to avoid orphan-reference 404s.
+  const _magicStillOk = !!(beat.magic_still_path && beat.magic_still_path_exists !== false);
+  const _magicVideoOk = !!(beat.magic_video_path && beat.magic_video_path_exists !== false);
+  const _magicStillSrc = _magicStillOk
+    ? `${SERVER_BASE}/files?path=${encodeURIComponent(`Production/${eventId}/${beat.magic_still_path}`)}&v=${beat._version ?? 0}`
+    : null;
+  const _magicVideoSrc = _magicVideoOk
+    ? `${SERVER_BASE}/files?path=${encodeURIComponent(`Production/${eventId}/${beat.magic_video_path}`)}&v=${beat._version ?? 0}`
+    : null;
+  // BUG-A fix (Kim 2026-05-20): the prior fallback `(_finalFileSrc ?? null)`
+  // made <video> render by default whenever beat.final.file existed,
+  // occluding the <img> element. Result: drag-drop landed on server but
+  // Kim saw no visual change because the video was on top of the image.
+  // The fix: default to null — <video> only renders on EXPLICIT user
+  // action (▶ opt N, ▶ Preview Still, ▶ lipsync, Preview Trim). The IMG
+  // is the resting display.
+  //
+  // Bug-B1 priority chain at previewOptIdx === -1 (Preview Still button):
+  //   1. magic_still_path (if still_image final + magic applied)
+  //   2. magic_video_path (if video-based final + magic applied)
+  //   3. beat.final.file (still_image OR raw_option fallback)
+  //   4. null (no preview available)
+  // magic_* served via /files NOT /asset (writes to event_dir, not clips_dir).
+  // previewVideoSrc is ONLY non-null when there is an ACTIVE preview (previewOptIdx !== null).
+  // This ensures the still image always shows when not actively previewing, even when
+  // lipsyncMounted=true (LD-757). The LD-757 buffer lives in lipsyncBufferSrc below.
+  const previewVideoSrc = previewOptIdx === null
+    ? null
+    : (previewOptIdx > 0 && _optOk)
+        ? `${SERVER_BASE}/asset/${_optChosen!.file}?v=${beat._version ?? 0}`
+        : (previewOptIdx === -1
+            ? (_magicStillSrc       // Bug-B1.1: magic on still
+                ?? _magicVideoSrc   // Bug-B1.2: magic on video
+                ?? (beat.final?.source === 'still_image' && beat.final?.file && beat.final?.file_exists !== false
+                    ? _finalFileSrc
+                    : null))
+            : (_lsOk
+                ? `${SERVER_BASE}/asset/${beat.lipsync!.file}?v=${beat._version ?? 0}`
+                : null));
+
+  // LD-757: when lipsyncMounted=true but no active preview, keep the lipsync <video>
+  // in DOM as display:none so decoded frames stay buffered for instant replay.
+  const lipsyncBufferSrc = (_isLipsyncShown && _lsOk && previewVideoSrc === null)
+    ? `${SERVER_BASE}/asset/${beat.lipsync!.file}?v=${beat._version ?? 0}`
+    : null;
 
   const previewAudioSrc = `${SERVER_BASE}/api/beat/audio/${beatId}?event_id=${eventId}`;
 
@@ -1086,7 +1824,40 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
         ?? beat.delay_seconds
         ?? 0,
     ) || 0;
-    if (!isLipsyncPreview) {
+    // Kim 2026-05-21: trim must apply on lipsync playback — Kim's mental model
+    // is that ▶ lipsync plays the canonical Stitcher output. Stored as absolute
+    // trim_start (seek-to) + trim_end (pause-at) in the ORIGINAL audio
+    // timeline. The lipsync mp4 has a DIFFERENT timeline (ByteDance preroll
+    // padding + our 1.5s tail extension), so absolute trim_end can't be
+    // applied directly to vid.currentTime — that cuts off mid-word.
+    //
+    // For lipsync we translate back-trim into the lipsync mp4 timeline:
+    //   back_offset = audio_duration - trim_end   (what user typed in s·back)
+    //   pause_at    = lipsync_mp4.duration - back_offset
+    // TRIM_SEEK_FIX_20260524: front-trim is now applied server-side (lipsync_start =
+    // trim_start + audio_delay in vendor_jobs.py). We no longer seek the lipsync <video>
+    // to trim_start — removed trimStartSec. Back-trim (RAF-based pauseAt) is unchanged.
+    // New canonical: trim_back is stored directly as relative seconds (2026-05-23 fix).
+    // Legacy fallback: derive from audio_duration - trim_end (for old beats without trim_back).
+    const trimBackDirect = beat.phase_1?.trim_back;
+    const trimEndRaw = beat.phase_1?.trim_end ?? beat.trim_out;
+    const trimEndSec: number | null =
+      trimEndRaw === null || trimEndRaw === undefined
+        ? null
+        : (Number.isFinite(Number(trimEndRaw)) ? Number(trimEndRaw) : null);
+    const audioDur = Number(beat.audio_duration_s ?? 0) || 0;
+    const backOffsetSec = (typeof trimBackDirect === 'number' && trimBackDirect > 0)
+      ? trimBackDirect  // New: trim_back IS the offset — no calculation needed
+      : (trimEndSec !== null && audioDur > 0)
+        ? Math.max(0, audioDur - trimEndSec)  // Legacy: reverse-calculate from audio_duration - trim_end
+        : 0;
+    // MAGIC_VIDEO_AUDIO_GUARD (Bug 2 fix 2026-05-28): magic_video has lipsync
+    // audio baked in. Playing TTS audio on top doubles the dialogue.
+    // Guard matches the lipsync guard pattern: if the video being previewed
+    // already carries its own audio (optIdx === -1 AND magic_video_path valid),
+    // suppress the separate TTS audio element entirely.
+    const hasMagicVideoAudio = previewOptIdx === -1 && _magicVideoOk;
+    if (!isLipsyncPreview && !hasMagicVideoAudio) {
       if (!aud) return;
       aud.currentTime = 0;
     }
@@ -1095,8 +1866,102 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
       : previewOptIdx === -1
         ? 'Still preview'
         : 'Animation preview';
+    // Apply trim to lipsync preview only (audio+video baked into one file).
+    // For opt N + still previews, audio and video are separate elements and
+    // the existing aud.currentTime=0 reset path doesn't carry trim semantics.
+    //
+    // Kim 2026-05-21: switched from `timeupdate` listener to RAF polling.
+    // `timeupdate` fires only every 200-500ms per browser spec, so back-trim
+    // values <200ms slip past — we'd hit the natural file end before the
+    // listener fired. RAF runs at display refresh (~16ms), so sub-100ms
+    // back-trim windows are honored precisely.
+    let rafId: number | null = null;
+    let onPlayListener: (() => void) | null = null;
+    if (isLipsyncPreview) {
+      // LIPSYNC_SEEK_FIX_20260524: seek to max(0, currentLipsyncStart - genLipsyncStart).
+      // genLipsyncStart = beat.lipsync.audio_processing.trim_start (lipsync_start at generation
+      // = trim_start + audio_delay at submit time, stored by server as ts_used).
+      // currentLipsyncStart = current trim_start + current audio_delay.
+      // Delta = how far to seek into the existing file to honor current trim settings.
+      //
+      // Why not always 0: if Kim generated lipsync at trim_start=0 and later changes
+      // trim_start=3, the file is NOT pre-trimmed — seeking to 0 shows 3s of unwanted
+      // animation before speech. Seeking to 3 shows the correct start.
+      //
+      // Why not always trim_start: if Kim re-sent lipsync WITH trim baked in (lipsync_start=1.5)
+      // and current trim_start=1.5, seekTo = 1.5-1.5 = 0. Correct.
+      //
+      // Old files without audio_processing: genLipsyncStart defaults to 0,
+      // seekTo = currentLipsyncStart (same as pre-TRIM_SEEK_FIX behavior).
+      //
+      // IDLE_LIPSYNC_SEEK_FIX_20260524: idle lipsync files are generated with
+      // audio_delay=0 — the ByteDance job receives TTS starting at t=0 of the
+      // idle Kling clip. audio_delay (beat.phase_1.audio_delay) is a COMPOSITE
+      // PREVIEW parameter only and is NOT baked into the idle file. Including it
+      // in currentLipsyncStart would seek to t=N on a freshly-mounted video that
+      // has no buffered data there, causing NotSupportedError from play().
+      {
+        const isIdleLipsync = (beat.lipsync as { source?: string } | undefined)?.source === 'idle_lipsync';
+        const genLipsyncStart = Number(beat.lipsync?.audio_processing?.trim_start ?? 0) || 0;
+        const currentTrimStart = Number(beat.phase_1?.trim_start ?? beat.trim_in ?? 0) || 0;
+        // For idle lipsync: audio_delay is NOT in the file — always start at trim_start only.
+        // For regular lipsync: audio_delay is baked in at submission time.
+        const currentLipsyncStart = isIdleLipsync
+          ? currentTrimStart
+          : currentTrimStart + audioDelaySec;
+        const lipsyncSeekTo = Math.max(0, currentLipsyncStart - genLipsyncStart);
+        try { vid.currentTime = lipsyncSeekTo; } catch { /* defensive */ }
+      }
+      // Translate back-trim into lipsync-mp4 timeline. vid.duration is only
+      // valid after loadedmetadata fires; gate accordingly. If we never see
+      // a finite duration, fall back to NO back-trim (don't truncate the
+      // speech) — safer than cutting mid-word per Kim's symptom.
+      if (backOffsetSec > 0) {
+        const computeAndApplyBack = () => {
+          const dur = Number(vid.duration);
+          if (!Number.isFinite(dur) || dur <= 0) {
+            console.warn(`[lipsync-trim] ${beatId}: vid.duration not ready (${vid.duration}); back-trim NOT applied`);
+            return;
+          }
+          const pauseAt = Math.max(0.01, dur - backOffsetSec);
+          console.log(`[lipsync-trim] ${beatId}: audioDur=${audioDur} trimEnd=${trimEndSec} back_offset=${backOffsetSec.toFixed(3)}s lipsync_dur=${dur.toFixed(3)}s pause_at=${pauseAt.toFixed(3)}s`);
+          const tick = () => {
+            if (!vid || vid.paused || vid.ended) {
+              rafId = null;
+              return;
+            }
+            if (vid.currentTime >= pauseAt) {
+              console.log(`[lipsync-trim] ${beatId}: pausing at ${vid.currentTime.toFixed(3)}s (target ${pauseAt.toFixed(3)}s)`);
+              try { vid.pause(); } catch { /* defensive */ }
+              // BUG FIX: reset to 0 so next play starts from the beginning, not the trim
+              // endpoint. Also reset previewOptIdx so the button shows ▶ (ready to play).
+              try { vid.currentTime = 0; } catch { /* defensive */ }
+              setPreviewOptIdx(null);
+              rafId = null;
+              return;
+            }
+            rafId = requestAnimationFrame(tick);
+          };
+          onPlayListener = () => {
+            if (rafId === null) rafId = requestAnimationFrame(tick);
+          };
+          vid.addEventListener('play', onPlayListener);
+          // Kick off immediately if already playing (race with safePlay).
+          if (!vid.paused) {
+            if (rafId === null) rafId = requestAnimationFrame(tick);
+          }
+        };
+        if (Number.isFinite(vid.duration) && vid.duration > 0) {
+          computeAndApplyBack();
+        } else {
+          vid.addEventListener('loadedmetadata', computeAndApplyBack, { once: true });
+        }
+      } else {
+        console.log(`[lipsync-trim] ${beatId}: no back trim (audioDur=${audioDur} trimEnd=${trimEndSec})`);
+      }
+    }
     safePlay(vid).catch((err) => handlePlayRejection(err, 'effect-play', toastCtx));
-    if (!isLipsyncPreview && aud) {
+    if (!isLipsyncPreview && !hasMagicVideoAudio && aud) {
       if (audioDelaySec > 0) {
         const ms = Math.round(audioDelaySec * 1000);
         const t = window.setTimeout(() => {
@@ -1104,11 +1969,17 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
         }, ms);
         return () => {
           window.clearTimeout(t);
+          if (rafId !== null) cancelAnimationFrame(rafId);
+          if (onPlayListener) vid.removeEventListener('play', onPlayListener);
         };
       }
       aud.play().catch(() => {});
     }
-  }, [previewOptIdx, beat.phase_1?.audio_delay, beat.audio_delay, beat.delay_seconds, safePlay, handlePlayRejection]);
+    return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      if (onPlayListener) vid.removeEventListener('play', onPlayListener);
+    };
+  }, [previewOptIdx, beat.phase_1?.audio_delay, beat.audio_delay, beat.delay_seconds, beat.phase_1?.trim_start, beat.phase_1?.trim_end, beat.phase_1?.trim_back, beat.trim_in, beat.trim_out, beat.audio_duration_s, _magicVideoOk, safePlay, handlePlayRejection]);
 
   useEffect(() => {
     return () => {
@@ -1124,10 +1995,17 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
 
     const isLipsyncPreview = optIdx === 0;
     const isStillFinalPreview = optIdx === -1;
+    // MAGIC_VIDEO_AUDIO_GUARD (Bug 2 fix 2026-05-28): suppress TTS audio when
+    // the preview video already has baked-in lipsync audio (magic_video case).
+    const hasMagicVideoAudio = isStillFinalPreview && _magicVideoOk;
     const file = isLipsyncPreview
       ? beat.lipsync?.file
       : (isStillFinalPreview
-          ? beat.final?.file
+          // Bug-B1 fix: magic_still_path / magic_video_path satisfy the guard
+          // even when beat.final?.file is absent (e.g. beat not yet in 'final'
+          // lifecycle). previewVideoSrc resolves magic_*_path via the priority
+          // chain; we just need a truthy value here to avoid the early return.
+          ? (beat.magic_still_path || beat.magic_video_path || beat.final?.file)
           : beat.phase_1?.options?.[optIdx - 1]?.file);
     if (!file) return;
     const vid = videoRef.current;
@@ -1135,23 +2013,77 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
     if (previewOptIdx === optIdx) {
       if (vid && !vid.paused) {
         safePause(vid).catch(() => {});
-        if (!isLipsyncPreview) safePause(aud).catch(() => {});
+        if (!isLipsyncPreview && !hasMagicVideoAudio) safePause(aud).catch(() => {});
+        // LIPSYNC_PLAY_STOP_20260524: always reset to ▶ state on explicit user
+        // stop click. Prior code left previewOptIdx=0 (pause-to-resume intent) but
+        // a stalled video has vid.paused===false yet never advances — user sees ⏸
+        // with nothing playing and no escape. Resetting to null here makes ⏸
+        // a reliable "stop" button: next ▶ click always restarts cleanly.
+        setPreviewOptIdx(null);
       } else {
+        // BUG FIX: if the video has ended, currentTime is at duration — play() immediately
+        // re-fires 'ended' with no visible frames. Reset to 0 first so replay works.
+        if (vid?.ended) {
+          try { vid.currentTime = 0; } catch { /* defensive — some browsers throw on seeks */ }
+        }
         safePlay(vid).catch((err) => handlePlayRejection(err, 'toggle-play'));
-        if (!isLipsyncPreview) safePlay(aud).catch((err) => handlePlayRejection(err, 'toggle-play-aud'));
+        if (!isLipsyncPreview && !hasMagicVideoAudio) safePlay(aud).catch((err) => handlePlayRejection(err, 'toggle-play-aud'));
       }
       return;
     }
     safePause(vid).catch(() => {});
-    if (!isLipsyncPreview) safePause(aud).catch(() => {});
+    if (!isLipsyncPreview && !hasMagicVideoAudio) safePause(aud).catch(() => {});
     setPreviewOptIdx(optIdx);
-  }, [previewOptIdx, beat.phase_1?.options, beat.lipsync?.file, beat.final?.file, safePlay, safePause, handlePlayRejection]);
+  }, [previewOptIdx, beat.phase_1?.options, beat.lipsync?.file, beat.final?.file, beat.magic_still_path, beat.magic_video_path, beat.magic_video_path_exists, safePlay, safePause, handlePlayRejection]);
 
   const handlePreviewEnded = useCallback(() => {
-    audioRef.current?.pause();
+    // MAGIC_STILL_AUDIO_TAIL_FIX (Kim 2026-05-27): magic_still video (previewOptIdx === -1)
+    // may be shorter than the beat audio (e.g. 4.0s video vs 4.24s TTS).
+    // When video ends before audio, DO NOT stop the audio — freeze at last frame
+    // and let audio run to its natural end. Audio's 'ended' event (handleAudioEnded)
+    // will reset the UI once audio completes.
+    const aud = audioRef.current;
+    if (previewOptIdx === -1 && aud && !aud.ended && !aud.paused) {
+      // Video ended early; audio still playing — keep playing state, return early.
+      // Browser already paused the <video> at its last frame automatically.
+      return;
+    }
+    aud?.pause();
+    // BUG FIX: reset currentTime so next play() starts from beginning, not the end.
+    // If the video stays mounted (LD-757 lipsyncMounted), play() on currentTime=duration
+    // immediately re-fires 'ended' with no visible frames.
+    if (videoRef.current) {
+      try { videoRef.current.currentTime = 0; } catch { /* defensive */ }
+    }
     // LD-757: reset UI only; lipsyncMounted keeps <video> in DOM.
     setPreviewOptIdx(null);
+  }, [previewOptIdx]);
+
+  // MAGIC_STILL_AUDIO_TAIL_FIX (Kim 2026-05-27): fires when audio outlasts the
+  // magic_still video. handlePreviewEnded returned early to let audio continue;
+  // now that audio has finished naturally, reset play state.
+  const handleAudioEnded = useCallback(() => {
+    // Hold the still frame for 2s after audio ends, then reset UI.
+    // Gives the viewer a moment to "land" on the final frame before it disappears.
+    window.setTimeout(() => {
+      if (videoRef.current) {
+        try { videoRef.current.currentTime = 0; } catch { /* defensive */ }
+      }
+      setPreviewOptIdx(null);
+    }, 2000);
   }, []);
+
+  // LIPSYNC_PLAY_STOP_20260524: reset play state when the <video> element fires
+  // an error event. Without this, a 404 / codec decode error fires 'error' but
+  // nothing handles it — previewOptIdx stays 0 and the button is permanently
+  // stuck as ⏸. Surface the error message via resetPlayState (toast + null reset).
+  const onPreviewVideoError = useCallback(() => {
+    const vid = videoRef.current;
+    const code = vid?.error?.code;
+    const msg = vid?.error?.message || `MEDIA_ERR code=${code ?? '?'}`;
+    console.warn(`[StoryboardTab] ${beatId} <video> error:`, vid?.error);
+    resetPlayState(`video load failed: ${msg}`, 'error', 'Lipsync playback');
+  }, [resetPlayState, beatId]);
 
   // Hydrate the ref's initial text + recover from localStorage if a fresher draft.
   useEffect(() => {
@@ -1348,6 +2280,7 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
         preload="auto"
         style={{ display: 'none' }}
         data-testid={`beat-audio-hidden-${index}`}
+        onEnded={handleAudioEnded}
       />
       <BeatImageHolder
         index={index}
@@ -1356,8 +2289,18 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
         eventId={eventId}
         onMutated={onMutated}
         previewVideoSrc={previewVideoSrc}
+        lipsyncBufferSrc={lipsyncBufferSrc}
         videoRef={videoRef as RefObject<HTMLVideoElement>}
         onPreviewEnded={handlePreviewEnded}
+        onPreviewVideoError={onPreviewVideoError}
+        onImageReassigned={() => {
+          // T4-3 (2026-05-19): dismiss lipsync preview on drag-drop image
+          // re-assign so the new image becomes immediately visible.
+          // Without this, lipsync video (LD-757-persistent once mounted)
+          // occludes the IMG element and visually the drop looks like a no-op.
+          setPreviewOptIdx(null);
+          setLipsyncMounted(false);
+        }}
       />
       <div class="mn-beat-text-row">
         <SuggestParentheticalDropdown onPick={(p) => void onParentheticalPick(p)} />
@@ -1376,13 +2319,14 @@ function BeatCard({ index, beatId, beat, eventId, onMutated, onInsertAfter, onDe
         beatId={beatId}
         eventId={eventId}
         beat={beat}
+        videoRole={videoRole}
         {...(savedAt ? { cacheBust: savedAt } : {})}
         onMutated={onMutated}
         previewOptIdx={previewOptIdx}
         onPreviewOption={handlePreviewOption}
         onEnsureLipsyncMounted={ensureLipsyncMounted}
       />
-      <BeatMagicButtons index={index} beatId={beatId} beat={beat} eventId={eventId} />
+      <BeatMagicButtons index={index} beatId={beatId} beat={beat} eventId={eventId} videoRole={videoRole} onPreviewOption={handlePreviewOption} />
       <div class="mn-sb-insert-after" data-testid={`sb-insert-after-${index}`}>
         <button
           class="mn-btn mn-btn-small mn-sb-insert-after-btn"
@@ -1422,9 +2366,21 @@ interface BeatImageHolderProps {
   previewVideoSrc?: string | null;
   videoRef?: RefObject<HTMLVideoElement>;
   onPreviewEnded?: () => void;
+  /** LIPSYNC_PLAY_STOP_20260524: called when the <video> element fires an error
+   * event (404, codec failure) so BeatCard can reset previewOptIdx to null. */
+  onPreviewVideoError?: () => void;
+  /** T4-3 (2026-05-19): on successful drag-drop image-assign, parent dismisses
+   * lipsync preview so the new image becomes visible. Once `lipsyncMounted`
+   * flips true (LD-757 persistence), the IMG element stops rendering — only
+   * the lipsync VIDEO shows. Drop succeeds in state but visually nothing
+   * changes because the video is occluding. */
+  onImageReassigned?: () => void;
+  /** LD-757: lipsync URL to keep buffered in a hidden <video> when no preview is active.
+   * Non-null only when lipsyncMounted=true && previewVideoSrc===null. */
+  lipsyncBufferSrc?: string | null;
 }
 
-function BeatImageHolder({ index, beatId, beat, eventId, onMutated, previewVideoSrc, videoRef, onPreviewEnded }: BeatImageHolderProps) {
+function BeatImageHolder({ index, beatId, beat, eventId, onMutated, previewVideoSrc, lipsyncBufferSrc, videoRef, onPreviewEnded, onPreviewVideoError, onImageReassigned }: BeatImageHolderProps) {
   const stillPath = beat.image_path;
   const hasImage = !!stillPath;
   // Blocker #145 / DS-22: image_override persisted but thumb stayed stale when
@@ -1442,16 +2398,35 @@ function BeatImageHolder({ index, beatId, beat, eventId, onMutated, previewVideo
       // commit time; line drifts with file edits.] Coverage:
       // e2e/storyboard_v59_assign_image_drop.spec.ts asserts the drop →
       // PATCH `assign_image` → server-side onMutated() round-trip.
+      // BUG-A UX clarifier (Kim 2026-05-20): if user drops the SAME image
+      // that's already on the beat, the visual won't change because the
+      // assigned image didn't change. Compare prior image_path stem so the
+      // toast tells Kim "no change" instead of misleading "assigned".
+      const priorStem = beat.image_path
+        ? beat.image_path.split('/').pop()?.replace(/\.(webp|png|jpe?g)$/i, '')
+        : undefined;
+      const isSameImage = priorStem === payload.lib_key;
       const result = await pathappPatch(activeScope.value, 'assign_image', {
         beat: beatId,
         image_key: payload.lib_key,
       });
       if (result.ok) {
         pushToast({
-          kind: 'success',
-          message: `Image ${payload.lib_key} assigned to ${beatId}`,
+          kind: isSameImage ? 'info' : 'success',
+          message: isSameImage
+            ? `Image ${payload.lib_key} was already on ${beatId} — no visual change`
+            : `Image ${payload.lib_key} assigned to ${beatId}`,
           source: 'sb-image-drop',
         });
+        // T4-3: dismiss lipsync preview so the new image is visible.
+        // Without this, the lipsync video keeps occluding the IMG element
+        // (LD-757 persistence) and the user sees no visual change.
+        onImageReassigned?.();
+        // BUG-A in-use highlight refresh: fire global event so LibraryPanel
+        // re-fetches its in-use set + highlights the now-active tile.
+        window.dispatchEvent(new CustomEvent('mn:image-assigned', {
+          detail: { beat_id: beatId, image_key: payload.lib_key },
+        }));
         onMutated();
       } else {
         pushToast({
@@ -1473,17 +2448,31 @@ function BeatImageHolder({ index, beatId, beat, eventId, onMutated, previewVideo
       onDragLeave={dropHandlers.onDragLeave}
       onDrop={dropHandlers.onDrop}
     >
-      {previewVideoSrc ? (
+      {(previewVideoSrc || lipsyncBufferSrc) ? (
         <div data-testid={`beat-preview-video-${index}`} style={{ display: 'contents' }}>
+          {/* Single video element: visible when actively previewing (previewVideoSrc),
+              display:none when only buffering (lipsyncBufferSrc). LD-757 keeps decoded
+              frames in browser memory for instant replay without file reload. */}
           <video
             {...(videoRef ? { ref: videoRef } : {})}
-            src={previewVideoSrc}
+            src={previewVideoSrc ?? lipsyncBufferSrc!}
             class="mn-storyboard-preview-video"
+            style={previewVideoSrc ? undefined : { display: 'none' }}
             playsInline
             preload="auto"
             onEnded={onPreviewEnded}
+            onError={onPreviewVideoError}
             data-testid={`beat-${index}-lipsync-video`}
           />
+          {/* Show still image when video is in buffer-only mode (hidden) */}
+          {!previewVideoSrc && hasImage && imgSrc && (
+            <img
+              src={imgSrc}
+              alt={`beat ${beatId} image`}
+              class="mn-storyboard-image-thumb"
+              loading="lazy"
+            />
+          )}
         </div>
       ) : hasImage && imgSrc ? (
         <img
@@ -1508,9 +2497,13 @@ interface BeatMagicProps {
   beatId: string;
   beat: BeatState;
   eventId: string;
+  videoRole: string;  // Bug-A1 (spec §2 Topic-2): pinned to active partition for magic_*_path writeback
+  // When provided, ▶ Preview magic button calls onPreviewOption(-1) which
+  // resolves via Bug-B1 priority chain: magic_still_path → magic_video_path → final.
+  onPreviewOption?: (idx: number) => void;
 }
 
-function BeatMagicButtons({ index, beatId, beat, eventId }: BeatMagicProps) {
+function BeatMagicButtons({ index, beatId, beat, eventId, videoRole, onPreviewOption }: BeatMagicProps) {
   const stillPath = beat.image_path;
   // Pick primary video: lipsync preferred, else selected animation option.
   let videoPath: string | undefined;
@@ -1529,9 +2522,14 @@ function BeatMagicButtons({ index, beatId, beat, eventId }: BeatMagicProps) {
     u.searchParams.set('mode', 'magic_still');
     u.searchParams.set('beat_id', beatId);
     u.searchParams.set('source_image_path', `Production/${eventId}/${stillPath}`);
-    // [CONFIRMED against api/endpoints.ts SERVER_BASE constant — magic_picker is co-hosted on the production_server.py origin; relative path here resolves identically to ${SERVER_BASE}/api/storyboard/magic_*]
     u.searchParams.set('return_endpoint', '/api/storyboard/magic_still');
     u.searchParams.set('scope_event_id', eventId);
+    // Bug-A1 (spec §2 Topic-2): scope_video_role MUST be in the URL — server-side
+    // handler now refuses (400 VIDEO_ROLE_REQUIRED) on missing role. Without this,
+    // path_picker would default to 'intro' and magic_still_path lands on the wrong
+    // partition (the bug Kim hit 2026-05-20 — magic_still_path written to
+    // videos.intro.beats.beat_01 instead of videos.resolution.beats.beat_01).
+    u.searchParams.set('scope_video_role', videoRole);
     window.open(u.toString(), '_blank');
   };
 
@@ -1540,41 +2538,71 @@ function BeatMagicButtons({ index, beatId, beat, eventId }: BeatMagicProps) {
     const u = new URL(`${SERVER_BASE}/magic`);
     u.searchParams.set('mode', 'magic_video');
     u.searchParams.set('beat_id', beatId);
-    u.searchParams.set('source_video_path', `Production/${eventId}/${videoPath}`);
+    // animation_clips/ is the canonical storage dir for all beat video files
+    // (lipsync + animation options) per AppState.clips_dir = event_dir/animation_clips/.
+    // Bug: prior path omitted animation_clips/ → "source_video not found" 404.
+    u.searchParams.set('source_video_path', `Production/${eventId}/animation_clips/${videoPath}`);
     if (stillPath) {
       u.searchParams.set('source_image_path', `Production/${eventId}/${stillPath}`);
     }
-    // [CONFIRMED against api/endpoints.ts SERVER_BASE constant — magic_picker is co-hosted on the production_server.py origin; relative path here resolves identically to ${SERVER_BASE}/api/storyboard/magic_*]
     u.searchParams.set('return_endpoint', '/api/storyboard/magic_video');
     u.searchParams.set('scope_event_id', eventId);
+    // Bug-A1 (spec §2 Topic-2): same as openMagicStill above.
+    u.searchParams.set('scope_video_role', videoRole);
     window.open(u.toString(), '_blank');
   };
 
   return (
     <div class="mn-beat-magic-row" data-testid={`beat-magic-row-${index}`}>
       {stillPath ? (
-        <button
-          type="button"
-          class="mn-btn mn-btn-small"
-          data-testid={`beat-magic-still-${index}`}
-          onClick={openMagicStill}
-          disabled={hasMagicStill}
-          title={hasMagicStill ? 'magic on still already exists' : 'Add magic trail on still (LD-468)'}
-        >
-          {hasMagicStill ? '✓ magic on still' : '🌟 Add magic on still'}
-        </button>
+        <>
+          <button
+            type="button"
+            class="mn-btn mn-btn-small"
+            data-testid={`beat-magic-still-${index}`}
+            onClick={hasMagicStill ? undefined : openMagicStill}
+            disabled={hasMagicStill}
+            title={hasMagicStill ? 'magic on still already rendered — use ▶ Preview magic to watch it' : 'Add magic trail on still (LD-468)'}
+          >
+            {hasMagicStill ? '✓ magic on still' : '🌟 Add magic on still'}
+          </button>
+          {hasMagicStill && onPreviewOption ? (
+            <button
+              type="button"
+              class="mn-btn mn-btn-small"
+              data-testid={`beat-magic-still-preview-${index}`}
+              onClick={() => onPreviewOption(-1)}
+              title="Preview the magic-on-still composite video inline"
+            >
+              ▶ Preview magic
+            </button>
+          ) : null}
+        </>
       ) : null}
       {videoPath ? (
-        <button
-          type="button"
-          class="mn-btn mn-btn-small"
-          data-testid={`beat-magic-video-${index}`}
-          onClick={openMagicVideo}
-          disabled={hasMagicVideo}
-          title={hasMagicVideo ? 'magic on video already exists' : 'Add magic trail on video (LD-469)'}
-        >
-          {hasMagicVideo ? '✓ magic on video' : '🎬 Add magic on video'}
-        </button>
+        <>
+          <button
+            type="button"
+            class="mn-btn mn-btn-small"
+            data-testid={`beat-magic-video-${index}`}
+            onClick={hasMagicVideo ? undefined : openMagicVideo}
+            disabled={hasMagicVideo}
+            title={hasMagicVideo ? 'magic on video already rendered — use ▶ Preview magic·v to watch it' : 'Add magic trail on video (LD-469)'}
+          >
+            {hasMagicVideo ? '✓ magic on video' : '🎬 Add magic on video'}
+          </button>
+          {hasMagicVideo && onPreviewOption ? (
+            <button
+              type="button"
+              class="mn-btn mn-btn-small"
+              data-testid={`beat-magic-video-preview-${index}`}
+              onClick={() => onPreviewOption(-1)}
+              title="Preview the magic-on-video composite inline (uses magic_video_path when no magic_still_path)"
+            >
+              ▶ Preview magic·v
+            </button>
+          ) : null}
+        </>
       ) : null}
     </div>
   );
@@ -1624,6 +2652,7 @@ function SendOutButton() {
     const data = result.data ?? {};
     if (result.ok && data.ok) {
       setStatus('ok');
+      stitcherRefreshTick.value += 1; // notify StitcherTab to re-fetch after auto-populate
       const stats = data.cache_stats ?? {};
       const statsStr = Object.entries(stats)
         .filter(([_, v]) => v !== 0)
@@ -1665,6 +2694,70 @@ function SendOutButton() {
 }
 
 // ----------------------------------------------------------------
+// FadeDivider — crossfade control between beats
+// ----------------------------------------------------------------
+
+function FadeDivider({
+  beatId,
+  eventId,
+  videoRole,
+  fadeMs,
+  onMutated,
+}: {
+  beatId: string;
+  eventId: string;
+  videoRole: string;
+  fadeMs: number | null | undefined;
+  onMutated: () => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const effectiveFade = fadeMs ?? 0;
+
+  const handleClick = async () => {
+    if (saving) return;
+    const next = effectiveFade === 0 ? 500 : 0;
+    setSaving(true);
+    try {
+      // Endpoint: /api/v2/beat/<beat_id>/patch — handles _V2_ALLOWED_FIELDS including fade_after_ms.
+      // Scope keys: event_id (legacy alias for scope_event_id per scope_router.py:129) +
+      //             scope_video_role / scope_target_video (LD-461 canonical pair).
+      // Rule 32: absolute URL required (file:// launch context).
+      await fetch(`http://localhost:5111/api/v2/beat/${encodeURIComponent(beatId)}/patch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          event_id: eventId,
+          scope_video_role: videoRole,
+          scope_target_video: videoRole,
+          field: 'fade_after_ms',
+          value: next === 0 ? null : next,
+        }),
+      });
+      onMutated();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const hasFade = effectiveFade > 0;
+
+  return (
+    <li
+      class={'mn-beat-fade-divider' + (hasFade ? ' mn-beat-fade-divider--active' : '')}
+      onClick={handleClick}
+      title={hasFade ? effectiveFade + 'ms crossfade — click to remove' : 'Click to add 500ms crossfade'}
+      role="button"
+      aria-label={hasFade ? effectiveFade + 'ms crossfade active' : 'No fade — click to add'}
+      style={{ cursor: saving ? 'wait' : 'pointer' }}
+    >
+      <span class="mn-beat-fade-label">
+        {saving ? '…' : hasFade ? '↔ ' + effectiveFade + 'ms fade' : '+ fade'}
+      </span>
+    </li>
+  );
+}
+
+// ----------------------------------------------------------------
 // Main tab
 // ----------------------------------------------------------------
 
@@ -1674,6 +2767,10 @@ export function StoryboardTab() {
   const [loading, setLoading] = useState(true);
   const [refreshTick, setRefreshTick] = useState(0);
   const [deleteConfirmBeatId, setDeleteConfirmBeatId] = useState<string | null>(null);
+  // Batch end-frame generator state (spec BATCH_END_FRAME_GENERATE_20260520_v1, LD-815)
+  const [batchInFlight, setBatchInFlight] = useState<boolean>(false);
+  const [batchProgress, setBatchProgress] = useState<{ done: number; total: number; failed: number; skipped: number } | null>(null);
+  const batchCancelRef = useRef<boolean>(false);
 
   // R1 fix per spec §5 Phase 3.1 — explicit scope signals in dep array,
   // first-run-sync via prevDepsRef, 200ms debounce on subsequent runs (Q6).
@@ -1782,6 +2879,120 @@ export function StoryboardTab() {
 
   const eventId = activeScope.value.event_id;
 
+  // Batch end-frame generator (spec BATCH_END_FRAME_GENERATE_20260520_v1, LD-815).
+  // Filter: beats in CURRENT activeTargetVideo partition with selected_option set,
+  // image_path set+exists, and end_frame_path missing/non-existent. Excludes
+  // image-missing beats (cursor R1 — else wasted START_IMAGE_REQUIRED toasts).
+  const batchEligibleBeats = useMemo(() => {
+    if (!state) return [] as Array<{ beat_id: string }>;
+    const role = activeTargetVideo.value;
+    const beats = (state.videos as any)?.[role]?.beats || {};
+    const result: Array<{ beat_id: string }> = [];
+    for (const [bid, b] of Object.entries(beats) as Array<[string, any]>) {
+      if (b?.phase_1?.selected_option == null) continue;
+      if (!b?.image_path || b?.image_path_exists === false) continue;
+      if (b?.end_frame_path && b?.end_frame_path_exists !== false) continue;
+      result.push({ beat_id: bid });
+    }
+    return result;
+  }, [state, activeTargetVideo.value, refreshTick]);
+
+  const onBatchEndFrames = async () => {
+    if (batchInFlight) return;
+    const candidateList = [...batchEligibleBeats];  // freeze list at click time
+    if (candidateList.length === 0) return;
+    // Freeze scope at batch start — cursor R1 defense vs stale React closure
+    // mid-loop. Even if Kim somehow changes VideoSelector via keyboard during
+    // the loop, this iteration uses the role she clicked Batch in.
+    const frozenRole = activeTargetVideo.value;
+    const frozenEventId = activeScope.value.event_id;
+
+    if (candidateList.length > 5) {
+      const cost = (candidateList.length * 0.04).toFixed(2);
+      const ok = window.confirm(
+        `This will generate end frames for ${candidateList.length} beats via OpenAI gpt-image-1.\n\n` +
+        `Estimated cost: ~$${cost} (${candidateList.length} × $0.04).\n\n` +
+        `Sequential, ~5–15 sec per beat. Keep this tab open until the batch completes — closing/navigating away stops the loop.\n\n` +
+        `Continue?`
+      );
+      if (!ok) return;
+    }
+
+    batchCancelRef.current = false;
+    setBatchInFlight(true);
+    setBatchProgress({ done: 0, total: candidateList.length, failed: 0, skipped: 0 });
+
+    let done = 0;
+    let failed = 0;
+    let skipped = 0;
+    for (const item of candidateList) {
+      if (batchCancelRef.current) {
+        pushToast({ kind: 'info', message: `Batch cancelled. Processed ${done}/${candidateList.length}.`, source: 'batch-endframe' });
+        break;
+      }
+      // Per-iteration freshness re-read — someone else may have generated
+      // this beat's end_frame_path between batch-start and this iteration.
+      try {
+        const freshRes = await apiGet<EventState>('v2_event_state', { event_id: frozenEventId });
+        if (freshRes.ok && freshRes.data) {
+          const freshBeat = (freshRes.data.videos as any)?.[frozenRole]?.beats?.[item.beat_id];
+          if (freshBeat?.end_frame_path && freshBeat?.end_frame_path_exists !== false) {
+            skipped += 1;
+            setBatchProgress({ done, total: candidateList.length, failed, skipped });
+            continue;
+          }
+        }
+      } catch {
+        // Freshness fetch failure is non-fatal — proceed with click-time decision.
+      }
+      try {
+        const resp = await fetch(ENDPOINTS.beat_preview_end_frame, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            scope_event_id: frozenEventId,
+            scope_video_role: frozenRole,
+            beat_id: item.beat_id,
+          }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data?.ok) {
+          failed += 1;
+          pushToast({
+            kind: 'error',
+            message: `Batch ${item.beat_id} failed: ${data?.error_message || data?.error || `HTTP ${resp.status}`}`,
+            source: 'batch-endframe',
+          });
+        } else {
+          done += 1;
+          // Live thumbnail refresh — per-iteration onMutated equivalent.
+          setRefreshTick((n) => n + 1);
+        }
+      } catch (e) {
+        failed += 1;
+        pushToast({
+          kind: 'error',
+          message: `Batch ${item.beat_id}: ${(e as Error).message}`,
+          source: 'batch-endframe',
+        });
+      }
+      setBatchProgress({ done, total: candidateList.length, failed, skipped });
+    }
+
+    setBatchInFlight(false);
+    setBatchProgress(null);
+    batchCancelRef.current = false;
+    pushToast({
+      kind: failed === 0 ? 'success' : 'warning',
+      message: `Batch end frames complete: ✓ ${done} · ✗ ${failed} · ⏭ ${skipped} (of ${candidateList.length})`,
+      source: 'batch-endframe',
+    });
+  };
+
+  const onCancelBatch = () => {
+    batchCancelRef.current = true;
+  };
+
   const executeDeleteBeat = async () => {
     const beatId = deleteConfirmBeatId;
     if (!beatId) return;
@@ -1835,20 +3046,84 @@ export function StoryboardTab() {
           <p>No beats in this event yet.</p>
         </div>
       ) : (
-        <ol class="mn-beat-list" data-testid="beat-list">
-          {beatList.map((b, i) => (
-            <BeatCard
-              key={b.beat_id}
-              index={i}
-              beatId={b.beat_id}
-              beat={b}
-              eventId={eventId}
-              onMutated={() => setRefreshTick((n) => n + 1)}
-              onInsertAfter={() => void onAddBeat(b.beat_id)}
-              onDeleteBeat={() => setDeleteConfirmBeatId(b.beat_id)}
-            />
-          ))}
-        </ol>
+        <>
+          {/* Batch end-frame generator (spec BATCH_END_FRAME_GENERATE_20260520_v1, LD-815).
+              Single click → loops over every beat in current video role that
+              has selected_option + image but no end_frame_path. */}
+          <div
+            class="mn-batch-endframe-bar"
+            data-testid="batch-endframe-bar"
+            style={{
+              padding: '8px 12px',
+              marginBottom: '8px',
+              background: 'rgba(74, 138, 138, 0.08)',
+              border: '1px solid rgba(74, 138, 138, 0.3)',
+              borderRadius: '4px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '12px',
+            }}
+          >
+            {batchInFlight && batchProgress ? (
+              <>
+                <span style={{ fontSize: '12px' }}>
+                  <Spinner size="sm" inline /> Batch end frames: {batchProgress.done} of {batchProgress.total}
+                  {batchProgress.failed > 0 ? ` · ✗ ${batchProgress.failed}` : ''}
+                  {batchProgress.skipped > 0 ? ` · ⏭ ${batchProgress.skipped}` : ''}
+                </span>
+                <button
+                  type="button"
+                  class="mn-btn mn-btn-small"
+                  data-testid="batch-endframe-cancel"
+                  onClick={onCancelBatch}
+                  title="Stop submitting new beats. Any OpenAI call already in flight will complete."
+                >
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                class="mn-btn mn-btn-small"
+                data-testid="batch-endframe-button"
+                onClick={onBatchEndFrames}
+                disabled={batchEligibleBeats.length === 0}
+                title={
+                  batchEligibleBeats.length === 0
+                    ? 'All beats in this video already have an end frame, or no beats have a selected option + start image.'
+                    : `Generate end frames via ChatGPT for ${batchEligibleBeats.length} beat(s) sequentially. ~$0.04 × ${batchEligibleBeats.length} = ~$${(batchEligibleBeats.length * 0.04).toFixed(2)}. Keep this tab open until complete. Each iteration re-reads state for freshness.`
+                }
+              >
+                ✏ Batch end frames ({batchEligibleBeats.length} beat{batchEligibleBeats.length === 1 ? '' : 's'})
+              </button>
+            )}
+          </div>
+          <ol class="mn-beat-list" data-testid="beat-list">
+            {beatList.map((b, i) => (
+              <Fragment key={b.beat_id}>
+                <BeatCard
+                  index={i}
+                  beatId={b.beat_id}
+                  beat={b}
+                  eventId={eventId}
+                  videoRole={activeTargetVideo.value}
+                  onMutated={() => setRefreshTick((n) => n + 1)}
+                  onInsertAfter={() => void onAddBeat(b.beat_id)}
+                  onDeleteBeat={() => setDeleteConfirmBeatId(b.beat_id)}
+                />
+                {i < beatList.length - 1 && (
+                  <FadeDivider
+                    beatId={b.beat_id}
+                    eventId={eventId}
+                    videoRole={activeTargetVideo.value}
+                    fadeMs={b.phase_1 ? b.phase_1.fade_after_ms : null}
+                    onMutated={() => setRefreshTick((n) => n + 1)}
+                  />
+                )}
+              </Fragment>
+            ))}
+          </ol>
+        </>
       )}
       <footer class="mn-pane-footer">
         <SendOutButton />

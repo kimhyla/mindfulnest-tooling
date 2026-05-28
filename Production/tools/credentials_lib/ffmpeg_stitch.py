@@ -64,7 +64,7 @@ NORMALIZATION_FFMPEG_ARGS: tuple[str, ...] = (
 # *_normalized.mp4 in normalized_segments/, _normalized_phase_a/, etc.
 # Next /api/scene/assemble + preview-stitched paths re-encode from source.
 # LD-284 itself unchanged; this is a CODE-ALIGNMENT, not a spec change.
-NORMALIZATION_RECIPE_VERSION: str = "v3"
+NORMALIZATION_RECIPE_VERSION: str = "v5"  # AV_FUSE_SS_20260525: revert broken setpts; fuse via -ss in normalize_for_concat
 NORMALIZATION_RECIPE_HASH: str = hashlib.sha256(
     (f"{NORMALIZATION_RECIPE_VERSION}:" + NORMALIZATION_VF_EXPR + "|"
      + " ".join(NORMALIZATION_ENCODER_ARGS)).encode("utf-8"),
@@ -76,8 +76,8 @@ NORMALIZATION_RECIPE_HASH: str = hashlib.sha256(
 # Stage 1 finalizes each beat (cached); Stage 2 mirrors preview-stitched
 # orchestration to assemble the scene + register scene_concat_mp4 asset.
 # ---------------------------------------------------------------------------
-FINALIZE_RECIPE_VERSION: str = "v1"
-ASSEMBLE_RECIPE_VERSION: str = "v1"
+FINALIZE_RECIPE_VERSION: str = "v2"  # bumped 2026-05-27: magic_still freeze_tail_s support
+ASSEMBLE_RECIPE_VERSION: str = "v2"  # FADE_THROUGH_BLACK_20260525: bumped to invalidate
 
 # ---------------------------------------------------------------------------
 # Watercolor overlay recipe version (V3 MEDIUM-6 fix from preflight 102).
@@ -85,7 +85,32 @@ ASSEMBLE_RECIPE_VERSION: str = "v1"
 # Bump whenever the overlay filter construction in render_watercolor_overlay
 # changes semantics (animation preset easing, chromakey params, scale behavior).
 # ---------------------------------------------------------------------------
-WATERCOLOR_OVERLAY_RECIPE_VERSION = "wc_v2_native_aspect"
+WATERCOLOR_OVERLAY_RECIPE_VERSION = "wc_v13_hand_only_split"
+# v13 (2026-05-28): Split rub applies to hand pigment only — cream paper +
+# black border stay fixed. Fixes v2-class "frame sliced in half" shear.
+# v7 (2026-05-28): tpad start alignment + cue_hold_s-derived stop_duration.
+#   (1) tpad stop_duration: was hardcoded 300 (→ 7200 frames → 504 timeout).
+#       Now passes cue_hold_s = ts_s + dur_s + 2.0 (typically 10-25s) +5s margin.
+#   (2) Frame constants in production_server.py corrected for 720×544 lipsync base
+#       video → letterboxed to 953×720 in 1280×720 canvas (content x_offset=164).
+#       frame_x["b"]: 40→185, frame_y: 180→30, frame_max_w["b"]: 600→340.
+# v5 (2026-05-28): Two fixes:
+#   (1) chromakey similarity 0.1 → 0.25 — handles YUV quantisation of magenta.
+#   (2) Remove -stream_loop -1 for video inputs; add tpad=stop_mode=clone in
+#       prefilter — stops baked PIL fade envelope from cycling every 2s.
+# v4 (2026-05-27): Switch PIL canvas and chromakey from green (0x00FF00) to
+# magenta (0xFF00FF). Green caused edge-eating during fade-in: semi-transparent
+# pixels blended toward green and were partially removed by chromakey. Magenta
+# doesn't appear in skin tones or watercolor art. Also: safe zone validation is
+# now enforce_safe_zone=True ONLY in watercolor animate, not magic trail.
+# v3 (2026-05-27): Root-cause fix for invisible overlay. ffmpeg overlay filter
+# advances BOTH input streams in parallel regardless of `enable` condition.
+# If cue input was limited to -t {dur_s} (e.g. 10.0s), [cN] reached EOF at t=10.0
+# BEFORE the enable window opened at t=11.341, making the overlay permanently
+# invisible. Fix: cue_hold_s = ts_s + dur_s + 2.0 ensures frames always exist
+# at any point in the enable window. Also: switched between() -> gte()*lte()
+# for unambiguous inclusive-on-both-ends semantics; added setpts=PTS-STARTPTS
+# on base to anchor PTS to zero; fixed ffmpeg fade st= to ts_s not 0.
 # v2 (preflight 134, 2026-04-20): scale-to-bbox (no pad), overlay at native aspect.
 # Prior v1 padded every cue to 1280x720 centered, which made a 400x400 PNG render
 # center-of-frame regardless of frame_x. v2 scales to (frame_max_w, frame_max_h)
@@ -94,7 +119,7 @@ WATERCOLOR_OVERLAY_RECIPE_VERSION = "wc_v2_native_aspect"
 # frame. Supersedes LD 304 semantics for overlay placement.
 WATERCOLOR_OVERLAY_RECIPE_HASH: str = hashlib.sha256(
     f"{WATERCOLOR_OVERLAY_RECIPE_VERSION}:fade_in=0.3s|slide_in=0.5s|"
-    f"gentle_pan=5px_sin|chromakey=0x00FF00:0.1:0.0|scale=bbox_no_pad".encode("utf-8"),
+    f"gentle_pan=5px_sin|chromakey=0xFF00FF:0.1:0.0|scale=bbox_no_pad".encode("utf-8"),
 ).hexdigest()[:16]
 
 # Watercolor cue animation presets and allowed cue types (mirror the
@@ -262,9 +287,29 @@ def normalize_for_concat(src: Path, dst: Path,
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.parent / f"{dst.stem}.tmp.{os.getpid()}{dst.suffix}"
     has_audio = _has_audio_stream(src)
+    # AV_FUSE_SS_20260525: fuse A/V at the demuxer level.
+    # ByteDance lipsync outputs have video.start_time≈22ms with
+    # audio.start_time=0.000. If we don't account for this, fps=24 snaps the
+    # 22ms video PTS to the nearest 24fps grid point (41ms), producing a 41ms
+    # A/V desync in every finalized clip. Applying setpts=PTS-STARTPTS in the
+    # video filter only makes things worse (shortens video duration relative to
+    # audio, causing catastrophic truncation on beats with trim_start > 0).
+    #
+    # The correct "fuse before importation" fix: detect video.start_time > 5ms
+    # and prepend -ss {video_start_s} BEFORE -i src. This seeks BOTH the video
+    # and audio streams in src to the same start point simultaneously, so both
+    # enter the normalization pipeline already fused. fps=24 then sees a video
+    # stream starting at PTS≈0, snaps to 0, and the desync never forms.
+    # The tiny audio trim (≈22ms) is imperceptible and correct — it aligns
+    # the audio channel to the first actual video frame.
+    video_start_s = ffprobe_video_start_time(src)
+    fuse_ss_args: list[str] = []
+    if video_start_s > 0.005:
+        fuse_ss_args = ["-ss", f"{video_start_s:.3f}"]
     try:
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            *fuse_ss_args,
             "-i", str(src.resolve()),
         ]
         if not has_audio:
@@ -286,10 +331,106 @@ def normalize_for_concat(src: Path, dst: Path,
 # ---------------------------------------------------------------------------
 # Trim
 # ---------------------------------------------------------------------------
+def translate_trim_for_source(
+    beat: dict,
+    source_file_name: str,
+    source_file_path: Path,
+    trim_start: float | None,
+    trim_end: float | None,
+    trim_back: float | None = None,
+) -> tuple[float | None, float | None]:
+    """Translate phase_1 trim_start/trim_end from the ORIGINAL TTS timeline
+    into the ACTUAL source file's timeline.
+
+    Why: trim_start/trim_end were authored against the original Kling clip
+    (5s or 10s duration matching trim window). After lipsync, the source file
+    becomes the lipsync mp4, which has a DIFFERENT timeline — ByteDance
+    prepends preroll and we extend the tail by 1.5s. Applying the absolute
+    trim_end directly to the lipsync mp4 cuts off speech mid-word (Kim
+    symptom 2026-05-21 on beat_05: trim_end=3.35 hit '...mindfuln-' instead
+    of '...mindfulnest' because lipsync mp4 was 4.36s long and speech ran
+    ~0.4s → ~3.76s within the mp4 timeline).
+
+    Translation rules (lipsync mp4 case ONLY — raw_option / still_image
+    finals keep their original timeline since trim_end was authored against
+    the same source):
+
+      back_offset_s   = audio_duration_s - trim_end_absolute     # user input
+      new_trim_end    = lipsync_mp4_duration - back_offset_s
+      gen_ls_start    = lipsync.audio_processing.trim_start      # ts_used at generation
+      new_trim_start  = max(0, trim_start - gen_ls_start)
+
+    STITCH_FRONT_TRIM_FIX_20260524: trim_start is now also translated into
+    the lipsync file's timeline using the same delta used by the UI preview
+    (LIPSYNC_SEEK_FIX_20260524). gen_ls_start = the lipsync_start at
+    generation time (ts_used = trim_start + audio_delay_sec), stored as
+    beat.lipsync.audio_processing.trim_start. Examples:
+      beat_09: gen=0, current=3  → new_trim_start=3  (trims 3s off existing file)
+      beat_03: gen=1.5, current=1.5 → new_trim_start=0 (no double-trim after resend)
+      old files (no audio_processing): gen=0 → new_trim_start=current_trim_start (unchanged)
+
+    Returns (translated_trim_start, translated_trim_end). When translation
+    isn't applicable (no lipsync, missing audio_duration_s, source isn't the
+    lipsync mp4), returns the inputs unchanged.
+    """
+    if trim_end is None:
+        # trim_back support: "remove N seconds from the end of the source file".
+        # trim_back is ALWAYS relative to the resolved source file's own timeline
+        # (whether raw Kling clip or lipsync mp4 — it was authored while Kim
+        # watched that specific file). So no lipsync-timeline translation is
+        # needed here; we just compute effective_trim_end = src_dur - trim_back.
+        if trim_back is not None and float(trim_back) > 0:
+            try:
+                src_dur = ffprobe_duration(source_file_path)
+            except Exception:
+                return (trim_start, None)
+            effective_end = max(
+                float(trim_start or 0.0) + 0.01,
+                src_dur - float(trim_back),
+            )
+            return (trim_start, effective_end)
+        return (trim_start, None)
+    lipsync_block = (beat or {}).get("lipsync") or {}
+    lipsync_file = lipsync_block.get("file")
+    if not lipsync_file:
+        return (trim_start, trim_end)
+    if Path(source_file_name).name != Path(lipsync_file).name:
+        return (trim_start, trim_end)
+    if lipsync_block.get("status") != "completed":
+        return (trim_start, trim_end)
+    audio_dur = beat.get("audio_duration_s")
+    try:
+        audio_dur_f = float(audio_dur) if audio_dur is not None else None
+    except (TypeError, ValueError):
+        audio_dur_f = None
+    if audio_dur_f is None or audio_dur_f <= 0:
+        return (trim_start, trim_end)
+    try:
+        lipsync_dur = ffprobe_duration(source_file_path)
+    except Exception:
+        return (trim_start, trim_end)
+    # STITCH_FRONT_TRIM_FIX_20260524: translate trim_start into lipsync timeline.
+    # gen_ls_start = lipsync_start at generation time (ts_used, stored as
+    # audio_processing.trim_start by vendor_jobs.py mark_done).
+    gen_ls_start = float(
+        (lipsync_block.get("audio_processing") or {}).get("trim_start") or 0
+    )
+    new_trim_start: float | None
+    if trim_start is None:
+        new_trim_start = None
+    else:
+        new_trim_start = max(0.0, float(trim_start) - gen_ls_start)
+    back_offset = max(0.0, audio_dur_f - float(trim_end))
+    new_end = max(float(new_trim_start or 0.0) + 0.01, lipsync_dur - back_offset)
+    return (new_trim_start, new_end)
+
+
 def trim_normalized(src: Path, dst: Path,
                     trim_start: float | None,
                     trim_end: float | None,
                     audio_delay: float = 0.0,
+                    mix_audio_path: "Path | None" = None,
+                    freeze_tail_s: float = 0.0,
                     timeout_s: int = DEFAULT_FFMPEG_TIMEOUT_S) -> float:
     """Trim src to [trim_start, trim_end] window at dst. Returns effective duration.
 
@@ -305,6 +446,13 @@ def trim_normalized(src: Path, dst: Path,
     storyboard_v46_prod.html where vid plays muted while audio is delayed
     by setTimeout. Audio that extends past the trim window is naturally
     clipped by ffmpeg's -t duration cap (mp4 ends when video ends).
+
+    freeze_tail_s (2026-05-27 — magic_still tail fix): when > 0 and
+    mix_audio_path is provided, probes the audio duration and ensures the
+    output is at least audio_dur + freeze_tail_s long. If the source video
+    is shorter than that target, freeze-extends the last frame via tpad.
+    Used for magic_still beats (is_magic_source=True) so the still image
+    holds on screen for freeze_tail_s seconds after speech ends.
     """
     dst.parent.mkdir(parents=True, exist_ok=True)
     src_dur = ffprobe_duration(src)
@@ -322,20 +470,71 @@ def trim_normalized(src: Path, dst: Path,
     duration = end - start
     tmp = dst.parent / f"{dst.stem}.tmp.{os.getpid()}{dst.suffix}"
     try:
-        cmd = [
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-ss", f"{start:.3f}",
-            "-i", str(src.resolve()),
-            "-t", f"{duration:.3f}",
-        ]
-        if audio_delay and audio_delay > 0:
+        if mix_audio_path is not None and mix_audio_path.is_file():
+            # Raw-option beat: the source clip has no audio (generated with
+            # sound: false per CLAUDE.md §8.1). Mix the speech MP3 in place
+            # of the silent anullsrc, offset to audio_delay seconds into the
+            # output clip. apad pads the audio stream to the full output
+            # duration so the codec doesn't truncate early.
+            # Note: -vf cannot coexist with -map when using -filter_complex;
+            # src is already at canonical codec from normalize_for_concat so
+            # we skip the VF re-pass and use NORMALIZATION_ENCODER_ARGS only.
             delay_ms = int(round(float(audio_delay) * 1000))
-            # adelay=ms:all=1 delays every audio channel uniformly. Mono
-            # output (-ac 1 in NORMALIZATION_FFMPEG_ARGS) means one channel
-            # but :all=1 is a safe no-op on mono and future-proofs against
-            # a stereo bump.
-            cmd += ["-af", f"adelay={delay_ms}:all=1"]
-        cmd += [*NORMALIZATION_FFMPEG_ARGS, str(tmp)]
+
+            # freeze_tail_s: for magic_still beats, ensure output covers
+            # audio_dur + freeze_tail_s. If source video is too short, tpad
+            # freezes the last frame to fill the gap.
+            target_duration = duration
+            extra_freeze = 0.0
+            if freeze_tail_s > 0:
+                audio_dur = ffprobe_duration(mix_audio_path)
+                target_duration = max(duration, audio_dur + float(freeze_tail_s))
+                extra_freeze = max(0.0, target_duration - duration)
+
+            if extra_freeze > 0.01:
+                # One-pass: freeze-extend video + mix audio, all in filter_complex.
+                cmd = [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-ss", f"{start:.3f}",
+                    "-i", str(src.resolve()),
+                    "-i", str(mix_audio_path.resolve()),
+                    "-filter_complex",
+                    f"[0:v]tpad=stop_mode=clone:stop_duration={extra_freeze:.3f}[v];"
+                    f"[1:a]adelay={delay_ms}:all=1,apad[a]",
+                    "-map", "[v]",
+                    "-map", "[a]",
+                    "-t", f"{target_duration:.3f}",
+                    *NORMALIZATION_ENCODER_ARGS,
+                    str(tmp),
+                ]
+            else:
+                cmd = [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-ss", f"{start:.3f}",
+                    "-i", str(src.resolve()),
+                    "-i", str(mix_audio_path.resolve()),
+                    "-t", f"{target_duration:.3f}",
+                    "-map", "0:v:0",
+                    "-map", "1:a:0",
+                    "-af", f"adelay={delay_ms}:all=1,apad",
+                    *NORMALIZATION_ENCODER_ARGS,
+                    str(tmp),
+                ]
+        else:
+            cmd = [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-ss", f"{start:.3f}",
+                "-i", str(src.resolve()),
+                "-t", f"{duration:.3f}",
+            ]
+            if audio_delay and audio_delay > 0:
+                delay_ms = int(round(float(audio_delay) * 1000))
+                # adelay=ms:all=1 delays every audio channel uniformly. Mono
+                # output (-ac 1 in NORMALIZATION_FFMPEG_ARGS) means one channel
+                # but :all=1 is a safe no-op on mono and future-proofs against
+                # a stereo bump.
+                cmd += ["-af", f"adelay={delay_ms}:all=1"]
+            cmd += [*NORMALIZATION_FFMPEG_ARGS, str(tmp)]
         subprocess.run(cmd, check=True, capture_output=True, timeout=timeout_s)
         os.replace(tmp, dst)
     finally:
@@ -383,6 +582,76 @@ def trim_body(src: Path, dst: Path,
             *NORMALIZATION_FFMPEG_ARGS,
             str(tmp),
         ]
+        subprocess.run(cmd, check=True, capture_output=True, timeout=timeout_s)
+        os.replace(tmp, dst)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+    return new_dur
+
+
+def trim_body_with_fade(
+    src: Path, dst: Path,
+    head_remove_s: float, tail_remove_s: float,
+    fade_in_s: float = 0.0, fade_out_s: float = 0.0,
+    timeout_s: int = DEFAULT_FFMPEG_TIMEOUT_S,
+) -> float:
+    """Trim head/tail AND apply fade-through-black filters in one ffmpeg pass.
+
+    FADE_THROUGH_BLACK_20260525: handles the "fade through black" transition
+    pattern where pause_after_ms>0 is combined with a per-pair crossfade value.
+    Unlike xfade (which overlaps both clips simultaneously and shows ghost frames
+    during the pause), this fades each beat's body independently to/from black so
+    the pause clip is pure black with no double-exposure artifacts.
+
+    head_remove_s / tail_remove_s: same semantics as trim_body() — can be 0
+    fade_in_s:  fade-from-black on the trimmed clip's START  (0 = skip)
+    fade_out_s: fade-to-black   on the trimmed clip's END    (0 = skip)
+    Returns new duration after trimming (fade filters do not remove frames).
+    """
+    src_dur = ffprobe_duration(src)
+    new_start = max(0.0, float(head_remove_s))
+    new_end = max(new_start, src_dur - max(0.0, float(tail_remove_s)))
+    new_dur = new_end - new_start
+    if new_dur <= 0:
+        raise ValueError(
+            f"trim_body_with_fade({src.name}): head={head_remove_s}s "
+            f"tail={tail_remove_s}s would empty the clip (src_dur={src_dur:.3f})",
+        )
+
+    vf_parts: list[str] = []
+    af_parts: list[str] = []
+    if fade_in_s > 0:
+        vf_parts.append(f"fade=t=in:st=0:d={fade_in_s:.3f}")
+        af_parts.append(f"afade=t=in:st=0:d={fade_in_s:.3f}")
+    if fade_out_s > 0:
+        # fade_out_start is relative to the OUTPUT (trimmed) timeline.
+        fade_out_start = max(0.0, new_dur - fade_out_s)
+        vf_parts.append(f"fade=t=out:st={fade_out_start:.3f}:d={fade_out_s:.3f}")
+        af_parts.append(f"afade=t=out:st={fade_out_start:.3f}:d={fade_out_s:.3f}")
+
+    # Chain fade filters before normalization (scale/pad/fps/setsar).
+    vf_chain = (
+        ",".join(vf_parts + [NORMALIZATION_VF_EXPR])
+        if vf_parts else NORMALIZATION_VF_EXPR
+    )
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.parent / f"{dst.stem}.tmp.{os.getpid()}{dst.suffix}"
+    try:
+        cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-ss", f"{new_start:.3f}",
+            "-i", str(src.resolve()),
+            "-t", f"{new_dur:.3f}",
+            "-vf", vf_chain,
+        ]
+        if af_parts:
+            cmd += ["-af", ",".join(af_parts)]
+        cmd += [*NORMALIZATION_ENCODER_ARGS, str(tmp)]
         subprocess.run(cmd, check=True, capture_output=True, timeout=timeout_s)
         os.replace(tmp, dst)
     finally:
@@ -572,6 +841,32 @@ def ffprobe_duration(path: Path) -> float:
         raise RuntimeError(f"ffprobe returned non-numeric duration {raw!r} for {path}")
 
 
+def ffprobe_video_start_time(path: Path) -> float:
+    """Return the PTS start_time of the first video stream in seconds, or 0.0.
+
+    AV_FUSE_SS_20260525: ByteDance lipsync outputs have video.start_time≈22ms
+    with audio.start_time=0.000. Used by normalize_for_concat() to detect this
+    offset so it can fuse A/V streams at the demuxer level via -ss before -i.
+
+    Returns 0.0 on any error (N/A, missing stream, timeout) so callers can
+    treat 0 as "no offset needed" without special-casing exceptions.
+    """
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error",
+             "-select_streams", "v:0",
+             "-show_entries", "stream=start_time",
+             "-of", "default=noprint_wrappers=1:nokey=1",
+             str(path.resolve())],
+            capture_output=True, timeout=10,
+        )
+        raw = out.stdout.decode("utf-8", errors="replace").strip()
+        val = float(raw)
+        return val if val > 0 else 0.0
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+        return 0.0
+
+
 # ---------------------------------------------------------------------------
 # LRU cleanup (caller holds the dir-level lock — counter (d) HIGH)
 # ---------------------------------------------------------------------------
@@ -665,6 +960,7 @@ def compute_cache_hash(state_snapshot: dict, fade_ms: int,
         mtime = os.path.getmtime(str(path))  # safe — existence already verified
         trim_start = phase1.get("trim_start", 0.0)
         trim_end = phase1.get("trim_end")  # None == no trim
+        trim_back = phase1.get("trim_back")  # back-trim (None = not set)
         pause_after_ms = phase1.get("pause_after_ms", 0)
         selected = phase1.get("selected_option")
         # Per-item fade override (PER_ITEM_FADE_AFTER_OVERRIDE_V1, April 19 2026).
@@ -682,7 +978,7 @@ def compute_cache_hash(state_snapshot: dict, fade_ms: int,
         audio_delay = phase1.get("audio_delay", 0.0) or 0.0
         parts.append(
             f"{beat_id}:{path}:{mtime:.6f}:{trim_start}:{trim_end}:{pause_after_ms}:"
-            f"fade_after:{fade_after_ms}:audio_delay:{audio_delay}",
+            f"fade_after:{fade_after_ms}:audio_delay:{audio_delay}:trim_back:{trim_back}",
         )
         metadata.append({
             "beat_id": beat_id,
@@ -690,6 +986,7 @@ def compute_cache_hash(state_snapshot: dict, fade_ms: int,
             "mtime": mtime,
             "trim_start": trim_start,
             "trim_end": trim_end,
+            "trim_back": trim_back,
             "pause_after_ms": pause_after_ms,
             "selected_option": selected,
             "fade_after_ms": fade_after_ms,
@@ -812,16 +1109,25 @@ def resolve_watercolor_asset(library_dir: Path, key: str, cue_type: str) -> Path
         candidate = library_dir / f"{key}{ext}"
         if candidate.is_file():
             return candidate
+    # Fallback: if the primary extension set didn't match, try the other set.
+    # This handles stale cue_type="png" for keys that only have an MP4 on disk
+    # (animated keys stored before the validator auto-correct was added).
+    fallback_exts = _WC_VIDEO_EXTS if cue_type == "png" else _WC_PNG_EXTS
+    for ext in fallback_exts:
+        candidate = library_dir / f"{key}{ext}"
+        if candidate.is_file():
+            return candidate
     raise FileNotFoundError(
         f"watercolor asset not found for key={key!r} cue_type={cue_type!r}; "
-        f"tried: {[str(library_dir / (key + e)) for e in exts]}",
+        f"tried: {[str(library_dir / (key + e)) for e in exts + list(fallback_exts)]}",
     )
 
 
 def _wc_build_cue_prefilter(input_idx: int, cue: dict,
                             chromakey_for_video: bool,
                             frame_max_w: int = 600,
-                            frame_max_h: int = 540) -> str:
+                            frame_max_h: int = 540,
+                            cue_hold_s: float = 20.0) -> str:
     """Return the pre-overlay filter fragment for a cue, producing label [cN].
 
     Counter HIGH-4 resolution: chromakey only applied when cue_type=="video"
@@ -836,27 +1142,43 @@ def _wc_build_cue_prefilter(input_idx: int, cue: dict,
     """
     cue_type = cue.get("cue_type") or "png"
     label = f"c{input_idx}"
+    # ts_s needed so fade-in starts at the cue's absolute time (not t=0).
+    # If fade st=0, the fade fires at global t=0 and is long gone by the time
+    # the overlay enable window opens at ts_s — the overlay would appear with
+    # no entrance animation. Using st=ts_s ties the fade to the enable window.
+    ts_s = float(cue.get("timestamp_ms") or 0) / 1000.0
     chain = []
     if cue_type == "video" and chromakey_for_video:
-        # 0x00FF00 green, 0.1 similarity, 0.0 blend — leaves clean edges
-        # when Chipper flyin/flyout ships as green-screen MP4 (Kling
-        # fallback path when native alpha channel unavailable).
-        chain.append("chromakey=0x00FF00:0.1:0.0")
+        chain.append("chromakey=0xFF00FF:0.25:0.0")
     # Scale-to-bbox with aspect preserved. No pad -> overlay is native-aspect
     # sized image, placed at (frame_x, frame_y) directly by the overlay filter.
+    # NOTE: the 2× canvas has the SAME aspect ratio as the source PNG, so the
+    # scale-to-bbox result is the same size as the PNG would produce, and the
+    # path position mapping is correct (canvas [0,1] ≡ PNG [0,1]).
     chain.append(
         f"scale=w={frame_max_w}:h={frame_max_h}:force_original_aspect_ratio=decrease"
     )
     # Apply animation preset's entrance effect (0.3s fade-in for fade_in and
     # slide_in; gentle_pan layers a slow x oscillation).
+    # Use st=ts_s so the fade fires at the cue's global start time, not t=0.
+    # IMPORTANT: skip ffmpeg fade for cue_type=="video" — the PIL renderer
+    # already bakes a 0.5s opacity ramp into the MP4 frames. Applying a
+    # second ffmpeg alpha fade multiplies the two opacities (PIL_alpha *
+    # ffmpeg_alpha), producing near-invisible onset for the first 0.3s.
     animation = cue.get("animation") or "fade_in"
-    if animation == "fade_in":
-        chain.append("fade=t=in:st=0:d=0.3:alpha=1")
-    elif animation == "slide_in":
-        # Short fade so opacity isn't binary.
-        chain.append("fade=t=in:st=0:d=0.15:alpha=1")
-    elif animation == "gentle_pan":
-        chain.append("fade=t=in:st=0:d=0.5:alpha=1")
+    if cue_type != "video":
+        # Image/PNG cues: apply ffmpeg entrance fade (PIL baking doesn't apply)
+        if animation == "fade_in":
+            chain.append(f"fade=t=in:st={ts_s:.3f}:d=0.3:alpha=1")
+        elif animation == "slide_in":
+            # Short fade so opacity isn't binary.
+            chain.append(f"fade=t=in:st={ts_s:.3f}:d=0.15:alpha=1")
+        elif animation == "gentle_pan":
+            chain.append(f"fade=t=in:st={ts_s:.3f}:d=0.5:alpha=1")
+    else:
+        # wc_v8: loop the baked rub clip for the full enable window. Motion is in
+        # the MP4 pixels — no tpad alignment, no ffmpeg fade (loop-friendly encode).
+        pass
     joined = ",".join(chain)
     return f"[{input_idx}:v]{joined}[{label}]"
 
@@ -866,15 +1188,27 @@ def _wc_overlay_x_expr(cue: dict, frame_x: int) -> str:
 
     fade_in    -> static x = frame_x
     slide_in   -> x slides from -W to frame_x over 0.5s relative to cue start
-    gentle_pan -> x = frame_x + 5*sin(2*PI*t_rel) for micro-motion
+    gentle_pan -> x = frame_x + 5*sin(2*PI*t_rel) for micro-motion (PNG only)
     """
+    cue_type = cue.get("cue_type") or "png"
+    # wc_v8: animated video cues bake motion in PIL — panning the whole tile made
+    # the magenta bounding box bounce while hands looked static inside it.
+    if cue_type == "video":
+        return str(frame_x)
+
     animation = cue.get("animation") or "fade_in"
     timestamp_s = float(cue.get("timestamp_ms") or 0) / 1000.0
     if animation == "slide_in":
-        # t_rel = t - timestamp_s; slide over 0.5s
+        # Slide in from off-screen LEFT (negative x) to frame_x over 0.5s.
+        # slide_start = -(frame_max_w + 50) ensures the asset starts fully
+        # off the left edge before sweeping to its resting position at frame_x.
+        # Prior code used frame_x - 300, meaning the asset started on-screen
+        # and appeared to barely move — not a real slide-in. (2026-05-27 fix)
+        # We use -700 as a safe off-left value for any reasonable frame_max_w.
+        slide_start = -700
         return (
             f"'if(lt(t,{timestamp_s + 0.5:.3f}),"
-            f"{frame_x}-300*(1-(t-{timestamp_s:.3f})/0.5),"
+            f"{slide_start}+({frame_x}-({slide_start}))*(t-{timestamp_s:.3f})/0.5,"
             f"{frame_x})'"
         )
     if animation == "gentle_pan":
@@ -925,22 +1259,59 @@ def render_watercolor_overlay(
         )
         cue_paths.append(path)
 
+    # Validate cue timestamps against base video duration (LOW fix, 2026-05-27).
+    # A cue at ts > video_duration silently never appears — no ffmpeg error,
+    # no output error, overlay just absent. Fail loudly instead.
+    base_video_duration = ffprobe_duration(base_video_path)
+    if base_video_duration > 0:
+        for cue in cues_sorted:
+            ts_s = float(cue.get("timestamp_ms") or 0) / 1000.0
+            if ts_s >= base_video_duration:
+                raise ValueError(
+                    f"Cue timestamp {ts_s:.3f}s (id={cue.get('id')!r}) exceeds "
+                    f"base video duration {base_video_duration:.3f}s. "
+                    f"The overlay would never appear. Check production_state.json "
+                    f"phase_b_watercolor_cues_json timestamp_ms values."
+                )
+
     # Build ffmpeg command.
     cmd: list[str] = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
         "-i", str(base_video_path.resolve()),
     ]
+    effective_cues: list[dict] = []
     for cue_path, cue in zip(cue_paths, cues_sorted):
-        # For PNG inputs, -loop 1 -t <duration> would be needed to extend;
-        # for overlay with enable='between', a still image as a single frame
-        # is reused across the enable window. Use -loop 1 for PNGs so ffmpeg
-        # doesn't complain about single-frame consumption.
-        if cue.get("cue_type") == "png":
+        # Decide input flags by ACTUAL FILE EXTENSION, not stored cue_type.
+        # cue_type in the dict may be stale (e.g., "png" for a key that resolved
+        # via fallback to an .mp4). -loop 1 is valid ONLY for image demuxers
+        # (png/jpg/gif). Applying it to an .mp4 input causes ffmpeg to exit with
+        # "Option not found" (observed: returncode=8 on macOS ARM).
+        is_image_input = cue_path.suffix.lower() in (".png", ".jpg", ".jpeg", ".gif", ".webp")
+        # Patch the in-memory cue dict so downstream filter builders
+        # (_wc_build_cue_prefilter) see the correct effective type.
+        effective_cue = dict(cue)
+        effective_cue["cue_type"] = "png" if is_image_input else "video"
+        effective_cues.append(effective_cue)
+        # cue_hold_s: how long the looped input must run so its frames exist
+        # at the cue's enable-window start (ts_s). With just -t dur_s, the
+        # stream was exhausted at t=dur_s — before the enable window opened
+        # at ts_s. ffmpeg overlay filter advances both input streams in
+        # parallel regardless of the enable condition, so [cN] is at EOF by
+        # the time the first overlay frame is requested at t=ts_s.
+        # Fix: hold for ts_s + dur_s + 2.0s (2s safety margin for stream-end
+        # lag).  Bounded by ~(ts_s+dur_s+2), typically <30s, not 3600s.
+        _cue_ts_s = float(cue.get("timestamp_ms") or 0) / 1000.0
+        _cue_dur_s = float(cue.get("duration_ms") or 1000) / 1000.0
+        cue_hold_s = _cue_ts_s + _cue_dur_s + 2.0
+        if is_image_input:
             cmd.extend(["-loop", "1",
-                        "-t", f"{float(cue.get('duration_ms') or 1000)/1000.0:.3f}",
+                        "-t", f"{cue_hold_s:.3f}",
                         "-i", str(cue_path.resolve())])
         else:
-            cmd.extend(["-i", str(cue_path.resolve())])
+            # wc_v8: loop tight alpha MP4 for full enable window (rub repeats).
+            cmd.extend(["-stream_loop", "-1",
+                        "-t", f"{cue_hold_s:.3f}",
+                        "-i", str(cue_path.resolve())])
 
     # Tmp target computed once (counter 102 LOW fix).
     tmp = output_path.parent / f"{output_path.stem}.tmp.{os.getpid()}{output_path.suffix}"
@@ -965,22 +1336,39 @@ def render_watercolor_overlay(
         ])
     else:
         # Normalize the base input first, then chain overlays off [base].
-        prefilters: list[str] = [f"[0:v]{NORMALIZATION_VF_EXPR}[base]"]
+        # setpts=PTS-STARTPTS ensures base PTS starts at 0 regardless of any
+        # CTTS offset or edit-list atom in the source MP4. Required so that
+        # the cue enable condition (gte(t,ts_s)*lte(t,...)) evaluates against
+        # a zero-anchored timeline matching the cue timestamps_ms values.
+        prefilters: list[str] = [f"[0:v]{NORMALIZATION_VF_EXPR},setpts=PTS-STARTPTS[base]"]
         overlays: list[str] = []
         prev_label = "base"
-        for i, cue in enumerate(cues_sorted):
+        for i, cue in enumerate(effective_cues):
             input_idx = i + 1  # base video is 0
-            prefilters.append(_wc_build_cue_prefilter(
-                input_idx, cue, chromakey_for_video,
-                frame_max_w=frame_max_w, frame_max_h=frame_max_h))
-            x_expr = _wc_overlay_x_expr(cue, frame_x)
+            # Hoist ts_s/dur_s before prefilter call so cue_hold_s can be passed.
+            # (wc_v6: tpad stop_duration is derived from cue_hold_s, not hardcoded 300.)
             ts_s = float(cue.get("timestamp_ms") or 0) / 1000.0
             dur_s = float(cue.get("duration_ms") or 1000) / 1000.0
+            cue_hold_s = ts_s + dur_s + 2.0
+            prefilters.append(_wc_build_cue_prefilter(
+                input_idx, cue, chromakey_for_video,
+                frame_max_w=frame_max_w, frame_max_h=frame_max_h,
+                cue_hold_s=cue_hold_s))
+            x_expr = _wc_overlay_x_expr(cue, frame_x)
             out_label = f"v{i+1}"
+            # Use gte()*lte() instead of between(): between() exclusivity
+            # semantics vary by ffmpeg version and fail at exact boundary frames.
+            # gte/lte are unambiguously inclusive on both sides.
+            # Root-cause fix for invisible overlay (v3, 2026-05-27):
+            # between(t,11.341,21.341) silently failed because [cN] was limited
+            # to -t {dur_s} (10.0s), reaching EOF at t=10.0 BEFORE the enable
+            # window opened at t=11.341. Fix: cue input uses
+            # cue_hold_s = ts_s + dur_s + 2.0 (see input construction above),
+            # ensuring frames exist at any point in the enable window.
             overlays.append(
                 f"[{prev_label}][c{input_idx}]overlay="
                 f"x={x_expr}:y={frame_y}:"
-                f"enable='between(t,{ts_s:.3f},{ts_s + dur_s:.3f})'"
+                f"enable='gte(t,{ts_s:.3f})*lte(t,{ts_s + dur_s:.3f})'"
                 f"[{out_label}]"
             )
             prev_label = out_label
@@ -1012,7 +1400,8 @@ def render_watercolor_overlay(
 # BEAT_FINALIZE_ENDPOINT_V1 + SCENE_ASSEMBLE_ENDPOINT_V1.
 # ---------------------------------------------------------------------------
 def compute_finalize_args_hash(slim_snapshot: dict, beat_id: str,
-                               clips_dir: Path) -> tuple[str, dict]:
+                               clips_dir: Path,
+                               event_dir: "Path | None" = None) -> tuple[str, dict]:
     """Compute the per-beat finalize cache hash + per-beat resolution metadata.
 
     Per Cursor Q1 (v3 spec §3.5 Stage 1): excludes fade_after_ms +
@@ -1021,29 +1410,61 @@ def compute_finalize_args_hash(slim_snapshot: dict, beat_id: str,
 
     Hash inputs:
       - beat_id
-      - resolved input file abs path (via resolve_beat_file)
+      - resolved input file abs path (via resolve_beat_file, or magic path)
       - resolved input file mtime
       - phase_1.selected_option
       - phase_1.trim_start, trim_end
       - phase_1.audio_delay
       - image_overrides[<role>][<beat_id>] — deterministic JSON
       - selected_lipsync_path if beat.lipsync.status == "completed", else None
+      - magic_still_path / magic_video_path (None when not set)
+      - is_magic_source flag
       - NORMALIZATION_RECIPE_HASH (per-codec)
       - FINALIZE_RECIPE_VERSION
 
     Returns:
         (hex_sha256, {beat_id, file, mtime, trim_start, trim_end,
                       audio_delay, selected_option, lipsync_path,
-                      image_override})
+                      image_override, is_magic_source})
+
+    Magic source priority (highest):
+      When beat.magic_still_path or beat.magic_video_path is set AND the file
+      exists in event_dir, the magic composite is used as the video source
+      instead of the regular priority chain (final → lipsync → phase_1 option).
+      Magic outputs are always SILENT (magic_compositor writes video-only;
+      magic_video ffmpeg blend maps 0:a? from a sound:false Kling clip).
+      The caller MUST mix in TTS audio when is_magic_source=True — this is
+      enforced by the _is_raw_option_src override in _handle_scene_assemble.
     """
     beats = slim_snapshot.get("beats") or {}
     image_overrides = slim_snapshot.get("image_overrides") or {}
     beat = beats.get(beat_id) or {}
     phase1 = beat.get("phase_1") or {}
-    path = resolve_beat_file(beat_id, slim_snapshot, clips_dir)  # raises FNF
+
+    # Priority 0a: magic composite (highest priority).
+    # magic_still_path and magic_video_path live in event_dir (not clips_dir).
+    # Both are SILENT; is_magic_source=True signals the caller to mix TTS in.
+    magic_still = beat.get("magic_still_path")
+    magic_video = beat.get("magic_video_path")
+    is_magic_source = False
+    magic_path_used: "str | None" = None
+    if event_dir:
+        for mpath in [magic_still, magic_video]:
+            if mpath:
+                candidate = Path(event_dir) / mpath
+                if candidate.is_file():
+                    path: Path = candidate
+                    is_magic_source = True
+                    magic_path_used = mpath
+                    break
+
+    if not is_magic_source:
+        path = resolve_beat_file(beat_id, slim_snapshot, clips_dir)  # raises FNF
+
     mtime = os.path.getmtime(str(path))
     trim_start = phase1.get("trim_start", 0.0) or 0.0
     trim_end = phase1.get("trim_end")
+    trim_back = phase1.get("trim_back")  # relative back-trim (None = not set)
     audio_delay = phase1.get("audio_delay", 0.0) or 0.0
     selected_option = phase1.get("selected_option")
     lipsync = beat.get("lipsync") or {}
@@ -1063,10 +1484,15 @@ def compute_finalize_args_hash(slim_snapshot: dict, beat_id: str,
         f"mtime:{mtime:.6f}",
         f"trim_start:{trim_start}",
         f"trim_end:{trim_end}",
+        f"trim_back:{trim_back}",  # back-trim (None = not set); included so cache
+        # invalidates when Kim adjusts the trim-back slider (split-brain fix).
         f"audio_delay:{audio_delay}",
         f"selected_option:{selected_option}",
         f"lipsync_path:{lipsync_path}",
         f"image_override:{image_override_json}",
+        f"magic_still:{magic_still}",    # cache invalidates when magic applied/removed
+        f"magic_video:{magic_video}",
+        f"is_magic_source:{is_magic_source}",
     ]
     digest = hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
     metadata = {
@@ -1075,10 +1501,13 @@ def compute_finalize_args_hash(slim_snapshot: dict, beat_id: str,
         "mtime": mtime,
         "trim_start": trim_start,
         "trim_end": trim_end,
+        "trim_back": trim_back,
         "audio_delay": audio_delay,
         "selected_option": selected_option,
         "lipsync_path": lipsync_path,
         "image_override": image_override,
+        "is_magic_source": is_magic_source,
+        "magic_path_used": magic_path_used,
     }
     return digest, metadata
 

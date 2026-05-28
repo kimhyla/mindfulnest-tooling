@@ -408,7 +408,7 @@ SERVER_VERSION = "v1"
 
 # Cost constants (verified April 2026)
 COST_PER_CLIP_KLING = 0.26
-DEFAULT_BUDGET = 32.00
+DEFAULT_BUDGET = 150.00  # raised from 32 — budget overrides are written to production_spend.json (persists across restarts)
 
 # Anti-lip-sync safeguards (CLAUDE.md Rule 8 — ALWAYS ON)
 BANNED_PROMPT_WORDS = [
@@ -605,10 +605,14 @@ def _bg_register_assembled_clip(group_id: str, clip_path: str, file_size_bytes: 
             "notes": f"Assembled group {group_id} -> {clip_path} ({file_size_bytes} bytes)",
         })
     except Exception as e:
-        # Queue for retry
+        # Queue for retry — use the env-aware resolver from lib/directus so
+        # this writer agrees with the replay reader (audit C1-10 split-brain).
+        # [INFERRED — verify the agreement: `grep -n _PENDING_QUEUE_PATH
+        # Production/lib/directus.py` shows the single source-of-truth; both
+        # this writer and lib.directus.try_replay_pending() read that same path.]
         try:
-            queue_path = os.path.join(os.path.dirname(__file__), "..", "pending_directus_writes.json")
-            queue_path = os.path.normpath(queue_path)
+            from lib.directus import _PENDING_QUEUE_PATH as _Q
+            queue_path = str(_Q)
             q = []
             if os.path.exists(queue_path):
                 try:
@@ -1081,13 +1085,14 @@ def sanitize_prompt(prompt: str) -> str:
 def validate_image_dimensions(data_uri: str) -> tuple[bool, str]:
     """CLAUDE.md Rule 6 — shortest side must be >= 600px.
 
-    Uses PIL if available; if PIL isn't installed, logs a warning and
-    passes (the injection-time validator and Directus gate remain in
-    force as backup layers)."""
-    try:
-        from PIL import Image  # type: ignore
-    except ImportError:
-        return True, "PIL not installed — dimension check skipped"
+    PIL is a HARD startup dependency (see _check_runtime_capabilities at
+    line ~11608 which exits the server with [startup:FATAL] if Pillow is
+    missing). The prior fall-through 'PIL not installed - dimension check
+    skipped' was a Rule 19 silent-bypass that became dead code after the
+    P2 LD-pending DEPENDENCY_STARTUP_CHECK_V1 work. Removed per C5-2 audit
+    finding.
+    """
+    from PIL import Image  # type: ignore
 
     try:
         # data:image/png;base64,XXXX
@@ -1108,13 +1113,12 @@ def auto_upscale_image(data_uri: str, target_min: int = MIN_ANIMATION_SIZE) -> t
     """Auto-upscale an image so its shortest side meets target_min.
 
     Returns (possibly_upscaled_data_uri, info_string).
-    If PIL isn't available or the image already meets the minimum, returns the original.
+    If the image already meets the minimum, returns the original.
+    PIL is a HARD startup dependency (see _check_runtime_capabilities) so the
+    'PIL not installed - no upscale' silent-bypass was removed per C5-2.
     This is the Rule 6 'auto-upscale fallback safety net'.
     """
-    try:
-        from PIL import Image  # type: ignore
-    except ImportError:
-        return data_uri, "PIL not installed — no upscale"
+    from PIL import Image  # type: ignore
 
     try:
         header, b64 = data_uri.split(",", 1)
@@ -1716,6 +1720,10 @@ class StitchEditorState:
         self._init_file()
 
     def _init_file(self) -> None:
+        # P1 LD-505 Phase C: state_path is now event_dir.parent/tools/...
+        # On a fresh event_dir (test fixture), the parent dir may not exist.
+        # Pre-create it so atomic_json_write doesn't FileNotFoundError.
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
         if not self.state_path.exists():
             self._atomic_write_json(self.state_path, {"version": 1, "jobs": {}})
         if not self.file_lock_path.exists():
@@ -2151,8 +2159,12 @@ class LipsyncPollingThread(threading.Thread):
 
     def _download_and_complete(self, video_role: str, beat_id: str, task_id: str, url: str) -> None:
         print(f"[lipsync-poller] {beat_id}/{task_id[:12]}…: completed, downloading {url[:60]}…", flush=True)
-        ls = self._lipsync_entry(video_role, beat_id)
-        fname = ls.get("file") or f"{beat_id}_lipsync.mp4"
+        # LIPSYNC_UNIQUE_FNAME_20260525: always generate a unique timestamp-based filename
+        # so the browser URL changes completely on each new lipsync — no reliance on
+        # query-param (?v=N) cache-busting, which Safari's media buffer ignores for
+        # video elements even after Cmd+Shift+R hard refresh.
+        _lipsync_ts = hex(int(time.time()))[2:]
+        fname = f"{beat_id}_lipsync_{_lipsync_ts}.mp4"
         clips_dir = self.state.clips_dir
         dst = clips_dir / Path(fname).name
         try:
@@ -2171,6 +2183,12 @@ class LipsyncPollingThread(threading.Thread):
             ls["recovered_by"] = "lipsync_poller_persistent"
             ls["recovered_at"] = datetime.now(timezone.utc).isoformat()
             beat["lipsync"] = ls
+            # LIPSYNC_VERSION_BUMP_20260524: bump _version so the browser URL
+            # (beat_NN_lipsync.mp4?v=N) changes, forcing a re-fetch of the new file.
+            # Without this, lipsyncMounted (LD-757) keeps the OLD file buffered in
+            # <video> even after the lipsync on disk is overwritten (same filename,
+            # same URL). The result: browser plays stale content, back-trim misbehaves.
+            beat["_version"] = int(beat.get("_version", 0) or 0) + 1
             partition["beats"][beat_id] = beat
 
         self._mutate_lipsync(self.state, video_role, mut)
@@ -2660,6 +2678,17 @@ _DIRECTUS_LOCK_CLIENT_SINGLETON: object = None  # lazy-init cache
 _DIRECTUS_LOCK_CLIENT_LOCK = threading.Lock()
 
 
+def _reset_directus_lock_client():
+    """Force the next _get_directus_lock_client() call to rebuild the
+    singleton. Called from _directus_lock_acquire's exception path when the
+    cached client persistently fails (stale auth token, killed connection,
+    etc.) — without reset the retry loop hits the same broken client every
+    iteration and runs out the deadline."""
+    global _DIRECTUS_LOCK_CLIENT_SINGLETON
+    with _DIRECTUS_LOCK_CLIENT_LOCK:
+        _DIRECTUS_LOCK_CLIENT_SINGLETON = None
+
+
 def _get_directus_lock_client():
     """Lazy-create a DirectusClient for lock operations. Returns None on
     failure so callers can degrade (FAIL CLOSED in mutate paths)."""
@@ -2709,8 +2738,22 @@ def _directus_lock_acquire(resource_key: str, reason: str = "mutate_state") -> d
                 limit=1,
             )
         except Exception as exc:  # noqa: BLE001
-            print(f"[dlock] WARN lookup failed: {exc}")
-            return None  # Directus unreachable
+            # Kim 2026-05-21: transient API hiccup shouldn't fail the whole
+            # mutate. Retry-until-deadline instead of immediate None — Railway
+            # free-tier Directus regularly takes 3+s on cold reads and a
+            # single dropped lookup was raising "lock unreachable" in the UI.
+            # Also nuke the singleton — a stale auth token or broken socket on
+            # the cached client would otherwise make every retry hit the same
+            # error and burn the deadline pointlessly.
+            print(f"[dlock] WARN lookup failed (resetting singleton + retrying until deadline): {exc}")
+            _reset_directus_lock_client()
+            if time.time() >= deadline:
+                return None
+            time.sleep(DIRECTUS_LOCK_POLL_INTERVAL)
+            client = _get_directus_lock_client()
+            if client is None:
+                continue
+            continue
 
         if existing:
             row = existing[0]
@@ -2733,8 +2776,15 @@ def _directus_lock_acquire(resource_key: str, reason: str = "mutate_state") -> d
                     })
                     return {"id": row["id"], "resource_key": resource_key, "reused": True}
                 except Exception as exc:  # noqa: BLE001
-                    print(f"[dlock] WARN reentrant heartbeat failed: {exc}")
-                    return None
+                    print(f"[dlock] WARN reentrant heartbeat failed (resetting + retrying): {exc}")
+                    _reset_directus_lock_client()
+                    if time.time() >= deadline:
+                        return None
+                    time.sleep(DIRECTUS_LOCK_POLL_INTERVAL)
+                    client = _get_directus_lock_client()
+                    if client is None:
+                        continue
+                    continue
 
             # Held by different machine — wait for expiry or timeout
             if exp > now_utc:
@@ -2758,8 +2808,15 @@ def _directus_lock_acquire(resource_key: str, reason: str = "mutate_state") -> d
                 })
                 return {"id": row["id"], "resource_key": resource_key, "stolen_from": row.get("holder_machine_id")}
             except Exception as exc:  # noqa: BLE001
-                print(f"[dlock] WARN steal-expired failed: {exc}")
-                return None
+                print(f"[dlock] WARN steal-expired failed (resetting + retrying): {exc}")
+                _reset_directus_lock_client()
+                if time.time() >= deadline:
+                    return None
+                time.sleep(DIRECTUS_LOCK_POLL_INTERVAL)
+                client = _get_directus_lock_client()
+                if client is None:
+                    continue
+                continue
 
         # No existing row — POST new
         new_exp = now_utc + timedelta(seconds=DIRECTUS_LOCK_TTL_SEC)
@@ -2781,8 +2838,15 @@ def _directus_lock_acquire(resource_key: str, reason: str = "mutate_state") -> d
             msg = str(exc).lower()
             if "unique" in msg or "conflict" in msg or "duplicate" in msg:
                 continue
-            print(f"[dlock] WARN create failed: {exc}")
-            return None
+            print(f"[dlock] WARN create failed (resetting + retrying): {exc}")
+            _reset_directus_lock_client()
+            if time.time() >= deadline:
+                return None
+            time.sleep(DIRECTUS_LOCK_POLL_INTERVAL)
+            client = _get_directus_lock_client()
+            if client is None:
+                continue
+            continue
 
 
 def _directus_lock_release(lock: dict | None) -> None:
@@ -2865,7 +2929,12 @@ def _pre_fail_cdn_check(poller, beat_id: str, opt_idx: int, task_id: str) -> Non
 
 KLING_MAX_DURATION_SEC = 10
 KLING_MIN_DURATION_SEC = 5
-_AUDIO_SHORT_THRESHOLD_SEC = 4.5  # audio <= this -> 5s animation; > -> 10s
+_AUDIO_SHORT_THRESHOLD_SEC = 2.0  # audio <= this -> 5s animation; > -> 10s
+# 2.0 = KLING_MIN_DURATION_SEC(5) - _VIDEO_TRIM_TAILROOM_TARGET_S(3.0).
+# Bumped from 3.5→2.0 (2026-05-27) because LIPSYNC_PAD_END was extended to 2.5s
+# and _VIDEO_TRIM_TAILROOM_TARGET_S was raised to match. With 3.5s threshold,
+# audio in the 2.0–3.5s range still chose 5s Kling but only left 1.5s tail —
+# not enough to cover a 2.5s face-return animation.
 
 
 def _find_beat_audio(event_dir: Path, beat_key: str, audio_override: str | None = None, app=None) -> Path | None:
@@ -3129,7 +3198,19 @@ _SILCOMP_NOISE_DB = "-32dB"
 _SILCOMP_MIN_DURATION_S = 0.150    # silencedetect threshold (150ms)
 _SILCOMP_TRIGGER_S = 1.0           # silences longer than this get compressed
 _SILCOMP_TARGET_S = 0.8            # compress target duration
-_VIDEO_TRIM_TAILROOM_S = 0.4       # audio_duration + 0.4s tail room
+_VIDEO_TRIM_TAILROOM_S = 0.0       # SWITCH_TO_KLING_LIPSYNC_20260524: Kling lipsync closes
+# the mouth naturally at audio end — no extra tail video needed (was 0.4s for ByteDance
+# LatentSync which required extra frames to close mouth after audio stopped).
+# The 1.5s TARGET below still guides how much tail we try to append for natural settling,
+# but the MINIMUM validation floor is now 0 — beats with audio filling the full trim window
+# (e.g. beat_03: 9.68s audio / 10.04s clip) are now valid.
+# Kim 2026-05-21: 0.4s is too tight visually — the last Kling frame is often
+# mid-articulation/mid-blink and the freeze pose at the end looks wrong. Target
+# 1.5s of trailing video when the trim window allows, so the character has
+# time to settle naturally after the last phoneme. Clamp via min() to whatever
+# the [trim_start, trim_end] window actually accommodates — beats with audio
+# near the 10s ceiling still get only the residual tail (no silent failure).
+_VIDEO_TRIM_TAILROOM_TARGET_S = 3.0  # bumped 2026-05-27: covers LIPSYNC_PAD_END=2.5 + 0.5s margin
 # Auto pre-roll (Preflight 110 LD AUTO_PREROLL_V1): when source TTS audio has
 # insufficient leading silence, LatentSync can't lock mouth landmarks and the
 # first phoneme's mouth movement is missing. Fold detection + padding into the
@@ -3296,7 +3377,8 @@ def _detect_head_silence_s(audio_path: Path,
 def _silcomp_audio(source_audio: Path, dst: Path,
                    auto_preroll: bool = False,
                    max_audio_s: float | None = None,
-                   loudnorm: bool = False) -> tuple[Path, dict]:
+                   loudnorm: bool = False,
+                   preroll_s: float = 0.0) -> tuple[Path, dict]:
     """Compress silences >1.0s down to 0.8s. Pass-through if no qualifying
     silences. Returns (path_to_use, metadata_dict).
 
@@ -3313,12 +3395,20 @@ def _silcomp_audio(source_audio: Path, dst: Path,
     Finding 4: preroll interacts weirdly with a non-zero trim_start (Kim
     intended to skip settling frames; preroll would undo that). When in
     doubt, leave auto_preroll=False.
+
+    preroll_s: explicit silence (seconds) to prepend BEFORE the TTS audio,
+    independent of auto_preroll. Used by the lipsync submission path to honour
+    phase_1.audio_delay (DELAY_FIX_20260524): the UI "Delay" slider means
+    "let N seconds of animation play silently before speech starts." This
+    bakes the delay into the audio bytes sent to ByteDance so LatentSync
+    receives [silence][speech] and stamps mouths correctly from N seconds in.
+    Takes priority over auto_preroll when both are non-zero.
     """
     src_dur = _ffprobe_duration(source_audio)
     silences = _detect_silences(source_audio)
     to_compress = [(s, e) for (s, e) in silences if (e - s) > _SILCOMP_TRIGGER_S]
 
-    # --- Auto pre-roll probe (Preflight 110) ---
+    # --- Pre-roll computation (explicit preroll_s takes priority over auto) ---
     preroll_meta = {
         "applied": False,
         "reason": "disabled_by_caller",
@@ -3328,7 +3418,16 @@ def _silcomp_audio(source_audio: Path, dst: Path,
         "min_threshold_s": _AUTO_PREROLL_MIN_S,
     }
     preroll_add_s = 0.0
-    if auto_preroll:
+    if preroll_s > 0.0:
+        # DELAY_FIX_20260524: explicit user-specified audio_delay. Prepend
+        # exactly preroll_s seconds of silence regardless of existing head
+        # silence — ByteDance will see [silence][speech] and stamp mouths
+        # starting at preroll_s seconds into the clip.
+        preroll_add_s = preroll_s
+        preroll_meta["applied"] = True
+        preroll_meta["reason"] = "explicit_audio_delay"
+        preroll_meta["preroll_added_s"] = round(preroll_add_s, 3)
+    elif auto_preroll:
         head = _detect_head_silence_s(source_audio)
         preroll_meta["detected_leading_silence_s"] = head
         if head >= _AUTO_PREROLL_MIN_S:
@@ -3512,7 +3611,11 @@ def _trim_video_to_audio(source_video: Path, dst: Path,
     effective_end = trim_end if trim_end is not None else raw_dur
     window_len = max(0.0, effective_end - trim_start)
     remaining = max(0.0, raw_dur - trim_start)
-    target = audio_duration_s + _VIDEO_TRIM_TAILROOM_S
+    # Target the generous 1.5s tail (Kim 2026-05-21); clamp by window + raw.
+    # Beats with audio close to the trim_end ceiling fall back to whatever
+    # residual tail remains. The validation in handle_lipsync_submit_v4
+    # enforces the 0.4s MINIMUM tail before this function runs.
+    target = audio_duration_s + _VIDEO_TRIM_TAILROOM_TARGET_S
     actual = min(target, window_len, remaining)
     print(f"[trim] src={source_video.name} raw={raw_dur:.2f}s "
           f"trim_start={trim_start:.2f} trim_end={effective_end:.2f} "
@@ -3831,10 +3934,27 @@ def _clean_text_for_tts(text: str) -> str:
     at the start of the line).
 
     Rule 11 source fidelity: spoken dialogue is byte-for-byte preserved.
+
+    V3 (LD-733 TTS_STRIP_LEADING_PARENTHETICAL_V3, locked 2026-05-16,
+    SHIPPED 2026-05-20 after fabrication-scan discovered V3 was never
+    actually landed in code): strip the LEADING parenthetical at the
+    start of text. Per LD-728 the leading paren is a VISUAL cue for
+    Kling motion + end-frame, NOT voice direction — but ElevenLabs v3
+    treats it as dramatic prose and inserts multi-second pauses.
+    Empirical 2026-05-16: beat_06 audio 17.66s → 11.539s after this
+    strip (−6.1s of phantom silent pauses removed). Only the FIRST
+    parenthetical at start-of-text is stripped — inline parentheticals
+    later in the dialogue body remain (V2 backward-compat for voice
+    direction). 3+ char minimum so single-letter parens like "(!)"
+    don't accidentally match.
     """
     if not text:
         return text
-    cleaned = TTS_CUE_MARKER_PATTERN.sub(' ... ', text)
+    # V3 leading-paren strip (LD-733). Pattern: optional leading whitespace
+    # + a single (...) of 3+ chars + optional trailing whitespace, anchored
+    # at start of text only.
+    cleaned = re.sub(r'^\s*\([^)]{3,}\)\s*', '', text)
+    cleaned = TTS_CUE_MARKER_PATTERN.sub(' ... ', cleaned)
     # Collapse any whitespace runs created by the substitution.
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     return cleaned
@@ -4316,44 +4436,84 @@ def _v2_validate_status(v):
 
 
 def _v2_validate_watercolor_cues_json(v):
-    """Validate watercolor cues JSON; re-emit with sort_keys=True for cache-hash stability (MEDIUM-5)."""
-    if not isinstance(v, str):
-        raise ValueError(f"must be JSON string, got {type(v).__name__}")
-    if len(v) > 200_000:
-        raise ValueError(f"cues JSON too long ({len(v)} chars, max 200000)")
-    try:
-        parsed = json.loads(v)
-    except Exception as exc:
-        raise ValueError(f"invalid JSON: {exc}")
+    """Validate watercolor cues; accept JSON string or raw list (frontend schema or server schema).
+
+    Frontend sends raw arrays with keys {id, watercolor_key, offset_ms, animation_type, duration_ms,
+    volume}. Server schema uses {key, timestamp_ms, animation, duration_ms, cue_type}. Both are
+    accepted here and normalized to server schema before storage so the bake pipeline always sees
+    a consistent shape. Stores as a JSON string with sort_keys=True for cache-hash stability (MEDIUM-5).
+    """
+    # Accept list directly (client sends raw array per F7-F9 contract).
+    if isinstance(v, list):
+        parsed = v
+    elif isinstance(v, str):
+        if len(v) > 200_000:
+            raise ValueError(f"cues JSON too long ({len(v)} chars, max 200000)")
+        try:
+            parsed = json.loads(v)
+        except Exception as exc:
+            raise ValueError(f"invalid JSON: {exc}")
+    else:
+        raise ValueError(f"must be JSON string or list, got {type(v).__name__}")
     if not isinstance(parsed, list):
         raise ValueError(f"watercolor cues must be a list, got {type(parsed).__name__}")
-    required_keys = ("timestamp_ms", "key", "animation", "duration_ms", "cue_type")
+    normalized = []
     for i, cue in enumerate(parsed):
         if not isinstance(cue, dict):
             raise ValueError(f"cue {i} must be dict, got {type(cue).__name__}")
-        for key in required_keys:
-            if key not in cue:
-                raise ValueError(f"cue {i} missing {key!r}")
-        if not isinstance(cue["timestamp_ms"], int) or cue["timestamp_ms"] < 0:
+        # Resolve key: accept server 'key' or frontend 'watercolor_key'.
+        key_val = cue.get("key") or cue.get("watercolor_key") or ""
+        if not isinstance(key_val, str) or not key_val:
+            raise ValueError(f"cue {i} missing 'key'/'watercolor_key'")
+        # Resolve timestamp: accept server 'timestamp_ms' or frontend 'offset_ms'.
+        ts_raw = cue.get("timestamp_ms") if "timestamp_ms" in cue else cue.get("offset_ms", 0)
+        try:
+            ts = int(ts_raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"cue {i} timestamp_ms/offset_ms must be integer, got {ts_raw!r}")
+        if ts < 0:
             raise ValueError(f"cue {i} timestamp_ms must be non-negative int")
-        if not isinstance(cue["duration_ms"], int) or cue["duration_ms"] < 0:
-            raise ValueError(f"cue {i} duration_ms must be non-negative int")
-        if cue["cue_type"] not in _V2_CUE_TYPES:
-            raise ValueError(
-                f"cue {i} cue_type must be one of {sorted(_V2_CUE_TYPES)}, "
-                f"got {cue['cue_type']!r}"
-            )
-        if cue["animation"] not in _V2_CUE_ANIMATIONS:
+        # Resolve animation: accept server 'animation' or frontend 'animation_type'.
+        anim = cue.get("animation") or cue.get("animation_type") or "fade_in"
+        if anim not in _V2_CUE_ANIMATIONS:
             raise ValueError(
                 f"cue {i} animation must be one of {sorted(_V2_CUE_ANIMATIONS)}, "
-                f"got {cue['animation']!r}"
+                f"got {anim!r}"
             )
-        if not isinstance(cue["key"], str) or not cue["key"]:
-            raise ValueError(f"cue {i} key must be non-empty string")
+        dur_raw = cue.get("duration_ms", 3000)
+        try:
+            dur = int(dur_raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"cue {i} duration_ms must be integer, got {dur_raw!r}")
+        if dur < 0:
+            raise ValueError(f"cue {i} duration_ms must be non-negative int")
+        raw_cue_type = cue.get("cue_type") or ""
+        # Auto-correct stale cue_type: animated keys always map to MP4/MOV (video),
+        # not PNG. A key containing "_animated_" was produced by the animation
+        # pipeline and will never have a .png sibling. Correcting here means
+        # existing cues stored with cue_type="png" before this fix still work.
+        if not raw_cue_type or raw_cue_type == "png" and "_animated_" in key_val:
+            cue_type = "video" if "_animated_" in key_val else (raw_cue_type or "png")
+        else:
+            cue_type = raw_cue_type
+        if cue_type not in _V2_CUE_TYPES:
+            raise ValueError(
+                f"cue {i} cue_type must be one of {sorted(_V2_CUE_TYPES)}, "
+                f"got {cue_type!r}"
+            )
+        normalized.append({
+            "id": str(cue.get("id") or f"cue_{i}"),
+            "key": key_val,
+            "timestamp_ms": ts,
+            "animation": anim,
+            "duration_ms": dur,
+            "cue_type": cue_type,
+            "volume": float(cue.get("volume", 1.0)),
+        })
     # Sort cues by timestamp_ms for stable rendering order.
-    parsed.sort(key=lambda c: c["timestamp_ms"])
+    normalized.sort(key=lambda c: c["timestamp_ms"])
     # Re-emit with sort_keys=True so hash is stable across client JS key ordering.
-    return json.dumps(parsed, sort_keys=True, separators=(",", ":"))
+    return json.dumps(normalized, sort_keys=True, separators=(",", ":"))
 
 
 # Per-field validator dispatch (V3 HIGH-1 fix — counter preflight 102).
@@ -4392,6 +4552,12 @@ _V2_MODULE_FIELD_VALIDATORS = {
     "phase_a_watercolor_cues_json": _v2_validate_watercolor_cues_json,
     "phase_a_preview_file": _v2_validate_str,
     "phase_a_status": _v2_validate_status,
+    # Phase A stitched outputs (PHASE_A_TOP_LEVEL_STATE_V1): added to
+    # _V2_MODULE_ALLOWED_FIELDS at 4281-4282 but were missing validators —
+    # caught by test_validator_dispatch_covers_all_whitelist_fields. P5
+    # 2026-05-19.
+    "phase_a_stitched_file": _v2_validate_str,
+    "phase_a_stitched_mtime": _v2_validate_mtime,
 }
 
 # Maps v2 field name -> L[] field name for sidecar projection
@@ -5042,8 +5208,12 @@ class AppContext:
         self.client = client
         self.started_at = time.time()
         self.last_request_at = time.time()
-        # Universal stitch editor job store — global, not per-event (STITCH_EDITOR_UNIVERSAL_V1)
-        self.stitch_state = StitchEditorState(Path(__file__).parent / "stitch_editor_state.json")
+        # Universal stitch editor job store — global, not per-event (STITCH_EDITOR_UNIVERSAL_V1).
+        # LD-505 Phase C: anchor on the runtime Production/ root (event_dir.parent)
+        # so cross-machine sync works. Was: Path(__file__).parent → tooling-side
+        # Production/tools/, broken on home Mac vs work PC (audit C1-11).
+        from lib.paths import runtime_production_root as _rpr
+        self.stitch_state = StitchEditorState(_rpr(event_dir) / "tools" / "stitch_editor_state.json")
         self._beats_cache: list[dict] | None = None
         # Storyboard HTML write lock — serializes concurrent patches to the
         # same file (drag-drop image inject, contenteditable text saves).
@@ -5694,7 +5864,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             if path == "/api/health":
                 return self._handle_health()
             if path == "/api/state":
-                return self._send_json(200, self.app.state.read_state())
+                return self._send_json(200, self._read_state_with_file_flags())
             # S5.5b new endpoints — Bug 4 fix + VideoSelector data source
             if path == "/api/event/current":
                 return self._handle_event_current()
@@ -5765,6 +5935,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_cr_library()
             if path == "/api/cr/full":
                 return self._handle_cr_full_image()
+            if path == "/api/storyboard/video_frame":
+                from server_handlers.background import handle_storyboard_video_frame
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                return handle_storyboard_video_frame(self, qs)
             if path.startswith("/api/storyboard/list"):
                 return self._handle_storyboard_list()
             # S3 v3.1 GET endpoints — LDs 462-467.
@@ -5814,6 +5988,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/stitch_editor/preview_file/"):
                 hash_id = path[len("/api/stitch_editor/preview_file/"):]
                 return self._serve_stitch_preview_file(hash_id)
+            if path == "/api/stitch_editor/beat_boundaries":
+                return self._handle_stitch_beat_boundaries()
             if path.startswith("/api/stitch_editor/audio_file/"):
                 fname = path[len("/api/stitch_editor/audio_file/"):]
                 return self._serve_stitch_audio_file(fname)
@@ -5860,6 +6036,14 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_redo(body)
             if path == "/api/beat/add_options":
                 return self._handle_add_options(body)
+            # T1-Phase 2 + 3 (spec MAGIC_AND_ENDFRAME_FIXES_20260520_v1, LD-814):
+            # end-frame iteration endpoints — Kim previews/uploads end frame
+            # BEFORE Regen B+C spends Kling $. _handle_add_options_startend
+            # then refuses to run without an approved end_frame_path (P4).
+            if path == "/api/beat/preview_end_frame":
+                return self._handle_preview_end_frame(body)
+            if path == "/api/beat/upload_end_frame":
+                return self._handle_upload_end_frame(body)
             if path == "/api/beat/swap_to_a":
                 # Flat alias for v2 path-param endpoint so pathappPatch can reach it.
                 _beat_id_from_body = body.get("beat_id") or body.get("beat")
@@ -5899,6 +6083,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_beat_delay(body)
             if path == "/api/beat/trim":
                 return self._handle_beat_trim(body)
+            if path == "/api/beat/zoom":
+                return self._handle_beat_zoom(body)
             if path == "/api/beat/use_as_final":  # Spec A: no-lipsync final path
                 return self._handle_use_as_final(body)
             if path == "/api/budget/override":
@@ -5907,6 +6093,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_restart()
             if path == "/api/lipsync":
                 return self._handle_lipsync_submit(body)
+            if path == "/api/lipsync_idle":
+                return self._handle_lipsync_idle(body)
             if path == "/api/inject-image":
                 return self._handle_inject_image(body)
             if path == "/api/assign-image":
@@ -6032,6 +6220,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_phase_suggest_script(body)
             if path == "/api/watercolor/animate":
                 return self._handle_watercolor_animate(body)
+            if path == "/api/phase/watercolor_delete":
+                return self._handle_phase_watercolor_delete(body)
             if path == "/api/stitch_editor/loudnorm":
                 return self._handle_stitch_loudnorm(body)
             # S5 v3.1 endpoints — LDs 468 + 469.
@@ -6485,7 +6675,9 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 normalize_for_concat,
                 render_xfade_pair,
                 resolve_pair_fades,
+                translate_trim_for_source,
                 trim_body,
+                trim_body_with_fade,
                 trim_normalized,
             )
         except ImportError as exc:
@@ -6572,7 +6764,9 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
             for bid in ordered_beat_ids:
                 try:
-                    digest, meta = compute_finalize_args_hash(slim, bid, clips_dir)
+                    digest, meta = compute_finalize_args_hash(
+                        slim, bid, clips_dir, event_dir=self.app.event_dir,
+                    )
                 except FileNotFoundError as exc:
                     return self._send_error_v59(
                                400,
@@ -6582,13 +6776,58 @@ class ProductionHandler(BaseHTTPRequestHandler):
                                extra={"ok": False, "beat_id": bid, "code": "BEAT_SOURCE_MISSING"},
                            )
                 src_path = Path(meta["file"])
+
+                # Resolve speech MP3 for raw-option beats (Kling clips generated
+                # with sound: false have no audio; the TTS MP3 must be mixed in).
+                # A beat is "raw_option source" when it has no completed lipsync
+                # OR when beat.final.source explicitly names raw_option.
+                # Magic sources are ALWAYS treated as raw_option: magic_compositor
+                # writes video-only; magic_video blend maps 0:a? from a silent
+                # Kling clip. TTS must be mixed in regardless of lipsync state.
+                _beat_dict = beats.get(bid) or {}
+                _beat_lipsync = _beat_dict.get("lipsync") or {}
+                _beat_final_src = (_beat_dict.get("final") or {}).get("source")
+                _is_raw_option_src = (
+                    bool(meta.get("is_magic_source"))  # magic output is always silent
+                    or _beat_lipsync.get("status") != "completed"
+                    or _beat_final_src == "raw_option"
+                )
+                _speech_mp3: "Path | None" = None
+                if _is_raw_option_src:
+                    _speech_mp3 = _find_beat_audio(
+                        self.app.event_dir, bid, app=self.app
+                    )
+                    if _speech_mp3 is not None and _speech_mp3.is_file():
+                        # Extend finalize_args_hash to include speech MP3 mtime
+                        # so the cache invalidates when the MP3 is regenerated.
+                        _mp3_extra = (
+                            f"|speech:{_speech_mp3.name}:"
+                            f"{_speech_mp3.stat().st_mtime:.6f}"
+                        )
+                        digest = hashlib.md5(
+                            (digest + _mp3_extra).encode("utf-8")
+                        ).hexdigest()
+                    else:
+                        _speech_mp3 = None  # not found; proceed with silent audio
+
                 src_md5 = hashlib.md5(str(src_path.resolve()).encode("utf-8")).hexdigest()[:10]
                 ts_ms = int(round(float(meta["trim_start"]) * 1000))
                 te_raw = meta["trim_end"]
                 te_ms = int(round(te_raw * 1000)) if te_raw is not None else -1
-                ad_ms = int(round(float(meta["audio_delay"]) * 1000))
+                tb_raw = meta.get("trim_back")
+                tb_ms = int(round(float(tb_raw) * 1000)) if tb_raw is not None else 0
+                # Use effective delay for the cache filename so lipsync beats
+                # (where ByteDance already baked the delay in) produce a
+                # distinct cache key from raw-option beats.  Lipsync beats get
+                # ad_ms=0; raw-option beats get the original authored value.
+                # _is_raw_option_src is already resolved above (line ~6703).
+                ad_ms = (
+                    int(round(float(meta.get("audio_delay") or 0.0) * 1000))
+                    if _is_raw_option_src else 0
+                )
                 fname = (
-                    f"{bid}_final_{src_md5}_{recipe6}_{ts_ms}_{te_ms}_{ad_ms}.mp4"
+                    f"{bid}_final_{src_md5}_{recipe6}_{ts_ms}_{te_ms}"
+                    f"_tb{tb_ms}_{ad_ms}.mp4"
                 )
                 fpath = cache_dir / fname
                 sidecar_path = fpath.with_suffix(".mp4.meta.json")
@@ -6610,10 +6849,34 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     if (not norm_path.is_file()
                         or src_path.stat().st_mtime > norm_path.stat().st_mtime):
                         normalize_for_concat(src_path, norm_path)
+                    # Kim 2026-05-21: when src is a lipsync mp4, absolute
+                    # trim_end (authored on original audio timeline) cuts off
+                    # mid-word because the lipsync timeline includes preroll
+                    # + extended tail. Translate back-trim / trim_back into the
+                    # source file's timeline before trimming.
+                    _ts_xlat, _te_xlat = translate_trim_for_source(
+                        _beat_dict,
+                        src_path.name, src_path,
+                        meta.get("trim_start"), meta.get("trim_end"),
+                        trim_back=meta.get("trim_back"),
+                    )
+                    # _effective_audio_delay is consistent with ad_ms used in
+                    # the cache filename above: 0.0 for lipsync beats (delay
+                    # already baked into the ByteDance output), original
+                    # authored value for raw-option beats.
+                    _effective_audio_delay = ad_ms / 1000.0
+                    # Magic-still beats need an extra tail so the still image
+                    # holds after the last phoneme (face-return + 2.5s pause).
+                    # Non-magic beats get 0 (no change from prior behaviour).
+                    _magic_freeze_tail = (
+                        2.5 if bool(meta.get("is_magic_source")) else 0.0
+                    )
                     trim_normalized(
                         norm_path, fpath,
-                        meta.get("trim_start"), meta.get("trim_end"),
-                        audio_delay=float(meta.get("audio_delay") or 0.0),
+                        _ts_xlat, _te_xlat,
+                        audio_delay=_effective_audio_delay,
+                        mix_audio_path=_speech_mp3,
+                        freeze_tail_s=_magic_freeze_tail,
                     )
                     sidecar_payload = {
                         "finalize_args_hash": digest,
@@ -6664,23 +6927,62 @@ class ProductionHandler(BaseHTTPRequestHandler):
             else:
                 for i, m in enumerate(beat_metas):
                     bid = m["beat_id"]
+
+                    # FADE_THROUGH_BLACK_20260525: when a beat pair has both
+                    # pause_after_ms>0 AND a non-zero fade value, use
+                    # fade-to/from-black instead of xfade dissolve.
+                    # xfade overlaps both clips simultaneously — during the
+                    # pause you see ghost frames from the OTHER beat.
+                    # Fade-through-black fades each body independently so
+                    # the pause is pure black with no double-exposure.
+                    curr_pause_fade_s = (
+                        clamped_pair_fades[i] / 1000.0
+                        if i < N - 1
+                           and m["pause_after_ms"] > 0
+                           and clamped_pair_fades[i] > 0
+                        else 0.0
+                    )
+                    prev_pause_fade_s = (
+                        clamped_pair_fades[i - 1] / 1000.0
+                        if i > 0
+                           and beat_metas[i - 1]["pause_after_ms"] > 0
+                           and clamped_pair_fades[i - 1] > 0
+                        else 0.0
+                    )
+
+                    # Normal xfade head/tail trims — skipped for pause-fade pairs.
                     head_s = (clamped_pair_fades[i - 1] / 1000.0
-                              if i > 0 and clamped_pair_fades[i - 1] > 0 else 0.0)
+                              if i > 0 and clamped_pair_fades[i - 1] > 0
+                                 and prev_pause_fade_s == 0.0
+                              else 0.0)
                     tail_s = (clamped_pair_fades[i] / 1000.0
-                              if i < N - 1 and clamped_pair_fades[i] > 0 else 0.0)
-                    if head_s == 0.0 and tail_s == 0.0:
+                              if i < N - 1 and clamped_pair_fades[i] > 0
+                                 and curr_pause_fade_s == 0.0
+                              else 0.0)
+
+                    needs_body = (head_s > 0 or tail_s > 0
+                                  or prev_pause_fade_s > 0 or curr_pause_fade_s > 0)
+                    if not needs_body:
                         parts.append(beat_final[bid])
                     else:
                         head_ms = int(round(head_s * 1000))
                         tail_ms = int(round(tail_s * 1000))
+                        fi_ms = int(round(prev_pause_fade_s * 1000))
+                        fo_ms = int(round(curr_pause_fade_s * 1000))
                         body_path = body_dir / (
-                            f"{bid}_body_{m['finalize_args_hash'][:10]}_{head_ms}_{tail_ms}_{recipe6}.mp4"
+                            f"{bid}_body_{m['finalize_args_hash'][:10]}"
+                            f"_{head_ms}_{tail_ms}_fi{fi_ms}_fo{fo_ms}_{recipe6}.mp4"
                         )
                         if body_path.is_file() and not force_rebuild:
                             cache_stats["body_hits"] += 1
                         else:
                             cache_stats["body_misses"] += 1
-                            trim_body(beat_final[bid], body_path, head_s, tail_s)
+                            trim_body_with_fade(
+                                beat_final[bid], body_path,
+                                head_s, tail_s,
+                                fade_in_s=prev_pause_fade_s,
+                                fade_out_s=curr_pause_fade_s,
+                            )
                         parts.append(body_path)
 
                     # NEW per Agent A finding: pause_after_ms wiring.
@@ -6707,8 +7009,11 @@ class ProductionHandler(BaseHTTPRequestHandler):
                             subprocess.run(cmd, check=True, capture_output=True, timeout=120)
                         parts.append(pause_path)
 
-                    # XFade pair clip if next pair has fade>0.
-                    if i < N - 1 and clamped_pair_fades[i] > 0:
+                    # XFade pair clip if next pair has fade>0 AND is NOT using
+                    # pause-fade. (pause-fade handles the transition via
+                    # fade-to/from-black on the body clips + pause clip, so no
+                    # xfade overlap clip is needed for that pair.)
+                    if i < N - 1 and clamped_pair_fades[i] > 0 and curr_pause_fade_s == 0.0:
                         next_bid = beat_metas[i + 1]["beat_id"]
                         next_fade_ms = int(clamped_pair_fades[i])
                         pair_key = hashlib.md5(
@@ -6785,6 +7090,41 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 scope_type, scope_root, scope_target_video,
                 "completed_mp4_path", str(scene_path),
             )
+
+            # Auto-populate the Stitcher's intro slot (or whichever slot matches
+            # scope_target_video) so "Send Out as MP4" → Stitcher is seamless.
+            # Uses mutate_state to upsert the most-recently-updated job, or
+            # creates a "default" job if no jobs exist yet.
+            try:
+                _scene_path_str = str(scene_path)
+                _slot_key = scope_target_video  # e.g. "intro"
+                _auto_job_name = f"auto_{_slot_key}"  # e.g. "auto_intro"
+                def _upsert_stitcher_slot(st: dict) -> None:
+                    jobs = st.setdefault("jobs", {})
+                    # Always use the deterministic auto_<slot> job so the client
+                    # can find it via startsWith('auto_') prefix match.
+                    # Never fall back into existing named jobs (probe_test,
+                    # phase7_final, etc.) — that misfires when those jobs'
+                    # names don't contain the event_id the client searches for.
+                    job_name = _auto_job_name
+                    if job_name not in jobs:
+                        jobs[job_name] = {
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                            "slots": {},
+                            "transitions": [],
+                        }
+                    _job = jobs[job_name]
+                    # Fix: existing jobs may have "slots": [] (list). Normalize to dict.
+                    if not isinstance(_job.get("slots"), dict):
+                        _job["slots"] = {}
+                    _job["slots"].setdefault(_slot_key, {})
+                    _job["slots"][_slot_key]["video_path"] = _scene_path_str
+                    _job["updated_at"] = datetime.now(timezone.utc).isoformat()
+                self.app.stitch_state.mutate_state(_upsert_stitcher_slot)
+                print(f"[scene_assemble] stitcher {_auto_job_name} slot auto-populated → {_scene_path_str}", flush=True)
+            except Exception as _ss_exc:
+                print(f"[scene_assemble] stitcher slot auto-populate failed (non-fatal): {_ss_exc}", flush=True)
 
             # Register as scene_concat_mp4 asset.
             asset_id = -1
@@ -6915,6 +7255,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
         from server_handlers.phases import handle_phase_watercolor_file
         return handle_phase_watercolor_file(self)
 
+    def _handle_phase_watercolor_delete(self, body: dict) -> None:
+        from server_handlers.phases import handle_phase_watercolor_delete
+        return handle_phase_watercolor_delete(self, body)
+
     def _handle_phase_base_clips_list(self) -> None:
         from server_handlers.phases import handle_phase_base_clips_list
         return handle_phase_base_clips_list(self)
@@ -6944,8 +7288,28 @@ class ProductionHandler(BaseHTTPRequestHandler):
         "\\", "|", "`", "$(", "${",
     )
 
-    def _validate_manual_path(self, manual_path: list, max_pts: int = 20) -> tuple[bool, list, str]:
-        """Validate manual_path = [[x,y],...] in [0,1]. Returns (ok, clean_path, err)."""
+    # Safe zone for path coordinates on the 2× canvas.
+    # The canvas is 2× the source PNG dimensions. At point (x=0, y=0), the
+    # paste position is (-png_w/2, -png_h/2) — completely off-screen. To keep
+    # hands fully visible, coordinates must stay in [SAFE_MIN, SAFE_MAX].
+    # For a 1096×1608 hands PNG on a 2192×3216 canvas this means ≥0.25 from
+    # each edge. (2026-05-27: added after [0,0] bug caused 4+ hours of invisible overlay.)
+    _PATH_SAFE_MIN = 0.15
+    _PATH_SAFE_MAX = 0.85
+
+    def _validate_manual_path(self, manual_path: list, max_pts: int = 100,
+                              enforce_safe_zone: bool = False) -> tuple[bool, list, str]:
+        """Validate manual_path = [[x,y],...] in [0,1]. Returns (ok, clean_path, err).
+
+        enforce_safe_zone=True: additionally restricts to [_PATH_SAFE_MIN, _PATH_SAFE_MAX].
+        This MUST be True only for the watercolor animator, where coordinates are used
+        on a 2× PIL canvas — at (0,0) the paste position is (-png_w/2, -png_h/2),
+        completely off-screen.
+
+        DO NOT pass enforce_safe_zone=True for the magic trail tool — magic trail
+        coordinates are relative to the scene image viewport where (0.84, 0.86) is a
+        perfectly valid bottom-right corner point.
+        """
         if not isinstance(manual_path, list) or len(manual_path) < 2:
             return False, [], "manual_path must be a list of [x,y] pairs (>=2 points)"
         if len(manual_path) > max_pts:
@@ -6960,6 +7324,16 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return False, [], f"manual_path[{i}] coords must be numeric"
             if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
                 return False, [], f"manual_path[{i}] = ({x}, {y}) out of [0,1] range"
+            if enforce_safe_zone:
+                safe_min = self._PATH_SAFE_MIN
+                safe_max = self._PATH_SAFE_MAX
+                if not (safe_min <= x <= safe_max and safe_min <= y <= safe_max):
+                    return False, [], (
+                        f"manual_path[{i}] = ({x:.3f}, {y:.3f}) is outside the safe zone "
+                        f"[{safe_min}, {safe_max}]. Points near (0,0) or (1,1) place the "
+                        f"asset off-canvas on the 2× watercolor rendering canvas. Use values "
+                        f"in [{safe_min}, {safe_max}] to keep the asset fully visible."
+                    )
             clean.append([x, y])
         return True, clean, ""
 
@@ -7366,6 +7740,11 @@ class ProductionHandler(BaseHTTPRequestHandler):
             ".webp": "image/webp", ".gif": "image/gif",
             ".mp4": "video/mp4", ".mov": "video/quicktime",
         }
+        # Video files require byte-range (Accept-Ranges/206) support so that
+        # browser <video> elements can seek (e.g. after pause+resume).
+        # _serve_mp4_with_range handles Range headers → 206 responses properly.
+        if ext in (".mp4", ".mov"):
+            return self._serve_mp4_with_range(Path(file_path))
         ct = content_types.get(ext, "application/octet-stream")
         with open(file_path, "rb") as _f:
             data = _f.read()
@@ -7489,7 +7868,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             #    image_path for v59 shell clients (DRAG_DROP_V59_GALLERY_V1).
             #    S5.5a2: writes to videos[role].image_overrides via
             #    mutate_video_state (BG_VIDEO_PARTITION_V1).
-            def _persist(partition, _bid=beat_id, _key=image_key, _ap=abs_path):
+            def _persist(partition, _bid=beat_id, _key=image_key, _ap=abs_path, _prev_key=prev_override_key):
                 partition.setdefault("image_overrides", {})[_bid] = _key
                 if _ap:
                     partition.setdefault("image_overrides_abs", {})[_bid] = _ap
@@ -7504,6 +7883,42 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     except ValueError:
                         _beat["image_path"] = _ap
                     _beat["_version"] = int(_beat.get("_version", 0) or 0) + 1
+                # T2 (Kim 2026-05-19 LD pending STALE_LIPSYNC_ON_ASSIGN_IMAGE_V1):
+                # If the beat has a completed lipsync AND the image key is
+                # changing, mark lipsync as stale via image_changed=True. The
+                # mp4 stays on disk and continues to play; UI surfaces a badge
+                # so Kim knows to re-lipsync. To revert: drag the old image
+                # back from the library (its key is captured at _prev_key).
+                # Image key unchanged: do nothing (no-op assign-same-image).
+                if _prev_key is not None and _prev_key != _key:
+                    _beat_state = partition.get("beats", {}).get(_bid)
+                    if _beat_state:
+                        _ls = _beat_state.get("lipsync")
+                        if _ls and _ls.get("status") == "completed":
+                            _ls["image_changed"] = True
+                            # Capture the prior key so Kim can revert by
+                            # dragging the old library tile back (no undo btn).
+                            _ls["prior_image_key_for_revert"] = _prev_key
+                        # Kim 2026-05-20 10:38 PM: magic_still_path /
+                        # magic_video_path were rendered FROM the prior image.
+                        # When image_path changes, the rendered magic is no
+                        # longer valid for the new image (Preview Still would
+                        # play stale magic over a new image). Clear those refs
+                        # so the priority chain at StoryboardTab.tsx falls
+                        # through to beat.final.file (which Re-render Still
+                        # will update). The .mp4 file on disk is preserved
+                        # in case Kim drags the old image back — but state
+                        # no longer points at it.
+                        if _beat_state.get("magic_still_path"):
+                            _beat_state["magic_still_path"] = None
+                        if _beat_state.get("magic_video_path"):
+                            _beat_state["magic_video_path"] = None
+                        # Same pattern for end_frame_path: was generated using
+                        # the prior start image as OpenAI input. New image
+                        # means the saved end frame is no longer the right
+                        # second image for Kling. Force re-Preview end frame.
+                        if _beat_state.get("end_frame_path"):
+                            _beat_state["end_frame_path"] = None
                 return None
             self.app.state.mutate_video_state(video_role, _persist)
 
@@ -7819,6 +8234,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
         from server_handlers.vendor_jobs import handle_lipsync_submit
         return handle_lipsync_submit(self, body)
 
+    def _handle_lipsync_idle(self, body: dict) -> None:
+        from server_handlers.vendor_jobs import handle_lipsync_idle
+        return handle_lipsync_idle(self, body)
+
     def _handle_lipsync_submit_legacy(self, body: dict) -> None:
         from server_handlers.vendor_jobs import handle_lipsync_submit_legacy
         return handle_lipsync_submit_legacy(self, body)
@@ -7871,43 +8290,84 @@ class ProductionHandler(BaseHTTPRequestHandler):
                        retry_safe=False,
                    )
 
-        p1 = beat.get("phase_1", {})
-        opts = p1.get("options", [])
-        sel = p1.get("selected_option", 1)
-        sel_idx = sel - 1  # selected_option is 1-indexed
-        if not opts or not (0 <= sel_idx < len(opts)):
+        # Kim 2026-05-20 follow-up: add explicit source mode so Kim can promote
+        # the LIPSYNC mp4 as the final (was previously hardcoded to raw_option).
+        # source='raw_option' (default) — finalize the currently selected_option
+        # source='lipsync'              — finalize beat.lipsync.file
+        requested_source = (body.get("source") or "raw_option").strip().lower()
+        if requested_source not in ("raw_option", "lipsync"):
             return self._send_error_v59(
                        400,
-                       error_code="GENERIC_ERROR",
-                       error_message=f"no option at index {sel_idx} (selected_option={sel})",
+                       error_code="INVALID_SOURCE",
+                       error_message=f"source must be 'raw_option' or 'lipsync', got {requested_source!r}",
                        retry_safe=False,
                    )
 
-        opt_file = opts[sel_idx].get("file", "")
-        if not opt_file:
-            return self._send_error_v59(
-                       400,
-                       error_code="SELECTED_OPTION_HAS_NO_FILE",
-                       error_message="selected option has no file",
-                       retry_safe=False,
-                   )
+        if requested_source == "lipsync":
+            ls = beat.get("lipsync") or {}
+            ls_file = ls.get("file") or ""
+            if ls.get("status") != "completed" or not ls_file:
+                return self._send_error_v59(
+                           400,
+                           error_code="LIPSYNC_NOT_AVAILABLE",
+                           error_message="cannot use lipsync as final — no completed lipsync.file on this beat",
+                           retry_safe=False,
+                       )
+            # lipsync mp4 lives in event_dir/animation_clips/ NOT clips_dir
+            abs_path = str(self.app.event_dir / "animation_clips" / ls_file)
+            if not os.path.isfile(abs_path):
+                return self._send_error_v59(
+                           400,
+                           error_code="LIPSYNC_FILE_MISSING",
+                           error_message=f"lipsync file not found on disk: {ls_file}",
+                           retry_safe=False,
+                       )
+            final_block = {
+                "source": "lipsync",
+                "source_option": ls.get("source_option"),
+                "file": ls_file,
+                "approved_at": datetime.now(timezone.utc).isoformat(),
+            }
+            opt_file = ls_file  # for the sidecar/log path below
+        else:
+            p1 = beat.get("phase_1", {})
+            opts = p1.get("options", [])
+            sel = p1.get("selected_option", 1)
+            sel_idx = sel - 1  # selected_option is 1-indexed
+            if not opts or not (0 <= sel_idx < len(opts)):
+                return self._send_error_v59(
+                           400,
+                           error_code="GENERIC_ERROR",
+                           error_message=f"no option at index {sel_idx} (selected_option={sel})",
+                           retry_safe=False,
+                       )
 
-        abs_path = str(self.app.state.clips_dir / opt_file)
-        if not os.path.isfile(abs_path):
-            return self._send_error_v59(
-                       400,
-                       error_code="GENERIC_ERROR",
-                       error_message=f"clip file not found: {opt_file}",
-                       retry_safe=False,
-                   )
+            opt_file = opts[sel_idx].get("file", "")
+            if not opt_file:
+                return self._send_error_v59(
+                           400,
+                           error_code="SELECTED_OPTION_HAS_NO_FILE",
+                           error_message="selected option has no file",
+                           retry_safe=False,
+                       )
 
-        # 1. Write final block to production_state.json under the requested role
-        final_block = {
-            "source": "raw_option",
-            "source_option": sel,
-            "file": opt_file,
-            "approved_at": datetime.now(timezone.utc).isoformat(),
-        }
+            abs_path = str(self.app.state.clips_dir / opt_file)
+            if not os.path.isfile(abs_path):
+                return self._send_error_v59(
+                           400,
+                           error_code="GENERIC_ERROR",
+                           error_message=f"clip file not found: {opt_file}",
+                           retry_safe=False,
+                       )
+
+            # 1. Write final block to production_state.json under the requested role
+            final_block = {
+                "source": "raw_option",
+                "source_option": sel,
+                "file": opt_file,
+                "approved_at": datetime.now(timezone.utc).isoformat(),
+            }
+
         # S5.5d: writes to videos[scope_video_role].beats[bid].final.
         def _mutate(s):
             role_beats = s.setdefault("videos", {}).setdefault(
@@ -8009,7 +8469,7 @@ body {{padding-top:44px!important;}}
     var filename=document.getElementById('sb-select').value;
     if(!filename||(filename.indexOf('storyboard_v')<0))return;
     if(!confirm('Switch to '+filename+'?\\n\\n⚠️ Make sure you have exported any browser edits (drag-drop, dialogue) before switching — unsaved browser edits will be lost.'))return;
-    fetch('/api/storyboard/switch',{{
+    fetch('http://localhost:5111/api/storyboard/switch',{{
       method:'POST',
       headers:{{'Content-Type':'application/json'}},
       body:JSON.stringify({{filename:filename}})
@@ -8095,6 +8555,121 @@ body {{padding-top:44px!important;}}
         from server_handlers.cropper import serve_asset
         return serve_asset(self, filename)
 
+    def _read_state_with_file_flags(self) -> dict:
+        """Read state and annotate every file-reference with file_exists.
+
+        Bug fix 2026-05-19 (P3 / LD-505 Phase C, extends PR #73):
+        phase_1.options[*].file, lipsync.file, final.file, final.image_path
+        can all reference clips/images that Kim has manually archived or
+        moved. Without per-field existence annotation, ▶ preview asset
+        fetches 404 and the <video> element surfaces a generic "codec/format
+        not supported" toast with no actionable signal. Audit C2-4 / C2-1.
+
+        Annotates EVERY *.file (or *.image_path) field on each beat with
+        `file_exists: bool` so the client can render disabled UI + an
+        "(archived)" label uniformly across slots. Audit C2-4 specifically
+        called out the lipsync.file gap on 14/19 resolution beats.
+
+        Pure read-only — does NOT mutate persisted state.
+        """
+        state = self.app.state.read_state()
+        clips_dir = self.app.state.clips_dir
+        event_dir = self.app.event_dir  # Bug-B3 (spec §2 Topic-2): magic + end_frame paths
+        videos = state.get("videos") if isinstance(state, dict) else None
+        if not isinstance(videos, dict):
+            return state
+
+        def _annotate_block(block, file_field: str = "file") -> None:
+            """Set block[file_field + '_exists'] based on disk presence.
+
+            file_field defaults to 'file' (relative to clips_dir); pass
+            'image_path' for absolute paths.
+            """
+            if not isinstance(block, dict):
+                return
+            f = block.get(file_field)
+            if file_field == "image_path":
+                exists_key = "image_path_exists"
+                block[exists_key] = bool(f and isinstance(f, str) and os.path.exists(f))
+            else:
+                exists_key = "file_exists"
+                block[exists_key] = bool(f and (clips_dir / f).is_file())
+
+        # Bug-B3 (spec §2 Topic-2, 2026-05-20): annotate magic + end_frame
+        # paths which resolve against EVENT_DIR (not clips_dir). Without these,
+        # orphan references (state.json points at a file that's been deleted
+        # from disk) produce silent 404s exactly like the LD-807 case we just
+        # hit on beat_03 earlier today.
+        def _annotate_beat_field(beat: dict, field: str, base_dir) -> None:
+            if not isinstance(beat, dict):
+                return
+            f = beat.get(field)
+            if not (f and isinstance(f, str)):
+                beat[f"{field}_exists"] = False
+                return
+            beat[f"{field}_exists"] = (base_dir / f).is_file()
+
+        end_frames_dir = event_dir / "end_frames"
+
+        for partition in videos.values():
+            if not isinstance(partition, dict):
+                continue
+            beats = partition.get("beats")
+            if not isinstance(beats, dict):
+                continue
+            for beat in beats.values():
+                if not isinstance(beat, dict):
+                    continue
+                # phase_1.options[*].file
+                p1 = beat.get("phase_1")
+                if isinstance(p1, dict):
+                    for opt in (p1.get("options") or []):
+                        _annotate_block(opt)
+                # phase_2.options[*].file (forward-compat per audit C2-5)
+                p2 = beat.get("phase_2")
+                if isinstance(p2, dict):
+                    for opt in (p2.get("options") or []):
+                        _annotate_block(opt)
+                # beat.lipsync.file (audit C2-4 — 14/19 resolution beats
+                # were unannotated; same Bug 3 class lurked here)
+                _annotate_block(beat.get("lipsync"))
+                # beat.final.file + beat.final.image_path (audit S3-F2)
+                final = beat.get("final")
+                if isinstance(final, dict):
+                    _annotate_block(final, "file")
+                    _annotate_block(final, "image_path")
+                # Bug-B3 — magic_*_path resolves to event_dir (NOT clips_dir).
+                _annotate_beat_field(beat, "magic_still_path", event_dir)
+                _annotate_beat_field(beat, "magic_video_path", event_dir)
+                # Bug-B3 — end_frame_path resolves to event_dir/end_frames/.
+                _annotate_beat_field(beat, "end_frame_path", end_frames_dir)
+
+        # Phase sub-object backward-compat flatten (2026-05-28, RC1-cue fix).
+        # Legacy state writes stored phase_b/phase_a fields in a nested
+        # sub-object (state['phase_b']['phase_b_watercolor_cues_json']), while
+        # current code (v2_module_patch, pickPhaseSlice in the React storyboard)
+        # expects flat top-level keys (state['phase_b_watercolor_cues_json']).
+        # Root cause: Kim's production state has real cues at the nested path
+        # (written by a pre-v3-arch path) while the top-level key = "[]"
+        # (never updated). pickPhaseSlice reads top-level → gets "[]" →
+        # latestCuesRef.current = [] → persistCues/RC1 update never fires.
+        # Fix: promote nested → top-level ONLY when top-level is absent or
+        # the sentinel empty "[]". Never overrides real top-level data.
+        # Pure read transform — does NOT write to disk. (DS-22 verified by
+        # smoke agent a86a7aaa0474ae564, Directus row id=6790.)
+        for _ph in ("phase_b", "phase_a"):
+            _sub = state.get(_ph)
+            if not isinstance(_sub, dict):
+                continue
+            for _sub_k, _sub_v in _sub.items():
+                if not _sub_k.startswith("phase_"):
+                    continue
+                _top_v = state.get(_sub_k)
+                if _top_v is None or _top_v == "[]" or _top_v == []:
+                    state[_sub_k] = _sub_v
+
+        return state
+
     def _serve_beat_audio(self, beat_id: str) -> None:
         from server_handlers.beats_legacy import serve_beat_audio
         return serve_beat_audio(self, beat_id)
@@ -8149,6 +8724,20 @@ body {{padding-top:44px!important;}}
     # Fail-loud on start-end errors per design-call 2 (April 17, 2026):
     # no silent fallback to legacy. Each path surfaces errors directly.
     # ========================================================================
+
+    # T1-Phase 2+3 end-frame iteration wrappers (spec MAGIC_AND_ENDFRAME_FIXES_20260520_v1, LD-814).
+    # The actual logic lives in server_handlers.background to keep this file lean.
+    # Wrappers use self._handle_*() naming so body_key_contract_check.parse_server_routes()
+    # can detect them — the bare `handle_*(self, body)` pattern is invisible to the
+    # regex-based parser (HANDLER_CALL_RE = r"self\._handle_*").
+    def _handle_preview_end_frame(self, body: dict) -> None:
+        from server_handlers.background import handle_preview_end_frame
+        return handle_preview_end_frame(self, body)
+
+    def _handle_upload_end_frame(self, body: dict) -> None:
+        from server_handlers.background import handle_upload_end_frame
+        return handle_upload_end_frame(self, body)
+
     def _handle_add_options(self, body: dict) -> None:
         """Dispatch Generate B+C to start-end (default) unless force_legacy."""
         # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
@@ -8183,125 +8772,58 @@ body {{padding-top:44px!important;}}
         beat_state = (((state.get("videos") or {}).get(video_role) or {}).get("beats") or {}).get(beat_id) or {}
         force_legacy = bool(beat_state.get("force_legacy"))
 
+        # LD-807 LIPSYNC_INVALIDATE_ON_REGEN_V1 — Regen B+C on a previously-
+        # lipsynced beat MUST clear stale lipsync state + on-disk file so the
+        # UI doesn't show a stale composite preview (the same invariant that
+        # handle_redo + handle_animate already enforce; the original LD-807
+        # implementation missed this dispatcher, which is the actual endpoint
+        # the "Regenerate B + C" button hits per StoryboardTab.tsx:835).
+        prior_lipsync_existed = bool(beat_state.get("lipsync"))
+        prior_lipsync_file = self.app.event_dir / "animation_clips" / f"{beat_id}_lipsync.mp4"
+        try:
+            if prior_lipsync_file.is_file():
+                prior_lipsync_existed = True
+                prior_lipsync_file.unlink()
+                print(f"[add_options] {beat_id}: unlinked stale lipsync {prior_lipsync_file.name}")
+        except OSError as exc:
+            print(f"[add_options] {beat_id}: lipsync unlink warning (non-fatal): {exc}")
+
+        if prior_lipsync_existed:
+            def _clear_lipsync(partition, _bid=beat_id):
+                pbeats = partition.setdefault("beats", {})
+                if _bid in pbeats and "lipsync" in pbeats[_bid]:
+                    pbeats[_bid]["lipsync"] = None
+            try:
+                self.app.state.mutate_video_state(video_role, _clear_lipsync)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[add_options] {beat_id}: lipsync state-clear warning (non-fatal): {exc}")
+            try:
+                from lib.directus import try_post_or_queue as _tpq
+                _tpq("prod_activity_log", {
+                    "action": "lipsync_invalidated_on_regen",
+                    "performed_by": "_handle_add_options",
+                    "details": {
+                        "event_id": self.app.event_id,
+                        "beat_id": beat_id,
+                        "video_role": video_role,
+                        "removed_file": str(prior_lipsync_file),
+                    },
+                })
+            except Exception as exc:  # noqa: BLE001
+                print(f"[add_options] {beat_id}: lipsync_invalidated_on_regen audit failed (non-fatal): {exc}")
+
         if force_legacy:
             print(f"[add_options:dispatch] {beat_id}: force_legacy=true -> legacy path")
             return self._handle_add_options_legacy(body)
 
-        # Default = start-end. Use configured end_frame_prompt if present,
-        # else synthesize a generic one from the beat's speaker so new beats
-        # added later still route start-end without manual config.
-        end_frame_prompt = (beat_state.get("end_frame_prompt") or "").strip()
-        if not end_frame_prompt:
-            # Derive end-frame prompt from Kim's creative cues in beat text.
-            # Priority: (parenthetical) > [emotion_at_start] > neutral fallback.
-            # Never synthesize from speaker name — that was invented without Kim's input.
-            import re as _re
-            beat_text = (beat_state.get("text") or "").strip()
-
-            _BG_LOCK = (
-                "Keep the background COMPLETELY IDENTICAL to the input — "
-                "every tree, leaf, light ray, and environment element must "
-                "stay pixel-perfect unchanged. Do NOT alter, shift, blur, "
-                "or recompose any background element whatsoever. "
-            )
-            _MOUTH_TAIL = (
-                " Beak/mouth at rest, natural mouth geometry preserved. "
-                "Same cartoon 3D Pixar-style art, same outfit, same 4:3 "
-                "composition, same lighting on the character."
-            )
-
-            # Resolve speaker for neutral-fallback pose lookup below.
-            _disp_speaker = _canonicalize_speaker(beat_state.get("speaker", "") or "")
-
-            # 1. (parenthetical) anywhere → stage direction only.
-            #    Emotion-only annotations like "(happy, friendly)" must NOT be sent
-            #    to FLUX Kontext verbatim — the character already looks happy/friendly
-            #    in the start frame, so FLUX generates a nearly-identical end frame,
-            #    and Kling barely moves (super-still symptom).
-            #    Stage directions contain physical action verbs and give FLUX a clear
-            #    geometric target (e.g. "looks at viewer" → head turns to camera).
-            #    Emotion-only parentheticals fall through to the safe neutral pose (path 3).
-            _STAGE_VERBS = {
-                "looks", "look", "looking", "glances", "glance", "faces", "face",
-                "turns", "turn", "turns to", "tilts", "tilt", "leans", "lean",
-                "reaches", "reach", "points", "point", "raises", "raise",
-                "walks", "walk", "steps", "step", "moves", "move",
-                "holds", "hold", "gestures", "gesture", "nods", "nod",
-                "bows", "bow", "crouches", "crouch", "stands", "stand",
-                "sits", "sit", "jumps", "jump", "lands", "land",
-                "extends", "extend", "lowers", "lower", "lifts", "lift",
-                "shrugs", "shrug", "waves", "wave", "claps", "clap",
-                "places", "place", "grabs", "grab", "drops", "drop",
-                "at", "toward", "forward", "backward", "sideways", "upward", "downward",
-            }
-            _paren = _re.search(r'\(([^)]{3,})\)', beat_text)
-            if _paren:
-                char_dir = _paren.group(1).strip()
-                _paren_words = set(_re.findall(r'\w+', char_dir.lower()))
-                _is_stage_direction = bool(_paren_words & _STAGE_VERBS)
-                if _is_stage_direction:
-                    end_frame_prompt = (
-                        _BG_LOCK
-                        + f"ONLY change the character: {char_dir}."
-                        + _MOUTH_TAIL
-                    )
-                    print(f"[add_options:dispatch] {beat_id}: end_frame_prompt from (parenthetical) stage direction")
-                else:
-                    print(f"[add_options:dispatch] {beat_id}: (parenthetical) is emotion-only {char_dir!r} — falling through to neutral pose")
-
-            else:
-                # 2. [emotion] at start of text → map to expression description.
-                # Exclude TTS directives: [pause], [break], [breath], [sigh].
-                _TTS_TAGS = {"pause", "break", "breath", "sigh", "silence"}
-                _start_tag = _re.match(r'^\[([^\]]+)\]', beat_text)
-                _emotion = _start_tag.group(1).lower().strip() if _start_tag else ""
-                _EMOTION_MAP = {
-                    "curious":    "curious expression, eyes wide and alert, slight questioning head tilt",
-                    "excited":    "excited expression, eyes bright and wide, alert eager posture",
-                    "happy":      "warm happy expression, eyes open and bright",
-                    "delighted":  "delighted expression, eyes open and bright, gentle smile",
-                    "sad":        "gentle sad expression, soft downward gaze, eyes half-lidded",
-                    "worried":    "worried expression, eyes wide, slight brow tension",
-                    "scared":     "scared expression, eyes wide, slight lean back",
-                    "surprised":  "surprised expression, eyes wide, slight lean back",
-                    "determined": "determined expression, eyes steady and focused",
-                    "relieved":   "relieved expression, eyes soft and open, relaxed posture",
-                    "neutral":    None,  # → fallback
-                }
-                if _emotion and _emotion not in _TTS_TAGS and _emotion in _EMOTION_MAP:
-                    char_dir = _EMOTION_MAP[_emotion]
-                    if char_dir:
-                        end_frame_prompt = (
-                            _BG_LOCK
-                            + f"ONLY change the character: {char_dir}."
-                            + _MOUTH_TAIL
-                        )
-                        print(f"[add_options:dispatch] {beat_id}: end_frame_prompt from [emotion={_emotion!r}]")
-
-            # 3. Neutral fallback — use safe STATIC geometric pose (small head tilt).
-            #    "Same as input" (old) → identical frames → Kling barely moves.
-            #    SPEAKER_MOTION_PROFILES vocab (Fix 7 mistake) → FLUX Kontext
-            #    hallucinates objects from motion words → Kling produces chaos.
-            #    A simple head tilt is ALWAYS renderable by FLUX Kontext with no
-            #    hallucination risk and gives Kling a clear but safe motion target.
-            if not end_frame_prompt:
-                _SAFE_NEUTRAL_POSE = {
-                    "Chipper": "head tilted gently to one side, attentive expression",
-                    "Tessa":   "head tilted gently, quiet attentive expression",
-                    "Luna":    "head turned slightly to one side, alert expression",
-                    "Benson":  "one ear tilted, head turned slightly, quiet attentive expression",
-                    "Ember":   "head turned slightly to one side, calm relaxed gaze",
-                    "Bork":    "hovering in a slightly tilted position, calm expression",
-                    "Bramble": "head turned slightly, grounded quiet presence",
-                }
-                _safe_pose = _SAFE_NEUTRAL_POSE.get(_disp_speaker, "head tilted gently, attentive expression")
-                end_frame_prompt = (
-                    _BG_LOCK
-                    + f"ONLY change the character: {_safe_pose}."
-                    + _MOUTH_TAIL
-                )
-                print(f"[add_options:dispatch] {beat_id}: end_frame_prompt neutral fallback — safe static pose")
-
+        # T1-Phase 1 (spec §2): prompt logic extracted to lib/end_frame_prompt.py.
+        # No imports from production_server.py inside the helper (cycle risk per
+        # cursor R1 review); caller resolves speaker_canonical here.
+        from lib.end_frame_prompt import build_end_frame_prompt as _build_end_frame_prompt
+        _disp_speaker = _canonicalize_speaker(beat_state.get("speaker", "") or "")
+        end_frame_prompt = _build_end_frame_prompt(
+            beat_state, _disp_speaker, addendum=None
+        )
         print(f"[add_options:dispatch] {beat_id}: -> start-end pipeline "
               f"(decision 180 universal default; prompt {len(end_frame_prompt)}c)")
         return self._handle_add_options_startend(body, beat_state, end_frame_prompt)
@@ -8338,6 +8860,32 @@ body {{padding-top:44px!important;}}
         # here prevents UnboundLocalError when Python sees the later assignment and
         # treats video_role as a local for the entire function scope.
         video_role = body.get("scope_video_role") or body.get("scope_target_video") or "intro"
+
+        # T1-Phase 4 (spec MAGIC_AND_ENDFRAME_FIXES_20260520_v1, LD-814):
+        # REFUSE Regen B+C unless an approved end_frame_path exists on disk.
+        # Kim's flow: she clicks "✏ Preview end frame" (or "📤 Upload end frame")
+        # FIRST to generate/upload + approve an end frame, THEN clicks Regen B+C.
+        # NO GRANDFATHERING — even when phase_1.options already exist, the next
+        # Regen B+C still requires a fresh end_frame_path. This server-side
+        # check is the source-of-truth gate; the client also disables the
+        # button when end_frame_path is missing (UI Phase 6).
+        _end_frame_path = beat_state.get("end_frame_path")
+        _end_frames_dir = self.app.event_dir / "end_frames"
+        _end_frame_disk_path = _end_frames_dir / _end_frame_path if _end_frame_path else None
+        if not _end_frame_path or not (_end_frame_disk_path and _end_frame_disk_path.is_file()):
+            return self._send_error_v59(
+                       400,
+                       error_code="END_FRAME_REQUIRED",
+                       error_message="Approved end_frame_path required — click 'Preview end frame' or 'Upload end frame' first.",
+                       retry_safe=False,
+                       extra={
+                           "beat_id": beat_id,
+                           "video_role": video_role,
+                           "end_frame_path": _end_frame_path,
+                           "end_frame_path_exists": bool(_end_frame_disk_path and _end_frame_disk_path.is_file()),
+                           "hint": "Per LD-814 / spec MAGIC_AND_ENDFRAME_FIXES_20260520_v1: Regen B+C reads a Kim-approved end frame from disk; OpenAI/FLUX is no longer called from this endpoint.",
+                       },
+                   )
 
         # Duration resolution — identical to legacy, repeated for independence.
         explicit_duration = body.get("duration")
@@ -8438,6 +8986,13 @@ body {{padding-top:44px!important;}}
         _requested_vendor = os.environ.get(
             "MN_END_FRAME_VENDOR", "openai"
         ).strip().lower()
+        # T1-Phase 4 (spec MAGIC_AND_ENDFRAME_FIXES_20260520_v1, LD-814): the
+        # end-frame OpenAI/FLUX cost is now charged separately at
+        # /api/beat/preview_end_frame (Phase 2) or /api/beat/upload_end_frame
+        # (Phase 3, $0). This handler READS the approved PNG from disk; no
+        # OpenAI/FLUX call here. So per-option budget is JUST Kling.
+        # _end_frame_unit_cost is preserved as a local for symmetry/log clarity
+        # but NOT added to per_option_cost. (Cursor R-final 2026-05-20 finding.)
         if _requested_vendor == "openai" and openai_key:
             _end_frame_unit_cost = COST_OPENAI_END_FRAME
         elif _requested_vendor == "flux" and bfl_key:
@@ -8446,7 +9001,7 @@ body {{padding-top:44px!important;}}
             _end_frame_unit_cost = COST_OPENAI_END_FRAME
         else:
             _end_frame_unit_cost = COST_FLUX_KONTEXT
-        per_option_cost = _end_frame_unit_cost + COST_KLING_10S
+        per_option_cost = COST_KLING_10S  # T1-Phase 4: no end-frame cost added here
         estimated = num_new * per_option_cost
         if spend["budget_remaining"] < estimated and spend["overrides"] == 0:
             return self._send_error_v59(
@@ -8576,120 +9131,79 @@ body {{padding-top:44px!important;}}
                 b["phase_1"]["status"] = "polling"
         self.app.state.mutate_state(set_polling)
 
-        # Fix 3 (20260513 motion-quality-pipeline): generate end frame via FLUX
-        # Kontext ONCE per beat and reuse for all num_new Kling options.
-        # Rule 8.3: end frame provides pixel-level gaze/pose anchoring without
-        # positive-prompt motion-lock — the one allowed exception to §8.2's
-        # do-not-stack rule. end_frame_prompt is already Rule 8.3 compliant
-        # (built by dispatcher at lines ~12605-12667 using _BG_LOCK + char-dir
-        # + _MOUTH_TAIL; no motion-lock phrases inside).
-        # Budget gate (before this block) already accounts for the resolved
-        # end-frame vendor unit cost (COST_OPENAI_END_FRAME or COST_FLUX_KONTEXT
-        # per MN_END_FRAME_VENDOR + key fallback) + COST_KLING_10S per option.
-        # Fail-loud per Rule 19: if FLUX errors out, return 500 — no silent
-        # fallback to single-image (that masks the failure and Kim never sees
-        # the lipsync-pipeline-incompatible motion she's debugging).
-        # Graceful degradation: empty end_frame_prompt OR missing bfl_key =>
-        # explicit single-image mode with an [INFO] log (not an error).
+        # T1-Phase 4 (spec MAGIC_AND_ENDFRAME_FIXES_20260520_v1, LD-814):
+        # READ approved end-frame PNG from disk; do NOT call OpenAI/FLUX here.
+        # End-frame generation has moved to /api/beat/preview_end_frame +
+        # /api/beat/upload_end_frame which Kim invokes BEFORE Regen B+C.
+        # The early REFUSE check above already guaranteed _end_frame_disk_path
+        # exists, but we re-verify here (defense-in-depth — file could be
+        # unlinked between the early check and this read, e.g. by a concurrent
+        # pruning op or manual delete).
         end_b64_uri: str | None = None
-        if end_frame_prompt and (openai_key or bfl_key):
-            # LD-730 vendor selection:
-            #   MN_END_FRAME_VENDOR=openai (default) → gpt-image-1
-            #   MN_END_FRAME_VENDOR=flux            → FLUX Kontext (legacy rollback)
-            #   Fallback: if requested vendor's key absent, use the other one.
-            _requested_vendor = os.environ.get(
-                "MN_END_FRAME_VENDOR", "openai"
-            ).strip().lower()
-            if _requested_vendor == "openai" and openai_key:
-                _vendor_used = "openai"
-                _end_frame_fn = openai_image_edit_generate_end_frame
-                _vendor_key = openai_key
-            elif _requested_vendor == "flux" and bfl_key:
-                _vendor_used = "flux"
-                _end_frame_fn = flux_kontext_generate_end_frame
-                _vendor_key = bfl_key
-            elif openai_key:
-                _vendor_used = (
-                    f"openai (fallback — requested={_requested_vendor!r} "
-                    f"but its key absent)"
-                )
-                _end_frame_fn = openai_image_edit_generate_end_frame
-                _vendor_key = openai_key
-            else:
-                _vendor_used = (
-                    f"flux (fallback — requested={_requested_vendor!r} "
-                    f"but its key absent)"
-                )
-                _end_frame_fn = flux_kontext_generate_end_frame
-                _vendor_key = bfl_key
-            print(
-                f"[add_options:startend] {beat_id}: end-frame vendor "
-                f"SELECTED = {_vendor_used} (env MN_END_FRAME_VENDOR="
-                f"{_requested_vendor!r})",
-                flush=True,
-            )
-            try:
-                end_frame_bytes = _end_frame_fn(
-                    start_image_bytes=start_bytes,
-                    end_prompt=end_frame_prompt,
-                    api_key=_vendor_key,
-                )
-                # Rule 6: auto-upscale end frame to ≥600px shortest side.
-                end_data_uri = (
-                    "data:image/png;base64,"
-                    + base64.b64encode(end_frame_bytes).decode("ascii")
-                )
-                end_data_uri, _end_upscale_info = auto_upscale_image(end_data_uri)
-                if "upscaled" in _end_upscale_info:
-                    print(f"[add_options:startend] {beat_id} end frame: "
-                          f"{_end_upscale_info}")
-                ok_end, info_end = validate_image_dimensions(end_data_uri)
-                if not ok_end:
-                    return self._send_error_v59(
-                               500,
-                               error_code="GENERIC_ERROR",
-                               error_message=f"end frame validation failed: {info_end}",
-                               retry_safe=True,
-                               extra={"beat": beat_id},
-                           )
-                end_b64_uri = end_data_uri
-                print(f"[add_options:startend] {beat_id}: end frame generated "
-                      f"via {_vendor_used} ({len(end_frame_bytes):,}B)")
-                # Fix 8 (20260513): override motion prompt to natural-interpolation.
-                # Vocabulary action terms fight the frame anchors and produce barely-
-                # moving output. Per LD-177 validated pattern (Tessa beat_05):
-                # minimal prompt + specific end frame > vocabulary prompt in start-end mode.
-                # The docstring above says "Gaze anchor comes from end-frame pixel geometry,
-                # not prompt words" — this makes the motion prompt honour that design intent.
-                _in_birds_8 = _canonical_speaker in BIRD_SPEAKERS
-                _cstr_8 = "Beak closed, no speech, no lip movement." if _in_birds_8 else "Mouth closed, no speech."
-                _tail_8 = LIPSYNC_SAFE_TAIL if target_beat.get("lipsync_targeted", True) else SPRITE_IDLE_TAIL
-                _hdr_8 = f"Cartoon {_canonical_speaker} character" if _canonical_speaker else "Cartoon character"
-                positive_prompt = sanitize_prompt(
-                    f"{_hdr_8}, natural motion between start and end frames. {_cstr_8} {_tail_8}"
-                )
-                print(f"[add_options:startend] {beat_id}: motion prompt -> natural-interpolation (end frame confirmed)")
-            except SystemExit as exc:
-                return self._send_error_v59(
-                           500,
-                           error_code="GENERIC_ERROR",
-                           error_message=f"FLUX Kontext end frame generation failed: {exc}",
-                           retry_safe=True,
-                           extra={"beat": beat_id, "hint": "Check BFL (FLUX) API key or retry — FLUX Kontext "
-                             "is required for start-end pipeline"},
-                       )
-            except Exception as exc:
-                return self._send_error_v59(
-                           500,
-                           error_code="GENERIC_ERROR",
-                           error_message=f"FLUX Kontext unexpected error: "
-                              f"{type(exc).__name__}: {exc}",
-                           retry_safe=True,
-                           extra={"beat": beat_id},
-                       )
+        try:
+            _end_frame_bytes_disk = _end_frame_disk_path.read_bytes()
+        except (OSError, AttributeError) as exc:
+            return self._send_error_v59(
+                       500,
+                       error_code="END_FRAME_READ_FAILED",
+                       error_message=f"approved end frame disappeared from disk: {type(exc).__name__}: {exc}",
+                       retry_safe=True,
+                       extra={"beat": beat_id, "end_frame_path": _end_frame_path,
+                              "hint": "Re-click 'Preview end frame' to regenerate."},
+                   )
+        print(f"[add_options:startend] {beat_id}: reading saved end_frame_path={_end_frame_path} ({len(_end_frame_bytes_disk):,}B from disk) — NOT calling OpenAI/FLUX (T1-Phase 4)", flush=True)
+        # Auto-upscale already happened at preview/upload time, but re-run as
+        # defense-in-depth in case the saved PNG is below the 600px floor.
+        end_data_uri = (
+            "data:image/png;base64,"
+            + base64.b64encode(_end_frame_bytes_disk).decode("ascii")
+        )
+        end_data_uri, _end_upscale_info = auto_upscale_image(end_data_uri)
+        if "upscaled" in _end_upscale_info:
+            print(f"[add_options:startend] {beat_id} end frame (from disk): {_end_upscale_info}", flush=True)
+        ok_end, info_end = validate_image_dimensions(end_data_uri)
+        if not ok_end:
+            return self._send_error_v59(
+                       500,
+                       error_code="END_FRAME_INVALID",
+                       error_message=f"approved end frame failed dim validation: {info_end}",
+                       retry_safe=True,
+                       extra={"beat": beat_id, "end_frame_path": _end_frame_path,
+                              "hint": "Re-click 'Preview end frame' to regenerate."},
+                   )
+        end_b64_uri = end_data_uri
+
+        # Motion prompt: combine per-creature motion vocabulary (action verbs,
+        # not motion-locks — safe per §8.2) with the start-end interpolation
+        # hint. Kim 2026-05-21 observed Luna beats returning with virtually
+        # no movement; root cause was the prior prompt stripped ALL motion
+        # description ("natural motion between start and end frames" is
+        # generic and cfg_scale=0.5 left Kling nothing to interpolate when
+        # end frame was visually close to start). Restoring the rich
+        # SPEAKER_MOTION_PROFILES vocabulary used by the legacy single-image
+        # path while preserving the start-end gaze anchor.
+        _in_birds_8 = _canonical_speaker in BIRD_SPEAKERS
+        _cstr_8 = "Beak closed, no speech, no lip movement." if _in_birds_8 else "Mouth closed, no speech."
+        _tail_8 = LIPSYNC_SAFE_TAIL if target_beat.get("lipsync_targeted", True) else SPRITE_IDLE_TAIL
+        _hdr_8 = f"Cartoon {_canonical_speaker} character" if _canonical_speaker else "Cartoon character"
+        # Resolve per-creature action verbs using same emotion lookup as
+        # build_motion_prompt. _motion_override (stage-direction from beat
+        # text) wins over the lookup table when present.
+        _emotion_8 = target_beat.get("emotion", "neutral") or "neutral"
+        if _emotion_8 not in VALID_EMOTIONS:
+            _emotion_8 = "neutral"
+        _override_8 = target_beat.get("_motion_override")
+        _profile_8 = SPEAKER_MOTION_PROFILES.get(_canonical_speaker)
+        if _override_8:
+            _action_8 = _override_8
+        elif _profile_8:
+            _action_8 = _profile_8.get(_emotion_8) or _profile_8["neutral"]
         else:
-            print(f"[add_options:startend] {beat_id}: no end frame "
-                  f"(end_frame_prompt empty or no bfl_key) — single-image mode")
+            _action_8 = SECTION_ACTIONS.get(target_beat.get("section", "") or "", DEFAULT_ACTION)
+        positive_prompt = sanitize_prompt(
+            f"{_hdr_8}, {_action_8}, natural interpolation between start and end frames. {_cstr_8} {_tail_8}"
+        )
+        print(f"[add_options:startend] {beat_id}: motion prompt -> {positive_prompt[:160]!r}", flush=True)
 
         # Per-option loop: Kling start-end submit (end frame reused across opts).
         submitted = 0
@@ -9251,6 +9765,10 @@ body {{padding-top:44px!important;}}
         from server_handlers.beats_legacy import handle_beat_trim
         return handle_beat_trim(self, body)
 
+    def _handle_beat_zoom(self, body: dict) -> None:
+        from server_handlers.beats_legacy import handle_beat_zoom
+        return handle_beat_zoom(self, body)
+
     def _handle_beat_undo_final(self, body: dict) -> None:
         from server_handlers.beats_legacy import handle_beat_undo_final
         return handle_beat_undo_final(self, body)
@@ -9628,6 +10146,7 @@ body {{padding-top:44px!important;}}
                 render_xfade_pair,
                 resolve_beat_file,
                 resolve_pair_fades,
+                translate_trim_for_source,
                 trim_body,
                 trim_normalized,
             )
@@ -9796,14 +10315,35 @@ body {{padding-top:44px!important;}}
                     ts_ms = int(round((meta.get("trim_start") or 0.0) * 1000))
                     te_raw = meta.get("trim_end")
                     te_ms = int(round(te_raw * 1000)) if te_raw is not None else -1
-                    ad_s = float(meta.get("audio_delay") or 0.0)
+                    # DOUBLE-DELAY FIX (mirrors _handle_scene_assemble line ~6703):
+                    # Lipsync beats already have the delay baked into the ByteDance
+                    # output — do NOT re-apply audio_delay. Only raw-option beats
+                    # (no completed lipsync, or final.source=="raw_option") need
+                    # the authored audio_delay applied here.
+                    _beat_dict = beats.get(bid) or {}
+                    _beat_lipsync = _beat_dict.get("lipsync") or {}
+                    _beat_final_src = (_beat_dict.get("final") or {}).get("source")
+                    _is_raw_option_src = (
+                        _beat_lipsync.get("status") != "completed"
+                        or _beat_final_src == "raw_option"
+                    )
+                    ad_s = float(meta.get("audio_delay") or 0.0) if _is_raw_option_src else 0.0
                     ad_ms = int(round(ad_s * 1000))
                     trimmed = trimmed_dir / (
                         f"{bid}_trimmed_{src_key}_{ts_ms}_{te_ms}_ad{ad_ms}_{_recipe6}.mp4"
                     )
+                    # Kim 2026-05-21 — translate lipsync absolute trim_end
+                    # into the lipsync mp4's timeline (see translate_trim_for_source).
+                    # Also handles trim_back (relative back-trim) for all sources.
+                    _ts_xlat, _te_xlat = translate_trim_for_source(
+                        beats.get(bid) or {},
+                        src.name, src,
+                        meta.get("trim_start"), meta.get("trim_end"),
+                        trim_back=meta.get("trim_back"),
+                    )
                     duration = trim_normalized(
                         norm, trimmed,
-                        meta.get("trim_start"), meta.get("trim_end"),
+                        _ts_xlat, _te_xlat,
                         audio_delay=ad_s,
                     )
                     trimmed_files[bid] = trimmed
@@ -10506,6 +11046,53 @@ body {{padding-top:44px!important;}}
                    retry_safe=False,
                )
 
+    def _handle_stitch_beat_boundaries(self) -> None:
+        """GET /api/stitch_editor/beat_boundaries
+        Returns beat boundary timecodes by probing animation_clips_final/*.
+        Used by StitcherTab to render beat markers on the inline timeline."""
+        import re as _re
+        clips_dir = self.app.event_dir / "animation_clips_final"
+        if not clips_dir.exists():
+            self._send_json(200, {"ok": True, "beats": [], "total_ms": 0})
+            return
+
+        pattern = _re.compile(r"beat_(\d+)_final_.*\.mp4$")
+        beat_files: dict[int, Path] = {}
+        try:
+            for f in clips_dir.iterdir():
+                m = pattern.match(f.name)
+                if m:
+                    beat_num = int(m.group(1))
+                    existing = beat_files.get(beat_num)
+                    if existing is None or f.stat().st_mtime > existing.stat().st_mtime:
+                        beat_files[beat_num] = f
+        except OSError as exc:
+            self._send_error_v59(500, "FS_ERROR", str(exc), retry_safe=True)
+            return
+
+        if not beat_files:
+            self._send_json(200, {"ok": True, "beats": [], "total_ms": 0})
+            return
+
+        boundaries = []
+        cursor_ms = 0
+        for beat_num in sorted(beat_files):
+            fpath = beat_files[beat_num]
+            try:
+                dur_s = _ffprobe_duration(fpath)
+                dur_ms = round(dur_s * 1000)
+            except Exception:  # noqa: BLE001
+                dur_ms = 3000  # fallback 3s if probe fails
+            boundaries.append({
+                "beat_id": f"beat_{beat_num:02d}",
+                "start_ms": cursor_ms,
+                "end_ms": cursor_ms + dur_ms,
+                "duration_ms": dur_ms,
+            })
+            cursor_ms += dur_ms
+
+        self._send_json(200, {"ok": True, "beats": boundaries, "total_ms": cursor_ms})
+
     def _serve_stitch_preview_file(self, hash_id: str) -> None:
         """GET /api/stitch_editor/preview_file/<hash> — serve preview MP4 with byte-range support."""
         safe = Path(hash_id).name
@@ -11175,18 +11762,35 @@ body {{padding-top:44px!important;}}
 
         Streams Production/assets/watercolor_library/<filename> thumbnails and
         video cue assets to the timeline widget's library panel.
+
+        Accepts both a bare key (e.g. "hands_rubbing") and a full filename with
+        extension (e.g. "hands_rubbing.png").  When the client sends a bare key
+        (which is how the Phase B cue overlay builds its src URL), the handler
+        resolves the extension via glob — same strategy as handle_watercolor_animate.
+        Prefers .png over .mov/.mp4 when multiple matches exist.
         """
         safe = Path(filename).name
-        # Only allow known watercolor extensions.
-        if not safe.lower().endswith((".png", ".mov", ".mp4")):
-            return self._send_error_v59(
-                       400,
-                       error_code="GENERIC_ERROR",
-                       error_message=f"watercolor serve rejects unsupported ext: {safe!r}",
-                       retry_safe=False,
-                       extra={"hint": "Allowed: .png, .mov, .mp4"},
-                   )
-        target = self._phase_assets_dir("watercolor_library") / safe
+        _ALLOWED_EXTS = (".png", ".mov", ".mp4")
+        wc_dir = self._phase_assets_dir("watercolor_library")
+        # Bare key path — no valid extension provided by the caller.
+        if not safe.lower().endswith(_ALLOWED_EXTS):
+            matches = [m for m in wc_dir.glob(f"{safe}.*")
+                       if m.suffix.lower() in _ALLOWED_EXTS]
+            if not matches:
+                return self._send_error_v59(
+                           400,
+                           error_code="GENERIC_ERROR",
+                           error_message=f"watercolor not found: {safe!r} (no .png/.mov/.mp4 in library)",
+                           retry_safe=False,
+                           extra={"hint": "Ensure the asset exists in watercolor_library/ with a .png, .mov, or .mp4 extension."},
+                       )
+            # RC2 fix: prefer the animated MP4/MOV over a static PNG when multiple
+            # extensions share the same stem (e.g., a thumbnail alongside a video).
+            mp4_match = next((m for m in matches if m.suffix.lower() in (".mp4", ".mov")), None)
+            png_match = next((m for m in matches if m.suffix.lower() == ".png"), None)
+            target = mp4_match or png_match or matches[0]
+        else:
+            target = wc_dir / safe
         if not target.is_file():
             return self._send_error_v59(
                        404,
@@ -11447,9 +12051,19 @@ body {{padding-top:44px!important;}}
     # Implementation (ffmpeg_stitch.py _wc_build_cue_prefilter) defaults to
     # 600x540 for Phase B; these dicts override per-phase for the call site.
     # Closes inventory v2 PB-17 + PA-19 WIRED-BUT-BROKEN class.
-    _PHASE_FRAME_X = {"b": 40, "a": 800}
-    _PHASE_FRAME_Y = 180
-    _PHASE_FRAME_MAX_W = {"b": 600, "a": 480}
+    #
+    # wc_v6 position fix (2026-05-28): Phase B lipsync base is 720×544.
+    # NORMALIZATION_VF_EXPR scales it to 953×720 within the 1280×720 canvas,
+    # centering the content with x_offset=164px on each side (black letterbox).
+    # Old frame_x["b"]=40 fell inside the left black bar → overlay never visible
+    # on the actual content. Corrected values match the CSS overlay at left=2%,
+    # top=4%, width=35% of the video (LD-821 CSS overlay architecture):
+    #   frame_x["b"] = 164 (content_left) + round(2% × 953) = 183 → 185
+    #   frame_y       = round(4% × 720) = 29 → 30
+    #   frame_max_w["b"] = round(35% × 953) = 334 → 340
+    _PHASE_FRAME_X = {"b": 185, "a": 800}
+    _PHASE_FRAME_Y = 30
+    _PHASE_FRAME_MAX_W = {"b": 340, "a": 480}
     _PHASE_FRAME_MAX_H = {"b": 540, "a": 540}
 
     def _handle_phase_b_preview(self, body: dict) -> None:
@@ -11522,11 +12136,88 @@ def inactivity_watchdog(app: AppContext, stop_event: threading.Event, httpd: Pro
             time.sleep(1)
 
 
+def _check_runtime_capabilities() -> None:
+    """Probe every hard-required and feature-degraded runtime dep at startup.
+
+    HARD deps (FATAL on missing): PyYAML, Pillow — break core handlers if absent.
+    SOFT deps (degraded feature): numpy — breaks Magic compositor specifically.
+
+    Emits structured ``[startup:capabilities]`` line that log scrapers + the
+    UI's `/api/bg/session-state.capabilities` reader can parse. Mirrors the
+    existing WaveSpeed smoke pattern at lines 11614–11638.
+
+    Audit C4-1/C4-2/C4-3/C4-4 origin: yaml + numpy were missing in the
+    runtime Python env on 2026-05-19; first user click on Magic surfaced
+    a generic 500. This check fails fast on hard deps and degrades cleanly
+    on soft deps.
+    """
+    hard = {"PyYAML": "yaml", "Pillow": "PIL"}
+    soft = {"numpy": "numpy", "scipy": "scipy"}  # both needed for magic_compositor [INFERRED — verify via grep -rn "import numpy\|import scipy" Production/tools/magic_compositor.py: both imports present at module top.]
+    missing_hard: list[str] = []
+    missing_soft: list[str] = []
+    for label, mod in hard.items():
+        try:
+            __import__(mod)
+        except ImportError:
+            missing_hard.append(label)
+    for label, mod in soft.items():
+        try:
+            __import__(mod)
+        except ImportError:
+            missing_soft.append(label)
+
+    capabilities = {
+        "yaml": "PyYAML" not in missing_hard,
+        "pillow": "Pillow" not in missing_hard,
+        "magic_compositor": not missing_soft,
+    }
+    # Structured single-line capability report (parseable).
+    print(
+        f"[startup:capabilities] {json.dumps(capabilities, sort_keys=True)}",
+        flush=True,
+    )
+
+    if missing_soft:
+        for name in missing_soft:
+            print(
+                f"[startup:degraded] feature 'magic_compositor' disabled — "
+                f"'{name}' not installed. Install via `pip install -r "
+                f"Production/tools/requirements.txt`.",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    if missing_hard:
+        for name in missing_hard:
+            print(
+                f"[startup:FATAL] hard-required runtime dep '{name}' missing. "
+                f"Install via `pip install -r Production/tools/requirements.txt` "
+                f"before starting the server.",
+                file=sys.stderr,
+                flush=True,
+            )
+        sys.exit(4)
+
+
 def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_event_dir: Path | None = None) -> int:
     storyboard_path = event_dir / storyboard_name
     if not storyboard_path.is_file():
         print(f"ERROR: storyboard not found: {storyboard_path}", file=sys.stderr)
         return 2
+
+    # LD-505 Phase C (2026-05-19): rebind every beat_generator module-level
+    # path constant from the runtime event_dir. Replaces the original
+    # 2-constant override (BG_STILLS_DIR + BG_SIDECAR_PATH) with a complete
+    # pass over all 11 constants + the two character-pose dicts that were
+    # baked at module-import time anchored on the (empty) tooling tree.
+    # Closes audit findings C1-5 / C1-6 / C1-7 / C1-8 / C1-9.
+    # See Production/lib/paths.py for the canonical helpers.
+    _bg_module().init_bg_paths(event_dir)
+
+    # P2 / LD-505 Phase C: dependency-presence smoke. Hard deps fail-loud
+    # with [FATAL]; soft deps degrade with structured [startup:capabilities]
+    # line that the UI / log scraper can parse. Audit C4-1/C4-2/C4-3/C4-4.
+    _check_runtime_capabilities()
 
     pid_file = event_dir / "production_server.pid"
     cleanup_stale(pid_file)
@@ -11534,9 +12225,16 @@ def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_e
         print(f"ERROR: port {SERVER_PORT} already in use", file=sys.stderr)
         return 3
 
-    # Parse API keys — find repo root by walking up
-    root = Path(__file__).resolve().parents[2]
-    keys = parse_api_keys(root / "Production" / "API_KEYS_MASTER.md")
+    # Parse API keys — LD-505 Phase C (T1-4, 2026-05-19): API_KEYS_MASTER.md
+    # is DATA, not code (.gitignored, Dropbox-only). Was anchored on tooling
+    # repo root via `Path(__file__).resolve().parents[2]` → file MISSING under
+    # LD-505 dual-canonical-roots when server runs from tooling. Result:
+    # parse_api_keys returned empty → no WaveSpeed key → /api/animate 500
+    # ("WaveSpeed client not configured") on every Regenerate B + C click,
+    # even without --doppler-run wrapper. Use lib/paths.API_KEYS_MASTER_PATH
+    # (same canonical resolver credentials.py uses for the Directus + EL keys).
+    from lib.paths import API_KEYS_MASTER_PATH
+    keys = parse_api_keys(API_KEYS_MASTER_PATH)
     client: WaveSpeedClient | None = None
     if keys.get("wavespeed"):
         client = WaveSpeedClient(keys["wavespeed"])
@@ -11584,34 +12282,112 @@ def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_e
         except OSError as exc:
             print(f"[startup] WARN: could not remove {orphan.name}: {exc}")
 
-    # BS5: Ghost-file scrub — on every startup, scan all option file references
-    # in state.json and mark any whose file no longer exists on disk as
-    # "ghost_cleaned". Prevents the browser from looping on 404s for options
-    # that were deleted (by a previous B+C clear, crash, or manual cleanup).
-    # Runs before AppContext so the storyboard loads clean state immediately.
+    # BS5 + P3 (LD-505 Phase C): Ghost-file scrub — v3 partition aware.
+    #
+    # Original BS5 (2026-04) walked `state["beats"]` (legacy v2 top-level
+    # shape). After v3 partitions landed (`state.videos.<role>.beats`),
+    # this walk found NOTHING and silently became a no-op for the whole
+    # ghost class — but printed "[startup:ghost_scrub] OK" giving the
+    # impression it worked. Audit C3-1.
+    #
+    # P3 fix: use lib.v3_partition._iter_v3_beats (also imported elsewhere
+    # for orphan-sweep + lipsync polling). Distinguish TRULY orphaned files
+    # (gone from disk + not in any archive dir) from manually archived
+    # files (still recoverable from _archive_*/) — only the former get
+    # status="ghost_cleaned"; archived files retain the option entry so the
+    # PR #73 enrichment (file_exists=false → "(archived)" label) gives Kim
+    # a recovery path. Walks every beat's phase_1.options[*] AND lipsync.file
+    # so the next-archive-event scenario doesn't recur (audit C2-4).
     _ghost_count = 0
+    _archived_count = 0
+    _archive_dirs = sorted(
+        d for d in state.clips_dir.iterdir()
+        if d.is_dir() and d.name.startswith("_archive_")
+    ) if state.clips_dir.exists() else []
+
+    def _is_in_archive(fname: str) -> bool:
+        return any((ad / fname).is_file() for ad in _archive_dirs)
+
     def _scrub_ghost_options(st: dict) -> None:
-        nonlocal _ghost_count
-        for _beat_id, _beat in (st.get("beats") or {}).items():
+        nonlocal _ghost_count, _archived_count
+        # C2-2/C2-3 (LD-pending GHOST_SCRUB_TOP_LEVEL_PATHS_V1, 2026-05-20):
+        # also scrub stale TOP-LEVEL path pointers — latest_preview_stitched_path
+        # at state root + completed_mp4_path per partition. These point at
+        # individual files that can be deleted/renamed/archived independently
+        # of the per-beat option/lipsync references. Without this scrub, the
+        # state lookups silently return non-existent paths to clients.
+        _top_path = st.get("latest_preview_stitched_path")
+        if isinstance(_top_path, str) and _top_path and not Path(_top_path).is_file():
+            st["latest_preview_stitched_path"] = None
+            _ghost_count += 1
+            print(
+                f"[startup:ghost_scrub] cleared stale latest_preview_stitched_path "
+                f"{_top_path!r}",
+                flush=True,
+            )
+        for _v_role, _v_partition in (st.get("videos") or {}).items():
+            if not isinstance(_v_partition, dict):
+                continue
+            _cm = _v_partition.get("completed_mp4_path")
+            if isinstance(_cm, str) and _cm and not Path(_cm).is_file():
+                _v_partition["completed_mp4_path"] = None
+                _ghost_count += 1
+                print(
+                    f"[startup:ghost_scrub] cleared stale "
+                    f"videos.{_v_role}.completed_mp4_path {_cm!r}",
+                    flush=True,
+                )
+
+        for _role, _beat_id, _beat in _iter_v3_beats(st):
+            # phase_1.options[*].file
             _opts = (_beat.get("phase_1") or {}).get("options") or []
             for _opt in _opts:
                 _fname = _opt.get("file")
                 if not _fname:
                     continue
-                _fpath = state.clips_dir / _fname
-                if not _fpath.is_file():
-                    _opt["status"] = "ghost_cleaned"
-                    _opt.pop("file", None)
-                    _ghost_count += 1
-                    print(f"[startup:ghost_scrub] {_beat_id}: cleared missing file {_fname!r}")
+                if (state.clips_dir / _fname).is_file():
+                    continue
+                if _is_in_archive(_fname):
+                    _archived_count += 1
+                    continue  # recoverable — leave entry; enrichment shows "(archived)"
+                _opt["status"] = "ghost_cleaned"
+                _opt.pop("file", None)
+                _ghost_count += 1
+                print(
+                    f"[startup:ghost_scrub] {_role}/{_beat_id}: cleared truly-orphan "
+                    f"option file {_fname!r}",
+                    flush=True,
+                )
+            # beat.lipsync.file
+            _ls = _beat.get("lipsync")
+            if isinstance(_ls, dict):
+                _lsfname = _ls.get("file")
+                if _lsfname and not (state.clips_dir / _lsfname).is_file():
+                    if not _is_in_archive(_lsfname):
+                        _beat["lipsync"] = None  # clear truly-orphan lipsync ref
+                        _ghost_count += 1
+                        print(
+                            f"[startup:ghost_scrub] {_role}/{_beat_id}: cleared "
+                            f"truly-orphan lipsync file {_lsfname!r}",
+                            flush=True,
+                        )
+                    else:
+                        _archived_count += 1
     try:
+        # P3: walk v3 partitions through mutate_state. Note: mutate_state takes
+        # a function that receives full state dict (legacy + v3 partitions);
+        # _iter_v3_beats handles both shapes internally.
         state.mutate_state(_scrub_ghost_options)
-        if _ghost_count:
-            print(f"[startup:ghost_scrub] cleaned {_ghost_count} ghost option(s)")
+        if _ghost_count or _archived_count:
+            print(
+                f"[startup:ghost_scrub] cleaned {_ghost_count} ghost; "
+                f"left {_archived_count} archived (recoverable via _archive_*/) ",
+                flush=True,
+            )
         else:
-            print("[startup:ghost_scrub] OK — no ghost options found")
+            print("[startup:ghost_scrub] OK — no ghost or archived files", flush=True)
     except Exception as _gs_exc:
-        print(f"[startup:ghost_scrub] WARN: scrub failed (non-fatal): {_gs_exc}")
+        print(f"[startup:ghost_scrub] WARN: scrub failed (non-fatal): {_gs_exc}", flush=True)
 
     app = AppContext(event_dir, storyboard_path, event_id, state, client)
 
@@ -11765,13 +12541,14 @@ def run_smoke_test() -> int:
         state = sm.read_state()
         assert state["videos"]["intro"]["beats"]["beat_01"]["phase_1"]["status"] == "completed"
 
-        print("[smoke] image dimension gate (graceful without PIL)...")
+        print("[smoke] image dimension gate (PIL hard-required per C5-2)...")
         tiny_png = (
             "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1"
             "HAwCAAAAC0lEQVR4nGNgAAIAAAUAAen63NgAAAAASUVORK5CYII="
         )
         ok, info = validate_image_dimensions(tiny_png)
-        # Either PIL is missing (passes with note) or it's present and rejects 1x1
+        # PIL is now a hard startup dep (LD-pending DEPENDENCY_STARTUP_CHECK_V1 +
+        # C5-2). Should reject 1x1 with "image too small (1x1, min shortest side 600px)".
         print(f"  -> ok={ok} info={info}")
 
         print("[smoke] storyboard HTML extraction...")

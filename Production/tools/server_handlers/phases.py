@@ -36,11 +36,22 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 # V59 Phase 4 path-depth correction: extracted modules are one level
-# deeper than production_server.py. These constants map original
-# `_PSERVER_TOOLS_DIR[.parent]*` targets correctly.
+# deeper than production_server.py. _PSERVER_TOOLS_DIR is for CODE-tree
+# lookups (sibling Python modules + sys.path inserts). It is NOT used for
+# data paths — those come from the runtime event_dir via _data_root(h).
 _PSERVER_TOOLS_DIR = Path(__file__).resolve().parent.parent  # Production/tools/
-_PSERVER_PRODUCTION_DIR = _PSERVER_TOOLS_DIR.parent  # Production/
-_PSERVER_REPO_ROOT = _PSERVER_PRODUCTION_DIR.parent  # repo root
+
+
+def _data_root(h) -> Path:
+    """Runtime ``Production/`` root, anchored on the running server's event_dir.
+
+    LD-505 Phase C (2026-05-19): replaces the old module-level
+    `_PSERVER_PRODUCTION_DIR = Path(__file__).resolve().parent.parent.parent`
+    which pointed at the (empty) tooling-side Production/ when CODE was in
+    tooling and DATA was in Dropbox. See lib/paths.runtime_production_root.
+    Audit C1-2/C1-3/C1-4 (live-confirmed empty libraries).
+    """
+    return Path(h.app.event_dir).parent
 
 
 # Project-internal modules imported the same way production_server.py does.
@@ -68,6 +79,53 @@ from tools.production_server import (  # noqa: E402
     parse_api_keys,
 )
 
+# ---------------------------------------------------------------------------
+# White-out fade — standardized Phase B ending transition
+# ---------------------------------------------------------------------------
+# Locked: every Phase B lipsync output gets a white fade-out at the tail.
+# Duration is constant (PHASE_B_WHITEOUT_DURATION_SEC). Applied in-place
+# on the downloaded mp4 before state is written; fully transparent to callers.
+PHASE_B_WHITEOUT_DURATION_SEC: float = 1.5  # seconds of fade-to-white at end
+
+
+def _apply_whiteout_fade(video_path: Path, fade_dur: float = PHASE_B_WHITEOUT_DURATION_SEC) -> None:
+    """Add a fade-to-white at the tail of *video_path*. Modifies file in-place.
+
+    Uses ffprobe to get duration, then ffmpeg vf/af fade filters. Writes to a
+    temp file then renames over the original (atomic on POSIX).
+    """
+    # Probe duration
+    probe = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(video_path),
+        ],
+        capture_output=True, text=True, check=True,
+    )
+    duration = float(probe.stdout.strip())
+    fade_start = max(0.0, duration - fade_dur)
+
+    tmp = video_path.with_suffix(".whiteout_tmp.mp4")
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-i", str(video_path),
+            "-vf", f"fade=out:st={fade_start:.3f}:d={fade_dur:.3f}:color=white",
+            "-af", f"afade=out:st={fade_start:.3f}:d={fade_dur:.3f}",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+            "-c:a", "aac", "-b:a", "128k",
+            str(tmp),
+        ],
+        check=True, capture_output=True,
+    )
+    tmp.rename(video_path)
+    print(
+        f"[phase_b_whiteout] ✓ {fade_dur}s white fade applied "
+        f"(fade_start={fade_start:.2f}s, total={duration:.2f}s)",
+        flush=True,
+    )
+
 def handle_phase_watercolor_list(h)-> None:
 
     """GET /api/phase/watercolor_list — inventory of watercolor library.
@@ -81,23 +139,52 @@ def handle_phase_watercolor_list(h)-> None:
     Per LD PHASE_A_PRODUCER_V1 + PHASE_B_PRODUCER_V1 (replaces hardcoded
     JS array in v58).
     """
-    wc_dir = _PSERVER_PRODUCTION_DIR / "assets" / "watercolor_library"
+    wc_dir = _data_root(h) / "assets" / "watercolor_library"
     items: list[dict] = []
     if wc_dir.is_dir():
+        # Build a set of static PNG/WebP stems for animation→base lookup below.
+        static_stems = {
+            p.stem for p in wc_dir.iterdir()
+            if p.is_file() and p.suffix.lower().lstrip(".") in ("png", "webp")
+        }
         for f in sorted(wc_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
             if not f.is_file():
                 continue
             ext = f.suffix.lower().lstrip(".")
             if ext not in ("png", "webp", "mov", "mp4"):
                 continue
+            # Test isolation: never surface smoke-test artifacts in the live library.
+            # Files starting with _smoketest_ are test-only and may not have been
+            # cleaned up by teardown. Filter here so UI never shows them.
+            if f.name.startswith("_smoketest_"):
+                continue
+            # Skip 0-byte files — render likely failed mid-write; browser cannot decode them.
+            if f.stat().st_size == 0:
+                continue
             key = f.stem
             kind = "animation" if ext in ("mov", "mp4") else "static"
+            # For animations, thumb_url points to the base static PNG so the tile
+            # shows the actual watercolor art rather than a black first-frame.
+            # Pattern: "hands_rubbing_animated_20260526-011128" → base "hands_rubbing"
+            # (strip _animated_YYYYMMDD-HHMMSS suffix).
+            thumb_key = key
+            if kind == "animation":
+                import re as _re
+                base = _re.sub(r"_animated_\d{8}-\d{6}$", "", key)
+                if base in static_stems:
+                    thumb_key = base
             items.append({
                 "key": key,
                 "filename": f.name,
                 "ext": ext,
                 "kind": kind,
-                "thumb_url": f"http://localhost:5111/api/phase/watercolor_file?key={key}",
+                "thumb_url": f"http://localhost:5111/api/phase/watercolor_file?key={thumb_key}",
+                # animation_url: the actual MP4/MOV for overlay compositing (always black-bg,
+                # rendered with mix-blend-mode:screen in the cue overlay).
+                "animation_url": (
+                    f"http://localhost:5111/api/phase_b/watercolor/{key}"
+                    if kind == "animation" else None
+                ),
                 "mtime": int(f.stat().st_mtime),
                 "size_bytes": f.stat().st_size,
             })
@@ -128,7 +215,16 @@ def handle_phase_watercolor_file(h)-> None:
                        retry_safe=False,
                    )
         key = key_list[0]
-        wc_dir = _PSERVER_PRODUCTION_DIR / "assets" / "watercolor_library"
+        wc_dir = _data_root(h) / "assets" / "watercolor_library"
+        # Direct stem lookup only. watercolor_list strips _animated_* from the
+        # thumb_key so thumbnail requests always arrive with the BASE static key
+        # (e.g. "hands_rubbing") — the {key}.* glob correctly returns the PNG.
+        # Stitcher requests arrive with the FULL animated key
+        # (e.g. "hands_rubbing_animated_20260527-223413") after the RC1 cue
+        # update fires — {key}.* returns the MP4. No guessing needed.
+        # (Reverted 2026-05-28: prior animated-glob-first approach broke
+        # thumbnail display because base-key requests began returning MP4,
+        # which <img> cannot render.)
         # Find the file by stem.
         matches = list(wc_dir.glob(f"{key}.*"))
         if not matches:
@@ -145,7 +241,8 @@ def handle_phase_watercolor_file(h)-> None:
             "png": "image/png", "webp": "image/webp",
             "mov": "video/quicktime", "mp4": "video/mp4",
         }.get(ext, "application/octet-stream")
-        h._send_bytes(200, data, ct)
+        h._send_bytes(200, data, ct,
+                      extra_headers={"Cache-Control": "public, max-age=600"})
     except (OSError, KeyError) as exc:
         return h._send_error_v59(
                    500,
@@ -153,6 +250,36 @@ def handle_phase_watercolor_file(h)-> None:
                    error_message=str(exc),
                    retry_safe=True,
                )
+
+
+def handle_phase_watercolor_delete(h, body: dict) -> None:
+    """POST /api/phase/watercolor_delete — delete a watercolor file from the library.
+
+    Body: {"key": "<stem>"}   e.g. "hands_rubbing" or "hands_rubbing_animated_20260527-223413"
+
+    Deletes every file in watercolor_library/ whose stem matches key (normally one
+    file, but handles rare sidecar cases). Returns 404 when key not found.
+    """
+    key = (body or {}).get("key")
+    if not key:
+        return h._send_error_v59(
+            400,
+            error_code="MISSING_KEY",
+            error_message="'key' is required",
+            retry_safe=False,
+        )
+    wc_dir = _data_root(h) / "assets" / "watercolor_library"
+    matches = list(wc_dir.glob(f"{key}.*"))
+    if not matches:
+        return h._send_error_v59(
+            404,
+            error_code="NOT_FOUND",
+            error_message=f"no watercolor with key={key!r}",
+            retry_safe=False,
+        )
+    for f in matches:
+        f.unlink()
+    return h._send_json(200, {"status": "deleted", "key": key, "count": len(matches)})
 
 
 def handle_phase_base_clips_list(h)-> None:
@@ -164,7 +291,7 @@ def handle_phase_base_clips_list(h)-> None:
 
     Per LDs PHASE_A_PRODUCER_V1 + PHASE_B_PRODUCER_V1.
     """
-    bases_dir = _PSERVER_PRODUCTION_DIR / "assets" / "lipsync_bases"
+    bases_dir = _data_root(h) / "assets" / "lipsync_bases"
     items: list[dict] = []
     if bases_dir.is_dir():
         for f in sorted(bases_dir.iterdir(), key=lambda p: p.name):
@@ -217,7 +344,7 @@ def handle_phase_b_ambient_preset_list(h)-> None:
     a global ambient catalog, not phase-b-specific) but renaming is out of
     scope for this fix per the parent dispatch.
     """
-    ambient_dir = _PSERVER_PRODUCTION_DIR / "assets" / "sound_library" / "ambient"
+    ambient_dir = _data_root(h) / "assets" / "sound_library" / "ambient"
     items: list[dict] = []
     if ambient_dir.is_dir():
         for f in sorted(ambient_dir.iterdir(), key=lambda p: p.name):
@@ -230,6 +357,113 @@ def handle_phase_b_ambient_preset_list(h)-> None:
                 "file_size_bytes": f.stat().st_size,
             })
     return h._send_json(200, {"ok": True, "items": items, "count": len(items)})
+
+
+# ---------------------------------------------------------------------------
+# Anthropic helper — shared by suggest_script + brief generation
+# ---------------------------------------------------------------------------
+
+def _call_anthropic_urllib(api_key: str, req_body: dict, timeout: int = 60) -> tuple:
+    """Make a single Anthropic Messages API call.
+    Returns (resp_data_dict, elapsed_ms_int).
+    Raises urllib.error.HTTPError or urllib.error.URLError on failure.
+    """
+    import urllib.request as _ur
+    url = "https://api.anthropic.com/v1/messages"
+    req_data = json.dumps(req_body).encode("utf-8")
+    req = _ur.Request(
+        url, data=req_data,
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        method="POST",
+    )
+    t0 = time.time()
+    with _ur.urlopen(req, timeout=timeout) as resp:
+        resp_data = json.loads(resp.read().decode("utf-8"))
+    return resp_data, int((time.time() - t0) * 1000)
+
+
+def _build_therapeutic_brief(
+    api_key: str,
+    module_meta: dict,
+    therapeutic_note: str,
+    technique_inventory: str,
+) -> dict | None:
+    """Generate a structured therapeutic brief via a separate Haiku call.
+
+    Returns dict with {goal, must_hits, what_to_evoke, watch_outs} or None on
+    any failure. Never raises — brief is non-critical; script generation is the
+    primary payload.
+
+    Brief content spec (per Kim 2026-05-25):
+      goal        — what the child will EXPERIENCE and to what clinical end
+      must_hits   — ordered steps the exercise structurally requires
+      what_to_evoke — internal state/feeling/insight/body-sensation
+      watch_outs  — contraindications for children, clinical caveats
+    """
+    creature = module_meta.get('creature_name', '')
+    technique = module_meta.get('technique_name', '') or '(see Therapeutic Note)'
+
+    system_prompt = (
+        "You generate tightly structured clinical guidance briefs for CRI-framework "
+        "script writers (MindfulNest therapeutic app, ages 7–11). "
+        "Return ONLY a valid JSON object — no preamble, no explanation, no markdown fences."
+    )
+    user_prompt = (
+        f"Creature: {creature}\nTechnique: {technique}\n\n"
+        f"Therapeutic Note:\n---\n{therapeutic_note or '(not available)'}\n---\n\n"
+        "Return this exact JSON object and nothing else:\n"
+        "{\n"
+        '  "goal": "<one sentence: what the child will EXPERIENCE, and to what clinical end>",\n'
+        '  "must_hits": ["<ordered step 1 the technique structurally requires>", "<step 2>", "..."],\n'
+        '  "what_to_evoke": ["<internal state / feeling / insight / body-sensation bullet>", "..."],\n'
+        '  "watch_outs": ["<contraindication for children OR clinical caveat OR thing to avoid>", "..."]\n'
+        "}\n\n"
+        "Rules:\n"
+        "  - goal: exactly ONE sentence, clinically precise\n"
+        "  - must_hits: 2–4 bullets, ORDERED (step 1 then step 2 etc.), structural requirements of the technique\n"
+        "  - what_to_evoke: 2–4 bullets — the internal state/insight/realization/body-feeling the child reaches\n"
+        "    (child-accessible language — what the child actually notices, not clinical terminology)\n"
+        "  - watch_outs: 2–4 bullets — contraindications for children, clinical caveats, things to avoid;\n"
+        "    clinical precision OK here (Kim is the therapist)\n"
+        "  - ONLY the JSON object. No extra text, no markdown fences."
+    )
+    req_body = {
+        "model": "claude-haiku-4-5",
+        "max_tokens": 512,
+        "system": system_prompt,
+        "messages": [{"role": "user", "content": user_prompt}],
+    }
+    try:
+        resp_data, _ = _call_anthropic_urllib(api_key, req_body, timeout=30)
+        content = resp_data.get("content") or []
+        raw = ""
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                raw += block.get("text", "")
+        raw = raw.strip()
+        # Strip markdown fences if model ignores instructions
+        if raw.startswith("```"):
+            lines = raw.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            raw = "\n".join(lines).strip()
+        brief = json.loads(raw)
+        # Validate expected keys are present
+        required = ("goal", "must_hits", "what_to_evoke", "watch_outs")
+        for k in required:
+            if k not in brief:
+                print(f"[suggest_script] brief missing key {k!r} — dropping brief")
+                return None
+        return brief
+    except Exception as exc:
+        print(f"[suggest_script] therapeutic brief generation failed (non-fatal): {exc}")
+        return None
 
 
 def handle_phase_suggest_script(h, body: dict)-> None:
@@ -417,93 +651,146 @@ def handle_phase_suggest_script(h, body: dict)-> None:
         )
     else:  # phase == "b"
         user_prompt = (
-            "You are drafting a Phase B 'meditation' script for an "
-            "interactive children's therapeutic app (MindfulNest, ages "
-            "7-11). Phase B is the Cedric-narrated meditation that "
-            "introduces a therapeutic technique through the fictional "
-            "Everdale world.\n\n"
+            "You are drafting a Phase B meditation script for MindfulNest "
+            "(ages 7-11), narrated by Cedric the wizard.\n\n"
             f"{module_identity}\n"
             f"{therapeutic_section}\n"
             f"{technique_section}\n"
-            "Constraints:\n"
-            "  - 90-120 seconds spoken (Cedric voice — wise narrator, "
-            "    warm, unhurried).\n"
-            "  - 9-step meditation arc: arrive -> observe -> "
-            "    invitation -> technique-intro -> technique-practice "
-            "    (3-4 sub-steps) -> return -> seal.\n"
-            "  - Use {{INHALE_CUE}}, {{EXHALE_CUE}}, {{HOLD_CUE}} cue "
-            "    markers at the moments where the child's breath "
-            "    should engage with the technique.\n"
-            "  - Frame the technique inside Everdale narrative — use "
-            "    the in-world spell name (e.g., 'Magic Hands') from the "
-            "    Therapeutic Note, NOT clinical names like 'palm "
-            "    interoception'.\n"
-            "  - Teach the SPECIFIC technique described in the "
-            "    Therapeutic Note. Do NOT substitute a generic "
-            "    meditation. If the technique is palm interoception, "
-            "    the script must guide the child through feeling their "
-            "    palms. If it is physiological sigh, the script must "
-            "    guide the double-inhale-extended-exhale pattern. "
-            "    Etc.\n"
-            "  - Direct second-person address.\n\n"
-            "Write the Phase B meditation script now."
+            "## TEMPLATE SELECTION\n\n"
+            "Choose the correct template based on the technique type:\n\n"
+            "1. **Sequential-step** — technique has 2-3 mechanically distinct "
+            "physical steps in order; the CONTRAST between steps (the release, "
+            "the long exhale) is the clinical payload. Examples: Physiological "
+            "Sigh, Squeeze & Release.\n"
+            "   Structure: WELCOME→CONNECTION→SETUP (name step count)→"
+            "PART 1→PART 2→[PART 3]→FULL ROUND (narrator paces only, minimal "
+            "words)→LANDING→EXIT. Word budget ~110-145.\n\n"
+            "2. **Cycle-based** — pure rhythmic counting (4-7-8, box breathing).\n"
+            "   Structure: WELCOME→CONNECTION→SETUP→CYCLE 1→TRANSITION→"
+            "CYCLE 2→LANDING→EXIT. Word budget ~120-140.\n\n"
+            "3. **Standard 7-section** — child feels a single sustained physical "
+            "action (warmth, belly moving, muscle relaxation).\n"
+            "   Structure: WELCOME→CONNECTION→SETUP→INSTRUCTION→DEEPENING→"
+            "LANDING→EXIT. Word budget ~120-160.\n\n"
+            "4. **Preview-enhanced** — technique is mental/cognitive (invisible). "
+            "Add PREVIEW (full walk-through before starting), CHECK-IN, and "
+            "an ACTION MARKER at the key therapeutic moment.\n"
+            "   Structure: WELCOME→CONNECTION→PREVIEW→SETUP→INSTRUCTION→"
+            "CHECK-IN→GUIDED PRACTICE→LANDING→EXIT. Word budget ~150-180.\n\n"
+            "## STRUCTURAL CONSTANTS (every template)\n\n"
+            "- WELCOME: Opens with 'Ahh...' (warm exhale, not a word). "
+            "Ends with 'Good.' as its own beat. {childName} appears ONCE, "
+            "in WELCOME only.\n"
+            "- CONNECTION: Uses exact Phase A vocabulary. Never re-teaches "
+            "what Phase A showed.\n"
+            "- LANDING: Names the felt experience. Use 'that's your magic' "
+            "or equivalent ownership framing. Conditional: 'notice if you "
+            "feel it' — NOT 'you will feel calm.'\n"
+            "- EXIT: 'Stay right there. Keep [breathing / feeling that]...' "
+            "— trails off. Do NOT conclude. Rescue sustain picks up here.\n"
+            "- 'you' never 'we'. Conditional sensation language throughout. "
+            "No clinical jargon. No therapy-speak.\n\n"
+            "## PACING FORMAT\n\n"
+            "Write plain sentences only — no 'Cedric:' prefixes.\n"
+            "Two-tier pause system:\n"
+            "  - Short pauses (< 2s): use ellipsis (… or …..) inline "
+            "within the sentence.\n"
+            "  - Long pauses (2s+): use [silence:Ns] tag (e.g. "
+            "[silence:4s], [silence:6s], [silence:9s]). The server "
+            "processes these into real ffmpeg silence — they produce "
+            "EXACT timed gaps in the audio. Use them generously for "
+            "the child to actually feel the sensation.\n"
+            "  - [long pause] is also valid for a medium pause (~2s).\n"
+            "  - [warm] at the very start signals a warm tonal cue.\n"
+            "End the script with the wizard releasing the child "
+            "('off you go, little one') — do NOT write "
+            "'[fade to Rescue sustain]'.\n\n"
+            "## FEW-SHOT EXAMPLE (Kim's final approved M1 script — May 2026)\n\n"
+            "This is the canonical format. Match this sparseness and "
+            "silence placement exactly. 'little one' not '{childName}'.\n\n"
+            "[warm] Ah, yes. ….. Welcome little one …... I am your Magical "
+            "Arts teacher. I've come to teach you …. the Magic Hands Spell.\n"
+            "You'll make a real ball of energy … right between your "
+            "hands.[long pause]\n"
+            "Step One. [long pause] Rub your hands together. …. Getting "
+            "warmer … warmer.[silence:4s]\n"
+            "Good.\n"
+            "Now imagine a soccer-sized ball of magic in your "
+            "hands. [silence:6s]\n"
+            "Can you feel it? [long pause] [long pause] Big breath "
+            "in.[long pause]\n"
+            "As you breathe out, move your hands closer "
+            "together. [silence:8s]\n"
+            "Good. Pull your hands farther apart. [silence:6s]\n"
+            "Now move your hands in and out, however you like. Play with "
+            "the energy you feel between your hands.[silence:9s]\n"
+            "Keep breathing. [silence:4s]\n"
+            "What do you feel between your hands? … Pulling? … Tingling? "
+            "… Warmth? … [silence:6s]\n"
+            "Can you move the energy around?[silence:4s]\n"
+            "That's the magic you have inside of you.\n"
+            "Let that magic grow stronger... [silence:4s]. Now, off you "
+            "go, little one. Come back again later for your next lesson.\n\n"
+            "IMPORTANT: Use [silence:Ns] for pauses where the child needs "
+            "to actually feel something — do NOT replace long silences with "
+            "ellipsis. No 'Cedric:' prefixes. No {{BELL_CUE}} or "
+            "{{PAUSE:Xs}} markers.\n\n"
+            "## TASK\n\n"
+            "Select the correct template from the four above based on the "
+            "technique in the Therapeutic Note. Apply all structural "
+            "constants and cue markers. Match the sparseness and pacing "
+            "of the few-shot example. Write the Phase B script now."
         )
         system_prompt = (
             "You are a CRI script writer drafting Phase B meditation "
-            "scripts for MindfulNest (B2C children's therapeutic app, "
-            "ages 7-11), narrated by Cedric the wizard. Ground every "
-            "script in the authored Therapeutic Note + Technique "
-            "Inventory provided in the user message — never invent or "
-            "substitute techniques."
+            "scripts for MindfulNest (ages 7-11), narrated by Cedric "
+            "the wizard. Ground every script in the authored Therapeutic "
+            "Note + Technique Inventory in the user message. Never invent "
+            "or substitute techniques. Follow the template structure, "
+            "structural constants, and cue markers exactly as provided."
         )
 
-    # Call Anthropic Messages API via urllib (no SDK dependency).
-    url = "https://api.anthropic.com/v1/messages"
-    req_body = {
+    # Call Anthropic in PARALLEL: (1) script generation, (2) therapeutic brief.
+    # Both use Haiku. Brief failure is non-fatal — returns null in the response.
+    # Using _cf (concurrent.futures) already imported at module top.
+    script_req = {
         "model": "claude-haiku-4-5",
         "max_tokens": 2048,
         "system": system_prompt,
-        "messages": [
-            {"role": "user", "content": user_prompt},
-        ],
+        "messages": [{"role": "user", "content": user_prompt}],
     }
-    req_data = json.dumps(req_body).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=req_data,
-        headers={
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
-        method="POST",
-    )
-    t0 = time.time()
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            resp_body = resp.read().decode("utf-8")
-            resp_data = json.loads(resp_body)
-    except urllib.error.HTTPError as exc:
-        err_body = exc.read().decode("utf-8", errors="replace")
-        return h._send_error_v59(
-                   502,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"Anthropic API HTTP {exc.code}",
-                   retry_safe=True,
-                   extra={"ok": False, "detail": err_body[:500]},
-               )
-    except urllib.error.URLError as exc:
-        return h._send_error_v59(
-                   502,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"Anthropic API URL error: {exc}",
-                   retry_safe=True,
-                   extra={"ok": False},
-               )
-    elapsed_ms = int((time.time() - t0) * 1000)
+    with _cf.ThreadPoolExecutor(max_workers=2) as pool:
+        script_future = pool.submit(_call_anthropic_urllib, api_key, script_req, 60)
+        brief_future = pool.submit(
+            _build_therapeutic_brief,
+            api_key, module_meta, therapeutic_note, technique_inventory,
+        )
+        # Script result — errors are fatal, returned as HTTP error response
+        try:
+            resp_data, elapsed_ms = script_future.result()
+        except urllib.error.HTTPError as exc:
+            err_body = exc.read().decode("utf-8", errors="replace")
+            return h._send_error_v59(
+                502, error_code="GENERIC_ERROR",
+                error_message=f"Anthropic API HTTP {exc.code}",
+                retry_safe=True,
+                extra={"ok": False, "detail": err_body[:500]},
+            )
+        except urllib.error.URLError as exc:
+            return h._send_error_v59(
+                502, error_code="GENERIC_ERROR",
+                error_message=f"Anthropic API URL error: {exc}",
+                retry_safe=True,
+                extra={"ok": False},
+            )
+        # Brief result — non-fatal
+        try:
+            therapeutic_brief = brief_future.result()
+        except Exception as exc:
+            print(f"[suggest_script] brief future error (non-fatal): {exc}")
+            therapeutic_brief = None
 
-    # Extract text from response shape.
-    # Response: {content: [{type:'text', text:'...'}], model: '...', usage: {input_tokens, output_tokens}}
+    # Extract text from script response.
     content = resp_data.get("content") or []
     script_text = ""
     for block in content:
@@ -514,6 +801,7 @@ def handle_phase_suggest_script(h, body: dict)-> None:
         "ok": True,
         "phase": phase,
         "script": script_text,
+        "therapeutic_brief": therapeutic_brief,
         "model_used": resp_data.get("model", "claude-haiku-4-5"),
         "generation_time_ms": elapsed_ms,
         "tokens_in": usage.get("input_tokens"),
@@ -522,11 +810,54 @@ def handle_phase_suggest_script(h, body: dict)-> None:
     })
 
 
+def _parse_silence_segments(script: str):
+    """Split script on [silence:Ns] tags.
+
+    Returns list of ('text', str) | ('silence', float) tuples.
+    Strips whitespace from text segments; preserves order.
+    """
+    import re as _re
+    _PAT = _re.compile(r'\[silence:\s*(\d+(?:\.\d+)?)\s*s?\]', _re.IGNORECASE)
+    parts = []
+    last = 0
+    for m in _PAT.finditer(script):
+        chunk = script[last:m.start()].strip()
+        if chunk:
+            parts.append(('text', chunk))
+        parts.append(('silence', float(m.group(1))))
+        last = m.end()
+    tail = script[last:].strip()
+    if tail:
+        parts.append(('text', tail))
+    return parts
+
+
+def _build_silence_mp3(duration_s: float, out_path) -> None:
+    """Write a silent MP3 of exact duration using ffmpeg anullsrc."""
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi",
+            "-i", f"anullsrc=r=44100:cl=mono",
+            "-t", str(duration_s),
+            "-acodec", "libmp3lame",
+            "-b:a", "128k",
+            str(out_path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
 def handle_phase_b_regen_audio(h, body: dict)-> None:
 
     """POST /api/phase_b/regen_audio
 
     Body: {"phase": "a"|"b", "script": "text"}
+
+    Supports [silence:Ns] tags in script for exact server-side silence injection.
+    Splits script at markers, calls ElevenLabs per segment, ffmpeg-concats with
+    real silence between segments.  Single-segment scripts use the fast single-call path.
 
     Writes phase_{phase}_voice_stem_<TS>.mp3 to event_dir root.
     Patches state phase_X_voice_stem_file + phase_X_voice_stem_mtime via mutate_state.
@@ -601,42 +932,125 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
     voice_id, model_id, voice_settings, speaker = h._phase_resolve_voice_settings(phase)
     # Universal hardening: robust_https_request with 3 retries + 90s timeout.
     from kling_startend_pipeline import robust_https_request  # noqa: PLC0415
-    tts_body = json.dumps({
-        "text": script,
-        "model_id": model_id,
-        "voice_settings": voice_settings,
-    }).encode("utf-8")
-    t0 = time.time()
-    try:
-        status_code, audio_bytes = robust_https_request(
+
+    def _tts_call(text_segment: str):
+        """Single ElevenLabs TTS call; returns (status_code, bytes)."""
+        body_bytes = json.dumps({
+            "text": text_segment,
+            "model_id": model_id,
+            "voice_settings": voice_settings,
+        }).encode("utf-8")
+        return robust_https_request(
             host="api.elevenlabs.io",
             path=f"/v1/text-to-speech/{voice_id}",
             method="POST",
             headers={"xi-api-key": elevenlabs_key,
                      "Content-Type": "application/json",
                      "Accept": "audio/mpeg"},
-            body=tts_body,
+            body=body_bytes,
             timeout=90,
             max_retries=3,
         )
-    except Exception as exc:  # noqa: BLE001
-        return h._send_error_v59(
-                   502,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"ElevenLabs network failure (after retries): "
-                     f"{type(exc).__name__}: {exc}",
-                   retry_safe=True,
-                   extra={"speaker": speaker, "voice_id": voice_id, "hint": "Check network / ElevenLabs status. Retry after a minute."},
-               )
-    if status_code >= 400:
-        detail = audio_bytes[:400].decode("utf-8", errors="replace")
-        return h._send_error_v59(
-                   502,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"ElevenLabs HTTP {status_code}: {detail}",
-                   retry_safe=True,
-                   extra={"speaker": speaker, "hint": "Often: API key expired or voice_id renamed. Check API_KEYS_MASTER.md."},
-               )
+
+    segments = _parse_silence_segments(script)
+    # Fast path: no [silence:Ns] tags → single TTS call (original behaviour).
+    use_multi = any(kind == 'silence' for kind, _ in segments)
+
+    t0 = time.time()
+    if not use_multi:
+        try:
+            status_code, audio_bytes = _tts_call(script)
+        except Exception as exc:  # noqa: BLE001
+            return h._send_error_v59(
+                       502,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"ElevenLabs network failure (after retries): "
+                         f"{type(exc).__name__}: {exc}",
+                       retry_safe=True,
+                       extra={"speaker": speaker, "voice_id": voice_id,
+                              "hint": "Check network / ElevenLabs status. Retry after a minute."},
+                   )
+        if status_code >= 400:
+            detail = audio_bytes[:400].decode("utf-8", errors="replace")
+            return h._send_error_v59(
+                       502,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"ElevenLabs HTTP {status_code}: {detail}",
+                       retry_safe=True,
+                       extra={"speaker": speaker,
+                              "hint": "Often: API key expired or voice_id renamed. Check API_KEYS_MASTER.md."},
+                   )
+    else:
+        # Multi-segment path: call ElevenLabs per text segment, inject real silence.
+        import tempfile as _tempfile
+        tmp_dir = Path(_tempfile.mkdtemp(prefix="mn_regen_audio_"))
+        concat_parts = []  # list of pathlib.Path in order
+        try:
+            seg_idx = 0
+            for kind, value in segments:
+                if kind == 'text':
+                    seg_path = tmp_dir / f"seg_{seg_idx:03d}_speech.mp3"
+                    try:
+                        sc, seg_bytes = _tts_call(value)
+                    except Exception as exc:  # noqa: BLE001
+                        return h._send_error_v59(
+                                   502,
+                                   error_code="GENERIC_ERROR",
+                                   error_message=f"ElevenLabs segment {seg_idx} network failure: "
+                                     f"{type(exc).__name__}: {exc}",
+                                   retry_safe=True,
+                                   extra={"segment_index": seg_idx, "speaker": speaker},
+                               )
+                    if sc >= 400:
+                        detail = seg_bytes[:400].decode("utf-8", errors="replace")
+                        return h._send_error_v59(
+                                   502,
+                                   error_code="GENERIC_ERROR",
+                                   error_message=f"ElevenLabs segment {seg_idx} HTTP {sc}: {detail}",
+                                   retry_safe=True,
+                                   extra={"segment_index": seg_idx, "speaker": speaker},
+                               )
+                    seg_path.write_bytes(seg_bytes)
+                    concat_parts.append(seg_path)
+                    seg_idx += 1
+                else:  # silence
+                    sil_path = tmp_dir / f"seg_{seg_idx:03d}_silence_{value}s.mp3"
+                    try:
+                        _build_silence_mp3(value, sil_path)
+                    except subprocess.CalledProcessError as exc:
+                        return h._send_error_v59(
+                                   500,
+                                   error_code="GENERIC_ERROR",
+                                   error_message=f"ffmpeg silence generation failed for {value}s: {exc}",
+                                   retry_safe=True,
+                               )
+                    concat_parts.append(sil_path)
+                    seg_idx += 1
+
+            # ffmpeg concat all parts into final bytes.
+            list_file = tmp_dir / "concat_list.txt"
+            list_file.write_text(
+                "\n".join(f"file '{p}'" for p in concat_parts),
+                encoding="utf-8",
+            )
+            concat_out = tmp_dir / "concat_out.mp3"
+            subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-f", "concat", "-safe", "0",
+                    "-i", str(list_file),
+                    "-acodec", "libmp3lame", "-b:a", "128k",
+                    str(concat_out),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            audio_bytes = concat_out.read_bytes()
+        finally:
+            # Clean up temp dir regardless of success/failure.
+            import shutil as _shutil
+            _shutil.rmtree(tmp_dir, ignore_errors=True)
+
     elapsed_call = time.time() - t0
 
     # Atomic write to event_dir root.
@@ -668,6 +1082,13 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
                    retry_safe=True,
                    extra={"hint": "Check event_dir permissions / disk space."},
                )
+    # NOTE: No atempo post-processing on the regen_audio (audition) path.
+    # ElevenLabs speed=0.50 (from Directus voice profile) already gives meditative
+    # pacing for auditioning word delivery. Compounding atempo=0.75 on top produces
+    # 37.5% normal speed — unnatural and artifacts on deep voices.
+    # The Python production render (render_phase_b_v9_meditation.py) applies
+    # atempo=0.75 on the final render where sentence-level silences are added
+    # separately and the compounding is intentional.
     try:
         duration = _ffprobe_duration(out_path)
     except (subprocess.CalledProcessError, ValueError, OSError):
@@ -1039,8 +1460,9 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
     Module-level lipsync (no beat). Loads base clip from
     Production/assets/lipsync_bases/<base_clip_id> (auto .mp4 / .mov),
     mixed audio from state phase_{phase}_mixed_audio_file (fallback to
-    voice_stem). Applies silcomp, trims video to audio, submits to
-    ByteDance via LipSyncClient.submit_and_wait (synchronous).
+    voice_stem). Applies silcomp, loops or trims base clip to audio
+    duration, submits to Kling Sync via LipSyncClient.submit_and_wait
+    (synchronous). Route: wavespeed.ai/kwaivgi/kling-lipsync.
 
     Writes phase_{phase}_lipsync_<TS>.mp4 and patches state.
     """
@@ -1137,26 +1559,69 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
                    extra={"budget_remaining": spend["budget_remaining"], "cost": COST_PER_LIPSYNC, "hint": "Raise budget via /api/budget/override or ship fewer."},
                )
 
-    # §8.4 silcomp + video trim to audio_duration + 0.4s tailroom.
+    # Kling Sync handles the full audio including meditation silences — do NOT
+    # apply silcomp (§8.4 silence compression was designed for ByteDance's 10s
+    # cap; SWITCH_TO_KLING_LIPSYNC_20260524 eliminated that vendor).
+    # Compressing silences would shorten Phase B meditation lipsync from ~132s
+    # to ~76s, stripping the intentional breath-pause timing the script author
+    # crafted. Pass the raw audio to Kling and loop the base clip accordingly.
+    _VIDEO_TAILROOM_S = 2.0  # Kim: "1.5–2s tail so cut-off after speaking isn't sudden"
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     tmp_audio_path = h.app.event_dir / f"_tmp_silcomp_phase_{phase}_{ts}.mp3"
     tmp_video_path = h.app.state.clips_dir / f"_tmp_trim_phase_{phase}_{ts}.mp4"
     try:
-        audio_for_lipsync, audio_meta = _silcomp_audio(audio_path, tmp_audio_path)
-        audio_duration = audio_meta["compressed_duration_s"]
+        # Use raw audio (no silcomp). tmp_audio_path is only created if Kling
+        # requires a separate file (e.g., format conversion); for now audio_path
+        # (the mixed MP3) is passed directly.
+        audio_for_lipsync = audio_path
+        audio_duration = _ffprobe_duration(audio_path)
         raw_dur = _ffprobe_duration(base_path)
-        if raw_dur <= audio_duration:
-            return h._send_error_v59(
-                       400,
-                       error_code="BASE_CLIP_SHORTER_THAN_AUDIO",
-                       error_message="base clip shorter than audio",
-                       retry_safe=False,
-                       extra={"base_clip_duration_s": round(raw_dur, 3), "audio_duration_s": round(audio_duration, 3), "hint": "Use a longer base clip or shorten the audio."},
-                   )
-        video_for_lipsync, trimmed_to, ts_used, te_used = _trim_video_to_audio(
-            base_path, tmp_video_path, audio_duration,
-            trim_start=0.0, trim_end=None,
-        )
+        target_video_s = audio_duration + _VIDEO_TAILROOM_S
+        # WaveSpeed enforces a 30MB cap on the base64-encoded 'video' field.
+        # base64 adds ~33% overhead, so raw files > ~22MB will exceed the cap.
+        # Re-encode oversized clips at 2 Mbps H.264 (sufficient quality for
+        # lipsync input — Kling generates fresh output anyway).
+        _WAVESPEED_RAW_MB_CEILING = 22.0
+        raw_size_mb = base_path.stat().st_size / 1024 / 1024
+
+        if raw_dur < target_video_s:
+            # Base clip is shorter than audio — Kling loops internally.
+            # DO NOT pre-loop: looping a 28MB clip to 76s → 165MB, instant reject.
+            if raw_size_mb > _WAVESPEED_RAW_MB_CEILING:
+                # File too large for data URI submission — re-encode at 2 Mbps.
+                print(
+                    f"[phase_b_lipsync] base clip {raw_size_mb:.1f}MB > "
+                    f"{_WAVESPEED_RAW_MB_CEILING}MB ceiling — re-encoding at 2Mbps for API",
+                    flush=True,
+                )
+                subprocess.run(
+                    [
+                        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                        "-i", str(base_path),
+                        "-c:v", "libx264", "-preset", "fast",
+                        "-b:v", "2000k", "-maxrate", "2000k", "-bufsize", "4000k",
+                        "-an",
+                        "-movflags", "+faststart",
+                        str(tmp_video_path),
+                    ],
+                    check=True, capture_output=True, timeout=120,
+                )
+                reenc_mb = tmp_video_path.stat().st_size / 1024 / 1024
+                print(f"[phase_b_lipsync] re-encoded: {reenc_mb:.1f}MB → base64 ~{reenc_mb*1.34:.1f}MB", flush=True)
+                video_for_lipsync = tmp_video_path
+            else:
+                print(
+                    f"[phase_b_lipsync] base clip {raw_dur:.2f}s < audio {audio_duration:.2f}s, "
+                    f"{raw_size_mb:.1f}MB — sending raw; Kling loops internally",
+                    flush=True,
+                )
+                video_for_lipsync = base_path
+        else:
+            # Base clip is longer than audio — trim to avoid sending excess data.
+            video_for_lipsync, _, _, _ = _trim_video_to_audio(
+                base_path, tmp_video_path, audio_duration,
+                trim_start=0.0, trim_end=None,
+            )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
             OSError, ValueError) as exc:
         traceback.print_exc()
@@ -1168,93 +1633,170 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
                    extra={"stage": "silcomp_or_trim", "detail": str(exc)[:400], "hint": "Check ffmpeg + that base clip is decodable."},
                )
 
-    # Submit synchronously via LipSyncClient (matches pattern at lines
-    # 4651, 4824). h.app.client is a WaveSpeedClient which has no
-    # submit_and_wait method — must wrap in LipSyncClient. Bug fixed
-    # 2026-04-21 after it silently surfaced as "WaveSpeed upstream" errors.
+    # Submit to Kling Sync (POST only — returns task_id in a few seconds).
+    # Poll + download run in a background thread so the HTTP response returns
+    # immediately (HTTP 202). Phase B meditations are 90-150s; Kling takes
+    # 2-10 minutes to process — a synchronous submit_and_wait would always
+    # time out in the browser ("Failed to fetch" / HTTP 0).
+    import threading as _threading
+
     out_name = f"phase_{phase}_lipsync_{ts}.mp4"
     out_path = h.app.event_dir / out_name
+    lipsync_client = LipSyncClient(h.app.client.api_key)
     try:
-        lipsync_client = LipSyncClient(h.app.client.api_key)
-        result = lipsync_client.submit_and_wait(
-            video_for_lipsync, audio_for_lipsync, out_path,
-        )
+        task_id = lipsync_client.submit(video_for_lipsync, audio_for_lipsync)
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
-        return h._send_error_v59(
-                   502,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"ByteDance LipSync failed: {type(exc).__name__}: {exc}",
-                   retry_safe=True,
-                   extra={"hint": f"{type(exc).__name__}: {str(exc)[:200]} — "
-                "check server stderr for full trace. Likely causes: "
-                "WaveSpeed upstream, DNS resolution, upload host (uguu/catbox), "
-                "or client-class mismatch (must be LipSyncClient)."},
-               )
-    finally:
-        # Cleanup tmp pre-conditioned files regardless of outcome.
         for tmp in (tmp_audio_path, tmp_video_path):
             try:
                 tmp.unlink(missing_ok=True)
             except Exception:  # noqa: BLE001
                 pass
-
-    if not out_path.is_file():
         return h._send_error_v59(
                    502,
-                   error_code="LIPSYNC_COMPLETED_BUT_OUTPUT_FILE",
-                   error_message="LipSync completed but output file missing",
+                   error_code="GENERIC_ERROR",
+                   error_message=f"Kling LipSync submit failed: {type(exc).__name__}: {exc}",
                    retry_safe=True,
-                   extra={"result": result, "hint": "Check LipSyncClient.submit_and_wait return + disk."},
+                   extra={"hint": f"{str(exc)[:200]} — check server stderr. "
+                "Likely: WaveSpeed API key, DNS, or oversized payload."},
                )
-    h.app.state.add_spend("lipsync", COST_PER_LIPSYNC)
-    mtime = int(os.path.getmtime(str(out_path)))
 
-    def _apply(state, _p=phase, _n=out_name, _m=mtime, _bid=base_clip_id):
-        state[f"phase_{_p}_lipsync_file"] = _n
-        state[f"phase_{_p}_lipsync_mtime"] = _m
-        state[f"phase_{_p}_cedric_base_clip_id" if _p == "b"
-              else f"phase_{_p}_empty_desk_bg_id"] = _bid
+    # Mark state as polling so UI can reflect in-progress status.
+    def _apply_polling(state, _p=phase, _tid=task_id):
+        state[f"phase_{_p}_lipsync_status"] = "polling"
+        state[f"phase_{_p}_lipsync_task_id"] = _tid
         state["_module_version"] = int(state.get("_module_version", 0) or 0) + 1
         return state["_module_version"]
-    # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — terminal-write pin check.
-    # If the event was swapped via /api/event/load mid-job, this lipsync
-    # output is now orphaned at _pin["pinned_event_dir"] (NOT deleted —
-    # recoverable per spec §10). Reject the state mutation with HTTP 423
-    # so the v59 client can re-hydrate + retry.
-    if not h._check_event_pin(_pin, "phase_b_lipsync_terminal_mutate"):
-        return h._send_error_v59(
-                   423,
-                   error_code="EVENT_CHANGED_MID_JOB",
-                   error_message="event_changed_mid_job",
-                   retry_safe=False,
-                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "pinned_event": _pin["pinned_event_dir"].name if _pin.get("pinned_event_dir") else None, "current_event": h.app.event_dir.name, "orphaned_output": str(out_path), "hint": "The active event changed via /api/event/load while this "
-                "lipsync job was running. The mp4 IS on disk at the pinned "
-                "event_dir but state was NOT mutated; client should "
-                "re-hydrate scope and retry."},
-               )
     try:
-        new_version = h.app.state.mutate_state(_apply)
-    except Exception as exc:  # noqa: BLE001
-        traceback.print_exc()
-        return h._send_error_v59(
-                   500,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"mutate_state failed: {type(exc).__name__}: {exc}",
-                   retry_safe=True,
-                   extra={"hint": "LipSync file written to disk; state persist failed."},
-               )
+        h.app.state.mutate_state(_apply_polling)
+    except Exception:  # noqa: BLE001
+        pass  # non-fatal — polling state is cosmetic
 
-    return h._send_json(200, {
-        "status": "ok",
+    # Background thread: poll Kling → download → write final state.
+    # Captures everything it needs from the enclosing scope; does NOT use h
+    # after the HTTP response is sent (h.wfile may be closed).
+    _app = h.app
+    _pin_captured = dict(_pin)
+
+    def _bg_poll_and_write(
+        _task_id=task_id,
+        _out_path=out_path,
+        _out_name=out_name,
+        _phase=phase,
+        _base_clip_id=base_clip_id,
+        _audio_dur=audio_duration,
+        _tmp_audio=tmp_audio_path,
+        _tmp_video=tmp_video_path,
+    ):
+        try:
+            result = lipsync_client.poll_until_done(_task_id)
+            status = (result.get("status") or "").lower()
+            if status == "completed" and result.get("outputs"):
+                url = result["outputs"][0]
+                lipsync_client.download(url, _out_path)
+                if not _out_path.is_file():
+                    raise RuntimeError(
+                        f"Kling reported completed but output not on disk: {_out_path}"
+                    )
+                # Standardized white-out transition at end of Phase B lipsync.
+                # Applied to EVERY lipsync output before state is written.
+                try:
+                    _apply_whiteout_fade(_out_path)
+                except Exception as _fade_exc:  # noqa: BLE001
+                    print(
+                        f"[phase_b_whiteout] WARNING: fade failed ({_fade_exc!r}) "
+                        f"— keeping raw download, proceeding without fade",
+                        flush=True,
+                    )
+                _app.state.add_spend("lipsync", COST_PER_LIPSYNC)
+                mtime = int(os.path.getmtime(str(_out_path)))
+
+                # LD-460 pin check before terminal state write — inline
+                # (can't call h._check_event_pin from bg thread; h is the
+                # HTTP handler whose socket may be closed).
+                _cur_gen = getattr(_app, "event_generation", None)
+                _pin_gen = _pin_captured.get("pinned_generation")
+                _cur_dir = getattr(_app, "event_dir", None)
+                _pin_dir = _pin_captured.get("pinned_event_dir")
+                if (_pin_gen is not None and _cur_gen != _pin_gen) or \
+                   (_pin_dir is not None and _cur_dir != _pin_dir):
+                    print(
+                        f"[phase_b_lipsync] pin mismatch after poll — "
+                        f"output on disk at {_out_path} but state NOT mutated "
+                        f"(event changed mid-job)",
+                        flush=True,
+                    )
+                    return
+
+                def _apply(state,
+                           _p=_phase, _n=_out_name, _m=mtime,
+                           _bid=_base_clip_id):
+                    state[f"phase_{_p}_lipsync_file"] = _n
+                    state[f"phase_{_p}_lipsync_mtime"] = _m
+                    state[f"phase_{_p}_lipsync_status"] = "done"
+                    state.pop(f"phase_{_p}_lipsync_task_id", None)
+                    state[f"phase_{_p}_cedric_base_clip_id" if _p == "b"
+                          else f"phase_{_p}_empty_desk_bg_id"] = _bid
+                    state["_module_version"] = (
+                        int(state.get("_module_version", 0) or 0) + 1
+                    )
+                    return state["_module_version"]
+                _app.state.mutate_state(_apply)
+                print(
+                    f"[phase_b_lipsync] ✓ complete → {_out_name} "
+                    f"({_out_path.stat().st_size} bytes)",
+                    flush=True,
+                )
+            else:
+                err = result.get("raw", {}).get("error", "unknown")
+                def _apply_err(state, _p=_phase, _e=err):
+                    state[f"phase_{_p}_lipsync_status"] = f"error: {str(_e)[:120]}"
+                    state.pop(f"phase_{_p}_lipsync_task_id", None)
+                    return state
+                _app.state.mutate_state(_apply_err)
+                print(
+                    f"[phase_b_lipsync] ✗ Kling returned status={status!r} "
+                    f"error={err}",
+                    flush=True,
+                )
+        except Exception as exc:  # noqa: BLE001
+            traceback.print_exc()
+            def _apply_exc(state, _p=_phase, _exc=exc):
+                state[f"phase_{_p}_lipsync_status"] = (
+                    f"error: {type(_exc).__name__}: {str(_exc)[:100]}"
+                )
+                state.pop(f"phase_{_p}_lipsync_task_id", None)
+                return state
+            try:
+                _app.state.mutate_state(_apply_exc)
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            for tmp in (_tmp_audio, _tmp_video):
+                try:
+                    tmp.unlink(missing_ok=True)
+                except Exception:  # noqa: BLE001
+                    pass
+
+    t = _threading.Thread(target=_bg_poll_and_write, daemon=True)
+    t.start()
+    print(
+        f"[phase_b_lipsync] submitted task_id={task_id} — "
+        f"polling in background thread {t.name}",
+        flush=True,
+    )
+
+    return h._send_json(202, {
+        "ok": True,
+        "status": "submitted",
+        "task_id": task_id,
         "phase": phase,
-        "file": out_name,
-        "mtime": mtime,
         "audio_duration_s": round(audio_duration, 3),
-        "video_trimmed_to_s": round(trimmed_to, 3),
         "base_clip_id": base_clip_id,
-        "result": result,
-        "module_version": new_version,
+        "message": (
+            "Kling Sync is processing (~1-4 min). "
+            "The storyboard will auto-update when done."
+        ),
     })
 
 

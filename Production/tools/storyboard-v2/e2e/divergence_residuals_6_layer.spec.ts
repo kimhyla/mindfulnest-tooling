@@ -87,8 +87,11 @@ test.describe('Track A residual #3 — BeatImageHolder assign_image drop wiring'
         body: JSON.stringify({
           _module_version: 1,
           videos: {
-            'phase_a': {
-              video_role: 'phase_a',
+            // activeTargetVideo defaults to 'intro' (scope.ts L56) so the
+            // storyboard renders from state.videos['intro']. Using 'phase_a'
+            // here caused the beats to never render — beat-image-zone-0 not found.
+            'intro': {
+              video_role: 'intro',
               beats: {
                 'beat_pa_01': {
                   speaker: 'Tessa',
@@ -107,24 +110,18 @@ test.describe('Track A residual #3 — BeatImageHolder assign_image drop wiring'
 
     const assignReqs: Request[] = [];
     page.on('request', (req) => {
-      const url = req.url();
-      // [INFERRED — verify against src/api/client.ts] pathappPatch routes
-      // via /api/v59/pathapp/<op> or similar. Capture any POST whose body
-      // contains "assign_image" — body-based check makes this robust to
-      // route-shape changes.
-      if (req.method() === 'POST' && (url.includes('/pathapp') || url.includes('/api/'))) {
-        const body = req.postData() || '';
-        if (body.includes('assign_image')) assignReqs.push(req);
+      // [CONFIRMED against src/api/endpoints.ts L63] pathappPatch routes
+      // assign_image via POST /api/assign-image (not /pathapp/<op>).
+      // Capture by URL — body only carries { beat, image_key, scope_* } keys,
+      // not the operation name.
+      if (req.method() === 'POST' && req.url().includes('/api/assign-image')) {
+        assignReqs.push(req);
       }
     });
     // Stub the assign_image mutation so the request resolves.
-    await page.route(/\/api\/.*pathapp.*/, async (r) => {
-      const body = r.request().postData() || '';
-      if (body.includes('assign_image')) {
-        await r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
-      } else {
-        await r.continue();
-      }
+    // [CONFIRMED against src/api/endpoints.ts L63] actual URL is /api/assign-image.
+    await page.route('**/api/assign-image', async (r) => {
+      await r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
     });
 
     await gotoApp(page);
@@ -171,8 +168,9 @@ test.describe('Track A residual #3 — BeatImageHolder assign_image drop wiring'
         body: JSON.stringify({
           _module_version: 1,
           videos: {
-            'phase_a': {
-              video_role: 'phase_a',
+            // Must be 'intro' — activeTargetVideo defaults to 'intro' (scope.ts L56).
+            'intro': {
+              video_role: 'intro',
               beats: { 'beat_x': { speaker: 'Tessa', text: 'x' } },
               display_order: ['beat_x'],
             },
@@ -251,17 +249,17 @@ test.describe('Track A residual #4 — BgTab delete-beat modal wiring', () => {
 
     const deleteReqs: Request[] = [];
     page.on('request', (req) => {
-      if (req.method() !== 'POST') return;
-      const body = req.postData() || '';
-      if (body.includes('bg_delete_beat')) deleteReqs.push(req);
-    });
-    await page.route(/\/api\/.*pathapp.*/, async (r) => {
-      const body = r.request().postData() || '';
-      if (body.includes('bg_delete_beat')) {
-        await r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
-      } else {
-        await r.continue();
+      // [CONFIRMED against src/api/endpoints.ts L124] pathappPatch routes
+      // bg_delete_beat via POST /api/bg/delete-beat (not /pathapp/<op>).
+      // Capture by URL — body only carries { beat_id, scope_* } keys,
+      // not the operation name.
+      if (req.method() === 'POST' && req.url().includes('/api/bg/delete-beat')) {
+        deleteReqs.push(req);
       }
+    });
+    // [CONFIRMED against src/api/endpoints.ts L124] actual URL is /api/bg/delete-beat.
+    await page.route('**/api/bg/delete-beat', async (r) => {
+      await r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
     });
 
     await gotoApp(page);

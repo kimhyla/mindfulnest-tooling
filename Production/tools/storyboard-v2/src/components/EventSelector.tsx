@@ -6,8 +6,7 @@
 
 import { useEffect, useState } from 'preact/hooks';
 import { activeScope, activeProjectType, makeScope, scopeKey } from '../state/scope';
-import { apiGet, emitScopeEventChanged } from '../api/client';
-import { MUTATION_ENDPOINTS } from '../api/endpoints';
+import { apiGet, emitScopeEventChanged, loadEvent } from '../api/client';
 
 interface EventListItem {
   event_id: string;
@@ -56,18 +55,21 @@ export function EventSelector() {
     setLoading(true);
     setErr(null);
     try {
-      const res = await fetch(MUTATION_ENDPOINTS.event_load, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ event_id: newEventId }),
-      });
-      if (!res.ok) {
-        const txt = await res.text().catch(() => '');
-        setErr(`HTTP ${res.status}: ${txt.slice(0, 100)}`);
+      // Wave 3 (blocker #52 F-S2-004): use the loadEvent client helper instead
+      // of a raw fetch — gets centralized error handling, scope-mismatch retry,
+      // and consistent shape with the rest of the mutation channel.
+      const result = await loadEvent(newEventId);
+      if (!result.ok) {
+        setErr(`HTTP ${result.status}: ${(result.error ?? '').slice(0, 100)}`);
         target.value = current;
         return;
       }
-      const data = (await res.json()) as { event_id: string; event_generation: number };
+      const data = result.data;
+      if (!data) {
+        setErr('event_load returned no data');
+        target.value = current;
+        return;
+      }
       setCurrent(data.event_id);
       activeScope.value = makeScope(data.event_id, null, data.event_generation);
       activeProjectType.value = 'event';

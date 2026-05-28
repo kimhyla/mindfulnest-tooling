@@ -104,15 +104,21 @@ class MotionPromptCoreTests(unittest.TestCase):
         self.assertIn(ps.DEFAULT_ACTION, p)
 
     def test_07_invalid_emotion_falls_back_to_neutral(self) -> None:
-        """Invalid emotion string logs warning, falls back to neutral."""
+        """Unknown emotion is promoted to a freeform-action override (not
+        a hard 'unknown emotion' rejection). Per Kim 2026-05-19: silent
+        promotion is the intended behavior — the test was asserting an
+        older error-log shape. Verify the new log shape AND the resulting
+        prompt is still well-formed."""
         beat = {"speaker": "Tessa", "emotion": "bonkers", "lipsync_targeted": True}
         buf = io.StringIO()
         with redirect_stdout(buf):
             p = ps.build_motion_prompt(beat)
         out = buf.getvalue()
-        self.assertIn("unknown emotion", out)
-        self.assertIn("falling back to 'neutral'", out)
-        self.assertIn(ps.SPEAKER_MOTION_PROFILES["Tessa"]["neutral"], p)
+        # New log message documents the promotion, not an unknown-emotion error.
+        self.assertIn("freeform emotion", out)
+        self.assertIn("bonkers", out)
+        # Prompt is well-formed (contains lipsync-safe tail since lipsync_targeted=True).
+        self.assertTrue(p.endswith(ps.LIPSYNC_SAFE_TAIL))
 
     def test_08_missing_lipsync_targeted_defaults_true(self) -> None:
         """Missing lipsync_targeted defaults True (Event_1 default per LD-180)."""

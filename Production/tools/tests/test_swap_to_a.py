@@ -95,11 +95,19 @@ def _make_event_fixture(tmp: Path, *, beats: dict | None = None) -> tuple[Path, 
                 "_version": 3,
             },
         }
+    # P5 migration (2026-05-19): legacy state["videos"]["intro"]["beats"] shape no longer valid
+    # under LD-461 video_role validator. Move beats into videos.intro.beats
+    # so scope_target_video=intro routes through the v3 partition path.
     state.write_text(json.dumps({
         "event_id": "Event_SWAPTEST",
-        "beats": beats,
-        "display_order": list(beats.keys()),
-        "image_overrides": {},
+        "version": 3,
+        "videos": {
+            "intro": {
+                "beats": beats,
+                "display_order": list(beats.keys()),
+                "image_overrides": {},
+            },
+        },
     }, indent=2))
     return event_dir, storyboard, "Event_SWAPTEST"
 
@@ -125,6 +133,15 @@ def _start_server(event_dir: Path, storyboard: Path, event_id: str, port: int):
 
 
 def _http_post(port: int, path: str, body: dict, timeout: float = 10.0):
+    # LD-461 SCOPE_BODY_HELPER_V1: v59 mutation endpoints require
+    # scope_event_id + scope_target_video in body. Tests pre-dating LD-461
+    # omitted them. Inject the fixture defaults unless the test explicitly
+    # sets them (P5.2 2026-05-19). Fixture uses legacy v2 state shape
+    # (state["videos"]["intro"]["beats"] top-level), so scope_target_video=legacy routes the
+    # mutation through the StateManager._mutate_lipsync legacy branch.
+    body = dict(body)
+    body.setdefault("scope_event_id", "Event_SWAPTEST")
+    body.setdefault("scope_target_video", "intro")
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}{path}", data=data,
@@ -181,7 +198,7 @@ class TestSwapToA(unittest.TestCase):
         self.assertEqual(resp["to_slot"], 1)
 
         state = self.app.state.read_state()
-        opts = state["beats"]["beat_01"]["phase_1"]["options"]
+        opts = state["videos"]["intro"]["beats"]["beat_01"]["phase_1"]["options"]
         # Slot 0 (A) now holds what used to be in slot 1 (B).
         self.assertEqual(opts[0]["file"], "beat_01_option_2.mp4")
         self.assertEqual(opts[0]["task_id"], "task_B")
@@ -206,7 +223,7 @@ class TestSwapToA(unittest.TestCase):
         self.assertEqual(status, 200, resp)
         self.assertEqual(resp["new_selected_option"], 1)
         state = self.app.state.read_state()
-        self.assertEqual(state["beats"]["beat_01"]["phase_1"]["selected_option"], 1)
+        self.assertEqual(state["videos"]["intro"]["beats"]["beat_01"]["phase_1"]["selected_option"], 1)
 
         # Case B: setup fresh with selected=1, swap from_slot=3 => selected becomes 3.
         self.tearDown()
@@ -230,7 +247,7 @@ class TestSwapToA(unittest.TestCase):
         self.assertEqual(status, 200, resp)
         self.assertEqual(resp["new_selected_option"], 3)
         state = self.app.state.read_state()
-        self.assertEqual(state["beats"]["beat_01"]["phase_1"]["selected_option"], 3)
+        self.assertEqual(state["videos"]["intro"]["beats"]["beat_01"]["phase_1"]["selected_option"], 3)
 
     def test_swap_preserves_unrelated_selected_option(self):
         # selected=3, swap from_slot=2 => selected should remain 3.
@@ -264,7 +281,7 @@ class TestSwapToA(unittest.TestCase):
         self.assertEqual(status, 200, resp)
         self.assertEqual(resp["new_source_option"], 1)
         state = self.app.state.read_state()
-        self.assertEqual(state["beats"]["beat_01"]["lipsync"]["source_option"], 1)
+        self.assertEqual(state["videos"]["intro"]["beats"]["beat_01"]["lipsync"]["source_option"], 1)
 
     # ------------------------------------------------------------------
     # 4. swap from slot C works same as slot B
@@ -275,7 +292,7 @@ class TestSwapToA(unittest.TestCase):
         self.assertEqual(status, 200, resp)
         self.assertEqual(resp["from_slot"], 3)
         state = self.app.state.read_state()
-        opts = state["beats"]["beat_01"]["phase_1"]["options"]
+        opts = state["videos"]["intro"]["beats"]["beat_01"]["phase_1"]["options"]
         # Slot 0 (A) now holds old slot 2 (C).
         self.assertEqual(opts[0]["file"], "beat_01_option_3.mp4")
         self.assertEqual(opts[0]["task_id"], "task_C")
@@ -322,7 +339,7 @@ class TestSwapToA(unittest.TestCase):
         self.assertEqual(resp["new_selected_option"], 1)
         self.assertEqual(resp["new_source_option"], 1)
         state = self.app.state.read_state()
-        opts = state["beats"]["beat_01"]["phase_1"]["options"]
+        opts = state["videos"]["intro"]["beats"]["beat_01"]["phase_1"]["options"]
         self.assertEqual(opts[0]["file"], "beat_01_option_4.mp4")
         self.assertEqual(opts[0]["task_id"], "task_D")
         self.assertEqual(opts[3]["file"], "beat_01_option_1.mp4")
@@ -447,7 +464,7 @@ class TestSwapToA(unittest.TestCase):
                                   {"from_slot": 2})
         self.assertEqual(status, 200, resp)
         state = self.app.state.read_state()
-        ls = state["beats"]["beat_01"]["lipsync"]
+        ls = state["videos"]["intro"]["beats"]["beat_01"]["lipsync"]
         self.assertFalse(ls["source_changed"], "source_changed should be cleared after swap")
         self.assertFalse(ls["audio_changed"], "audio_changed should be cleared after swap")
         # source_option should have moved from 2 -> 1.

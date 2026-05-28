@@ -168,12 +168,16 @@ test.describe('Track B — LD testid smoke coverage', () => {
     await expect(page.locator('[data-testid="beat-0-still-hold-input"]')).toBeVisible();
   });
 
-  test('LD-787 — trim-in + trim-out', async ({ page }) => {
+  test('LD-787 — trim-front + trim-back (LD-756 naming: seconds-from-front + seconds-from-end)', async ({ page }) => {
+    // Source implementation uses beat-{index}-trim-front / beat-{index}-trim-back
+    // per LD-756 "seconds-from-front + seconds-from-end" naming convention
+    // (StoryboardTab.tsx L1595/L1606). The LD-787 spec was written with
+    // trim-in/trim-out aliases that don't exist in the implementation.
     await mockBootstrap(page);
     await stubMedia(page);
     await gotoStoryboard(page);
-    await expect(page.locator('[data-testid="beat-0-trim-in"]')).toBeVisible();
-    await expect(page.locator('[data-testid="beat-0-trim-out"]')).toBeVisible();
+    await expect(page.locator('[data-testid="beat-0-trim-front"]')).toBeVisible();
+    await expect(page.locator('[data-testid="beat-0-trim-back"]')).toBeVisible();
   });
 
   test('LD-792 — guardedClick buttons present (smoke)', async ({ page }) => {

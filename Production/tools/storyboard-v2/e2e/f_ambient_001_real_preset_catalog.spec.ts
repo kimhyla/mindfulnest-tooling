@@ -81,9 +81,9 @@ async function gotoApp(page: Page): Promise<void> {
 async function openPhaseB(page: Page): Promise<void> {
   await page.click('[data-testid="tab-phase-b"]');
   await expect(page.locator('[data-testid="pane-phase-b"]')).toBeVisible();
-  const summary = page.locator('[data-testid="phase-producer-b"] > summary');
-  await expect(summary).toBeVisible();
-  await summary.click();
+  // PhaseProducer is always-open (collapse removed 2026-05-25, commit b6ac706).
+  // No summary/details expansion needed — full content is immediately visible.
+  await expect(page.locator('[data-testid="phase-producer-b"]')).toBeVisible();
 }
 
 /**

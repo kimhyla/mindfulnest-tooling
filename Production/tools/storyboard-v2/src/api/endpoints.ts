@@ -18,7 +18,9 @@ export const READ_ENDPOINTS = {
   bg_state: `${SERVER_BASE}/api/bg/session-state`,
   bg_session_state: `${SERVER_BASE}/api/bg/session-state`,
   bg_segments: `${SERVER_BASE}/api/bg/segments`,
-  patch_health: `${SERVER_BASE}/api/patch_health`,
+  // patch_health removed from READ_ENDPOINTS 2026-05-19 (P4): server route
+  // is POST-only (CLAUDE.md Rule 36 §36.3 healthcheck violation reporter).
+  // Moved to MUTATION_ENDPOINTS below. Audit C4-9.
   // S3 v3.1
   event_list: `${SERVER_BASE}/api/event/list`,
   phase_watercolor_list: `${SERVER_BASE}/api/phase/watercolor_list`,
@@ -43,6 +45,7 @@ export const READ_ENDPOINTS = {
   lipsync_status: `${SERVER_BASE}/api/lipsync/status`,
   stitch_editor_jobs: `${SERVER_BASE}/api/stitch_editor/jobs`,
   stitch_editor_job: `${SERVER_BASE}/api/stitch_editor/job/{job_name}`,
+  stitch_editor_beat_boundaries: `${SERVER_BASE}/api/stitch_editor/beat_boundaries`,
 } as const;
 
 // MUTATION endpoints — Session 1 ships ZERO callers of these; they exist
@@ -68,7 +71,11 @@ export const MUTATION_ENDPOINTS = {
   inject_image: `${SERVER_BASE}/api/inject-image`,
   cr_save_crop: `${SERVER_BASE}/api/cr/save-crop`,
   cr_library_delete: `${SERVER_BASE}/api/cr/library/delete`,
-  v2_sidecar_write: `${SERVER_BASE}/api/v2/sidecar`,
+  // v2_sidecar_write removed 2026-05-19 (P4): declared with no server
+  // handler, zero callers in the v2 client — latent landmine (audit C3-3).
+  // patch_health moved here from READ_ENDPOINTS 2026-05-19 (P4): POST-only
+  // per CLAUDE.md Rule 36 §36.3 client healthcheck-violation reporter.
+  patch_health: `${SERVER_BASE}/api/patch_health`,
   // Session 1.5 NEW endpoint — state snapshot before every v59 write (M1)
   state_snapshot: `${SERVER_BASE}/api/state/snapshot`,
   // Session 1.5 v3.1 NEW endpoint — atomic event swap + generation bump (LD-458)
@@ -78,6 +85,7 @@ export const MUTATION_ENDPOINTS = {
   // S3 v3.1 — phase + animate + stitcher mutations.
   phase_suggest_script: `${SERVER_BASE}/api/phase/suggest_script`,
   watercolor_animate: `${SERVER_BASE}/api/watercolor/animate`,
+  phase_watercolor_delete: `${SERVER_BASE}/api/phase/watercolor_delete`,
   stitch_loudnorm: `${SERVER_BASE}/api/stitch_editor/loudnorm`,
   // V59 architectural-fix Wave 1 (F-S2-001) — StitcherTab Preview/Bake
   // routed via pathappPatch. stitch_save_job already exists below.
@@ -126,14 +134,21 @@ export const MUTATION_ENDPOINTS = {
   animate_redo: `${SERVER_BASE}/api/animate/redo`,
   select: `${SERVER_BASE}/api/select`,
   beat_add_options: `${SERVER_BASE}/api/beat/add_options`,
+  // T1-Phase 2 + 3 (spec MAGIC_AND_ENDFRAME_FIXES_20260520_v1, LD-814):
+  // end-frame iteration endpoints. Kim previews/uploads end frame BEFORE
+  // Regen B+C; Regen B+C then REFUSES without an approved end_frame_path.
+  beat_preview_end_frame: `${SERVER_BASE}/api/beat/preview_end_frame`,
+  beat_upload_end_frame: `${SERVER_BASE}/api/beat/upload_end_frame`,
   beat_swap_to_a: `${SERVER_BASE}/api/beat/swap_to_a`,
   lipsync: `${SERVER_BASE}/api/lipsync`,
+  lipsync_idle: `${SERVER_BASE}/api/lipsync_idle`,
   beat_use_as_final: `${SERVER_BASE}/api/beat/use_as_final`,
   // LD-761 STILL_AS_FINAL_FEATURE_SPEC_V1: Ken Burns rendered MP4 as final source.
   beat_use_still_as_final: `${SERVER_BASE}/api/beat/use_still_as_final`,
   beat_undo_final: `${SERVER_BASE}/api/beat/undo_final`,
   beat_delay: `${SERVER_BASE}/api/beat/delay`,
   beat_trim: `${SERVER_BASE}/api/beat/trim`,
+  beat_zoom: `${SERVER_BASE}/api/beat/zoom`,
   // Authoring-workflow Pillar 7 cornerstone (C-7) — canonical beat-recovery
   // primitive. COPY default; move=true for cross-event/role moves. Per
   // LD BEAT_GRAFT_RECOVERY_MECHANISM_V1: pre-render-only invariant

@@ -190,6 +190,12 @@ test.describe('S1 — beat lifecycle state machine', () => {
       text: 'Final beat.',
       audio_file: 'audio/beat_lc_01.mp3',
       phase_1: { selected_option: 1, options: [{ file: 'animations/opt1.mp4' }] },
+      // lipsync.file must be present so StoryboardTab renders "Resend Lipsync"
+      // (not "Send for Lipsync"). The code at StoryboardTab.tsx:1320 checks
+      // beat.lipsync?.file to decide the button label. A beat whose final.source
+      // is 'lipsync' will have a lipsync.file in production; the fixture must
+      // mirror this to exercise the correct code path.
+      lipsync: { file: 'lipsync/beat_lc_01_output.mp4', status: 'completed' },
       final: {
         source: 'lipsync',
         source_option: 1,

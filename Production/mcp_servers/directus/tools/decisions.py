@@ -126,6 +126,10 @@ def register(mcp: Any) -> None:
         if marker_regex:
             payload["marker_regex"] = True
 
+        # LD-760: sanitize XML-leak tokens BEFORE fabrication gate + write.
+        from tools.sanitize import sanitize_payload  # noqa: PLC0415 — late import to avoid cycle
+        payload = sanitize_payload(payload, field_prefix="prod_locked_decisions")
+
         # LD-783: same gate as lib/directus.try_post_or_queue (not on PATCH path).
         try:
             payload = verify_ld_marker_or_raise(payload)

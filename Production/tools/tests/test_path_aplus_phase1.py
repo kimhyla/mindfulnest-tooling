@@ -46,12 +46,18 @@ def _make_app_and_state(tmp_path: Path):
     state_mgr = PS.StateManager(event_dir, "M1E1_TEST")
 
     # Seed the beat_99_test fixture
+    # P5 migration (2026-05-19): v3 partition shape + display_order so the
+    # DISPLAY_ORDER_STRICT_V2 prune in mutate_state doesn't delete the seeded beat.
     def seed(state):
-        state.setdefault("beats", {})["beat_99_test"] = {
+        partition = state.setdefault("videos", {}).setdefault("intro", {})
+        partition.setdefault("beats", {})["beat_99_test"] = {
             "text": "original text",
             "phase_1": {"selected_option": 1, "trim_start": 0.0},
             "_version": 3,
         }
+        do = partition.setdefault("display_order", [])
+        if "beat_99_test" not in do:
+            do.append("beat_99_test")
         return True
     state_mgr.mutate_state(seed)
 
@@ -102,7 +108,7 @@ class TestPathAPlusPhase1(unittest.TestCase):
         self.assertEqual(r["new_version"], 4)
         # Confirm on disk
         fresh = self.app.state.read_state()
-        beat = fresh["beats"]["beat_99_test"]
+        beat = fresh["videos"]["intro"]["beats"]["beat_99_test"]
         self.assertEqual(beat["phase_1"]["selected_option"], 2)
         self.assertEqual(beat["_version"], 4)
 
@@ -121,7 +127,7 @@ class TestPathAPlusPhase1(unittest.TestCase):
         self.assertEqual(r["expected"], 999)
         # State unchanged
         fresh = self.app.state.read_state()
-        self.assertEqual(fresh["beats"]["beat_99_test"]["phase_1"]["selected_option"], 1)
+        self.assertEqual(fresh["videos"]["intro"]["beats"]["beat_99_test"]["phase_1"]["selected_option"], 1)
 
     # ------------------------------------------------------------------
     # Test 3 — mutation_id idempotency (replay returns cached)
@@ -145,7 +151,7 @@ class TestPathAPlusPhase1(unittest.TestCase):
         self.assertTrue(r2.get("cached"))
         # State still has value=2 (from r1), NOT 99
         fresh = self.app.state.read_state()
-        self.assertEqual(fresh["beats"]["beat_99_test"]["phase_1"]["selected_option"], 2)
+        self.assertEqual(fresh["videos"]["intro"]["beats"]["beat_99_test"]["phase_1"]["selected_option"], 2)
 
     # ------------------------------------------------------------------
     # Test 4 — MINDFULNEST_WRITE_PATH=legacy disables v2 path
@@ -162,7 +168,7 @@ class TestPathAPlusPhase1(unittest.TestCase):
         self.assertIn("legacy", r["error"])
         # State UNCHANGED
         fresh = self.app.state.read_state()
-        self.assertEqual(fresh["beats"]["beat_99_test"]["phase_1"]["selected_option"], 1)
+        self.assertEqual(fresh["videos"]["intro"]["beats"]["beat_99_test"]["phase_1"]["selected_option"], 1)
 
     # ------------------------------------------------------------------
     # Test 5 — sidecar JSON is written on mutation
@@ -207,8 +213,10 @@ class TestPathAPlusPhase1(unittest.TestCase):
         )
         self.assertEqual(r["status"], "applied")
         fresh = self.app.state.read_state()
+        # P5 (2026-05-19): image_overrides nested under videos.intro per
+        # IMAGE_OVERRIDES_NESTED_BY_ROLE_V1 (S5.5a2). Was top-level pre-v3.
         self.assertEqual(
-            fresh["image_overrides"]["beat_99_test"],
+            fresh["videos"]["intro"]["image_overrides"]["beat_99_test"],
             "tessa_closeup_4x3",
         )
         # Sidecar should also surface it as "i" key
@@ -229,7 +237,7 @@ class TestPathAPlusPhase1(unittest.TestCase):
         )
         self.assertEqual(r["status"], "applied")
         fresh = self.app.state.read_state()
-        self.assertEqual(fresh["beats"]["beat_99_test"]["phase_1"]["selected_option"], 3)
+        self.assertEqual(fresh["videos"]["intro"]["beats"]["beat_99_test"]["phase_1"]["selected_option"], 3)
 
     # ------------------------------------------------------------------
     # Test 9 — dialogue field type rejection (non-str)

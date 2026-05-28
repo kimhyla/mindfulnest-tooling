@@ -152,7 +152,21 @@ def load_api_keys() -> dict:
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)  # type: ignore
     # parse_api_keys overlays Doppler env (OPENAI_API_KEY, BFL_API_KEY, …) over file.
-    keys = mod.parse_api_keys(PROD_ROOT / "API_KEYS_MASTER.md")
+    # LD-505 (2026-05-20 Bug-1 fix): API_KEYS_MASTER.md is DATA, lives in
+    # the Dropbox runtime tree, NOT in the tooling tree (.gitignored,
+    # Dropbox-only). PROD_ROOT here is tooling/Production/ because
+    # __file__ points at the .py source. Use lib.paths.API_KEYS_MASTER_PATH
+    # (same canonical resolver production_server.py:11741 uses). Bug
+    # surfaced when Kim clicked Regen B+C: 'No such file or directory:
+    # tooling-tree/Production/API_KEYS_MASTER.md' → opt2/opt3 never submitted.
+    if str(HERE.parent.parent) not in sys.path:
+        sys.path.insert(0, str(HERE.parent.parent))
+    try:
+        from lib.paths import API_KEYS_MASTER_PATH  # type: ignore
+        keys = mod.parse_api_keys(API_KEYS_MASTER_PATH)
+    except ImportError:
+        # Fallback: legacy tooling-tree path (will fail loud under LD-505).
+        keys = mod.parse_api_keys(PROD_ROOT / "API_KEYS_MASTER.md")
     # Explicit Doppler-first for end-frame vendors (LD-754 / MN_END_FRAME_VENDOR).
     openai_env = (os.environ.get("OPENAI_API_KEY") or "").strip()
     if openai_env:
@@ -162,8 +176,13 @@ def load_api_keys() -> dict:
         keys["bfl"] = bfl_env
     elif not keys.get("bfl"):
         # BFL file fallback when env unset (legacy direct-invoke path).
+        # LD-505: resolve to Dropbox tree (same fix as above).
         import re
-        content = (PROD_ROOT / "API_KEYS_MASTER.md").read_text(encoding="utf-8")
+        try:
+            from lib.paths import API_KEYS_MASTER_PATH as _AKM
+        except ImportError:
+            _AKM = PROD_ROOT / "API_KEYS_MASTER.md"
+        content = _AKM.read_text(encoding="utf-8")
         m = re.search(
             r"\|\s*\*+(?:Flux|BFL|Black\s*Forest)[^|]*\*+[^|]*\|\s*`([^`]+)`",
             content, re.IGNORECASE,
@@ -411,6 +430,18 @@ def openai_image_edit_generate_end_frame(
         _field("model", "gpt-image-1"),
         _field("prompt", end_prompt),
         _field("quality", "high"),
+        # input_fidelity:high preserves accessories + character details from the
+        # input image (LD-730 + LD-pending BG_MORPH_FIX_V1, ref_doc 231). Without
+        # this, gpt-image-1 re-stages the body composition and silently drops
+        # removable accessories (glasses, backpack, necklace) — same regression
+        # class that LD-730 fixed for FLUX → OpenAI swap, but the
+        # input_fidelity carryover from LD-439 still-gen was missed in the
+        # initial implementation. beat_generator.py:1251 uses it for the
+        # Responses-API still-gen path; this is the matching /v1/images/edits
+        # multipart-form equivalent. [INFERRED — verify against OpenAI docs
+        # https://platform.openai.com/docs/api-reference/images/createEdit;
+        # at write time the parameter is documented as multipart field].
+        _field("input_fidelity", "high"),
         _field("size", size_param),
         _field("n", "1"),
         (

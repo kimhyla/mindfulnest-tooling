@@ -182,12 +182,14 @@ class MagicCompositor:
         parent_asset_id: int = None,
         tags: list = None,
         scene_key: str = None,
+        path_authored_against: dict = None,
     ):
         if style not in STYLES:
             raise ValueError(f"Unknown style '{style}'. Available: {list(STYLES)}")
 
         self.bg_path  = background_path
         self.path_pts = path_pts
+        self.path_pts = self._aspect_correct(self.path_pts, path_authored_against)
         self.style    = style
         self.s        = STYLES[style]
         self.duration = duration
@@ -222,6 +224,19 @@ class MagicCompositor:
 
         print(f"Loading background: {os.path.basename(background_path)}", flush=True)
         self.bg_img = Image.open(background_path).convert("RGB")
+        _orig_w, _orig_h = self.bg_img.size
+        # libx264 in yuv420p (the default for codec="h264") requires both
+        # width AND height to be EVEN — chroma subsampling math. Odd-dim
+        # inputs explode with avcodec_open2("libx264", {}) ExternalError 542398533.
+        # Crop 1 px off the right/bottom if needed; visually imperceptible
+        # vs the alternative (silent black-square preview from a 500 error).
+        # Failure mode observed 2026-05-20 on still_3_body_stone_glow_v9.png (1677x938)
+        # and on 22 of 36 generator crops.
+        if _orig_w % 2 or _orig_h % 2:
+            _new_w = _orig_w - (_orig_w % 2)
+            _new_h = _orig_h - (_orig_h % 2)
+            self.bg_img = self.bg_img.crop((0, 0, _new_w, _new_h))
+            print(f"  cropped odd dims {_orig_w}x{_orig_h} -> {_new_w}x{_new_h} (libx264 even-dim requirement)", flush=True)
         self.W, self.H = self.bg_img.size
         print(f"  {self.W}x{self.H}", flush=True)
 
@@ -439,6 +454,29 @@ class MagicCompositor:
                   p[i][1]*(1-t)+p[i+1][1]*t) for i in range(len(p)-1)]
         return p[0]
 
+    def _aspect_correct(self, path_pts, authored):
+        """Correct path_pts if authored against different aspect ratio than compositor canvas."""
+        if not authored or "width" not in authored or "height" not in authored:
+            return path_pts
+        pw, ph = float(authored.get("width", 0)), float(authored.get("height", 0))
+        if pw <= 0 or ph <= 0:
+            return path_pts
+        src_ar = pw / ph
+        dst_ar = self.W / self.H
+        if abs(src_ar - dst_ar) <= 0.01:
+            return path_pts
+        corrected = []
+        for (fx, fy) in path_pts:
+            if src_ar > dst_ar:
+                scale = dst_ar / src_ar
+                fy = (fy - 0.5) * scale + 0.5
+            else:
+                scale = src_ar / dst_ar
+                fx = (fx - 0.5) * scale + 0.5
+            corrected.append((fx, fy))
+        print(f"  [aspect_correct] authored {pw:.0f}x{ph:.0f} (ar={src_ar:.3f}) -> compositor {self.W}x{self.H} (ar={dst_ar:.3f}): corrected {len(corrected)} pts", flush=True)
+        return corrected
+
     def _path_width(self, y_frac: float) -> int:
         y_near = max(p[1] for p in self.path_pts)
         y_far  = min(p[1] for p in self.path_pts)
@@ -508,7 +546,16 @@ def render_magic(scene_key: str, bg_still: str = None, preview_only: bool = Fals
         print(result["preview_path"])
     """
     import yaml as _yaml
-    reg_path = _Path(__file__).parent / "scene_registry.yaml"
+    # LD-505 Phase C: anchor scene_registry.yaml on the runtime DROPBOX_ROOT
+    # via lib/paths (env-aware: MN_DROPBOX_ROOT first, then platform default).
+    # Was `_Path(__file__).parent / ...` which resolved to the tooling tree.
+    # CODE tree — finding Production/lib/paths.py (sibling Python module).
+    import sys as _sys, os as _os
+    _lib_parent = _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", ".."))
+    if _lib_parent not in _sys.path:
+        _sys.path.insert(0, _lib_parent)
+    from Production.lib.paths import DROPBOX_ROOT as _DR
+    reg_path = _DR / "Production" / "tools" / "scene_registry.yaml"
     registry = _yaml.safe_load(reg_path.read_text()) or {}
     scene = registry.get(scene_key)
     if scene is None:

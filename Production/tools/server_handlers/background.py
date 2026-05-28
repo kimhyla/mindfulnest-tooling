@@ -45,11 +45,19 @@ from tools.production_server import (  # noqa: E402
 )
 
 # V59 Phase 4 path-depth correction: extracted modules are one level
-# deeper than production_server.py. These constants map original
-# `_PSERVER_TOOLS_DIR[.parent]*` targets correctly.
+# deeper than production_server.py. _PSERVER_TOOLS_DIR is for CODE-tree
+# lookups (sibling Python modules, sys.path inserts). NOT used for data
+# paths — those come from _data_root(h) per LD-505 Phase C (2026-05-19).
 _PSERVER_TOOLS_DIR = Path(__file__).resolve().parent.parent  # Production/tools/
-_PSERVER_PRODUCTION_DIR = _PSERVER_TOOLS_DIR.parent  # Production/
-_PSERVER_REPO_ROOT = _PSERVER_PRODUCTION_DIR.parent  # repo root
+
+
+def _data_root(h) -> Path:
+    """Runtime ``Production/`` root, anchored on the running server's event_dir.
+
+    Replaces the LD-505-broken `_PSERVER_PRODUCTION_DIR = Path(__file__)...`
+    which resolved to the (empty) tooling tree. Audit C1-1 / C1-2 / C1-7.
+    """
+    return Path(h.app.event_dir).parent
 
 
 # Project-internal modules imported the same way production_server.py does.
@@ -95,9 +103,15 @@ from tools.production_server import (  # noqa: E402
 
 def serve_magic_picker(h)-> None:
 
-    """Serve path_picker.html for the /magic route."""
+    """Serve path_picker.html for the /magic route.
+
+    Bug fix 2026-05-19: path_picker.html lives at Production/tools/path_picker.html
+    (NOT Production/path_picker.html). The original constant after the Phase 4
+    handler split was wrong — _PSERVER_PRODUCTION_DIR points to Production/ but
+    the file is one level deeper at Production/tools/. Use _PSERVER_TOOLS_DIR.
+    """
     import urllib.parse as _up
-    picker = _PSERVER_PRODUCTION_DIR / "path_picker.html"
+    picker = _PSERVER_TOOLS_DIR / "path_picker.html"
     if not picker.exists():
         return h._send_error_v59(
                    404,
@@ -129,14 +143,18 @@ def handle_magic_resolve_bg(h)-> None:
                    retry_safe=False,
                    extra={"ok": False},
                )
-    reg_path = _PSERVER_PRODUCTION_DIR / "scene_registry.yaml"
+    # Canonical location is Production/tools/scene_registry.yaml per
+    # VISIBLE_MAGIC_TECH_SPEC_v1.md + magic_compositor.py:520 — NOT
+    # Production/scene_registry.yaml. _data_root(h) is event_dir.parent =
+    # Production/, so the subdir 'tools' is required.
+    reg_path = _data_root(h) / "tools" / "scene_registry.yaml"
     if not reg_path.exists():
         return h._send_error_v59(
                    404,
                    error_code="SCENE_REGISTRY_YAML_NOT_FOUND",
                    error_message="scene_registry.yaml not found",
                    retry_safe=False,
-                   extra={"ok": False},
+                   extra={"ok": False, "expected_path": str(reg_path)},
                )
     registry = _yaml.safe_load(reg_path.read_text()) or {}
     scene = registry.get(scene_key, {})
@@ -211,7 +229,7 @@ def handle_magic_submit_path(h, body: dict)-> None:
     _pin = {
         "pinned_generation": h.app.event_generation,
         "pinned_event_dir": h.app.event_dir,
-        "pinned_video_role": (body or {}).get("scope_video_role", "intro"),
+        "pinned_video_role": (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video"),
         "_handler": '_handle_magic_submit_path',
     }
     # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — pre-work pin check (S2).
@@ -312,7 +330,9 @@ def handle_magic_submit_path(h, body: dict)-> None:
             # ── Step 1: Write to scene_registry.yaml ──────────────
             _MAGIC_JOBS[job_id].update({"status": "writing_registry",
                                         "message": "Saving path to scene registry..."})
-            reg_path = _PSERVER_PRODUCTION_DIR / "scene_registry.yaml"
+            # Canonical location is Production/tools/scene_registry.yaml
+            # (see VISIBLE_MAGIC_TECH_SPEC_v1.md + magic_compositor.py:520).
+            reg_path = _data_root(h) / "tools" / "scene_registry.yaml"
             bak_path = reg_path.with_suffix(f".yaml.bak_magic_{int(time.time())}")
             shutil.copy2(reg_path, bak_path)
 
@@ -400,9 +420,17 @@ def handle_magic_submit_path(h, body: dict)-> None:
 
             # ── Step 3: Render preview still ──────────────────────
             _MAGIC_JOBS[job_id].update({"message": "Rendering preview still (final frame)..."})
-            sys.path.insert(0, str(_PSERVER_PRODUCTION_DIR))
+            # magic_compositor lives at Production/tools/magic_compositor.py
+            # (CODE tree). Use _PSERVER_TOOLS_DIR to be explicit about
+            # code-vs-data intent per LD-505 Phase C lint guard.
+            sys.path.insert(0, str(_PSERVER_TOOLS_DIR))
             from magic_compositor import MagicCompositor
-            out_dir = db / "Production" / "Event_1" / "kling_clips"
+            # LD-505 Phase C anchor — derive kling_clips dir from the scene's
+            # event_id (resolved above from scene_registry.yaml), not the
+            # legacy hardcoded "Event_1". Same idiom as event_dir on line 387.
+            # [CONFIRMED against this function: event_id is set on line 386
+            # from reg2 scene metadata; event_dir already uses this pattern.]
+            out_dir = db / "Production" / f"Event_{event_id.replace('e','')}" / "kling_clips"
             out_dir.mkdir(parents=True, exist_ok=True)
             path_pts_tuples = [tuple(pt) for pt in path_pts_clean]
             mc = MagicCompositor(
@@ -511,12 +539,17 @@ def handle_magic_submit_path(h, body: dict)-> None:
 
 def handle_magic_still(h, body: dict)-> None:
 
-    """POST /api/storyboard/magic_still {beat_id, manual_path, source_image_path, scope_event_id}
+    """POST /api/storyboard/magic_still {beat_id, manual_path, source_image_path, scope_event_id, scope_video_role}
 
     Per LD-468 MAGIC_TRAIL_ON_STILL_V1. Invokes magic_compositor with the
     still as background; renders animated mp4 of magic forming on the
     still.
     """
+    # Bug-A3 (spec §2 Topic-2, 2026-05-20): scope_video_role REQUIRED. The
+    # previous default-to-'intro' silently wrote magic_still_path to the wrong
+    # partition (Kim hit this on resolution beat_01 — magic_still_path landed
+    # on videos.intro.beats.beat_01 instead). _assert_event_scope's default
+    # allow_missing_video_role=False already returns 400 VIDEO_ROLE_REQUIRED.
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
         return
     beat_id = (body or {}).get("beat_id")
@@ -594,10 +627,14 @@ def handle_magic_still(h, body: dict)-> None:
                )
 
     # LD-460 pin
+    # Bug-A3 (spec §2 Topic-2, 2026-05-20): NO 'intro' default — _assert_event_scope
+    # at line 548 already enforced presence of scope_video_role; if we get here
+    # without it, something has gone deeply wrong upstream and we surface it
+    # (rather than silently writing to wrong partition).
     _pin = {
         "pinned_generation": h.app.event_generation,
         "pinned_event_dir": h.app.event_dir,
-        "pinned_video_role": (body or {}).get("scope_video_role", "intro"),
+        "pinned_video_role": (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video"),
         "_handler": "_handle_magic_still",
     }
     if not h._check_event_pin(_pin, "magic_still_pre_work"):
@@ -613,6 +650,24 @@ def handle_magic_still(h, body: dict)-> None:
     out_dir = h.app.event_dir
     out_path = out_dir / f"magic_still_{beat_id}_{ts}.mp4"
 
+    # Dynamic duration: ensure magic_still video covers audio + 2.5s tail so
+    # the still holds on screen after speech ends (Kim 2026-05-27).
+    # Fallback to 4.0s when audio_duration_s is unknown.
+    _MAGIC_STILL_TAIL_S = 2.5
+    _magic_audio_dur = 0.0
+    try:
+        _video_role = (body or {}).get("scope_video_role") or "intro"
+        _st = h.app.state.read_state()
+        _beat_st = (((_st.get("videos") or {}).get(_video_role) or {})
+                    .get("beats", {}).get(beat_id) or {})
+        _magic_audio_dur = float(_beat_st.get("audio_duration_s") or 0)
+    except Exception:
+        pass
+    magic_still_duration = (
+        max(4.0, _magic_audio_dur + _MAGIC_STILL_TAIL_S)
+        if _magic_audio_dur > 0 else 4.0
+    )
+
     try:
         tools_dir = str(_PSERVER_TOOLS_DIR)
         if tools_dir not in sys.path:
@@ -622,7 +677,7 @@ def handle_magic_still(h, body: dict)-> None:
             background_path=safe_sip,
             path_pts=clean_path,
             style="tessa_ori",
-            duration=4.0,
+            duration=magic_still_duration,
             fps=24,
             output_dir=str(out_dir),
             label=f"magic_still_{beat_id}_{ts}",
@@ -672,6 +727,7 @@ def handle_magic_still(h, body: dict)-> None:
     # the client UI can render the "has magic" indicator + serve the
     # composite on next page load. Idempotent — re-rendering overwrites.
     magic_filename = Path(rendered).name
+    scope = None  # captured below for Bug-A4 read-back verify
     try:
         scope = scope_router.resolve(body, h.app.event_dir.name)
 
@@ -682,13 +738,67 @@ def handle_magic_still(h, body: dict)-> None:
 
         scope_router.mutate_partition(h.app.state, scope, _set_magic_still)
     except Exception as exc:
+        # Bug-A4 (spec §2 Topic-2, 2026-05-20): this swallow-all is the bug we
+        # fixed Kim's wrong-partition issue on top of — but we keep it here so
+        # the existing pattern's lenience is preserved. The read-back verify
+        # BELOW lives OUTSIDE this try/except so it CANNOT be swallowed.
         print(f"[magic_still] WARN state writeback failed: {exc}", flush=True)
+
+    # Bug-A4 (spec §2 Topic-2): DS-22 read-back verify — re-read state and
+    # confirm the magic_still_path landed at the expected partition. If not,
+    # return 500 STATE_WRITEBACK_VERIFY_FAILED (NOT silent 200). Lives OUTSIDE
+    # the swallow-all try/except above so exceptions propagate.
+    # Cursor R-final 2026-05-20 fix: if scope is None (resolve failed up there),
+    # treat as STATE_WRITEBACK_VERIFY_FAILED — we CANNOT confirm writeback
+    # succeeded, so the only safe response is 500 (NOT 200 with null partition).
+    partition_written: str | None = None
+    if scope is None:
+        return h._send_error_v59(
+                   500,
+                   error_code="STATE_WRITEBACK_VERIFY_FAILED",
+                   error_message="scope_router.resolve failed before mutate_partition; cannot verify writeback",
+                   retry_safe=True,
+                   extra={"hint": "Check server log [magic_still] WARN state writeback failed message."},
+               )
+    try:
+        _state_after = h.app.state.read_state()
+        _video_role_written = getattr(scope, "video_role", None)
+        if _video_role_written:
+            _beat_after = (((_state_after.get("videos") or {}).get(_video_role_written) or {})
+                          .get("beats") or {}).get(beat_id) or {}
+            if _beat_after.get("magic_still_path") == magic_filename:
+                partition_written = _video_role_written
+                print(f"[magic_still] state writeback verified: videos.{_video_role_written}.beats.{beat_id}.magic_still_path={magic_filename}", flush=True)
+            else:
+                print(f"[magic_still] STATE_WRITEBACK_VERIFY_FAILED: expected videos.{_video_role_written}.beats.{beat_id}.magic_still_path={magic_filename!r}, got {_beat_after.get('magic_still_path')!r}", flush=True)
+                return h._send_error_v59(
+                           500,
+                           error_code="STATE_WRITEBACK_VERIFY_FAILED",
+                           error_message="magic_still_path was not persisted at the expected partition",
+                           retry_safe=True,
+                           extra={
+                               "expected_partition": _video_role_written,
+                               "expected_beat_id": beat_id,
+                               "expected_magic_still_path": magic_filename,
+                               "got_magic_still_path": _beat_after.get("magic_still_path"),
+                           },
+                       )
+    except Exception as exc:  # noqa: BLE001
+        # Verify itself crashed — surface loud rather than 200 silently.
+        print(f"[magic_still] STATE_WRITEBACK_VERIFY_CRASHED: {type(exc).__name__}: {exc}", flush=True)
+        return h._send_error_v59(
+                   500,
+                   error_code="STATE_WRITEBACK_VERIFY_FAILED",
+                   error_message=f"state writeback verify crashed: {type(exc).__name__}: {exc}",
+                   retry_safe=True,
+               )
 
     return h._send_json(200, {
         "ok": True,
         "beat_id": beat_id,
         "composite_path": str(rendered),
         "magic_still_path": magic_filename,
+        "partition_written": partition_written,
         "asset_id": registered_id,
         "manual_path_points": len(clean_path),
     })
@@ -696,18 +806,21 @@ def handle_magic_still(h, body: dict)-> None:
 
 def handle_magic_video(h, body: dict)-> None:
 
-    """POST /api/storyboard/magic_video {beat_id, manual_path, source_video_path, scope_event_id}
+    """POST /api/storyboard/magic_video {beat_id, manual_path, source_video_path, scope_event_id, scope_video_role}
 
     Per LD-469 MAGIC_TRAIL_ON_VIDEO_V1. Generates magic-on-black via
     magic_compositor.render_video(black_bg=True), then ffmpeg overlays
     onto the source video via blend=mode=screen (black pixels become
     transparent in screen blend; magic pixels shine through additively).
     """
+    # Bug-A3 (spec §2 Topic-2, 2026-05-20): scope_video_role REQUIRED.
+    # _assert_event_scope default allow_missing_video_role=False enforces 400 on missing.
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
         return
     beat_id = (body or {}).get("beat_id")
     manual_path = (body or {}).get("manual_path") or []
     source_video_path_raw = (body or {}).get("source_video_path") or ""
+    path_authored_against = (body or {}).get("path_authored_against") or None
     if not beat_id:
         return h._send_error_v59(
                    400,
@@ -822,10 +935,13 @@ def handle_magic_video(h, body: dict)-> None:
                )
 
     # LD-460 pin
+    # Bug-A3 (spec §2 Topic-2, 2026-05-20): NO 'intro' default — handle_magic_video
+    # also requires scope_video_role explicit at the route boundary (same bug
+    # class as magic_still).
     _pin = {
         "pinned_generation": h.app.event_generation,
         "pinned_event_dir": h.app.event_dir,
-        "pinned_video_role": (body or {}).get("scope_video_role", "intro"),
+        "pinned_video_role": (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video"),
         "_handler": "_handle_magic_video",
     }
     if not h._check_event_pin(_pin, "magic_video_pre_work"):
@@ -839,16 +955,19 @@ def handle_magic_video(h, body: dict)-> None:
 
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_dir = h.app.event_dir
-    magic_only_path = out_dir / f"_tmp_magic_only_{beat_id}_{ts}.mp4"
+    # NOTE: magic_only_path is no longer written to disk — compositing is done
+    # entirely in Python/numpy to avoid ffmpeg yuv420p blend color corruption
+    # (ffmpeg blend=screen on YUV chroma channels Cb/Cr produces magenta artifacts
+    # because neutral black has Cb=128,Cr=128 in YUV, not 0,0 as screen blend assumes).
     out_path = out_dir / f"magic_video_{beat_id}_{ts}.mp4"
 
-    # Step 1: generate magic-on-black via magic_compositor.
-    # We need a reference image of the right dimensions; since
-    # MagicCompositor requires a background_path, write a tiny black PNG
-    # of (width, height) first.
+    # Step 1: build MagicCompositor (no render to disk).
+    # We still need a black PNG ref so MagicCompositor can read image dimensions.
     try:
         from PIL import Image as _PILImage
-        black_ref = out_dir / f"_tmp_black_ref_{beat_id}_{ts}.png"
+        import numpy as _np_mv  # avoid clobbering outer np imports
+        _req_id = _stdlib_uuid.uuid4().hex[:8]
+        black_ref = out_dir / f"_tmp_black_ref_{beat_id}_{ts}_{_req_id}.png"
         _PILImage.new("RGB", (width, height), (0, 0, 0)).save(black_ref)
     except Exception as exc:
         return h._send_error_v59(
@@ -858,6 +977,7 @@ def handle_magic_video(h, body: dict)-> None:
                    retry_safe=True,
                )
 
+    mc = None
     try:
         tools_dir = str(_PSERVER_TOOLS_DIR)
         if tools_dir not in sys.path:
@@ -873,14 +993,15 @@ def handle_magic_video(h, body: dict)-> None:
             label=f"magic_only_{beat_id}_{ts}",
             beat_id=beat_id,
             tags=["magic", "magic_video", "tessa_ori"],
+            path_authored_against=path_authored_against,
         )
-        mc.render_video(output_path=str(magic_only_path), black_bg=True)
+        # DO NOT call mc.render_video() — we composite directly in Step 2.
     except Exception as exc:
         traceback.print_exc()
         return h._send_error_v59(
                    500,
                    error_code="GENERIC_ERROR",
-                   error_message=f"magic_compositor (black_bg) failed: {type(exc).__name__}: {exc}",
+                   error_message=f"magic_compositor init failed: {type(exc).__name__}: {exc}",
                    retry_safe=True,
                )
     finally:
@@ -889,41 +1010,206 @@ def handle_magic_video(h, body: dict)-> None:
         except Exception:
             pass
 
-    # Step 2: ffmpeg overlay via blend=screen.
-    cmd = [
-        "ffmpeg", "-y",
+    # Step 2: Python-numpy additive composite piped to ffmpeg for h264 encoding.
+    #
+    # Root cause of the old ffmpeg blend=screen approach: ffmpeg blend operates on
+    # raw YUV pixel values.  A black background in RGB is Y=16, Cb=128, Cr=128 in
+    # YUV (limited range).  screen(Cb_amber=99, Cb_black=128) = 177 instead of 99,
+    # shifting chroma dramatically and producing magenta output.  Converting to
+    # format=rgb24 in the filter graph does NOT fix this — the decode path still
+    # applies YUV→RGB colour matrix internally.  The fix: decode lipsync to raw
+    # RGB24 via a pipe, composite in Python numpy (correct RGB maths), encode back
+    # via a second ffmpeg pipe that handles audio copy.
+    #
+    # INVARIANTS:
+    #   - decode_proc reads safe_ffmpeg_src → raw RGB24 bytes on stdout
+    #   - encode_proc reads raw RGB24 on stdin → h264 yuv420p + audio from lipsync
+    #   - mc._make_trail(frame_idx) returns float32 (H,W,3) trail in [0,255]
+    #   - additive blend: clip(bg + trail, 0, 255).astype(uint8)
+    frame_size = width * height * 3  # bytes per RGB24 frame
+
+    mc_n_frames = mc.n_frames  # set by MagicCompositor.__init__ from duration*fps
+
+    decode_cmd = [
+        "ffmpeg",
         "-i", safe_ffmpeg_src,
-        "-i", str(magic_only_path.resolve()),
-        "-filter_complex", "[0:v][1:v]blend=all_mode=screen[out]",
-        "-map", "[out]",
-        "-map", "0:a?",
+        # fps=24 normalises source frame-rate to exactly match encode_cmd's -r 24.
+        # Without this, a 25fps source produces floor(duration*25)=172 frames while
+        # encode_cmd's -t duration @ 24fps only consumes floor(duration*24)=165 frames,
+        # causing encode_proc to close stdin early and raising BrokenPipeError on
+        # the 166th encode_proc.stdin.write() call.
+        #
+        # VFR safety (cursor review finding — HIGH severity): fps=24 alone is not
+        # sufficient for variable-framerate sources (Kling / ByteDance LipSync outputs
+        # are often VFR). The fps filter with VFR input can over- or under-count frames
+        # relative to the -t boundary. Adding -frames:v as a hard frame-count cap
+        # guarantees the decode side emits exactly floor(duration*24) frames regardless
+        # of source framerate type (CFR or VFR), eliminating residual BrokenPipeError
+        # risk on VFR inputs.
+        "-vf", f"scale={width}:{height},fps=24,format=rgb24",
+        "-f", "rawvideo", "-pix_fmt", "rgb24",
+        "-vcodec", "rawvideo",
+        "-an",                              # no audio in decode stream
+        "-t", str(min(vid_duration, 10.0)),
+        "-frames:v", str(int(min(vid_duration, 10.0) * 24)),  # hard cap: exact frame count
+        "pipe:1",
+    ]
+    encode_cmd = [
+        "ffmpeg", "-y",
+        "-f", "rawvideo", "-vcodec", "rawvideo",
+        "-s", f"{width}x{height}", "-r", "24", "-pix_fmt", "rgb24",
+        "-i", "pipe:0",                     # composited RGB frames on stdin
+        "-i", safe_ffmpeg_src,              # original source for audio
+        "-map", "0:v",
+        "-map", "1:a?",
         "-c:v", "libx264", "-pix_fmt", "yuv420p",
         "-c:a", "copy",
         "-t", str(min(vid_duration, 10.0)),
         str(out_path),
     ]
+    decode_proc = None
+    encode_proc = None
     try:
-        subprocess.run(cmd, check=True, capture_output=True, timeout=300)
+        decode_proc = subprocess.Popen(
+            decode_cmd,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        encode_proc = subprocess.Popen(
+            encode_cmd,
+            stdin=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+
+        frame_idx = 0
+        while True:
+            raw = decode_proc.stdout.read(frame_size)
+            if len(raw) < frame_size:
+                break
+            bg_arr = _np_mv.frombuffer(raw, dtype=_np_mv.uint8).reshape(height, width, 3).astype(_np_mv.float32)
+
+            # Map lipsync frame_idx → magic compositor frame (same fps+duration, so 1:1)
+            mc_frame_idx = min(frame_idx, mc_n_frames - 1)
+            trail = mc._make_trail(mc_frame_idx)
+
+            # Additive blend (tessa_ori style = "additive"; black background pixels
+            # have trail≈0, sparkle pixels add brightness — never darkens).
+            result = _np_mv.clip(bg_arr + trail, 0, 255).astype(_np_mv.uint8)
+            encode_proc.stdin.write(result.tobytes())
+            frame_idx += 1
+
+        # Drain + wait for both processes.
+        # IMPORTANT (Python 3.12): Do NOT explicitly close encode_proc.stdin before
+        # calling communicate(). communicate() internally calls self.stdin.flush() then
+        # self.stdin.close() (subprocess.py:2067). If stdin is already closed, flush()
+        # raises ValueError: flush of closed file. Let communicate() own the close.
+        decode_proc.stdout.close()
+        _, decode_stderr = decode_proc.communicate(timeout=60)
+        _, encode_stderr = encode_proc.communicate(timeout=300)
+
+        if decode_proc.returncode not in (0, None):
+            print(f"[magic_video] decode stderr: {decode_stderr.decode('utf-8', errors='replace')[-500:]}", flush=True)
+            raise subprocess.CalledProcessError(decode_proc.returncode, decode_cmd, stderr=decode_stderr)
+        if encode_proc.returncode not in (0, None):
+            raise subprocess.CalledProcessError(encode_proc.returncode, encode_cmd, stderr=encode_stderr)
+
+        print(f"[magic_video] composite OK: {frame_idx} frames, out={out_path.name}", flush=True)
+
+    except BrokenPipeError:
+        # encode_proc closed its stdin (exited after its -t limit).
+        # This normally means the fps=24 normalisation above wasn't in place OR
+        # decode produced a few extra frames past the encode window.
+        # IMPORTANT: encode_proc may have already written a complete valid MP4.
+        # Try to recover by waiting for encode_proc to exit and checking the file.
+        traceback.print_exc()
+        enc_stderr_broken = b""
+        if encode_proc is not None:
+            try:
+                encode_proc.stdin.close()
+            except Exception:
+                pass
+            try:
+                # Do NOT call communicate() here — stdin was just explicitly closed,
+                # so communicate()'s internal flush() would raise ValueError (Python 3.12).
+                # Use wait() + stderr.read() instead.
+                #
+                # Deadlock fix (cursor review finding — MEDIUM severity): if wait()
+                # raises TimeoutExpired and the broad except swallows it, stderr.read()
+                # then blocks forever (process still running, pipe write-end still open).
+                # Fix: catch TimeoutExpired specifically, kill the process, then read.
+                try:
+                    encode_proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    encode_proc.kill()
+                    encode_proc.wait()  # reap after kill (no timeout needed — SIGKILL is unconditional)
+                enc_stderr_broken = encode_proc.stderr.read() if encode_proc.stderr else b""
+            except Exception:
+                pass
+        file_ok = out_path.exists() and out_path.stat().st_size > 1024
+        if file_ok:
+            print(
+                f"[magic_video] BrokenPipeError after {frame_idx} frames but "
+                f"out_path exists ({out_path.stat().st_size} bytes) — treating as success.",
+                flush=True,
+            )
+            # Fall through to normal success path (post-except block).
+            # We need to let the finally block run, then continue. Use a flag.
+        else:
+            return h._send_error_v59(
+                       500,
+                       error_code="ENCODE_EXITED_EARLY",
+                       error_message=(
+                           f"encode_proc exited after {frame_idx} frames "
+                           f"(fps mismatch? source fps != 24fps). "
+                           f"Check fps=24 filter in decode_cmd."
+                       ),
+                       retry_safe=True,
+                       extra={
+                           "encode_stderr": enc_stderr_broken.decode("utf-8", errors="replace")[-500:],
+                           "frames_written": frame_idx,
+                       },
+                   )
     except subprocess.CalledProcessError as exc:
         return h._send_error_v59(
                    500,
                    error_code="FFMPEG_BLEND_FAILED",
-                   error_message="ffmpeg blend failed",
+                   error_message="magic_video composite+encode failed",
                    retry_safe=True,
-                   extra={"stderr": exc.stderr.decode("utf-8", errors="replace")[-1000:]},
+                   extra={"stderr": (exc.stderr or b"").decode("utf-8", errors="replace")[-1000:]},
                )
     except subprocess.TimeoutExpired:
         return h._send_error_v59(
                    504,
                    error_code="FFMPEG_BLEND_TIMED_OUT",
-                   error_message="ffmpeg blend timed out (>300s)",
+                   error_message="magic_video composite+encode timed out (>300s)",
                    retry_safe=True,
                )
+    except Exception as exc:
+        traceback.print_exc()
+        # Read encode_proc stderr to diagnose why it may have exited early.
+        enc_stderr_generic = b""
+        if encode_proc is not None and encode_proc.returncode is not None:
+            try:
+                enc_stderr_generic = encode_proc.stderr.read()
+            except Exception:
+                pass
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"magic_video composite failed: {type(exc).__name__}: {exc}",
+                   retry_safe=True,
+                   extra={
+                       "encode_stderr_snippet": enc_stderr_generic.decode("utf-8", errors="replace")[-500:] if enc_stderr_generic else "",
+                   },
+               )
     finally:
-        try:
-            magic_only_path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        # Kill subprocesses if still running (e.g. early-return paths above)
+        for proc in (decode_proc, encode_proc):
+            if proc is not None:
+                try:
+                    if proc.returncode is None:
+                        proc.kill()
+                        proc.wait()
+                except Exception:
+                    pass
 
     if not h._check_event_pin(_pin, "magic_video_terminal"):
         return h._send_error_v59(
@@ -959,6 +1245,7 @@ def handle_magic_video(h, body: dict)-> None:
     # MAG-1 fix: write magic_video_path back into state.beats[beat_id].
     # Same pattern as magic_still — see _handle_magic_still for rationale.
     magic_filename = Path(out_path).name
+    scope = None  # captured below for Bug-A4 read-back verify
     try:
         scope = scope_router.resolve(body, h.app.event_dir.name)
 
@@ -969,18 +1256,113 @@ def handle_magic_video(h, body: dict)-> None:
 
         scope_router.mutate_partition(h.app.state, scope, _set_magic_video)
     except Exception as exc:
+        # Bug-A4 (spec §2 Topic-2): swallow-all preserved here for legacy
+        # lenience; verify BELOW is OUTSIDE this try/except so it propagates.
         print(f"[magic_video] WARN state writeback failed: {exc}", flush=True)
+
+    # Bug-A4 (spec §2 Topic-2, 2026-05-20): DS-22 read-back verify — mirror of
+    # the magic_still path above. Returns 500 STATE_WRITEBACK_VERIFY_FAILED
+    # if partition mismatch detected OR if scope_router.resolve failed up there
+    # (cursor R-final 2026-05-20 — can't claim writeback ok if we never even
+    # resolved scope).
+    partition_written: str | None = None
+    if scope is None:
+        return h._send_error_v59(
+                   500,
+                   error_code="STATE_WRITEBACK_VERIFY_FAILED",
+                   error_message="scope_router.resolve failed before mutate_partition; cannot verify writeback",
+                   retry_safe=True,
+                   extra={"hint": "Check server log [magic_video] WARN state writeback failed message."},
+               )
+    try:
+        _state_after = h.app.state.read_state()
+        _video_role_written = getattr(scope, "video_role", None)
+        if _video_role_written:
+            _beat_after = (((_state_after.get("videos") or {}).get(_video_role_written) or {})
+                          .get("beats") or {}).get(beat_id) or {}
+            if _beat_after.get("magic_video_path") == magic_filename:
+                partition_written = _video_role_written
+                print(f"[magic_video] state writeback verified: videos.{_video_role_written}.beats.{beat_id}.magic_video_path={magic_filename}", flush=True)
+            else:
+                print(f"[magic_video] STATE_WRITEBACK_VERIFY_FAILED: expected videos.{_video_role_written}.beats.{beat_id}.magic_video_path={magic_filename!r}, got {_beat_after.get('magic_video_path')!r}", flush=True)
+                return h._send_error_v59(
+                           500,
+                           error_code="STATE_WRITEBACK_VERIFY_FAILED",
+                           error_message="magic_video_path was not persisted at the expected partition",
+                           retry_safe=True,
+                           extra={
+                               "expected_partition": _video_role_written,
+                               "expected_beat_id": beat_id,
+                               "expected_magic_video_path": magic_filename,
+                               "got_magic_video_path": _beat_after.get("magic_video_path"),
+                           },
+                       )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[magic_video] STATE_WRITEBACK_VERIFY_CRASHED: {type(exc).__name__}: {exc}", flush=True)
+        return h._send_error_v59(
+                   500,
+                   error_code="STATE_WRITEBACK_VERIFY_FAILED",
+                   error_message=f"state writeback verify crashed: {type(exc).__name__}: {exc}",
+                   retry_safe=True,
+               )
 
     return h._send_json(200, {
         "ok": True,
         "beat_id": beat_id,
         "composite_path": str(out_path),
         "magic_video_path": magic_filename,
+        "partition_written": partition_written,
         "asset_id": registered_id,
         "source_dims": [width, height],
         "duration_s": vid_duration,
         "manual_path_points": len(clean_path),
     })
+
+
+def handle_storyboard_video_frame(h, query: dict) -> None:
+    """GET /api/storyboard/video_frame?path=<encoded>&t=0
+    Returns PNG bytes of frame at time t of the given video using server-side ffmpeg.
+    """
+    import subprocess as _sp
+    raw_path = query.get("path", "")
+    if isinstance(raw_path, list):
+        raw_path = raw_path[0] if raw_path else ""
+    if not raw_path:
+        return h._send_error_v59(400, error_code="PATH_REQUIRED",
+                                 error_message="path required", retry_safe=False)
+    p = Path(raw_path)
+    if not p.is_absolute():
+        p = Path(h.app.event_dir).parent.parent / raw_path
+    safe = os.path.realpath(str(p))
+    project_root = os.path.realpath(str(Path(h.app.event_dir).parent.parent))
+    if not safe.startswith(project_root):
+        return h._send_error_v59(403, error_code="PATH_OUT_OF_ROOT",
+                                 error_message="path outside project root", retry_safe=False)
+    t_raw = query.get("t", "0")
+    if isinstance(t_raw, list):
+        t_raw = t_raw[0] if t_raw else "0"
+    try:
+        t = float(t_raw or 0)
+    except (ValueError, TypeError):
+        t = 0.0
+    cmd = ["ffmpeg", "-y", "-ss", str(t), "-i", safe,
+           "-vframes", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1"]
+    try:
+        result = _sp.run(cmd, capture_output=True, timeout=10, check=False)
+        if result.returncode != 0 or not result.stdout:
+            return h._send_error_v59(500, error_code="FFMPEG_FRAME_EXTRACT_FAILED",
+                                     error_message=result.stderr.decode('utf-8', errors='replace')[-500:],
+                                     retry_safe=True)
+        h.send_response(200)
+        h.send_header("Content-Type", "image/png")
+        h.send_header("Content-Length", str(len(result.stdout)))
+        h.send_header("Cache-Control", "no-store")
+        h.end_headers()
+        h.wfile.write(result.stdout)
+    except _sp.TimeoutExpired:
+        return h._send_error_v59(504, error_code="FFMPEG_FRAME_EXTRACT_TIMEOUT",
+                                 error_message="ffmpeg timed out extracting frame",
+                                 retry_safe=True)
 
 
 def handle_bg_crop_preview(h)-> None:
@@ -1076,6 +1458,10 @@ def handle_bg_session_state(h)-> None:
     scope_phase = _q("scope_phase")  # may be None — derived from video role
 
     bg = _bg_module()
+    # Normalize: storyboard sends "Event_1" (scope format); sidecar keys use "1" (numeric).
+    # Strip the "Event_" prefix so get_seg_entry looks up "event_1_post" not "event_Event_1_post".
+    if scope_event_id is not None:
+        scope_event_id = bg.normalize_bg_event_id(scope_event_id)
     with bg._sidecar_lock:
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
@@ -1514,6 +1900,9 @@ def handle_bg_reorder_beats(h, body: dict)-> None:
         scope_event_id = body.get("scope_event_id")
         if scope_event_id is None:
             scope_event_id = body.get("event_id")
+        # Normalize: storyboard sends "Event_1" (scope format); sidecar keys use "1" (numeric).
+        if scope_event_id is not None:
+            scope_event_id = bg.normalize_bg_event_id(scope_event_id)
         scope_arc_raw = body.get("scope_arc_number")
         if scope_arc_raw is None:
             scope_arc_raw = body.get("arc_number")
@@ -1825,7 +2214,7 @@ def handle_bg_submit_flux(h, body: dict)-> None:
     _pin = {
         "pinned_generation": h.app.event_generation,
         "pinned_event_dir": h.app.event_dir,
-        "pinned_video_role": (body or {}).get("scope_video_role", "intro"),
+        "pinned_video_role": (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video"),
         "_handler": '_handle_bg_submit_flux',
     }
 
@@ -1890,7 +2279,7 @@ def handle_bg_submit_gpt_batch(h, body: dict)-> None:
     _pin = {
         "pinned_generation": h.app.event_generation,
         "pinned_event_dir": h.app.event_dir,
-        "pinned_video_role": (body or {}).get("scope_video_role", "intro"),
+        "pinned_video_role": (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video"),
         "_handler": '_handle_bg_submit_gpt_batch',
     }
     # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — pre-work pin check (S2).
@@ -2117,26 +2506,34 @@ def handle_bg_accept_lib_image(h, body: dict)-> None:
             print(f"[LIBDROP] thumbnail skipped for {abs_path!r}: {_thumb_err}", flush=True)
             thumb_b64 = None
 
+        # ALWAYS write to gpt_options[slot_index] — even when thumb_b64 is None.
+        # Previously this was inside `if thumb_b64:`, which meant that when
+        # thumbnail generation failed (bad abs_path, PIL unavailable, path-safety
+        # check failed), gpt_options was never updated. The client's optimistic
+        # onPatchOptionTile state would then be overwritten by the follow-up
+        # refreshState() GET, causing the slot to revert to "(empty)" even though
+        # the toast said "Option N set". Fix: always write the entry; thumb_b64
+        # is an optional field on the option_entry dict.
+        opts = beat.get("gpt_options") or []
+        option_entry: dict = {
+            "key": key,
+            "source": "library_drop",
+            "local_path": abs_path,
+            "filename": filename,
+        }
         if thumb_b64:
-            opts = beat.get("gpt_options") or []
-            option_entry = {
-                "key": key,
-                "thumb_b64": thumb_b64,
-                "source": "library_drop",
-                "local_path": abs_path,
-                "filename": filename,
-            }
-            if slot_index < len(opts) and isinstance(opts[slot_index], dict):
-                opts[slot_index].update(option_entry)
+            option_entry["thumb_b64"] = thumb_b64
+        if slot_index < len(opts) and isinstance(opts[slot_index], dict):
+            opts[slot_index].update(option_entry)
+        else:
+            # Pad with None up to slot_index, then place the entry.
+            while len(opts) < slot_index:
+                opts.append(None)
+            if slot_index < len(opts):
+                opts[slot_index] = option_entry
             else:
-                # Pad with None up to slot_index, then place the entry.
-                while len(opts) < slot_index:
-                    opts.append(None)
-                if slot_index < len(opts):
-                    opts[slot_index] = option_entry
-                else:
-                    opts.append(option_entry)
-            beat["gpt_options"] = opts
+                opts.append(option_entry)
+        beat["gpt_options"] = opts
 
         bg.write_sidecar(sidecar)
     print(f"[LIBDROP] accepted library image {key!r} -> beat {beat_id} (thumb={'yes' if thumb_b64 else 'no'})", flush=True)
@@ -2415,7 +2812,7 @@ def handle_bg_assemble_group(h, body: dict)-> None:
     _pin = {
         "pinned_generation": h.app.event_generation,
         "pinned_event_dir": h.app.event_dir,
-        "pinned_video_role": (body or {}).get("scope_video_role", "intro"),
+        "pinned_video_role": (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video"),
         "_handler": '_handle_bg_assemble_group',
     }
     # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — pre-work pin check (S2).
@@ -2531,7 +2928,7 @@ def handle_bg_run_local_animation(h, body: dict)-> None:
     _pin = {
         "pinned_generation": h.app.event_generation,
         "pinned_event_dir": h.app.event_dir,
-        "pinned_video_role": (body or {}).get("scope_video_role", "intro"),
+        "pinned_video_role": (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video"),
         "_handler": '_handle_bg_run_local_animation',
     }
     # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — pre-work pin check (S2).
@@ -2910,6 +3307,20 @@ def handle_animate(h, body: dict)-> None:
     # video_role resolved by scope_router; image override lookup is
     # partition-aware via the get_beat_image(_, video_role) helper.
     video_role = scope.video_role
+
+    # Read state snapshot once for per-beat end_frame_path lookups.
+    # When a beat has an approved end frame on disk, the first Animate uses
+    # kling_startend_submit (start+end) instead of legacy single-image Kling,
+    # matching what Regen B+C does (Rule 8.3 §8.3 universal default).
+    try:
+        _animate_full_state = h.app.state.read_state()
+    except Exception:
+        _animate_full_state = {}
+    _animate_state_beats: dict = (
+        ((_animate_full_state.get("videos") or {}).get(video_role) or {}).get("beats") or {}
+    )
+    _animate_end_frames_dir = h.app.event_dir / "end_frames"
+
     for beat in beats:
         beat_id = h._beat_id(beat.get("line_number", -1))
         # Check image overrides first (from drag-drop), then storyboard
@@ -2947,6 +3358,24 @@ def handle_animate(h, body: dict)-> None:
         print(f"[animate] {beat_id} duration={beat_duration}s reason={duration_reason}")
 
         # Initialize beat state via partition router (was videos.intro hardcode).
+        # Blocker #146 (LD-pending LIPSYNC_INVALIDATE_ON_REGEN_V1): also clear
+        # any prior `beat.lipsync` state AND unlink the on-disk
+        # {beat_id}_lipsync.mp4 file. Stale lipsync MP4 from a prior regen
+        # cycle creates a "partial-lipsync perception bug" (#147) — the
+        # beat looks lipsynced even though state.lipsync is null and the
+        # video has just been regenerated. Cleanup is best-effort on the
+        # disk file (file may not exist; unlink races with concurrent
+        # readers are tolerated since the next lipsync will overwrite).
+        prior_lipsync_file = h.app.event_dir / "animation_clips" / f"{beat_id}_lipsync.mp4"
+        prior_lipsync_existed = False
+        try:
+            if prior_lipsync_file.is_file():
+                prior_lipsync_existed = True
+                prior_lipsync_file.unlink()
+                print(f"[animate] {beat_id}: unlinked stale lipsync {prior_lipsync_file.name}")
+        except OSError as exc:  # noqa: BLE001
+            print(f"[animate] {beat_id}: lipsync unlink warning (non-fatal): {exc}")
+
         def init_beat_partition(partition, _beat_id=beat_id, _beat=beat):
             pbeats = partition.setdefault("beats", {})
             pbeats.setdefault(_beat_id, {
@@ -2960,21 +3389,132 @@ def handle_animate(h, body: dict)-> None:
                 "options": [],
                 "selected_option": None,
             }
+            # Clear lipsync state (Blocker #146) — paired with the disk
+            # unlink above. Setting to None rather than deleting the key so
+            # downstream code can still distinguish "explicitly cleared" from
+            # "never existed".
+            if "lipsync" in pbeats[_beat_id]:
+                pbeats[_beat_id]["lipsync"] = None
         h.app.state.mutate_video_state(scope.video_role, init_beat_partition)
+
+        # Best-effort Directus audit log of the invalidation. Fire-and-forget.
+        if prior_lipsync_existed:
+            try:
+                from lib.directus import try_post_or_queue as _tpq
+                _tpq("prod_activity_log", {
+                    "action": "lipsync_invalidated_on_regen",
+                    "performed_by": "handle_animate",
+                    "details": {
+                        "event_id": h.app.event_id,
+                        "beat_id": beat_id,
+                        "video_role": scope.video_role,
+                        "removed_file": str(prior_lipsync_file),
+                    },
+                })
+            except Exception as exc:  # noqa: BLE001
+                print(f"[animate] {beat_id}: lipsync_invalidated_on_regen audit failed (non-fatal): {exc}")
+
+        # Check if this beat has an approved end_frame_path on disk.
+        # If yes, route through kling_startend_submit (Rule 8.3) so the first
+        # Animate click honours Kim's chosen second image, same as Regen B+C.
+        _state_beat = _animate_state_beats.get(beat_id) or {}
+        _end_frame_path = _state_beat.get("end_frame_path")
+        _end_frame_disk = _animate_end_frames_dir / _end_frame_path if _end_frame_path else None
+        _use_startend = bool(
+            _end_frame_path and _end_frame_disk and _end_frame_disk.is_file()
+        )
+        if _use_startend:
+            print(f"[animate] {beat_id}: end_frame found ({_end_frame_path}) → start-end pipeline")
+        else:
+            print(f"[animate] {beat_id}: no end_frame → legacy single-image Kling")
 
         # Submit options_per_beat jobs, staggered
         for opt_idx in range(options_per_beat):
-            try:
-                task_id = h.app.client.submit_animation(
-                    image, prompt, duration=beat_duration,
-                )
-            except Exception as exc:  # noqa: BLE001
-                print(f"[ERR] submit failed for {beat_id} opt{opt_idx + 1}: {exc}")
-                skipped.append({"beat": beat_id, "opt": opt_idx + 1, "reason": str(exc)})
-                continue
+            if _use_startend:
+                # ── Start-end path (Rule 8.3) ──────────────────────────────
+                # Uses the pre-approved end_frame PNG from disk + kling_startend_submit,
+                # identical to _handle_add_options_startend.
+                try:
+                    from kling_startend_pipeline import kling_startend_submit as _ks_submit  # type: ignore
+                    from tools.production_server import (  # type: ignore
+                        RULE8_ANTI_LIPSYNC,
+                        SPEAKER_MOTION_PROFILES,
+                        VALID_EMOTIONS,
+                        LIPSYNC_SAFE_TAIL,
+                        BIRD_SPEAKERS,
+                        SECTION_ACTIONS,
+                        DEFAULT_ACTION,
+                        _load_subject_element,
+                    )
+                    # Build start URI — normalize to PNG (WebP from crop-lib would fail WaveSpeed)
+                    _start_hdr, _start_b64 = image.split(",", 1)
+                    _start_bytes = base64.b64decode(_start_b64)
+                    if "image/png" not in _start_hdr:
+                        from PIL import Image as _PilImg  # type: ignore
+                        _pbuf = io.BytesIO()
+                        _PilImg.open(io.BytesIO(_start_bytes)).save(_pbuf, format="PNG")
+                        _start_bytes = _pbuf.getvalue()
+                    start_uri = (
+                        f"data:image/png;base64,{base64.b64encode(_start_bytes).decode('ascii')}"
+                    )
+                    # Build end URI from approved disk PNG
+                    _end_bytes = _end_frame_disk.read_bytes()  # type: ignore[union-attr]
+                    end_uri = (
+                        f"data:image/png;base64,{base64.b64encode(_end_bytes).decode('ascii')}"
+                    )
+                    # Build motion prompt (mirrors _handle_add_options_startend logic)
+                    _canonical = _canonicalize_speaker(beat.get("speaker", "") or "")
+                    _in_birds = _canonical in BIRD_SPEAKERS
+                    _cstr = (
+                        "Beak closed, no speech, no lip movement."
+                        if _in_birds else "Mouth closed, no speech."
+                    )
+                    _hdr_p = f"Cartoon {_canonical} character" if _canonical else "Cartoon character"
+                    _emotion = beat.get("emotion", "neutral") or "neutral"
+                    if _emotion not in VALID_EMOTIONS:
+                        _emotion = "neutral"
+                    _profile = SPEAKER_MOTION_PROFILES.get(_canonical)
+                    if _profile:
+                        _action = _profile.get(_emotion) or _profile["neutral"]
+                    else:
+                        _action = SECTION_ACTIONS.get(beat.get("section", "") or "", DEFAULT_ACTION)
+                    _se_prompt = sanitize_prompt(
+                        f"{_hdr_p}, {_action}, natural interpolation between start and end frames."
+                        f" {_cstr} {LIPSYNC_SAFE_TAIL}"
+                    )
+                    _elem = _load_subject_element(_canonical)
+                    task_id = _ks_submit(
+                        start_b64_uri=start_uri,
+                        end_b64_uri=end_uri,
+                        prompt=_se_prompt,
+                        negative_prompt=RULE8_ANTI_LIPSYNC,
+                        duration=beat_duration,
+                        api_key=h.app.client.api_key,
+                        element_entry=_elem,
+                    )
+                    _source_tag = "kling_startend"
+                    print(
+                        f"[animate] {beat_id} opt{opt_idx + 1}: start-end submitted "
+                        f"task_id={task_id} end_frame={_end_frame_path}"
+                    )
+                except (SystemExit, Exception) as exc:  # noqa: BLE001
+                    print(f"[ERR] animate start-end failed for {beat_id} opt{opt_idx + 1}: {exc}")
+                    skipped.append({"beat": beat_id, "opt": opt_idx + 1, "reason": f"start-end: {exc}"})
+                    continue
+            else:
+                # ── Legacy single-image path ───────────────────────────────
+                try:
+                    task_id = h.app.client.submit_animation(
+                        image, prompt, duration=beat_duration,
+                    )
+                    _source_tag = "kling"
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[ERR] submit failed for {beat_id} opt{opt_idx + 1}: {exc}")
+                    skipped.append({"beat": beat_id, "opt": opt_idx + 1, "reason": str(exc)})
+                    continue
 
             # Append option via partition router (was videos.intro hardcode).
-            def add_option_partition(partition, _bid=beat_id, _tid=task_id):
+            def add_option_partition(partition, _bid=beat_id, _tid=task_id, _src=_source_tag):
                 pbeats = partition.setdefault("beats", {})
                 pbeats[_bid]["phase_1"]["options"].append({
                     "task_id": _tid,
@@ -2982,7 +3522,7 @@ def handle_animate(h, body: dict)-> None:
                     "file": None,
                     "submitted_at": datetime.now(timezone.utc).isoformat(),
                     "submitted_at_epoch": int(time.time()),  # Tier 1B timeout
-                    "source": "kling",  # Tier 1B threshold lookup
+                    "source": _src,  # Tier 1B threshold lookup; "kling_startend" when end frame used
                     "retries": 0,
                     "last_error": None,
                 })
@@ -3121,9 +3661,29 @@ def handle_redo(h, body: dict)-> None:
 
     video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
 
+    # Bug-2 hardening (Kim 2026-05-20): if the downstream Kling submit would
+    # FAIL (e.g. WaveSpeed client missing keys, scenario that surfaced when
+    # kling_startend_pipeline.py:155 was looking up the wrong API_KEYS_MASTER
+    # path), do NOT clear existing phase_1.options first — that produces
+    # data loss with no recovery. Pre-flight check: if h.app.client is None
+    # or no scope-event-id, bail BEFORE mutating state.
+    if h.app.client is None:
+        return h._send_error_v59(
+                   500,
+                   error_code="WAVESPEED_NOT_CONFIGURED",
+                   error_message="WaveSpeed client not configured (API key missing or load failed)",
+                   retry_safe=True,
+                   extra={"hint": "Check API_KEYS_MASTER.md is reachable; restart server if path drift fixed since startup."},
+               )
+
     # Acquire lock -> clear state -> list old files -> release -> delete -> resubmit
+    # Blocker #146 (LIPSYNC_INVALIDATE_ON_REGEN_V1): also clear b["lipsync"]
+    # and stage its file for unlink, so handle_redo + handle_animate both
+    # share the same invalidation semantics (idempotent if both fire).
     old_files: list[str] = []
+    prior_lipsync_existed = False
     def clear(state, _role=video_role):
+        nonlocal prior_lipsync_existed
         b = ((state.get("videos") or {}).get(_role) or {}).get("beats", {}).get(beat_id)
         if not b:
             return
@@ -3131,6 +3691,9 @@ def handle_redo(h, body: dict)-> None:
             if opt.get("file"):
                 old_files.append(opt["file"])
         b["phase_1"] = {"status": "polling", "options": [], "selected_option": None}
+        if b.get("lipsync"):
+            prior_lipsync_existed = True
+            b["lipsync"] = None
     h.app.state.mutate_state(clear)
 
     for fname in old_files:
@@ -3140,6 +3703,33 @@ def handle_redo(h, body: dict)-> None:
                 p.unlink()
             except OSError:
                 pass
+
+    # Blocker #146: unlink stale {beat_id}_lipsync.mp4 (paired with the
+    # state-clear above).
+    prior_lipsync_file = h.app.event_dir / "animation_clips" / f"{beat_id}_lipsync.mp4"
+    try:
+        if prior_lipsync_file.is_file():
+            prior_lipsync_existed = True
+            prior_lipsync_file.unlink()
+            print(f"[redo] {beat_id}: unlinked stale lipsync {prior_lipsync_file.name}")
+    except OSError as exc:
+        print(f"[redo] {beat_id}: lipsync unlink warning (non-fatal): {exc}")
+
+    if prior_lipsync_existed:
+        try:
+            from lib.directus import try_post_or_queue as _tpq
+            _tpq("prod_activity_log", {
+                "action": "lipsync_invalidated_on_regen",
+                "performed_by": "handle_redo",
+                "details": {
+                    "event_id": h.app.event_id,
+                    "beat_id": beat_id,
+                    "video_role": video_role,
+                    "removed_file": str(prior_lipsync_file),
+                },
+            })
+        except Exception as exc:  # noqa: BLE001
+            print(f"[redo] {beat_id}: lipsync_invalidated_on_regen audit failed (non-fatal): {exc}")
 
     # Resubmit via the existing /api/animate path, but scoped to this beat.
     # Forward scope_video_role/scope_target_video so the resubmit hits the
@@ -3162,13 +3752,23 @@ def handle_watercolor_animate(h, body: dict)-> None:
 
     """POST /api/watercolor/animate {watercolor_key, manual_path, motion_description, scope_event_id}
 
-    Per LD-470 WATERCOLOR_ANIMATE_PROCEDURAL_V1. SUPERSEDES the S4 magic-
-    compositor-based implementation. Claude API generates an ffmpeg
-    filter_complex spec given watercolor + path geometry + motion intent.
-    Server validates against safe-filter allowlist BEFORE executing
-    ffmpeg.
+    Per WATERCOLOR_ANIMATE_PIL_RENDERER_V1 + WATERCOLOR_ANIMATE_PROCEDURAL_TECH_SPEC_v2.
+    Deterministic PIL frame renderer (supersedes Claude+ffmpeg LD-470).
+
+    motion_description: parsed server-side for oscillation frequency/style (NOT Claude).
+    manual_path: rub axis + compositor placement reference (normalized 0-1).
+
+    Encode: fixed white frame + center-split hand pigment rub (wc_v13).
+    See LESSONS_LEARNED_20260528_PHASE_B_WATERCOLOR_ANIMATE_V1.md.
     """
-    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+    # Watercolor animation is a Phase B asset — it is NOT partitioned by
+    # intro/resolution/standalone video role.  Requiring scope_video_role here
+    # caused video_role_invalid when Kim's event uses the 'resolution' role
+    # (no 'intro' partition in state.videos) and the magic picker URL omitted
+    # the param.  allow_missing_video_role=True keeps event-scope enforcement
+    # while dropping the video-role gate for this endpoint.
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False,
+                                 allow_missing_video_role=True):
         return
     # Accept both `watercolor_key` (S5 spec) and `source_key` (S4 alias).
     watercolor_key = ((body or {}).get("watercolor_key")
@@ -3206,7 +3806,9 @@ def handle_watercolor_animate(h, body: dict)-> None:
                        retry_safe=False,
                    )
 
-    ok, clean_path, err = h._validate_manual_path(manual_path)
+    # wc_v8: tight-crop encode auto-expands canvas to fit the path — only reject
+    # coordinates that are literally out of [0,1]. Magic trail callers do NOT use this flag.
+    ok, clean_path, err = h._validate_manual_path(manual_path, enforce_safe_zone=False)
     if not ok:
         return h._send_error_v59(
                    400,
@@ -3215,7 +3817,7 @@ def handle_watercolor_animate(h, body: dict)-> None:
                    retry_safe=False,
                )
 
-    wc_dir = _PSERVER_PRODUCTION_DIR / "assets" / "watercolor_library"
+    wc_dir = _data_root(h) / "assets" / "watercolor_library"
     matches = list(wc_dir.glob(f"{watercolor_key}.*"))
     if not matches:
         return h._send_error_v59(
@@ -3251,7 +3853,7 @@ def handle_watercolor_animate(h, body: dict)-> None:
     _pin = {
         "pinned_generation": h.app.event_generation,
         "pinned_event_dir": h.app.event_dir,
-        "pinned_video_role": (body or {}).get("scope_video_role", "intro"),
+        "pinned_video_role": (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video"),
         "_handler": "_handle_watercolor_animate",
     }
     if not h._check_event_pin(_pin, "watercolor_animate_pre_work"):
@@ -3263,180 +3865,244 @@ def handle_watercolor_animate(h, body: dict)-> None:
                    extra={"code": "ASYNC_JOB_GENERATION_PIN_V1"},
                )
 
-    # Resolve Anthropic key.
-    try:
-        sys.path.insert(0, str(_PSERVER_REPO_ROOT / "lib"))
-        from credential_store import get_secret_optional  # type: ignore
-        api_key = get_secret_optional("ANTHROPIC_API_KEY")
-    except Exception:
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        return h._send_json(503, {
-            "ok": False,
-            "code": "ANTHROPIC_API_KEY_MISSING",
-            "message": "Anthropic API key not configured.",
-        })
+    # ── Deterministic PIL Frame Renderer (replaces Claude API + filter_complex) ──────
+    # May 27 regression (169d570): replaced LD-470 Claude+ffmpeg with whole-PNG
+    # path translation — lost the center-split opposite rub that LD-470 specified.
+    # wc_v11: bake LD-470 semantics directly — fixed paper layer + split hand halves
+    # oscillating in opposite directions along the path axis.
+    # ─────────────────────────────────────────────────────────────────────────────────
+    import tempfile as _tempfile
 
-    # Build Claude prompt.
-    path_str = ", ".join(f"({p[0]:.3f},{p[1]:.3f})" for p in clean_path)
-    system_prompt = (
-        "You are an ffmpeg filter chain generator. Given a watercolor PNG, "
-        "a path geometry (normalized x,y points in [0,1]), and a motion "
-        "description, output a JSON object with a SAFE ffmpeg filter_complex "
-        "string that produces an animated MP4 from the still PNG.\n\n"
-        "Available filters (allowlist — use NO others): split, hflip, vflip, "
-        "rotate, scale, overlay, blend, fade, crop, pad, drawbox, hue, eq, "
-        "zoompan, fps, setpts, geq, displace, format.\n\n"
-        "Forbidden: any shell command, file://, http://, exec, system, run, "
-        "backslash, pipe, backticks, dollar-paren. duration_s must be in [0.5, 10].\n\n"
-        "Reference examples:\n"
-        "- 'hands rub up and down' + vertical line: split frame at line, "
-        "vflip lower half, oscillate y-translation sinusoidally with sin(2*PI*t).\n"
-        "- 'circle spins clockwise' + circle path: crop to bounding box of "
-        "circle, rotate filter with 'a=t*PI'.\n"
-        "- 'energy radiates outward' + center point: zoompan 'z=1.0+0.1*sin(t)'.\n\n"
-        "Output JSON ONLY, no markdown fences:\n"
-        "  {\"filter_complex\": \"<chain>\", \"duration_s\": <number>, "
-        "\"output_size\": [w,h], \"explanation\": \"<one sentence>\"}"
+    # Duration: scale with path density (short path → 2s, long path → 5s cap).
+    duration_s = max(2.0, min(5.0, len(clean_path) * 0.4))
+    fps_anim = 24
+
+    # ── Oscillation frequency from motion description ────────────────────────
+    # motion_desc drives animation style: fast rubbing, gentle drift, or default.
+    # Kim's description is READ HERE — this is what drives the animation logic.
+    import math as _math
+    _motion_lower = motion_desc.lower()
+    if any(w in _motion_lower for w in [
+        "rub", "friction", "heat", "warm", "brisk", "quick", "fast",
+        "opposite", "back and forth", "back-and-forth", "reverse",
+        "up and down", "up-and-down", "to and fro", "rapidly", "briskly",
+    ]):
+        _osc_freq = 2.5   # brisk rubbing: ~5 full cycles per 2s
+    elif any(w in _motion_lower for w in [
+        "gentle", "slow", "soft", "drift", "float", "sway",
+        "pulse", "breathe", "subtle", "calm", "easy",
+    ]):
+        _osc_freq = 0.75  # gentle drift: ~1.5 cycles per 2s
+    else:
+        _osc_freq = 1.5   # moderate default oscillation
+
+    # Ensure at least 3 full oscillation cycles; extend duration if needed.
+    duration_s = max(duration_s, min(5.0, 3.0 / _osc_freq))
+
+    n_frames = max(1, int(duration_s * fps_anim))
+    elapsed_ms = 0   # no API call
+    explanation = (
+        f"PIL center-split rub ({_osc_freq}Hz), "
+        f"{len(clean_path)} path pts, motion={motion_desc!r}, "
+        f"fixed frame + hand-pigment split rub (LD-470 wc_v13)"
     )
-    user_prompt = (
-        f"Input watercolor: {watercolor_key}.png at {src_w}x{src_h} pixels.\n"
-        f"Path geometry (normalized): [{path_str}]\n"
-        f"Motion intent: {motion_desc!r}\n\n"
-        "Generate the JSON now."
-    )
 
-    # Call Claude.
-    url = "https://api.anthropic.com/v1/messages"
-    req_data = json.dumps({
-        "model": "claude-sonnet-4-6",
-        "max_tokens": 1024,
-        "system": system_prompt,
-        "messages": [{"role": "user", "content": user_prompt}],
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=req_data,
-        headers={"x-api-key": api_key,
-                 "anthropic-version": "2023-06-01",
-                 "content-type": "application/json"},
-        method="POST",
-    )
-    t0 = time.time()
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            resp_data = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        err_body = exc.read().decode("utf-8", errors="replace")
-        return h._send_error_v59(
-                   502,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"Anthropic API HTTP {exc.code}",
-                   retry_safe=True,
-                   extra={"detail": err_body[:500]},
-               )
-    except urllib.error.URLError as exc:
-        return h._send_error_v59(
-                   502,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"Anthropic URL error: {exc}",
-                   retry_safe=True,
-               )
-    elapsed_ms = int((time.time() - t0) * 1000)
-
-    # Extract JSON from response (model may wrap in code fence; be defensive).
-    text = ""
-    for block in resp_data.get("content", []) or []:
-        if isinstance(block, dict) and block.get("type") == "text":
-            text += block.get("text", "")
-    # Strip ```json fences if present.
-    text = text.strip()
-    m = re.search(r'\{[\s\S]*\}', text)
-    if not m:
-        return h._send_error_v59(
-                   502,
-                   error_code="CLAUDE_RESPONSE_HAD_NO_JSON",
-                   error_message="Claude response had no JSON object",
-                   retry_safe=True,
-                   extra={"raw": text[:500]},
-               )
-    try:
-        spec = json.loads(m.group(0))
-    except json.JSONDecodeError as exc:
-        return h._send_error_v59(
-                   502,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"Claude JSON parse failed: {exc}",
-                   retry_safe=True,
-                   extra={"raw": text[:500]},
-               )
-
-    filter_complex = spec.get("filter_complex") or ""
-    duration_s = float(spec.get("duration_s") or 3.0)
-    explanation = (spec.get("explanation") or "")[:300]
-
-    if not (0.5 <= duration_s <= 10.0):
-        return h._send_error_v59(
-                   400,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"duration_s={duration_s} outside [0.5, 10]",
-                   retry_safe=False,
-               )
-
-    # SAFETY GATE.
-    ok_filter, gate_err = h._validate_ffmpeg_filter_chain(filter_complex)
-    if not ok_filter:
-        # Log to activity log for debugging.
-        try:
-            from lib.directus import try_post_or_queue  # type: ignore
-            try_post_or_queue("prod_activity_log", {
-                "action": "watercolor_animate_unsafe_filter_rejected",
-                "performed_by": "watercolor_animate_endpoint",
-                "details": {
-                    "watercolor_key": watercolor_key,
-                    "motion_description": motion_desc,
-                    "rejected_filter_complex": filter_complex,
-                    "gate_error": gate_err,
-                    "claude_explanation": explanation,
-                },
-            })
-        except Exception:
-            pass
-        return h._send_error_v59(
-                   400,
-                   error_code="UNSAFE_FILTER_CHAIN",
-                   error_message="unsafe_filter_chain",
-                   retry_safe=False,
-                   extra={"details": gate_err, "filter_complex_preview": filter_complex[:200]},
-               )
-
-    # Execute ffmpeg.
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_path = wc_dir / f"{watercolor_key}_animated_{ts}.mp4"
-    ffmpeg_out = str(out_path.resolve())
-    cmd = [
-        "ffmpeg", "-y",
-        "-loop", "1", "-i", safe_ffmpeg_still,
-        "-filter_complex", filter_complex,
-        "-t", f"{duration_s:.3f}",
-        "-c:v", "libx264",
-        "-pix_fmt", "yuv420p",
-        ffmpeg_out,
-    ]
+    # Atomic write: encode to .tmp.mp4, rename when complete.
+    # Prevents corrupt MP4 from appearing in the library if the server restarts
+    # or the encode errors mid-write. (2026-05-27: LOW fix from audit)
+    out_path_tmp = out_path.with_suffix(".tmp.mp4")
+
     try:
-        subprocess.run(cmd, check=True, capture_output=True, timeout=60)
-    except subprocess.CalledProcessError as exc:
+        from PIL import Image as _PILImage  # already confirmed available at startup
+
+        with _PILImage.open(safe_ffmpeg_still) as _wc_src:
+            _w, _h = _wc_src.size
+            # libx264 requires even dimensions.
+            _w = _w if _w % 2 == 0 else _w - 1
+            _h = _h if _h % 2 == 0 else _h - 1
+            _wc_rgba = _wc_src.convert("RGBA").crop((0, 0, _w, _h))
+
+        _r, _g, _b, _a_orig = _wc_rgba.split()
+
+        # LD-470 center-split rub (deterministic replacement for Claude+ffmpeg).
+        # Original spec: split at center seam, oscillate halves in opposite
+        # directions along the path axis — NOT translate the whole PNG blob.
+        _dir_x = float(clean_path[-1][0]) - float(clean_path[0][0])
+        _dir_y = float(clean_path[-1][1]) - float(clean_path[0][1])
+        _dir_len = _math.hypot(_dir_x, _dir_y) or 1.0
+        _dir_x /= _dir_len
+        _dir_y /= _dir_len
+        _rub_px = max(16, min(int(_h * 0.05), int(_w * 0.05), 56))
+        _pad = max(8, _w // 32)
+        _crop_w = (_w + 2 * _rub_px + 2 * _pad) // 2 * 2 or 2
+        _crop_h = (_h + 2 * _rub_px + 2 * _pad) // 2 * 2 or 2
+        _base_x = _pad + _rub_px
+        _base_y = _pad + _rub_px
+
+        # Pixel classification — only true hand pigment may move.
+        # wc_v13: prior logic used "not pure white (>245)" as hand, which swept
+        # in cream paper texture + black border (~222k px). Splitting those with
+        # the hand halves sheared the entire white card (v2-class "frame slice").
+        _hand_mask = _PILImage.new("L", (_w, _h), 0)
+        _fixed_mask = _PILImage.new("L", (_w, _h), 0)
+        _src_px = _wc_rgba.load()
+        _hb_min_x, _hb_min_y, _hb_max_x, _hb_max_y = _w, _h, 0, 0
+        _hand_px = _hand_mask.load()
+        _fixed_px = _fixed_mask.load()
+        for _yy in range(_h):
+            for _xx in range(_w):
+                _pr, _pg, _pb, _pa = _src_px[_xx, _yy]
+                if _pa < 20:
+                    continue
+                _hb_min_x = min(_hb_min_x, _xx)
+                _hb_min_y = min(_hb_min_y, _yy)
+                _hb_max_x = max(_hb_max_x, _xx)
+                _hb_max_y = max(_hb_max_y, _yy)
+                _is_border = _pr < 80 and _pg < 80 and _pb < 80
+                _is_white = _pr > 245 and _pg > 245 and _pb > 245
+                _is_cream = (
+                    (_pr + _pg + _pb) > 700
+                    and (max(_pr, _pg, _pb) - min(_pr, _pg, _pb)) < 35
+                )
+                if _is_border or _is_white or _is_cream:
+                    _fixed_px[_xx, _yy] = _pa
+                else:
+                    _hand_px[_xx, _yy] = _pa
+        _fixed_rgba = _PILImage.new("RGBA", (_w, _h), (0, 0, 0, 0))
+        _fixed_rgba.paste(_wc_rgba, mask=_fixed_mask)
+
+        # Solid white underlay for hand-rub gaps (under pigment only).
+        _matte_x0 = max(0, _hb_min_x - 2)
+        _matte_y0 = max(0, _hb_min_y - 2)
+        _matte_x1 = min(_w - 1, _hb_max_x + 2)
+        _matte_y1 = min(_h - 1, _hb_max_y + 2)
+        _matte_w = (_matte_x1 - _matte_x0 + 1) // 2 * 2 or 2
+        _matte_h = (_matte_y1 - _matte_y0 + 1) // 2 * 2 or 2
+        _white_underlay = _PILImage.new("RGB", (_matte_w, _matte_h), (255, 255, 255))
+        _underlay_x = _base_x + _matte_x0
+        _underlay_y = _base_y + _matte_y0
+
+        # Split ONLY hand pigment at prayer-hands seam (hand bbox center).
+        _hand_min_x, _hand_min_y, _hand_max_x, _hand_max_y = _w, _h, 0, 0
+        for _yy in range(_h):
+            for _xx in range(_w):
+                if _hand_px[_xx, _yy]:
+                    _hand_min_x = min(_hand_min_x, _xx)
+                    _hand_min_y = min(_hand_min_y, _yy)
+                    _hand_max_x = max(_hand_max_x, _xx)
+                    _hand_max_y = max(_hand_max_y, _yy)
+        _split_vertical = abs(_dir_y) >= abs(_dir_x)
+        if _split_vertical:
+            _split_at = max(
+                _hand_min_x + 1,
+                min((_hand_min_x + _hand_max_x) // 2, _hand_max_x - 1),
+            )
+        else:
+            _split_at = max(
+                _hand_min_y + 1,
+                min((_hand_min_y + _hand_max_y) // 2, _hand_max_y - 1),
+            )
+
+        _half_a_mask = _PILImage.new("L", (_w, _h), 0)
+        _half_b_mask = _PILImage.new("L", (_w, _h), 0)
+        _ha_px = _half_a_mask.load()
+        _hb_px = _half_b_mask.load()
+        for _yy in range(_h):
+            for _xx in range(_w):
+                _a = _hand_px[_xx, _yy]
+                if not _a:
+                    continue
+                if _split_vertical:
+                    if _xx < _split_at:
+                        _ha_px[_xx, _yy] = _a
+                    else:
+                        _hb_px[_xx, _yy] = _a
+                elif _yy < _split_at:
+                    _ha_px[_xx, _yy] = _a
+                else:
+                    _hb_px[_xx, _yy] = _a
+
+        _half_a_rgba = _PILImage.new("RGBA", (_w, _h), (0, 0, 0, 0))
+        _half_a_rgba.paste(_wc_rgba, mask=_half_a_mask)
+        _half_b_rgba = _PILImage.new("RGBA", (_w, _h), (0, 0, 0, 0))
+        _half_b_rgba.paste(_wc_rgba, mask=_half_b_mask)
+
+        with _tempfile.TemporaryDirectory() as _fdir:
+            for _fi in range(n_frames):
+                _time_s = _fi / fps_anim
+                _t = 0.5 - 0.5 * _math.cos(2 * _math.pi * _osc_freq * _time_s)
+                _offset = (_t - 0.5) * 2.0 * _rub_px
+                _dx_a = int(_dir_x * _offset)
+                _dy_a = int(_dir_y * _offset)
+                _dx_b = -_dx_a
+                _dy_b = -_dy_a
+
+                _frame_bg = _PILImage.new(
+                    "RGB", (_crop_w, _crop_h), (255, 0, 255),
+                )
+                # Layer 1: solid white under hand-rub gaps.
+                _frame_bg.paste(_white_underlay, (_underlay_x, _underlay_y))
+                # Layer 2: fixed paper + cream texture + border (never moves).
+                _frame_bg.paste(_fixed_rgba, (_base_x, _base_y), mask=_fixed_mask)
+                # Layer 3+4: hand pigment halves rub in opposite directions.
+                _frame_bg.paste(
+                    _half_a_rgba,
+                    (_base_x + _dx_a, _base_y + _dy_a),
+                    mask=_half_a_mask,
+                )
+                _frame_bg.paste(
+                    _half_b_rgba,
+                    (_base_x + _dx_b, _base_y + _dy_b),
+                    mask=_half_b_mask,
+                )
+                _frame_bg.save(f"{_fdir}/frame_{_fi:04d}.png", "PNG")
+
+            _encode_cmd = [
+                "ffmpeg", "-y",
+                "-framerate", str(fps_anim),
+                "-i", f"{_fdir}/frame_%04d.png",
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                str(out_path_tmp),
+            ]
+            try:
+                subprocess.run(_encode_cmd, check=True, capture_output=True, timeout=120)
+                # Atomic rename: only appears as a valid MP4 once fully written.
+                import os as _os
+                _os.rename(str(out_path_tmp), str(out_path))
+            except subprocess.CalledProcessError as _enc_exc:
+                # Clean up partial tmp file on encode failure.
+                try:
+                    out_path_tmp.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                return h._send_error_v59(
+                           500,
+                           error_code="FFMPEG_ENCODE_FAILED",
+                           error_message="ffmpeg encode failed",
+                           retry_safe=True,
+                           extra={"stderr": _enc_exc.stderr.decode("utf-8", errors="replace")[-500:]},
+                       )
+            except subprocess.TimeoutExpired:
+                try:
+                    out_path_tmp.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                return h._send_error_v59(
+                           504,
+                           error_code="FFMPEG_ENCODE_TIMED_OUT",
+                           error_message="ffmpeg encode timed out (>120s)",
+                           retry_safe=True,
+                       )
+
+    except Exception as _pil_exc:
         return h._send_error_v59(
                    500,
-                   error_code="FFMPEG_FAILED",
-                   error_message="ffmpeg failed",
-                   retry_safe=True,
-                   extra={"filter_complex": filter_complex, "stderr": exc.stderr.decode("utf-8", errors="replace")[-1000:]},
-               )
-    except subprocess.TimeoutExpired:
-        return h._send_error_v59(
-                   504,
-                   error_code="FFMPEG_TIMED_OUT",
-                   error_message="ffmpeg timed out (>60s)",
+                   error_code="PIL_RENDER_FAILED",
+                   error_message=f"PIL frame render failed: {_pil_exc}",
                    retry_safe=True,
                )
 
@@ -3458,17 +4124,57 @@ def handle_watercolor_animate(h, body: dict)-> None:
             module_id=_resolve_module_id_for_state(h.app.state),
             produced_by_skill="watercolor_animate_endpoint",
             colloquial_name=f"{watercolor_key} animated",
-            tags=["watercolor_animation", watercolor_key, "claude_filter_complex"],
+            tags=["watercolor_animation", watercolor_key, "pil_center_split_rub"],
             notes=(
-                f"Watercolor animation via Claude+ffmpeg (LD-470). "
+                f"Watercolor animation via PIL frame renderer (replaces Claude+ffmpeg LD-470). "
                 f"motion={motion_desc!r}. {len(clean_path)} path points. "
-                f"duration={duration_s}s. claude_ms={elapsed_ms}. "
-                f"explanation={explanation!r}"
+                f"duration={duration_s}s. {explanation}"
             ),
             role="library",
         )
     except Exception as exc:
         print(f"[watercolor/animate] WARN registered_write failed: {exc}", flush=True)
+
+    # State writeback — record animated override at top-level state key
+    # "watercolor_animated_overrides" (a flat dict: {key: filename}).
+    # NOTE: actual watercolor cues live at
+    #   state["phase_b"]["phase_b_watercolor_cues_json"] (JSON string, see phases.py).
+    # The consumer (handle_phase_watercolor_file) uses a disk glob for
+    # {key}_animated_*.mp4 (newest by mtime) — no state dependency needed there.
+    # This writeback is supplementary: lets assembly/rendering scripts find the
+    # canonical animated file without a disk glob.
+    animated_filename = Path(out_path).name
+
+    def _set_watercolor_animated(state):
+        overrides = state.setdefault("watercolor_animated_overrides", {})
+        overrides[watercolor_key] = {
+            "path": animated_filename,
+            "asset_id": registered_id,
+        }
+
+    try:
+        h.app.state.mutate_state(_set_watercolor_animated)
+    except Exception as exc:
+        print(f"[watercolor/animate] WARN state writeback failed: {exc}", flush=True)
+        return h._send_error_v59(500, error_code="STATE_WRITEBACK_FAILED",
+                                 error_message=f"animated OK but state writeback failed: {exc}",
+                                 retry_safe=True,
+                                 extra={"animated_path": str(out_path), "asset_id": registered_id})
+
+    # DS-22 read-back verify
+    try:
+        _state_after = h.app.state.read_state()
+        _overrides_after = _state_after.get("watercolor_animated_overrides") or {}
+        _hit = (_overrides_after.get(watercolor_key) or {}).get("path") == animated_filename
+        if not _hit:
+            return h._send_error_v59(500, error_code="STATE_WRITEBACK_VERIFY_FAILED",
+                                     error_message="watercolor_animated_overrides not visible after writeback",
+                                     retry_safe=True,
+                                     extra={"expected_path": animated_filename, "expected_key": watercolor_key})
+        print(f"[watercolor/animate] state writeback verified for key={watercolor_key}: {animated_filename}", flush=True)
+    except Exception as exc:
+        return h._send_error_v59(500, error_code="STATE_WRITEBACK_VERIFY_FAILED",
+                                 error_message=f"verify crashed: {type(exc).__name__}: {exc}", retry_safe=True)
 
     return h._send_json(200, {
         "ok": True,
@@ -3477,8 +4183,350 @@ def handle_watercolor_animate(h, body: dict)-> None:
         "asset_id": registered_id,
         "explanation": explanation,
         "duration_s": duration_s,
-        "filter_complex": filter_complex,
-        "claude_ms": elapsed_ms,
+        "renderer": "pil_center_split_rub",
+        "osc_freq_hz": _osc_freq,
     })
 
 
+
+
+# ============================================================================
+# Topic 1: End-frame iteration UI (spec MAGIC_AND_ENDFRAME_FIXES_20260520_v1)
+# LD-814 governs.
+# ============================================================================
+
+def _prune_end_frames(beat_dir: Path, beat_id: str, keep: int = 3) -> list[Path]:
+    """T1-Phase 5: keep only the `keep` most-recent {beat_id}_endframe_*.png
+    files in beat_dir; unlink the rest.
+
+    Returns list of pruned paths for logging. Errors during unlink are
+    swallowed individually (best-effort cleanup) but the pattern itself is
+    deterministic — sort by mtime desc, drop after `keep`.
+    """
+    if not beat_dir.is_dir():
+        return []
+    candidates = sorted(
+        beat_dir.glob(f"{beat_id}_endframe_*.png"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    pruned: list[Path] = []
+    for p in candidates[keep:]:
+        try:
+            p.unlink()
+            pruned.append(p)
+        except OSError as exc:
+            print(f"[prune_end_frames] {beat_id}: warning unlinking {p.name}: {exc}", flush=True)
+    return pruned
+
+
+def _save_end_frame_and_persist(
+    h,
+    body: dict,
+    beat_id: str,
+    video_role: str,
+    end_frame_bytes: bytes,
+    log_tag: str,
+) -> dict:
+    """Shared finisher for both preview_end_frame + upload_end_frame.
+
+    Writes PNG to event_dir/end_frames/, mutates state with end_frame_path,
+    DS-22 read-back verify, prunes oldest beyond keep=3.
+
+    Returns dict to send to client (NOT yet sent — caller wraps).
+    Raises Exception on hard failure (caller handles).
+    """
+    from datetime import datetime as _dt
+
+    # Auto-upscale + validate (mirror _handle_add_options_startend pattern)
+    from production_server import (  # type: ignore
+        auto_upscale_image,
+        validate_image_dimensions,
+    )
+    end_data_uri = (
+        "data:image/png;base64,"
+        + base64.b64encode(end_frame_bytes).decode("ascii")
+    )
+    end_data_uri, _upscale_info = auto_upscale_image(end_data_uri)
+    if "upscaled" in _upscale_info:
+        print(f"[{log_tag}] {beat_id} end frame: {_upscale_info}", flush=True)
+    ok_dim, info_dim = validate_image_dimensions(end_data_uri)
+    if not ok_dim:
+        raise ValueError(f"end frame validation failed: {info_dim}")
+
+    # Decode the final (possibly-upscaled) PNG bytes from data URI back out.
+    _hdr, _b64 = end_data_uri.split(",", 1)
+    final_png_bytes = base64.b64decode(_b64)
+
+    # Save to event_dir/end_frames/
+    end_frames_dir = h.app.event_dir / "end_frames"
+    end_frames_dir.mkdir(parents=True, exist_ok=True)
+    ts = _dt.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    filename = f"{beat_id}_endframe_{ts}.png"
+    out_path = end_frames_dir / filename
+    out_path.write_bytes(final_png_bytes)
+    print(f"[{log_tag}] {beat_id}: end frame saved -> {out_path.name} ({len(final_png_bytes):,}B)", flush=True)
+
+    # Mutate state.end_frame_path via scope_router (partition-aware).
+    scope = None
+    try:
+        scope = scope_router.resolve(body, h.app.event_dir.name)
+
+        def _set_end_frame(partition: dict) -> None:
+            beats = partition.setdefault("beats", {})
+            beat = beats.setdefault(beat_id, {})
+            beat["end_frame_path"] = filename
+
+        scope_router.mutate_partition(h.app.state, scope, _set_end_frame)
+    except Exception as exc:  # noqa: BLE001
+        # Mirror magic_still pattern: log + continue, but DS-22 verify below
+        # OUTSIDE this catch will propagate state failures.
+        print(f"[{log_tag}] {beat_id}: state writeback WARN: {exc}", flush=True)
+
+    # DS-22 read-back verify (spec Bug-A4 pattern — OUTSIDE swallow-all).
+    partition_written: str | None = None
+    if scope is not None:
+        _video_role_written = getattr(scope, "video_role", None)
+        if _video_role_written:
+            _state_after = h.app.state.read_state()
+            _beat_after = (((_state_after.get("videos") or {}).get(_video_role_written) or {})
+                          .get("beats") or {}).get(beat_id) or {}
+            if _beat_after.get("end_frame_path") == filename:
+                partition_written = _video_role_written
+                print(f"[{log_tag}] {beat_id}: state verified videos.{_video_role_written}.beats.{beat_id}.end_frame_path={filename}", flush=True)
+            else:
+                # Cleanup the orphan PNG we just wrote (state didn't persist).
+                try:
+                    out_path.unlink()
+                except OSError:
+                    pass
+                raise RuntimeError(
+                    f"STATE_WRITEBACK_VERIFY_FAILED: expected videos.{_video_role_written}.beats.{beat_id}.end_frame_path={filename!r}, got {_beat_after.get('end_frame_path')!r}"
+                )
+
+    # Prune: keep last 3.
+    pruned = _prune_end_frames(end_frames_dir, beat_id, keep=3)
+    if pruned:
+        print(f"[{log_tag}] {beat_id}: pruned {len(pruned)} old end_frame(s): {[p.name for p in pruned]}", flush=True)
+
+    end_frame_url = (
+        f"/files?path=Production/{h.app.event_dir.name}/end_frames/"
+        + urllib.parse.quote(filename)
+    )
+    return {
+        "ok": True,
+        "beat_id": beat_id,
+        "end_frame_path": filename,
+        "end_frame_url": end_frame_url,
+        "partition_written": partition_written,
+        "size_bytes": len(final_png_bytes),
+        "pruned_count": len(pruned),
+    }
+
+
+def handle_preview_end_frame(h, body: dict) -> None:
+    """POST /api/beat/preview_end_frame
+    Body: {scope_event_id, scope_video_role, beat_id, prompt_addendum?}
+
+    T1-Phase 2 of spec MAGIC_AND_ENDFRAME_FIXES_20260520_v1.
+
+    Generates a single end-frame image via OpenAI gpt-image-1 (or FLUX per
+    LD-730 vendor selection) and saves to event_dir/end_frames/. Sets
+    beat.end_frame_path. Idempotent: each call OVERWRITES end_frame_path
+    with the new filename; the previous PNG is retained per keep-last-3
+    pruning policy.
+
+    Required: scope_video_role (no 'intro' default — same Bug-A3 discipline).
+    """
+    import urllib.parse as _up_local  # noqa: F401 — imported for shared finisher
+    # Scope validation (no scope_video_role default).
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+
+    beat_id = (body or {}).get("beat_id") or (body or {}).get("beat")
+    if not beat_id:
+        return h._send_error_v59(400, error_code="MISSING_BEAT_ID",
+                                 error_message="beat_id required", retry_safe=False)
+    # Same beat_id discipline as magic_still (line ~584).
+    import re as _re_pre
+    if "/" in beat_id or "\\" in beat_id or ".." in beat_id or beat_id.startswith("."):
+        return h._send_error_v59(400, error_code="INVALID_BEAT_ID",
+                                 error_message="invalid beat_id", retry_safe=False)
+    if not _re_pre.match(r"^[A-Za-z0-9][A-Za-z0-9_-]*$", beat_id):
+        return h._send_error_v59(400, error_code="INVALID_BEAT_ID",
+                                 error_message="beat_id must match [A-Za-z0-9_-]+", retry_safe=False)
+
+    video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video")
+    if not video_role:
+        return h._send_error_v59(400, error_code="VIDEO_ROLE_REQUIRED",
+                                 error_message="scope_video_role required", retry_safe=False)
+
+    prompt_addendum = (body or {}).get("prompt_addendum") or None
+
+    # Resolve beat state + speaker for prompt build.
+    state = h.app.state.read_state()
+    beat_state = (((state.get("videos") or {}).get(video_role) or {}).get("beats") or {}).get(beat_id) or {}
+    if not beat_state:
+        return h._send_error_v59(404, error_code="BEAT_NOT_FOUND",
+                                 error_message=f"beat {beat_id} not found in videos.{video_role}.beats",
+                                 retry_safe=False)
+
+    # Resolve start image — needed by both OpenAI + FLUX (start_image_bytes input).
+    beat_image = h.app.get_beat_image(beat_id, video_role)
+    if not beat_image:
+        return h._send_error_v59(400, error_code="START_IMAGE_REQUIRED",
+                                 error_message=f"beat {beat_id} has no assigned image — drag-drop a start image first",
+                                 retry_safe=False)
+
+    # beat_image is data:image/...;base64,...
+    try:
+        _hdr, start_b64 = beat_image.split(",", 1)
+        start_bytes = base64.b64decode(start_b64)
+    except Exception as exc:
+        return h._send_error_v59(500, error_code="START_IMAGE_MALFORMED",
+                                 error_message=f"start image data-URI malformed: {type(exc).__name__}: {exc}",
+                                 retry_safe=True)
+
+    # Build prompt via shared helper (caller canonicalizes speaker — no
+    # production_server.py imports inside lib helper per cursor R1).
+    from production_server import _canonicalize_speaker as _cs  # type: ignore
+    from lib.end_frame_prompt import build_end_frame_prompt
+    speaker_canonical = _cs(beat_state.get("speaker", "") or "")
+    end_frame_prompt = build_end_frame_prompt(beat_state, speaker_canonical, addendum=prompt_addendum)
+    print(f"[preview_end_frame] {beat_id} prompt ({len(end_frame_prompt)} chars): {end_frame_prompt[:160]!r}...", flush=True)
+
+    # Vendor selection (mirror _handle_add_options_startend logic).
+    import os as _os
+    from production_server import parse_api_keys  # type: ignore
+    from lib.paths import API_KEYS_MASTER_PATH
+    keys = parse_api_keys(API_KEYS_MASTER_PATH)
+    bfl_key = keys.get("bfl")
+    openai_key = keys.get("openai")
+    if not (bfl_key or openai_key):
+        return h._send_error_v59(500, error_code="END_FRAME_VENDOR_KEY_UNAVAILABLE",
+                                 error_message="No end-frame vendor key available (need OpenAI or BFL/FLUX)",
+                                 retry_safe=True)
+
+    _requested = _os.environ.get("MN_END_FRAME_VENDOR", "openai").strip().lower()
+    from kling_startend_pipeline import (  # type: ignore
+        openai_image_edit_generate_end_frame as _openai_fn,
+        flux_kontext_generate_end_frame as _flux_fn,
+    )
+    if _requested == "openai" and openai_key:
+        _vendor_used = "openai"; _fn = _openai_fn; _key = openai_key
+    elif _requested == "flux" and bfl_key:
+        _vendor_used = "flux"; _fn = _flux_fn; _key = bfl_key
+    elif openai_key:
+        _vendor_used = "openai (fallback)"; _fn = _openai_fn; _key = openai_key
+    else:
+        _vendor_used = "flux (fallback)"; _fn = _flux_fn; _key = bfl_key
+    print(f"[preview_end_frame] {beat_id}: vendor={_vendor_used}", flush=True)
+
+    try:
+        end_bytes = _fn(start_image_bytes=start_bytes, end_prompt=end_frame_prompt, api_key=_key)
+    except SystemExit as exc:
+        return h._send_error_v59(500, error_code="END_FRAME_GENERATION_FAILED",
+                                 error_message=f"end-frame vendor SystemExit: {exc}",
+                                 retry_safe=True, extra={"beat": beat_id})
+    except Exception as exc:
+        return h._send_error_v59(500, error_code="END_FRAME_GENERATION_FAILED",
+                                 error_message=f"end-frame generation failed: {type(exc).__name__}: {exc}",
+                                 retry_safe=True, extra={"beat": beat_id})
+
+    try:
+        resp = _save_end_frame_and_persist(h, body, beat_id, video_role, end_bytes, log_tag="preview_end_frame")
+    except RuntimeError as exc:
+        # State writeback verify failure surfaces here.
+        return h._send_error_v59(500, error_code="STATE_WRITEBACK_VERIFY_FAILED",
+                                 error_message=str(exc), retry_safe=True,
+                                 extra={"beat": beat_id, "video_role": video_role})
+    except Exception as exc:
+        return h._send_error_v59(500, error_code="GENERIC_ERROR",
+                                 error_message=f"end-frame save failed: {type(exc).__name__}: {exc}",
+                                 retry_safe=True, extra={"beat": beat_id})
+
+    return h._send_json(200, resp)
+
+
+def handle_upload_end_frame(h, body: dict) -> None:
+    """POST /api/beat/upload_end_frame
+    Body: {scope_event_id, scope_video_role, beat_id, file_b64, mime}
+
+    T1-Phase 3 of spec MAGIC_AND_ENDFRAME_FIXES_20260520_v1.
+
+    Accepts a base64-encoded PNG/JPG/WEBP that Kim manually downloaded from
+    chatgpt.com (or anywhere). Decodes, converts to PNG via PIL if not
+    already, and saves as the beat's end_frame_path. No OpenAI/FLUX call.
+    """
+    # Scope validation.
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+
+    beat_id = (body or {}).get("beat_id") or (body or {}).get("beat")
+    if not beat_id:
+        return h._send_error_v59(400, error_code="MISSING_BEAT_ID",
+                                 error_message="beat_id required", retry_safe=False)
+    import re as _re_up
+    if "/" in beat_id or "\\" in beat_id or ".." in beat_id or beat_id.startswith("."):
+        return h._send_error_v59(400, error_code="INVALID_BEAT_ID",
+                                 error_message="invalid beat_id", retry_safe=False)
+    if not _re_up.match(r"^[A-Za-z0-9][A-Za-z0-9_-]*$", beat_id):
+        return h._send_error_v59(400, error_code="INVALID_BEAT_ID",
+                                 error_message="beat_id must match [A-Za-z0-9_-]+", retry_safe=False)
+
+    video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video")
+    if not video_role:
+        return h._send_error_v59(400, error_code="VIDEO_ROLE_REQUIRED",
+                                 error_message="scope_video_role required", retry_safe=False)
+
+    file_b64 = (body or {}).get("file_b64") or ""
+    mime = ((body or {}).get("mime") or "image/png").lower()
+    if not file_b64:
+        return h._send_error_v59(400, error_code="FILE_REQUIRED",
+                                 error_message="file_b64 required (base64-encoded image bytes)", retry_safe=False)
+    if mime not in ("image/png", "image/jpeg", "image/jpg", "image/webp"):
+        return h._send_error_v59(400, error_code="INVALID_MIME",
+                                 error_message=f"mime must be image/png|jpeg|webp; got {mime!r}",
+                                 retry_safe=False)
+
+    try:
+        raw_bytes = base64.b64decode(file_b64)
+    except Exception as exc:
+        return h._send_error_v59(400, error_code="INVALID_BASE64",
+                                 error_message=f"file_b64 not valid base64: {type(exc).__name__}",
+                                 retry_safe=False)
+    if len(raw_bytes) < 100:
+        return h._send_error_v59(400, error_code="FILE_TOO_SMALL",
+                                 error_message=f"decoded file is only {len(raw_bytes)}B — looks like an empty upload",
+                                 retry_safe=False)
+
+    # Convert non-PNG to PNG via PIL.
+    png_bytes: bytes
+    if mime == "image/png":
+        png_bytes = raw_bytes
+    else:
+        try:
+            from PIL import Image
+            import io
+            _img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+            _out = io.BytesIO()
+            _img.save(_out, format="PNG")
+            png_bytes = _out.getvalue()
+            print(f"[upload_end_frame] {beat_id}: converted {mime} -> PNG ({len(raw_bytes):,}B -> {len(png_bytes):,}B)", flush=True)
+        except Exception as exc:
+            return h._send_error_v59(500, error_code="IMAGE_CONVERSION_FAILED",
+                                     error_message=f"PIL conversion failed: {type(exc).__name__}: {exc}",
+                                     retry_safe=False)
+
+    try:
+        resp = _save_end_frame_and_persist(h, body, beat_id, video_role, png_bytes, log_tag="upload_end_frame")
+    except RuntimeError as exc:
+        return h._send_error_v59(500, error_code="STATE_WRITEBACK_VERIFY_FAILED",
+                                 error_message=str(exc), retry_safe=True,
+                                 extra={"beat": beat_id, "video_role": video_role})
+    except Exception as exc:
+        return h._send_error_v59(500, error_code="GENERIC_ERROR",
+                                 error_message=f"end-frame save failed: {type(exc).__name__}: {exc}",
+                                 retry_safe=True, extra={"beat": beat_id})
+
+    return h._send_json(200, resp)

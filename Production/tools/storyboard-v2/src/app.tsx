@@ -43,6 +43,8 @@ function readStoredActiveTab(): TabKey {
 // so cross-cutting components (e.g. LibraryPanel per LD-682
 // STITCHER_LIBRARY_DEFAULT_SFX_TIER_V1) can react to tab transitions.
 export const activeTab = signal<TabKey>(readStoredActiveTab());
+/** Bumped by SendOutButton on successful scene_assemble; StitcherTab subscribes to re-fetch. */
+export const stitcherRefreshTick = signal(0);
 function ActivePane() {
   switch (activeTab.value) {
     case 'storyboard':

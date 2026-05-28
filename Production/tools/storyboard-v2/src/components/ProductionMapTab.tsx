@@ -7,9 +7,8 @@
 //   cells = ✅/⏳/❌ + count + latest filename
 
 import { useEffect, useState } from 'preact/hooks';
-import { apiGet } from '../api/client';
+import { apiGet, loadEvent } from '../api/client';
 import { activeScope, scopeKey, makeScope } from '../state/scope';
-import { MUTATION_ENDPOINTS } from '../api/endpoints';
 
 // Custom event the App listens for. ProductionMapTab dispatches this on
 // cell click; App switches activeTab to 'storyboard'.
@@ -174,17 +173,11 @@ export function ProductionMapTab() {
                       // S4 — click cell to load that scope in storyboard.
                       // Per LD-465 PRODUCTION_MAP_V1.
                       if (!m.event_dir) return;
+                      // Wave 3 (blocker #53 F-S2-005): loadEvent client helper.
                       try {
-                        const res = await fetch(MUTATION_ENDPOINTS.event_load, {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ event_id: m.event_dir }),
-                        });
-                        if (res.ok) {
-                          const data = await res.json() as {
-                            event_id: string;
-                            event_generation: number;
-                          };
+                        const result = await loadEvent(m.event_dir);
+                        if (result.ok && result.data) {
+                          const data = result.data;
                           activeScope.value = makeScope(
                             data.event_id, null, data.event_generation,
                           );

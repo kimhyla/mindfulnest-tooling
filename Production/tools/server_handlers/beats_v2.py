@@ -600,6 +600,67 @@ def handle_v2_event_state(h, path: str) -> None:
     except Exception as _exc:
         print(f"[v2-state] WARN: lipsync file_mtime projection failed: {_exc!r}", flush=True)
 
+    # Tier 1 / T1-1 (2026-05-19) — file_exists enrichment for every *.file
+    # ref. Closes Kim's smoke #1-3 (archived option ▶ → generic codec toast).
+    # PR #73 + P3 added this to /api/state but the v59 client hydrates from
+    # THIS endpoint (/api/v2/event/<id>/state) — feature-parity audit T1-1.
+    # Mirrors production_server._read_state_with_file_flags._annotate_block.
+    try:
+        clips_dir = h.app.state.clips_dir
+        event_dir = h.app.event_dir  # Bug-B3 (spec §2 Topic-2): magic + end_frame
+        end_frames_dir = event_dir / "end_frames"
+
+        def _annotate(block, field: str = "file") -> None:
+            if not isinstance(block, dict):
+                return
+            f = block.get(field)
+            if field == "image_path":
+                block["image_path_exists"] = bool(
+                    f and isinstance(f, str) and os.path.exists(f)
+                )
+            else:
+                block["file_exists"] = bool(f and (clips_dir / f).is_file())
+
+        # Bug-B3 (spec §2 Topic-2, 2026-05-20): annotate magic + end_frame
+        # paths which resolve against EVENT_DIR (not clips_dir). Without these,
+        # orphan references silently 404 on <video src=...>. Mirrors the
+        # production_server._read_state_with_file_flags extension.
+        def _annotate_beat_field(beat: dict, field: str, base_dir) -> None:
+            if not isinstance(beat, dict):
+                return
+            f = beat.get(field)
+            if not (f and isinstance(f, str)):
+                beat[f"{field}_exists"] = False
+                return
+            beat[f"{field}_exists"] = (base_dir / f).is_file()
+
+        for _role, _part in (state.get("videos") or {}).items():
+            if not isinstance(_part, dict):
+                continue
+            for _bid, _beat in (_part.get("beats") or {}).items():
+                if not isinstance(_beat, dict):
+                    continue
+                _p1 = _beat.get("phase_1")
+                if isinstance(_p1, dict):
+                    for _opt in (_p1.get("options") or []):
+                        _annotate(_opt)
+                _p2 = _beat.get("phase_2")
+                if isinstance(_p2, dict):
+                    for _opt in (_p2.get("options") or []):
+                        _annotate(_opt)
+                _annotate(_beat.get("lipsync"))
+                _final = _beat.get("final")
+                if isinstance(_final, dict):
+                    _annotate(_final, "file")
+                    _annotate(_final, "image_path")
+                # Bug-B3 — magic_*_path resolves to event_dir
+                _annotate_beat_field(_beat, "magic_still_path", event_dir)
+                _annotate_beat_field(_beat, "magic_video_path", event_dir)
+                # Bug-B3 — end_frame_path resolves to event_dir/end_frames/
+                _annotate_beat_field(_beat, "end_frame_path", end_frames_dir)
+    except Exception as _exc:
+        print(f"[v2-state] WARN: file_exists enrichment failed: {_exc!r}", flush=True)
+
     return h._send_json(200, state)
 
 

@@ -152,6 +152,42 @@
   border-radius: 4px;
   padding: 10px 12px;
 }
+
+/* Fade divider between beats */
+.mn-beat-fade-divider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 18px;
+  margin: 2px 0;
+  border-radius: 3px;
+  opacity: 0.4;
+  transition: opacity 0.15s, background 0.15s;
+  list-style: none;
+  background: transparent;
+  border: 1px dashed transparent;
+}
+.mn-beat-fade-divider:hover {
+  opacity: 1;
+  background: rgba(100, 180, 255, 0.08);
+  border-color: rgba(100, 180, 255, 0.3);
+}
+.mn-beat-fade-divider--active {
+  opacity: 1;
+  background: linear-gradient(90deg, transparent 0%, rgba(100, 180, 255, 0.18) 50%, transparent 100%);
+  border-color: rgba(100, 180, 255, 0.4);
+}
+.mn-beat-fade-divider--active:hover {
+  background: linear-gradient(90deg, transparent 0%, rgba(100, 180, 255, 0.28) 50%, transparent 100%);
+}
+.mn-beat-fade-label {
+  font-size: 10px;
+  color: rgba(150, 200, 255, 0.8);
+  pointer-events: none;
+  user-select: none;
+  letter-spacing: 0.03em;
+}
+
 .mn-beat-meta {
   display: flex;
   gap: 12px;
@@ -418,7 +454,12 @@
   flex-direction: column;
   gap: 4px;
   align-items: stretch;
+  position: relative;
 }
+/* Same hover-delete UX as main Library AssetTile (LD UI_PRIMITIVES_SHARED_V1). */
+.mn-phase-watercolor-tile:hover .mn-asset-tile-delete { opacity: 1; }
+/* Animation tiles: delete always visible — many are stale test encodes. */
+.mn-phase-watercolor-tile--animation .mn-asset-tile-delete { opacity: 0.92; }
 /* White interior — wraps the thumb so the cream mat shows around the white. */
 .mn-phase-watercolor-tile .mn-phase-watercolor-thumb-wrap {
   background: #ffffff;
@@ -458,6 +499,57 @@
   margin: 8px 0;
 }
 .mn-phase-script-editor:focus { border-color: var(--accent); outline: none; }
+
+/* Therapeutic brief panel — shown/hidden via 📋 toggle button.
+   Warm amber tint distinguishes it from regular panel chrome. */
+.mn-brief-toggle-btn {
+  font-size: 12px;
+  padding: 3px 10px;
+  opacity: 0.8;
+}
+.mn-brief-toggle-btn--active {
+  opacity: 1;
+  border-color: rgba(245, 176, 66, 0.5);
+  color: var(--text-warn);
+}
+.mn-brief-panel {
+  background: rgba(245, 176, 66, 0.06);
+  border: 1px solid rgba(245, 176, 66, 0.22);
+  border-radius: 5px;
+  padding: 12px 14px 10px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.mn-brief-section {
+  margin-bottom: 10px;
+}
+.mn-brief-section:last-child {
+  margin-bottom: 0;
+}
+.mn-brief-title {
+  display: block;
+  font-weight: 600;
+  font-size: 11px;
+  color: var(--text-warn);
+  margin-bottom: 4px;
+  letter-spacing: 0.02em;
+}
+.mn-brief-goal {
+  margin: 0;
+  color: var(--text);
+}
+.mn-brief-list {
+  margin: 0;
+  padding-left: 16px;
+  color: var(--text);
+}
+.mn-brief-list li {
+  margin-bottom: 3px;
+}
+.mn-brief-list li:last-child {
+  margin-bottom: 0;
+}
 .mn-phase-status-tag { font-size: 11px; font-style: italic; }
 .mn-phase-status-line {
   margin-top: 8px;
@@ -477,6 +569,44 @@
 .mn-phase-audio audio, .mn-phase-lipsync video {
   background: var(--code-bg);
   border-radius: 3px;
+}
+.mn-lipsync-video-wrapper {
+  position: relative;
+  display: inline-block;
+  line-height: 0; /* kills gap under video */
+}
+.mn-lipsync-watercolor-overlay {
+  position: absolute;
+  /* Top-left corner inset: ~35% of the video width, auto height preserves
+     the animation's aspect ratio. Positioned over the fireplace area. */
+  left: 2%;
+  top: 4%;
+  width: 35%;
+  height: auto;
+  object-fit: contain;
+  pointer-events: none;
+  /* WATERCOLOR_BLEND_FIX_V2 (2026-05-27): use normal blend so the white paper
+     background of the watercolor painting remains visible ("white background remains
+     untouched" — Kim's requirement). multiply was eating the white; normal shows
+     the full watercolor painting on its paper background over the video. */
+  mix-blend-mode: normal;
+}
+
+/* Overlay preview panel — shown after "Preview with Overlay" compositing */
+.mn-phase-overlay-preview {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: var(--code-bg);
+  border-radius: 4px;
+  border: 1px solid var(--border-color, #444);
+}
+.mn-btn-preview-overlay {
+  background: #2a5a2a;
+  color: #e8f5e8;
+  border-color: #3a7a3a;
+}
+.mn-btn-preview-overlay:hover:not(:disabled) {
+  background: #3a7a3a;
 }
 
 /* WaveformTimeline — S5.5f / WAVESURFER_TIMELINE_INTEGRATION_V1 */
@@ -513,20 +643,32 @@
      stacking context so the markers receive clicks. */
   z-index: 5;
 }
-.mn-waveform-cue-marker {
+.mn-waveform-cue-block {
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 8px;
-  margin-left: -4px;
-  background: rgba(204, 51, 51, 0.55);
-  border-left: 1px solid #c33;
-  border-right: 1px solid #c33;
+  min-width: 4px;
+  background: rgba(204, 51, 51, 0.35);
+  border-left: 2px solid #c33;
   pointer-events: auto;
   cursor: pointer;
+  box-sizing: border-box;
 }
-.mn-waveform-cue-marker:hover {
-  background: rgba(204, 51, 51, 0.85);
+.mn-waveform-cue-block:hover {
+  background: rgba(204, 51, 51, 0.55);
+}
+.mn-waveform-cue-block-handle {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  background: #c33;
+  cursor: ew-resize;
+  opacity: 0.7;
+}
+.mn-waveform-cue-block-handle:hover {
+  opacity: 1;
 }
 .mn-waveform-error {
   margin-top: 4px;
@@ -803,6 +945,82 @@
 }
 .mn-stitcher-sfx-cue-marker:hover {
   background: rgba(50, 130, 200, 0.85);
+}
+
+/* Inline preview player + beat timeline */
+.mn-stitcher-preview-area {
+  margin: 8px 0;
+  border: 1px solid #333;
+  border-radius: 4px;
+  background: #111;
+  overflow: hidden;
+}
+
+.mn-stitcher-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: #1a1a1a;
+  border-bottom: 1px solid #333;
+}
+
+.mn-stitcher-video-player {
+  width: 100%;
+  max-height: 420px;
+  display: block;
+  background: #000;
+}
+
+.mn-beat-timeline {
+  position: relative;
+  height: 32px;
+  background: #1a1a1a;
+  cursor: pointer;
+  border-top: 1px solid #333;
+  overflow: hidden;
+  user-select: none;
+}
+
+.mn-beat-timeline:hover {
+  background: #1f1f1f;
+}
+
+.mn-beat-timeline-loading {
+  display: flex;
+  align-items: center;
+}
+
+.mn-beat-segment {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-right: 1px solid #333;
+  box-sizing: border-box;
+  transition: background 0.1s;
+}
+
+.mn-beat-segment:hover {
+  filter: brightness(1.3);
+}
+
+.mn-beat-even {
+  background: #1e3a2e;
+}
+
+.mn-beat-odd {
+  background: #162d3a;
+}
+
+.mn-beat-segment-label {
+  font-size: 9px;
+  color: #aaa;
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 /* Module-level SFX cue strip (G6) — drop target spans below the slot strip. */
@@ -1846,6 +2064,49 @@
   display: contents;
 }
 
+/* BUG-A in-use highlight (Kim 2026-05-20, softened 2026-05-20 per Bug-4).
+   Kim feedback: glowing rim + large badge blocked thumbnail view. Replaced
+   with a small unobtrusive corner dot — distinguishes in-use crops without
+   obscuring the image. Master vs delivery is still readable from the dot. */
+.mn-library-tile-wrap.mn-library-tile-in-use .mn-asset-tile {
+  /* no outline, no box-shadow — thumbnail is unobstructed */
+}
+.mn-badge-in-use {
+  background: #16a34a;
+  color: #fff;
+  font-size: 0;            /* text hidden; tile-corner dot only */
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 3;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.7);
+}
+.mn-badge-in-use::after {
+  /* tooltip on hover so Kim can still read 'IN USE' explicitly */
+  content: "IN USE";
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  background: rgba(22, 163, 74, 0.95);
+  color: #fff;
+  padding: 2px 6px;
+  border-radius: 3px;
+  position: absolute;
+  top: 12px;
+  right: 0;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 120ms;
+  pointer-events: none;
+}
+.mn-library-tile-wrap:hover .mn-badge-in-use::after {
+  opacity: 1;
+}
+
 /* ─── Crop button (✂) — hover-revealed on library tiles + BG option tiles ─── */
 /* Library: .mn-asset-tile already has position:relative — crop btn sits top-left
    (delete btn is top-right) so they don't overlap. */
@@ -2048,4 +2309,14 @@
 }
 .mn-kim-done-wrap .kim-done-label {
   color: #555;
+}
+/* End-frame thumbnail hover-to-enlarge (T1-Phase 6 follow-up, Kim 2026-05-20).
+   Revised 7:35 PM after first attempt didn't visually enlarge — switched to
+   position:fixed + opacity/visibility to escape any ancestor overflow:hidden
+   clip and avoid inline-style precedence. 50x50 thumb expands to 400x400
+   viewport-fixed preview on hover. */
+.mn-end-frame-thumb-wrap:hover .mn-end-frame-large,
+.mn-end-frame-thumb-wrap:focus-within .mn-end-frame-large {
+  opacity: 1 !important;
+  visibility: visible !important;
 }

@@ -18,9 +18,10 @@ Phase A/B feature parity for the v59 client. Work that exists in legacy
 1. **WaveSurfer.js v7 waveform display** (per LD-472)
 2. **Watercolor library drag-drop onto timeline** (currently opens new tab via `/magic`)
 3. **Cue popover** (animation type / duration / Delete) per LD-470 procedural watercolor
-4. **Voice stem upload UI** (no `<input type="file">` anywhere in PhaseProducer)
-5. **Ambient preset selector inside producer** (currently only in Stitcher slots)
-6. **Phase A 3-clip handling** (fly-in / sitting / fly-out — currently only handles ONE base clip)
+4. **Watercolor Animate This** — deterministic PIL renderer per **LD-823** `WATERCOLOR_ANIMATE_PIL_RENDERER_V1` (2026-05-28). Canonical docs: `WATERCOLOR_ANIMATE_PROCEDURAL_TECH_SPEC_v2.md`, `LESSONS_LEARNED_20260528_PHASE_B_WATERCOLOR_ANIMATE_V1.md`. `motion_description` parsed server-side (not Claude).
+5. **Voice stem upload UI** (no `<input type="file">` anywhere in PhaseProducer)
+6. **Ambient preset selector inside producer** (currently only in Stitcher slots)
+7. **Phase A 3-clip handling** (fly-in / sitting / fly-out — currently only handles ONE base clip)
 
 ## §2 Predecessor state (S5.5c + S5.5e shipped 2026-05-03)
 
