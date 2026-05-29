@@ -211,6 +211,7 @@ for sub in Production/tools Production/lib Production/scripts; do
     fi
     log_safe="$(echo "$sub" | tr '/' '_')"
     rsync -a --delete \
+        --exclude 'stitch_editor_state.json' \
         "$SRC_TOOLING/$sub/" \
         "$DEST_DROPBOX/$sub/" \
         2>&1 | tee "$LOG_DIR/rsync_${log_safe}.log"

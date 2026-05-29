@@ -51,6 +51,12 @@ from tools.production_server import (  # noqa: E402
 _PSERVER_TOOLS_DIR = Path(__file__).resolve().parent.parent  # Production/tools/
 
 
+def _magic_canvas_dims(width: int, height: int) -> tuple[int, int]:
+    """Even W×H matching MagicCompositor libx264 crop (magic_compositor.py ~235)."""
+    w, h = int(width), int(height)
+    return w - (w % 2), h - (h % 2)
+
+
 def _data_root(h) -> Path:
     """Runtime ``Production/`` root, anchored on the running server's event_dir.
 
@@ -555,6 +561,7 @@ def handle_magic_still(h, body: dict)-> None:
     beat_id = (body or {}).get("beat_id")
     manual_path = (body or {}).get("manual_path") or []
     source_image_path_raw = (body or {}).get("source_image_path") or ""
+    path_authored_against = (body or {}).get("path_authored_against") or None
     if not beat_id:
         return h._send_error_v59(
                    400,
@@ -683,6 +690,7 @@ def handle_magic_still(h, body: dict)-> None:
             label=f"magic_still_{beat_id}_{ts}",
             beat_id=beat_id,
             tags=["magic", "magic_still", "tessa_ori"],
+            path_authored_against=path_authored_against,
         )
         rendered = mc.render_video(output_path=str(out_path))
     except Exception as exc:
@@ -735,6 +743,9 @@ def handle_magic_still(h, body: dict)-> None:
             beats = partition.setdefault("beats", {})
             beat = beats.setdefault(beat_id, {})
             beat["magic_still_path"] = magic_filename
+            beat["magic_manual_path"] = clean_path
+            if path_authored_against:
+                beat["magic_path_authored_against"] = path_authored_against
 
         scope_router.mutate_partition(h.app.state, scope, _set_magic_still)
     except Exception as exc:
@@ -912,6 +923,7 @@ def handle_magic_video(h, body: dict)-> None:
         stream = (meta.get("streams") or [{}])[0]
         width = int(stream.get("width") or 1280)
         height = int(stream.get("height") or 720)
+        comp_w, comp_h = _magic_canvas_dims(width, height)
         try:
             vid_duration = float(stream.get("duration") or 0)
         except (TypeError, ValueError):
@@ -933,6 +945,26 @@ def handle_magic_video(h, body: dict)-> None:
                    error_message="could not determine source duration",
                    retry_safe=True,
                )
+
+    # LD-828: path must be drawn on the lipsync frame surface, not the still crop.
+    if path_authored_against:
+        try:
+            aw = int(path_authored_against.get("width") or 0)
+            ah = int(path_authored_against.get("height") or 0)
+        except (TypeError, ValueError):
+            aw, ah = 0, 0
+        aw, ah = _magic_canvas_dims(aw, ah)
+        if aw > 0 and ah > 0 and (aw != comp_w or ah != comp_h):
+            return h._send_error_v59(
+                       400,
+                       error_code="PATH_SURFACE_MISMATCH",
+                       error_message=(
+                           f"path was drawn on {aw}x{ah} but source video is {comp_w}x{comp_h}. "
+                           "Re-open Magic on video and draw on the lipsync frame (not the still crop)."
+                       ),
+                       retry_safe=False,
+                       extra={"authored_dims": [aw, ah], "video_dims": [comp_w, comp_h]},
+                   )
 
     # LD-460 pin
     # Bug-A3 (spec §2 Topic-2, 2026-05-20): NO 'intro' default — handle_magic_video
@@ -968,7 +1000,7 @@ def handle_magic_video(h, body: dict)-> None:
         import numpy as _np_mv  # avoid clobbering outer np imports
         _req_id = _stdlib_uuid.uuid4().hex[:8]
         black_ref = out_dir / f"_tmp_black_ref_{beat_id}_{ts}_{_req_id}.png"
-        _PILImage.new("RGB", (width, height), (0, 0, 0)).save(black_ref)
+        _PILImage.new("RGB", (comp_w, comp_h), (0, 0, 0)).save(black_ref)
     except Exception as exc:
         return h._send_error_v59(
                    500,
@@ -1010,6 +1042,9 @@ def handle_magic_video(h, body: dict)-> None:
         except Exception:
             pass
 
+    # Lock decode/encode to compositor canvas (may differ from raw ffprobe on odd dims).
+    comp_w, comp_h = mc.W, mc.H
+
     # Step 2: Python-numpy additive composite piped to ffmpeg for h264 encoding.
     #
     # Root cause of the old ffmpeg blend=screen approach: ffmpeg blend operates on
@@ -1026,9 +1061,15 @@ def handle_magic_video(h, body: dict)-> None:
     #   - encode_proc reads raw RGB24 on stdin → h264 yuv420p + audio from lipsync
     #   - mc._make_trail(frame_idx) returns float32 (H,W,3) trail in [0,255]
     #   - additive blend: clip(bg + trail, 0, 255).astype(uint8)
-    frame_size = width * height * 3  # bytes per RGB24 frame
+    frame_size = comp_w * comp_h * 3  # bytes per RGB24 frame
 
     mc_n_frames = mc.n_frames  # set by MagicCompositor.__init__ from duration*fps
+
+    print(
+        f"[magic_video] compositing {len(clean_path)} path pts on {comp_w}x{comp_h} "
+        f"(authored={path_authored_against})",
+        flush=True,
+    )
 
     decode_cmd = [
         "ffmpeg",
@@ -1046,7 +1087,7 @@ def handle_magic_video(h, body: dict)-> None:
         # guarantees the decode side emits exactly floor(duration*24) frames regardless
         # of source framerate type (CFR or VFR), eliminating residual BrokenPipeError
         # risk on VFR inputs.
-        "-vf", f"scale={width}:{height},fps=24,format=rgb24",
+        "-vf", f"scale={comp_w}:{comp_h},fps=24,format=rgb24",
         "-f", "rawvideo", "-pix_fmt", "rgb24",
         "-vcodec", "rawvideo",
         "-an",                              # no audio in decode stream
@@ -1057,7 +1098,7 @@ def handle_magic_video(h, body: dict)-> None:
     encode_cmd = [
         "ffmpeg", "-y",
         "-f", "rawvideo", "-vcodec", "rawvideo",
-        "-s", f"{width}x{height}", "-r", "24", "-pix_fmt", "rgb24",
+        "-s", f"{comp_w}x{comp_h}", "-r", "24", "-pix_fmt", "rgb24",
         "-i", "pipe:0",                     # composited RGB frames on stdin
         "-i", safe_ffmpeg_src,              # original source for audio
         "-map", "0:v",
@@ -1084,7 +1125,7 @@ def handle_magic_video(h, body: dict)-> None:
             raw = decode_proc.stdout.read(frame_size)
             if len(raw) < frame_size:
                 break
-            bg_arr = _np_mv.frombuffer(raw, dtype=_np_mv.uint8).reshape(height, width, 3).astype(_np_mv.float32)
+            bg_arr = _np_mv.frombuffer(raw, dtype=_np_mv.uint8).reshape(comp_h, comp_w, 3).astype(_np_mv.float32)
 
             # Map lipsync frame_idx → magic compositor frame (same fps+duration, so 1:1)
             mc_frame_idx = min(frame_idx, mc_n_frames - 1)
@@ -1235,7 +1276,7 @@ def handle_magic_video(h, body: dict)-> None:
                 f"Magic trail on video {svp.name} for beat {beat_id} via "
                 f"S5 Workflow B (LD-469). {len(clean_path)} path points; "
                 f"black_bg=True + blend=screen overlay; "
-                f"source dims {width}x{height}, duration {vid_duration:.2f}s."
+                f"source dims {comp_w}x{comp_h}, duration {vid_duration:.2f}s."
             ),
             role="library",
         )
@@ -1253,6 +1294,9 @@ def handle_magic_video(h, body: dict)-> None:
             beats = partition.setdefault("beats", {})
             beat = beats.setdefault(beat_id, {})
             beat["magic_video_path"] = magic_filename
+            beat["magic_manual_path"] = clean_path
+            if path_authored_against:
+                beat["magic_path_authored_against"] = path_authored_against
 
         scope_router.mutate_partition(h.app.state, scope, _set_magic_video)
     except Exception as exc:
@@ -1313,7 +1357,8 @@ def handle_magic_video(h, body: dict)-> None:
         "magic_video_path": magic_filename,
         "partition_written": partition_written,
         "asset_id": registered_id,
-        "source_dims": [width, height],
+        "source_dims": [comp_w, comp_h],
+        "path_authored_against": path_authored_against,
         "duration_s": vid_duration,
         "manual_path_points": len(clean_path),
     })
@@ -1345,7 +1390,22 @@ def handle_storyboard_video_frame(h, query: dict) -> None:
         t = float(t_raw or 0)
     except (ValueError, TypeError):
         t = 0.0
+    # LD-828: match MagicCompositor + handle_magic_video canvas (even dims + scale).
+    try:
+        probe = _sp.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "json", safe],
+            capture_output=True, check=True, timeout=15,
+        )
+        meta = json.loads(probe.stdout.decode("utf-8"))
+        stream = (meta.get("streams") or [{}])[0]
+        fw = int(stream.get("width") or 1280)
+        fh = int(stream.get("height") or 720)
+        fw, fh = _magic_canvas_dims(fw, fh)
+    except (_sp.CalledProcessError, json.JSONDecodeError, ValueError, TypeError):
+        fw, fh = 1280, 720
     cmd = ["ffmpeg", "-y", "-ss", str(t), "-i", safe,
+           "-vf", f"scale={fw}:{fh}",
            "-vframes", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1"]
     try:
         result = _sp.run(cmd, capture_output=True, timeout=10, check=False)

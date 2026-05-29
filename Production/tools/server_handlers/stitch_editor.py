@@ -63,6 +63,107 @@ from tools.production_server import (  # noqa: E402
     _silcomp_audio,
 )
 
+# Canonical stitch job: one per event; slots accumulate across Send Out + exports.
+STITCH_SLOT_ORDER = ["intro", "phase_a", "phase_b", "resolution"]
+
+
+def stitch_event_job_name(event_id: str) -> str:
+    return f"{event_id}_stitch"
+
+
+def _normalize_job_slots(slots) -> dict:
+    if isinstance(slots, dict):
+        return dict(slots)
+    return {}
+
+
+def _slot_has_video(slot) -> bool:
+    return isinstance(slot, dict) and bool((slot.get("video_path") or "").strip())
+
+
+def stitch_migrate_legacy_to_canonical(state: dict, event_id: str) -> bool:
+    """Merge auto_* / phase_* legacy jobs into {event_id}_stitch without dropping slots."""
+    jobs = state.setdefault("jobs", {})
+    canonical_name = stitch_event_job_name(event_id)
+    canonical = jobs.setdefault(
+        canonical_name,
+        {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "slots": {},
+            "transitions": [],
+        },
+    )
+    if not isinstance(canonical.get("slots"), dict):
+        canonical["slots"] = {}
+
+    merged: dict[str, dict] = {}
+    for slot_key in STITCH_SLOT_ORDER:
+        existing = canonical["slots"].get(slot_key)
+        if _slot_has_video(existing):
+            merged[slot_key] = dict(existing)
+
+    changed = False
+    for name, job in jobs.items():
+        if name == canonical_name:
+            continue
+        if not (
+            name.startswith("auto_")
+            or (name.startswith("phase_") and event_id in name)
+        ):
+            continue
+        for slot_key, slot in _normalize_job_slots(job.get("slots")).items():
+            if slot_key not in STITCH_SLOT_ORDER or not _slot_has_video(slot):
+                continue
+            prev = merged.get(slot_key)
+            if prev is None or not _slot_has_video(prev):
+                merged[slot_key] = dict(slot)
+                changed = True
+
+    for slot_key, slot in merged.items():
+        if not _slot_has_video(slot):
+            continue
+        prev = canonical["slots"].get(slot_key) or {}
+        if prev.get("video_path") != slot.get("video_path") or not _slot_has_video(prev):
+            canonical["slots"][slot_key] = {**prev, **slot}
+            changed = True
+
+    if changed:
+        canonical["updated_at"] = datetime.now(timezone.utc).isoformat()
+    return changed
+
+
+def stitch_upsert_event_slot(
+    h,
+    event_id: str,
+    slot_key: str,
+    slot_patch: dict,
+    *,
+    beat_boundaries: list | None = None,
+) -> str:
+    """Upsert one slot into the canonical per-event stitch job."""
+    if slot_key not in STITCH_SLOT_ORDER:
+        raise ValueError(f"invalid stitch slot key: {slot_key!r}")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    job_name = stitch_event_job_name(event_id)
+
+    def upsert(state: dict) -> None:
+        stitch_migrate_legacy_to_canonical(state, event_id)
+        jobs = state.setdefault("jobs", {})
+        job = jobs[job_name]
+        if not isinstance(job.get("slots"), dict):
+            job["slots"] = {}
+        slot = job["slots"].setdefault(slot_key, {})
+        slot.update(slot_patch)
+        if beat_boundaries is not None:
+            slot["beat_boundaries"] = beat_boundaries
+        job["updated_at"] = now_iso
+
+    h.app.stitch_state.mutate_state(upsert)
+    return job_name
+
+
 def handle_stitch_loudnorm(h, body: dict)-> None:
 
     """POST /api/stitch_editor/loudnorm — apply ffmpeg single-pass loudnorm.
@@ -319,6 +420,15 @@ def handle_stitch_list_jobs(h)-> None:
 def handle_stitch_load_job(h, name: str)-> None:
 
     """GET /api/stitch_editor/job/<name> — load full job dict."""
+    if name.endswith("_stitch"):
+        event_id = name[: -len("_stitch")]
+        if event_id:
+
+            def migrate(state: dict) -> None:
+                stitch_migrate_legacy_to_canonical(state, event_id)
+
+            h.app.stitch_state.mutate_state(migrate)
+
     state = h.app.stitch_state.read_state()
     job = state.get("jobs", {}).get(name)
     if job is None:
@@ -347,10 +457,22 @@ def handle_stitch_save_job(h, body: dict)-> None:
                    retry_safe=False,
                )
 
-    slots = body.get("slots", [])
+    slots_raw = body.get("slots", [])
     transitions = body.get("transitions", [])
 
-    for i, slot in enumerate(slots):
+    # Slots may be dict keyed by slot id (v59 client + scene_assemble auto-populate)
+    # or legacy list. Validate video_path on slot dict values only.
+    if isinstance(slots_raw, dict):
+        slots = slots_raw
+        slot_items = [v for v in slots_raw.values() if isinstance(v, dict)]
+    elif isinstance(slots_raw, list):
+        slots = slots_raw
+        slot_items = [s for s in slots_raw if isinstance(s, dict)]
+    else:
+        slots = {}
+        slot_items = []
+
+    for i, slot in enumerate(slot_items):
         vp = slot.get("video_path", "")
         if vp:
             try:
@@ -364,15 +486,41 @@ def handle_stitch_save_job(h, body: dict)-> None:
                        )
 
     now_iso = datetime.now(timezone.utc).isoformat()
+    merge_slots = bool(body.get("merge_slots"))
+    scope = h._scope_body(body) or {}
+    event_id = (scope.get("event_id") or scope.get("scope_event_id") or "").strip()
 
     def upsert(state: dict) -> None:
         jobs = state.setdefault("jobs", {})
         existing = jobs.get(name, {})
+        if merge_slots and event_id and name == stitch_event_job_name(event_id):
+            stitch_migrate_legacy_to_canonical(state, event_id)
+            existing = jobs.get(name, {})
+            base_slots = _normalize_job_slots(existing.get("slots"))
+            incoming = _normalize_job_slots(slots)
+            for slot_key, slot in incoming.items():
+                if not isinstance(slot, dict):
+                    continue
+                if _slot_has_video(slot) or slot.get("sfx_cues") or slot.get("trim_in_s") is not None:
+                    prev = base_slots.get(slot_key) or {}
+                    base_slots[slot_key] = {**prev, **slot}
+            slots_out = base_slots
+        elif merge_slots and isinstance(slots, dict):
+            base_slots = _normalize_job_slots(existing.get("slots"))
+            for slot_key, slot in slots.items():
+                if not isinstance(slot, dict):
+                    continue
+                if _slot_has_video(slot) or slot.get("sfx_cues") or slot.get("trim_in_s") is not None:
+                    prev = base_slots.get(slot_key) or {}
+                    base_slots[slot_key] = {**prev, **slot}
+            slots_out = base_slots
+        else:
+            slots_out = slots
         jobs[name] = {
             "created_at": existing.get("created_at", now_iso),
             "updated_at": now_iso,
-            "slots": slots,
-            "transitions": transitions,
+            "slots": slots_out,
+            "transitions": transitions if transitions else existing.get("transitions", []),
         }
 
     h.app.stitch_state.mutate_state(upsert)

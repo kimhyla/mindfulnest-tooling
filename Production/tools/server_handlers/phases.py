@@ -1800,147 +1800,82 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
     })
 
 
-def handle_phase_b_preview(h, body: dict)-> None:
-
-    """POST /api/phase_b/preview
-
-    Body: {"phase": "a"|"b"}
-
-    Reads: phase_{phase}_lipsync_file, phase_{phase}_watercolor_cues_json,
-    phase_{phase}_*_mtime fields from state. Computes cache hash including
-    WATERCOLOR_OVERLAY_RECIPE_HASH (MEDIUM-6 fix), watercolor_cues_json
-    (normalized by _v2_validate_watercolor_cues_json), frame_x,
-    chromakey_for_video flag.
-
-    Cache hit: stream cached mp4 with no-cache+ETag.
-    Cache miss: call render_watercolor_overlay, atomic write, LRU cleanup.
-    """
-    # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
-        return
-
-    # Lazy-load helper.
+def _phase_load_overlay_helpers():
     try:
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "credentials_lib"))
         from ffmpeg_stitch import (  # type: ignore
             render_watercolor_overlay,
             resolve_watercolor_asset,
             WATERCOLOR_OVERLAY_RECIPE_HASH,
+            PREVIEW_OVERLAY_ENCODER_ARGS,
             lru_cleanup,
         )
     except ImportError as exc:
-        return h._send_error_v59(
-                   500,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"lib/ffmpeg_stitch import failed: {exc}",
-                   retry_safe=True,
-                   extra={"hint": "Verify Production/tools/lib/ffmpeg_stitch.py has render_watercolor_overlay."},
-               )
+        raise RuntimeError(f"lib/ffmpeg_stitch import failed: {exc}") from exc
+    return (
+        render_watercolor_overlay,
+        resolve_watercolor_asset,
+        WATERCOLOR_OVERLAY_RECIPE_HASH,
+        PREVIEW_OVERLAY_ENCODER_ARGS,
+        lru_cleanup,
+    )
 
-    phase = (body.get("phase") or "").strip().lower()
+
+def _phase_ensure_overlay_mp4(h, phase: str) -> tuple[Path, str]:
+    """Return cached or freshly rendered phase preview MP4 with overlays baked in."""
+    (
+        render_watercolor_overlay,
+        resolve_watercolor_asset,
+        WATERCOLOR_OVERLAY_RECIPE_HASH,
+        PREVIEW_OVERLAY_ENCODER_ARGS,
+        lru_cleanup,
+    ) = _phase_load_overlay_helpers()
+
     err = h._phase_check(phase)
     if err:
-        return h._send_error_v59(
-                   400,
-                   error_code="GENERIC_ERROR",
-                   error_message=err,
-                   retry_safe=False,
-                   extra={"hint": "phase is 'a' or 'b'."},
-               )
+        raise ValueError(err)
 
     state = h.app.state.read_state()
     lipsync_name = state.get(f"phase_{phase}_lipsync_file")
     if not lipsync_name:
-        return h._send_error_v59(
-                   400,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"phase_{phase}_lipsync_file not set in state",
-                   retry_safe=False,
-                   extra={"hint": "Run Send for Lipsync first."},
-               )
+        raise ValueError(f"phase_{phase}_lipsync_file not set in state")
     if "/" in lipsync_name or "\\" in lipsync_name or ".." in lipsync_name:
-        return h._send_error_v59(
-                   400,
-                   error_code="INVALID_PHASE_LIPSYNC_FILENAME_IN",
-                   error_message="invalid phase lipsync filename in state",
-                   retry_safe=False,
-               )
-    try:
-        lipsync_path = require_basename_under_dir(lipsync_name, h.app.event_dir)
-    except ValueError as exc:
-        return h._send_error_v59(
-                   400,
-                   error_code="GENERIC_ERROR",
-                   error_message=str(exc),
-                   retry_safe=False,
-               )
+        raise ValueError("invalid phase lipsync filename in state")
+
+    lipsync_path = require_basename_under_dir(lipsync_name, h.app.event_dir)
     if not lipsync_path.is_file():
-        return h._send_error_v59(
-                   404,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"lipsync file not found on disk: {lipsync_name}",
-                   retry_safe=False,
-                   extra={"hint": "File may have been deleted. Re-run Send for Lipsync."},
-               )
+        raise FileNotFoundError(f"lipsync file not found on disk: {lipsync_name}")
     lipsync_path = lipsync_path.resolve()
+
     cues_json = state.get(f"phase_{phase}_watercolor_cues_json") or "[]"
     try:
         cues = json.loads(cues_json)
     except Exception as exc:  # noqa: BLE001
-        return h._send_error_v59(
-                   400,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"phase_{phase}_watercolor_cues_json invalid: {exc}",
-                   retry_safe=False,
-                   extra={"hint": "Validator should have caught this -- state.json is corrupt. Reset via /api/v2/module/patch with empty array."},
-               )
+        raise ValueError(f"phase_{phase}_watercolor_cues_json invalid: {exc}") from exc
     if not isinstance(cues, list):
-        return h._send_error_v59(
-                   400,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"phase_{phase}_watercolor_cues_json is not a list",
-                   retry_safe=False,
-                   extra={"hint": "Reset to [] via /api/v2/module/patch."},
-               )
+        raise ValueError(f"phase_{phase}_watercolor_cues_json is not a list")
 
-    # Pre-check watercolor assets exist (HIGH-3 fail-loud).
     library_dir = h._phase_assets_dir("watercolor_library")
     missing_assets = []
     for i, cue in enumerate(cues):
         try:
-            resolve_watercolor_asset(library_dir, cue.get("key") or "",
-                                     cue.get("cue_type") or "png")
+            resolve_watercolor_asset(
+                library_dir, cue.get("key") or "", cue.get("cue_type") or "png",
+            )
         except FileNotFoundError as exc:
             missing_assets.append({"cue_index": i, "error": str(exc)})
     if missing_assets:
-        return h._send_error_v59(
-                   400,
-                   error_code="WATERCOLOR_ASSETS_MISSING_FOR_CUE",
-                   error_message="watercolor assets missing for cue(s)",
-                   retry_safe=False,
-                   extra={"missing": missing_assets, "hint": f"Drop the asset files into {library_dir} with the exact key names."},
-               )
+        raise FileNotFoundError(f"watercolor assets missing: {missing_assets}")
 
     frame_x = h._PHASE_FRAME_X[phase]
     frame_y = h._PHASE_FRAME_Y
     frame_max_w = h._PHASE_FRAME_MAX_W[phase]
     frame_max_h = h._PHASE_FRAME_MAX_H[phase]
 
-    # Cache hash: all preview-affecting inputs (MEDIUM-5 + MEDIUM-6).
     lipsync_mtime = os.path.getmtime(str(lipsync_path))
-    # Normalize cues for hash stability via the same validator used on write.
-    try:
-        normalized_cues_json = _v2_validate_watercolor_cues_json(cues_json)
-    except ValueError as exc:
-        return h._send_error_v59(
-                   400,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"watercolor_cues_json validation failed: {exc}",
-                   retry_safe=False,
-                   extra={"hint": "Re-drag cues to re-save with a valid schema."},
-               )
+    normalized_cues_json = _v2_validate_watercolor_cues_json(cues_json)
     hash_parts = [
-        f"recipe:v3",
+        "recipe:v3",
         f"wc_overlay:{WATERCOLOR_OVERLAY_RECIPE_HASH}",
         f"phase:{phase}",
         f"frame_x:{frame_x}",
@@ -1962,67 +1897,31 @@ def handle_phase_b_preview(h, body: dict)-> None:
     lock_path = preview_dir / ".lock"
 
     import fcntl  # noqa: PLC0415
-    # nosec: CodeQL false-positive — lock_path from server event_dir/preview, not user input
     lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
     try:
         try:
             fcntl.lockf(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except (BlockingIOError, OSError):
-            return h._send_error_v59(
-                       409,
-                       error_code="ANOTHER_PHASE_PREVIEW_IS_GENERATING",
-                       error_message="another phase preview is generating",
-                       retry_safe=False,
-                       extra={"hint": "Wait for the in-flight preview to finish."},
-                   )
-        # Cache hit.
-        if final_path.is_file():
-            evicted = lru_cleanup(preview_dir)
-            return h._stream_preview_mp4(final_path, cache_hash, evicted=evicted)
+        except (BlockingIOError, OSError) as exc:
+            raise RuntimeError("another phase preview is generating") from exc
 
-        # Cache miss: render.
-        try:
-            render_watercolor_overlay(
-                base_video_path=lipsync_path,
-                cues=cues,
-                frame_x=frame_x,
-                frame_y=frame_y,
-                output_path=final_path,
-                library_dir=library_dir,
-                chromakey_for_video=True,
-                frame_max_w=frame_max_w,
-                frame_max_h=frame_max_h,
-            )
-        except FileNotFoundError as exc:
-            return h._send_error_v59(
-                       400,
-                       error_code="GENERIC_ERROR",
-                       error_message=f"asset resolution failed: {exc}",
-                       retry_safe=False,
-                       extra={"hint": "Add the missing watercolor to the library."},
-                   )
-        except subprocess.TimeoutExpired as exc:
-            if final_path.is_file():
-                evicted = lru_cleanup(preview_dir)
-                return h._stream_preview_mp4(final_path, cache_hash, evicted=evicted)
-            return h._send_error_v59(
-                       504,
-                       error_code="GENERIC_ERROR",
-                       error_message=f"ffmpeg timeout after {exc.timeout}s",
-                       retry_safe=True,
-                       extra={"hint": "Try fewer cues or shorter lipsync."},
-                   )
-        except subprocess.CalledProcessError as exc:
-            stderr = (exc.stderr or b"")[:600].decode("utf-8", errors="replace")
-            return h._send_error_v59(
-                       500,
-                       error_code="GENERIC_ERROR",
-                       error_message=f"ffmpeg overlay failed (returncode={exc.returncode})",
-                       retry_safe=True,
-                       extra={"stderr": stderr, "hint": "Check stderr; common cause is missing cue asset or corrupt lipsync."},
-                   )
-        evicted = lru_cleanup(preview_dir)
-        return h._stream_preview_mp4(final_path, cache_hash, evicted=evicted)
+        if final_path.is_file():
+            lru_cleanup(preview_dir)
+            return final_path, cache_hash
+
+        render_watercolor_overlay(
+            base_video_path=lipsync_path,
+            cues=cues,
+            frame_x=frame_x,
+            frame_y=frame_y,
+            output_path=final_path,
+            library_dir=library_dir,
+            chromakey_for_video=True,
+            frame_max_w=frame_max_w,
+            frame_max_h=frame_max_h,
+            encoder_args=PREVIEW_OVERLAY_ENCODER_ARGS,
+        )
+        lru_cleanup(preview_dir)
+        return final_path, cache_hash
     finally:
         try:
             fcntl.lockf(lock_fd, fcntl.LOCK_UN)
@@ -2032,5 +1931,178 @@ def handle_phase_b_preview(h, body: dict)-> None:
             os.close(lock_fd)
         except OSError:
             pass
+
+
+def handle_phase_export_stitcher(h, body: dict) -> None:
+    """POST /api/phase/export_stitcher — bake overlays (Phase B) and upsert stitch slot."""
+    from server_handlers.stitch_editor import stitch_upsert_event_slot
+
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+
+    phase = (body.get("phase") or "").strip().lower()
+    err = h._phase_check(phase)
+    if err:
+        return h._send_error_v59(
+            400,
+            error_code="GENERIC_ERROR",
+            error_message=err,
+            retry_safe=False,
+            extra={"hint": "phase is 'a' or 'b'."},
+        )
+
+    event_id = h.app.event_dir.name
+    slot_key = f"phase_{phase}"
+    state = h.app.state.read_state()
+    overlay_baked = False
+
+    if phase == "b":
+        try:
+            final_path, _cache_hash = _phase_ensure_overlay_mp4(h, phase)
+        except ValueError as exc:
+            return h._send_error_v59(
+                400, error_code="GENERIC_ERROR", error_message=str(exc), retry_safe=False,
+            )
+        except FileNotFoundError as exc:
+            return h._send_error_v59(
+                404, error_code="GENERIC_ERROR", error_message=str(exc), retry_safe=False,
+            )
+        except RuntimeError as exc:
+            return h._send_error_v59(
+                409, error_code="ANOTHER_PHASE_PREVIEW_IS_GENERATING",
+                error_message=str(exc), retry_safe=False,
+            )
+        except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or b"")[:600].decode("utf-8", errors="replace")
+            return h._send_error_v59(
+                500, error_code="GENERIC_ERROR",
+                error_message=f"ffmpeg overlay failed (returncode={exc.returncode})",
+                retry_safe=True, extra={"stderr": stderr},
+            )
+        root = h._stitch_project_root()
+        video_rel = str(final_path.resolve().relative_to(root))
+        overlay_baked = True
+    else:
+        stitched_name = state.get("phase_a_stitched_file")
+        if not stitched_name:
+            return h._send_error_v59(
+                400,
+                error_code="GENERIC_ERROR",
+                error_message="phase_a_stitched_file not set in state",
+                retry_safe=False,
+                extra={"hint": "Run Mix Audio (auto-stitch) first."},
+            )
+        if "/" in stitched_name or "\\" in stitched_name or ".." in stitched_name:
+            return h._send_error_v59(
+                400,
+                error_code="INVALID_PHASE_STITCHED_FILENAME",
+                error_message="invalid phase_a_stitched filename in state",
+                retry_safe=False,
+            )
+        video_rel = f"Production/{event_id}/{stitched_name}"
+
+    try:
+        h._stitch_resolve_path(video_rel)
+    except ValueError:
+        return h._send_error_v59(
+            403,
+            error_code="VIDEO_PATH_OUTSIDE_PROJECT_ROOT",
+            error_message="export video path outside project root",
+            retry_safe=False,
+        )
+
+    job_name = stitch_upsert_event_slot(
+        h,
+        event_id,
+        slot_key,
+        {
+            "video_path": video_rel,
+            "overlay_baked": overlay_baked,
+            "source": f"phase_{phase}_export",
+        },
+    )
+    return h._send_json(200, {
+        "ok": True,
+        "job_name": job_name,
+        "slot_key": slot_key,
+        "video_path": video_rel,
+        "overlay_baked": overlay_baked,
+    })
+
+
+def handle_phase_b_preview(h, body: dict)-> None:
+
+    """POST /api/phase_b/preview — stream cached or freshly rendered overlay MP4."""
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+
+    phase = (body.get("phase") or "").strip().lower()
+    err = h._phase_check(phase)
+    if err:
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=err,
+                   retry_safe=False,
+                   extra={"hint": "phase is 'a' or 'b'."},
+               )
+
+    try:
+        final_path, cache_hash = _phase_ensure_overlay_mp4(h, phase)
+    except RuntimeError as exc:
+        if "import failed" in str(exc):
+            return h._send_error_v59(
+                       500,
+                       error_code="GENERIC_ERROR",
+                       error_message=str(exc),
+                       retry_safe=True,
+                       extra={"hint": "Verify Production/tools/lib/ffmpeg_stitch.py has render_watercolor_overlay."},
+                   )
+        return h._send_error_v59(
+                   409,
+                   error_code="ANOTHER_PHASE_PREVIEW_IS_GENERATING",
+                   error_message="another phase preview is generating",
+                   retry_safe=False,
+                   extra={"hint": "Wait for the in-flight preview to finish."},
+               )
+    except ValueError as exc:
+        return h._send_error_v59(
+                   400,
+                   error_code="GENERIC_ERROR",
+                   error_message=str(exc),
+                   retry_safe=False,
+               )
+    except FileNotFoundError as exc:
+        msg = str(exc)
+        if "watercolor assets missing" in msg:
+            return h._send_error_v59(
+                       400,
+                       error_code="WATERCOLOR_ASSETS_MISSING_FOR_CUE",
+                       error_message="watercolor assets missing for cue(s)",
+                       retry_safe=False,
+                       extra={"hint": msg},
+                   )
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=msg,
+                   retry_safe=False,
+               )
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or b"")[:600].decode("utf-8", errors="replace")
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"ffmpeg overlay failed (returncode={exc.returncode})",
+                   retry_safe=True,
+                   extra={"stderr": stderr, "hint": "Check stderr; common cause is missing cue asset or corrupt lipsync."},
+               )
+
+    try:
+        _, _, _, _, lru_cleanup = _phase_load_overlay_helpers()
+        evicted = lru_cleanup(final_path.parent)
+    except Exception:
+        evicted = []
+    return h._stream_preview_mp4(final_path, cache_hash, evicted=evicted)
 
 

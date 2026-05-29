@@ -37,6 +37,7 @@ const SLOT_DEFS: Array<{ key: SlotKey; label: string }> = [
 interface StitchSlot {
   video_path?: string;
   video_dur_ms?: number;
+  beat_boundaries?: BeatBoundary[];
   ambient_bed?: string;
   loudnorm_already_applied?: boolean;
   sfx_cues?: SfxCue[];
@@ -218,15 +219,74 @@ export function StitcherTab() {
         }
         const data = res.data;
         const eventName = activeScope.value.event_id;
-        // Pick the active job for this event.
-        // Priority: (1) job name contains event_id (legacy named jobs like "phase7_Event_1"),
-        // (2) auto_<slot> job created by scene_assemble Send Out path,
-        // (3) most-recently-updated job (by updated_at),
-        // (4) jobs[0] as last resort.
         const jobs = data?.jobs ?? [];
+        const canonicalName = `${eventName}_stitch`;
+
+        const mergeSlotsFromJob = (
+          merged: Record<string, StitchSlot>,
+          jobSlots: Record<string, StitchSlot> | StitchSlot[] | undefined,
+        ) => {
+          if (!jobSlots || typeof jobSlots !== 'object' || Array.isArray(jobSlots)) return;
+          for (const [key, slot] of Object.entries(jobSlots)) {
+            if (!slot?.video_path) continue;
+            merged[key] = { ...(merged[key] ?? {}), ...slot };
+          }
+        };
+
+        // Prefer canonical per-event job (server upserts preserve all slots).
+        const canonicalDetailRes = await apiGet<{ job?: StitchJob; name?: string }>(
+          'stitch_editor_job',
+          { job_name: canonicalName },
+        );
+        if (!cancelled && canonicalDetailRes.ok && canonicalDetailRes.data?.job) {
+          const canonicalJob = canonicalDetailRes.data.job;
+          const canonicalSlots: Record<string, StitchSlot> = {};
+          mergeSlotsFromJob(canonicalSlots, canonicalJob.slots as Record<string, StitchSlot>);
+          if (Object.keys(canonicalSlots).length > 0) {
+            setJob({
+              name: canonicalName,
+              slots: canonicalSlots,
+              transitions: canonicalJob.transitions ?? [],
+            });
+            setError(null);
+            setLoading(false);
+            return;
+          }
+        }
+
+        // Legacy fallback: merge auto_* + phase_* jobs (skip empty slots).
+        const relevantSummaries = jobs.filter(
+          (j) => j.name?.startsWith('auto_') || j.name?.includes(eventName),
+        );
+        const mergedSlots: Record<string, StitchSlot> = {};
+        let mergedTransitions: Transition[] = [];
+        for (const summary of relevantSummaries) {
+          if (!summary.name || summary.name === canonicalName) continue;
+          const mergeDetailRes = await apiGet<{ job?: StitchJob; name?: string }>(
+            'stitch_editor_job',
+            { job_name: summary.name },
+          );
+          if (cancelled || !mergeDetailRes.ok || !mergeDetailRes.data?.job) continue;
+          const j = mergeDetailRes.data.job;
+          mergeSlotsFromJob(mergedSlots, j.slots as Record<string, StitchSlot>);
+          if (j.transitions?.length && !mergedTransitions.length) {
+            mergedTransitions = j.transitions;
+          }
+        }
+        if (Object.keys(mergedSlots).length > 0) {
+          setJob({
+            name: canonicalName,
+            slots: mergedSlots,
+            transitions: mergedTransitions,
+          });
+          setError(null);
+          setLoading(false);
+          return;
+        }
+        // Fallback: legacy single-job pick.
         const eventJobSummary =
-          jobs.find((j) => j.name?.includes(eventName)) ??
           jobs.find((j) => j.name?.startsWith('auto_')) ??
+          jobs.find((j) => j.name?.includes(eventName)) ??
           (jobs.length > 1
             ? jobs.reduce((a, b) =>
                 ((a as any).updated_at ?? '') >= ((b as any).updated_at ?? '') ? a : b
@@ -287,6 +347,7 @@ export function StitcherTab() {
       name: job.name,
       slots: nextSlots,
       transitions: transitions ?? job.transitions ?? [],
+      merge_slots: true,
     });
     if (res.ok) {
       // Update local state mirror immediately so the UI reflects the write.
@@ -324,12 +385,23 @@ export function StitcherTab() {
     return t ?? null;
   };
 
-  const fetchBeatBoundaries = async () => {
+  const fetchBeatBoundaries = async (slot?: SlotKey) => {
     setBeatBoundariesLoading(true);
     setBeatBoundaries([]);
+    const slotData = slot ? job?.slots?.[slot] : undefined;
+    if (slotData?.beat_boundaries?.length) {
+      setBeatBoundaries(slotData.beat_boundaries);
+      setBeatBoundariesLoading(false);
+      return;
+    }
+    const scopeTarget =
+      slot && (slot === 'intro' || slot === 'resolution') ? slot : undefined;
     const res = await apiGet<{ ok: boolean; beats?: BeatBoundary[] }>(
       'stitch_editor_beat_boundaries',
-      { event_id: activeScope.value.event_id },
+      {
+        event_id: activeScope.value.event_id,
+        ...(scopeTarget ? { scope_target_video: scopeTarget } : {}),
+      },
     );
     setBeatBoundariesLoading(false);
     if (res.ok && res.data?.beats?.length) {
@@ -347,7 +419,9 @@ export function StitcherTab() {
     const totalMs = beatBoundaries.length > 0
       ? beatBoundaries[beatBoundaries.length - 1].end_ms
       : video.duration * 1000;
-    video.currentTime = (ratio * totalMs) / 1000;
+    const videoMs = Number.isFinite(video.duration) ? video.duration * 1000 : totalMs;
+    const seekMs = Math.min(totalMs, videoMs > 0 ? videoMs : totalMs);
+    video.currentTime = (ratio * seekMs) / 1000;
   };
 
   const onPreviewSlot = async (slot: SlotKey) => {
@@ -374,7 +448,7 @@ export function StitcherTab() {
         // after async/await (breaks trusted-event chain). Rendered link is user-clicked.
         setPreviewUrls((prev) => ({ ...prev, [slot]: data.preview_url }));
         setActivePreviewSlot(slot);
-        void fetchBeatBoundaries();
+        void fetchBeatBoundaries(slot);
       }
       setStatusMsg(`✓ Preview ${slot} ready`);
     } else {
@@ -793,7 +867,12 @@ export function StitcherTab() {
                 title="Click to seek"
               >
                 {beatBoundaries.length > 0 ? (() => {
-                  const totalMs = beatBoundaries[beatBoundaries.length - 1].end_ms;
+                  const video = videoRef.current;
+                  const boundaryTotal = beatBoundaries[beatBoundaries.length - 1].end_ms;
+                  const videoMs = video && Number.isFinite(video.duration)
+                    ? video.duration * 1000
+                    : boundaryTotal;
+                  const totalMs = videoMs > 0 ? Math.min(boundaryTotal, videoMs) : boundaryTotal;
                   return beatBoundaries.map((b, i) => {
                     const leftPct = (b.start_ms / totalMs) * 100;
                     const widthPct = (b.duration_ms / totalMs) * 100;

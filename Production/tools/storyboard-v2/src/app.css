@@ -659,16 +659,27 @@
 }
 .mn-waveform-cue-block-handle {
   position: absolute;
-  right: 0;
   top: 0;
   bottom: 0;
-  width: 6px;
+  width: 10px;
   background: #c33;
   cursor: ew-resize;
-  opacity: 0.7;
+  opacity: 0.85;
+  z-index: 2;
+  touch-action: none;
 }
-.mn-waveform-cue-block-handle:hover {
+.mn-waveform-cue-block-handle--left {
+  left: 0;
+  transform: translateX(-50%);
+}
+.mn-waveform-cue-block-handle--right {
+  right: 0;
+  transform: translateX(50%);
+}
+.mn-waveform-cue-block-handle:hover,
+.mn-waveform-cue-block-handle:active {
   opacity: 1;
+  background: #a02222;
 }
 .mn-waveform-error {
   margin-top: 4px;

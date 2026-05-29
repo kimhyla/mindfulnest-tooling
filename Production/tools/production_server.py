@@ -6222,6 +6222,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_watercolor_animate(body)
             if path == "/api/phase/watercolor_delete":
                 return self._handle_phase_watercolor_delete(body)
+            if path == "/api/phase/export_stitcher":
+                return self._handle_phase_export_stitcher(body)
             if path == "/api/stitch_editor/loudnorm":
                 return self._handle_stitch_loudnorm(body)
             # S5 v3.1 endpoints — LDs 468 + 469.
@@ -6711,14 +6713,18 @@ class ProductionHandler(BaseHTTPRequestHandler):
             beats = partition.get("beats") or {}
             display_order = partition.get("display_order") or []
 
-            # Filter to ordered beats with phase_1.selected_option set.
+            # Include beats with selected_option OR committed magic/final/lipsync media.
+            _assemble_event_dir = (
+                self.app.event_dir if scope_type == "event" else scope_root
+            )
+            from ffmpeg_stitch import beat_is_assemblable  # noqa: PLC0415
             allowed = set(display_order)
             ordered_beat_ids: list[str] = [
                 bid for bid in display_order
                 if bid in allowed
                 and bid in beats
                 and isinstance(beats[bid], dict)
-                and (beats[bid].get("phase_1") or {}).get("selected_option") is not None
+                and beat_is_assemblable(beats[bid], event_dir=_assemble_event_dir)
             ]
             # Fallback: if display_order is empty (legacy / cold partitions),
             # use sorted beat ids — consistent with _handle_preview_stitched
@@ -6727,15 +6733,19 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 ordered_beat_ids = sorted(
                     bid for bid, b in beats.items()
                     if isinstance(b, dict)
-                    and (b.get("phase_1") or {}).get("selected_option") is not None
+                    and beat_is_assemblable(b, event_dir=_assemble_event_dir)
                 )
             if not ordered_beat_ids:
                 return self._send_error_v59(
                            400,
-                           error_code="NO_BEATS_WITH_SELECTED_OPTION",
-                           error_message="no beats with selected_option in target partition",
+                           error_code="NO_ASSEMBLABLE_BEATS",
+                           error_message="no assemblable beats in target partition",
                            retry_safe=False,
-                           extra={"ok": False, "code": "EMPTY_SCENE"},
+                           extra={
+                               "ok": False,
+                               "code": "EMPTY_SCENE",
+                               "hint": "Select an animation option or run magic preview on each beat in display_order.",
+                           },
                        )
 
             # Resolve clips_dir per scope.
@@ -6788,8 +6798,11 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 _beat_lipsync = _beat_dict.get("lipsync") or {}
                 _beat_final_src = (_beat_dict.get("final") or {}).get("source")
                 _is_raw_option_src = (
-                    bool(meta.get("is_magic_source"))  # magic output is always silent
-                    or _beat_lipsync.get("status") != "completed"
+                    bool(meta.get("is_magic_still_source"))  # magic_still is silent
+                    or (
+                        _beat_lipsync.get("status") != "completed"
+                        and not meta.get("is_magic_video_source")
+                    )
                     or _beat_final_src == "raw_option"
                 )
                 _speech_mp3: "Path | None" = None
@@ -7098,31 +7111,31 @@ class ProductionHandler(BaseHTTPRequestHandler):
             try:
                 _scene_path_str = str(scene_path)
                 _slot_key = scope_target_video  # e.g. "intro"
-                _auto_job_name = f"auto_{_slot_key}"  # e.g. "auto_intro"
-                def _upsert_stitcher_slot(st: dict) -> None:
-                    jobs = st.setdefault("jobs", {})
-                    # Always use the deterministic auto_<slot> job so the client
-                    # can find it via startsWith('auto_') prefix match.
-                    # Never fall back into existing named jobs (probe_test,
-                    # phase7_final, etc.) — that misfires when those jobs'
-                    # names don't contain the event_id the client searches for.
-                    job_name = _auto_job_name
-                    if job_name not in jobs:
-                        jobs[job_name] = {
-                            "created_at": datetime.now(timezone.utc).isoformat(),
-                            "updated_at": datetime.now(timezone.utc).isoformat(),
-                            "slots": {},
-                            "transitions": [],
-                        }
-                    _job = jobs[job_name]
-                    # Fix: existing jobs may have "slots": [] (list). Normalize to dict.
-                    if not isinstance(_job.get("slots"), dict):
-                        _job["slots"] = {}
-                    _job["slots"].setdefault(_slot_key, {})
-                    _job["slots"][_slot_key]["video_path"] = _scene_path_str
-                    _job["updated_at"] = datetime.now(timezone.utc).isoformat()
-                self.app.stitch_state.mutate_state(_upsert_stitcher_slot)
-                print(f"[scene_assemble] stitcher {_auto_job_name} slot auto-populated → {_scene_path_str}", flush=True)
+                _slot_boundaries = []
+                _cursor_ms = 0
+                for _m in beat_metas:
+                    _dur_ms = round(float(_m["duration_s"]) * 1000)
+                    _slot_boundaries.append({
+                        "beat_id": _m["beat_id"],
+                        "start_ms": _cursor_ms,
+                        "end_ms": _cursor_ms + _dur_ms,
+                        "duration_ms": _dur_ms,
+                    })
+                    _cursor_ms += _dur_ms
+                from server_handlers.stitch_editor import stitch_upsert_event_slot
+                _event_id = scope_root.name
+                stitch_upsert_event_slot(
+                    self,
+                    _event_id,
+                    _slot_key,
+                    {"video_path": _scene_path_str, "source": "scene_assemble"},
+                    beat_boundaries=_slot_boundaries,
+                )
+                print(
+                    f"[scene_assemble] stitcher { _event_id }_stitch slot {_slot_key} "
+                    f"auto-populated → {_scene_path_str}",
+                    flush=True,
+                )
             except Exception as _ss_exc:
                 print(f"[scene_assemble] stitcher slot auto-populate failed (non-fatal): {_ss_exc}", flush=True)
 
@@ -10183,19 +10196,21 @@ body {{padding-top:44px!important;}}
         beats = snapshot.get("beats") or {}
         display_order = snapshot.get("display_order") or []
         allowed = set(display_order)
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "credentials_lib"))
+        from ffmpeg_stitch import beat_is_assemblable, compute_finalize_args_hash  # noqa: PLC0415
         beat_ids_sorted = sorted(
             bid for bid, b in beats.items()
             if bid in allowed
             and isinstance(b, dict)
-            and (b.get("phase_1") or {}).get("selected_option") is not None
+            and beat_is_assemblable(b, event_dir=self.app.event_dir)
         )
         if not beat_ids_sorted:
             return self._send_error_v59(
                        400,
-                       error_code="NO_BEATS_WITH_SELECTED_OPTION",
-                       error_message="no beats with selected_option in snapshot",
+                       error_code="NO_ASSEMBLABLE_BEATS",
+                       error_message="no assemblable beats in snapshot",
                        retry_safe=False,
-                       extra={"hint": "Select an animation option for each beat before previewing."},
+                       extra={"hint": "Select an animation option or run magic on each beat before previewing."},
                    )
 
         # ---- counter (a) HIGH: validate file existence BEFORE hash ----
@@ -10203,7 +10218,9 @@ body {{padding-top:44px!important;}}
         missing = []
         for bid in beat_ids_sorted:
             try:
-                resolve_beat_file(bid, snapshot, clips_dir)
+                compute_finalize_args_hash(
+                    snapshot, bid, clips_dir, event_dir=self.app.event_dir,
+                )
             except FileNotFoundError as exc:
                 missing.append({"beat_id": bid, "error": str(exc)})
         if missing:
@@ -11047,28 +11064,74 @@ body {{padding-top:44px!important;}}
                )
 
     def _handle_stitch_beat_boundaries(self) -> None:
-        """GET /api/stitch_editor/beat_boundaries
-        Returns beat boundary timecodes by probing animation_clips_final/*.
-        Used by StitcherTab to render beat markers on the inline timeline."""
+        """GET /api/stitch_editor/beat_boundaries?scope_target_video=resolution
+        Returns beat boundary timecodes for a storyboard video partition.
+        When scope_target_video is intro/resolution, only beats in that
+        partition's display_order with selected_option are included.
+        Without scope_target_video, falls back to legacy global cache scan."""
         import re as _re
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "credentials_lib"))
+        from ffmpeg_stitch import beat_is_assemblable  # noqa: PLC0415
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        scope_target_video = (qs.get("scope_target_video") or [None])[0]
+        if isinstance(scope_target_video, list):
+            scope_target_video = scope_target_video[0] if scope_target_video else None
+
         clips_dir = self.app.event_dir / "animation_clips_final"
+        ordered_beat_ids: list[str] = []
+        if scope_target_video in ("intro", "resolution"):
+            try:
+                state = self.app.state.read_state()
+                partition = ((state.get("videos") or {}).get(scope_target_video) or {})
+                beats = partition.get("beats") or {}
+                display_order = partition.get("display_order") or []
+                allowed = set(display_order)
+                ordered_beat_ids = [
+                    bid for bid in display_order
+                    if bid in allowed
+                    and bid in beats
+                    and isinstance(beats[bid], dict)
+                    and beat_is_assemblable(beats[bid], event_dir=self.app.event_dir)
+                ]
+                if not ordered_beat_ids:
+                    ordered_beat_ids = sorted(
+                        bid for bid, b in beats.items()
+                        if isinstance(b, dict)
+                        and beat_is_assemblable(b, event_dir=self.app.event_dir)
+                    )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[beat_boundaries] WARN partition read failed: {exc}", flush=True)
+
         if not clips_dir.exists():
             self._send_json(200, {"ok": True, "beats": [], "total_ms": 0})
             return
 
-        pattern = _re.compile(r"beat_(\d+)_final_.*\.mp4$")
-        beat_files: dict[int, Path] = {}
-        try:
-            for f in clips_dir.iterdir():
-                m = pattern.match(f.name)
-                if m:
-                    beat_num = int(m.group(1))
-                    existing = beat_files.get(beat_num)
-                    if existing is None or f.stat().st_mtime > existing.stat().st_mtime:
-                        beat_files[beat_num] = f
-        except OSError as exc:
-            self._send_error_v59(500, "FS_ERROR", str(exc), retry_safe=True)
-            return
+        beat_files: dict[str, Path] = {}
+        if ordered_beat_ids:
+            try:
+                for f in clips_dir.iterdir():
+                    for bid in ordered_beat_ids:
+                        if f.name.startswith(f"{bid}_final_") and f.suffix == ".mp4":
+                            existing = beat_files.get(bid)
+                            if existing is None or f.stat().st_mtime > existing.stat().st_mtime:
+                                beat_files[bid] = f
+            except OSError as exc:
+                self._send_error_v59(500, "FS_ERROR", str(exc), retry_safe=True)
+                return
+        else:
+            pattern = _re.compile(r"beat_(\d+)_final_.*\.mp4$")
+            try:
+                for f in clips_dir.iterdir():
+                    m = pattern.match(f.name)
+                    if m:
+                        beat_num = int(m.group(1))
+                        bid = f"beat_{beat_num:02d}"
+                        existing = beat_files.get(bid)
+                        if existing is None or f.stat().st_mtime > existing.stat().st_mtime:
+                            beat_files[bid] = f
+            except OSError as exc:
+                self._send_error_v59(500, "FS_ERROR", str(exc), retry_safe=True)
+                return
 
         if not beat_files:
             self._send_json(200, {"ok": True, "beats": [], "total_ms": 0})
@@ -11076,15 +11139,18 @@ body {{padding-top:44px!important;}}
 
         boundaries = []
         cursor_ms = 0
-        for beat_num in sorted(beat_files):
-            fpath = beat_files[beat_num]
+        beat_order = ordered_beat_ids if ordered_beat_ids else sorted(beat_files.keys())
+        for bid in beat_order:
+            fpath = beat_files.get(bid)
+            if fpath is None:
+                continue
             try:
                 dur_s = _ffprobe_duration(fpath)
                 dur_ms = round(dur_s * 1000)
             except Exception:  # noqa: BLE001
                 dur_ms = 3000  # fallback 3s if probe fails
             boundaries.append({
-                "beat_id": f"beat_{beat_num:02d}",
+                "beat_id": bid,
                 "start_ms": cursor_ms,
                 "end_ms": cursor_ms + dur_ms,
                 "duration_ms": dur_ms,
@@ -12069,6 +12135,10 @@ body {{padding-top:44px!important;}}
     def _handle_phase_b_preview(self, body: dict) -> None:
         from server_handlers.phases import handle_phase_b_preview
         return handle_phase_b_preview(self, body)
+
+    def _handle_phase_export_stitcher(self, body: dict) -> None:
+        from server_handlers.phases import handle_phase_export_stitcher
+        return handle_phase_export_stitcher(self, body)
 
 
 # ---------------------------------------------------------------------------

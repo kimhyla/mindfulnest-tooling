@@ -356,7 +356,7 @@
       { tag: 'b', text: beatId },
       { text: '…' },
       { tag: 'br' },
-      { tag: 'small', style: 'color:#555', text: 'Draw a 3-8 point path on the still reference; magic will overlay onto the moving video.' },
+      { tag: 'small', style: 'color:#555', text: 'Draw a 3-8 point path on the lipsync video frame below; magic overlays onto the moving video.' },
     ]);
   } else if (mode === 'watercolor_animate') {
     lbl.textContent = `Animate watercolor: ${watercolorKey}`;
@@ -476,7 +476,6 @@
     const image = new Image();
     image.onload = () => {
         applyImage(image);
-        window.__pathAuthoredAgainst = { width: image.naturalWidth, height: image.naturalHeight };
     };
     image.onerror = () => {
         console.error('[path_picker] Server-side frame extract failed — refusing to fall back to still (would cause coordinate mismatch).');
@@ -497,10 +496,16 @@
     image.src = url;
   }
 
+  function evenCanvasDims(w, h) {
+    return [w - (w % 2), h - (h % 2)];
+  }
+
   function applyImage(image) {
     img = image;
-    canvas.width  = image.naturalWidth;
-    canvas.height = image.naturalHeight;
+    let [w, h] = evenCanvasDims(image.naturalWidth, image.naturalHeight);
+    canvas.width  = w;
+    canvas.height = h;
+    window.__pathAuthoredAgainst = { width: w, height: h };
     canvas.style.display = 'block';
     document.getElementById('drop-text').style.display = 'none';
     points = [];
@@ -565,7 +570,7 @@
   function redraw() {
     if (!img) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(img, 0, 0);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
     if (points.length === 0) return;
 
     ctx.beginPath();

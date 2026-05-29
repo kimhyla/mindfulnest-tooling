@@ -183,19 +183,24 @@ class MagicCompositor:
         tags: list = None,
         scene_key: str = None,
         path_authored_against: dict = None,
+        path_interp: str = "polyline",
     ):
         if style not in STYLES:
             raise ValueError(f"Unknown style '{style}'. Available: {list(STYLES)}")
 
+        if path_interp not in ("polyline", "bezier"):
+            raise ValueError(f"path_interp must be 'polyline' or 'bezier', got {path_interp!r}")
+
         self.bg_path  = background_path
         self.path_pts = path_pts
-        self.path_pts = self._aspect_correct(self.path_pts, path_authored_against)
+        self.path_interp = path_interp
         self.style    = style
         self.s        = STYLES[style]
         self.duration = duration
         self.fps      = fps
         self.seed     = seed
         self.n_frames = int(fps * duration)
+        self._path_authored_against = path_authored_against
 
         # LD-421 registration metadata
         self.module_id = module_id
@@ -239,6 +244,8 @@ class MagicCompositor:
             print(f"  cropped odd dims {_orig_w}x{_orig_h} -> {_new_w}x{_new_h} (libx264 even-dim requirement)", flush=True)
         self.W, self.H = self.bg_img.size
         print(f"  {self.W}x{self.H}", flush=True)
+
+        self.path_pts = self._aspect_correct(self.path_pts, self._path_authored_against)
 
         self._gain = self._calibrate_brightness()
         self._particles = self._build_particles()
@@ -355,7 +362,7 @@ class MagicCompositor:
         lums = []
         for i in range(20):
             t = i / 19
-            fx, fy = self._bezier(t)
+            fx, fy = self._path_at(t)
             px = min(self.W - 1, int(fx * self.W))
             py = min(self.H - 1, int(fy * self.H))
             r, g, b = self.bg_img.getpixel((px, py))
@@ -412,7 +419,7 @@ class MagicCompositor:
             if alpha < 0.04:
                 continue
 
-            fx, fy = self._bezier(ts)
+            fx, fy = self._path_at(ts)
             pw     = self._path_width(fy)
             px     = int(fx * W + sx_n * pw * s["scatter_x_frac"])
             py     = int(fy * H + sy_n * pw * s["scatter_y_frac"])
@@ -447,6 +454,27 @@ class MagicCompositor:
             raise ValueError(f"Unknown blend: {self.s['blend']}")
         return Image.fromarray(result)
 
+    def _path_at(self, t: float) -> tuple:
+        if self.path_interp == "bezier":
+            return self._bezier(t)
+        return self._polyline(t)
+
+    def _polyline(self, t: float) -> tuple:
+        """Walk path_pts in order with straight segments (matches path_picker lineTo)."""
+        pts = self.path_pts
+        if not pts:
+            return (0.0, 0.0)
+        if len(pts) == 1:
+            return pts[0]
+        t = max(0.0, min(1.0, float(t)))
+        n_seg = len(pts) - 1
+        pos = t * n_seg
+        idx = min(int(pos), n_seg - 1)
+        local = pos - idx
+        x0, y0 = pts[idx]
+        x1, y1 = pts[idx + 1]
+        return (x0 + (x1 - x0) * local, y0 + (y1 - y0) * local)
+
     def _bezier(self, t: float) -> tuple:
         p = list(self.path_pts)
         while len(p) > 1:
@@ -455,26 +483,27 @@ class MagicCompositor:
         return p[0]
 
     def _aspect_correct(self, path_pts, authored):
-        """Correct path_pts if authored against different aspect ratio than compositor canvas."""
+        """Remap path_pts when draw-surface dims differ from compositor canvas."""
         if not authored or "width" not in authored or "height" not in authored:
             return path_pts
-        pw, ph = float(authored.get("width", 0)), float(authored.get("height", 0))
+        pw = int(float(authored.get("width", 0)))
+        ph = int(float(authored.get("height", 0)))
         if pw <= 0 or ph <= 0:
             return path_pts
-        src_ar = pw / ph
-        dst_ar = self.W / self.H
-        if abs(src_ar - dst_ar) <= 0.01:
+        pw = pw - (pw % 2)
+        ph = ph - (ph % 2)
+        if pw == self.W and ph == self.H:
             return path_pts
         corrected = []
         for (fx, fy) in path_pts:
-            if src_ar > dst_ar:
-                scale = dst_ar / src_ar
-                fy = (fy - 0.5) * scale + 0.5
-            else:
-                scale = src_ar / dst_ar
-                fx = (fx - 0.5) * scale + 0.5
-            corrected.append((fx, fy))
-        print(f"  [aspect_correct] authored {pw:.0f}x{ph:.0f} (ar={src_ar:.3f}) -> compositor {self.W}x{self.H} (ar={dst_ar:.3f}): corrected {len(corrected)} pts", flush=True)
+            px = fx * pw
+            py = fy * ph
+            corrected.append((px / self.W, py / self.H))
+        print(
+            f"  [aspect_correct] authored {pw}x{ph} -> compositor {self.W}x{self.H}: "
+            f"remapped {len(corrected)} pts",
+            flush=True,
+        )
         return corrected
 
     def _path_width(self, y_frac: float) -> int:

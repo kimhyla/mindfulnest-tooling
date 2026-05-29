@@ -39,7 +39,9 @@ export interface WaveformTimelineProps {
   onWatercolorDrop?: (lib_key: string, offset_ms: number) => void;
   /** Called on audioprocess + seeking so the parent can track playback position (ms). */
   onTimeUpdate?: (currentMs: number) => void;
-  /** Called when the user drags the right edge of a cue block to resize it. */
+  /** Called when the user drags a cue block edge (left = move start, right = move end). */
+  onCueRangeChange?: (cueId: string, offsetMs: number, durationMs: number) => void;
+  /** @deprecated Prefer onCueRangeChange — right-edge-only resize shim. */
   onCueResize?: (cueId: string, newDurationMs: number) => void;
   /** Called whenever WaveSurfer's play/pause state changes (authoritative source). */
   onPlayStateChange?: (playing: boolean) => void;
@@ -62,10 +64,13 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     onReady,
     onWatercolorDrop,
     onTimeUpdate,
+    onCueRangeChange,
     onCueResize,
     onPlayStateChange,
     linkedVideo,
   } = props;
+
+  const MIN_CUE_DURATION_MS = 250;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -75,6 +80,12 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isReady, setIsReady] = useState<boolean>(false);
+  /** Live drag preview — avoids hammering server with patch on every pointermove. */
+  const [dragDraft, setDragDraft] = useState<{
+    id: string;
+    offset_ms: number;
+    duration_ms: number;
+  } | null>(null);
   // Ref mirror of isReady so pointer-event closures always see the current value
   // without needing to be in the useEffect dependency array.
   const isReadyRef = useRef<boolean>(false);
@@ -298,40 +309,107 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     return Math.max(0, Math.min(100 - cuePctLeft(cue), (durMs / durationMs) * 100));
   };
 
-  // Resize handle: pointer capture drag on the right edge of a cue block.
-  // INVARIANTS: wrapperRef must be mounted; durationMs must be non-null and > 0.
-  const onHandlePointerDown = (
-    e: PointerEvent,
-    cue: WatercolorCue,
-  ) => {
-    e.stopPropagation(); // do NOT let the waveform seek handler see this event
+  const emitCueRange = (cueId: string, offsetMs: number, durationMs: number) => {
+    const clampedDuration = Math.max(MIN_CUE_DURATION_MS, Math.round(durationMs));
+    const clampedOffset = Math.max(0, Math.round(offsetMs));
+    if (onCueRangeChange) {
+      onCueRangeChange(cueId, clampedOffset, clampedDuration);
+      return;
+    }
+    onCueResize?.(cueId, clampedDuration);
+  };
+
+  const previewCueRange = (cueId: string, offsetMs: number, durationMs: number) => {
+    setDragDraft({
+      id: cueId,
+      offset_ms: Math.max(0, Math.round(offsetMs)),
+      duration_ms: Math.max(MIN_CUE_DURATION_MS, Math.round(durationMs)),
+    });
+  };
+
+  const displayCues = cues.map((c) => {
+    if (!dragDraft || dragDraft.id !== c.id) return c;
+    return { ...c, offset_ms: dragDraft.offset_ms, duration_ms: dragDraft.duration_ms };
+  });
+
+  const relXFromPointer = (wrapper: HTMLDivElement, evt: PointerEvent): number => {
+    const box = wrapper.getBoundingClientRect();
+    return Math.max(0, Math.min(1, (evt.clientX - box.left) / box.width));
+  };
+
+  // Right handle: drag end time forward/back — offset fixed, duration changes.
+  const onRightHandlePointerDown = (e: PointerEvent, cue: WatercolorCue) => {
+    e.stopPropagation();
+    e.preventDefault();
     if (!durationMs || durationMs <= 0) return;
     const handle = e.currentTarget as HTMLDivElement;
     handle.setPointerCapture(e.pointerId);
-
     const wrapper = wrapperRef.current;
     if (!wrapper) return;
 
-    const onMove = (moveEvt: PointerEvent) => {
-      const box = wrapper.getBoundingClientRect();
-      const relX = Math.max(0, Math.min(1, (moveEvt.clientX - box.left) / box.width));
-      const endMs = relX * durationMs;
-      const newDuration = Math.max(0, endMs - cue.offset_ms);
-      onCueResize?.(cue.id, Math.round(newDuration));
+    const startOffset = cue.offset_ms;
+
+    const applyPreview = (evt: PointerEvent) => {
+      const endMs = relXFromPointer(wrapper, evt) * durationMs;
+      const maxEnd = durationMs;
+      const clampedEnd = Math.max(startOffset + MIN_CUE_DURATION_MS, Math.min(maxEnd, endMs));
+      previewCueRange(cue.id, startOffset, clampedEnd - startOffset);
     };
 
     const onUp = (upEvt: PointerEvent) => {
-      const box = wrapper.getBoundingClientRect();
-      const relX = Math.max(0, Math.min(1, (upEvt.clientX - box.left) / box.width));
-      const endMs = relX * durationMs;
-      const newDuration = Math.max(0, endMs - cue.offset_ms);
-      onCueResize?.(cue.id, Math.round(newDuration));
-      handle.removeEventListener('pointermove', onMove);
+      const endMs = relXFromPointer(wrapper, upEvt) * durationMs;
+      const maxEnd = durationMs;
+      const clampedEnd = Math.max(startOffset + MIN_CUE_DURATION_MS, Math.min(maxEnd, endMs));
+      setDragDraft(null);
+      emitCueRange(cue.id, startOffset, clampedEnd - startOffset);
+      handle.removeEventListener('pointermove', applyPreview);
       handle.removeEventListener('pointerup', onUp);
+      handle.removeEventListener('pointercancel', onUp);
     };
 
-    handle.addEventListener('pointermove', onMove);
+    handle.addEventListener('pointermove', applyPreview);
     handle.addEventListener('pointerup', onUp);
+    handle.addEventListener('pointercancel', onUp);
+  };
+
+  // Left handle: drag start time earlier/later — end time fixed, offset + duration change.
+  const onLeftHandlePointerDown = (e: PointerEvent, cue: WatercolorCue) => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (!durationMs || durationMs <= 0) return;
+    const handle = e.currentTarget as HTMLDivElement;
+    handle.setPointerCapture(e.pointerId);
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+
+    const startDuration = cue.duration_ms ?? 3000;
+    const endMs = cue.offset_ms + startDuration;
+
+    const applyPreview = (evt: PointerEvent) => {
+      const newOffset = relXFromPointer(wrapper, evt) * durationMs;
+      const clampedOffset = Math.max(
+        0,
+        Math.min(endMs - MIN_CUE_DURATION_MS, newOffset),
+      );
+      previewCueRange(cue.id, clampedOffset, endMs - clampedOffset);
+    };
+
+    const onUp = (upEvt: PointerEvent) => {
+      const newOffset = relXFromPointer(wrapper, upEvt) * durationMs;
+      const clampedOffset = Math.max(
+        0,
+        Math.min(endMs - MIN_CUE_DURATION_MS, newOffset),
+      );
+      setDragDraft(null);
+      emitCueRange(cue.id, clampedOffset, endMs - clampedOffset);
+      handle.removeEventListener('pointermove', applyPreview);
+      handle.removeEventListener('pointerup', onUp);
+      handle.removeEventListener('pointercancel', onUp);
+    };
+
+    handle.addEventListener('pointermove', applyPreview);
+    handle.addEventListener('pointerup', onUp);
+    handle.addEventListener('pointercancel', onUp);
   };
 
   // Drop target — `kind: 'lib-watercolor'` payloads land here and become cues.
@@ -373,7 +451,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       data-source-label={sourceLabel ?? ''}
       data-loaded-duration-ms={durationMs ?? ''}
       data-current-time-ms={Math.round(currentMs)}
-      data-cue-count={cues.length}
+      data-cue-count={displayCues.length}
       onDragOver={dropHandlers.onDragOver}
       onDragLeave={dropHandlers.onDragLeave}
       onDrop={dropHandlers.onDrop}
@@ -417,7 +495,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       </div>
       <div ref={containerRef} class="mn-waveform-canvas" />
       <div class="mn-waveform-cue-overlay">
-        {cues.map((cue) => (
+        {displayCues.map((cue) => (
           <div
             key={cue.id}
             data-testid={`cue-marker-${cue.id}`}
@@ -429,16 +507,24 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
               width: `${cuePctWidth(cue)}%`,
             }}
             onClick={(e: MouseEvent) => {
-              // Only fire cueClick when clicking the block body, not the handle.
+              // Only fire cueClick when clicking the block body, not a resize handle.
               const target = e.target as HTMLElement;
-              if (target.classList.contains('mn-waveform-cue-block-handle')) return;
+              if (target.closest('.mn-waveform-cue-block-handle')) return;
               onCueClick?.(cue.id, { x: e.clientX, y: e.clientY });
             }}
             title={`${cue.watercolor_key} @ ${(cue.offset_ms / 1000).toFixed(1)}s · ${((cue.duration_ms ?? 3000) / 1000).toFixed(1)}s`}
           >
             <div
-              class="mn-waveform-cue-block-handle"
-              onPointerDown={(e: PointerEvent) => onHandlePointerDown(e, cue)}
+              class="mn-waveform-cue-block-handle mn-waveform-cue-block-handle--left"
+              data-testid={`cue-handle-left-${cue.id}`}
+              title="Drag to adjust cue start time"
+              onPointerDown={(e: PointerEvent) => onLeftHandlePointerDown(e, cue)}
+            />
+            <div
+              class="mn-waveform-cue-block-handle mn-waveform-cue-block-handle--right"
+              data-testid={`cue-handle-right-${cue.id}`}
+              title="Drag to adjust cue end time"
+              onPointerDown={(e: PointerEvent) => onRightHandlePointerDown(e, cue)}
             />
           </div>
         ))}

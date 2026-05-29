@@ -86,6 +86,7 @@ export const MUTATION_ENDPOINTS = {
   phase_suggest_script: `${SERVER_BASE}/api/phase/suggest_script`,
   watercolor_animate: `${SERVER_BASE}/api/watercolor/animate`,
   phase_watercolor_delete: `${SERVER_BASE}/api/phase/watercolor_delete`,
+  phase_export_stitcher: `${SERVER_BASE}/api/phase/export_stitcher`,
   stitch_loudnorm: `${SERVER_BASE}/api/stitch_editor/loudnorm`,
   // V59 architectural-fix Wave 1 (F-S2-001) — StitcherTab Preview/Bake
   // routed via pathappPatch. stitch_save_job already exists below.

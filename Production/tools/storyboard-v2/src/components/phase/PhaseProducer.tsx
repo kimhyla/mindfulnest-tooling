@@ -16,6 +16,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { apiGet, pathappPatch } from '../../api/client';
 import { activeScope, activeVideoRole } from '../../state/scope';
 import { SERVER_BASE } from '../../api/endpoints';
+import { stitcherRefreshTick } from '../../app';
 import { WaveformTimeline, type WatercolorCue } from './WaveformTimeline';
 import { CuePopover } from './CuePopover';
 
@@ -445,7 +446,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       return;
     }
     setBusyAction('preview');
-    setStatusMsg('Compositing overlay preview… (may take 10–30s)');
+    setStatusMsg('Compositing overlay preview… first run may take 1–3 min for a full lipsync clip; cached runs are faster.');
     // Revoke any previous blob URL to avoid memory leak.
     if (previewOverlayUrl) URL.revokeObjectURL(previewOverlayUrl);
     setPreviewOverlayUrl(null);
@@ -480,25 +481,31 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   };
 
   const onExportToStitcher = async () => {
-    // The export source for Phase B is the lipsync mp4; for Phase A it's
-    // the stitched mp4.
     const srcFile = phase === 'a' ? stateSlice.stitched_file : stateSlice.lipsync_file;
     if (!srcFile) {
       setStatusMsg(`No ${phase === 'a' ? 'stitched' : 'lipsync'} mp4 yet — finish the producer flow first.`);
       return;
     }
     setBusyAction('export');
-    setStatusMsg('Exporting to Stitcher…');
-    const res = await pathappPatch(activeScope.value, 'stitch_save_job', {
-      job_name: `phase_${phase}_${activeScope.value.event_id}`,
-      slot: phase === 'a' ? 'phase_a' : 'phase_b',
-      video_path: `Production/${activeScope.value.event_id}/${srcFile}`,
-    });
+    setStatusMsg(
+      phase === 'b'
+        ? 'Exporting to Stitcher (baking watercolor overlays)…'
+        : 'Exporting to Stitcher…',
+    );
+    const slotKey = phase === 'a' ? 'phase_a' : 'phase_b';
+
+    const res = await pathappPatch<{ job_name?: string; video_path?: string; overlay_baked?: boolean }>(
+      activeScope.value,
+      'phase_export_stitcher',
+      { phase },
+    );
     setBusyAction(null);
     if (res.ok) {
-      setStatusMsg('✓ Exported to Stitcher (see Stitcher tab to bake)');
+      stitcherRefreshTick.value += 1;
+      const baked = res.data?.overlay_baked ? ' (overlays baked in)' : '';
+      setStatusMsg(`✓ Exported to Stitcher → ${slotKey} slot${baked} (open Stitcher tab to preview/bake)`);
     } else {
-      setStatusMsg(`✗ Export HTTP ${res.status}: ${res.error ?? ''}`);
+      setStatusMsg(`✗ Export HTTP ${res.status}: ${res.error ?? 'export failed'}`);
     }
   };
 
@@ -582,9 +589,9 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     void persistCues(next);
   };
 
-  const onCueResize = (cueId: string, newDurationMs: number) => {
+  const onCueRangeChange = (cueId: string, offsetMs: number, durationMs: number) => {
     const next = (stateSlice.watercolor_cues ?? []).map((c) =>
-      c.id === cueId ? { ...c, duration_ms: newDurationMs } : c,
+      c.id === cueId ? { ...c, offset_ms: offsetMs, duration_ms: durationMs } : c,
     );
     void persistCues(next);
   };
@@ -845,7 +852,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           onCueClick={onCueClick}
           onWatercolorDrop={onWatercolorDrop}
           onTimeUpdate={(ms) => setCurrentTimeMs(ms)}
-          onCueResize={onCueResize}
+          onCueRangeChange={onCueRangeChange}
 
           linkedVideo={videoRef}
         />

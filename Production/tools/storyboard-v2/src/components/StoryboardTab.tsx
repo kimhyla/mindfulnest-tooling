@@ -2560,11 +2560,12 @@ function BeatMagicButtons({ index, beatId, beat, eventId, videoRole, onPreviewOp
             type="button"
             class="mn-btn mn-btn-small"
             data-testid={`beat-magic-still-${index}`}
-            onClick={hasMagicStill ? undefined : openMagicStill}
-            disabled={hasMagicStill}
-            title={hasMagicStill ? 'magic on still already rendered — use ▶ Preview magic to watch it' : 'Add magic trail on still (LD-468)'}
+            onClick={openMagicStill}
+            title={hasMagicStill
+              ? 'Re-draw magic path on still — replaces the current magic_still_path'
+              : 'Add magic trail on still (LD-468)'}
           >
-            {hasMagicStill ? '✓ magic on still' : '🌟 Add magic on still'}
+            {hasMagicStill ? '↻ Redo magic on still' : '🌟 Add magic on still'}
           </button>
           {hasMagicStill && onPreviewOption ? (
             <button
@@ -2585,11 +2586,12 @@ function BeatMagicButtons({ index, beatId, beat, eventId, videoRole, onPreviewOp
             type="button"
             class="mn-btn mn-btn-small"
             data-testid={`beat-magic-video-${index}`}
-            onClick={hasMagicVideo ? undefined : openMagicVideo}
-            disabled={hasMagicVideo}
-            title={hasMagicVideo ? 'magic on video already rendered — use ▶ Preview magic·v to watch it' : 'Add magic trail on video (LD-469)'}
+            onClick={openMagicVideo}
+            title={hasMagicVideo
+              ? 'Re-draw magic path on lipsync frame — replaces the current magic_video_path'
+              : 'Add magic trail on video (LD-469)'}
           >
-            {hasMagicVideo ? '✓ magic on video' : '🎬 Add magic on video'}
+            {hasMagicVideo ? '↻ Redo magic on video' : '🎬 Add magic on video'}
           </button>
           {hasMagicVideo && onPreviewOption ? (
             <button

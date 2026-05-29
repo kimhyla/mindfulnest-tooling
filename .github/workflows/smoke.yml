@@ -59,3 +59,27 @@ jobs:
         # route registered. Symmetric to body-key-contract; same parsers.
         run: |
           python3 -m pytest Production/scripts/tests/test_endpoint_presence_contract.py -v
+
+  session-lockin-regression:
+    # 2026-05-28 session hardening — stitcher canonical job, magic polyline,
+    # Send Out magic-assemblable beats. Static markers + unit tests; fails CI
+    # if regressions remove lock-in code paths.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pytest + Pillow (magic_compositor tests)
+        run: python3 -m pip install --quiet pytest Pillow numpy imageio imageio-ffmpeg
+      - name: Stitcher lock-in static markers
+        run: python3 Production/scripts/verify_stitcher_lockin_20260528.py
+      - name: Session regression unit tests
+        working-directory: Production/tools
+        run: |
+          python3 -m pytest \
+            tests/test_stitch_canonical_job.py \
+            tests/test_beat_is_assemblable.py \
+            tests/test_magic_path_polyline.py \
+            -q

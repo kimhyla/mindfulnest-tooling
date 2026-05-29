@@ -55,6 +55,14 @@ NORMALIZATION_ENCODER_ARGS: tuple[str, ...] = (
     "-c:a", "aac", "-b:a", "128k", "-ac", "1", "-ar", "44100",
     "-movflags", "+faststart",
 )
+# Phase B preview-only: same CRF/profile as LD-284 alignment but veryfast preset.
+# Full-length lipsync (100s+) with -preset slow can take many minutes per cache miss.
+PREVIEW_OVERLAY_ENCODER_ARGS: tuple[str, ...] = (
+    "-c:v", "libx264", "-profile:v", "high", "-pix_fmt", "yuv420p",
+    "-preset", "veryfast", "-g", "48", "-crf", "20",
+    "-c:a", "aac", "-b:a", "128k", "-ac", "1", "-ar", "44100",
+    "-movflags", "+faststart",
+)
 NORMALIZATION_FFMPEG_ARGS: tuple[str, ...] = (
     "-vf", NORMALIZATION_VF_EXPR, *NORMALIZATION_ENCODER_ARGS,
 )
@@ -245,6 +253,37 @@ def resolve_beat_file(beat_id: str, state_snapshot: dict,
             f"beat {beat_id!r} selected file does not exist: {candidate}",
         )
     return candidate
+
+
+def beat_is_assemblable(beat: dict, event_dir: "Path | None" = None) -> bool:
+    """Return True when Send Out / scene assemble can finalize this beat.
+
+    A beat is assemblable when Kim has committed renderable media via ANY of:
+      - phase_1.selected_option (classic animation path)
+      - beat.final (use-as-final)
+      - completed lipsync
+      - magic_still_path / magic_video_path on disk (magic preview path)
+
+    Magic-only beats (e.g. beat_02 with magic still, no selected_option) MUST
+    be included — Kim's Storyboard magic preview is the commit signal.
+    """
+    if not isinstance(beat, dict):
+        return False
+    phase1 = beat.get("phase_1") or {}
+    if phase1.get("selected_option") is not None:
+        return True
+    final = beat.get("final") or {}
+    if final.get("file"):
+        return True
+    lipsync = beat.get("lipsync") or {}
+    if lipsync.get("status") == "completed" and lipsync.get("file"):
+        return True
+    if event_dir is not None:
+        for key in ("magic_still_path", "magic_video_path"):
+            rel = beat.get(key)
+            if rel and (Path(event_dir) / rel).is_file():
+                return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -1227,6 +1266,7 @@ def render_watercolor_overlay(
     timeout_s: int = 600,
     frame_max_w: int = 600,
     frame_max_h: int = 540,
+    encoder_args: tuple[str, ...] | None = None,
 ) -> Path:
     """Compose base_video with N watercolor cues via linear ffmpeg filter_complex.
 
@@ -1246,6 +1286,7 @@ def render_watercolor_overlay(
     Raises subprocess.CalledProcessError on ffmpeg failure.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    enc_args = encoder_args if encoder_args is not None else NORMALIZATION_ENCODER_ARGS
     # Sort cues by timestamp_ms for deterministic stacking (later cue on top).
     cues_sorted = sorted(cues or [], key=lambda c: int(c.get("timestamp_ms") or 0))
 
@@ -1332,7 +1373,7 @@ def render_watercolor_overlay(
             "-filter_complex", filter_complex,
             "-map", "[vout]",
             "-map", "0:a?",
-            *NORMALIZATION_ENCODER_ARGS,
+            *enc_args,
         ])
     else:
         # Normalize the base input first, then chain overlays off [base].
@@ -1380,7 +1421,7 @@ def render_watercolor_overlay(
             "-filter_complex", filter_complex,
             "-map", "[vout]",
             "-map", "0:a?",  # pass base audio if present
-            *NORMALIZATION_ENCODER_ARGS,
+            *enc_args,
         ])
     cmd.append(str(tmp))
     try:
@@ -1418,23 +1459,19 @@ def compute_finalize_args_hash(slim_snapshot: dict, beat_id: str,
       - image_overrides[<role>][<beat_id>] — deterministic JSON
       - selected_lipsync_path if beat.lipsync.status == "completed", else None
       - magic_still_path / magic_video_path (None when not set)
-      - is_magic_source flag
+      - is_magic_still_source / is_magic_video_source flags
       - NORMALIZATION_RECIPE_HASH (per-codec)
       - FINALIZE_RECIPE_VERSION
 
     Returns:
         (hex_sha256, {beat_id, file, mtime, trim_start, trim_end,
                       audio_delay, selected_option, lipsync_path,
-                      image_override, is_magic_source})
+                      image_override, is_magic_still_source, is_magic_video_source})
 
     Magic source priority (highest):
-      When beat.magic_still_path or beat.magic_video_path is set AND the file
-      exists in event_dir, the magic composite is used as the video source
-      instead of the regular priority chain (final → lipsync → phase_1 option).
-      Magic outputs are always SILENT (magic_compositor writes video-only;
-      magic_video ffmpeg blend maps 0:a? from a sound:false Kling clip).
-      The caller MUST mix in TTS audio when is_magic_source=True — this is
-      enforced by the _is_raw_option_src override in _handle_scene_assemble.
+      magic_still_path: silent composite — caller MUST mix TTS (is_magic_still_source).
+      magic_video_path: lipsync audio is baked in at composite time (handle_magic_video
+      maps source lipsync audio). Do NOT re-mix TTS on top (is_magic_video_source).
     """
     beats = slim_snapshot.get("beats") or {}
     image_overrides = slim_snapshot.get("image_overrides") or {}
@@ -1446,19 +1483,24 @@ def compute_finalize_args_hash(slim_snapshot: dict, beat_id: str,
     # Both are SILENT; is_magic_source=True signals the caller to mix TTS in.
     magic_still = beat.get("magic_still_path")
     magic_video = beat.get("magic_video_path")
-    is_magic_source = False
+    is_magic_still_source = False
+    is_magic_video_source = False
     magic_path_used: "str | None" = None
     if event_dir:
-        for mpath in [magic_still, magic_video]:
-            if mpath:
-                candidate = Path(event_dir) / mpath
-                if candidate.is_file():
-                    path: Path = candidate
-                    is_magic_source = True
-                    magic_path_used = mpath
-                    break
+        if magic_still:
+            candidate = Path(event_dir) / magic_still
+            if candidate.is_file():
+                path: Path = candidate
+                is_magic_still_source = True
+                magic_path_used = magic_still
+        elif magic_video:
+            candidate = Path(event_dir) / magic_video
+            if candidate.is_file():
+                path = candidate
+                is_magic_video_source = True
+                magic_path_used = magic_video
 
-    if not is_magic_source:
+    if not is_magic_still_source and not is_magic_video_source:
         path = resolve_beat_file(beat_id, slim_snapshot, clips_dir)  # raises FNF
 
     mtime = os.path.getmtime(str(path))
@@ -1492,7 +1534,8 @@ def compute_finalize_args_hash(slim_snapshot: dict, beat_id: str,
         f"image_override:{image_override_json}",
         f"magic_still:{magic_still}",    # cache invalidates when magic applied/removed
         f"magic_video:{magic_video}",
-        f"is_magic_source:{is_magic_source}",
+        f"is_magic_still_source:{is_magic_still_source}",
+        f"is_magic_video_source:{is_magic_video_source}",
     ]
     digest = hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
     metadata = {
@@ -1506,7 +1549,9 @@ def compute_finalize_args_hash(slim_snapshot: dict, beat_id: str,
         "selected_option": selected_option,
         "lipsync_path": lipsync_path,
         "image_override": image_override,
-        "is_magic_source": is_magic_source,
+        "is_magic_still_source": is_magic_still_source,
+        "is_magic_video_source": is_magic_video_source,
+        "is_magic_source": is_magic_still_source,  # legacy alias: silent magic only
         "magic_path_used": magic_path_used,
     }
     return digest, metadata
