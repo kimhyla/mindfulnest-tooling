@@ -431,6 +431,52 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     }
   };
 
+  const onPhaseARestitch = async () => {
+    setBusyAction('restitch');
+    setStatusMsg('Re-stitching from pinned fly-in/out…');
+    const res = await pathappPatch(activeScope.value, 'phase_a_restitch', { phase: 'a' });
+    setBusyAction(null);
+    if (res.ok) {
+      setStatusMsg('✓ Phase A re-stitched');
+      await refreshAll();
+    } else {
+      setStatusMsg(`✗ Restitch HTTP ${res.status}: ${res.error ?? ''}`);
+    }
+  };
+
+  const onRegenFlyinFlyout = async () => {
+    setBusyAction('regen_fly');
+    setStatusMsg('Kling close-up fly-in/out started (~13 min)…');
+    const res = await pathappPatch(activeScope.value, 'phase_a_regen_flyin_flyout', { phase: 'a' });
+    setBusyAction(null);
+    if (res.ok && res.status === 202) {
+      setStatusMsg('⏳ Fly-in/out regenerating — auto-stitch when done');
+    } else if (res.ok) {
+      setStatusMsg('✓ Fly-in/out regen complete');
+      await refreshAll();
+    } else {
+      setStatusMsg(`✗ Fly-in/out HTTP ${res.status}: ${res.error ?? ''}`);
+    }
+  };
+
+  const onRegenBaseClip = async () => {
+    setBusyAction('regen_base');
+    setStatusMsg('Kling idle base clip (~6 min)…');
+    const res = await pathappPatch(activeScope.value, 'phase_a_regen_base_clip', {
+      phase: 'a',
+      clip_id: stateSlice.chipper_sitting_clip_id ?? selectedBaseClip ?? 'chipper_idle_newstyle_v3',
+    });
+    setBusyAction(null);
+    if (res.ok && res.status === 202) {
+      setStatusMsg('⏳ Base clip regenerating — Send for Lipsync when done');
+    } else if (res.ok) {
+      setStatusMsg('✓ Base clip regen complete');
+      await refreshAll();
+    } else {
+      setStatusMsg(`✗ Base clip HTTP ${res.status}: ${res.error ?? ''}`);
+    }
+  };
+
   // ── Preview with Overlay ─────────────────────────────────────────────────
   // Calls /api/phase_b/preview which ffmpeg-composites the watercolor PNG cues
   // onto the lipsync video server-side and streams back the composed MP4.
@@ -1105,11 +1151,31 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
               type="button"
               class="mn-btn"
               data-testid="phase-a-restitch-btn"
-              onClick={onMixAudio}
+              onClick={onPhaseARestitch}
               disabled={busyAction !== null}
-              title="Re-stitch fly-in / sitting / fly-out into phase_a_stitched_file"
+              title="Re-stitch fly-in / sitting / fly-out into phase_a_stitched_file (pinned bookends)"
             >
-              {busyAction === 'mix' ? 'Re-stitching…' : 'Re-stitch (Phase A)'}
+              {busyAction === 'restitch' ? 'Re-stitching…' : 'Re-stitch (Phase A)'}
+            </button>
+            <button
+              type="button"
+              class="mn-btn mn-btn-small"
+              data-testid="phase-a-regen-flyin-flyout-btn"
+              onClick={onRegenFlyinFlyout}
+              disabled={busyAction !== null}
+              title="Regenerate closeup_match fly-in and fly-out (~13 min Kling)"
+            >
+              Regen fly-in/out
+            </button>
+            <button
+              type="button"
+              class="mn-btn mn-btn-small"
+              data-testid="phase-a-regen-base-clip-btn"
+              onClick={onRegenBaseClip}
+              disabled={busyAction !== null}
+              title="Regenerate Chipper idle base clip from still (~6 min Kling)"
+            >
+              Regen base clip
             </button>
             <BaseClipPicker
               open={pickerPosition !== null}

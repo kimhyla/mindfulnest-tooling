@@ -2106,3 +2106,172 @@ def handle_phase_b_preview(h, body: dict)-> None:
     return h._stream_preview_mp4(final_path, cache_hash, evicted=evicted)
 
 
+def handle_phase_a_regen_flyin_flyout(h, body: dict) -> None:
+    """POST /api/phase_a/regen_flyin_flyout — closeup_match bookends (~13 min)."""
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+
+    state = h.app.state.read_state()
+    if state.get("phase_a_flyin_flyout_status") == "running":
+        return h._send_error_v59(
+            409,
+            error_code="GENERIC_ERROR",
+            error_message="fly-in/fly-out regeneration already running",
+            retry_safe=False,
+        )
+
+    tools_dir = Path(__file__).resolve().parent.parent
+    script = tools_dir / "phase_a_flyin_flyout_closeup_match_v1.py"
+    if not script.is_file():
+        return h._send_error_v59(
+            500,
+            error_code="GENERIC_ERROR",
+            error_message=f"missing script: {script.name}",
+            retry_safe=False,
+        )
+
+    _app = h.app
+    _stitch = h._auto_assemble_phase_a_stitched
+
+    def _apply_running(state):
+        state["phase_a_flyin_flyout_status"] = "running"
+        state.pop("phase_a_flyin_flyout_error", None)
+        return state
+
+    h.app.state.mutate_state(_apply_running)
+
+    def _bg():
+        import subprocess as _sp
+        env = {**os.environ, "MN_EVENT_DIR": str(_app.event_dir)}
+        try:
+            proc = _sp.run(
+                [sys.executable, str(script)],
+                cwd=str(tools_dir),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=1800,
+            )
+            if proc.returncode != 0:
+                err = (proc.stderr or proc.stdout or "")[:300]
+                def _fail(state, _e=err):
+                    state["phase_a_flyin_flyout_status"] = f"error: {_e[:120]}"
+                    return state
+                _app.state.mutate_state(_fail)
+                return
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            try:
+                canonical = _stitch(ts)
+            except Exception as exc:  # noqa: BLE001
+                canonical = {"error": str(exc)[:200]}
+            def _done(state, _c=canonical):
+                state["phase_a_flyin_flyout_status"] = "done"
+                return state
+            _app.state.mutate_state(_done)
+            print(f"[phase_a_regen_flyin_flyout] complete canonical={canonical}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            traceback.print_exc()
+            def _exc(state, _x=exc):
+                state["phase_a_flyin_flyout_status"] = (
+                    f"error: {type(_x).__name__}: {str(_x)[:100]}"
+                )
+                return state
+            _app.state.mutate_state(_exc)
+
+    threading.Thread(target=_bg, daemon=True).start()
+    return h._send_json(202, {
+        "ok": True,
+        "status": "running",
+        "message": "Kling close-up fly-in/out started (~13 min). Phase A will auto-stitch when done.",
+    })
+
+
+def handle_phase_a_regen_base_clip(h, body: dict) -> None:
+    """POST /api/phase_a/regen_base_clip — Kling idle base (~6 min)."""
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+
+    state = h.app.state.read_state()
+    if state.get("phase_a_base_clip_regen_status") == "running":
+        return h._send_error_v59(
+            409,
+            error_code="GENERIC_ERROR",
+            error_message="base clip regeneration already running",
+            retry_safe=False,
+        )
+
+    tools_dir = Path(__file__).resolve().parent.parent
+    script = tools_dir / "phase_a_chipper_lipsync_base.py"
+    clip_id = (body or {}).get("clip_id") or "chipper_idle_newstyle_v3"
+    _app = h.app
+
+    def _apply_running(state):
+        state["phase_a_base_clip_regen_status"] = "running"
+        return state
+
+    h.app.state.mutate_state(_apply_running)
+
+    def _bg():
+        import subprocess as _sp
+        env = {**os.environ, "MN_EVENT_DIR": str(_app.event_dir)}
+        try:
+            proc = _sp.run(
+                [sys.executable, str(script), "--clip-id", str(clip_id)],
+                cwd=str(tools_dir),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=900,
+            )
+            def _term(state, _rc=proc.returncode, _out=proc.stdout, _err=proc.stderr):
+                if _rc == 0:
+                    state["phase_a_base_clip_regen_status"] = "done"
+                    state["phase_a_chipper_sitting_clip_id"] = clip_id
+                else:
+                    state["phase_a_base_clip_regen_status"] = (
+                        f"error: {(_err or _out or 'failed')[:120]}"
+                    )
+                return state
+            _app.state.mutate_state(_term)
+        except Exception as exc:  # noqa: BLE001
+            def _exc(state, _x=exc):
+                state["phase_a_base_clip_regen_status"] = (
+                    f"error: {type(_x).__name__}: {str(_x)[:100]}"
+                )
+                return state
+            _app.state.mutate_state(_exc)
+
+    threading.Thread(target=_bg, daemon=True).start()
+    return h._send_json(202, {
+        "ok": True,
+        "status": "running",
+        "clip_id": clip_id,
+        "message": "Kling idle base clip started (~6 min). Send for Lipsync when done.",
+    })
+
+
+def handle_phase_a_restitch(h, body: dict) -> None:
+    """POST /api/phase_a/restitch — re-assemble from pinned fly-in/out + raw lipsync."""
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    try:
+        result = h._auto_assemble_phase_a_stitched(ts)
+    except Exception as exc:  # noqa: BLE001
+        traceback.print_exc()
+        return h._send_error_v59(
+            500,
+            error_code="GENERIC_ERROR",
+            error_message=f"restitch failed: {exc}",
+            retry_safe=True,
+        )
+    if not result:
+        return h._send_error_v59(
+            404,
+            error_code="GENERIC_ERROR",
+            error_message="missing fly-in, fly-out, or raw lipsync inputs",
+            retry_safe=False,
+        )
+    return h._send_json(200, {"ok": True, "canonical": result})
+
+

@@ -71,6 +71,9 @@ MARKERS=(
     "LD-809|image_changed"
     "LD-809|stale lipsync"
     "LD-809|mn-btn-stale"
+    # LD-826 — Stitcher multi-phase track + persisted selection
+    "LD-826|stitcher-multiphase-track"
+    "LD-826|selection persists per event"
     # Baseline buttons — every beat should have these (displayed text)
     "BASELINE|Regen Audio"
     "BASELINE|Regenerate B"

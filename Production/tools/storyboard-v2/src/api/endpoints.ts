@@ -99,6 +99,9 @@ export const MUTATION_ENDPOINTS = {
   phase_a_mix_audio: `${SERVER_BASE}/api/phase_a/mix_audio`,
   phase_b_lipsync: `${SERVER_BASE}/api/phase_b/lipsync`,
   phase_a_lipsync: `${SERVER_BASE}/api/phase_a/lipsync`,
+  phase_a_regen_flyin_flyout: `${SERVER_BASE}/api/phase_a/regen_flyin_flyout`,
+  phase_a_regen_base_clip: `${SERVER_BASE}/api/phase_a/regen_base_clip`,
+  phase_a_restitch: `${SERVER_BASE}/api/phase_a/restitch`,
   stitch_save_job: `${SERVER_BASE}/api/stitch_editor/job`,
   // S5.5g — module-level SFX cue upsert (separate from per-slot sfx_cues
   // which travel inside stitch_save_job.slots[i].sfx_cues per audit doc §3).

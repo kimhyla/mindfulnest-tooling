@@ -6138,6 +6138,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_phase_b_lipsync(body)
             if path == "/api/phase_a/lipsync":
                 return self._handle_phase_b_lipsync(body)
+            if path == "/api/phase_a/regen_flyin_flyout":
+                return self._handle_phase_a_regen_flyin_flyout(body)
+            if path == "/api/phase_a/regen_base_clip":
+                return self._handle_phase_a_regen_base_clip(body)
+            if path == "/api/phase_a/restitch":
+                return self._handle_phase_a_restitch(body)
             if path == "/api/phase_b/preview":
                 return self._handle_phase_b_preview(body)
             # Phase A panel build (LD PHASE_A_PANEL_VOICE_SLIDERS_V1, 2026-04-20):
@@ -11909,6 +11915,18 @@ body {{padding-top:44px!important;}}
         from server_handlers.phases import handle_phase_b_mix_audio
         return handle_phase_b_mix_audio(self, body)
 
+    def _handle_phase_a_regen_flyin_flyout(self, body: dict) -> None:
+        from server_handlers.phases import handle_phase_a_regen_flyin_flyout
+        return handle_phase_a_regen_flyin_flyout(self, body)
+
+    def _handle_phase_a_regen_base_clip(self, body: dict) -> None:
+        from server_handlers.phases import handle_phase_a_regen_base_clip
+        return handle_phase_a_regen_base_clip(self, body)
+
+    def _handle_phase_a_restitch(self, body: dict) -> None:
+        from server_handlers.phases import handle_phase_a_restitch
+        return handle_phase_a_restitch(self, body)
+
     def _auto_assemble_phase_a_stitched(self, ts: str) -> dict | None:
         """Stitch fly-in + lipsync (voice-only) + fly-out, then overlay a
         CONTINUOUS ambient bed across the entire duration so the bed is
@@ -11930,36 +11948,17 @@ body {{padding-top:44px!important;}}
 
         state = self.app.state.read_state()
 
-        # Find RAW lipsync (no "withbed" in name) on disk. The mix_audio handler
-        # updates state.phase_a_lipsync_file to the withbed version, so we can't
-        # use the state pointer — we want the pre-mix source with only voice audio.
-        raw_lipsyncs = sorted(
-            (p for p in self.app.event_dir.glob("phase_a_lipsync_*.mp4")
-             if "withbed" not in p.name.lower()),
-            key=lambda p: p.stat().st_mtime, reverse=True,
+        from phase_a_stitch_lib import (  # noqa: WPS433 — local tools import
+            resolve_phase_a_flyin,
+            resolve_phase_a_flyout,
+            resolve_phase_a_raw_lipsync,
         )
-        if not raw_lipsyncs:
-            return None
-        raw_lipsync_path = raw_lipsyncs[0]
 
-        # Auto-detect latest fly-in (most recent by mtime).
-        flyins = sorted(
-            self.app.event_dir.glob("phase_a_flyin*.mp4"),
-            key=lambda p: p.stat().st_mtime, reverse=True,
-        )
-        # Auto-detect latest fly-out v*; prefer non-"kling"-named variants
-        # since those are the post-processed shippable versions.
-        flyouts_all = sorted(
-            self.app.event_dir.glob("phase_a_flyout_v*.mp4"),
-            key=lambda p: p.stat().st_mtime, reverse=True,
-        )
-        flyouts = [p for p in flyouts_all if "kling" not in p.name.lower()]
-        if not flyouts:
-            flyouts = flyouts_all
-        if not flyins or not flyouts:
+        raw_lipsync_path = resolve_phase_a_raw_lipsync(self.app.event_dir)
+        flyin_src = resolve_phase_a_flyin(self.app.event_dir, state)
+        flyout_src = resolve_phase_a_flyout(self.app.event_dir, state)
+        if not raw_lipsync_path or not flyin_src or not flyout_src:
             return None
-        flyin_src = flyins[0]
-        flyout_src = flyouts[0]
 
         # Resolve ambient preset (for the full-length overlay).
         # S5.5d (v3): phase_a is TOP-LEVEL state.

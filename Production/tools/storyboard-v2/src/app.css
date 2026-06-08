@@ -1034,6 +1034,70 @@
   pointer-events: none;
 }
 
+/* Always-on multi-phase strip (intro/phase_a/phase_b/resolution). */
+.mn-stitcher-multiphase-track {
+  margin: 10px 0 8px;
+  padding: 8px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+.mn-stitcher-multiphase-track-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.mn-stitcher-multiphase-track-rail {
+  display: flex;
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+  background: #151821;
+}
+.mn-stitcher-multiphase-segment {
+  border: 0;
+  border-right: 1px solid var(--border);
+  background: #1f2937;
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 2px;
+  cursor: pointer;
+  min-width: 88px;
+  padding: 6px 8px;
+}
+.mn-stitcher-multiphase-segment:last-child {
+  border-right: 0;
+}
+.mn-stitcher-multiphase-segment:hover {
+  background: #263448;
+}
+.mn-stitcher-multiphase-segment.is-active {
+  background: #2f5e9b;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+}
+.mn-stitcher-multiphase-segment.is-empty,
+.mn-stitcher-multiphase-segment:disabled {
+  background: #1b1e25;
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+.mn-stitcher-multiphase-segment-label {
+  font-size: 11px;
+  line-height: 1;
+}
+.mn-stitcher-multiphase-segment-meta {
+  font-size: 10px;
+  color: #b8c4d9;
+  line-height: 1;
+}
+
 /* Module-level SFX cue strip (G6) — drop target spans below the slot strip. */
 .mn-stitcher-module-timeline {
   margin: 12px 0;

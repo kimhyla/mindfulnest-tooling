@@ -155,6 +155,32 @@ async function mockTimelineCues(page: Page): Promise<void> {
   });
 }
 
+async function mockStitchPreviewAndBoundaries(page: Page): Promise<void> {
+  await page.route('**/api/stitch_editor/preview', async (r) => {
+    await r.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        preview_url: 'http://localhost:5111/api/stitch_editor/preview_file/mock_preview',
+      }),
+    });
+  });
+  await page.route('**/api/stitch_editor/beat_boundaries**', async (r) => {
+    await r.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        beats: [
+          { beat_id: 'beat_01', start_ms: 0, end_ms: 5000, duration_ms: 5000 },
+          { beat_id: 'beat_02', start_ms: 5000, end_ms: 10000, duration_ms: 5000 },
+        ],
+      }),
+    });
+  });
+}
+
 async function mockSfxLibrary(page: Page): Promise<void> {
   await page.route('**/api/timeline/sfx_library', async (r) => {
     await r.fulfill({
@@ -184,6 +210,63 @@ async function openStitcher(page: Page): Promise<void> {
   // Wait for the strip to render (job loaded).
   await expect(page.locator('[data-testid="stitcher-strip"]')).toBeVisible();
 }
+
+// ============================================================================
+// Phase A0 — Multi-phase track durability (LD-826)
+// ============================================================================
+
+test.describe('G17 — Stitcher multi-phase track persistence', () => {
+  test('G17 — track renders with all 4 persistent segments', async ({ page }) => {
+    await mockStitcherJob(page);
+    await mockSnapshot(page);
+    await mockStitchSaveJob(page);
+    await mockSfxLibrary(page);
+
+    await gotoApp(page);
+    await openStitcher(page);
+
+    await expect(page.locator('[data-testid="stitcher-multiphase-track"]')).toBeVisible();
+    await expect(page.locator('[data-testid="stitcher-multiphase-segment-intro"]')).toBeVisible();
+    await expect(page.locator('[data-testid="stitcher-multiphase-segment-phase_a"]')).toBeVisible();
+    await expect(page.locator('[data-testid="stitcher-multiphase-segment-phase_b"]')).toBeVisible();
+    await expect(page.locator('[data-testid="stitcher-multiphase-segment-resolution"]')).toBeVisible();
+  });
+
+  test('G17.2 — selected segment persists after reload (same event)', async ({ page }) => {
+    await mockStitcherJob(page);
+    await mockSnapshot(page);
+    await mockStitchSaveJob(page);
+    await mockSfxLibrary(page);
+    await mockStitchPreviewAndBoundaries(page);
+
+    await gotoApp(page);
+    await openStitcher(page);
+
+    await page.evaluate(() => {
+      for (const key of Object.keys(window.localStorage)) {
+        if (key.startsWith('storyboard_v2_stitcher_track_slot:')) {
+          window.localStorage.removeItem(key);
+        }
+      }
+    });
+
+    const phaseBSegment = page.locator('[data-testid="stitcher-multiphase-segment-phase_b"]');
+    await phaseBSegment.click();
+    await expect(phaseBSegment).toHaveClass(/is-active/);
+
+    await page.reload();
+    await expect(page.locator('[data-testid="app-root"]')).toBeVisible();
+    await openStitcher(page);
+    await expect(page.locator('[data-testid="stitcher-multiphase-segment-phase_b"]')).toHaveClass(/is-active/);
+
+    await expect.poll(() => page.evaluate(() => {
+      const key = Object.keys(window.localStorage).find((k) =>
+        k.startsWith('storyboard_v2_stitcher_track_slot:'),
+      );
+      return key ? window.localStorage.getItem(key) : null;
+    })).toBe('phase_b');
+  });
+});
 
 /**
  * Dispatch a synthetic DragEvent('drop') with the given drag payload at the

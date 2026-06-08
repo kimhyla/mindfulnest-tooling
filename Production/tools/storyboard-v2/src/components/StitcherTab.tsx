@@ -89,6 +89,35 @@ const SFX_DEFAULTS = {
 // Stitcher slots are typically short; 30s is a safe default that keeps drop
 // math sane until the real duration loads. Tests inject explicit video_dur_ms.
 const DEFAULT_SLOT_DUR_MS = 30000;
+const STITCHER_TRACK_SLOT_LS_PREFIX = 'storyboard_v2_stitcher_track_slot';
+
+function isSlotKey(value: string): value is SlotKey {
+  return value === 'intro' || value === 'phase_a' || value === 'phase_b' || value === 'resolution';
+}
+
+function readPersistedTrackSlot(eventId: string): SlotKey | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(`${STITCHER_TRACK_SLOT_LS_PREFIX}:${eventId}`);
+    return raw && isSlotKey(raw) ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+function writePersistedTrackSlot(eventId: string, slot: SlotKey | null): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const key = `${STITCHER_TRACK_SLOT_LS_PREFIX}:${eventId}`;
+    if (slot) {
+      window.localStorage.setItem(key, slot);
+    } else {
+      window.localStorage.removeItem(key);
+    }
+  } catch {
+    // localStorage may be unavailable in some test contexts.
+  }
+}
 
 interface PopoverState {
   scope: 'slot' | 'module';
@@ -178,6 +207,7 @@ export function StitcherTab() {
 
   // Inline preview player state
   const [activePreviewSlot, setActivePreviewSlot] = useState<SlotKey | null>(null);
+  const [trackFocusedSlot, setTrackFocusedSlot] = useState<SlotKey | null>(null);
   const [beatBoundaries, setBeatBoundaries] = useState<BeatBoundary[]>([]);
   const [beatBoundariesLoading, setBeatBoundariesLoading] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -188,6 +218,11 @@ export function StitcherTab() {
   useEffect(() => {
     setRefreshTick((n) => n + 1);
   }, [stitcherRefreshTick.value]);
+
+  useEffect(() => {
+    const persisted = readPersistedTrackSlot(activeScope.value.event_id);
+    setTrackFocusedSlot(persisted);
+  }, [activeScope.value.event_id]);
 
   // One-shot fetch of the ambient catalog. The catalog is module-level static
   // (filesystem inventory of Production/assets/sound_library/ambient/), not
@@ -332,6 +367,25 @@ export function StitcherTab() {
   const slotsToShow = standaloneMode && job?.slots
     ? SLOT_DEFS.filter((s) => job.slots && s.key in job.slots)
     : SLOT_DEFS;
+  const multiPhaseSlots = standaloneMode ? slotsToShow : SLOT_DEFS;
+  const multiPhaseTotalMs = Math.max(
+    1,
+    multiPhaseSlots.reduce((acc, sd) => {
+      const dur = job?.slots?.[sd.key]?.video_dur_ms ?? DEFAULT_SLOT_DUR_MS;
+      return acc + dur;
+    }, 0),
+  );
+
+  useEffect(() => {
+    if (!job?.slots) return;
+    const activeSlot = trackFocusedSlot ? job.slots[trackFocusedSlot] : null;
+    if (activeSlot?.video_path) return;
+    const fallback = multiPhaseSlots.find((sd) => job.slots?.[sd.key]?.video_path)?.key ?? null;
+    if (fallback !== trackFocusedSlot) {
+      setTrackFocusedSlot(fallback);
+      writePersistedTrackSlot(activeScope.value.event_id, fallback);
+    }
+  }, [job, trackFocusedSlot, multiPhaseSlots, activeScope.value.event_id]);
 
   /**
    * Persist the entire job slots dict via stitch_save_job. Used when sfx_cues
@@ -448,6 +502,8 @@ export function StitcherTab() {
         // after async/await (breaks trusted-event chain). Rendered link is user-clicked.
         setPreviewUrls((prev) => ({ ...prev, [slot]: data.preview_url }));
         setActivePreviewSlot(slot);
+        setTrackFocusedSlot(slot);
+        writePersistedTrackSlot(activeScope.value.event_id, slot);
         void fetchBeatBoundaries(slot);
       }
       setStatusMsg(`✓ Preview ${slot} ready`);
@@ -455,6 +511,19 @@ export function StitcherTab() {
       const data = res.data as { error?: string } | undefined;
       setStatusMsg(`✗ Preview HTTP ${res.status}: ${data?.error ?? res.error ?? ''}`);
     }
+  };
+
+  const onMultiPhaseSegmentClick = (slot: SlotKey) => {
+    const slotData = job?.slots?.[slot];
+    if (!slotData?.video_path) return;
+    setTrackFocusedSlot(slot);
+    writePersistedTrackSlot(activeScope.value.event_id, slot);
+    if (previewUrls[slot]) {
+      setActivePreviewSlot(slot);
+      void fetchBeatBoundaries(slot);
+      return;
+    }
+    void onPreviewSlot(slot);
   };
 
   const onBake = async () => {
@@ -837,6 +906,36 @@ export function StitcherTab() {
                 </div>
               );
             })}
+          </div>
+
+          <div class="mn-stitcher-multiphase-track" data-testid="stitcher-multiphase-track">
+            <div class="mn-stitcher-multiphase-track-header">
+              <strong>Multi-phase view track</strong>
+              <span class="mn-dim">selection persists per event</span>
+            </div>
+            <div class="mn-stitcher-multiphase-track-rail">
+              {multiPhaseSlots.map((sd) => {
+                const slot = job.slots?.[sd.key];
+                const durMs = slot?.video_dur_ms ?? DEFAULT_SLOT_DUR_MS;
+                const widthPct = (durMs / multiPhaseTotalMs) * 100;
+                const selected = trackFocusedSlot === sd.key;
+                return (
+                  <button
+                    type="button"
+                    key={`track-${sd.key}`}
+                    class={`mn-stitcher-multiphase-segment${selected ? ' is-active' : ''}${slot?.video_path ? '' : ' is-empty'}`}
+                    style={`width:${widthPct.toFixed(3)}%`}
+                    data-testid={`stitcher-multiphase-segment-${sd.key}`}
+                    onClick={() => onMultiPhaseSegmentClick(sd.key)}
+                    disabled={!slot?.video_path}
+                    title={slot?.video_path ?? `${sd.label} slot is empty`}
+                  >
+                    <span class="mn-stitcher-multiphase-segment-label">{sd.label}</span>
+                    <span class="mn-stitcher-multiphase-segment-meta">{(durMs / 1000).toFixed(1)}s</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           {/* Inline preview player + beat timeline.
