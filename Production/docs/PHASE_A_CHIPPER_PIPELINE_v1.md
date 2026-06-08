@@ -79,7 +79,7 @@ Phase A ships as **one stitched MP4** (`phase_a_stitched_*.mp4`) built from thre
 
 **Prompt-only is insufficient** for tooth-free dialogue. Next approaches (in order):
 
-1. **Kling Elements** — pass `element_list` for Chipper (`character_subjects.json` → `element_id`); add wing pose refs to `refer_images`.
+1. **Kling Elements** — pass `element_list` for Chipper (`character_subjects.json` → `element_id`; refreshed Jun 7 2026 with hands-down neutral frontal + anatomy refer sheets). Re-register via `scripts/register_character_subjects.py --char Chipper --force`.
 2. **ChatGPT wing refs as start still** — frame zero must show correct tucked wings; prompts reinforce but don't replace pixels.
 3. **Composite pipeline** — static body plate + beak-only lipsync overlay (Rhubarb / 2D mouth).
 4. **Different vendor** for mouth-only pass.
