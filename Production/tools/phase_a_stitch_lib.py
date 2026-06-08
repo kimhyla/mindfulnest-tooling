@@ -52,12 +52,24 @@ def resolve_phase_a_flyout(event_dir: Path, state: dict) -> Path | None:
     return pool[0] if pool else None
 
 
-def resolve_phase_a_raw_lipsync(event_dir: Path) -> Path | None:
-    """Newest phase_a_lipsync_*.mp4 without 'withbed' in the name."""
-    matches = sorted(
-        (p for p in event_dir.glob("phase_a_lipsync_*.mp4")
-         if "withbed" not in p.name.lower()),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
+def resolve_phase_a_raw_lipsync(event_dir: Path, state: dict | None = None) -> Path | None:
+    """Prefer pinned phase_a_lipsync_file; else newest raw middle mp4.
+
+    Accepts phase_a_lipsync_* and chipper_lipsync_* names.
+    Skips *withbed* variants (ambient is applied at stitch time).
+    """
+    state = state or {}
+    pinned = _state_get(state, "phase_a_lipsync_file")
+    if pinned:
+        p = event_dir / pinned
+        if p.is_file() and "withbed" not in p.name.lower():
+            return p
+
+    matches: list[Path] = []
+    for pattern in ("phase_a_lipsync_*.mp4", "chipper_lipsync_*.mp4"):
+        matches.extend(
+            p for p in event_dir.glob(pattern)
+            if "withbed" not in p.name.lower()
+        )
+    matches = sorted(matches, key=lambda p: p.stat().st_mtime, reverse=True)
     return matches[0] if matches else None

@@ -27,6 +27,10 @@ __pycache__/
 .coverage
 htmlcov/
 
+# Rhubarb Lip Sync — built locally via Production/scripts/setup_rhubarb_arm64.sh
+Production/tools/bin/rhubarb
+Production/tools/bin/res/
+
 # Backup files (production_server.py.bak.* etc.)
 *.bak
 *.bak.*

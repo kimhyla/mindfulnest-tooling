@@ -25,7 +25,6 @@ def test_pinned_flyout_wins_over_newer_v4(tmp_path: Path) -> None:
     new = tmp_path / "phase_a_flyout_v4_20260420T231237Z.mp4"
     old.write_bytes(b"x")
     new.write_bytes(b"xx")
-    # Make v4 newer on disk
     import os
     import time
     now = time.time()
@@ -62,4 +61,28 @@ def test_raw_lipsync_skips_withbed(tmp_path: Path) -> None:
     now = time.time()
     os.utime(raw, (now, now))
     os.utime(bed, (now + 10, now + 10))
-    assert resolve_phase_a_raw_lipsync(tmp_path) == raw
+    assert resolve_phase_a_raw_lipsync(tmp_path, {}) == raw
+
+
+def test_pinned_chipper_lipsync_wins_over_newer_phase_a_glob(tmp_path: Path) -> None:
+    """chipper_lipsync_* pin must resolve even when phase_a_lipsync_* is newer."""
+    chipper = tmp_path / "chipper_lipsync_g_wide_static_20260607T233541Z.mp4"
+    newer = tmp_path / "phase_a_lipsync_20260607-182528.mp4"
+    chipper.write_bytes(b"x")
+    newer.write_bytes(b"xx")
+    import os
+    import time
+    now = time.time()
+    os.utime(chipper, (now - 100, now - 100))
+    os.utime(newer, (now, now))
+
+    state = {"phase_a_lipsync_file": chipper.name}
+    got = resolve_phase_a_raw_lipsync(tmp_path, state)
+    assert got == chipper
+
+
+def test_chipper_glob_when_unpinned(tmp_path: Path) -> None:
+    chipper = tmp_path / "chipper_lipsync_test_20260608.mp4"
+    chipper.write_bytes(b"x")
+    got = resolve_phase_a_raw_lipsync(tmp_path, {})
+    assert got == chipper

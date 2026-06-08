@@ -6137,7 +6137,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             if path == "/api/phase_b/lipsync":
                 return self._handle_phase_b_lipsync(body)
             if path == "/api/phase_a/lipsync":
-                return self._handle_phase_b_lipsync(body)
+                return self._handle_phase_a_lipsync(body)
             if path == "/api/phase_a/regen_flyin_flyout":
                 return self._handle_phase_a_regen_flyin_flyout(body)
             if path == "/api/phase_a/regen_base_clip":
@@ -11927,6 +11927,11 @@ body {{padding-top:44px!important;}}
         from server_handlers.phases import handle_phase_a_restitch
         return handle_phase_a_restitch(self, body)
 
+    @with_pin_and_drain('_handle_phase_a_lipsync', track_sync=True)
+    def _handle_phase_a_lipsync(self, body: dict) -> None:
+        from server_handlers.phases import handle_phase_a_lipsync
+        return handle_phase_a_lipsync(self, body)
+
     def _auto_assemble_phase_a_stitched(self, ts: str) -> dict | None:
         """Stitch fly-in + lipsync (voice-only) + fly-out, then overlay a
         CONTINUOUS ambient bed across the entire duration so the bed is
@@ -11954,7 +11959,7 @@ body {{padding-top:44px!important;}}
             resolve_phase_a_raw_lipsync,
         )
 
-        raw_lipsync_path = resolve_phase_a_raw_lipsync(self.app.event_dir)
+        raw_lipsync_path = resolve_phase_a_raw_lipsync(self.app.event_dir, state)
         flyin_src = resolve_phase_a_flyin(self.app.event_dir, state)
         flyout_src = resolve_phase_a_flyout(self.app.event_dir, state)
         if not raw_lipsync_path or not flyin_src or not flyout_src:
@@ -11962,7 +11967,10 @@ body {{padding-top:44px!important;}}
 
         # Resolve ambient preset (for the full-length overlay).
         # S5.5d (v3): phase_a is TOP-LEVEL state.
-        ambient_preset_id = (state.get("phase_a") or {}).get("phase_a_ambient_preset_id")
+        ambient_preset_id = (
+            state.get("phase_a_ambient_preset_id")
+            or (state.get("phase_a") or {}).get("phase_a_ambient_preset_id")
+        )
         ambient_path: Path | None = None
         if ambient_preset_id:
             candidate = self._phase_assets_dir("ambient_library") / f"{ambient_preset_id}.mp3"
@@ -12079,10 +12087,14 @@ body {{padding-top:44px!important;}}
             dur = 0.0
 
         def _apply(state, _n=out_path.name, _m=mtime_v):
-            # S5.5d (v3): phase_a is TOP-LEVEL state; lazy-create.
-            _phase_a = state.setdefault("phase_a", {})
-            _phase_a["phase_a_stitched_file"] = _n
-            _phase_a["phase_a_stitched_mtime"] = _m
+            for key, val in (
+                ("phase_a_stitched_file", _n),
+                ("phase_a_stitched_mtime", _m),
+            ):
+                state[key] = val
+                nested = state.setdefault("phase_a", {})
+                if isinstance(nested, dict):
+                    nested[key] = val
             state["_module_version"] = int(state.get("_module_version", 0) or 0) + 1
             return state["_module_version"]
         try:
