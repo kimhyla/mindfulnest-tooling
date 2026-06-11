@@ -389,6 +389,13 @@ if [[ -n "${MN_DEPLOY_SKIP_LAUNCH:-}" ]]; then
 fi
 
 EVENT_DIR="${_ARG_EVENT_DIR:-${MN_EVENT_DIR:-Production/Event_1}}"
+# MN_EVENT_DIR is sometimes set to an absolute Dropbox path; production_server
+# expects a path relative to the Dropbox runtime root.
+if [[ "$EVENT_DIR" == "$DEST_DROPBOX/"* ]]; then
+    EVENT_DIR="${EVENT_DIR#"$DEST_DROPBOX/"}"
+elif [[ "$EVENT_DIR" == /* && "$EVENT_DIR" =~ /Production/(Event_[^/]+)$ ]]; then
+    EVENT_DIR="Production/${BASH_REMATCH[1]}"
+fi
 echo "[deploy] (f) launching production_server.py against $EVENT_DIR ..."
 cd "$DEST_DROPBOX"
 
