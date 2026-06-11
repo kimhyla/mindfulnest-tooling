@@ -215,6 +215,19 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   // The <video> is muted; WaveSurfer owns the audio output.
   const videoRef = useRef<HTMLVideoElement>(null);
 
+  const phaseABaseClipOptions = (items: BaseClipItem[]) =>
+    items
+      .filter((c) => {
+        if (phase !== 'a') return c.character === 'cedric';
+        const id = c.id.toLowerCase();
+        return c.character === 'arlo' || c.character === 'chipper' || id.includes('arlo');
+      })
+      .sort((a, b) => {
+        const rank = (c: BaseClipItem) =>
+          c.character === 'arlo' || c.id.toLowerCase().includes('arlo') ? 0 : 1;
+        return rank(a) - rank(b) || a.id.localeCompare(b.id);
+      });
+
   const refreshAll = async () => {
     const [wc, bc, st, ap] = await Promise.all([
       apiGet<WatercolorListResponse>('phase_watercolor_list'),
@@ -1025,13 +1038,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             onChange={(e: Event) => setSelectedBaseClip((e.target as HTMLSelectElement).value)}
           >
             <option value="">— select —</option>
-            {baseClips
-              .filter((c) => (
-                phase === 'a'
-                  ? (c.character === 'arlo' || c.character === 'chipper')
-                  : c.character === 'cedric'
-              ))
-              .map((c) => (
+            {phaseABaseClipOptions(baseClips).map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.id} ({c.duration_s ?? '?'}s)
                 </option>
