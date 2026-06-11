@@ -133,6 +133,24 @@ def stitch_migrate_legacy_to_canonical(state: dict, event_id: str) -> bool:
     return changed
 
 
+def enrich_beat_boundaries(boundaries: list | None) -> list | None:
+    """Ensure each boundary has duration_ms (UI roadmap + waveform math)."""
+    if not boundaries:
+        return boundaries
+    out: list[dict] = []
+    for raw in boundaries:
+        if not isinstance(raw, dict):
+            continue
+        b = dict(raw)
+        if b.get("duration_ms") is None:
+            try:
+                b["duration_ms"] = int(b["end_ms"]) - int(b["start_ms"])
+            except (TypeError, ValueError, KeyError):
+                continue
+        out.append(b)
+    return out
+
+
 def stitch_upsert_event_slot(
     h,
     event_id: str,
@@ -157,7 +175,7 @@ def stitch_upsert_event_slot(
         slot = job["slots"].setdefault(slot_key, {})
         slot.update(slot_patch)
         if beat_boundaries is not None:
-            slot["beat_boundaries"] = beat_boundaries
+            slot["beat_boundaries"] = enrich_beat_boundaries(beat_boundaries)
         job["updated_at"] = now_iso
 
     h.app.stitch_state.mutate_state(upsert)
@@ -429,6 +447,8 @@ def handle_stitch_load_job(h, name: str)-> None:
 
             h.app.stitch_state.mutate_state(migrate)
 
+    import copy  # noqa: PLC0415
+
     state = h.app.stitch_state.read_state()
     job = state.get("jobs", {}).get(name)
     if job is None:
@@ -438,7 +458,16 @@ def handle_stitch_load_job(h, name: str)-> None:
                    error_message=f"Job not found: {name!r}",
                    retry_safe=False,
                )
-    return h._send_json(200, {"job": job, "name": name})
+    response_job = copy.deepcopy(job) if isinstance(job, dict) else job
+    if isinstance(response_job, dict):
+        slots = response_job.get("slots")
+        if isinstance(slots, dict):
+            for slot in slots.values():
+                if isinstance(slot, dict) and slot.get("beat_boundaries"):
+                    slot["beat_boundaries"] = enrich_beat_boundaries(
+                        slot["beat_boundaries"],
+                    )
+    return h._send_json(200, {"job": response_job, "name": name})
 
 
 def handle_stitch_save_job(h, body: dict)-> None:

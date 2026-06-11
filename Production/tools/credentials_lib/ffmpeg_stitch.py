@@ -32,7 +32,8 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Normalization recipe (LD-284) — single source of truth
 # ---------------------------------------------------------------------------
-# H.264 High / yuv420p / 1280x720 / 24fps / CRF 20 / AAC 128k mono 44.1k / +faststart.
+# H.264 High / yuv420p / 1280x720 / 24fps / LD-296 capped bitrate
+# / AAC 128k mono 44.1k / +faststart.
 # Bumping NORMALIZATION_RECIPE_VERSION = bumping NORMALIZATION_RECIPE_HASH = preview cache invalidation.
 #
 # Split into three constants (preflight 103 / Bug 3 fix):
@@ -51,7 +52,8 @@ NORMALIZATION_VF_EXPR: str = (
 )
 NORMALIZATION_ENCODER_ARGS: tuple[str, ...] = (
     "-c:v", "libx264", "-profile:v", "high", "-pix_fmt", "yuv420p",
-    "-preset", "slow", "-g", "48", "-crf", "20",
+    "-preset", "slow", "-g", "48",
+    "-b:v", "1500k", "-maxrate", "1800k", "-bufsize", "3000k",
     "-c:a", "aac", "-b:a", "128k", "-ac", "1", "-ar", "44100",
     "-movflags", "+faststart",
 )
@@ -72,7 +74,7 @@ NORMALIZATION_FFMPEG_ARGS: tuple[str, ...] = (
 # *_normalized.mp4 in normalized_segments/, _normalized_phase_a/, etc.
 # Next /api/scene/assemble + preview-stitched paths re-encode from source.
 # LD-284 itself unchanged; this is a CODE-ALIGNMENT, not a spec change.
-NORMALIZATION_RECIPE_VERSION: str = "v5"  # AV_FUSE_SS_20260525: revert broken setpts; fuse via -ss in normalize_for_concat
+NORMALIZATION_RECIPE_VERSION: str = "v6"  # LD-296: cap delivery bitrate for kid-facing MP4s
 NORMALIZATION_RECIPE_HASH: str = hashlib.sha256(
     (f"{NORMALIZATION_RECIPE_VERSION}:" + NORMALIZATION_VF_EXPR + "|"
      + " ".join(NORMALIZATION_ENCODER_ARGS)).encode("utf-8"),
@@ -289,6 +291,42 @@ def beat_is_assemblable(beat: dict, event_dir: "Path | None" = None) -> bool:
 # ---------------------------------------------------------------------------
 # Normalization (LD-284 recipe)
 # ---------------------------------------------------------------------------
+def mp4_is_playable(path: Path, *, min_duration_s: float = 0.05) -> bool:
+    """Return True when path is a readable MP4 with streams and positive duration.
+
+    Guards stitch-editor LRU caches against partially-written normalize outputs
+    (broken moov → nb_streams=0) that otherwise pass ``Path.is_file()``.
+    """
+    try:
+        out = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration:stream=codec_type",
+                "-of", "json",
+                str(path.resolve()),
+            ],
+            capture_output=True, check=True, text=True, timeout=15,
+        )
+        payload = json.loads(out.stdout or "{}")
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+        json.JSONDecodeError,
+        ValueError,
+    ):
+        return False
+
+    streams = payload.get("streams") or []
+    if not streams:
+        return False
+    try:
+        dur = float((payload.get("format") or {}).get("duration") or 0)
+    except (TypeError, ValueError):
+        return False
+    return dur >= min_duration_s
+
+
 def _has_audio_stream(src: Path) -> bool:
     """Return True iff src has at least one audio stream. Used to guarantee
     normalized outputs always have an audio track (Bug 4 fix, preflight 103):
@@ -636,6 +674,8 @@ def trim_body_with_fade(
     src: Path, dst: Path,
     head_remove_s: float, tail_remove_s: float,
     fade_in_s: float = 0.0, fade_out_s: float = 0.0,
+    *,
+    fade_audio: bool = True,
     timeout_s: int = DEFAULT_FFMPEG_TIMEOUT_S,
 ) -> float:
     """Trim head/tail AND apply fade-through-black filters in one ffmpeg pass.
@@ -649,6 +689,8 @@ def trim_body_with_fade(
     head_remove_s / tail_remove_s: same semantics as trim_body() — can be 0
     fade_in_s:  fade-from-black on the trimmed clip's START  (0 = skip)
     fade_out_s: fade-to-black   on the trimmed clip's END    (0 = skip)
+    fade_audio: when False, only video fades (audio full level until hard cut;
+                matches Stitcher dissolve with audio_xfade_ms=0).
     Returns new duration after trimming (fade filters do not remove frames).
     """
     src_dur = ffprobe_duration(src)
@@ -665,12 +707,14 @@ def trim_body_with_fade(
     af_parts: list[str] = []
     if fade_in_s > 0:
         vf_parts.append(f"fade=t=in:st=0:d={fade_in_s:.3f}")
-        af_parts.append(f"afade=t=in:st=0:d={fade_in_s:.3f}")
+        if fade_audio:
+            af_parts.append(f"afade=t=in:st=0:d={fade_in_s:.3f}")
     if fade_out_s > 0:
         # fade_out_start is relative to the OUTPUT (trimmed) timeline.
         fade_out_start = max(0.0, new_dur - fade_out_s)
         vf_parts.append(f"fade=t=out:st={fade_out_start:.3f}:d={fade_out_s:.3f}")
-        af_parts.append(f"afade=t=out:st={fade_out_start:.3f}:d={fade_out_s:.3f}")
+        if fade_audio:
+            af_parts.append(f"afade=t=out:st={fade_out_start:.3f}:d={fade_out_s:.3f}")
 
     # Chain fade filters before normalization (scale/pad/fps/setsar).
     vf_chain = (
@@ -1156,9 +1200,10 @@ def resolve_watercolor_asset(library_dir: Path, key: str, cue_type: str) -> Path
         candidate = library_dir / f"{key}{ext}"
         if candidate.is_file():
             return candidate
+    tried = [str(library_dir / f"{key}{e}") for e in (*exts, *fallback_exts)]
     raise FileNotFoundError(
         f"watercolor asset not found for key={key!r} cue_type={cue_type!r}; "
-        f"tried: {[str(library_dir / (key + e)) for e in exts + list(fallback_exts)]}",
+        f"tried: {tried}",
     )
 
 
@@ -1423,6 +1468,11 @@ def render_watercolor_overlay(
             "-map", "0:a?",  # pass base audio if present
             *enc_args,
         ])
+    # Cap output to base duration — looped cue inputs use cue_hold_s (ts+dur+2s)
+    # which can exceed the base clip; without -t the longest input wins (~3s on
+    # a 2s base). Preview/stitch expect overlay output to match lipsync length.
+    if base_video_duration > 0:
+        cmd.extend(["-t", f"{base_video_duration:.3f}"])
     cmd.append(str(tmp))
     try:
         subprocess.run(cmd, check=True, capture_output=True, timeout=timeout_s)

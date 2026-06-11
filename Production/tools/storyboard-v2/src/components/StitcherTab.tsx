@@ -444,7 +444,11 @@ export function StitcherTab() {
     setBeatBoundaries([]);
     const slotData = slot ? job?.slots?.[slot] : undefined;
     if (slotData?.beat_boundaries?.length) {
-      setBeatBoundaries(slotData.beat_boundaries);
+      const enriched = slotData.beat_boundaries.map((b) => ({
+        ...b,
+        duration_ms: b.duration_ms ?? (b.end_ms - b.start_ms),
+      }));
+      setBeatBoundaries(enriched);
       setBeatBoundariesLoading(false);
       return;
     }
