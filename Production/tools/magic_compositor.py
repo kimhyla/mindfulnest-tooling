@@ -150,7 +150,7 @@ STYLES = {
 
         "blend": "additive",   # additive = visible on bright backgrounds
 
-        "status": "draft",
+        "status": "approved",      # Kim approved for runestone/nest orbital paths (Event 1 res beat 2+)
         "directus_ld": None,
     },
 }

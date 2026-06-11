@@ -4799,6 +4799,47 @@ def storyboard_beat_id_for_bg_beat(
     return storyboard_beat_id_from_bg_beat(bg_beat_id)
 
 
+def resolve_magic_style_for_render(
+    bg_beat_id: str,
+    *,
+    sidecar: dict | None = None,
+    production_state: dict | None = None,
+    video_role: str = "resolution",
+    manual_path: list | None = None,
+    scene_registry: dict | None = None,
+) -> str:
+    """Pick compositor style — floor-flat tessa_ori vs wide sparkle river wide_ori."""
+    if scene_registry:
+        for key in (
+            f"m1_e1_res_{bg_beat_id}",
+            f"m1_e1_res_{bg_beat_id.replace('bg_arc1_event1_post_', '')}",
+        ):
+            scene = scene_registry.get(key) or {}
+            style = scene.get("style")
+            if isinstance(style, str) and style:
+                return style
+            archetype = scene.get("archetype") or ""
+            if archetype in ("stone_activation", "character_exit_ground"):
+                return "wide_ori"
+
+    sb_id = storyboard_beat_id_for_bg_beat(
+        bg_beat_id,
+        sidecar=sidecar,
+        production_state=production_state,
+        video_role=video_role,
+    )
+    if sb_id and sb_id != "beat_01":
+        return "wide_ori"
+
+    if manual_path and len(manual_path) >= 4:
+        ys = [float(p[1]) for p in manual_path]
+        xs = [float(p[0]) for p in manual_path]
+        if (max(ys) - min(ys)) > 0.12 and (max(xs) - min(xs)) > 0.12:
+            return "wide_ori"
+
+    return "tessa_ori"
+
+
 def bg_beat_id_from_storyboard_id(
     storyboard_beat_id: str,
     event_id: str,

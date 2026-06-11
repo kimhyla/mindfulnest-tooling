@@ -547,6 +547,52 @@ def handle_magic_submit_path(h, body: dict)-> None:
     })
 
 
+def _load_scene_registry(h) -> dict:
+    reg_path = _data_root(h) / "tools" / "scene_registry.yaml"
+    if not reg_path.exists():
+        return {}
+    import yaml as _yaml
+    return _yaml.safe_load(reg_path.read_text()) or {}
+
+
+def _resolve_magic_style(h, beat_id: str, body: dict, manual_path: list, sidecar: dict) -> str:
+    bg = _bg_module()
+    video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
+    production_state = h.app.state.read_state()
+    registry = _load_scene_registry(h)
+    return bg.resolve_magic_style_for_render(
+        beat_id,
+        sidecar=sidecar,
+        production_state=production_state,
+        video_role=video_role,
+        manual_path=manual_path,
+        scene_registry=registry,
+    )
+
+
+def _persist_magic_scene_registry(
+    h,
+    *,
+    beat_id: str,
+    manual_path: list,
+    style: str,
+) -> None:
+    """Best-effort YAML persist so scene_registry tracks last approved path + style."""
+    try:
+        reg_path = _data_root(h) / "tools" / "scene_registry.yaml"
+        if not reg_path.exists():
+            return
+        import yaml as _yaml
+        registry = _yaml.safe_load(reg_path.read_text()) or {}
+        scene_key = f"m1_e1_res_{beat_id}"
+        scene = registry.setdefault(scene_key, {})
+        scene["manual_path"] = manual_path
+        scene["style"] = style
+        reg_path.write_text(_yaml.safe_dump(registry, sort_keys=False))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[magic] WARN scene_registry persist failed beat={beat_id}: {exc}", flush=True)
+
+
 def _persist_magic_fields_to_bg_sidecar(
     h,
     *,
@@ -719,17 +765,21 @@ def handle_magic_still(h, body: dict)-> None:
         if tools_dir not in sys.path:
             sys.path.insert(0, tools_dir)
         from magic_compositor import MagicCompositor  # type: ignore
+        with _bg_module()._sidecar_lock:
+            _sidecar_style = _bg_module().read_sidecar()
+        magic_style = _resolve_magic_style(h, beat_id, body, clean_path, _sidecar_style)
         mc = MagicCompositor(
             background_path=safe_sip,
             path_pts=clean_path,
-            style="tessa_ori",
+            style=magic_style,
             duration=magic_still_duration,
             fps=24,
             output_dir=str(out_dir),
             label=f"magic_still_{beat_id}_{ts}",
             beat_id=beat_id,
-            tags=["magic", "magic_still", "tessa_ori"],
+            tags=["magic", "magic_still", magic_style],
             path_authored_against=path_authored_against,
+            path_interp="polyline",
         )
         rendered = mc.render_video(output_path=str(out_path))
     except Exception as exc:
@@ -863,6 +913,12 @@ def handle_magic_still(h, body: dict)-> None:
                 "magic_manual_path": clean_path,
                 **({"magic_path_authored_against": path_authored_against} if path_authored_against else {}),
             },
+        )
+        _persist_magic_scene_registry(
+            h,
+            beat_id=beat_id,
+            manual_path=clean_path,
+            style=magic_style,
         )
 
     return h._send_json(200, {
@@ -1076,17 +1132,21 @@ def handle_magic_video(h, body: dict)-> None:
         if tools_dir not in sys.path:
             sys.path.insert(0, tools_dir)
         from magic_compositor import MagicCompositor  # type: ignore
+        with _bg_module()._sidecar_lock:
+            _sidecar_style = _bg_module().read_sidecar()
+        magic_style = _resolve_magic_style(h, beat_id, body, clean_path, _sidecar_style)
         mc = MagicCompositor(
             background_path=str(black_ref),
             path_pts=clean_path,
-            style="tessa_ori",
+            style=magic_style,
             duration=min(vid_duration, 10.0),
             fps=24,
             output_dir=str(out_dir),
             label=f"magic_only_{beat_id}_{ts}",
             beat_id=beat_id,
-            tags=["magic", "magic_video", "tessa_ori"],
+            tags=["magic", "magic_video", magic_style],
             path_authored_against=path_authored_against,
+            path_interp="polyline",
         )
         # DO NOT call mc.render_video() — we composite directly in Step 2.
     except Exception as exc:
@@ -1431,6 +1491,12 @@ def handle_magic_video(h, body: dict)-> None:
                 "magic_manual_path": clean_path,
                 **({"magic_path_authored_against": path_authored_against} if path_authored_against else {}),
             },
+        )
+        _persist_magic_scene_registry(
+            h,
+            beat_id=beat_id,
+            manual_path=clean_path,
+            style=magic_style,
         )
 
     return h._send_json(200, {

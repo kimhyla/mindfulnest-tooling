@@ -110,6 +110,61 @@ def test_merge_storyboard_magic_uses_display_order_mapping():
     assert merged["magic_still_path"] == "magic_still_beat_02.mp4"
 
 
+def test_resolve_magic_style_wide_ori_for_resolution_beat_two():
+    sidecar = {
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_1_post": {
+                        "beats": [
+                            {"beat_id": "bg_arc1_event1_post_beat_01"},
+                            {"beat_id": "bg_arc1_event1_post_beat_21"},
+                        ],
+                    },
+                },
+            },
+        },
+    }
+    production_state = {
+        "videos": {
+            "resolution": {"display_order": ["beat_01", "beat_02"], "beats": {}},
+        },
+    }
+    style = bg.resolve_magic_style_for_render(
+        "bg_arc1_event1_post_beat_21",
+        sidecar=sidecar,
+        production_state=production_state,
+        video_role="resolution",
+    )
+    assert style == "wide_ori"
+
+
+def test_resolve_magic_style_tessa_ori_for_beat_one():
+    sidecar = {
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_1_post": {
+                        "beats": [{"beat_id": "bg_arc1_event1_post_beat_01"}],
+                    },
+                },
+            },
+        },
+    }
+    production_state = {
+        "videos": {
+            "resolution": {"display_order": ["beat_01"], "beats": {}},
+        },
+    }
+    style = bg.resolve_magic_style_for_render(
+        "bg_arc1_event1_post_beat_01",
+        sidecar=sidecar,
+        production_state=production_state,
+        video_role="resolution",
+    )
+    assert style == "tessa_ori"
+
+
 def test_persist_magic_fields_on_bg_sidecar_by_storyboard_id():
     sidecar = {
         "arcs": {
