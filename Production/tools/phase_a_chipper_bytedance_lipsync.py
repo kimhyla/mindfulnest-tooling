@@ -29,6 +29,8 @@ CHAIN_GAP_TAIL_S = 0.5
 
 HERE = Path(__file__).resolve().parent
 
+from phase_a_av_post import DEFAULT_LOOP_XFADE_S, crossfade_loop_video  # noqa: E402
+
 
 def log(msg: str) -> None:
     print(f"[phase_a_bytedance] {msg}", flush=True)
@@ -55,30 +57,18 @@ def _production_server():
     return ps
 
 
-def forward_loop(src: Path, dst: Path, target_s: float) -> None:
-    """Repeat forward copies only (no reverse) — avoids motion reversal mid-speech."""
+def extend_idle_base(src: Path, dst: Path, target_s: float) -> None:
+    """Crossfade-loop idle base to target length (no hard concat seams)."""
     src_dur = ffprobe_duration(src)
     if src_dur <= 0:
         raise ValueError(f"invalid source duration: {src}")
-    repeats = max(1, int((target_s / src_dur) + 0.999))
-    tmp_dir = dst.parent
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    concat_list = tmp_dir / f"fwd_list_{src.stem}_{os.getpid()}.txt"
-    line = "file '" + str(src.resolve()).replace("'", "'\\''") + "'"
-    concat_list.write_text("\n".join([line] * repeats) + "\n", encoding="utf-8")
-    subprocess.run(
-        [
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-f", "concat", "-safe", "0", "-i", str(concat_list),
-            "-t", f"{target_s:.3f}", "-c:v", "libx264", "-preset", "fast",
-            "-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart", str(dst),
-        ],
-        check=True,
-        capture_output=True,
-        timeout=300,
+    crossfade_loop_video(
+        src, dst, target_s, xfade_s=DEFAULT_LOOP_XFADE_S, fps=24,
     )
-    concat_list.unlink(missing_ok=True)
-    log(f"forward loop: {src_dur:.1f}s x {repeats} -> {dst.name} ({ffprobe_duration(dst):.1f}s)")
+    log(
+        f"crossfade extend: {src_dur:.1f}s -> {dst.name} "
+        f"({ffprobe_duration(dst):.1f}s target={target_s:.1f}s)"
+    )
 
 
 def prep_audio_bytedance_style(src: Path, tmp_dir: Path) -> Path:
@@ -179,7 +169,7 @@ def make_idle_gap_clip(base_video: Path, duration_s: float, out_path: Path) -> P
         return None
     out_path.parent.mkdir(parents=True, exist_ok=True)
     looped = out_path.with_name(f"{out_path.stem}_loop.mp4")
-    forward_loop(base_video, looped, duration_s)
+    extend_idle_base(base_video, looped, duration_s)
     subprocess.run(
         [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
@@ -197,10 +187,6 @@ def make_idle_gap_clip(base_video: Path, duration_s: float, out_path: Path) -> P
         timeout=180,
     )
     looped.unlink(missing_ok=True)
-    log(f"idle gap: {duration_s:.2f}s -> {out_path.name}")
-    return out_path
-
-
     log(f"idle gap: {duration_s:.2f}s -> {out_path.name}")
     return out_path
 
@@ -538,8 +524,8 @@ def _run_single_pass_bytedance(
     """One looped base clip + one ByteDance job — no §8.5 segment concat."""
     log(f"single-pass lipsync: {audio_dur:.1f}s on looped base (no segment split)")
     target_s = audio_dur + VIDEO_TRIM_TAILROOM_S
-    looped = work / f"single_fwd_{ts}.mp4"
-    forward_loop(base_video, looped, target_s)
+    looped = work / f"single_xfade_{ts}.mp4"
+    extend_idle_base(base_video, looped, target_s)
     trimmed = work / f"single_trim_{ts}.mp4"
     trim_video_for_lipsync(looped, trimmed, audio_dur)
     raw_out = work / f"single_bd_{ts}.mp4"
@@ -552,6 +538,7 @@ def _run_single_pass_bytedance(
             "chunk_count": 1,
             "gap_insert_count": 0,
             "gap_clip_count": 0,
+            "loop_method": "crossfade",
             "prepped_audio_duration_s": round(audio_dur, 3),
         })
     return out_path
@@ -630,8 +617,8 @@ def run_bytedance_tight_lipsync(
         seg_audio = work / f"seg_{i}_{ts}.mp3"
         extract_audio_segment(audio, seg_audio, t0, t1)
         target_s = chunk_dur + VIDEO_TRIM_TAILROOM_S
-        looped = work / f"seg_{i}_fwd_{ts}.mp4"
-        chain_source = "idle_base_forward_loop"
+        looped = work / f"seg_{i}_xfade_{ts}.mp4"
+        chain_source = "idle_base_crossfade_loop"
         chain_gap_key: str | int | None = None
 
         if chain_chunks and i == 0 and "lead" in prebuilt_gaps:
@@ -643,7 +630,7 @@ def run_bytedance_tight_lipsync(
             chain_source = f"gap_{i - 1}_tail"
             chain_gap_key = i - 1
         else:
-            forward_loop(base_video, looped, target_s)
+            extend_idle_base(base_video, looped, target_s)
 
         trimmed = work / f"seg_{i}_trim_{ts}.mp4"
         trim_video_for_lipsync(looped, trimmed, chunk_dur, trim_start=0.0)

@@ -2533,8 +2533,15 @@ def handle_phase_a_regen_base_clip(h, body: dict) -> None:
 
     # CODE tree — sibling script under Production/tools/
     tools_dir = _PSERVER_TOOLS_DIR
+    if str(tools_dir) not in sys.path:
+        sys.path.insert(0, str(tools_dir))
+    from phase_a_chipper_lipsync_base import (  # noqa: WPS433
+        DEFAULT_CLIP_ID,
+        PHASE_A_BASE_CLIP_DURATION_S,
+    )
     script = tools_dir / "phase_a_chipper_lipsync_base.py"
-    clip_id = (body or {}).get("clip_id") or "arlo_idle_wizard_desk_v1"
+    clip_id = (body or {}).get("clip_id") or DEFAULT_CLIP_ID
+    duration_s = int((body or {}).get("duration_s") or PHASE_A_BASE_CLIP_DURATION_S)
     _app = h.app
 
     def _apply_running(state):
@@ -2548,7 +2555,14 @@ def handle_phase_a_regen_base_clip(h, body: dict) -> None:
         env = {**os.environ, "MN_EVENT_DIR": str(_app.event_dir)}
         try:
             proc = _sp.run(
-                [sys.executable, str(script), "--clip-id", str(clip_id)],
+                [
+                    sys.executable,
+                    str(script),
+                    "--clip-id",
+                    str(clip_id),
+                    "--duration",
+                    str(duration_s),
+                ],
                 cwd=str(tools_dir),
                 env=env,
                 capture_output=True,
@@ -2578,7 +2592,11 @@ def handle_phase_a_regen_base_clip(h, body: dict) -> None:
         "ok": True,
         "status": "running",
         "clip_id": clip_id,
-        "message": "Kling idle base clip started (~6 min). Send for Lipsync when done.",
+        "duration_s": duration_s,
+        "message": (
+            f"Kling idle base clip started (~6 min, {duration_s}s). "
+            "Send for Lipsync when done."
+        ),
     })
 
 

@@ -24,6 +24,7 @@ from phase_a_av_post import (  # noqa: E402
     av_duration_gap,
     pad_video_to_match_audio,
     trim_av_lead_in,
+    trim_av_trailing_silence,
     upscale_lipsync_to_bookend,
 )
 from phase_a_chipper_bytedance_lipsync import (  # noqa: E402
@@ -167,7 +168,9 @@ def run_phase_a_base_clip_bytedance_lipsync(
     _, pad_s = pad_video_to_match_audio(bd_up, padded)
     # Leading preroll is already a timeline gap clip — do not trim again.
     lead_trim_s = 0.0 if bd_meta.get("timeline_gaps_preserved") else preroll_s
-    trim_av_lead_in(padded, out_path, lead_trim_s)
+    lead_out = work / f"bytedance_lead_{tag}.mp4"
+    trim_av_lead_in(padded, lead_out, lead_trim_s)
+    _, trail_trim_s = trim_av_trailing_silence(lead_out, out_path)
 
     v_final, a_final, gap_final = av_duration_gap(out_path)
     method_key = METHOD_CHAINED if chain_chunks else METHOD
@@ -178,6 +181,7 @@ def run_phase_a_base_clip_bytedance_lipsync(
         "audio_source": audio_raw.name,
         "preroll_added_s": round(preroll_s, 3),
         "lead_trim_s": round(lead_trim_s, 3),
+        "trailing_trim_s": round(trail_trim_s, 3),
         "timeline_gaps_preserved": bd_meta.get("timeline_gaps_preserved", False),
         "chained_chunks": bd_meta.get("chained_chunks", chain_chunks),
         "single_pass": bd_meta.get("single_pass", single_pass),
@@ -281,6 +285,7 @@ def rebuild_middle_with_timeline_gaps(
     stem = run_dir.name.replace("phase_a_permanent_", "")
     out_path = run_dir / f"phase_a_lipsync_{stem}_{out_suffix}.mp4"
     trim_av_lead_in(padded, out_path, 0.0)
+    _, trail_trim_s = trim_av_trailing_silence(out_path, out_path)
 
     v_final, a_final, gap_final = av_duration_gap(out_path)
     manifest = {
@@ -289,6 +294,7 @@ def rebuild_middle_with_timeline_gaps(
         "segment_count": len(segs),
         **gap_meta,
         "lead_trim_s": 0.0,
+        "trailing_trim_s": round(trail_trim_s, 3),
         "video_pad_s": round(pad_s, 3),
         "final_av_gap_s": round(gap_final, 3),
         "output": out_path.name,

@@ -21,7 +21,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { activeScope } from '../state/scope';
-import { activeTab } from '../app';
+import { activeTab, serverRehydrateTick } from '../state/refreshSignals';
 import { apiGet, pathappPatch } from '../api/client';
 import { SERVER_BASE } from '../api/endpoints';
 import { AssetTile } from './ui/AssetTile';
@@ -330,7 +330,7 @@ export function LibraryPanel() {
     return () => {
       cancelled = true;
     };
-  }, [refreshTick, activeScope.value.event_id]);
+  }, [refreshTick, serverRehydrateTick.value, activeScope.value.event_id]);
   // Listen for assign-image refreshes from other parts of the app.
   useEffect(() => {
     const onAssign = () => setRefreshTick((n) => n + 1);
@@ -356,7 +356,7 @@ export function LibraryPanel() {
     return () => {
       cancelled = true;
     };
-  }, [refreshTick, activeScope.value.event_id]);
+  }, [refreshTick, serverRehydrateTick.value, activeScope.value.event_id]);
 
   const onDelete = async (item: LibItem) => {
     const k = item.key ?? item.abs_path;

@@ -24,6 +24,7 @@ import { Spinner } from './ui/Spinner';
 import { Select } from './ui/Select';
 import { pushToast } from './ui/Toast';
 import { stitcherRefreshTick } from '../app';
+import { serverRehydrateTick } from '../state/refreshSignals';
 import {
   allBeatsStitchExportReady,
   stitchExportBlockTooltip,
@@ -344,6 +345,7 @@ export function BgTab() {
 
     const depKey = [
       arcNumber,
+      serverRehydrateTick.value,
       activeScope.value.event_id,
       activeProjectType.value,
       activeMilestoneId.value ?? '',
@@ -366,6 +368,7 @@ export function BgTab() {
     };
   }, [
     arcNumber,
+    serverRehydrateTick.value,
     activeScope.value.event_id,
     activeProjectType.value,
     activeMilestoneId.value,

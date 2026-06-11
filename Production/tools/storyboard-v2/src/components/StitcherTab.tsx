@@ -19,6 +19,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { activeScope, activeProjectType, scopeKey } from '../state/scope';
 import { stitcherRefreshTick } from '../app';
+import { serverRehydrateTick } from '../state/refreshSignals';
 import { apiGet, pathappPatch } from '../api/client';
 import { StitcherSlotWaveform } from './StitcherSlotWaveform';
 import { StitcherTransitionSelector, type Transition } from './StitcherTransitionSelector';
@@ -362,7 +363,7 @@ export function StitcherTab() {
       }
     })();
     return () => { cancelled = true; };
-  }, [refreshTick, activeScope.value.event_id]);
+  }, [refreshTick, activeScope.value.event_id, serverRehydrateTick.value]);
 
   const slotsToShow = standaloneMode && job?.slots
     ? SLOT_DEFS.filter((s) => job.slots && s.key in job.slots)
@@ -527,6 +528,9 @@ export function StitcherTab() {
       void fetchBeatBoundaries(slot);
       return;
     }
+    // Drop stale preview from another slot while the new stitch_preview loads.
+    setActivePreviewSlot(null);
+    setBeatBoundaries([]);
     void onPreviewSlot(slot);
   };
 

@@ -24,6 +24,7 @@ import {
 } from '../state/scope';
 import { apiGet, expectField, pathappPatch, type ExpectFieldSpec } from '../api/client';
 import { stitcherRefreshTick } from '../app';
+import { serverRehydrateTick } from '../state/refreshSignals';
 import { SERVER_BASE, MUTATION_ENDPOINTS as ENDPOINTS } from '../api/endpoints';
 import { makeDropTarget } from '../utils/dragdrop';
 import { Spinner } from './ui/Spinner';
@@ -2796,6 +2797,7 @@ export function StoryboardTab() {
 
     const depKey = [
       refreshTick,
+      serverRehydrateTick.value,
       activeScope.value.event_id,
       activeProjectType.value,
       activeMilestoneId.value ?? '',

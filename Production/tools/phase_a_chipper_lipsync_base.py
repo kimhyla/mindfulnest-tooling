@@ -45,7 +45,11 @@ NEGATIVE = (
 )
 
 ARLO_ELEMENT_ID = "313106596591323"
-DEFAULT_CLIP_ID = "arlo_idle_wizard_desk_v1"
+# v2: 15s Kling idle (fewer loop seams when stretched to ~40s Phase A speech).
+PHASE_A_BASE_CLIP_DURATION_S = 15
+DEFAULT_CLIP_ID = "arlo_idle_wizard_desk_v2"
+LEGACY_CLIP_ID = "arlo_idle_wizard_desk_v1"
+PHASE_A_BASE_DURATION_CHOICES = (5, 10, 15)
 
 
 def assert_arlo_element(prod: Path) -> dict:
@@ -95,7 +99,12 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--still", type=Path, help="Source PNG (default: Arlo wizard desk v1)")
     p.add_argument("--clip-id", default=DEFAULT_CLIP_ID)
-    p.add_argument("--duration", type=int, default=10, choices=(5, 10))
+    p.add_argument(
+        "--duration",
+        type=int,
+        default=PHASE_A_BASE_CLIP_DURATION_S,
+        choices=PHASE_A_BASE_DURATION_CHOICES,
+    )
     p.add_argument("--no-element", action="store_true")
     args = p.parse_args()
 

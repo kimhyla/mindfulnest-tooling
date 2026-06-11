@@ -17,6 +17,8 @@ import { apiGet, pathappPatch } from '../../api/client';
 import { activeScope, activeVideoRole } from '../../state/scope';
 import { SERVER_BASE } from '../../api/endpoints';
 import { stitcherRefreshTick } from '../../app';
+import { serverRehydrateTick } from '../../state/refreshSignals';
+import { SERVER_REHYDRATE_EVENT } from '../../state/serverRehydrate';
 import { WaveformTimeline, type WatercolorCue, type WaveformPlaybackControl } from './WaveformTimeline';
 import { CuePopover } from './CuePopover';
 
@@ -188,6 +190,13 @@ function priorityAudioFile(
   return null;
 }
 
+function stitchedPreviewStale(slice: PhaseStateSlice): boolean {
+  if (!slice.stitched_file) return false;
+  const lm = slice.lipsync_mtime ?? 0;
+  const sm = slice.stitched_mtime ?? 0;
+  return lm > 0 && (sm === 0 || lm > sm);
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 
 function fileUrl(name: string): string {
@@ -245,26 +254,32 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
         return rank(a) - rank(b) || a.id.localeCompare(b.id);
       });
 
-  const refreshAll = async () => {
+  const refreshAll = async (): Promise<boolean> => {
     const [wc, bc, st, ap] = await Promise.all([
       apiGet<WatercolorListResponse>('phase_watercolor_list'),
       apiGet<BaseClipsResponse>('phase_base_clips_list'),
       apiGet<EventStateResponse>('v2_event_state', { event_id: activeScope.value.event_id }),
       apiGet<AmbientPresetListResponse>('phase_b_ambient_preset_list'),
     ]);
+    let nextSlice = stateSlice;
+    if (st.ok && st.data) {
+      nextSlice = pickPhaseSlice(st.data, phase);
+      setStateSlice(nextSlice);
+      if (nextSlice.script) setScriptDraft(nextSlice.script);
+    } else if (!st.ok) {
+      setStatusMsg(
+        `⚠ Could not load Phase ${phase.toUpperCase()} state (HTTP ${st.status || 'network'}). `
+        + 'Tabs refresh automatically when the server is back.',
+      );
+    }
     if (wc.ok && wc.data?.items) {
       const next = wc.data.items as WatercolorItem[];
       setWatercolors((prev) => {
-        // Skip the state swap when the library hasn't changed — prevents the
-        // thumbnail blink caused by Preact reconciling a fresh-identity array
-        // on every 30s lipsync poll. Compare by key+mtime (cheap; server sends
-        // mtime from f.stat().st_mtime). A new animation landing changes mtime,
-        // so real updates still trigger a re-render.
         if (
           prev.length === next.length &&
           prev.every((p, i) => p.key === next[i].key && p.mtime === next[i].mtime)
         ) {
-          return prev; // Same reference → Preact bails out of reconcile
+          return prev;
         }
         return next;
       });
@@ -273,27 +288,47 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       setBaseClips(bc.data.items);
       const phaseAChars = new Set(['arlo', 'chipper']);
       const wantedChar = phase === 'a' ? 'arlo' : 'cedric';
-      const sittingId = phase === 'a' ? stateSlice.chipper_sitting_clip_id : undefined;
+      const sittingId = phase === 'a' ? nextSlice.chipper_sitting_clip_id : undefined;
       const bySitting = sittingId
         ? bc.data.items.find((c) => c.id === sittingId)
         : undefined;
       const match = bySitting
         ?? bc.data.items.find((c) => c.character === wantedChar)
         ?? bc.data.items.find((c) => c.character && phaseAChars.has(c.character));
-      if (match) setSelectedBaseClip((prev) => prev || match.id);
+      if (match) setSelectedBaseClip(match.id);
     }
-    if (st.ok && st.data) {
-      const slice = pickPhaseSlice(st.data, phase);
-      setStateSlice(slice);
-      if (slice.script) setScriptDraft(slice.script);
+    if (ap.ok && ap.data?.items) {
+      setAmbientPresets(ap.data.items);
     }
-    if (ap.ok && ap.data?.items) setAmbientPresets(ap.data.items);
+    const hydrated = Boolean(st.ok && st.data);
+    if (hydrated) {
+      setStatusMsg((prev) => (
+        prev?.startsWith('⚠ Could not load Phase') ? null : prev
+      ));
+    }
+    return hydrated;
   };
 
   useEffect(() => {
     let cancelled = false;
     (async () => { if (!cancelled) await refreshAll(); })();
     return () => { cancelled = true; };
+  }, [activeScope.value.event_id, phase, serverRehydrateTick.value]);
+
+  useEffect(() => {
+    const onRehydrate = () => { void refreshAll(); };
+    window.addEventListener(SERVER_REHYDRATE_EVENT, onRehydrate);
+    return () => window.removeEventListener(SERVER_REHYDRATE_EVENT, onRehydrate);
+  }, [activeScope.value.event_id, phase]);
+
+  useEffect(() => {
+    const retry = () => { void refreshAll(); };
+    window.addEventListener('focus', retry);
+    document.addEventListener('visibilitychange', retry);
+    return () => {
+      window.removeEventListener('focus', retry);
+      document.removeEventListener('visibilitychange', retry);
+    };
   }, [activeScope.value.event_id, phase]);
 
   // Resume polling after hard refresh while server still reports running.
@@ -522,7 +557,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     setBusyAction('regen_base');
     setStatusMsg('Kling idle base clip (~6 min)…');
     const res = await pathappPatch(activeScope.value, 'phase_a_regen_base_clip', {
-      clip_id: stateSlice.chipper_sitting_clip_id ?? selectedBaseClip ?? 'arlo_idle_wizard_desk_v1',
+      clip_id: stateSlice.chipper_sitting_clip_id ?? selectedBaseClip ?? 'arlo_idle_wizard_desk_v2',
     });
     setBusyAction(null);
     if (res.ok && res.status === 202) {
@@ -1024,75 +1059,6 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           ) : null}
         </div>
 
-        {/* Lipsync video player — shows approved video after Send for Lipsync completes.
-            Muted: WaveSurfer (above) owns audio playback and is the master clock.
-            videoRef is passed to WaveformTimeline as linkedVideo so seek/play/pause
-            from the waveform drive the video position — this is how watercolor cue
-            placement timestamps (offset_ms) map to visible video frames. */}
-        <div class="mn-phase-lipsync" data-testid={`phase-${phase}-lipsync-player`}>
-          {lipsyncFile ? (
-            <>
-              <strong>Lipsync video:</strong>
-              <div class="mn-lipsync-video-wrapper">
-                {/* muted: WaveSurfer owns audio. controls REMOVED intentionally:
-                  native controls let Kim pause video without WaveSurfer knowing → desync.
-                  WaveformTimeline ⏸/▶ is the single control point. */}
-              <video
-                  ref={videoRef}
-                  muted
-                  src={fileUrl(lipsyncFile)}
-                  style={{ maxHeight: '20vh', display: 'block' }}
-                />
-                {(stateSlice.watercolor_cues ?? [])
-                  .filter(
-                    (cue) =>
-                      currentTimeMs >= cue.offset_ms &&
-                      currentTimeMs < cue.offset_ms + (cue.duration_ms ?? 3000),
-                  )
-                  .map((cue) => {
-                    // PNG+JS-opacity overlay (LD-821 WATERCOLOR_OVERLAY_PNG_CSS_ARCHITECTURE_V1).
-                    // We use the source PNG (not the MP4) so there is no black-background /
-                    // mix-blend-mode hack. The server's thumb_url already resolves animated keys
-                    // to their base PNG — no new endpoint needed.
-                    const wcItem = watercolors.find((w) => w.key === cue.watercolor_key);
-                    // Resolve PNG source: prefer server-provided thumb_url (handles animated→base
-                    // resolution server-side). Fallback to direct watercolor endpoint for any cue
-                    // whose key isn't yet in the loaded list (e.g. freshly animated, list not
-                    // yet refreshed).
-                    const pngSrc =
-                      wcItem?.thumb_url ??
-                      `${SERVER_BASE}/api/phase_b/watercolor/${encodeURIComponent(cue.watercolor_key)}`;
-
-                    // PNG overlay — always use the base PNG (thumb_url resolves
-                    // animated keys → base PNG server-side). mix-blend-mode:multiply
-                    // in CSS makes white paper background transparent, leaving only
-                    // the watercolor pigment visible over the lipsync video.
-                    // Opacity: 300ms fade-in (matches server-side 0.3s ffmpeg fade),
-                    // then solid hold at 1.0. No fade-out — cue disappears when its
-                    // time window ends (filter condition above removes from DOM).
-                    const elapsed = currentTimeMs - cue.offset_ms;
-                    const opacity = Math.min(1.0, elapsed / 300);
-
-                    return (
-                      <img
-                        key={cue.id}
-                        class="mn-lipsync-watercolor-overlay"
-                        src={pngSrc}
-                        alt=""
-                        style={{ opacity }}
-                      />
-                    );
-                  })}
-              </div>
-              <span class="mn-dim">{lipsyncFile}</span>
-            </>
-          ) : (
-            <div class="mn-phase-lipsync-placeholder mn-dim" data-testid={`phase-${phase}-lipsync-placeholder`}>
-              Lipsync video will appear here after "Send for Lipsync" completes.
-            </div>
-          )}
-        </div>
-
         {/* Action row: Base clip select + Send for Lipsync + Mix Audio + Export */}
         <div class="mn-phase-row">
           <label class="mn-dim" for={`phase-${phase}-baseclip`}>Base clip:</label>
@@ -1144,7 +1110,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             data-testid={`phase-${phase}-preview-overlay-btn`}
             onClick={onPreviewOverlay}
             disabled={busyAction !== null || !lipsyncFile}
-            title="Play the lipsync frame above — same surface used for watercolor cue placement (overlays appear when cues exist)."
+            title="Play the large preview frame below — same surface for watercolor overlays (drag cues onto the waveform)."
           >
             🎨 Preview with Overlay
           </button>
@@ -1159,6 +1125,62 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             {statusMsg}
           </div>
         ) : null}
+
+        {/* Primary preview — lipsync video + live CSS watercolor overlays.
+            Muted: WaveSurfer (above) owns audio. Waveform ▶/⏸ is the control point.
+            Drag watercolors onto the waveform; overlays appear here during playback. */}
+        <div
+          class="mn-phase-lipsync mn-phase-lipsync-primary"
+          data-testid={`phase-${phase}-lipsync-player`}
+        >
+          {lipsyncFile ? (
+            <>
+              <strong>Preview (lipsync + overlay cues):</strong>
+              <div class="mn-lipsync-video-wrapper">
+                <video
+                  ref={videoRef}
+                  muted
+                  playsInline
+                  preload="auto"
+                  class="mn-lipsync-preview-video"
+                  src={fileUrl(lipsyncFile)}
+                />
+                {(stateSlice.watercolor_cues ?? [])
+                  .filter(
+                    (cue) =>
+                      currentTimeMs >= cue.offset_ms &&
+                      currentTimeMs < cue.offset_ms + (cue.duration_ms ?? 3000),
+                  )
+                  .map((cue) => {
+                    const wcItem = watercolors.find((w) => w.key === cue.watercolor_key);
+                    const pngSrc =
+                      wcItem?.thumb_url ??
+                      `${SERVER_BASE}/api/phase_b/watercolor/${encodeURIComponent(cue.watercolor_key)}`;
+                    const elapsed = currentTimeMs - cue.offset_ms;
+                    const opacity = Math.min(1.0, elapsed / 300);
+
+                    return (
+                      <img
+                        key={cue.id}
+                        class="mn-lipsync-watercolor-overlay"
+                        src={pngSrc}
+                        alt=""
+                        style={{ opacity }}
+                      />
+                    );
+                  })}
+              </div>
+              <span class="mn-dim">{lipsyncFile}</span>
+            </>
+          ) : (
+            <div
+              class="mn-phase-lipsync-placeholder mn-dim"
+              data-testid={`phase-${phase}-lipsync-placeholder`}
+            >
+              Lipsync preview appears here after &quot;Send for Lipsync&quot; completes.
+            </div>
+          )}
+        </div>
 
         {/* Phase A 3-clip section — only when phase==='a' (LD PHASE_A_THREE_CLIP_HANDLING_V1).
             Phase B is single-clip via the existing baseclip select above. */}
@@ -1217,22 +1239,27 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                 Regen base clip
               </button>
             </div>
-            {stateSlice.stitched_file ? (
+            {stateSlice.stitched_file && !stitchedPreviewStale(stateSlice) ? (
               <div
                 class="mn-phase-stitched-preview"
                 data-testid="phase-a-stitched-preview"
               >
-                <strong>Stitched preview (Arlo lipsync + ambient):</strong>
+                <strong>Stitched preview (lipsync + ambient bed):</strong>
                 <video
                   controls
                   src={fileUrl(stateSlice.stitched_file)}
-                  style={{ maxHeight: '40vh', display: 'block', width: '100%' }}
+                  class="mn-phase-stitched-video"
                 />
                 <span class="mn-dim">{stateSlice.stitched_file}</span>
               </div>
+            ) : stateSlice.stitched_file && stitchedPreviewStale(stateSlice) ? (
+              <div class="mn-phase-stitched-stale mn-dim" data-testid="phase-a-stitched-stale">
+                Stitched preview is from before the current lipsync ({stateSlice.stitched_file}).
+                Run <strong>Mix Audio</strong> or <strong>Re-stitch</strong> to refresh.
+              </div>
             ) : (
               <div class="mn-dim" data-testid="phase-a-stitched-placeholder">
-                Stitched preview appears here after lipsync completes (or after Mix Audio).
+                Stitched preview appears here after Mix Audio (lipsync + ambient).
               </div>
             )}
             <BaseClipPicker

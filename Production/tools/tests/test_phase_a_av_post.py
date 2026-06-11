@@ -14,6 +14,7 @@ from phase_a_av_post import (  # noqa: E402
     crossfade_loop_video,
     pad_video_to_match_audio,
     trim_av_lead_in,
+    trim_av_trailing_silence,
     upscale_lipsync_to_bookend,
 )
 from phase_a_chipper_idle_lipsync import (  # noqa: E402
@@ -87,6 +88,32 @@ def test_trim_av_lead_in(tmp_path: Path) -> None:
     trim_av_lead_in(src, dst, 0.5)
     dur = _ffprobe_duration(dst)
     assert 1.3 <= dur <= 1.7
+
+
+def test_trim_av_trailing_silence(tmp_path: Path) -> None:
+    src = tmp_path / "speech_then_silence.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", "color=c=green:s=320x240:d=2.5:r=24",
+            "-f", "lavfi", "-i", "sine=f=440:duration=1.0",
+            "-filter_complex", "[1:a]apad=whole_dur=2.5[aout]",
+            "-map", "0:v", "-map", "[aout]",
+            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-shortest",
+            str(src),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=60,
+    )
+    before = _ffprobe_duration(src)
+    dst = tmp_path / "tailed.mp4"
+    _, trimmed = trim_av_trailing_silence(src, dst)
+    after = _ffprobe_duration(dst)
+    assert trimmed > 0.4
+    assert after < before - 0.3
+    assert 1.0 <= after <= 1.25
 
 
 def test_preroll_seconds_helper() -> None:

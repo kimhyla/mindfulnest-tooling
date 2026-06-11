@@ -6,13 +6,11 @@
 // Session 1 ships read-only preview. ZERO mutation calls. The single mutation
 // channel pathappPatch() exists in src/api/client.ts but has no callers.
 
-import { signal } from '@preact/signals';
 import { useEffect } from 'preact/hooks';
 import { ScopeBoundary } from './components/ScopeBoundary';
 import { ScopeBanner } from './components/ScopeBanner';
 import { ToastHost } from './components/ui/Toast';
-import { TabBar, TABS, ACTIVE_TAB_STORAGE_KEY, type TabKey } from './components/TabBar';
-import { StoryboardTab } from './components/StoryboardTab';
+import { TabBar } from './components/TabBar';
 import { BgTab } from './components/BgTab';
 import { CropperModal } from './components/CropperModal';
 import { cropperState } from './state/cropper';
@@ -26,25 +24,12 @@ import { VideoSelector } from './components/VideoSelector';
 import { PhaseATab } from './components/tabs/PhaseATab';
 import { PhaseBTab } from './components/tabs/PhaseBTab';
 import { activeScope, activeProjectType, scopeKey } from './state/scope';
+import { activeTab } from './state/refreshSignals';
+export { stitcherRefreshTick, serverRehydrateTick } from './state/refreshSignals';
+import { ServerRehydrateWatcher } from './components/ServerRehydrateWatcher';
+import { StoryboardTab } from './components/StoryboardTab';
 import './app.css';
 
-function readStoredActiveTab(): TabKey {
-  try {
-    const raw = sessionStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
-    if (raw && raw !== 'cropper' && TABS.some((t) => t.key === raw)) return raw as TabKey;
-  } catch {
-    // ignore
-  }
-  return 'storyboard';
-}
-
-// Top-level signals — cross-tab UI state lives here, NOT in any component
-// closure. This keeps state explicit and inspectable. activeTab is exported
-// so cross-cutting components (e.g. LibraryPanel per LD-682
-// STITCHER_LIBRARY_DEFAULT_SFX_TIER_V1) can react to tab transitions.
-export const activeTab = signal<TabKey>(readStoredActiveTab());
-/** Bumped by SendOutButton on successful scene_assemble; StitcherTab subscribes to re-fetch. */
-export const stitcherRefreshTick = signal(0);
 function ActivePane() {
   switch (activeTab.value) {
     case 'storyboard':
@@ -94,6 +79,7 @@ export function App() {
   return (
     <ScopeBoundary>
       <div class="mn-app" data-testid="app-root">
+        <ServerRehydrateWatcher />
         <ScopeBanner />
         <ToastHost />
         <header class="mn-app-header">

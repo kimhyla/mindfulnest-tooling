@@ -6,6 +6,7 @@ Classification:
   B — pad_video_to_match_audio       Kling lipsync A/V duration repair
   C — apply_smooth_zoom              Ken Burns 2× prescale zoompan (jitter-free)
   D — trim_av_lead_in                strip lipsync preroll before stitch
+  D2 — trim_av_trailing_silence      cut ByteDance post-pad lip tail after speech ends
   E — upscale_lipsync_to_bookend     Kling ~720×544 → bookend resolution (sharp stitch)
 """
 from __future__ import annotations
@@ -27,6 +28,11 @@ BOOKEND_WIDTH = 1660
 BOOKEND_HEIGHT = 1244
 # Kling LipSync returns ~720×544 regardless of input base resolution.
 KLING_LIPSYNC_UPSCALE_THRESHOLD_W = 1000
+# Hold after last detected speech before hard cut — enough for a natural close, not
+# the full ByteDance LIPSYNC_PAD_END neutral-return animation (~2.5s).
+TRAILING_SPEECH_HOLD_S = 0.15
+_SILENCE_DETECT_NOISE_DB = "-32dB"
+_SILENCE_DETECT_MIN_S = 0.20
 
 
 def log(msg: str) -> None:
@@ -308,6 +314,98 @@ def trim_av_lead_in(src: Path, dst: Path, lead_s: float) -> Path:
     tmp.replace(dst)
     log(f"trim lead-in {lead_s:.3f}s -> {dst.name} ({_ffprobe_duration(dst):.2f}s)")
     return dst
+
+
+def detect_trailing_silence_start(
+    media_path: Path,
+    *,
+    noise_db: str = _SILENCE_DETECT_NOISE_DB,
+    min_silence_s: float = _SILENCE_DETECT_MIN_S,
+) -> float | None:
+    """Return timeline position (s) where the final trailing silence begins."""
+    media_path = media_path.expanduser().resolve()
+    r = subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-nostats", "-i", str(media_path),
+            "-af", f"silencedetect=noise={noise_db}:d={min_silence_s}",
+            "-f", "null", "-",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    starts: list[float] = []
+    for line in r.stderr.splitlines():
+        if "silence_start:" not in line:
+            continue
+        try:
+            starts.append(float(line.split("silence_start:")[1].strip().split()[0]))
+        except (ValueError, IndexError):
+            continue
+    if not starts:
+        return None
+    total = _ffprobe_duration(media_path)
+    last = starts[-1]
+    # Ignore mid-file pauses — only trim a tail that runs to (or nearly to) EOF.
+    if total - last >= 0.12:
+        return last
+    return None
+
+
+def trim_av_trailing_silence(
+    src: Path,
+    dst: Path,
+    *,
+    hold_after_speech_s: float = TRAILING_SPEECH_HOLD_S,
+) -> tuple[Path, float]:
+    """Cut trailing silence + post-pad lip motion; keep a short hold after last speech."""
+    src = src.expanduser().resolve()
+    dst = dst.expanduser().resolve()
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    total = _ffprobe_duration(src)
+    silence_start = detect_trailing_silence_start(src)
+    if silence_start is None:
+        target = total
+    else:
+        target = min(total, silence_start + hold_after_speech_s)
+    trimmed_s = max(0.0, total - target)
+    if trimmed_s < 0.08:
+        if dst != src:
+            subprocess.run(
+                [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-i", str(src), "-c", "copy", str(dst),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=120,
+            )
+        log(f"trailing trim skip: tail {trimmed_s:.3f}s (< 80ms)")
+        return (dst if dst.is_file() else src), 0.0
+
+    tmp = dst.with_suffix(".tmp.mp4")
+    subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-i", str(src), "-t", f"{target:.3f}",
+            "-map", "0:v:0", "-map", "0:a:0?",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "1",
+            "-movflags", "+faststart",
+            str(tmp),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=300,
+    )
+    tmp.replace(dst)
+    log(
+        f"trailing trim -{trimmed_s:.3f}s "
+        f"(speech_end~{silence_start:.2f}s hold={hold_after_speech_s:.2f}s) "
+        f"-> {dst.name} ({_ffprobe_duration(dst):.2f}s)"
+    )
+    return dst, trimmed_s
 
 
 def apply_smooth_zoom(
