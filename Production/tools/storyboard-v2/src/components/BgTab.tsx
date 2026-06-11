@@ -120,6 +120,7 @@ interface BgSegmentsResponse {
 
 interface BgSessionState {
   active_context?: { arc_number: number; event_id: string; phase: string } | null;
+  scope_active_context?: { arc_number: number; event_id: string; phase: string } | null;
   beats?: BgBeat[];
   flux_options_complete?: boolean;
 }
@@ -320,13 +321,15 @@ export function BgTab() {
       const segs = segRes.data?.segments ?? [];
       setSegments(segs);
 
-      // LD-545 Option B — pass scope_event_id so the server derives the
-      // active segment from the scope's event, not the sidecar's active_context.
+      // LD-545 Option B — scope_event_id + scope_video_role derive the segment
+      // (intro→pre, resolution→post). Without scope_video_role the server falls
+      // back to stale sidecar active_context and shows the wrong beats.
       const stateRes = await apiGet<BgSessionState>('bg_session_state', {
         scope_event_id: activeScope.value.event_id,
+        scope_video_role: activeTargetVideo.value,
       });
       if (cancelled) return;
-      const ctx = stateRes.data?.active_context;
+      const ctx = stateRes.data?.scope_active_context ?? stateRes.data?.active_context;
       if (ctx) {
         setArcNumber(Number(ctx.arc_number) || arcNumber);
         setActiveSegment(`${ctx.event_id}|${ctx.phase}`);
@@ -550,6 +553,7 @@ export function BgTab() {
     // LD-545 Option B — include scope_event_id on refresh fetches too.
     const stateRes = await apiGet<BgSessionState>('bg_session_state', {
       scope_event_id: activeScope.value.event_id,
+      scope_video_role: activeTargetVideo.value,
     });
     if (stateRes.ok && stateRes.data) {
       const nextBeats = stateRes.data.beats ?? [];

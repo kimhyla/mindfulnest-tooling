@@ -35,7 +35,12 @@ test.describe('BG_TAB_SCOPE_SYNC_V1 — segment context re-fetches on scope-vect
     page.on('request', (req) => {
       const u = req.url();
       if (u.includes('/api/bg/segments')) segmentsHits.push(u);
-      if (u.includes('/api/bg/session-state')) sessionStateHits.push(u);
+      if (u.includes('/api/bg/session-state')) {
+        sessionStateHits.push(u);
+        expect(u, 'session-state must carry scope_video_role after video switch').toMatch(
+          /scope_video_role=(intro|resolution)/,
+        );
+      }
     });
 
     // Route-mock /api/video/set_active. The real server handler routes through

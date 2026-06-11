@@ -1684,6 +1684,154 @@ def handle_bg_poll_flux(h)-> None:
     return h._send_json(200, results)
 
 
+def _log_bg_segment_preserve_activity(
+    scope_event_id: str,
+    video_role: str,
+    outgoing: dict,
+) -> None:
+    """Best-effort Directus audit when a BG segment is snapshotted on video switch."""
+    import threading
+
+    def _do_write() -> None:
+        try:
+            _libdir = os.path.join(os.path.dirname(__file__), "..", "credentials_lib")
+            if _libdir not in sys.path:
+                sys.path.insert(0, _libdir)
+            from credentials import load_credentials  # type: ignore
+            from directus import DirectusClient  # type: ignore
+
+            creds = load_credentials()
+            c = DirectusClient(
+                creds["directus_url"],
+                creds["directus_email"],
+                creds["directus_password"],
+            )
+            c._request("POST", "/items/prod_activity_log", data={
+                "action": "bg_segment_preserved_on_video_switch",
+                "performed_by": "production_server.video_set_active",
+                "notes": (
+                    f"{scope_event_id} {video_role}: "
+                    f"{outgoing.get('beat_count', 0)} beats, "
+                    f"{outgoing.get('preserved_clip_count', 0)} clips preserved"
+                ),
+                "details": json.dumps({
+                    "scope_event_id": scope_event_id,
+                    "video_role": video_role,
+                    **outgoing,
+                }),
+            })
+        except Exception as exc:  # noqa: BLE001
+            print(f"[BG] directus preserve log failed (non-blocking): {exc}", flush=True)
+
+    threading.Thread(
+        target=_do_write,
+        daemon=True,
+        name=f"bg-preserve-log-{video_role}",
+    ).start()
+
+
+def switch_bg_context_for_video_role(
+    h,
+    scope_event_id: str,
+    from_video_role: str | None,
+    to_video_role: str,
+) -> dict:
+    """Switch Beat Gen sidecar context when the storyboard video role changes.
+
+    On switch away from a role:
+      - Rolling Kling O3 segment preserve (clips + manifest under
+        ``kling_o3_clips/_preserved/segments/``).
+      - Best-effort Directus ``prod_activity_log`` row for restore audit.
+
+    On switch into a role:
+      - Updates sidecar ``active_context`` to the scope-canonical segment.
+      - Intro-only: ensures canonical mirror tail beat(s) exist (position-
+        based penultimate/ultimate export fades apply at Send-to-Stitcher).
+    """
+    bg = _bg_module()
+    event_dir = h.app.event_dir
+    outgoing: dict = {}
+
+    if from_video_role and from_video_role != to_video_role:
+        try:
+            arc_o, evt_o, phase_o = _resolve_bg_segment_for_scope(
+                scope_event_id, from_video_role,
+            )
+            evt_o_str = str(evt_o)
+            with bg._sidecar_lock:
+                sidecar = bg.read_sidecar()
+                seg_o = bg.get_seg_entry(sidecar, arc_o, evt_o_str, phase_o)
+                beat_count = len(seg_o.get("beats") or [])
+                preserved = bg.preserve_kling_o3_segment_beats(
+                    sidecar,
+                    arc_o,
+                    evt_o_str,
+                    phase_o,
+                    event_dir,
+                    reason=f"video_switch_{from_video_role}_to_{to_video_role}",
+                )
+                outgoing = {
+                    "video_role": from_video_role,
+                    "segment_key": bg.kling_o3_preserved_segment_key(
+                        arc_o, evt_o_str, phase_o,
+                    ),
+                    "preserved_clip_count": preserved,
+                    "beat_count": beat_count,
+                    "preserve_dir": str(
+                        bg.kling_o3_preserved_segment_dir(
+                            event_dir, arc_o, evt_o_str, phase_o,
+                        ).resolve()
+                    ),
+                }
+            if beat_count > 0:
+                _log_bg_segment_preserve_activity(scope_event_id, from_video_role, outgoing)
+        except ValueError as exc:
+            print(f"[BG] skip outgoing preserve on video switch: {exc}", flush=True)
+
+    arc_t, evt_t, phase_t = _resolve_bg_segment_for_scope(scope_event_id, to_video_role)
+    evt_t_str = str(evt_t)
+    beat_label = f"arc{arc_t}_event{evt_t}_{phase_t}"
+
+    with bg._sidecar_lock:
+        sidecar = bg.read_sidecar()
+        sidecar["active_context"] = {
+            "arc_number": arc_t,
+            "event_id": evt_t_str,
+            "phase": phase_t,
+        }
+        seg = bg.get_seg_entry(sidecar, arc_t, evt_t_str, phase_t)
+        beats = list(seg.get("beats") or [])
+
+        if phase_t == "pre":
+            bg.append_intro_canonical_tail_beats(beats, beat_label, phase_t)
+            for beat in beats:
+                role = beat.get("intro_beat_role")
+                if role:
+                    bg._apply_intro_canonical_beat_defaults(
+                        beat, evt_t_str, phase_t, role,
+                    )
+            seg["beats"] = beats
+
+        bg.write_sidecar(sidecar)
+        target_beats = seg.get("beats") or []
+        scope_active_context = dict(sidecar["active_context"])
+
+    print(
+        f"[BG] video-role switch {from_video_role!r} -> {to_video_role!r} "
+        f"arc={arc_t} event={evt_t_str} phase={phase_t} "
+        f"outgoing_beats={outgoing.get('beat_count', 0)} "
+        f"target_beats={len(target_beats)}",
+        flush=True,
+    )
+    return {
+        "outgoing": outgoing,
+        "scope_active_context": scope_active_context,
+        "beats": target_beats,
+        "had_saved": len(target_beats) > 0,
+        "target_video_role": to_video_role,
+    }
+
+
 def handle_bg_set_active_context(h, body: dict)-> None:
 
     """POST /api/bg/set-active-context {arc_number, event_id, phase}

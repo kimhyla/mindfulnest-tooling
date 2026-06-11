@@ -296,17 +296,18 @@ def handle_video_list(h) -> None:
 
 
 def handle_video_set_active(h, body: dict) -> None:
-    """POST /api/video/set_active — write state.active_video (display hint).
+    """POST /api/video/set_active — persist active video + switch Beat Gen context.
 
     Body: {scope_event_id, video_role}. Validates video_role against
     canonical set + presence in state.videos via state.validate_video_role.
 
-    IMPORTANT (LD-474 reminder): state.active_video is a DISPLAY HINT
-    ONLY. It is the write-target of this endpoint so the v59 client can
-    persist Kim's last-selected video role across page reloads. Server
-    handlers MUST NOT read state.active_video for partition selection —
-    partition selection comes ONLY from body['scope_video_role'] on each
-    mutating request. This endpoint exists solely for UX persistence.
+    Writes ``state.active_video`` (display hint for reload UX) AND atomically:
+      - preserves outgoing BG segment (Kling O3 clips + sidecar beats)
+      - switches sidecar ``active_context`` to the target segment
+      - intro-only: seeds canonical mirror tail when loading intro
+
+    Partition selection on other handlers still comes ONLY from
+    ``body['scope_video_role']`` per LD-474 — not from ``state.active_video``.
     """
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
         return
@@ -328,6 +329,19 @@ def handle_video_set_active(h, body: dict) -> None:
                    extra={"ok": False, "code": "VIDEO_ROLE_INVALID", "got": video_role, "valid": sorted(h.app.state._VALID_VIDEO_ROLES), "hint": "must be in canonical set AND exist in state.videos."},
                )
 
+    scope_event_id = h._scope_body(body).get("scope_event_id") or h.app.event_id
+    prior_state = h.app.state.read_state()
+    from_video_role = prior_state.get("active_video")
+
+    from server_handlers.background import switch_bg_context_for_video_role
+
+    bg_switch = switch_bg_context_for_video_role(
+        h,
+        scope_event_id,
+        from_video_role if isinstance(from_video_role, str) else None,
+        video_role,
+    )
+
     # Write state.active_video at the top level (not partition-scoped).
     def _set_active(state, _role=video_role):
         state["active_video"] = _role
@@ -337,6 +351,7 @@ def handle_video_set_active(h, body: dict) -> None:
         "ok": True,
         "event_id": h.app.event_id,
         "active_video": video_role,
+        "bg_switch": bg_switch,
     })
 
 
