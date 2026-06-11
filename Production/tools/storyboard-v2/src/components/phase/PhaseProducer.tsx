@@ -603,6 +603,12 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   };
 
   const onExportToStitcher = async () => {
+    if (phase === 'a' && stitchedPreviewStale(stateSlice)) {
+      setStatusMsg(
+        'Stitched preview is stale — run Mix Audio / Re-stitch before Export to Stitcher.',
+      );
+      return;
+    }
     const srcFile = phase === 'a' ? stateSlice.stitched_file : stateSlice.lipsync_file;
     if (!srcFile) {
       setStatusMsg(`No ${phase === 'a' ? 'stitched' : 'lipsync'} mp4 yet — finish the producer flow first.`);

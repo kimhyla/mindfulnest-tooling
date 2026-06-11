@@ -11646,7 +11646,13 @@ body {{padding-top:44px!important;}}
         mix_hash = _hl.md5("|".join(sig_parts).encode(), usedforsecurity=False).hexdigest()[:12]
         out_path = cache_dir / f"se_slot_{mix_hash}.mp4"
         if out_path.is_file():
-            return out_path
+            from ffmpeg_stitch import mp4_is_playable  # noqa: PLC0415
+            if mp4_is_playable(out_path):
+                return out_path
+            try:
+                out_path.unlink()
+            except OSError:
+                pass
 
         slot_dur_ms = self._ffprobe_duration_ms(norm_path)
         slot_dur_s = slot_dur_ms / 1000.0
@@ -11898,8 +11904,25 @@ body {{padding-top:44px!important;}}
         ).hexdigest()[:12]
 
         out_path = cache_dir / f"stitch_preview_{out_hash}.mp4"
+        expected_ms = sum(slot_durations) if slot_durations else 0
+        expected_s = expected_ms / 1000.0
+        from ffmpeg_stitch import preview_cache_is_valid  # noqa: PLC0415
+
+        if out_path.is_file() and not preview_cache_is_valid(out_path, expected_s):
+            try:
+                out_path.unlink()
+            except OSError:
+                pass
+
         if not out_path.is_file():
             concat_with_xfade_clips(slot_finals, out_path)
+
+        if not preview_cache_is_valid(out_path, expected_s):
+            actual_ms = self._ffprobe_duration_ms(out_path)
+            raise RuntimeError(
+                f"stitch preview corrupt or truncated: got {actual_ms}ms, "
+                f"expected ~{expected_ms}ms ({out_path.name})",
+            )
 
         # LRU cleanup (prevent cache accumulation)
         lru_cleanup(cache_dir, keep=5, pattern=r"^stitch_preview_.*\.mp4$")

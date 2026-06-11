@@ -388,6 +388,19 @@ export function StitcherTab() {
     }
   }, [job, trackFocusedSlot, multiPhaseSlots, activeScope.value.event_id]);
 
+  // Invalidate all preview URLs when any slot source changes (export / regen).
+  useEffect(() => {
+    if (!job?.slots) return;
+    setPreviewUrls({});
+    setActivePreviewSlot(null);
+    setBeatBoundaries([]);
+  }, [
+    job?.slots?.['intro']?.video_path,
+    job?.slots?.['phase_a']?.video_path,
+    job?.slots?.['phase_b']?.video_path,
+    job?.slots?.['resolution']?.video_path,
+  ]);
+
   /**
    * Persist the entire job slots dict via stitch_save_job. Used when sfx_cues
    * change (add/edit/delete) on any slot — the slot.sfx_cues array is the
@@ -523,12 +536,8 @@ export function StitcherTab() {
     if (!slotData?.video_path) return;
     setTrackFocusedSlot(slot);
     writePersistedTrackSlot(activeScope.value.event_id, slot);
-    if (previewUrls[slot]) {
-      setActivePreviewSlot(slot);
-      void fetchBeatBoundaries(slot);
-      return;
-    }
-    // Drop stale preview from another slot while the new stitch_preview loads.
+    // Always rebuild preview — client-side previewUrls cache cannot detect
+    // server-side stitch_preview LRU corruption when slot source changes.
     setActivePreviewSlot(null);
     setBeatBoundaries([]);
     void onPreviewSlot(slot);
@@ -962,6 +971,7 @@ export function StitcherTab() {
               </div>
               <video
                 ref={videoRef}
+                key={previewUrls[activePreviewSlot] ?? activePreviewSlot}
                 controls
                 src={previewUrls[activePreviewSlot]}
                 class="mn-stitcher-video-player"

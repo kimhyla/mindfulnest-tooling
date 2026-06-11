@@ -327,6 +327,41 @@ def mp4_is_playable(path: Path, *, min_duration_s: float = 0.05) -> bool:
     return dur >= min_duration_s
 
 
+def preview_cache_is_valid(
+    path: Path,
+    expected_duration_s: float,
+    *,
+    min_ratio: float = 0.85,
+) -> bool:
+    """True when cached stitch preview duration matches the pipeline expectation.
+
+    Guards ``stitch_preview_*.mp4`` LRU hits: partial concat writes can produce
+    ~1s playable files that pass ``mp4_is_playable`` but freeze the UI player.
+    """
+    if expected_duration_s <= 0:
+        return mp4_is_playable(path)
+    if not mp4_is_playable(path):
+        return False
+    try:
+        out = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "csv=p=0",
+                str(path.resolve()),
+            ],
+            capture_output=True, check=True, text=True, timeout=15,
+        )
+        dur = float((out.stdout or "").strip())
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        ValueError,
+    ):
+        return False
+    return dur >= expected_duration_s * min_ratio
+
+
 def _has_audio_stream(src: Path) -> bool:
     """Return True iff src has at least one audio stream. Used to guarantee
     normalized outputs always have an audio track (Bug 4 fix, preflight 103):
