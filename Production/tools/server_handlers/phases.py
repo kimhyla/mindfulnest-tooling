@@ -2450,7 +2450,8 @@ def handle_phase_a_regen_flyin_flyout(h, body: dict) -> None:
             retry_safe=False,
         )
 
-    tools_dir = Path(__file__).resolve().parent.parent
+    # CODE tree — sibling script under Production/tools/
+    tools_dir = _PSERVER_TOOLS_DIR
     script = tools_dir / "phase_a_flyin_flyout_wide_v1.py"
     if not script.is_file():
         return h._send_error_v59(
@@ -2530,7 +2531,8 @@ def handle_phase_a_regen_base_clip(h, body: dict) -> None:
             retry_safe=False,
         )
 
-    tools_dir = Path(__file__).resolve().parent.parent
+    # CODE tree — sibling script under Production/tools/
+    tools_dir = _PSERVER_TOOLS_DIR
     script = tools_dir / "phase_a_chipper_lipsync_base.py"
     clip_id = (body or {}).get("clip_id") or "arlo_idle_wizard_desk_v1"
     _app = h.app
