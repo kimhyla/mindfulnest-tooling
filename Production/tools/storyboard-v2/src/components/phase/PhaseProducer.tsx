@@ -93,6 +93,7 @@ interface PhaseStateSlice {
   lipsync_file?: string;
   lipsync_mtime?: number;
   lipsync_status?: string;   // "polling" | "done" | "error: ..." from background thread
+  lipsync_requires_regen?: boolean;
   flyin_flyout_status?: string;
   stitched_file?: string;        // phase A only
   stitched_mtime?: number;
@@ -134,6 +135,7 @@ function pickPhaseSlice(state: EventStateResponse, phase: 'a' | 'b'): PhaseState
   const ls = get<string>('lipsync_file');              if (ls) slice.lipsync_file = ls;
   const lsm = get<number>('lipsync_mtime');            if (lsm) slice.lipsync_mtime = lsm;
   const lst = get<string>('lipsync_status');           if (lst) slice.lipsync_status = lst;
+  const lrr = get<boolean>('lipsync_requires_regen');  if (lrr) slice.lipsync_requires_regen = lrr;
   const ffst = get<string>('flyin_flyout_status');     if (ffst) slice.flyin_flyout_status = ffst;
   const st = get<string>('stitched_file');             if (st) slice.stitched_file = st;
   const stm = get<number>('stitched_mtime');           if (stm) slice.stitched_mtime = stm;
@@ -165,9 +167,24 @@ type AudioSourceLabel = 'lipsync' | 'mixed' | 'stem';
 function priorityAudioFile(
   slice: PhaseStateSlice,
 ): { name: string; label: AudioSourceLabel } | null {
-  if (slice.lipsync_file) return { name: slice.lipsync_file, label: 'lipsync' };
+  const stemMtime = slice.voice_stem_mtime ?? 0;
+  const lipsyncMtime = slice.lipsync_mtime ?? 0;
+  const lipsyncStale =
+    Boolean(slice.lipsync_requires_regen) ||
+    (slice.lipsync_status?.startsWith('error:') ?? false) ||
+    (slice.lipsync_status === 'qa_failed') ||
+    (stemMtime > 0 && lipsyncMtime > 0 && stemMtime > lipsyncMtime);
+
+  // After stem regen, audition the fresh stem — not audio extracted from stale lipsync.
+  if (slice.voice_stem_file && lipsyncStale) {
+    return { name: slice.voice_stem_file, label: 'stem' };
+  }
+  if (slice.lipsync_file && !lipsyncStale) {
+    return { name: slice.lipsync_file, label: 'lipsync' };
+  }
   if (slice.mixed_audio_file) return { name: slice.mixed_audio_file, label: 'mixed' };
   if (slice.voice_stem_file) return { name: slice.voice_stem_file, label: 'stem' };
+  if (slice.lipsync_file) return { name: slice.lipsync_file, label: 'lipsync' };
   return null;
 }
 

@@ -1102,6 +1102,21 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
     def _apply(state, _p=phase, _n=out_name, _m=mtime):
         state[f"phase_{_p}_voice_stem_file"] = _n
         state[f"phase_{_p}_voice_stem_mtime"] = _m
+        # Fresh stem invalidates lipsync/mix/stitch derived from the old audio.
+        for key in (
+            f"phase_{_p}_lipsync_file",
+            f"phase_{_p}_lipsync_mtime",
+            f"phase_{_p}_lipsync_status",
+            f"phase_{_p}_lipsync_method",
+            f"phase_{_p}_lipsync_qa_dir",
+            f"phase_{_p}_lipsync_reliability_note",
+            f"phase_{_p}_mixed_audio_file",
+            f"phase_{_p}_mixed_audio_mtime",
+            f"phase_{_p}_stitched_file",
+            f"phase_{_p}_stitched_mtime",
+        ):
+            state.pop(key, None)
+        state[f"phase_{_p}_lipsync_requires_regen"] = True
         state["_module_version"] = int(state.get("_module_version", 0) or 0) + 1
         return state["_module_version"]
     try:
