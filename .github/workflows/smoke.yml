@@ -82,4 +82,13 @@ jobs:
             tests/test_stitch_canonical_job.py \
             tests/test_beat_is_assemblable.py \
             tests/test_magic_path_polyline.py \
+            tests/test_o3_job_state_reliability.py \
+            tests/test_beat_generator_o3_sidecar_contract.py \
+            tests/test_o3_stuck_job_recovery.py \
+            tests/test_arlo_canonical_registry.py \
+            tests/test_intro_export_api_contract.py \
             -q
+      - name: O3 intro contract shell gate
+        run: bash Production/scripts/verify_o3_intro_contract.sh
+      - name: Deploy-backup beat_generator contract
+        run: python3 Production/scripts/verify_deploy_backup_contract.py --beat-generator Production/tools/beat_generator.py

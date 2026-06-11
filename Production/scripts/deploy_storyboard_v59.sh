@@ -327,6 +327,12 @@ echo "[deploy] (d) sha256 verification..."
 verify_files=(
     "Production/tools/production_server.py"
     "Production/tools/scope_router.py"
+    "Production/tools/beat_generator.py"
+    "Production/tools/kling_o3_element_beat_pipeline.py"
+    "Production/tools/arlo_o3_voice_pipeline.py"
+    "Production/tools/server_handlers/background.py"
+    "Production/tools/server_handlers/kling_o3.py"
+    "Production/tools/kling_o3_job_store.py"
     "Production/tools/storyboard-v2/src/api/endpoints.ts"
     "Production/tools/storyboard-v2/src/api/client.ts"
 )
@@ -348,6 +354,19 @@ for f in "${verify_files[@]}"; do
     fi
     echo "  verified: $f  $src_sha"
 done
+
+# ----------------------------------------------------------------
+# (d.5) Full-tree sha256 parity for O3 + intro critical paths
+# ----------------------------------------------------------------
+echo "[deploy] (d.5) tooling↔Dropbox parity check..."
+MN_TOOLING_ROOT="$SRC_TOOLING" MN_DROPBOX_ROOT="$DEST_DROPBOX" \
+    python3 "$SRC_TOOLING/Production/scripts/verify_tooling_dropbox_parity.py"
+
+# ----------------------------------------------------------------
+# (d.6) O3 + intro contract pytest gate (blocks partial backup restores)
+# ----------------------------------------------------------------
+echo "[deploy] (d.6) O3/intro contract gate..."
+bash "$SRC_TOOLING/Production/scripts/verify_o3_intro_contract.sh"
 
 # ----------------------------------------------------------------
 # (e) Auto-restart production_server.py if mtime changed
@@ -447,11 +466,26 @@ fi
 echo "[deploy] (g) curl smoke ok — server serving fresh build (sha=$BUILD_SHA, marker_matches=$MARKER_COUNT)"
 
 # ----------------------------------------------------------------
-# (h) Write .last_deploy timestamp sentinel
+# (h) Post-restart O3 sidecar API smoke — server must expose lock API live
+# ----------------------------------------------------------------
+echo "[deploy] (h) O3 capability smoke via /api/bg/session-state ..."
+O3_OK=$(curl -sS --max-time 15 \
+    "http://localhost:${SERVER_PORT}/api/bg/session-state?scope_event_id=Event_1&scope_video_role=intro" \
+    | python3 -c "import sys,json; c=json.load(sys.stdin).get('capabilities') or {}; print('ok' if c.get('update_beat_locked') and c.get('sidecar_file_lock') else 'fail')" \
+    2>/dev/null || echo "fail")
+if [[ "$O3_OK" != "ok" ]]; then
+    echo "FATAL: live server capabilities missing update_beat_locked/sidecar_file_lock (got: $O3_OK)" >&2
+    tail -20 "$LOG_DIR/server.log" >&2 || true
+    exit 1
+fi
+echo "[deploy] (h) O3 capability smoke ok"
+
+# ----------------------------------------------------------------
+# (i) Write .last_deploy timestamp sentinel
 # Per V59_CICD_GAP_FIX_SPEC_v1.md Phase G — pre-commit hook reads this
 # to detect "Dropbox runtime tree edited after last deploy" divergence.
 # ----------------------------------------------------------------
 date +%s > "$SRC_TOOLING/.last_deploy"
-echo "[deploy] (h) .last_deploy timestamp written: $(cat "$SRC_TOOLING/.last_deploy")"
+echo "[deploy] (i) .last_deploy timestamp written: $(cat "$SRC_TOOLING/.last_deploy")"
 
 echo "[deploy] complete  snapshot=$SNAPSHOT_DIR  log=$LOG_DIR/server.log"

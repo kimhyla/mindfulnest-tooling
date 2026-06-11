@@ -86,4 +86,16 @@ else
     echo "    SKIPPED (MN_SKIP_ENDPOINT_LINT=1)."
 fi
 
+echo "==> pre-push: O3/intro contract pytest gate"
+if [ -z "$MN_SKIP_O3_INTRO_CONTRACT" ]; then
+    if ! bash Production/scripts/verify_o3_intro_contract.sh; then
+        echo ""
+        echo "ERROR: O3/intro contract tests failed."
+        echo "Emergency bypass: MN_SKIP_O3_INTRO_CONTRACT=1 git push --no-verify"
+        exit 1
+    fi
+else
+    echo "    SKIPPED (MN_SKIP_O3_INTRO_CONTRACT=1)."
+fi
+
 echo "==> pre-push: all guards passed; proceeding with push."
