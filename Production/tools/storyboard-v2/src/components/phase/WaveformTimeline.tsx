@@ -14,7 +14,7 @@
 // Cursor v8 Q1: WaveSurfer.create / destroy cycle leaves no WebAudio leaks —
 // every effect that creates an instance returns a cleanup that calls .destroy().
 
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import WaveSurfer from 'wavesurfer.js';
 import { makeDropTarget, type DragPayload } from '../../utils/dragdrop';
 
@@ -51,6 +51,14 @@ export interface WaveformTimelineProps {
    * WaveformTimeline drives the video: play/pause/seek mirror WaveSurfer state.
    */
   linkedVideo?: { current: HTMLVideoElement | null };
+  /** Parent can call play()/pause() from Preview with Overlay (same user-gesture stack). */
+  playbackControl?: { current: WaveformPlaybackControl | null };
+}
+
+export interface WaveformPlaybackControl {
+  play: (opts?: { fromStart?: boolean }) => boolean;
+  pause: () => void;
+  readonly isReady: boolean;
 }
 
 export function WaveformTimeline(props: WaveformTimelineProps) {
@@ -68,6 +76,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     onCueResize,
     onPlayStateChange,
     linkedVideo,
+    playbackControl,
   } = props;
 
   const MIN_CUE_DURATION_MS = 250;
@@ -429,6 +438,49 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     (payload) => payload.kind === 'lib-watercolor',
   );
 
+  const startPlayback = useCallback(
+    (fromStart = false) => {
+      const ws = wsRef.current;
+      if (!ws || !isReadyRef.current) return false;
+      if (fromStart) ws.seekTo(0);
+      const lv = linkedVideo?.current;
+      if (lv) {
+        lv.muted = true;
+        lv.currentTime = ws.getCurrentTime();
+        lv.play().catch(() => {});
+      }
+      ws.play();
+      return true;
+    },
+    [linkedVideo],
+  );
+
+  const togglePlayback = useCallback(() => {
+    const ws = wsRef.current;
+    if (!ws) return;
+    if (ws.isPlaying()) {
+      ws.pause();
+    } else {
+      startPlayback(false);
+    }
+  }, [startPlayback]);
+
+  useEffect(() => {
+    if (!playbackControl) return;
+    playbackControl.current = {
+      get isReady() {
+        return isReadyRef.current;
+      },
+      play: (opts) => startPlayback(opts?.fromStart ?? false),
+      pause: () => {
+        wsRef.current?.pause();
+      },
+    };
+    return () => {
+      playbackControl.current = null;
+    };
+  }, [playbackControl, startPlayback]);
+
   if (!audioSrc) {
     return (
       <div
@@ -462,27 +514,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
           class="mn-btn mn-btn-play"
           data-testid="waveform-play-btn"
           disabled={!isReady}
-          onClick={() => {
-            const ws = wsRef.current;
-            if (!ws) return;
-            if (ws.isPlaying()) {
-              // Pause: WaveSurfer drives; 'pause' event handler mirrors to video.
-              ws.pause();
-            } else {
-              // Play: call lv.play() SYNCHRONOUSLY in the user-gesture stack
-              // BEFORE ws.play() so Chrome's autoplay policy never blocks it.
-              // WaveSurfer fires 'play' async (after AudioContext.resume()) —
-              // by then we're outside the gesture window and Chrome may block
-              // lv.play() even with lv.muted=true (browser-version quirk).
-              const lv = linkedVideo?.current;
-              if (lv) {
-                lv.muted = true;
-                lv.currentTime = ws.getCurrentTime();
-                lv.play().catch(() => {});
-              }
-              ws.play();
-            }
-          }}
+          onClick={togglePlayback}
           title={isPlaying ? 'Pause' : 'Play'}
         >
           {isPlaying ? '⏸ Pause' : '▶ Play'}

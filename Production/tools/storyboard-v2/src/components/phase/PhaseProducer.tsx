@@ -17,7 +17,7 @@ import { apiGet, pathappPatch } from '../../api/client';
 import { activeScope, activeVideoRole } from '../../state/scope';
 import { SERVER_BASE } from '../../api/endpoints';
 import { stitcherRefreshTick } from '../../app';
-import { WaveformTimeline, type WatercolorCue } from './WaveformTimeline';
+import { WaveformTimeline, type WatercolorCue, type WaveformPlaybackControl } from './WaveformTimeline';
 import { CuePopover } from './CuePopover';
 
 // ── Schema translation: frontend ↔ server ───────────────────────────────────
@@ -221,8 +221,6 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const [ambientPresets, setAmbientPresets] = useState<AmbientPreset[]>([]);
   // Playback position in ms — updated by WaveformTimeline via onTimeUpdate.
   const [currentTimeMs, setCurrentTimeMs] = useState(0);
-  // Server-composed preview: URL of the mp4 returned by /api/phase_b/preview.
-  const [previewOverlayUrl, setPreviewOverlayUrl] = useState<string | null>(null);
   // True while Kling lipsync is processing in the background (202 submitted).
   const [lipsyncing, setLipsyncing] = useState(false);
   // Mtime of lipsync_file at the moment we submitted — used to detect when
@@ -231,6 +229,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   // Ref to the lipsync <video> element so WaveformTimeline can sync seek/play/pause.
   // The <video> is muted; WaveSurfer owns the audio output.
   const videoRef = useRef<HTMLVideoElement>(null);
+  const waveformPlaybackRef = useRef<WaveformPlaybackControl | null>(null);
   const wcUploadInputRef = useRef<HTMLInputElement>(null);
 
   const phaseABaseClipOptions = (items: BaseClipItem[]) =>
@@ -463,9 +462,24 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
         setStatusMsg('✓ Lipsync complete');
         await refreshAll();
       }
+    } else if (
+      res.status === 409 &&
+      (res.error_code === 'PHASE_A_LIPSYNC_RUNNING' ||
+        res.error_message?.includes('already running') ||
+        (res.data as { error_code?: string; error_message?: string } | undefined)?.error_code ===
+          'PHASE_A_LIPSYNC_RUNNING' ||
+        (res.data as { error_message?: string } | undefined)?.error_message?.includes('already running'))
+    ) {
+      lipsyncMtimeBefore.current = stateSlice.lipsync_mtime ?? null;
+      setLipsyncing(true);
+      setStatusMsg(
+        `⏳ Lipsync already processing (~8–20 min). ${res.hint ?? 'Will auto-update when done.'}`,
+      );
     } else {
-      const data = res.data as { hint?: string } | undefined;
-      setStatusMsg(`✗ Lipsync HTTP ${res.status}: ${data?.hint ?? res.error ?? ''}`);
+      const data = res.data as { hint?: string; error_message?: string } | undefined;
+      setStatusMsg(
+        `✗ Lipsync HTTP ${res.status}: ${data?.hint ?? data?.error_message ?? res.error ?? ''}`,
+      );
     }
   };
 
@@ -522,55 +536,35 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   };
 
   // ── Preview with Overlay ─────────────────────────────────────────────────
-  // Calls /api/phase_b/preview which streams the lipsync MP4 (with watercolor
-  // PNG cues composited when present). Empty cue list → plain lipsync preview.
-  const onPreviewOverlay = async () => {
+  // One preview surface: lipsync <video> + CSS watercolor overlays on cue timing.
+  // WaveSurfer is master clock (audio); video mirrors play/seek. No second player.
+  const onPreviewOverlay = () => {
     if (!lipsyncFile) {
       setStatusMsg('No lipsync video yet — run Send for Lipsync first.');
       return;
     }
+    if (!audioFile) {
+      setStatusMsg('No audio on timeline — generate a stem or finish lipsync first.');
+      return;
+    }
+    document
+      .querySelector(`[data-testid="phase-${phase}-lipsync-player"]`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    const ctl = waveformPlaybackRef.current;
+    if (!ctl?.isReady) {
+      setStatusMsg('Audio waveform still loading — wait a moment and try again.');
+      return;
+    }
+    if (!ctl.play({ fromStart: true })) {
+      setStatusMsg('Could not start preview — try the ▶ Play button on the waveform.');
+      return;
+    }
     const hasCues = (stateSlice.watercolor_cues ?? []).length > 0;
-    setBusyAction('preview');
     setStatusMsg(
       hasCues
-        ? 'Compositing overlay preview… first run may take 1–3 min for a full lipsync clip; cached runs are faster.'
-        : 'Loading lipsync preview… first run may take 1–3 min; cached runs are faster.',
+        ? '▶ Previewing — watercolor overlays appear on the lipsync frame above.'
+        : '▶ Previewing lipsync — drag watercolors onto the waveform when ready.',
     );
-    // Revoke any previous blob URL to avoid memory leak.
-    if (previewOverlayUrl) URL.revokeObjectURL(previewOverlayUrl);
-    setPreviewOverlayUrl(null);
-    try {
-      const resp = await fetch(`${SERVER_BASE}/api/phase_b/preview`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          phase,
-          scope_event_id: activeScope.value.event_id,
-          scope_video_role: activeVideoRole.value,
-        }),
-      });
-      if (!resp.ok) {
-        let hint = '';
-        try {
-          const j = await resp.json() as { error_message?: string; hint?: string };
-          hint = j.error_message ?? j.hint ?? '';
-        } catch { /* ignore */ }
-        setStatusMsg(`✗ Preview HTTP ${resp.status}${hint ? ': ' + hint : ''}`);
-        setBusyAction(null);
-        return;
-      }
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      setPreviewOverlayUrl(url);
-      setStatusMsg(
-        hasCues
-          ? '✓ Preview ready — watercolor overlay composited below.'
-          : '✓ Preview ready — lipsync video below.',
-      );
-    } catch (err) {
-      setStatusMsg(`✗ Preview fetch error: ${String(err)}`);
-    }
-    setBusyAction(null);
   };
 
   const onExportToStitcher = async () => {
@@ -978,6 +972,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           onCueRangeChange={onCueRangeChange}
 
           linkedVideo={videoRef}
+          playbackControl={waveformPlaybackRef}
         />
         {activeCue && popoverAnchor ? (
           <CuePopover
@@ -1148,34 +1143,12 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             class="mn-btn mn-btn-preview-overlay"
             data-testid={`phase-${phase}-preview-overlay-btn`}
             onClick={onPreviewOverlay}
-            disabled={busyAction !== null}
-            title="Server streams lipsync preview; watercolor PNGs are composited when cues exist on the timeline."
+            disabled={busyAction !== null || !lipsyncFile}
+            title="Play the lipsync frame above — same surface used for watercolor cue placement (overlays appear when cues exist)."
           >
-            {busyAction === 'preview' ? '⏳ Compositing…' : '🎨 Preview with Overlay'}
+            🎨 Preview with Overlay
           </button>
         </div>
-
-        {/* Composed overlay preview — shown after clicking "Preview with Overlay".
-            Server has ffmpeg-baked the watercolor PNG into the lipsync video so
-            the result shows the REAL composited output, not a live CSS overlay. */}
-        {previewOverlayUrl && (
-          <div class="mn-phase-overlay-preview" data-testid={`phase-${phase}-overlay-preview`}>
-            <strong>🎨 Overlay preview (server-composited):</strong>
-            <video
-              controls
-              src={previewOverlayUrl}
-              style={{ display: 'block', maxWidth: '100%', marginTop: '8px', borderRadius: '4px' }}
-            />
-            <button
-              type="button"
-              class="mn-btn mn-btn-small"
-              style={{ marginTop: '6px' }}
-              onClick={() => { URL.revokeObjectURL(previewOverlayUrl); setPreviewOverlayUrl(null); }}
-            >
-              ✕ Close preview
-            </button>
-          </div>
-        )}
 
         {/* Status line */}
         {statusMsg ? (

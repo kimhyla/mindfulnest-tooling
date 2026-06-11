@@ -1526,7 +1526,7 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
         else:
             return h._send_error_v59(
                 409,
-                error_code="GENERIC_ERROR",
+                error_code="PHASE_A_LIPSYNC_RUNNING",
                 error_message="Phase A lipsync already running",
                 retry_safe=False,
                 extra={"hint": f"Wait up to {PHASE_A_LIPSYNC_STALE_SEC // 60} min or refresh after stale auto-clear."},

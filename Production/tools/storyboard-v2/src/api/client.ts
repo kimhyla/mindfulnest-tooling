@@ -61,11 +61,6 @@ export interface ApiResult<T = unknown> {
 export const SCOPE_EVENT_MISMATCH = 'mn:scope-mismatch';
 export const SCOPE_EVENT_CHANGED = 'mn:event-changed';
 
-function emitScopeMismatch(detail: Record<string, unknown>): void {
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent(SCOPE_EVENT_MISMATCH, { detail }));
-  }
-}
 function emitEventChanged(detail: Record<string, unknown>): void {
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent(SCOPE_EVENT_CHANGED, { detail }));
@@ -301,19 +296,9 @@ export async function pathappPatch<T = unknown>(
 
   const result = await apiPostRaw<T>(MUTATION_ENDPOINTS[endpoint], payload, method);
 
-  // LD-456 — HTTP 409 scope mismatch. Surface, do not retry.
-  if (result.status === 409) {
-    // V59 canonical SCOPE_MISMATCH is dispatched from parseApiError via errorBoundary.
-    if (result.error_code !== 'SCOPE_MISMATCH') {
-      emitScopeMismatch({
-        endpoint,
-        status: 409,
-        data: result.data,
-        hint: 'reload tab to re-resolve scope',
-      });
-    }
-    return result;
-  }
+  // LD-456 — SCOPE_MISMATCH is surfaced via parseApiError → dispatchV59Error.
+  // Other HTTP 409 responses (e.g. Phase A lipsync already running) must NOT
+  // emit mn:scope-mismatch — that caused the red "server is on ?" banner.
 
   // LD-458/460 — HTTP 423 event_changed_mid_job. Re-hydrate + retry once.
   if (result.status === 423 && !opts._isRetry) {

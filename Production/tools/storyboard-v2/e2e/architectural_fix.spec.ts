@@ -258,7 +258,13 @@ test.describe('AF.1 — StitcherTab mutation channel (F-S2-001)', () => {
       await r.fulfill({
         status: 409,
         contentType: 'application/json',
-        body: JSON.stringify({ error: 'scope_mismatch', expected: 'X', got: 'Y' }),
+        body: JSON.stringify({
+          ok: false,
+          error_code: 'SCOPE_MISMATCH',
+          error_message: 'scope_event_id mismatch',
+          retry_safe: false,
+          hint: 'Reload the tab to re-resolve.',
+        }),
       });
     });
 
@@ -287,8 +293,8 @@ test.describe('AF.1 — StitcherTab mutation channel (F-S2-001)', () => {
       () =>
         (window as unknown as { __mn_mismatch?: Array<Record<string, unknown>> }).__mn_mismatch?.[0],
     );
-    expect((detail as Record<string, unknown>)['endpoint']).toBe('stitch_preview');
-    expect((detail as Record<string, unknown>)['status']).toBe(409);
+    expect((detail as Record<string, unknown>)['error_code']).toBe('SCOPE_MISMATCH');
+    expect((detail as Record<string, unknown>)['error_message']).toBe('scope_event_id mismatch');
   });
 
   test('AF.1.5 — Bake HTTP 423 → re-hydrate v2 event-state + retry once succeeds (LD-458/460)', async ({ page }) => {
