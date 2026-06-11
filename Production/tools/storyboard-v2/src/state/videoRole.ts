@@ -1,0 +1,48 @@
+// Canonical video-role switching — shared by header VideoSelector and Beat Gen Segment dropdown.
+// Keeps activeTargetVideo, URL ?video=, server sidecar active_context, and BG beats in sync.
+
+import { activeScope, activeTargetVideo } from './scope';
+import { pathappPatch } from '../api/client';
+
+/** BG segment phase → storyboard video role (mirrors server _BG_PHASE_MAP). */
+const PHASE_TO_VIDEO_ROLE: Record<string, string> = {
+  pre: 'intro',
+  post: 'resolution',
+  main: 'standalone',
+};
+
+export function videoRoleForBgPhase(phase: string): string | null {
+  return PHASE_TO_VIDEO_ROLE[phase] ?? null;
+}
+
+export interface SetActiveVideoRoleResult {
+  ok: boolean;
+  status: number;
+  error?: string;
+  activeVideo?: string;
+}
+
+/** Persist video role on server + update client scope signal + URL hint. */
+export async function setActiveVideoRole(newRole: string): Promise<SetActiveVideoRoleResult> {
+  if (!newRole || newRole === activeTargetVideo.value) {
+    return { ok: true, status: 200, activeVideo: activeTargetVideo.value };
+  }
+  const res = await pathappPatch<{ ok: boolean; active_video?: string }>(
+    activeScope.value,
+    'video_set_active',
+    { video_role: newRole },
+  );
+  if (!res.ok) {
+    return { ok: false, status: res.status, error: res.error ?? `HTTP ${res.status}` };
+  }
+  const active = res.data?.active_video ?? newRole;
+  activeTargetVideo.value = active;
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.set('video', active);
+    window.history.replaceState({}, '', url.toString());
+  } catch {
+    // no-op when history API unavailable
+  }
+  return { ok: true, status: res.status, activeVideo: active };
+}

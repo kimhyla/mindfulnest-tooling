@@ -15,6 +15,7 @@ import {
   activeScope, scopeKey,
   activeProjectType, activeMilestoneId, activeTargetVideo,
 } from '../state/scope';
+import { setActiveVideoRole, videoRoleForBgPhase } from '../state/videoRole';
 import { apiGet, pathappPatch } from '../api/client';
 import { SERVER_BASE } from '../api/endpoints';
 import { makeDropTarget } from '../utils/dragdrop';
@@ -593,8 +594,23 @@ export function BgTab() {
 
   const onSelectSegment = async (combined: string) => {
     if (!combined) return;
-    setActiveSegment(combined);
     const [event_id, phase] = combined.split('|');
+    const targetRole = videoRoleForBgPhase(phase);
+    if (targetRole && targetRole !== activeTargetVideo.value) {
+      const roleRes = await setActiveVideoRole(targetRole);
+      if (!roleRes.ok) {
+        pushToast({
+          kind: 'error',
+          message: `Video switch failed: ${roleRes.error ?? 'unknown error'}`,
+          source: 'bg-segment-video-role',
+        });
+        return;
+      }
+      setActiveSegment(combined);
+      // activeTargetVideo change re-fires fetchData via useEffect — beats reload cleanly.
+      return;
+    }
+    setActiveSegment(combined);
     const result = await pathappPatch(activeScope.value, 'bg_set_active_context', {
       arc_number: arcNumber, event_id, phase,
     });

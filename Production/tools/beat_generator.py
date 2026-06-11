@@ -4751,12 +4751,52 @@ def has_pinned_kling_o3_preserve(beat_id: str, event_dir: str | Path) -> bool:
 
 
 def storyboard_beat_id_from_bg_beat(bg_beat_id: str) -> str | None:
-    """Map ``bg_arc1_event1_post_beat_01`` → ``beat_01`` for production_state keys."""
+    """Map ``bg_arc1_event1_post_beat_01`` → ``beat_01`` (suffix-only fallback)."""
     m = re.search(r"_beat_(\d+)$", bg_beat_id or "")
     if not m:
         return None
     num = m.group(1)
     return f"beat_{num.zfill(2)}" if num.isdigit() else f"beat_{num}"
+
+
+def _parse_bg_beat_segment(bg_beat_id: str) -> tuple[int, str, str] | None:
+    m = re.match(r"bg_arc(\d+)_event(\d+)_(\w+)_beat_", bg_beat_id or "")
+    if not m:
+        return None
+    return int(m.group(1)), m.group(2), m.group(3)
+
+
+def storyboard_beat_id_for_bg_beat(
+    bg_beat_id: str,
+    *,
+    sidecar: dict | None = None,
+    production_state: dict | None = None,
+    video_role: str = "resolution",
+) -> str | None:
+    """Map Beat Gen row id → storyboard partition beat key.
+
+    BG ids embed script line numbers (``beat_21``); storyboard ``display_order``
+    uses sequential ``beat_01``..``beat_N``. Prefer positional mapping so magic
+    writeback survives DISPLAY_ORDER_STRICT pruning.
+    """
+    if sidecar and production_state and bg_beat_id:
+        parsed = _parse_bg_beat_segment(bg_beat_id)
+        if parsed:
+            arc, event_id, phase = parsed
+            seg = get_seg_entry(sidecar, arc, event_id, phase)
+            beats = seg.get("beats") or []
+            idx = next(
+                (i for i, row in enumerate(beats) if row.get("beat_id") == bg_beat_id),
+                None,
+            )
+            if idx is not None:
+                partition = (production_state.get("videos") or {}).get(video_role) or {}
+                display_order = partition.get("display_order")
+                if isinstance(display_order, list) and idx < len(display_order):
+                    mapped = display_order[idx]
+                    if isinstance(mapped, str) and mapped:
+                        return mapped
+    return storyboard_beat_id_from_bg_beat(bg_beat_id)
 
 
 def bg_beat_id_from_storyboard_id(
@@ -4786,12 +4826,18 @@ def merge_storyboard_magic_into_bg_beat(
     beat: dict,
     production_state: dict | None,
     video_role: str,
+    sidecar: dict | None = None,
 ) -> dict:
     """Fill missing magic fields on a BG beat from storyboard partition state."""
     out = dict(beat)
     if not production_state:
         return out
-    sb_id = storyboard_beat_id_from_bg_beat(beat.get("beat_id") or "")
+    sb_id = storyboard_beat_id_for_bg_beat(
+        beat.get("beat_id") or "",
+        sidecar=sidecar,
+        production_state=production_state,
+        video_role=video_role,
+    )
     if not sb_id:
         return out
     sb_beat = (

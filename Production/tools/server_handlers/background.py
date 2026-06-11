@@ -696,8 +696,16 @@ def handle_magic_still(h, body: dict)-> None:
     try:
         _video_role = (body or {}).get("scope_video_role") or "intro"
         _st = h.app.state.read_state()
+        with _bg_module()._sidecar_lock:
+            _sidecar_audio = _bg_module().read_sidecar()
+        _sb_for_audio = _bg_module().storyboard_beat_id_for_bg_beat(
+            beat_id,
+            sidecar=_sidecar_audio,
+            production_state=_st,
+            video_role=_video_role,
+        ) or beat_id
         _beat_st = (((_st.get("videos") or {}).get(_video_role) or {})
-                    .get("beats", {}).get(beat_id) or {})
+                    .get("beats", {}).get(_sb_for_audio) or {})
         _magic_audio_dur = float(_beat_st.get("audio_duration_s") or 0)
     except Exception:
         pass
@@ -767,7 +775,16 @@ def handle_magic_still(h, body: dict)-> None:
     # composite on next page load. Idempotent — re-rendering overwrites.
     magic_filename = Path(rendered).name
     scope = None  # captured below for Bug-A4 read-back verify
-    sb_beat_id = _bg_module().storyboard_beat_id_from_bg_beat(beat_id) or beat_id
+    _video_role_body = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
+    _production_state = h.app.state.read_state()
+    with _bg_module()._sidecar_lock:
+        _sidecar_for_map = _bg_module().read_sidecar()
+    sb_beat_id = _bg_module().storyboard_beat_id_for_bg_beat(
+        beat_id,
+        sidecar=_sidecar_for_map,
+        production_state=_production_state,
+        video_role=_video_role_body,
+    ) or beat_id
     try:
         scope = scope_router.resolve(body, h.app.event_dir.name)
 
@@ -1331,7 +1348,16 @@ def handle_magic_video(h, body: dict)-> None:
     # Same pattern as magic_still — see _handle_magic_still for rationale.
     magic_filename = Path(out_path).name
     scope = None  # captured below for Bug-A4 read-back verify
-    sb_beat_id = _bg_module().storyboard_beat_id_from_bg_beat(beat_id) or beat_id
+    _video_role_body = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
+    _production_state = h.app.state.read_state()
+    with _bg_module()._sidecar_lock:
+        _sidecar_for_map = _bg_module().read_sidecar()
+    sb_beat_id = _bg_module().storyboard_beat_id_for_bg_beat(
+        beat_id,
+        sidecar=_sidecar_for_map,
+        production_state=_production_state,
+        video_role=_video_role_body,
+    ) or beat_id
     try:
         scope = scope_router.resolve(body, h.app.event_dir.name)
 
@@ -1657,7 +1683,7 @@ def handle_bg_session_state(h)-> None:
         try:
             production_state = h.app.state.read_state()
             beats = [
-                bg.merge_storyboard_magic_into_bg_beat(b, production_state, video_role)
+                bg.merge_storyboard_magic_into_bg_beat(b, production_state, video_role, sidecar)
                 for b in beats
             ]
             beats = bg.enrich_beats_kling_o3_pinned(beats, h.app.event_dir)
