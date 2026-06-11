@@ -77,7 +77,7 @@ test.describe('F-PHASE-A-001 — Phase A endpoint routing (id=122)', () => {
     expect(urls.some((u) => u.includes('/api/phase_b/mix_audio'))).toBe(false);
   });
 
-  test('F122.2 — Pick clip (fly-in) opens base-clip modal', async ({ page }) => {
+  test('F122.2 — Pick clip (sitting) opens base-clip modal with arlo clips', async ({ page }) => {
     await page.route('**/api/v2/event/*/state', async (r) => {
       await r.fulfill({
         status: 200,
@@ -96,11 +96,11 @@ test.describe('F-PHASE-A-001 — Phase A endpoint routing (id=122)', () => {
           ok: true,
           items: [
             {
-              id: 'clip_fly',
-              filename: 'fly.mp4',
+              id: 'arlo_idle_wizard_desk_v1',
+              filename: 'arlo.mp4',
               ext: 'mp4',
-              character: 'chipper',
-              duration_s: 3,
+              character: 'arlo',
+              duration_s: 10,
             },
           ],
         }),
@@ -116,7 +116,7 @@ test.describe('F-PHASE-A-001 — Phase A endpoint routing (id=122)', () => {
     await gotoApp(page);
     await page.locator('[data-testid="tab-phase-a"]').click();
     await page.locator('[data-testid="phase-producer-a"]').click();
-    await page.locator('[data-testid="phase-a-clip-pick-flyin"]').click();
+    await page.locator('[data-testid="phase-a-clip-pick-sitting"]').click();
     await expect(page.locator('[data-testid="modal-base-clip-picker"]')).toBeVisible();
   });
 });

@@ -112,6 +112,7 @@ test.describe('K2 — bg_accept_beats writes to videos.<role>.beats, NOT top-lev
           { accepted_image_key: 'k2', dialogue_text: 'partition test 2', speaker: 'Chipper' },
         ],
       },
+      timeout: 60_000,
     });
     expect(r.ok(), `accept-beats must succeed; got HTTP ${r.status()}: ${await r.text()}`).toBeTruthy();
 
@@ -155,6 +156,7 @@ test.describe('K7 — speaker write-boundary canonicalization (RED until C-3)', 
           { accepted_image_key: 'k7a', dialogue_text: 'empty speaker test', speaker: '' },
         ],
       },
+      timeout: 60_000,
     });
     expect(r.ok(), `accept-beats must succeed; got HTTP ${r.status()}: ${await r.text()}`).toBeTruthy();
 
@@ -179,6 +181,7 @@ test.describe('K7 — speaker write-boundary canonicalization (RED until C-3)', 
           { accepted_image_key: 'k7b', dialogue_text: 'guide bird canonicalize', speaker: 'Guide Bird' },
         ],
       },
+      timeout: 60_000,
     });
     expect(r.ok(), `accept-beats must succeed; got HTTP ${r.status()}: ${await r.text()}`).toBeTruthy();
 

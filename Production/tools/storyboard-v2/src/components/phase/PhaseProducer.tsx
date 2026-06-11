@@ -296,7 +296,26 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     return () => { cancelled = true; };
   }, [activeScope.value.event_id, phase]);
 
-  // Auto-poll every 30s while Kling lipsync is processing.
+  // Resume polling after hard refresh while server still reports running.
+  useEffect(() => {
+    const status = stateSlice.lipsync_status;
+    if (status === 'running') {
+      lipsyncMtimeBefore.current = stateSlice.lipsync_mtime ?? null;
+      setLipsyncing(true);
+      setStatusMsg(
+        phase === 'a'
+          ? '⏳ Lipsync processing (~5–20 min). Will auto-update when done.'
+          : '⏳ Lipsync submitted — Kling processing (~8–20 min). Will auto-update when done.',
+      );
+    } else if (
+      (status === 'needs_manual_visual_review' || status === 'done') &&
+      stateSlice.lipsync_file
+    ) {
+      setLipsyncing(false);
+    }
+  }, [phase, stateSlice.lipsync_status, stateSlice.lipsync_file, stateSlice.lipsync_mtime]);
+
+  // Auto-poll every 30s while lipsync is processing.
   useEffect(() => {
     if (!lipsyncing) return;
     const id = setInterval(async () => {
@@ -474,7 +493,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const onPhaseARestitch = async () => {
     setBusyAction('restitch');
     setStatusMsg('Re-stitching lipsync + ambient…');
-    const res = await pathappPatch(activeScope.value, 'phase_a_restitch', { phase: 'a' });
+    const res = await pathappPatch(activeScope.value, 'phase_a_restitch', {});
     setBusyAction(null);
     if (res.ok) {
       setStatusMsg('✓ Phase A re-stitched');
@@ -488,7 +507,6 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     setBusyAction('regen_base');
     setStatusMsg('Kling idle base clip (~6 min)…');
     const res = await pathappPatch(activeScope.value, 'phase_a_regen_base_clip', {
-      phase: 'a',
       clip_id: stateSlice.chipper_sitting_clip_id ?? selectedBaseClip ?? 'arlo_idle_wizard_desk_v1',
     });
     setBusyAction(null);
@@ -582,7 +600,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
 
   const onDeleteWatercolor = async (key: string) => {
     if (!window.confirm(`Delete "${key}" from watercolor library?`)) return;
-    const res = await pathappPatch(activeScope.value, 'phase_watercolor_delete', { key });
+    const res = await pathappPatch(activeScope.value, 'phase_watercolor_delete', { key: key });
     if (res.ok) {
       setStatusMsg(`✓ Deleted "${key}"`);
       await refreshAll();

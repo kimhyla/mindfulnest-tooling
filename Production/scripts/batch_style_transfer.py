@@ -317,7 +317,7 @@ def main() -> None:
 
     # Load API key
     api_key = _load_openai_key()
-    print(f"OpenAI key: {api_key[:8]}...{api_key[-4:]}  ({len(api_key)} chars)")
+    print(f"OpenAI key loaded (length={len(api_key)})")
     print()
 
     # Determine which characters to run

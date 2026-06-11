@@ -547,10 +547,8 @@ test.describe('F9 — CuePopover Delete with Modal-confirm', () => {
 // Phase D — Phase A 3-clip handling (F10-F13)
 //
 // Phase A producer renders 3 base-clip slots (fly-in / sitting / fly-out)
-// per LD PHASE_A_THREE_CLIP_HANDLING_V1. Phase B remains single-clip via
-// the existing selectedBaseClip + Cedric filter. Re-stitch fires manually
-// (Cursor v8 Q9) via the existing onMixAudio path
-// (pathappPatch 'phase_a_mix_audio' with phase:'a').
+// Phase A Arlo migration: single sitting/base clip (fly-in/out removed).
+// Re-stitch fires phase_a_restitch (middle-only + ambient).
 // ----------------------------------------------------------------------------
 
 async function mockBaseClipsList(page: Page): Promise<void> {
@@ -561,14 +559,19 @@ async function mockBaseClipsList(page: Page): Promise<void> {
       body: JSON.stringify({
         ok: true,
         items: [
-          { id: 'flyin_clip_a', filename: 'flyin_a.mp4', ext: 'mp4', character: 'chipper', duration_s: 1.5 },
+          { id: 'arlo_idle_wizard_desk_v1', filename: 'arlo_idle_wizard_desk_v1.mp4', ext: 'mp4', character: 'arlo', duration_s: 10.0 },
           { id: 'sitting_clip_a', filename: 'sitting_a.mp4', ext: 'mp4', character: 'chipper', duration_s: 30.0 },
-          { id: 'flyout_clip_a', filename: 'flyout_a.mp4', ext: 'mp4', character: 'chipper', duration_s: 1.0 },
           { id: 'cedric_clip_a', filename: 'cedric_a.mp4', ext: 'mp4', character: 'cedric', duration_s: 5.0 },
         ],
-        count: 4,
+        count: 3,
       }),
     });
+  });
+}
+
+async function mockRestitch(page: Page): Promise<void> {
+  await page.route('**/api/phase_a/restitch', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
   });
 }
 
@@ -590,8 +593,8 @@ async function openPhaseA(page: Page): Promise<void> {
   await expect(page.locator('[data-testid="phase-producer-a"]')).toBeVisible();
 }
 
-test.describe('F10 — Phase A 3-clip render', () => {
-  test('F10 — Phase A producer renders flyin / sitting / flyout slots', async ({ page }) => {
+test.describe('F10 — Phase A base clip section', () => {
+  test('F10 — Phase A producer renders Arlo base (talking) slot only', async ({ page }) => {
     await mockAudioFiles(page);
     await mockBaseClipsList(page);
     await mockPhaseState(page, {});
@@ -600,9 +603,9 @@ test.describe('F10 — Phase A 3-clip render', () => {
 
     const section = page.locator('[data-testid="phase-a-clip-section"]');
     await expect(section).toBeVisible();
-    await expect(page.locator('[data-testid="phase-a-clip-slot-flyin"]')).toBeVisible();
     await expect(page.locator('[data-testid="phase-a-clip-slot-sitting"]')).toBeVisible();
-    await expect(page.locator('[data-testid="phase-a-clip-slot-flyout"]')).toBeVisible();
+    await expect(page.locator('[data-testid="phase-a-clip-slot-flyin"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="phase-a-clip-slot-flyout"]')).toHaveCount(0);
   });
 });
 
@@ -625,43 +628,39 @@ test.describe('F11 — Phase A clip pick', () => {
     const pickerModal = page.locator('[data-testid="modal-base-clip-picker"]');
     await expect(pickerModal).toBeVisible();
 
-    // Modal should list chipper clips; cedric_clip_a should NOT appear.
+    // Modal should list arlo/chipper clips; cedric should NOT appear.
     await expect(pickerModal.locator('[data-testid="base-clip-option-cedric_clip_a"]')).toHaveCount(0);
-    await expect(pickerModal.locator('[data-testid="base-clip-option-sitting_clip_a"]')).toBeVisible();
+    await expect(pickerModal.locator('[data-testid="base-clip-option-arlo_idle_wizard_desk_v1"]')).toBeVisible();
 
-    await pickerModal.locator('[data-testid="base-clip-option-sitting_clip_a"]').click();
+    await pickerModal.locator('[data-testid="base-clip-option-arlo_idle_wizard_desk_v1"]').click();
 
     await expect.poll(() => patches.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
     const body = patches[0]!.postDataJSON() as Record<string, unknown>;
     expect(body['field']).toBe('phase_a_chipper_sitting_clip_id');
-    expect(body['value']).toBe('sitting_clip_a');
+    expect(body['value']).toBe('arlo_idle_wizard_desk_v1');
   });
 });
 
 test.describe('F12 — Phase A re-stitch', () => {
-  test('F12 — Re-stitch button fires phase_a/mix_audio with phase=a', async ({ page }) => {
+  test('F12 — Re-stitch button fires phase_a/restitch', async ({ page }) => {
     await mockAudioFiles(page);
     await mockBaseClipsList(page);
     await mockModulePatch(page);
-    await mockMixAudio(page);
+    await mockRestitch(page);
     await mockPhaseState(page, {
-      phase_a_chipper_flyin_clip_id: 'flyin_clip_a',
-      phase_a_chipper_sitting_clip_id: 'sitting_clip_a',
-      phase_a_chipper_flyout_clip_id: 'flyout_clip_a',
+      phase_a_chipper_sitting_clip_id: 'arlo_idle_wizard_desk_v1',
     });
     await gotoApp(page);
     await openPhaseA(page);
 
-    const mixReqs: Request[] = [];
+    const restitchReqs: Request[] = [];
     page.on('request', (req) => {
-      if (req.url().includes('/api/phase_a/mix_audio')) mixReqs.push(req);
+      if (req.url().includes('/api/phase_a/restitch')) restitchReqs.push(req);
     });
 
     await page.locator('[data-testid="phase-a-restitch-btn"]').click();
 
-    await expect.poll(() => mixReqs.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
-    const body = mixReqs[0]!.postDataJSON() as Record<string, unknown>;
-    expect(body['phase']).toBe('a');
+    await expect.poll(() => restitchReqs.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
   });
 });
 

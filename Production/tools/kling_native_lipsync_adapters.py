@@ -140,14 +140,15 @@ def _b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
-def _kling_jwt_token(access_key: str, secret_key: str) -> str:
+def _kling_jwt_token(access_key: str, signing_key: str) -> str:
     now = int(time.time())
     header = _b64url(json.dumps({"alg": "HS256", "typ": "JWT"}, separators=(",", ":")).encode())
     payload = _b64url(
         json.dumps({"iss": access_key, "exp": now + 1800, "nbf": now - 5}, separators=(",", ":")).encode()
     )
     signing_input = f"{header}.{payload}".encode()
-    signature = _b64url(hmac.new(secret_key.encode(), signing_input, hashlib.sha256).digest())
+    # Kling API requires HMAC-SHA256 JWT signing (not password hashing).
+    signature = _b64url(hmac.new(signing_key.encode(), signing_input, hashlib.sha256).digest())
     return f"{header}.{payload}.{signature}"
 
 

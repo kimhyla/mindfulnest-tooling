@@ -72,7 +72,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install pytest + Pillow (magic_compositor tests)
-        run: python3 -m pip install --quiet pytest Pillow numpy imageio imageio-ffmpeg
+        run: python3 -m pip install --quiet pytest Pillow numpy scipy imageio imageio-ffmpeg
       - name: Stitcher lock-in static markers
         run: python3 Production/scripts/verify_stitcher_lockin_20260528.py
       - name: Session regression unit tests

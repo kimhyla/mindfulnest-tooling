@@ -1115,7 +1115,7 @@ def release_remote_mutex(
 
 def acquire_local_lock() -> int:
     LOCAL_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(LOCAL_LOCK_PATH), os.O_RDWR | os.O_CREAT, 0o644)
+    fd = os.open(str(LOCAL_LOCK_PATH), os.O_RDWR | os.O_CREAT, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
