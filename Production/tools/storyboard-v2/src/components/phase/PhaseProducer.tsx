@@ -231,6 +231,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   // Ref to the lipsync <video> element so WaveformTimeline can sync seek/play/pause.
   // The <video> is muted; WaveSurfer owns the audio output.
   const videoRef = useRef<HTMLVideoElement>(null);
+  const wcUploadInputRef = useRef<HTMLInputElement>(null);
 
   const phaseABaseClipOptions = (items: BaseClipItem[]) =>
     items
@@ -610,6 +611,37 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     } else {
       setStatusMsg(`✗ Delete failed: ${res.error ?? res.status}`);
     }
+  };
+
+  const onWatercolorUpload = async (e: Event) => {
+    const files = (e.target as HTMLInputElement).files;
+    if (!files || files.length === 0) return;
+    let added = 0;
+    for (const file of Array.from(files)) {
+      try {
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(file);
+        });
+        const image_b64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+        const res = await pathappPatch(activeScope.value, 'cr_upload', {
+          filename: file.name,
+          image_b64,
+          tier: 'watercolor',
+        });
+        if (res.ok) added++;
+        else setStatusMsg(`✗ Upload failed: ${res.error ?? res.status}`);
+      } catch (err) {
+        setStatusMsg(`✗ Upload error: ${String(err)}`);
+      }
+    }
+    if (added > 0) {
+      setStatusMsg(`✓ Added ${added} watercolor asset(s)`);
+      await refreshAll();
+    }
+    if (wcUploadInputRef.current) wcUploadInputRef.current.value = '';
   };
 
   const onAnimateThis = (key: string) => {
@@ -1245,7 +1277,25 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
 
         {/* Watercolor library + Animate-this */}
         <div class="mn-phase-watercolor-list" data-testid={`phase-${phase}-watercolors`}>
-          <strong>Watercolors ({watercolors.length}):</strong>
+          <div class="mn-phase-watercolor-header">
+            <strong>Watercolors ({watercolors.length}):</strong>
+            <label
+              class="mn-library-upload-btn mn-phase-watercolor-add-btn"
+              data-testid={`phase-${phase}-watercolor-add-btn`}
+              title="Upload PNG to watercolor library"
+            >
+              <input
+                ref={wcUploadInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                multiple
+                hidden
+                onChange={(e: Event) => void onWatercolorUpload(e)}
+                data-testid={`phase-${phase}-watercolor-add-input`}
+              />
+              + Add
+            </label>
+          </div>
           <div class="mn-phase-watercolor-grid">
             {watercolors.map((wc) => (
               <div

@@ -114,6 +114,7 @@ def run_phase_a_base_clip_bytedance_lipsync(
     *,
     tmp_dir: Path | None = None,
     chain_chunks: bool = False,
+    single_pass: bool = True,
     resume: bool = False,
 ) -> dict:
     """Middle segment: ByteDance on promoted base + miracle bookend post."""
@@ -129,7 +130,8 @@ def run_phase_a_base_clip_bytedance_lipsync(
     log(f"audio: {audio_raw.name}")
     log(
         "middle: ByteDance LatentSync (NOT Kling LipSync — preserves wing pixels)"
-        + (", chained chunks ON" if chain_chunks else ", chained chunks OFF")
+        + (", single-pass ON" if single_pass else ", single-pass OFF")
+        + (", chained chunks ON" if chain_chunks else "")
     )
 
     raw_dur = _ffprobe_duration(audio_raw)
@@ -154,6 +156,7 @@ def run_phase_a_base_clip_bytedance_lipsync(
         audio_prepped=True,
         out_meta=bd_meta,
         chain_chunks=chain_chunks,
+        single_pass=single_pass,
         resume=resume,
     )
 
@@ -177,6 +180,7 @@ def run_phase_a_base_clip_bytedance_lipsync(
         "lead_trim_s": round(lead_trim_s, 3),
         "timeline_gaps_preserved": bd_meta.get("timeline_gaps_preserved", False),
         "chained_chunks": bd_meta.get("chained_chunks", chain_chunks),
+        "single_pass": bd_meta.get("single_pass", single_pass),
         "gap_insert_count": bd_meta.get("gap_insert_count", 0),
         "gap_clip_count": bd_meta.get("gap_clip_count", 0),
         "chunk_count": bd_meta.get("chunk_count", 1),

@@ -20,6 +20,8 @@ from pathlib import Path
 
 BYTEDANCE_URL = "https://api.wavespeed.ai/api/v3/bytedance/lipsync/audio-to-video"
 BYTEDANCE_MAX_CHUNK_S = 7.0
+# Match lipsync_sender.LIPSYNC_MAX_DURATION_SEC — one ByteDance job for full Phase A stem.
+PHASE_A_SINGLE_PASS_MAX_S = 180.0
 VIDEO_TRIM_TAILROOM_S = 3.0
 GAP_MIN_S = 0.05
 # Tail of pre-speech idle gap used as ByteDance video seed (continuity across chunks).
@@ -523,6 +525,38 @@ def find_existing_seg_trim(work: Path, chunk_index: int) -> Path | None:
     return cands[-1] if cands else None
 
 
+def _run_single_pass_bytedance(
+    base_video: Path,
+    audio: Path,
+    out_path: Path,
+    *,
+    work: Path,
+    ts: str,
+    audio_dur: float,
+    out_meta: dict | None,
+) -> Path:
+    """One looped base clip + one ByteDance job — no §8.5 segment concat."""
+    log(f"single-pass lipsync: {audio_dur:.1f}s on looped base (no segment split)")
+    target_s = audio_dur + VIDEO_TRIM_TAILROOM_S
+    looped = work / f"single_fwd_{ts}.mp4"
+    forward_loop(base_video, looped, target_s)
+    trimmed = work / f"single_trim_{ts}.mp4"
+    trim_video_for_lipsync(looped, trimmed, audio_dur)
+    raw_out = work / f"single_bd_{ts}.mp4"
+    run_bytedance_lipsync(trimmed, audio, raw_out)
+    trim_padded_lipsync_segment(raw_out, out_path, audio_dur)
+    if out_meta is not None:
+        out_meta.update({
+            "single_pass": True,
+            "chained_chunks": False,
+            "chunk_count": 1,
+            "gap_insert_count": 0,
+            "gap_clip_count": 0,
+            "prepped_audio_duration_s": round(audio_dur, 3),
+        })
+    return out_path
+
+
 def run_bytedance_tight_lipsync(
     base_video: Path,
     audio_raw: Path,
@@ -532,9 +566,10 @@ def run_bytedance_tight_lipsync(
     audio_prepped: bool = False,
     out_meta: dict | None = None,
     chain_chunks: bool = False,
+    single_pass: bool = False,
     resume: bool = False,
 ) -> Path:
-    """Raw ByteDance with beat-pipeline audio prep and §8.5 segmentation."""
+    """Raw ByteDance with beat-pipeline audio prep; §8.5 segmentation unless single_pass."""
     work = tmp_dir or (out_path.parent / "_tmp_phase_a_bytedance")
     work.mkdir(parents=True, exist_ok=True)
     resume_tag = detect_work_tag(work) if resume else None
@@ -545,16 +580,17 @@ def run_bytedance_tight_lipsync(
     audio = audio_raw if audio_prepped else prep_audio_bytedance_style(audio_raw, work)
     audio_dur = ffprobe_duration(audio)
 
+    if single_pass and audio_dur <= PHASE_A_SINGLE_PASS_MAX_S:
+        return _run_single_pass_bytedance(
+            base_video, audio, out_path,
+            work=work, ts=ts, audio_dur=audio_dur, out_meta=out_meta,
+        )
+
     if audio_dur <= BYTEDANCE_MAX_CHUNK_S:
-        target_s = audio_dur + VIDEO_TRIM_TAILROOM_S
-        looped = work / f"chipper_fwd_{ts}.mp4"
-        forward_loop(base_video, looped, target_s)
-        trimmed = work / f"chipper_trim_{ts}.mp4"
-        trim_video_for_lipsync(looped, trimmed, audio_dur)
-        raw_out = work / f"chipper_bd_{ts}.mp4"
-        run_bytedance_lipsync(trimmed, audio, raw_out)
-        trim_padded_lipsync_segment(raw_out, out_path, audio_dur)
-        return out_path
+        return _run_single_pass_bytedance(
+            base_video, audio, out_path,
+            work=work, ts=ts, audio_dur=audio_dur, out_meta=out_meta,
+        )
 
     _, chunks = compute_bytedance_chunks(audio)
     log(

@@ -27,6 +27,7 @@ def test_bytedance_chaining_is_not_default() -> None:
 
     assert inspect.signature(bd.run_bytedance_tight_lipsync).parameters["chain_chunks"].default is False
     assert inspect.signature(middle.run_phase_a_base_clip_bytedance_lipsync).parameters["chain_chunks"].default is False
+    assert inspect.signature(middle.run_phase_a_base_clip_bytedance_lipsync).parameters["single_pass"].default is True
 
 
 def test_arlo_element_guard_blocks_stale_id(tmp_path: Path) -> None:

@@ -681,6 +681,7 @@ def handle_cr_upload(h, body: dict)-> None:
     """POST /api/cr/upload {filename, image_b64, tier?}
     Saves a manually-uploaded image to the library.
     tier='source' -> BG_STILLS_DIR/sources/  (pre-crop images)
+    tier='watercolor' -> assets/watercolor_library/  (Phase A/B overlay PNGs)
     tier='cropped' or absent -> BG_STILLS_DIR/crops/  (ready images)
     Returns { key, filename, thumb_b64, gallery_b64, tier, abs_path }."""
     # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
@@ -747,6 +748,10 @@ def handle_cr_upload(h, body: dict)-> None:
     bg = _bg_module()
     if tier == "source":
         dest_dir = os.path.join(bg.BG_STILLS_DIR, "sources")
+    elif tier == "watercolor":
+        from server_handlers.phases import _data_root  # noqa: PLC0415
+
+        dest_dir = str(_data_root(h) / "assets" / "watercolor_library")
     else:
         dest_dir = os.path.join(bg.BG_STILLS_DIR, "crops")
         tier = "cropped"
@@ -775,14 +780,18 @@ def handle_cr_upload(h, body: dict)-> None:
     # still_master for source images (pre-crop masters); still_delivery for crops.
     try:
         from registered_write import register_asset as _reg_upload  # type: ignore
-        _asset_type = "still_master" if tier == "source" else "still_delivery"
+        _asset_type = (
+            "still_master" if tier == "source"
+            else "watercolor_static" if tier == "watercolor"
+            else "still_delivery"
+        )
         _reg_upload(
             file_path=dest_path,
             asset_type=_asset_type,
             module_id=_resolve_module_id_for_state(h.app.state),
             produced_by_skill="cr_upload_endpoint",
             iteration_notes=f"Manual upload via library panel (tier={tier})",
-            tags=["library_upload", tier],
+            tags=["library_upload", tier] + (["watercolor"] if tier == "watercolor" else []),
             role=tier,
         )
     except Exception as _reg_exc:
