@@ -1222,8 +1222,14 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
+}
+.mn-library-header .mn-library-upload-btn {
+  flex-shrink: 0;
+  margin-left: auto;
 }
 .mn-library-count {
   font-family: var(--mono);
@@ -2129,6 +2135,7 @@
   align-items: center;
   padding: 4px 8px;
   border-bottom: 1px solid var(--border, #333);
+  flex-wrap: wrap;
 }
 .mn-library-search {
   flex: 1;
@@ -2147,6 +2154,7 @@
   border-radius: 4px;
   background: var(--bg, #1a1a1a);
   color: var(--text, #ddd);
+  flex-shrink: 0;
 }
 /* CC-20 — Add Image upload button. Class-only selector (Rule 36 §36.1). */
 .mn-library-upload-btn {

@@ -119,4 +119,30 @@ test.describe('F-PHASE-A-001 — Phase A endpoint routing (id=122)', () => {
     await page.locator('[data-testid="phase-a-clip-pick-sitting"]').click();
     await expect(page.locator('[data-testid="modal-base-clip-picker"]')).toBeVisible();
   });
+
+  test('F122.3 — Preview with Overlay works without watercolor cues', async ({ page }) => {
+    await page.route('**/api/v2/event/*/state', async (r) => {
+      await r.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          _module_version: 1,
+          phase_a_lipsync_file: 'phase_a_lipsync_fixture.mp4',
+          phase_a_lipsync_mtime: 1,
+          videos: { intro: { video_role: 'intro', beats: {} } },
+        }),
+      });
+    });
+    await page.route('**/api/phase_b/ambient_preset_list', async (r) => {
+      await r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, items: [] }) });
+    });
+    await page.route('**/api/phase_b/preview', async (r) => {
+      await r.fulfill({ status: 200, contentType: 'video/mp4', body: Buffer.from('fake-preview-mp4') });
+    });
+    await gotoApp(page);
+    await page.locator('[data-testid="tab-phase-a"]').click();
+    await page.locator('[data-testid="phase-producer-a"]').click();
+    await page.locator('[data-testid="phase-a-preview-overlay-btn"]').click();
+    await expect(page.locator('[data-testid="phase-a-overlay-preview"]')).toBeVisible({ timeout: 10_000 });
+  });
 });

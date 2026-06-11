@@ -472,6 +472,24 @@ export function LibraryPanel() {
         <span class="mn-dim mn-library-count" data-testid="library-count">
           {loading ? '…' : `${filteredItems.length} / ${items.length} items`}
         </span>
+        {/* CC-20 — upload always in header so narrow rails never clip "+ Add". */}
+        <label
+          class="mn-library-upload-btn"
+          data-testid="library-upload-btn"
+          aria-disabled={uploading ? 'true' : undefined}
+          title="Upload image to library"
+        >
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            multiple
+            hidden
+            onChange={onUpload}
+            data-testid="library-upload-input"
+          />
+          {uploading ? '…' : '+ Add'}
+        </label>
       </header>
 
       <div class="mn-library-controls" data-testid="library-controls">
@@ -496,24 +514,6 @@ export function LibraryPanel() {
             <option key={t} value={t}>{t}</option>
           ))}
         </select>
-        {/* CC-20 — Add Image upload button (hidden file input behind label) */}
-        <label
-          class="mn-library-upload-btn"
-          data-testid="library-upload-btn"
-          aria-disabled={uploading ? 'true' : undefined}
-          title="Upload image to library"
-        >
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/png,image/jpeg,image/webp"
-            multiple
-            hidden
-            onChange={onUpload}
-            data-testid="library-upload-input"
-          />
-          {uploading ? '…' : '+ Add'}
-        </label>
       </div>
 
       <div class="mn-library-body">

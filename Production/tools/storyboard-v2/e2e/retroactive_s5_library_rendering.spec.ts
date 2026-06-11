@@ -233,4 +233,27 @@ test.describe('S5 — library rendering edge cases', () => {
     await expect(page.locator('[data-testid="library-empty"]')).toHaveCount(0);
     await expect(page.locator('[data-testid="library-list"]')).toHaveCount(0);
   });
+
+  test('S5.8 — + Add upload button stays visible on watercolors tier', async ({ page }) => {
+    await page.route('**/api/cr/library**', async (r) => {
+      await r.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          images: [{
+            key: 'wc_1',
+            filename: 'spell_title.png',
+            abs_path: '/tmp/spell_title.png',
+            tags: ['watercolor'],
+            tier: 'source',
+          }],
+        }),
+      });
+    });
+    await gotoApp(page);
+    await page.locator('[data-testid="library-tier-select"]').selectOption('watercolors');
+    const addBtn = page.locator('[data-testid="library-upload-btn"]');
+    await expect(addBtn).toBeVisible();
+    await expect(addBtn).toContainText('+ Add');
+  });
 });

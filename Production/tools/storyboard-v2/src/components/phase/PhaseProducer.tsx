@@ -521,21 +521,20 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   };
 
   // ── Preview with Overlay ─────────────────────────────────────────────────
-  // Calls /api/phase_b/preview which ffmpeg-composites the watercolor PNG cues
-  // onto the lipsync video server-side and streams back the composed MP4.
-  // This is the V2 approach — the composed result is shown inline so Kim can
-  // see exactly how the overlay looks over the video without scrubbing/playing.
+  // Calls /api/phase_b/preview which streams the lipsync MP4 (with watercolor
+  // PNG cues composited when present). Empty cue list → plain lipsync preview.
   const onPreviewOverlay = async () => {
     if (!lipsyncFile) {
       setStatusMsg('No lipsync video yet — run Send for Lipsync first.');
       return;
     }
-    if (!(stateSlice.watercolor_cues ?? []).length) {
-      setStatusMsg('No watercolor cues — drag a cue onto the waveform first.');
-      return;
-    }
+    const hasCues = (stateSlice.watercolor_cues ?? []).length > 0;
     setBusyAction('preview');
-    setStatusMsg('Compositing overlay preview… first run may take 1–3 min for a full lipsync clip; cached runs are faster.');
+    setStatusMsg(
+      hasCues
+        ? 'Compositing overlay preview… first run may take 1–3 min for a full lipsync clip; cached runs are faster.'
+        : 'Loading lipsync preview… first run may take 1–3 min; cached runs are faster.',
+    );
     // Revoke any previous blob URL to avoid memory leak.
     if (previewOverlayUrl) URL.revokeObjectURL(previewOverlayUrl);
     setPreviewOverlayUrl(null);
@@ -562,7 +561,11 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
       setPreviewOverlayUrl(url);
-      setStatusMsg('✓ Preview ready — watercolor overlay composited below.');
+      setStatusMsg(
+        hasCues
+          ? '✓ Preview ready — watercolor overlay composited below.'
+          : '✓ Preview ready — lipsync video below.',
+      );
     } catch (err) {
       setStatusMsg(`✗ Preview fetch error: ${String(err)}`);
     }
@@ -1114,7 +1117,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             data-testid={`phase-${phase}-preview-overlay-btn`}
             onClick={onPreviewOverlay}
             disabled={busyAction !== null}
-            title="Server-composes the watercolor PNG onto the lipsync video so you can see exactly how the overlay looks"
+            title="Server streams lipsync preview; watercolor PNGs are composited when cues exist on the timeline."
           >
             {busyAction === 'preview' ? '⏳ Compositing…' : '🎨 Preview with Overlay'}
           </button>
