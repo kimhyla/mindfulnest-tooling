@@ -4750,6 +4750,83 @@ def storyboard_beat_id_from_bg_beat(bg_beat_id: str) -> str | None:
     return f"beat_{num.zfill(2)}" if num.isdigit() else f"beat_{num}"
 
 
+def bg_beat_id_from_storyboard_id(
+    storyboard_beat_id: str,
+    event_id: str,
+    phase: str,
+    arc_number: int = 1,
+) -> str | None:
+    """Map ``beat_01`` → ``bg_arc1_event1_post_beat_01`` for Beat Gen sidecar keys."""
+    m = re.search(r"beat_(\d+)$", storyboard_beat_id or "")
+    if not m:
+        return None
+    num = m.group(1)
+    num_fmt = num.zfill(2) if num.isdigit() else num
+    return f"bg_arc{arc_number}_event{event_id}_{phase}_beat_{num_fmt}"
+
+
+_MAGIC_SYNC_FIELDS: tuple[str, ...] = (
+    "magic_still_path",
+    "magic_video_path",
+    "magic_manual_path",
+    "magic_path_authored_against",
+)
+
+
+def merge_storyboard_magic_into_bg_beat(
+    beat: dict,
+    production_state: dict | None,
+    video_role: str,
+) -> dict:
+    """Fill missing magic fields on a BG beat from storyboard partition state."""
+    out = dict(beat)
+    if not production_state:
+        return out
+    sb_id = storyboard_beat_id_from_bg_beat(beat.get("beat_id") or "")
+    if not sb_id:
+        return out
+    sb_beat = (
+        ((production_state.get("videos") or {}).get(video_role) or {})
+        .get("beats") or {}
+    ).get(sb_id) or {}
+    for field in _MAGIC_SYNC_FIELDS:
+        if sb_beat.get(field) is not None and not out.get(field):
+            out[field] = sb_beat[field]
+    return out
+
+
+def persist_magic_fields_on_bg_sidecar(
+    sidecar: dict,
+    *,
+    arc_number: int,
+    event_id: str,
+    phase: str,
+    request_beat_id: str,
+    fields: dict,
+) -> bool:
+    """Write magic_* fields onto the matching Beat Gen sidecar row."""
+    bg_beat_id = (
+        request_beat_id
+        if str(request_beat_id).startswith("bg_")
+        else bg_beat_id_from_storyboard_id(request_beat_id, str(event_id), phase, arc_number)
+    )
+    beat_obj = None
+    if bg_beat_id:
+        seg = get_seg_entry(sidecar, arc_number, str(event_id), phase)
+        beat_obj = next(
+            (b for b in (seg.get("beats") or []) if b.get("beat_id") == bg_beat_id),
+            None,
+        )
+    if beat_obj is None:
+        _, beat_obj = find_beat(sidecar, request_beat_id)
+    if not beat_obj:
+        return False
+    for key, val in fields.items():
+        if val is not None:
+            beat_obj[key] = val
+    return True
+
+
 def resolve_bg_beat_tts_text(beat: dict) -> str:
     """Spoken line for ElevenLabs — dialogue_text first, else Kling prompt extraction."""
     dialogue = (beat.get("dialogue_text") or "").strip()

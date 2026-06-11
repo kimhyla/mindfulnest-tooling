@@ -547,6 +547,33 @@ def handle_magic_submit_path(h, body: dict)-> None:
     })
 
 
+def _persist_magic_fields_to_bg_sidecar(
+    h,
+    *,
+    request_beat_id: str,
+    video_role: str,
+    fields: dict,
+) -> None:
+    """Mirror magic_* writeback onto Beat Gen sidecar (best-effort)."""
+    try:
+        bg = _bg_module()
+        arc, evt, phase = _resolve_bg_segment_for_scope(h.app.event_id, video_role)
+        with bg._sidecar_lock:
+            sidecar = bg.read_sidecar()
+            ok = bg.persist_magic_fields_on_bg_sidecar(
+                sidecar,
+                arc_number=arc,
+                event_id=str(evt),
+                phase=phase,
+                request_beat_id=request_beat_id,
+                fields=fields,
+            )
+            if ok:
+                bg.write_sidecar(sidecar)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[BG] magic sidecar persist failed beat={request_beat_id}: {exc}", flush=True)
+
+
 def handle_magic_still(h, body: dict)-> None:
 
     """POST /api/storyboard/magic_still {beat_id, manual_path, source_image_path, scope_event_id, scope_video_role}
@@ -740,12 +767,13 @@ def handle_magic_still(h, body: dict)-> None:
     # composite on next page load. Idempotent — re-rendering overwrites.
     magic_filename = Path(rendered).name
     scope = None  # captured below for Bug-A4 read-back verify
+    sb_beat_id = _bg_module().storyboard_beat_id_from_bg_beat(beat_id) or beat_id
     try:
         scope = scope_router.resolve(body, h.app.event_dir.name)
 
         def _set_magic_still(partition: dict) -> None:
             beats = partition.setdefault("beats", {})
-            beat = beats.setdefault(beat_id, {})
+            beat = beats.setdefault(sb_beat_id, {})
             beat["magic_still_path"] = magic_filename
             beat["magic_manual_path"] = clean_path
             if path_authored_against:
@@ -780,12 +808,12 @@ def handle_magic_still(h, body: dict)-> None:
         _video_role_written = getattr(scope, "video_role", None)
         if _video_role_written:
             _beat_after = (((_state_after.get("videos") or {}).get(_video_role_written) or {})
-                          .get("beats") or {}).get(beat_id) or {}
+                          .get("beats") or {}).get(sb_beat_id) or {}
             if _beat_after.get("magic_still_path") == magic_filename:
                 partition_written = _video_role_written
-                print(f"[magic_still] state writeback verified: videos.{_video_role_written}.beats.{beat_id}.magic_still_path={magic_filename}", flush=True)
+                print(f"[magic_still] state writeback verified: videos.{_video_role_written}.beats.{sb_beat_id}.magic_still_path={magic_filename}", flush=True)
             else:
-                print(f"[magic_still] STATE_WRITEBACK_VERIFY_FAILED: expected videos.{_video_role_written}.beats.{beat_id}.magic_still_path={magic_filename!r}, got {_beat_after.get('magic_still_path')!r}", flush=True)
+                print(f"[magic_still] STATE_WRITEBACK_VERIFY_FAILED: expected videos.{_video_role_written}.beats.{sb_beat_id}.magic_still_path={magic_filename!r}, got {_beat_after.get('magic_still_path')!r}", flush=True)
                 return h._send_error_v59(
                            500,
                            error_code="STATE_WRITEBACK_VERIFY_FAILED",
@@ -793,7 +821,7 @@ def handle_magic_still(h, body: dict)-> None:
                            retry_safe=True,
                            extra={
                                "expected_partition": _video_role_written,
-                               "expected_beat_id": beat_id,
+                               "expected_beat_id": sb_beat_id,
                                "expected_magic_still_path": magic_filename,
                                "got_magic_still_path": _beat_after.get("magic_still_path"),
                            },
@@ -807,6 +835,18 @@ def handle_magic_still(h, body: dict)-> None:
                    error_message=f"state writeback verify crashed: {type(exc).__name__}: {exc}",
                    retry_safe=True,
                )
+
+    if _video_role_written:
+        _persist_magic_fields_to_bg_sidecar(
+            h,
+            request_beat_id=beat_id,
+            video_role=_video_role_written,
+            fields={
+                "magic_still_path": magic_filename,
+                "magic_manual_path": clean_path,
+                **({"magic_path_authored_against": path_authored_against} if path_authored_against else {}),
+            },
+        )
 
     return h._send_json(200, {
         "ok": True,
@@ -1291,12 +1331,13 @@ def handle_magic_video(h, body: dict)-> None:
     # Same pattern as magic_still — see _handle_magic_still for rationale.
     magic_filename = Path(out_path).name
     scope = None  # captured below for Bug-A4 read-back verify
+    sb_beat_id = _bg_module().storyboard_beat_id_from_bg_beat(beat_id) or beat_id
     try:
         scope = scope_router.resolve(body, h.app.event_dir.name)
 
         def _set_magic_video(partition: dict) -> None:
             beats = partition.setdefault("beats", {})
-            beat = beats.setdefault(beat_id, {})
+            beat = beats.setdefault(sb_beat_id, {})
             beat["magic_video_path"] = magic_filename
             beat["magic_manual_path"] = clean_path
             if path_authored_against:
@@ -1327,12 +1368,12 @@ def handle_magic_video(h, body: dict)-> None:
         _video_role_written = getattr(scope, "video_role", None)
         if _video_role_written:
             _beat_after = (((_state_after.get("videos") or {}).get(_video_role_written) or {})
-                          .get("beats") or {}).get(beat_id) or {}
+                          .get("beats") or {}).get(sb_beat_id) or {}
             if _beat_after.get("magic_video_path") == magic_filename:
                 partition_written = _video_role_written
-                print(f"[magic_video] state writeback verified: videos.{_video_role_written}.beats.{beat_id}.magic_video_path={magic_filename}", flush=True)
+                print(f"[magic_video] state writeback verified: videos.{_video_role_written}.beats.{sb_beat_id}.magic_video_path={magic_filename}", flush=True)
             else:
-                print(f"[magic_video] STATE_WRITEBACK_VERIFY_FAILED: expected videos.{_video_role_written}.beats.{beat_id}.magic_video_path={magic_filename!r}, got {_beat_after.get('magic_video_path')!r}", flush=True)
+                print(f"[magic_video] STATE_WRITEBACK_VERIFY_FAILED: expected videos.{_video_role_written}.beats.{sb_beat_id}.magic_video_path={magic_filename!r}, got {_beat_after.get('magic_video_path')!r}", flush=True)
                 return h._send_error_v59(
                            500,
                            error_code="STATE_WRITEBACK_VERIFY_FAILED",
@@ -1340,7 +1381,7 @@ def handle_magic_video(h, body: dict)-> None:
                            retry_safe=True,
                            extra={
                                "expected_partition": _video_role_written,
-                               "expected_beat_id": beat_id,
+                               "expected_beat_id": sb_beat_id,
                                "expected_magic_video_path": magic_filename,
                                "got_magic_video_path": _beat_after.get("magic_video_path"),
                            },
@@ -1353,6 +1394,18 @@ def handle_magic_video(h, body: dict)-> None:
                    error_message=f"state writeback verify crashed: {type(exc).__name__}: {exc}",
                    retry_safe=True,
                )
+
+    if _video_role_written:
+        _persist_magic_fields_to_bg_sidecar(
+            h,
+            request_beat_id=beat_id,
+            video_role=_video_role_written,
+            fields={
+                "magic_video_path": magic_filename,
+                "magic_manual_path": clean_path,
+                **({"magic_path_authored_against": path_authored_against} if path_authored_against else {}),
+            },
+        )
 
     return h._send_json(200, {
         "ok": True,
@@ -1594,6 +1647,22 @@ def handle_bg_session_state(h)-> None:
         })
 
     all_done = beats and all(b.get("flux_options") for b in beats)
+    video_role = scope_video_role or ""
+    if not video_role and scope_phase:
+        for role, phase in _BG_PHASE_MAP.items():
+            if phase == scope_phase:
+                video_role = role
+                break
+    if beats and video_role:
+        try:
+            production_state = h.app.state.read_state()
+            beats = [
+                bg.merge_storyboard_magic_into_bg_beat(b, production_state, video_role)
+                for b in beats
+            ]
+            beats = bg.enrich_beats_kling_o3_pinned(beats, h.app.event_dir)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[BG] magic merge enrich failed: {exc}", flush=True)
     return h._send_json(200, {
         # `active_context` retained for backward compat (BG segment
         # dropdown reads it as secondary filter).

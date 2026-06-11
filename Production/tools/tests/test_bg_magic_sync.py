@@ -1,0 +1,50 @@
+"""BG magic sync — storyboard partition ↔ Beat Gen sidecar."""
+from __future__ import annotations
+
+import beat_generator as bg
+
+
+def test_merge_storyboard_magic_into_bg_beat_fills_missing_still():
+    sidecar_beat = {"beat_id": "bg_arc1_event1_post_beat_01", "magic_video_path": "mv.mp4"}
+    production_state = {
+        "videos": {
+            "resolution": {
+                "beats": {
+                    "beat_01": {
+                        "magic_still_path": "magic_still_beat_01_20260605-180641.mp4",
+                        "magic_manual_path": [[0.5, 0.5]],
+                    },
+                },
+            },
+        },
+    }
+    merged = bg.merge_storyboard_magic_into_bg_beat(
+        sidecar_beat, production_state, "resolution",
+    )
+    assert merged["magic_still_path"] == "magic_still_beat_01_20260605-180641.mp4"
+    assert merged["magic_video_path"] == "mv.mp4"
+
+
+def test_persist_magic_fields_on_bg_sidecar_by_storyboard_id():
+    sidecar = {
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_1_post": {
+                        "beats": [{"beat_id": "bg_arc1_event1_post_beat_21"}],
+                    },
+                },
+            },
+        },
+    }
+    ok = bg.persist_magic_fields_on_bg_sidecar(
+        sidecar,
+        arc_number=1,
+        event_id="1",
+        phase="post",
+        request_beat_id="beat_21",
+        fields={"magic_still_path": "magic_still_beat_21.mp4"},
+    )
+    assert ok is True
+    beat = sidecar["arcs"]["arc_1"]["segments"]["event_1_post"]["beats"][0]
+    assert beat["magic_still_path"] == "magic_still_beat_21.mp4"

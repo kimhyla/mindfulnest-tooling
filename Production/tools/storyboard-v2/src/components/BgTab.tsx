@@ -26,6 +26,11 @@ import { pushToast } from './ui/Toast';
 import { stitcherRefreshTick } from '../app';
 import { serverRehydrateTick } from '../state/refreshSignals';
 import {
+  BeatMagicButtons,
+  resolveBgMagicPreviewUrl,
+  resolveBgMagicStillSourcePath,
+} from './BeatMagicButtons';
+import {
   allBeatsStitchExportReady,
   stitchExportBlockTooltip,
 } from '../utils/bgStitchExport';
@@ -104,6 +109,12 @@ interface BgBeat {
     min_dimension?: number;
     has_audio?: boolean;
   } | null;
+  magic_still_path?: string | null;
+  magic_video_path?: string | null;
+  magic_still_path_exists?: boolean;
+  magic_video_path_exists?: boolean;
+  start_frame_image?: { abs_path?: string } | null;
+  end_frame_image?: { abs_path?: string } | null;
 }
 
 interface BgSegment {
@@ -563,6 +574,17 @@ export function BgTab() {
       setActiveNativeLipSyncJobs(collectActiveNativeLipSyncJobsFromBeats(nextBeats));
     }
   };
+
+  useEffect(() => {
+    const onMsg = (e: MessageEvent) => {
+      if (e.origin !== window.location.origin) return;
+      if (e.data?.type === 'mn-magic-or-animate-complete') {
+        void refreshState();
+      }
+    };
+    window.addEventListener('message', onMsg);
+    return () => window.removeEventListener('message', onMsg);
+  }, []);
 
   // ----------------------------------------------------------------
   // Mutations
@@ -1094,6 +1116,8 @@ export function BgTab() {
               key={b.beat_id}
               index={i}
               beat={b}
+              eventId={activeScope.value.event_id}
+              videoRole={activeTargetVideo.value}
               pollResultForBeat={pollResults[b.beat_id]}
               busy={activeJobId !== null || !!activeO3Jobs[b.beat_id] || !!activeNativeLipSyncJobs[b.beat_id]}
               nativeExperimentBusy={!!activeNativeLipSyncJobs[b.beat_id]}
@@ -1356,6 +1380,8 @@ export function BgTab() {
 interface BeatGenCardProps {
   index: number;
   beat: BgBeat;
+  eventId: string;
+  videoRole: string;
   pollResultForBeat?: GptOption[];
   busy: boolean;
   nativeExperimentBusy: boolean;
@@ -1388,7 +1414,7 @@ interface BeatGenCardProps {
 }
 
 function BeatGenCard({
-  index, beat, pollResultForBeat, busy, nativeExperimentBusy,
+  index, beat, eventId, videoRole, pollResultForBeat, busy, nativeExperimentBusy,
   onDelete, onUpdateText, onUpdateSpeaker, onGenerate, onAccept,
   onSelectO3Video, onApplyO3Trim, onSubmitNativeLipSyncExperiment,
   onEditChip, onInsertAfter, onRemoveRef, onRefresh,
@@ -1457,6 +1483,11 @@ function BeatGenCard({
   // Native LipSync experiment is dev-only QA — hidden from producer UI so it cannot
   // be mistaken for the canonical Generate path (Element O3 + 720 delivery).
   const showNativeExperimentCard = false;
+
+  const magicStillSource = resolveBgMagicStillSourcePath(beat, eventId);
+  const magicVideoSource = beat.kling_o3_video_path ?? null;
+  const magicPreviewUrl = resolveBgMagicPreviewUrl(beat, eventId);
+  const [showMagicPreview, setShowMagicPreview] = useState(false);
 
   return (
     <li class="mn-bg-beat-card" data-testid={`bg-beat-card-${index}`} data-beat-id={beat.beat_id}>
@@ -1617,6 +1648,24 @@ function BeatGenCard({
           ) : beat.speaker ? 'Generate padded O3 voice video' : 'Generate 3 options'}
         </button>
       </div>
+
+      <BeatMagicButtons
+        index={index}
+        beatId={beat.beat_id}
+        eventId={eventId}
+        videoRole={videoRole}
+        stillImagePath={magicStillSource}
+        videoSourcePath={magicVideoSource}
+        videoSourceIsAbsolute={!!magicVideoSource}
+        magicStillPath={beat.magic_still_path}
+        magicVideoPath={beat.magic_video_path}
+        onPreviewMagic={magicPreviewUrl ? () => setShowMagicPreview(true) : undefined}
+      />
+      {showMagicPreview && magicPreviewUrl ? (
+        <div class="mn-bg-magic-preview" data-testid={`bg-magic-preview-${index}`}>
+          <video controls preload="metadata" src={magicPreviewUrl} />
+        </div>
+      ) : null}
 
       {/* 3-options row — 1×3 layout (NOT 3×3 matrix) */}
       <div class="mn-bg-options-row" data-testid={`bg-options-row-${index}`}>

@@ -28,6 +28,7 @@ import { serverRehydrateTick } from '../state/refreshSignals';
 import { SERVER_BASE, MUTATION_ENDPOINTS as ENDPOINTS } from '../api/endpoints';
 import { makeDropTarget } from '../utils/dragdrop';
 import { Spinner } from './ui/Spinner';
+import { BeatMagicButtons } from './BeatMagicButtons';
 import { pushToast } from './ui/Toast';
 import { Modal } from './ui/Modal';
 import { BeatAudioPreview } from './BeatAudioPreview';
@@ -2213,6 +2214,16 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
             ? `last save ${savedAt.slice(11, 19)}Z`
             : '';
 
+  const storyboardStillPath = beat.image_path
+    ? `Production/${eventId}/${beat.image_path}`
+    : null;
+  let storyboardVideoPath: string | undefined;
+  if (beat.lipsync?.file) storyboardVideoPath = beat.lipsync.file;
+  else if (beat.phase_1?.options && beat.phase_1.selected_option !== undefined) {
+    const opt = beat.phase_1.options[beat.phase_1.selected_option - 1];
+    if (opt?.file) storyboardVideoPath = opt.file;
+  }
+
   return (
     <li
       class="mn-beat-card"
@@ -2327,7 +2338,17 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
         onPreviewOption={handlePreviewOption}
         onEnsureLipsyncMounted={ensureLipsyncMounted}
       />
-      <BeatMagicButtons index={index} beatId={beatId} beat={beat} eventId={eventId} videoRole={videoRole} onPreviewOption={handlePreviewOption} />
+      <BeatMagicButtons
+        index={index}
+        beatId={beatId}
+        eventId={eventId}
+        videoRole={videoRole}
+        stillImagePath={storyboardStillPath}
+        videoSourcePath={storyboardVideoPath ?? null}
+        magicStillPath={beat.magic_still_path}
+        magicVideoPath={beat.magic_video_path}
+        onPreviewMagic={() => handlePreviewOption(-1)}
+      />
       <div class="mn-sb-insert-after" data-testid={`sb-insert-after-${index}`}>
         <button
           class="mn-btn mn-btn-small mn-sb-insert-after-btn"
@@ -2485,128 +2506,6 @@ function BeatImageHolder({ index, beatId, beat, eventId, onMutated, previewVideo
       ) : (
         <span class="mn-dim mn-storyboard-image-placeholder">drop library image here</span>
       )}
-    </div>
-  );
-}
-
-// ----------------------------------------------------------------
-// BeatMagicButtons — S5 v3.1 magic trail triggers (LDs 468/469)
-// ----------------------------------------------------------------
-
-interface BeatMagicProps {
-  index: number;
-  beatId: string;
-  beat: BeatState;
-  eventId: string;
-  videoRole: string;  // Bug-A1 (spec §2 Topic-2): pinned to active partition for magic_*_path writeback
-  // When provided, ▶ Preview magic button calls onPreviewOption(-1) which
-  // resolves via Bug-B1 priority chain: magic_still_path → magic_video_path → final.
-  onPreviewOption?: (idx: number) => void;
-}
-
-function BeatMagicButtons({ index, beatId, beat, eventId, videoRole, onPreviewOption }: BeatMagicProps) {
-  const stillPath = beat.image_path;
-  // Pick primary video: lipsync preferred, else selected animation option.
-  let videoPath: string | undefined;
-  if (beat.lipsync?.file) videoPath = beat.lipsync.file;
-  else if (beat.phase_1?.options && beat.phase_1.selected_option !== undefined) {
-    const opt = beat.phase_1.options[beat.phase_1.selected_option - 1];
-    if (opt?.file) videoPath = opt.file;
-  }
-
-  const hasMagicStill = !!beat.magic_still_path;
-  const hasMagicVideo = !!beat.magic_video_path;
-
-  const openMagicStill = () => {
-    if (!stillPath) return;
-    const u = new URL(`${SERVER_BASE}/magic`);
-    u.searchParams.set('mode', 'magic_still');
-    u.searchParams.set('beat_id', beatId);
-    u.searchParams.set('source_image_path', `Production/${eventId}/${stillPath}`);
-    u.searchParams.set('return_endpoint', '/api/storyboard/magic_still');
-    u.searchParams.set('scope_event_id', eventId);
-    // Bug-A1 (spec §2 Topic-2): scope_video_role MUST be in the URL — server-side
-    // handler now refuses (400 VIDEO_ROLE_REQUIRED) on missing role. Without this,
-    // path_picker would default to 'intro' and magic_still_path lands on the wrong
-    // partition (the bug Kim hit 2026-05-20 — magic_still_path written to
-    // videos.intro.beats.beat_01 instead of videos.resolution.beats.beat_01).
-    u.searchParams.set('scope_video_role', videoRole);
-    window.open(u.toString(), '_blank');
-  };
-
-  const openMagicVideo = () => {
-    if (!videoPath) return;
-    const u = new URL(`${SERVER_BASE}/magic`);
-    u.searchParams.set('mode', 'magic_video');
-    u.searchParams.set('beat_id', beatId);
-    // animation_clips/ is the canonical storage dir for all beat video files
-    // (lipsync + animation options) per AppState.clips_dir = event_dir/animation_clips/.
-    // Bug: prior path omitted animation_clips/ → "source_video not found" 404.
-    u.searchParams.set('source_video_path', `Production/${eventId}/animation_clips/${videoPath}`);
-    if (stillPath) {
-      u.searchParams.set('source_image_path', `Production/${eventId}/${stillPath}`);
-    }
-    u.searchParams.set('return_endpoint', '/api/storyboard/magic_video');
-    u.searchParams.set('scope_event_id', eventId);
-    // Bug-A1 (spec §2 Topic-2): same as openMagicStill above.
-    u.searchParams.set('scope_video_role', videoRole);
-    window.open(u.toString(), '_blank');
-  };
-
-  return (
-    <div class="mn-beat-magic-row" data-testid={`beat-magic-row-${index}`}>
-      {stillPath ? (
-        <>
-          <button
-            type="button"
-            class="mn-btn mn-btn-small"
-            data-testid={`beat-magic-still-${index}`}
-            onClick={openMagicStill}
-            title={hasMagicStill
-              ? 'Re-draw magic path on still — replaces the current magic_still_path'
-              : 'Add magic trail on still (LD-468)'}
-          >
-            {hasMagicStill ? '↻ Redo magic on still' : '🌟 Add magic on still'}
-          </button>
-          {hasMagicStill && onPreviewOption ? (
-            <button
-              type="button"
-              class="mn-btn mn-btn-small"
-              data-testid={`beat-magic-still-preview-${index}`}
-              onClick={() => onPreviewOption(-1)}
-              title="Preview the magic-on-still composite video inline"
-            >
-              ▶ Preview magic
-            </button>
-          ) : null}
-        </>
-      ) : null}
-      {videoPath ? (
-        <>
-          <button
-            type="button"
-            class="mn-btn mn-btn-small"
-            data-testid={`beat-magic-video-${index}`}
-            onClick={openMagicVideo}
-            title={hasMagicVideo
-              ? 'Re-draw magic path on lipsync frame — replaces the current magic_video_path'
-              : 'Add magic trail on video (LD-469)'}
-          >
-            {hasMagicVideo ? '↻ Redo magic on video' : '🎬 Add magic on video'}
-          </button>
-          {hasMagicVideo && onPreviewOption ? (
-            <button
-              type="button"
-              class="mn-btn mn-btn-small"
-              data-testid={`beat-magic-video-preview-${index}`}
-              onClick={() => onPreviewOption(-1)}
-              title="Preview the magic-on-video composite inline (uses magic_video_path when no magic_still_path)"
-            >
-              ▶ Preview magic·v
-            </button>
-          ) : null}
-        </>
-      ) : null}
     </div>
   );
 }
