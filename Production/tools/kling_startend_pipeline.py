@@ -612,6 +612,14 @@ def flux_kontext_generate_end_frame(
 #  Kling Subject Binding — character element registry loader
 # =========================================================================
 
+def _subjects_prod_root() -> Path:
+    """Production root for character_subjects.json — Dropbox when MN_PROD_ROOT is set."""
+    env = os.environ.get("MN_PROD_ROOT", "").strip()
+    if env:
+        return Path(env).expanduser().resolve()
+    return PROD_ROOT
+
+
 def _load_subject_element(speaker: str) -> "dict | None":
     """Return element_list entry for speaker from character_subjects.json, or None.
 
@@ -624,7 +632,7 @@ def _load_subject_element(speaker: str) -> "dict | None":
              or None if not configured / not yet registered.
     """
     try:
-        subjects_path = PROD_ROOT / "character_subjects.json"
+        subjects_path = _subjects_prod_root() / "character_subjects.json"
         if not subjects_path.is_file():
             return None
         data = json.loads(subjects_path.read_text(encoding="utf-8"))

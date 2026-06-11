@@ -133,7 +133,14 @@ def _load_sprite_rgba(path: Path, size: tuple[int, int]) -> np.ndarray:
     return np.array(img)
 
 
-def _overlay_rgba_bgr(frame_bgr: np.ndarray, sprite_rgba: np.ndarray, x0: int, y0: int) -> None:
+def _overlay_rgba_bgr(
+    frame_bgr: np.ndarray,
+    sprite_rgba: np.ndarray,
+    x0: int,
+    y0: int,
+    *,
+    region_mask: np.ndarray | None = None,
+) -> None:
     h, w = sprite_rgba.shape[:2]
     y1 = min(frame_bgr.shape[0], y0 + h)
     x1 = min(frame_bgr.shape[1], x0 + w)
@@ -142,6 +149,8 @@ def _overlay_rgba_bgr(frame_bgr: np.ndarray, sprite_rgba: np.ndarray, x0: int, y
     rh, rw = y1 - y0, x1 - x0
     sprite = sprite_rgba[:rh, :rw]
     alpha = sprite[:, :, 3:4].astype(np.float32) / 255.0
+    if region_mask is not None:
+        alpha = alpha * (region_mask[:rh, :rw].astype(np.float32) / 255.0)[..., None]
     sprite_bgr = sprite[:, :, :3][:, :, ::-1]
     region = frame_bgr[y0:y1, x0:x1].astype(np.float32)
     blended = alpha * sprite_bgr.astype(np.float32) + (1.0 - alpha) * region
@@ -153,6 +162,17 @@ def _beak_overlay_rect(
     height: int,
     beak_config: dict[str, Any],
 ) -> tuple[int, int, int, int]:
+    poly = beak_config.get("beak_polygon")
+    if isinstance(poly, list) and len(poly) >= 3:
+        xs = [float(p[0]) for p in poly]
+        ys = [float(p[1]) for p in poly]
+        x0 = max(0, int(min(xs) * width))
+        y0 = max(0, int(min(ys) * height))
+        x1 = min(width, int(max(xs) * width))
+        y1 = min(height, int(max(ys) * height))
+        if x1 > x0 and y1 > y0:
+            return x0, y0, x1, y1
+
     cx = int(float(beak_config["beak_cx_frac"]) * width)
     cy = int(float(beak_config["beak_cy_frac"]) * height)
     sprite_w = int(float(beak_config["sprite_w_frac"]) * width)
@@ -162,6 +182,27 @@ def _beak_overlay_rect(
     x1 = min(width, x0 + sprite_w)
     y1 = min(height, y0 + sprite_h)
     return x0, y0, x1, y1
+
+
+def _beak_region_mask(
+    width: int,
+    height: int,
+    beak_config: dict[str, Any],
+    x0: int,
+    y0: int,
+    x1: int,
+    y1: int,
+) -> np.ndarray | None:
+    poly = beak_config.get("beak_polygon")
+    if not isinstance(poly, list) or len(poly) < 3:
+        return None
+    mask = np.zeros((y1 - y0, x1 - x0), dtype=np.uint8)
+    pts = np.array(
+        [[int(float(p[0]) * width) - x0, int(float(p[1]) * height) - y0] for p in poly],
+        dtype=np.int32,
+    )
+    cv2.fillPoly(mask, [pts], 255)
+    return mask
 
 
 def _audio_duration_s(audio_path: Path) -> float:
@@ -202,6 +243,7 @@ def composite_static_plate_rhubarb(
     w, h = plate_rgba.size
     x0, y0, x1, y1 = _beak_overlay_rect(w, h, beak_config)
     overlay_size = (x1 - x0, y1 - y0)
+    region_mask = _beak_region_mask(w, h, beak_config, x0, y0, x1, y1)
 
     sprite_cache: dict[str, np.ndarray] = {}
     for key, path in sprites.items():
@@ -232,7 +274,7 @@ def composite_static_plate_rhubarb(
                     key = "A"
                 sprite_rgba = sprite_cache.get(key)
                 if sprite_rgba is not None:
-                    _overlay_rgba_bgr(frame, sprite_rgba, x0, y0)
+                    _overlay_rgba_bgr(frame, sprite_rgba, x0, y0, region_mask=region_mask)
             writer.write(frame)
     finally:
         writer.release()
@@ -290,6 +332,7 @@ def composite_rhubarb_lipsync(
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     x0, y0, x1, y1 = _beak_overlay_rect(w, h, beak_config)
     overlay_size = (x1 - x0, y1 - y0)
+    region_mask = _beak_region_mask(w, h, beak_config, x0, y0, x1, y1)
 
     sprite_cache: dict[str, np.ndarray] = {}
     for key, path in sprites.items():
@@ -323,7 +366,7 @@ def composite_rhubarb_lipsync(
                         key = "A"
                     sprite_rgba = sprite_cache.get(key)
                     if sprite_rgba is not None:
-                        _overlay_rgba_bgr(frame, sprite_rgba, x0, y0)
+                        _overlay_rgba_bgr(frame, sprite_rgba, x0, y0, region_mask=region_mask)
             writer.write(frame)
             frame_idx += 1
     finally:

@@ -86,6 +86,8 @@ from tools.production_server import (  # noqa: E402
 # Duration is constant (PHASE_B_WHITEOUT_DURATION_SEC). Applied in-place
 # on the downloaded mp4 before state is written; fully transparent to callers.
 PHASE_B_WHITEOUT_DURATION_SEC: float = 1.5  # seconds of fade-to-white at end
+# Kling LipSync on ~43s stems: p99 ~15 min; auto-clear stuck "running" after 20 min.
+PHASE_A_LIPSYNC_STALE_SEC: int = 1200
 
 
 def _apply_whiteout_fade(video_path: Path, fade_dur: float = PHASE_B_WHITEOUT_DURATION_SEC) -> None:
@@ -302,10 +304,11 @@ def handle_phase_base_clips_list(h)-> None:
             ext = f.suffix.lower().lstrip(".")
             if ext not in ("mp4", "mov"):
                 continue
-            # Character is heuristic: "chipper" or "cedric" in filename.
+            # Character is heuristic: "arlo", "chipper", or "cedric" in filename.
             lname = f.name.lower()
             character = (
-                "chipper" if "chipper" in lname
+                "arlo" if "arlo" in lname
+                else "chipper" if "chipper" in lname
                 else "cedric" if "cedric" in lname
                 else None
             )
@@ -1175,6 +1178,10 @@ def handle_phase_b_mix_audio(h, body: dict)-> None:
                )
     ambient_preset_id = body.get("ambient_preset_id")
     if not ambient_preset_id or not isinstance(ambient_preset_id, str):
+        # Fallback: UI may omit preset if state was set via dropdown patch only.
+        state_for_preset = h.app.state.read_state()
+        ambient_preset_id = state_for_preset.get(f"phase_{phase}_ambient_preset_id")
+    if not ambient_preset_id or not isinstance(ambient_preset_id, str):
         return h._send_error_v59(
                    400,
                    error_code="AMBIENT_PRESET_ID_IS_REQUIRED",
@@ -1452,8 +1459,9 @@ def handle_phase_b_mix_audio(h, body: dict)-> None:
 
 
 def handle_phase_a_lipsync(h, body: dict) -> None:
-    """POST /api/phase_a/lipsync — ByteDance-tight for Chipper (birds).
+    """POST /api/phase_a/lipsync — idle Kling lipsync for Chipper (birds).
 
+    Kim 2026-06-08: storyboard idle pattern on body plate still + slow zoom.
     Phase B human lipsync stays on Kling Sync (handle_phase_b_lipsync).
     Locked policy: Production/docs/PHASE_A_CHIPPER_PIPELINE_LOCKED_v1.md
     """
@@ -1477,26 +1485,43 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
         )
 
     state = h.app.state.read_state()
+
+    def _phase_a_lipsync_running_stale(st: dict) -> bool:
+        if st.get("phase_a_lipsync_status") != "running":
+            return False
+        started = st.get("phase_a_lipsync_started_at")
+        if not isinstance(started, (int, float)):
+            return True  # legacy running with no timestamp — treat as stale
+        return (time.time() - float(started)) > PHASE_A_LIPSYNC_STALE_SEC
+
     if state.get("phase_a_lipsync_status") == "running":
-        return h._send_error_v59(
-            409,
-            error_code="GENERIC_ERROR",
-            error_message="Phase A lipsync already running",
-            retry_safe=False,
-        )
+        if _phase_a_lipsync_running_stale(state):
+            def _clear_stale_running(st):
+                st["phase_a_lipsync_status"] = (
+                    f"error: stale_timeout: running > {PHASE_A_LIPSYNC_STALE_SEC}s"
+                )
+                st.pop("phase_a_lipsync_started_at", None)
+                nested = st.setdefault("phase_a", {})
+                if isinstance(nested, dict):
+                    nested["phase_a_lipsync_status"] = st["phase_a_lipsync_status"]
+                    nested.pop("phase_a_lipsync_started_at", None)
+                return st.get("_module_version", 0)
+            h.app.state.mutate_state(_clear_stale_running)
+            state = h.app.state.read_state()
+        else:
+            return h._send_error_v59(
+                409,
+                error_code="GENERIC_ERROR",
+                error_message="Phase A lipsync already running",
+                retry_safe=False,
+                extra={"hint": f"Wait up to {PHASE_A_LIPSYNC_STALE_SEC // 60} min or refresh after stale auto-clear."},
+            )
 
     base_clip_id = (
         (body or {}).get("base_clip_id")
         or state.get("phase_a_chipper_sitting_clip_id")
         or state.get("phase_a_empty_desk_bg_id")
     )
-    if not base_clip_id or not isinstance(base_clip_id, str):
-        return h._send_error_v59(
-            400,
-            error_code="BASE_CLIP_ID_IS_REQUIRED",
-            error_message="base_clip_id is required (or set phase_a_chipper_sitting_clip_id)",
-            retry_safe=False,
-        )
 
     audio_name = (
         state.get("phase_a_voice_stem_file")
@@ -1520,27 +1545,36 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
             retry_safe=False,
         )
 
-    bases_dir = h._phase_assets_dir("lipsync_bases")
-    base_path: Path | None = None
-    raw = bases_dir / base_clip_id
-    if raw.is_file():
-        base_path = raw
-    else:
-        for ext in ("mp4", "mov"):
-            candidate = bases_dir / f"{base_clip_id}.{ext}"
-            if candidate.is_file():
-                base_path = candidate
-                break
-    if base_path is None:
-        return h._send_error_v59(
-            404,
-            error_code="GENERIC_ERROR",
-            error_message=f"base clip not found: {base_clip_id}",
-            retry_safe=False,
-        )
+    base_video_path: Path | None = None
+    if base_clip_id:
+        from phase_a_chipper_kling_lipsync import resolve_lipsync_base
 
+        bases_dir = h._phase_assets_dir("lipsync_bases")
+        try:
+            base_video_path = resolve_lipsync_base(bases_dir, base_clip_id)
+        except FileNotFoundError:
+            base_video_path = None
+
+    still_path: Path | None = None
+    if base_video_path is None:
+        from phase_a_chipper_idle_lipsync import resolve_body_plate
+
+        try:
+            still_path = resolve_body_plate(h.app.event_dir, state)
+        except FileNotFoundError as exc:
+            return h._send_error_v59(
+                404,
+                error_code="GENERIC_ERROR",
+                error_message=str(exc),
+                retry_safe=False,
+                extra={"hint": "Add phase_a_chipper_body_plate_v1.png to the event folder."},
+            )
+
+    # Base-clip path: ByteDance LatentSync (preserves wing pixels). Idle-from-still: 2× Kling jobs.
+    lipsync_jobs = 1 if base_video_path else 2
+    lipsync_method = "base_clip_bytedance_tight_v1" if base_video_path else "idle_kling_lipsync"
     spend = h.app.state.read_spend()
-    if spend["budget_remaining"] < COST_PER_LIPSYNC:
+    if spend["budget_remaining"] < COST_PER_LIPSYNC * lipsync_jobs:
         return h._send_error_v59(
             402,
             error_code="BUDGET_EXCEEDED_FOR_LIP_SYNC",
@@ -1548,7 +1582,7 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
             retry_safe=False,
             extra={
                 "budget_remaining": spend["budget_remaining"],
-                "cost": COST_PER_LIPSYNC,
+                "cost": COST_PER_LIPSYNC * lipsync_jobs,
             },
         )
 
@@ -1558,7 +1592,12 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
 
     def _apply_running(st):
         st["phase_a_lipsync_status"] = "running"
+        st["phase_a_lipsync_started_at"] = time.time()
         st.pop("phase_a_lipsync_task_id", None)
+        nested = st.setdefault("phase_a", {})
+        if isinstance(nested, dict):
+            nested["phase_a_lipsync_status"] = "running"
+            nested["phase_a_lipsync_started_at"] = st["phase_a_lipsync_started_at"]
         st["_module_version"] = int(st.get("_module_version", 0) or 0) + 1
         return st["_module_version"]
 
@@ -1567,23 +1606,51 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
     _app = h.app
     _pin_captured = dict(_pin)
     _stitch = h._auto_assemble_phase_a_stitched
+    _still_path = still_path
+    _base_clip_id = base_clip_id
+    _base_video_path = base_video_path
+    _lipsync_jobs = lipsync_jobs
+    _lipsync_method = lipsync_method
 
     def _bg(
         _out_path=out_path,
         _out_name=out_name,
-        _base_path=base_path,
         _audio_path=audio_path,
-        _base_clip_id=base_clip_id,
+        _still=_still_path,
+        _base_clip_id=_base_clip_id,
+        _base_video=_base_video_path,
+        _jobs=_lipsync_jobs,
+        _method=_lipsync_method,
     ):
         try:
-            from phase_a_chipper_bytedance_lipsync import run_bytedance_tight_lipsync
+            if _base_video is not None:
+                from phase_a_middle_permanent import run_phase_a_base_clip_bytedance_lipsync
 
-            tmp_dir = _app.event_dir / "_tmp_phase_a_bytedance"
-            run_bytedance_tight_lipsync(
-                _base_path, _audio_path, _out_path, tmp_dir=tmp_dir,
-            )
+                tmp_dir = _app.event_dir / "_tmp_phase_a_permanent"
+                run_phase_a_base_clip_bytedance_lipsync(
+                    _base_video, _audio_path, _out_path, tmp_dir=tmp_dir,
+                )
+            else:
+                from phase_a_chipper_idle_lipsync import run_phase_a_chipper_idle_lipsync
+
+                tmp_dir = _app.event_dir / "_tmp_phase_a_idle_lipsync"
+                run_phase_a_chipper_idle_lipsync(
+                    _still, _audio_path, _out_path, tmp_dir=tmp_dir, apply_zoom=False,
+                )
             if not _out_path.is_file():
-                raise RuntimeError(f"ByteDance finished but output missing: {_out_path}")
+                raise RuntimeError(f"lipsync finished but output missing: {_out_path}")
+
+            from phase_a_av_post import av_duration_gap
+            from phase_a_middle_permanent import extract_qa_frames
+
+            video_s, audio_s, av_gap_s = av_duration_gap(_out_path)
+            if av_gap_s > 0.10:
+                raise RuntimeError(
+                    f"Phase A media gate failed: A/V gap {av_gap_s:.3f}s "
+                    f"(video={video_s:.3f}s audio={audio_s:.3f}s)"
+                )
+            qa_dir = _app.event_dir / f"phase_a_lipsync_qa_{Path(_out_name).stem}"
+            extract_qa_frames(_out_path, qa_dir)
 
             _cur_gen = getattr(_app, "event_generation", None)
             _pin_gen = _pin_captured.get("pinned_generation")
@@ -1596,43 +1663,66 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
                     f"but state NOT mutated",
                     flush=True,
                 )
+
+                def _apply_pin_mismatch(st):
+                    st["phase_a_lipsync_status"] = "error: pin_mismatch: event scope changed mid-job"
+                    st.pop("phase_a_lipsync_started_at", None)
+                    nested = st.setdefault("phase_a", {})
+                    if isinstance(nested, dict):
+                        nested["phase_a_lipsync_status"] = st["phase_a_lipsync_status"]
+                        nested.pop("phase_a_lipsync_started_at", None)
+                    return st.get("_module_version", 0)
+
+                try:
+                    _app.state.mutate_state(_apply_pin_mismatch)
+                except Exception:  # noqa: BLE001
+                    pass
                 return
 
-            _app.state.add_spend("lipsync", COST_PER_LIPSYNC)
+            _app.state.add_spend("lipsync", COST_PER_LIPSYNC * _jobs)
             mtime = int(os.path.getmtime(str(_out_path)))
 
             def _apply_done(st,
-                           _n=_out_name, _m=mtime, _bid=_base_clip_id):
+                           _n=_out_name, _m=mtime, _bid=_base_clip_id, _meth=_method,
+                           _qa=str(qa_dir), _gap=av_gap_s):
                 for key, val in (
                     ("phase_a_lipsync_file", _n),
                     ("phase_a_lipsync_mtime", _m),
-                    ("phase_a_lipsync_status", "done"),
-                    ("phase_a_empty_desk_bg_id", _bid),
+                    ("phase_a_lipsync_status", "needs_manual_visual_review"),
+                    ("phase_a_lipsync_method", _meth),
+                    ("phase_a_lipsync_qa_dir", _qa),
+                    ("phase_a_lipsync_av_gap_s", round(_gap, 3)),
                 ):
                     st[key] = val
                     nested = st.setdefault("phase_a", {})
                     if isinstance(nested, dict):
                         nested[key] = val
+                st["phase_a_lipsync_requires_regen"] = False
+                st.pop("phase_a_lipsync_reliability_note", None)
+                nested = st.setdefault("phase_a", {})
+                if isinstance(nested, dict):
+                    nested["phase_a_lipsync_requires_regen"] = False
+                    nested.pop("phase_a_lipsync_reliability_note", None)
+                if _bid:
+                    st["phase_a_chipper_sitting_clip_id"] = _bid
+                    nested = st.setdefault("phase_a", {})
+                    if isinstance(nested, dict):
+                        nested["phase_a_chipper_sitting_clip_id"] = _bid
                 st.pop("phase_a_lipsync_task_id", None)
+                st.pop("phase_a_lipsync_started_at", None)
+                nested = st.setdefault("phase_a", {})
+                if isinstance(nested, dict):
+                    nested.pop("phase_a_lipsync_started_at", None)
                 st["_module_version"] = int(st.get("_module_version", 0) or 0) + 1
                 return st["_module_version"]
 
             _app.state.mutate_state(_apply_done)
             print(
-                f"[phase_a_lipsync] ✓ ByteDance complete → {_out_name} "
-                f"({_out_path.stat().st_size} bytes)",
+                f"[phase_a_lipsync] media gate passed; visual review required → {_out_name} "
+                f"({_out_path.stat().st_size} bytes, av_gap={av_gap_s:.3f}s, qa={qa_dir})",
                 flush=True,
             )
-            try:
-                ts_stitch = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-                canonical = _stitch(ts_stitch)
-                print(f"[phase_a_lipsync] auto-stitch: {canonical}", flush=True)
-            except Exception as stitch_exc:  # noqa: BLE001
-                traceback.print_exc()
-                print(
-                    f"[phase_a_lipsync] auto-stitch failed (non-fatal): {stitch_exc!r}",
-                    flush=True,
-                )
+            print("[phase_a_lipsync] auto-stitch skipped until visual gates pass", flush=True)
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc()
 
@@ -1641,7 +1731,12 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
                     f"error: {type(_e).__name__}: {str(_e)[:100]}"
                 )
                 st.pop("phase_a_lipsync_task_id", None)
-                return st
+                st.pop("phase_a_lipsync_started_at", None)
+                nested = st.setdefault("phase_a", {})
+                if isinstance(nested, dict):
+                    nested["phase_a_lipsync_status"] = st["phase_a_lipsync_status"]
+                    nested.pop("phase_a_lipsync_started_at", None)
+                return st.get("_module_version", 0)
 
             try:
                 _app.state.mutate_state(_apply_err)
@@ -1653,11 +1748,13 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
         "ok": True,
         "status": "running",
         "phase": "a",
-        "vendor": "bytedance-tight",
+        "vendor": lipsync_method,
+        "still": still_path.name if still_path else None,
         "base_clip_id": base_clip_id,
+        "base_clip_file": base_video_path.name if base_video_path else None,
         "message": (
-            "ByteDance LatentSync is processing (~5–15 min for long stems). "
-            "Phase A will auto-stitch when done."
+            "ByteDance Phase A lipsync is processing. "
+            "Phase A will stop for visual review after media gates pass."
         ),
     })
 
@@ -2279,11 +2376,16 @@ def handle_phase_b_preview(h, body: dict)-> None:
                    extra={"hint": "Wait for the in-flight preview to finish."},
                )
     except ValueError as exc:
+        msg = str(exc)
+        extra: dict = {}
+        if "lipsync_file not set" in msg:
+            extra["hint"] = "Send for Lipsync first, then retry Preview."
         return h._send_error_v59(
                    400,
                    error_code="GENERIC_ERROR",
-                   error_message=str(exc),
+                   error_message=msg,
                    retry_safe=False,
+                   extra=extra or None,
                )
     except FileNotFoundError as exc:
         msg = str(exc)
@@ -2320,7 +2422,7 @@ def handle_phase_b_preview(h, body: dict)-> None:
 
 
 def handle_phase_a_regen_flyin_flyout(h, body: dict) -> None:
-    """POST /api/phase_a/regen_flyin_flyout — closeup_match bookends (~13 min)."""
+    """POST /api/phase_a/regen_flyin_flyout — wide room bookends (~13 min)."""
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
         return
 
@@ -2334,7 +2436,7 @@ def handle_phase_a_regen_flyin_flyout(h, body: dict) -> None:
         )
 
     tools_dir = Path(__file__).resolve().parent.parent
-    script = tools_dir / "phase_a_flyin_flyout_closeup_match_v1.py"
+    script = tools_dir / "phase_a_flyin_flyout_wide_v1.py"
     if not script.is_file():
         return h._send_error_v59(
             500,
@@ -2358,7 +2460,7 @@ def handle_phase_a_regen_flyin_flyout(h, body: dict) -> None:
         env = {**os.environ, "MN_EVENT_DIR": str(_app.event_dir)}
         try:
             proc = _sp.run(
-                [sys.executable, str(script)],
+                [sys.executable, str(script), "--no-element"],
                 cwd=str(tools_dir),
                 env=env,
                 capture_output=True,
@@ -2395,7 +2497,7 @@ def handle_phase_a_regen_flyin_flyout(h, body: dict) -> None:
     return h._send_json(202, {
         "ok": True,
         "status": "running",
-        "message": "Kling close-up fly-in/out started (~13 min). Phase A will auto-stitch when done.",
+        "message": "Kling wide fly-in/out started (~13 min). Phase A will auto-stitch when done.",
     })
 
 
@@ -2415,7 +2517,7 @@ def handle_phase_a_regen_base_clip(h, body: dict) -> None:
 
     tools_dir = Path(__file__).resolve().parent.parent
     script = tools_dir / "phase_a_chipper_lipsync_base.py"
-    clip_id = (body or {}).get("clip_id") or "chipper_idle_newstyle_v3"
+    clip_id = (body or {}).get("clip_id") or "arlo_idle_wizard_desk_v1"
     _app = h.app
 
     def _apply_running(state):
@@ -2482,7 +2584,7 @@ def handle_phase_a_restitch(h, body: dict) -> None:
         return h._send_error_v59(
             404,
             error_code="GENERIC_ERROR",
-            error_message="missing fly-in, fly-out, or raw lipsync inputs",
+            error_message="missing raw lipsync input for Phase A stitch",
             retry_safe=False,
         )
     return h._send_json(200, {"ok": True, "canonical": result})

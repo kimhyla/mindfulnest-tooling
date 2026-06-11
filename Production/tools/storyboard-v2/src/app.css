@@ -767,6 +767,12 @@
 .mn-phase-a-clip-total {
   margin: 6px 0;
 }
+.mn-phase-a-clip-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 12px;
+}
 
 /* BaseClipPicker list */
 .mn-base-clip-list {
@@ -1871,6 +1877,37 @@
   aspect-ratio: 16 / 9;
   object-fit: cover;
   border-radius: 3px;
+}
+.mn-bg-option video {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 3px;
+  background: #000;
+}
+.mn-bg-option.is-approved-video {
+  cursor: pointer;
+}
+.mn-bg-o3-trim-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 4px 2px;
+}
+.mn-bg-o3-trim-input {
+  width: 58px;
+  min-width: 58px;
+  padding: 3px 5px;
+  border: 1px solid var(--mn-border);
+  border-radius: 4px;
+  background: var(--mn-bg);
+  color: var(--mn-fg);
+  font-size: 11px;
+}
+.mn-bg-o3-trim-controls .mn-btn {
+  padding: 3px 7px;
+  font-size: 11px;
 }
 .mn-bg-option-empty {
   width: 100%;

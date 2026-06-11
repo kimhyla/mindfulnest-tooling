@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -114,6 +115,91 @@ def run_kling_lipsync(
         f"{ffprobe_duration(out_path):.2f}s)"
     )
     return out_path
+
+
+def resolve_lipsync_base(bases_dir: Path, base_clip_id: str) -> Path:
+    """Resolve Production/assets/lipsync_bases/<id>.mp4|.mov."""
+    raw = bases_dir / base_clip_id
+    if raw.is_file():
+        return raw
+    for ext in ("mp4", "mov"):
+        candidate = bases_dir / f"{base_clip_id}.{ext}"
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError(f"base clip not found: {base_clip_id}")
+
+
+def run_phase_a_base_clip_lipsync(
+    base_video: Path,
+    audio_raw: Path,
+    out_path: Path,
+    *,
+    tmp_dir: Path | None = None,
+) -> dict:
+    """Lipsync on a pre-made broader idle base clip — no idle regen, no Ken Burns zoom."""
+    import json
+    from datetime import datetime, timezone
+
+    from phase_a_av_post import (
+        av_duration_gap,
+        pad_video_to_match_audio,
+        trim_av_lead_in,
+        upscale_lipsync_to_bookend,
+    )
+    from production_server import _ffprobe_duration, _silcomp_audio
+
+    base_video = base_video.expanduser().resolve()
+    audio_raw = audio_raw.expanduser().resolve()
+    out_path = out_path.expanduser().resolve()
+    work = tmp_dir or (out_path.parent / "_tmp_phase_a_base_lipsync")
+    work.mkdir(parents=True, exist_ok=True)
+    ts = int(time.time())
+    tag = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+    log(f"base clip: {base_video.name}")
+    log(f"audio: {audio_raw.name}")
+
+    raw_dur = _ffprobe_duration(audio_raw)
+    tmp_audio = work / f"base_audio_{ts}.mp3"
+    audio_for_lipsync, audio_proc_meta = _silcomp_audio(
+        audio_raw,
+        tmp_audio,
+        loudnorm=True,
+        auto_preroll=True,
+        max_audio_s=raw_dur + 2.0,
+    )
+    pr = audio_proc_meta.get("preroll_processing") or {}
+    preroll_s = float(pr.get("preroll_added_s") or 0.0)
+
+    ls_raw = work / f"lipsync_raw_{tag}.mp4"
+    run_kling_lipsync(base_video, audio_for_lipsync, ls_raw, tmp_dir=work)
+
+    ls_upscaled = work / f"lipsync_bookend_{tag}.mp4"
+    upscale_lipsync_to_bookend(ls_raw, ls_upscaled)
+
+    padded = work / f"lipsync_padded_{tag}.mp4"
+    _, pad_s = pad_video_to_match_audio(ls_upscaled, padded)
+    trim_av_lead_in(padded, out_path, preroll_s)
+
+    v_final, a_final, gap_final = av_duration_gap(out_path)
+    manifest = {
+        "pipeline": "phase_a_base_clip_kling_lipsync",
+        "base_clip": base_video.name,
+        "audio_source": audio_raw.name,
+        "preroll_added_s": round(preroll_s, 3),
+        "video_pad_s": round(pad_s, 3),
+        "final_av_gap_s": round(gap_final, 3),
+        "output": out_path.name,
+        "method": "base_clip_kling_lipsync",
+        "zoom": False,
+        "upscale_bookend": True,
+        "bookend_resolution": "1660x1244",
+    }
+    out_path.with_suffix(".json").write_text(
+        json.dumps(manifest, indent=2) + "\n", encoding="utf-8",
+    )
+    log(f"DONE base-clip lipsync → {out_path.name} (v={v_final:.2f}s a={a_final:.2f}s)")
+    return manifest
 
 
 def main() -> int:

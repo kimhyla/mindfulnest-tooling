@@ -67,12 +67,12 @@ CLASSIFICATION: list[dict] = [
     },
 ]
 
-# Normalized crop on 1254×1254 bust stills (beak + lower face, excludes eyes).
+# Tighter beak-only crop on 1254×1254 bust stills (excludes eyes).
 BEAK_CROP_FRAC = {
-    "x0": 0.36,
-    "y0": 0.52,
-    "x1": 0.64,
-    "y1": 0.74,
+    "x0": 0.42,
+    "y0": 0.58,
+    "x1": 0.58,
+    "y1": 0.72,
 }
 
 
@@ -132,18 +132,35 @@ def run_prep(*, source_dir: Path, event_dir: Path) -> dict:
         })
 
     # Beak placement on 1280×960 body plate — measured from dark-beak centroid.
+    # Preserve Kim's path_picker beak_polygon if already set.
+    existing_poly = None
+    if config_path.is_file():
+        try:
+            existing = json.loads(config_path.read_text(encoding="utf-8"))
+            existing_poly = existing.get("beak_polygon")
+        except (json.JSONDecodeError, OSError):
+            existing_poly = None
+
     config = {
         "character": "chipper",
-        "version": 1,
+        "version": 2 if existing_poly else 1,
         "beak_cx_frac": 0.535,
-        "beak_cy_frac": 0.460,
+        "beak_cy_frac": 0.46,
         "sprite_w_frac": 0.22,
         "sprite_h_frac": 0.14,
         "sprites_dir": "chipper_beak_sprites",
         "body_plate": "phase_a_chipper_body_plate_v1.png",
         "beak_crop_frac": BEAK_CROP_FRAC,
-        "note": "Placement from body_plate dark-beak centroid; tune beak_cy_frac if overlay sits high/low.",
+        "note": "Run path_picker for beak_polygon; prep preserves existing polygon.",
     }
+    if existing_poly:
+        config["beak_polygon"] = existing_poly
+        xs = [float(p[0]) for p in existing_poly]
+        ys = [float(p[1]) for p in existing_poly]
+        config["beak_cx_frac"] = round((min(xs) + max(xs)) / 2, 3)
+        config["beak_cy_frac"] = round((min(ys) + max(ys)) / 2, 3)
+        config["sprite_w_frac"] = round(max(xs) - min(xs), 3)
+        config["sprite_h_frac"] = round(max(ys) - min(ys), 3)
     config_path = event_dir / "chipper_beak_config.json"
     config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     log(f"config: {config_path.name}")

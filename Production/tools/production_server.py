@@ -318,6 +318,9 @@ import concurrent.futures as _cf
 _GPT_JOBS: dict = {}
 _GPT_EXECUTOR = None
 
+# In-memory Kling O3 batch job registry (persisted to disk via kling_o3_job_store)
+_KLING_O3_JOBS: dict = {}
+
 
 def _gpt_executor():
     global _GPT_EXECUTOR
@@ -962,6 +965,12 @@ SPEAKER_MOTION_PROFILES: "dict[str, dict[str, str]]" = {
         # Override path (Fix 1 _motion_override) still wins when present —
         # this only affects the fall-through case.
         "neutral":          "gentle head micro-tilt, quiet wing adjustments, soft feather ripple, attentive blink",
+    },
+    "Arlo": {
+        "happy_excited":    "bright paw gesture, gentle tail lift, warm head nod, lively ear perk",
+        "upset_shocked":    "small paw lift, quick ear flick back, startled body recoil, wide-eyed blink",
+        "sad_disappointed": "soft paw-to-chest gesture, tail lowering gently, small head dip, quiet blink",
+        "neutral":          "subtle paw settle, gentle tail sway, attentive ear twitch, warm relaxed blink",
     },
 }
 
@@ -3788,6 +3797,9 @@ _SPEAKER_ALIAS = {
     "guide bird": "Chipper",     # legacy (pre-2026-04-17)
     "pip": "Chipper",            # legacy (pre-2026-04-17)
     "assistant bird": "Chipper",
+    # Arlo — active squirrel guide identity. Keep separate from Chipper so
+    # bird-class prompt branches and old Chipper element bindings cannot leak.
+    "arlo": "Arlo",
     # Wizard (Cedric) — canonical + all legacy aliases
     "cedric": "Cedric",
     "myrrhin": "Cedric",         # legacy (pre-2026-04-17)
@@ -3877,6 +3889,10 @@ def _resolve_voice_profile(speaker: str) -> dict | None:
         return None
     cache = _load_voice_profiles_from_directus()
     key_lc = speaker.lower().strip()
+    # Arlo intentionally reuses Chipper's ElevenLabs voice while keeping a
+    # separate speaker identity for visual prompts and Kling Elements.
+    if key_lc == "arlo" and "Chipper" in cache:
+        return cache["Chipper"]
     # Alias table first
     canonical = _SPEAKER_ALIAS.get(key_lc)
     if canonical and canonical in cache:
@@ -5921,6 +5937,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_bg_poll_flux()
             if path.startswith("/api/bg/poll-gpt-status"):
                 return self._handle_bg_poll_gpt_status()
+            if path.startswith("/api/bg/poll-arlo-o3-voice-status"):
+                return self._handle_bg_poll_arlo_o3_voice_status()
+            if path.startswith("/api/bg/poll-kling-native-lipsync-experiment-status"):
+                return self._handle_bg_poll_kling_native_lipsync_experiment_status()
             if path == "/api/bg/groups":
                 return self._handle_bg_groups()
             if path == "/api/bg/poll-assemble-status":
@@ -5929,6 +5949,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_bg_stills(path)
             if path == "/api/bg/crop-preview":
                 return self._handle_bg_crop_preview()
+            if path == "/preview/phase_a/permanent":
+                return self._handle_preview_phase_a_permanent()
             if path == "/files":
                 return self._handle_files_serve()
             if path == "/api/cr/library":
@@ -6175,10 +6197,20 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_bg_delete_beat(body)
             if path == "/api/bg/accept-beats":
                 return self._handle_bg_accept_beats(body)
+            if path == "/api/bg/export-to-stitcher":
+                return self._handle_bg_export_to_stitcher(body)
             if path == "/api/bg/submit-flux-batch":
                 return self._handle_bg_submit_flux(body)
             if path == "/api/bg/submit-gpt-batch":
                 return self._handle_bg_submit_gpt_batch(body)
+            if path == "/api/bg/submit-arlo-o3-voice":
+                return self._handle_bg_submit_arlo_o3_voice(body)
+            if path == "/api/bg/submit-kling-native-lipsync-experiment":
+                return self._handle_bg_submit_kling_native_lipsync_experiment(body)
+            if path == "/api/bg/select-o3-video":
+                return self._handle_bg_select_o3_video(body)
+            if path == "/api/bg/kling-o3-trim":
+                return self._handle_bg_kling_o3_trim(body)
             if path == "/api/bg/accept-option":
                 return self._handle_bg_accept_option(body)
             if path == "/api/bg/accept-lib-image":
@@ -7614,6 +7646,36 @@ class ProductionHandler(BaseHTTPRequestHandler):
         from server_handlers.background import handle_bg_poll_gpt_status
         return handle_bg_poll_gpt_status(self)
 
+    @with_pin_and_drain('_handle_bg_submit_arlo_o3_voice', track_sync=False)
+    def _handle_bg_submit_arlo_o3_voice(self, body: dict) -> None:
+        from server_handlers.background import handle_bg_submit_arlo_o3_voice
+        return handle_bg_submit_arlo_o3_voice(self, body)
+
+    def _handle_bg_poll_arlo_o3_voice_status(self) -> None:
+        from server_handlers.background import handle_bg_poll_arlo_o3_voice_status
+        return handle_bg_poll_arlo_o3_voice_status(self)
+
+    @with_pin_and_drain('_handle_bg_submit_kling_native_lipsync_experiment', track_sync=False)
+    def _handle_bg_submit_kling_native_lipsync_experiment(self, body: dict) -> None:
+        from server_handlers.background import handle_bg_submit_kling_native_lipsync_experiment
+        return handle_bg_submit_kling_native_lipsync_experiment(self, body)
+
+    def _handle_bg_poll_kling_native_lipsync_experiment_status(self) -> None:
+        from server_handlers.background import handle_bg_poll_kling_native_lipsync_experiment_status
+        return handle_bg_poll_kling_native_lipsync_experiment_status(self)
+
+    def _handle_bg_select_o3_video(self, body: dict) -> None:
+        from server_handlers.background import handle_bg_select_o3_video
+        return handle_bg_select_o3_video(self, body)
+
+    def _handle_bg_kling_o3_trim(self, body: dict) -> None:
+        from server_handlers.background import handle_bg_kling_o3_trim
+        return handle_bg_kling_o3_trim(self, body)
+
+    def _handle_bg_export_to_stitcher(self, body: dict) -> None:
+        from server_handlers.kling_o3 import handle_bg_export_to_stitcher
+        return handle_bg_export_to_stitcher(self, body)
+
     def _handle_bg_accept_option(self, body: dict) -> None:
         from server_handlers.background import handle_bg_accept_option
         return handle_bg_accept_option(self, body)
@@ -7672,6 +7734,55 @@ class ProductionHandler(BaseHTTPRequestHandler):
         from server_handlers.background import handle_bg_stills
         return handle_bg_stills(self, path)
 
+    def _resolve_served_file_path(self, file_path: str) -> str | None:
+        """Resolve ?path= to an on-disk file under Dropbox, tooling, or event_dir."""
+        if not file_path:
+            return None
+        if os.path.isfile(file_path):
+            return file_path
+        if os.path.isabs(file_path):
+            return None
+
+        candidates: list[str] = []
+        candidates.append(os.path.join(str(DROPBOX_ROOT), file_path))
+        candidates.append(str((_MN_REPO_ROOT / Path(file_path)).resolve()))
+
+        ev = Path(self.app.event_dir)
+        prod = ev.parent
+        rel = Path(file_path)
+        parts = rel.parts
+        if len(parts) >= 3 and parts[0] == "Production" and parts[1] == ev.name:
+            candidates.append(str(ev / parts[-1]))
+        if len(parts) >= 2 and parts[0] == "Production":
+            candidates.append(str(prod / Path(*parts[1:])))
+        if len(parts) == 1:
+            candidates.append(str(ev / parts[0]))
+        candidates.append(str(ev / rel.name))
+
+        seen: set[str] = set()
+        for cand in candidates:
+            if cand in seen:
+                continue
+            seen.add(cand)
+            if os.path.isfile(cand):
+                return cand
+        return None
+
+    def _handle_preview_phase_a_permanent(self) -> None:
+        """Stable Phase A preview — no ?path= query (avoids slash-encoding 404s)."""
+        preview = Path(self.app.event_dir) / "phase_a_permanent_preview.mp4"
+        if not preview.is_file():
+            return self._send_error_v59(
+                404,
+                error_code="PREVIEW_NOT_FOUND",
+                error_message=(
+                    "phase_a_permanent_preview.mp4 missing — "
+                    "run scripts/run_phase_a_permanent.py --rebuild-gaps"
+                ),
+                retry_safe=False,
+            )
+        return self._serve_mp4_with_range(preview.resolve())
+
     def _handle_files_serve(self) -> None:
         """GET /files?path=<absolute_path> — serve local file bytes (images/video).
 
@@ -7712,18 +7823,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
                    )
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         file_path = (qs.get("path") or [None])[0]
-        resolved: str | None = None
-        if file_path:
-            if os.path.isfile(file_path):
-                resolved = file_path
-            elif not os.path.isabs(file_path):
-                drop_join = os.path.join(str(DROPBOX_ROOT), file_path)
-                if os.path.isfile(drop_join):
-                    resolved = drop_join
-                else:
-                    alt = (_MN_REPO_ROOT / Path(file_path)).resolve()
-                    if alt.is_file():
-                        resolved = str(alt)
+        resolved = self._resolve_served_file_path(file_path) if file_path else None
         if not resolved:
             return self._send_error_v59(
                        404,
@@ -10588,9 +10688,9 @@ body {{padding-top:44px!important;}}
         },
         "a": {
             "voice_id": "7o9pyvsN0ob5GO6LBQp6",
-            "fallback_settings": {"stability": 0.30, "style": 0.30},
+            "fallback_settings": {"stability": 0.72, "style": 0.06, "speed": 1.0},
             "model_id": "eleven_v3",
-            "speaker": "Chipper",
+            "speaker": "Arlo",
         },
     }
 
@@ -11308,7 +11408,13 @@ body {{padding-top:44px!important;}}
         norm_name = f"se_norm_{path_md5}_{mtime_ms}_{sha_prefix}_t{trim_sig}.mp4"
         norm_path = cache_dir / norm_name
         if norm_path.is_file():
-            return norm_path
+            from ffmpeg_stitch import mp4_is_playable  # noqa: PLC0415
+            if mp4_is_playable(norm_path):
+                return norm_path
+            try:
+                norm_path.unlink()
+            except OSError:
+                pass
 
         # Source for normalization: pre-trimmed mp4 if trim is set, else original.
         src_for_norm = Path(video_path)
@@ -11362,15 +11468,33 @@ body {{padding-top:44px!important;}}
         except Exception:
             has_audio = True  # assume ok on ffprobe failure
 
-        if has_audio:
+        from ffmpeg_stitch import mp4_is_playable  # noqa: PLC0415
+        if has_audio and mp4_is_playable(norm_path):
             return norm_path
+
+        if not mp4_is_playable(norm_path):
+            raise RuntimeError(
+                f"Normalized clip is unreadable (corrupt cache?): {norm_path}",
+            )
 
         try:
             dur_s = self._ffprobe_duration_ms(norm_path) / 1000.0
         except Exception:
             dur_s = 10.0
 
+        if dur_s <= 0:
+            raise RuntimeError(
+                f"Normalized clip has zero duration (corrupt cache?): {norm_path}",
+            )
+
         sil_path = norm_path.with_suffix("").with_name(norm_path.stem + "_audio.mp4")
+        if sil_path.is_file():
+            if mp4_is_playable(sil_path):
+                return sil_path
+            try:
+                sil_path.unlink()
+            except OSError:
+                pass
         if not sil_path.is_file():
             subprocess.run([
                 "ffmpeg", "-y", "-i", str(norm_path),
@@ -11933,36 +12057,29 @@ body {{padding-top:44px!important;}}
         return handle_phase_a_lipsync(self, body)
 
     def _auto_assemble_phase_a_stitched(self, ts: str) -> dict | None:
-        """Stitch fly-in + lipsync (voice-only) + fly-out, then overlay a
-        CONTINUOUS ambient bed across the entire duration so the bed is
-        audible during the fly-in and fly-out (not just the middle).
+        """Stitch raw Phase A lipsync middle only + continuous ambient bed.
+
+        Arlo migration (2026-06): fly-in/fly-out bookends removed — Arlo is
+        already on-screen in the wizard desk base; no entrance/exit Kling clips.
 
         Two-stage ffmpeg:
-          1. Normalize each clip to LD-284 and concat -> intermediate
-             (voice-only in middle, silent at edges)
+          1. Normalize raw lipsync to LD-284 (1280×720)
           2. Overlay full-length bed from state.phase_a_ambient_preset_id at
-             volume=0.15 (normalize=0) -> canonical final
+             volume=0.15 -> canonical final
 
-        Uses the RAW lipsync (no "withbed" in name) as the middle section so
-        the final mix never double-applies the bed (Kim fix 2026-04-21 late).
+        Uses RAW lipsync (no "withbed" in name) so the bed is never doubled.
 
-        Returns {file, mtime, duration_s} or None if inputs missing.
+        Returns {file, mtime, duration_s} or None if lipsync input missing.
         """
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "credentials_lib"))
-        from ffmpeg_stitch import normalize_for_concat, concat_with_xfade_clips  # type: ignore
+        from ffmpeg_stitch import normalize_for_concat  # type: ignore
 
         state = self.app.state.read_state()
 
-        from phase_a_stitch_lib import (  # noqa: WPS433 — local tools import
-            resolve_phase_a_flyin,
-            resolve_phase_a_flyout,
-            resolve_phase_a_raw_lipsync,
-        )
+        from phase_a_stitch_lib import resolve_phase_a_raw_lipsync  # noqa: WPS433
 
         raw_lipsync_path = resolve_phase_a_raw_lipsync(self.app.event_dir, state)
-        flyin_src = resolve_phase_a_flyin(self.app.event_dir, state)
-        flyout_src = resolve_phase_a_flyout(self.app.event_dir, state)
-        if not raw_lipsync_path or not flyin_src or not flyout_src:
+        if not raw_lipsync_path:
             return None
 
         # Resolve ambient preset (for the full-length overlay).
@@ -11986,58 +12103,9 @@ body {{padding-top:44px!important;}}
             if needs:
                 normalize_for_concat(src, dst)
 
-        flyin_norm = norm_dir / f"flyin_{flyin_src.stem}.mp4"
         raw_norm = norm_dir / f"raw_{raw_lipsync_path.stem}.mp4"
-        flyout_norm = norm_dir / f"flyout_{flyout_src.stem}.mp4"
-        _normalize_cached(flyin_src, flyin_norm)
         _normalize_cached(raw_lipsync_path, raw_norm)
-        _normalize_cached(flyout_src, flyout_norm)
-
-        # Stage 1: concat flyin + raw_lipsync + flyout with xfade transitions.
-        # - fade_in_s (0.5s): flyin -> middle — masks Chipper's smile landing.
-        # - fade_out_s (1.5s): middle -> flyout — EXTENDED to cover "Good luck!"
-        #   which lands at ~25.25s into the canonical and whose lipsync is
-        #   unsynced on the final frames; the 1.5s fade window puts the phrase
-        #   under a black/flyout dissolve so viewers hear it without seeing
-        #   the unsynced mouth. Audio uses acrossfade at matching durations.
-        #   (Kim 2026-04-21 fix.)
-        flyin_dur = _ffprobe_duration(flyin_norm)
-        raw_dur = _ffprobe_duration(raw_norm)
-        fade_in_s = 0.5
-        fade_out_s = 2.5
-        offset_1 = max(0.0, flyin_dur - fade_in_s)
-        # Second xfade offset lives in the [v01] timeline (which is shorter
-        # than flyin_dur+raw_dur by fade_in_s).
-        offset_2 = max(0.0, flyin_dur + raw_dur - fade_in_s - fade_out_s)
-
-        intermediate_path = norm_dir / f"intermediate_{ts}.mp4"
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "credentials_lib"))
-        from ffmpeg_stitch import (  # type: ignore
-            NORMALIZATION_VF_EXPR, NORMALIZATION_ENCODER_ARGS,
-        )
-        # fadeblack on the second transition: middle fades to pure black at
-        # the fade midpoint, then fly-out emerges from black. Unlike plain
-        # "fade" (which shows both clips simultaneously with reduced opacity),
-        # fadeblack GUARANTEES the middle is completely gone before fly-out
-        # appears — which hides the unsynced "Good luck!" mouth frames.
-        filter_complex = (
-            f"[0:v][1:v]xfade=transition=fade:duration={fade_in_s}:offset={offset_1:.3f}[v01];"
-            f"[v01][2:v]xfade=transition=fadeblack:duration={fade_out_s}:offset={offset_2:.3f}[vx];"
-            f"[vx]{NORMALIZATION_VF_EXPR}[vout];"
-            f"[0:a][1:a]acrossfade=d={fade_in_s}[a01];"
-            f"[a01][2:a]acrossfade=d={fade_out_s}[aout]"
-        )
-        subprocess.run([
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-i", str(flyin_norm.resolve()),
-            "-i", str(raw_norm.resolve()),
-            "-i", str(flyout_norm.resolve()),
-            "-filter_complex", filter_complex,
-            "-map", "[vout]",
-            "-map", "[aout]",
-            *NORMALIZATION_ENCODER_ARGS,
-            str(intermediate_path),
-        ], check=True, capture_output=True, timeout=180)
+        intermediate_path = raw_norm
 
         out_path = self.app.event_dir / f"phase_a_stitched_{ts}.mp4"
 
@@ -12106,9 +12174,8 @@ body {{padding-top:44px!important;}}
             "file": out_path.name,
             "mtime": mtime_v,
             "duration_s": round(dur, 3),
-            "flyin": flyin_src.name,
             "raw_lipsync": raw_lipsync_path.name,
-            "flyout": flyout_src.name,
+            "bookends": "none",
             "ambient_preset_id": ambient_preset_id,
         }
 
@@ -12252,11 +12319,24 @@ def _check_runtime_capabilities() -> None:
         "pillow": "Pillow" not in missing_hard,
         "magic_compositor": not missing_soft,
     }
+    bg_caps = _bg_capabilities()
+    capabilities["update_beat_locked"] = bool(bg_caps.get("update_beat_locked"))
+    capabilities["sidecar_file_lock"] = bool(bg_caps.get("sidecar_file_lock"))
     # Structured single-line capability report (parseable).
     print(
         f"[startup:capabilities] {json.dumps(capabilities, sort_keys=True)}",
         flush=True,
     )
+
+    if not capabilities["update_beat_locked"] or not capabilities["sidecar_file_lock"]:
+        print(
+            "[startup:FATAL] beat_generator missing O3 sidecar API "
+            "(update_beat_locked / sidecar_file_lock). "
+            "Element O3 + lipsync pipelines will fail until tools are redeployed.",
+            file=sys.stderr,
+            flush=True,
+        )
+        sys.exit(4)
 
     if missing_soft:
         for name in missing_soft:

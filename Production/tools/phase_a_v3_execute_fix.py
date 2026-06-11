@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Phase A v3 Chipper lipsync + stitch CLI.
 
-Canonical implementation: phase_a_chipper_bytedance_lipsync.run_bytedance_tight_lipsync
+Canonical implementation: phase_a_chipper_idle_lipsync.run_phase_a_chipper_idle_lipsync
 Locked playbook: Production/docs/PHASE_A_CHIPPER_PIPELINE_LOCKED_v1.md
 
 Usage:
@@ -21,9 +21,10 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from phase_a_chipper_bytedance_lipsync import (  # noqa: E402
+from phase_a_chipper_idle_lipsync import (  # noqa: E402
     log,
-    run_bytedance_tight_lipsync,
+    resolve_body_plate,
+    run_phase_a_chipper_idle_lipsync,
 )
 
 EVENT_DIR = Path(os.environ.get("MN_EVENT_DIR", HERE.parent / "Event_1"))
@@ -67,19 +68,24 @@ def resolve_base_clip(state: dict, clip_id: str | None) -> Path:
     sys.exit(f"base clip not found for id={cid} under {bases}")
 
 
-def update_lipsync_state(out_name: str, mtime: int, base_clip_id: str) -> None:
+def update_lipsync_state(out_name: str, mtime: int, base_clip_id: str | None) -> None:
     state = load_state()
     pairs = (
         ("phase_a_lipsync_file", out_name),
         ("phase_a_lipsync_mtime", mtime),
         ("phase_a_lipsync_status", "done"),
-        ("phase_a_empty_desk_bg_id", base_clip_id),
+        ("phase_a_lipsync_method", "idle_kling_lipsync"),
     )
     for key, val in pairs:
         state[key] = val
         nested = state.setdefault("phase_a", {})
         if isinstance(nested, dict):
             nested[key] = val
+    if base_clip_id:
+        state["phase_a_chipper_sitting_clip_id"] = base_clip_id
+        nested = state.setdefault("phase_a", {})
+        if isinstance(nested, dict):
+            nested["phase_a_chipper_sitting_clip_id"] = base_clip_id
     state.pop("phase_a_lipsync_task_id", None)
     save_state(state)
 
@@ -133,15 +139,15 @@ def main() -> int:
         return 0
 
     audio_raw = resolve_voice_stem(state)
-    base_video = resolve_base_clip(state, args.base_clip_id)
-    base_id = base_video.stem
-    log(f"voice stem: {audio_raw.name} base: {base_video.name}")
+    still = resolve_body_plate(EVENT_DIR, state)
+    base_id = state.get("phase_a_chipper_sitting_clip_id")
+    log(f"voice stem: {audio_raw.name} still: {still.name}")
 
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_name = f"phase_a_lipsync_{ts}.mp4"
     out_path = EVENT_DIR / out_name
-    tmp_dir = EVENT_DIR / "_tmp_phase_a_exec"
-    run_bytedance_tight_lipsync(base_video, audio_raw, out_path, tmp_dir=tmp_dir)
+    tmp_dir = EVENT_DIR / "_tmp_phase_a_idle_lipsync"
+    run_phase_a_chipper_idle_lipsync(still, audio_raw, out_path, tmp_dir=tmp_dir)
     update_lipsync_state(out_name, int(os.path.getmtime(out_path)), base_id)
 
     preview = f"http://127.0.0.1:5111/files?path=Production/Event_1/{out_name}"

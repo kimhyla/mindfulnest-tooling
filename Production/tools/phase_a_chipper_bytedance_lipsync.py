@@ -11,6 +11,7 @@ See Production/docs/PHASE_A_CHIPPER_PIPELINE_LOCKED_v1.md
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -20,6 +21,9 @@ from pathlib import Path
 BYTEDANCE_URL = "https://api.wavespeed.ai/api/v3/bytedance/lipsync/audio-to-video"
 BYTEDANCE_MAX_CHUNK_S = 7.0
 VIDEO_TRIM_TAILROOM_S = 3.0
+GAP_MIN_S = 0.05
+# Tail of pre-speech idle gap used as ByteDance video seed (continuity across chunks).
+CHAIN_GAP_TAIL_S = 0.5
 
 HERE = Path(__file__).resolve().parent
 
@@ -158,6 +162,254 @@ def trim_video_for_lipsync(
     return out
 
 
+def compute_bytedance_chunks(audio: Path) -> tuple[float, list[tuple[float, float]]]:
+    """Return (audio_dur, speech chunk windows) for §8.5 segmentation."""
+    audio_dur = ffprobe_duration(audio)
+    ps = _production_server()
+    silences = ps._detect_silences(audio)
+    chunks = chunk_audio_for_bytedance(audio_dur, silences)
+    return audio_dur, chunks
+
+
+def make_idle_gap_clip(base_video: Path, duration_s: float, out_path: Path) -> Path | None:
+    """Idle base loop + silent audio — preserves natural pauses between speech chunks."""
+    if duration_s < GAP_MIN_S:
+        return None
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    looped = out_path.with_name(f"{out_path.stem}_loop.mp4")
+    forward_loop(base_video, looped, duration_s)
+    subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-i", str(looped),
+            "-f", "lavfi", "-t", f"{duration_s:.3f}",
+            "-i", "anullsrc=channel_layout=mono:sample_rate=44100",
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-c:v", "copy",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "1",
+            "-shortest", "-movflags", "+faststart",
+            str(out_path),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=180,
+    )
+    looped.unlink(missing_ok=True)
+    log(f"idle gap: {duration_s:.2f}s -> {out_path.name}")
+    return out_path
+
+
+    log(f"idle gap: {duration_s:.2f}s -> {out_path.name}")
+    return out_path
+
+
+def build_chained_video_from_gap_end(
+    gap_clip: Path,
+    target_s: float,
+    dst: Path,
+    *,
+    tail_s: float = CHAIN_GAP_TAIL_S,
+) -> Path:
+    """Build ByteDance input video continuing from the end of a pre-speech idle gap."""
+    gap_dur = ffprobe_duration(gap_clip)
+    if gap_dur <= 0:
+        raise ValueError(f"invalid gap clip duration: {gap_clip}")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tail_use = min(tail_s, max(0.1, gap_dur - 0.05))
+    tail_start = max(0.0, gap_dur - tail_use)
+    tmp = dst.parent / f"{dst.stem}_tail.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-ss", f"{tail_start:.3f}", "-i", str(gap_clip),
+            "-t", f"{tail_use:.3f}", "-an",
+            "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart", str(tmp),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=120,
+    )
+    tail_dur = ffprobe_duration(tmp)
+    pad_s = max(0.0, target_s - tail_dur)
+    if pad_s < 0.01:
+        subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-i", str(tmp), "-t", f"{target_s:.3f}", "-an",
+                "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart", str(dst),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=120,
+        )
+    else:
+        subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-i", str(tmp),
+                "-vf", f"tpad=stop_mode=clone:stop_duration={pad_s:.3f}",
+                "-t", f"{target_s:.3f}", "-an",
+                "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart", str(dst),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=120,
+        )
+    tmp.unlink(missing_ok=True)
+    out_dur = ffprobe_duration(dst)
+    if abs(out_dur - target_s) > 0.15:
+        raise RuntimeError(
+            f"chain video duration mismatch: {out_dur:.3f}s != target {target_s:.3f}s"
+        )
+    log(
+        f"chain from gap: {gap_clip.name} tail={tail_use:.2f}s "
+        f"-> {dst.name} ({out_dur:.2f}s)"
+    )
+    return dst
+
+
+def ensure_timeline_gaps(
+    chunks: list[tuple[float, float]],
+    base_video: Path,
+    work: Path,
+    tag: str,
+    prebuilt: dict[str | int, Path] | None = None,
+) -> dict[str | int, Path]:
+    """Build or reuse idle gap clips keyed by 'lead' and inter-chunk indices."""
+    gaps: dict[str | int, Path] = dict(prebuilt or {})
+    work.mkdir(parents=True, exist_ok=True)
+    if chunks and chunks[0][0] > GAP_MIN_S and "lead" not in gaps:
+        lead = make_idle_gap_clip(
+            base_video, chunks[0][0], work / f"gap_lead_{tag}.mp4",
+        )
+        if lead:
+            gaps["lead"] = lead
+    for i in range(len(chunks) - 1):
+        gap_dur = chunks[i + 1][0] - chunks[i][1]
+        if gap_dur <= GAP_MIN_S or i in gaps:
+            continue
+        gap = make_idle_gap_clip(
+            base_video, gap_dur, work / f"gap_{i}_{tag}.mp4",
+        )
+        if gap:
+            gaps[i] = gap
+    return gaps
+
+
+def build_pieces_with_timeline_gaps(
+    chunk_segments: list[Path],
+    chunks: list[tuple[float, float]],
+    base_video: Path,
+    work: Path,
+    tag: str,
+    *,
+    prebuilt_gaps: dict[str | int, Path] | None = None,
+) -> list[Path]:
+    """Interleave speech segments with idle+silence gaps from prepped audio timeline."""
+    if len(chunk_segments) != len(chunks):
+        raise ValueError(
+            f"segment/chunk count mismatch: {len(chunk_segments)} vs {len(chunks)}"
+        )
+    work.mkdir(parents=True, exist_ok=True)
+    pieces: list[Path] = []
+    gaps_s: list[float] = []
+    gap_files = ensure_timeline_gaps(chunks, base_video, work, tag, prebuilt_gaps)
+
+    if chunks and chunks[0][0] > GAP_MIN_S:
+        lead = gap_files.get("lead")
+        if lead:
+            pieces.append(lead)
+            gaps_s.append(chunks[0][0])
+
+    for i, seg in enumerate(chunk_segments):
+        pieces.append(seg)
+        if i + 1 < len(chunks):
+            gap_dur = chunks[i + 1][0] - chunks[i][1]
+            if gap_dur > GAP_MIN_S:
+                gap = gap_files.get(i)
+                if gap is None:
+                    gap = make_idle_gap_clip(
+                        base_video, gap_dur, work / f"gap_{i}_{tag}.mp4",
+                    )
+                if gap:
+                    pieces.append(gap)
+                    gaps_s.append(gap_dur)
+
+    total_gap = sum(gaps_s)
+    log(
+        f"timeline gaps: {len(gaps_s)} inserts, {total_gap:.2f}s "
+        f"({len(pieces)} pieces total)"
+    )
+    return pieces
+
+
+def prepare_speech_segments_from_work(
+    work: Path,
+    chunks: list[tuple[float, float]],
+    out_work: Path,
+    tag: str,
+) -> list[Path]:
+    """Re-trim saved ByteDance raw segments to exact speech windows."""
+    out_work.mkdir(parents=True, exist_ok=True)
+    segments: list[Path] = []
+    for i, (t0, t1) in enumerate(chunks):
+        speech_s = t1 - t0
+        raw_candidates = [
+            p for p in sorted(work.glob(f"seg_{i}_bd_*.mp4"))
+            if "_bd_trim_" not in p.name
+        ]
+        raw = raw_candidates[0] if raw_candidates else None
+        if raw is None:
+            trimmed = sorted(work.glob(f"seg_{i}_bd_trim_*.mp4"))
+            raw = trimmed[0] if trimmed else None
+        if raw is None:
+            raise FileNotFoundError(f"segment {i} not found under {work}")
+        dst = out_work / f"seg_{i}_speech_{tag}.mp4"
+        trim_padded_lipsync_segment(raw, dst, speech_s)
+        segments.append(dst)
+    return segments
+
+
+def reconcat_bytedance_segments_with_gaps(
+    base_video: Path,
+    audio_prepped: Path,
+    chunk_segments: list[Path] | None,
+    out_path: Path,
+    *,
+    tmp_dir: Path | None = None,
+    segments_work: Path | None = None,
+) -> dict:
+    """Rebuild segmented middle from existing trim segments — no API calls."""
+    work = tmp_dir or (out_path.parent / "_reconcat_gaps")
+    work.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    _, chunks = compute_bytedance_chunks(audio_prepped)
+
+    if segments_work and segments_work.is_dir():
+        segs = prepare_speech_segments_from_work(segments_work, chunks, work, ts)
+    elif chunk_segments:
+        segs = chunk_segments
+    else:
+        raise ValueError("segments_work or chunk_segments required")
+
+    pieces = build_pieces_with_timeline_gaps(
+        segs, chunks, base_video, work, ts, prebuilt_gaps=None,
+    )
+    concat_videos(pieces, out_path)
+    meta = {
+        "timeline_gaps_preserved": True,
+        "chunk_count": len(chunks),
+        "gap_insert_count": len(pieces) - len(segs),
+        "output_duration_s": round(ffprobe_duration(out_path), 3),
+        "prepped_audio_duration_s": round(ffprobe_duration(audio_prepped), 3),
+    }
+    log(f"reconcat with gaps -> {out_path.name} ({meta['output_duration_s']:.2f}s)")
+    return meta
+
+
 def concat_videos(parts: list[Path], dest: Path) -> None:
     tmp_dir = dest.parent
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -189,22 +441,33 @@ def trim_padded_lipsync_segment(
     dest_path: Path,
     speech_duration_s: float,
 ) -> Path:
-    """Strip pad_audio_for_lipsync margins (+0.5s lead / +2.5s tail per chunk)."""
+    """Strip LipSync pad margins while keeping ByteDance A/V in sync."""
     import lipsync_sender as ls  # noqa: WPS433
 
-    ps = _production_server()
-    out, _, _, _ = ps._trim_video_to_audio(
-        raw_path,
-        dest_path,
-        speech_duration_s,
-        trim_start=ls.LIPSYNC_PAD_START,
+    pad_start = ls.LIPSYNC_PAD_START
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-ss", f"{pad_start:.3f}",
+            "-i", str(raw_path),
+            "-t", f"{speech_duration_s:.3f}",
+            "-map", "0:v:0", "-map", "0:a:0?",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "1",
+            "-movflags", "+faststart",
+            str(dest_path),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=180,
     )
     log(
-        f"trim pad: {raw_path.name} {ffprobe_duration(raw_path):.2f}s "
-        f"-> {dest_path.name} {ffprobe_duration(out):.2f}s "
-        f"(speech={speech_duration_s:.2f}s)"
+        f"trim pad A/V: {raw_path.name} -> {dest_path.name} "
+        f"(speech={speech_duration_s:.2f}s, v={ffprobe_duration(dest_path):.2f}s)"
     )
-    return out
+    return dest_path
 
 
 def run_bytedance_lipsync(video: Path, audio: Path, out_path: Path) -> None:
@@ -233,19 +496,53 @@ def run_bytedance_lipsync(video: Path, audio: Path, out_path: Path) -> None:
             padded.unlink(missing_ok=True)
 
 
+def detect_work_tag(work: Path) -> str | None:
+    """Reuse timestamp tag from an in-progress bytedance_work directory."""
+    leads = sorted(work.glob("gap_lead_*.mp4"))
+    if not leads:
+        manifests = sorted(work.glob("chain_manifest_*.json"))
+        if manifests:
+            return manifests[-1].stem.replace("chain_manifest_", "")
+        return None
+    return leads[-1].stem.replace("gap_lead_", "")
+
+
+def load_existing_gaps(work: Path) -> dict[str | int, Path]:
+    gaps: dict[str | int, Path] = {}
+    for p in sorted(work.glob("gap_lead_*.mp4")):
+        gaps["lead"] = p
+    for p in sorted(work.glob("gap_[0-9]_*.mp4")):
+        parts = p.stem.split("_")
+        if len(parts) >= 2 and parts[1].isdigit():
+            gaps[int(parts[1])] = p
+    return gaps
+
+
+def find_existing_seg_trim(work: Path, chunk_index: int) -> Path | None:
+    cands = sorted(work.glob(f"seg_{chunk_index}_bd_trim_*.mp4"))
+    return cands[-1] if cands else None
+
+
 def run_bytedance_tight_lipsync(
     base_video: Path,
     audio_raw: Path,
     out_path: Path,
     *,
     tmp_dir: Path | None = None,
+    audio_prepped: bool = False,
+    out_meta: dict | None = None,
+    chain_chunks: bool = False,
+    resume: bool = False,
 ) -> Path:
     """Raw ByteDance with beat-pipeline audio prep and §8.5 segmentation."""
     work = tmp_dir or (out_path.parent / "_tmp_phase_a_bytedance")
     work.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    resume_tag = detect_work_tag(work) if resume else None
+    ts = resume_tag or datetime.now().strftime("%Y%m%d-%H%M%S")
+    if resume_tag:
+        log(f"resume: reusing work tag {ts}")
 
-    audio = prep_audio_bytedance_style(audio_raw, work)
+    audio = audio_raw if audio_prepped else prep_audio_bytedance_style(audio_raw, work)
     audio_dur = ffprobe_duration(audio)
 
     if audio_dur <= BYTEDANCE_MAX_CHUNK_S:
@@ -259,19 +556,59 @@ def run_bytedance_tight_lipsync(
         trim_padded_lipsync_segment(raw_out, out_path, audio_dur)
         return out_path
 
-    ps = _production_server()
-    silences = ps._detect_silences(audio)
-    chunks = chunk_audio_for_bytedance(audio_dur, silences)
-    log(f"§8.5 segment split: {len(chunks)} chunks (max {BYTEDANCE_MAX_CHUNK_S}s pre-pad)")
+    _, chunks = compute_bytedance_chunks(audio)
+    log(
+        f"§8.5 segment split: {len(chunks)} chunks "
+        f"(max {BYTEDANCE_MAX_CHUNK_S}s, chain={chain_chunks})"
+    )
 
+    prebuilt_gaps = load_existing_gaps(work) if resume_tag else {}
+    if not prebuilt_gaps:
+        prebuilt_gaps = ensure_timeline_gaps(chunks, base_video, work, ts)
+    elif len(prebuilt_gaps) < len(chunks):
+        prebuilt_gaps = ensure_timeline_gaps(
+            chunks, base_video, work, ts, prebuilt_gaps,
+        )
+    chain_log: list[dict] = []
     seg_paths: list[Path] = []
+    skipped = 0
+
     for i, (t0, t1) in enumerate(chunks):
         chunk_dur = t1 - t0
+        existing = find_existing_seg_trim(work, i) if resume else None
+        if existing is not None:
+            seg_paths.append(existing)
+            skipped += 1
+            sidecar = sorted(work.glob(f"seg_{i}_chain_*.json"))
+            if sidecar:
+                chain_log.append(json.loads(sidecar[-1].read_text()))
+            else:
+                chain_log.append({
+                    "chunk_index": i,
+                    "resumed": True,
+                    "output": existing.name,
+                })
+            log(f"  chunk {i + 1}/{len(chunks)}: RESUME {existing.name}")
+            continue
+
         seg_audio = work / f"seg_{i}_{ts}.mp3"
         extract_audio_segment(audio, seg_audio, t0, t1)
         target_s = chunk_dur + VIDEO_TRIM_TAILROOM_S
         looped = work / f"seg_{i}_fwd_{ts}.mp4"
-        forward_loop(base_video, looped, target_s)
+        chain_source = "idle_base_forward_loop"
+        chain_gap_key: str | int | None = None
+
+        if chain_chunks and i == 0 and "lead" in prebuilt_gaps:
+            build_chained_video_from_gap_end(prebuilt_gaps["lead"], target_s, looped)
+            chain_source = "gap_lead_tail"
+            chain_gap_key = "lead"
+        elif chain_chunks and i > 0 and (i - 1) in prebuilt_gaps:
+            build_chained_video_from_gap_end(prebuilt_gaps[i - 1], target_s, looped)
+            chain_source = f"gap_{i - 1}_tail"
+            chain_gap_key = i - 1
+        else:
+            forward_loop(base_video, looped, target_s)
+
         trimmed = work / f"seg_{i}_trim_{ts}.mp4"
         trim_video_for_lipsync(looped, trimmed, chunk_dur, trim_start=0.0)
         seg_raw = work / f"seg_{i}_bd_{ts}.mp4"
@@ -281,6 +618,49 @@ def run_bytedance_tight_lipsync(
         trim_padded_lipsync_segment(seg_raw, seg_trimmed, chunk_dur)
         seg_paths.append(seg_trimmed)
 
-    concat_videos(seg_paths, out_path)
-    log(f"segmented lipsync: {len(seg_paths)} parts -> {out_path.name}")
+        chain_entry = {
+            "chunk_index": i,
+            "timeline_s": [round(t0, 3), round(t1, 3)],
+            "speech_duration_s": round(chunk_dur, 3),
+            "chain_source": chain_source,
+            "chain_gap_key": chain_gap_key,
+            "chain_enabled": chain_chunks,
+            "video_seed": looped.name,
+            "output": seg_trimmed.name,
+        }
+        chain_log.append(chain_entry)
+        (work / f"seg_{i}_chain_{ts}.json").write_text(
+            json.dumps(chain_entry, indent=2) + "\n", encoding="utf-8",
+        )
+
+    pieces = build_pieces_with_timeline_gaps(
+        seg_paths, chunks, base_video, work, ts, prebuilt_gaps=prebuilt_gaps,
+    )
+    concat_videos(pieces, out_path)
+    log(f"segmented lipsync: {len(seg_paths)} chunks + gaps -> {out_path.name}")
+
+    chain_manifest = {
+        "chain_chunks": chain_chunks,
+        "chunk_count": len(chunks),
+        "gap_clip_count": len(prebuilt_gaps),
+        "gap_keys": sorted(prebuilt_gaps.keys(), key=str),
+        "chunks": chain_log,
+        "resumed_chunks": skipped,
+        "work_tag": ts,
+    }
+    (work / f"chain_manifest_{ts}.json").write_text(
+        json.dumps(chain_manifest, indent=2) + "\n", encoding="utf-8",
+    )
+
+    if out_meta is not None:
+        out_meta.update({
+            "timeline_gaps_preserved": True,
+            "chained_chunks": chain_chunks,
+            "chunk_count": len(chunks),
+            "gap_insert_count": len(pieces) - len(seg_paths),
+            "gap_clip_count": len(prebuilt_gaps),
+            "prepped_audio_duration_s": round(audio_dur, 3),
+            "chain_manifest": f"chain_manifest_{ts}.json",
+            "resumed_chunks": skipped,
+        })
     return out_path

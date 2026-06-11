@@ -62,7 +62,7 @@ class TrimVideoHonorsTrimStart(unittest.TestCase):
             self.assertLess(ss_idx, i_idx, f"-ss must precede -i: {cmd}")
             # value is trim_start
             self.assertEqual(cmd[ss_idx + 1], "5.100")
-            # duration = min(audio+0.4, window_len=4.9, remaining=4.94) = 4.9
+            # duration = min(audio+TARGET_TAIL, window_len=4.9, remaining=4.94) = 4.9
             t_idx = cmd.index("-t")
             self.assertEqual(cmd[t_idx + 1], "4.900")
             self.assertAlmostEqual(actual, 4.9, places=3)
@@ -80,7 +80,7 @@ class TrimVideoHonorsTrimEnd(unittest.TestCase):
         try:
             with mock.patch.object(PS, "_ffprobe_duration", return_value=10.0), \
                  mock.patch.object(PS.subprocess, "run") as mrun:
-                # audio 5.2 + 0.4 = 5.6; window 2.0→5.0 = 3.0 → actual=3.0
+                # audio 5.2 + TARGET(3.0) = 8.2; window 2.0→5.0 = 3.0 → actual=3.0
                 _, actual, _, _ = PS._trim_video_to_audio(
                     Path("/tmp/src.mp4"), Path("/tmp/dst.mp4"),
                     audio_duration_s=5.2,
@@ -98,13 +98,14 @@ class TrimVideoHonorsTrimEnd(unittest.TestCase):
         try:
             with mock.patch.object(PS, "_ffprobe_duration", return_value=10.0), \
                  mock.patch.object(PS.subprocess, "run") as mrun:
-                # audio 2.0 + 0.4 = 2.4; window 1.0→9.0 = 8.0 → actual=2.4
+                # audio 2.0 + TARGET(3.0) = 5.0; window 1.0→9.0 = 8.0 → actual=5.0
                 _, actual, _, _ = PS._trim_video_to_audio(
                     Path("/tmp/src.mp4"), Path("/tmp/dst.mp4"),
                     audio_duration_s=2.0,
                     trim_start=1.0, trim_end=9.0,
                 )
-            self.assertAlmostEqual(actual, 2.4, places=3)
+            target = 2.0 + PS._VIDEO_TRIM_TAILROOM_TARGET_S
+            self.assertAlmostEqual(actual, target, places=3)
         finally:
             _disarm_alarm()
 
@@ -117,18 +118,18 @@ class TrimVideoDefaultsPreserveBackcompat(unittest.TestCase):
         try:
             with mock.patch.object(PS, "_ffprobe_duration", return_value=10.0), \
                  mock.patch.object(PS.subprocess, "run") as mrun:
-                # Old: actual = min(5.2+0.4, 10) = 5.6
-                # New w/ defaults: effective_end=10, window=10, remaining=10 → 5.6
+                # actual = min(5.2+TARGET(3.0), window=10, remaining=10) = 8.2
                 _, actual, ts, te = PS._trim_video_to_audio(
                     Path("/tmp/src.mp4"), Path("/tmp/dst.mp4"),
                     audio_duration_s=5.2,
                 )
-            self.assertAlmostEqual(actual, 5.6, places=3)
+            target = 5.2 + PS._VIDEO_TRIM_TAILROOM_TARGET_S
+            self.assertAlmostEqual(actual, target, places=3)
             self.assertEqual(ts, 0.0)
             self.assertEqual(te, 10.0)
             cmd = mrun.call_args[0][0]
             self.assertEqual(cmd[cmd.index("-ss") + 1], "0.000")
-            self.assertEqual(cmd[cmd.index("-t") + 1], "5.600")
+            self.assertEqual(cmd[cmd.index("-t") + 1], f"{target:.3f}")
         finally:
             _disarm_alarm()
 
@@ -199,7 +200,7 @@ class WindowInsufficientFailsLoudInCaller(unittest.TestCase):
                         "selected_option": 1,
                         "options": [{"file": "x.mp4"}],
                         "trim_start": 2.0,
-                        "trim_end": 4.0,  # 2.0s window — audio 5.2+0.4 won't fit
+                        "trim_end": 4.0,  # 2.0s window — audio 5.2 won't fit raw 5s clip
                     },
                     "lipsync": None,
                 }
@@ -226,8 +227,9 @@ class WindowInsufficientFailsLoudInCaller(unittest.TestCase):
                                                   "source_duration_s": 5.2,
                                                   "compressed_duration_s": 5.2,
                                                   "silences_compressed": []})), \
-                 mock.patch.object(VJ, "_ffprobe_duration", return_value=10.0):
+                 mock.patch.object(VJ, "_ffprobe_duration", return_value=5.0):
                 # LD-461 + LD-474: scope_event_id + scope_video_role required.
+                # raw_dur=5.0 prevents auto-extend (extended=7.2 > raw_dur).
                 handler._handle_lipsync_submit({
                     "beat": "beat_07",
                     "scope_event_id": "M1E1",
@@ -239,7 +241,8 @@ class WindowInsufficientFailsLoudInCaller(unittest.TestCase):
             self.assertEqual(called_code, 400)
             self.assertIn("audio exceeds trim window", called_body.get("error", ""))
             self.assertEqual(called_body.get("trim_window_s"), 2.0)
-            self.assertAlmostEqual(called_body.get("needed_s"), 5.6, places=2)
+            need = 5.2 + PS._VIDEO_TRIM_TAILROOM_S
+            self.assertAlmostEqual(called_body.get("needed_s"), need, places=2)
         finally:
             _disarm_alarm()
 

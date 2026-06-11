@@ -211,7 +211,8 @@ class TestC4RenderOverlayParameterization(unittest.TestCase):
             return _R()
 
         out_path = self.tmp / f"out_{frame_x}.mp4"
-        with mock.patch.object(FS.subprocess, "run", side_effect=dispatch):
+        with mock.patch.object(FS, "ffprobe_duration", return_value=10.0), \
+             mock.patch.object(FS.subprocess, "run", side_effect=dispatch):
             FS.render_watercolor_overlay(
                 base_video_path=self.base, cues=cues,
                 frame_x=frame_x, frame_y=180, output_path=out_path,
@@ -255,7 +256,7 @@ class TestC4RenderOverlayParameterization(unittest.TestCase):
         )
         joined = " ".join(cmds[0])
         # Exactly one chromakey filter in the whole filter_complex.
-        self.assertEqual(joined.count("chromakey=0x00FF00:0.1:0.0"), 1,
+        self.assertEqual(joined.count("chromakey=0xFF00FF:0.25:0.0"), 1,
                          f"expected exactly 1 chromakey (video-only); got: {joined}")
         # Chromakey is on the video input branch (input 2), not input 1 (png).
         self.assertIn("[2:v]chromakey", joined)
@@ -392,7 +393,7 @@ class TestWatercolorOverlayRecipeHash(unittest.TestCase):
         # (ffmpeg_stitch.py:95-98). Test was missing the suffix; updated.
         expected = hashlib.sha256(
             f"{FS.WATERCOLOR_OVERLAY_RECIPE_VERSION}:fade_in=0.3s|slide_in=0.5s|"
-            f"gentle_pan=5px_sin|chromakey=0x00FF00:0.1:0.0|scale=bbox_no_pad".encode("utf-8"),
+            f"gentle_pan=5px_sin|chromakey=0xFF00FF:0.1:0.0|scale=bbox_no_pad".encode("utf-8"),
         ).hexdigest()[:16]
         self.assertEqual(FS.WATERCOLOR_OVERLAY_RECIPE_HASH, expected)
 
@@ -513,20 +514,20 @@ class TestPhaseEndpoints(unittest.TestCase):
                 out.write_bytes(b"\x00trim\x00")
             return _R()
 
-        def fake_submit_and_wait(self_, video, audio, dest):
-            dest.write_bytes(b"\x00bytedance_out\x00")
-            return {"ok": True, "job_id": "fake_job", "cost": 0.15}
+        def _fake_lipsync_client(*_a, **_kw):
+            class _LSC:
+                def submit(self, _video, _audio):
+                    return "fake_task_id"
 
-        # P5 (2026-05-19): per Kim — animation must be longer than audio
-        # for lipsync correctness ("we need padding on the audio at the
-        # front and back"). Server correctly rejects when base_clip_dur ==
-        # audio_dur. Mock returns different durations so base_clip is
-        # longer than audio (25s vs 20s, providing 5s of headroom).
-        # Production server now reads ffprobe duration via _ffprobe_duration
-        # for BOTH the voice stem and the base clip — side_effect makes
-        # the first call (voice stem audio) return 20.0 and the second
-        # (base clip) return 25.0.
-        # P5 (2026-05-19): updated to LD-400 §8.5 limits — voice 4s, base 8s.
+                def poll_until_done(self, _task_id):
+                    return {"status": "completed", "outputs": ["http://fake/kling.mp4"]}
+
+                def download(self, _url, dest):
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(b"\x00bd_out\x00")
+            return _LSC()
+
+        # Kling async flow: HTTP 202 on submit; bg thread poll+download writes state.
         _ffp_durations = [4.0, 8.0, 8.0, 8.0]  # voice, base, base, base
         with mock.patch.object(PS.subprocess, "run", side_effect=dispatch), \
              mock.patch("production_server._ffprobe_duration", side_effect=lambda *a, **kw: _ffp_durations.pop(0) if _ffp_durations else 8.0), \
@@ -536,26 +537,29 @@ class TestPhaseEndpoints(unittest.TestCase):
                                            "compressed_duration_s": 4.0,
                                            "silences_compressed": 0})), \
              mock.patch("production_server._trim_video_to_audio",
-                        return_value=(Path("/tmp/fake_trim.mp4"), 4.4, 0.0, 4.4)), \
+                        return_value=(Path("/tmp/fake_trim.mp4"), 7.0, 0.0, 8.0)), \
+             mock.patch("server_handlers.phases._apply_whiteout_fade"), \
              mock.patch("server_handlers.phases.LipSyncClient",
-                        create=True,
-                        new=lambda *_a, **_kw: type("LSC", (), {
-                            "submit_and_wait": lambda self_, v, a, d: (
-                                d.write_bytes(b"\x00bd_out\x00"),
-                                {"ok": True, "job_id": "fake", "cost": 0.15},
-                            )[1],
-                        })()):
+                        create=True, new=_fake_lipsync_client):
             status, resp, _ = _http_post(
                 self.port, "/api/phase_b/lipsync",
                 {"phase": "b", "base_clip_id": "cedric_base_v1"},
                 timeout=30,
             )
-        self.assertEqual(status, 200, resp)
-        self.assertTrue(resp["file"].startswith("phase_b_lipsync_"))
-        self.assertEqual(resp["base_clip_id"], "cedric_base_v1")
-        state = self.app.state.read_state()
-        self.assertEqual(state.get("phase_b_lipsync_file"), resp["file"])
-        # module-level field for base clip.
+        self.assertEqual(status, 202, resp)
+        self.assertEqual(resp.get("status"), "submitted")
+        self.assertEqual(resp.get("task_id"), "fake_task_id")
+        self.assertEqual(resp.get("base_clip_id"), "cedric_base_v1")
+        # Background thread writes terminal state after poll+download.
+        lipsync_file = None
+        for _ in range(40):
+            state = self.app.state.read_state()
+            lipsync_file = state.get("phase_b_lipsync_file")
+            if lipsync_file:
+                break
+            time.sleep(0.05)
+        self.assertTrue(lipsync_file and lipsync_file.startswith("phase_b_lipsync_"),
+                        f"expected bg thread to write lipsync file; state={state}")
         self.assertEqual(state.get("phase_b_cedric_base_clip_id"), "cedric_base_v1")
 
     # 12. preview fails loud on missing lipsync

@@ -38,12 +38,10 @@ function fromServerSchema(raw: Record<string, unknown>): WatercolorCue {
 import { BaseClipPicker } from './BaseClipPicker';
 import { setDragData, type DragPayload } from '../../utils/dragdrop';
 
-type PhaseAClipPosition = 'flyin' | 'sitting' | 'flyout';
-const PHASE_A_CLIP_POSITIONS: ReadonlyArray<PhaseAClipPosition> = ['flyin', 'sitting', 'flyout'];
+type PhaseAClipPosition = 'sitting';
+const PHASE_A_CLIP_POSITIONS: ReadonlyArray<PhaseAClipPosition> = ['sitting'];
 const PHASE_A_CLIP_LABELS: Record<PhaseAClipPosition, string> = {
-  flyin: 'Fly-in',
-  sitting: 'Sitting',
-  flyout: 'Fly-out',
+  sitting: 'Arlo base (talking)',
 };
 
 interface WatercolorItem {
@@ -95,6 +93,7 @@ interface PhaseStateSlice {
   lipsync_file?: string;
   lipsync_mtime?: number;
   lipsync_status?: string;   // "polling" | "done" | "error: ..." from background thread
+  flyin_flyout_status?: string;
   stitched_file?: string;        // phase A only
   stitched_mtime?: number;
   script?: string;
@@ -135,6 +134,7 @@ function pickPhaseSlice(state: EventStateResponse, phase: 'a' | 'b'): PhaseState
   const ls = get<string>('lipsync_file');              if (ls) slice.lipsync_file = ls;
   const lsm = get<number>('lipsync_mtime');            if (lsm) slice.lipsync_mtime = lsm;
   const lst = get<string>('lipsync_status');           if (lst) slice.lipsync_status = lst;
+  const ffst = get<string>('flyin_flyout_status');     if (ffst) slice.flyin_flyout_status = ffst;
   const st = get<string>('stitched_file');             if (st) slice.stitched_file = st;
   const stm = get<number>('stitched_mtime');           if (stm) slice.stitched_mtime = stm;
   const sc = get<string>('script');                    if (sc) slice.script = sc;
@@ -241,9 +241,15 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     }
     if (bc.ok && bc.data?.items) {
       setBaseClips(bc.data.items);
-      // Auto-select character match for the active phase.
-      const wantedChar = phase === 'a' ? 'chipper' : 'cedric';
-      const match = bc.data.items.find((c) => c.character === wantedChar);
+      const phaseAChars = new Set(['arlo', 'chipper']);
+      const wantedChar = phase === 'a' ? 'arlo' : 'cedric';
+      const sittingId = phase === 'a' ? stateSlice.chipper_sitting_clip_id : undefined;
+      const bySitting = sittingId
+        ? bc.data.items.find((c) => c.id === sittingId)
+        : undefined;
+      const match = bySitting
+        ?? bc.data.items.find((c) => c.character === wantedChar)
+        ?? bc.data.items.find((c) => c.character && phaseAChars.has(c.character));
       if (match) setSelectedBaseClip((prev) => prev || match.id);
     }
     if (st.ok && st.data) {
@@ -260,7 +266,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     return () => { cancelled = true; };
   }, [activeScope.value.event_id, phase]);
 
-  // Auto-poll every 30s while Kling lipsync is processing in background.
+  // Auto-poll every 30s while Kling lipsync is processing.
   useEffect(() => {
     if (!lipsyncing) return;
     const id = setInterval(async () => {
@@ -375,11 +381,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   };
 
   const onSendForLipsync = async () => {
-    // PA-9 (Phase A): lipsync MUST target the sitting clip (the talking-head
-    // segment), not whatever clip happens to be in the base-clip dropdown.
-    // Phase A is a 3-clip sequence (fly-in / sitting / fly-out); only the
-    // sitting clip carries the dialogue audio. Per LD-375 PHASE_A_CANONICAL_PIPELINE_V1.
-    // Phase B is single-clip Cedric — selectedBaseClip is the canonical target.
+    // Phase A: single Arlo base clip carries dialogue (no fly-in/fly-out bookends).
     const lipsyncClipId =
       phase === 'a'
         ? stateSlice.chipper_sitting_clip_id ?? selectedBaseClip
@@ -387,7 +389,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     if (!lipsyncClipId) {
       setStatusMsg(
         phase === 'a'
-          ? 'Pick a sitting clip first (Phase A 3-clip picker → sitting slot).'
+          ? 'Pick an Arlo base clip first (Regen base clip or picker below).'
           : 'Pick a base clip first.',
       );
       return;
@@ -406,7 +408,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
         // so we can detect when the new file lands, then start polling.
         lipsyncMtimeBefore.current = stateSlice.lipsync_mtime ?? null;
         setLipsyncing(true);
-        setStatusMsg('⏳ Lipsync submitted — Kling processing (~1-4 min). Will auto-update when done.');
+        setStatusMsg('⏳ Lipsync submitted — Kling processing (~8–20 min). Will auto-update when done.');
       } else {
         setStatusMsg('✓ Lipsync complete');
         await refreshAll();
@@ -418,10 +420,18 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   };
 
   const onMixAudio = async () => {
+    const presetId = stateSlice.ambient_preset_id?.trim();
+    if (!presetId) {
+      setStatusMsg('✗ Pick an ambient bed preset first (dropdown above).');
+      return;
+    }
     setBusyAction('mix');
     setStatusMsg('Mix Audio (Phase A auto-fires stitch)…');
     const mixEp = phase === 'a' ? 'phase_a_mix_audio' : 'phase_b_mix_audio';
-    const res = await pathappPatch(activeScope.value, mixEp, { phase });
+    const res = await pathappPatch(activeScope.value, mixEp, {
+      phase,
+      ambient_preset_id: presetId,
+    });
     setBusyAction(null);
     if (res.ok) {
       setStatusMsg('✓ Mix complete (Phase A stitch auto-fired)');
@@ -433,7 +443,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
 
   const onPhaseARestitch = async () => {
     setBusyAction('restitch');
-    setStatusMsg('Re-stitching from pinned fly-in/out…');
+    setStatusMsg('Re-stitching lipsync + ambient…');
     const res = await pathappPatch(activeScope.value, 'phase_a_restitch', { phase: 'a' });
     setBusyAction(null);
     if (res.ok) {
@@ -444,27 +454,12 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     }
   };
 
-  const onRegenFlyinFlyout = async () => {
-    setBusyAction('regen_fly');
-    setStatusMsg('Kling close-up fly-in/out started (~13 min)…');
-    const res = await pathappPatch(activeScope.value, 'phase_a_regen_flyin_flyout', { phase: 'a' });
-    setBusyAction(null);
-    if (res.ok && res.status === 202) {
-      setStatusMsg('⏳ Fly-in/out regenerating — auto-stitch when done');
-    } else if (res.ok) {
-      setStatusMsg('✓ Fly-in/out regen complete');
-      await refreshAll();
-    } else {
-      setStatusMsg(`✗ Fly-in/out HTTP ${res.status}: ${res.error ?? ''}`);
-    }
-  };
-
   const onRegenBaseClip = async () => {
     setBusyAction('regen_base');
     setStatusMsg('Kling idle base clip (~6 min)…');
     const res = await pathappPatch(activeScope.value, 'phase_a_regen_base_clip', {
       phase: 'a',
-      clip_id: stateSlice.chipper_sitting_clip_id ?? selectedBaseClip ?? 'chipper_idle_newstyle_v3',
+      clip_id: stateSlice.chipper_sitting_clip_id ?? selectedBaseClip ?? 'arlo_idle_wizard_desk_v1',
     });
     setBusyAction(null);
     if (res.ok && res.status === 202) {
@@ -666,9 +661,8 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
 
   // ── Phase A 3-clip handling (Phase D) ──────────────────────────────────
   const phaseAClipId = (pos: PhaseAClipPosition): string | undefined => {
-    if (pos === 'flyin') return stateSlice.chipper_flyin_clip_id;
     if (pos === 'sitting') return stateSlice.chipper_sitting_clip_id;
-    return stateSlice.chipper_flyout_clip_id;
+    return undefined;
   };
 
   const onPickPhaseAClip = async (pos: PhaseAClipPosition, clipId: string) => {
@@ -1032,7 +1026,11 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           >
             <option value="">— select —</option>
             {baseClips
-              .filter((c) => phase === 'a' ? c.character === 'chipper' : c.character === 'cedric')
+              .filter((c) => (
+                phase === 'a'
+                  ? (c.character === 'arlo' || c.character === 'chipper')
+                  : c.character === 'cedric'
+              ))
               .map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.id} ({c.duration_s ?? '?'}s)
@@ -1147,40 +1145,50 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             <div class="mn-phase-a-clip-total mn-dim">
               Total: {phaseATotalDurationS().toFixed(1)}s
             </div>
-            <button
-              type="button"
-              class="mn-btn"
-              data-testid="phase-a-restitch-btn"
-              onClick={onPhaseARestitch}
-              disabled={busyAction !== null}
-              title="Re-stitch fly-in / sitting / fly-out into phase_a_stitched_file (pinned bookends)"
-            >
-              {busyAction === 'restitch' ? 'Re-stitching…' : 'Re-stitch (Phase A)'}
-            </button>
-            <button
-              type="button"
-              class="mn-btn mn-btn-small"
-              data-testid="phase-a-regen-flyin-flyout-btn"
-              onClick={onRegenFlyinFlyout}
-              disabled={busyAction !== null}
-              title="Regenerate closeup_match fly-in and fly-out (~13 min Kling)"
-            >
-              Regen fly-in/out
-            </button>
-            <button
-              type="button"
-              class="mn-btn mn-btn-small"
-              data-testid="phase-a-regen-base-clip-btn"
-              onClick={onRegenBaseClip}
-              disabled={busyAction !== null}
-              title="Regenerate Chipper idle base clip from still (~6 min Kling)"
-            >
-              Regen base clip
-            </button>
+            <div class="mn-phase-a-clip-actions">
+              <button
+                type="button"
+                class="mn-btn"
+                data-testid="phase-a-restitch-btn"
+                onClick={onPhaseARestitch}
+                disabled={busyAction !== null}
+                title="Re-stitch raw lipsync + ambient bed into phase_a_stitched_file"
+              >
+                {busyAction === 'restitch' ? 'Re-stitching…' : 'Re-stitch (Phase A)'}
+              </button>
+              <button
+                type="button"
+                class="mn-btn mn-btn-small"
+                data-testid="phase-a-regen-base-clip-btn"
+                onClick={onRegenBaseClip}
+                disabled={busyAction !== null}
+                title="Regenerate Arlo wizard-desk idle base from still (~6 min Kling)"
+              >
+                Regen base clip
+              </button>
+            </div>
+            {stateSlice.stitched_file ? (
+              <div
+                class="mn-phase-stitched-preview"
+                data-testid="phase-a-stitched-preview"
+              >
+                <strong>Stitched preview (Arlo lipsync + ambient):</strong>
+                <video
+                  controls
+                  src={fileUrl(stateSlice.stitched_file)}
+                  style={{ maxHeight: '40vh', display: 'block', width: '100%' }}
+                />
+                <span class="mn-dim">{stateSlice.stitched_file}</span>
+              </div>
+            ) : (
+              <div class="mn-dim" data-testid="phase-a-stitched-placeholder">
+                Stitched preview appears here after lipsync completes (or after Mix Audio).
+              </div>
+            )}
             <BaseClipPicker
               open={pickerPosition !== null}
               positionLabel={pickerPosition ? PHASE_A_CLIP_LABELS[pickerPosition] : ''}
-              character="chipper"
+              character="arlo"
               clips={baseClips}
               onPick={(id) => {
                 if (pickerPosition) void onPickPhaseAClip(pickerPosition, id);
