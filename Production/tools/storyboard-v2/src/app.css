@@ -1948,6 +1948,17 @@
   border-radius: 3px;
   background: #000;
 }
+.mn-bg-magic-preview {
+  margin-top: 8px;
+  max-width: calc((100% - 16px) / 3);
+}
+.mn-bg-magic-preview video {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 3px;
+  background: #000;
+}
 .mn-bg-option.is-approved-video {
   cursor: pointer;
 }

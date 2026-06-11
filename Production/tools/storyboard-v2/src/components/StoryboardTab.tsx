@@ -304,7 +304,7 @@ interface BeatButtonRowProps {
   /** Triggered after any successful mutation so parent can refresh state. */
   onMutated: () => void;
   previewOptIdx: number | null;
-  onPreviewOption: (optIdx: number) => void;
+  onPreviewOption: (optIdx: number, magicKind?: 'still' | 'video' | null) => void;
   /** LD-757: flip parent lipsyncMounted so the lipsync <video> stays mounted. */
   onEnsureLipsyncMounted: () => void;
   /** T1-Phase 6: active video role for preview_end_frame + upload_end_frame POST bodies. */
@@ -1686,6 +1686,7 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(beat.text_last_updated_at ?? null);
   const [previewOptIdx, setPreviewOptIdx] = useState<number | null>(null);
+  const [magicPreviewKind, setMagicPreviewKind] = useState<'still' | 'video' | null>(null);
   // LD-757: sticky sentinel — once set, lipsync <video> stays mounted across previews.
   const [lipsyncMounted, setLipsyncMounted] = useState(false);
   const ensureLipsyncMounted = useCallback(() => setLipsyncMounted(true), []);
@@ -1740,11 +1741,14 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
     : (previewOptIdx > 0 && _optOk)
         ? `${SERVER_BASE}/asset/${_optChosen!.file}?v=${beat._version ?? 0}`
         : (previewOptIdx === -1
-            ? (_magicStillSrc       // Bug-B1.1: magic on still
-                ?? _magicVideoSrc   // Bug-B1.2: magic on video
-                ?? (beat.final?.source === 'still_image' && beat.final?.file && beat.final?.file_exists !== false
-                    ? _finalFileSrc
-                    : null))
+            ? ((magicPreviewKind === 'video'
+                ? (_magicVideoSrc ?? _magicStillSrc)
+                : magicPreviewKind === 'still'
+                  ? (_magicStillSrc ?? _magicVideoSrc)
+                  : (_magicStillSrc ?? _magicVideoSrc))
+              ?? (beat.final?.source === 'still_image' && beat.final?.file && beat.final?.file_exists !== false
+                  ? _finalFileSrc
+                  : null))
             : (_lsOk
                 ? `${SERVER_BASE}/asset/${beat.lipsync!.file}?v=${beat._version ?? 0}`
                 : null));
@@ -1858,7 +1862,7 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
     // Guard matches the lipsync guard pattern: if the video being previewed
     // already carries its own audio (optIdx === -1 AND magic_video_path valid),
     // suppress the separate TTS audio element entirely.
-    const hasMagicVideoAudio = previewOptIdx === -1 && _magicVideoOk;
+    const hasMagicVideoAudio = previewOptIdx === -1 && magicPreviewKind === 'video' && _magicVideoOk;
     if (!isLipsyncPreview && !hasMagicVideoAudio) {
       if (!aud) return;
       aud.currentTime = 0;
@@ -1981,7 +1985,7 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
       if (rafId !== null) cancelAnimationFrame(rafId);
       if (onPlayListener) vid.removeEventListener('play', onPlayListener);
     };
-  }, [previewOptIdx, beat.phase_1?.audio_delay, beat.audio_delay, beat.delay_seconds, beat.phase_1?.trim_start, beat.phase_1?.trim_end, beat.phase_1?.trim_back, beat.trim_in, beat.trim_out, beat.audio_duration_s, _magicVideoOk, safePlay, handlePlayRejection]);
+  }, [previewOptIdx, magicPreviewKind, beat.phase_1?.audio_delay, beat.audio_delay, beat.delay_seconds, beat.phase_1?.trim_start, beat.phase_1?.trim_end, beat.phase_1?.trim_back, beat.trim_in, beat.trim_out, beat.audio_duration_s, _magicVideoOk, safePlay, handlePlayRejection]);
 
   useEffect(() => {
     return () => {
@@ -1990,16 +1994,23 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
     };
   }, []);
 
-  const handlePreviewOption = useCallback((optIdx: number) => {
+  const handlePreviewOption = useCallback((optIdx: number, magicKind?: 'still' | 'video' | null) => {
     const nowTs = performance.now();
     if (lastClickRef.current > 0 && nowTs - lastClickRef.current < 250) return;
     lastClickRef.current = nowTs;
 
+    if (optIdx === -1) {
+      setMagicPreviewKind(magicKind === undefined ? null : magicKind);
+    }
+
     const isLipsyncPreview = optIdx === 0;
     const isStillFinalPreview = optIdx === -1;
+    const previewMagicKind = optIdx === -1
+      ? (magicKind === undefined ? magicPreviewKind : magicKind)
+      : null;
     // MAGIC_VIDEO_AUDIO_GUARD (Bug 2 fix 2026-05-28): suppress TTS audio when
     // the preview video already has baked-in lipsync audio (magic_video case).
-    const hasMagicVideoAudio = isStillFinalPreview && _magicVideoOk;
+    const hasMagicVideoAudio = isStillFinalPreview && previewMagicKind === 'video' && _magicVideoOk;
     const file = isLipsyncPreview
       ? beat.lipsync?.file
       : (isStillFinalPreview
@@ -2036,7 +2047,7 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
     safePause(vid).catch(() => {});
     if (!isLipsyncPreview && !hasMagicVideoAudio) safePause(aud).catch(() => {});
     setPreviewOptIdx(optIdx);
-  }, [previewOptIdx, beat.phase_1?.options, beat.lipsync?.file, beat.final?.file, beat.magic_still_path, beat.magic_video_path, beat.magic_video_path_exists, safePlay, safePause, handlePlayRejection]);
+  }, [previewOptIdx, magicPreviewKind, beat.phase_1?.options, beat.lipsync?.file, beat.final?.file, beat.magic_still_path, beat.magic_video_path, beat.magic_video_path_exists, _magicVideoOk, safePlay, safePause, handlePlayRejection]);
 
   const handlePreviewEnded = useCallback(() => {
     // MAGIC_STILL_AUDIO_TAIL_FIX (Kim 2026-05-27): magic_still video (previewOptIdx === -1)
@@ -2347,7 +2358,8 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
         videoSourcePath={storyboardVideoPath ?? null}
         magicStillPath={beat.magic_still_path}
         magicVideoPath={beat.magic_video_path}
-        onPreviewMagic={() => handlePreviewOption(-1)}
+        onPreviewMagicStill={() => handlePreviewOption(-1, 'still')}
+        onPreviewMagicVideo={() => handlePreviewOption(-1, 'video')}
       />
       <div class="mn-sb-insert-after" data-testid={`sb-insert-after-${index}`}>
         <button

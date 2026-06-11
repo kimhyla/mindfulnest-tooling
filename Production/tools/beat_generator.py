@@ -3093,17 +3093,26 @@ def resolve_beat_stitch_export_clip_path(
     event_dir: str | Path,
     scratch_dir: Path,
 ) -> Path:
-    """Clip for segment concat — magic-on-still (+TTS), magic-on-video, or Kling."""
+    """Clip for segment concat — magic-on-video, magic-on-still (+TTS), or Kling."""
+    event_dir = Path(event_dir)
+    if beat.get("kling_o3_status") == "approved":
+        mv = beat.get("magic_video_path")
+        if mv:
+            mp = Path(mv)
+            if not mp.is_absolute():
+                mp = event_dir / mv
+            if mp.is_file():
+                return mp.resolve()
     magic_still = beat_magic_still_clip_path(beat, event_dir)
     if magic_still is not None:
         if resolve_bg_beat_tts_audio_path(event_dir, beat):
             return materialize_magic_still_with_tts_export(beat, event_dir, scratch_dir)
         return magic_still
     mv = beat.get("magic_video_path")
-    if mv and (beat.get("kling_o3_status") == "approved"):
+    if mv:
         mp = Path(mv)
         if not mp.is_absolute():
-            mp = Path(event_dir) / mv
+            mp = event_dir / mv
         if mp.is_file():
             return mp.resolve()
     return _kling_o3_export_clip_path(beat, event_dir, scratch_dir)

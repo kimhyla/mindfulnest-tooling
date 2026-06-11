@@ -15,7 +15,8 @@ export interface BeatMagicButtonsProps {
   videoSourceIsAbsolute?: boolean;
   magicStillPath?: string | null | undefined;
   magicVideoPath?: string | null | undefined;
-  onPreviewMagic?: (() => void) | undefined;
+  onPreviewMagicStill?: (() => void) | undefined;
+  onPreviewMagicVideo?: (() => void) | undefined;
 }
 
 export function BeatMagicButtons({
@@ -28,7 +29,8 @@ export function BeatMagicButtons({
   videoSourceIsAbsolute = false,
   magicStillPath,
   magicVideoPath,
-  onPreviewMagic,
+  onPreviewMagicStill,
+  onPreviewMagicVideo,
 }: BeatMagicButtonsProps) {
   const hasMagicStill = !!magicStillPath;
   const hasMagicVideo = !!magicVideoPath;
@@ -78,12 +80,12 @@ export function BeatMagicButtons({
           >
             {hasMagicStill ? '↻ Redo magic on still' : '🌟 Add magic on still'}
           </button>
-          {hasMagicStill && onPreviewMagic ? (
+          {hasMagicStill && onPreviewMagicStill ? (
             <button
               type="button"
               class="mn-btn mn-btn-small"
               data-testid={`beat-magic-still-preview-${index}`}
-              onClick={onPreviewMagic}
+              onClick={onPreviewMagicStill}
               title="Preview the magic-on-still composite video inline"
             >
               ▶ Preview magic
@@ -104,12 +106,12 @@ export function BeatMagicButtons({
           >
             {hasMagicVideo ? '↻ Redo magic on video' : '🎬 Add magic on video'}
           </button>
-          {hasMagicVideo && onPreviewMagic ? (
+          {hasMagicVideo && onPreviewMagicVideo ? (
             <button
               type="button"
               class="mn-btn mn-btn-small"
               data-testid={`beat-magic-video-preview-${index}`}
-              onClick={onPreviewMagic}
+              onClick={onPreviewMagicVideo}
               title="Preview the magic-on-video composite inline"
             >
               ▶ Preview magic·v
@@ -154,12 +156,25 @@ export function resolveBgMagicStillSourcePath(
   return null;
 }
 
-export function resolveBgMagicPreviewUrl(
-  beat: { magic_still_path?: string | null; magic_video_path?: string | null },
+function magicPathToPreviewUrl(
+  rel: string | null | undefined,
   eventId: string,
 ): string | null {
-  const rel = beat.magic_still_path || beat.magic_video_path;
   if (!rel) return null;
   const path = rel.startsWith('/') ? rel : `Production/${eventId}/${rel}`;
   return `${SERVER_BASE}/files?path=${encodeURIComponent(path)}`;
+}
+
+export function resolveBgMagicStillPreviewUrl(
+  beat: { magic_still_path?: string | null; magic_video_path?: string | null },
+  eventId: string,
+): string | null {
+  return magicPathToPreviewUrl(beat.magic_still_path, eventId);
+}
+
+export function resolveBgMagicVideoPreviewUrl(
+  beat: { magic_still_path?: string | null; magic_video_path?: string | null },
+  eventId: string,
+): string | null {
+  return magicPathToPreviewUrl(beat.magic_video_path, eventId);
 }

@@ -27,7 +27,8 @@ import { stitcherRefreshTick } from '../app';
 import { serverRehydrateTick } from '../state/refreshSignals';
 import {
   BeatMagicButtons,
-  resolveBgMagicPreviewUrl,
+  resolveBgMagicStillPreviewUrl,
+  resolveBgMagicVideoPreviewUrl,
   resolveBgMagicStillSourcePath,
 } from './BeatMagicButtons';
 import {
@@ -1486,8 +1487,9 @@ function BeatGenCard({
 
   const magicStillSource = resolveBgMagicStillSourcePath(beat, eventId);
   const magicVideoSource = beat.kling_o3_video_path ?? null;
-  const magicPreviewUrl = resolveBgMagicPreviewUrl(beat, eventId);
-  const [showMagicPreview, setShowMagicPreview] = useState(false);
+  const magicStillPreviewUrl = resolveBgMagicStillPreviewUrl(beat, eventId);
+  const magicVideoPreviewUrl = resolveBgMagicVideoPreviewUrl(beat, eventId);
+  const [magicPreviewMode, setMagicPreviewMode] = useState<'still' | 'video' | null>(null);
 
   return (
     <li class="mn-bg-beat-card" data-testid={`bg-beat-card-${index}`} data-beat-id={beat.beat_id}>
@@ -1659,12 +1661,18 @@ function BeatGenCard({
         videoSourceIsAbsolute={!!magicVideoSource}
         magicStillPath={beat.magic_still_path}
         magicVideoPath={beat.magic_video_path}
-        onPreviewMagic={magicPreviewUrl ? () => setShowMagicPreview(true) : undefined}
+        onPreviewMagicStill={magicStillPreviewUrl ? () => setMagicPreviewMode('still') : undefined}
+        onPreviewMagicVideo={magicVideoPreviewUrl ? () => setMagicPreviewMode('video') : undefined}
       />
-      {showMagicPreview && magicPreviewUrl ? (
-        <div class="mn-bg-magic-preview" data-testid={`bg-magic-preview-${index}`}>
-          <video controls preload="metadata" src={magicPreviewUrl} />
+      {magicPreviewMode === 'still' && magicStillPreviewUrl ? (
+        <div class="mn-bg-magic-preview" data-testid={`bg-magic-preview-still-${index}`}>
+          <video controls preload="metadata" src={magicStillPreviewUrl} />
         </div>
+      ) : null}
+      {magicPreviewMode === 'video' && magicVideoPreviewUrl ? (
+        <p class="mn-dim" data-testid={`bg-magic-preview-video-hint-${index}`}>
+          Magic-on-video preview is playing in the approved O3 player below.
+        </p>
       ) : null}
 
       {/* 3-options row — 1×3 layout (NOT 3×3 matrix) */}
@@ -1697,6 +1705,13 @@ function BeatGenCard({
             trimStart={beat.kling_o3_trim_start ?? 0}
             trimBack={beat.kling_o3_trim_back ?? null}
             onApplyO3Trim={onApplyO3Trim}
+            overrideVideoUrl={
+              magicPreviewMode === 'video'
+              && opt?.source === 'approved_kling_o3_video'
+              && magicVideoPreviewUrl
+                ? magicVideoPreviewUrl
+                : null
+            }
           />
         ))}
       </div>
@@ -1858,11 +1873,12 @@ interface BgOptionTilePropsExt extends BgOptionTileProps {
   trimStart: number;
   trimBack: number | null;
   onApplyO3Trim: (trimStart: number, trimBack: number | null, clear?: boolean) => void;
+  overrideVideoUrl?: string | null;
 }
 
 function BgOptionTile({
   beatIndex, optionIndex, option, selected, onClick, beatId, onRefresh, onPatchOptionTile,
-  trimStart, trimBack, onApplyO3Trim,
+  trimStart, trimBack, onApplyO3Trim, overrideVideoUrl,
 }: BgOptionTilePropsExt) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [trimStartDraft, setTrimStartDraft] = useState<string>(String(trimStart || 0));
@@ -1953,9 +1969,10 @@ function BgOptionTile({
   const keyMissing = !option.key;
   const isApprovedVideo = !!option.video_path;
   const tooltip = keyMissing ? 'Option missing key — regenerate beat' : undefined;
-  const videoUrl = option.video_path
-    ? `${SERVER_BASE}/files?path=${encodeURIComponent(option.video_path)}`
-    : null;
+  const videoUrl = overrideVideoUrl
+    ?? (option.video_path
+      ? `${SERVER_BASE}/files?path=${encodeURIComponent(option.video_path)}`
+      : null);
   const currentVideoTime = () => {
     const video = videoRef.current;
     return video ? Math.max(0, Number(video.currentTime) || 0) : 0;
