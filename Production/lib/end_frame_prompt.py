@@ -27,7 +27,7 @@ _BG_LOCK = (
 )
 
 _MOUTH_TAIL = (
-    " Beak/mouth at rest, natural mouth geometry preserved. "
+    " Mouth at rest, natural mouth geometry preserved. "
     "Same cartoon 3D Pixar-style art, same outfit, same 4:3 "
     "composition, same lighting on the character."
 )
@@ -64,6 +64,7 @@ _EMOTION_MAP: dict[str, str | None] = {
 
 _SAFE_NEUTRAL_POSE: dict[str, str] = {
     "Chipper": "head tilted gently to one side, attentive expression",
+    "Arlo":    "ears perked gently, paws relaxed, warm attentive expression",
     "Tessa":   "head tilted gently, quiet attentive expression",
     "Luna":    "head turned slightly to one side, alert expression",
     "Benson":  "one ear tilted, head turned slightly, quiet attentive expression",

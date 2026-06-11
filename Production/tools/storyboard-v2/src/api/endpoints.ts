@@ -37,6 +37,8 @@ export const READ_ENDPOINTS = {
   admin_inflight_count: `${SERVER_BASE}/api/admin/inflight_count`,
   // S5.5c — Beat Generator GPT batch poll (read).
   bg_poll_gpt_status: `${SERVER_BASE}/api/bg/poll-gpt-status`,
+  bg_poll_arlo_o3_voice_status: `${SERVER_BASE}/api/bg/poll-arlo-o3-voice-status`,
+  bg_poll_kling_native_lipsync_experiment_status: `${SERVER_BASE}/api/bg/poll-kling-native-lipsync-experiment-status`,
   // S5.5e — Storyboard beat-level reads.
   // beat_audio is a templated path: GET /api/beat/audio/<beat_id>?event_id=...
   // apiGet() substitutes {beat_id} from the query dict before issuing.
@@ -55,6 +57,7 @@ export const READ_ENDPOINTS = {
 // 409 on mismatch.
 export const MUTATION_ENDPOINTS = {
   bg_accept_beats: `${SERVER_BASE}/api/bg/accept-beats`,
+  bg_export_to_stitcher: `${SERVER_BASE}/api/bg/export-to-stitcher`,
   bg_set_active_context: `${SERVER_BASE}/api/bg/set-active-context`,
   bg_extract_beats: `${SERVER_BASE}/api/bg/extract-beats`,
   bg_inject_beats: `${SERVER_BASE}/api/bg/inject-beats`,
@@ -129,6 +132,10 @@ export const MUTATION_ENDPOINTS = {
   bg_delete_beat: `${SERVER_BASE}/api/bg/delete-beat`,
   bg_add_beat: `${SERVER_BASE}/api/bg/add-beat`,
   bg_submit_gpt_batch: `${SERVER_BASE}/api/bg/submit-gpt-batch`,
+  bg_submit_arlo_o3_voice: `${SERVER_BASE}/api/bg/submit-arlo-o3-voice`,
+  bg_submit_kling_native_lipsync_experiment: `${SERVER_BASE}/api/bg/submit-kling-native-lipsync-experiment`,
+  bg_select_o3_video: `${SERVER_BASE}/api/bg/select-o3-video`,
+  bg_kling_o3_trim: `${SERVER_BASE}/api/bg/kling-o3-trim`,
   bg_accept_option: `${SERVER_BASE}/api/bg/accept-option`,
   bg_accept_lib_image: `${SERVER_BASE}/api/bg/accept-lib-image`,
   cr_upload: `${SERVER_BASE}/api/cr/upload`,
@@ -180,6 +187,7 @@ export function isMutationEndpoint(e: Endpoint): e is MutationEndpoint {
 // `event_id` or `scope_event_id` (the server's _scope_body helper coalesces).
 export const BG_MUTATION_ENDPOINTS: ReadonlySet<MutationEndpoint> = new Set<MutationEndpoint>([
   'bg_accept_beats',
+  'bg_export_to_stitcher',
   'bg_set_active_context',
   'bg_extract_beats',
   'bg_inject_beats',
@@ -191,6 +199,7 @@ export const BG_MUTATION_ENDPOINTS: ReadonlySet<MutationEndpoint> = new Set<Muta
   'bg_delete_beat',
   'bg_add_beat',
   'bg_submit_gpt_batch',
+  'bg_submit_kling_native_lipsync_experiment',
   'bg_accept_option',
   'bg_accept_lib_image',
 ]);

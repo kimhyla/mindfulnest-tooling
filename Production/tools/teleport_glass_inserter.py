@@ -55,7 +55,8 @@ WAVESPEED_IP = "49.51.190.24"  # api.wavespeed.ai real Tencent IP per LD-379
 LUMINANCE_PASS_THRESHOLD = 0.95  # tail frame must be >=95% white
 
 POSITIVE_PROMPT = (
-    "Cinematic teleport magic transition: blue bird holds a glowing mirror. "
+    "Cinematic teleport magic transition: the same black-and-white magpie "
+    "songbird with blue neck scarf from the start frame holds a glowing mirror. "
     "Brilliant golden-white magical light EXPLODES outward from the mirror's "
     "surface in radiating waves of pure energy, growing blindingly bright. "
     "The light expands rapidly outward, engulfing the entire frame, "
@@ -69,7 +70,9 @@ POSITIVE_PROMPT = (
 
 NEGATIVE_PROMPT = (
     "lip sync, speaking, talking, mouth movement, beak movement, dialogue, "
-    "speech, open mouth, Chinese, audio, voice, singing"
+    "speech, open mouth, Chinese, audio, voice, singing, "
+    "second bird, companion bird, duplicate character, blue round bird, "
+    "all-blue bird, child on screen, second person"
 )
 
 # ────────────────────────────────────────────────────────────────────────
@@ -91,8 +94,8 @@ except Exception:
     )
 
 DEFAULT_START_IMAGE = (
-    DROPBOX_ROOT / "Production" / "Guide_Bird" / "poses"
-    / "chipper in woods with mirror face forward final.png"
+    DROPBOX_ROOT / "Production" / "Chipper" / "poses"
+    / "chipper_mirror_teleport_studio.png"
 )
 
 
@@ -108,13 +111,13 @@ def fail(msg: str, code: int = 1) -> None:
 # ────────────────────────────────────────────────────────────────────────
 # End-frame generation (LD-737 §INPUT 2 verbatim).
 # ────────────────────────────────────────────────────────────────────────
-def generate_end_frame(out_path: Path) -> Path:
-    """Programmatic white-glow end frame. Deterministic; safe to re-run."""
+def generate_end_frame(out_path: Path, width: int | None = None, height: int | None = None) -> Path:
+    """Programmatic white-glow end frame. Matches speak clip size when width/height given."""
     try:
         from PIL import Image, ImageFilter, ImageDraw  # type: ignore
     except ImportError:
         fail("Pillow required. pip install Pillow.")
-    w, h = KLING_DIM_W, KLING_DIM_H
+    w, h = int(width or KLING_DIM_W), int(height or KLING_DIM_H)
     end = Image.new("RGB", (w, h), (255, 254, 250))
     draw = ImageDraw.Draw(end)
     cx, cy = w // 2, h // 2
@@ -127,8 +130,59 @@ def generate_end_frame(out_path: Path) -> Path:
     end = end.filter(ImageFilter.GaussianBlur(radius=120))
     out_path.parent.mkdir(parents=True, exist_ok=True)
     end.save(out_path, "PNG")
-    log(f"end frame generated → {out_path} ({out_path.stat().st_size:,} B)")
+    log(f"end frame generated → {out_path} ({w}x{h}, {out_path.stat().st_size:,} B)")
     return out_path
+
+
+def extract_last_frame(video_path: Path, out_png: Path) -> Path:
+    """Freeze still: last frame of the speak clip (becomes Kling burst start frame)."""
+    if not video_path.is_file():
+        fail(f"video missing for last-frame extract: {video_path}")
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-sseof", "-0.05",
+        "-i", str(video_path),
+        "-frames:v", "1",
+        str(out_png),
+    ]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    if r.returncode != 0 or not out_png.is_file():
+        fail(f"last-frame extract failed: {(r.stderr or r.stdout or '')[:400]}")
+    log(f"frozen last frame → {out_png} ({out_png.stat().st_size:,} B)")
+    return out_png
+
+
+def image_dimensions(png_path: Path) -> tuple[int, int]:
+    try:
+        from PIL import Image  # type: ignore
+    except ImportError:
+        fail("Pillow required. pip install Pillow.")
+    with Image.open(png_path) as im:
+        return im.size
+
+
+def run_burst_from_frozen_speak_frame(
+    speak_video: Path,
+    dest_mp4: Path,
+    *,
+    scratch_dir: Path,
+    dry_run: bool = False,
+) -> Path:
+    """LD-737 burst generated ON the speak clip's frozen last frame (not a separate scene)."""
+    frozen = scratch_dir / f"{speak_video.stem}_frozen_last.png"
+    end_frame = scratch_dir / f"{speak_video.stem}_white_end.png"
+    extract_last_frame(speak_video, frozen)
+    w, h = image_dimensions(frozen)
+    generate_end_frame(end_frame, width=w, height=h)
+    if dry_run:
+        log(f"DRY-RUN burst from frozen frame → {dest_mp4.name} ({w}x{h})")
+        return dest_mp4
+    api_key = load_wavespeed_key()
+    task_id = kling_submit(frozen, end_frame, api_key)
+    url = kling_poll_with_dns_workaround(task_id, api_key)
+    download_clip(url, dest_mp4)
+    return dest_mp4
 
 
 def png_to_data_uri(p: Path) -> str:
@@ -141,6 +195,18 @@ def png_to_data_uri(p: Path) -> str:
 # fix per LD-741 — avoids production_server import-time deadlock).
 # ────────────────────────────────────────────────────────────────────────
 def load_wavespeed_key() -> str:
+    """Prefer Doppler/env, then credential_store, then API_KEYS_MASTER.md."""
+    env_key = (os.environ.get("WAVESPEED_API_KEY") or "").strip()
+    if env_key:
+        return env_key
+    try:
+        from lib.credential_store import get_secret  # type: ignore
+
+        secret = (get_secret("WAVESPEED_API_KEY") or "").strip()
+        if secret:
+            return secret
+    except Exception:
+        pass
     candidates = [
         DROPBOX_ROOT / "Production" / "API_KEYS_MASTER.md",
         PROD_DIR / "API_KEYS_MASTER.md",
@@ -158,13 +224,13 @@ def load_wavespeed_key() -> str:
                         candidate = line.split(sep, 1)[1].strip().strip("`'\"")
                         if candidate and not candidate.lower().startswith("wavespeed"):
                             return candidate
-    fail("WaveSpeed API key not found in API_KEYS_MASTER.md")
+    fail("WaveSpeed API key not found (WAVESPEED_API_KEY env or API_KEYS_MASTER.md)")
     return ""  # unreachable
 
 
 def kling_submit(start_image: Path, end_image: Path, api_key: str) -> str:
     """POST start+end frames to Kling. Returns task_id."""
-    import urllib.request
+    import tempfile
 
     body = {
         "duration": KLING_DURATION_S,
@@ -175,19 +241,39 @@ def kling_submit(start_image: Path, end_image: Path, api_key: str) -> str:
         "negative_prompt": NEGATIVE_PROMPT,
         "prompt": POSITIVE_PROMPT,
     }
-    data = json.dumps(body).encode()
-    req = urllib.request.Request(
-        KLING_ENDPOINT,
-        data=data,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    log(f"submitting to {KLING_ENDPOINT} (body {len(data):,} B)")
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        result = json.loads(resp.read())
+    payload = json.dumps(body)
+    log(f"submitting to {KLING_ENDPOINT} (body {len(payload):,} B)")
+    tmp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp:
+            tmp.write(payload.encode("utf-8"))
+            tmp_path = tmp.name
+        proc = subprocess.run(
+            [
+                "curl", "-sS", "--http1.1", "-m", "120",
+                "--resolve", f"api.wavespeed.ai:443:{WAVESPEED_IP}",
+                "-X", "POST",
+                "-H", f"Authorization: Bearer {api_key}",
+                "-H", "Content-Type: application/json",
+                "-d", f"@{tmp_path}",
+                KLING_ENDPOINT,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=130,
+        )
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+    if proc.returncode != 0:
+        fail(f"kling submit curl failed: {proc.stderr[:400]}")
+    try:
+        result = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        fail(f"kling submit bad JSON: {proc.stdout[:400]}")
     task_id = (result.get("data") or {}).get("id") or result.get("id")
     if not task_id:
         fail(f"no task_id in response: {result!r}")

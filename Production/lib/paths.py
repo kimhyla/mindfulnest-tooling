@@ -137,6 +137,7 @@ def character_pose_paths(event_dir: Path | str) -> dict[str, str]:
     return {
         "Tessa":   str(bp.prod_root / "Tessa"   / "poses" / "tessa_neutral.png"),
         "Chipper": str(bp.char_assets / "generated_masters" / "master_chipper_live-batch-2-761a7da1.png"),
+        "Arlo":    str(bp.prod_root / "Arlo"    / "poses" / "arlo_canonical_neutral_vest.png"),
         "Luna":    str(bp.prod_root / "Luna"    / "Luna v2 Master 4.png"),
         "Benson":  str(bp.prod_root / "Benson"  / "poses" / "benson_kontext_swap_v1.png"),
         "Ember":   str(bp.prod_root / "Ember"   / "poses" / "ember_HERO.png"),
