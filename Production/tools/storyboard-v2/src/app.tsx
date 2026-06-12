@@ -6,7 +6,7 @@
 // Session 1 ships read-only preview. ZERO mutation calls. The single mutation
 // channel pathappPatch() exists in src/api/client.ts but has no callers.
 
-import { useEffect } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 import { effect } from '@preact/signals';
 import { ScopeBoundary } from './components/ScopeBoundary';
 import { ScopeBanner } from './components/ScopeBanner';
@@ -28,7 +28,7 @@ import { activeScope, activeProjectType, scopeKey } from './state/scope';
 import { activeTab } from './state/refreshSignals';
 import { ServerRehydrateWatcher } from './components/ServerRehydrateWatcher';
 import { StoryboardTab } from './components/StoryboardTab';
-import { pauseAllWaveformPlayback } from './utils/waveformPlaybackBus';
+import { stopAllPhasePlayback } from './utils/waveformPlaybackBus';
 import './app.css';
 
 export { stitcherRefreshTick, serverRehydrateTick } from './state/refreshSignals';
@@ -116,17 +116,23 @@ function ActivePane() {
 }
 
 export function App() {
-  // Stop ghost audio from hidden keep-alive Phase A/B waveforms when leaving phase tabs.
+  const [buildSha, setBuildSha] = useState('');
+
+  useEffect(() => {
+    setBuildSha(
+      document.querySelector('meta[name="build-sha"]')?.getAttribute('content') ?? '?',
+    );
+  }, []);
+
+  // Stop ghost audio whenever the top tab changes (keep-alive mounts A+B simultaneously).
   effect(() => {
-    const tab = activeTab.value;
-    if (tab !== 'phase_a' && tab !== 'phase_b') {
-      pauseAllWaveformPlayback();
-    }
+    activeTab.value;
+    stopAllPhasePlayback();
   });
 
   useEffect(() => {
     const onHidden = () => {
-      if (document.hidden) pauseAllWaveformPlayback();
+      if (document.hidden) stopAllPhasePlayback();
     };
     document.addEventListener('visibilitychange', onHidden);
     return () => document.removeEventListener('visibilitychange', onHidden);
@@ -150,7 +156,23 @@ export function App() {
           <h1>Storyboard v2</h1>
           <span class="mn-app-subhead" data-testid="app-subhead">
             Path C rewrite &middot; Session 4 v3.1 — full producer wiring + animate + stitcher complete
+            {buildSha ? (
+              <>
+                {' '}
+                &middot; build{' '}
+                <span data-testid="app-build-sha">{buildSha}</span>
+              </>
+            ) : null}
           </span>
+          <button
+            type="button"
+            class="mn-btn mn-btn-stop-audio"
+            data-testid="stop-all-audio-btn"
+            title="Stop Phase A/B waveform and preview audio (fixes ghost playback)"
+            onClick={() => stopAllPhasePlayback()}
+          >
+            Stop audio
+          </button>
           <ProjectSelector />
           {/* CC-9: hide VideoSelector in milestone scope — milestones have no
               per-video-role partitioning; their content is the single

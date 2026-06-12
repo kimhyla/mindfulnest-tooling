@@ -137,6 +137,16 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   const onWaveformClickRef = useRef(onWaveformClick);
   onWaveformClickRef.current = onWaveformClick;
 
+  const hardPause = useCallback(() => {
+    wsRef.current?.pause();
+    linkedVideo?.current?.pause();
+    setIsPlaying(false);
+    const pane = wrapperRef.current?.closest('.mn-tab-pane-keepalive');
+    pane?.querySelectorAll('video, audio').forEach((el) => {
+      if (el instanceof HTMLMediaElement) el.pause();
+    });
+  }, [linkedVideo]);
+
   // WaveSurfer mount — audioSrc changes only. Seek handlers live in a separate
   // effect below (LD WAVEFORM_DRAG_SEEK_V1).
   useEffect(() => {
@@ -188,7 +198,17 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     ws.on('ready', onReadyHandler);
     ws.on('audioprocess', onAudioProcess);
     ws.on('seeking', onSeeking);
+
+    const stopPlaybackIfHiddenPane = (): boolean => {
+      const pane = wrapperRef.current?.closest('.mn-tab-pane-keepalive') as HTMLElement | null;
+      if (!pane?.hidden) return false;
+      ws.pause();
+      linkedVideo?.current?.pause();
+      return true;
+    };
+
     ws.on('play', () => {
+      if (stopPlaybackIfHiddenPane()) return;
       setIsPlaying(true);
       onPlayStateChange?.(true);
     });
@@ -235,6 +255,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     // ─────────────────────────────────────────────────────────────────────────
 
     ws.on('play', () => {
+      if (stopPlaybackIfHiddenPane()) return;
       const lv = linkedVideo?.current;
       if (!lv) return;
       // Do NOT set lv.currentTime here. The play button already sets it
@@ -261,6 +282,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       lv_play(lv);
     });
     ws.on('audioprocess', () => {
+      if (stopPlaybackIfHiddenPane()) return;
       const lv = linkedVideo?.current;
       if (!lv) return;
       // Correct drift >0.3s to avoid fighting over tiny float jitter.
@@ -312,9 +334,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
 
     const pauseIfHidden = () => {
       if (!pane.hidden) return;
-      wsRef.current?.pause();
-      linkedVideo?.current?.pause();
-      setIsPlaying(false);
+      hardPause();
     };
 
     const pauseIfHiddenAndStopMedia = () => {
@@ -331,7 +351,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     const obs = new MutationObserver(pauseIfHiddenAndStopMedia);
     obs.observe(pane, { attributes: true, attributeFilter: ['hidden'] });
     return () => obs.disconnect();
-  }, [audioSrc, linkedVideo]);
+  }, [audioSrc, linkedVideo, hardPause]);
 
   // Drag-seek — separate effect so handlers bind AFTER WaveSurfer ready + wrapper
   // ref exist. Regression history:
@@ -678,13 +698,13 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       const ws = wsRef.current;
       if (!ws) return;
       if (ws.isPlaying()) {
-        ws.pause();
+        hardPause();
         return;
       }
       setLoadError(null);
       await startPlayback(false);
     })();
-  }, [startPlayback]);
+  }, [startPlayback, hardPause]);
 
   const controlRef = useRef<WaveformPlaybackControl>({
     get isReady() {
@@ -698,9 +718,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       return isReadyRef.current;
     },
     play: (opts) => startPlayback(opts?.fromStart ?? false),
-    pause: () => {
-      wsRef.current?.pause();
-    },
+    pause: hardPause,
   };
 
   useEffect(() => {
@@ -711,7 +729,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       unregister();
       playbackControl.current = null;
     };
-  }, [playbackControl, startPlayback]);
+  }, [playbackControl, startPlayback, hardPause]);
 
   if (!audioSrc) {
     return (

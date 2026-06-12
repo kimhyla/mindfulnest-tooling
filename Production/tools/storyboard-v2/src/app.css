@@ -20,6 +20,11 @@
   color: var(--text-dim);
   font-size: 12px;
 }
+.mn-btn-stop-audio {
+  margin-left: 12px;
+  font-size: 12px;
+  padding: 4px 10px;
+}
 
 /* Tab bar + D1 cross-tab scope rail (EventSelector + scope chip) */
 .mn-tab-bar-row {

@@ -92,6 +92,7 @@ MARKERS=(
     # Phase waveform playback — keep-alive mounts A+B; pause hidden + playback bus (2026-06-12)
     "PHASE_WAVEFORM_PLAY|Playback failed"
     "PHASE_WAVEFORM_PLAY|attributeFilter"
+    "PHASE_WAVEFORM_PLAY|stop-all-audio-btn"
     # Baseline buttons — every beat should have these (displayed text)
     "BASELINE|Regen Audio"
     "BASELINE|Regenerate B"
