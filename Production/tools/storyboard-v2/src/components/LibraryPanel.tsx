@@ -762,11 +762,14 @@ export function LibraryPanel() {
             if (audioUrl) {
               return (
                 <audio
+                  key={audioUrl}
                   class="mn-library-preview-audio"
                   data-testid="library-preview-audio"
+                  data-audio-filename={preview.item.filename ?? preview.item.key}
                   src={audioUrl}
                   controls
                   autoPlay
+                  preload="metadata"
                 />
               );
             }

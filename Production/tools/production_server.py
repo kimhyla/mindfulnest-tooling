@@ -6044,7 +6044,9 @@ class ProductionHandler(BaseHTTPRequestHandler):
             if path == "/api/stitch_editor/beat_boundaries":
                 return self._handle_stitch_beat_boundaries()
             if path.startswith("/api/stitch_editor/audio_file/"):
-                fname = path[len("/api/stitch_editor/audio_file/"):]
+                fname = urllib.parse.unquote(
+                    path[len("/api/stitch_editor/audio_file/"):],
+                )
                 return self._serve_stitch_audio_file(fname)
             if urllib.parse.urlparse(self.path).path == "/api/finder_video":
                 return self._serve_finder_video()
@@ -11178,28 +11180,46 @@ body {{padding-top:44px!important;}}
         from server_handlers.stitch_editor import handle_stitch_audio_extract
         return handle_stitch_audio_extract(self, body)
 
+    def _stitch_audio_content_type(self, filename: str) -> str:
+        ext = Path(filename).suffix.lower()
+        return {
+            ".mp3": "audio/mpeg",
+            ".wav": "audio/wav",
+            ".m4a": "audio/mp4",
+        }.get(ext, "audio/mpeg")
+
     def _serve_stitch_audio_file(self, fname: str) -> None:
         """GET /api/stitch_editor/audio_file/<fname> — serve extracted waveform audio
-        OR ambient library files (sidebar preview).
+        OR sound_library files (Library preview + sidebar).
 
         Lookup order (first hit wins):
           1. _stitch_cache_dir()                           — extracted waveform audio
-          2. Production/assets/ambient_library/            — primary ambient library
-          3. Production/assets/sound_library/ambient/      — duplicate location
+          2. Production/assets/sound_library/ambient/
+          3. Production/assets/sound_library/sfx/
+          4. Production/assets/sound_library/transitions/
+          5. Production/assets/ambient_library/            — legacy ambient
         """
-        safe = Path(fname).name
+        safe = Path(urllib.parse.unquote(fname)).name
+        if not safe or safe in (".", ".."):
+            return self._send_error_v59(
+                400,
+                error_code="GENERIC_ERROR",
+                error_message="invalid audio filename",
+                retry_safe=False,
+            )
         project_root = self._stitch_project_root()
         candidates = [
             self._stitch_cache_dir() / safe,
-            project_root / "Production" / "assets" / "ambient_library" / safe,
             project_root / "Production" / "assets" / "sound_library" / "ambient" / safe,
             project_root / "Production" / "assets" / "sound_library" / "sfx" / safe,
             project_root / "Production" / "assets" / "sound_library" / "transitions" / safe,
+            project_root / "Production" / "assets" / "ambient_library" / safe,
         ]
+        content_type = self._stitch_audio_content_type(safe)
         for target in candidates:
             if target.is_file():
                 body = target.read_bytes()
-                return self._send_bytes(200, body, "audio/mpeg", extra_headers={
+                return self._send_bytes(200, body, content_type, extra_headers={
                     "Cache-Control": "public, max-age=3600",
                     "Accept-Ranges": "bytes",
                 })
