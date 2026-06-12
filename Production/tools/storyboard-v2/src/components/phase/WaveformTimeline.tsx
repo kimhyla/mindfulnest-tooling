@@ -34,6 +34,8 @@ import { makeDropTarget, type DragPayload } from '../../utils/dragdrop';
 import {
   pauseOtherWaveformPlayback,
   registerWaveformPlaybackControl,
+  stopAllPhasePlayback,
+  pauseAllPhasePlayback,
 } from '../../utils/waveformPlaybackBus';
 
 export interface WatercolorCue {
@@ -162,6 +164,15 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     });
   }, [linkedVideo]);
 
+  /** Keep ▶/⏸ label aligned with WaveSurfer even if a play/pause event is dropped. */
+  const syncPlayUi = useCallback(() => {
+    const ws = wsRef.current;
+    if (!ws) return;
+    const playing = ws.isPlaying();
+    setIsPlaying(playing);
+    onPlayStateChange?.(playing);
+  }, [onPlayStateChange]);
+
   // WaveSurfer mount — audioSrc changes only. Seek handlers live in a separate
   // effect below (LD WAVEFORM_DRAG_SEEK_V1).
   useEffect(() => {
@@ -199,9 +210,11 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       onReady?.(d);
     };
     const onAudioProcess = () => {
+      if (stopPlaybackIfHiddenPane()) return;
       const ms = ws.getCurrentTime() * 1000;
       setCurrentMs(ms);
       onTimeUpdate?.(ms);
+      syncPlayUi();
     };
     // 'seeking' fires after every ws.seekTo() call with the real committed position.
     const onSeeking = () => {
@@ -329,6 +342,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     return () => {
       isReadyRef.current = false;
       try {
+        ws.pause();
         ws.destroy();
       } catch {
         // destroy() throws if AbortError is in flight — non-fatal at unmount
@@ -337,7 +351,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     };
     // onReady / onWaveformClick are intentionally captured at mount time.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [audioSrc]);
+  }, [audioSrc, syncPlayUi]);
 
   // Keep-alive: pause when this phase tab is hidden so background WaveSurfer
   // instances do not block playback on the visible tab (Chrome autoplay policy).
@@ -698,6 +712,9 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       if (!ws || !isReadyRef.current) return false;
       const pane = wrapperRef.current?.closest('.mn-tab-pane-keepalive') as HTMLElement | null;
       if (pane?.hidden) return false;
+      if (ws.isPlaying()) return true;
+
+      pauseOtherWaveformPlayback(playbackControlRef);
 
       if (fromStart) ws.seekTo(0);
       const lv = linkedVideo?.current;
@@ -712,7 +729,10 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
         .then(() => {
           // WaveSurfer swallows AbortError — verify media actually started.
           requestAnimationFrame(() => {
-            if (!ws.isPlaying()) {
+            if (ws.isPlaying()) {
+              setIsPlaying(true);
+              onPlayStateChange?.(true);
+            } else {
               setLoadError(
                 'Playback failed — try ▶ Play again (do not drag the waveform at the same time).',
               );
@@ -722,6 +742,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
         .catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
           setLoadError(`Playback failed: ${msg}`);
+          setIsPlaying(false);
         });
       if (lv && lv.paused) {
         lv.muted = true;
@@ -729,18 +750,21 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       }
       return true;
     },
-    [linkedVideo, playbackControlRef],
+    [linkedVideo, playbackControlRef, onPlayStateChange],
   );
 
   const togglePlayback = useCallback(() => {
     const ws = wsRef.current;
     if (!ws) return;
-    if (ws.isPlaying()) {
-      hardPause();
+    if (ws.isPlaying() || isPlaying) {
+      // Stop every keep-alive waveform — kills ghost dual-audio from hidden panes.
+      pauseAllPhasePlayback();
+      setIsPlaying(false);
+      onPlayStateChange?.(false);
       return;
     }
     startPlayback(false);
-  }, [startPlayback, hardPause]);
+  }, [startPlayback, isPlaying, onPlayStateChange]);
 
   playbackControlRef.play = (opts) => startPlayback(opts?.fromStart ?? false);
   playbackControlRef.pause = hardPause;

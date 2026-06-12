@@ -607,13 +607,16 @@
 }
 .mn-lipsync-video-wrapper {
   position: relative;
-  display: block;
-  width: 100%;
+  /* inline-block shrink-wraps to the video box — block+width:100% made % overlay
+     sizing drift vs LD-821 fireplace bbox (spell_title looked "gigantic"). */
+  display: inline-block;
+  max-width: 100%;
   line-height: 0;
 }
 .mn-lipsync-preview-video {
   display: block;
-  width: 100%;
+  width: auto;
+  max-width: 100%;
   max-height: 45vh;
   background: #000;
   border-radius: 3px;
@@ -640,13 +643,15 @@
 }
 .mn-lipsync-watercolor-overlay {
   position: absolute;
-  /* Top-left corner inset: ~35% of the video width, auto height preserves
-     the animation's aspect ratio. Positioned over the fireplace area. */
+  /* LD-821 browser preview mirrors server stitch bbox: left inset ~2%, top ~4%,
+     width ~35% of frame, height capped (server frame_max_h=540 in a ~720-tall frame). */
   left: 2%;
   top: 4%;
   width: 35%;
+  max-height: 55%;
   height: auto;
   object-fit: contain;
+  object-position: left top;
   pointer-events: none;
   /* WATERCOLOR_BLEND_FIX_V2 (2026-05-27): use normal blend so the white paper
      background of the watercolor painting remains visible ("white background remains

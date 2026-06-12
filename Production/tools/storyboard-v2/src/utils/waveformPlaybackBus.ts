@@ -19,12 +19,21 @@ export function pauseOtherWaveformPlayback(except: PlaybackControl): void {
   }
 }
 
-/** Stop every mounted Phase A/B waveform (hidden keep-alive panes included). */
+/** Pause every mounted Phase A/B waveform (hidden keep-alive panes included). */
 export function pauseAllWaveformPlayback(): void {
   for (const c of controls.values()) c.pause();
 }
 
-/** WaveSurfer + linked preview videos in hidden keep-alive panes. */
+/** Pause waveforms + linked preview media without resetting playhead (▶/⏸ toggle). */
+export function pauseAllPhasePlayback(): void {
+  pauseAllWaveformPlayback();
+  if (typeof document === 'undefined') return;
+  document.querySelectorAll('.mn-tab-pane-keepalive video, .mn-tab-pane-keepalive audio').forEach((el) => {
+    if (el instanceof HTMLMediaElement) el.pause();
+  });
+}
+
+/** WaveSurfer + linked preview videos in hidden keep-alive panes; resets playhead (tab / Stop audio). */
 export function stopAllPhasePlayback(): void {
   pauseAllWaveformPlayback();
   if (typeof document === 'undefined') return;
