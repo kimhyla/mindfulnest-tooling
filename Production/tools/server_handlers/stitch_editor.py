@@ -67,6 +67,37 @@ from tools.production_server import (  # noqa: E402
 STITCH_SLOT_ORDER = ["intro", "phase_a", "phase_b", "resolution"]
 # Canonical under-speech ambient level (Phase A stitch + preview/bake mix).
 STITCH_AMBIENT_BED_VOLUME = 0.15
+STITCH_SFX_CUE_DEFAULT_VOLUME = 0.45
+STITCH_SFX_CUE_DEFAULT_FADEIN_MS = 300
+STITCH_SFX_CUE_DEFAULT_FADEOUT_MS = 1200
+
+
+def normalize_slot_audio_mix_levels(slot: dict) -> None:
+    """Canonical ambient + SFX mix levels for any stitch slot (all four phases)."""
+    if not isinstance(slot, dict):
+        return
+    preset = (slot.get("ambient_bed") or "").strip()
+    amb_path = (slot.get("ambient_bed_path") or "").strip()
+    if preset or amb_path:
+        slot["ambient_volume"] = STITCH_AMBIENT_BED_VOLUME
+    elif not preset and not amb_path:
+        slot.pop("ambient_volume", None)
+    for cue in slot.get("sfx_cues") or []:
+        if not isinstance(cue, dict):
+            continue
+        cue.setdefault("volume", STITCH_SFX_CUE_DEFAULT_VOLUME)
+        cue.setdefault("fadein_ms", STITCH_SFX_CUE_DEFAULT_FADEIN_MS)
+        cue.setdefault("fadeout_ms", STITCH_SFX_CUE_DEFAULT_FADEOUT_MS)
+
+
+def normalize_job_slots_audio(slots) -> None:
+    """Apply normalize_slot_audio_mix_levels to every canonical stitch slot key."""
+    if not isinstance(slots, dict):
+        return
+    for slot_key in STITCH_SLOT_ORDER:
+        slot = slots.get(slot_key)
+        if isinstance(slot, dict):
+            normalize_slot_audio_mix_levels(slot)
 
 
 def stitch_event_job_name(event_id: str) -> str:
@@ -126,11 +157,119 @@ def _hydrate_slot_ambient_paths(h, slots: list) -> None:
             resolved = _resolve_stitch_ambient_bed_path(h, preset)
             if resolved:
                 slot["ambient_bed_path"] = resolved
-                slot.setdefault("ambient_volume", STITCH_AMBIENT_BED_VOLUME)
             else:
                 slot.pop("ambient_bed_path", None)
         else:
             slot.pop("ambient_bed_path", None)
+        normalize_slot_audio_mix_levels(slot)
+
+
+def _mix_stitch_waveform_audio(
+    h,
+    base_audio_path: Path,
+    slot: dict,
+    cache_dir: Path,
+    base_sig: str,
+) -> Path | None:
+    """Mix ambient bed + SFX cues into extracted slot audio for composer waveform (all slots)."""
+    import hashlib as _hl  # noqa: PLC0415
+
+    normalize_slot_audio_mix_levels(slot)
+    ambient_path = (slot.get("ambient_bed_path") or "").strip()
+    ambient_volume = float(slot.get("ambient_volume", STITCH_AMBIENT_BED_VOLUME))
+    sfx_cues = [c for c in (slot.get("sfx_cues") or []) if isinstance(c, dict)]
+
+    if not ambient_path and not sfx_cues:
+        return None
+    if ambient_path and not os.path.isfile(ambient_path):
+        ambient_path = ""
+
+    slot_dur_ms = h._ffprobe_duration_ms(base_audio_path)
+    slot_dur_s = max(slot_dur_ms, 1) / 1000.0
+
+    sig_parts = [base_sig, ambient_path, f"{ambient_volume:.4f}"]
+    sig_parts += [
+        f"{c.get('id', i)}:{c.get('offset_ms', 0)}:{c.get('duration_ms', '')}:"
+        f"{c.get('volume', STITCH_SFX_CUE_DEFAULT_VOLUME)}"
+        for i, c in enumerate(sfx_cues)
+    ]
+    mix_hash = _hl.md5("|".join(sig_parts).encode(), usedforsecurity=False).hexdigest()[:12]
+    out_path = cache_dir / f"stitch_audio_{mix_hash}.mp3"
+    if out_path.is_file():
+        return out_path
+
+    input_args: list[str] = ["-i", str(base_audio_path.resolve())]
+    filter_lanes: list[str] = []
+    base_audio = "[0:a]"
+    next_input_idx = 1
+
+    if ambient_path:
+        input_args += ["-i", ambient_path]
+        aidx = next_input_idx
+        next_input_idx += 1
+        filter_lanes.append(
+            f"[{aidx}:a]aloop=-1:size=2147483647,"
+            f"atrim=duration={slot_dur_s:.3f},"
+            f"volume={ambient_volume:.3f}[bed]"
+        )
+
+    valid_cue_labels: list[str] = []
+    for idx, cue in enumerate(sfx_cues):
+        src = cue.get("source_path") or ""
+        if not src or not os.path.isfile(src):
+            continue
+        input_args += ["-i", src]
+        cidx = next_input_idx
+        next_input_idx += 1
+        offset_ms = int(cue.get("offset_ms", 0))
+        fadein_ms = int(cue.get("fadein_ms", STITCH_SFX_CUE_DEFAULT_FADEIN_MS))
+        fadeout_ms = int(cue.get("fadeout_ms", STITCH_SFX_CUE_DEFAULT_FADEOUT_MS))
+        vol = float(cue.get("volume", STITCH_SFX_CUE_DEFAULT_VOLUME))
+        cue_dur_ms = h._ffprobe_duration_ms(Path(src))
+        cue_dur_s = cue_dur_ms / 1000.0 if cue_dur_ms else 5.0
+        play_ms = cue.get("duration_ms")
+        if play_ms is not None and int(play_ms) > 0:
+            play_s = min(cue_dur_s, int(play_ms) / 1000.0)
+        else:
+            play_s = cue_dur_s
+        fadeout_start_s = max(0.0, play_s - fadeout_ms / 1000.0)
+        label = f"cue{len(valid_cue_labels)}"
+        valid_cue_labels.append(label)
+        filter_lanes.append(
+            f"[{cidx}:a]aresample=44100,"
+            f"atrim=duration={play_s:.3f},"
+            f"adelay={offset_ms}|{offset_ms},"
+            f"afade=t=in:st=0:d={fadein_ms / 1000:.3f},"
+            f"afade=t=out:st={fadeout_start_s:.3f}:d={fadeout_ms / 1000:.3f},"
+            f"volume={vol:.3f}[{label}]"
+        )
+
+    mix_inputs = [base_audio]
+    if ambient_path:
+        mix_inputs.append("[bed]")
+    mix_inputs += [f"[{label}]" for label in valid_cue_labels]
+    if len(mix_inputs) < 2:
+        return None
+
+    n_mix = len(mix_inputs)
+    filter_lanes.append(
+        f"{''.join(mix_inputs)}amix=inputs={n_mix}:duration=first:normalize=0[aout]"
+    )
+    filter_complex = ";".join(filter_lanes)
+    mix_cmd = [
+        "ffmpeg", "-y",
+        *input_args,
+        "-filter_complex", filter_complex,
+        "-map", "[aout]",
+        "-ac", "1", "-ar", "44100", "-b:a", "128k",
+        str(out_path.resolve()),
+    ]
+    try:
+        subprocess.run(mix_cmd, check=True, capture_output=True, timeout=180)
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or b"")[:400].decode("utf-8", errors="replace")
+        raise RuntimeError(f"waveform audio mix failed: {stderr}") from exc
+    return out_path
 
 
 def stitch_migrate_legacy_to_canonical(state: dict, event_id: str) -> bool:
@@ -514,6 +653,7 @@ def handle_stitch_load_job(h, name: str)-> None:
     if isinstance(response_job, dict):
         slots = response_job.get("slots")
         if isinstance(slots, dict):
+            normalize_job_slots_audio(slots)
             for slot in slots.values():
                 if isinstance(slot, dict) and slot.get("beat_boundaries"):
                     slot["beat_boundaries"] = enrich_beat_boundaries(
@@ -603,10 +743,7 @@ def handle_stitch_save_job(h, body: dict)-> None:
                         prev.get("ambient_bed") or ""
                     ):
                         merged.pop("ambient_bed_path", None)
-                    if (merged.get("ambient_bed") or "").strip():
-                        merged.setdefault("ambient_volume", STITCH_AMBIENT_BED_VOLUME)
-                    elif "ambient_bed" in slot:
-                        merged.pop("ambient_volume", None)
+                    normalize_slot_audio_mix_levels(merged)
                     base_slots[slot_key] = merged
             slots_out = base_slots
         elif merge_slots and isinstance(slots, dict):
@@ -621,10 +758,7 @@ def handle_stitch_save_job(h, body: dict)-> None:
                         prev.get("ambient_bed") or ""
                     ):
                         merged.pop("ambient_bed_path", None)
-                    if (merged.get("ambient_bed") or "").strip():
-                        merged.setdefault("ambient_volume", STITCH_AMBIENT_BED_VOLUME)
-                    elif "ambient_bed" in slot:
-                        merged.pop("ambient_volume", None)
+                    normalize_slot_audio_mix_levels(merged)
                     base_slots[slot_key] = merged
             slots_out = base_slots
         elif not slot_items and existing.get("slots"):
@@ -632,6 +766,7 @@ def handle_stitch_save_job(h, body: dict)-> None:
             slots_out = _normalize_job_slots(existing.get("slots"))
         else:
             slots_out = slots
+        normalize_job_slots_audio(slots_out if isinstance(slots_out, dict) else {})
         jobs[name] = {
             "created_at": existing.get("created_at", now_iso),
             "updated_at": now_iso,
@@ -741,60 +876,39 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
 
     duration_ms = h._ffprobe_duration_ms(audio_path)
     serve_fname = audio_fname
+    mix_slot: dict = {}
     ambient_bed = (body.get("ambient_bed") or "").strip()
-    ambient_volume = float(body.get("ambient_volume", STITCH_AMBIENT_BED_VOLUME))
-    ambient_path = _resolve_stitch_ambient_bed_path(h, ambient_bed) if ambient_bed else ""
-    if ambient_path and not os.path.isfile(ambient_path):
-        ambient_path = ""
-
-    if ambient_path:
-        mix_sig = _hl.md5(
-            f"{cache_key}:{ambient_path}:{ambient_volume:.4f}".encode(),
-            usedforsecurity=False,
-        ).hexdigest()[:12]
-        mixed_fname = f"stitch_audio_{mix_sig}.mp3"
-        mixed_path = cache_dir / mixed_fname
-        if not mixed_path.is_file():
-            slot_dur_s = max(duration_ms, 1) / 1000.0
-            filter_complex = (
-                f"[1:a]aloop=-1:size=2147483647,atrim=duration={slot_dur_s:.3f},"
-                f"volume={ambient_volume:.3f}[bed];"
-                f"[0:a][bed]amix=inputs=2:duration=first:normalize=0[aout]"
+    if ambient_bed:
+        mix_slot["ambient_bed"] = ambient_bed
+    sfx_raw = body.get("sfx_cues")
+    if isinstance(sfx_raw, list):
+        mix_slot["sfx_cues"] = [c for c in sfx_raw if isinstance(c, dict)]
+    if mix_slot:
+        _hydrate_slot_ambient_paths(h, [mix_slot])
+        try:
+            mixed_path = _mix_stitch_waveform_audio(
+                h,
+                audio_path,
+                mix_slot,
+                cache_dir,
+                cache_key,
             )
-            mix_cmd = [
-                "ffmpeg", "-y",
-                "-i", str(audio_path.resolve()),
-                "-i", ambient_path,
-                "-filter_complex", filter_complex,
-                "-map", "[aout]",
-                "-ac", "1", "-ar", "44100", "-b:a", "128k",
-                str(mixed_path.resolve()),
-            ]
-            try:
-                subprocess.run(mix_cmd, check=True, capture_output=True, timeout=180)
-            except subprocess.CalledProcessError as exc:
-                stderr = (exc.stderr or b"")[:400].decode("utf-8", errors="replace")
-                return h._send_error_v59(
-                           500,
-                           error_code="AMBIENT_MIX_FAILED",
-                           error_message="ambient waveform mix failed",
-                           retry_safe=True,
-                           extra={"stderr": stderr},
-                       )
-            except subprocess.TimeoutExpired:
-                return h._send_error_v59(
-                           504,
-                           error_code="AMBIENT_MIX_TIMED_OUT",
-                           error_message="ambient waveform mix timed out",
-                           retry_safe=True,
-                       )
-        serve_fname = mixed_fname
-        duration_ms = h._ffprobe_duration_ms(mixed_path)
+        except RuntimeError as exc:
+            return h._send_error_v59(
+                       500,
+                       error_code="SLOT_AUDIO_MIX_FAILED",
+                       error_message=str(exc),
+                       retry_safe=True,
+                   )
+        if mixed_path is not None:
+            serve_fname = mixed_path.name
+            duration_ms = h._ffprobe_duration_ms(mixed_path)
 
     return h._send_json(200, {
         "audio_url": f"http://localhost:5111/api/stitch_editor/audio_file/{serve_fname}",
         "duration_ms": duration_ms,
-        "ambient_mixed": bool(ambient_path),
+        "ambient_mixed": bool(mix_slot.get("ambient_bed_path")),
+        "sfx_mixed": bool(mix_slot.get("sfx_cues")),
     })
 
 
@@ -843,9 +957,15 @@ def hydrate_stitch_pipeline_body(h, body: dict) -> dict:
         if _slots_list:
             _body["slots"] = _slots_list
             _hydrate_slot_ambient_paths(h, _body["slots"])
+            for slot in _body["slots"]:
+                if isinstance(slot, dict):
+                    normalize_slot_audio_mix_levels(slot)
 
     if _body.get("slots"):
         _hydrate_slot_ambient_paths(h, _body["slots"])
+        for slot in _body["slots"]:
+            if isinstance(slot, dict):
+                normalize_slot_audio_mix_levels(slot)
 
     if "transitions" not in _body and job:
         _body["transitions"] = job.get("transitions") or []

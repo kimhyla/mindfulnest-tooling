@@ -27,7 +27,12 @@ import { SfxCuePopover, type SfxCue } from './phase/SfxCuePopover';
 import type { WaveformPlaybackControl } from './phase/WaveformTimeline';
 import { acceptDragForTarget, makeDropTarget, type DragPayload } from '../utils/dragdrop';
 import { resolveStitchSlotSourceVideoUrl } from '../utils/stitchSlotVideo';
-import { STITCH_AMBIENT_BED_VOLUME } from '../utils/stitchConstants';
+import {
+  STITCH_AMBIENT_BED_VOLUME,
+  STITCH_SFX_CUE_DEFAULT_FADEIN_MS,
+  STITCH_SFX_CUE_DEFAULT_FADEOUT_MS,
+  STITCH_SFX_CUE_DEFAULT_VOLUME,
+} from '../utils/stitchConstants';
 import { stopAllPhasePlayback } from '../utils/waveformPlaybackBus';
 import {
   allStitchSlotsReady,
@@ -99,9 +104,9 @@ interface AmbientPresetListResponse {
 
 // Server defaults from server.py:14085-14087 (_handle_timeline_cue_upsert).
 const SFX_DEFAULTS = {
-  volume: 0.45,
-  fadein_ms: 300,
-  fadeout_ms: 1200,
+  volume: STITCH_SFX_CUE_DEFAULT_VOLUME,
+  fadein_ms: STITCH_SFX_CUE_DEFAULT_FADEIN_MS,
+  fadeout_ms: STITCH_SFX_CUE_DEFAULT_FADEOUT_MS,
 };
 
 // Slot duration fallback when the server-provided video_dur_ms is missing.

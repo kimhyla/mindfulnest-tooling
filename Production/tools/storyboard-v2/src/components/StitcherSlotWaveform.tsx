@@ -4,7 +4,7 @@
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import { activeScope } from '../state/scope';
 import { pathappPatch } from '../api/client';
-import { STITCH_AMBIENT_BED_VOLUME } from '../utils/stitchConstants';
+import { STITCH_AMBIENT_BED_VOLUME, STITCH_SLOT_AUDIO_MIX_V1 } from '../utils/stitchConstants';
 import {
   WaveformTimeline,
   type WatercolorCue,
@@ -75,9 +75,10 @@ export function StitcherSlotWaveform({
     let cancelled = false;
     setExtractError(null);
     (async () => {
-      const body: Record<string, string | number> = {
+      const body: Record<string, string | number | ReadonlyArray<SfxCue>> = {
         video_path: videoPath,
         ambient_volume: STITCH_AMBIENT_BED_VOLUME,
+        sfx_cues: cues,
       };
       if (ambientBed) body['ambient_bed'] = ambientBed;
       const res = await pathappPatch<{ audio_url?: string; duration_ms?: number; ambient_mixed?: boolean }>(
@@ -102,7 +103,7 @@ export function StitcherSlotWaveform({
     return () => {
       cancelled = true;
     };
-  }, [playbackDisabled, videoPath, ambientBed, videoDurMs, activeScope.value.event_id]);
+  }, [playbackDisabled, videoPath, ambientBed, cues, videoDurMs, activeScope.value.event_id]);
 
   const timelineCues = useMemo(() => sfxToTimelineCues(cues), [cues]);
   const fallbackDurationMs = extractDurMs ?? videoDurMs;
@@ -134,6 +135,7 @@ export function StitcherSlotWaveform({
       data-ambient-bed={ambientBed ?? ''}
       data-stitcher-ambient-waveform="STITCHER_AMBIENT_WAVEFORM_V1"
       data-stitch-ambient-volume-v1="STITCH_AMBIENT_BED_VOLUME_V1"
+      data-stitch-slot-audio-mix={STITCH_SLOT_AUDIO_MIX_V1}
     >
       <WaveformTimeline
         timelineTestId={`stitcher-slot-waveform-${slotKey}`}

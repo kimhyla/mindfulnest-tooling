@@ -94,6 +94,7 @@ MARKERS=(
     "STITCHER_AMBIENT|STITCHER_AMBIENT_WAVEFORM_V1"
     "STITCHER_AMBIENT|data-stitcher-ambient-waveform"
     "STITCHER_AMBIENT|STITCH_AMBIENT_BED_VOLUME_V1"
+    "STITCHER_AMBIENT|STITCH_SLOT_AUDIO_MIX_V1"
     # Phase stem trim + reject lipsync (2026-06-10)
     "PHASE_STEM_TRIM|waveform-stem-cut-block"
     "PHASE_STEM_TRIM|Reject lipsync"

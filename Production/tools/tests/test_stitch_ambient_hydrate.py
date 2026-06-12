@@ -1,16 +1,19 @@
-"""Ambient bed hydration + merge durability for stitch editor."""
+"""Ambient + SFX mix level normalization for all stitch slots."""
 from __future__ import annotations
 
 import os
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
 
 from server_handlers.stitch_editor import (
     STITCH_AMBIENT_BED_VOLUME,
+    STITCH_SLOT_ORDER,
+    STITCH_SFX_CUE_DEFAULT_VOLUME,
     _hydrate_slot_ambient_paths,
     _resolve_stitch_ambient_bed_path,
     _slot_merge_worthy,
+    normalize_job_slots_audio,
+    normalize_slot_audio_mix_levels,
 )
 
 
@@ -24,7 +27,7 @@ class _MockHandler:
         )
 
 
-class StitchAmbientHydrateTests(unittest.TestCase):
+class StitchSlotAudioMixTests(unittest.TestCase):
     def test_slot_merge_worthy_accepts_ambient_only_patch(self):
         self.assertTrue(_slot_merge_worthy({"ambient_bed": "Intro video ambient bed"}))
 
@@ -59,6 +62,32 @@ class StitchAmbientHydrateTests(unittest.TestCase):
         slots = [{"ambient_bed": "", "ambient_bed_path": "/some/path.mp3"}]
         _hydrate_slot_ambient_paths(h, slots)
         self.assertNotIn("ambient_bed_path", slots[0])
+
+    def test_legacy_loud_ambient_clamped_for_all_slot_keys(self):
+        job_slots = {
+            key: {
+                "video_path": f"Production/Event_1/{key}.mp4",
+                "ambient_bed": "phase a ambient bed" if key == "phase_a" else "",
+                "ambient_volume": 0.6,
+            }
+            for key in STITCH_SLOT_ORDER
+        }
+        job_slots["intro"]["ambient_bed"] = "Intro video ambient bed"
+        normalize_job_slots_audio(job_slots)
+        self.assertEqual(job_slots["intro"]["ambient_volume"], STITCH_AMBIENT_BED_VOLUME)
+        self.assertEqual(job_slots["phase_a"]["ambient_volume"], STITCH_AMBIENT_BED_VOLUME)
+        self.assertNotIn("ambient_volume", job_slots["phase_b"])
+
+    def test_sfx_cues_get_canonical_defaults_on_any_slot(self):
+        slot = {
+            "video_path": "Production/Event_1/resolution.mp4",
+            "sfx_cues": [{"id": "c1", "source_path": "/x.mp3", "offset_ms": 1000}],
+        }
+        normalize_slot_audio_mix_levels(slot)
+        cue = slot["sfx_cues"][0]
+        self.assertEqual(cue["volume"], STITCH_SFX_CUE_DEFAULT_VOLUME)
+        self.assertEqual(cue["fadein_ms"], 300)
+        self.assertEqual(cue["fadeout_ms"], 1200)
 
 
 if __name__ == "__main__":

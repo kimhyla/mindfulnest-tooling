@@ -11679,8 +11679,12 @@ body {{padding-top:44px!important;}}
         If no ambient and no SFX, returns norm_path unchanged.
         """
         import hashlib as _hl  # noqa: PLC0415
-        from server_handlers.stitch_editor import STITCH_AMBIENT_BED_VOLUME  # noqa: PLC0415
+        from server_handlers.stitch_editor import (  # noqa: PLC0415
+            STITCH_AMBIENT_BED_VOLUME,
+            normalize_slot_audio_mix_levels,
+        )
 
+        normalize_slot_audio_mix_levels(slot)
         ambient_path = slot.get("ambient_bed_path") or ""
         ambient_volume = float(slot.get("ambient_volume", STITCH_AMBIENT_BED_VOLUME))
         sfx_cues = slot.get("sfx_cues") or []
