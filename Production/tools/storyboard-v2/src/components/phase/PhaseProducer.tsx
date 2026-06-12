@@ -96,6 +96,9 @@ interface PhaseStateSlice {
   lipsync_mtime?: number;
   lipsync_status?: string;   // "polling" | "done" | "error: ..." from background thread
   lipsync_requires_regen?: boolean;
+  voice_stem_cut_start_s?: number;
+  voice_stem_cut_end_s?: number;
+  /** @deprecated Legacy keep-region keys — ignored when cut keys present. */
   voice_stem_trim_start_s?: number;
   voice_stem_trim_back_s?: number;
   flyin_flyout_status?: string;
@@ -140,6 +143,8 @@ function pickPhaseSlice(state: EventStateResponse, phase: 'a' | 'b'): PhaseState
   const lsm = get<number>('lipsync_mtime');            if (lsm) slice.lipsync_mtime = lsm;
   const lst = get<string>('lipsync_status');           if (lst) slice.lipsync_status = lst;
   const lrr = get<boolean>('lipsync_requires_regen');  if (lrr) slice.lipsync_requires_regen = lrr;
+  const tcs = get<number>('voice_stem_cut_start_s'); if (tcs !== undefined) slice.voice_stem_cut_start_s = tcs;
+  const tce = get<number>('voice_stem_cut_end_s');   if (tce !== undefined) slice.voice_stem_cut_end_s = tce;
   const tss = get<number>('voice_stem_trim_start_s'); if (tss !== undefined) slice.voice_stem_trim_start_s = tss;
   const tsb = get<number>('voice_stem_trim_back_s');  if (tsb !== undefined) slice.voice_stem_trim_back_s = tsb;
   const ffst = get<string>('flyin_flyout_status');     if (ffst) slice.flyin_flyout_status = ffst;
@@ -523,8 +528,10 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   };
 
   const onApplyStemCut = async () => {
-    if (stemTrimStartMs <= 0 && stemTrimBackMs <= 0) {
-      setStatusMsg('Drag the amber handles inward first — nothing to cut yet.');
+    const cutStart = Math.round((stateSlice.voice_stem_cut_start_s ?? 0) * 1000);
+    const cutEnd = Math.round((stateSlice.voice_stem_cut_end_s ?? 0) * 1000);
+    if (cutEnd <= cutStart + 250) {
+      setStatusMsg('Drag the amber handles to mark the section to remove, then Apply Cut.');
       return;
     }
     setBusyAction('apply_cut');
@@ -800,29 +807,33 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     void persistCues(next);
   };
 
-  const persistStemTrim = async (trimStartMs: number, trimBackMs: number) => {
-    const startS = Math.round(trimStartMs) / 1000;
-    const backS = Math.round(trimBackMs) / 1000;
+  const persistStemCut = async (cutStartMs: number, cutEndMs: number) => {
+    const startS = Math.round(cutStartMs) / 1000;
+    const endS = Math.round(cutEndMs) / 1000;
     setStateSlice((s) => ({
       ...s,
-      voice_stem_trim_start_s: startS,
-      voice_stem_trim_back_s: backS,
+      voice_stem_cut_start_s: startS,
+      voice_stem_cut_end_s: endS,
     }));
-    const startField = `phase_${phase}_voice_stem_trim_start_s`;
-    const backField = `phase_${phase}_voice_stem_trim_back_s`;
-    const [startRes, backRes] = await Promise.all([
+    const startField = `phase_${phase}_voice_stem_cut_start_s`;
+    const endField = `phase_${phase}_voice_stem_cut_end_s`;
+    const legacyStart = `phase_${phase}_voice_stem_trim_start_s`;
+    const legacyBack = `phase_${phase}_voice_stem_trim_back_s`;
+    const [startRes, endRes] = await Promise.all([
       pathappPatch(activeScope.value, 'v2_module_patch', { field: startField, value: startS }),
-      pathappPatch(activeScope.value, 'v2_module_patch', { field: backField, value: backS }),
+      pathappPatch(activeScope.value, 'v2_module_patch', { field: endField, value: endS }),
+      pathappPatch(activeScope.value, 'v2_module_patch', { field: legacyStart, value: 0 }),
+      pathappPatch(activeScope.value, 'v2_module_patch', { field: legacyBack, value: 0 }),
     ]);
-    if (!startRes.ok || !backRes.ok) {
+    if (!startRes.ok || !endRes.ok) {
       setStatusMsg(
-        `✗ stem trim patch failed (HTTP ${startRes.status}/${backRes.status})`,
+        `✗ stem cut patch failed (HTTP ${startRes.status}/${endRes.status})`,
       );
     }
   };
 
-  const onStemTrimChange = (trimStartMs: number, trimBackMs: number) => {
-    void persistStemTrim(trimStartMs, trimBackMs);
+  const onStemCutChange = (cutStartMs: number, cutEndMs: number) => {
+    void persistStemCut(cutStartMs, cutEndMs);
   };
 
   const onCueDelete = () => {
@@ -967,13 +978,13 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const audioFile = priorityAudioFile(stateSlice);
   const lipsyncFile = stateSlice.lipsync_file ?? null;
   const canEditStemTrim = Boolean(stateSlice.voice_stem_file && audioFile?.label === 'stem');
-  const stemTrimStartMs = Math.round((stateSlice.voice_stem_trim_start_s ?? 0) * 1000);
-  const stemTrimBackMs = Math.round((stateSlice.voice_stem_trim_back_s ?? 0) * 1000);
+  const stemCutStartMs = Math.round((stateSlice.voice_stem_cut_start_s ?? 0) * 1000);
+  const stemCutEndMs = Math.round((stateSlice.voice_stem_cut_end_s ?? 0) * 1000);
   const showRejectLipsync =
     Boolean(lipsyncFile) &&
     !lipsyncing &&
     stateSlice.lipsync_status !== 'running';
-  const hasStemTrimDraft = stemTrimStartMs > 0 || stemTrimBackMs > 0;
+  const hasStemCut = stemCutEndMs > stemCutStartMs + 250;
   const activeCue =
     activeCueId
       ? (stateSlice.watercolor_cues ?? []).find((c) => c.id === activeCueId) ?? null
@@ -1083,10 +1094,10 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           onWatercolorDrop={onWatercolorDrop}
           onTimeUpdate={(ms) => setCurrentTimeMs(ms)}
           onCueRangeChange={onCueRangeChange}
-          stemTrimStartMs={stemTrimStartMs}
-          stemTrimBackMs={stemTrimBackMs}
-          stemTrimEditable={canEditStemTrim}
-          onStemTrimChange={onStemTrimChange}
+          stemCutStartMs={stemCutStartMs}
+          stemCutEndMs={stemCutEndMs}
+          stemCutEditable={canEditStemTrim}
+          onStemCutChange={onStemCutChange}
 
           linkedVideo={videoRef}
           playbackControl={waveformPlaybackRef}
@@ -1185,13 +1196,13 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                 class="mn-btn mn-btn-primary"
                 data-testid={`phase-${phase}-apply-stem-cut-btn`}
                 onClick={onApplyStemCut}
-                disabled={busyAction !== null || !hasStemTrimDraft}
-                title="Bake amber selection into a new voice stem mp3 (ffmpeg)"
+                disabled={busyAction !== null || !hasStemCut}
+                title="Remove the amber region from the voice stem (ffmpeg)"
               >
                 {busyAction === 'apply_cut' ? 'Cutting…' : 'Apply Cut'}
               </button>
               <span class="mn-dim mn-stem-trim-hint" data-testid={`phase-${phase}-stem-trim-hint`}>
-                Amber bar = trim region · drag handles, then Apply Cut
+                Amber = section to remove · drag handles, then Apply Cut
               </span>
             </>
           ) : null}

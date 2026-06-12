@@ -77,10 +77,10 @@ MARKERS=(
     # LD-827 — Stitcher viewer instant /files fallback while module preview bakes
     "LD-827|LD-827 instant slot preview"
     # Phase stem trim + reject lipsync (2026-06-10)
-    "PHASE_STEM_TRIM|waveform-stem-trim-block"
+    "PHASE_STEM_TRIM|waveform-stem-cut-block"
     "PHASE_STEM_TRIM|Reject lipsync"
     "PHASE_STEM_TRIM|Apply Cut"
-    "PHASE_STEM_TRIM|Amber bar = trim region"
+    "PHASE_STEM_TRIM|Amber = section to remove"
     "PHASE_STEM_TRIM|waveform-seek-layer"
     # Baseline buttons — every beat should have these (displayed text)
     "BASELINE|Regen Audio"

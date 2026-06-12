@@ -772,8 +772,8 @@
   transform: translateX(-50%);
 }
 .mn-waveform-stem-trim-handle--right {
-  right: 0;
-  transform: translateX(50%);
+  right: auto;
+  transform: translateX(-50%);
 }
 .mn-waveform-stem-trim-handle:hover,
 .mn-waveform-stem-trim-handle:active {

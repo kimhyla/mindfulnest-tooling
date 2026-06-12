@@ -105,42 +105,96 @@ _PHASE_LIPSYNC_DERIVED_KEYS = (
     "stitched_file",
     "stitched_mtime",
 )
-_PHASE_VOICE_STEM_TRIM_KEYS = (
+_PHASE_VOICE_STEM_CUT_KEYS = (
+    "voice_stem_cut_start_s",
+    "voice_stem_cut_end_s",
+)
+# Legacy keep-region keys (pre-2026-06-12 invert); cleared on write.
+_PHASE_VOICE_STEM_TRIM_KEYS_LEGACY = (
     "voice_stem_trim_start_s",
     "voice_stem_trim_back_s",
 )
 
 
+def _phase_voice_stem_cut_window(state: dict, phase: str) -> tuple[float, float]:
+    """Return (cut_start_s, cut_end_s) — absolute times of the region TO REMOVE."""
+    start = float(state.get(f"phase_{phase}_voice_stem_cut_start_s") or 0.0)
+    end = float(state.get(f"phase_{phase}_voice_stem_cut_end_s") or 0.0)
+    return max(0.0, start), max(0.0, end)
+
+
 def _phase_voice_stem_trim_window(state: dict, phase: str) -> tuple[float, float]:
-    """Return (trim_start_s, trim_back_s) from module state (seconds from front/back)."""
-    start = float(state.get(f"phase_{phase}_voice_stem_trim_start_s") or 0.0)
-    back = float(state.get(f"phase_{phase}_voice_stem_trim_back_s") or 0.0)
-    return max(0.0, start), max(0.0, back)
+    """Deprecated alias — use _phase_voice_stem_cut_window."""
+    return _phase_voice_stem_cut_window(state, phase)
 
 
-def _materialize_trimmed_audio(
+def _materialize_cut_out_audio(
     source: Path,
     dst: Path,
-    trim_start_s: float,
-    trim_back_s: float,
+    cut_start_s: float,
+    cut_end_s: float,
 ) -> Path:
-    """ffmpeg-trim *source* to *dst*; returns *source* unchanged when trim inactive."""
-    if trim_start_s <= 0.001 and trim_back_s <= 0.001:
-        return source
-    dur = _ffprobe_duration(source)
-    end_s = dur - trim_back_s if trim_back_s > 0.001 else dur
-    window = end_s - trim_start_s
-    if window < 0.25:
+    """Remove [cut_start_s, cut_end_s) from *source*; write kept audio to *dst*."""
+    if cut_end_s <= cut_start_s + 0.001:
         raise ValueError(
-            f"trim window too small ({window:.2f}s): "
-            f"start={trim_start_s:.2f}s back={trim_back_s:.2f}s dur={dur:.2f}s",
+            f"cut region empty or inverted: start={cut_start_s:.3f}s end={cut_end_s:.3f}s",
         )
+    dur = _ffprobe_duration(source)
+    if cut_end_s - cut_start_s >= dur - 0.001:
+        raise ValueError(
+            f"cut region covers entire file ({cut_end_s - cut_start_s:.2f}s of {dur:.2f}s)",
+        )
+
+    kept = (cut_start_s - 0.0) + max(0.0, dur - cut_end_s)
+    if kept < 0.25:
+        raise ValueError(
+            f"kept audio too small ({kept:.2f}s after removing "
+            f"[{cut_start_s:.2f}s, {cut_end_s:.2f}s] from {dur:.2f}s)",
+        )
+
+    # Single-segment keeps (head or tail removal).
+    if cut_start_s <= 0.001:
+        subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-ss", f"{cut_end_s:.3f}",
+                "-i", str(source),
+                "-c:a", "libmp3lame", "-q:a", "2",
+                str(dst),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=120,
+        )
+        return dst
+
+    if cut_end_s >= dur - 0.001:
+        subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-t", f"{cut_start_s:.3f}",
+                "-i", str(source),
+                "-c:a", "libmp3lame", "-q:a", "2",
+                str(dst),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=120,
+        )
+        return dst
+
+    # Middle removal — concat [0, cut_start) + [cut_end, dur).
     subprocess.run(
         [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-ss", f"{trim_start_s:.3f}",
             "-i", str(source),
-            "-t", f"{window:.3f}",
+            "-filter_complex",
+            (
+                f"[0:a]atrim=0:{cut_start_s:.3f},asetpts=PTS-STARTPTS[a1];"
+                f"[0:a]atrim={cut_end_s:.3f}:{dur:.3f},asetpts=PTS-STARTPTS[a2];"
+                f"[a1][a2]concat=n=2:v=0:a=1[out]"
+            ),
+            "-map", "[out]",
             "-c:a", "libmp3lame", "-q:a", "2",
             str(dst),
         ],
@@ -149,6 +203,26 @@ def _materialize_trimmed_audio(
         timeout=120,
     )
     return dst
+
+
+def _materialize_trimmed_audio(
+    source: Path,
+    dst: Path,
+    trim_start_s: float,
+    trim_back_s: float,
+) -> Path:
+    """Legacy keep-region trim — maps to cut-out of complement bands."""
+    if trim_start_s <= 0.001 and trim_back_s <= 0.001:
+        return source
+    dur = _ffprobe_duration(source)
+    cut_start = trim_start_s
+    cut_end = dur - trim_back_s if trim_back_s > 0.001 else dur
+    return _materialize_cut_out_audio(source, dst, cut_start, cut_end)
+
+
+def _phase_clear_stem_cut_keys(state: dict, phase: str) -> None:
+    for suffix in _PHASE_VOICE_STEM_CUT_KEYS + _PHASE_VOICE_STEM_TRIM_KEYS_LEGACY:
+        state.pop(f"phase_{phase}_{suffix}", None)
 
 
 def _phase_clear_lipsync_derived(state: dict, phase: str, *, requires_regen: bool) -> None:
@@ -170,12 +244,12 @@ def _apply_phase_audio_trim(
     state: dict,
     ts: str,
 ) -> tuple[Path, float]:
-    """Resolve lipsync/mix audio path, applying persisted stem trim when active."""
-    trim_start, trim_back = _phase_voice_stem_trim_window(state, phase)
-    if trim_start <= 0.001 and trim_back <= 0.001:
+    """Resolve lipsync/mix audio path, applying persisted stem cut when active."""
+    cut_start, cut_end = _phase_voice_stem_cut_window(state, phase)
+    if cut_end <= cut_start + 0.001:
         return audio_path, _ffprobe_duration(audio_path)
     tmp_trim = h.app.event_dir / f"_tmp_stem_trim_phase_{phase}_{ts}.mp3"
-    trimmed = _materialize_trimmed_audio(audio_path, tmp_trim, trim_start, trim_back)
+    trimmed = _materialize_cut_out_audio(audio_path, tmp_trim, cut_start, cut_end)
     return trimmed, _ffprobe_duration(trimmed)
 
 
@@ -1057,14 +1131,14 @@ def handle_phase_apply_stem_cut(h, body: dict) -> None:
             extra={"hint": "Generate a voice stem first."},
         )
 
-    trim_start, trim_back = _phase_voice_stem_trim_window(state, phase)
-    if trim_start <= 0.001 and trim_back <= 0.001:
+    cut_start, cut_end = _phase_voice_stem_cut_window(state, phase)
+    if cut_end <= cut_start + 0.001:
         return h._send_error_v59(
             400,
             error_code="GENERIC_ERROR",
-            error_message="No stem trim set — drag amber handles first",
+            error_message="No stem cut region set — drag amber handles first",
             retry_safe=False,
-            extra={"hint": "Drag the amber bar left/right handles, then Apply Cut."},
+            extra={"hint": "Amber box = audio to REMOVE. Drag handles, then Apply Cut."},
         )
 
     try:
@@ -1089,7 +1163,7 @@ def handle_phase_apply_stem_cut(h, body: dict) -> None:
     out_name = f"phase_{phase}_voice_stem_{ts}.mp3"
     out_path = h.app.event_dir / out_name
     try:
-        _materialize_trimmed_audio(src, out_path, trim_start, trim_back)
+        _materialize_cut_out_audio(src, out_path, cut_start, cut_end)
         duration = _ffprobe_duration(out_path)
     except (subprocess.CalledProcessError, ValueError, OSError) as exc:
         traceback.print_exc()
@@ -1106,8 +1180,7 @@ def handle_phase_apply_stem_cut(h, body: dict) -> None:
     def _apply(st, _p=phase, _n=out_name, _m=mtime):
         st[f"phase_{_p}_voice_stem_file"] = _n
         st[f"phase_{_p}_voice_stem_mtime"] = _m
-        for suffix in _PHASE_VOICE_STEM_TRIM_KEYS:
-            st.pop(f"phase_{_p}_{suffix}", None)
+        _phase_clear_stem_cut_keys(st, _p)
         _phase_clear_lipsync_derived(st, _p, requires_regen=True)
         st["_module_version"] = int(st.get("_module_version", 0) or 0) + 1
         return st["_module_version"]
@@ -1129,11 +1202,11 @@ def handle_phase_apply_stem_cut(h, body: dict) -> None:
         "file": out_name,
         "mtime": mtime,
         "duration_s": round(duration, 3),
-        "trim_start_s": trim_start,
-        "trim_back_s": trim_back,
+        "cut_start_s": cut_start,
+        "cut_end_s": cut_end,
         "previous_stem_file": stem_name,
         "module_version": new_version,
-        "message": "Stem cut applied — waveform reloads trimmed audio.",
+        "message": "Stem cut applied — removed amber region; waveform reloads kept audio.",
     })
 
 
@@ -1389,8 +1462,7 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
         state[f"phase_{_p}_voice_stem_mtime"] = _m
         # Fresh stem invalidates lipsync/mix/stitch derived from the old audio.
         _phase_clear_lipsync_derived(state, _p, requires_regen=True)
-        for suffix in _PHASE_VOICE_STEM_TRIM_KEYS:
-            state.pop(f"phase_{_p}_{suffix}", None)
+        _phase_clear_stem_cut_keys(state, _p)
         state["_module_version"] = int(state.get("_module_version", 0) or 0) + 1
         return state["_module_version"]
     try:
@@ -1545,7 +1617,7 @@ def handle_phase_b_mix_audio(h, body: dict)-> None:
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     voice_extract_path = h.app.event_dir / f"_tmp_voice_extract_{phase}_{ts}.mp3"
     voice_for_mix_path = voice_stem_path  # default fallback
-    trim_start, trim_back = _phase_voice_stem_trim_window(state, phase)
+    cut_start, cut_end = _phase_voice_stem_cut_window(state, phase)
     lipsync_name_for_source = state.get(f"phase_{phase}_lipsync_file")
     lipsync_source_path: Path | None = None
     if lipsync_name_for_source:
@@ -1579,22 +1651,22 @@ def handle_phase_b_mix_audio(h, body: dict)-> None:
                 print(f"[mix_audio] extract-from-lipsync failed (falling back to voice_stem): {exc}")
                 lipsync_source_path = None
 
-    if lipsync_source_path is None and (trim_start > 0.001 or trim_back > 0.001):
+    if lipsync_source_path is None and cut_end > cut_start + 0.001:
         try:
             tmp_trim = h.app.event_dir / f"_tmp_stem_trim_mix_{phase}_{ts}.mp3"
-            voice_for_mix_path = _materialize_trimmed_audio(
-                voice_stem_path, tmp_trim, trim_start, trim_back,
+            voice_for_mix_path = _materialize_cut_out_audio(
+                voice_stem_path, tmp_trim, cut_start, cut_end,
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
                 OSError, ValueError) as exc:
             return h._send_error_v59(
                 400,
                 error_code="STEM_TRIM_FAILED",
-                error_message=f"stem trim failed: {exc}",
+                error_message=f"stem cut failed: {exc}",
                 retry_safe=False,
                 extra={
-                    "trim_start_s": trim_start,
-                    "trim_back_s": trim_back,
+                    "cut_start_s": cut_start,
+                    "cut_end_s": cut_end,
                     "hint": "Reduce front/back trim values so at least 0.25s of audio remains.",
                 },
             )
