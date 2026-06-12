@@ -180,26 +180,13 @@ if [[ "${MN_SKIP_REGRESSION_GUARD:-0}" != "1" ]]; then
     else
         echo "[deploy] WARN: regression guard script missing at $GUARD_SCRIPT — skipping" >&2
     fi
-    DURABILITY_SCRIPT="$SRC_TOOLING/Production/scripts/verify_phase_waveform_play_durability.sh"
-    if [[ -x "$DURABILITY_SCRIPT" ]]; then
-        if ! bash "$DURABILITY_SCRIPT"; then
-            echo "[deploy] FATAL: waveform play durability guard failed." >&2
+    SESSION_DURABILITY_SCRIPT="$SRC_TOOLING/Production/scripts/verify_storyboard_session_durability.sh"
+    if [[ -x "$SESSION_DURABILITY_SCRIPT" ]]; then
+        if ! bash "$SESSION_DURABILITY_SCRIPT"; then
+            echo "[deploy] FATAL: storyboard session durability guard failed." >&2
             exit 1
         fi
-        echo "[deploy] (a-pre.6b) PHASE_WAVEFORM_PLAY source durability ok"
-    fi
-    PRODUCER_DURABILITY_SCRIPT="$SRC_TOOLING/Production/scripts/verify_phase_producer_durability.sh"
-    if [[ -x "$PRODUCER_DURABILITY_SCRIPT" ]]; then
-        if ! bash "$PRODUCER_DURABILITY_SCRIPT"; then
-            echo "[deploy] FATAL: Phase A/B producer durability guard failed." >&2
-            exit 1
-        fi
-        echo "[deploy] (a-pre.6c) PHASE_PRODUCER_AB source durability ok"
-    fi
-    SEEK_DURABILITY_SCRIPT="$SRC_TOOLING/Production/scripts/verify_stitcher_module_seek_durability.sh"
-    if [[ -f "$SEEK_DURABILITY_SCRIPT" ]]; then
-        bash "$SEEK_DURABILITY_SCRIPT" || exit 1
-        echo "[deploy] (a-pre.6d) STITCHER_MODULE_SEEK source durability ok"
+        echo "[deploy] (a-pre.6b) session durability ok (waveform, producer, seek, library audio, phase fades + pytest)"
     fi
 else
     echo "[deploy] (a-pre.6) LD-766 regression guard SKIPPED (MN_SKIP_REGRESSION_GUARD=1)"
