@@ -569,6 +569,11 @@
   font-family: var(--mono);
   font-size: 11px;
 }
+.mn-phase-status-line--lipsync-pending {
+  border-left-color: #c9a227;
+  background: rgba(201, 162, 39, 0.12);
+  color: #6b5410;
+}
 .mn-phase-audio, .mn-phase-lipsync {
   margin: 8px 0;
   display: flex;

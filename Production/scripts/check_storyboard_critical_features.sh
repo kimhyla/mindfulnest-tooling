@@ -84,6 +84,9 @@ MARKERS=(
     "PHASE_STEM_TRIM|Apply Cut"
     "PHASE_STEM_TRIM|Drag gold handles · amber = section to remove"
     "PHASE_STEM_TRIM|waveform-seek-layer"
+    # Phase lipsync tab-switch durability (2026-06-12)
+    "PHASE_LIPSYNC|Safe to switch tabs"
+    "PHASE_LIPSYNC|Lipsync in progress"
     # Baseline buttons — every beat should have these (displayed text)
     "BASELINE|Regen Audio"
     "BASELINE|Regenerate B"

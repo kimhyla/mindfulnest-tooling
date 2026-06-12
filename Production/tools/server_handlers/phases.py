@@ -2446,6 +2446,7 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
                     state[f"phase_{_p}_lipsync_file"] = _n
                     state[f"phase_{_p}_lipsync_mtime"] = _m
                     state[f"phase_{_p}_lipsync_status"] = "done"
+                    state[f"phase_{_p}_lipsync_requires_regen"] = False
                     state.pop(f"phase_{_p}_lipsync_task_id", None)
                     state[f"phase_{_p}_cedric_base_clip_id" if _p == "b"
                           else f"phase_{_p}_empty_desk_bg_id"] = _bid

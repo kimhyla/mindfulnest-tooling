@@ -175,6 +175,19 @@ function pickPhaseSlice(state: EventStateResponse, phase: 'a' | 'b'): PhaseState
 
 type AudioSourceLabel = 'lipsync' | 'mixed' | 'stem';
 
+/** Server statuses while a phase lipsync job is still in flight. */
+const PHASE_LIPSYNC_IN_FLIGHT = new Set(['running', 'polling', 'submitting', 'submitted']);
+
+function isPhaseLipsyncInFlight(status: string | undefined): boolean {
+  return Boolean(status && PHASE_LIPSYNC_IN_FLIGHT.has(status));
+}
+
+function phaseLipsyncProgressMessage(phase: 'a' | 'b'): string {
+  return phase === 'a'
+    ? '⏳ Lipsync processing (~5–20 min). Safe to switch tabs — will auto-update when done.'
+    : '⏳ Lipsync in progress (~8–20 min). Safe to switch tabs — will auto-update when done.';
+}
+
 function priorityAudioFile(
   slice: PhaseStateSlice,
 ): { name: string; label: AudioSourceLabel } | null {
@@ -343,18 +356,18 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     };
   }, [activeScope.value.event_id, phase]);
 
-  // Resume polling after hard refresh while server still reports running.
+  // Resume polling after hard refresh OR tab switch while server still reports in-flight.
   useEffect(() => {
     const status = stateSlice.lipsync_status;
-    if (status === 'running') {
-      lipsyncMtimeBefore.current = stateSlice.lipsync_mtime ?? null;
+    if (isPhaseLipsyncInFlight(status)) {
+      if (lipsyncMtimeBefore.current === null) {
+        lipsyncMtimeBefore.current = stateSlice.lipsync_mtime ?? null;
+      }
       setLipsyncing(true);
-      setStatusMsg(
-        phase === 'a'
-          ? '⏳ Lipsync processing (~5–20 min). Will auto-update when done.'
-          : '⏳ Lipsync submitted — Kling processing (~8–20 min). Will auto-update when done.',
-      );
-    } else if (
+      setStatusMsg(phaseLipsyncProgressMessage(phase));
+      return;
+    }
+    if (
       (status === 'needs_manual_visual_review' || status === 'done') &&
       stateSlice.lipsync_file
     ) {
@@ -362,33 +375,49 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     }
   }, [phase, stateSlice.lipsync_status, stateSlice.lipsync_file, stateSlice.lipsync_mtime]);
 
-  // Auto-poll every 30s while lipsync is processing.
-  useEffect(() => {
-    if (!lipsyncing) return;
-    const id = setInterval(async () => {
-      await refreshAll();
-    }, 30_000);
-    return () => clearInterval(id);
-  }, [lipsyncing]);
+  const serverLipsyncInFlight = isPhaseLipsyncInFlight(stateSlice.lipsync_status);
+  const lipsyncInFlight = lipsyncing || serverLipsyncInFlight;
 
-  // Detect when lipsync_mtime changes (success) OR lipsync_status = "error:…" (failure).
+  // Poll while in-flight — survives tab unmount/remount because status lives in state.json.
   useEffect(() => {
-    if (!lipsyncing) return;
-    // Error path: background thread wrote "error: <reason>" to state.
+    if (!lipsyncInFlight) return;
+    void refreshAll();
+    const id = setInterval(() => {
+      void refreshAll();
+    }, 15_000);
+    return () => clearInterval(id);
+  }, [lipsyncInFlight, activeScope.value.event_id, phase]);
+
+  // Terminal transitions: error, or new lipsync file landed (mtime / status).
+  useEffect(() => {
+    if (!lipsyncInFlight && !lipsyncing) return;
     const status = stateSlice.lipsync_status;
     if (status && status.startsWith('error:')) {
       setLipsyncing(false);
       setStatusMsg(`✗ Lipsync failed: ${status.replace(/^error:\s*/, '')}`);
       return;
     }
-    // Success path: mtime changed → new file landed.
+    if (status === 'done' || status === 'needs_manual_visual_review') {
+      const currentMtime = stateSlice.lipsync_mtime ?? null;
+      const before = lipsyncMtimeBefore.current;
+      if (
+        stateSlice.lipsync_file &&
+        (before === null || currentMtime === null || currentMtime !== before)
+      ) {
+        setLipsyncing(false);
+        lipsyncMtimeBefore.current = null;
+        setStatusMsg('✓ Lipsync complete — video ready.');
+      }
+      return;
+    }
     const currentMtime = stateSlice.lipsync_mtime ?? null;
     const before = lipsyncMtimeBefore.current;
-    if (currentMtime !== null && currentMtime !== before) {
+    if (currentMtime !== null && before !== null && currentMtime !== before) {
       setLipsyncing(false);
+      lipsyncMtimeBefore.current = null;
       setStatusMsg('✓ Lipsync complete — video ready.');
     }
-  }, [stateSlice.lipsync_mtime, stateSlice.lipsync_status, lipsyncing]);
+  }, [stateSlice.lipsync_mtime, stateSlice.lipsync_status, stateSlice.lipsync_file, lipsyncInFlight, lipsyncing]);
 
   // Track latest watercolor cues in a ref so the postMessage handler can read
   // current cue state without stale closure (handler deps = [phase] only).
@@ -504,7 +533,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
         // so we can detect when the new file lands, then start polling.
         lipsyncMtimeBefore.current = stateSlice.lipsync_mtime ?? null;
         setLipsyncing(true);
-        setStatusMsg('⏳ Lipsync submitted — Kling processing (~8–20 min). Will auto-update when done.');
+        setStatusMsg(phaseLipsyncProgressMessage(phase));
       } else {
         setStatusMsg('✓ Lipsync complete');
         await refreshAll();
@@ -519,9 +548,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     ) {
       lipsyncMtimeBefore.current = stateSlice.lipsync_mtime ?? null;
       setLipsyncing(true);
-      setStatusMsg(
-        `⏳ Lipsync already processing (~8–20 min). ${res.hint ?? 'Will auto-update when done.'}`,
-      );
+      setStatusMsg(phaseLipsyncProgressMessage(phase));
     } else {
       const data = res.data as { hint?: string; error_message?: string } | undefined;
       setStatusMsg(
@@ -1023,9 +1050,12 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const stemCutEndMs = Math.round((stateSlice.voice_stem_cut_end_s ?? 0) * 1000);
   const showRejectLipsync =
     Boolean(lipsyncFile) &&
-    !lipsyncing &&
-    stateSlice.lipsync_status !== 'running';
+    !lipsyncInFlight;
   const hasStemCut = stemCutEndMs > stemCutStartMs + 250;
+  const displayStatusMsg =
+    lipsyncInFlight && !statusMsg?.startsWith('✗')
+      ? phaseLipsyncProgressMessage(phase)
+      : statusMsg;
   const activeCue =
     activeCueId
       ? (stateSlice.watercolor_cues ?? []).find((c) => c.id === activeCueId) ?? null
@@ -1037,7 +1067,8 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
         <span class='mn-dim mn-phase-status-tag' data-testid={`phase-${phase}-status-header`}>
           {waveformAudio ? `audio: ${waveformAudio.label}` : 'no audio yet'}
           {stemTrimMode ? ' · trim mode' : ''}
-          {lipsyncFile && !stemTrimMode ? ' · lipsync ✓' : ''}
+          {lipsyncFile && !stemTrimMode && !lipsyncInFlight ? ' · lipsync ✓' : ''}
+          {lipsyncInFlight ? ' · lipsync ⏳' : ''}
         </span>
       </div>
 
@@ -1285,9 +1316,13 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             class="mn-btn"
             data-testid={`phase-${phase}-send-lipsync-btn`}
             onClick={onSendForLipsync}
-            disabled={busyAction !== null || !selectedBaseClip}
+            disabled={busyAction !== null || !selectedBaseClip || lipsyncInFlight}
           >
-            {busyAction === 'lipsync' ? 'Sending…' : 'Send for Lipsync'}
+            {busyAction === 'lipsync'
+              ? 'Sending…'
+              : lipsyncInFlight
+                ? 'Lipsync in progress…'
+                : 'Send for Lipsync'}
           </button>
           {showRejectLipsync ? (
             <button
@@ -1333,13 +1368,13 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           </button>
         </div>
 
-        {/* Status line */}
-        {statusMsg ? (
+        {/* Status line — server-driven in-flight message survives tab switches */}
+        {displayStatusMsg ? (
           <div
-            class="mn-phase-status-line"
+            class={`mn-phase-status-line${lipsyncInFlight ? ' mn-phase-status-line--lipsync-pending' : ''}`}
             data-testid={`phase-${phase}-status`}
           >
-            {statusMsg}
+            {displayStatusMsg}
           </div>
         ) : null}
 
