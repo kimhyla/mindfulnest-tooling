@@ -960,6 +960,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       data-stem-cut-editable={cutEditable ? '1' : '0'}
       data-stem-cut-start-ms={Math.round(displayStemCut.start_ms)}
       data-stem-cut-end-ms={Math.round(displayStemCut.end_ms)}
+      data-phase-waveform-pause-v1="PHASE_WAVEFORM_PAUSE_V1"
       onDragOver={dropHandlers.onDragOver}
       onDragLeave={dropHandlers.onDragLeave}
       onDrop={dropHandlers.onDrop}

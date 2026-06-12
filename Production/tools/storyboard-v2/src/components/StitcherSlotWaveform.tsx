@@ -133,6 +133,7 @@ export function StitcherSlotWaveform({
       data-has-waveform={audioSrc ? 'true' : 'false'}
       data-ambient-bed={ambientBed ?? ''}
       data-stitcher-ambient-waveform="STITCHER_AMBIENT_WAVEFORM_V1"
+      data-stitch-ambient-volume-v1="STITCH_AMBIENT_BED_VOLUME_V1"
     >
       <WaveformTimeline
         timelineTestId={`stitcher-slot-waveform-${slotKey}`}
