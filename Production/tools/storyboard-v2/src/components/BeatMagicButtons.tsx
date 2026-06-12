@@ -15,6 +15,9 @@ export interface BeatMagicButtonsProps {
   videoSourceIsAbsolute?: boolean;
   magicStillPath?: string | null | undefined;
   magicVideoPath?: string | null | undefined;
+  /** Server-enriched: video when O3 approved + magic_video, else still */
+  magicCanonicalKind?: 'still' | 'video' | null | undefined;
+  klingO3Status?: string | null | undefined;
   onPreviewMagicStill?: (() => void) | undefined;
   onPreviewMagicVideo?: (() => void) | undefined;
 }
@@ -29,11 +32,27 @@ export function BeatMagicButtons({
   videoSourceIsAbsolute = false,
   magicStillPath,
   magicVideoPath,
+  magicCanonicalKind,
+  klingO3Status,
   onPreviewMagicStill,
   onPreviewMagicVideo,
 }: BeatMagicButtonsProps) {
   const hasMagicStill = !!magicStillPath;
   const hasMagicVideo = !!magicVideoPath;
+  const canonicalKind = magicCanonicalKind ?? resolveBgMagicCanonicalKind({
+    kling_o3_status: klingO3Status,
+    magic_still_path: magicStillPath,
+    magic_video_path: magicVideoPath,
+  });
+  const onPreviewCanonical = canonicalKind === 'video'
+    ? onPreviewMagicVideo
+    : canonicalKind === 'still'
+      ? onPreviewMagicStill
+      : undefined;
+  const showCanonicalPreview = !!onPreviewCanonical && (
+    (canonicalKind === 'video' && hasMagicVideo)
+    || (canonicalKind === 'still' && hasMagicStill)
+  );
 
   const openMagicStill = () => {
     if (!stillImagePath) return;
@@ -80,13 +99,13 @@ export function BeatMagicButtons({
           >
             {hasMagicStill ? '↻ Redo magic on still' : '🌟 Add magic on still'}
           </button>
-          {hasMagicStill && onPreviewMagicStill ? (
+          {showCanonicalPreview && canonicalKind === 'still' && onPreviewCanonical ? (
             <button
               type="button"
               class="mn-btn mn-btn-small"
-              data-testid={`beat-magic-still-preview-${index}`}
-              onClick={onPreviewMagicStill}
-              title="Preview the magic-on-still composite video inline"
+              data-testid={`beat-magic-preview-${index}`}
+              onClick={onPreviewCanonical}
+              title="Preview magic-on-still composite with ElevenLabs dialogue"
             >
               ▶ Preview magic
             </button>
@@ -106,15 +125,15 @@ export function BeatMagicButtons({
           >
             {hasMagicVideo ? '↻ Redo magic on video' : '🎬 Add magic on video'}
           </button>
-          {hasMagicVideo && onPreviewMagicVideo ? (
+          {showCanonicalPreview && canonicalKind === 'video' && onPreviewCanonical ? (
             <button
               type="button"
               class="mn-btn mn-btn-small"
-              data-testid={`beat-magic-video-preview-${index}`}
-              onClick={onPreviewMagicVideo}
-              title="Preview the magic-on-video composite inline"
+              data-testid={`beat-magic-preview-${index}`}
+              onClick={onPreviewCanonical}
+              title="Preview magic-on-video composite in the approved O3 player"
             >
-              ▶ Preview magic·v
+              ▶ Preview magic
             </button>
           ) : null}
         </>
@@ -177,4 +196,19 @@ export function resolveBgMagicVideoPreviewUrl(
   eventId: string,
 ): string | null {
   return magicPathToPreviewUrl(beat.magic_video_path, eventId);
+}
+
+export function resolveBgMagicCanonicalKind(beat: {
+  kling_o3_status?: string | null | undefined;
+  magic_canonical_kind?: 'still' | 'video' | null | undefined;
+  magic_still_path?: string | null | undefined;
+  magic_video_path?: string | null | undefined;
+}): 'still' | 'video' | null {
+  if (beat.magic_canonical_kind === 'still' || beat.magic_canonical_kind === 'video') {
+    return beat.magic_canonical_kind;
+  }
+  if (beat.kling_o3_status === 'approved' && beat.magic_video_path) return 'video';
+  if (beat.magic_still_path) return 'still';
+  if (beat.magic_video_path) return 'video';
+  return null;
 }

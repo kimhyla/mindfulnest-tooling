@@ -734,31 +734,10 @@ def handle_magic_still(h, body: dict)-> None:
     out_dir = h.app.event_dir
     out_path = out_dir / f"magic_still_{beat_id}_{ts}.mp4"
 
-    # Dynamic duration: ensure magic_still video covers audio + 2.5s tail so
-    # the still holds on screen after speech ends (Kim 2026-05-27).
-    # Fallback to 4.0s when audio_duration_s is unknown.
-    _MAGIC_STILL_TAIL_S = 2.5
-    _magic_audio_dur = 0.0
-    try:
-        _video_role = (body or {}).get("scope_video_role") or "intro"
-        _st = h.app.state.read_state()
-        with _bg_module()._sidecar_lock:
-            _sidecar_audio = _bg_module().read_sidecar()
-        _sb_for_audio = _bg_module().storyboard_beat_id_for_bg_beat(
-            beat_id,
-            sidecar=_sidecar_audio,
-            production_state=_st,
-            video_role=_video_role,
-        ) or beat_id
-        _beat_st = (((_st.get("videos") or {}).get(_video_role) or {})
-                    .get("beats", {}).get(_sb_for_audio) or {})
-        _magic_audio_dur = float(_beat_st.get("audio_duration_s") or 0)
-    except Exception:
-        pass
-    magic_still_duration = (
-        max(4.0, _magic_audio_dur + _MAGIC_STILL_TAIL_S)
-        if _magic_audio_dur > 0 else 4.0
-    )
+    # Canonical magic_still clip is 4.0s silent — TTS is mixed at stitch export
+    # (materialize_magic_still_with_tts_export). Beat 1 approved renders used 4.0s
+    # regardless of dialogue length; extending here adds frames of blocky trail tail.
+    magic_still_duration = 4.0
 
     try:
         tools_dir = str(_PSERVER_TOOLS_DIR)

@@ -4808,35 +4808,17 @@ def resolve_magic_style_for_render(
     manual_path: list | None = None,
     scene_registry: dict | None = None,
 ) -> str:
-    """Pick compositor style — floor-flat tessa_ori vs wide sparkle river wide_ori."""
+    """Pick compositor style — canonical approved look is tessa_ori (beat 1 resolution)."""
     if scene_registry:
         for key in (
             f"m1_e1_res_{bg_beat_id}",
             f"m1_e1_res_{bg_beat_id.replace('bg_arc1_event1_post_', '')}",
         ):
-            scene = scene_registry.get(key) or {}
-            style = scene.get("style")
-            if isinstance(style, str) and style:
-                return style
-            archetype = scene.get("archetype") or ""
-            if archetype in ("stone_activation", "character_exit_ground"):
-                return "wide_ori"
-
-    sb_id = storyboard_beat_id_for_bg_beat(
-        bg_beat_id,
-        sidecar=sidecar,
-        production_state=production_state,
-        video_role=video_role,
-    )
-    if sb_id and sb_id != "beat_01":
-        return "wide_ori"
-
-    if manual_path and len(manual_path) >= 4:
-        ys = [float(p[1]) for p in manual_path]
-        xs = [float(p[0]) for p in manual_path]
-        if (max(ys) - min(ys)) > 0.12 and (max(xs) - min(xs)) > 0.12:
-            return "wide_ori"
-
+            style = (scene_registry.get(key) or {}).get("style")
+            if isinstance(style, str) and style in ("tessa_ori", "wide_ori"):
+                # Production default: tessa_ori sparkle river (beat 1 approved look).
+                # wide_ori remains opt-in via explicit scene_registry only.
+                return style if style == "wide_ori" and (scene_registry.get(key) or {}).get("force_wide_ori") else "tessa_ori"
     return "tessa_ori"
 
 
@@ -4861,6 +4843,25 @@ _MAGIC_SYNC_FIELDS: tuple[str, ...] = (
     "magic_manual_path",
     "magic_path_authored_against",
 )
+_AUDIO_SYNC_FIELDS: tuple[str, ...] = (
+    "audio_file",
+    "audio_duration_s",
+)
+
+
+def resolve_bg_magic_canonical_kind(beat: dict) -> str | None:
+    """Which magic composite is canonical for preview + stitch export.
+
+    O3-approved beats with magic_video use magic-on-video (beat 1 resolution).
+    Still-only beats use magic_still + ElevenLabs TTS at stitch export.
+    """
+    if beat.get("kling_o3_status") == "approved" and beat.get("magic_video_path"):
+        return "video"
+    if beat.get("magic_still_path"):
+        return "still"
+    if beat.get("magic_video_path"):
+        return "video"
+    return None
 
 
 def merge_storyboard_magic_into_bg_beat(
@@ -4869,9 +4870,10 @@ def merge_storyboard_magic_into_bg_beat(
     video_role: str,
     sidecar: dict | None = None,
 ) -> dict:
-    """Fill missing magic fields on a BG beat from storyboard partition state."""
+    """Fill missing magic/TTS fields on a BG beat from storyboard partition state."""
     out = dict(beat)
     if not production_state:
+        out["magic_canonical_kind"] = resolve_bg_magic_canonical_kind(out)
         return out
     sb_id = storyboard_beat_id_for_bg_beat(
         beat.get("beat_id") or "",
@@ -4880,7 +4882,9 @@ def merge_storyboard_magic_into_bg_beat(
         video_role=video_role,
     )
     if not sb_id:
+        out["magic_canonical_kind"] = resolve_bg_magic_canonical_kind(out)
         return out
+    out["storyboard_beat_id"] = sb_id
     sb_beat = (
         ((production_state.get("videos") or {}).get(video_role) or {})
         .get("beats") or {}
@@ -4888,6 +4892,11 @@ def merge_storyboard_magic_into_bg_beat(
     for field in _MAGIC_SYNC_FIELDS:
         if sb_beat.get(field) is not None and not out.get(field):
             out[field] = sb_beat[field]
+    # Storyboard partition owns TTS filenames (beat_02 → line_02_*), not BG script ids.
+    for field in _AUDIO_SYNC_FIELDS:
+        if sb_beat.get(field) is not None:
+            out[field] = sb_beat[field]
+    out["magic_canonical_kind"] = resolve_bg_magic_canonical_kind(out)
     return out
 
 
@@ -4931,19 +4940,50 @@ def resolve_bg_beat_tts_text(beat: dict) -> str:
     return extract_spoken_dialogue_from_kling_prompt(beat.get("kling_o3_prompt") or "")
 
 
-def resolve_bg_beat_tts_audio_path(event_dir: str | Path, beat: dict) -> Path | None:
-    """On-disk TTS mp3 for a Beat Gen beat (``audio_file`` on sidecar)."""
+def resolve_bg_beat_tts_audio_path(
+    event_dir: str | Path,
+    beat: dict,
+    *,
+    sidecar: dict | None = None,
+    production_state: dict | None = None,
+    video_role: str = "resolution",
+) -> Path | None:
+    """On-disk TTS mp3 for a Beat Gen beat.
+
+    Uses storyboard ``display_order`` beat id (``beat_02``) for filename lookup,
+    not the BG script suffix (``beat_21`` → ``line_21_*`` wrong clip).
+    """
     event_dir = Path(event_dir)
     af = (beat.get("audio_file") or "").strip()
-    sb_id = storyboard_beat_id_from_bg_beat(beat.get("beat_id") or "") or ""
-    if af:
-        p = Path(af)
+    sb_id = (beat.get("storyboard_beat_id") or "").strip()
+    if not sb_id and sidecar and production_state:
+        sb_id = storyboard_beat_id_for_bg_beat(
+            beat.get("beat_id") or "",
+            sidecar=sidecar,
+            production_state=production_state,
+            video_role=video_role,
+        ) or ""
+    if not sb_id:
+        sb_id = storyboard_beat_id_from_bg_beat(beat.get("beat_id") or "") or ""
+
+    def _resolve_named_file(name: str) -> Path | None:
+        p = Path(name)
         if p.is_file():
             return p.resolve()
         for base in (event_dir / "story_scene_tts_v2", event_dir):
-            cand = base / af
-            if cand.is_file():
-                return cand.resolve()
+            direct = base / name
+            if direct.is_file():
+                return direct.resolve()
+            if base.is_dir():
+                for hit in sorted(base.rglob(name)):
+                    if hit.is_file() and "_archive" not in str(hit):
+                        return hit.resolve()
+        return None
+
+    if af:
+        found = _resolve_named_file(af)
+        if found is not None:
+            return found
     if sb_id:
         try:
             beat_num = int(sb_id.split("_")[1])
@@ -5142,6 +5182,7 @@ def enrich_beat_kling_o3_pinned(beat: dict, event_dir: str | Path) -> dict:
         if not still_path.is_absolute():
             still_path = Path(event_dir) / still_name
         out["magic_still_path_exists"] = still_path.is_file()
+    out["magic_canonical_kind"] = resolve_bg_magic_canonical_kind(out)
     ap = resolve_bg_beat_tts_audio_path(event_dir, beat)
     out["audio_file_exists"] = ap is not None
     if ap is not None and not (out.get("audio_file") or "").strip():

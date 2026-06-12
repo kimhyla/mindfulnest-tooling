@@ -101,13 +101,13 @@ m1_e1_res_beat_02_runestone:
       module_id: m1
       shot_role: res_beat_02_base
       status: approved
-  style: wide_ori
+  style: tessa_ori
 m1_e1_res_bg_arc1_event1_post_beat_02:
   archetype: stone_activation
   beat: res_beat_02
   event_id: e1
   module_id: m1
-  style: wide_ori
+  style: tessa_ori
   manual_path:
   - - 0.153
     - 0.645

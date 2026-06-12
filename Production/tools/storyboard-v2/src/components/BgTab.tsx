@@ -10,7 +10,7 @@
 // Per LD ASYNC_JOB_GENERATION_PIN_V1: GPT batch is async (10s poll cadence
 // per Cursor v8 Q6).
 
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState, useCallback, useLayoutEffect } from 'preact/hooks';
 import {
   activeScope, scopeKey,
   activeProjectType, activeMilestoneId, activeTargetVideo,
@@ -115,6 +115,10 @@ interface BgBeat {
   magic_video_path?: string | null;
   magic_still_path_exists?: boolean;
   magic_video_path_exists?: boolean;
+  magic_canonical_kind?: 'still' | 'video' | null;
+  storyboard_beat_id?: string | null;
+  audio_file?: string | null;
+  audio_file_exists?: boolean;
   start_frame_image?: { abs_path?: string } | null;
   end_frame_image?: { abs_path?: string } | null;
 }
@@ -1391,6 +1395,78 @@ export function BgTab() {
 }
 
 // ----------------------------------------------------------------
+// ----------------------------------------------------------------
+// BgMagicStillPreview — silent magic_still + ElevenLabs TTS (Storyboard parity)
+// ----------------------------------------------------------------
+
+function BgMagicStillPreview({
+  index,
+  videoUrl,
+  storyboardBeatId,
+  eventId,
+  autoPlayOnMount,
+}: {
+  index: number;
+  videoUrl: string;
+  storyboardBeatId: string;
+  eventId: string;
+  autoPlayOnMount?: boolean;
+}) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioUrl = `${SERVER_BASE}/api/beat/audio/${encodeURIComponent(storyboardBeatId)}?event_id=${encodeURIComponent(eventId)}`;
+
+  const syncPlay = useCallback(async () => {
+    const vid = videoRef.current;
+    const aud = audioRef.current;
+    if (!vid || !aud) return;
+    try { aud.currentTime = 0; } catch { /* defensive */ }
+    try { vid.currentTime = 0; } catch { /* defensive */ }
+    await Promise.all([vid.play(), aud.play().catch(() => {})]);
+  }, []);
+
+  const syncPause = useCallback(() => {
+    try { videoRef.current?.pause(); } catch { /* defensive */ }
+    try { audioRef.current?.pause(); } catch { /* defensive */ }
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!autoPlayOnMount) return;
+    void syncPlay();
+  }, [autoPlayOnMount, videoUrl, storyboardBeatId, syncPlay]);
+
+  const onVideoPlay = () => { void syncPlay(); };
+  const onVideoPause = () => { syncPause(); };
+  const onVideoEnded = () => {
+    const aud = audioRef.current;
+    if (aud && !aud.ended && !aud.paused) return;
+    syncPause();
+  };
+  const onAudioEnded = () => {
+    window.setTimeout(() => syncPause(), 2000);
+  };
+
+  return (
+    <div class="mn-bg-magic-preview" data-testid={`bg-magic-preview-still-${index}`}>
+      <video
+        ref={videoRef}
+        controls
+        preload="metadata"
+        src={videoUrl}
+        onPlay={onVideoPlay}
+        onPause={onVideoPause}
+        onEnded={onVideoEnded}
+      />
+      <audio
+        ref={audioRef}
+        preload="auto"
+        src={audioUrl}
+        onEnded={onAudioEnded}
+      />
+    </div>
+  );
+}
+
 // BeatGenCard — per-beat UI (1 char ref + 1 BG ref + 1×3 options)
 // ----------------------------------------------------------------
 
@@ -1505,7 +1581,12 @@ function BeatGenCard({
   const magicVideoSource = beat.kling_o3_video_path ?? null;
   const magicStillPreviewUrl = resolveBgMagicStillPreviewUrl(beat, eventId);
   const magicVideoPreviewUrl = resolveBgMagicVideoPreviewUrl(beat, eventId);
+  const useMagicVideoOnO3 =
+    beat.magic_canonical_kind === 'video'
+    && !!magicVideoPreviewUrl
+    && beat.magic_video_path_exists !== false;
   const [magicPreviewMode, setMagicPreviewMode] = useState<'still' | 'video' | null>(null);
+  const [stillPreviewAutoplay, setStillPreviewAutoplay] = useState(false);
 
   return (
     <li class="mn-bg-beat-card" data-testid={`bg-beat-card-${index}`} data-beat-id={beat.beat_id}>
@@ -1677,18 +1758,33 @@ function BeatGenCard({
         videoSourceIsAbsolute={!!magicVideoSource}
         magicStillPath={beat.magic_still_path}
         magicVideoPath={beat.magic_video_path}
-        onPreviewMagicStill={magicStillPreviewUrl ? () => setMagicPreviewMode('still') : undefined}
+        magicCanonicalKind={beat.magic_canonical_kind ?? null}
+        klingO3Status={beat.kling_o3_status ?? null}
+        onPreviewMagicStill={magicStillPreviewUrl ? () => {
+          setStillPreviewAutoplay(true);
+          setMagicPreviewMode('still');
+        } : undefined}
         onPreviewMagicVideo={magicVideoPreviewUrl ? () => setMagicPreviewMode('video') : undefined}
       />
-      {magicPreviewMode === 'still' && magicStillPreviewUrl ? (
+      {magicPreviewMode === 'still' && magicStillPreviewUrl && beat.storyboard_beat_id ? (
+        <BgMagicStillPreview
+          index={index}
+          videoUrl={magicStillPreviewUrl}
+          storyboardBeatId={beat.storyboard_beat_id}
+          eventId={eventId}
+          autoPlayOnMount={stillPreviewAutoplay}
+        />
+      ) : null}
+      {magicPreviewMode === 'still' && magicStillPreviewUrl && !beat.storyboard_beat_id ? (
         <div class="mn-bg-magic-preview" data-testid={`bg-magic-preview-still-${index}`}>
           <video controls preload="metadata" src={magicStillPreviewUrl} />
+          <p class="mn-dim">No storyboard beat id — TTS preview unavailable.</p>
         </div>
       ) : null}
       {magicPreviewMode === 'video' && magicVideoPreviewUrl ? (
-        <p class="mn-dim" data-testid={`bg-magic-preview-video-hint-${index}`}>
-          Magic-on-video preview is playing in the approved O3 player below.
-        </p>
+        <div class="mn-bg-magic-preview" data-testid={`bg-magic-preview-video-${index}`}>
+          <video controls preload="metadata" src={magicVideoPreviewUrl} />
+        </div>
       ) : null}
 
       {/* 3-options row — 1×3 layout (NOT 3×3 matrix) */}
@@ -1722,9 +1818,7 @@ function BeatGenCard({
             trimBack={beat.kling_o3_trim_back ?? null}
             onApplyO3Trim={onApplyO3Trim}
             overrideVideoUrl={
-              magicPreviewMode === 'video'
-              && opt?.source === 'approved_kling_o3_video'
-              && magicVideoPreviewUrl
+              useMagicVideoOnO3 && opt?.source === 'approved_kling_o3_video'
                 ? magicVideoPreviewUrl
                 : null
             }

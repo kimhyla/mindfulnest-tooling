@@ -25,6 +25,7 @@ import { StitcherSlotWaveform } from './StitcherSlotWaveform';
 import { StitcherTransitionSelector, type Transition } from './StitcherTransitionSelector';
 import { SfxCuePopover, type SfxCue } from './phase/SfxCuePopover';
 import { acceptDragForTarget, makeDropTarget, type DragPayload } from '../utils/dragdrop';
+import { resolveStitchSlotSourceVideoUrl } from '../utils/stitchSlotVideo';
 
 type SlotKey = 'intro' | 'phase_a' | 'phase_b' | 'resolution';
 
@@ -91,6 +92,50 @@ const SFX_DEFAULTS = {
 // math sane until the real duration loads. Tests inject explicit video_dur_ms.
 const DEFAULT_SLOT_DUR_MS = 30000;
 const STITCHER_TRACK_SLOT_LS_PREFIX = 'storyboard_v2_stitcher_track_slot';
+const STITCHER_PREVIEW_LS_PREFIX = 'storyboard_v2_stitcher_preview';
+
+interface CachedStitcherPreview {
+  video_path: string;
+  preview_url: string;
+}
+
+function readCachedStitcherPreview(eventId: string, slot: SlotKey): CachedStitcherPreview | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(`${STITCHER_PREVIEW_LS_PREFIX}:${eventId}:${slot}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as CachedStitcherPreview;
+    if (parsed?.video_path && parsed?.preview_url) return parsed;
+  } catch {
+    // ignore corrupt cache
+  }
+  return null;
+}
+
+function writeCachedStitcherPreview(
+  eventId: string,
+  slot: SlotKey,
+  cache: CachedStitcherPreview,
+): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(
+      `${STITCHER_PREVIEW_LS_PREFIX}:${eventId}:${slot}`,
+      JSON.stringify(cache),
+    );
+  } catch {
+    // localStorage may be unavailable in tests
+  }
+}
+
+function clearCachedStitcherPreview(eventId: string, slot: SlotKey): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(`${STITCHER_PREVIEW_LS_PREFIX}:${eventId}:${slot}`);
+  } catch {
+    // ignore
+  }
+}
 
 function isSlotKey(value: string): value is SlotKey {
   return value === 'intro' || value === 'phase_a' || value === 'phase_b' || value === 'resolution';
@@ -195,6 +240,7 @@ export function StitcherTab() {
   // Per-slot preview URL — set after a successful Preview call. Renders as a
   // visible "▶ Watch" link directly in the slot so popup-blocker doesn't swallow it.
   const [previewUrls, setPreviewUrls] = useState<Partial<Record<SlotKey, string>>>({});
+  const [previewLoadingSlot, setPreviewLoadingSlot] = useState<SlotKey | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
   // ST-14: derive standaloneMode from canonical activeProjectType signal —
   // reactive on signal change. Milestone scope is always 1-slot standalone
@@ -221,9 +267,37 @@ export function StitcherTab() {
   }, [stitcherRefreshTick.value]);
 
   useEffect(() => {
+    if (!job?.slots) return;
+    const eventId = activeScope.value.event_id;
+    setPreviewUrls((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const sd of SLOT_DEFS) {
+        const path = job.slots?.[sd.key]?.video_path;
+        const cached = readCachedStitcherPreview(eventId, sd.key);
+        if (cached && cached.video_path !== path) {
+          clearCachedStitcherPreview(eventId, sd.key);
+        }
+        if (next[sd.key] && cached?.video_path !== path) {
+          delete next[sd.key];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [
+    job?.slots?.['intro']?.video_path,
+    job?.slots?.['phase_a']?.video_path,
+    job?.slots?.['phase_b']?.video_path,
+    job?.slots?.['resolution']?.video_path,
+    activeScope.value.event_id,
+  ]);
+
+  useEffect(() => {
+    if (trackFocusedSlot) return;
     const persisted = readPersistedTrackSlot(activeScope.value.event_id);
-    setTrackFocusedSlot(persisted);
-  }, [activeScope.value.event_id]);
+    setTrackFocusedSlot(persisted ?? SLOT_DEFS[0].key);
+  }, [trackFocusedSlot, activeScope.value.event_id]);
 
   // One-shot fetch of the ambient catalog. The catalog is module-level static
   // (filesystem inventory of Production/assets/sound_library/ambient/), not
@@ -376,30 +450,14 @@ export function StitcherTab() {
       return acc + dur;
     }, 0),
   );
-
-  useEffect(() => {
-    if (!job?.slots) return;
-    const activeSlot = trackFocusedSlot ? job.slots[trackFocusedSlot] : null;
-    if (activeSlot?.video_path) return;
-    const fallback = multiPhaseSlots.find((sd) => job.slots?.[sd.key]?.video_path)?.key ?? null;
-    if (fallback !== trackFocusedSlot) {
-      setTrackFocusedSlot(fallback);
-      writePersistedTrackSlot(activeScope.value.event_id, fallback);
-    }
-  }, [job, trackFocusedSlot, multiPhaseSlots, activeScope.value.event_id]);
-
-  // Invalidate all preview URLs when any slot source changes (export / regen).
-  useEffect(() => {
-    if (!job?.slots) return;
-    setPreviewUrls({});
-    setActivePreviewSlot(null);
-    setBeatBoundaries([]);
-  }, [
-    job?.slots?.['intro']?.video_path,
-    job?.slots?.['phase_a']?.video_path,
-    job?.slots?.['phase_b']?.video_path,
-    job?.slots?.['resolution']?.video_path,
-  ]);
+  const viewerSlot: SlotKey = trackFocusedSlot ?? multiPhaseSlots[0]?.key ?? 'intro';
+  const viewerSlotData = job?.slots?.[viewerSlot];
+  const viewerSourceUrl = resolveStitchSlotSourceVideoUrl(viewerSlotData?.video_path);
+  const viewerProcessedUrl = previewUrls[viewerSlot];
+  /** Roadmap: instant source file. Slot Preview button swaps in stitch-processed MP4. */
+  const viewerVideoUrl = viewerProcessedUrl ?? viewerSourceUrl;
+  const viewerLoading = previewLoadingSlot === viewerSlot
+    || (busySlot?.slot === viewerSlot && busySlot.action === 'preview');
 
   /**
    * Persist the entire job slots dict via stitch_save_job. Used when sfx_cues
@@ -496,52 +554,63 @@ export function StitcherTab() {
     video.currentTime = (ratio * seekMs) / 1000;
   };
 
-  const onPreviewSlot = async (slot: SlotKey) => {
+  const onPreviewSlot = async (slot: SlotKey, opts?: { quiet?: boolean }) => {
     const slotData = job?.slots?.[slot];
     if (!slotData?.video_path) {
-      setStatusMsg(`Slot ${slot} has no video assigned.`);
-      return;
+      if (!opts?.quiet) setStatusMsg(`Slot ${slot} has no video assigned.`);
+      return false;
     }
+    setPreviewLoadingSlot(slot);
     setBusySlot({ slot, action: 'preview' });
-    setStatusMsg(null);
-    // _stitch_build_pipeline expects a `slots` list of slot objects each with
-    // video_path. The client was only sending the slot key — server returned
-    // "No slots provided". Also open the returned preview_url in a new tab.
+    if (!opts?.quiet) setStatusMsg(null);
     const res = await pathappPatch(activeScope.value, 'stitch_preview', {
       name: job?.name,
       slot,
-      slots: [slotData],   // single-slot preview — server builds just this clip
+      slots: [slotData],
     });
     setBusySlot(null);
+    setPreviewLoadingSlot(null);
     if (res.ok) {
       const data = res.data as { preview_url?: string } | undefined;
       if (data?.preview_url) {
-        // Store URL for inline "▶ Watch" link — window.open is blocked by Chrome
-        // after async/await (breaks trusted-event chain). Rendered link is user-clicked.
-        setPreviewUrls((prev) => ({ ...prev, [slot]: data.preview_url }));
+        setPreviewUrls((prev) => ({ ...prev, [slot]: data.preview_url! }));
+        writeCachedStitcherPreview(activeScope.value.event_id, slot, {
+          video_path: slotData.video_path,
+          preview_url: data.preview_url,
+        });
         setActivePreviewSlot(slot);
         setTrackFocusedSlot(slot);
         writePersistedTrackSlot(activeScope.value.event_id, slot);
         void fetchBeatBoundaries(slot);
       }
-      setStatusMsg(`✓ Preview ${slot} ready`);
-    } else {
-      const data = res.data as { error?: string } | undefined;
+      if (!opts?.quiet) setStatusMsg(`✓ Preview ${slot} ready`);
+      return true;
+    }
+    const data = res.data as { error?: string } | undefined;
+    if (!opts?.quiet) {
       setStatusMsg(`✗ Preview HTTP ${res.status}: ${data?.error ?? res.error ?? ''}`);
     }
+    return false;
   };
 
   const onMultiPhaseSegmentClick = (slot: SlotKey) => {
-    const slotData = job?.slots?.[slot];
-    if (!slotData?.video_path) return;
     setTrackFocusedSlot(slot);
+    setActivePreviewSlot(slot);
     writePersistedTrackSlot(activeScope.value.event_id, slot);
-    // Always rebuild preview — client-side previewUrls cache cannot detect
-    // server-side stitch_preview LRU corruption when slot source changes.
-    setActivePreviewSlot(null);
-    setBeatBoundaries([]);
-    void onPreviewSlot(slot);
+    void fetchBeatBoundaries(slot);
   };
+
+  const focusedSlotVideoPath =
+    trackFocusedSlot != null ? job?.slots?.[trackFocusedSlot]?.video_path : undefined;
+
+  useEffect(() => {
+    if (standaloneMode || !trackFocusedSlot || !job?.slots) return;
+    void fetchBeatBoundaries(trackFocusedSlot);
+  }, [
+    standaloneMode,
+    trackFocusedSlot,
+    focusedSlotVideoPath,
+  ]);
 
   const onBake = async () => {
     if (!job?.name) {
@@ -944,8 +1013,7 @@ export function StitcherTab() {
                     style={`width:${widthPct.toFixed(3)}%`}
                     data-testid={`stitcher-multiphase-segment-${sd.key}`}
                     onClick={() => onMultiPhaseSegmentClick(sd.key)}
-                    disabled={!slot?.video_path}
-                    title={slot?.video_path ?? `${sd.label} slot is empty`}
+                    title={slot?.video_path ?? `${sd.label} — no video yet (black frame)`}
                   >
                     <span class="mn-stitcher-multiphase-segment-label">{sd.label}</span>
                     <span class="mn-stitcher-multiphase-segment-meta">{(durMs / 1000).toFixed(1)}s</span>
@@ -955,28 +1023,30 @@ export function StitcherTab() {
             </div>
           </div>
 
-          {/* Inline preview player + beat timeline.
-              Shows below the slot strip when any slot's Preview is active.
-              Full-width to give proper NLE-style viewing context. */}
-          {activePreviewSlot && previewUrls[activePreviewSlot] ? (
+          {/* Always-on roadmap viewer — frame stays mounted; video src swaps per track slot. */}
+          {!standaloneMode ? (
             <div class="mn-stitcher-preview-area" data-testid="stitcher-preview-area">
               <div class="mn-stitcher-preview-header">
-                <span class="mn-dim">Preview: <strong>{activePreviewSlot}</strong></span>
-                <button
-                  type="button"
-                  class="mn-btn mn-btn-small"
-                  onClick={() => { setActivePreviewSlot(null); setBeatBoundaries([]); }}
-                  data-testid="stitcher-preview-close"
-                >✕ Close</button>
+                <span class="mn-dim">
+                  Preview: <strong>{viewerSlot}</strong>
+                  {viewerLoading ? ' — building processed preview…' : ''}
+                  {!viewerLoading && viewerProcessedUrl ? ' — processed (trim/ambient)' : ''}
+                  {!viewerLoading && !viewerProcessedUrl && viewerSourceUrl ? ' — source file' : ''}
+                </span>
               </div>
               <video
                 ref={videoRef}
-                key={previewUrls[activePreviewSlot] ?? activePreviewSlot}
+                key={`${viewerSlot}-${viewerVideoUrl ?? 'empty'}`}
                 controls
-                src={previewUrls[activePreviewSlot]}
+                src={viewerVideoUrl}
                 class="mn-stitcher-video-player"
                 data-testid="stitcher-video-player"
               />
+              {!viewerVideoUrl && !viewerLoading ? (
+                <p class="mn-dim mn-stitcher-preview-placeholder">
+                  No video in this slot yet — black frame until Send to Stitcher.
+                </p>
+              ) : null}
               <div
                 class={`mn-beat-timeline${beatBoundariesLoading ? ' mn-beat-timeline-loading' : ''}`}
                 data-testid="mn-beat-timeline"
@@ -1010,6 +1080,17 @@ export function StitcherTab() {
                   </span>
                 )}
               </div>
+            </div>
+          ) : null}
+
+          {/* Legacy single-slot Preview still opens the same cached URL in the roadmap viewer. */}
+          {standaloneMode && activePreviewSlot && previewUrls[activePreviewSlot] ? (
+            <div class="mn-stitcher-preview-area" data-testid="stitcher-preview-area-standalone">
+              <video
+                controls
+                src={previewUrls[activePreviewSlot]}
+                class="mn-stitcher-video-player"
+              />
             </div>
           ) : null}
 

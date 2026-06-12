@@ -1745,7 +1745,7 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
                 ? (_magicVideoSrc ?? _magicStillSrc)
                 : magicPreviewKind === 'still'
                   ? (_magicStillSrc ?? _magicVideoSrc)
-                  : (_magicStillSrc ?? _magicVideoSrc))
+                  : (_magicVideoSrc ?? _magicStillSrc))
               ?? (beat.final?.source === 'still_image' && beat.final?.file && beat.final?.file_exists !== false
                   ? _finalFileSrc
                   : null))
