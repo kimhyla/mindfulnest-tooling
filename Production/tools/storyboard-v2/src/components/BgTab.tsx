@@ -2045,18 +2045,25 @@ function BgOptionTile({
   trimStart, trimBack, onApplyO3Trim, replaceSelected, onSetReplaceSlot, showReplaceOnRegen, overrideVideoUrl,
 }: BgOptionTilePropsExt) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const trimPlaybackListenerRef = useRef<((this: HTMLVideoElement, ev: Event) => void) | null>(null);
   const [trimStartDraft, setTrimStartDraft] = useState<string>(String(trimStart || 0));
   const [trimBackDraft, setTrimBackDraft] = useState<string>(String(trimBack || 0));
-  const [trimPreviewUrl, setTrimPreviewUrl] = useState<string | undefined>(undefined);
   useEffect(() => {
     setTrimStartDraft(String(trimStart || 0));
   }, [trimStart]);
   useEffect(() => {
     setTrimBackDraft(String(trimBack || 0));
   }, [trimBack]);
-  useEffect(() => {
-    setTrimPreviewUrl(undefined);
-  }, [trimStart, trimBack, option?.video_path]);
+  const clearTrimPlaybackListener = useCallback((video?: HTMLVideoElement | null) => {
+    const el = video ?? videoRef.current;
+    if (!el) return;
+    if (trimPlaybackListenerRef.current) {
+      el.removeEventListener('timeupdate', trimPlaybackListenerRef.current);
+      trimPlaybackListenerRef.current = null;
+    }
+    el.ontimeupdate = null;
+  }, []);
+  useEffect(() => () => clearTrimPlaybackListener(), [clearTrimPlaybackListener]);
   // R2.1 fix: drop target for library-image drag → POST bg_accept_lib_image
   // with server-accurate body shape (spec §4.3): {beat_id, key, filename,
   // abs_path, slot_index}. slot_index = optionIndex (0/1/2).
@@ -2150,19 +2157,42 @@ function BgOptionTile({
   const keyMissing = !option.key;
   const isApprovedVideo = !!option.video_path;
   const tooltip = keyMissing ? 'Option missing key — regenerate beat' : undefined;
-  const videoUrl = trimPreviewUrl
-    ?? overrideVideoUrl
-    ?? (option.video_path
-      ? `${SERVER_BASE}/files?path=${encodeURIComponent(option.video_path)}`
-      : null);
-  const currentVideoTime = () => {
+  const canonicalVideoUrl = option.video_path
+    ? (overrideVideoUrl
+      ?? `${SERVER_BASE}/files?path=${encodeURIComponent(option.video_path)}`)
+    : null;
+  const waitForVideoMetadata = (video: HTMLVideoElement) => new Promise<void>((resolve, reject) => {
+    if (Number.isFinite(video.duration) && video.duration > 0) {
+      resolve();
+      return;
+    }
+    const onReady = () => {
+      video.removeEventListener('loadedmetadata', onReady);
+      video.removeEventListener('error', onErr);
+      resolve();
+    };
+    const onErr = () => {
+      video.removeEventListener('loadedmetadata', onReady);
+      video.removeEventListener('error', onErr);
+      reject(new Error('video load failed'));
+    };
+    video.addEventListener('loadedmetadata', onReady, { once: true });
+    video.addEventListener('error', onErr, { once: true });
+  });
+  const resetVideoToCanonical = async () => {
     const video = videoRef.current;
-    return video ? Math.max(0, Number(video.currentTime) || 0) : 0;
-  };
-  const currentVideoBack = (atTime = currentVideoTime()) => {
-    const video = videoRef.current;
-    if (!video || !Number.isFinite(video.duration)) return trimBack;
-    return Math.max(0, (Number(video.duration) || 0) - atTime);
+    if (!video || !canonicalVideoUrl) return;
+    clearTrimPlaybackListener(video);
+    if (video.src !== canonicalVideoUrl) {
+      video.src = canonicalVideoUrl;
+    }
+    video.load();
+    try {
+      await waitForVideoMetadata(video);
+      video.currentTime = 0;
+    } catch {
+      // leave for user refresh
+    }
   };
   const parseDraft = (value: string) => {
     const parsed = parseFloat(value);
@@ -2173,66 +2203,90 @@ function BgOptionTile({
   const trimEndValue = (video: HTMLVideoElement) => {
     const dur = Number.isFinite(video.duration) ? Number(video.duration) : 0;
     if (dur <= 0) return null;
-    return Math.max(trimStartValue() + 0.01, dur - trimBackValue());
+    const back = trimBackValue();
+    if (back <= 0) return null;
+    return Math.max(trimStartValue() + 0.01, dur - back);
+  };
+  const attachTrimStopListener = (video: HTMLVideoElement, stopAt: number | null) => {
+    clearTrimPlaybackListener(video);
+    const onTimeUpdate = () => {
+      const end = stopAt ?? (Number.isFinite(video.duration) ? video.duration : Infinity);
+      if (video.currentTime >= end) {
+        video.pause();
+        clearTrimPlaybackListener(video);
+      }
+    };
+    trimPlaybackListenerRef.current = onTimeUpdate;
+    video.addEventListener('timeupdate', onTimeUpdate);
   };
   const playTrimPreview = async () => {
-    const video = videoRef.current;
-    if (!video) return;
-    const back = trimBackValue() > 0 ? trimBackValue() : null;
-    const result = await pathappPatch<{
-      preview_video_url?: string;
-      effective_duration_s?: number | null;
-    }>(activeScope.value, 'bg_kling_o3_trim', {
-      beat_id: beatId,
-      trim_start: trimStartValue(),
-      trim_back: back,
-      preview_only: true,
-    });
-    if (!result.ok || !result.data?.preview_video_url) {
+    if (!selected) {
       pushToast({
         kind: 'error',
-        message: `Preview trim failed: ${result.error ?? 'no preview URL'}`,
-        source: 'bg-o3-trim-preview-error',
+        message: 'Select this clip as approved O3 video before trimming',
+        source: 'bg-o3-trim-preview-not-active',
       });
       return;
     }
-    setTrimPreviewUrl(result.data.preview_video_url);
-    video.src = result.data.preview_video_url;
-    await new Promise<void>((resolve, reject) => {
-      const onReady = () => {
-        video.removeEventListener('loadedmetadata', onReady);
-        video.removeEventListener('error', onErr);
-        resolve();
-      };
-      const onErr = () => {
-        video.removeEventListener('loadedmetadata', onReady);
-        video.removeEventListener('error', onErr);
-        reject(new Error('trim preview load failed'));
-      };
-      video.addEventListener('loadedmetadata', onReady, { once: true });
-      video.addEventListener('error', onErr, { once: true });
-    }).catch(() => undefined);
-    video.currentTime = 0;
-    const dur = result.data.effective_duration_s;
-    pushToast({
-      kind: 'info',
-      message: dur != null
-        ? `Preview trim: ${dur.toFixed(1)}s materialized clip — click Apply Trim to save`
-        : 'Preview trim loaded — click Apply Trim to save',
-      source: 'bg-o3-trim-preview',
-    });
+    const video = videoRef.current;
+    if (!video || !canonicalVideoUrl) return;
+    try {
+      if (video.src !== canonicalVideoUrl) {
+        video.src = canonicalVideoUrl;
+      }
+      await waitForVideoMetadata(video);
+    } catch {
+      pushToast({
+        kind: 'error',
+        message: 'Preview Trim: could not load clip — try refreshing',
+        source: 'bg-o3-trim-preview-load',
+      });
+      return;
+    }
+    const start = trimStartValue();
+    const stopAt = trimEndValue(video);
+    clearTrimPlaybackListener(video);
+    video.currentTime = start;
+    attachTrimStopListener(video, stopAt);
     try {
       await video.play();
     } catch {
-      // seek still visible
+      pushToast({
+        kind: 'info',
+        message: 'Preview Trim: seek set — press play if autoplay was blocked',
+        source: 'bg-o3-trim-preview-play',
+      });
     }
+    pushToast({
+      kind: 'info',
+      message: stopAt != null
+        ? `Preview Trim: ${start.toFixed(1)}s → ${stopAt.toFixed(1)}s (draft — Apply Trim to save)`
+        : `Preview Trim: from ${start.toFixed(1)}s (draft — Apply Trim to save)`,
+      source: 'bg-o3-trim-preview',
+    });
   };
   const applyDraftTrim = async () => {
-    const url = await onApplyO3Trim(
+    if (!selected) {
+      pushToast({
+        kind: 'error',
+        message: 'Select this clip as approved O3 video before applying trim',
+        source: 'bg-o3-trim-apply-not-active',
+      });
+      return;
+    }
+    await onApplyO3Trim(
       trimStartValue(),
       trimBackValue() > 0 ? trimBackValue() : null,
     );
-    if (url) setTrimPreviewUrl(url);
+  };
+  const currentVideoTime = () => {
+    const video = videoRef.current;
+    return video ? Math.max(0, Number(video.currentTime) || 0) : 0;
+  };
+  const currentVideoBack = (atTime = currentVideoTime()) => {
+    const video = videoRef.current;
+    if (!video || !Number.isFinite(video.duration)) return trimBackValue();
+    return Math.max(0, (Number(video.duration) || 0) - atTime);
   };
   const setStartFromPlayhead = () => {
     const start = currentVideoTime();
@@ -2253,31 +2307,27 @@ function BgOptionTile({
       onDrop={dropHandlers.onDrop}
       title={tooltip}
     >
-      {videoUrl ? (
+      {canonicalVideoUrl ? (
         <>
           <video
             ref={videoRef}
             controls
             preload="metadata"
-            src={videoUrl}
+            src={canonicalVideoUrl}
             data-testid={`bg-option-video-${beatIndex}-${optionIndex}`}
+            onPause={() => clearTrimPlaybackListener()}
             onPlay={() => {
               const video = videoRef.current;
               if (!video) return;
               const start = trimStartValue();
-              const end = trimEndValue(video);
+              const stopAt = trimEndValue(video);
               if (start > 0.01 && video.currentTime < start) {
                 video.currentTime = start;
               }
-              video.ontimeupdate = () => {
-                const stopAt = end ?? Infinity;
-                if (video.currentTime >= stopAt) {
-                  video.pause();
-                  video.ontimeupdate = null;
-                }
-              };
+              attachTrimStopListener(video, stopAt);
             }}
           />
+          {selected && isApprovedVideo ? (
           <div class="mn-bg-o3-trim-controls" data-testid={`bg-o3-trim-controls-${beatIndex}-${optionIndex}`}>
             <span class="mn-dim">
               trim front
@@ -2360,13 +2410,13 @@ function BgOptionTile({
                 e.stopPropagation();
                 setTrimStartDraft('0');
                 setTrimBackDraft('0');
-                setTrimPreviewUrl(undefined);
-                void onApplyO3Trim(0, null, true);
+                void onApplyO3Trim(0, null, true).then(() => resetVideoToCanonical());
               }}
             >
               Clear Trim
             </button>
           </div>
+          ) : null}
         </>
       ) : option.thumb_b64 ? (
         <img src={option.thumb_b64} alt={`option ${optionIndex + 1}`} />
