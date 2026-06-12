@@ -70,6 +70,7 @@ interface GptOption {
   local_path?: string;
   video_path?: string;
   source?: string;
+  slot_index?: number;
   thumb_b64?: string;
   gallery_b64?: string;
   cost_usd?: number;
@@ -92,6 +93,7 @@ interface BgBeat {
   kling_o3_status?: string;
   kling_o3_video_path?: string;
   kling_o3_options?: GptOption[];
+  kling_o3_replace_slot_index?: number;
   kling_o3_trim_start?: number;
   kling_o3_trim_back?: number | null;
   kling_o3_trim_end?: number | null;
@@ -257,6 +259,32 @@ function resolveO3OptionKey(opt: GptOption, beatId: string, slotIndex: number): 
   if (opt.key) return opt.key;
   const base = (opt.video_path ?? '').split('/').pop()?.replace(/\.mp4$/i, '') ?? '';
   return base || `${beatId}_o3_${slotIndex}`;
+}
+
+/** Fixed 3-container layout — slot_index maps to UI column (0=left, 1=middle, 2=right). */
+function buildFixedO3OptionSlots(beat: BgBeat): (GptOption | null)[] {
+  const slots: (GptOption | null)[] = [null, null, null];
+  const o3History = (beat.kling_o3_options ?? []).filter((o) => isUserSelectableO3Video(o?.video_path));
+  o3History.forEach((opt, i) => {
+    const idx = typeof opt.slot_index === 'number' && opt.slot_index >= 0 && opt.slot_index < 3
+      ? opt.slot_index
+      : i;
+    if (idx < 3 && !slots[idx]) slots[idx] = opt;
+  });
+  const activeO3Path = isUserSelectableO3Video(beat.kling_o3_video_path) ? beat.kling_o3_video_path! : null;
+  const activeListed = activeO3Path && o3History.some((o) => o.video_path === activeO3Path);
+  if (beat.kling_o3_status === 'approved' && activeO3Path && !activeListed) {
+    const firstEmpty = slots.findIndex((s) => !s);
+    const idx = firstEmpty >= 0 ? firstEmpty : 0;
+    slots[idx] = {
+      key: `${beat.beat_id}_approved_o3_video`,
+      label: 'approved O3 video',
+      video_path: activeO3Path,
+      source: 'approved_kling_o3_video',
+      slot_index: idx,
+    };
+  }
+  return slots;
 }
 
 function formatO3JobFailure(error?: string | null): string {
@@ -710,6 +738,23 @@ export function BgTab() {
     }
   };
 
+  const onSetReplaceSlot = async (beatId: string, slotIndex: number) => {
+    setBeats((prev) => prev.map((b) => (
+      b.beat_id === beatId ? { ...b, kling_o3_replace_slot_index: slotIndex } : b
+    )));
+    const result = await pathappPatch(activeScope.value, 'bg_update_beat', {
+      beat_id: beatId,
+      kling_o3_replace_slot_index: slotIndex,
+    });
+    if (!result.ok) {
+      pushToast({
+        kind: 'error',
+        message: `Replace slot save failed: ${result.error}`,
+        source: 'bg-replace-slot',
+      });
+    }
+  };
+
   const onGenerateBatch = async (beatId: string) => {
     if (activeO3Jobs[beatId]) {
       pushToast({ kind: 'info', message: 'This beat is already generating.', source: 'bg-o3-beat-busy' });
@@ -721,9 +766,7 @@ export function BgTab() {
         activeScope.value, 'bg_submit_arlo_o3_voice', {
           beat_id: beatId,
           model: 'pro',
-          // Submit the refs currently visible in the card. This closes the
-          // drop-then-immediately-generate race where the async ref save has
-          // not reached the sidecar before the server starts the O3 subprocess.
+          replace_slot_index: beat.kling_o3_replace_slot_index ?? 0,
           reference_image: beat.reference_image ?? null,
           bg_ref_image: beat.bg_ref_image ?? null,
         },
@@ -1160,6 +1203,7 @@ export function BgTab() {
               onAccept={(optionKey) => onAcceptOption(b.beat_id, optionKey)}
               onSelectO3Video={(optionKey) => onSelectO3Video(b.beat_id, optionKey)}
               onApplyO3Trim={(trimStart, trimBack, clear) => onApplyO3Trim(b.beat_id, trimStart, trimBack, clear)}
+              onSetReplaceSlot={(slotIndex) => onSetReplaceSlot(b.beat_id, slotIndex)}
               onSubmitNativeLipSyncExperiment={() => onSubmitNativeLipSyncExperiment(b.beat_id)}
               onEditChip={(c) => requestEditChip(b.beat_id, c)}
               onInsertAfter={() => onAddBeat(b.beat_id)}
@@ -1497,6 +1541,7 @@ interface BeatGenCardProps {
   onAccept: (optionKey: string) => void;
   onSelectO3Video: (optionKey: string) => void;
   onApplyO3Trim: (trimStart: number, trimBack: number | null, clear?: boolean) => Promise<string | undefined>;
+  onSetReplaceSlot: (slotIndex: number) => void;
   onSubmitNativeLipSyncExperiment: () => void;
   // BG-5 / BG-8 / BG-18 — visible-button handlers (NOT right-click per Kim 2026-05-06).
   onEditChip: (chipText: string) => void;
@@ -1520,7 +1565,7 @@ interface BeatGenCardProps {
 function BeatGenCard({
   index, beat, eventId, videoRole, pollResultForBeat, busy, nativeExperimentBusy,
   onDelete, onUpdateText, onUpdateSpeaker, onGenerate, onAccept,
-  onSelectO3Video, onApplyO3Trim, onSubmitNativeLipSyncExperiment,
+  onSelectO3Video, onApplyO3Trim, onSetReplaceSlot, onSubmitNativeLipSyncExperiment,
   onEditChip, onInsertAfter, onRemoveRef, onRefresh,
   onPatchOptionTile, onPatchRefImage,
 }: BeatGenCardProps) {
@@ -1554,28 +1599,19 @@ function BeatGenCard({
     onUpdateText(next);
   };
 
-  // Determine which option list to show. Preference: live poll results for
-  // this beat, else the persisted gpt_options/flux_options on the beat.
-  const persistedOptions = beat.gpt_options ?? beat.flux_options ?? [];
-  const liveOptions = pollResultForBeat ?? null;
   const optionsToShow: (GptOption | null)[] = (() => {
-    const o3History = (beat.kling_o3_options ?? []).filter((o) => isUserSelectableO3Video(o?.video_path));
-    const activeAlreadyListed = o3History.some((o) => o.video_path === beat.kling_o3_video_path);
-    const activeO3Path = isUserSelectableO3Video(beat.kling_o3_video_path) ? beat.kling_o3_video_path! : null;
-    const approvedO3 = beat.kling_o3_status === 'approved' && activeO3Path && !activeAlreadyListed
-      ? [{
-          key: `${beat.beat_id}_approved_o3_video`,
-          label: 'approved O3 video',
-          video_path: activeO3Path,
-          source: 'approved_kling_o3_video',
-        }]
-      : [];
-    const o3Options = [...o3History, ...approvedO3];
-    const src = liveOptions ?? (o3Options.length > 0 ? o3Options : persistedOptions);
+    const o3Slots = buildFixedO3OptionSlots(beat);
+    if (o3Slots.some((s) => s?.video_path)) {
+      return o3Slots;
+    }
+    const persistedOptions = beat.gpt_options ?? beat.flux_options ?? [];
+    const liveOptions = pollResultForBeat ?? null;
+    const src = liveOptions ?? persistedOptions;
     const padded: (GptOption | null)[] = [...src];
     while (padded.length < 3) padded.push(null);
-    return padded.slice(0, 3); // hard cap at 3 — never 9 (LD BEAT_GEN_3_OPTIONS_NOT_GRID_V1)
+    return padded.slice(0, 3);
   })();
+  const replaceSlotIndex = beat.kling_o3_replace_slot_index ?? 0;
   const o3FailureMessage = (beat.kling_o3_voice_fix_status ?? '').startsWith('failed')
     ? formatO3JobFailure(beat.kling_o3_voice_fix_error)
     : null;
@@ -1829,6 +1865,9 @@ function BeatGenCard({
             trimStart={beat.kling_o3_trim_start ?? 0}
             trimBack={beat.kling_o3_trim_back ?? null}
             onApplyO3Trim={onApplyO3Trim}
+            replaceSelected={i === replaceSlotIndex}
+            onSetReplaceSlot={() => onSetReplaceSlot(i)}
+            showReplaceOnRegen={!!beat.speaker}
             overrideVideoUrl={
               useMagicVideoOnO3 && opt?.source === 'approved_kling_o3_video'
                 ? magicVideoPreviewUrl
@@ -1995,12 +2034,15 @@ interface BgOptionTilePropsExt extends BgOptionTileProps {
   trimStart: number;
   trimBack: number | null;
   onApplyO3Trim: (trimStart: number, trimBack: number | null, clear?: boolean) => Promise<string | undefined>;
+  replaceSelected: boolean;
+  onSetReplaceSlot: () => void;
+  showReplaceOnRegen: boolean;
   overrideVideoUrl?: string | null;
 }
 
 function BgOptionTile({
   beatIndex, optionIndex, option, selected, onClick, beatId, onRefresh, onPatchOptionTile,
-  trimStart, trimBack, onApplyO3Trim, overrideVideoUrl,
+  trimStart, trimBack, onApplyO3Trim, replaceSelected, onSetReplaceSlot, showReplaceOnRegen, overrideVideoUrl,
 }: BgOptionTilePropsExt) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [trimStartDraft, setTrimStartDraft] = useState<string>(String(trimStart || 0));
@@ -2086,6 +2128,19 @@ function BgOptionTile({
         onDrop={dropHandlers.onDrop}
       >
         <div class="mn-bg-option-empty">option {optionIndex + 1} (empty)</div>
+        {showReplaceOnRegen ? (
+          <label class="mn-dim" style="font-size:11px;display:block;margin-top:4px">
+            <input
+              type="radio"
+              name={`bg-replace-${beatIndex}`}
+              checked={replaceSelected}
+              onChange={() => onSetReplaceSlot()}
+              data-testid={`bg-replace-radio-${beatIndex}-${optionIndex}`}
+              aria-label={`Replace empty slot ${optionIndex + 1} on next Kling generation`}
+            />
+            {' '}Replace on regen
+          </label>
+        ) : null}
       </div>
     );
   }
@@ -2331,6 +2386,37 @@ function BgOptionTile({
         />
         {' '}{isApprovedVideo ? 'approved O3 video' : `option ${optionIndex + 1}`}
       </label>
+      {showReplaceOnRegen && option?.video_path ? (
+        <label class="mn-dim" style="font-size:11px;display:block;margin-top:2px">
+          <input
+            type="radio"
+            name={`bg-replace-${beatIndex}`}
+            checked={replaceSelected}
+            onChange={(e) => {
+              e.stopPropagation();
+              onSetReplaceSlot();
+            }}
+            data-testid={`bg-replace-radio-${beatIndex}-${optionIndex}`}
+            aria-label={`Replace slot ${optionIndex + 1} on next Kling generation`}
+          />
+          {' '}Replace on regen
+        </label>
+      ) : showReplaceOnRegen ? (
+        <label class="mn-dim" style="font-size:11px;display:block;margin-top:2px">
+          <input
+            type="radio"
+            name={`bg-replace-${beatIndex}`}
+            checked={replaceSelected}
+            onChange={(e) => {
+              e.stopPropagation();
+              onSetReplaceSlot();
+            }}
+            data-testid={`bg-replace-radio-${beatIndex}-${optionIndex}`}
+            aria-label={`Replace slot ${optionIndex + 1} on next Kling generation`}
+          />
+          {' '}Replace on regen
+        </label>
+      ) : null}
       {/* ✂ Send to Cropper — hover-revealed. gallery_b64 is raw base64 (not data: URI). */}
       {(option.gallery_b64 || option.local_path || option.thumb_b64) && (
         <button

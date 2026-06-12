@@ -2215,6 +2215,7 @@ def handle_bg_update_beat(h, body: dict)-> None:
     _BG_BEAT_WRITABLE = frozenset({
         "speaker", "dialogue_text", "scene_notes", "emotion",
         "accepted_image_key", "reference_image", "bg_ref_image",
+        "kling_o3_replace_slot_index",
     })
     # BUG1FIX-20260507 — exclude scope/metadata keys that pathappPatch
     # auto-injects per LD-461 SCOPE_BODY_HELPER_V1 + LD-474
@@ -2258,6 +2259,16 @@ def handle_bg_update_beat(h, body: dict)-> None:
         for field in _BG_BEAT_WRITABLE:
             if field in body:
                 value = body[field]
+                if field == "kling_o3_replace_slot_index":
+                    try:
+                        value = max(0, min(2, int(value)))
+                    except (TypeError, ValueError):
+                        return h._send_error_v59(
+                            400,
+                            error_code="INVALID_REPLACE_SLOT",
+                            error_message="kling_o3_replace_slot_index must be 0, 1, or 2",
+                            retry_safe=False,
+                        )
                 # For reference_image / bg_ref_image: if abs_path is set
                 # and the file exists, render a PIL thumbnail and inject
                 # thumb_b64 so BgRefSlot can <img src=...> after refresh.
@@ -3010,14 +3021,12 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                         error_message=f"{label} must be set before generating O3 video",
                         retry_safe=False,
                     )
-            prior_video = beat.get("kling_o3_video_path")
-            if prior_video and Path(str(prior_video)).is_file():
-                bg.stash_prior_kling_o3_before_redo(
-                    beat,
-                    event_dir,
-                    reason="o3_element_submit",
-                    label="previous approved O3 video",
-                )
+            replace_slot = body.get("replace_slot_index", beat.get("kling_o3_replace_slot_index", 0))
+            try:
+                replace_slot = max(0, min(2, int(replace_slot)))
+            except (TypeError, ValueError):
+                replace_slot = 0
+            beat["kling_o3_replace_slot_index"] = replace_slot
             existing_job_id = str(beat.get("kling_o3_voice_fix_ui_job_id") or "")
             existing_status = str(beat.get("kling_o3_voice_fix_status") or "")
             if existing_job_id and existing_status not in {"approved", "failed", "failed_o3", "failed_provider_fetch", "failed_provider_sub720"}:

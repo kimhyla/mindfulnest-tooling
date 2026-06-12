@@ -555,6 +555,7 @@ SIDECAR_MERGE_PRESERVE_FIELDS: tuple[str, ...] = (
     "flux_options", "accepted_image_key", "accepted_library_ref", "status",
     "kling_o3_prompt", "kling_o3_duration", "kling_o3_duration_locked",
     "kling_o3_status", "kling_o3_video_path", "kling_o3_generation",
+    "kling_o3_options", "kling_o3_replace_slot_index", "kling_o3_selected_option_key",
     "kling_o3_task_id", "kling_o3_trim_start", "kling_o3_trim_back",
     "kling_o3_actual_duration_s", "kling_o3_completed_at",
     "reference_image", "bg_ref_image", "reference_image_locked", "pipeline",
@@ -4729,6 +4730,71 @@ def stash_prior_kling_o3_before_redo(
         opt["active"] = opt.get("video_path") == video_path
     beat["kling_o3_options"] = options[:3]
     return True
+
+
+def _kling_o3_option_key(beat_id: str, video_path: str) -> str:
+    digest = hashlib.sha1(video_path.encode("utf-8")).hexdigest()[:10]
+    return f"{beat_id}_o3_video_{digest}"
+
+
+def normalize_kling_o3_option_slots(beat: dict) -> list[dict | None]:
+    """Return fixed 3-slot view of ``kling_o3_options`` (index = UI container)."""
+    slots: list[dict | None] = [None, None, None]
+    options = [
+        o for o in (beat.get("kling_o3_options") or [])
+        if isinstance(o, dict) and (o.get("video_path") or o.get("key"))
+    ]
+    for i, opt in enumerate(options):
+        idx = opt.get("slot_index")
+        if not isinstance(idx, int) or idx < 0 or idx > 2:
+            idx = i if i < 3 else None
+        if idx is None:
+            continue
+        if slots[idx] is None:
+            slots[idx] = opt
+            opt["slot_index"] = idx
+            continue
+        for j in range(3):
+            if slots[j] is None:
+                slots[j] = opt
+                opt["slot_index"] = j
+                break
+    return slots
+
+
+def assign_kling_o3_option_to_slot(
+    beat: dict,
+    slot_index: int,
+    *,
+    video_path: str,
+    label: str,
+    source: str,
+    now: str,
+    make_active: bool = True,
+) -> str:
+    """Place a generated clip in container ``slot_index`` (0–2); returns option key."""
+    slot_index = max(0, min(2, int(slot_index)))
+    beat_id = str(beat.get("beat_id") or "beat")
+    key = _kling_o3_option_key(beat_id, video_path)
+    slots = normalize_kling_o3_option_slots(beat)
+    new_opt = {
+        "key": key,
+        "label": label,
+        "video_path": video_path,
+        "source": source,
+        "active": make_active,
+        "slot_index": slot_index,
+        "created_at": now,
+    }
+    slots[slot_index] = new_opt
+    for opt in slots:
+        if opt:
+            opt["active"] = bool(make_active and opt.get("video_path") == video_path)
+    beat["kling_o3_options"] = [o for o in slots if o is not None]
+    if make_active:
+        beat["kling_o3_video_path"] = video_path
+        beat["kling_o3_selected_option_key"] = key
+    return key
 
 
 def kling_o3_pinned_dir(event_dir: str | Path) -> Path:

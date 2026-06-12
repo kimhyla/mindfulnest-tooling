@@ -455,29 +455,18 @@ def _is_user_selectable_o3_video(video_path: str) -> bool:
 def _upsert_o3_option(beat: dict, *, video_path: str, label: str, active: bool, now: str) -> None:
     if not _is_user_selectable_o3_video(video_path):
         return
-    options = [
-        o for o in (beat.get("kling_o3_options") or [])
-        if isinstance(o, dict) and _is_user_selectable_o3_video(str(o.get("video_path") or ""))
-    ]
-    key = _o3_option_key(beat.get("beat_id") or "beat", video_path)
-    existing = next((o for o in options if o.get("video_path") == video_path), None)
-    if existing:
-        existing.update({"key": key, "label": label, "active": active, "updated_at": now})
-    else:
-        options.append({
-            "key": key,
-            "label": label,
-            "video_path": video_path,
-            "source": "kling_o3_voice_video",
-            "active": active,
-            "created_at": now,
-        })
-    for opt in options:
-        opt["active"] = bool(opt.get("video_path") == video_path and active)
-    # Keep the three visible option slots useful: current active plus two prior candidates.
-    active_opts = [o for o in options if o.get("active")]
-    inactive = [o for o in options if not o.get("active")]
-    beat["kling_o3_options"] = active_opts[:1] + inactive[-2:]
+    import beat_generator as bg  # noqa: PLC0415
+
+    slot_index = int(beat.get("kling_o3_replace_slot_index") or 0)
+    bg.assign_kling_o3_option_to_slot(
+        beat,
+        slot_index,
+        video_path=video_path,
+        label=label,
+        source="kling_o3_voice_video",
+        now=now,
+        make_active=active,
+    )
 
 
 def _restore_prior_video_state(beat: dict, *, prior_video: str | None, prior_status: str | None, prior_beat_status: str | None) -> None:

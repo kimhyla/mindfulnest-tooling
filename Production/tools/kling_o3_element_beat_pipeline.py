@@ -120,20 +120,18 @@ def _option_key(beat_id: str, video_path: str) -> str:
 
 
 def _upsert_option(beat: dict, *, video_path: str, label: str, now: str) -> None:
-    options = [o for o in (beat.get("kling_o3_options") or []) if isinstance(o, dict)]
-    key = _option_key(beat.get("beat_id") or "beat", video_path)
-    options = [o for o in options if o.get("video_path") != video_path]
-    options.append({
-        "key": key,
-        "label": label,
-        "video_path": video_path,
-        "source": "kling_o3_element_native_voice",
-        "active": True,
-        "created_at": now,
-    })
-    for opt in options:
-        opt["active"] = opt.get("video_path") == video_path
-    beat["kling_o3_options"] = options[:3]
+    import beat_generator as bg_sidecar  # noqa: PLC0415
+
+    slot_index = int(beat.get("kling_o3_replace_slot_index") or 0)
+    bg_sidecar.assign_kling_o3_option_to_slot(
+        beat,
+        slot_index,
+        video_path=video_path,
+        label=label,
+        source="kling_o3_element_native_voice",
+        now=now,
+        make_active=True,
+    )
 
 
 def run_pipeline(
