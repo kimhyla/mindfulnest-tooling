@@ -107,7 +107,6 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   const MIN_STEM_CUT_MS = 250;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const seekLayerRef = useRef<HTMLDivElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const wsRef = useRef<WaveSurfer | null>(null);
   const [durationMs, setDurationMs] = useState<number | null>(null);
@@ -125,11 +124,13 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     start_ms: number;
     end_ms: number;
   } | null>(null);
-  // Ref mirror of isReady so pointer-event closures always see the current value
-  // without needing to be in the useEffect dependency array.
+  // Ref mirror of isReady so pointer-event closures always see the current value.
   const isReadyRef = useRef<boolean>(false);
+  const onWaveformClickRef = useRef(onWaveformClick);
+  onWaveformClickRef.current = onWaveformClick;
 
-  // (re)mount WaveSurfer whenever audioSrc changes.
+  // WaveSurfer mount — audioSrc changes only. Seek handlers live in a separate
+  // effect below (LD WAVEFORM_DRAG_SEEK_V1).
   useEffect(() => {
     if (!audioSrc || !containerRef.current) return;
     setLoadError(null);
@@ -280,42 +281,59 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       setLoadError(msg);
     });
 
-    // Custom pointer-based seek — replaces WaveSurfer's built-in dragToSeek.
-    // LD WAVEFORM_DRAG_SEEK_V1 (2026-05-25): interact:false + our own handlers.
-    // REGRESSION GUARD (2026-06-10): handlers MUST live on mn-waveform-seek-layer,
-    // NOT on the WaveSurfer canvas — the cue/trim overlay sits above the canvas
-    // and blocks pointer events. Stem-trim block uses pointer-events:none on the
-    // body so seek passes through the amber region; only handles capture drags.
-    const seekLayer = seekLayerRef.current;
-    if (!seekLayer) return;
+    return () => {
+      isReadyRef.current = false;
+      try {
+        ws.destroy();
+      } catch {
+        // destroy() throws if AbortError is in flight — non-fatal at unmount
+      }
+      if (wsRef.current === ws) wsRef.current = null;
+    };
+    // onReady / onWaveformClick are intentionally captured at mount time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audioSrc]);
+
+  // Drag-seek — separate effect so handlers bind AFTER WaveSurfer ready + wrapper
+  // ref exist. Regression history:
+  //   2026-05-25 (0ff0be0): interact:false + canvas pointer handlers — worked
+  //   until cue overlay (8604e4c) blocked canvas hits.
+  //   2026-06-10 (c3ab386): seek-layer inside WS effect — broke because
+  //   seekLayerRef.current was null on first run → early return left ZERO
+  //   handlers attached (playhead stuck / snap-to-0).
+  // Durable rule: bind on wrapperRef; never early-return before WS cleanup;
+  // skip only cue/cut handles; deps include isReady.
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    const ws = wsRef.current;
+    if (!wrapper || !ws || !isReady || !audioSrc) return;
+
     let isDragging = false;
     let seekPointerId: number | null = null;
 
     const getRelX = (e: PointerEvent): number => {
-      const box = seekLayer.getBoundingClientRect();
-      return Math.max(0, Math.min(1, (e.clientX - box.left) / box.width));
+      const box = wrapper.getBoundingClientRect();
+      const trackLeft = box.left + 8;
+      const trackWidth = box.width - 16;
+      if (trackWidth <= 0) return 0;
+      return Math.max(0, Math.min(1, (e.clientX - trackLeft) / trackWidth));
     };
 
-    const isTrimOrCueHandle = (target: EventTarget | null): boolean =>
-      target instanceof HTMLElement &&
-      Boolean(
+    const shouldSkipSeek = (target: EventTarget | null): boolean => {
+      if (!(target instanceof HTMLElement)) return false;
+      return Boolean(
         target.closest(
-          '.mn-waveform-cue-block-handle, .mn-waveform-stem-trim-handle',
+          '.mn-waveform-cue-block-handle, .mn-waveform-stem-trim-handle, .mn-waveform-cue-block',
         ),
       );
-
-    const isCueBlockBody = (target: EventTarget | null): boolean =>
-      target instanceof HTMLElement &&
-      Boolean(target.closest('.mn-waveform-cue-block')) &&
-      !isTrimOrCueHandle(target);
+    };
 
     const onPointerDown = (e: PointerEvent) => {
       if (!isReadyRef.current) return;
-      if (isTrimOrCueHandle(e.target)) return;
-      if (isCueBlockBody(e.target)) return;
+      if (shouldSkipSeek(e.target)) return;
       isDragging = true;
       seekPointerId = e.pointerId;
-      seekLayer.setPointerCapture(e.pointerId);
+      wrapper.setPointerCapture(e.pointerId);
       ws.seekTo(getRelX(e));
     };
     const onPointerMove = (e: PointerEvent) => {
@@ -328,7 +346,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       seekPointerId = null;
       const rel = getRelX(e);
       ws.seekTo(rel);
-      onWaveformClick?.(rel * ws.getDuration() * 1000);
+      onWaveformClickRef.current?.(rel * ws.getDuration() * 1000);
     };
     const onPointerCancel = (e: PointerEvent) => {
       if (seekPointerId !== null && e.pointerId !== seekPointerId) return;
@@ -336,27 +354,18 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       seekPointerId = null;
     };
 
-    seekLayer.addEventListener('pointerdown', onPointerDown);
-    seekLayer.addEventListener('pointermove', onPointerMove);
-    seekLayer.addEventListener('pointerup', onPointerUp);
-    seekLayer.addEventListener('pointercancel', onPointerCancel);
+    wrapper.addEventListener('pointerdown', onPointerDown);
+    wrapper.addEventListener('pointermove', onPointerMove);
+    wrapper.addEventListener('pointerup', onPointerUp);
+    wrapper.addEventListener('pointercancel', onPointerCancel);
 
     return () => {
-      seekLayer.removeEventListener('pointerdown', onPointerDown);
-      seekLayer.removeEventListener('pointermove', onPointerMove);
-      seekLayer.removeEventListener('pointerup', onPointerUp);
-      seekLayer.removeEventListener('pointercancel', onPointerCancel);
-      isReadyRef.current = false;
-      try {
-        ws.destroy();
-      } catch {
-        // destroy() throws if AbortError is in flight — non-fatal at unmount
-      }
-      if (wsRef.current === ws) wsRef.current = null;
+      wrapper.removeEventListener('pointerdown', onPointerDown);
+      wrapper.removeEventListener('pointermove', onPointerMove);
+      wrapper.removeEventListener('pointerup', onPointerUp);
+      wrapper.removeEventListener('pointercancel', onPointerCancel);
     };
-    // onReady / onWaveformClick are intentionally captured at mount time.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [audioSrc]);
+  }, [audioSrc, isReady]);
 
   // Cue block horizontal position (% of timeline width).
   const cuePctLeft = (cue: WatercolorCue): number => {
@@ -685,10 +694,9 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       </div>
       <div ref={containerRef} class="mn-waveform-canvas" />
       <div
-        ref={seekLayerRef}
         class="mn-waveform-seek-layer"
         data-testid="waveform-seek-layer"
-        title="Click or drag to seek"
+        aria-hidden="true"
       />
       <div class="mn-waveform-cue-overlay">
         {cutEditable && durationMs && durationMs > 0 ? (

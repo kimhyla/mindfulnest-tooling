@@ -662,6 +662,8 @@
   padding: 6px 8px;
   background: var(--code-bg);
   border-radius: 3px;
+  cursor: pointer;
+  touch-action: none;
 }
 .mn-waveform-empty {
   padding: 12px;
@@ -686,8 +688,7 @@
   bottom: 6px;
   top: 28px;
   z-index: 4;
-  cursor: pointer;
-  touch-action: none;
+  pointer-events: none;
 }
 .mn-waveform-cue-overlay {
   position: absolute;
