@@ -101,3 +101,16 @@ export function writeCachedModulePreview(
     // ignore
   }
 }
+
+/** LD-827 — multi-phase viewer must never be blank while module preview bakes. */
+export function resolveModuleViewerVideoUrl(opts: {
+  standaloneMode: boolean;
+  modulePreviewUrl?: string | undefined;
+  viewerProcessedUrl?: string | undefined;
+  viewerSourceUrl?: string | undefined;
+}): string | undefined {
+  if (opts.standaloneMode) {
+    return opts.viewerProcessedUrl ?? opts.viewerSourceUrl;
+  }
+  return opts.modulePreviewUrl ?? opts.viewerSourceUrl;
+}

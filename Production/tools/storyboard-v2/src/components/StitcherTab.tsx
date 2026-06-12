@@ -33,6 +33,7 @@ import {
   modulePreviewCacheKey,
   orderedStitchSlots,
   readCachedModulePreview,
+  resolveModuleViewerVideoUrl,
   resolveStitchTransitions,
   slotIndexForKey,
   writeCachedModulePreview,
@@ -470,10 +471,13 @@ export function StitcherTab() {
   const viewerSlotData = job?.slots?.[viewerSlot];
   const viewerSourceUrl = resolveStitchSlotSourceVideoUrl(viewerSlotData?.video_path);
   const viewerProcessedUrl = previewUrls[viewerSlot];
-  /** Multi-phase: continuous module preview with transitions. Milestone: per-slot source. */
-  const viewerVideoUrl = standaloneMode
-    ? (viewerProcessedUrl ?? viewerSourceUrl)
-    : modulePreviewUrl;
+  /** Multi-phase: module preview when ready; instant /files fallback while baking (LD-827). */
+  const viewerVideoUrl = resolveModuleViewerVideoUrl({
+    standaloneMode,
+    modulePreviewUrl,
+    viewerProcessedUrl,
+    viewerSourceUrl,
+  });
   const viewerLoading = modulePreviewLoading
     || previewLoadingSlot === viewerSlot
     || (busySlot?.slot === viewerSlot && busySlot.action === 'preview');
@@ -1143,7 +1147,10 @@ export function StitcherTab() {
                   Module review
                   {viewerLoading ? ' — building all-phase preview…' : ''}
                   {!viewerLoading && modulePreviewUrl ? ' — all 4 phases + dissolve transitions' : ''}
-                  {!viewerLoading && !modulePreviewUrl && !standaloneMode
+                  {!viewerLoading && !modulePreviewUrl && viewerSourceUrl
+                    ? ' — LD-827 instant slot preview (module preview building…)'
+                    : ''}
+                  {!viewerLoading && !modulePreviewUrl && !viewerSourceUrl
                     ? ' — waiting for all four slot videos'
                     : ''}
                 </span>

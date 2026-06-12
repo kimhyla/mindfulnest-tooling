@@ -74,6 +74,8 @@ MARKERS=(
     # LD-826 — Stitcher multi-phase track + persisted selection
     "LD-826|stitcher-multiphase-track"
     "LD-826|selection persists per event"
+    # LD-827 — Stitcher viewer instant /files fallback while module preview bakes
+    "LD-827|LD-827 instant slot preview"
     # Baseline buttons — every beat should have these (displayed text)
     "BASELINE|Regen Audio"
     "BASELINE|Regenerate B"
