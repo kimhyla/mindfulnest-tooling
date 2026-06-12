@@ -89,6 +89,9 @@ MARKERS=(
     "PHASE_LIPSYNC|Lipsync in progress"
     "PHASE_LIPSYNC|pane-phase-a-keepalive"
     "PHASE_LIPSYNC|pane-phase-b-keepalive"
+    # Phase waveform playback — keep-alive mounts A+B; pause hidden + playback bus (2026-06-12)
+    "PHASE_WAVEFORM_PLAY|Playback failed"
+    "PHASE_WAVEFORM_PLAY|attributeFilter"
     # Baseline buttons — every beat should have these (displayed text)
     "BASELINE|Regen Audio"
     "BASELINE|Regenerate B"

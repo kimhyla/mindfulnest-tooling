@@ -720,32 +720,35 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   // One preview surface: lipsync <video> + CSS watercolor overlays on cue timing.
   // WaveSurfer is master clock (audio); video mirrors play/seek. No second player.
   const onPreviewOverlay = () => {
-    if (!lipsyncFile) {
-      setStatusMsg('No lipsync video yet — run Send for Lipsync first.');
-      return;
-    }
-    if (!priorityAudio) {
-      setStatusMsg('No audio on timeline — generate a stem or finish lipsync first.');
-      return;
-    }
-    document
-      .querySelector(`[data-testid="phase-${phase}-lipsync-player"]`)
-      ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    const ctl = waveformPlaybackRef.current;
-    if (!ctl?.isReady) {
-      setStatusMsg('Audio waveform still loading — wait a moment and try again.');
-      return;
-    }
-    if (!ctl.play({ fromStart: true })) {
-      setStatusMsg('Could not start preview — try the ▶ Play button on the waveform.');
-      return;
-    }
-    const hasCues = (stateSlice.watercolor_cues ?? []).length > 0;
-    setStatusMsg(
-      hasCues
-        ? '▶ Previewing — watercolor overlays appear on the lipsync frame above.'
-        : '▶ Previewing lipsync — drag watercolors onto the waveform when ready.',
-    );
+    void (async () => {
+      if (!lipsyncFile) {
+        setStatusMsg('No lipsync video yet — run Send for Lipsync first.');
+        return;
+      }
+      if (!priorityAudio) {
+        setStatusMsg('No audio on timeline — generate a stem or finish lipsync first.');
+        return;
+      }
+      document
+        .querySelector(`[data-testid="phase-${phase}-lipsync-player"]`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      const ctl = waveformPlaybackRef.current;
+      if (!ctl?.isReady) {
+        setStatusMsg('Audio waveform still loading — wait a moment and try again.');
+        return;
+      }
+      const ok = await ctl.play({ fromStart: true });
+      if (!ok) {
+        setStatusMsg('Could not start preview — try the ▶ Play button on the waveform.');
+        return;
+      }
+      const hasCues = (stateSlice.watercolor_cues ?? []).length > 0;
+      setStatusMsg(
+        hasCues
+          ? '▶ Previewing — watercolor overlays appear on the lipsync frame above.'
+          : '▶ Previewing lipsync — drag watercolors onto the waveform when ready.',
+      );
+    })();
   };
 
   const onExportToStitcher = async () => {

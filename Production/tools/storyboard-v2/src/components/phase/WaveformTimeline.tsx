@@ -17,6 +17,10 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import WaveSurfer from 'wavesurfer.js';
 import { makeDropTarget, type DragPayload } from '../../utils/dragdrop';
+import {
+  pauseOtherWaveformPlayback,
+  registerWaveformPlaybackControl,
+} from '../../utils/waveformPlaybackBus';
 
 export interface WatercolorCue {
   id: string;
@@ -67,7 +71,7 @@ export interface WaveformTimelineProps {
 }
 
 export interface WaveformPlaybackControl {
-  play: (opts?: { fromStart?: boolean }) => boolean;
+  play: (opts?: { fromStart?: boolean }) => Promise<boolean>;
   pause: () => void;
   readonly isReady: boolean;
 }
@@ -297,6 +301,27 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     // onReady / onWaveformClick are intentionally captured at mount time.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioSrc]);
+
+  // Keep-alive: pause when this phase tab is hidden so background WaveSurfer
+  // instances do not block playback on the visible tab (Chrome autoplay policy).
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+    const pane = wrapper.closest('.mn-tab-pane-keepalive') as HTMLElement | null;
+    if (!pane) return;
+
+    const pauseIfHidden = () => {
+      if (!pane.hidden) return;
+      wsRef.current?.pause();
+      linkedVideo?.current?.pause();
+      setIsPlaying(false);
+    };
+
+    pauseIfHidden();
+    const obs = new MutationObserver(pauseIfHidden);
+    obs.observe(pane, { attributes: true, attributeFilter: ['hidden'] });
+    return () => obs.disconnect();
+  }, [audioSrc, linkedVideo]);
 
   // Drag-seek — separate effect so handlers bind AFTER WaveSurfer ready + wrapper
   // ref exist. Regression history:
@@ -607,44 +632,73 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   );
 
   const startPlayback = useCallback(
-    (fromStart = false) => {
+    async (fromStart = false): Promise<boolean> => {
       const ws = wsRef.current;
       if (!ws || !isReadyRef.current) return false;
+      const pane = wrapperRef.current?.closest('.mn-tab-pane-keepalive') as HTMLElement | null;
+      if (pane?.hidden) return false;
+
       if (fromStart) ws.seekTo(0);
       const lv = linkedVideo?.current;
       if (lv) {
         lv.muted = true;
         lv.currentTime = ws.getCurrentTime();
-        lv.play().catch(() => {});
       }
-      ws.play();
-      return true;
+
+      try {
+        pauseOtherWaveformPlayback(controlRef.current);
+        await ws.play();
+        if (lv && lv.paused) {
+          lv.muted = true;
+          await lv.play();
+        }
+        setLoadError(null);
+        return true;
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        setLoadError(`Playback failed: ${msg}`);
+        return false;
+      }
     },
     [linkedVideo],
   );
 
   const togglePlayback = useCallback(() => {
-    const ws = wsRef.current;
-    if (!ws) return;
-    if (ws.isPlaying()) {
-      ws.pause();
-    } else {
-      startPlayback(false);
-    }
+    void (async () => {
+      const ws = wsRef.current;
+      if (!ws) return;
+      if (ws.isPlaying()) {
+        ws.pause();
+        return;
+      }
+      setLoadError(null);
+      await startPlayback(false);
+    })();
   }, [startPlayback]);
+
+  const controlRef = useRef<WaveformPlaybackControl>({
+    get isReady() {
+      return isReadyRef.current;
+    },
+    play: async () => false,
+    pause: () => {},
+  });
+  controlRef.current = {
+    get isReady() {
+      return isReadyRef.current;
+    },
+    play: (opts) => startPlayback(opts?.fromStart ?? false),
+    pause: () => {
+      wsRef.current?.pause();
+    },
+  };
 
   useEffect(() => {
     if (!playbackControl) return;
-    playbackControl.current = {
-      get isReady() {
-        return isReadyRef.current;
-      },
-      play: (opts) => startPlayback(opts?.fromStart ?? false),
-      pause: () => {
-        wsRef.current?.pause();
-      },
-    };
+    playbackControl.current = controlRef.current;
+    const unregister = registerWaveformPlaybackControl(controlRef.current);
     return () => {
+      unregister();
       playbackControl.current = null;
     };
   }, [playbackControl, startPlayback]);
