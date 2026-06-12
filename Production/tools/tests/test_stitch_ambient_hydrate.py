@@ -17,6 +17,7 @@ from server_handlers.stitch_editor import (
     normalize_job_slots_audio,
     normalize_slot_audio_mix_levels,
     stitch_upsert_event_slot,
+    _persist_stitch_job_canonical_audio,
 )
 
 
@@ -142,6 +143,33 @@ class StitchSlotAudioMixTests(unittest.TestCase):
         from server_handlers.stitch_editor import _job_canonical_audio_needs_persist
 
         self.assertTrue(_job_canonical_audio_needs_persist(live, normalized))
+
+    def test_persist_stitch_job_canonical_audio_writes_volume(self):
+        state = {
+            "jobs": {
+                "Event_1_stitch": {
+                    "slots": {
+                        "phase_a": {
+                            "video_path": "Production/Event_1/phase_a.mp4",
+                            "ambient_bed": "ambient bed pretty option2",
+                            "ambient_volume": 0.6,
+                            "ambient_bed_path": "/stale/bed.mp3",
+                        }
+                    }
+                }
+            }
+        }
+        normalized = {
+            "phase_a": {
+                "video_path": "Production/Event_1/phase_a.mp4",
+                "ambient_bed": "ambient bed pretty option2",
+                "ambient_volume": STITCH_AMBIENT_BED_VOLUME,
+            }
+        }
+        _persist_stitch_job_canonical_audio(state, "Event_1_stitch", normalized)
+        slot = state["jobs"]["Event_1_stitch"]["slots"]["phase_a"]
+        self.assertEqual(slot["ambient_volume"], STITCH_AMBIENT_BED_VOLUME)
+        self.assertNotIn("ambient_bed_path", slot)
 
     def test_default_ambient_does_not_overwrite_existing(self):
         slot = {

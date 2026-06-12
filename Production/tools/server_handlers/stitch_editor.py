@@ -409,6 +409,7 @@ def stitch_migrate_legacy_to_canonical(state: dict, event_id: str) -> bool:
             changed = True
 
     if changed:
+        normalize_job_slots_audio(canonical["slots"])
         canonical["updated_at"] = datetime.now(timezone.utc).isoformat()
     return changed
 

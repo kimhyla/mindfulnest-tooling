@@ -29,6 +29,7 @@ import { acceptDragForTarget, makeDropTarget, type DragPayload } from '../utils/
 import { resolveStitchSlotSourceVideoUrl } from '../utils/stitchSlotVideo';
 import {
   STITCH_AMBIENT_BED_VOLUME,
+  STITCH_AMBIENT_VOLUME_PERSIST_V1,
   STITCH_DEFAULT_AMBIENT_BEDS_V1,
   STITCH_SFX_CUE_DEFAULT_FADEIN_MS,
   STITCH_SFX_CUE_DEFAULT_FADEOUT_MS,
@@ -1189,6 +1190,7 @@ export function StitcherTab() {
       class="mn-tab-pane mn-stitcher-pane"
       data-testid="pane-stitcher"
       data-stitch-default-ambient-beds={STITCH_DEFAULT_AMBIENT_BEDS_V1}
+      data-stitch-ambient-volume-persist={STITCH_AMBIENT_VOLUME_PERSIST_V1}
     >
       <header class="mn-pane-header">
         <h2>Stitcher</h2>

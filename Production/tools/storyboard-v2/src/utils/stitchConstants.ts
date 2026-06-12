@@ -12,6 +12,9 @@ export const STITCH_SLOT_AUDIO_MIX_V1 = 'STITCH_SLOT_AUDIO_MIX_V1' as const;
 /** STITCH_DEFAULT_AMBIENT_BEDS_V1 — canonical preset_id per stitch slot (auto-applied on export/load). */
 export const STITCH_DEFAULT_AMBIENT_BEDS_V1 = 'STITCH_DEFAULT_AMBIENT_BEDS_V1' as const;
 
+/** STITCH_AMBIENT_VOLUME_PERSIST_V1 — client mirrors server 0.15 clamp on every slot with a bed. */
+export const STITCH_AMBIENT_VOLUME_PERSIST_V1 = 'STITCH_AMBIENT_VOLUME_PERSIST_V1' as const;
+
 export type StitchSlotKey = 'intro' | 'phase_a' | 'phase_b' | 'resolution';
 
 /** Canonical ambient bed preset_id per slot — mirrors stitch_editor.py STITCH_DEFAULT_AMBIENT_BEDS. */
