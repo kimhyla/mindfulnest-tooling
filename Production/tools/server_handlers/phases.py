@@ -2214,6 +2214,16 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
                )
     # Resolve audio source: prefer mixed_audio_file, fallback to voice_stem.
     state = h.app.state.read_state()
+    existing_status = state.get(f"phase_{phase}_lipsync_status")
+    existing_tid = state.get(f"phase_{phase}_lipsync_task_id")
+    if existing_status == "polling" and existing_tid:
+        return h._send_json(202, {
+            "ok": True,
+            "status": "already_polling",
+            "task_id": existing_tid,
+            "phase": phase,
+            "message": "Lipsync already in progress — auto-updating when done.",
+        })
     audio_name = (state.get(f"phase_{phase}_mixed_audio_file")
                   or state.get(f"phase_{phase}_voice_stem_file"))
     if not audio_name:
@@ -2507,10 +2517,122 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
         "audio_duration_s": round(audio_duration, 3),
         "base_clip_id": base_clip_id,
         "message": (
-            "Kling Sync is processing (~1-4 min). "
+            "Kling Sync is processing (~8-20 min). "
             "The storyboard will auto-update when done."
         ),
     })
+
+
+def _write_phase_b_lipsync_complete(
+    app,
+    *,
+    phase: str,
+    out_path: Path,
+    out_name: str,
+    base_clip_id: str | None,
+) -> None:
+    """Terminal success write shared by bg thread + persistent poller."""
+    try:
+        _apply_whiteout_fade(out_path)
+    except Exception as fade_exc:  # noqa: BLE001
+        print(
+            f"[phase_{phase}_lipsync] WARNING: fade failed ({fade_exc!r}) "
+            f"— keeping raw download",
+            flush=True,
+        )
+    app.state.add_spend("lipsync", COST_PER_LIPSYNC)
+    mtime = int(os.path.getmtime(str(out_path)))
+
+    def _apply(state, _p=phase, _n=out_name, _m=mtime, _bid=base_clip_id):
+        state[f"phase_{_p}_lipsync_file"] = _n
+        state[f"phase_{_p}_lipsync_mtime"] = _m
+        state[f"phase_{_p}_lipsync_status"] = "done"
+        state[f"phase_{_p}_lipsync_requires_regen"] = False
+        state.pop(f"phase_{_p}_lipsync_task_id", None)
+        if _bid:
+            key = f"phase_{_p}_cedric_base_clip_id" if _p == "b" else f"phase_{_p}_empty_desk_bg_id"
+            state[key] = _bid
+        state["_module_version"] = int(state.get("_module_version", 0) or 0) + 1
+        return state["_module_version"]
+
+    app.state.mutate_state(_apply)
+
+
+def sweep_phase_module_lipsync_polls(state, client) -> None:
+    """Poll in-flight phase B module lipsync jobs — survives server restarts.
+
+    Beat-level lipsync uses LipsyncPollingThread in production_server.py;
+    phase B module lipsync previously used a one-shot daemon thread that died
+    on deploy/restart while state stayed ``polling``.
+    """
+    snap = state.read_state()
+    phase = "b"
+    status = snap.get(f"phase_{phase}_lipsync_status")
+    task_id = snap.get(f"phase_{phase}_lipsync_task_id")
+    if status != "polling" or not task_id:
+        return
+    try:
+        result = client.poll(task_id)
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[phase_{phase}_lipsync-poller] {task_id[:12]}… transport error "
+            f"({type(exc).__name__}: {exc!r}); will retry",
+            flush=True,
+        )
+        return
+    poll_status = (result.get("status") or "").lower()
+    outputs = result.get("outputs") or []
+    print(
+        f"[phase_{phase}_lipsync-poller] {task_id[:12]}… status={poll_status!r} "
+        f"outputs={len(outputs)}",
+        flush=True,
+    )
+    if poll_status == "completed" and outputs:
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        out_name = f"phase_{phase}_lipsync_{ts}.mp4"
+        out_path = state.event_dir / out_name
+        base_clip_id = snap.get(f"phase_{phase}_cedric_base_clip_id")
+        try:
+            LipSyncClient(client.api_key).download(outputs[0], out_path)
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[phase_{phase}_lipsync-poller] download failed ({exc}); will retry",
+                flush=True,
+            )
+            return
+        if not out_path.is_file():
+            print(
+                f"[phase_{phase}_lipsync-poller] completed but file missing: {out_path}",
+                flush=True,
+            )
+            return
+        # Reconstruct minimal app shim for shared writer (add_spend + mutate_state).
+        class _AppShim:
+            pass
+
+        shim = _AppShim()
+        shim.state = state
+        _write_phase_b_lipsync_complete(
+            shim,
+            phase=phase,
+            out_path=out_path,
+            out_name=out_name,
+            base_clip_id=base_clip_id,
+        )
+        print(
+            f"[phase_{phase}_lipsync-poller] ✓ recovered → {out_name} "
+            f"({out_path.stat().st_size} bytes)",
+            flush=True,
+        )
+    elif poll_status in ("failed", "error"):
+        err = result.get("raw", {}).get("error", "unknown")
+
+        def _apply_err(st, _p=phase, _e=err):
+            st[f"phase_{_p}_lipsync_status"] = f"error: {str(_e)[:120]}"
+            st.pop(f"phase_{_p}_lipsync_task_id", None)
+            return st
+
+        state.mutate_state(_apply_err)
 
 
 def _phase_load_overlay_helpers():

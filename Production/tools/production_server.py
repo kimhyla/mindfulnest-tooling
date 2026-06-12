@@ -2115,17 +2115,25 @@ class LipsyncPollingThread(threading.Thread):
             if ls.get("status") == "polling" and ls.get("task_id"):
                 candidates.append((video_role, beat_id, ls["task_id"]))
         if not candidates:
-            return
-        # Preflight 111 (2026-04-19): emit a visible heartbeat so the server
-        # log always shows the daemon is alive when work exists. Previously
-        # the daemon completed cycles silently, making it impossible to tell
-        # if silent meant "no candidates" vs "stuck" vs "crashed thread".
-        print(f"[lipsync-poller] cycle: {len(candidates)} candidate(s): "
-              f"{[(b, t[:12]) for _r, b, t in candidates]}", flush=True)
-        for video_role, beat_id, task_id in candidates:
-            if self.stop_event.is_set():
-                return
-            self._poll_one(video_role, beat_id, task_id)
+            pass
+        else:
+            # Preflight 111 (2026-04-19): emit a visible heartbeat so the server
+            # log always shows the daemon is alive when work exists. Previously
+            # the daemon completed cycles silently, making it impossible to tell
+            # if silent meant "no candidates" vs "stuck" vs "crashed thread".
+            print(f"[lipsync-poller] cycle: {len(candidates)} candidate(s): "
+                  f"{[(b, t[:12]) for _r, b, t in candidates]}", flush=True)
+            for video_role, beat_id, task_id in candidates:
+                if self.stop_event.is_set():
+                    return
+                self._poll_one(video_role, beat_id, task_id)
+        # Phase B module lipsync (top-level state, not beat partition).
+        try:
+            from server_handlers.phases import sweep_phase_module_lipsync_polls
+            sweep_phase_module_lipsync_polls(self.state, self.client)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[lipsync-poller] phase module sweep error: {exc}", flush=True)
+            traceback.print_exc()
 
     @staticmethod
     def _mutate_lipsync(state_mgr: StateManager, video_role: str, mutator_fn) -> None:
