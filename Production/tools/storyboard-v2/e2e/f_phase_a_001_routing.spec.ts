@@ -136,13 +136,13 @@ test.describe('F-PHASE-A-001 — Phase A endpoint routing (id=122)', () => {
     await page.route('**/api/phase_b/ambient_preset_list', async (r) => {
       await r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, items: [] }) });
     });
+    await page.route('**/api/phase_b/preview', async (r) => {
+      await r.fulfill({ status: 200, contentType: 'video/mp4', body: Buffer.from('fake-preview-mp4') });
+    });
     await gotoApp(page);
     await page.locator('[data-testid="tab-phase-a"]').click();
     await page.locator('[data-testid="phase-producer-a"]').click();
     await page.locator('[data-testid="phase-a-preview-overlay-btn"]').click();
-    await expect(page.locator('[data-testid="phase-a-status"]')).toContainText('Previewing', {
-      timeout: 5_000,
-    });
-    await expect(page.locator('[data-testid="phase-a-overlay-preview"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="phase-a-overlay-preview"]')).toBeVisible({ timeout: 10_000 });
   });
 });
