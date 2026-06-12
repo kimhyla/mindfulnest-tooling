@@ -1025,6 +1025,118 @@ def handle_phase_reject_lipsync(h, body: dict) -> None:
     })
 
 
+def handle_phase_apply_stem_cut(h, body: dict) -> None:
+    """POST /api/phase_{a|b}/apply_stem_cut
+
+    Bakes persisted stem trim into a new voice_stem mp3 (ffmpeg), replaces
+    phase_{phase}_voice_stem_file, clears trim keys, and invalidates lipsync.
+    Body: {"phase": "a"|"b"}
+    """
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+
+    phase = (body.get("phase") or "").strip().lower()
+    err = h._phase_check(phase)
+    if err:
+        return h._send_error_v59(
+            400,
+            error_code="GENERIC_ERROR",
+            error_message=err,
+            retry_safe=False,
+            extra={"hint": "phase is 'a' or 'b'."},
+        )
+
+    state = h.app.state.read_state()
+    stem_name = state.get(f"phase_{phase}_voice_stem_file")
+    if not stem_name:
+        return h._send_error_v59(
+            404,
+            error_code="GENERIC_ERROR",
+            error_message=f"phase_{phase}_voice_stem_file not set",
+            retry_safe=False,
+            extra={"hint": "Generate a voice stem first."},
+        )
+
+    trim_start, trim_back = _phase_voice_stem_trim_window(state, phase)
+    if trim_start <= 0.001 and trim_back <= 0.001:
+        return h._send_error_v59(
+            400,
+            error_code="GENERIC_ERROR",
+            error_message="No stem trim set — drag amber handles first",
+            retry_safe=False,
+            extra={"hint": "Drag the amber bar left/right handles, then Apply Cut."},
+        )
+
+    try:
+        src = require_basename_under_dir(stem_name, h.app.event_dir)
+    except ValueError as exc:
+        return h._send_error_v59(
+            400,
+            error_code="GENERIC_ERROR",
+            error_message=str(exc),
+            retry_safe=False,
+        )
+
+    if not src.is_file():
+        return h._send_error_v59(
+            404,
+            error_code="GENERIC_ERROR",
+            error_message=f"voice stem missing on disk: {stem_name}",
+            retry_safe=False,
+        )
+
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    out_name = f"phase_{phase}_voice_stem_{ts}.mp3"
+    out_path = h.app.event_dir / out_name
+    try:
+        _materialize_trimmed_audio(src, out_path, trim_start, trim_back)
+        duration = _ffprobe_duration(out_path)
+    except (subprocess.CalledProcessError, ValueError, OSError) as exc:
+        traceback.print_exc()
+        return h._send_error_v59(
+            500,
+            error_code="GENERIC_ERROR",
+            error_message=f"stem cut failed: {exc}",
+            retry_safe=True,
+            extra={"hint": "Check ffmpeg/ffprobe and trim window size."},
+        )
+
+    mtime = int(os.path.getmtime(str(out_path)))
+
+    def _apply(st, _p=phase, _n=out_name, _m=mtime):
+        st[f"phase_{_p}_voice_stem_file"] = _n
+        st[f"phase_{_p}_voice_stem_mtime"] = _m
+        for suffix in _PHASE_VOICE_STEM_TRIM_KEYS:
+            st.pop(f"phase_{_p}_{suffix}", None)
+        _phase_clear_lipsync_derived(st, _p, requires_regen=True)
+        st["_module_version"] = int(st.get("_module_version", 0) or 0) + 1
+        return st["_module_version"]
+
+    try:
+        new_version = h.app.state.mutate_state(_apply)
+    except Exception as exc:  # noqa: BLE001
+        traceback.print_exc()
+        return h._send_error_v59(
+            500,
+            error_code="GENERIC_ERROR",
+            error_message=f"mutate_state failed: {type(exc).__name__}: {exc}",
+            retry_safe=True,
+        )
+
+    return h._send_json(200, {
+        "ok": True,
+        "phase": phase,
+        "file": out_name,
+        "mtime": mtime,
+        "duration_s": round(duration, 3),
+        "trim_start_s": trim_start,
+        "trim_back_s": trim_back,
+        "previous_stem_file": stem_name,
+        "module_version": new_version,
+        "message": "Stem cut applied — waveform reloads trimmed audio.",
+    })
+
+
 def handle_phase_b_regen_audio(h, body: dict)-> None:
 
     """POST /api/phase_b/regen_audio

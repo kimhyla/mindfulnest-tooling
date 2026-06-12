@@ -522,6 +522,30 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     }
   };
 
+  const onApplyStemCut = async () => {
+    if (stemTrimStartMs <= 0 && stemTrimBackMs <= 0) {
+      setStatusMsg('Drag the amber handles inward first — nothing to cut yet.');
+      return;
+    }
+    setBusyAction('apply_cut');
+    setStatusMsg('Applying stem cut (ffmpeg)…');
+    const cutEp = phase === 'a' ? 'phase_a_apply_stem_cut' : 'phase_b_apply_stem_cut';
+    const res = await pathappPatch(activeScope.value, cutEp, { phase });
+    setBusyAction(null);
+    if (res.ok) {
+      const data = res.data as { file?: string; duration_s?: number } | undefined;
+      setStatusMsg(
+        `✓ Stem cut applied${data?.duration_s ? ` (${data.duration_s.toFixed(1)}s)` : ''} — send for lipsync when ready.`,
+      );
+      await refreshAll();
+    } else {
+      const data = res.data as { hint?: string; error_message?: string } | undefined;
+      setStatusMsg(
+        `✗ Apply Cut HTTP ${res.status}: ${data?.hint ?? data?.error_message ?? res.error ?? ''}`,
+      );
+    }
+  };
+
   const onRejectLipsync = async () => {
     setBusyAction('reject_lipsync');
     setStatusMsg('Rejecting lipsync…');
@@ -949,6 +973,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     Boolean(lipsyncFile) &&
     !lipsyncing &&
     stateSlice.lipsync_status !== 'running';
+  const hasStemTrimDraft = stemTrimStartMs > 0 || stemTrimBackMs > 0;
   const activeCue =
     activeCueId
       ? (stateSlice.watercolor_cues ?? []).find((c) => c.id === activeCueId) ?? null
@@ -1154,9 +1179,21 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             </button>
           ) : null}
           {canEditStemTrim ? (
-            <span class="mn-dim mn-stem-trim-hint" data-testid={`phase-${phase}-stem-trim-hint`}>
-              Amber bar = stem trim before lipsync
-            </span>
+            <>
+              <button
+                type="button"
+                class="mn-btn mn-btn-primary"
+                data-testid={`phase-${phase}-apply-stem-cut-btn`}
+                onClick={onApplyStemCut}
+                disabled={busyAction !== null || !hasStemTrimDraft}
+                title="Bake amber selection into a new voice stem mp3 (ffmpeg)"
+              >
+                {busyAction === 'apply_cut' ? 'Cutting…' : 'Apply Cut'}
+              </button>
+              <span class="mn-dim mn-stem-trim-hint" data-testid={`phase-${phase}-stem-trim-hint`}>
+                Amber bar = trim region · drag handles, then Apply Cut
+              </span>
+            </>
           ) : null}
           {phase === 'a' ? (
             <button

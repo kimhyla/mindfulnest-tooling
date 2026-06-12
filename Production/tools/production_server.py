@@ -6179,6 +6179,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_phase_reject_lipsync(body)
             if path == "/api/phase_b/reject_lipsync":
                 return self._handle_phase_reject_lipsync(body)
+            if path == "/api/phase_a/apply_stem_cut":
+                return self._handle_phase_apply_stem_cut(body)
+            if path == "/api/phase_b/apply_stem_cut":
+                return self._handle_phase_apply_stem_cut(body)
             if path == "/api/phase_a/regen_flyin_flyout":
                 return self._handle_phase_a_regen_flyin_flyout(body)
             if path == "/api/phase_a/regen_base_clip":
@@ -12129,6 +12133,11 @@ body {{padding-top:44px!important;}}
     def _handle_phase_reject_lipsync(self, body: dict) -> None:
         from server_handlers.phases import handle_phase_reject_lipsync
         return handle_phase_reject_lipsync(self, body)
+
+    @with_pin_and_drain('_handle_phase_apply_stem_cut', track_sync=True)
+    def _handle_phase_apply_stem_cut(self, body: dict) -> None:
+        from server_handlers.phases import handle_phase_apply_stem_cut
+        return handle_phase_apply_stem_cut(self, body)
 
     def _auto_assemble_phase_a_stitched(self, ts: str) -> dict | None:
         """Stitch raw Phase A lipsync middle only + continuous ambient bed.

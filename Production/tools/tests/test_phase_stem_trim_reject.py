@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock as mock
 import urllib.request
 from pathlib import Path
 
@@ -219,6 +220,40 @@ class TestPhaseRejectLipsyncEndpoint(unittest.TestCase):
             {"phase": "b"},
         )
         self.assertEqual(status, 404, resp)
+
+    def test_apply_stem_cut_writes_trimmed_stem(self):
+        stem = self.event_dir / "phase_b_voice_stem_source.mp3"
+        stem.write_bytes(b"\xff\xfb" + b"\x00" * 2048)
+
+        def _seed(state):
+            state["phase_b_voice_stem_file"] = stem.name
+            state["phase_b_voice_stem_mtime"] = int(time.time())
+            state["phase_b_voice_stem_trim_start_s"] = 0.5
+            state["phase_b_voice_stem_trim_back_s"] = 0.25
+            return 1
+
+        self.app.state.mutate_state(_seed)
+
+        with mock.patch(
+            "server_handlers.phases._materialize_trimmed_audio",
+            side_effect=lambda src, dst, ts, tb: dst.write_bytes(b"\xff\xfbtrim") or dst,
+        ), mock.patch(
+            "server_handlers.phases._ffprobe_duration",
+            return_value=10.0,
+        ):
+            status, resp, _ = _http_post(
+                self.port,
+                "/api/phase_b/apply_stem_cut",
+                {"phase": "b"},
+            )
+
+        self.assertEqual(status, 200, resp)
+        self.assertTrue(resp.get("ok"))
+        self.assertTrue(str(resp.get("file", "")).startswith("phase_b_voice_stem_"))
+        state = self.app.state.read_state()
+        self.assertEqual(state.get("phase_b_voice_stem_file"), resp["file"])
+        self.assertNotIn("phase_b_voice_stem_trim_start_s", state)
+        self.assertNotIn("phase_b_voice_stem_trim_back_s", state)
 
 
 if __name__ == "__main__":

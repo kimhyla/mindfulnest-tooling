@@ -104,6 +104,8 @@ export const MUTATION_ENDPOINTS = {
   phase_a_lipsync: `${SERVER_BASE}/api/phase_a/lipsync`,
   phase_b_reject_lipsync: `${SERVER_BASE}/api/phase_b/reject_lipsync`,
   phase_a_reject_lipsync: `${SERVER_BASE}/api/phase_a/reject_lipsync`,
+  phase_b_apply_stem_cut: `${SERVER_BASE}/api/phase_b/apply_stem_cut`,
+  phase_a_apply_stem_cut: `${SERVER_BASE}/api/phase_a/apply_stem_cut`,
   phase_a_regen_flyin_flyout: `${SERVER_BASE}/api/phase_a/regen_flyin_flyout`,
   phase_a_regen_base_clip: `${SERVER_BASE}/api/phase_a/regen_base_clip`,
   phase_a_restitch: `${SERVER_BASE}/api/phase_a/restitch`,

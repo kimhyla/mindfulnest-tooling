@@ -92,6 +92,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   const MIN_STEM_TRIM_MS = 250;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const seekLayerRef = useRef<HTMLDivElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const wsRef = useRef<WaveSurfer | null>(null);
   const [durationMs, setDurationMs] = useState<number | null>(null);
@@ -265,48 +266,71 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     });
 
     // Custom pointer-based seek — replaces WaveSurfer's built-in dragToSeek.
-    // Works on mouse, touch (pointer events unify both), and stylus.
-    // setPointerCapture() keeps pointermove firing even when the cursor leaves
-    // the element mid-drag, so fast drags don't lose tracking.
-    const canvas = containerRef.current;
+    // LD WAVEFORM_DRAG_SEEK_V1 (2026-05-25): interact:false + our own handlers.
+    // REGRESSION GUARD (2026-06-10): handlers MUST live on mn-waveform-seek-layer,
+    // NOT on the WaveSurfer canvas — the cue/trim overlay sits above the canvas
+    // and blocks pointer events. Stem-trim block uses pointer-events:none on the
+    // body so seek passes through the amber region; only handles capture drags.
+    const seekLayer = seekLayerRef.current;
+    if (!seekLayer) return;
     let isDragging = false;
+    let seekPointerId: number | null = null;
 
     const getRelX = (e: PointerEvent): number => {
-      const box = canvas.getBoundingClientRect();
+      const box = seekLayer.getBoundingClientRect();
       return Math.max(0, Math.min(1, (e.clientX - box.left) / box.width));
     };
 
+    const isTrimOrCueHandle = (target: EventTarget | null): boolean =>
+      target instanceof HTMLElement &&
+      Boolean(
+        target.closest(
+          '.mn-waveform-cue-block-handle, .mn-waveform-stem-trim-handle',
+        ),
+      );
+
+    const isCueBlockBody = (target: EventTarget | null): boolean =>
+      target instanceof HTMLElement &&
+      Boolean(target.closest('.mn-waveform-cue-block')) &&
+      !isTrimOrCueHandle(target);
+
     const onPointerDown = (e: PointerEvent) => {
       if (!isReadyRef.current) return;
+      if (isTrimOrCueHandle(e.target)) return;
+      if (isCueBlockBody(e.target)) return;
       isDragging = true;
-      canvas.setPointerCapture(e.pointerId);
+      seekPointerId = e.pointerId;
+      seekLayer.setPointerCapture(e.pointerId);
       ws.seekTo(getRelX(e));
     };
     const onPointerMove = (e: PointerEvent) => {
-      if (!isDragging) return;
+      if (!isDragging || e.pointerId !== seekPointerId) return;
       ws.seekTo(getRelX(e));
     };
     const onPointerUp = (e: PointerEvent) => {
-      if (!isDragging) return;
+      if (!isDragging || e.pointerId !== seekPointerId) return;
       isDragging = false;
+      seekPointerId = null;
       const rel = getRelX(e);
       ws.seekTo(rel);
       onWaveformClick?.(rel * ws.getDuration() * 1000);
     };
-    const onPointerCancel = () => {
+    const onPointerCancel = (e: PointerEvent) => {
+      if (seekPointerId !== null && e.pointerId !== seekPointerId) return;
       isDragging = false;
+      seekPointerId = null;
     };
 
-    canvas.addEventListener('pointerdown', onPointerDown);
-    canvas.addEventListener('pointermove', onPointerMove);
-    canvas.addEventListener('pointerup', onPointerUp);
-    canvas.addEventListener('pointercancel', onPointerCancel);
+    seekLayer.addEventListener('pointerdown', onPointerDown);
+    seekLayer.addEventListener('pointermove', onPointerMove);
+    seekLayer.addEventListener('pointerup', onPointerUp);
+    seekLayer.addEventListener('pointercancel', onPointerCancel);
 
     return () => {
-      canvas.removeEventListener('pointerdown', onPointerDown);
-      canvas.removeEventListener('pointermove', onPointerMove);
-      canvas.removeEventListener('pointerup', onPointerUp);
-      canvas.removeEventListener('pointercancel', onPointerCancel);
+      seekLayer.removeEventListener('pointerdown', onPointerDown);
+      seekLayer.removeEventListener('pointermove', onPointerMove);
+      seekLayer.removeEventListener('pointerup', onPointerUp);
+      seekLayer.removeEventListener('pointercancel', onPointerCancel);
       isReadyRef.current = false;
       try {
         ws.destroy();
@@ -644,6 +668,12 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
         ) : null}
       </div>
       <div ref={containerRef} class="mn-waveform-canvas" />
+      <div
+        ref={seekLayerRef}
+        class="mn-waveform-seek-layer"
+        data-testid="waveform-seek-layer"
+        title="Click or drag to seek"
+      />
       <div class="mn-waveform-cue-overlay">
         {stemTrimEditable && durationMs && durationMs > 0 ? (
           <div

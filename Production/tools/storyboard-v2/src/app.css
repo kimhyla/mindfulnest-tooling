@@ -677,6 +677,18 @@
   width: 100%;
   min-height: 80px;
 }
+/* Transparent hit target for drag-seek — sits above canvas, below cue overlay.
+   Must stay aligned with .mn-waveform-cue-overlay (same inset). */
+.mn-waveform-seek-layer {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 6px;
+  top: 28px;
+  z-index: 4;
+  cursor: pointer;
+  touch-action: none;
+}
 .mn-waveform-cue-overlay {
   position: absolute;
   left: 8px;
@@ -735,7 +747,8 @@
   background: rgba(204, 153, 51, 0.35);
   border-left: 2px solid #c93;
   border-right: 2px solid #c93;
-  pointer-events: auto;
+  /* Body is visual-only — seek layer below receives scrub drags. */
+  pointer-events: none;
   box-sizing: border-box;
   z-index: 3;
 }
@@ -750,8 +763,9 @@
   background: #c93;
   cursor: ew-resize;
   opacity: 0.9;
-  z-index: 2;
+  z-index: 6;
   touch-action: none;
+  pointer-events: auto;
 }
 .mn-waveform-stem-trim-handle--left {
   left: 0;
