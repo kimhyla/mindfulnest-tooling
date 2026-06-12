@@ -1094,12 +1094,13 @@ export function StitcherTab() {
             </div>
           ) : null}
 
-          {/* Per-boundary transitions (G7-G8). 3 selectors for 4 slots:
-              after_slot=0 (intro→phase_a), 1 (phase_a→phase_b),
-              2 (phase_b→resolution). Per spec §3.3 + Q1 LOCKED 2026-05-04
-              + STITCHER_TRANSITIONS_V1 (HARD). Hidden in standalone mode. */}
+          {/* Per-boundary transitions (G7-G8). Apply on Bake / slot Preview only —
+              not the roadmap viewer above (one slot at a time). */}
           {!standaloneMode ? (
             <div class="mn-stitcher-transitions-row" data-testid="stitcher-transitions-row">
+              <p class="mn-dim mn-stitcher-transitions-hint">
+                Phase transitions apply when you Bake (or use a slot Preview button), not in the roadmap viewer.
+              </p>
               {[0, 1, 2].map((afterSlot) => (
                 <StitcherTransitionSelector
                   key={`trans-${afterSlot}`}

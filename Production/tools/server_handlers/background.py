@@ -3685,6 +3685,13 @@ def handle_bg_select_o3_video(h, body: dict) -> None:
             )
         options = [o for o in (beat.get("kling_o3_options") or []) if isinstance(o, dict)]
         opt = next((o for o in options if o.get("key") == option_key), None)
+        if opt is None:
+            for o in options:
+                vp = o.get("video_path") or ""
+                stem = Path(vp).stem if vp else ""
+                if stem and (stem == option_key or vp.endswith(f"/{option_key}.mp4")):
+                    opt = o
+                    break
         if opt is None and option_key == f"{beat_id}_approved_o3_video" and beat.get("kling_o3_video_path"):
             opt = {
                 "key": option_key,
@@ -3707,8 +3714,12 @@ def handle_bg_select_o3_video(h, body: dict) -> None:
         beat["status"] = "approved"
         beat["kling_o3_selected_option_key"] = option_key
         beat["kling_o3_selected_at"] = now
+        bg.clear_kling_o3_beat_trim(beat)
         for o in options:
-            o["active"] = (o.get("key") == option_key)
+            if not o.get("key"):
+                vp = o.get("video_path") or ""
+                o["key"] = Path(vp).stem if vp else f"{beat_id}_o3_{options.index(o)}"
+            o["active"] = (o.get("key") == option_key or o.get("video_path") == video_path)
         beat["kling_o3_options"] = options
         bg.write_sidecar(sidecar)
     return h._send_json(200, {"ok": True, "beat_id": beat_id, "option_key": option_key, "video_path": video_path})

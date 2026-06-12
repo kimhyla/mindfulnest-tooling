@@ -252,6 +252,13 @@ function isUserSelectableO3Video(path?: string | null): boolean {
     && !name.includes('_noaudio');
 }
 
+/** Stable option key for O3 history rows that were persisted without ``key``. */
+function resolveO3OptionKey(opt: GptOption, beatId: string, slotIndex: number): string {
+  if (opt.key) return opt.key;
+  const base = (opt.video_path ?? '').split('/').pop()?.replace(/\.mp4$/i, '') ?? '';
+  return base || `${beatId}_o3_${slotIndex}`;
+}
+
 function formatO3JobFailure(error?: string | null): string {
   const raw = (error ?? '').trim();
   if (!raw) return 'O3 voice job failed; previous approved clip was kept active.';
@@ -906,7 +913,9 @@ export function BgTab() {
       const dur = result.data?.effective_duration_s;
       pushToast({
         kind: 'success',
-        message: clear ? 'Trim cleared' : (dur != null ? `Trim saved (${dur.toFixed(1)}s)` : 'Trim saved'),
+        message: clear
+          ? 'Trim cleared — full clip restored for export (switch O3 option separately if needed)'
+          : (dur != null ? `Trim saved (${dur.toFixed(1)}s effective)` : 'Trim saved'),
         source: 'bg-o3-trim',
       });
     } else {
@@ -1807,11 +1816,12 @@ function BeatGenCard({
                 ? opt.video_path === beat.kling_o3_video_path
                 : opt.key === beat.accepted_image_key
             )}
-            onClick={() => opt?.key && (
-              opt.video_path
-                ? onSelectO3Video(opt.key)
-                : onAccept(opt.key)
-            )}
+            onClick={() => {
+              if (!opt) return;
+              const optionKey = resolveO3OptionKey(opt, beat.beat_id, i);
+              if (opt.video_path) onSelectO3Video(optionKey);
+              else if (opt.key) onAccept(opt.key);
+            }}
             onRefresh={onRefresh}
             onPatchOptionTile={onPatchOptionTile}
             trimStart={beat.kling_o3_trim_start ?? 0}
@@ -2108,10 +2118,11 @@ function BgOptionTile({
     if (!video) return;
     const start = trimStartValue();
     const end = trimEndValue(video);
+    const stopAt = end ?? (Number.isFinite(video.duration) ? video.duration : Infinity);
+    const effectiveS = Math.max(0, stopAt - start);
     video.pause();
     video.currentTime = start;
     video.ontimeupdate = () => {
-      const stopAt = end ?? (Number.isFinite(video.duration) ? video.duration : Infinity);
       if (video.currentTime >= stopAt) {
         video.pause();
         video.ontimeupdate = null;
@@ -2119,8 +2130,17 @@ function BgOptionTile({
     };
     try {
       await video.play();
+      pushToast({
+        kind: 'info',
+        message: `Preview trim: ${start.toFixed(1)}s → ${Number.isFinite(stopAt) ? stopAt.toFixed(1) : '?'}s (${effectiveS.toFixed(1)}s) — click Apply Trim to save`,
+        source: 'bg-o3-trim-preview',
+      });
     } catch {
-      // Browser may block autoplay; the seek still makes the preview range visible.
+      pushToast({
+        kind: 'info',
+        message: `Preview trim seek: ${start.toFixed(1)}s → ${Number.isFinite(stopAt) ? stopAt.toFixed(1) : '?'}s — click Apply Trim to save`,
+        source: 'bg-o3-trim-preview',
+      });
     }
   };
   const applyDraftTrim = () => {
@@ -2129,13 +2149,10 @@ function BgOptionTile({
   const setStartFromPlayhead = () => {
     const start = currentVideoTime();
     setTrimStartDraft(start.toFixed(2));
-    onApplyO3Trim(start, trimBackValue() > 0 ? trimBackValue() : null);
   };
   const setEndFromPlayhead = () => {
-    const endAt = currentVideoTime();
-    const back = currentVideoBack(endAt) ?? 0;
+    const back = currentVideoBack(currentVideoTime()) ?? 0;
     setTrimBackDraft(back.toFixed(2));
-    onApplyO3Trim(trimStartValue(), back > 0 ? back : null);
   };
   return (
     <div
@@ -2209,7 +2226,7 @@ function BgOptionTile({
                 e.stopPropagation();
                 setStartFromPlayhead();
               }}
-              title="Set front trim to the current video playhead"
+              title="Set front trim from playhead (draft only — Apply Trim to save)"
             >
               Start Trim
             </button>
@@ -2221,7 +2238,7 @@ function BgOptionTile({
                 e.stopPropagation();
                 setEndFromPlayhead();
               }}
-              title="Set end trim to the current video playhead"
+              title="Set back trim from playhead (draft only — Apply Trim to save)"
             >
               End Trim
             </button>
