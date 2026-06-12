@@ -122,13 +122,18 @@ export function App() {
     setBuildSha(
       document.querySelector('meta[name="build-sha"]')?.getAttribute('content') ?? '?',
     );
+    // Page load: silence every keep-alive waveform + preview before tabs mount.
+    stopAllPhasePlayback();
   }, []);
 
-  // Stop ghost audio on tab change only — never call effect() during render (leaks + stops play).
+  // Stop ghost audio on tab change — never call effect() during render (leaks + stops play).
   const prevTabRef = useRef(activeTab.value);
   useEffect(() => {
     const dispose = effect(() => {
       const tab = activeTab.value;
+      if (tab === 'stitcher') {
+        stopAllPhasePlayback();
+      }
       if (tab === prevTabRef.current) return;
       prevTabRef.current = tab;
       stopAllPhasePlayback();

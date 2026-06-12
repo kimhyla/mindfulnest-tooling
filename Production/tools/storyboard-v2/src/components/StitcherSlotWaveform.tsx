@@ -4,12 +4,18 @@
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import { activeScope } from '../state/scope';
 import { pathappPatch } from '../api/client';
-import { WaveformTimeline, type WatercolorCue } from './phase/WaveformTimeline';
+import {
+  WaveformTimeline,
+  type WatercolorCue,
+  type WaveformPlaybackControl,
+} from './phase/WaveformTimeline';
 import type { SfxCue } from './phase/SfxCuePopover';
 
 export interface StitcherSlotWaveformProps {
   slotKey: string;
   videoPath?: string;
+  /** Preset id from ambient dropdown — mixed into composer waveform extract. */
+  ambientBed?: string;
   videoDurMs: number;
   cues: ReadonlyArray<SfxCue>;
   onSfxDrop: (
@@ -20,6 +26,14 @@ export interface StitcherSlotWaveformProps {
   ) => void;
   onCueRangeChange: (cue_id: string, offset_ms: number, duration_ms: number) => void;
   onCueClick: (cue_id: string, anchor: { x: number; y: number }) => void;
+  /** Muted slot video — WaveSurfer owns audio; red playhead tracks video time. */
+  linkedVideo?: { current: HTMLVideoElement | null };
+  linkedVideoEventSuppressRef?: { current: boolean };
+  playbackControl?: { current: WaveformPlaybackControl | null };
+  /** Compact strip in slot grid; full controls in slot composer. */
+  compact?: boolean;
+  /** Grid strips: SFX drop/seek only — no ▶ or playback bus. */
+  playbackDisabled?: boolean;
 }
 
 function sfxToTimelineCues(cues: ReadonlyArray<SfxCue>): WatercolorCue[] {
@@ -34,18 +48,24 @@ function sfxToTimelineCues(cues: ReadonlyArray<SfxCue>): WatercolorCue[] {
 export function StitcherSlotWaveform({
   slotKey,
   videoPath,
+  ambientBed,
   videoDurMs,
   cues,
   onSfxDrop,
   onCueRangeChange,
   onCueClick,
+  linkedVideo,
+  linkedVideoEventSuppressRef,
+  playbackControl,
+  compact = true,
+  playbackDisabled = false,
 }: StitcherSlotWaveformProps) {
   const [audioSrc, setAudioSrc] = useState<string | null>(null);
   const [extractDurMs, setExtractDurMs] = useState<number | null>(null);
   const [extractError, setExtractError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!videoPath) {
+    if (playbackDisabled || !videoPath) {
       setAudioSrc(null);
       setExtractDurMs(null);
       setExtractError(null);
@@ -54,10 +74,12 @@ export function StitcherSlotWaveform({
     let cancelled = false;
     setExtractError(null);
     (async () => {
-      const res = await pathappPatch<{ audio_url?: string; duration_ms?: number }>(
+      const body: Record<string, string> = { video_path: videoPath };
+      if (ambientBed) body['ambient_bed'] = ambientBed;
+      const res = await pathappPatch<{ audio_url?: string; duration_ms?: number; ambient_mixed?: boolean }>(
         activeScope.value,
         'stitch_audio_extract',
-        { video_path: videoPath },
+        body,
       );
       if (cancelled) return;
       if (res.ok && res.data?.audio_url) {
@@ -76,19 +98,26 @@ export function StitcherSlotWaveform({
     return () => {
       cancelled = true;
     };
-  }, [videoPath, videoDurMs, activeScope.value.event_id]);
+  }, [playbackDisabled, videoPath, ambientBed, videoDurMs, activeScope.value.event_id]);
 
   const timelineCues = useMemo(() => sfxToTimelineCues(cues), [cues]);
   const fallbackDurationMs = extractDurMs ?? videoDurMs;
   const cueTestIdPrefix = `stitcher-sfx-cue-marker-${slotKey}-`;
+  const waveformHeight = compact ? 56 : 72;
+  const sourceLabel: 'lipsync' | 'mixed' | 'stem' | null = ambientBed ? 'mixed' : null;
+  const sourceFilename = ambientBed
+    ? `${videoPath?.split('/').pop() ?? slotKey} + ${ambientBed}`
+    : (videoPath?.split('/').pop() ?? slotKey);
 
-  const emptyMessage = !videoPath
-    ? '— no slot video yet — drop SFX to place cue (timing uses default duration)'
-    : extractError
-      ? `Waveform unavailable (${extractError}) — drop SFX still works`
-      : audioSrc
-        ? undefined
-        : 'Extracting slot audio for waveform…';
+  const emptyMessage = playbackDisabled
+    ? undefined
+    : !videoPath
+      ? '— no slot video yet — drop SFX to place cue (timing uses default duration)'
+      : extractError
+        ? `Waveform unavailable (${extractError}) — drop SFX still works`
+        : audioSrc
+          ? undefined
+          : 'Extracting slot audio for waveform…';
 
   return (
     <div
@@ -98,16 +127,23 @@ export function StitcherSlotWaveform({
       data-video-dur-ms={videoDurMs}
       data-cue-count={cues.length}
       data-has-waveform={audioSrc ? 'true' : 'false'}
+      data-ambient-bed={ambientBed ?? ''}
+      data-stitcher-ambient-waveform="STITCHER_AMBIENT_WAVEFORM_V1"
     >
       <WaveformTimeline
         timelineTestId={`stitcher-slot-waveform-${slotKey}`}
         audioSrc={audioSrc}
-        sourceLabel="mixed"
-        sourceFilename={videoPath?.split('/').pop() ?? slotKey}
+        sourceLabel={sourceLabel}
+        sourceFilename={sourceFilename}
         cues={timelineCues}
-        compact
+        compact={compact}
+        waveformHeight={waveformHeight}
         fallbackDurationMs={fallbackDurationMs}
         {...(emptyMessage !== undefined ? { emptyMessage } : {})}
+        {...(linkedVideo ? { linkedVideo } : {})}
+        {...(linkedVideoEventSuppressRef ? { linkedVideoEventSuppressRef } : {})}
+        {...(playbackControl ? { playbackControl } : {})}
+        playbackDisabled={playbackDisabled}
         cueTestIdPrefix={cueTestIdPrefix}
         cueBlockClassName="mn-stitcher-sfx-cue-block"
         onSfxDrop={onSfxDrop}

@@ -34,6 +34,7 @@ export function resolveStitchTransitions(existing?: Transition[] | null): Transi
 
 export interface StitchSlotLike {
   video_path?: string;
+  ambient_bed?: string;
 }
 
 export function orderedStitchSlots(
@@ -89,10 +90,12 @@ export interface CachedModulePreview {
 }
 
 export function modulePreviewCacheKey(
-  slotPaths: string[],
+  slots: Record<string, StitchSlotLike> | undefined,
   transitions: Transition[],
 ): string {
-  return JSON.stringify({ slotPaths, transitions });
+  const slotPaths = STITCH_SLOT_ORDER.map((key) => slots?.[key]?.video_path ?? '');
+  const ambientBeds = STITCH_SLOT_ORDER.map((key) => slots?.[key]?.ambient_bed ?? '');
+  return JSON.stringify({ slotPaths, ambientBeds, transitions });
 }
 
 export function readCachedModulePreview(

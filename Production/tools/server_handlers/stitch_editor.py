@@ -81,6 +81,55 @@ def _slot_has_video(slot) -> bool:
     return isinstance(slot, dict) and bool((slot.get("video_path") or "").strip())
 
 
+def _slot_merge_worthy(slot) -> bool:
+    """Fields that may be merged into an existing stitch job slot."""
+    if not isinstance(slot, dict):
+        return False
+    return (
+        _slot_has_video(slot)
+        or slot.get("sfx_cues")
+        or slot.get("trim_in_s") is not None
+        or slot.get("trim_out_ms") is not None
+        or "ambient_bed" in slot
+    )
+
+
+def _resolve_stitch_ambient_bed_path(h, preset_or_path: str) -> str:
+    """Map stitch slot ambient_bed preset_id → on-disk mp3 for ffmpeg mix."""
+    raw = (preset_or_path or "").strip()
+    if not raw:
+        return ""
+    if os.path.isfile(raw):
+        return raw
+    if "/" in raw or "\\" in raw or ".." in raw:
+        return ""
+    project_root = h._stitch_project_root()
+    for rel in (
+        Path("Production") / "assets" / "sound_library" / "ambient" / f"{raw}.mp3",
+        Path("Production") / "assets" / "ambient_library" / f"{raw}.mp3",
+    ):
+        candidate = project_root / rel
+        if candidate.is_file():
+            return str(candidate.resolve())
+    return ""
+
+
+def _hydrate_slot_ambient_paths(h, slots: list) -> None:
+    """In-place: ambient_bed preset_id → ambient_bed_path for preview/bake mix."""
+    for slot in slots:
+        if not isinstance(slot, dict):
+            continue
+        preset = (slot.get("ambient_bed") or "").strip()
+        if preset:
+            resolved = _resolve_stitch_ambient_bed_path(h, preset)
+            if resolved:
+                slot["ambient_bed_path"] = resolved
+            else:
+                slot.pop("ambient_bed_path", None)
+        else:
+            slot.pop("ambient_bed_path", None)
+
+
 def stitch_migrate_legacy_to_canonical(state: dict, event_id: str) -> bool:
     """Merge auto_* / phase_* legacy jobs into {event_id}_stitch without dropping slots."""
     jobs = state.setdefault("jobs", {})
@@ -486,8 +535,22 @@ def handle_stitch_save_job(h, body: dict)-> None:
                    retry_safe=False,
                )
 
-    slots_raw = body.get("slots", [])
+    slots_raw = body.get("slots")
     transitions = body.get("transitions", [])
+    slot_key_partial = (body.get("slot") or "").strip()
+    ambient_bed_partial = body.get("ambient_bed") if "ambient_bed" in body else None
+
+    # Legacy v59 client sent {name, slot, ambient_bed} without slots — never wipe job.
+    partial_ambient_merge = False
+    if (
+        slots_raw is None
+        and slot_key_partial in STITCH_SLOT_ORDER
+        and ambient_bed_partial is not None
+    ):
+        partial_ambient_merge = True
+        slots_raw = {slot_key_partial: {"ambient_bed": ambient_bed_partial or ""}}
+    elif slots_raw is None:
+        slots_raw = []
 
     # Slots may be dict keyed by slot id (v59 client + scene_assemble auto-populate)
     # or legacy list. Validate video_path on slot dict values only.
@@ -515,7 +578,7 @@ def handle_stitch_save_job(h, body: dict)-> None:
                        )
 
     now_iso = datetime.now(timezone.utc).isoformat()
-    merge_slots = bool(body.get("merge_slots"))
+    merge_slots = bool(body.get("merge_slots")) or partial_ambient_merge
     scope = h._scope_body(body) or {}
     event_id = (scope.get("event_id") or scope.get("scope_event_id") or "").strip()
 
@@ -530,19 +593,32 @@ def handle_stitch_save_job(h, body: dict)-> None:
             for slot_key, slot in incoming.items():
                 if not isinstance(slot, dict):
                     continue
-                if _slot_has_video(slot) or slot.get("sfx_cues") or slot.get("trim_in_s") is not None:
+                if _slot_merge_worthy(slot):
                     prev = base_slots.get(slot_key) or {}
-                    base_slots[slot_key] = {**prev, **slot}
+                    merged = {**prev, **slot}
+                    if "ambient_bed" in slot and (slot.get("ambient_bed") or "") != (
+                        prev.get("ambient_bed") or ""
+                    ):
+                        merged.pop("ambient_bed_path", None)
+                    base_slots[slot_key] = merged
             slots_out = base_slots
         elif merge_slots and isinstance(slots, dict):
             base_slots = _normalize_job_slots(existing.get("slots"))
             for slot_key, slot in slots.items():
                 if not isinstance(slot, dict):
                     continue
-                if _slot_has_video(slot) or slot.get("sfx_cues") or slot.get("trim_in_s") is not None:
+                if _slot_merge_worthy(slot):
                     prev = base_slots.get(slot_key) or {}
-                    base_slots[slot_key] = {**prev, **slot}
+                    merged = {**prev, **slot}
+                    if "ambient_bed" in slot and (slot.get("ambient_bed") or "") != (
+                        prev.get("ambient_bed") or ""
+                    ):
+                        merged.pop("ambient_bed_path", None)
+                    base_slots[slot_key] = merged
             slots_out = base_slots
+        elif not slot_items and existing.get("slots"):
+            # Malformed save without merge_slots — preserve existing slots.
+            slots_out = _normalize_job_slots(existing.get("slots"))
         else:
             slots_out = slots
         jobs[name] = {
@@ -573,8 +649,9 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
 
     """POST /api/stitch_editor/audio_extract — extract audio track for WaveSurfer.
 
-    Input: {video_path: "/abs/path/..."}
+    Input: {video_path, optional ambient_bed preset_id, optional ambient_volume}
     Output: {audio_url: "http://localhost:5111/api/stitch_editor/audio_file/<hash>", duration_ms: N}
+    When ambient_bed is set, mixes the bed under slot video audio for composer waveform parity.
     """
     import hashlib as _hl  # noqa: PLC0415
     video_path_str = body.get("video_path", "")
@@ -652,9 +729,61 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
                    )
 
     duration_ms = h._ffprobe_duration_ms(audio_path)
+    serve_fname = audio_fname
+    ambient_bed = (body.get("ambient_bed") or "").strip()
+    ambient_volume = float(body.get("ambient_volume", 0.15))
+    ambient_path = _resolve_stitch_ambient_bed_path(h, ambient_bed) if ambient_bed else ""
+    if ambient_path and not os.path.isfile(ambient_path):
+        ambient_path = ""
+
+    if ambient_path:
+        mix_sig = _hl.md5(
+            f"{cache_key}:{ambient_path}:{ambient_volume:.4f}".encode(),
+            usedforsecurity=False,
+        ).hexdigest()[:12]
+        mixed_fname = f"stitch_audio_{mix_sig}.mp3"
+        mixed_path = cache_dir / mixed_fname
+        if not mixed_path.is_file():
+            slot_dur_s = max(duration_ms, 1) / 1000.0
+            filter_complex = (
+                f"[1:a]aloop=-1:size=2147483647,atrim=duration={slot_dur_s:.3f},"
+                f"volume={ambient_volume:.3f}[bed];"
+                f"[0:a][bed]amix=inputs=2:duration=first:dropout_transition=0[aout]"
+            )
+            mix_cmd = [
+                "ffmpeg", "-y",
+                "-i", str(audio_path.resolve()),
+                "-i", ambient_path,
+                "-filter_complex", filter_complex,
+                "-map", "[aout]",
+                "-ac", "1", "-ar", "44100", "-b:a", "128k",
+                str(mixed_path.resolve()),
+            ]
+            try:
+                subprocess.run(mix_cmd, check=True, capture_output=True, timeout=180)
+            except subprocess.CalledProcessError as exc:
+                stderr = (exc.stderr or b"")[:400].decode("utf-8", errors="replace")
+                return h._send_error_v59(
+                           500,
+                           error_code="AMBIENT_MIX_FAILED",
+                           error_message="ambient waveform mix failed",
+                           retry_safe=True,
+                           extra={"stderr": stderr},
+                       )
+            except subprocess.TimeoutExpired:
+                return h._send_error_v59(
+                           504,
+                           error_code="AMBIENT_MIX_TIMED_OUT",
+                           error_message="ambient waveform mix timed out",
+                           retry_safe=True,
+                       )
+        serve_fname = mixed_fname
+        duration_ms = h._ffprobe_duration_ms(mixed_path)
+
     return h._send_json(200, {
-        "audio_url": f"http://localhost:5111/api/stitch_editor/audio_file/{audio_fname}",
+        "audio_url": f"http://localhost:5111/api/stitch_editor/audio_file/{serve_fname}",
         "duration_ms": duration_ms,
+        "ambient_mixed": bool(ambient_path),
     })
 
 
@@ -702,6 +831,10 @@ def hydrate_stitch_pipeline_body(h, body: dict) -> dict:
             ]
         if _slots_list:
             _body["slots"] = _slots_list
+            _hydrate_slot_ambient_paths(h, _body["slots"])
+
+    if _body.get("slots"):
+        _hydrate_slot_ambient_paths(h, _body["slots"])
 
     if "transitions" not in _body and job:
         _body["transitions"] = job.get("transitions") or []

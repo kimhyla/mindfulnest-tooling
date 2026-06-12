@@ -73,6 +73,8 @@ export interface WaveformTimelineProps {
   cueTestIdPrefix?: string;
   /** Override root data-testid (Stitcher: stitcher-slot-waveform-intro). */
   timelineTestId?: string;
+  /** WaveSurfer canvas height in px (Stitcher compact strips use 56). */
+  waveformHeight?: number;
   /** Optional extra class on cue blocks (Stitcher SFX styling). */
   cueBlockClassName?: string;
   /** Called on audioprocess + seeking so the parent can track playback position (ms). */
@@ -100,15 +102,21 @@ export interface WaveformTimelineProps {
    * WaveformTimeline drives the video: play/pause/seek mirror WaveSurfer state.
    */
   linkedVideo?: { current: HTMLVideoElement | null };
+  /** Parent ignores linked-video play/seeked while waveform drives the element. */
+  linkedVideoEventSuppressRef?: { current: boolean };
   /** Parent can call play()/pause() from Preview with Overlay (same user-gesture stack). */
   playbackControl?: { current: WaveformPlaybackControl | null };
+  /** Drop/seek only — no playback bus, no ▶ (Stitcher compact grid strips). */
+  playbackDisabled?: boolean;
 }
 
 export interface WaveformPlaybackControl {
   readonly busId: symbol;
   play: (opts?: { fromStart?: boolean }) => boolean;
   pause: () => void;
+  seekToMs: (ms: number) => void;
   readonly isReady: boolean;
+  readonly isPlaying: boolean;
 }
 
 export function WaveformTimeline(props: WaveformTimelineProps) {
@@ -127,13 +135,16 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     emptyMessage,
     cueTestIdPrefix,
     timelineTestId,
+    waveformHeight,
     cueBlockClassName,
     onTimeUpdate,
     onCueRangeChange,
     onCueResize,
     onPlayStateChange,
     linkedVideo,
+    linkedVideoEventSuppressRef,
     playbackControl,
+    playbackDisabled,
     stemCutStartMs,
     stemCutEndMs,
     stemCutEditable,
@@ -192,15 +203,29 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     return Math.max(0, Math.min(100 - cuePctLeft(cue), (durMs / timelineDurationMs) * 100));
   };
 
+  const withLinkedVideoSuppress = useCallback((fn: () => void) => {
+    const ref = linkedVideoEventSuppressRef;
+    if (ref) ref.current = true;
+    try {
+      fn();
+    } finally {
+      requestAnimationFrame(() => {
+        if (ref) ref.current = false;
+      });
+    }
+  }, [linkedVideoEventSuppressRef]);
+
   const hardPause = useCallback(() => {
     wsRef.current?.pause();
-    linkedVideo?.current?.pause();
+    withLinkedVideoSuppress(() => {
+      linkedVideo?.current?.pause();
+    });
     setIsPlaying(false);
     const pane = wrapperRef.current?.closest('.mn-tab-pane-keepalive');
     pane?.querySelectorAll('video, audio').forEach((el) => {
       if (el instanceof HTMLMediaElement) el.pause();
     });
-  }, [linkedVideo]);
+  }, [linkedVideo, withLinkedVideoSuppress]);
 
   /** Keep ▶/⏸ label aligned with WaveSurfer even if a play/pause event is dropped. */
   const syncPlayUi = useCallback(() => {
@@ -214,7 +239,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   // WaveSurfer mount — audioSrc changes only. Seek handlers live in a separate
   // effect below (LD WAVEFORM_DRAG_SEEK_V1).
   useEffect(() => {
-    if (!audioSrc || !containerRef.current) return;
+    if (playbackDisabled || !audioSrc || !containerRef.current) return;
     setLoadError(null);
     setDurationMs(null);
     setCurrentMs(0);
@@ -226,7 +251,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       waveColor: '#7d6b5d',
       progressColor: '#3a2e26',
       cursorColor: '#c33',
-      height: 80,
+      height: waveformHeight ?? 80,
       normalize: true,
       barWidth: 2,
       barGap: 1,
@@ -245,6 +270,12 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       setDurationMs(d);
       setIsReady(true);
       isReadyRef.current = true;
+      // Never resume after decode — prevents ghost audio on tab load / refresh.
+      try {
+        ws.pause();
+      } catch {
+        // ignore
+      }
       onReady?.(d);
     };
     const onAudioProcess = () => {
@@ -288,89 +319,74 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     });
 
     // ── Linked video sync ────────────────────────────────────────────────────
-    // When a <video> ref is passed (linkedVideo), WaveSurfer is the master clock.
-    // The video is muted by the caller; WaveSurfer's WebAudio provides the audio.
-    // Access linkedVideo.current inside callbacks so we always get the live element
-    // (refs don't trigger re-renders, so captured-at-effect-time is safe).
-    // ── lv_play helper ───────────────────────────────────────────────────────
-    // Force .muted = true before EVERY play() call.
-    // Root cause of the sync bug: WaveSurfer fires 'play' after its internal
-    // WebAudio Promise resolves, outside the original user-gesture window.
-    // Chrome's autoplay policy blocks video.play() on an unmuted element from
-    // an async callback — the Promise is rejected silently because we used
-    // .catch(() => {}).  Setting .muted = true imperatively bypasses the policy
-    // entirely (muted elements can always autoplay regardless of gesture timing).
-    // The JSX `muted` attribute on <video> is insufficient: Preact does not
-    // reliably reflect it to the DOM .muted property in all Chrome versions.
+    const suppressLinkedVideoEvents = (fn: () => void) => {
+      const ref = linkedVideoEventSuppressRef;
+      if (ref) ref.current = true;
+      try {
+        fn();
+      } finally {
+        requestAnimationFrame(() => {
+          if (ref) ref.current = false;
+        });
+      }
+    };
     const lv_play = (lv: HTMLVideoElement) => {
-      lv.muted = true;
-      lv.play().catch(() => {
-        // Chrome rejects play() with AbortError when:
-        //   (a) lv.currentTime is set while a play() Promise is in-flight
-        //   (b) "video-only background media paused to save power" power-saving policy
-        // Retry once via rAF — by then the Promise chain is settled and the
-        // browser has processed the muted-video policy check.
-        if (lv.paused) {
-          requestAnimationFrame(() => {
-            lv.muted = true;
-            lv.play().catch(() => {});
-          });
-        }
+      suppressLinkedVideoEvents(() => {
+        lv.muted = true;
+        lv.play().catch(() => {
+          if (lv.paused) {
+            requestAnimationFrame(() => {
+              suppressLinkedVideoEvents(() => {
+                lv.muted = true;
+                lv.play().catch(() => {});
+              });
+            });
+          }
+        });
       });
     };
-    // ─────────────────────────────────────────────────────────────────────────
 
     ws.on('play', () => {
       if (stopPlaybackIfHiddenPane()) return;
       const lv = linkedVideo?.current;
       if (!lv) return;
-      // Do NOT set lv.currentTime here. The play button already sets it
-      // synchronously in the user-gesture handler before calling ws.play().
-      // Setting currentTime here interrupts the in-flight lv.play() Promise
-      // (Chrome AbortError: "play() request was interrupted"). The audioprocess
-      // drift corrector (below) catches any minor float skew on subsequent ticks.
       lv_play(lv);
     });
     ws.on('pause', () => {
-      linkedVideo?.current?.pause();
+      suppressLinkedVideoEvents(() => {
+        linkedVideo?.current?.pause();
+      });
     });
     ws.on('finish', () => {
       const lv = linkedVideo?.current;
       if (!lv) return;
-      lv.pause();
-      lv.currentTime = 0;
+      suppressLinkedVideoEvents(() => {
+        lv.pause();
+        lv.currentTime = 0;
+      });
     });
     ws.on('seeking', () => {
       const lv = linkedVideo?.current;
       if (!lv) return;
-      lv.currentTime = ws.getCurrentTime();
-      if (!ws.isPlaying()) return;
-      lv_play(lv);
+      suppressLinkedVideoEvents(() => {
+        lv.currentTime = ws.getCurrentTime();
+        if (!ws.isPlaying()) return;
+        lv.muted = true;
+        lv.play().catch(() => {});
+      });
     });
     ws.on('audioprocess', () => {
       if (stopPlaybackIfHiddenPane()) return;
       const lv = linkedVideo?.current;
       if (!lv) return;
-      // Correct drift >0.3s to avoid fighting over tiny float jitter.
-      // GUARD: only set currentTime when the video is already playing (not paused).
-      // Setting currentTime while lv.play() is in-flight (lv.paused=true with a
-      // pending Promise) aborts the Promise, which triggers the self-healer below,
-      // which calls lv_play() again — creating a loop that keeps the video at 0.
-      // When lv.paused=true the self-healer below will call lv_play(); once play()
-      // resolves the next audioprocess tick sees paused=false and corrects drift then.
       const drift = Math.abs(lv.currentTime - ws.getCurrentTime());
-      if (!lv.paused && drift > 0.3) lv.currentTime = ws.getCurrentTime();
-      // Self-healing: if WaveSurfer is playing but video is still paused
-      // (e.g. autoplay rejected on first try), restart it.
-      // Guard: only self-heal if WaveSurfer is genuinely still playing.
-      // Without this, 'audioprocess' fires during the pause flush ticks
-      // (WebAudio buffer drain after ws.pause()), sees lv.paused===true,
-      // and re-starts the video — causing the desync Kim reported.
-      // ws.isPlaying() returns false synchronously after ws.pause(), so
-      // this guard makes the healer a no-op during teardown.
+      if (!lv.paused && drift > 0.3) {
+        suppressLinkedVideoEvents(() => {
+          lv.currentTime = ws.getCurrentTime();
+        });
+      }
       if (lv.paused && ws.isPlaying()) lv_play(lv);
     });
-    // ─────────────────────────────────────────────────────────────────────────
 
     ws.load(audioSrc).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
@@ -389,7 +405,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     };
     // onReady / onWaveformClick are intentionally captured at mount time.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [audioSrc, syncPlayUi]);
+  }, [audioSrc, syncPlayUi, waveformHeight]);
 
   // Keep-alive: pause when this phase tab is hidden so background WaveSurfer
   // instances do not block playback on the visible tab (Chrome autoplay policy).
@@ -734,8 +750,12 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       get isReady() {
         return isReadyRef.current;
       },
+      get isPlaying() {
+        return wsRef.current?.isPlaying() ?? false;
+      },
       play: () => false,
       pause: () => {},
+      seekToMs: () => {},
     };
   }
   const playbackControlRef = controlRef.current;
@@ -756,24 +776,27 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       if (fromStart) ws.seekTo(0);
       const lv = linkedVideo?.current;
       if (lv) {
-        lv.muted = true;
-        lv.currentTime = ws.getCurrentTime();
+        withLinkedVideoSuppress(() => {
+          lv.muted = true;
+          lv.currentTime = ws.getCurrentTime();
+        });
       }
 
       pauseOtherWaveformPlayback(playbackControlRef);
       setLoadError(null);
       void ws.play()
         .then(() => {
-          // WaveSurfer swallows AbortError — verify media actually started.
           requestAnimationFrame(() => {
-            if (ws.isPlaying()) {
-              setIsPlaying(true);
-              onPlayStateChange?.(true);
-            } else {
-              setLoadError(
-                'Playback failed — try ▶ Play again (do not drag the waveform at the same time).',
-              );
-            }
+            requestAnimationFrame(() => {
+              if (ws.isPlaying()) {
+                setIsPlaying(true);
+                onPlayStateChange?.(true);
+              } else if (!linkedVideoEventSuppressRef?.current) {
+                setLoadError(
+                  'Playback failed — try ▶ Play again (do not drag the waveform at the same time).',
+                );
+              }
+            });
           });
         })
         .catch((err: unknown) => {
@@ -782,12 +805,14 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
           setIsPlaying(false);
         });
       if (lv && lv.paused) {
-        lv.muted = true;
-        lv.play().catch(() => {});
+        withLinkedVideoSuppress(() => {
+          lv.muted = true;
+          lv.play().catch(() => {});
+        });
       }
       return true;
     },
-    [linkedVideo, playbackControlRef, onPlayStateChange],
+    [linkedVideo, linkedVideoEventSuppressRef, playbackControlRef, onPlayStateChange, withLinkedVideoSuppress],
   );
 
   const togglePlayback = useCallback(() => {
@@ -805,8 +830,32 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
 
   playbackControlRef.play = (opts) => startPlayback(opts?.fromStart ?? false);
   playbackControlRef.pause = hardPause;
+  playbackControlRef.seekToMs = (ms: number) => {
+    const ws = wsRef.current;
+    const durMs = durationMs ?? fallbackDurationMs;
+    if (!ws || !durMs || durMs <= 0) return;
+    const clamped = Math.max(0, Math.min(durMs, ms));
+    ws.seekTo(clamped / durMs);
+    setCurrentMs(clamped);
+    const lv = linkedVideo?.current;
+    if (lv) {
+      withLinkedVideoSuppress(() => {
+        lv.muted = true;
+        try {
+          lv.currentTime = clamped / 1000;
+        } catch {
+          // ignore seek on unloaded media
+        }
+      });
+    }
+  };
 
   useEffect(() => {
+    if (playbackDisabled) {
+      return () => {
+        hardPause();
+      };
+    }
     const unregister = registerWaveformPlaybackControl(playbackControlRef);
     if (playbackControl) {
       playbackControl.current = playbackControlRef;
@@ -818,7 +867,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
         playbackControl.current = null;
       }
     };
-  }, [playbackControl, hardPause]);
+  }, [playbackControl, hardPause, playbackDisabled]);
 
   const rootTestId = timelineTestId ?? 'waveform-timeline';
 

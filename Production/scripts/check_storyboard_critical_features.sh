@@ -85,6 +85,14 @@ MARKERS=(
     # Stitcher SFX timeline blocks (WaveformTimeline parity — Phase 2)
     "STITCHER_SFX_TIMELINE|STITCHER_SFX_TIMELINE_V1"
     "STITCHER_SFX_TIMELINE|mn-stitcher-sfx-cue-block"
+    # Stitcher slot composer — synced video + waveform (Phase A/B parity)
+    "STITCHER_SLOT_COMPOSER|STITCHER_SLOT_COMPOSER_V1"
+    "STITCHER_SLOT_COMPOSER|stitcher-slot-composer"
+    "STITCHER_SLOT_COMPOSER|stitcher-composer-video"
+    "STITCHER_SLOT_COMPOSER|Video + waveform stay in sync"
+    # STITCHER_AMBIENT — ambient preset mixed into composer waveform extract
+    "STITCHER_AMBIENT|STITCHER_AMBIENT_WAVEFORM_V1"
+    "STITCHER_AMBIENT|data-stitcher-ambient-waveform"
     # Phase stem trim + reject lipsync (2026-06-10)
     "PHASE_STEM_TRIM|waveform-stem-cut-block"
     "PHASE_STEM_TRIM|Reject lipsync"
