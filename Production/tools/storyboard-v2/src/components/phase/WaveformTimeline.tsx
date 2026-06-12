@@ -12,7 +12,8 @@
 //           pauseOtherWaveformPlayback matches on busId, never object identity churn.
 //   PLAY-4  stopAllPhasePlayback only on tab change — effect() in useEffect with dispose,
 //           never bare effect() during App render (app.tsx prevTabRef pattern).
-//   PLAY-5  Hidden keep-alive panes pause via MutationObserver on [hidden] only.
+//   PLAY-6  Linked-video audioprocess must not lv_play() after pause (Stitcher ▶/⏸).
+//           togglePlayback calls hardPause() before pauseAllPhasePlayback().
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // Responsibilities (Phase A + Phase B — same WaveformTimeline instance per tab):
@@ -385,7 +386,8 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
           lv.currentTime = ws.getCurrentTime();
         });
       }
-      if (lv.paused && ws.isPlaying()) lv_play(lv);
+      // Do NOT lv_play() here — ws 'play' handler owns start; audioprocess restart
+      // fought ▶/⏸ Pause (video play → StitcherTab onVideoPlay → ws.play() loop).
     });
 
     ws.load(audioSrc).catch((err: unknown) => {
@@ -819,14 +821,14 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     const ws = wsRef.current;
     if (!ws) return;
     if (ws.isPlaying() || isPlaying) {
-      // Stop every keep-alive waveform — kills ghost dual-audio from hidden panes.
+      // Local hardPause first — bus + linked-video sync must not restart after pause.
+      hardPause();
       pauseAllPhasePlayback();
-      setIsPlaying(false);
-      onPlayStateChange?.(false);
+      syncPlayUi();
       return;
     }
     startPlayback(false);
-  }, [startPlayback, isPlaying, onPlayStateChange]);
+  }, [startPlayback, isPlaying, hardPause, syncPlayUi]);
 
   playbackControlRef.play = (opts) => startPlayback(opts?.fromStart ?? false);
   playbackControlRef.pause = hardPause;

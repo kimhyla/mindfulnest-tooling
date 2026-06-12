@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from server_handlers.stitch_editor import (
+    STITCH_AMBIENT_BED_VOLUME,
     _hydrate_slot_ambient_paths,
     _resolve_stitch_ambient_bed_path,
     _slot_merge_worthy,
@@ -42,6 +43,16 @@ class StitchAmbientHydrateTests(unittest.TestCase):
             self.assertNotEqual(slots[0]["ambient_bed_path"], "/stale/old/path.mp3")
         else:
             self.skipTest("Intro video ambient bed.mp3 not on disk in this environment")
+
+    def test_hydrate_sets_canonical_ambient_volume(self):
+        h = _MockHandler()
+        slots = [{"ambient_bed": "Intro video ambient bed"}]
+        _hydrate_slot_ambient_paths(h, slots)
+        if slots[0].get("ambient_bed_path"):
+            self.assertEqual(slots[0].get("ambient_volume"), STITCH_AMBIENT_BED_VOLUME)
+
+    def test_canonical_volume_is_quiet_under_speech(self):
+        self.assertEqual(STITCH_AMBIENT_BED_VOLUME, 0.15)
 
     def test_hydrate_clears_path_when_preset_cleared(self):
         h = _MockHandler()

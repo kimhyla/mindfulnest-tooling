@@ -162,6 +162,31 @@ test.describe('PHASE_WAVEFORM_PLAY — ▶ Play must not seek-collide', () => {
     expect(ms).toBeLessThan(2500);
     expect(ms).toBeGreaterThan(50);
   });
+
+  test('PLAY-3 — ⏸ Pause stops playback (no audioprocess restart loop)', async ({ page }) => {
+    await mockAudioFiles(page, 30);
+    await mockPhaseState(page, { phase_b_lipsync_file: 'fix_lipsync.mp4' });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const waveform = await waitForWaveformReady(page, 'b');
+    const playBtn = page.locator(
+      '[data-testid="pane-phase-b-keepalive"] [data-testid="waveform-play-btn"]',
+    );
+    await playBtn.click();
+    await expect(playBtn).toHaveText(/⏸ Pause/, { timeout: 3_000 });
+
+    await page.waitForTimeout(400);
+    const msBeforePause = Number(await waveform.getAttribute('data-current-time-ms'));
+    expect(msBeforePause).toBeGreaterThan(100);
+
+    await playBtn.click();
+    await expect(playBtn).toHaveText(/▶ Play/, { timeout: 3_000 });
+
+    await page.waitForTimeout(600);
+    const msAfterPause = Number(await waveform.getAttribute('data-current-time-ms'));
+    expect(msAfterPause - msBeforePause).toBeLessThan(150);
+  });
 });
 
 test.describe('PHASE_WAVEFORM_PLAY — Phase A parity (same WaveformTimeline + bus)', () => {

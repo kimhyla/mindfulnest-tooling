@@ -27,6 +27,7 @@ import { SfxCuePopover, type SfxCue } from './phase/SfxCuePopover';
 import type { WaveformPlaybackControl } from './phase/WaveformTimeline';
 import { acceptDragForTarget, makeDropTarget, type DragPayload } from '../utils/dragdrop';
 import { resolveStitchSlotSourceVideoUrl } from '../utils/stitchSlotVideo';
+import { STITCH_AMBIENT_BED_VOLUME } from '../utils/stitchConstants';
 import { stopAllPhasePlayback } from '../utils/waveformPlaybackBus';
 import {
   allStitchSlotsReady,
@@ -56,6 +57,7 @@ interface StitchSlot {
   beat_boundaries?: BeatBoundary[];
   ambient_bed?: string;
   ambient_bed_path?: string;
+  ambient_volume?: number;
   loudnorm_already_applied?: boolean;
   sfx_cues?: SfxCue[];
   trim_in_ms?: number;
@@ -953,6 +955,11 @@ export function StitcherTab() {
     setBusySlot({ slot, action: 'ambient' });
     const prev = job.slots[slot] ?? {};
     const nextSlot: StitchSlot = { ...prev, ambient_bed: value };
+    if (value) {
+      nextSlot.ambient_volume = STITCH_AMBIENT_BED_VOLUME;
+    } else {
+      delete nextSlot.ambient_volume;
+    }
     delete nextSlot.ambient_bed_path;
     const nextSlots: Record<string, StitchSlot> = {
       ...job.slots,

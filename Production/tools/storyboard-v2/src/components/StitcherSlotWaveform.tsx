@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import { activeScope } from '../state/scope';
 import { pathappPatch } from '../api/client';
+import { STITCH_AMBIENT_BED_VOLUME } from '../utils/stitchConstants';
 import {
   WaveformTimeline,
   type WatercolorCue,
@@ -74,7 +75,10 @@ export function StitcherSlotWaveform({
     let cancelled = false;
     setExtractError(null);
     (async () => {
-      const body: Record<string, string> = { video_path: videoPath };
+      const body: Record<string, string | number> = {
+        video_path: videoPath,
+        ambient_volume: STITCH_AMBIENT_BED_VOLUME,
+      };
       if (ambientBed) body['ambient_bed'] = ambientBed;
       const res = await pathappPatch<{ audio_url?: string; duration_ms?: number; ambient_mixed?: boolean }>(
         activeScope.value,

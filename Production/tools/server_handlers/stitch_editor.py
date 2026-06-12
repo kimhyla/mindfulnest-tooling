@@ -65,6 +65,8 @@ from tools.production_server import (  # noqa: E402
 
 # Canonical stitch job: one per event; slots accumulate across Send Out + exports.
 STITCH_SLOT_ORDER = ["intro", "phase_a", "phase_b", "resolution"]
+# Canonical under-speech ambient level (Phase A stitch + preview/bake mix).
+STITCH_AMBIENT_BED_VOLUME = 0.15
 
 
 def stitch_event_job_name(event_id: str) -> str:
@@ -124,6 +126,7 @@ def _hydrate_slot_ambient_paths(h, slots: list) -> None:
             resolved = _resolve_stitch_ambient_bed_path(h, preset)
             if resolved:
                 slot["ambient_bed_path"] = resolved
+                slot.setdefault("ambient_volume", STITCH_AMBIENT_BED_VOLUME)
             else:
                 slot.pop("ambient_bed_path", None)
         else:
@@ -600,6 +603,10 @@ def handle_stitch_save_job(h, body: dict)-> None:
                         prev.get("ambient_bed") or ""
                     ):
                         merged.pop("ambient_bed_path", None)
+                    if (merged.get("ambient_bed") or "").strip():
+                        merged.setdefault("ambient_volume", STITCH_AMBIENT_BED_VOLUME)
+                    elif "ambient_bed" in slot:
+                        merged.pop("ambient_volume", None)
                     base_slots[slot_key] = merged
             slots_out = base_slots
         elif merge_slots and isinstance(slots, dict):
@@ -614,6 +621,10 @@ def handle_stitch_save_job(h, body: dict)-> None:
                         prev.get("ambient_bed") or ""
                     ):
                         merged.pop("ambient_bed_path", None)
+                    if (merged.get("ambient_bed") or "").strip():
+                        merged.setdefault("ambient_volume", STITCH_AMBIENT_BED_VOLUME)
+                    elif "ambient_bed" in slot:
+                        merged.pop("ambient_volume", None)
                     base_slots[slot_key] = merged
             slots_out = base_slots
         elif not slot_items and existing.get("slots"):
@@ -731,7 +742,7 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
     duration_ms = h._ffprobe_duration_ms(audio_path)
     serve_fname = audio_fname
     ambient_bed = (body.get("ambient_bed") or "").strip()
-    ambient_volume = float(body.get("ambient_volume", 0.15))
+    ambient_volume = float(body.get("ambient_volume", STITCH_AMBIENT_BED_VOLUME))
     ambient_path = _resolve_stitch_ambient_bed_path(h, ambient_bed) if ambient_bed else ""
     if ambient_path and not os.path.isfile(ambient_path):
         ambient_path = ""
@@ -748,7 +759,7 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
             filter_complex = (
                 f"[1:a]aloop=-1:size=2147483647,atrim=duration={slot_dur_s:.3f},"
                 f"volume={ambient_volume:.3f}[bed];"
-                f"[0:a][bed]amix=inputs=2:duration=first:dropout_transition=0[aout]"
+                f"[0:a][bed]amix=inputs=2:duration=first:normalize=0[aout]"
             )
             mix_cmd = [
                 "ffmpeg", "-y",
