@@ -65,7 +65,7 @@ from tools.production_server import (  # noqa: E402
 
 # Canonical stitch job: one per event; slots accumulate across Send Out + exports.
 STITCH_SLOT_ORDER = ["intro", "phase_a", "phase_b", "resolution"]
-# Canonical under-speech ambient level (Phase A stitch + preview/bake mix).
+# Canonical under-speech ambient level (all stitch slots — waveform, preview, bake).
 STITCH_AMBIENT_BED_VOLUME = 0.15
 STITCH_SFX_CUE_DEFAULT_VOLUME = 0.45
 STITCH_SFX_CUE_DEFAULT_FADEIN_MS = 300
@@ -122,7 +122,7 @@ def _job_canonical_audio_needs_persist(live_slots, normalized_slots: dict) -> bo
 
 
 def _persist_stitch_job_canonical_audio(state: dict, name: str, normalized_slots: dict) -> None:
-    """Write canonical ambient_bed + 0.15 volume (+ SFX defaults) into persisted stitch job."""
+    """Write canonical ambient_bed + STITCH_AMBIENT_BED_VOLUME (+ SFX defaults) into persisted stitch job."""
     live = state.get("jobs", {}).get(name)
     if not isinstance(live, dict) or not isinstance(live.get("slots"), dict):
         return

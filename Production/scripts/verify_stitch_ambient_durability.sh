@@ -3,7 +3,7 @@
 #
 # Root cause class (2026-06-12):
 #   1. Empty-slot wipe on ambient save without merge_slots
-#   2. Legacy 0.6 ambient_volume on bake vs canonical 0.15 under speech
+#   2. Legacy 0.6 / 0.18 ambient_volume drift vs canonical 0.15 under speech
 #   3. Default beds only on intro — must auto-apply per slot on export/load
 #   4. Composer waveform audio_extract must mix ambient + SFX with amix normalize=0
 set -euo pipefail
