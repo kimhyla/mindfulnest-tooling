@@ -249,6 +249,9 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const waveformPlaybackRef = useRef<WaveformPlaybackControl | null>(null);
   const wcUploadInputRef = useRef<HTMLInputElement>(null);
+  // User toggled "Trim voice stem" — show stem on waveform + amber cut handles even
+  // when a lipsync file would otherwise win audio priority.
+  const [stemTrimMode, setStemTrimMode] = useState(false);
 
   const phaseABaseClipOptions = (items: BaseClipItem[]) =>
     items
@@ -527,6 +530,26 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     }
   };
 
+  const onEnterStemTrimMode = () => {
+    if (!stateSlice.voice_stem_file) {
+      setStatusMsg('Generate a voice stem first.');
+      return;
+    }
+    setStemTrimMode(true);
+    setStatusMsg(
+      '✂ Trim mode — gold handles on the waveform. Amber = section to REMOVE. Drag handles, then Apply Cut.',
+    );
+  };
+
+  const onExitStemTrimMode = () => {
+    setStemTrimMode(false);
+    setStatusMsg(
+      lipsyncFile
+        ? 'Trim mode off — waveform shows lipsync audio again.'
+        : 'Trim mode off.',
+    );
+  };
+
   const onApplyStemCut = async () => {
     const cutStart = Math.round((stateSlice.voice_stem_cut_start_s ?? 0) * 1000);
     const cutEnd = Math.round((stateSlice.voice_stem_cut_end_s ?? 0) * 1000);
@@ -544,6 +567,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       setStatusMsg(
         `✓ Stem cut applied${data?.duration_s ? ` (${data.duration_s.toFixed(1)}s)` : ''} — send for lipsync when ready.`,
       );
+      setStemTrimMode(true);
       await refreshAll();
     } else {
       const data = res.data as { hint?: string; error_message?: string } | undefined;
@@ -630,7 +654,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       setStatusMsg('No lipsync video yet — run Send for Lipsync first.');
       return;
     }
-    if (!audioFile) {
+    if (!priorityAudio) {
       setStatusMsg('No audio on timeline — generate a stem or finish lipsync first.');
       return;
     }
@@ -975,9 +999,13 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     }
   };
 
-  const audioFile = priorityAudioFile(stateSlice);
+  const priorityAudio = priorityAudioFile(stateSlice);
+  const waveformAudio =
+    stemTrimMode && stateSlice.voice_stem_file
+      ? { name: stateSlice.voice_stem_file, label: 'stem' as const }
+      : priorityAudio;
   const lipsyncFile = stateSlice.lipsync_file ?? null;
-  const canEditStemTrim = Boolean(stateSlice.voice_stem_file && audioFile?.label === 'stem');
+  const canEditStemCut = Boolean(stemTrimMode && stateSlice.voice_stem_file);
   const stemCutStartMs = Math.round((stateSlice.voice_stem_cut_start_s ?? 0) * 1000);
   const stemCutEndMs = Math.round((stateSlice.voice_stem_cut_end_s ?? 0) * 1000);
   const showRejectLipsync =
@@ -994,8 +1022,9 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     <div class={`mn-phase-producer mn-phase-${phase}`} data-testid={`phase-producer-${phase}`}>
       <div class='mn-phase-status-header'>
         <span class='mn-dim mn-phase-status-tag' data-testid={`phase-${phase}-status-header`}>
-          {audioFile ? `audio: ${audioFile.label}` : 'no audio yet'}
-          {lipsyncFile ? ' · lipsync ✓' : ''}
+          {waveformAudio ? `audio: ${waveformAudio.label}` : 'no audio yet'}
+          {stemTrimMode ? ' · trim mode' : ''}
+          {lipsyncFile && !stemTrimMode ? ' · lipsync ✓' : ''}
         </span>
       </div>
 
@@ -1083,12 +1112,69 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           </button>
         </div>
 
+        {/* Waveform trim toolbar — enter trim mode to show amber cut on stem (not lipsync). */}
+        {stateSlice.voice_stem_file ? (
+          <div class="mn-phase-waveform-trim-toolbar" data-testid={`phase-${phase}-waveform-trim-toolbar`}>
+            {stemTrimMode ? (
+              <>
+                <span class="mn-stem-trim-mode-badge" data-testid={`phase-${phase}-stem-trim-mode-badge`}>
+                  ✂ Trim mode — voice stem on waveform
+                </span>
+                <button
+                  type="button"
+                  class="mn-btn mn-btn-primary"
+                  data-testid={`phase-${phase}-apply-stem-cut-btn`}
+                  onClick={onApplyStemCut}
+                  disabled={busyAction !== null || !hasStemCut}
+                  title="Remove the amber region from the voice stem (ffmpeg)"
+                >
+                  {busyAction === 'apply_cut' ? 'Cutting…' : 'Apply Cut'}
+                </button>
+                <span class="mn-dim mn-stem-trim-hint" data-testid={`phase-${phase}-stem-trim-hint`}>
+                  Drag gold handles · amber = section to remove
+                </span>
+                {lipsyncFile ? (
+                  <button
+                    type="button"
+                    class="mn-btn"
+                    data-testid={`phase-${phase}-exit-stem-trim-btn`}
+                    onClick={onExitStemTrimMode}
+                    disabled={busyAction !== null}
+                    title="Return waveform to lipsync audio"
+                  >
+                    Exit trim mode
+                  </button>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  class="mn-btn mn-btn-trim-stem"
+                  data-testid={`phase-${phase}-trim-voice-stem-btn`}
+                  onClick={onEnterStemTrimMode}
+                  disabled={busyAction !== null}
+                  title="Switch waveform to voice stem and show amber cut handles"
+                >
+                  Trim voice stem
+                </button>
+                {lipsyncFile ? (
+                  <span class="mn-dim mn-stem-trim-hint">
+                    Lipsync is on the waveform now — click Trim voice stem to edit the stem cut.
+                  </span>
+                ) : null}
+              </>
+            )}
+          </div>
+        ) : null}
+
         {/* Audio waveform — WaveSurfer v7 timeline (LD-330 / LD-472).
-            Priority: lipsync > mixed > stem (resolved by priorityAudioFile). */}
+            Priority: lipsync > mixed > stem (resolved by priorityAudioFile).
+            stemTrimMode forces stem for cut editing. */}
         <WaveformTimeline
-          audioSrc={audioFile ? fileUrl(audioFile.name) : null}
-          sourceLabel={audioFile?.label ?? null}
-          sourceFilename={audioFile?.name ?? null}
+          audioSrc={waveformAudio ? fileUrl(waveformAudio.name) : null}
+          sourceLabel={waveformAudio?.label ?? null}
+          sourceFilename={waveformAudio?.name ?? null}
           cues={stateSlice.watercolor_cues ?? []}
           onCueClick={onCueClick}
           onWatercolorDrop={onWatercolorDrop}
@@ -1096,10 +1182,9 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           onCueRangeChange={onCueRangeChange}
           stemCutStartMs={stemCutStartMs}
           stemCutEndMs={stemCutEndMs}
-          stemCutEditable={canEditStemTrim}
+          stemCutEditable={canEditStemCut}
           onStemCutChange={onStemCutChange}
-
-          linkedVideo={videoRef}
+          {...(stemTrimMode ? {} : { linkedVideo: videoRef })}
           playbackControl={waveformPlaybackRef}
         />
         {activeCue && popoverAnchor ? (
@@ -1188,23 +1273,6 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             >
               {busyAction === 'reject_lipsync' ? 'Rejecting…' : 'Reject lipsync'}
             </button>
-          ) : null}
-          {canEditStemTrim ? (
-            <>
-              <button
-                type="button"
-                class="mn-btn mn-btn-primary"
-                data-testid={`phase-${phase}-apply-stem-cut-btn`}
-                onClick={onApplyStemCut}
-                disabled={busyAction !== null || !hasStemCut}
-                title="Remove the amber region from the voice stem (ffmpeg)"
-              >
-                {busyAction === 'apply_cut' ? 'Cutting…' : 'Apply Cut'}
-              </button>
-              <span class="mn-dim mn-stem-trim-hint" data-testid={`phase-${phase}-stem-trim-hint`}>
-                Amber = section to remove · drag handles, then Apply Cut
-              </span>
-            </>
           ) : null}
           {phase === 'a' ? (
             <button

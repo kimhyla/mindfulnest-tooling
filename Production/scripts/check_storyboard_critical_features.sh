@@ -79,8 +79,9 @@ MARKERS=(
     # Phase stem trim + reject lipsync (2026-06-10)
     "PHASE_STEM_TRIM|waveform-stem-cut-block"
     "PHASE_STEM_TRIM|Reject lipsync"
+    "PHASE_STEM_TRIM|Trim voice stem"
     "PHASE_STEM_TRIM|Apply Cut"
-    "PHASE_STEM_TRIM|Amber = section to remove"
+    "PHASE_STEM_TRIM|Drag gold handles · amber = section to remove"
     "PHASE_STEM_TRIM|waveform-seek-layer"
     # Baseline buttons — every beat should have these (displayed text)
     "BASELINE|Regen Audio"
