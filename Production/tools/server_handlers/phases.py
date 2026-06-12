@@ -2384,9 +2384,11 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
                )
 
     # Mark state as polling so UI can reflect in-progress status.
-    def _apply_polling(state, _p=phase, _tid=task_id):
+    def _apply_polling(state, _p=phase, _tid=task_id, _bid=base_clip_id):
         state[f"phase_{_p}_lipsync_status"] = "polling"
         state[f"phase_{_p}_lipsync_task_id"] = _tid
+        if _p == "b" and _bid:
+            state["phase_b_cedric_base_clip_id"] = _bid
         state["_module_version"] = int(state.get("_module_version", 0) or 0) + 1
         return state["_module_version"]
     try:

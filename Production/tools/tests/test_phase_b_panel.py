@@ -554,6 +554,7 @@ class TestPhaseEndpoints(unittest.TestCase):
         state_after_submit = self.app.state.read_state()
         self.assertEqual(state_after_submit.get("phase_b_lipsync_status"), "polling")
         self.assertEqual(state_after_submit.get("phase_b_lipsync_task_id"), "fake_task_id")
+        self.assertEqual(state_after_submit.get("phase_b_cedric_base_clip_id"), "cedric_base_v1")
         # Background thread writes terminal state after poll+download.
         lipsync_file = None
         for _ in range(40):

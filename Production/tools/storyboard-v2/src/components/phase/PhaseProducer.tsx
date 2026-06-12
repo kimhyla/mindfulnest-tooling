@@ -110,6 +110,8 @@ interface PhaseStateSlice {
   chipper_flyin_clip_id?: string;
   chipper_sitting_clip_id?: string;
   chipper_flyout_clip_id?: string;
+  /** Phase B — persisted lipsync base clip (phase_b_cedric_base_clip_id). */
+  cedric_base_clip_id?: string;
   // S5.5f — ambient bed preset (LD AMBIENT_PRESET_SELECTOR_INPRODUCER_V1).
   ambient_preset_id?: string;
 }
@@ -168,6 +170,9 @@ function pickPhaseSlice(state: EventStateResponse, phase: 'a' | 'b'): PhaseState
     const fi = get<string>('chipper_flyin_clip_id');   if (fi) slice.chipper_flyin_clip_id = fi;
     const si = get<string>('chipper_sitting_clip_id'); if (si) slice.chipper_sitting_clip_id = si;
     const fo = get<string>('chipper_flyout_clip_id');  if (fo) slice.chipper_flyout_clip_id = fo;
+  }
+  if (phase === 'b') {
+    const bci = get<string>('cedric_base_clip_id'); if (bci) slice.cedric_base_clip_id = bci;
   }
   const ap = get<string>('ambient_preset_id'); if (ap) slice.ambient_preset_id = ap;
   return slice;
@@ -314,10 +319,18 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       const phaseAChars = new Set(['arlo', 'chipper']);
       const wantedChar = phase === 'a' ? 'arlo' : 'cedric';
       const sittingId = phase === 'a' ? nextSlice.chipper_sitting_clip_id : undefined;
+      const savedBaseClipId =
+        phase === 'b'
+          ? nextSlice.cedric_base_clip_id
+          : sittingId;
+      const bySaved = savedBaseClipId
+        ? bc.data.items.find((c) => c.id === savedBaseClipId)
+        : undefined;
       const bySitting = sittingId
         ? bc.data.items.find((c) => c.id === sittingId)
         : undefined;
-      const match = bySitting
+      const match = bySaved
+        ?? bySitting
         ?? bc.data.items.find((c) => c.character === wantedChar)
         ?? bc.data.items.find((c) => c.character && phaseAChars.has(c.character));
       if (match) setSelectedBaseClip(match.id);
@@ -502,6 +515,17 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       } else {
         setStatusMsg(`error: HTTP ${res.status} ${res.error ?? ''}`);
       }
+    }
+  };
+
+  const onBaseClipChange = (clipId: string) => {
+    setSelectedBaseClip(clipId);
+    if (phase === 'b' && clipId) {
+      setStateSlice((s) => ({ ...s, cedric_base_clip_id: clipId }));
+      void pathappPatch(activeScope.value, 'v2_module_patch', {
+        field: 'phase_b_cedric_base_clip_id',
+        value: clipId,
+      });
     }
   };
 
@@ -1302,7 +1326,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             id={`phase-${phase}-baseclip`}
             data-testid={`phase-${phase}-baseclip-select`}
             value={selectedBaseClip}
-            onChange={(e: Event) => setSelectedBaseClip((e.target as HTMLSelectElement).value)}
+            onChange={(e: Event) => onBaseClipChange((e.target as HTMLSelectElement).value)}
           >
             <option value="">— select —</option>
             {phaseABaseClipOptions(baseClips).map((c) => (
