@@ -775,7 +775,12 @@ def _single_canonical_intro_mode() -> bool:
 
 
 def is_superseded_intro_tail_beat(beat: dict) -> bool:
-    """Old transition/mirror rows replaced by canonical tail on re-extract."""
+    """Old transition/mirror rows replaced by canonical tail on re-extract.
+
+    Authored intro beats 08–10 use scene_notes ``Transition to Spell`` with
+    real dialogue — never treat that scene tag alone as superseded (regression:
+    sidecar truncated to 7 beats and stitch fades landed on beat_07→mirror).
+    """
     if is_canonical_lead_beat(beat.get("beat_id") or ""):
         return False
     if _has_populated_intro_mirror_beat(beat):
@@ -785,10 +790,13 @@ def is_superseded_intro_tail_beat(beat: dict) -> bool:
         return True
     scene = (beat.get("scene_notes") or "").lower()
     prompt = (beat.get("kling_o3_prompt") or "").lower()
-    if "transition to spell" in scene:
-        return True
-    if "teleport glass finale" in prompt or "teleport mirror" in scene:
-        return True
+    dialogue = (beat.get("dialogue_text") or "").strip()
+    # Legacy unrole'd placeholders from pre-single-canonical re-extracts only.
+    if not role and dialogue in ("", INTRO_DIALOGUE_PLACEHOLDER):
+        if "transition to spell" in scene:
+            return True
+        if "teleport glass finale" in prompt or "teleport mirror" in scene:
+            return True
     return False
 
 
