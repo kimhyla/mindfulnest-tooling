@@ -726,7 +726,7 @@ def handle_stitch_preview(h, body: dict)-> None:
         return
     try:
         hydrated = hydrate_stitch_pipeline_body(h, body)
-        out_path, slot_durations = h._stitch_build_pipeline(hydrated)
+        out_path, slot_durations, slot_start_offsets_ms = h._stitch_build_pipeline(hydrated)
     except (ValueError, PermissionError) as exc:
         return h._send_error_v59(
                    400,
@@ -756,6 +756,7 @@ def handle_stitch_preview(h, body: dict)-> None:
         "preview_url": f"http://localhost:5111/api/stitch_editor/preview_file/{hash_id}",
         "duration_ms": duration_ms,
         "slot_durations": slot_durations,
+        "slot_start_offsets_ms": slot_start_offsets_ms,
     })
 
 
@@ -823,7 +824,7 @@ def handle_stitch_bake(h, body: dict)-> None:
             raise ValueError("No slots provided — assign videos to all stitch slots first")
 
         try:
-            out_path, _durations = h._stitch_build_pipeline(_body)
+            out_path, _durations, _slot_starts = h._stitch_build_pipeline(_body)
         except (ValueError, PermissionError) as exc:
             return h._send_error_v59(
                        400,

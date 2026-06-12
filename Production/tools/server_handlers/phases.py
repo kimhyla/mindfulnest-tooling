@@ -82,10 +82,11 @@ from tools.production_server import (  # noqa: E402
 # ---------------------------------------------------------------------------
 # White-out fade — standardized Phase B ending transition
 # ---------------------------------------------------------------------------
-# Locked: every Phase B lipsync output gets a white fade-out at the tail.
-# Duration is constant (PHASE_B_WHITEOUT_DURATION_SEC). Applied in-place
-# on the downloaded mp4 before state is written; fully transparent to callers.
-PHASE_B_WHITEOUT_DURATION_SEC: float = 0.6  # short video tail fade (intro fade_out_video_tail_ms default)
+# Locked: Phase B ending transition is handled at stitch module boundaries
+# (expand_clips_with_black_pause_boundaries) — NOT baked into lipsync MP4s.
+# In-clip whiteout duplicated the intro bug class (fade eating tail dialogue).
+PHASE_B_WHITEOUT_ENABLED: bool = False
+PHASE_B_WHITEOUT_DURATION_SEC: float = 0.6  # unused when PHASE_B_WHITEOUT_ENABLED=False
 # Intro export uses fade_audio=False — dialogue stays full level until hard cut.
 # Phase B whiteout matches that: video fades to white; audio untouched until file end.
 PHASE_B_WHITEOUT_FADE_AUDIO: bool = False
@@ -257,11 +258,9 @@ def _apply_phase_audio_trim(
 
 
 def _apply_whiteout_fade(video_path: Path, fade_dur: float = PHASE_B_WHITEOUT_DURATION_SEC) -> None:
-    """Add a fade-to-white at the tail of *video_path*. Modifies file in-place.
-
-    Uses ffprobe to get duration, then ffmpeg vf/af fade filters. Writes to a
-    temp file then renames over the original (atomic on POSIX).
-    """
+    """Optional white fade at tail of Phase B lipsync — disabled; stitch handles boundaries."""
+    if not PHASE_B_WHITEOUT_ENABLED:
+        return
     # Probe duration
     probe = subprocess.run(
         [

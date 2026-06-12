@@ -163,6 +163,8 @@ async function mockStitchPreviewAndBoundaries(page: Page): Promise<void> {
       body: JSON.stringify({
         ok: true,
         preview_url: 'http://localhost:5111/api/stitch_editor/preview_file/mock_preview',
+        slot_durations: [30000, 50000, 100000, 30000],
+        slot_start_offsets_ms: [0, 32600, 82600, 182600],
       }),
     });
   });
@@ -265,6 +267,31 @@ test.describe('G17 — Stitcher multi-phase track persistence', () => {
       );
       return key ? window.localStorage.getItem(key) : null;
     })).toBe('phase_b');
+  });
+
+  test('G17.3 — segment click seeks module preview (not intro t=0)', async ({ page }) => {
+    await mockStitcherJob(page);
+    await mockSnapshot(page);
+    await mockStitchSaveJob(page);
+    await mockSfxLibrary(page);
+    await mockStitchPreviewAndBoundaries(page);
+
+    await gotoApp(page);
+    await openStitcher(page);
+
+    await page.waitForFunction(() => {
+      const v = document.querySelector('[data-testid="stitcher-video-player"]') as HTMLVideoElement | null;
+      return v?.src?.includes('mock_preview') ?? false;
+    }, { timeout: 15000 });
+
+    await page.locator('[data-testid="stitcher-multiphase-segment-phase_a"]').click();
+
+    await expect.poll(async () => {
+      return page.evaluate(() => {
+        const v = document.querySelector('[data-testid="stitcher-video-player"]') as HTMLVideoElement | null;
+        return v?.currentTime ?? 0;
+      });
+    }).toBeGreaterThan(25);
   });
 });
 

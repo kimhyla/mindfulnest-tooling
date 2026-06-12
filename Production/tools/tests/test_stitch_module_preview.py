@@ -20,3 +20,8 @@ def test_default_stitch_transitions_dissolve_2800ms() -> None:
         assert t["kind"] == "dissolve"
         assert t["fade_ms"] == 2800
         assert t["audio_xfade_ms"] == 0
+
+
+def test_stitch_preview_includes_slot_start_offsets() -> None:
+    src = (TOOLS / "server_handlers" / "stitch_editor.py").read_text(encoding="utf-8")
+    assert '"slot_start_offsets_ms": slot_start_offsets_ms' in src

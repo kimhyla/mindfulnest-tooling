@@ -19,9 +19,17 @@ export function defaultStitchTransitions(): Transition[] {
 export function resolveStitchTransitions(existing?: Transition[] | null): Transition[] {
   const defaults = defaultStitchTransitions();
   if (!existing?.length) return defaults;
-  return defaults.map(
-    (d) => existing.find((t) => t.after_slot === d.after_slot) ?? d,
-  );
+  return defaults.map((d) => {
+    const found = existing.find((t) => t.after_slot === d.after_slot);
+    if (!found) return d;
+    return {
+      ...found,
+      kind: found.kind ?? d.kind,
+      fade_ms: found.fade_ms ?? d.fade_ms,
+      // Dissolve boundaries use fade-through-black; never duck dialogue at tail.
+      audio_xfade_ms: 0,
+    };
+  });
 }
 
 export interface StitchSlotLike {
@@ -53,6 +61,20 @@ export function cumulativeSlotOffsetsMs(slotDurationsMs: number[]): number[] {
   return offsets;
 }
 
+/** Seek target for a slot inside the module preview timeline (prefers server black-pause offsets). */
+export function modulePreviewSeekOffsetMs(
+  slotKey: SlotKey,
+  slotStartOffsetsMs: number[],
+  slotDurationsMs: number[],
+): number {
+  const idx = slotIndexForKey(slotKey);
+  if (idx >= 0 && idx < slotStartOffsetsMs.length) {
+    return slotStartOffsetsMs[idx] ?? 0;
+  }
+  const legacy = cumulativeSlotOffsetsMs(slotDurationsMs);
+  return legacy[idx] ?? 0;
+}
+
 export function slotIndexForKey(key: SlotKey): number {
   return STITCH_SLOT_ORDER.indexOf(key);
 }
@@ -63,6 +85,7 @@ export interface CachedModulePreview {
   cache_key: string;
   preview_url: string;
   slot_durations: number[];
+  slot_start_offsets_ms?: number[];
 }
 
 export function modulePreviewCacheKey(

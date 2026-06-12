@@ -31,11 +31,11 @@ import {
   cumulativeSlotOffsetsMs,
   defaultStitchTransitions,
   modulePreviewCacheKey,
+  modulePreviewSeekOffsetMs,
   orderedStitchSlots,
   readCachedModulePreview,
   resolveModuleViewerVideoUrl,
   resolveStitchTransitions,
-  slotIndexForKey,
   writeCachedModulePreview,
 } from '../utils/stitchModulePreview';
 
@@ -595,7 +595,11 @@ export function StitcherTab() {
     const cached = readCachedModulePreview(activeScope.value.event_id);
     if (cached?.cache_key === cacheKey) {
       setModulePreviewUrl(cached.preview_url);
-      setModuleSlotOffsetsMs(cumulativeSlotOffsetsMs(cached.slot_durations));
+      setModuleSlotOffsetsMs(
+        cached.slot_start_offsets_ms?.length
+          ? cached.slot_start_offsets_ms
+          : cumulativeSlotOffsetsMs(cached.slot_durations),
+      );
       return true;
     }
 
@@ -613,15 +617,23 @@ export function StitcherTab() {
     setModulePreviewLoading(false);
 
     if (res.ok) {
-      const data = res.data as { preview_url?: string; slot_durations?: number[] } | undefined;
+      const data = res.data as {
+        preview_url?: string;
+        slot_durations?: number[];
+        slot_start_offsets_ms?: number[];
+      } | undefined;
       if (data?.preview_url) {
         const durs = data.slot_durations ?? [];
+        const starts = data.slot_start_offsets_ms?.length
+          ? data.slot_start_offsets_ms
+          : cumulativeSlotOffsetsMs(durs);
         setModulePreviewUrl(data.preview_url);
-        setModuleSlotOffsetsMs(cumulativeSlotOffsetsMs(durs));
+        setModuleSlotOffsetsMs(starts);
         writeCachedModulePreview(activeScope.value.event_id, {
           cache_key: cacheKey,
           preview_url: data.preview_url,
           slot_durations: durs,
+          slot_start_offsets_ms: starts,
         });
       }
       if (!opts?.quiet) setStatusMsg('✓ Module preview ready — press play to review transitions');
@@ -678,25 +690,56 @@ export function StitcherTab() {
     return false;
   };
 
+  const seekModulePreviewTo = (offsetMs: number) => {
+    const video = videoRef.current;
+    if (!video) return;
+    // LD-827 fallback: per-slot /files URL is NOT the module reel — never apply
+    // module offsets (that was the "always jumps to intro" regression class).
+    if (!modulePreviewUrl) {
+      video.currentTime = 0;
+      void video.play().catch(() => {});
+      return;
+    }
+    const apply = () => {
+      video.currentTime = Math.max(0, offsetMs / 1000);
+      void video.play().catch(() => {});
+    };
+    if (video.readyState >= 1) {
+      apply();
+      return;
+    }
+    video.addEventListener('loadedmetadata', apply, { once: true });
+  };
+
   const onMultiPhaseSegmentClick = (slot: SlotKey) => {
     setTrackFocusedSlot(slot);
     setActivePreviewSlot(slot);
     writePersistedTrackSlot(activeScope.value.event_id, slot);
     void fetchBeatBoundaries(slot);
-    const idx = slotIndexForKey(slot);
-    const offsetMs = moduleSlotOffsetsMs[idx] ?? 0;
-    const video = videoRef.current;
-    if (video && modulePreviewUrl && Number.isFinite(offsetMs)) {
-      video.currentTime = offsetMs / 1000;
-      void video.play().catch(() => {});
-    }
+    const offsetMs = modulePreviewSeekOffsetMs(slot, moduleSlotOffsetsMs, []);
+    seekModulePreviewTo(offsetMs);
   };
+
+  // After module preview finishes baking, seek to persisted track selection.
+  useEffect(() => {
+    if (!modulePreviewUrl || trackFocusedSlot == null) return;
+    if (!moduleSlotOffsetsMs.length) return;
+    const offsetMs = modulePreviewSeekOffsetMs(trackFocusedSlot, moduleSlotOffsetsMs, []);
+    seekModulePreviewTo(offsetMs);
+  }, [modulePreviewUrl, moduleSlotOffsetsMs, trackFocusedSlot]);
 
   useEffect(() => {
     if (standaloneMode || !job?.name || !job?.slots) return;
     if (job.transitions?.length) return;
     void saveJobTransitions(defaultStitchTransitions());
   }, [standaloneMode, job?.name, job?.transitions?.length]);
+
+  useEffect(() => {
+    if (!job?.transitions?.length || !job?.name) return;
+    const needsAudioFix = job.transitions.some((t) => (t.audio_xfade_ms ?? 0) > 0);
+    if (!needsAudioFix) return;
+    void saveJobTransitions(resolveStitchTransitions(job.transitions));
+  }, [job?.name, JSON.stringify(job?.transitions)]);
 
   useEffect(() => {
     if (standaloneMode || !job?.slots) return;
@@ -1110,7 +1153,11 @@ export function StitcherTab() {
             })}
           </div>
 
-          <div class="mn-stitcher-multiphase-track" data-testid="stitcher-multiphase-track">
+          <div
+            class="mn-stitcher-multiphase-track"
+            data-testid="stitcher-multiphase-track"
+            data-stitcher-module-seek="STITCHER_MODULE_SEEK_V1"
+          >
             <div class="mn-stitcher-multiphase-track-header">
               <strong>Multi-phase view track</strong>
               <span class="mn-dim">click a phase to jump in the module preview · selection persists per event</span>
@@ -1157,7 +1204,7 @@ export function StitcherTab() {
               </div>
               <video
                 ref={videoRef}
-                key={`${viewerSlot}-${viewerVideoUrl ?? 'empty'}`}
+                key={modulePreviewUrl ? 'stitcher-module-preview' : `${viewerSlot}-${viewerVideoUrl ?? 'empty'}`}
                 controls
                 src={viewerVideoUrl}
                 class="mn-stitcher-video-player"

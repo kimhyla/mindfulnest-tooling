@@ -777,7 +777,17 @@ def trim_body_with_fade(
         ]
         if af_parts:
             cmd += ["-af", ",".join(af_parts)]
-        cmd += [*NORMALIZATION_ENCODER_ARGS, str(tmp)]
+            cmd += [*NORMALIZATION_ENCODER_ARGS, str(tmp)]
+        else:
+            cmd += [
+                "-map", "0:v:0", "-map", "0:a?",
+                "-c:v", "libx264", "-profile:v", "high", "-pix_fmt", "yuv420p",
+                "-preset", "slow", "-g", "48",
+                "-b:v", "1500k", "-maxrate", "1800k", "-bufsize", "3000k",
+                "-c:a", "copy",
+                "-movflags", "+faststart",
+                str(tmp),
+            ]
         subprocess.run(cmd, check=True, capture_output=True, timeout=timeout_s)
         os.replace(tmp, dst)
     finally:
@@ -819,6 +829,32 @@ def render_black_pause_clip(
             except OSError:
                 pass
     return dest
+
+
+def module_slot_start_offsets_ms(
+    slot_durations_ms: list[int],
+    pair_fades_ms: list[int],
+    *,
+    visual_out_ms: int = DEFAULT_FADE_THROUGH_BLACK_VISUAL_OUT_MS,
+    visual_in_ms: int = DEFAULT_FADE_THROUGH_BLACK_VISUAL_IN_MS,
+) -> list[int]:
+    """Start offset of each logical slot inside a module preview after black-pause inserts."""
+    if not slot_durations_ms:
+        return []
+    starts = [0]
+    acc = 0
+    for i in range(len(slot_durations_ms) - 1):
+        acc += int(slot_durations_ms[i])
+        pair = int(pair_fades_ms[i]) if i < len(pair_fades_ms) else 0
+        if pair > 0:
+            _, _, black_ms = allocate_pair_fade_budget(
+                pair,
+                visual_out_ms=visual_out_ms,
+                visual_in_ms=visual_in_ms,
+            )
+            acc += black_ms
+        starts.append(acc)
+    return starts
 
 
 def allocate_pair_fade_budget(

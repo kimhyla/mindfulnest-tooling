@@ -30,7 +30,7 @@ BOOKEND_HEIGHT = 1244
 KLING_LIPSYNC_UPSCALE_THRESHOLD_W = 1000
 # Hold after last detected speech before hard cut — enough for a natural close, not
 # the full ByteDance LIPSYNC_PAD_END neutral-return animation (~2.5s).
-TRAILING_SPEECH_HOLD_S = 0.75  # was 0.15 — avoid clipping last syllable before tail trim
+TRAILING_SPEECH_HOLD_S = 1.0  # hold after last speech before tail trim (intro fade parity)
 _SILENCE_DETECT_NOISE_DB = "-32dB"
 _SILENCE_DETECT_MIN_S = 0.20
 

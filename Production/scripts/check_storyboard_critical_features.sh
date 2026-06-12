@@ -76,6 +76,13 @@ MARKERS=(
     "LD-826|selection persists per event"
     # LD-827 — Stitcher viewer instant /files fallback while module preview bakes
     "LD-827|LD-827 instant slot preview"
+    # LD-828 — module preview phase jump seek (regression: LD-827 + wrong offsets + video remount)
+    "LD-828|STITCHER_MODULE_SEEK_V1"
+    "LD-828|stitcher-module-preview"
+    "LD-828|seekModulePreviewTo"
+    # Library audio preview (sfx/ambient/transitions tiers)
+    "LIBRARY_AUDIO_PREVIEW|LIBRARY_AUDIO_PREVIEW_V1"
+    "LIBRARY_AUDIO_PREVIEW|library-preview-audio"
     # Phase stem trim + reject lipsync (2026-06-10)
     "PHASE_STEM_TRIM|waveform-stem-cut-block"
     "PHASE_STEM_TRIM|Reject lipsync"

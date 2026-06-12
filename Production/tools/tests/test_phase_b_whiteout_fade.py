@@ -18,11 +18,16 @@ from server_handlers.phases import (  # noqa: E402
 
 
 def test_whiteout_constants_match_intro_pattern() -> None:
+    from server_handlers.phases import PHASE_B_WHITEOUT_ENABLED  # noqa: PLC0415
+
+    assert PHASE_B_WHITEOUT_ENABLED is False
     assert PHASE_B_WHITEOUT_FADE_AUDIO is False
-    assert PHASE_B_WHITEOUT_DURATION_SEC == 0.6
 
 
 def test_apply_whiteout_fade_uses_audio_copy_not_afade(tmp_path: Path) -> None:
+    from server_handlers.phases import PHASE_B_WHITEOUT_ENABLED  # noqa: PLC0415
+
+    assert PHASE_B_WHITEOUT_ENABLED is False
     video = tmp_path / "phase_b_lipsync_test.mp4"
     video.write_bytes(b"fake")
     captured: list[list[str]] = []
@@ -38,12 +43,5 @@ def test_apply_whiteout_fade_uses_audio_copy_not_afade(tmp_path: Path) -> None:
     with mock.patch("server_handlers.phases.subprocess.run", side_effect=_run):
         _apply_whiteout_fade(video)
 
-    assert captured, "ffmpeg command not captured"
-    cmd = captured[0]
-    assert "-c:a" in cmd
-    assert "copy" in cmd
-    assert "-af" not in cmd
-    vf_idx = cmd.index("-vf")
-    assert "fade=out" in cmd[vf_idx + 1]
-    assert f"d={PHASE_B_WHITEOUT_DURATION_SEC:.3f}" in cmd[vf_idx + 1]
-    assert video.is_file()
+    assert not captured, "whiteout disabled — ffmpeg must not run"
+    assert video.read_bytes() == b"fake"

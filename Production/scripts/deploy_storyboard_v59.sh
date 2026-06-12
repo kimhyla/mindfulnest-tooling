@@ -196,6 +196,11 @@ if [[ "${MN_SKIP_REGRESSION_GUARD:-0}" != "1" ]]; then
         fi
         echo "[deploy] (a-pre.6c) PHASE_PRODUCER_AB source durability ok"
     fi
+    SEEK_DURABILITY_SCRIPT="$SRC_TOOLING/Production/scripts/verify_stitcher_module_seek_durability.sh"
+    if [[ -f "$SEEK_DURABILITY_SCRIPT" ]]; then
+        bash "$SEEK_DURABILITY_SCRIPT" || exit 1
+        echo "[deploy] (a-pre.6d) STITCHER_MODULE_SEEK source durability ok"
+    fi
 else
     echo "[deploy] (a-pre.6) LD-766 regression guard SKIPPED (MN_SKIP_REGRESSION_GUARD=1)"
 fi

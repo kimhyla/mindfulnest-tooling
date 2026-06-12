@@ -11193,6 +11193,8 @@ body {{padding-top:44px!important;}}
             self._stitch_cache_dir() / safe,
             project_root / "Production" / "assets" / "ambient_library" / safe,
             project_root / "Production" / "assets" / "sound_library" / "ambient" / safe,
+            project_root / "Production" / "assets" / "sound_library" / "sfx" / safe,
+            project_root / "Production" / "assets" / "sound_library" / "transitions" / safe,
         ]
         for target in candidates:
             if target.is_file():
@@ -11773,7 +11775,7 @@ body {{padding-top:44px!important;}}
                 )
         return out_path
 
-    def _stitch_build_pipeline(self, body: dict) -> tuple[Path, list[int]]:
+    def _stitch_build_pipeline(self, body: dict) -> tuple[Path, list[int], list[int]]:
         """Core pipeline shared by preview and bake.
 
         Returns (output_mp4_path, [slot_dur_ms, ...]).
@@ -11956,6 +11958,15 @@ body {{padding-top:44px!important;}}
                 fade_audio=False,
             )
 
+        from ffmpeg_stitch import module_slot_start_offsets_ms  # noqa: PLC0415
+
+        slot_start_offsets_ms = module_slot_start_offsets_ms(
+            slot_durations,
+            pair_fades_ms,
+            visual_out_ms=_VISUAL_OUT_MS,
+            visual_in_ms=_VISUAL_IN_MS,
+        )
+
         # Concat all slot finals (LD-284: already normalized)
         job_sig = json.dumps(
             {
@@ -11994,7 +12005,7 @@ body {{padding-top:44px!important;}}
         lru_cleanup(cache_dir, keep=5, pattern=r"^stitch_preview_.*\.mp4$")
         lru_cleanup(cache_dir, keep=10, pattern=r"^se_slot_.*\.mp4$")
 
-        return out_path, slot_durations
+        return out_path, slot_durations, slot_start_offsets_ms
 
     @with_pin_and_drain('_handle_stitch_preview', track_sync=True)
     def _handle_stitch_preview(self, body: dict) -> None:

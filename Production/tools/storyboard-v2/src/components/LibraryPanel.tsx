@@ -119,6 +119,24 @@ export function stitchLibraryToLibItems(data: StitchLibraryResponse): LibItem[] 
 
 const AUDIO_LIBRARY_TIERS = new Set<LibraryTier>(['ambient', 'sfx', 'transitions']);
 
+/** Preview URL for sound_library audio rows (sfx / ambient / transitions). */
+export function libraryAudioPreviewUrl(item: LibItem): string | undefined {
+  const fname = item.filename ?? item.key;
+  if (!fname) return undefined;
+  const at = inferAssetType(item);
+  const tags = item.tags ?? [];
+  const isAudioRow =
+    at === 'audio' ||
+    at === 'sfx' ||
+    at === 'transition' ||
+    tags.includes('ambient') ||
+    tags.includes('sfx') ||
+    tags.includes('transition') ||
+    AUDIO_LIBRARY_TIERS.has((item.tier ?? '') as LibraryTier);
+  if (!isAudioRow) return undefined;
+  return `/api/stitch_editor/audio_file/${encodeURIComponent(fname)}`;
+}
+
 function thumbSrc(it: LibItem): string | undefined {
   return it.thumb_b64 ?? it.thumb_url ?? undefined;
 }
@@ -528,7 +546,7 @@ export function LibraryPanel() {
     : 'Upload image to library';
 
   return (
-    <aside class="mn-library-panel" data-testid="library-panel">
+    <aside class="mn-library-panel" data-testid="library-panel" data-library-audio-preview="LIBRARY_AUDIO_PREVIEW_V1">
       <header class="mn-library-header">
         <h3>Library</h3>
         <span class="mn-dim mn-library-count" data-testid="library-count">
@@ -739,7 +757,19 @@ export function LibraryPanel() {
           </header>
           {(() => {
             const at = inferAssetType(preview.item);
+            const audioUrl = libraryAudioPreviewUrl(preview.item);
             const src = preview.item.gallery_b64 ?? thumbSrc(preview.item);
+            if (audioUrl) {
+              return (
+                <audio
+                  class="mn-library-preview-audio"
+                  data-testid="library-preview-audio"
+                  src={audioUrl}
+                  controls
+                  autoPlay
+                />
+              );
+            }
             if (at === 'audio' && src) {
               return (
                 <audio
