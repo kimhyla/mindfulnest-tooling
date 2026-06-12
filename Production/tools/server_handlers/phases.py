@@ -89,6 +89,95 @@ PHASE_B_WHITEOUT_DURATION_SEC: float = 1.5  # seconds of fade-to-white at end
 # Kling LipSync on ~43s stems: p99 ~15 min; auto-clear stuck "running" after 20 min.
 PHASE_A_LIPSYNC_STALE_SEC: int = 1200
 
+# Cleared on reject/regen so lipsync/mix/stitch no longer reference stale outputs.
+_PHASE_LIPSYNC_DERIVED_KEYS = (
+    "lipsync_file",
+    "lipsync_mtime",
+    "lipsync_status",
+    "lipsync_method",
+    "lipsync_qa_dir",
+    "lipsync_av_gap_s",
+    "lipsync_reliability_note",
+    "lipsync_task_id",
+    "lipsync_started_at",
+    "mixed_audio_file",
+    "mixed_audio_mtime",
+    "stitched_file",
+    "stitched_mtime",
+)
+_PHASE_VOICE_STEM_TRIM_KEYS = (
+    "voice_stem_trim_start_s",
+    "voice_stem_trim_back_s",
+)
+
+
+def _phase_voice_stem_trim_window(state: dict, phase: str) -> tuple[float, float]:
+    """Return (trim_start_s, trim_back_s) from module state (seconds from front/back)."""
+    start = float(state.get(f"phase_{phase}_voice_stem_trim_start_s") or 0.0)
+    back = float(state.get(f"phase_{phase}_voice_stem_trim_back_s") or 0.0)
+    return max(0.0, start), max(0.0, back)
+
+
+def _materialize_trimmed_audio(
+    source: Path,
+    dst: Path,
+    trim_start_s: float,
+    trim_back_s: float,
+) -> Path:
+    """ffmpeg-trim *source* to *dst*; returns *source* unchanged when trim inactive."""
+    if trim_start_s <= 0.001 and trim_back_s <= 0.001:
+        return source
+    dur = _ffprobe_duration(source)
+    end_s = dur - trim_back_s if trim_back_s > 0.001 else dur
+    window = end_s - trim_start_s
+    if window < 0.25:
+        raise ValueError(
+            f"trim window too small ({window:.2f}s): "
+            f"start={trim_start_s:.2f}s back={trim_back_s:.2f}s dur={dur:.2f}s",
+        )
+    subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-ss", f"{trim_start_s:.3f}",
+            "-i", str(source),
+            "-t", f"{window:.3f}",
+            "-c:a", "libmp3lame", "-q:a", "2",
+            str(dst),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=120,
+    )
+    return dst
+
+
+def _phase_clear_lipsync_derived(state: dict, phase: str, *, requires_regen: bool) -> None:
+    for suffix in _PHASE_LIPSYNC_DERIVED_KEYS:
+        state.pop(f"phase_{phase}_{suffix}", None)
+        nested = state.get(f"phase_{phase}")
+        if isinstance(nested, dict):
+            nested.pop(f"phase_{phase}_{suffix}", None)
+    state[f"phase_{phase}_lipsync_requires_regen"] = requires_regen
+    nested = state.setdefault(f"phase_{phase}", {})
+    if isinstance(nested, dict):
+        nested[f"phase_{phase}_lipsync_requires_regen"] = requires_regen
+
+
+def _apply_phase_audio_trim(
+    h,
+    audio_path: Path,
+    phase: str,
+    state: dict,
+    ts: str,
+) -> tuple[Path, float]:
+    """Resolve lipsync/mix audio path, applying persisted stem trim when active."""
+    trim_start, trim_back = _phase_voice_stem_trim_window(state, phase)
+    if trim_start <= 0.001 and trim_back <= 0.001:
+        return audio_path, _ffprobe_duration(audio_path)
+    tmp_trim = h.app.event_dir / f"_tmp_stem_trim_phase_{phase}_{ts}.mp3"
+    trimmed = _materialize_trimmed_audio(audio_path, tmp_trim, trim_start, trim_back)
+    return trimmed, _ffprobe_duration(trimmed)
+
 
 def _apply_whiteout_fade(video_path: Path, fade_dur: float = PHASE_B_WHITEOUT_DURATION_SEC) -> None:
     """Add a fade-to-white at the tail of *video_path*. Modifies file in-place.
@@ -852,6 +941,90 @@ def _build_silence_mp3(duration_s: float, out_path) -> None:
     )
 
 
+def handle_phase_reject_lipsync(h, body: dict) -> None:
+    """POST /api/phase_{a|b}/reject_lipsync
+
+    Clears lipsync + derived mix/stitch state so the waveform returns to the
+    voice stem. Keeps the lipsync MP4 on disk (archived filename optional later).
+    Body: {"phase": "a"|"b"}
+    """
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+
+    phase = (body.get("phase") or "").strip().lower()
+    err = h._phase_check(phase)
+    if err:
+        return h._send_error_v59(
+            400,
+            error_code="GENERIC_ERROR",
+            error_message=err,
+            retry_safe=False,
+            extra={"hint": "phase is 'a' or 'b'."},
+        )
+
+    state = h.app.state.read_state()
+    lipsync_name = state.get(f"phase_{phase}_lipsync_file")
+    if not lipsync_name:
+        return h._send_error_v59(
+            404,
+            error_code="GENERIC_ERROR",
+            error_message=f"phase_{phase}_lipsync_file not set — nothing to reject",
+            retry_safe=False,
+            extra={"hint": "Generate a lipsync first, or edit the stem trim directly if no video exists."},
+        )
+
+    if state.get(f"phase_{phase}_lipsync_status") == "running":
+        return h._send_error_v59(
+            409,
+            error_code="PHASE_LIPSYNC_RUNNING",
+            error_message=f"Phase {phase.upper()} lipsync still running",
+            retry_safe=False,
+            extra={"hint": "Wait for the in-flight job to finish or time out before rejecting."},
+        )
+
+    archived_name: str | None = None
+    try:
+        src = require_basename_under_dir(lipsync_name, h.app.event_dir)
+        if src.is_file():
+            archive_dir = h.app.event_dir / "_rejected_lipsync"
+            archive_dir.mkdir(exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+            archived = archive_dir / f"phase_{phase}_lipsync_rejected_{ts}_{src.name}"
+            shutil.move(str(src), str(archived))
+            archived_name = archived.name
+    except (ValueError, OSError) as exc:
+        print(f"[phase_reject_lipsync] archive move skipped: {exc}", flush=True)
+
+    def _apply(st, _p=phase):
+        _phase_clear_lipsync_derived(st, _p, requires_regen=True)
+        st[f"phase_{_p}_lipsync_status"] = "rejected"
+        st["_module_version"] = int(st.get("_module_version", 0) or 0) + 1
+        return st["_module_version"]
+
+    try:
+        new_version = h.app.state.mutate_state(_apply)
+    except Exception as exc:  # noqa: BLE001
+        traceback.print_exc()
+        return h._send_error_v59(
+            500,
+            error_code="GENERIC_ERROR",
+            error_message=f"mutate_state failed: {type(exc).__name__}: {exc}",
+            retry_safe=True,
+        )
+
+    return h._send_json(200, {
+        "ok": True,
+        "phase": phase,
+        "archived_file": archived_name,
+        "previous_lipsync_file": lipsync_name,
+        "module_version": new_version,
+        "message": (
+            "Lipsync cleared from state — waveform now shows voice stem. "
+            "Set stem trim (front/back seconds), then Send for Lipsync."
+        ),
+    })
+
+
 def handle_phase_b_regen_audio(h, body: dict)-> None:
 
     """POST /api/phase_b/regen_audio
@@ -1103,20 +1276,9 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
         state[f"phase_{_p}_voice_stem_file"] = _n
         state[f"phase_{_p}_voice_stem_mtime"] = _m
         # Fresh stem invalidates lipsync/mix/stitch derived from the old audio.
-        for key in (
-            f"phase_{_p}_lipsync_file",
-            f"phase_{_p}_lipsync_mtime",
-            f"phase_{_p}_lipsync_status",
-            f"phase_{_p}_lipsync_method",
-            f"phase_{_p}_lipsync_qa_dir",
-            f"phase_{_p}_lipsync_reliability_note",
-            f"phase_{_p}_mixed_audio_file",
-            f"phase_{_p}_mixed_audio_mtime",
-            f"phase_{_p}_stitched_file",
-            f"phase_{_p}_stitched_mtime",
-        ):
-            state.pop(key, None)
-        state[f"phase_{_p}_lipsync_requires_regen"] = True
+        _phase_clear_lipsync_derived(state, _p, requires_regen=True)
+        for suffix in _PHASE_VOICE_STEM_TRIM_KEYS:
+            state.pop(f"phase_{_p}_{suffix}", None)
         state["_module_version"] = int(state.get("_module_version", 0) or 0) + 1
         return state["_module_version"]
     try:
@@ -1271,6 +1433,7 @@ def handle_phase_b_mix_audio(h, body: dict)-> None:
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     voice_extract_path = h.app.event_dir / f"_tmp_voice_extract_{phase}_{ts}.mp3"
     voice_for_mix_path = voice_stem_path  # default fallback
+    trim_start, trim_back = _phase_voice_stem_trim_window(state, phase)
     lipsync_name_for_source = state.get(f"phase_{phase}_lipsync_file")
     lipsync_source_path: Path | None = None
     if lipsync_name_for_source:
@@ -1303,6 +1466,26 @@ def handle_phase_b_mix_audio(h, body: dict)-> None:
                 # Non-fatal: fall back to voice stem + warn in logs.
                 print(f"[mix_audio] extract-from-lipsync failed (falling back to voice_stem): {exc}")
                 lipsync_source_path = None
+
+    if lipsync_source_path is None and (trim_start > 0.001 or trim_back > 0.001):
+        try:
+            tmp_trim = h.app.event_dir / f"_tmp_stem_trim_mix_{phase}_{ts}.mp3"
+            voice_for_mix_path = _materialize_trimmed_audio(
+                voice_stem_path, tmp_trim, trim_start, trim_back,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+                OSError, ValueError) as exc:
+            return h._send_error_v59(
+                400,
+                error_code="STEM_TRIM_FAILED",
+                error_message=f"stem trim failed: {exc}",
+                retry_safe=False,
+                extra={
+                    "trim_start_s": trim_start,
+                    "trim_back_s": trim_back,
+                    "hint": "Reduce front/back trim values so at least 0.25s of audio remains.",
+                },
+            )
 
     out_name = f"phase_{phase}_mixed_{ts}.mp3"
     out_path = h.app.event_dir / out_name
@@ -1560,6 +1743,21 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
             retry_safe=False,
         )
 
+    ts_pre = datetime.now().strftime("%Y%m%d-%H%M%S")
+    try:
+        audio_for_lipsync, _ = _apply_phase_audio_trim(
+            h, audio_path, "a", state, ts_pre,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+            OSError, ValueError) as exc:
+        return h._send_error_v59(
+            400,
+            error_code="STEM_TRIM_FAILED",
+            error_message=f"stem trim failed: {exc}",
+            retry_safe=False,
+            extra={"hint": "Adjust stem trim front/back seconds on the waveform row."},
+        )
+
     base_video_path: Path | None = None
     if base_clip_id:
         from phase_a_chipper_kling_lipsync import resolve_lipsync_base
@@ -1630,7 +1828,7 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
     def _bg(
         _out_path=out_path,
         _out_name=out_name,
-        _audio_path=audio_path,
+        _audio_path=audio_for_lipsync,
         _still=_still_path,
         _base_clip_id=_base_clip_id,
         _base_video=_base_video_path,
@@ -1887,19 +2085,24 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
     # Kling Sync handles the full audio including meditation silences — do NOT
     # apply silcomp (§8.4 silence compression was designed for ByteDance's 10s
     # cap; SWITCH_TO_KLING_LIPSYNC_20260524 eliminated that vendor).
-    # Compressing silences would shorten Phase B meditation lipsync from ~132s
-    # to ~76s, stripping the intentional breath-pause timing the script author
-    # crafted. Pass the raw audio to Kling and loop the base clip accordingly.
     _VIDEO_TAILROOM_S = 2.0  # Kim: "1.5–2s tail so cut-off after speaking isn't sudden"
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    try:
+        audio_for_lipsync, audio_duration = _apply_phase_audio_trim(
+            h, audio_path, phase, state, ts,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+            OSError, ValueError) as exc:
+        return h._send_error_v59(
+            400,
+            error_code="STEM_TRIM_FAILED",
+            error_message=f"stem trim failed: {exc}",
+            retry_safe=False,
+            extra={"hint": "Adjust stem trim front/back seconds before Send for Lipsync."},
+        )
     tmp_audio_path = h.app.event_dir / f"_tmp_silcomp_phase_{phase}_{ts}.mp3"
     tmp_video_path = h.app.state.clips_dir / f"_tmp_trim_phase_{phase}_{ts}.mp4"
     try:
-        # Use raw audio (no silcomp). tmp_audio_path is only created if Kling
-        # requires a separate file (e.g., format conversion); for now audio_path
-        # (the mixed MP3) is passed directly.
-        audio_for_lipsync = audio_path
-        audio_duration = _ffprobe_duration(audio_path)
         raw_dur = _ffprobe_duration(base_path)
         target_video_s = audio_duration + _VIDEO_TAILROOM_S
         # WaveSpeed enforces a 30MB cap on the base64-encoded 'video' field.

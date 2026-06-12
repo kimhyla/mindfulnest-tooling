@@ -41,6 +41,11 @@ export interface WaveformTimelineProps {
   onTimeUpdate?: (currentMs: number) => void;
   /** Called when the user drags a cue block edge (left = move start, right = move end). */
   onCueRangeChange?: (cueId: string, offsetMs: number, durationMs: number) => void;
+  /** Voice stem trim (seconds from front/back) — amber bar, distinct from red cue blocks. */
+  stemTrimStartMs?: number;
+  stemTrimBackMs?: number;
+  stemTrimEditable?: boolean;
+  onStemTrimChange?: (trimStartMs: number, trimBackMs: number) => void;
   /** @deprecated Prefer onCueRangeChange — right-edge-only resize shim. */
   onCueResize?: (cueId: string, newDurationMs: number) => void;
   /** Called whenever WaveSurfer's play/pause state changes (authoritative source). */
@@ -77,9 +82,14 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     onPlayStateChange,
     linkedVideo,
     playbackControl,
+    stemTrimStartMs = 0,
+    stemTrimBackMs = 0,
+    stemTrimEditable = false,
+    onStemTrimChange,
   } = props;
 
   const MIN_CUE_DURATION_MS = 250;
+  const MIN_STEM_TRIM_MS = 250;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -94,6 +104,10 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     id: string;
     offset_ms: number;
     duration_ms: number;
+  } | null>(null);
+  const [stemTrimDraft, setStemTrimDraft] = useState<{
+    start_ms: number;
+    back_ms: number;
   } | null>(null);
   // Ref mirror of isReady so pointer-event closures always see the current value
   // without needing to be in the useEffect dependency array.
@@ -346,6 +360,36 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     return Math.max(0, Math.min(1, (evt.clientX - box.left) / box.width));
   };
 
+  const displayStemTrim = stemTrimDraft ?? {
+    start_ms: stemTrimStartMs,
+    back_ms: stemTrimBackMs,
+  };
+
+  const stemTrimPctLeft = (): number => {
+    if (!durationMs || durationMs <= 0) return 0;
+    return Math.max(0, Math.min(100, (displayStemTrim.start_ms / durationMs) * 100));
+  };
+
+  const stemTrimPctWidth = (): number => {
+    if (!durationMs || durationMs <= 0) return 0;
+    const playableMs = durationMs - displayStemTrim.start_ms - displayStemTrim.back_ms;
+    return Math.max(0, Math.min(100 - stemTrimPctLeft(), (playableMs / durationMs) * 100));
+  };
+
+  const emitStemTrim = (startMs: number, backMs: number) => {
+    onStemTrimChange?.(
+      Math.max(0, Math.round(startMs)),
+      Math.max(0, Math.round(backMs)),
+    );
+  };
+
+  const previewStemTrim = (startMs: number, backMs: number) => {
+    setStemTrimDraft({
+      start_ms: Math.max(0, Math.round(startMs)),
+      back_ms: Math.max(0, Math.round(backMs)),
+    });
+  };
+
   // Right handle: drag end time forward/back — offset fixed, duration changes.
   const onRightHandlePointerDown = (e: PointerEvent, cue: WatercolorCue) => {
     e.stopPropagation();
@@ -411,6 +455,77 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       );
       setDragDraft(null);
       emitCueRange(cue.id, clampedOffset, endMs - clampedOffset);
+      handle.removeEventListener('pointermove', applyPreview);
+      handle.removeEventListener('pointerup', onUp);
+      handle.removeEventListener('pointercancel', onUp);
+    };
+
+    handle.addEventListener('pointermove', applyPreview);
+    handle.addEventListener('pointerup', onUp);
+    handle.addEventListener('pointercancel', onUp);
+  };
+
+  const onStemTrimLeftHandlePointerDown = (e: PointerEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (!durationMs || durationMs <= 0 || !stemTrimEditable) return;
+    const handle = e.currentTarget as HTMLDivElement;
+    handle.setPointerCapture(e.pointerId);
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+
+    const startBack = displayStemTrim.back_ms;
+    const endMs = durationMs - startBack;
+
+    const applyPreview = (evt: PointerEvent) => {
+      const newStart = relXFromPointer(wrapper, evt) * durationMs;
+      const clampedStart = Math.max(
+        0,
+        Math.min(endMs - MIN_STEM_TRIM_MS, newStart),
+      );
+      previewStemTrim(clampedStart, startBack);
+    };
+
+    const onUp = (upEvt: PointerEvent) => {
+      const newStart = relXFromPointer(wrapper, upEvt) * durationMs;
+      const clampedStart = Math.max(
+        0,
+        Math.min(endMs - MIN_STEM_TRIM_MS, newStart),
+      );
+      setStemTrimDraft(null);
+      emitStemTrim(clampedStart, startBack);
+      handle.removeEventListener('pointermove', applyPreview);
+      handle.removeEventListener('pointerup', onUp);
+      handle.removeEventListener('pointercancel', onUp);
+    };
+
+    handle.addEventListener('pointermove', applyPreview);
+    handle.addEventListener('pointerup', onUp);
+    handle.addEventListener('pointercancel', onUp);
+  };
+
+  const onStemTrimRightHandlePointerDown = (e: PointerEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (!durationMs || durationMs <= 0 || !stemTrimEditable) return;
+    const handle = e.currentTarget as HTMLDivElement;
+    handle.setPointerCapture(e.pointerId);
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+
+    const startMs = displayStemTrim.start_ms;
+
+    const applyPreview = (evt: PointerEvent) => {
+      const endMs = relXFromPointer(wrapper, evt) * durationMs;
+      const clampedEnd = Math.max(startMs + MIN_STEM_TRIM_MS, Math.min(durationMs, endMs));
+      previewStemTrim(startMs, durationMs - clampedEnd);
+    };
+
+    const onUp = (upEvt: PointerEvent) => {
+      const endMs = relXFromPointer(wrapper, upEvt) * durationMs;
+      const clampedEnd = Math.max(startMs + MIN_STEM_TRIM_MS, Math.min(durationMs, endMs));
+      setStemTrimDraft(null);
+      emitStemTrim(startMs, durationMs - clampedEnd);
       handle.removeEventListener('pointermove', applyPreview);
       handle.removeEventListener('pointerup', onUp);
       handle.removeEventListener('pointercancel', onUp);
@@ -504,6 +619,9 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       data-loaded-duration-ms={durationMs ?? ''}
       data-current-time-ms={Math.round(currentMs)}
       data-cue-count={displayCues.length}
+      data-stem-trim-editable={stemTrimEditable ? '1' : '0'}
+      data-stem-trim-start-ms={Math.round(displayStemTrim.start_ms)}
+      data-stem-trim-back-ms={Math.round(displayStemTrim.back_ms)}
       onDragOver={dropHandlers.onDragOver}
       onDragLeave={dropHandlers.onDragLeave}
       onDrop={dropHandlers.onDrop}
@@ -527,6 +645,30 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       </div>
       <div ref={containerRef} class="mn-waveform-canvas" />
       <div class="mn-waveform-cue-overlay">
+        {stemTrimEditable && durationMs && durationMs > 0 ? (
+          <div
+            class="mn-waveform-stem-trim-block"
+            data-testid="waveform-stem-trim-block"
+            style={{
+              left: `${stemTrimPctLeft()}%`,
+              width: `${stemTrimPctWidth()}%`,
+            }}
+            title={`Stem trim: start ${(displayStemTrim.start_ms / 1000).toFixed(2)}s · back ${(displayStemTrim.back_ms / 1000).toFixed(2)}s`}
+          >
+            <div
+              class="mn-waveform-stem-trim-handle mn-waveform-stem-trim-handle--left"
+              data-testid="waveform-stem-trim-handle-left"
+              title="Drag to trim stem start"
+              onPointerDown={onStemTrimLeftHandlePointerDown}
+            />
+            <div
+              class="mn-waveform-stem-trim-handle mn-waveform-stem-trim-handle--right"
+              data-testid="waveform-stem-trim-handle-right"
+              title="Drag to trim stem end"
+              onPointerDown={onStemTrimRightHandlePointerDown}
+            />
+          </div>
+        ) : null}
         {displayCues.map((cue) => (
           <div
             key={cue.id}

@@ -96,6 +96,8 @@ interface PhaseStateSlice {
   lipsync_mtime?: number;
   lipsync_status?: string;   // "polling" | "done" | "error: ..." from background thread
   lipsync_requires_regen?: boolean;
+  voice_stem_trim_start_s?: number;
+  voice_stem_trim_back_s?: number;
   flyin_flyout_status?: string;
   stitched_file?: string;        // phase A only
   stitched_mtime?: number;
@@ -138,6 +140,8 @@ function pickPhaseSlice(state: EventStateResponse, phase: 'a' | 'b'): PhaseState
   const lsm = get<number>('lipsync_mtime');            if (lsm) slice.lipsync_mtime = lsm;
   const lst = get<string>('lipsync_status');           if (lst) slice.lipsync_status = lst;
   const lrr = get<boolean>('lipsync_requires_regen');  if (lrr) slice.lipsync_requires_regen = lrr;
+  const tss = get<number>('voice_stem_trim_start_s'); if (tss !== undefined) slice.voice_stem_trim_start_s = tss;
+  const tsb = get<number>('voice_stem_trim_back_s');  if (tsb !== undefined) slice.voice_stem_trim_back_s = tsb;
   const ffst = get<string>('flyin_flyout_status');     if (ffst) slice.flyin_flyout_status = ffst;
   const st = get<string>('stitched_file');             if (st) slice.stitched_file = st;
   const stm = get<number>('stitched_mtime');           if (stm) slice.stitched_mtime = stm;
@@ -518,6 +522,23 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     }
   };
 
+  const onRejectLipsync = async () => {
+    setBusyAction('reject_lipsync');
+    setStatusMsg('Rejecting lipsync…');
+    const rejectEp = phase === 'a' ? 'phase_a_reject_lipsync' : 'phase_b_reject_lipsync';
+    const res = await pathappPatch(activeScope.value, rejectEp, { phase });
+    setBusyAction(null);
+    if (res.ok) {
+      setStatusMsg('✓ Lipsync rejected — stem on waveform; drag amber handles to trim before resending.');
+      await refreshAll();
+    } else {
+      const data = res.data as { hint?: string; error_message?: string } | undefined;
+      setStatusMsg(
+        `✗ Reject lipsync HTTP ${res.status}: ${data?.hint ?? data?.error_message ?? res.error ?? ''}`,
+      );
+    }
+  };
+
   const onMixAudio = async () => {
     const presetId = stateSlice.ambient_preset_id?.trim();
     if (!presetId) {
@@ -755,6 +776,31 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     void persistCues(next);
   };
 
+  const persistStemTrim = async (trimStartMs: number, trimBackMs: number) => {
+    const startS = Math.round(trimStartMs) / 1000;
+    const backS = Math.round(trimBackMs) / 1000;
+    setStateSlice((s) => ({
+      ...s,
+      voice_stem_trim_start_s: startS,
+      voice_stem_trim_back_s: backS,
+    }));
+    const startField = `phase_${phase}_voice_stem_trim_start_s`;
+    const backField = `phase_${phase}_voice_stem_trim_back_s`;
+    const [startRes, backRes] = await Promise.all([
+      pathappPatch(activeScope.value, 'v2_module_patch', { field: startField, value: startS }),
+      pathappPatch(activeScope.value, 'v2_module_patch', { field: backField, value: backS }),
+    ]);
+    if (!startRes.ok || !backRes.ok) {
+      setStatusMsg(
+        `✗ stem trim patch failed (HTTP ${startRes.status}/${backRes.status})`,
+      );
+    }
+  };
+
+  const onStemTrimChange = (trimStartMs: number, trimBackMs: number) => {
+    void persistStemTrim(trimStartMs, trimBackMs);
+  };
+
   const onCueDelete = () => {
     if (!activeCueId) return;
     const next = (stateSlice.watercolor_cues ?? []).filter((c) => c.id !== activeCueId);
@@ -871,12 +917,6 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     if (res.ok) {
       setStatusMsg('✓ Stem generated');
       await refreshAll();
-      // Phase B only: auto-submit for lipsync — cedric_idle_study_v1 is already
-      // auto-selected. stream_loop on the server stretches it to match audio duration.
-      if (phase === 'b' && selectedBaseClip) {
-        setStatusMsg('✓ Stem generated — auto-sending for lipsync…');
-        await onSendForLipsync();
-      }
     } else {
       setStatusMsg(`✗ Stem HTTP ${res.status}: ${res.error ?? ''}`);
     }
@@ -902,6 +942,13 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
 
   const audioFile = priorityAudioFile(stateSlice);
   const lipsyncFile = stateSlice.lipsync_file ?? null;
+  const canEditStemTrim = Boolean(stateSlice.voice_stem_file && audioFile?.label === 'stem');
+  const stemTrimStartMs = Math.round((stateSlice.voice_stem_trim_start_s ?? 0) * 1000);
+  const stemTrimBackMs = Math.round((stateSlice.voice_stem_trim_back_s ?? 0) * 1000);
+  const showRejectLipsync =
+    Boolean(lipsyncFile) &&
+    !lipsyncing &&
+    stateSlice.lipsync_status !== 'running';
   const activeCue =
     activeCueId
       ? (stateSlice.watercolor_cues ?? []).find((c) => c.id === activeCueId) ?? null
@@ -1011,6 +1058,10 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           onWatercolorDrop={onWatercolorDrop}
           onTimeUpdate={(ms) => setCurrentTimeMs(ms)}
           onCueRangeChange={onCueRangeChange}
+          stemTrimStartMs={stemTrimStartMs}
+          stemTrimBackMs={stemTrimBackMs}
+          stemTrimEditable={canEditStemTrim}
+          onStemTrimChange={onStemTrimChange}
 
           linkedVideo={videoRef}
           playbackControl={waveformPlaybackRef}
@@ -1090,6 +1141,23 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           >
             {busyAction === 'lipsync' ? 'Sending…' : 'Send for Lipsync'}
           </button>
+          {showRejectLipsync ? (
+            <button
+              type="button"
+              class="mn-btn mn-btn-reject-lipsync"
+              data-testid={`phase-${phase}-reject-lipsync-btn`}
+              onClick={onRejectLipsync}
+              disabled={busyAction !== null}
+              title="Clear lipsync video and return waveform to voice stem for trimming"
+            >
+              {busyAction === 'reject_lipsync' ? 'Rejecting…' : 'Reject lipsync'}
+            </button>
+          ) : null}
+          {canEditStemTrim ? (
+            <span class="mn-dim mn-stem-trim-hint" data-testid={`phase-${phase}-stem-trim-hint`}>
+              Amber bar = stem trim before lipsync
+            </span>
+          ) : null}
           {phase === 'a' ? (
             <button
               type="button"

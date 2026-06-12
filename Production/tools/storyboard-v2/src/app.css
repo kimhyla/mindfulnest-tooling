@@ -727,6 +727,51 @@
   opacity: 1;
   background: #a02222;
 }
+.mn-waveform-stem-trim-block {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 4px;
+  background: rgba(204, 153, 51, 0.35);
+  border-left: 2px solid #c93;
+  border-right: 2px solid #c93;
+  pointer-events: auto;
+  box-sizing: border-box;
+  z-index: 3;
+}
+.mn-waveform-stem-trim-block:hover {
+  background: rgba(204, 153, 51, 0.5);
+}
+.mn-waveform-stem-trim-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  background: #c93;
+  cursor: ew-resize;
+  opacity: 0.9;
+  z-index: 2;
+  touch-action: none;
+}
+.mn-waveform-stem-trim-handle--left {
+  left: 0;
+  transform: translateX(-50%);
+}
+.mn-waveform-stem-trim-handle--right {
+  right: 0;
+  transform: translateX(50%);
+}
+.mn-waveform-stem-trim-handle:hover,
+.mn-waveform-stem-trim-handle:active {
+  opacity: 1;
+  background: #a07020;
+}
+.mn-btn-reject-lipsync {
+  border-color: #a07020;
+}
+.mn-stem-trim-hint {
+  font-size: 11px;
+}
 .mn-waveform-error {
   margin-top: 4px;
   font-size: 11px;

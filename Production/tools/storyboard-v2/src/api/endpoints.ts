@@ -102,6 +102,8 @@ export const MUTATION_ENDPOINTS = {
   phase_a_mix_audio: `${SERVER_BASE}/api/phase_a/mix_audio`,
   phase_b_lipsync: `${SERVER_BASE}/api/phase_b/lipsync`,
   phase_a_lipsync: `${SERVER_BASE}/api/phase_a/lipsync`,
+  phase_b_reject_lipsync: `${SERVER_BASE}/api/phase_b/reject_lipsync`,
+  phase_a_reject_lipsync: `${SERVER_BASE}/api/phase_a/reject_lipsync`,
   phase_a_regen_flyin_flyout: `${SERVER_BASE}/api/phase_a/regen_flyin_flyout`,
   phase_a_regen_base_clip: `${SERVER_BASE}/api/phase_a/regen_base_clip`,
   phase_a_restitch: `${SERVER_BASE}/api/phase_a/restitch`,

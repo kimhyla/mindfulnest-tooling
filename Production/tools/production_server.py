@@ -4387,6 +4387,8 @@ _V2_MODULE_ALLOWED_FIELDS = frozenset({
     "phase_b_cedric_base_clip_id",
     "phase_b_lipsync_file",
     "phase_b_lipsync_mtime",
+    "phase_b_voice_stem_trim_start_s",
+    "phase_b_voice_stem_trim_back_s",
     "phase_b_watercolor_cues_json",
     "phase_b_preview_file",
     "phase_b_status",
@@ -4403,6 +4405,8 @@ _V2_MODULE_ALLOWED_FIELDS = frozenset({
     "phase_a_chipper_flyout_clip_id",
     "phase_a_lipsync_file",
     "phase_a_lipsync_mtime",
+    "phase_a_voice_stem_trim_start_s",
+    "phase_a_voice_stem_trim_back_s",
     "phase_a_watercolor_cues_json",
     "phase_a_preview_file",
     "phase_a_status",
@@ -4449,6 +4453,13 @@ def _v2_validate_status(v):
             f"must be one of {sorted(_V2_STATUS_VALUES)}, got {v!r}"
         )
     return v
+
+
+def _v2_validate_trim_seconds(v):
+    v = float(v)
+    if v < 0 or v > 3600:
+        raise ValueError(f"trim seconds must be in [0, 3600], got {v}")
+    return round(v, 3)
 
 
 def _v2_validate_watercolor_cues_json(v):
@@ -4549,6 +4560,8 @@ _V2_MODULE_FIELD_VALIDATORS = {
     "phase_b_cedric_base_clip_id": _v2_validate_str,
     "phase_b_lipsync_file": _v2_validate_str,
     "phase_b_lipsync_mtime": _v2_validate_mtime,
+    "phase_b_voice_stem_trim_start_s": _v2_validate_trim_seconds,
+    "phase_b_voice_stem_trim_back_s": _v2_validate_trim_seconds,
     "phase_b_watercolor_cues_json": _v2_validate_watercolor_cues_json,
     "phase_b_preview_file": _v2_validate_str,
     "phase_b_status": _v2_validate_status,
@@ -4565,6 +4578,8 @@ _V2_MODULE_FIELD_VALIDATORS = {
     "phase_a_chipper_flyout_clip_id": _v2_validate_str,
     "phase_a_lipsync_file": _v2_validate_str,
     "phase_a_lipsync_mtime": _v2_validate_mtime,
+    "phase_a_voice_stem_trim_start_s": _v2_validate_trim_seconds,
+    "phase_a_voice_stem_trim_back_s": _v2_validate_trim_seconds,
     "phase_a_watercolor_cues_json": _v2_validate_watercolor_cues_json,
     "phase_a_preview_file": _v2_validate_str,
     "phase_a_status": _v2_validate_status,
@@ -6160,6 +6175,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_phase_b_lipsync(body)
             if path == "/api/phase_a/lipsync":
                 return self._handle_phase_a_lipsync(body)
+            if path == "/api/phase_a/reject_lipsync":
+                return self._handle_phase_reject_lipsync(body)
+            if path == "/api/phase_b/reject_lipsync":
+                return self._handle_phase_reject_lipsync(body)
             if path == "/api/phase_a/regen_flyin_flyout":
                 return self._handle_phase_a_regen_flyin_flyout(body)
             if path == "/api/phase_a/regen_base_clip":
@@ -12105,6 +12124,11 @@ body {{padding-top:44px!important;}}
     def _handle_phase_a_lipsync(self, body: dict) -> None:
         from server_handlers.phases import handle_phase_a_lipsync
         return handle_phase_a_lipsync(self, body)
+
+    @with_pin_and_drain('_handle_phase_reject_lipsync', track_sync=True)
+    def _handle_phase_reject_lipsync(self, body: dict) -> None:
+        from server_handlers.phases import handle_phase_reject_lipsync
+        return handle_phase_reject_lipsync(self, body)
 
     def _auto_assemble_phase_a_stitched(self, ts: str) -> dict | None:
         """Stitch raw Phase A lipsync middle only + continuous ambient bed.
