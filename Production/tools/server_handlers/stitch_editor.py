@@ -70,6 +70,37 @@ STITCH_AMBIENT_BED_VOLUME = 0.15
 STITCH_SFX_CUE_DEFAULT_VOLUME = 0.45
 STITCH_SFX_CUE_DEFAULT_FADEIN_MS = 300
 STITCH_SFX_CUE_DEFAULT_FADEOUT_MS = 1200
+# Canonical ambient bed preset_id per stitch slot (filename stem under sound_library/ambient/).
+STITCH_DEFAULT_AMBIENT_BEDS: dict[str, str] = {
+    "intro": "Intro video ambient bed",
+    "phase_a": "ambient bed pretty option2",
+    "phase_b": "ambient bed pretty option",
+    "resolution": "ambien bed pretty option4",
+}
+
+
+def apply_stitch_slot_default_ambient_preset(slot_key: str, slot: dict) -> bool:
+    """Apply canonical ambient preset when slot has video but no bed selected yet."""
+    if slot_key not in STITCH_DEFAULT_AMBIENT_BEDS:
+        return False
+    if not isinstance(slot, dict) or not (slot.get("video_path") or "").strip():
+        return False
+    if (slot.get("ambient_bed") or "").strip():
+        return False
+    slot["ambient_bed"] = STITCH_DEFAULT_AMBIENT_BEDS[slot_key]
+    return True
+
+
+def apply_stitch_job_default_ambient_presets(slots) -> bool:
+    """Backfill empty ambient_bed on all canonical slots. Returns True if any slot changed."""
+    if not isinstance(slots, dict):
+        return False
+    changed = False
+    for slot_key in STITCH_SLOT_ORDER:
+        slot = slots.get(slot_key)
+        if isinstance(slot, dict) and apply_stitch_slot_default_ambient_preset(slot_key, slot):
+            changed = True
+    return changed
 
 
 def normalize_slot_audio_mix_levels(slot: dict) -> None:
@@ -97,6 +128,7 @@ def normalize_job_slots_audio(slots) -> None:
     for slot_key in STITCH_SLOT_ORDER:
         slot = slots.get(slot_key)
         if isinstance(slot, dict):
+            apply_stitch_slot_default_ambient_preset(slot_key, slot)
             normalize_slot_audio_mix_levels(slot)
 
 
@@ -365,6 +397,8 @@ def stitch_upsert_event_slot(
             job["slots"] = {}
         slot = job["slots"].setdefault(slot_key, {})
         slot.update(slot_patch)
+        apply_stitch_slot_default_ambient_preset(slot_key, slot)
+        normalize_slot_audio_mix_levels(slot)
         if beat_boundaries is not None:
             slot["beat_boundaries"] = enrich_beat_boundaries(beat_boundaries)
         job["updated_at"] = now_iso
@@ -653,12 +687,33 @@ def handle_stitch_load_job(h, name: str)-> None:
     if isinstance(response_job, dict):
         slots = response_job.get("slots")
         if isinstance(slots, dict):
+            backfilled = apply_stitch_job_default_ambient_presets(slots)
             normalize_job_slots_audio(slots)
             for slot in slots.values():
                 if isinstance(slot, dict) and slot.get("beat_boundaries"):
                     slot["beat_boundaries"] = enrich_beat_boundaries(
                         slot["beat_boundaries"],
                     )
+            if backfilled:
+
+                def persist_defaults(state: dict) -> None:
+                    live = state.get("jobs", {}).get(name)
+                    if not isinstance(live, dict) or not isinstance(live.get("slots"), dict):
+                        return
+                    for slot_key in STITCH_SLOT_ORDER:
+                        src = slots.get(slot_key)
+                        if not isinstance(src, dict) or not src.get("ambient_bed"):
+                            continue
+                        dst = live["slots"].setdefault(slot_key, {})
+                        if isinstance(dst, dict):
+                            dst["ambient_bed"] = src["ambient_bed"]
+                            dst["ambient_volume"] = src.get(
+                                "ambient_volume", STITCH_AMBIENT_BED_VOLUME
+                            )
+                            dst.pop("ambient_bed_path", None)
+                    live["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+                h.app.stitch_state.mutate_state(persist_defaults)
     return h._send_json(200, {"job": response_job, "name": name})
 
 

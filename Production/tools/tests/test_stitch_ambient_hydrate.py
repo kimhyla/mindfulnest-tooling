@@ -7,14 +7,25 @@ from pathlib import Path
 
 from server_handlers.stitch_editor import (
     STITCH_AMBIENT_BED_VOLUME,
+    STITCH_DEFAULT_AMBIENT_BEDS,
     STITCH_SLOT_ORDER,
     STITCH_SFX_CUE_DEFAULT_VOLUME,
     _hydrate_slot_ambient_paths,
     _resolve_stitch_ambient_bed_path,
     _slot_merge_worthy,
+    apply_stitch_slot_default_ambient_preset,
     normalize_job_slots_audio,
     normalize_slot_audio_mix_levels,
+    stitch_upsert_event_slot,
 )
+
+
+class _MockStitchState:
+    def __init__(self, initial=None):
+        self.state = initial or {"jobs": {}}
+
+    def mutate_state(self, fn):
+        fn(self.state)
 
 
 class _MockHandler:
@@ -76,7 +87,9 @@ class StitchSlotAudioMixTests(unittest.TestCase):
         normalize_job_slots_audio(job_slots)
         self.assertEqual(job_slots["intro"]["ambient_volume"], STITCH_AMBIENT_BED_VOLUME)
         self.assertEqual(job_slots["phase_a"]["ambient_volume"], STITCH_AMBIENT_BED_VOLUME)
-        self.assertNotIn("ambient_volume", job_slots["phase_b"])
+        self.assertEqual(job_slots["phase_b"]["ambient_bed"], STITCH_DEFAULT_AMBIENT_BEDS["phase_b"])
+        self.assertEqual(job_slots["phase_b"]["ambient_volume"], STITCH_AMBIENT_BED_VOLUME)
+        self.assertEqual(job_slots["resolution"]["ambient_bed"], STITCH_DEFAULT_AMBIENT_BEDS["resolution"])
 
     def test_sfx_cues_get_canonical_defaults_on_any_slot(self):
         slot = {
@@ -88,6 +101,33 @@ class StitchSlotAudioMixTests(unittest.TestCase):
         self.assertEqual(cue["volume"], STITCH_SFX_CUE_DEFAULT_VOLUME)
         self.assertEqual(cue["fadein_ms"], 300)
         self.assertEqual(cue["fadeout_ms"], 1200)
+
+    def test_default_ambient_presets_match_canonical_map(self):
+        self.assertEqual(STITCH_DEFAULT_AMBIENT_BEDS["intro"], "Intro video ambient bed")
+        self.assertEqual(STITCH_DEFAULT_AMBIENT_BEDS["phase_a"], "ambient bed pretty option2")
+        self.assertEqual(STITCH_DEFAULT_AMBIENT_BEDS["phase_b"], "ambient bed pretty option")
+        self.assertEqual(STITCH_DEFAULT_AMBIENT_BEDS["resolution"], "ambien bed pretty option4")
+
+    def test_default_ambient_applied_on_upsert_when_empty(self):
+        h = _MockHandler()
+        h.app = type("A", (), {"stitch_state": _MockStitchState()})()
+        stitch_upsert_event_slot(
+            h,
+            "Event_test",
+            "phase_b",
+            {"video_path": "Production/Event_test/phase_b.mp4"},
+        )
+        slot = h.app.stitch_state.state["jobs"]["Event_test_stitch"]["slots"]["phase_b"]
+        self.assertEqual(slot["ambient_bed"], STITCH_DEFAULT_AMBIENT_BEDS["phase_b"])
+        self.assertEqual(slot["ambient_volume"], STITCH_AMBIENT_BED_VOLUME)
+
+    def test_default_ambient_does_not_overwrite_existing(self):
+        slot = {
+            "video_path": "Production/Event_1/intro.mp4",
+            "ambient_bed": "custom bed",
+        }
+        self.assertFalse(apply_stitch_slot_default_ambient_preset("intro", slot))
+        self.assertEqual(slot["ambient_bed"], "custom bed")
 
 
 if __name__ == "__main__":

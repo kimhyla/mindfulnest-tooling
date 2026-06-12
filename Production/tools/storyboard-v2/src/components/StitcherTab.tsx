@@ -29,9 +29,11 @@ import { acceptDragForTarget, makeDropTarget, type DragPayload } from '../utils/
 import { resolveStitchSlotSourceVideoUrl } from '../utils/stitchSlotVideo';
 import {
   STITCH_AMBIENT_BED_VOLUME,
+  STITCH_DEFAULT_AMBIENT_BEDS_V1,
   STITCH_SFX_CUE_DEFAULT_FADEIN_MS,
   STITCH_SFX_CUE_DEFAULT_FADEOUT_MS,
   STITCH_SFX_CUE_DEFAULT_VOLUME,
+  defaultAmbientBedForSlot,
 } from '../utils/stitchConstants';
 import { stopAllPhasePlayback } from '../utils/waveformPlaybackBus';
 import {
@@ -115,6 +117,16 @@ const SFX_DEFAULTS = {
 const DEFAULT_SLOT_DUR_MS = 30000;
 const STITCHER_TRACK_SLOT_LS_PREFIX = 'storyboard_v2_stitcher_track_slot';
 const STITCHER_PREVIEW_LS_PREFIX = 'storyboard_v2_stitcher_preview';
+
+/** Backfill canonical ambient presets on slots that have video but no bed yet. */
+function applyDefaultAmbientPresetsToSlots(slots: Record<string, StitchSlot>): void {
+  for (const { key } of SLOT_DEFS) {
+    const slot = slots[key];
+    if (!slot?.video_path || (slot.ambient_bed ?? '').trim()) continue;
+    slot.ambient_bed = defaultAmbientBedForSlot(key);
+    slot.ambient_volume = STITCH_AMBIENT_BED_VOLUME;
+  }
+}
 
 interface CachedStitcherPreview {
   video_path: string;
@@ -410,6 +422,7 @@ export function StitcherTab() {
           const canonicalJob = canonicalDetailRes.data.job;
           const canonicalSlots: Record<string, StitchSlot> = {};
           mergeSlotsFromJob(canonicalSlots, canonicalJob.slots as Record<string, StitchSlot>);
+          applyDefaultAmbientPresetsToSlots(canonicalSlots);
           if (Object.keys(canonicalSlots).length > 0) {
             setJob({
               name: canonicalName,
@@ -1160,7 +1173,11 @@ export function StitcherTab() {
   })();
 
   return (
-    <section class="mn-tab-pane mn-stitcher-pane" data-testid="pane-stitcher">
+    <section
+      class="mn-tab-pane mn-stitcher-pane"
+      data-testid="pane-stitcher"
+      data-stitch-default-ambient-beds={STITCH_DEFAULT_AMBIENT_BEDS_V1}
+    >
       <header class="mn-pane-header">
         <h2>Stitcher</h2>
         <span class="mn-scope-chip" data-testid="stitcher-scope-chip">
