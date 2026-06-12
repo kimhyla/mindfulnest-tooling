@@ -92,6 +92,13 @@
   border-radius: 6px;
   padding: 16px;
 }
+/* Phase A/B stay mounted while hidden so lipsync poll intervals survive tab switches. */
+.mn-tab-pane-keepalive[hidden] {
+  display: none !important;
+}
+.mn-tab-pane-keepalive:not([hidden]) {
+  display: block;
+}
 .mn-pane-header {
   display: flex;
   align-items: baseline;

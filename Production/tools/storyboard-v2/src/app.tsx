@@ -25,24 +25,58 @@ import { PhaseATab } from './components/tabs/PhaseATab';
 import { PhaseBTab } from './components/tabs/PhaseBTab';
 import { activeScope, activeProjectType, scopeKey } from './state/scope';
 import { activeTab } from './state/refreshSignals';
-export { stitcherRefreshTick, serverRehydrateTick } from './state/refreshSignals';
 import { ServerRehydrateWatcher } from './components/ServerRehydrateWatcher';
 import { StoryboardTab } from './components/StoryboardTab';
 import './app.css';
 
+export { stitcherRefreshTick, serverRehydrateTick } from './state/refreshSignals';
+
+/** Phase A/B producers stay mounted (hidden) so lipsync polling never dies on tab switch. */
+function PhaseTabsKeepAlive({ visibleTab }: { visibleTab: string }) {
+  if (activeProjectType.value !== 'event') {
+    if (visibleTab === 'phase_a') return <PhaseATab />;
+    if (visibleTab === 'phase_b') return <PhaseBTab />;
+    return null;
+  }
+  return (
+    <>
+      <div
+        class="mn-tab-pane-keepalive"
+        hidden={visibleTab !== 'phase_a'}
+        data-testid="pane-phase-a-keepalive"
+      >
+        <PhaseATab />
+      </div>
+      <div
+        class="mn-tab-pane-keepalive"
+        hidden={visibleTab !== 'phase_b'}
+        data-testid="pane-phase-b-keepalive"
+      >
+        <PhaseBTab />
+      </div>
+    </>
+  );
+}
+
 function ActivePane() {
-  switch (activeTab.value) {
+  const tab = activeTab.value;
+  const isEvent = activeProjectType.value === 'event';
+  const phaseVisible =
+    tab === 'phase_a' || tab === 'phase_b' ? tab : '';
+
+  let main = null as preact.JSX.Element | null;
+  switch (tab) {
     case 'storyboard':
-      return <StoryboardTab />;
+      main = <StoryboardTab />;
+      break;
     case 'bg':
-      return <BgTab />;
+      main = <BgTab />;
+      break;
     case 'cropper':
-      // Cropper "tab" presents as a tab AND can open as a modal from
-      // Storyboard/BG. When on the Cropper tab itself, ensure the modal is open.
       if (!cropperState.value.open) {
         cropperState.value = { ...cropperState.value, open: true };
       }
-      return (
+      main = (
         <section class="mn-tab-pane mn-cropper-pane" data-testid="pane-cropper">
           <header class="mn-pane-header">
             <h2>Cropper</h2>
@@ -54,17 +88,29 @@ function ActivePane() {
           </p>
         </section>
       );
+      break;
     case 'stitcher':
-      return <StitcherTab />;
-    case 'phase_a':
-      return <PhaseATab />;
-    case 'phase_b':
-      return <PhaseBTab />;
+      main = <StitcherTab />;
+      break;
     case 'map':
-      return <ProductionMapTab />;
+      main = <ProductionMapTab />;
+      break;
+    case 'phase_a':
+    case 'phase_b':
+      main = null;
+      break;
     default:
-      return <p class="mn-warn">Unknown tab</p>;
+      main = <p class="mn-warn">Unknown tab</p>;
   }
+
+  return (
+    <>
+      {isEvent ? <PhaseTabsKeepAlive visibleTab={phaseVisible} /> : null}
+      {!isEvent && tab === 'phase_a' ? <PhaseATab /> : null}
+      {!isEvent && tab === 'phase_b' ? <PhaseBTab /> : null}
+      {main}
+    </>
+  );
 }
 
 export function App() {

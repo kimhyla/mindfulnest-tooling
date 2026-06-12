@@ -87,6 +87,8 @@ MARKERS=(
     # Phase lipsync tab-switch durability (2026-06-12)
     "PHASE_LIPSYNC|Safe to switch tabs"
     "PHASE_LIPSYNC|Lipsync in progress"
+    "PHASE_LIPSYNC|pane-phase-a-keepalive"
+    "PHASE_LIPSYNC|pane-phase-b-keepalive"
     # Baseline buttons — every beat should have these (displayed text)
     "BASELINE|Regen Audio"
     "BASELINE|Regenerate B"
