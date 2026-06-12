@@ -93,7 +93,7 @@ MARKERS=(
     # STITCHER_AMBIENT — ambient preset mixed into composer waveform extract
     "STITCHER_AMBIENT|STITCHER_AMBIENT_WAVEFORM_V1"
     "STITCHER_AMBIENT|data-stitcher-ambient-waveform"
-    "STITCHER_AMBIENT|STITCH_AMBIENT_BED_VOLUME"
+    "STITCHER_AMBIENT|STITCH_AMBIENT_BED_VOLUME_V1"
     # Phase stem trim + reject lipsync (2026-06-10)
     "PHASE_STEM_TRIM|waveform-stem-cut-block"
     "PHASE_STEM_TRIM|Reject lipsync"
@@ -114,8 +114,7 @@ MARKERS=(
     "PHASE_WAVEFORM_PLAY|waveform-play-btn"
     "PHASE_WAVEFORM_PLAY|attributeFilter"
     "PHASE_WAVEFORM_PLAY|stop-all-audio-btn"
-    "PHASE_WAVEFORM_PLAY|audioprocess must not lv_play"
-    "PHASE_WAVEFORM_PLAY|hardPause() before pauseAllPhasePlayback"
+    "PHASE_WAVEFORM_PLAY|PHASE_WAVEFORM_PAUSE_V1"
     # Phase A/B producer overlay + animated chromakey canvas (2026-06-12)
     "PHASE_WATERCOLOR_OVERLAY|PHASE_WATERCOLOR_OVERLAY_V1"
     "PHASE_WATERCOLOR_OVERLAY|watercolor-anim-overlay"
