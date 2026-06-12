@@ -28,24 +28,31 @@ export function pauseAllWaveformPlayback(): void {
 /** Pause waveforms + linked preview media without resetting playhead (▶/⏸ toggle). */
 export function pauseAllPhasePlayback(): void {
   pauseAllWaveformPlayback();
-  if (typeof document === 'undefined') return;
-  document.querySelectorAll('.mn-tab-pane-keepalive video, .mn-tab-pane-keepalive audio').forEach((el) => {
-    if (el instanceof HTMLMediaElement) el.pause();
-  });
+  pauseAppMediaElements(false);
 }
 
-/** WaveSurfer + linked preview videos in hidden keep-alive panes; resets playhead (tab / Stop audio). */
+/** WaveSurfer + preview media app-wide; resets playhead (tab / Stop audio). */
 export function stopAllPhasePlayback(): void {
   pauseAllWaveformPlayback();
+  pauseAppMediaElements(true);
+}
+
+function pauseAppMediaElements(resetTime: boolean): void {
   if (typeof document === 'undefined') return;
-  document.querySelectorAll('.mn-tab-pane-keepalive video, .mn-tab-pane-keepalive audio').forEach((el) => {
-    if (el instanceof HTMLMediaElement) {
+  document
+    .querySelectorAll(
+      '.mn-tab-pane-keepalive video, .mn-tab-pane-keepalive audio, ' +
+        '.mn-stitcher-pane video, .mn-stitcher-pane audio, ' +
+        '.mn-library-preview-audio',
+    )
+    .forEach((el) => {
+      if (!(el instanceof HTMLMediaElement)) return;
       el.pause();
+      if (!resetTime) return;
       try {
         el.currentTime = 0;
       } catch {
         // ignore seek errors on unloaded media
       }
-    }
-  });
+    });
 }

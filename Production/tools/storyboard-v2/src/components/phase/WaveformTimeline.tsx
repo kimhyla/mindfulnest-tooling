@@ -807,14 +807,18 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   playbackControlRef.pause = hardPause;
 
   useEffect(() => {
-    if (!playbackControl) return;
-    playbackControl.current = playbackControlRef;
     const unregister = registerWaveformPlaybackControl(playbackControlRef);
+    if (playbackControl) {
+      playbackControl.current = playbackControlRef;
+    }
     return () => {
       unregister();
-      playbackControl.current = null;
+      hardPause();
+      if (playbackControl) {
+        playbackControl.current = null;
+      }
     };
-  }, [playbackControl, playbackControlRef]);
+  }, [playbackControl, hardPause]);
 
   const rootTestId = timelineTestId ?? 'waveform-timeline';
 

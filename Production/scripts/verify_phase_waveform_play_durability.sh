@@ -37,6 +37,12 @@ grep -q 'void ws.play()' "$WS" \
   || fail "startPlayback must call ws.play() synchronously — void ws.play() (PLAY-2)"
 grep -q 'busId' "$BUS" \
   || fail "waveformPlaybackBus must use busId identity (PLAY-3)"
+grep -q 'registerWaveformPlaybackControl' "$WS" \
+  || fail "WaveformTimeline must register on playback bus (Stitcher + Phase A/B)"
+grep -q 'mn-stitcher-pane' "$BUS" \
+  || fail "waveformPlaybackBus must pause Stitcher preview media on tab change"
+grep -q 'mn-library-preview-audio' "$BUS" \
+  || fail "waveformPlaybackBus must pause library preview audio on tab change"
 grep -q 'prevTabRef' "$APP" \
   || fail "app.tsx must use prevTabRef tab-change stop (PLAY-4)"
 grep -q 'seek-jump' "$E2E" \

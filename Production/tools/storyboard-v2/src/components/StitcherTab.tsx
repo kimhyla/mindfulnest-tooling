@@ -26,6 +26,7 @@ import { StitcherTransitionSelector, type Transition } from './StitcherTransitio
 import { SfxCuePopover, type SfxCue } from './phase/SfxCuePopover';
 import { acceptDragForTarget, makeDropTarget, type DragPayload } from '../utils/dragdrop';
 import { resolveStitchSlotSourceVideoUrl } from '../utils/stitchSlotVideo';
+import { stopAllPhasePlayback } from '../utils/waveformPlaybackBus';
 import {
   allStitchSlotsReady,
   cumulativeSlotOffsetsMs,
@@ -275,6 +276,11 @@ export function StitcherTab() {
   const [beatBoundaries, setBeatBoundaries] = useState<BeatBoundary[]>([]);
   const [beatBoundariesLoading, setBeatBoundariesLoading] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  // Leaving Stitcher: stop module preview + slot waveforms (STITCHER_SFX_TIMELINE ghost audio).
+  useEffect(() => () => {
+    stopAllPhasePlayback();
+  }, []);
 
   // Re-fetch whenever SendOutButton completes a scene_assemble (cross-tab signal).
   // This ensures the intro slot auto-populated by scene_assemble becomes visible

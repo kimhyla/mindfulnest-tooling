@@ -174,7 +174,7 @@ export function App() {
             type="button"
             class="mn-btn mn-btn-stop-audio"
             data-testid="stop-all-audio-btn"
-            title="Stop Phase A/B waveform and preview audio (fixes ghost playback)"
+            title="Stop waveform, Stitcher preview, and library preview audio"
             onClick={() => stopAllPhasePlayback()}
           >
             Stop audio
