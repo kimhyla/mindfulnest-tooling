@@ -526,6 +526,12 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
         field: 'phase_b_cedric_base_clip_id',
         value: clipId,
       });
+    } else if (phase === 'a' && clipId) {
+      setStateSlice((s) => ({ ...s, chipper_sitting_clip_id: clipId }));
+      void pathappPatch(activeScope.value, 'v2_module_patch', {
+        field: 'phase_a_chipper_sitting_clip_id',
+        value: clipId,
+      });
     }
   };
 
@@ -959,6 +965,9 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       ...s,
       [`chipper_${pos}_clip_id`]: clipId,
     } as PhaseStateSlice));
+    if (pos === 'sitting') {
+      setSelectedBaseClip(clipId);
+    }
     const res = await pathappPatch(activeScope.value, 'v2_module_patch', {
       field,
       value: clipId,

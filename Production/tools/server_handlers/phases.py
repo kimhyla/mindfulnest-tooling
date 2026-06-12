@@ -1987,14 +1987,18 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
     out_name = f"phase_a_lipsync_{ts}.mp4"
     out_path = h.app.event_dir / out_name
 
-    def _apply_running(st):
+    def _apply_running(st, _bid=base_clip_id):
         st["phase_a_lipsync_status"] = "running"
         st["phase_a_lipsync_started_at"] = time.time()
         st.pop("phase_a_lipsync_task_id", None)
+        if _bid:
+            st["phase_a_chipper_sitting_clip_id"] = _bid
         nested = st.setdefault("phase_a", {})
         if isinstance(nested, dict):
             nested["phase_a_lipsync_status"] = "running"
             nested["phase_a_lipsync_started_at"] = st["phase_a_lipsync_started_at"]
+            if _bid:
+                nested["phase_a_chipper_sitting_clip_id"] = _bid
         st["_module_version"] = int(st.get("_module_version", 0) or 0) + 1
         return st["_module_version"]
 
