@@ -7,6 +7,7 @@
 // channel pathappPatch() exists in src/api/client.ts but has no callers.
 
 import { useEffect } from 'preact/hooks';
+import { effect } from '@preact/signals';
 import { ScopeBoundary } from './components/ScopeBoundary';
 import { ScopeBanner } from './components/ScopeBanner';
 import { ToastHost } from './components/ui/Toast';
@@ -27,6 +28,7 @@ import { activeScope, activeProjectType, scopeKey } from './state/scope';
 import { activeTab } from './state/refreshSignals';
 import { ServerRehydrateWatcher } from './components/ServerRehydrateWatcher';
 import { StoryboardTab } from './components/StoryboardTab';
+import { pauseAllWaveformPlayback } from './utils/waveformPlaybackBus';
 import './app.css';
 
 export { stitcherRefreshTick, serverRehydrateTick } from './state/refreshSignals';
@@ -114,6 +116,22 @@ function ActivePane() {
 }
 
 export function App() {
+  // Stop ghost audio from hidden keep-alive Phase A/B waveforms when leaving phase tabs.
+  effect(() => {
+    const tab = activeTab.value;
+    if (tab !== 'phase_a' && tab !== 'phase_b') {
+      pauseAllWaveformPlayback();
+    }
+  });
+
+  useEffect(() => {
+    const onHidden = () => {
+      if (document.hidden) pauseAllWaveformPlayback();
+    };
+    document.addEventListener('visibilitychange', onHidden);
+    return () => document.removeEventListener('visibilitychange', onHidden);
+  }, []);
+
   // S4 — Production Map cell click → switch to Storyboard tab.
   useEffect(() => {
     const onMapNavigate = () => {

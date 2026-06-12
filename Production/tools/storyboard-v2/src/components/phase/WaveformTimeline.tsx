@@ -317,8 +317,18 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       setIsPlaying(false);
     };
 
-    pauseIfHidden();
-    const obs = new MutationObserver(pauseIfHidden);
+    const pauseIfHiddenAndStopMedia = () => {
+      pauseIfHidden();
+      // Also pause any HTML media in this pane (lipsync preview, stitched clip).
+      pane.querySelectorAll('video, audio').forEach((el) => {
+        if (el instanceof HTMLMediaElement) {
+          el.pause();
+        }
+      });
+    };
+
+    pauseIfHiddenAndStopMedia();
+    const obs = new MutationObserver(pauseIfHiddenAndStopMedia);
     obs.observe(pane, { attributes: true, attributeFilter: ['hidden'] });
     return () => obs.disconnect();
   }, [audioSrc, linkedVideo]);
