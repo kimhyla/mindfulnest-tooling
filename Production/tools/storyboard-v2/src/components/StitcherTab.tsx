@@ -26,6 +26,17 @@ import { StitcherTransitionSelector, type Transition } from './StitcherTransitio
 import { SfxCuePopover, type SfxCue } from './phase/SfxCuePopover';
 import { acceptDragForTarget, makeDropTarget, type DragPayload } from '../utils/dragdrop';
 import { resolveStitchSlotSourceVideoUrl } from '../utils/stitchSlotVideo';
+import {
+  allStitchSlotsReady,
+  cumulativeSlotOffsetsMs,
+  defaultStitchTransitions,
+  modulePreviewCacheKey,
+  orderedStitchSlots,
+  readCachedModulePreview,
+  resolveStitchTransitions,
+  slotIndexForKey,
+  writeCachedModulePreview,
+} from '../utils/stitchModulePreview';
 
 type SlotKey = 'intro' | 'phase_a' | 'phase_b' | 'resolution';
 
@@ -241,6 +252,11 @@ export function StitcherTab() {
   // visible "▶ Watch" link directly in the slot so popup-blocker doesn't swallow it.
   const [previewUrls, setPreviewUrls] = useState<Partial<Record<SlotKey, string>>>({});
   const [previewLoadingSlot, setPreviewLoadingSlot] = useState<SlotKey | null>(null);
+  /** Full module reel: intro → phase_a → phase_b → resolution with dissolve transitions. */
+  const [modulePreviewUrl, setModulePreviewUrl] = useState<string | undefined>(undefined);
+  const [modulePreviewLoading, setModulePreviewLoading] = useState(false);
+  const [moduleSlotOffsetsMs, setModuleSlotOffsetsMs] = useState<number[]>([]);
+  const modulePreviewGenRef = useRef(0);
   const [refreshTick, setRefreshTick] = useState(0);
   // ST-14: derive standaloneMode from canonical activeProjectType signal —
   // reactive on signal change. Milestone scope is always 1-slot standalone
@@ -454,9 +470,12 @@ export function StitcherTab() {
   const viewerSlotData = job?.slots?.[viewerSlot];
   const viewerSourceUrl = resolveStitchSlotSourceVideoUrl(viewerSlotData?.video_path);
   const viewerProcessedUrl = previewUrls[viewerSlot];
-  /** Roadmap: instant source file. Slot Preview button swaps in stitch-processed MP4. */
-  const viewerVideoUrl = viewerProcessedUrl ?? viewerSourceUrl;
-  const viewerLoading = previewLoadingSlot === viewerSlot
+  /** Multi-phase: continuous module preview with transitions. Milestone: per-slot source. */
+  const viewerVideoUrl = standaloneMode
+    ? (viewerProcessedUrl ?? viewerSourceUrl)
+    : modulePreviewUrl;
+  const viewerLoading = modulePreviewLoading
+    || previewLoadingSlot === viewerSlot
     || (busySlot?.slot === viewerSlot && busySlot.action === 'preview');
 
   /**
@@ -503,12 +522,15 @@ export function StitcherTab() {
     const nextArr = idx >= 0
       ? existing.map((t, i) => (i === idx ? next : t))
       : [...existing, next];
-    void saveJobTransitions(nextArr);
+    void saveJobTransitions(nextArr).then((ok) => {
+      if (ok) void buildModulePreview({ quiet: true });
+    });
   };
 
   const findTransition = (afterSlot: number): Transition | null => {
     const t = (job?.transitions ?? []).find((x) => x.after_slot === afterSlot);
-    return t ?? null;
+    if (t) return t;
+    return defaultStitchTransitions().find((x) => x.after_slot === afterSlot) ?? null;
   };
 
   const fetchBeatBoundaries = async (slot?: SlotKey) => {
@@ -554,7 +576,66 @@ export function StitcherTab() {
     video.currentTime = (ratio * seekMs) / 1000;
   };
 
+  const buildModulePreview = async (opts?: { quiet?: boolean }): Promise<boolean> => {
+    if (standaloneMode || !job?.name || !job?.slots) return false;
+    if (!allStitchSlotsReady(job.slots)) {
+      if (!opts?.quiet) {
+        setStatusMsg('Assign videos to all four slots (intro, Phase A, B, resolution) first.');
+      }
+      return false;
+    }
+    const transitions = resolveStitchTransitions(job.transitions);
+    const slotsList = orderedStitchSlots(job.slots);
+    const slotPaths = slotsList.map((s) => s.video_path!);
+    const cacheKey = modulePreviewCacheKey(slotPaths, transitions);
+    const cached = readCachedModulePreview(activeScope.value.event_id);
+    if (cached?.cache_key === cacheKey) {
+      setModulePreviewUrl(cached.preview_url);
+      setModuleSlotOffsetsMs(cumulativeSlotOffsetsMs(cached.slot_durations));
+      return true;
+    }
+
+    const gen = ++modulePreviewGenRef.current;
+    setModulePreviewLoading(true);
+    if (!opts?.quiet) {
+      setStatusMsg('Building module preview — all 4 phases with transitions (may take ~1 min)…');
+    }
+    const res = await pathappPatch(activeScope.value, 'stitch_preview', {
+      name: job.name,
+      slots: slotsList,
+      transitions,
+    });
+    if (gen !== modulePreviewGenRef.current) return false;
+    setModulePreviewLoading(false);
+
+    if (res.ok) {
+      const data = res.data as { preview_url?: string; slot_durations?: number[] } | undefined;
+      if (data?.preview_url) {
+        const durs = data.slot_durations ?? [];
+        setModulePreviewUrl(data.preview_url);
+        setModuleSlotOffsetsMs(cumulativeSlotOffsetsMs(durs));
+        writeCachedModulePreview(activeScope.value.event_id, {
+          cache_key: cacheKey,
+          preview_url: data.preview_url,
+          slot_durations: durs,
+        });
+      }
+      if (!opts?.quiet) setStatusMsg('✓ Module preview ready — press play to review transitions');
+      return true;
+    }
+    const data = res.data as { error?: string } | undefined;
+    if (!opts?.quiet) {
+      setStatusMsg(`✗ Module preview HTTP ${res.status}: ${data?.error ?? res.error ?? ''}`);
+    }
+    return false;
+  };
+
   const onPreviewSlot = async (slot: SlotKey, opts?: { quiet?: boolean }) => {
+    if (!standaloneMode) {
+      const built = await buildModulePreview(opts);
+      if (built) onMultiPhaseSegmentClick(slot);
+      return built;
+    }
     const slotData = job?.slots?.[slot];
     if (!slotData?.video_path) {
       if (!opts?.quiet) setStatusMsg(`Slot ${slot} has no video assigned.`);
@@ -598,7 +679,38 @@ export function StitcherTab() {
     setActivePreviewSlot(slot);
     writePersistedTrackSlot(activeScope.value.event_id, slot);
     void fetchBeatBoundaries(slot);
+    const idx = slotIndexForKey(slot);
+    const offsetMs = moduleSlotOffsetsMs[idx] ?? 0;
+    const video = videoRef.current;
+    if (video && modulePreviewUrl && Number.isFinite(offsetMs)) {
+      video.currentTime = offsetMs / 1000;
+      void video.play().catch(() => {});
+    }
   };
+
+  useEffect(() => {
+    if (standaloneMode || !job?.name || !job?.slots) return;
+    if (job.transitions?.length) return;
+    void saveJobTransitions(defaultStitchTransitions());
+  }, [standaloneMode, job?.name, job?.transitions?.length]);
+
+  useEffect(() => {
+    if (standaloneMode || !job?.slots) return;
+    if (!allStitchSlotsReady(job.slots)) {
+      setModulePreviewUrl(undefined);
+      setModuleSlotOffsetsMs([]);
+      return;
+    }
+    void buildModulePreview({ quiet: true });
+  }, [
+    standaloneMode,
+    job?.name,
+    job?.slots?.['intro']?.video_path,
+    job?.slots?.['phase_a']?.video_path,
+    job?.slots?.['phase_b']?.video_path,
+    job?.slots?.['resolution']?.video_path,
+    JSON.stringify(job?.transitions ?? []),
+  ]);
 
   const focusedSlotVideoPath =
     trackFocusedSlot != null ? job?.slots?.[trackFocusedSlot]?.video_path : undefined;
@@ -977,7 +1089,7 @@ export function StitcherTab() {
                       onClick={() => onPreviewSlot(sd.key)}
                       disabled={busy || !slot?.video_path}
                     >
-                      {busySlot?.slot === sd.key && busySlot.action === 'preview' ? '…' : 'Preview'}
+                      {busySlot?.slot === sd.key && busySlot.action === 'preview' ? '…' : 'Review'}
                     </button>
                     <button
                       type="button"
@@ -997,7 +1109,7 @@ export function StitcherTab() {
           <div class="mn-stitcher-multiphase-track" data-testid="stitcher-multiphase-track">
             <div class="mn-stitcher-multiphase-track-header">
               <strong>Multi-phase view track</strong>
-              <span class="mn-dim">selection persists per event</span>
+              <span class="mn-dim">click a phase to jump in the module preview</span>
             </div>
             <div class="mn-stitcher-multiphase-track-rail">
               {multiPhaseSlots.map((sd) => {
@@ -1028,10 +1140,12 @@ export function StitcherTab() {
             <div class="mn-stitcher-preview-area" data-testid="stitcher-preview-area">
               <div class="mn-stitcher-preview-header">
                 <span class="mn-dim">
-                  Preview: <strong>{viewerSlot}</strong>
-                  {viewerLoading ? ' — building processed preview…' : ''}
-                  {!viewerLoading && viewerProcessedUrl ? ' — processed (trim/ambient)' : ''}
-                  {!viewerLoading && !viewerProcessedUrl && viewerSourceUrl ? ' — source file' : ''}
+                  Module review
+                  {viewerLoading ? ' — building all-phase preview…' : ''}
+                  {!viewerLoading && modulePreviewUrl ? ' — all 4 phases + dissolve transitions' : ''}
+                  {!viewerLoading && !modulePreviewUrl && !standaloneMode
+                    ? ' — waiting for all four slot videos'
+                    : ''}
                 </span>
               </div>
               <video
@@ -1098,9 +1212,6 @@ export function StitcherTab() {
               not the roadmap viewer above (one slot at a time). */}
           {!standaloneMode ? (
             <div class="mn-stitcher-transitions-row" data-testid="stitcher-transitions-row">
-              <p class="mn-dim mn-stitcher-transitions-hint">
-                Phase transitions apply when you Bake (or use a slot Preview button), not in the roadmap viewer.
-              </p>
               {[0, 1, 2].map((afterSlot) => (
                 <StitcherTransitionSelector
                   key={`trans-${afterSlot}`}

@@ -11895,7 +11895,10 @@ body {{padding-top:44px!important;}}
 
         # Concat all slot finals (LD-284: already normalized)
         job_sig = json.dumps(
-            {"slots": [s.get("video_path") for s in slots], "trans": len(transitions)},
+            {
+                "slots": [s.get("video_path") for s in slots],
+                "trans": transitions,
+            },
             sort_keys=True,
         ).encode()
         out_hash = _hl.md5(

@@ -658,6 +658,60 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
     })
 
 
+_STITCH_SLOT_ORDER = ["intro", "phase_a", "phase_b", "resolution"]
+_DEFAULT_PHASE_TRANSITION_FADE_MS = 2800
+
+
+def default_stitch_transitions() -> list[dict]:
+    """Prolonged dissolve at each phase boundary (matches intro canonical fade scale)."""
+    return [
+        {
+            "after_slot": i,
+            "kind": "dissolve",
+            "fade_ms": _DEFAULT_PHASE_TRANSITION_FADE_MS,
+            "audio_xfade_ms": _DEFAULT_PHASE_TRANSITION_FADE_MS,
+        }
+        for i in range(3)
+    ]
+
+
+def hydrate_stitch_pipeline_body(h, body: dict) -> dict:
+    """Load ordered slots + transitions from stitch job when client sends {name} only."""
+    _body = dict(body or {})
+    job_name = _body.get("name") or ""
+    job = None
+    if job_name:
+        try:
+            _st = h.app.stitch_state.read_state()
+            job = (_st.get("jobs") or {}).get(job_name)
+        except Exception as exc:
+            print(f"[stitch] WARN: job hydration read failed: {exc}")
+
+    if not _body.get("slots") and job:
+        _slots_dict = job.get("slots") or {}
+        if isinstance(_slots_dict, dict):
+            _slots_list = [
+                _slots_dict[k]
+                for k in _STITCH_SLOT_ORDER
+                if k in _slots_dict and (_slots_dict[k] or {}).get("video_path")
+            ]
+        else:
+            _slots_list = [
+                s for s in (_slots_dict or [])
+                if isinstance(s, dict) and s.get("video_path")
+            ]
+        if _slots_list:
+            _body["slots"] = _slots_list
+
+    if "transitions" not in _body and job:
+        _body["transitions"] = job.get("transitions") or []
+
+    if not _body.get("transitions"):
+        _body["transitions"] = default_stitch_transitions()
+
+    return _body
+
+
 def handle_stitch_preview(h, body: dict)-> None:
 
     """POST /api/stitch_editor/preview — build temp MP4, return URL for inline playback.
@@ -671,7 +725,8 @@ def handle_stitch_preview(h, body: dict)-> None:
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
         return
     try:
-        out_path, slot_durations = h._stitch_build_pipeline(body)
+        hydrated = hydrate_stitch_pipeline_body(h, body)
+        out_path, slot_durations = h._stitch_build_pipeline(hydrated)
     except (ValueError, PermissionError) as exc:
         return h._send_error_v59(
                    400,
@@ -763,45 +818,9 @@ def handle_stitch_bake(h, body: dict)-> None:
                )
 
     try:
-        # Hydrate slots from job state when the client sends only {name, …}.
-        # The preview path sends slots inline (one slot at a time); the bake
-        # path historically sent only the job name, which caused
-        # _stitch_build_pipeline to always raise "No slots provided".
-        # Fix: if body has no "slots", load them from stitch_state by job name
-        # and convert the dict-keyed slots into the ordered list the pipeline
-        # expects. Transitions are also hydrated so crossfade settings survive.
-        _SLOT_ORDER = ["intro", "phase_a", "phase_b", "resolution"]
-        _body = dict(body)
+        _body = hydrate_stitch_pipeline_body(h, body)
         if not _body.get("slots"):
-            _bake_job_name = _body.get("name") or ""
-            if _bake_job_name:
-                try:
-                    _st = h.app.stitch_state.read_state()
-                    _bake_job = (_st.get("jobs") or {}).get(_bake_job_name)
-                    if _bake_job:
-                        _slots_dict = _bake_job.get("slots") or {}
-                        # Normalize: stitch_state may store slots as list (legacy)
-                        # or dict (current). Gracefully handle both.
-                        if isinstance(_slots_dict, dict):
-                            _slots_list = [
-                                _slots_dict[k]
-                                for k in _SLOT_ORDER
-                                if k in _slots_dict
-                                and (_slots_dict[k] or {}).get("video_path")
-                            ]
-                        else:
-                            _slots_list = [
-                                s for s in (_slots_dict or [])
-                                if isinstance(s, dict) and s.get("video_path")
-                            ]
-                        if _slots_list:
-                            _body["slots"] = _slots_list
-                            if "transitions" not in _body:
-                                _body["transitions"] = _bake_job.get("transitions") or []
-                except Exception as _hydrate_exc:
-                    # Non-fatal: if state read fails, fall through to
-                    # "No slots provided" which gives the user a clear message.
-                    print(f"[stitch-bake] WARN: slot hydration failed: {_hydrate_exc}")
+            raise ValueError("No slots provided — assign videos to all stitch slots first")
 
         try:
             out_path, _durations = h._stitch_build_pipeline(_body)
