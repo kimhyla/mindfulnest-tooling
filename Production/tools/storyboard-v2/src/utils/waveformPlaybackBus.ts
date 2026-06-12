@@ -1,4 +1,5 @@
-/** Coordinates Phase A/B waveform players (only one should play at a time). */
+/** Coordinates Phase A/B waveform players (only one should play at a time).
+ *  PHASE_WAVEFORM_PLAY + PHASE_PRODUCER_AB — keep-alive mounts both panes. */
 export type PlaybackControl = {
   readonly busId: symbol;
   pause: () => void;

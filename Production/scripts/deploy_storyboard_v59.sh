@@ -188,6 +188,14 @@ if [[ "${MN_SKIP_REGRESSION_GUARD:-0}" != "1" ]]; then
         fi
         echo "[deploy] (a-pre.6b) PHASE_WAVEFORM_PLAY source durability ok"
     fi
+    PRODUCER_DURABILITY_SCRIPT="$SRC_TOOLING/Production/scripts/verify_phase_producer_durability.sh"
+    if [[ -x "$PRODUCER_DURABILITY_SCRIPT" ]]; then
+        if ! bash "$PRODUCER_DURABILITY_SCRIPT"; then
+            echo "[deploy] FATAL: Phase A/B producer durability guard failed." >&2
+            exit 1
+        fi
+        echo "[deploy] (a-pre.6c) PHASE_PRODUCER_AB source durability ok"
+    fi
 else
     echo "[deploy] (a-pre.6) LD-766 regression guard SKIPPED (MN_SKIP_REGRESSION_GUARD=1)"
 fi

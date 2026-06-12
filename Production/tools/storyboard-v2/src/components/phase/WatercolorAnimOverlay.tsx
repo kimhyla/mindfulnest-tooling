@@ -107,6 +107,7 @@ export function WatercolorAnimOverlay({
       <canvas
         ref={canvasRef}
         class="mn-lipsync-watercolor-overlay"
+        data-testid="watercolor-anim-overlay"
         style={{ opacity }}
         aria-hidden="true"
       />

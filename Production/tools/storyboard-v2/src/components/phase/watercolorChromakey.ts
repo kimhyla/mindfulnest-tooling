@@ -1,4 +1,5 @@
-/** Browser magenta key — mirrors ffmpeg `chromakey=0xFF00FF:0.25:0.0` (wc_v13 encode matte). */
+/** Browser magenta key — mirrors ffmpeg `chromakey=0xFF00FF:0.25:0.0` (wc_v13 encode matte).
+ *  PHASE_WATERCOLOR_OVERLAY_V1 — used by WatercolorAnimOverlay for Phase A + B live preview. */
 export function applyMagentaChromakey(imageData: ImageData): void {
   const d = imageData.data;
   for (let i = 0; i < d.length; i += 4) {

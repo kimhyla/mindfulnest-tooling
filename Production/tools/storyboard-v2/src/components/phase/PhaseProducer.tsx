@@ -1,6 +1,21 @@
 // PhaseProducer — shared base for Phase A + Phase B producers.
 // Per LD-462 PHASE_A_PRODUCER_V1 + LD-463 PHASE_B_PRODUCER_V1.
 //
+// ── DURABILITY RULES (PHASE_PRODUCER_AB_V1 — do not regress, 2026-06-12) ────
+// Single component serves BOTH tabs. Enforced by verify_phase_producer_durability.sh
+// + e2e/phase_waveform_playback.spec.ts (Phase A + B sections).
+//
+// Symptom fixes (all shared — never fork phase-a-only / phase-b-only playback UI):
+//   OVERLAY-1  Gigantic overlays → app.css inline-block video wrapper + 35% bbox
+//   OVERLAY-2  Pink frame on anim → WatercolorAnimOverlay canvas chromakey (not <video>)
+//   OVERLAY-3  Still / frozen anim → loop MP4 + onPlayStateChange wave sync
+//   PLAY-*     ▶/⏸, ghost audio, seek jump → WaveformTimeline + waveformPlaybackBus
+//   STEM-*     Amber cut rectangle → WaveformTimeline stem cut (both phases)
+//
+// Preview with Overlay → waveform play from start on lipsync frame (same surface).
+// Export to Stitcher → server ffmpeg bake (chromakey + stream_loop).
+// ─────────────────────────────────────────────────────────────────────────────
+//
 // S4 SCOPE (this file): real producer UX — script editor, audio player
 // (priority lipsync > mixed > stem), Send for Lipsync, lipsync video
 // player, Mix Audio (Phase A only — auto-fires stitch), Export to
@@ -1097,7 +1112,12 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       : null;
 
   return (
-    <div class={`mn-phase-producer mn-phase-${phase}`} data-testid={`phase-producer-${phase}`}>
+    <div
+      class={`mn-phase-producer mn-phase-${phase}`}
+      data-testid={`phase-producer-${phase}`}
+      data-phase-producer-ab="PHASE_PRODUCER_AB_V1"
+      data-phase-watercolor-overlay="PHASE_WATERCOLOR_OVERLAY_V1"
+    >
       <div class='mn-phase-status-header'>
         <span class='mn-dim mn-phase-status-tag' data-testid={`phase-${phase}-status-header`}>
           {waveformAudio ? `audio: ${waveformAudio.label}` : 'no audio yet'}

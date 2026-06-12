@@ -41,5 +41,7 @@ grep -q 'prevTabRef' "$APP" \
   || fail "app.tsx must use prevTabRef tab-change stop (PLAY-4)"
 grep -q 'seek-jump' "$E2E" \
   || fail "e2e/phase_waveform_playback.spec.ts must include seek-jump regression test"
+grep -q 'openPhaseA' "$E2E" \
+  || fail "e2e must include Phase A parity tests (openPhaseA)"
 
 echo "[waveform-play-durability] OK — source patterns + e2e spec present"

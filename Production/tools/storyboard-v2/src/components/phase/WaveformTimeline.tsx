@@ -15,7 +15,7 @@
 //   PLAY-5  Hidden keep-alive panes pause via MutationObserver on [hidden] only.
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Responsibilities (Phase B scope):
+// Responsibilities (Phase A + Phase B — same WaveformTimeline instance per tab):
 //  - Mount WaveSurfer over a container, load the audio source priority winner
 //    (lipsync > mixed > stem; resolved by PhaseProducer)
 //  - Expose duration via the ready event so cue markers can be positioned

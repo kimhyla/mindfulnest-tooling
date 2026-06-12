@@ -73,9 +73,15 @@ async function openPhaseB(page: Page): Promise<void> {
   await expect(page.locator('[data-testid="phase-producer-b"]')).toBeVisible();
 }
 
-async function waitForWaveformReady(page: Page) {
+async function openPhaseA(page: Page): Promise<void> {
+  await page.click('[data-testid="tab-phase-a"]');
+  await expect(page.locator('[data-testid="pane-phase-a-keepalive"]')).toBeVisible();
+  await expect(page.locator('[data-testid="phase-producer-a"]')).toBeVisible();
+}
+
+async function waitForWaveformReady(page: Page, phase: 'a' | 'b' = 'b') {
   const waveform = page.locator(
-    '[data-testid="pane-phase-b-keepalive"] [data-testid="waveform-timeline"]',
+    `[data-testid="pane-phase-${phase}-keepalive"] [data-testid="waveform-timeline"]`,
   );
   await expect(waveform).toBeVisible();
   await expect.poll(async () => {
@@ -105,7 +111,7 @@ test.describe('PHASE_WAVEFORM_PLAY — ▶ Play must not seek-collide', () => {
     await gotoApp(page);
     await openPhaseB(page);
 
-    const waveform = await waitForWaveformReady(page);
+    const waveform = await waitForWaveformReady(page, 'b');
     const playBtn = page.locator(
       '[data-testid="pane-phase-b-keepalive"] [data-testid="waveform-play-btn"]',
     );
@@ -129,7 +135,7 @@ test.describe('PHASE_WAVEFORM_PLAY — ▶ Play must not seek-collide', () => {
     await gotoApp(page);
     await openPhaseB(page);
 
-    const waveform = await waitForWaveformReady(page);
+    const waveform = await waitForWaveformReady(page, 'b');
     const canvas = waveform.locator('.mn-waveform-canvas');
     const box = await canvas.boundingBox();
     expect(box).not.toBeNull();
@@ -155,5 +161,85 @@ test.describe('PHASE_WAVEFORM_PLAY — ▶ Play must not seek-collide', () => {
     const ms = Number(await waveform.getAttribute('data-current-time-ms'));
     expect(ms).toBeLessThan(2500);
     expect(ms).toBeGreaterThan(50);
+  });
+});
+
+test.describe('PHASE_WAVEFORM_PLAY — Phase A parity (same WaveformTimeline + bus)', () => {
+  test('PLAY-A1 — Phase A ▶ Play toggles without seek-jump', async ({ page }) => {
+    await mockAudioFiles(page, 30);
+    await mockPhaseState(page, { phase_a_lipsync_file: 'fix_phase_a_lipsync.mp4' });
+    await gotoApp(page);
+    await openPhaseA(page);
+
+    const waveform = await waitForWaveformReady(page, 'a');
+    const canvas = waveform.locator('.mn-waveform-canvas');
+    const box = await canvas.boundingBox();
+    expect(box).not.toBeNull();
+
+    await canvas.click({ position: { x: 2, y: box!.height / 2 } });
+    await expect.poll(async () => {
+      const v = await waveform.getAttribute('data-current-time-ms');
+      return v ? Number(v) : 0;
+    }).toBeLessThan(1500);
+
+    const playBtn = page.locator(
+      '[data-testid="pane-phase-a-keepalive"] [data-testid="waveform-play-btn"]',
+    );
+    await playBtn.click();
+
+    await expect(playBtn).toHaveText(/⏸ Pause/, { timeout: 3_000 });
+    await page.waitForTimeout(500);
+    const ms = Number(await waveform.getAttribute('data-current-time-ms'));
+    expect(ms).toBeLessThan(2500);
+    expect(ms).toBeGreaterThan(50);
+  });
+
+  test('PLAY-A2 — Phase A Preview with Overlay starts playback status', async ({ page }) => {
+    await mockAudioFiles(page, 30);
+    await mockPhaseState(page, {
+      phase_a_lipsync_file: 'fix_phase_a_lipsync.mp4',
+      phase_a_watercolor_cues_json: JSON.stringify([
+        {
+          id: 'cue_test',
+          key: 'hands_rubbing_animated_test',
+          timestamp_ms: 1000,
+          duration_ms: 5000,
+          cue_type: 'video',
+        },
+      ]),
+    });
+    await page.route('**/api/phase/watercolor_list**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          items: [
+            {
+              key: 'hands_rubbing_animated_test',
+              filename: 'hands_rubbing_animated_test.mp4',
+              ext: 'mp4',
+              kind: 'animation',
+              thumb_url: 'http://localhost:5111/api/phase/watercolor_file?key=hands_rubbing',
+              animation_url:
+                'http://localhost:5111/api/phase_b/watercolor/hands_rubbing_animated_test',
+              mtime: 1,
+              size_bytes: 1000,
+            },
+          ],
+        }),
+      });
+    });
+    await gotoApp(page);
+    await openPhaseA(page);
+    await waitForWaveformReady(page, 'a');
+
+    await page.locator('[data-testid="phase-a-preview-overlay-btn"]').click();
+    await expect(page.locator('[data-testid="phase-a-status"]')).toContainText('Previewing', {
+      timeout: 5_000,
+    });
+    await expect(
+      page.locator('[data-testid="pane-phase-a-keepalive"] [data-testid="waveform-play-btn"]'),
+    ).toHaveText(/⏸ Pause/, { timeout: 3_000 });
   });
 });

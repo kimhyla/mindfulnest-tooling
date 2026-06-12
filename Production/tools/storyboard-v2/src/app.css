@@ -607,8 +607,8 @@
 }
 .mn-lipsync-video-wrapper {
   position: relative;
-  /* inline-block shrink-wraps to the video box — block+width:100% made % overlay
-     sizing drift vs LD-821 fireplace bbox (spell_title looked "gigantic"). */
+  /* PHASE_WATERCOLOR_OVERLAY_V1 — inline-block shrink-wraps to the video box;
+     block+width:100% made % overlay sizing drift vs LD-821 fireplace bbox. */
   display: inline-block;
   max-width: 100%;
   line-height: 0;

@@ -96,6 +96,12 @@ MARKERS=(
     "PHASE_WAVEFORM_PLAY|waveform-play-btn"
     "PHASE_WAVEFORM_PLAY|attributeFilter"
     "PHASE_WAVEFORM_PLAY|stop-all-audio-btn"
+    # Phase A/B producer overlay + animated chromakey canvas (2026-06-12)
+    "PHASE_WATERCOLOR_OVERLAY|PHASE_WATERCOLOR_OVERLAY_V1"
+    "PHASE_WATERCOLOR_OVERLAY|watercolor-anim-overlay"
+    "PHASE_PRODUCER_AB|PHASE_PRODUCER_AB_V1"
+    "PHASE_PRODUCER_AB|phase-producer-"
+    "PHASE_PRODUCER_AB|onPlayStateChange"
     # Baseline buttons — every beat should have these (displayed text)
     "BASELINE|Regen Audio"
     "BASELINE|Regenerate B"
