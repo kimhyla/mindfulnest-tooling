@@ -125,6 +125,17 @@ function applyDefaultAmbientPresetsToSlots(slots: Record<string, StitchSlot>): v
     if (!slot?.video_path || (slot.ambient_bed ?? '').trim()) continue;
     slot.ambient_bed = defaultAmbientBedForSlot(key);
     slot.ambient_volume = STITCH_AMBIENT_BED_VOLUME;
+    delete slot.ambient_bed_path;
+  }
+}
+
+/** Force canonical 0.15 under-speech volume on every slot that has an ambient bed. */
+function normalizeStitchSlotAmbientVolumesInPlace(slots: Record<string, StitchSlot>): void {
+  for (const { key } of SLOT_DEFS) {
+    const slot = slots[key];
+    if (!slot || !(slot.ambient_bed ?? '').trim()) continue;
+    slot.ambient_volume = STITCH_AMBIENT_BED_VOLUME;
+    delete slot.ambient_bed_path;
   }
 }
 
@@ -423,6 +434,7 @@ export function StitcherTab() {
           const canonicalSlots: Record<string, StitchSlot> = {};
           mergeSlotsFromJob(canonicalSlots, canonicalJob.slots as Record<string, StitchSlot>);
           applyDefaultAmbientPresetsToSlots(canonicalSlots);
+          normalizeStitchSlotAmbientVolumesInPlace(canonicalSlots);
           if (Object.keys(canonicalSlots).length > 0) {
             setJob({
               name: canonicalName,

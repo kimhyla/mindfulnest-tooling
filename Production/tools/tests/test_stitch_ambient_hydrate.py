@@ -121,6 +121,28 @@ class StitchSlotAudioMixTests(unittest.TestCase):
         self.assertEqual(slot["ambient_bed"], STITCH_DEFAULT_AMBIENT_BEDS["phase_b"])
         self.assertEqual(slot["ambient_volume"], STITCH_AMBIENT_BED_VOLUME)
 
+    def test_default_ambient_preset_sets_volume_without_extra_normalize(self):
+        slot = {"video_path": "Production/Event_1/resolution.mp4"}
+        self.assertTrue(apply_stitch_slot_default_ambient_preset("resolution", slot))
+        self.assertEqual(slot["ambient_volume"], STITCH_AMBIENT_BED_VOLUME)
+
+    def test_job_canonical_audio_needs_persist_when_legacy_volume(self):
+        live = {
+            "intro": {
+                "ambient_bed": "Intro video ambient bed",
+                "ambient_volume": 0.6,
+            }
+        }
+        normalized = {
+            "intro": {
+                "ambient_bed": "Intro video ambient bed",
+                "ambient_volume": STITCH_AMBIENT_BED_VOLUME,
+            }
+        }
+        from server_handlers.stitch_editor import _job_canonical_audio_needs_persist
+
+        self.assertTrue(_job_canonical_audio_needs_persist(live, normalized))
+
     def test_default_ambient_does_not_overwrite_existing(self):
         slot = {
             "video_path": "Production/Event_1/intro.mp4",

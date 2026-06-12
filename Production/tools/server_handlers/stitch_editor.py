@@ -88,7 +88,64 @@ def apply_stitch_slot_default_ambient_preset(slot_key: str, slot: dict) -> bool:
     if (slot.get("ambient_bed") or "").strip():
         return False
     slot["ambient_bed"] = STITCH_DEFAULT_AMBIENT_BEDS[slot_key]
+    slot["ambient_volume"] = STITCH_AMBIENT_BED_VOLUME
+    slot.pop("ambient_bed_path", None)
     return True
+
+
+def _job_canonical_audio_needs_persist(live_slots, normalized_slots: dict) -> bool:
+    """True when persisted job lacks canonical ambient_bed volume/path vs normalized view."""
+    if not isinstance(normalized_slots, dict):
+        return False
+    live = live_slots if isinstance(live_slots, dict) else {}
+    for slot_key in STITCH_SLOT_ORDER:
+        src = normalized_slots.get(slot_key)
+        if not isinstance(src, dict):
+            continue
+        preset = (src.get("ambient_bed") or "").strip()
+        if not preset:
+            continue
+        dst = live.get(slot_key)
+        if not isinstance(dst, dict):
+            return True
+        if (dst.get("ambient_bed") or "").strip() != preset:
+            return True
+        try:
+            vol = float(dst.get("ambient_volume", 0))
+        except (TypeError, ValueError):
+            return True
+        if abs(vol - STITCH_AMBIENT_BED_VOLUME) > 1e-6:
+            return True
+        if dst.get("ambient_bed_path"):
+            return True
+    return False
+
+
+def _persist_stitch_job_canonical_audio(state: dict, name: str, normalized_slots: dict) -> None:
+    """Write canonical ambient_bed + 0.15 volume (+ SFX defaults) into persisted stitch job."""
+    live = state.get("jobs", {}).get(name)
+    if not isinstance(live, dict) or not isinstance(live.get("slots"), dict):
+        return
+    if not isinstance(normalized_slots, dict):
+        return
+    for slot_key in STITCH_SLOT_ORDER:
+        src = normalized_slots.get(slot_key)
+        if not isinstance(src, dict):
+            continue
+        dst = live["slots"].setdefault(slot_key, {})
+        if not isinstance(dst, dict):
+            continue
+        preset = (src.get("ambient_bed") or "").strip()
+        if preset:
+            dst["ambient_bed"] = preset
+            dst["ambient_volume"] = STITCH_AMBIENT_BED_VOLUME
+            dst.pop("ambient_bed_path", None)
+        elif "ambient_bed" in src and not preset:
+            dst.pop("ambient_bed", None)
+            dst.pop("ambient_volume", None)
+            dst.pop("ambient_bed_path", None)
+        normalize_slot_audio_mix_levels(dst)
+    live["updated_at"] = datetime.now(timezone.utc).isoformat()
 
 
 def apply_stitch_job_default_ambient_presets(slots) -> bool:
@@ -694,24 +751,11 @@ def handle_stitch_load_job(h, name: str)-> None:
                     slot["beat_boundaries"] = enrich_beat_boundaries(
                         slot["beat_boundaries"],
                     )
-            if backfilled:
+            live_slots = (job.get("slots") if isinstance(job, dict) else None)
+            if backfilled or _job_canonical_audio_needs_persist(live_slots, slots):
 
                 def persist_defaults(state: dict) -> None:
-                    live = state.get("jobs", {}).get(name)
-                    if not isinstance(live, dict) or not isinstance(live.get("slots"), dict):
-                        return
-                    for slot_key in STITCH_SLOT_ORDER:
-                        src = slots.get(slot_key)
-                        if not isinstance(src, dict) or not src.get("ambient_bed"):
-                            continue
-                        dst = live["slots"].setdefault(slot_key, {})
-                        if isinstance(dst, dict):
-                            dst["ambient_bed"] = src["ambient_bed"]
-                            dst["ambient_volume"] = src.get(
-                                "ambient_volume", STITCH_AMBIENT_BED_VOLUME
-                            )
-                            dst.pop("ambient_bed_path", None)
-                    live["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    _persist_stitch_job_canonical_audio(state, name, slots)
 
                 h.app.stitch_state.mutate_state(persist_defaults)
     return h._send_json(200, {"job": response_job, "name": name})
