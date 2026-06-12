@@ -51,9 +51,9 @@ interface WatercolorItem {
   filename: string;
   ext: string;
   kind: 'static' | 'animation' | string;
-  /** Always an image URL (static PNG or base PNG for animations) — safe for <img>. */
+  /** Always an image URL (static PNG or base PNG for animation tiles) — safe for <img>. */
   thumb_url: string;
-  /** For animations: the actual MP4/MOV URL (black-bg, Stitcher use only — NOT used for browser overlay per LD-821). */
+  /** For animations: the MP4/MOV with baked hand motion (wc_v13 white-paper encode). */
   animation_url?: string | null;
   mtime: number;
   size_bytes: number;
@@ -235,6 +235,60 @@ function fileUrl(name: string): string {
   return `${SERVER_BASE}/files?path=${encodeURIComponent(`Production/${eventId}/${name}`)}`;
 }
 
+/** Animated watercolor cue — MP4 with baked hand motion, synced to waveform clock. */
+function WatercolorAnimOverlay({
+  src,
+  elapsedMs,
+  isWavePlaying,
+  opacity,
+}: {
+  src: string;
+  elapsedMs: number;
+  isWavePlaying: boolean;
+  opacity: number;
+}) {
+  const ref = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.muted = true;
+    const t = Math.max(0, elapsedMs / 1000);
+    if (!isWavePlaying) {
+      el.pause();
+      if (el.readyState >= 1 && Math.abs(el.currentTime - t) > 0.033) {
+        el.currentTime = t;
+      }
+      return;
+    }
+    if (el.paused) {
+      el.currentTime = t;
+      el.play().catch(() => {
+        requestAnimationFrame(() => {
+          const retry = ref.current;
+          if (!retry) return;
+          retry.muted = true;
+          retry.play().catch(() => {});
+        });
+      });
+      return;
+    }
+    if (Math.abs(el.currentTime - t) > 0.35) {
+      el.currentTime = t;
+    }
+  }, [elapsedMs, isWavePlaying, src]);
+  return (
+    <video
+      ref={ref}
+      class="mn-lipsync-watercolor-overlay"
+      src={src}
+      muted
+      playsInline
+      preload="auto"
+      style={{ opacity }}
+    />
+  );
+}
+
 // NOTE: PhaseProducer always renders its full content without collapse.
 // Phase B and Phase A each own an entire tab — collapsing the full tab body
 // is wrong UX. <details>/<summary> removed 2026-05-25. Do NOT re-introduce
@@ -257,6 +311,8 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const [ambientPresets, setAmbientPresets] = useState<AmbientPreset[]>([]);
   // Playback position in ms — updated by WaveformTimeline via onTimeUpdate.
   const [currentTimeMs, setCurrentTimeMs] = useState(0);
+  // WaveSurfer play state — drives animated watercolor <video> sync (not loop).
+  const [waveIsPlaying, setWaveIsPlaying] = useState(false);
   // True while Kling lipsync is processing in the background (202 submitted).
   const [lipsyncing, setLipsyncing] = useState(false);
   // Mtime of lipsync_file at the moment we submitted — used to detect when
@@ -1273,6 +1329,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           onCueClick={onCueClick}
           onWatercolorDrop={onWatercolorDrop}
           onTimeUpdate={(ms) => setCurrentTimeMs(ms)}
+          onPlayStateChange={setWaveIsPlaying}
           onCueRangeChange={onCueRangeChange}
           stemCutStartMs={stemCutStartMs}
           stemCutEndMs={stemCutEndMs}
@@ -1441,11 +1498,30 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                   )
                   .map((cue) => {
                     const wcItem = watercolors.find((w) => w.key === cue.watercolor_key);
+                    const isAnimation =
+                      wcItem?.kind === 'animation' ||
+                      cue.watercolor_key.includes('_animated_');
+                    const elapsed = currentTimeMs - cue.offset_ms;
+                    const opacity = Math.min(1.0, elapsed / 300);
+
+                    if (isAnimation) {
+                      const animSrc =
+                        wcItem?.animation_url ??
+                        `${SERVER_BASE}/api/phase_b/watercolor/${encodeURIComponent(cue.watercolor_key)}`;
+                      return (
+                        <WatercolorAnimOverlay
+                          key={cue.id}
+                          src={animSrc}
+                          elapsedMs={elapsed}
+                          isWavePlaying={waveIsPlaying}
+                          opacity={opacity}
+                        />
+                      );
+                    }
+
                     const pngSrc =
                       wcItem?.thumb_url ??
                       `${SERVER_BASE}/api/phase_b/watercolor/${encodeURIComponent(cue.watercolor_key)}`;
-                    const elapsed = currentTimeMs - cue.offset_ms;
-                    const opacity = Math.min(1.0, elapsed / 300);
 
                     return (
                       <img
