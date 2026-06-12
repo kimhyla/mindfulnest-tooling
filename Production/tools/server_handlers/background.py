@@ -1834,7 +1834,8 @@ def _log_bg_segment_preserve_activity(
 
     def _do_write() -> None:
         try:
-            _libdir = os.path.join(os.path.dirname(__file__), "..", "credentials_lib")
+            # CODE tree — credentials_lib sibling under Production/tools/
+            _libdir = str(_PSERVER_TOOLS_DIR / "credentials_lib")
             if _libdir not in sys.path:
                 sys.path.insert(0, _libdir)
             from credentials import load_credentials  # type: ignore
