@@ -12,7 +12,7 @@ export function defaultStitchTransitions(): Transition[] {
     after_slot,
     kind: 'dissolve',
     fade_ms: DEFAULT_PHASE_TRANSITION_FADE_MS,
-    audio_xfade_ms: DEFAULT_PHASE_TRANSITION_FADE_MS,
+    audio_xfade_ms: 0,
   }));
 }
 

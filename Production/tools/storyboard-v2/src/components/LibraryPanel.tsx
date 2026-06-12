@@ -55,6 +55,22 @@ interface LibItem {
   // LD-738 LIBRARY_MASTER_ASSET_VISIBILITY_FIX_V1
   is_master?: boolean;
   has_crop?: boolean;
+  /** Audio items from stitch_editor/library (ms). */
+  duration_ms?: number;
+}
+
+interface StitchLibraryAudioItem {
+  filename: string;
+  path: string;
+  duration_ms: number;
+  category: string;
+  source_folder: string;
+}
+
+interface StitchLibraryResponse {
+  ambient?: StitchLibraryAudioItem[];
+  sfx?: StitchLibraryAudioItem[];
+  transitions?: StitchLibraryAudioItem[];
 }
 
 interface LibraryResponse {
@@ -70,6 +86,38 @@ export function flattenLibraryResponse(r: LibraryResponse): LibItem[] {
   if (Array.isArray(r.items)) return r.items;
   return [...(r.sources ?? []), ...(r.crops ?? []), ...(r.masters ?? [])];
 }
+
+/** Map GET /api/stitch_editor/library scan into LibItem rows for sfx/ambient/transitions tiers. */
+export function stitchLibraryToLibItems(data: StitchLibraryResponse): LibItem[] {
+  const out: LibItem[] = [];
+  const push = (list: StitchLibraryAudioItem[] | undefined, category: string) => {
+    for (const item of list ?? []) {
+      const tags =
+        category === 'ambient'
+          ? ['ambient']
+          : category === 'transitions'
+            ? ['transition']
+            : ['sfx'];
+      out.push({
+        key: item.filename,
+        abs_path: item.path,
+        filename: item.filename,
+        display_name: item.filename,
+        asset_type: category === 'ambient' ? 'audio' : category === 'sfx' ? 'sfx' : 'transition',
+        tags,
+        tier: category,
+        duration_ms: item.duration_ms,
+        mtime: 0,
+      });
+    }
+  };
+  push(data.ambient, 'ambient');
+  push(data.sfx, 'sfx');
+  push(data.transitions, 'transitions');
+  return out;
+}
+
+const AUDIO_LIBRARY_TIERS = new Set<LibraryTier>(['ambient', 'sfx', 'transitions']);
 
 function thumbSrc(it: LibItem): string | undefined {
   return it.thumb_b64 ?? it.thumb_url ?? undefined;
@@ -133,7 +181,7 @@ export const TIER_TO_FILTER_MAP: Record<LibraryTier, (it: LibItem) => boolean> =
     const tags = it.tags ?? [];
     return at === 'audio' && tags.includes('ambient');
   },
-  sfx: (it) => inferAssetType(it) === 'sfx',
+  sfx: (it) => inferAssetType(it) === 'sfx' || inferAssetType(it) === 'transition',
   transitions: (it) => (it.tags ?? []).includes('transition'),
   watercolors: (it) => {
     const tags = it.tags ?? [];
@@ -341,17 +389,22 @@ export function LibraryPanel() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const res = await apiGet<LibraryResponse>('cr_library', {
-        event_id: activeScope.value.event_id,
-      });
+      const [crRes, stitchRes] = await Promise.all([
+        apiGet<LibraryResponse>('cr_library', { event_id: activeScope.value.event_id }),
+        apiGet<StitchLibraryResponse>('stitch_editor_library'),
+      ]);
       if (cancelled) return;
       setLoading(false);
-      if (res.ok && res.data) {
-        setItems(flattenLibraryResponse(res.data));
-        setError(null);
-      } else {
-        setError(res.error ?? 'unknown error');
+      const imageItems = crRes.ok && crRes.data ? flattenLibraryResponse(crRes.data) : [];
+      const audioItems =
+        stitchRes.ok && stitchRes.data ? stitchLibraryToLibItems(stitchRes.data) : [];
+      if (!crRes.ok && !stitchRes.ok) {
+        setError(crRes.error ?? stitchRes.error ?? 'unknown error');
+        setItems([]);
+        return;
       }
+      setItems([...imageItems, ...audioItems]);
+      setError(null);
     })();
     return () => {
       cancelled = true;
@@ -426,6 +479,7 @@ export function LibraryPanel() {
     if (!files || files.length === 0) return;
     setUploading(true);
     let added = 0;
+    const audioTier = AUDIO_LIBRARY_TIERS.has(tier) ? tier : null;
     for (const file of Array.from(files)) {
       try {
         const dataUrl = await new Promise<string>((resolve, reject) => {
@@ -434,11 +488,12 @@ export function LibraryPanel() {
           reader.onerror = () => reject(reader.error);
           reader.readAsDataURL(file);
         });
-        const image_b64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+        const file_b64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
         const result = await pathappPatch(activeScope.value, 'cr_upload', {
           filename: file.name,
-          image_b64,
-          tier: 'source',
+          ...(audioTier
+            ? { file_b64, tier: audioTier }
+            : { image_b64: file_b64, tier: 'source' }),
         });
         if (result.ok) {
           added++;
@@ -465,6 +520,13 @@ export function LibraryPanel() {
     return items.filter((it) => tierFilter(it) && matchesSearch(it, searchQuery));
   }, [items, tier, searchQuery]);
 
+  const uploadAccept = AUDIO_LIBRARY_TIERS.has(tier)
+    ? 'audio/mpeg,audio/wav,audio/mp4,.mp3,.wav,.m4a'
+    : 'image/png,image/jpeg,image/webp';
+  const uploadTitle = AUDIO_LIBRARY_TIERS.has(tier)
+    ? `Upload ${tier} audio to sound_library/${tier}/`
+    : 'Upload image to library';
+
   return (
     <aside class="mn-library-panel" data-testid="library-panel">
       <header class="mn-library-header">
@@ -477,12 +539,12 @@ export function LibraryPanel() {
           class="mn-library-upload-btn"
           data-testid="library-upload-btn"
           aria-disabled={uploading ? 'true' : undefined}
-          title="Upload image to library"
+          title={uploadTitle}
         >
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/png,image/jpeg,image/webp"
+            accept={uploadAccept}
             multiple
             hidden
             onChange={onUpload}
@@ -548,8 +610,9 @@ export function LibraryPanel() {
               // lib-image so existing image-slot drop targets continue working.
               // Built as discriminated-union variants (DragPayload requires
               // source_path on the lib-sfx variant).
-              const isSfxTier = tier === 'sfx' || tier === 'ambient';
-              const dragPayload: DragPayload = isSfxTier
+              const isAudioDragTier =
+                tier === 'sfx' || tier === 'ambient' || tier === 'transitions';
+              const dragPayload: DragPayload = isAudioDragTier
                 ? {
                     kind: 'lib-sfx',
                     lib_key: libKey,
@@ -563,7 +626,12 @@ export function LibraryPanel() {
                     ...(it.abs_path ? { abs_path: it.abs_path } : {}),
                     ...(it.filename ? { filename: it.filename } : {}),
                   };
-              const dimsLabel = it.width && it.height ? `${it.width}×${it.height}` : undefined;
+              const dimsLabel =
+                it.duration_ms != null && it.duration_ms > 0
+                  ? `${(it.duration_ms / 1000).toFixed(1)}s`
+                  : it.width && it.height
+                    ? `${it.width}×${it.height}`
+                    : undefined;
               const isMaster = it.is_master === true;
               const tileTier = isMaster ? 'master' : 'delivery';
               const tileProps: {

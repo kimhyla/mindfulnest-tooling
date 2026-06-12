@@ -85,7 +85,10 @@ from tools.production_server import (  # noqa: E402
 # Locked: every Phase B lipsync output gets a white fade-out at the tail.
 # Duration is constant (PHASE_B_WHITEOUT_DURATION_SEC). Applied in-place
 # on the downloaded mp4 before state is written; fully transparent to callers.
-PHASE_B_WHITEOUT_DURATION_SEC: float = 1.5  # seconds of fade-to-white at end
+PHASE_B_WHITEOUT_DURATION_SEC: float = 0.6  # short video tail fade (intro fade_out_video_tail_ms default)
+# Intro export uses fade_audio=False — dialogue stays full level until hard cut.
+# Phase B whiteout matches that: video fades to white; audio untouched until file end.
+PHASE_B_WHITEOUT_FADE_AUDIO: bool = False
 # Kling LipSync on ~43s stems: p99 ~15 min; auto-clear stuck "running" after 20 min.
 PHASE_A_LIPSYNC_STALE_SEC: int = 1200
 
@@ -273,21 +276,24 @@ def _apply_whiteout_fade(video_path: Path, fade_dur: float = PHASE_B_WHITEOUT_DU
     fade_start = max(0.0, duration - fade_dur)
 
     tmp = video_path.with_suffix(".whiteout_tmp.mp4")
-    subprocess.run(
-        [
-            "ffmpeg", "-y", "-i", str(video_path),
-            "-vf", f"fade=out:st={fade_start:.3f}:d={fade_dur:.3f}:color=white",
-            "-af", f"afade=out:st={fade_start:.3f}:d={fade_dur:.3f}",
-            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
-            "-c:a", "aac", "-b:a", "128k",
-            str(tmp),
-        ],
-        check=True, capture_output=True,
-    )
+    cmd: list[str] = [
+        "ffmpeg", "-y", "-i", str(video_path),
+        "-vf", f"fade=out:st={fade_start:.3f}:d={fade_dur:.3f}:color=white",
+    ]
+    if PHASE_B_WHITEOUT_FADE_AUDIO:
+        cmd.extend(["-af", f"afade=out:st={fade_start:.3f}:d={fade_dur:.3f}"])
+    else:
+        cmd.extend(["-c:a", "copy"])
+    cmd.extend([
+        "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+        str(tmp),
+    ])
+    subprocess.run(cmd, check=True, capture_output=True)
     tmp.rename(video_path)
     print(
         f"[phase_b_whiteout] ✓ {fade_dur}s white fade applied "
-        f"(fade_start={fade_start:.2f}s, total={duration:.2f}s)",
+        f"(fade_start={fade_start:.2f}s, total={duration:.2f}s, "
+        f"audio={'afade' if PHASE_B_WHITEOUT_FADE_AUDIO else 'copy'})",
         flush=True,
     )
 

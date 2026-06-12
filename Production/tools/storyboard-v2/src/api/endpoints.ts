@@ -24,6 +24,7 @@ export const READ_ENDPOINTS = {
   // S3 v3.1
   event_list: `${SERVER_BASE}/api/event/list`,
   phase_watercolor_list: `${SERVER_BASE}/api/phase/watercolor_list`,
+  stitch_editor_library: `${SERVER_BASE}/api/stitch_editor/library`,
   phase_base_clips_list: `${SERVER_BASE}/api/phase/base_clips_list`,
   // S5.5f — ambient bed preset inventory.
   phase_b_ambient_preset_list: `${SERVER_BASE}/api/phase_b/ambient_preset_list`,

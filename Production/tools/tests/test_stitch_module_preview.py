@@ -19,4 +19,4 @@ def test_default_stitch_transitions_dissolve_2800ms() -> None:
         assert t["after_slot"] == i
         assert t["kind"] == "dissolve"
         assert t["fade_ms"] == 2800
-        assert t["audio_xfade_ms"] == 2800
+        assert t["audio_xfade_ms"] == 0

@@ -669,7 +669,7 @@ def default_stitch_transitions() -> list[dict]:
             "after_slot": i,
             "kind": "dissolve",
             "fade_ms": _DEFAULT_PHASE_TRANSITION_FADE_MS,
-            "audio_xfade_ms": _DEFAULT_PHASE_TRANSITION_FADE_MS,
+            "audio_xfade_ms": 0,
         }
         for i in range(3)
     ]

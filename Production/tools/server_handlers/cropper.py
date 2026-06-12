@@ -711,7 +711,59 @@ def handle_cr_upload(h, body: dict)-> None:
 
     filename  = body.get("filename", "")
     image_b64 = body.get("image_b64", "")
+    file_b64  = body.get("file_b64", "") or image_b64
     tier      = body.get("tier", "cropped")
+
+    audio_tiers = ("sfx", "ambient", "transitions")
+    if tier in audio_tiers:
+        if not filename or not file_b64:
+            return h._send_error_v59(
+                400,
+                error_code="MISSING_FILENAME_OR_FILE_B64",
+                error_message="filename and file_b64 required for audio upload",
+                retry_safe=False,
+            )
+        filename = os.path.basename(filename)
+        if not filename.lower().endswith((".mp3", ".wav", ".m4a")):
+            return h._send_error_v59(
+                400,
+                error_code="INVALID_FILENAME_EXTENSION",
+                error_message="audio filename must be .mp3, .wav, or .m4a",
+                retry_safe=False,
+            )
+        raw_b64 = file_b64.split(",", 1)[1] if "," in file_b64 else file_b64
+        try:
+            raw_bytes = base64.b64decode(raw_b64)
+        except Exception as e:
+            return h._send_error_v59(
+                400,
+                error_code="GENERIC_ERROR",
+                error_message=f"base64 decode failed: {e}",
+                retry_safe=False,
+            )
+        from server_handlers.phases import _data_root  # noqa: PLC0415
+
+        dest_dir = _data_root(h) / "assets" / "sound_library" / tier
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest_path = dest_dir / filename
+        if not h._check_event_pin(_pin, "cr_upload_write_bytes"):
+            return h._send_error_v59(
+                423,
+                error_code="EVENT_CHANGED_MID_JOB",
+                error_message="event_changed_mid_job",
+                retry_safe=False,
+                extra={"code": "ASYNC_JOB_GENERATION_PIN_V1"},
+            )
+        dest_path.write_bytes(raw_bytes)
+        print(f"[library] audio upload saved: {dest_path} tier={tier}", flush=True)
+        return h._send_json(200, {
+            "ok": True,
+            "key": dest_path.stem,
+            "filename": filename,
+            "tier": tier,
+            "abs_path": str(dest_path),
+            "asset_type": "audio" if tier == "ambient" else tier,
+        })
 
     if not filename or not image_b64:
         return h._send_error_v59(
