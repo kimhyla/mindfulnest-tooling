@@ -550,6 +550,13 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     );
   };
 
+  const onClearStemCutSelection = async () => {
+    setBusyAction('clear_cut');
+    await persistStemCut(0, 0);
+    setBusyAction(null);
+    setStatusMsg('Cut selection cleared — drag gold handles to mark a new region.');
+  };
+
   const onApplyStemCut = async () => {
     const cutStart = Math.round((stateSlice.voice_stem_cut_start_s ?? 0) * 1000);
     const cutEnd = Math.round((stateSlice.voice_stem_cut_end_s ?? 0) * 1000);
@@ -567,7 +574,13 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       setStatusMsg(
         `✓ Stem cut applied${data?.duration_s ? ` (${data.duration_s.toFixed(1)}s)` : ''} — send for lipsync when ready.`,
       );
-      setStemTrimMode(true);
+      setStemTrimMode(false);
+      setStateSlice((s) => {
+        const next = { ...s };
+        delete next.voice_stem_cut_start_s;
+        delete next.voice_stem_cut_end_s;
+        return next;
+      });
       await refreshAll();
     } else {
       const data = res.data as { hint?: string; error_message?: string } | undefined;
@@ -1130,21 +1143,35 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                 >
                   {busyAction === 'apply_cut' ? 'Cutting…' : 'Apply Cut'}
                 </button>
-                <span class="mn-dim mn-stem-trim-hint" data-testid={`phase-${phase}-stem-trim-hint`}>
-                  Drag gold handles · amber = section to remove
-                </span>
-                {lipsyncFile ? (
+                {hasStemCut ? (
                   <button
                     type="button"
                     class="mn-btn"
-                    data-testid={`phase-${phase}-exit-stem-trim-btn`}
-                    onClick={onExitStemTrimMode}
+                    data-testid={`phase-${phase}-clear-stem-cut-btn`}
+                    onClick={() => void onClearStemCutSelection()}
                     disabled={busyAction !== null}
-                    title="Return waveform to lipsync audio"
+                    title="Remove amber selection without changing the stem file"
                   >
-                    Exit trim mode
+                    {busyAction === 'clear_cut' ? 'Clearing…' : 'Clear selection'}
                   </button>
                 ) : null}
+                <span class="mn-dim mn-stem-trim-hint" data-testid={`phase-${phase}-stem-trim-hint`}>
+                  Drag gold handles · amber = section to remove
+                </span>
+                <button
+                  type="button"
+                  class="mn-btn"
+                  data-testid={`phase-${phase}-exit-stem-trim-btn`}
+                  onClick={onExitStemTrimMode}
+                  disabled={busyAction !== null}
+                  title={
+                    lipsyncFile
+                      ? 'Return waveform to lipsync audio'
+                      : 'Hide trim handles and return to normal waveform view'
+                  }
+                >
+                  Exit trim mode
+                </button>
               </>
             ) : (
               <>

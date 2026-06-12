@@ -80,6 +80,7 @@ MARKERS=(
     "PHASE_STEM_TRIM|waveform-stem-cut-block"
     "PHASE_STEM_TRIM|Reject lipsync"
     "PHASE_STEM_TRIM|Trim voice stem"
+    "PHASE_STEM_TRIM|Clear selection"
     "PHASE_STEM_TRIM|Apply Cut"
     "PHASE_STEM_TRIM|Drag gold handles · amber = section to remove"
     "PHASE_STEM_TRIM|waveform-seek-layer"

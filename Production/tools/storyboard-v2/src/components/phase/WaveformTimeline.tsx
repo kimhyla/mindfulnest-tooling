@@ -124,6 +124,10 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     start_ms: number;
     end_ms: number;
   } | null>(null);
+  // Drop drag preview when server props change (e.g. Apply Cut clears cut keys).
+  useEffect(() => {
+    setStemCutDraft(null);
+  }, [audioSrc, cutStartMs, cutEndMs]);
   // Ref mirror of isReady so pointer-event closures always see the current value.
   const isReadyRef = useRef<boolean>(false);
   const onWaveformClickRef = useRef(onWaveformClick);
