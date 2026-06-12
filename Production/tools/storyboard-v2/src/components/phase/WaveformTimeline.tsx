@@ -1,6 +1,20 @@
 // WaveformTimeline — WaveSurfer.js v7 audio timeline for Phase A/B producers.
 // Per LD WAVESURFER_TIMELINE_INTEGRATION_V1 + LD-330 + LD-472.
 //
+// ── DURABILITY RULES (PHASE_WAVEFORM_PLAY — do not regress, 2026-06-12) ─────
+// Enforced by: e2e/phase_waveform_playback.spec.ts + check_storyboard_critical_features.sh
+//   PLAY-1  ▶ Play lives in .mn-waveform-source-label — MUST be in shouldSkipSeek()
+//           and MUST stopPropagation on pointerdown. Otherwise pointerdown seeks
+//           before play(), WaveSurfer swallows AbortError, button stays ▶ Play.
+//   PLAY-2  ws.play() MUST run synchronously from the click handler — no await before
+//           play() (Chrome user-gesture window).
+//   PLAY-3  playback bus control object is stable (one useRef shell + mutate methods);
+//           pauseOtherWaveformPlayback matches on busId, never object identity churn.
+//   PLAY-4  stopAllPhasePlayback only on tab change — effect() in useEffect with dispose,
+//           never bare effect() during App render (app.tsx prevTabRef pattern).
+//   PLAY-5  Hidden keep-alive panes pause via MutationObserver on [hidden] only.
+// ─────────────────────────────────────────────────────────────────────────────
+//
 // Responsibilities (Phase B scope):
 //  - Mount WaveSurfer over a container, load the audio source priority winner
 //    (lipsync > mixed > stem; resolved by PhaseProducer)
@@ -71,7 +85,8 @@ export interface WaveformTimelineProps {
 }
 
 export interface WaveformPlaybackControl {
-  play: (opts?: { fromStart?: boolean }) => Promise<boolean>;
+  readonly busId: symbol;
+  play: (opts?: { fromStart?: boolean }) => boolean;
   pause: () => void;
   readonly isReady: boolean;
 }
@@ -361,7 +376,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   //   seekLayerRef.current was null on first run → early return left ZERO
   //   handlers attached (playhead stuck / snap-to-0).
   // Durable rule: bind on wrapperRef; never early-return before WS cleanup;
-  // skip only cue/cut handles; deps include isReady.
+  // skip source-label (▶ Play lives there), cue blocks, cut handles; deps include isReady.
   useEffect(() => {
     const wrapper = wrapperRef.current;
     const ws = wsRef.current;
@@ -382,7 +397,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       if (!(target instanceof HTMLElement)) return false;
       return Boolean(
         target.closest(
-          '.mn-waveform-cue-block-handle, .mn-waveform-stem-trim-handle, .mn-waveform-cue-block',
+          '.mn-waveform-source-label, .mn-waveform-cue-block-handle, .mn-waveform-stem-trim-handle, .mn-waveform-cue-block',
         ),
       );
     };
@@ -661,8 +676,24 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     (payload) => payload.kind === 'lib-watercolor',
   );
 
+  const controlRef = useRef<WaveformPlaybackControl | null>(null);
+  if (!controlRef.current) {
+    controlRef.current = {
+      busId: Symbol('mn-waveform-playback'),
+      get isReady() {
+        return isReadyRef.current;
+      },
+      play: () => false,
+      pause: () => {},
+    };
+  }
+  const playbackControlRef = controlRef.current;
+
+  // Call ws.play() synchronously from the click handler stack — async/await
+  // before play() loses Chrome's user-gesture window and WaveSurfer may swallow
+  // AbortError without firing the 'play' event (button stays on ▶ Play).
   const startPlayback = useCallback(
-    async (fromStart = false): Promise<boolean> => {
+    (fromStart = false): boolean => {
       const ws = wsRef.current;
       if (!ws || !isReadyRef.current) return false;
       const pane = wrapperRef.current?.closest('.mn-tab-pane-keepalive') as HTMLElement | null;
@@ -675,56 +706,54 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
         lv.currentTime = ws.getCurrentTime();
       }
 
-      try {
-        pauseOtherWaveformPlayback(controlRef.current);
-        await ws.play();
-        if (lv && lv.paused) {
-          lv.muted = true;
-          await lv.play();
-        }
-        setLoadError(null);
-        return true;
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        setLoadError(`Playback failed: ${msg}`);
-        return false;
+      pauseOtherWaveformPlayback(playbackControlRef);
+      setLoadError(null);
+      void ws.play()
+        .then(() => {
+          // WaveSurfer swallows AbortError — verify media actually started.
+          requestAnimationFrame(() => {
+            if (!ws.isPlaying()) {
+              setLoadError(
+                'Playback failed — try ▶ Play again (do not drag the waveform at the same time).',
+              );
+            }
+          });
+        })
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          setLoadError(`Playback failed: ${msg}`);
+        });
+      if (lv && lv.paused) {
+        lv.muted = true;
+        lv.play().catch(() => {});
       }
+      return true;
     },
-    [linkedVideo],
+    [linkedVideo, playbackControlRef],
   );
 
   const togglePlayback = useCallback(() => {
-    void (async () => {
-      const ws = wsRef.current;
-      if (!ws) return;
-      if (ws.isPlaying()) {
-        hardPause();
-        return;
-      }
-      setLoadError(null);
-      await startPlayback(false);
-    })();
+    const ws = wsRef.current;
+    if (!ws) return;
+    if (ws.isPlaying()) {
+      hardPause();
+      return;
+    }
+    startPlayback(false);
   }, [startPlayback, hardPause]);
 
-  const controlRef = useRef<WaveformPlaybackControl>({
-    get isReady() {
-      return isReadyRef.current;
-    },
-    play: async () => false,
-    pause: () => {},
-  });
-  controlRef.current.play = (opts) => startPlayback(opts?.fromStart ?? false);
-  controlRef.current.pause = hardPause;
+  playbackControlRef.play = (opts) => startPlayback(opts?.fromStart ?? false);
+  playbackControlRef.pause = hardPause;
 
   useEffect(() => {
     if (!playbackControl) return;
-    playbackControl.current = controlRef.current;
-    const unregister = registerWaveformPlaybackControl(controlRef.current);
+    playbackControl.current = playbackControlRef;
+    const unregister = registerWaveformPlaybackControl(playbackControlRef);
     return () => {
       unregister();
       playbackControl.current = null;
     };
-  }, [playbackControl]);
+  }, [playbackControl, playbackControlRef]);
 
   if (!audioSrc) {
     return (
@@ -762,6 +791,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
           class="mn-btn mn-btn-play"
           data-testid="waveform-play-btn"
           disabled={!isReady}
+          onPointerDown={(e: PointerEvent) => e.stopPropagation()}
           onClick={togglePlayback}
           title={isPlaying ? 'Pause' : 'Play'}
         >

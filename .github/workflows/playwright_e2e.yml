@@ -404,6 +404,7 @@ jobs:
             e2e/f_phase_a_001_routing.spec.ts \
             e2e/f_phase_b_001_files_serve.spec.ts \
             e2e/delay_durability.spec.ts \
+            e2e/phase_waveform_playback.spec.ts \
             e2e/layer_b_option_b_bg_session_state.spec.ts \
             e2e/divergence_residuals_6_layer.spec.ts \
             e2e/track-b-ld-coverage.spec.ts \

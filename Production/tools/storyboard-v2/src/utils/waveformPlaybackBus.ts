@@ -1,24 +1,27 @@
 /** Coordinates Phase A/B waveform players (only one should play at a time). */
-type PlaybackControl = { pause: () => void };
+export type PlaybackControl = {
+  readonly busId: symbol;
+  pause: () => void;
+};
 
-const controls = new Set<PlaybackControl>();
+const controls = new Map<symbol, PlaybackControl>();
 
 export function registerWaveformPlaybackControl(c: PlaybackControl): () => void {
-  controls.add(c);
+  controls.set(c.busId, c);
   return () => {
-    controls.delete(c);
+    controls.delete(c.busId);
   };
 }
 
 export function pauseOtherWaveformPlayback(except: PlaybackControl): void {
-  for (const c of controls) {
-    if (c !== except) c.pause();
+  for (const c of controls.values()) {
+    if (c.busId !== except.busId) c.pause();
   }
 }
 
 /** Stop every mounted Phase A/B waveform (hidden keep-alive panes included). */
 export function pauseAllWaveformPlayback(): void {
-  for (const c of controls) c.pause();
+  for (const c of controls.values()) c.pause();
 }
 
 /** WaveSurfer + linked preview videos in hidden keep-alive panes. */

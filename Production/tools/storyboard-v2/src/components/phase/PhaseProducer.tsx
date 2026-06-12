@@ -737,7 +737,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
         setStatusMsg('Audio waveform still loading — wait a moment and try again.');
         return;
       }
-      const ok = await ctl.play({ fromStart: true });
+      const ok = ctl.play({ fromStart: true });
       if (!ok) {
         setStatusMsg('Could not start preview — try the ▶ Play button on the waveform.');
         return;

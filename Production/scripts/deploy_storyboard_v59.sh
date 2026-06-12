@@ -180,6 +180,14 @@ if [[ "${MN_SKIP_REGRESSION_GUARD:-0}" != "1" ]]; then
     else
         echo "[deploy] WARN: regression guard script missing at $GUARD_SCRIPT — skipping" >&2
     fi
+    DURABILITY_SCRIPT="$SRC_TOOLING/Production/scripts/verify_phase_waveform_play_durability.sh"
+    if [[ -x "$DURABILITY_SCRIPT" ]]; then
+        if ! bash "$DURABILITY_SCRIPT"; then
+            echo "[deploy] FATAL: waveform play durability guard failed." >&2
+            exit 1
+        fi
+        echo "[deploy] (a-pre.6b) PHASE_WAVEFORM_PLAY source durability ok"
+    fi
 else
     echo "[deploy] (a-pre.6) LD-766 regression guard SKIPPED (MN_SKIP_REGRESSION_GUARD=1)"
 fi
