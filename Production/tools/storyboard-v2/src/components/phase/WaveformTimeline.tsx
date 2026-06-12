@@ -713,13 +713,8 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     play: async () => false,
     pause: () => {},
   });
-  controlRef.current = {
-    get isReady() {
-      return isReadyRef.current;
-    },
-    play: (opts) => startPlayback(opts?.fromStart ?? false),
-    pause: hardPause,
-  };
+  controlRef.current.play = (opts) => startPlayback(opts?.fromStart ?? false);
+  controlRef.current.pause = hardPause;
 
   useEffect(() => {
     if (!playbackControl) return;
@@ -729,7 +724,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       unregister();
       playbackControl.current = null;
     };
-  }, [playbackControl, startPlayback, hardPause]);
+  }, [playbackControl]);
 
   if (!audioSrc) {
     return (

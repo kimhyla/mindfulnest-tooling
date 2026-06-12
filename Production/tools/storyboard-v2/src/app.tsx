@@ -6,7 +6,7 @@
 // Session 1 ships read-only preview. ZERO mutation calls. The single mutation
 // channel pathappPatch() exists in src/api/client.ts but has no callers.
 
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { effect } from '@preact/signals';
 import { ScopeBoundary } from './components/ScopeBoundary';
 import { ScopeBanner } from './components/ScopeBanner';
@@ -124,11 +124,17 @@ export function App() {
     );
   }, []);
 
-  // Stop ghost audio whenever the top tab changes (keep-alive mounts A+B simultaneously).
-  effect(() => {
-    activeTab.value;
-    stopAllPhasePlayback();
-  });
+  // Stop ghost audio on tab change only — never call effect() during render (leaks + stops play).
+  const prevTabRef = useRef(activeTab.value);
+  useEffect(() => {
+    const dispose = effect(() => {
+      const tab = activeTab.value;
+      if (tab === prevTabRef.current) return;
+      prevTabRef.current = tab;
+      stopAllPhasePlayback();
+    });
+    return dispose;
+  }, []);
 
   useEffect(() => {
     const onHidden = () => {
