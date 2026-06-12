@@ -34,7 +34,6 @@ import { makeDropTarget, type DragPayload } from '../../utils/dragdrop';
 import {
   pauseOtherWaveformPlayback,
   registerWaveformPlaybackControl,
-  stopAllPhasePlayback,
   pauseAllPhasePlayback,
 } from '../../utils/waveformPlaybackBus';
 
