@@ -5542,6 +5542,7 @@ def _ffmpeg_concat_kling_clips_with_pair_fades(
     fs = _ffmpeg_stitch_module()
     compute_fade_clamp_per_pair = fs.compute_fade_clamp_per_pair
     trim_body_with_fade = fs.trim_body_with_fade
+    expand_clips_with_black_pause_boundaries = fs.expand_clips_with_black_pause_boundaries
 
     if not clip_paths:
         raise ValueError("no clips to concat")
@@ -5561,33 +5562,16 @@ def _ffmpeg_concat_kling_clips_with_pair_fades(
 
     body_dir = scratch_dir / "fade_black"
     body_dir.mkdir(parents=True, exist_ok=True)
-
-    parts: list[Path] = []
-    n = len(clip_paths)
-    for i, clip in enumerate(clip_paths):
-        fade_in_s = (
-            _intro_visual_fade_in_s(clamped[i - 1])
-            if i > 0 and clamped[i - 1] > 0 else 0.0
-        )
-        fade_out_s = (
-            _intro_visual_fade_out_s(clamped[i])
-            if i < n - 1 and clamped[i] > 0 else 0.0
-        )
-        if fade_in_s == 0.0 and fade_out_s == 0.0:
-            parts.append(clip)
-        else:
-            body = body_dir / (
-                f"clip_{i:02d}_fi{fade_in_s:.3f}_fo{fade_out_s:.3f}_vonly.mp4"
-            )
-            trim_body_with_fade(
-                clip, body,
-                head_remove_s=0.0,
-                tail_remove_s=0.0,
-                fade_in_s=fade_in_s,
-                fade_out_s=fade_out_s,
-                fade_audio=False,
-            )
-            parts.append(body)
+    visual_out_ms = _load_intro_fade_out_video_tail_ms()
+    visual_in_ms = _load_intro_fade_in_video_head_ms()
+    parts = expand_clips_with_black_pause_boundaries(
+        clip_paths,
+        clamped,
+        body_dir,
+        visual_out_ms=visual_out_ms,
+        visual_in_ms=visual_in_ms,
+        fade_audio=False,
+    )
 
     _ffmpeg_concat_kling_clips_reencode(parts, dest)
 
@@ -5597,11 +5581,12 @@ def _boundaries_for_pair_fade_concat(
     clip_paths: list[Path],
     pair_fades: list[int],
 ) -> list[dict]:
-    """Timeline markers after fade-through-black concat (full clip durations, hard cuts)."""
-    _ = pair_fades
+    """Timeline markers — beat bodies only; black pauses sit between markers."""
     cursor_ms = 0
     out: list[dict] = []
-    for beat, clip in zip(beats, clip_paths):
+    visual_out_ms = _load_intro_fade_out_video_tail_ms()
+    visual_in_ms = _load_intro_fade_in_video_head_ms()
+    for i, (beat, clip) in enumerate(zip(beats, clip_paths)):
         dur_ms = int(round(_ffprobe_duration(clip) * 1000))
         out.append({
             "beat_id": beat["beat_id"],
@@ -5610,6 +5595,9 @@ def _boundaries_for_pair_fade_concat(
             "duration_ms": dur_ms,
         })
         cursor_ms += dur_ms
+        if i < len(pair_fades) and pair_fades[i] > 0:
+            black_ms = max(0, int(pair_fades[i]) - visual_out_ms - visual_in_ms)
+            cursor_ms += black_ms
     return out
 
 

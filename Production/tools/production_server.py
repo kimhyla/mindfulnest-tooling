@@ -11841,6 +11841,9 @@ body {{padding-top:44px!important;}}
         #                 head; audio_xfade_ms=0 → hard audio cut;
         #                 audio_xfade_ms>0 → afade out/in across the boundary
         transitions = body.get("transitions") or []
+        trans_by_after = {
+            int(t.get("after_slot", 0)): t for t in transitions if isinstance(t, dict)
+        }
         for t in transitions:
             after_slot = int(t.get("after_slot", 0))
             if after_slot >= len(slot_finals):
@@ -11878,20 +11881,28 @@ body {{padding-top:44px!important;}}
                 rebaked = self._stitch_mix_slot_audio(slot_finals[after_slot], trans_slot, cache_dir)
                 slot_finals[after_slot] = rebaked
 
-            elif kind == "dissolve":
-                # NEW S5.5g — visual fadeblack at boundary. Apply fade=t=out
-                # to slot[after_slot] tail + fade=t=in to slot[after_slot+1]
-                # head. Audio fade conditional on audio_xfade_ms (Q1 LOCKED).
-                # Reference: LD-376 fadeblack pattern from Phase A.
-                slot_finals[after_slot] = self._stitch_apply_dissolve_tail(
-                    slot_finals[after_slot], cache_dir,
-                    fade_ms=fade_ms, audio_xfade_ms=audio_xfade_ms,
-                )
-                if after_slot + 1 < len(slot_finals):
-                    slot_finals[after_slot + 1] = self._stitch_apply_dissolve_head(
-                        slot_finals[after_slot + 1], cache_dir,
-                        fade_ms=fade_ms, audio_xfade_ms=audio_xfade_ms,
-                    )
+        # Dissolve boundaries: short visual fade + inserted black hold (not eating dialogue).
+        from ffmpeg_stitch import expand_clips_with_black_pause_boundaries  # noqa: PLC0415
+
+        _DEFAULT_DISSOLVE_MS = 2800
+        _VISUAL_FADE_MS = 600
+        pair_fades_ms: list[int] = []
+        for i in range(max(0, len(slot_finals) - 1)):
+            t = trans_by_after.get(i)
+            kind = (t.get("kind") or "dissolve").lower() if t else "dissolve"
+            if kind == "dissolve":
+                pair_fades_ms.append(int((t or {}).get("fade_ms", _DEFAULT_DISSOLVE_MS)))
+            else:
+                pair_fades_ms.append(0)
+        if any(f > 0 for f in pair_fades_ms):
+            slot_finals = expand_clips_with_black_pause_boundaries(
+                slot_finals,
+                pair_fades_ms,
+                cache_dir / "module_boundary_black",
+                visual_out_ms=_VISUAL_FADE_MS,
+                visual_in_ms=_VISUAL_FADE_MS,
+                fade_audio=False,
+            )
 
         # Concat all slot finals (LD-284: already normalized)
         job_sig = json.dumps(
@@ -11907,7 +11918,7 @@ body {{padding-top:44px!important;}}
         ).hexdigest()[:12]
 
         out_path = cache_dir / f"stitch_preview_{out_hash}.mp4"
-        expected_ms = sum(slot_durations) if slot_durations else 0
+        expected_ms = sum(self._ffprobe_duration_ms(p) for p in slot_finals)
         expected_s = expected_ms / 1000.0
         from ffmpeg_stitch import preview_cache_is_valid  # noqa: PLC0415
 

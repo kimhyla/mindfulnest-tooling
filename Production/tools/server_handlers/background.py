@@ -3584,6 +3584,9 @@ def _clear_o3_job_metadata(job_id: str, *, status: str, result: dict | None = No
 
 def handle_bg_kling_o3_trim(h, body: dict) -> None:
     """POST /api/bg/kling-o3-trim — set/clear front/back trim on a Beat Gen O3 clip."""
+    import copy
+    from urllib.parse import quote
+
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
         return
     beat_id = body.get("beat_id")
@@ -3594,6 +3597,7 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
             error_message="beat_id required",
             retry_safe=False,
         )
+    preview_only = bool(body.get("preview_only") or body.get("preview"))
     raw_trim_start = body.get("trim_start")
     if raw_trim_start is None:
         raw_trim_start = body.get("trim_in", 0)
@@ -3617,6 +3621,28 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
         )
 
     bg = _bg_module()
+
+    def _trim_preview_url(work_beat: dict) -> str | None:
+        vp = work_beat.get("kling_o3_video_path") or ""
+        if not vp or not Path(vp).is_file():
+            return None
+        event_dir = Path(h.app.event_dir)
+        scratch = event_dir / "assembled" / "_kling_o3_trim_scratch"
+        dest = scratch / f"{beat_id}_ui_trim_preview.mp4"
+        try:
+            if bg.kling_o3_trim_is_active(work_beat):
+                bg.materialize_kling_o3_trimmed_clip(work_beat, dest, source_path=Path(vp))
+            else:
+                import shutil
+                shutil.copy2(vp, dest)
+        except Exception as exc:
+            print(f"[bg_o3_trim] preview materialize failed for {beat_id}: {exc}", flush=True)
+            return None
+        if not dest.is_file():
+            return None
+        rel = f"Production/{event_dir.name}/assembled/_kling_o3_trim_scratch/{dest.name}"
+        return f"/files?path={quote(rel)}"
+
     with bg._sidecar_lock:
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
@@ -3628,8 +3654,11 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                 error_message=f"beat {beat_id} not found",
                 retry_safe=False,
             )
+        work_beat = copy.deepcopy(beat)
         if body.get("clear"):
-            bg.clear_kling_o3_beat_trim(beat)
+            bg.clear_kling_o3_beat_trim(work_beat)
+            if not preview_only:
+                bg.clear_kling_o3_beat_trim(beat)
             result = {
                 "trim_start": 0.0,
                 "trim_back": None,
@@ -3638,7 +3667,7 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
         else:
             try:
                 result = bg.set_kling_o3_beat_trim(
-                    beat,
+                    work_beat,
                     trim_start=trim_start,
                     trim_back=trim_back,
                 )
@@ -3649,7 +3678,15 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                     error_message=str(exc),
                     retry_safe=False,
                 )
-        bg.write_sidecar(sidecar)
+            if not preview_only:
+                beat["kling_o3_trim_start"] = work_beat.get("kling_o3_trim_start")
+                beat["kling_o3_trim_back"] = work_beat.get("kling_o3_trim_back")
+                beat.pop("kling_o3_trim_end", None)
+        if not preview_only:
+            bg.write_sidecar(sidecar)
+    preview_url = _trim_preview_url(work_beat)
+    if preview_url:
+        result["preview_video_url"] = preview_url
     return h._send_json(200, {"ok": True, "beat_id": beat_id, **result})
 
 

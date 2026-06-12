@@ -781,6 +781,96 @@ def trim_body_with_fade(
     return new_dur
 
 
+def render_black_pause_clip(
+    duration_s: float,
+    dest: Path,
+    *,
+    timeout_s: int = DEFAULT_FFMPEG_TIMEOUT_S,
+) -> Path:
+    """Silent black filler at LD-284 codec (inserted BETWEEN clips, not inside them)."""
+    duration_s = max(0.05, float(duration_s))
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.parent / f"{dest.stem}.tmp.{os.getpid()}{dest.suffix}"
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", "color=c=black:s=1280x720:r=24",
+        "-f", "lavfi", "-i", "anullsrc=channel_layout=mono:sample_rate=44100",
+        "-t", f"{duration_s:.3f}",
+        "-shortest",
+        "-map", "0:v:0", "-map", "1:a:0",
+        *NORMALIZATION_ENCODER_ARGS,
+        str(tmp),
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, timeout=timeout_s)
+        os.replace(tmp, dest)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+    return dest
+
+
+def expand_clips_with_black_pause_boundaries(
+    clips: list[Path],
+    pair_fades_ms: list[int],
+    scratch_dir: Path,
+    *,
+    visual_out_ms: int = 600,
+    visual_in_ms: int = 600,
+    fade_audio: bool = False,
+) -> list[Path]:
+    """Fade-through-black with inserted black hold — does not eat dialogue time.
+
+    pair_fades_ms[i] is the total boundary budget between clips[i] and clips[i+1]:
+    short fade-out on clip i, optional black hold, short fade-in on clip i+1.
+    """
+    if not clips:
+        return []
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    n = len(clips)
+    if len(pair_fades_ms) != max(0, n - 1):
+        raise ValueError(
+            f"expand_clips_with_black_pause_boundaries: len(pair_fades_ms)="
+            f"{len(pair_fades_ms)} expected {max(0, n - 1)}",
+        )
+    parts: list[Path] = []
+    for i, clip in enumerate(clips):
+        fade_in_s = (
+            min(visual_in_ms, pair_fades_ms[i - 1]) / 1000.0
+            if i > 0 and pair_fades_ms[i - 1] > 0 else 0.0
+        )
+        fade_out_s = (
+            min(visual_out_ms, pair_fades_ms[i]) / 1000.0
+            if i < n - 1 and pair_fades_ms[i] > 0 else 0.0
+        )
+        if fade_in_s > 0.0 or fade_out_s > 0.0:
+            body = scratch_dir / (
+                f"black_pause_body_{i:02d}_{clip.stem}_"
+                f"fi{fade_in_s:.3f}_fo{fade_out_s:.3f}.mp4"
+            )
+            trim_body_with_fade(
+                clip, body,
+                head_remove_s=0.0,
+                tail_remove_s=0.0,
+                fade_in_s=fade_in_s,
+                fade_out_s=fade_out_s,
+                fade_audio=fade_audio,
+            )
+            parts.append(body)
+        else:
+            parts.append(clip)
+        if i < n - 1 and pair_fades_ms[i] > 0:
+            black_ms = max(0, int(pair_fades_ms[i]) - visual_out_ms - visual_in_ms)
+            if black_ms > 0:
+                black = scratch_dir / f"black_pause_{i:02d}_{black_ms}ms.mp4"
+                render_black_pause_clip(black_ms / 1000.0, black)
+                parts.append(black)
+    return parts
+
+
 def trim_tail(src: Path, dst: Path, tail_remove_s: float,
               timeout_s: int = DEFAULT_FFMPEG_TIMEOUT_S) -> float:
     """Remove tail_remove_s seconds from the end of src. Returns new duration.
