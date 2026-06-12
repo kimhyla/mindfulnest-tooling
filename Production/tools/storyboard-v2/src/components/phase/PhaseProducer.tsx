@@ -20,6 +20,7 @@ import { stitcherRefreshTick } from '../../app';
 import { serverRehydrateTick } from '../../state/refreshSignals';
 import { SERVER_REHYDRATE_EVENT } from '../../state/serverRehydrate';
 import { WaveformTimeline, type WatercolorCue, type WaveformPlaybackControl } from './WaveformTimeline';
+import { WatercolorAnimOverlay } from './WatercolorAnimOverlay';
 import { CuePopover } from './CuePopover';
 
 // ── Schema translation: frontend ↔ server ───────────────────────────────────
@@ -257,8 +258,8 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const [ambientPresets, setAmbientPresets] = useState<AmbientPreset[]>([]);
   // Playback position in ms — updated by WaveformTimeline via onTimeUpdate.
   const [currentTimeMs, setCurrentTimeMs] = useState(0);
-  // Server-composed preview blob URL from POST /api/phase_b/preview (chromakey + loop).
-  const [previewOverlayUrl, setPreviewOverlayUrl] = useState<string | null>(null);
+  // WaveSurfer play state — drives animated overlay loop + canvas redraw.
+  const [waveIsPlaying, setWaveIsPlaying] = useState(false);
   // True while Kling lipsync is processing in the background (202 submitted).
   const [lipsyncing, setLipsyncing] = useState(false);
   // Mtime of lipsync_file at the moment we submitted — used to detect when
@@ -269,12 +270,6 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const waveformPlaybackRef = useRef<WaveformPlaybackControl | null>(null);
   const wcUploadInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    return () => {
-      if (previewOverlayUrl) URL.revokeObjectURL(previewOverlayUrl);
-    };
-  }, [previewOverlayUrl]);
   // User toggled "Trim voice stem" — show stem on waveform + amber cut handles even
   // when a lipsync file would otherwise win audio priority.
   const [stemTrimMode, setStemTrimMode] = useState(false);
@@ -725,59 +720,34 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   };
 
   // ── Preview with Overlay ─────────────────────────────────────────────────
-  // Server ffmpeg-composites animated cues (chromakey magenta, stream_loop for
-  // full cue window). Browser live preview uses static PNG thumbs for placement only.
-  const onPreviewOverlay = async () => {
+  // One surface: lipsync frame + canvas-chromakey animated overlays on cue timing.
+  const onPreviewOverlay = () => {
     if (!lipsyncFile) {
       setStatusMsg('No lipsync video yet — run Send for Lipsync first.');
       return;
     }
+    if (!priorityAudio) {
+      setStatusMsg('No audio on timeline — generate a stem or finish lipsync first.');
+      return;
+    }
+    document
+      .querySelector(`[data-testid="phase-${phase}-lipsync-player"]`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    const ctl = waveformPlaybackRef.current;
+    if (!ctl?.isReady) {
+      setStatusMsg('Audio waveform still loading — wait a moment and try again.');
+      return;
+    }
+    if (!ctl.play({ fromStart: true })) {
+      setStatusMsg('Could not start preview — try the ▶ Play button on the waveform.');
+      return;
+    }
     const hasCues = (stateSlice.watercolor_cues ?? []).length > 0;
-    setBusyAction('preview');
     setStatusMsg(
       hasCues
-        ? 'Compositing overlay preview… first run may take 1–3 min; cached runs are faster.'
-        : 'Loading lipsync preview… first run may take 1–3 min; cached runs are faster.',
+        ? '▶ Previewing — animated overlays appear on the lipsync frame above.'
+        : '▶ Previewing lipsync — drag watercolors onto the waveform when ready.',
     );
-    if (previewOverlayUrl) URL.revokeObjectURL(previewOverlayUrl);
-    setPreviewOverlayUrl(null);
-    try {
-      const resp = await fetch(`${SERVER_BASE}/api/phase_b/preview`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          phase,
-          scope_event_id: activeScope.value.event_id,
-          scope_video_role: activeVideoRole.value,
-        }),
-      });
-      if (!resp.ok) {
-        let hint = '';
-        try {
-          const j = (await resp.json()) as { error_message?: string; hint?: string };
-          hint = j.error_message ?? j.hint ?? '';
-        } catch {
-          /* ignore */
-        }
-        setStatusMsg(`✗ Preview HTTP ${resp.status}${hint ? `: ${hint}` : ''}`);
-        setBusyAction(null);
-        return;
-      }
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      setPreviewOverlayUrl(url);
-      document
-        .querySelector(`[data-testid="phase-${phase}-overlay-preview"]`)
-        ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      setStatusMsg(
-        hasCues
-          ? '✓ Preview ready — animated overlays composited below (ffmpeg chromakey).'
-          : '✓ Preview ready — lipsync video below.',
-      );
-    } catch (err) {
-      setStatusMsg(`✗ Preview fetch error: ${String(err)}`);
-    }
-    setBusyAction(null);
   };
 
   const onExportToStitcher = async () => {
@@ -1302,6 +1272,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           onCueClick={onCueClick}
           onWatercolorDrop={onWatercolorDrop}
           onTimeUpdate={(ms) => setCurrentTimeMs(ms)}
+          onPlayStateChange={setWaveIsPlaying}
           onCueRangeChange={onCueRangeChange}
           stemCutStartMs={stemCutStartMs}
           stemCutEndMs={stemCutEndMs}
@@ -1427,9 +1398,9 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             data-testid={`phase-${phase}-preview-overlay-btn`}
             onClick={onPreviewOverlay}
             disabled={busyAction !== null || !lipsyncFile}
-            title="Server-composites watercolor cues (chromakey + animated loop) into a preview MP4 below."
+            title="Play from the start — animated watercolors render on the lipsync frame above."
           >
-            {busyAction === 'preview' ? '⏳ Compositing…' : '🎨 Preview with Overlay'}
+            🎨 Preview with Overlay
           </button>
         </div>
 
@@ -1470,13 +1441,30 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                   )
                   .map((cue) => {
                     const wcItem = watercolors.find((w) => w.key === cue.watercolor_key);
-                    // Live preview: static PNG only (thumb_url). Animated MP4s carry magenta
-                    // chromakey — motion + keying happen in server Preview with Overlay / export.
+                    const isAnimation =
+                      wcItem?.kind === 'animation' ||
+                      cue.watercolor_key.includes('_animated_');
+                    const elapsed = currentTimeMs - cue.offset_ms;
+                    const opacity = Math.min(1.0, elapsed / 300);
+
+                    if (isAnimation) {
+                      const animSrc =
+                        wcItem?.animation_url ??
+                        `${SERVER_BASE}/api/phase_b/watercolor/${encodeURIComponent(cue.watercolor_key)}`;
+                      return (
+                        <WatercolorAnimOverlay
+                          key={cue.id}
+                          src={animSrc}
+                          elapsedMs={elapsed}
+                          isWavePlaying={waveIsPlaying}
+                          opacity={opacity}
+                        />
+                      );
+                    }
+
                     const pngSrc =
                       wcItem?.thumb_url ??
                       `${SERVER_BASE}/api/phase_b/watercolor/${encodeURIComponent(cue.watercolor_key)}`;
-                    const elapsed = currentTimeMs - cue.offset_ms;
-                    const opacity = Math.min(1.0, elapsed / 300);
 
                     return (
                       <img
@@ -1500,28 +1488,6 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             </div>
           )}
         </div>
-
-        {previewOverlayUrl ? (
-          <div class="mn-phase-overlay-preview" data-testid={`phase-${phase}-overlay-preview`}>
-            <strong>🎨 Overlay preview (server-composited):</strong>
-            <video
-              controls
-              class="mn-phase-stitched-video"
-              src={previewOverlayUrl}
-            />
-            <button
-              type="button"
-              class="mn-btn mn-btn-small"
-              style={{ marginTop: '6px' }}
-              onClick={() => {
-                URL.revokeObjectURL(previewOverlayUrl);
-                setPreviewOverlayUrl(null);
-              }}
-            >
-              ✕ Close preview
-            </button>
-          </div>
-        ) : null}
 
         {/* Phase A 3-clip section — only when phase==='a' (LD PHASE_A_THREE_CLIP_HANDLING_V1).
             Phase B is single-clip via the existing baseclip select above. */}

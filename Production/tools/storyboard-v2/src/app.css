@@ -659,6 +659,9 @@
      the full watercolor painting on its paper background over the video. */
   mix-blend-mode: normal;
 }
+canvas.mn-lipsync-watercolor-overlay {
+  display: block;
+}
 
 /* Overlay preview panel — shown after "Preview with Overlay" compositing */
 .mn-phase-overlay-preview {
