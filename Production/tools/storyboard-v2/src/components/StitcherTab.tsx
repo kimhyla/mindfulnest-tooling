@@ -1109,7 +1109,7 @@ export function StitcherTab() {
           <div class="mn-stitcher-multiphase-track" data-testid="stitcher-multiphase-track">
             <div class="mn-stitcher-multiphase-track-header">
               <strong>Multi-phase view track</strong>
-              <span class="mn-dim">click a phase to jump in the module preview</span>
+              <span class="mn-dim">click a phase to jump in the module preview · selection persists per event</span>
             </div>
             <div class="mn-stitcher-multiphase-track-rail">
               {multiPhaseSlots.map((sd) => {
