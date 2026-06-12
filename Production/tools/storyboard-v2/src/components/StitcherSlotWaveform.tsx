@@ -1,82 +1,119 @@
-// StitcherSlotWaveform — per-slot SFX strip drop target (Q1 Option C: sfx-strip → lib-sfx).
+// StitcherSlotWaveform — per-slot SFX timeline (WaveformTimeline parity).
+// STITCHER_SFX_TIMELINE_V1 — WaveSurfer strip + lib-sfx drop + resize handles.
 
-import { useRef } from 'preact/hooks';
-import { acceptDragForTarget, makeDropTarget, type DragPayload } from '../utils/dragdrop';
+import { useEffect, useMemo, useState } from 'preact/hooks';
+import { activeScope } from '../state/scope';
+import { pathappPatch } from '../api/client';
+import { WaveformTimeline, type WatercolorCue } from './phase/WaveformTimeline';
 import type { SfxCue } from './phase/SfxCuePopover';
 
 export interface StitcherSlotWaveformProps {
   slotKey: string;
+  videoPath?: string;
   videoDurMs: number;
   cues: ReadonlyArray<SfxCue>;
-  onSfxDrop: (lib_key: string, source_path: string, offset_ms: number) => void;
+  onSfxDrop: (
+    lib_key: string,
+    source_path: string,
+    offset_ms: number,
+    duration_ms: number,
+  ) => void;
+  onCueRangeChange: (cue_id: string, offset_ms: number, duration_ms: number) => void;
   onCueClick: (cue_id: string, anchor: { x: number; y: number }) => void;
+}
+
+function sfxToTimelineCues(cues: ReadonlyArray<SfxCue>): WatercolorCue[] {
+  return cues.map((cue) => ({
+    id: cue.id,
+    watercolor_key: cue.name ?? cue.source_path.split('/').pop() ?? cue.id,
+    offset_ms: cue.offset_ms,
+    duration_ms: cue.duration_ms ?? 3000,
+  }));
 }
 
 export function StitcherSlotWaveform({
   slotKey,
+  videoPath,
   videoDurMs,
   cues,
   onSfxDrop,
+  onCueRangeChange,
   onCueClick,
 }: StitcherSlotWaveformProps) {
-  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const [audioSrc, setAudioSrc] = useState<string | null>(null);
+  const [extractDurMs, setExtractDurMs] = useState<number | null>(null);
+  const [extractError, setExtractError] = useState<string | null>(null);
 
-  const dropHandlers = makeDropTarget(
-    (payload: DragPayload, e: DragEvent) => {
-      if (payload.kind !== 'lib-sfx') return;
-      if (videoDurMs <= 0) return;
-      const wrapper = wrapperRef.current;
-      if (!wrapper) return;
-      const box = wrapper.getBoundingClientRect();
-      if (box.width <= 0) return;
-      const relativeX = (e.clientX - box.left) / box.width;
-      const clamped = Math.max(0, Math.min(1, relativeX));
-      const offsetMs = Math.round(clamped * videoDurMs);
-      onSfxDrop(payload.lib_key, payload.source_path, offsetMs);
-    },
-    acceptDragForTarget('sfx-strip'),
-    'sfx-strip',
-  );
+  useEffect(() => {
+    if (!videoPath) {
+      setAudioSrc(null);
+      setExtractDurMs(null);
+      setExtractError(null);
+      return;
+    }
+    let cancelled = false;
+    setExtractError(null);
+    (async () => {
+      const res = await pathappPatch<{ audio_url?: string; duration_ms?: number }>(
+        activeScope.value,
+        'stitch_audio_extract',
+        { video_path: videoPath },
+      );
+      if (cancelled) return;
+      if (res.ok && res.data?.audio_url) {
+        setAudioSrc(res.data.audio_url);
+        setExtractDurMs(
+          typeof res.data.duration_ms === 'number' && res.data.duration_ms > 0
+            ? res.data.duration_ms
+            : videoDurMs,
+        );
+      } else {
+        setAudioSrc(null);
+        setExtractDurMs(null);
+        setExtractError(res.error ?? `audio extract HTTP ${res.status}`);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [videoPath, videoDurMs, activeScope.value.event_id]);
 
-  const cuePctLeft = (cue: SfxCue): number => {
-    if (videoDurMs <= 0) return 0;
-    return Math.max(0, Math.min(100, (cue.offset_ms / videoDurMs) * 100));
-  };
+  const timelineCues = useMemo(() => sfxToTimelineCues(cues), [cues]);
+  const fallbackDurationMs = extractDurMs ?? videoDurMs;
+  const cueTestIdPrefix = `stitcher-sfx-cue-marker-${slotKey}-`;
+
+  const emptyMessage = !videoPath
+    ? '— no slot video yet — drop SFX to place cue (timing uses default duration)'
+    : extractError
+      ? `Waveform unavailable (${extractError}) — drop SFX still works`
+      : audioSrc
+        ? undefined
+        : 'Extracting slot audio for waveform…';
 
   return (
-    // CI fix #4: consolidated to single div (Q1's outer-wrapper pattern
-    // broke G3 — drops on outer never reached inner-element drop handlers).
-    // Restores the original pre-Q1 DOM shape where slot-waveform testid +
-    // drop handlers + data-drop-target-kind are all on the SAME element.
-    /* eslint-disable-next-line jsx-a11y/no-static-element-interactions */
     <div
-      ref={wrapperRef}
-      class="mn-stitcher-slot-waveform mn-drop-target"
-      data-testid={`stitcher-slot-waveform-${slotKey}`}
-      data-drop-target-kind="sfx-strip"
+      class="mn-stitcher-slot-waveform-wrap"
+      data-stitcher-sfx-timeline="STITCHER_SFX_TIMELINE_V1"
       data-slot-key={slotKey}
       data-video-dur-ms={videoDurMs}
       data-cue-count={cues.length}
-      onDragOver={dropHandlers.onDragOver}
-      onDragLeave={dropHandlers.onDragLeave}
-      onDrop={dropHandlers.onDrop}
+      data-has-waveform={audioSrc ? 'true' : 'false'}
     >
-      <div class="mn-stitcher-slot-waveform-canvas" />
-      <div class="mn-stitcher-slot-waveform-cue-overlay">
-        {cues.map((cue) => (
-          <div
-            key={cue.id}
-            data-testid={`stitcher-sfx-cue-marker-${slotKey}-${cue.id}`}
-            data-offset-ms={cue.offset_ms}
-            class="mn-stitcher-sfx-cue-marker"
-            style={{ left: `${cuePctLeft(cue)}%` }}
-            onClick={(e: MouseEvent) =>
-              onCueClick(cue.id, { x: e.clientX, y: e.clientY })
-            }
-            title={`${cue.name ?? cue.source_path.split('/').pop() ?? cue.id} @ ${(cue.offset_ms / 1000).toFixed(1)}s`}
-          />
-        ))}
-      </div>
+      <WaveformTimeline
+        timelineTestId={`stitcher-slot-waveform-${slotKey}`}
+        audioSrc={audioSrc}
+        sourceLabel="mixed"
+        sourceFilename={videoPath?.split('/').pop() ?? slotKey}
+        cues={timelineCues}
+        compact
+        fallbackDurationMs={fallbackDurationMs}
+        {...(emptyMessage !== undefined ? { emptyMessage } : {})}
+        cueTestIdPrefix={cueTestIdPrefix}
+        cueBlockClassName="mn-stitcher-sfx-cue-block"
+        onSfxDrop={onSfxDrop}
+        onCueRangeChange={onCueRangeChange}
+        onCueClick={onCueClick}
+      />
     </div>
   );
 }

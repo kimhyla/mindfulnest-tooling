@@ -1119,6 +1119,34 @@ canvas.mn-lipsync-watercolor-overlay {
   background: rgba(50, 130, 200, 0.85);
 }
 
+/* STITCHER_SFX_TIMELINE_V1 — WaveformTimeline blocks on per-slot strip */
+.mn-stitcher-slot-waveform-wrap {
+  margin: 6px 0;
+}
+.mn-waveform-timeline--compact {
+  min-height: 72px;
+}
+.mn-waveform-timeline--compact .mn-waveform-canvas {
+  min-height: 36px;
+}
+.mn-waveform-timeline--drop-only .mn-waveform-canvas--placeholder {
+  min-height: 36px;
+  background: var(--code-bg);
+  border: 1px dashed var(--border);
+  border-radius: 2px;
+}
+.mn-waveform-source-label--compact {
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+.mn-stitcher-sfx-cue-block {
+  background: rgba(50, 130, 200, 0.35);
+  border-color: #2872b4;
+}
+.mn-stitcher-sfx-cue-block:hover {
+  background: rgba(50, 130, 200, 0.55);
+}
+
 /* Inline preview player + beat timeline */
 .mn-stitcher-preview-area {
   margin: 8px 0;

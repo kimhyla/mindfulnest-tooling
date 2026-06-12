@@ -23,6 +23,7 @@ python3 -m pytest \
   "$ROOT/Production/tools/tests/test_stitch_module_seek.py" \
   "$ROOT/Production/tools/tests/test_module_slot_start_offsets.py" \
   "$ROOT/Production/tools/tests/test_stitch_module_preview.py" \
+  "$ROOT/Production/tools/tests/test_stitch_sfx_duration_trim.py" \
   "$ROOT/Production/tools/tests/test_phase_a_av_post.py::test_trailing_speech_hold_avoids_aggressive_clip" \
   -q
 

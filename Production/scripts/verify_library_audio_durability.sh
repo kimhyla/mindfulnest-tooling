@@ -9,6 +9,8 @@ set -euo pipefail
 
 ROOT="${MN_TOOLING_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
 LIB="$ROOT/Production/tools/storyboard-v2/src/components/LibraryPanel.tsx"
+STITCHER_SLOT="$ROOT/Production/tools/storyboard-v2/src/components/StitcherSlotWaveform.tsx"
+WAVEFORM="$ROOT/Production/tools/storyboard-v2/src/components/phase/WaveformTimeline.tsx"
 ENDPOINTS="$ROOT/Production/tools/storyboard-v2/src/api/endpoints.ts"
 CROPPER="$ROOT/Production/tools/server_handlers/cropper.py"
 SERVER="$ROOT/Production/tools/production_server.py"
@@ -18,6 +20,11 @@ TESTS="$ROOT/Production/tools/tests"
 fail() { echo "FATAL: $1" >&2; exit 1; }
 
 grep -q 'LIBRARY_AUDIO_PREVIEW_V1' "$LIB" || fail "missing LIBRARY_AUDIO_PREVIEW_V1 marker"
+grep -q 'STITCHER_SFX_TIMELINE_V1' "$STITCHER_SLOT" || fail "StitcherSlotWaveform must expose STITCHER_SFX_TIMELINE_V1"
+grep -q 'WaveformTimeline' "$STITCHER_SLOT" || fail "StitcherSlotWaveform must use WaveformTimeline"
+grep -q 'onCueRangeChange' "$STITCHER_SLOT" || fail "missing onCueRangeChange wiring"
+grep -q 'stitch_audio_extract' "$ENDPOINTS" || fail "endpoints.ts missing stitch_audio_extract"
+grep -q 'onSfxDrop' "$WAVEFORM" || fail "WaveformTimeline must support onSfxDrop"
 grep -q 'stitchLibraryToLibItems' "$LIB" || fail "missing stitchLibraryToLibItems"
 grep -q "stitch_editor_library" "$LIB" || fail "LibraryPanel must load stitch_editor/library"
 grep -q 'libraryAudioPreviewUrl' "$LIB" || fail "missing libraryAudioPreviewUrl"

@@ -871,18 +871,47 @@ export function StitcherTab() {
     lib_key: string,
     source_path: string,
     offset_ms: number,
+    duration_ms: number,
   ) => {
     if (!job?.slots) return;
     const slot = job.slots[slotKey];
     if (!slot) return;
+    const slotDur = slot.video_dur_ms ?? DEFAULT_SLOT_DUR_MS;
+    // Trust timeline drop math (WaveSurfer/extract duration). Only cap when slot
+    // duration is known and the cue would extend past the slot end.
+    let durMs = Math.max(250, duration_ms);
+    if (slotDur > 0 && offset_ms + durMs > slotDur) {
+      durMs = Math.max(250, slotDur - offset_ms);
+    }
     const newCue: SfxCue = {
       id: generateCueId('cue'),
       source_path,
       name: source_path.split('/').pop() ?? lib_key,
       offset_ms,
+      duration_ms: durMs,
       ...SFX_DEFAULTS,
     };
     const nextCues = [...(slot.sfx_cues ?? []), newCue];
+    const nextSlots: Record<string, StitchSlot> = {
+      ...job.slots,
+      [slotKey]: { ...slot, sfx_cues: nextCues },
+    };
+    void saveJobSlots(nextSlots);
+  };
+
+  const onSfxCueRangeChangeOnSlot = (slotKey: SlotKey) => (
+    cueId: string,
+    offsetMs: number,
+    durationMs: number,
+  ) => {
+    if (!job?.slots) return;
+    const slot = job.slots[slotKey];
+    if (!slot) return;
+    const nextCues = (slot.sfx_cues ?? []).map((c) =>
+      c.id === cueId
+        ? { ...c, offset_ms: offsetMs, duration_ms: durationMs }
+        : c,
+    );
     const nextSlots: Record<string, StitchSlot> = {
       ...job.slots,
       [slotKey]: { ...slot, sfx_cues: nextCues },
@@ -1067,9 +1096,11 @@ export function StitcherTab() {
                   />
                   <StitcherSlotWaveform
                     slotKey={sd.key}
+                    {...(slot?.video_path ? { videoPath: slot.video_path } : {})}
                     videoDurMs={slotDurMs}
                     cues={cues}
                     onSfxDrop={onSfxDropOnSlot(sd.key)}
+                    onCueRangeChange={onSfxCueRangeChangeOnSlot(sd.key)}
                     onCueClick={onSfxClickOnSlot(sd.key)}
                   />
                   {/* Per-slot trim controls (G9-G10) — values in seconds for

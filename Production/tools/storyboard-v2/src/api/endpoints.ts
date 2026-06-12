@@ -111,6 +111,7 @@ export const MUTATION_ENDPOINTS = {
   phase_a_regen_base_clip: `${SERVER_BASE}/api/phase_a/regen_base_clip`,
   phase_a_restitch: `${SERVER_BASE}/api/phase_a/restitch`,
   stitch_save_job: `${SERVER_BASE}/api/stitch_editor/job`,
+  stitch_audio_extract: `${SERVER_BASE}/api/stitch_editor/audio_extract`,
   // S5.5g — module-level SFX cue upsert (separate from per-slot sfx_cues
   // which travel inside stitch_save_job.slots[i].sfx_cues per audit doc §3).
   timeline_cue_upsert: `${SERVER_BASE}/api/timeline/cues`,

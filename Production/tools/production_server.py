@@ -11703,7 +11703,9 @@ body {{padding-top:44px!important;}}
 
         # Cache key: norm mtime + ambient + sfx cue ids
         sig_parts = [str(norm_path.stat().st_mtime), ambient_path, str(ambient_volume)]
-        sig_parts += [f"{c['id']}:{c['offset_ms']}" for c in sfx_cues]
+        sig_parts += [
+            f"{c['id']}:{c['offset_ms']}:{c.get('duration_ms', '')}" for c in sfx_cues
+        ]
         mix_hash = _hl.md5("|".join(sig_parts).encode(), usedforsecurity=False).hexdigest()[:12]
         out_path = cache_dir / f"se_slot_{mix_hash}.mp4"
         if out_path.is_file():
@@ -11746,10 +11748,16 @@ body {{padding-top:44px!important;}}
             vol = float(cue.get("volume", 0.45))
             cue_dur_ms = self._ffprobe_duration_ms(Path(cue["source_path"]))
             cue_dur_s = cue_dur_ms / 1000.0 if cue_dur_ms else 5.0
-            fadeout_start_s = max(0.0, cue_dur_s - fadeout_ms / 1000.0)
+            play_ms = cue.get("duration_ms")
+            if play_ms is not None and int(play_ms) > 0:
+                play_s = min(cue_dur_s, int(play_ms) / 1000.0)
+            else:
+                play_s = cue_dur_s
+            fadeout_start_s = max(0.0, play_s - fadeout_ms / 1000.0)
             label = f"cue{idx}"
             filter_lanes.append(
                 f"[{cidx}:a]aresample=44100,"
+                f"atrim=duration={play_s:.3f},"
                 f"adelay={offset_ms}|{offset_ms},"
                 f"afade=t=in:st=0:d={fadein_ms / 1000:.3f},"
                 f"afade=t=out:st={fadeout_start_s:.3f}:d={fadeout_ms / 1000:.3f},"

@@ -56,6 +56,25 @@ export interface WaveformTimelineProps {
   onReady?: (durationMs: number) => void;
   /** Phase C — drop watercolor tile to create a cue at offset_ms = dropX/width × duration. */
   onWatercolorDrop?: (lib_key: string, offset_ms: number) => void;
+  /** Stitcher SFX — drop lib-sfx tile; includes default duration_ms window. */
+  onSfxDrop?: (
+    lib_key: string,
+    source_path: string,
+    offset_ms: number,
+    duration_ms: number,
+  ) => void;
+  /** When audio is not loaded yet, use this duration for drop + cue block math. */
+  fallbackDurationMs?: number;
+  /** Hide play controls (Stitcher per-slot strip). */
+  compact?: boolean;
+  /** Override empty-state copy (Stitcher: "Load video…"). */
+  emptyMessage?: string;
+  /** Prefix for cue block testids (Stitcher: stitcher-sfx-cue-marker-intro-). */
+  cueTestIdPrefix?: string;
+  /** Override root data-testid (Stitcher: stitcher-slot-waveform-intro). */
+  timelineTestId?: string;
+  /** Optional extra class on cue blocks (Stitcher SFX styling). */
+  cueBlockClassName?: string;
   /** Called on audioprocess + seeking so the parent can track playback position (ms). */
   onTimeUpdate?: (currentMs: number) => void;
   /** Called when the user drags a cue block edge (left = move start, right = move end). */
@@ -102,6 +121,13 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     onWaveformClick,
     onReady,
     onWatercolorDrop,
+    onSfxDrop,
+    fallbackDurationMs,
+    compact,
+    emptyMessage,
+    cueTestIdPrefix,
+    timelineTestId,
+    cueBlockClassName,
     onTimeUpdate,
     onCueRangeChange,
     onCueResize,
@@ -152,6 +178,19 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   const isReadyRef = useRef<boolean>(false);
   const onWaveformClickRef = useRef(onWaveformClick);
   onWaveformClickRef.current = onWaveformClick;
+
+  const timelineDurationMs = durationMs ?? fallbackDurationMs ?? null;
+
+  const cuePctLeft = (cue: WatercolorCue): number => {
+    if (!timelineDurationMs || timelineDurationMs <= 0) return 0;
+    return Math.max(0, Math.min(100, (cue.offset_ms / timelineDurationMs) * 100));
+  };
+
+  const cuePctWidth = (cue: WatercolorCue): number => {
+    if (!timelineDurationMs || timelineDurationMs <= 0) return 0;
+    const durMs = cue.duration_ms ?? 3000;
+    return Math.max(0, Math.min(100 - cuePctLeft(cue), (durMs / timelineDurationMs) * 100));
+  };
 
   const hardPause = useCallback(() => {
     wsRef.current?.pause();
@@ -454,19 +493,6 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     };
   }, [audioSrc, isReady]);
 
-  // Cue block horizontal position (% of timeline width).
-  const cuePctLeft = (cue: WatercolorCue): number => {
-    if (!durationMs || durationMs <= 0) return 0;
-    return Math.max(0, Math.min(100, (cue.offset_ms / durationMs) * 100));
-  };
-
-  // Cue block width (% of timeline width). Min 4px enforced via CSS min-width.
-  const cuePctWidth = (cue: WatercolorCue): number => {
-    if (!durationMs || durationMs <= 0) return 0;
-    const durMs = cue.duration_ms ?? 3000;
-    return Math.max(0, Math.min(100 - cuePctLeft(cue), (durMs / durationMs) * 100));
-  };
-
   const emitCueRange = (cueId: string, offsetMs: number, durationMs: number) => {
     const clampedDuration = Math.max(MIN_CUE_DURATION_MS, Math.round(durationMs));
     const clampedOffset = Math.max(0, Math.round(offsetMs));
@@ -529,7 +555,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   const onRightHandlePointerDown = (e: PointerEvent, cue: WatercolorCue) => {
     e.stopPropagation();
     e.preventDefault();
-    if (!durationMs || durationMs <= 0) return;
+    if (!timelineDurationMs || timelineDurationMs <= 0) return;
     const handle = e.currentTarget as HTMLDivElement;
     handle.setPointerCapture(e.pointerId);
     const wrapper = wrapperRef.current;
@@ -538,15 +564,15 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     const startOffset = cue.offset_ms;
 
     const applyPreview = (evt: PointerEvent) => {
-      const endMs = relXFromPointer(wrapper, evt) * durationMs;
-      const maxEnd = durationMs;
+      const endMs = relXFromPointer(wrapper, evt) * timelineDurationMs;
+      const maxEnd = timelineDurationMs;
       const clampedEnd = Math.max(startOffset + MIN_CUE_DURATION_MS, Math.min(maxEnd, endMs));
       previewCueRange(cue.id, startOffset, clampedEnd - startOffset);
     };
 
     const onUp = (upEvt: PointerEvent) => {
-      const endMs = relXFromPointer(wrapper, upEvt) * durationMs;
-      const maxEnd = durationMs;
+      const endMs = relXFromPointer(wrapper, upEvt) * timelineDurationMs;
+      const maxEnd = timelineDurationMs;
       const clampedEnd = Math.max(startOffset + MIN_CUE_DURATION_MS, Math.min(maxEnd, endMs));
       setDragDraft(null);
       emitCueRange(cue.id, startOffset, clampedEnd - startOffset);
@@ -564,7 +590,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   const onLeftHandlePointerDown = (e: PointerEvent, cue: WatercolorCue) => {
     e.stopPropagation();
     e.preventDefault();
-    if (!durationMs || durationMs <= 0) return;
+    if (!timelineDurationMs || timelineDurationMs <= 0) return;
     const handle = e.currentTarget as HTMLDivElement;
     handle.setPointerCapture(e.pointerId);
     const wrapper = wrapperRef.current;
@@ -574,7 +600,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     const endMs = cue.offset_ms + startDuration;
 
     const applyPreview = (evt: PointerEvent) => {
-      const newOffset = relXFromPointer(wrapper, evt) * durationMs;
+      const newOffset = relXFromPointer(wrapper, evt) * timelineDurationMs;
       const clampedOffset = Math.max(
         0,
         Math.min(endMs - MIN_CUE_DURATION_MS, newOffset),
@@ -583,7 +609,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     };
 
     const onUp = (upEvt: PointerEvent) => {
-      const newOffset = relXFromPointer(wrapper, upEvt) * durationMs;
+      const newOffset = relXFromPointer(wrapper, upEvt) * timelineDurationMs;
       const clampedOffset = Math.max(
         0,
         Math.min(endMs - MIN_CUE_DURATION_MS, newOffset),
@@ -672,21 +698,33 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     handle.addEventListener('pointercancel', onUp);
   };
 
-  // Drop target — `kind: 'lib-watercolor'` payloads land here and become cues.
-  // The drop X position relative to the wrapper element determines offset_ms.
+  // Drop target — lib-watercolor (Phase A/B) or lib-sfx (Stitcher).
   const dropHandlers = makeDropTarget(
     (payload: DragPayload, e: DragEvent) => {
-      if (payload.kind !== 'lib-watercolor') return;
-      if (!durationMs || durationMs <= 0) return;
+      if (!timelineDurationMs || timelineDurationMs <= 0) return;
       const wrapper = wrapperRef.current;
       if (!wrapper) return;
       const box = wrapper.getBoundingClientRect();
       const relativeX = (e.clientX - box.left) / box.width;
       const clamped = Math.max(0, Math.min(1, relativeX));
-      const offsetMs = Math.round(clamped * durationMs);
-      onWatercolorDrop?.(payload.lib_key, offsetMs);
+      const offsetMs = Math.round(clamped * timelineDurationMs);
+      if (payload.kind === 'lib-watercolor') {
+        onWatercolorDrop?.(payload.lib_key, offsetMs);
+        return;
+      }
+      if (payload.kind === 'lib-sfx' && onSfxDrop) {
+        const defaultDur = Math.max(
+          MIN_CUE_DURATION_MS,
+          Math.min(3000, timelineDurationMs - offsetMs),
+        );
+        onSfxDrop(payload.lib_key, payload.source_path, offsetMs, defaultDur);
+      }
     },
-    (payload) => payload.kind === 'lib-watercolor',
+    (payload) => {
+      if (payload.kind === 'lib-watercolor' && onWatercolorDrop) return true;
+      if (payload.kind === 'lib-sfx' && onSfxDrop) return true;
+      return false;
+    },
   );
 
   const controlRef = useRef<WaveformPlaybackControl | null>(null);
@@ -778,14 +816,77 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     };
   }, [playbackControl, playbackControlRef]);
 
+  const rootTestId = timelineTestId ?? 'waveform-timeline';
+
   if (!audioSrc) {
+    if (onSfxDrop && fallbackDurationMs && fallbackDurationMs > 0) {
+      return (
+        /* eslint-disable-next-line jsx-a11y/no-static-element-interactions */
+        <div
+          ref={wrapperRef}
+          class="mn-waveform-timeline mn-waveform-timeline--drop-only mn-drop-target mn-stitcher-slot-waveform"
+          data-testid={rootTestId}
+          data-loaded-duration-ms={fallbackDurationMs}
+          data-cue-count={displayCues.length}
+          onDragOver={dropHandlers.onDragOver}
+          onDragLeave={dropHandlers.onDragLeave}
+          onDrop={dropHandlers.onDrop}
+        >
+          <div class="mn-waveform-source-label mn-waveform-source-label--compact">
+            <span class="mn-dim">
+              {emptyMessage ?? 'Loading slot audio — drop SFX from Library onto this strip'}
+            </span>
+          </div>
+          <div class="mn-waveform-canvas mn-waveform-canvas--placeholder" />
+          <div class="mn-waveform-cue-overlay">
+            {displayCues.map((cue) => (
+              <div
+                key={cue.id}
+                data-testid={
+                  cueTestIdPrefix
+                    ? `${cueTestIdPrefix}${cue.id}`
+                    : `cue-marker-${cue.id}`
+                }
+                data-offset-ms={cue.offset_ms}
+                data-duration-ms={cue.duration_ms ?? 3000}
+                class={`mn-waveform-cue-block${cueBlockClassName ? ` ${cueBlockClassName}` : ''}`}
+                style={{
+                  left: `${cuePctLeft(cue)}%`,
+                  width: `${cuePctWidth(cue)}%`,
+                }}
+                onClick={(e: MouseEvent) => {
+                  const target = e.target as HTMLElement;
+                  if (target.closest('.mn-waveform-cue-block-handle')) return;
+                  onCueClick?.(cue.id, { x: e.clientX, y: e.clientY });
+                }}
+                title={`${cue.watercolor_key} @ ${(cue.offset_ms / 1000).toFixed(1)}s · ${((cue.duration_ms ?? 3000) / 1000).toFixed(1)}s`}
+              >
+                <div
+                  class="mn-waveform-cue-block-handle mn-waveform-cue-block-handle--left"
+                  data-testid={`cue-handle-left-${cue.id}`}
+                  title="Drag to adjust cue start time"
+                  onPointerDown={(e: PointerEvent) => onLeftHandlePointerDown(e, cue)}
+                />
+                <div
+                  class="mn-waveform-cue-block-handle mn-waveform-cue-block-handle--right"
+                  data-testid={`cue-handle-right-${cue.id}`}
+                  title="Drag to adjust cue end time"
+                  onPointerDown={(e: PointerEvent) => onRightHandlePointerDown(e, cue)}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
     return (
       <div
         class="mn-waveform-timeline mn-waveform-empty"
         data-testid="waveform-timeline-empty"
       >
         <span class="mn-dim">
-          No audio yet — generate a stem from the script or send for lipsync.
+          {emptyMessage
+            ?? 'No audio yet — generate a stem from the script or send for lipsync.'}
         </span>
       </div>
     );
@@ -794,11 +895,11 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   return (
     <div
       ref={wrapperRef}
-      class="mn-waveform-timeline mn-drop-target"
-      data-testid="waveform-timeline"
+      class={`mn-waveform-timeline mn-drop-target${compact ? ' mn-waveform-timeline--compact' : ''}`}
+      data-testid={rootTestId}
       data-audio-src={audioSrc}
       data-source-label={sourceLabel ?? ''}
-      data-loaded-duration-ms={durationMs ?? ''}
+      data-loaded-duration-ms={timelineDurationMs ?? ''}
       data-current-time-ms={Math.round(currentMs)}
       data-cue-count={displayCues.length}
       data-stem-cut-editable={cutEditable ? '1' : '0'}
@@ -808,24 +909,39 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       onDragLeave={dropHandlers.onDragLeave}
       onDrop={dropHandlers.onDrop}
     >
-      <div class="mn-waveform-source-label">
-        <button
-          type="button"
-          class="mn-btn mn-btn-play"
-          data-testid="waveform-play-btn"
-          disabled={!isReady}
-          onPointerDown={(e: PointerEvent) => e.stopPropagation()}
-          onClick={togglePlayback}
-          title={isPlaying ? 'Pause' : 'Play'}
-        >
-          {isPlaying ? '⏸ Pause' : '▶ Play'}
-        </button>
-        <strong>Audio ({sourceLabel ?? '—'}):</strong>{' '}
-        <span class="mn-dim">{sourceFilename ?? ''}</span>
-        {durationMs ? (
-          <span class="mn-dim"> · {(currentMs / 1000).toFixed(1)}s / {(durationMs / 1000).toFixed(1)}s</span>
-        ) : null}
-      </div>
+      {compact ? (
+        <div class="mn-waveform-source-label mn-waveform-source-label--compact">
+          <span class="mn-dim">Drag SFX from Library onto this waveform</span>
+          {timelineDurationMs ? (
+            <span class="mn-dim">
+              {' '}
+              · {(timelineDurationMs / 1000).toFixed(1)}s
+            </span>
+          ) : null}
+        </div>
+      ) : (
+        <div class="mn-waveform-source-label">
+          <button
+            type="button"
+            class="mn-btn mn-btn-play"
+            data-testid="waveform-play-btn"
+            disabled={!isReady}
+            onPointerDown={(e: PointerEvent) => e.stopPropagation()}
+            onClick={togglePlayback}
+            title={isPlaying ? 'Pause' : 'Play'}
+          >
+            {isPlaying ? '⏸ Pause' : '▶ Play'}
+          </button>
+          <strong>Audio ({sourceLabel ?? '—'}):</strong>{' '}
+          <span class="mn-dim">{sourceFilename ?? ''}</span>
+          {durationMs ? (
+            <span class="mn-dim">
+              {' '}
+              · {(currentMs / 1000).toFixed(1)}s / {(durationMs / 1000).toFixed(1)}s
+            </span>
+          ) : null}
+        </div>
+      )}
       <div ref={containerRef} class="mn-waveform-canvas" />
       <div
         class="mn-waveform-seek-layer"
@@ -871,10 +987,14 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
         {displayCues.map((cue) => (
           <div
             key={cue.id}
-            data-testid={`cue-marker-${cue.id}`}
+            data-testid={
+              cueTestIdPrefix
+                ? `${cueTestIdPrefix}${cue.id}`
+                : `cue-marker-${cue.id}`
+            }
             data-offset-ms={cue.offset_ms}
             data-duration-ms={cue.duration_ms ?? 3000}
-            class="mn-waveform-cue-block"
+            class={`mn-waveform-cue-block${cueBlockClassName ? ` ${cueBlockClassName}` : ''}`}
             style={{
               left: `${cuePctLeft(cue)}%`,
               width: `${cuePctWidth(cue)}%`,

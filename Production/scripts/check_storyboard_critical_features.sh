@@ -82,6 +82,9 @@ MARKERS=(
     # Library audio preview (sfx/ambient/transitions tiers)
     "LIBRARY_AUDIO_PREVIEW|LIBRARY_AUDIO_PREVIEW_V1"
     "LIBRARY_AUDIO_PREVIEW|library-preview-audio"
+    # Stitcher SFX timeline blocks (WaveformTimeline parity — Phase 2)
+    "STITCHER_SFX_TIMELINE|STITCHER_SFX_TIMELINE_V1"
+    "STITCHER_SFX_TIMELINE|mn-stitcher-sfx-cue-block"
     # Phase stem trim + reject lipsync (2026-06-10)
     "PHASE_STEM_TRIM|waveform-stem-cut-block"
     "PHASE_STEM_TRIM|Reject lipsync"
