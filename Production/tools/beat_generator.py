@@ -5606,8 +5606,6 @@ def _ffmpeg_concat_kling_clips_with_pair_fades(
     import shutil
 
     fs = _ffmpeg_stitch_module()
-    compute_fade_clamp_per_pair = fs.compute_fade_clamp_per_pair
-    trim_body_with_fade = fs.trim_body_with_fade
     expand_clips_with_black_pause_boundaries = fs.expand_clips_with_black_pause_boundaries
 
     if not clip_paths:
@@ -5620,19 +5618,13 @@ def _ffmpeg_concat_kling_clips_with_pair_fades(
         _ffmpeg_concat_kling_clips_reencode(clip_paths, dest)
         return
 
-    durations = [_ffprobe_duration(p) for p in clip_paths]
-    clamped = compute_fade_clamp_per_pair(durations, pair_fades)
-    if all(f <= 0 for f in clamped):
-        _ffmpeg_concat_kling_clips_reencode(clip_paths, dest)
-        return
-
     body_dir = scratch_dir / "fade_black"
     body_dir.mkdir(parents=True, exist_ok=True)
     visual_out_ms = _load_intro_fade_out_video_tail_ms()
     visual_in_ms = _load_intro_fade_in_video_head_ms()
     parts = expand_clips_with_black_pause_boundaries(
         clip_paths,
-        clamped,
+        pair_fades,
         body_dir,
         visual_out_ms=visual_out_ms,
         visual_in_ms=visual_in_ms,
@@ -5648,6 +5640,8 @@ def _boundaries_for_pair_fade_concat(
     pair_fades: list[int],
 ) -> list[dict]:
     """Timeline markers — beat bodies only; black pauses sit between markers."""
+    fs = _ffmpeg_stitch_module()
+    allocate_pair_fade_budget = fs.allocate_pair_fade_budget
     cursor_ms = 0
     out: list[dict] = []
     visual_out_ms = _load_intro_fade_out_video_tail_ms()
@@ -5662,7 +5656,11 @@ def _boundaries_for_pair_fade_concat(
         })
         cursor_ms += dur_ms
         if i < len(pair_fades) and pair_fades[i] > 0:
-            black_ms = max(0, int(pair_fades[i]) - visual_out_ms - visual_in_ms)
+            _, _, black_ms = allocate_pair_fade_budget(
+                pair_fades[i],
+                visual_out_ms=visual_out_ms,
+                visual_in_ms=visual_in_ms,
+            )
             cursor_ms += black_ms
     return out
 

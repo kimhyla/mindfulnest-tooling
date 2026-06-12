@@ -11882,10 +11882,23 @@ body {{padding-top:44px!important;}}
                 slot_finals[after_slot] = rebaked
 
         # Dissolve boundaries: short visual fade + inserted black hold (not eating dialogue).
-        from ffmpeg_stitch import expand_clips_with_black_pause_boundaries  # noqa: PLC0415
+        from ffmpeg_stitch import (  # noqa: PLC0415
+            DEFAULT_FADE_THROUGH_BLACK_VISUAL_IN_MS,
+            DEFAULT_FADE_THROUGH_BLACK_VISUAL_OUT_MS,
+            DEFAULT_MODULE_PAIR_FADE_MS,
+            expand_clips_with_black_pause_boundaries,
+        )
 
-        _DEFAULT_DISSOLVE_MS = 2800
-        _VISUAL_FADE_MS = 600
+        try:
+            import beat_generator as _bg_fade  # noqa: PLC0415
+
+            _VISUAL_OUT_MS = _bg_fade._load_intro_fade_out_video_tail_ms()
+            _VISUAL_IN_MS = _bg_fade._load_intro_fade_in_video_head_ms()
+            _DEFAULT_DISSOLVE_MS = _bg_fade._load_intro_final_pair_fade_ms()
+        except Exception:
+            _VISUAL_OUT_MS = DEFAULT_FADE_THROUGH_BLACK_VISUAL_OUT_MS
+            _VISUAL_IN_MS = DEFAULT_FADE_THROUGH_BLACK_VISUAL_IN_MS
+            _DEFAULT_DISSOLVE_MS = DEFAULT_MODULE_PAIR_FADE_MS
         pair_fades_ms: list[int] = []
         for i in range(max(0, len(slot_finals) - 1)):
             t = trans_by_after.get(i)
@@ -11899,8 +11912,8 @@ body {{padding-top:44px!important;}}
                 slot_finals,
                 pair_fades_ms,
                 cache_dir / "module_boundary_black",
-                visual_out_ms=_VISUAL_FADE_MS,
-                visual_in_ms=_VISUAL_FADE_MS,
+                visual_out_ms=_VISUAL_OUT_MS,
+                visual_in_ms=_VISUAL_IN_MS,
                 fade_audio=False,
             )
 

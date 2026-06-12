@@ -89,6 +89,14 @@ NORMALIZATION_RECIPE_HASH: str = hashlib.sha256(
 FINALIZE_RECIPE_VERSION: str = "v2"  # bumped 2026-05-27: magic_still freeze_tail_s support
 ASSEMBLE_RECIPE_VERSION: str = "v2"  # FADE_THROUGH_BLACK_20260525: bumped to invalidate
 
+# Fade-through-black canonical defaults (manifest chipper_teleport_intro aligned).
+DEFAULT_FADE_THROUGH_BLACK_VISUAL_OUT_MS = 600
+DEFAULT_FADE_THROUGH_BLACK_VISUAL_IN_MS = 600
+DEFAULT_MIN_BLACK_PAUSE_MS = 500
+DEFAULT_MODULE_PAIR_FADE_MS = 2800
+DEFAULT_PRE_PENULTIMATE_PAIR_FADE_MS = 1500
+DEFAULT_FINAL_PAIR_FADE_MS = 2800
+
 # ---------------------------------------------------------------------------
 # Watercolor overlay recipe version (V3 MEDIUM-6 fix from preflight 102).
 # Bumping this version invalidates all phase_{a,b}_preview caches.
@@ -813,6 +821,30 @@ def render_black_pause_clip(
     return dest
 
 
+def allocate_pair_fade_budget(
+    pair_ms: int,
+    *,
+    visual_out_ms: int = DEFAULT_FADE_THROUGH_BLACK_VISUAL_OUT_MS,
+    visual_in_ms: int = DEFAULT_FADE_THROUGH_BLACK_VISUAL_IN_MS,
+    min_black_ms: int = DEFAULT_MIN_BLACK_PAUSE_MS,
+) -> tuple[int, int, int]:
+    """Split boundary budget: short clip fades + black hold (does not eat dialogue).
+
+    Black-pause inserts time *between* clips. Do not clamp ``pair_ms`` to beat
+    duration — that was the xfade-overlap bug that eliminated black holds on
+    shorter beats and dimmed speech tails.
+    """
+    pair_ms = max(0, int(pair_ms))
+    if pair_ms <= 0:
+        return 0, 0, 0
+    target_black = min(min_black_ms, max(0, pair_ms - 200))
+    visual_budget = max(0, pair_ms - target_black)
+    out_ms = min(visual_out_ms, visual_budget // 2 if visual_budget else 0)
+    in_ms = min(visual_in_ms, max(0, visual_budget - out_ms))
+    black_ms = max(0, pair_ms - out_ms - in_ms)
+    return out_ms, in_ms, black_ms
+
+
 def expand_clips_with_black_pause_boundaries(
     clips: list[Path],
     pair_fades_ms: list[int],
@@ -838,14 +870,24 @@ def expand_clips_with_black_pause_boundaries(
         )
     parts: list[Path] = []
     for i, clip in enumerate(clips):
-        fade_in_s = (
-            min(visual_in_ms, pair_fades_ms[i - 1]) / 1000.0
-            if i > 0 and pair_fades_ms[i - 1] > 0 else 0.0
+        fade_in_ms = (
+            allocate_pair_fade_budget(
+                pair_fades_ms[i - 1],
+                visual_out_ms=visual_out_ms,
+                visual_in_ms=visual_in_ms,
+            )[1]
+            if i > 0 and pair_fades_ms[i - 1] > 0 else 0
         )
-        fade_out_s = (
-            min(visual_out_ms, pair_fades_ms[i]) / 1000.0
-            if i < n - 1 and pair_fades_ms[i] > 0 else 0.0
+        fade_out_ms = (
+            allocate_pair_fade_budget(
+                pair_fades_ms[i],
+                visual_out_ms=visual_out_ms,
+                visual_in_ms=visual_in_ms,
+            )[0]
+            if i < n - 1 and pair_fades_ms[i] > 0 else 0
         )
+        fade_in_s = fade_in_ms / 1000.0
+        fade_out_s = fade_out_ms / 1000.0
         if fade_in_s > 0.0 or fade_out_s > 0.0:
             body = scratch_dir / (
                 f"black_pause_body_{i:02d}_{clip.stem}_"
@@ -863,7 +905,11 @@ def expand_clips_with_black_pause_boundaries(
         else:
             parts.append(clip)
         if i < n - 1 and pair_fades_ms[i] > 0:
-            black_ms = max(0, int(pair_fades_ms[i]) - visual_out_ms - visual_in_ms)
+            _, _, black_ms = allocate_pair_fade_budget(
+                pair_fades_ms[i],
+                visual_out_ms=visual_out_ms,
+                visual_in_ms=visual_in_ms,
+            )
             if black_ms > 0:
                 black = scratch_dir / f"black_pause_{i:02d}_{black_ms}ms.mp4"
                 render_black_pause_clip(black_ms / 1000.0, black)
