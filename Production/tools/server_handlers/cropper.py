@@ -39,6 +39,16 @@ from pathlib import Path
 # Handler bodies may reference any of these by bare name.
 from lib.atomic_json_write import atomic_json_write
 from lib.v3_partition import _iter_v3_beats
+from lib.event_library import (
+    arc_number_from_event_id,
+    canonical_images_dir,
+    canonical_meta_for_arc,
+    ensure_event_library_dirs,
+    event_images_crops_dir,
+    event_images_sources_dir,
+    event_watercolors_dir,
+    is_canonical_image_path,
+)
 from server_handlers._path_security import (
     require_basename_under_dir,
     require_realpath_under_project,
@@ -206,14 +216,17 @@ def _enrich_library_items_prod_assets(images: list) -> None:
 def handle_cr_library(h)-> None:
 
     """GET /api/cr/library -> { images: [...] }
-    Returns three tiers: source (accepted BG stills + uploaded sources),
+    Returns tiers: source (accepted BG stills + uploaded sources),
     cropped (crops/ dir), character_master (Character_Assets/; reference-only
-    for deletes). Sidecar metadata may accompany items. Each item has: key,
-    filename, thumb_b64, gallery_b64, tier, abs_path."""
+    for deletes), canonical (global registry injected per arc).
+    Scoped to the server's active event_dir image library."""
     bg = _bg_module()
+    prod_root = h.app.event_dir.parent
+    arc_number = arc_number_from_event_id(h.app.event_id)
     images = []
+    seen_keys: set[str] = set()
 
-    def _read_image(fp, tier):
+    def _read_image(fp, tier, extra: dict | None = None):
         try:
             from PIL import Image as _PILImage
             import io as _io2
@@ -223,16 +236,27 @@ def handle_cr_library(h)-> None:
                 buf = _io2.BytesIO()
                 im.convert("RGB").save(buf, "JPEG", quality=72)
             thumb_b64 = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
-            # Normalize key: spaces → underscores for consistent matching
-            # against _handle_assign_image / resolve_library_image_path.
-            return {"key": os.path.splitext(fname)[0].replace(" ", "_"),
+            key = os.path.splitext(fname)[0].replace(" ", "_")
+            item = {"key": key,
                     "filename": fname,
                     "thumb_b64": thumb_b64, "gallery_b64": thumb_b64,
                     "tier": tier, "abs_path": fp}
+            if extra:
+                item.update(extra)
+            return item
         except OSError:
             return None
 
-    # --- Tier 1: accepted FLUX stills from BG sidecar ---
+    def _append(item: dict | None) -> None:
+        if not item:
+            return
+        key = item.get("key")
+        if not key or key in seen_keys:
+            return
+        seen_keys.add(key)
+        images.append(item)
+
+    # --- Tier 1: accepted FLUX stills from BG sidecar (event library) ---
     try:
         sidecar = bg.read_sidecar()
         for arc in sidecar.get("arcs", {}).values():
@@ -247,37 +271,29 @@ def handle_cr_library(h)-> None:
                         if item:
                             item["beat_id"] = beat.get("beat_id", "")
                             item["speaker"] = beat.get("speaker", "")
-                            images.append(item)
+                            _append(item)
     except Exception as e:
         print(f"[library] sidecar scan warning: {e}")
 
-    # --- Tier 1b: manually uploaded source images ---
-    # Sort mtime-desc so newest uploads land at the top of the library
-    # panel (Bug B from preflight 186 / LD-pending). Crops + chars stay
-    # alphabetic (those are deliveries / reference; stable order matters).
-    sources_dir = os.path.join(bg.BG_STILLS_DIR, "sources")
+    # --- Tier 1b: manually uploaded source images (event-scoped) ---
+    sources_dir = str(event_images_sources_dir(h.app.event_dir))
     if os.path.isdir(sources_dir):
         _src_names = [f for f in os.listdir(sources_dir)
                       if f.lower().endswith((".webp", ".png", ".jpg", ".jpeg"))]
         _src_names.sort(
             key=lambda f: -os.path.getmtime(os.path.join(sources_dir, f)))
         for fname in _src_names:
-            item = _read_image(os.path.join(sources_dir, fname), "source")
-            if item:
-                images.append(item)
+            _append(_read_image(os.path.join(sources_dir, fname), "source"))
 
-    # --- Tier 2: cropped delivery images ---
-    crops_dir = os.path.join(bg.BG_STILLS_DIR, "crops")
+    # --- Tier 2: cropped delivery images (event-scoped) ---
+    crops_dir = str(event_images_crops_dir(h.app.event_dir))
     if os.path.isdir(crops_dir):
         for fname in sorted(os.listdir(crops_dir)):
             if fname.lower().endswith((".webp", ".png", ".jpg", ".jpeg")):
-                item = _read_image(os.path.join(crops_dir, fname), "cropped")
-                if item:
-                    images.append(item)
+                _append(_read_image(os.path.join(crops_dir, fname), "cropped"))
 
-    # --- Tier 3: character reference masters ---
-    char_dir = os.path.join(bg.BG_STILLS_DIR, "..", "Character_Assets")
-    char_dir = os.path.normpath(char_dir)
+    # --- Tier 3: character reference masters (global reference) ---
+    char_dir = str(prod_root / "Character_Assets")
     if os.path.isdir(char_dir):
         for fname in sorted(os.listdir(char_dir)):
             if fname.endswith("_reference_master.png"):
@@ -285,12 +301,35 @@ def handle_cr_library(h)-> None:
                 if item:
                     speaker = fname.replace("_reference_master.png", "").capitalize()
                     item["speaker"] = speaker
-                    images.append(item)
+                    _append(item)
+
+    # --- Tier 4: canonical images (global, arc-filtered) ---
+    can_dir = canonical_images_dir(prod_root)
+    for meta in canonical_meta_for_arc(prod_root, arc_number):
+        filename = meta.get("filename")
+        if not filename:
+            continue
+        fp = can_dir / filename
+        if not fp.is_file():
+            print(f"[library] canonical missing on disk: {fp}", flush=True)
+            continue
+        item = _read_image(str(fp), "canonical", extra={
+            "display_name": meta.get("display_name"),
+            "tags": meta.get("tags") or ["canonical"],
+            "asset_type": "canonical_image",
+        })
+        _append(item)
 
     _enrich_library_items_prod_assets(images)
 
-    print(f"[library] serving {len(images)} images ({sum(1 for i in images if i['tier']=='source')} source, {sum(1 for i in images if i['tier']=='cropped')} cropped)", flush=True)
-    return h._send_json(200, {"images": images})
+    print(
+        f"[library] event={h.app.event_id} arc={arc_number} serving {len(images)} images "
+        f"({sum(1 for i in images if i['tier']=='source')} source, "
+        f"{sum(1 for i in images if i['tier']=='cropped')} cropped, "
+        f"{sum(1 for i in images if i['tier']=='canonical')} canonical)",
+        flush=True,
+    )
+    return h._send_json(200, {"images": images, "event_id": h.app.event_id})
 
 
 def handle_cr_full_image(h)-> None:
@@ -386,12 +425,21 @@ def handle_cr_library_delete(h, body: dict)-> None:
                    extra={"ok": False},
                )
     abs_path_hint = (body or {}).get("abs_path") or None
+    if abs_path_hint and is_canonical_image_path(abs_path_hint, h.app.event_dir.parent):
+        return h._send_error_v59(
+            403,
+            error_code="CANONICAL_IMAGE_PROTECTED",
+            error_message="canonical images cannot be deleted",
+            retry_safe=False,
+            extra={"ok": False},
+        )
 
     # Tier dirs: sources/ AND crops/. Character_Assets/ is NEVER deleted
     # via this handler (reference assets — protected explicitly below).
     bg = _bg_module()
-    sources_dir = os.path.join(bg.BG_STILLS_DIR, "sources")
-    crops_dir = os.path.join(bg.BG_STILLS_DIR, "crops")
+    prod_root = h.app.event_dir.parent
+    sources_dir = str(event_images_sources_dir(h.app.event_dir))
+    crops_dir = str(event_images_crops_dir(h.app.event_dir))
     if not os.path.isdir(sources_dir):
         return h._send_error_v59(
                    500,
@@ -801,9 +849,7 @@ def handle_cr_upload(h, body: dict)-> None:
     if tier == "source":
         dest_dir = os.path.join(bg.BG_STILLS_DIR, "sources")
     elif tier == "watercolor":
-        from server_handlers.phases import _data_root  # noqa: PLC0415
-
-        dest_dir = str(_data_root(h) / "assets" / "watercolor_library")
+        dest_dir = str(event_watercolors_dir(h.app.event_dir))
     else:
         dest_dir = os.path.join(bg.BG_STILLS_DIR, "crops")
         tier = "cropped"

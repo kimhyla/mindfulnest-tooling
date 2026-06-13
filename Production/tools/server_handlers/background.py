@@ -74,6 +74,7 @@ def _data_root(h) -> Path:
 from lib.atomic_json_write import atomic_json_write
 from lib.v3_partition import _iter_v3_beats
 from lib.paths import DROPBOX_ROOT
+from lib.event_library import event_watercolors_dir
 
 # V59 Phase 4 cross-review fix (CI follow-up):
 # missing module-level references from extracted handler bodies.
@@ -5200,7 +5201,7 @@ def handle_watercolor_animate(h, body: dict)-> None:
                    retry_safe=False,
                )
 
-    wc_dir = _data_root(h) / "assets" / "watercolor_library"
+    wc_dir = event_watercolors_dir(h.app.event_dir)
     matches = list(wc_dir.glob(f"{watercolor_key}.*"))
     if not matches:
         return h._send_error_v59(

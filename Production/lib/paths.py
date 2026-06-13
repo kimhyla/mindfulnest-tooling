@@ -106,17 +106,23 @@ class BgPaths:
 
 
 def bg_paths(event_dir: Path | str) -> BgPaths:
-    """Build the BgPaths bundle for a given event_dir."""
+    """Build the BgPaths bundle for a given event_dir.
+
+    Image library roots are per-event under ``Event_N/library/images/``.
+    Shared Beat Gen sidecar + Character_Assets remain at ``Production/`` level.
+    """
     prod = runtime_production_root(event_dir)
     project = prod.parent
+    ev = Path(event_dir)
+    images_root = ev / "library" / "images"
     return BgPaths(
         prod_root=prod,
-        stills_dir=prod / "beat_generator_stills",
+        stills_dir=images_root,
         sidecar_path=prod / "beat_generator_state.json",
         char_assets=prod / "Character_Assets",
         skeleton_base=project / "Arc Skeletons",
         canon_base=project / "Canon",
-        local_stills_dir=prod / "beat_generator_stills" / "local_renders",
+        local_stills_dir=images_root / "local_renders",
         project_root=project,
     )
 

@@ -58,6 +58,7 @@ def _data_root(h) -> Path:
 # Handler bodies may reference any of these by bare name.
 from lib.atomic_json_write import atomic_json_write
 from lib.v3_partition import _iter_v3_beats
+from lib.event_library import event_watercolors_dir
 from lib.paths import DROPBOX_ROOT
 import scope_router
 from ffmpeg_utils import strip_audio as _strip_clip_audio
@@ -527,7 +528,7 @@ def handle_phase_watercolor_list(h)-> None:
 
     """GET /api/phase/watercolor_list — inventory of watercolor library.
 
-    Reads Production/assets/watercolor_library/ for PNG/MOV files.
+    Reads Event_N/library/watercolor/ for PNG/MOV files.
     Returns {items: [{key, filename, kind, thumb_url, mtime}]}.
 
     kind: 'static' for .png, 'animation' for .mov (animated via the
@@ -536,7 +537,7 @@ def handle_phase_watercolor_list(h)-> None:
     Per LD PHASE_A_PRODUCER_V1 + PHASE_B_PRODUCER_V1 (replaces hardcoded
     JS array in v58).
     """
-    wc_dir = _data_root(h) / "assets" / "watercolor_library"
+    wc_dir = event_watercolors_dir(h.app.event_dir)
     items: list[dict] = []
     if wc_dir.is_dir():
         # Build a set of static PNG/WebP stems for animation→base lookup below.
@@ -612,7 +613,7 @@ def handle_phase_watercolor_file(h)-> None:
                        retry_safe=False,
                    )
         key = key_list[0]
-        wc_dir = _data_root(h) / "assets" / "watercolor_library"
+        wc_dir = event_watercolors_dir(h.app.event_dir)
         # Direct stem lookup only. watercolor_list strips _animated_* from the
         # thumb_key so thumbnail requests always arrive with the BASE static key
         # (e.g. "hands_rubbing") — the {key}.* glob correctly returns the PNG.
@@ -665,7 +666,7 @@ def handle_phase_watercolor_delete(h, body: dict) -> None:
             error_message="'key' is required",
             retry_safe=False,
         )
-    wc_dir = _data_root(h) / "assets" / "watercolor_library"
+    wc_dir = event_watercolors_dir(h.app.event_dir)
     matches = list(wc_dir.glob(f"{key}.*"))
     if not matches:
         return h._send_error_v59(
@@ -2955,7 +2956,7 @@ def _phase_ensure_overlay_mp4(h, phase: str) -> tuple[Path, str]:
     if not isinstance(cues, list):
         raise ValueError(f"phase_{phase}_watercolor_cues_json is not a list")
 
-    library_dir = h._phase_assets_dir("watercolor_library")
+    library_dir = event_watercolors_dir(h.app.event_dir)
     missing_assets = []
     for i, cue in enumerate(cues):
         try:

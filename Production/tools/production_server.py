@@ -5527,15 +5527,11 @@ class AppContext:
         client-supplied abs_path MUST resolve under one of these roots before
         the server reads/opens the file. See is_path_under_library_root().
 
-        Mirrors candidate_dirs in resolve_library_image_path() — keep in sync.
+        Per-event image library + global canonical images + Character_Assets.
         """
-        bg = _bg_module()
-        return [
-            os.path.realpath(bg.BG_STILLS_DIR),
-            os.path.realpath(os.path.join(bg.BG_STILLS_DIR, "sources")),
-            os.path.realpath(os.path.join(bg.BG_STILLS_DIR, "crops")),
-            os.path.realpath(os.path.normpath(os.path.join(bg.BG_STILLS_DIR, "..", "Character_Assets"))),
-        ]
+        from lib.event_library import library_image_roots
+
+        return library_image_roots(self.app.event_dir, self.app.event_dir.parent)
 
     def is_path_under_library_root(self, abs_path: str) -> bool:
         """Return True iff abs_path resolves under an approved library root.
@@ -5574,42 +5570,12 @@ class AppContext:
     def resolve_library_image_path(self, image_key: str) -> str | None:
         """Resolve image_key to its absolute on-disk path in library directories.
 
-        Scans BG_STILLS_DIR, sources/, crops/, Character_Assets/ in order,
-        matching filename stem with space→underscore normalization.
+        Scans per-event library dirs, canonical images, and Character_Assets.
         Returns None if not found (caller falls back to legacy HTML scan).
         """
-        bg = _bg_module()
-        normalized = image_key.replace(" ", "_")
-        candidate_dirs = [
-            bg.BG_STILLS_DIR,
-            os.path.join(bg.BG_STILLS_DIR, "sources"),
-            os.path.join(bg.BG_STILLS_DIR, "crops"),
-            os.path.normpath(os.path.join(bg.BG_STILLS_DIR, "..", "Character_Assets")),
-        ]
-        for d in candidate_dirs:
-            if not os.path.isdir(d):
-                continue
-            try:
-                entries = os.listdir(d)
-            except OSError:
-                continue
-            for fname in entries:
-                if not fname.lower().endswith((".png", ".webp", ".jpg", ".jpeg")):
-                    continue
-                stem = os.path.splitext(fname)[0]
-                if stem == image_key or stem.replace(" ", "_") == normalized:
-                    return os.path.join(d, fname)
-            # Prefix-match fallback: key may lack a trailing _<timestamp> suffix
-            # added when the file was written (e.g. "bg_foo_opt1" stored but
-            # "bg_foo_opt1_1777470570.png" is on disk). Match stem.startswith(key+"_")
-            # to avoid collisions between similarly-named keys.
-            for fname in entries:
-                if not fname.lower().endswith((".png", ".webp", ".jpg", ".jpeg")):
-                    continue
-                stem = os.path.splitext(fname)[0]
-                if stem.startswith(image_key + "_") or stem.startswith(normalized + "_"):
-                    return os.path.join(d, fname)
-        return None
+        from lib.event_library import resolve_library_image_path as _resolve
+
+        return _resolve(image_key, self.app.event_dir, self.app.event_dir.parent)
 
     def touch(self) -> None:
         self.last_request_at = time.time()
@@ -12394,7 +12360,7 @@ body {{padding-top:44px!important;}}
     def _serve_watercolor(self, filename: str) -> None:
         """GET /api/phase_b/watercolor/<filename>
 
-        Streams Production/assets/watercolor_library/<filename> thumbnails and
+        Streams Event_N/library/watercolors/<filename> thumbnails and
         video cue assets to the timeline widget's library panel.
 
         Accepts both a bare key (e.g. "hands_rubbing") and a full filename with
@@ -12405,7 +12371,9 @@ body {{padding-top:44px!important;}}
         """
         safe = Path(filename).name
         _ALLOWED_EXTS = (".png", ".mov", ".mp4")
-        wc_dir = self._phase_assets_dir("watercolor_library")
+        from lib.event_library import event_watercolors_dir
+
+        wc_dir = event_watercolors_dir(self.app.event_dir)
         # Bare key path — no valid extension provided by the caller.
         if not safe.lower().endswith(_ALLOWED_EXTS):
             matches = [m for m in wc_dir.glob(f"{safe}.*")
@@ -12416,7 +12384,7 @@ body {{padding-top:44px!important;}}
                            error_code="GENERIC_ERROR",
                            error_message=f"watercolor not found: {safe!r} (no .png/.mov/.mp4 in library)",
                            retry_safe=False,
-                           extra={"hint": "Ensure the asset exists in watercolor_library/ with a .png, .mov, or .mp4 extension."},
+                           extra={"hint": "Ensure the asset exists in Event library/watercolors/ with a .png, .mov, or .mp4 extension."},
                        )
             # RC2 fix: prefer the animated MP4/MOV over a static PNG when multiple
             # extensions share the same stem (e.g., a thumbnail alongside a video).

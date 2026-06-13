@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "sets": [
+    {
+      "id": "arcs_1_2_baseline",
+      "arc_numbers": [1, 2],
+      "images": [
+        {
+          "key": "canonical_arlo_mirror_v1",
+          "filename": "canonical_arlo_mirror_v1.png",
+          "display_name": "Arlo with mirror (canonical)",
+          "tags": ["character", "arlo", "canonical"]
+        },
+        {
+          "key": "canonical_arlo_neutral_v1",
+          "filename": "canonical_arlo_neutral_v1.png",
+          "display_name": "Arlo neutral (canonical)",
+          "tags": ["character", "arlo", "canonical"]
+        },
+        {
+          "key": "canonical_heartwood_grove_01",
+          "filename": "canonical_heartwood_grove_01.png",
+          "display_name": "Heartwood grove 01 (canonical)",
+          "tags": ["location", "heartwood", "canonical"]
+        },
+        {
+          "key": "canonical_heartwood_grove_02",
+          "filename": "canonical_heartwood_grove_02.png",
+          "display_name": "Heartwood grove 02 (canonical)",
+          "tags": ["location", "heartwood", "canonical"]
+        },
+        {
+          "key": "canonical_heartwood_grove_03",
+          "filename": "canonical_heartwood_grove_03.png",
+          "display_name": "Heartwood grove 03 (canonical)",
+          "tags": ["location", "heartwood", "canonical"]
+        },
+        {
+          "key": "canonical_heartwood_grove_04",
+          "filename": "canonical_heartwood_grove_04.png",
+          "display_name": "Heartwood grove 04 (canonical)",
+          "tags": ["location", "heartwood", "canonical"]
+        }
+      ]
+    }
+  ]
+}

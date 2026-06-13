@@ -71,6 +71,8 @@ def handle_event_create(h, body: dict) -> None:
     new_event_dir = parent / new_event_id
     # Create dir + initialize state via StateManager (writes v3-shape state.json).
     new_event_dir.mkdir(parents=True, exist_ok=False)
+    from lib.event_library import ensure_event_library_dirs
+    ensure_event_library_dirs(new_event_dir)
     # Storyboard template — copy current event's storyboard if possible,
     # else create minimal placeholder (lets future event_load satisfy
     # the storyboard_v*_prod.html lookup).
