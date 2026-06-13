@@ -17,6 +17,7 @@ export const READ_ENDPOINTS = {
   // dev tool that reads endpoints.ts; callers should use bg_session_state.
   bg_state: `${SERVER_BASE}/api/bg/session-state`,
   bg_session_state: `${SERVER_BASE}/api/bg/session-state`,
+  bg_extract_beats_draft: `${SERVER_BASE}/api/bg/extract-beats/draft`,
   bg_segments: `${SERVER_BASE}/api/bg/segments`,
   // patch_health removed from READ_ENDPOINTS 2026-05-19 (P4): server route
   // is POST-only (CLAUDE.md Rule 36 §36.3 healthcheck violation reporter).
@@ -61,6 +62,8 @@ export const MUTATION_ENDPOINTS = {
   bg_export_to_stitcher: `${SERVER_BASE}/api/bg/export-to-stitcher`,
   bg_set_active_context: `${SERVER_BASE}/api/bg/set-active-context`,
   bg_extract_beats: `${SERVER_BASE}/api/bg/extract-beats`,
+  bg_extract_beats_plan: `${SERVER_BASE}/api/bg/extract-beats/plan`,
+  bg_extract_beats_approve: `${SERVER_BASE}/api/bg/extract-beats/approve`,
   bg_generate_kling_prompts: `${SERVER_BASE}/api/bg/generate-kling-prompts`,
   bg_inject_beats: `${SERVER_BASE}/api/bg/inject-beats`,
   bg_update_beat: `${SERVER_BASE}/api/bg/update-beat`,
@@ -197,6 +200,8 @@ export const BG_MUTATION_ENDPOINTS: ReadonlySet<MutationEndpoint> = new Set<Muta
   'bg_export_to_stitcher',
   'bg_set_active_context',
   'bg_extract_beats',
+  'bg_extract_beats_plan',
+  'bg_extract_beats_approve',
   'bg_generate_kling_prompts',
   'bg_inject_beats',
   'bg_update_beat',

@@ -1,7 +1,7 @@
 # Tech Spec — Claude Extract-Beats Workflow (Skeleton → Beat Plan → Kling O3)
 
 **Version:** v1  
-**Status:** APPROVED SPEC (implementation not started)  
+**Status:** IMPLEMENTED (2026-06-13)  
 **Authority:** Kim decisions Q1–Q10 (2026-06-13)  
 **Repo:** `mindfulnest-tooling`  
 **Spec location:** `Production/docs/TECH_SPEC_CLAUDE_SUGGEST_BEATS_v1.md`  

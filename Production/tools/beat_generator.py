@@ -987,14 +987,31 @@ _SKIP_TYPES = re.compile(
 )
 
 # Regex patterns for skeleton structure
-_EVENT_HEADER   = re.compile(r"^##\s+EVENT\s+([\d]+[a-z]?):\s*(.+)", re.IGNORECASE | re.MULTILINE)
-_SECTION_SETUP  = re.compile(r"^###\s+Narrative Setup",              re.IGNORECASE | re.MULTILINE)
-_SECTION_THERAP = re.compile(r"^###\s+Therapeutic",                  re.IGNORECASE | re.MULTILINE)
-_SECTION_RES    = re.compile(r"^###\s+Resolution",                   re.IGNORECASE | re.MULTILINE)
-_SECTION_TMRW   = re.compile(r"^###\s+Tomorrow Hook",                re.IGNORECASE | re.MULTILINE)
-_SECTION_POST   = re.compile(r"^###\s+Post-",                        re.IGNORECASE | re.MULTILINE)
-_NEXT_H3        = re.compile(r"^###",                                 re.MULTILINE)
-_MODULE_MARKER  = re.compile(r"\*\*[►▶]\s*INSERT MODULE",            re.IGNORECASE)
+_EVENT_HEADER_H2 = re.compile(
+    r"^##\s+EVENT\s+([\d]+[a-z]?):\s*(.+)", re.IGNORECASE | re.MULTILINE,
+)
+_EVENT_HEADER_UNDERLINE = re.compile(
+    r"^EVENT\s+([\d]+[a-z]?):\s*(.+?)\s*\n[-=]{3,}",
+    re.IGNORECASE | re.MULTILINE,
+)
+_EVENT_HEADER = _EVENT_HEADER_H2
+_SECTION_SETUP = re.compile(
+    r"^###\s+(?:Narrative Setup|Intro Video(?:\s*---\s*Narrative Setup)?|Video Intro)",
+    re.IGNORECASE | re.MULTILINE,
+)
+_SECTION_SETUP_BOLD = re.compile(r"^\*\*Video Intro\*\*", re.IGNORECASE | re.MULTILINE)
+_SECTION_THERAP = re.compile(r"^###\s+Therapeutic", re.IGNORECASE | re.MULTILINE)
+_SECTION_RES = re.compile(
+    r"^###\s+(?:Resolution|Video Resolution)", re.IGNORECASE | re.MULTILINE,
+)
+_SECTION_TMRW = re.compile(r"^###\s+Tomorrow Hook", re.IGNORECASE | re.MULTILINE)
+_SECTION_POST = re.compile(r"^###\s+Post-", re.IGNORECASE | re.MULTILINE)
+_NEXT_H3 = re.compile(r"^###", re.MULTILINE)
+_MODULE_MARKER = re.compile(
+    r"(?:\*\*)?[►▶]\s*INSERT MODULE|^INSERT MODULE\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_M_NUMBER_IN_TITLE = re.compile(r"\(M(\d+)\)", re.IGNORECASE)
 
 # Dialogue line patterns (most specific first)
 _DIALOGUE_PATS = [
@@ -1032,6 +1049,151 @@ def _infer_emotion(dialogue, scene=""):
     return "neutral"
 
 
+def _parse_event_header_rest(rest: str) -> tuple[str, str]:
+    type_m = re.search(r"\(([^)]+)\)\s*$", rest)
+    event_type = type_m.group(1).strip() if type_m else "Narrative Event"
+    clean_name = rest[: type_m.start()].strip() if type_m else rest
+    return event_type, clean_name
+
+
+def _collect_event_blocks(text: str) -> list[dict]:
+    """Collect event blocks from skeleton text (Arc 1 ## headers + Arc 2 underline)."""
+    markers: list[tuple[int, str, str]] = []
+    for m in _EVENT_HEADER_H2.finditer(text):
+        markers.append((m.start(), str(m.group(1)), m.group(2).strip()))
+    for m in _EVENT_HEADER_UNDERLINE.finditer(text):
+        markers.append((m.start(), str(m.group(1)), m.group(2).strip()))
+    markers.sort(key=lambda t: t[0])
+    # Dedupe same event_id at same position (prefer first)
+    seen_pos: set[int] = set()
+    unique: list[tuple[int, str, str]] = []
+    for pos, eid, rest in markers:
+        if pos in seen_pos:
+            continue
+        seen_pos.add(pos)
+        unique.append((pos, eid, rest))
+
+    blocks: list[dict] = []
+    for i, (pos, event_id, rest) in enumerate(unique):
+        end = unique[i + 1][0] if i + 1 < len(unique) else len(text)
+        event_type, clean_name = _parse_event_header_rest(rest)
+        if _SKIP_TYPES.search(f"({event_type})"):
+            continue
+        event_text = text[pos:end]
+        blocks.append({
+            "pos": pos,
+            "event_id": event_id,
+            "event_type": event_type,
+            "clean_name": clean_name,
+            "event_text": event_text,
+            "has_module": bool(_MODULE_MARKER.search(event_text)),
+        })
+    return blocks
+
+
+def _find_intro_section_start(event_text: str) -> tuple[int, str, str] | None:
+    """Return (start_pos, label, method) for intro body within an event block."""
+    for pat, label, method in (
+        (_SECTION_SETUP, "Narrative Setup", "regex_setup"),
+        (_SECTION_SETUP_BOLD, "Video Intro", "regex_bold_intro"),
+    ):
+        m = pat.search(event_text)
+        if m:
+            return m.end(), label, method
+    return None
+
+
+def slice_skeleton_section(arc_number, event_id, phase="full") -> dict:
+    """
+    Return one skeleton section blob for Beat Gen segment scope.
+
+    Returns dict with keys: text, section_label, slice_method, event_name,
+    m_number, arc_number, event_id, phase, char_count.
+    Empty text when event/section not found.
+    """
+    path = _skeleton_path(arc_number)
+    result: dict = {
+        "arc_number": int(arc_number),
+        "event_id": str(event_id),
+        "phase": str(phase),
+        "text": "",
+        "section_label": "",
+        "slice_method": "not_found",
+        "event_name": "",
+        "m_number": None,
+        "char_count": 0,
+    }
+    if not os.path.exists(path):
+        return result
+    with open(path, "r", encoding="utf-8") as f:
+        text = f.read()
+
+    event_id = str(event_id)
+    blocks = _collect_event_blocks(text)
+    event_block = next((b for b in blocks if b["event_id"] == event_id), None)
+    if not event_block:
+        return result
+
+    event_text = event_block["event_text"]
+    result["event_name"] = event_block["clean_name"]
+    header_line = event_text.splitlines()[0] if event_text else ""
+    m_m = _M_NUMBER_IN_TITLE.search(header_line) or _M_NUMBER_IN_TITLE.search(event_block["clean_name"])
+    if m_m:
+        result["m_number"] = int(m_m.group(1))
+
+    phase = str(phase)
+    if phase in ("pre", "full"):
+        intro = _find_intro_section_start(event_text)
+        if intro:
+            start, label, method = intro
+            body = _slice_section(
+                event_text, start,
+                [_SECTION_THERAP, _SECTION_RES, _NEXT_H3],
+            )
+            mod_m = _MODULE_MARKER.search(body)
+            if mod_m and phase == "pre":
+                body = body[: mod_m.start()]
+            result.update({
+                "text": body.strip(),
+                "section_label": label,
+                "slice_method": method,
+                "char_count": len(body.strip()),
+            })
+            return result
+        if phase == "full" and not event_block["has_module"]:
+            result.update({
+                "text": event_text.strip(),
+                "section_label": "full event",
+                "slice_method": "full_event",
+                "char_count": len(event_text.strip()),
+            })
+            return result
+
+    if phase in ("post", "full"):
+        res_m = _SECTION_RES.search(event_text)
+        if res_m:
+            body = _slice_section(
+                event_text, res_m.end(),
+                [_SECTION_TMRW, _SECTION_POST, _NEXT_H3],
+            )
+            result.update({
+                "text": body.strip(),
+                "section_label": "Resolution",
+                "slice_method": "regex_resolution",
+                "char_count": len(body.strip()),
+            })
+            return result
+
+    if phase == "full":
+        result.update({
+            "text": event_text.strip(),
+            "section_label": "full event fallback",
+            "slice_method": "full_event_fallback",
+            "char_count": len(event_text.strip()),
+        })
+    return result
+
+
 def get_segments(arc_number):
     """
     Return list of video-producing segments from ARC_0N_SKELETON_FINAL.md.
@@ -1047,25 +1209,12 @@ def get_segments(arc_number):
     with open(path, "r", encoding="utf-8") as f:
         text = f.read()
 
-    # Collect valid events in order (positions + metadata)
-    valid = []
-    for m in _EVENT_HEADER.finditer(text):
-        event_id = m.group(1)
-        rest = m.group(2).strip()
-        type_m = re.search(r"\(([^)]+)\)\s*$", rest)
-        event_type = type_m.group(1).strip() if type_m else "Narrative Event"
-        clean_name = rest[:type_m.start()].strip() if type_m else rest
-        if _SKIP_TYPES.search(f"({event_type})"):
-            continue
-        valid.append({"pos": m.start(), "event_id": str(event_id),
-                      "event_type": event_type, "clean_name": clean_name})
+    valid = _collect_event_blocks(text)
 
     segments = []
     seg_idx = 0
-    for i, ev in enumerate(valid):
-        ev_end = valid[i + 1]["pos"] if i + 1 < len(valid) else len(text)
-        event_text = text[ev["pos"]:ev_end]
-        has_module = bool(_MODULE_MARKER.search(event_text))
+    for ev in valid:
+        has_module = ev["has_module"]
         base = {"event_id": ev["event_id"], "event_type": ev["event_type"]}
 
         if has_module:
@@ -1224,7 +1373,7 @@ def extract_beats(arc_number, event_id, phase="full"):
 _CANON_BASE = os.path.join(_PROJECT_DIR, "Canon")
 
 # Matches "(M<n>)" anywhere in an EVENT header title (e.g., "TESSA'S FALL (M1)")
-_M_NUMBER_IN_TITLE = re.compile(r"\(M(\d+)\)", re.IGNORECASE)
+# (pattern defined above with skeleton regex block)
 
 
 def find_event_for_module(arc_number, m_number):
@@ -4532,6 +4681,146 @@ def upgrade_legacy_bg_beats_to_kling_o3(sidecar: dict) -> int:
                 apply_kling_o3_defaults_to_beat(beat, event_id, phase)
                 updated += 1
     return updated
+
+
+def beat_is_kling_approved_protected(beat: dict) -> bool:
+    """True when an existing beat must survive re-extract unless force=True."""
+    status = (beat.get("kling_o3_status") or "").strip().lower()
+    if status == "approved":
+        return True
+    vpath = (beat.get("kling_o3_video_path") or "").strip()
+    if vpath and os.path.isfile(vpath):
+        return True
+    return False
+
+
+def beat_is_canonical_mirror_protected(beat: dict) -> bool:
+    if beat.get("intro_beat_role") == INTRO_BEAT_ROLE_CANONICAL_MIRROR:
+        return True
+    if beat.get("intro_beat_role") == INTRO_BEAT_ROLE_SEMI_CANONICAL:
+        return True
+    if is_canonical_lead_beat(beat.get("beat_id") or ""):
+        return True
+    return False
+
+
+def build_beats_from_approved_plan(
+    beats_plan: list[dict],
+    prompt_by_index: dict[int, str],
+    *,
+    arc_number: int,
+    event_id: str,
+    phase: str,
+) -> list[dict]:
+    """Map approved plan + Claude prompts to sidecar beat rows."""
+    beat_label = f"arc{arc_number}_event{event_id}_{phase}"
+    beats: list[dict] = []
+    for i, row in enumerate(beats_plan, start=1):
+        idx = int(row.get("beat_index") or i)
+        speaker_raw = (row.get("speaker") or "Character").strip()
+        if speaker_raw.lower() in ("[stage direction]", "stage direction"):
+            speaker = "[Stage Direction]"
+        else:
+            speaker = _canon_speaker(speaker_raw) or speaker_raw
+        dialogue = (row.get("dialogue_text") or "").strip()
+        emotion = (row.get("emotion") or "neutral").strip() or "neutral"
+        scene_notes = (row.get("scene_notes") or "").strip()[:500]
+        prompt = (prompt_by_index.get(idx) or "").strip()
+        if prompt and "Only @Image1 is visible" not in prompt:
+            prompt = _append_kling_o3_submit_locks(
+                prompt, speaker=speaker, spoken=_kling_o3_normalize_spoken(dialogue),
+            )
+        beat = {
+            "beat_id": f"bg_{beat_label}_beat_{idx:02d}",
+            "speaker": speaker,
+            "dialogue_text": dialogue,
+            "scene_notes": scene_notes,
+            "emotion": emotion,
+            "kling_o3_prompt": prompt,
+            "status": "draft",
+            "pipeline": "kling_o3_omni",
+            "flux_options": [],
+            "gpt_options": [],
+            "schema_version": 1,
+            "beat_plan_source": "claude_extract_v1",
+        }
+        if not prompt:
+            apply_kling_o3_defaults_to_beat(beat, event_id, phase)
+        else:
+            align_beat_reference_to_element(beat)
+            bg_path = resolve_beat_bg_ref_path(beat, event_id, phase)
+            if bg_path and not beat.get("bg_ref_image"):
+                beat["bg_ref_image"] = _ref_dict_from_path(bg_path)
+            if not beat.get("kling_o3_duration_locked"):
+                beat["kling_o3_duration"] = resolve_kling_o3_submit_duration(
+                    beat, prompt,
+                )
+            beat.setdefault("kling_o3_status", "draft")
+        beats.append(beat)
+    beats.sort(key=lambda b: segment_beat_order_key(b))
+    return beats
+
+
+def apply_approved_extract_plan(
+    sidecar: dict,
+    arc_number: int,
+    event_id: str,
+    phase: str,
+    story_summary: str,
+    beats_plan: list[dict],
+    prompt_by_index: dict[int, str],
+    *,
+    force: bool = False,
+) -> list[dict]:
+    """Write approved Claude extract plan into segment beats with merge policy."""
+    seg = get_seg_entry(sidecar, arc_number, event_id, phase)
+    existing = list(seg.get("beats") or [])
+    incoming = build_beats_from_approved_plan(
+        beats_plan, prompt_by_index,
+        arc_number=arc_number, event_id=event_id, phase=phase,
+    )
+    incoming_ids = {b["beat_id"] for b in incoming if b.get("beat_id")}
+
+    protected: list[dict] = []
+    for b in existing:
+        if beat_is_canonical_mirror_protected(b):
+            protected.append(b)
+            continue
+        if not force and beat_is_kling_approved_protected(b):
+            protected.append(b)
+
+    if force:
+        kept_orphans: list[dict] = [
+            b for b in protected if b.get("beat_id") not in incoming_ids
+        ]
+    else:
+        kept_orphans = [
+            b for b in protected if b.get("beat_id") not in incoming_ids
+        ]
+        kept_orphans.extend([
+            b for b in existing
+            if b.get("beat_id") not in incoming_ids
+            and b not in protected
+            and not beat_is_canonical_mirror_protected(b)
+            and beat_is_kling_approved_protected(b)
+        ])
+
+    merged = merge_incoming_segment_beats(existing, incoming)
+    merged_ids = {b.get("beat_id") for b in merged}
+    for b in kept_orphans:
+        if b.get("beat_id") and b["beat_id"] not in merged_ids:
+            merged.append(b)
+            merged_ids.add(b["beat_id"])
+
+    beat_label = f"arc{arc_number}_event{event_id}_{phase}"
+    append_intro_canonical_tail_beats(merged, beat_label, phase)
+    merged = normalize_segment_beat_order(merged)
+    seg["beats"] = merged
+    seg["beat_plan_draft"] = None
+    seg["beat_plan_approved_at"] = datetime.now(timezone.utc).isoformat()
+    if story_summary:
+        seg["beat_plan_story_summary"] = story_summary
+    return merged
 
 
 def generate_kling_prompts_for_segment(sidecar: dict, arc_number: int, event_id: str, phase: str) -> int:

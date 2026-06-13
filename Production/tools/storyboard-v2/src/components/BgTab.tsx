@@ -21,6 +21,7 @@ import { SERVER_BASE } from '../api/endpoints';
 import { makeDropTarget } from '../utils/dragdrop';
 import { openCropper } from '../state/cropper';
 import { Modal } from './ui/Modal';
+import { BeatPlanModal, type BeatPlanRow } from './BeatPlanModal';
 import { Spinner } from './ui/Spinner';
 import { Select } from './ui/Select';
 import { pushToast } from './ui/Toast';
@@ -352,7 +353,10 @@ export function BgTab() {
   const [, setAcceptStatus] = useState<'idle' | 'sending' | 'ok' | 'error'>('idle');
   const [stitcherExportStatus, setStitcherExportStatus] = useState<'idle' | 'sending'>('idle');
   const [extractStatus, setExtractStatus] = useState<'idle' | 'sending'>('idle');
-  const [suggestStatus, setSuggestStatus] = useState<'idle' | 'sending'>('idle');
+  const [approveStatus, setApproveStatus] = useState<'idle' | 'sending'>('idle');
+  const [beatPlanOpen, setBeatPlanOpen] = useState(false);
+  const [beatPlanSummary, setBeatPlanSummary] = useState('');
+  const [beatPlanRows, setBeatPlanRows] = useState<BeatPlanRow[]>([]);
   // Running cost across this session (only counts batches submitted from this UI).
   const [runningCostUsd, setRunningCostUsd] = useState<number>(0);
   const [lastBatchCostUsd, setLastBatchCostUsd] = useState<number>(0);
@@ -665,40 +669,49 @@ export function BgTab() {
     if (!activeSegment) return;
     const [event_id, phase] = activeSegment.split('|');
     setExtractStatus('sending');
-    const result = await pathappPatch<{ beats: BgBeat[]; count: number }>(
-      activeScope.value, 'bg_extract_beats', { arc_number: arcNumber, event_id, phase },
+    const result = await pathappPatch<{
+      story_summary?: string;
+      beats_plan?: BeatPlanRow[];
+      model_used?: string;
+      generation_time_ms?: number;
+    }>(
+      activeScope.value, 'bg_extract_beats_plan', { arc_number: arcNumber, event_id, phase },
     );
     setExtractStatus('idle');
     if (result.ok && result.data) {
-      setBeats(result.data.beats ?? []);
-      pushToast({ kind: 'success', message: `Extracted ${result.data.count} beats`, source: 'bg-extract' });
+      setBeatPlanSummary(result.data.story_summary ?? '');
+      setBeatPlanRows(result.data.beats_plan ?? []);
+      setBeatPlanOpen(true);
+      pushToast({
+        kind: 'success',
+        message: `Planned ${result.data.beats_plan?.length ?? 0} beats — review and Approve`,
+        source: 'bg-extract-plan',
+      });
     } else {
       pushToast({ kind: 'error', message: `Extract failed: ${result.error}`, source: 'bg-extract-error' });
     }
   };
 
-  /** Build Kling O3 prompt boxes from beat dialogue + skeleton scene metadata (Suggest beats). */
-  const onSuggestBeats = async () => {
+  const onApproveBeatPlan = async (storySummary: string, beatsPlan: BeatPlanRow[]) => {
     if (!activeSegment) return;
     const [event_id, phase] = activeSegment.split('|');
-    if (beats.length === 0) {
-      pushToast({ kind: 'info', message: 'Extract beats first, then Suggest beats.', source: 'bg-suggest-empty' });
-      return;
-    }
-    setSuggestStatus('sending');
+    setApproveStatus('sending');
     const result = await pathappPatch<{ beats: BgBeat[]; count: number }>(
-      activeScope.value, 'bg_generate_kling_prompts', { arc_number: arcNumber, event_id, phase },
+      activeScope.value, 'bg_extract_beats_approve', {
+        arc_number: arcNumber, event_id, phase, story_summary: storySummary, beats_plan: beatsPlan,
+      },
     );
-    setSuggestStatus('idle');
+    setApproveStatus('idle');
     if (result.ok && result.data) {
       setBeats(result.data.beats ?? []);
+      setBeatPlanOpen(false);
       pushToast({
         kind: 'success',
-        message: `Suggested Kling O3 prompts for ${result.data.count ?? beats.length} beats`,
-        source: 'bg-suggest',
+        message: `Populated ${result.data.count ?? 0} beats with Kling O3 prompts`,
+        source: 'bg-extract-approve',
       });
     } else {
-      pushToast({ kind: 'error', message: `Suggest beats failed: ${result.error}`, source: 'bg-suggest-error' });
+      pushToast({ kind: 'error', message: `Approve failed: ${result.error}`, source: 'bg-approve-error' });
     }
   };
 
@@ -1183,20 +1196,8 @@ export function BgTab() {
           disabled={!activeSegment || extractStatus === 'sending'}
         >
           {extractStatus === 'sending' ? (
-            <><Spinner size="sm" inline /> Extracting…</>
+            <><Spinner size="sm" inline /> Reading skeleton…</>
           ) : '+ Extract Beats from script'}
-        </button>
-        <button
-          type="button"
-          class="mn-btn"
-          data-testid="bg-suggest-beats-btn"
-          onClick={onSuggestBeats}
-          disabled={!activeSegment || beats.length === 0 || suggestStatus === 'sending'}
-          title="Build Kling O3 prompt boxes from dialogue + scene metadata for every beat in this segment"
-        >
-          {suggestStatus === 'sending' ? (
-            <><Spinner size="sm" inline /> Suggesting…</>
-          ) : 'Suggest beats'}
         </button>
         <button
           type="button"
@@ -1303,6 +1304,16 @@ export function BgTab() {
           ) : 'Send Beat Gen to Stitcher'}
         </button>
       </footer>
+
+      {/* Beat plan approval modal (Claude extract Phase A → B) */}
+      <BeatPlanModal
+        open={beatPlanOpen}
+        storySummary={beatPlanSummary}
+        beatsPlan={beatPlanRows}
+        approveStatus={approveStatus}
+        onClose={() => setBeatPlanOpen(false)}
+        onApprove={onApproveBeatPlan}
+      />
 
       {/* BG-9 — Delete-beat confirm Modal */}
       <Modal

@@ -5933,6 +5933,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_bg_segments()
             if path == "/api/bg/session-state":
                 return self._handle_bg_session_state()
+            if path == "/api/bg/extract-beats/draft":
+                from server_handlers.background import handle_bg_extract_beats_draft_get
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                return handle_bg_extract_beats_draft_get(self, qs)
             if path == "/api/bg/poll-flux-status":
                 return self._handle_bg_poll_flux()
             if path.startswith("/api/bg/poll-gpt-status"):
@@ -6197,6 +6201,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_bg_set_active_context(body)
             if path == "/api/bg/extract-beats":
                 return self._handle_bg_extract_beats(body)
+            if path == "/api/bg/extract-beats/plan":
+                return self._handle_bg_extract_beats_plan(body)
+            if path == "/api/bg/extract-beats/approve":
+                return self._handle_bg_extract_beats_approve(body)
             if path == "/api/bg/generate-kling-prompts":
                 return self._handle_bg_generate_kling_prompts(body)
             if path == "/api/bg/inject-beats":
@@ -7623,6 +7631,14 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_bg_extract_beats(self, body: dict) -> None:
         from server_handlers.background import handle_bg_extract_beats
         return handle_bg_extract_beats(self, body)
+
+    def _handle_bg_extract_beats_plan(self, body: dict) -> None:
+        from server_handlers.background import handle_bg_extract_beats_plan
+        return handle_bg_extract_beats_plan(self, body)
+
+    def _handle_bg_extract_beats_approve(self, body: dict) -> None:
+        from server_handlers.background import handle_bg_extract_beats_approve
+        return handle_bg_extract_beats_approve(self, body)
 
     def _handle_bg_generate_kling_prompts(self, body: dict) -> None:
         from server_handlers.kling_o3 import handle_bg_generate_kling_prompts

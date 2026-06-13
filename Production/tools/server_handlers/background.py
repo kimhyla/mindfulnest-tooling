@@ -2009,87 +2009,224 @@ def handle_bg_set_active_context(h, body: dict)-> None:
 
 
 def handle_bg_extract_beats(h, body: dict)-> None:
+    """POST /api/bg/extract-beats — deprecated alias for /extract-beats/plan."""
+    return handle_bg_extract_beats_plan(h, body)
 
-    """POST /api/bg/extract-beats {arc_number, event_id, phase} -> { beats }
 
-    NOTE: body['event_id'] is the BG segment number; storyboard scope
-    guard uses body['scope_event_id'] when present.
-    """
-    # LD-456 SCOPE_VALIDATION_V1
+def handle_bg_extract_beats_plan(h, body: dict) -> None:
+    """POST /api/bg/extract-beats/plan — Phase A: Claude beat plan (no sidecar beat write)."""
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
-        return  # LD-461 SCOPE_BODY_HELPER_V1 — migrated from hand-rolled dict
+        return
     arc_number = int(body.get("arc_number", 1))
-    event_id   = str(body.get("event_id", "1"))
-    phase      = str(body.get("phase", "full"))
+    event_id = str(body.get("event_id", "1"))
+    phase = str(body.get("phase", "full"))
     bg = _bg_module()
-    beats = bg.extract_beats(arc_number, event_id, phase)
-    # Write to sidecar — MERGE with existing saved state so that
-    # re-extracting beats never wipes flux_options, accepted_image_key,
-    # accepted_library_ref, or status that the user already set.
+    section = bg.slice_skeleton_section(arc_number, event_id, phase)
+    if not (section.get("text") or "").strip():
+        return h._send_json(422, {
+            "ok": False,
+            "code": "SKELETON_SECTION_EMPTY",
+            "message": (
+                f"No skeleton section for arc={arc_number} event={event_id} phase={phase}"
+            ),
+            "section_meta": section,
+            "retry_safe": True,
+        })
+
+    from claude_extract_beats import (
+        claude_plan_beats,
+        normalize_beats_plan,
+        resolve_anthropic_api_key,
+    )
+
+    api_key = resolve_anthropic_api_key()
+    if not api_key:
+        return h._send_json(503, {
+            "ok": False,
+            "code": "ANTHROPIC_API_KEY_MISSING",
+            "message": (
+                "Anthropic API key not configured. Add ANTHROPIC_API_KEY to Doppler "
+                "(project=mindfulnest, config=dev) or set the env var and restart the server."
+            ),
+            "retry_safe": False,
+        })
+
+    meta = {
+        "arc_number": arc_number,
+        "event_id": event_id,
+        "phase": phase,
+        "event_name": section.get("event_name"),
+        "m_number": section.get("m_number"),
+        "section_label": section.get("section_label"),
+        "slice_method": section.get("slice_method"),
+    }
+    try:
+        plan_result = claude_plan_beats(section["text"], meta=meta, api_key=api_key)
+    except Exception as exc:
+        print(f"[BG] extract-beats/plan Claude error: {exc}")
+        traceback.print_exc()
+        return h._send_json(502, {
+            "ok": False,
+            "code": "CLAUDE_PLAN_FAILED",
+            "message": str(exc),
+            "retry_safe": True,
+        })
+
+    beats_plan = normalize_beats_plan(plan_result.get("beats_plan") or [])
+    story_summary = plan_result.get("story_summary") or ""
+    draft = {
+        "story_summary": story_summary,
+        "beats_plan": beats_plan,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "model_used": plan_result.get("model_used"),
+        "generation_time_ms": plan_result.get("generation_time_ms"),
+        "section_meta": section,
+    }
     with bg._sidecar_lock:
         sidecar = bg.read_sidecar()
         seg = bg.get_seg_entry(sidecar, arc_number, event_id, phase)
-        # Build lookup of existing beat data keyed by beat_id
-        existing = {b["beat_id"]: b for b in (seg.get("beats") or [])}
-        _PRESERVE = (
-            "flux_options", "gpt_options",
-            "bg_gpt_batch_job_id", "bg_gpt_batch_job_started_at",
-            "accepted_image_key", "accepted_library_ref", "accepted_local_path", "accepted_video_path",
-            "status", "reference_image", "bg_ref_image",
-            "kling_o3_status", "kling_o3_video_path", "kling_o3_options",
-            "kling_o3_selected_option_key", "kling_o3_selected_at", "kling_o3_task_id",
-            "kling_o3_trim_start", "kling_o3_trim_back", "kling_o3_trim_end",
-            "kling_o3_prompt", "kling_o3_duration", "kling_o3_duration_locked",
-            "kling_o3_generation", "kling_o3_model", "kling_o3_submit_response", "kling_o3_poll_result",
-            "kling_o3_completed_at", "kling_o3_error",
-            "kling_o3_voice_fix_status", "kling_o3_voice_fix_audio_path",
-            "kling_o3_voice_fix_attempt_id", "kling_o3_voice_fix_phase",
-            "kling_o3_voice_fix_error_code", "kling_o3_voice_fix_updated_at",
-            "kling_o3_voice_fix_ui_job_id", "kling_o3_voice_fix_job_log_path",
-            "kling_o3_voice_fix_job_started_at", "kling_o3_voice_fix_job_pid",
-            "kling_o3_voice_fix_job_completed_at", "kling_o3_voice_fix_job_result",
-            "kling_o3_voice_fix_lipsync_audio_path",
-            "kling_o3_voice_fix_lipsync_padding",
-            "kling_o3_voice_fix_voice_id", "kling_o3_voice_fix_spoken_text",
-            "kling_o3_voice_fix_audio_duration_s",
-            "kling_o3_voice_fix_task_id", "kling_o3_voice_fix_result",
-            "kling_o3_voice_fix_base_video_path",
-            "kling_o3_voice_fix_silent_video_path",
-            "kling_o3_voice_fix_lipsync_input_path",
-            "kling_o3_voice_fix_lipsync_input_profile",
-            "kling_o3_voice_fix_provider_contract",
-            "kling_o3_voice_fix_lipsync_transport",
-            "kling_o3_voice_fix_url_preflight",
-            "kling_o3_voice_fix_url_transport_error",
-            "kling_o3_voice_fix_lipsync_quality",
-            "kling_o3_voice_fix_output_profile",
-            "kling_o3_voice_fix_lipsync_audio_check",
-            "kling_o3_voice_fix_output_duration_s",
-            "kling_o3_voice_fix_completed_at",
-            "kling_o3_voice_fix_error",
-            "arlo_visual_quality",
-        )
-        for b in beats:
-            saved = existing.get(b["beat_id"])
-            if saved:
-                for field in _PRESERVE:
-                    if field in saved and saved[field] is not None:
-                        b.setdefault(field, saved[field])
-        for b in beats:
-            if not (b.get("kling_o3_prompt") or "").strip():
-                bg.apply_kling_o3_defaults_to_beat(b, event_id, phase)
-        seg["beats"] = beats
-        # Find segment name from listing
+        seg["beat_plan_draft"] = draft
+        seg["slice_method"] = section.get("slice_method")
         for s in bg.get_segments(arc_number):
             if str(s["event_id"]) == event_id and s["phase"] == phase:
                 seg["name"] = s["name"]
                 break
         sidecar["active_context"] = {
-            "arc_number": arc_number, "event_id": event_id, "phase": phase
+            "arc_number": arc_number, "event_id": event_id, "phase": phase,
         }
         bg.write_sidecar(sidecar)
-    print(f"[BG] extracted {len(beats)} beats arc={arc_number} event={event_id} phase={phase}")
-    return h._send_json(200, {"beats": beats, "count": len(beats)})
+
+    print(
+        f"[BG] extract-beats/plan arc={arc_number} event={event_id} phase={phase} "
+        f"beats={len(beats_plan)} slice={section.get('slice_method')}"
+    )
+    return h._send_json(200, {
+        "ok": True,
+        "story_summary": story_summary,
+        "beats_plan": beats_plan,
+        "section_meta": section,
+        "slice_method": section.get("slice_method"),
+        "model_used": plan_result.get("model_used"),
+        "generation_time_ms": plan_result.get("generation_time_ms"),
+        "sources_loaded": {
+            "skeleton_section_chars": section.get("char_count", 0),
+            "arc_number": arc_number,
+            "event_id": event_id,
+            "phase": phase,
+            "m_number": section.get("m_number"),
+        },
+    })
+
+
+def handle_bg_extract_beats_approve(h, body: dict) -> None:
+    """POST /api/bg/extract-beats/approve — Phase B: Kling prompts + sidecar write."""
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+    arc_number = int(body.get("arc_number", 1))
+    event_id = str(body.get("event_id", "1"))
+    phase = str(body.get("phase", "full"))
+    force = bool(body.get("force"))
+    story_summary = str(body.get("story_summary") or "").strip()
+    beats_plan_raw = body.get("beats_plan") or []
+    if not beats_plan_raw:
+        return h._send_error_v59(
+            400,
+            error_code="MISSING_BEATS_PLAN",
+            error_message="beats_plan array required",
+            retry_safe=False,
+        )
+
+    from claude_extract_beats import (
+        claude_author_kling_prompts,
+        normalize_beats_plan,
+        resolve_anthropic_api_key,
+    )
+
+    api_key = resolve_anthropic_api_key()
+    if not api_key:
+        return h._send_json(503, {
+            "ok": False,
+            "code": "ANTHROPIC_API_KEY_MISSING",
+            "message": "Anthropic API key not configured.",
+            "retry_safe": False,
+        })
+
+    beats_plan = normalize_beats_plan(beats_plan_raw)
+    bg = _bg_module()
+    section = bg.slice_skeleton_section(arc_number, event_id, phase)
+    meta = {
+        "arc_number": arc_number,
+        "event_id": event_id,
+        "phase": phase,
+        "event_name": section.get("event_name"),
+        "m_number": section.get("m_number"),
+    }
+    try:
+        author_result = claude_author_kling_prompts(
+            story_summary, beats_plan, meta=meta, api_key=api_key,
+        )
+    except Exception as exc:
+        print(f"[BG] extract-beats/approve Claude error: {exc}")
+        traceback.print_exc()
+        return h._send_json(502, {
+            "ok": False,
+            "code": "CLAUDE_AUTHOR_FAILED",
+            "message": str(exc),
+            "retry_safe": True,
+        })
+
+    prompt_by_index = author_result.get("prompt_by_index") or {}
+    with bg._sidecar_lock:
+        sidecar = bg.read_sidecar()
+        beats = bg.apply_approved_extract_plan(
+            sidecar, arc_number, event_id, phase,
+            story_summary, beats_plan, prompt_by_index,
+            force=force,
+        )
+        sidecar["active_context"] = {
+            "arc_number": arc_number, "event_id": event_id, "phase": phase,
+        }
+        bg.write_sidecar(sidecar)
+
+    print(
+        f"[BG] extract-beats/approve arc={arc_number} event={event_id} phase={phase} "
+        f"beats={len(beats)} force={force}"
+    )
+    return h._send_json(200, {
+        "ok": True,
+        "beats": beats,
+        "count": len(beats),
+        "model_used": author_result.get("model_used"),
+        "generation_time_ms": author_result.get("generation_time_ms"),
+    })
+
+
+def handle_bg_extract_beats_draft_get(h, qs: dict) -> None:
+    """GET /api/bg/extract-beats/draft — reload beat plan draft for segment."""
+    scope_body = {
+        "scope_event_id": (qs.get("scope_event_id") or [""])[0],
+        "event_id": (qs.get("scope_event_id") or qs.get("event_id") or [""])[0],
+    }
+    if not h._assert_event_scope(scope_body, allow_missing=True):
+        return
+    try:
+        arc_number = int((qs.get("arc_number") or ["1"])[0])
+    except ValueError:
+        arc_number = 1
+    event_id = str((qs.get("event_id") or ["1"])[0])
+    phase = str((qs.get("phase") or ["full"])[0])
+    bg = _bg_module()
+    sidecar = bg.read_sidecar()
+    seg = bg.get_seg_entry(sidecar, arc_number, event_id, phase)
+    draft = seg.get("beat_plan_draft") or {}
+    if not draft:
+        return h._send_json(200, {"ok": True, "beat_plan_draft": None})
+    return h._send_json(200, {
+        "ok": True,
+        "beat_plan_draft": draft,
+        "story_summary": draft.get("story_summary"),
+        "beats_plan": draft.get("beats_plan"),
+    })
 
 
 def handle_bg_inject_beats(h, body: dict)-> None:
