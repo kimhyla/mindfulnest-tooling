@@ -357,7 +357,7 @@ def stitch_slot_duration_warnings(h, slot_key: str, slot: dict) -> list[str]:
 
 
 def ensure_job_slot_defaults(h, slots) -> bool:
-    """Sync durations, ambient presets, and intro whoosh across all canonical slots."""
+    """Sync durations, ambient presets, intro whoosh, and phase_a canonical path."""
     if not isinstance(slots, dict):
         return False
     changed = False
@@ -365,6 +365,8 @@ def ensure_job_slot_defaults(h, slots) -> bool:
         slot = slots.get(slot_key)
         if not isinstance(slot, dict):
             continue
+        if slot_key == "phase_a" and sync_stitch_phase_a_from_phase_tab(h, slot):
+            changed = True
         if sync_stitch_slot_video_dur_ms(h, slot):
             changed = True
         if apply_stitch_slot_default_ambient_preset(slot_key, slot):
@@ -387,6 +389,45 @@ def collect_stitch_job_slot_warnings(h, slots) -> dict[str, list[str]]:
         if warnings:
             out[slot_key] = warnings
     return out
+
+
+def _stitch_scope_event_id(h) -> str:
+    if hasattr(h.app, "event_dir"):
+        return Path(h.app.event_dir).name
+    return ""
+
+
+def _production_state_phase_a_stitched_filename(h) -> str:
+    """Same key as Phase A tab player (`stitched_file` / phase_a_stitched_file)."""
+    if not hasattr(h.app, "state"):
+        return ""
+    try:
+        state = h.app.state.read_state() or {}
+    except Exception:
+        return ""
+    return (state.get("phase_a_stitched_file") or "").strip()
+
+
+def sync_stitch_phase_a_from_phase_tab(h, slot: dict) -> bool:
+    """Point stitch phase_a at production_state phase_a_stitched_file (Phase A tab parity)."""
+    if not isinstance(slot, dict):
+        return False
+    fname = _production_state_phase_a_stitched_filename(h)
+    event_id = _stitch_scope_event_id(h)
+    if not fname or not event_id:
+        return False
+    canonical_path = f"Production/{event_id}/{fname}"
+    current = (slot.get("video_path") or "").strip()
+    if current == canonical_path:
+        return False
+    try:
+        abs_path = h._stitch_resolve_path(canonical_path)
+        require_media_under_project(abs_path, extensions=MEDIA_EXTENSIONS)
+    except (ValueError, FileNotFoundError):
+        return False
+    slot["video_path"] = canonical_path
+    sync_stitch_slot_video_dur_ms(h, slot, force=True)
+    return True
 
 
 def stitch_event_job_name(event_id: str) -> str:

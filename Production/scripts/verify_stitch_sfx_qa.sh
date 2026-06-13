@@ -20,7 +20,7 @@ grep -q 'aformat=channel_layouts=mono' "$EDITOR" || fail "missing mono normalize
 grep -q 'sync_stitch_slot_video_dur_ms' "$EDITOR" || fail "missing video_dur drift sync"
 grep -q 'ensure_stitch_intro_default_whoosh_cue' "$EDITOR" || fail "missing intro default whoosh"
 grep -q 'collect_stitch_job_slot_warnings' "$EDITOR" || fail "missing slot duration warnings"
-grep -q 'STITCH_VIDEO_DUR_DRIFT_TOLERANCE_MS' "$EDITOR" || fail "missing duration drift tolerance"
+grep -q 'sync_stitch_phase_a_from_phase_tab' "$EDITOR" || fail "missing Phase A tab canonical sync"
 
 python3 -m pytest "$ROOT/Production/tools/tests/test_stitch_sfx_qa.py" -q
 python3 -m pytest "$ROOT/Production/tools/tests/test_stitch_video_dur_sync.py" -q

@@ -115,5 +115,34 @@ class TestStitchSlotDurationWarnings(unittest.TestCase):
         self.assertTrue(any("50949" in w for w in warnings))
 
 
+class TestPhaseATabCanonicalSync(unittest.TestCase):
+    def test_sync_phase_a_from_production_state(self):
+        from server_handlers.stitch_editor import sync_stitch_phase_a_from_phase_tab
+
+        h = MagicMock()
+        h.app.event_dir = Path("/proj/Production/Event_1")
+        h.app.state.read_state.return_value = {
+            "phase_a_stitched_file": "phase_a_stitched_20260611-175925.mp4",
+        }
+        h._stitch_resolve_path.return_value = (
+            "/proj/Production/Event_1/phase_a_stitched_20260611-175925.mp4"
+        )
+        h._ffprobe_duration_ms.return_value = 38333
+        slot = {
+            "video_path": "Production/Event_1/phase_a_stitched_20260609-153516.mp4",
+            "video_dur_ms": 50908,
+        }
+        with unittest.mock.patch(
+            "server_handlers.stitch_editor.require_media_under_project",
+            return_value="/proj/Production/Event_1/phase_a_stitched_20260611-175925.mp4",
+        ):
+            self.assertTrue(sync_stitch_phase_a_from_phase_tab(h, slot))
+        self.assertEqual(
+            slot["video_path"],
+            "Production/Event_1/phase_a_stitched_20260611-175925.mp4",
+        )
+        self.assertEqual(slot["video_dur_ms"], 38333)
+
+
 if __name__ == "__main__":
     unittest.main()
