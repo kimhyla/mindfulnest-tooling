@@ -178,6 +178,7 @@ const LIBRARY_TIER_LS_KEY = 'mn.library.tier';
 // / 'character_master' for image disk items today.
 function inferAssetType(it: LibItem): string {
   if (it.asset_type) return it.asset_type;
+  if (it.tier === 'canonical') return 'canonical_image';
   if (it.tier === 'character_master') return 'still_master';
   if (it.tier === 'source' || it.tier === 'cropped') return 'still_delivery';
   return 'image';
@@ -192,7 +193,14 @@ function inferAssetType(it: LibItem): string {
 export const TIER_TO_FILTER_MAP: Record<LibraryTier, (it: LibItem) => boolean> = {
   images: (it) => {
     const at = inferAssetType(it);
-    return at === 'image' || at === 'still_delivery' || at === 'still_master' || at === 'beat_scene';
+    return (
+      at === 'image' ||
+      at === 'still_delivery' ||
+      at === 'still_master' ||
+      at === 'beat_scene' ||
+      at === 'canonical_image' ||
+      it.tier === 'canonical'
+    );
   },
   ambient: (it) => {
     const at = inferAssetType(it);
