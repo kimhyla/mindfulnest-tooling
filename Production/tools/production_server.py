@@ -11198,6 +11198,7 @@ body {{padding-top:44px!important;}}
           3. Production/assets/sound_library/sfx/
           4. Production/assets/sound_library/transitions/
           5. Production/assets/ambient_library/            — legacy ambient
+          6. project_root/<filename>                         — legacy root SFX (spaces ok)
         """
         safe = Path(urllib.parse.unquote(fname)).name
         if not safe or safe in (".", ".."):
@@ -11214,6 +11215,7 @@ body {{padding-top:44px!important;}}
             project_root / "Production" / "assets" / "sound_library" / "sfx" / safe,
             project_root / "Production" / "assets" / "sound_library" / "transitions" / safe,
             project_root / "Production" / "assets" / "ambient_library" / safe,
+            project_root / safe,
         ]
         content_type = self._stitch_audio_content_type(safe)
         for target in candidates:

@@ -109,6 +109,8 @@ export interface WaveformTimelineProps {
   playbackControl?: { current: WaveformPlaybackControl | null };
   /** Drop/seek only — no playback bus, no ▶ (Stitcher compact grid strips). */
   playbackDisabled?: boolean;
+  /** Server ffmpeg remix in flight — block ▶ until mixed audio_src is loaded. */
+  mixExtracting?: boolean;
 }
 
 export interface WaveformPlaybackControl {
@@ -146,6 +148,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     linkedVideoEventSuppressRef,
     playbackControl,
     playbackDisabled,
+    mixExtracting = false,
     stemCutStartMs,
     stemCutEndMs,
     stemCutEditable,
@@ -767,6 +770,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   // AbortError without firing the 'play' event (button stays on ▶ Play).
   const startPlayback = useCallback(
     (fromStart = false): boolean => {
+      if (mixExtracting) return false;
       const ws = wsRef.current;
       if (!ws || !isReadyRef.current) return false;
       const pane = wrapperRef.current?.closest('.mn-tab-pane-keepalive') as HTMLElement | null;
@@ -814,7 +818,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       }
       return true;
     },
-    [linkedVideo, linkedVideoEventSuppressRef, playbackControlRef, onPlayStateChange, withLinkedVideoSuppress],
+    [linkedVideo, linkedVideoEventSuppressRef, playbackControlRef, onPlayStateChange, withLinkedVideoSuppress, mixExtracting],
   );
 
   const togglePlayback = useCallback(() => {
@@ -961,6 +965,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       data-stem-cut-start-ms={Math.round(displayStemCut.start_ms)}
       data-stem-cut-end-ms={Math.round(displayStemCut.end_ms)}
       data-phase-waveform-pause-v1="PHASE_WAVEFORM_PAUSE_V1"
+      data-mix-extracting={mixExtracting ? 'true' : 'false'}
       onDragOver={dropHandlers.onDragOver}
       onDragLeave={dropHandlers.onDragLeave}
       onDrop={dropHandlers.onDrop}
@@ -981,10 +986,16 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
             type="button"
             class="mn-btn mn-btn-play"
             data-testid="waveform-play-btn"
-            disabled={!isReady}
+            disabled={!isReady || mixExtracting}
             onPointerDown={(e: PointerEvent) => e.stopPropagation()}
             onClick={togglePlayback}
-            title={isPlaying ? 'Pause' : 'Play'}
+            title={
+              mixExtracting
+                ? 'Remixing audio…'
+                : isPlaying
+                  ? 'Pause'
+                  : 'Play'
+            }
           >
             {isPlaying ? '⏸ Pause' : '▶ Play'}
           </button>

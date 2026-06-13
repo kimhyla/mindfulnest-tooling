@@ -14,6 +14,7 @@ run "$SCRIPTS/verify_phase_waveform_play_durability.sh"
 run "$SCRIPTS/verify_phase_producer_durability.sh"
 run "$SCRIPTS/verify_stitcher_module_seek_durability.sh"
 run "$SCRIPTS/verify_stitch_ambient_durability.sh"
+run "$SCRIPTS/verify_stitch_sfx_qa.sh"
 run "$SCRIPTS/verify_library_audio_durability.sh"
 run "$SCRIPTS/verify_phase_boundary_fade_durability.sh"
 

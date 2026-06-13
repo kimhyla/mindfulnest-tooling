@@ -38,6 +38,12 @@ class _MockHandler:
             )
         )
 
+    def _stitch_resolve_path(self, raw: str) -> str:
+        return raw
+
+    def _ffprobe_duration_ms(self, _path) -> int:
+        return 0
+
 
 class StitchSlotAudioMixTests(unittest.TestCase):
     def test_slot_merge_worthy_accepts_ambient_only_patch(self):

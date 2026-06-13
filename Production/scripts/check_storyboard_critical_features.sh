@@ -97,6 +97,10 @@ MARKERS=(
     "STITCHER_AMBIENT|STITCH_SLOT_AUDIO_MIX_V1"
     "STITCHER_AMBIENT|STITCH_DEFAULT_AMBIENT_BEDS_V1"
     "STITCHER_AMBIENT|STITCH_AMBIENT_VOLUME_PERSIST_V1"
+    # Stitcher SFX timeline — video_dur hydration + remix gating (2026-06-12)
+    "STITCHER_SFX|STITCH_SLOT_VIDEO_DUR_V1"
+    "STITCHER_SFX|data-mix-extracting"
+    "STITCHER_SFX|Remixing slot audio"
     # Phase stem trim + reject lipsync (2026-06-10)
     "PHASE_STEM_TRIM|waveform-stem-cut-block"
     "PHASE_STEM_TRIM|Reject lipsync"

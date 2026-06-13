@@ -103,21 +103,31 @@ def _job_canonical_audio_needs_persist(live_slots, normalized_slots: dict) -> bo
         if not isinstance(src, dict):
             continue
         preset = (src.get("ambient_bed") or "").strip()
-        if not preset:
+        dur_ms = src.get("video_dur_ms")
+        if not preset and not dur_ms:
             continue
         dst = live.get(slot_key)
         if not isinstance(dst, dict):
             return True
-        if (dst.get("ambient_bed") or "").strip() != preset:
+        if preset and (dst.get("ambient_bed") or "").strip() != preset:
             return True
-        try:
-            vol = float(dst.get("ambient_volume", 0))
-        except (TypeError, ValueError):
-            return True
-        if abs(vol - STITCH_AMBIENT_BED_VOLUME) > 1e-6:
-            return True
-        if dst.get("ambient_bed_path"):
-            return True
+        if preset:
+            try:
+                vol = float(dst.get("ambient_volume", 0))
+            except (TypeError, ValueError):
+                return True
+            if abs(vol - STITCH_AMBIENT_BED_VOLUME) > 1e-6:
+                return True
+            if dst.get("ambient_bed_path"):
+                return True
+        if dur_ms is not None:
+            try:
+                live_dur = int(dst.get("video_dur_ms") or 0)
+                norm_dur = int(dur_ms)
+            except (TypeError, ValueError):
+                return True
+            if norm_dur > 0 and live_dur != norm_dur:
+                return True
     return False
 
 
@@ -144,6 +154,14 @@ def _persist_stitch_job_canonical_audio(state: dict, name: str, normalized_slots
             dst.pop("ambient_bed", None)
             dst.pop("ambient_volume", None)
             dst.pop("ambient_bed_path", None)
+        dur_ms = src.get("video_dur_ms")
+        if dur_ms is not None:
+            try:
+                dur_i = int(dur_ms)
+            except (TypeError, ValueError):
+                dur_i = 0
+            if dur_i > 0:
+                dst["video_dur_ms"] = dur_i
         normalize_slot_audio_mix_levels(dst)
     live["updated_at"] = datetime.now(timezone.utc).isoformat()
 
@@ -187,6 +205,45 @@ def normalize_job_slots_audio(slots) -> None:
         if isinstance(slot, dict):
             apply_stitch_slot_default_ambient_preset(slot_key, slot)
             normalize_slot_audio_mix_levels(slot)
+
+
+def hydrate_stitch_slot_video_dur_ms(h, slot: dict) -> bool:
+    """Probe slot video_path and set video_dur_ms when missing (waveform timeline scale)."""
+    if not isinstance(slot, dict):
+        return False
+    vp = (slot.get("video_path") or "").strip()
+    if not vp:
+        return False
+    try:
+        existing = int(slot.get("video_dur_ms") or 0)
+    except (TypeError, ValueError):
+        existing = 0
+    if existing > 0:
+        return False
+    if not hasattr(h, "_stitch_resolve_path") or not hasattr(h, "_ffprobe_duration_ms"):
+        return False
+    try:
+        abs_path = h._stitch_resolve_path(vp)
+        abs_path = require_media_under_project(abs_path, extensions=MEDIA_EXTENSIONS)
+    except (ValueError, FileNotFoundError):
+        return False
+    dur_ms = h._ffprobe_duration_ms(abs_path)
+    if dur_ms > 0:
+        slot["video_dur_ms"] = dur_ms
+        return True
+    return False
+
+
+def hydrate_job_slot_video_durs(h, slots) -> bool:
+    """Backfill video_dur_ms on all canonical slots. Returns True if any slot changed."""
+    if not isinstance(slots, dict):
+        return False
+    changed = False
+    for slot_key in STITCH_SLOT_ORDER:
+        slot = slots.get(slot_key)
+        if isinstance(slot, dict) and hydrate_stitch_slot_video_dur_ms(h, slot):
+            changed = True
+    return changed
 
 
 def stitch_event_job_name(event_id: str) -> str:
@@ -279,7 +336,8 @@ def _mix_stitch_waveform_audio(
     sig_parts = [base_sig, ambient_path, f"{ambient_volume:.4f}"]
     sig_parts += [
         f"{c.get('id', i)}:{c.get('offset_ms', 0)}:{c.get('duration_ms', '')}:"
-        f"{c.get('volume', STITCH_SFX_CUE_DEFAULT_VOLUME)}"
+        f"{c.get('volume', STITCH_SFX_CUE_DEFAULT_VOLUME)}:"
+        f"{c.get('source_path', '')}"
         for i, c in enumerate(sfx_cues)
     ]
     mix_hash = _hl.md5("|".join(sig_parts).encode(), usedforsecurity=False).hexdigest()[:12]
@@ -339,6 +397,9 @@ def _mix_stitch_waveform_audio(
     mix_inputs += [f"[{label}]" for label in valid_cue_labels]
     if len(mix_inputs) < 2:
         return None
+
+    if valid_cue_labels:
+        slot["_sfx_mixed"] = True
 
     n_mix = len(mix_inputs)
     filter_lanes.append(
@@ -455,6 +516,7 @@ def stitch_upsert_event_slot(
             job["slots"] = {}
         slot = job["slots"].setdefault(slot_key, {})
         slot.update(slot_patch)
+        hydrate_stitch_slot_video_dur_ms(h, slot)
         apply_stitch_slot_default_ambient_preset(slot_key, slot)
         normalize_slot_audio_mix_levels(slot)
         if beat_boundaries is not None:
@@ -747,13 +809,14 @@ def handle_stitch_load_job(h, name: str)-> None:
         if isinstance(slots, dict):
             backfilled = apply_stitch_job_default_ambient_presets(slots)
             normalize_job_slots_audio(slots)
+            durs_hydrated = hydrate_job_slot_video_durs(h, slots)
             for slot in slots.values():
                 if isinstance(slot, dict) and slot.get("beat_boundaries"):
                     slot["beat_boundaries"] = enrich_beat_boundaries(
                         slot["beat_boundaries"],
                     )
             live_slots = (job.get("slots") if isinstance(job, dict) else None)
-            if backfilled or _job_canonical_audio_needs_persist(live_slots, slots):
+            if backfilled or durs_hydrated or _job_canonical_audio_needs_persist(live_slots, slots):
 
                 def persist_defaults(state: dict) -> None:
                     _persist_stitch_job_canonical_audio(state, name, slots)
@@ -866,6 +929,8 @@ def handle_stitch_save_job(h, body: dict)-> None:
             slots_out = _normalize_job_slots(existing.get("slots"))
         else:
             slots_out = slots
+        if isinstance(slots_out, dict):
+            hydrate_job_slot_video_durs(h, slots_out)
         normalize_job_slots_audio(slots_out if isinstance(slots_out, dict) else {})
         jobs[name] = {
             "created_at": existing.get("created_at", now_iso),
@@ -975,12 +1040,14 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
                    )
 
     duration_ms = h._ffprobe_duration_ms(audio_path)
+    video_dur_ms = duration_ms
     serve_fname = audio_fname
     mix_slot: dict = {}
     ambient_bed = (body.get("ambient_bed") or "").strip()
     if ambient_bed:
         mix_slot["ambient_bed"] = ambient_bed
     sfx_raw = body.get("sfx_cues")
+    sfx_mixed = False
     if isinstance(sfx_raw, list):
         mix_slot["sfx_cues"] = [c for c in sfx_raw if isinstance(c, dict)]
     if mix_slot:
@@ -1003,12 +1070,14 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
         if mixed_path is not None:
             serve_fname = mixed_path.name
             duration_ms = h._ffprobe_duration_ms(mixed_path)
+            sfx_mixed = bool(mix_slot.get("_sfx_mixed"))
 
     return h._send_json(200, {
         "audio_url": f"http://localhost:5111/api/stitch_editor/audio_file/{serve_fname}",
         "duration_ms": duration_ms,
+        "video_dur_ms": video_dur_ms,
         "ambient_mixed": bool(mix_slot.get("ambient_bed_path")),
-        "sfx_mixed": bool(mix_slot.get("sfx_cues")),
+        "sfx_mixed": sfx_mixed,
     })
 
 

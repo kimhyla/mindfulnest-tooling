@@ -22,7 +22,8 @@ def test_serve_stitch_audio_prefers_canonical_sound_library() -> None:
     assert "sound_library" in block and "ambient" in block
     ambient_idx = block.index("sound_library/ambient")
     legacy_idx = block.index("ambient_library")
-    assert ambient_idx < legacy_idx
+    root_idx = block.index("project_root / safe")
+    assert ambient_idx < legacy_idx < root_idx
 
 
 def test_unquote_restores_ambient_filename_with_spaces() -> None:
