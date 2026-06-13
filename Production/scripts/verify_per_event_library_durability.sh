@@ -8,6 +8,7 @@ PATHS="${REPO_ROOT}/Production/lib/paths.py"
 EVENT_LIB="${REPO_ROOT}/Production/lib/event_library.py"
 CROPPER="${REPO_ROOT}/Production/tools/server_handlers/cropper.py"
 TEST="${REPO_ROOT}/Production/tools/tests/test_event_library_scoping.py"
+APP_CTX_TEST="${REPO_ROOT}/Production/tools/tests/test_app_context_library_roots.py"
 SMOKE="${SCRIPT_DIR}/smoke_per_event_library.sh"
 
 fail() { echo "[per-event-library-durability] FAIL: $1" >&2; exit 1; }
@@ -16,6 +17,7 @@ fail() { echo "[per-event-library-durability] FAIL: $1" >&2; exit 1; }
 [[ -f "$EVENT_LIB" ]] || fail "missing event_library.py"
 [[ -f "$CROPPER" ]] || fail "missing cropper.py"
 [[ -f "$TEST" ]] || fail "missing test_event_library_scoping.py"
+[[ -f "$APP_CTX_TEST" ]] || fail "missing test_app_context_library_roots.py"
 [[ -x "$SMOKE" ]] || fail "missing smoke_per_event_library.sh"
 
 grep -q 'library/images' "$PATHS" \
@@ -25,7 +27,7 @@ grep -q 'def event_images_dir' "$EVENT_LIB" \
 grep -q 'canonical_meta_for_arc' "$CROPPER" \
   || fail "cropper handle_cr_library must inject canonical tier"
 
-python3 -m pytest "$TEST" -q
+python3 -m pytest "$TEST" "$APP_CTX_TEST" -q
 
 if curl -sf "http://localhost:${MN_SERVER_PORT:-5111}/api/event/current" >/dev/null 2>&1; then
   bash "$SMOKE"

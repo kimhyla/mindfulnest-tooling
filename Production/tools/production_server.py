@@ -5528,6 +5528,9 @@ class AppContext:
         the server reads/opens the file. See is_path_under_library_root().
 
         Per-event image library + global canonical images + Character_Assets.
+
+        BG_REF_APP_CONTEXT_V1: AppContext methods use self.event_dir — never
+        self.app (that attribute exists only on ProductionHandler).
         """
         from lib.event_library import library_image_roots
 

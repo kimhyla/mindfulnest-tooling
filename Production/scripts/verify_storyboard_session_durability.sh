@@ -27,6 +27,7 @@ run "$SCRIPTS/verify_event_canonical_module.sh"
 run "$SCRIPTS/verify_event_library_scope_durability.sh"
 run "$SCRIPTS/verify_scope_deep_link_durability.sh"
 run "$SCRIPTS/verify_per_event_library_durability.sh"
+run "$SCRIPTS/verify_bg_ref_app_context_durability.sh"
 
 python3 -m pytest \
   "$ROOT/Production/tools/tests/test_stitch_audio_file_serve.py" \
