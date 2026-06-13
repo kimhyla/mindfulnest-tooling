@@ -5531,7 +5531,7 @@ class AppContext:
         """
         from lib.event_library import library_image_roots
 
-        return library_image_roots(self.app.event_dir, self.app.event_dir.parent)
+        return library_image_roots(self.event_dir, self.event_dir.parent)
 
     def is_path_under_library_root(self, abs_path: str) -> bool:
         """Return True iff abs_path resolves under an approved library root.
@@ -5575,7 +5575,7 @@ class AppContext:
         """
         from lib.event_library import resolve_library_image_path as _resolve
 
-        return _resolve(image_key, self.app.event_dir, self.app.event_dir.parent)
+        return _resolve(image_key, self.event_dir, self.event_dir.parent)
 
     def touch(self) -> None:
         self.last_request_at = time.time()
