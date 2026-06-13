@@ -621,37 +621,16 @@ def _subjects_prod_root() -> Path:
 
 
 def _load_subject_element(speaker: str) -> "dict | None":
-    """Return element_list entry for speaker from character_subjects.json, or None.
+    """Return element_list entry for speaker, or None.
 
-    Fail-open: any missing config, bad file, or unregistered character returns
-    None — caller proceeds without element_list (identical to current behavior).
-    Never raises. Uses case-insensitive multi-tier lookup so it handles both
-    _canonicalize_speaker() output ('luna') and title-case ('Luna') safely.
-
-    Returns: {"element_id": "...", "element_name": "..."} ready for element_list[],
-             or None if not configured / not yet registered.
+    Fail-open: missing config or unregistered character returns None — caller
+    proceeds without element_list. Never raises. Routes through
+    kling_character_registry so speaker aliases (e.g. luna→Lorelai) match Beat Gen.
     """
     try:
-        subjects_path = _subjects_prod_root() / "character_subjects.json"
-        if not subjects_path.is_file():
-            return None
-        data = json.loads(subjects_path.read_text(encoding="utf-8"))
-        chars = data.get("characters") or {}
-        # Multi-tier lookup: exact → lowercase → title-case → capitalize
-        entry = (
-            chars.get(speaker)
-            or chars.get(speaker.lower())
-            or chars.get(speaker.title())
-            or chars.get(speaker.capitalize())
-        )
-        if not entry:
-            return None
-        if entry.get("status") != "active":
-            return None
-        eid = entry.get("element_id")
-        if not eid:
-            return None
-        return {"element_id": str(eid), "element_name": entry.get("element_name", speaker)}
+        import kling_character_registry as reg
+
+        return reg.get_element_list_entry(speaker or "")
     except Exception as exc:
         log(f"[subject-binding] _load_subject_element({speaker!r}) failed (non-fatal): {exc}")
         return None

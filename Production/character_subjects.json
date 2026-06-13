@@ -293,6 +293,46 @@
         "locked_at": "2026-06-05T02:17:24.682197+00:00",
         "sample_text_fingerprint": "189c4fe75845a9d5"
       }
+    },
+    "Lorelai": {
+      "element_id": "313353263247308",
+      "status": "active",
+      "element_name": "Lorelai",
+      "description": "Cartoon 3D Pixar-style lemur scholar, glasses, backpack, excitable academic personality",
+      "frontal_image": "Lorelai/poses/lorelai_canonical_neutral.png",
+      "refer_images": [
+        "Lorelai/poses/lorelai_explaining.png",
+        "Lorelai/poses/lorelai_shocked.png"
+      ],
+      "elevenlabs_voice_id": "PoHUWWWMHFrA8z7Q88pu",
+      "elevenlabs_voice_name": "Miranda",
+      "kling_voice_id": "894868384255451200",
+      "kling_voice_label": "ElevenLabs Miranda (create-voice)",
+      "created_at": "2026-06-13T20:16:25.444641+00:00",
+      "wavespeed_prediction_id": "d076c1eb6335456a94808de1cbe39e26",
+      "audition_line": "Fascinating! The patterns match exactly!",
+      "audition_speed": 1.15,
+      "element_sample_lines": [
+        "Fascinating! The patterns match exactly!",
+        "Wait — look at this! The nest stones are glowing!",
+        "I think I know what the Great Wizard meant!"
+      ],
+      "element_sample_text": "Fascinating! The patterns match exactly! ... Wait — look at this! The nest stones are glowing! ... I think I know what the Great Wizard meant!",
+      "voice_sample_lock": {
+        "schema_version": 1,
+        "session_id": "luna_voice_inherit_20260613",
+        "audition_line": "Fascinating! The patterns match exactly!",
+        "element_sample_lines": [
+          "Fascinating! The patterns match exactly!",
+          "Wait — look at this! The nest stones are glowing!",
+          "I think I know what the Great Wizard meant!"
+        ],
+        "element_sample_text": "Fascinating! The patterns match exactly! ... Wait — look at this! The nest stones are glowing! ... I think I know what the Great Wizard meant!",
+        "locked_speed": 1.15,
+        "locked_at": "2026-06-13T19:45:44.316121+00:00",
+        "sample_text_fingerprint": "8140f4cfbad207f2"
+      },
+      "elevenlabs_voice_sample_path": "kling_voice_samples/lorelai.mp3"
     }
   }
 }
