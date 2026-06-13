@@ -25,6 +25,7 @@ run "$SCRIPTS/verify_stitch_slot_audio_extract_durability.sh"
 run "$SCRIPTS/verify_stitch_slot_export_full_media_durability.sh"
 run "$SCRIPTS/verify_event_canonical_module.sh"
 run "$SCRIPTS/verify_event_library_scope_durability.sh"
+run "$SCRIPTS/verify_scope_deep_link_durability.sh"
 
 python3 -m pytest \
   "$ROOT/Production/tools/tests/test_stitch_audio_file_serve.py" \

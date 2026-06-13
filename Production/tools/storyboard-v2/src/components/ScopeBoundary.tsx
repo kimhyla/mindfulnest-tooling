@@ -15,6 +15,7 @@
 //   2. GET /api/event/current — server's truth (when no ?event= deep link)
 //   3. ?event=Event_1 URL query param — when present AND mismatched with the
 //      server pin, POST /api/event/load to honor shareable deep links
+//      (SCOPE_DEEP_LINK_DURABILITY_V1 — avoids scope_mismatch 409 on v2 state)
 //   4. <body data-event-id="Event_1"> attribute
 //   5. window.__MN_EVENT_ID__ global (set by production_server.py at render time)
 //   6. Hardcoded fallback "Event_1"
