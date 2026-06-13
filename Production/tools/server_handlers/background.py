@@ -2203,9 +2203,11 @@ def handle_bg_extract_beats_approve(h, body: dict) -> None:
 
 def handle_bg_extract_beats_draft_get(h, qs: dict) -> None:
     """GET /api/bg/extract-beats/draft — reload beat plan draft for segment."""
+    scope_event = (qs.get("scope_event_id") or qs.get("event_id") or [""])[0]
     scope_body = {
-        "scope_event_id": (qs.get("scope_event_id") or [""])[0],
-        "event_id": (qs.get("scope_event_id") or qs.get("event_id") or [""])[0],
+        "scope_event_id": scope_event,
+        "event_id": scope_event,
+        "scope_video_role": (qs.get("scope_video_role") or [""])[0],
     }
     if not h._assert_event_scope(scope_body, allow_missing=True):
         return
