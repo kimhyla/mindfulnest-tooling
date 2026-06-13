@@ -3937,6 +3937,86 @@ def handle_bg_select_o3_video(h, body: dict) -> None:
     return h._send_json(200, {"ok": True, "beat_id": beat_id, "option_key": option_key, "video_path": video_path})
 
 
+def handle_bg_render_still_clip(h, body: dict) -> None:
+    """POST /api/bg/render-still-clip — Ken Burns / static hold still → O3 slot mp4."""
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+    beat_id = (body.get("beat_id") or "").strip()
+    if not beat_id:
+        return h._send_error_v59(
+            400,
+            error_code="MISSING_BEAT_ID",
+            error_message="beat_id required",
+            retry_safe=False,
+        )
+    method = str(body.get("method") or "ken_burns").strip()
+    if method not in ("ken_burns", "static_hold"):
+        return h._send_error_v59(
+            400,
+            error_code="INVALID_STILL_RENDER_METHOD",
+            error_message="method must be ken_burns or static_hold",
+            retry_safe=False,
+        )
+    try:
+        duration = float(body.get("duration") or 4.0)
+    except (TypeError, ValueError):
+        duration = 4.0
+    try:
+        slot_index = int(body.get("slot_index") or 0)
+    except (TypeError, ValueError):
+        slot_index = 0
+    video_role = (
+        (body.get("scope_target_video") or body.get("scope_video_role") or "intro") or "intro"
+    ).strip()
+    bg = _bg_module()
+    with bg.sidecar_file_lock():
+        sidecar = bg.read_sidecar()
+        sidecar = bg._migrate_sidecar(sidecar)
+        _, beat = bg.find_beat(sidecar, beat_id)
+        if not beat:
+            return h._send_error_v59(
+                404,
+                error_code="BEAT_NOT_FOUND",
+                error_message=f"beat {beat_id} not found",
+                retry_safe=False,
+            )
+        if not bg.beat_is_still_insert(beat):
+            return h._send_error_v59(
+                400,
+                error_code="NOT_STILL_INSERT_BEAT",
+                error_message="render-still-clip only applies to still_insert beats",
+                retry_safe=False,
+            )
+        production_state = h.app.state.read_state()
+        try:
+            result = bg.render_still_insert_o3_clip(
+                beat,
+                h.app.event_dir,
+                method=method,
+                duration=duration,
+                slot_index=slot_index,
+                sidecar=sidecar,
+                production_state=production_state,
+                video_role=video_role,
+            )
+        except ValueError as exc:
+            return h._send_error_v59(
+                400,
+                error_code="STILL_SOURCE_MISSING",
+                error_message=str(exc),
+                retry_safe=False,
+            )
+        except Exception as exc:
+            return h._send_error_v59(
+                500,
+                error_code="STILL_CLIP_RENDER_FAILED",
+                error_message=str(exc),
+                retry_safe=True,
+            )
+        bg.write_sidecar(sidecar)
+    return h._send_json(200, {"ok": True, "beat_id": beat_id, **result})
+
+
 def handle_bg_accept_option(h, body: dict)-> None:
 
     """POST /api/bg/accept-option {beat_id, option_key} -> { ok }"""

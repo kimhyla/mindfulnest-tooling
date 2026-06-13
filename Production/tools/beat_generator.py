@@ -2653,11 +2653,22 @@ def run_magic_compositor(beat, background_path, path_pts, style, duration, fps=2
     return {"video_path": video_path, "preview_path": preview_path}
 
 
-def run_ken_burns(beat, still_path, pan_x_pct, pan_y_pct, zoom_start, zoom_end, duration, fps=24):
+def run_ken_burns(
+    beat,
+    still_path,
+    pan_x_pct,
+    pan_y_pct,
+    zoom_start,
+    zoom_end,
+    duration,
+    fps=24,
+    *,
+    out_path: str | Path | None = None,
+):
     out_dir = _LOCAL_STILLS_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     ts = int(time.time())
-    video_path = str(out_dir / f"{beat['beat_id']}_kenburns_{ts}.mp4")
+    video_path = str(out_path) if out_path else str(out_dir / f"{beat['beat_id']}_kenburns_{ts}.mp4")
     total_frames = int(duration * fps)
     zoompan = (
         f"zoompan=z='{zoom_start}+({zoom_end}-{zoom_start})*on/{total_frames}'"
@@ -2679,19 +2690,20 @@ def run_ken_burns(beat, still_path, pan_x_pct, pan_y_pct, zoom_start, zoom_end, 
     actual_dur = _ffprobe_duration(Path(video_path))
     if abs(actual_dur - duration) > 0.2:
         raise RuntimeError(f"ken_burns output duration {actual_dur:.2f}s, expected {duration:.2f}s ±0.2s")
-    beat["local_render_params"] = {
-        "method": "ken_burns", "still_path": still_path,
-        "pan_x_pct": pan_x_pct, "pan_y_pct": pan_y_pct,
-        "zoom_start": zoom_start, "zoom_end": zoom_end, "duration": duration,
-    }
+    if out_path is None:
+        beat["local_render_params"] = {
+            "method": "ken_burns", "still_path": still_path,
+            "pan_x_pct": pan_x_pct, "pan_y_pct": pan_y_pct,
+            "zoom_start": zoom_start, "zoom_end": zoom_end, "duration": duration,
+        }
     return {"video_path": video_path, "preview_path": still_path}
 
 
-def run_static_hold(beat, still_path, duration, fps=24):
+def run_static_hold(beat, still_path, duration, fps=24, *, out_path: str | Path | None = None):
     out_dir = _LOCAL_STILLS_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     ts = int(time.time())
-    video_path = str(out_dir / f"{beat['beat_id']}_static_{ts}.mp4")
+    video_path = str(out_path) if out_path else str(out_dir / f"{beat['beat_id']}_static_{ts}.mp4")
     cmd = [
         "ffmpeg", "-y", "-loop", "1", "-i", still_path,
         "-t", str(duration),
@@ -2707,10 +2719,119 @@ def run_static_hold(beat, still_path, duration, fps=24):
     actual_dur = _ffprobe_duration(Path(video_path))
     if abs(actual_dur - duration) > 0.2:
         raise RuntimeError(f"static_hold duration {actual_dur:.2f}s, expected {duration:.2f}s ±0.2s")
-    beat["local_render_params"] = {
-        "method": "static_hold", "still_path": still_path, "duration": duration,
-    }
+    if out_path is None:
+        beat["local_render_params"] = {
+            "method": "static_hold", "still_path": still_path, "duration": duration,
+        }
     return {"video_path": video_path, "preview_path": still_path}
+
+
+def resolve_still_source_abs_path(beat: dict) -> Path | None:
+    """PNG/JPEG still for still_insert Ken Burns — library drop, char ref, or BG ref."""
+    lib = beat.get("accepted_library_ref") or {}
+    if isinstance(lib, dict):
+        ap = str(lib.get("abs_path") or "").strip()
+        if ap and Path(ap).is_file():
+            return Path(ap).resolve()
+    for opt in beat.get("gpt_options") or []:
+        if not isinstance(opt, dict):
+            continue
+        for key in ("local_path", "abs_path"):
+            ap = str(opt.get(key) or "").strip()
+            if ap and Path(ap).is_file():
+                return Path(ap).resolve()
+    for ref_key in ("reference_image", "bg_ref_image", "start_frame_image", "end_frame_image"):
+        ref = beat.get(ref_key) or {}
+        if isinstance(ref, dict):
+            ap = str(ref.get("abs_path") or "").strip()
+            if ap and Path(ap).is_file():
+                return Path(ap).resolve()
+    return None
+
+
+def beat_is_still_insert(beat: dict) -> bool:
+    return (
+        str(beat.get("pipeline") or "") == "still_insert"
+        or str(beat.get("beat_render_mode") or "") == "still_insert"
+    )
+
+
+def render_still_insert_o3_clip(
+    beat: dict,
+    event_dir: str | Path,
+    *,
+    method: str = "ken_burns",
+    duration: float = 4.0,
+    slot_index: int = 0,
+    sidecar: dict | None = None,
+    production_state: dict | None = None,
+    video_role: str = "intro",
+) -> dict:
+    """Ken Burns / static hold still → mp4 in kling_o3 slot (trim + magic-on-video parity)."""
+    still = resolve_still_source_abs_path(beat)
+    if still is None:
+        raise ValueError(
+            "No still image — drop a library image in option 1 or set char/BG ref first"
+        )
+    event_dir = Path(event_dir)
+    clips_dir = kling_o3_clips_dir(event_dir)
+    ts = int(time.time())
+    silent_path = clips_dir / f"{beat['beat_id']}_still_insert_{ts}.mp4"
+    if method == "static_hold":
+        run_static_hold(beat, str(still), duration, out_path=silent_path)
+    else:
+        run_ken_burns(
+            beat, str(still), 20, 20, 1.0, 1.15, duration, out_path=silent_path,
+        )
+    final_path = silent_path.resolve()
+    audio = resolve_bg_beat_tts_audio_path(
+        event_dir, beat, sidecar=sidecar,
+        production_state=production_state, video_role=video_role,
+    )
+    tts_mixed = False
+    if audio is not None and audio.is_file():
+        muxed = clips_dir / f"{beat['beat_id']}_still_insert_{ts}_tts.mp4"
+        fs = _ffmpeg_stitch_module()
+        fs.trim_normalized(
+            final_path,
+            muxed,
+            trim_start=0.0,
+            trim_end=None,
+            mix_audio_path=audio,
+            audio_delay=0.0,
+            freeze_tail_s=0.0,
+        )
+        final_path = muxed.resolve()
+        tts_mixed = True
+    opt_key = f"{beat['beat_id']}_still_insert_{ts}"
+    option = {
+        "key": opt_key,
+        "label": "still insert clip",
+        "video_path": str(final_path),
+        "source": "still_insert_static_hold" if method == "static_hold" else "still_insert_ken_burns",
+        "slot_index": slot_index,
+        "active": True,
+    }
+    options = [o for o in (beat.get("kling_o3_options") or []) if isinstance(o, dict)]
+    options.append(option)
+    now = datetime.now(timezone.utc).isoformat()
+    beat["kling_o3_options"] = options
+    beat["kling_o3_video_path"] = str(final_path)
+    beat["kling_o3_status"] = "approved"
+    beat["status"] = "approved"
+    beat["kling_o3_selected_option_key"] = opt_key
+    beat["kling_o3_selected_at"] = now
+    clear_kling_o3_beat_trim(beat)
+    for o in options:
+        o["active"] = o.get("key") == opt_key or o.get("video_path") == str(final_path)
+    return {
+        "video_path": str(final_path),
+        "option_key": opt_key,
+        "method": method,
+        "duration_s": duration,
+        "tts_mixed": tts_mixed,
+        "still_path": str(still),
+    }
 
 
 def probe_capabilities() -> dict:

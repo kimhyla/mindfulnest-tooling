@@ -62,6 +62,19 @@ function canonBeatSpeaker(raw?: string): string {
   return RETIRED_SPEAKER_CANON[s] ?? RETIRED_SPEAKER_CANON[s.toLowerCase()] ?? s;
 }
 
+function isStillInsertBeat(beat?: BgBeat | null): boolean {
+  if (!beat) return false;
+  return beat.pipeline === 'still_insert' || beat.beat_render_mode === 'still_insert';
+}
+
+function isO3VoiceBeat(beat?: BgBeat | null): boolean {
+  if (!beat) return false;
+  if (isStillInsertBeat(beat)) return false;
+  const sp = (beat.speaker ?? '').trim().toLowerCase();
+  if (!sp || sp === '[stage direction]' || sp === 'stage direction') return false;
+  return true;
+}
+
 // ----------------------------------------------------------------
 // Modal state — single-modal stack invariant per UI_PRIMITIVES_SHARED_V1.
 // BG-9 (delete confirm), BG-34/35 (Accept All warn + confirm), BG-5 (edit chip),
@@ -96,6 +109,8 @@ interface GptOption {
 interface BgBeat {
   beat_id: string;
   speaker?: string;
+  pipeline?: string;
+  beat_render_mode?: string;
   dialogue_text?: string;
   scene_notes?: string;
   emotion?: string;
@@ -182,6 +197,17 @@ interface ArloO3SubmitResponse {
   attempt_id?: string;
   deduped?: boolean;
   message?: string;
+}
+
+interface StillClipRenderResponse {
+  ok: boolean;
+  beat_id?: string;
+  video_path?: string;
+  option_key?: string;
+  method?: string;
+  duration_s?: number;
+  tts_mixed?: boolean;
+  still_path?: string;
 }
 
 interface ArloO3PollResponse {
@@ -363,6 +389,7 @@ export function BgTab() {
   const [loading, setLoading] = useState(true);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [activeO3Jobs, setActiveO3Jobs] = useState<Record<string, string>>({});
+  const [activeStillRenderJobs, setActiveStillRenderJobs] = useState<Record<string, boolean>>({});
   const [activeNativeLipSyncJobs, setActiveNativeLipSyncJobs] = useState<Record<string, string>>({});
   const [pollResults, setPollResults] = useState<Record<string, GptOption[]>>({});
   const [, setAcceptStatus] = useState<'idle' | 'sending' | 'ok' | 'error'>('idle');
@@ -854,13 +881,53 @@ export function BgTab() {
     }
   };
 
+  const onRenderStillClip = async (beatId: string) => {
+    if (activeStillRenderJobs[beatId]) {
+      pushToast({ kind: 'info', message: 'Still clip is already rendering.', source: 'bg-still-clip-busy' });
+      return;
+    }
+    const beat = beats.find((b) => b.beat_id === beatId);
+    setActiveStillRenderJobs((prev) => ({ ...prev, [beatId]: true }));
+    const result = await pathappPatch<StillClipRenderResponse>(
+      activeScope.value,
+      'bg_render_still_clip',
+      {
+        beat_id: beatId,
+        method: 'ken_burns',
+        duration: 4.0,
+        slot_index: beat?.kling_o3_replace_slot_index ?? 0,
+      },
+    );
+    setActiveStillRenderJobs((prev) => {
+      const next = { ...prev };
+      delete next[beatId];
+      return next;
+    });
+    if (result.ok) {
+      pushToast({
+        kind: 'success',
+        message: result.data?.tts_mixed
+          ? 'Still clip rendered with TTS — use trim / magic on video below.'
+          : 'Still clip rendered — use trim / magic on video below.',
+        source: 'bg-still-clip',
+      });
+      await refreshState();
+    } else {
+      pushToast({ kind: 'error', message: `Still clip failed: ${result.error}`, source: 'bg-still-clip-error' });
+    }
+  };
+
   const onGenerateBatch = async (beatId: string) => {
+    const beat = beats.find((b) => b.beat_id === beatId);
+    if (isStillInsertBeat(beat)) {
+      await onRenderStillClip(beatId);
+      return;
+    }
     if (activeO3Jobs[beatId]) {
       pushToast({ kind: 'info', message: 'This beat is already generating.', source: 'bg-o3-beat-busy' });
       return;
     }
-    const beat = beats.find((b) => b.beat_id === beatId);
-    if (beat?.speaker) {
+    if (isO3VoiceBeat(beat)) {
       const result = await pathappPatch<ArloO3SubmitResponse>(
         activeScope.value, 'bg_submit_arlo_o3_voice', {
           beat_id: beatId,
@@ -1307,7 +1374,12 @@ export function BgTab() {
               eventId={activeScope.value.event_id}
               videoRole={activeTargetVideo.value}
               pollResultForBeat={pollResults[b.beat_id]}
-              busy={activeJobId !== null || !!activeO3Jobs[b.beat_id] || !!activeNativeLipSyncJobs[b.beat_id]}
+              busy={
+                activeJobId !== null
+                || !!activeO3Jobs[b.beat_id]
+                || !!activeStillRenderJobs[b.beat_id]
+                || !!activeNativeLipSyncJobs[b.beat_id]
+              }
               nativeExperimentBusy={!!activeNativeLipSyncJobs[b.beat_id]}
               onDelete={() => onDeleteBeat(b.beat_id)}
               onUpdateText={(t) => onUpdateBeatText(b.beat_id, t)}
@@ -1923,7 +1995,13 @@ function BeatGenCard({
         >
           {busy ? (
             <><Spinner size="sm" inline /> Generating…</>
-          ) : beat.speaker ? 'Generate padded O3 voice video' : 'Generate 3 options'}
+          ) : isStillInsertBeat(beat) ? (
+            'Render still clip (Ken Burns + TTS)'
+          ) : isO3VoiceBeat(beat) ? (
+            'Generate padded O3 voice video'
+          ) : (
+            'Generate 3 options'
+          )}
         </button>
       </div>
 
