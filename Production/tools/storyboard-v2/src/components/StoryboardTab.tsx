@@ -162,7 +162,7 @@ type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 // Source of truth: prod_voice_profiles Directus collection. Keep this list
 // in sync — drift is a CI-checkable error (C13 Test D lockfile correctness).
 const KNOWN_SPEAKERS: readonly string[] = [
-  'Cedric', 'Arlo', 'Tessa', 'Luna', 'Benson',
+  'Cedric', 'Arlo', 'Tessa', 'Lorelai', 'Benson',
   'Ember', 'Bork', 'Bramble', 'Grizzle', 'Oliver',
 ] as const;
 

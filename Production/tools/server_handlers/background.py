@@ -2108,6 +2108,8 @@ def handle_bg_extract_beats_plan(h, body: dict) -> None:
         "slice_method": section.get("slice_method"),
         "model_used": plan_result.get("model_used"),
         "generation_time_ms": plan_result.get("generation_time_ms"),
+        "staging_warnings": plan_result.get("staging_warnings") or [],
+        "cast_policy": plan_result.get("cast_policy"),
         "sources_loaded": {
             "skeleton_section_chars": section.get("char_count", 0),
             "arc_number": arc_number,

@@ -6,10 +6,16 @@ from __future__ import annotations
 
 import json
 import os
-import re
-import time
 from pathlib import Path
 from typing import Any
+
+from beat_extract_policy import (
+    build_still_insert_prompt,
+    kling_staging_policy_block,
+    load_gold_example,
+    postprocess_beats_plan,
+    postprocess_plan_result,
+)
 
 CLAUDE_SONNET_MODEL = "claude-sonnet-4-6"
 PLAN_TIMEOUT_S = 90
@@ -123,23 +129,28 @@ def claude_plan_beats(
         _PLANNER_SKILL,
         "You are a MindfulNest beat planner. Return JSON with story_summary and beats_plan.",
     )
+    gold = load_gold_example(
+        meta.get("arc_number", 1), meta.get("event_id", ""), meta.get("phase", "pre"),
+    )
     phase = meta.get("phase") or "pre"
     soft_target = "6–15" if phase in ("pre", "full") else "3–8"
     system = (
         f"{skill}\n\n"
-        "Return ONLY valid JSON — no markdown fences, no preamble.\n"
+        f"{kling_staging_policy_block()}\n\n"
+        + (f"GOLD REFERENCE (match this density and style):\n{gold}\n\n" if gold else "")
+        + "Return ONLY valid JSON — no markdown fences, no preamble.\n"
         "Schema:\n"
         "{\n"
-        '  "story_summary": "<plot + cute/funny + must-haves>",\n'
+        '  "story_summary": "<plot + cute/funny + must-haves; Lorelai lemur + Arlo>",\n'
         '  "beats_plan": [\n'
         "    {\n"
         '      "beat_index": 1,\n'
-        '      "beat_type": "dialogue" | "stage_direction",\n'
-        '      "speaker": "Character name or [Stage Direction]",\n'
-        '      "dialogue_text": "verbatim skeleton quote or [CLAUDE INVENTED] bridge",\n'
+        '      "beat_type": "dialogue" | "stage_still" | "stage_direction",\n'
+        '      "speaker": "Lorelai | Tessa | Arlo | [Stage Direction]",\n'
+        '      "dialogue_text": "spoken line or empty for stage_still",\n'
         '      "emotion": "short delivery phrase",\n'
-        '      "scene_notes": "staging / camera / action notes for Phase B",\n'
-        '      "skeleton_quote": "optional verbatim excerpt",\n'
+        '      "scene_notes": "Kling-safe micro-expression OR still description",\n'
+        '      "skeleton_quote": "optional",\n'
         '      "invented": false\n'
         "    }\n"
         "  ]\n"
@@ -162,12 +173,14 @@ def claude_plan_beats(
     beats_plan = parsed.get("beats_plan") or []
     if not isinstance(beats_plan, list) or not beats_plan:
         raise ValueError("beats_plan must be a non-empty array")
-    return {
+    raw = {
         "story_summary": str(parsed.get("story_summary") or "").strip(),
         "beats_plan": beats_plan,
         "model_used": CLAUDE_SONNET_MODEL,
         "generation_time_ms": elapsed_ms,
     }
+    processed = postprocess_plan_result(raw, meta)
+    return processed
 
 
 def claude_author_kling_prompts(
@@ -185,53 +198,70 @@ def claude_author_kling_prompts(
         "You author Event-1-quality Kling O3 prompts for MindfulNest beats.",
     )
     few_shot = _few_shot_kling_examples()
-    system = (
-        f"{skill}\n\n"
-        f"Reference camera lock (include verbatim in every prompt):\n{bg.KLING_O3_CAMERA_LOCK}\n\n"
-        "Few-shot approved prompts:\n"
-        f"{few_shot}\n\n"
-        "Return ONLY valid JSON:\n"
-        "{\n"
-        '  "beats": [\n'
-        "    {\n"
-        '      "beat_index": 1,\n'
-        '      "kling_o3_prompt": "<full multi-line prompt>"\n'
-        "    }\n"
-        "  ]\n"
-        "}\n"
-        "Every beat_index from the plan must appear exactly once."
-    )
-    plan_json = json.dumps(
-        {"story_summary": story_summary, "beats_plan": beats_plan},
-        ensure_ascii=False,
-        indent=2,
-    )
-    user = (
-        f"Segment: arc {meta.get('arc_number')} event {meta.get('event_id')} "
-        f"phase {meta.get('phase')}\n\n"
-        f"Approved beat plan:\n{plan_json}\n"
-    )
-    resp, elapsed_ms = _call_anthropic(
-        api_key, system, user, max_tokens=8192, timeout=AUTHOR_TIMEOUT_S,
-    )
-    parsed = _parse_claude_json(_anthropic_text(resp))
-    if not isinstance(parsed, dict):
-        raise ValueError("Claude author response must be a JSON object")
-    beats_out = parsed.get("beats") or []
-    if not isinstance(beats_out, list) or not beats_out:
-        raise ValueError("beats array required in author response")
+
     prompt_by_index: dict[int, str] = {}
-    for row in beats_out:
-        if not isinstance(row, dict):
-            continue
+    dialogue_beats: list[dict] = []
+    for row in beats_plan:
         idx = int(row.get("beat_index") or 0)
-        prompt = str(row.get("kling_o3_prompt") or "").strip()
-        if idx and prompt:
-            prompt_by_index[idx] = prompt
-    if len(prompt_by_index) < len(beats_plan):
-        raise ValueError(
-            f"Claude returned {len(prompt_by_index)} prompts for {len(beats_plan)} beats"
+        bt = str(row.get("beat_type") or "dialogue").lower()
+        if bt == "stage_still":
+            if idx:
+                prompt_by_index[idx] = build_still_insert_prompt(row)
+            continue
+        if idx:
+            dialogue_beats.append(row)
+
+    elapsed_ms = 0
+    if dialogue_beats:
+        system = (
+            f"{skill}\n\n"
+            f"{kling_staging_policy_block()}\n\n"
+            f"Reference camera lock (include verbatim in every prompt):\n{bg.KLING_O3_CAMERA_LOCK}\n\n"
+            "Few-shot approved prompts:\n"
+            f"{few_shot}\n\n"
+            "Return ONLY valid JSON:\n"
+            "{\n"
+            '  "beats": [\n'
+            "    {\n"
+            '      "beat_index": 1,\n'
+            '      "kling_o3_prompt": "<full multi-line prompt>"\n'
+            "    }\n"
+            "  ]\n"
+            "}\n"
+            "Every dialogue beat_index must appear exactly once."
         )
+        plan_json = json.dumps(
+            {"story_summary": story_summary, "beats_plan": dialogue_beats},
+            ensure_ascii=False,
+            indent=2,
+        )
+        user = (
+            f"Segment: arc {meta.get('arc_number')} event {meta.get('event_id')} "
+            f"phase {meta.get('phase')}\n\n"
+            f"Approved dialogue beats only:\n{plan_json}\n"
+        )
+        resp, elapsed_ms = _call_anthropic(
+            api_key, system, user, max_tokens=8192, timeout=AUTHOR_TIMEOUT_S,
+        )
+        parsed = _parse_claude_json(_anthropic_text(resp))
+        if not isinstance(parsed, dict):
+            raise ValueError("Claude author response must be a JSON object")
+        beats_out = parsed.get("beats") or []
+        if not isinstance(beats_out, list) or not beats_out:
+            raise ValueError("beats array required in author response")
+        for row in beats_out:
+            if not isinstance(row, dict):
+                continue
+            idx = int(row.get("beat_index") or 0)
+            prompt = str(row.get("kling_o3_prompt") or "").strip()
+            if idx and prompt:
+                prompt_by_index[idx] = prompt
+        if len([i for i in prompt_by_index if i in {b.get("beat_index") for b in dialogue_beats}]) < len(dialogue_beats):
+            raise ValueError(
+                f"Claude returned incomplete dialogue prompts "
+                f"({len(dialogue_beats)} beats expected)"
+            )
+
     return {
         "prompt_by_index": prompt_by_index,
         "model_used": CLAUDE_SONNET_MODEL,
@@ -240,32 +270,6 @@ def claude_author_kling_prompts(
 
 
 def normalize_beats_plan(beats_plan: list[dict]) -> list[dict]:
-    """Validate and normalize beats_plan from UI or Claude."""
-    out: list[dict] = []
-    for i, row in enumerate(beats_plan, start=1):
-        if not isinstance(row, dict):
-            continue
-        beat_type = str(row.get("beat_type") or "dialogue").strip().lower()
-        if beat_type not in ("dialogue", "stage_direction"):
-            beat_type = "stage_direction" if row.get("speaker") in (
-                "[Stage Direction]", "Scene", "Narrator",
-            ) else "dialogue"
-        speaker = str(row.get("speaker") or "Character").strip()
-        if beat_type == "stage_direction" and speaker == "Character":
-            speaker = "[Stage Direction]"
-        dialogue = str(row.get("dialogue_text") or "").strip()
-        invented = bool(row.get("invented")) or dialogue.startswith("[CLAUDE INVENTED]")
-        out.append({
-            "beat_index": int(row.get("beat_index") or i),
-            "beat_type": beat_type,
-            "speaker": speaker,
-            "dialogue_text": dialogue,
-            "emotion": str(row.get("emotion") or "neutral").strip() or "neutral",
-            "scene_notes": str(row.get("scene_notes") or "").strip(),
-            "skeleton_quote": str(row.get("skeleton_quote") or "").strip(),
-            "invented": invented,
-        })
-    out.sort(key=lambda b: b["beat_index"])
-    for j, beat in enumerate(out, start=1):
-        beat["beat_index"] = j
-    return out
+    """Validate, apply cast policy, and normalize beats_plan from UI or Claude."""
+    processed, _warnings = postprocess_beats_plan(beats_plan)
+    return processed

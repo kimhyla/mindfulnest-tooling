@@ -925,6 +925,12 @@ SPEAKER_MOTION_PROFILES: "dict[str, dict[str, str]]" = {
         "sad_disappointed": "soft wing settle, gentle feather droop, quiet head dip, slow blink",
         "neutral":          "curious owl head swivels, wing adjustments, feather ripple, alert blinking",
     },
+    "Lorelai": {
+        "happy_excited":    "bright ear perk, quick tail lift, enthusiastic paw gesture, scholarly grin",
+        "upset_shocked":    "sharp head turn, ears flicking back, startled tail puff, rapid blink",
+        "sad_disappointed": "soft ear droop, gentle tail lowering, quiet head dip, slow blink",
+        "neutral":          "curious lemur head tilt, subtle tail sway, paw adjustments, alert blinking",
+    },
     "Benson": {
         "happy_excited":    "ears lifting, small forward hop, chest lift, bright blink",
         "upset_shocked":    "ears flattening, body tightening, rapid nose wrinkle, startled weight recoil",
@@ -3800,14 +3806,15 @@ ELEVENLABS_TTS_ENDPOINT = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id
 # dialogue lines still route to the correct voice profile without a mass
 # rename across every beat.
 _SPEAKER_ALIAS = {
-    # Bird (Chipper) — canonical + all legacy aliases
-    "chipper": "Chipper",
-    "guide bird": "Chipper",     # legacy (pre-2026-04-17)
-    "pip": "Chipper",            # legacy (pre-2026-04-17)
-    "assistant bird": "Chipper",
-    # Arlo — active squirrel guide identity. Keep separate from Chipper so
-    # bird-class prompt branches and old Chipper element bindings cannot leak.
+    # Bird guide — Chipper/Pip retired; canonical guide is Arlo (2026-06-13).
+    "chipper": "Arlo",
+    "guide bird": "Arlo",
+    "pip": "Arlo",
+    "assistant bird": "Arlo",
     "arlo": "Arlo",
+    # Lemur archaeologist — Luna retired (2026-06-13).
+    "luna": "Lorelai",
+    "lorelai": "Lorelai",
     # Wizard (Cedric) — canonical + all legacy aliases
     "cedric": "Cedric",
     "myrrhin": "Cedric",         # legacy (pre-2026-04-17)
@@ -13093,13 +13100,13 @@ def run_smoke_test() -> int:
     import tempfile
 
     print("[smoke] motion prompt build + sanitize...")
-    # Legacy speaker "Guide Bird" canonicalizes to "Chipper" (LD-183).
+    # Legacy speaker "Guide Bird" canonicalizes to "Arlo" (2026-06-13 cast).
     # Narrative (lipsync-targeted) path gets non-motion-locking tail.
     beat = {"speaker": "Guide Bird", "section": "Discovery", "text": "Hi",
             "emotion": "happy_excited", "lipsync_targeted": True}
     p = build_motion_prompt(beat)
-    assert "Beak closed" in p, f"expected Beak closed in: {p!r}"
-    assert "Cartoon Chipper character" in p, f"canonical name missing: {p!r}"
+    assert "Mouth closed" in p, f"expected Mouth closed in: {p!r}"
+    assert "Cartoon Arlo character" in p, f"canonical name missing: {p!r}"
     assert LIPSYNC_SAFE_TAIL in p, f"expected {LIPSYNC_SAFE_TAIL!r} in: {p!r}"
     # Sprite-pipeline path gets motion-locking tail.
     sprite_beat = {"speaker": "Tessa", "emotion": "neutral", "lipsync_targeted": False}

@@ -131,12 +131,12 @@ def init_bg_paths(event_dir) -> None:
 
 # Speaker canonicalization (mirrors production_server._SPEAKER_ALIAS subset)
 _BG_SPEAKER_ALIAS = {
-    "chipper":       "Chipper",
-    "guide bird":    "Chipper",
-    "pip":           "Chipper",
-    "assistant bird": "Chipper",
+    "chipper":       "Arlo",
+    "guide bird":    "Arlo",
+    "pip":           "Arlo",
+    "assistant bird": "Arlo",
+    "luna":          "Lorelai",
     "tessa":         "Tessa",
-    "luna":          "Luna",
     "benson":        "Benson",
     "ember":         "Ember",
     "bork":          "Bork",
@@ -161,6 +161,8 @@ _CREATURE_OUTFIT = {
     # as hard constraints, not optional style notes.
     "Luna":    "wearing round wire-frame glasses and a large overstuffed scholar backpack "
                "packed with books, scrolls, and a ruler (visible in ALL panels of the reference)",
+    "Lorelai": "lemur archaeologist with round glasses and overstuffed scholar backpack "
+               "(visible in ALL panels of the reference)",
     "Tessa":   "",  # orange shell is the character, no added accessories
     "Benson":  "",
     "Ember":   "",
@@ -173,6 +175,7 @@ _CREATURE_OUTFIT = {
 SPECIES_DESC = {
     "Tessa":   "cartoon turtle with a warm orange shell and gentle eyes, Pixar 3D animated style",
     "Luna":    "cartoon owl with big round scholarly eyes and ruffled feathers, Pixar 3D animated style",
+    "Lorelai": "cartoon lemur archaeologist with bright eyes, soft fur, and scholarly glasses, Pixar 3D animated style",
     "Benson":  "cartoon bunny with soft grey fur and a kind anxious expression, Pixar 3D animated style",
     "Ember":   "cartoon fox with bright auburn fur and a lively curious expression, Pixar 3D animated style",
     "Bork":    "cartoon firefly with bioluminescent glow and tiny insect wings, Pixar 3D animated style",
@@ -4717,6 +4720,7 @@ def build_beats_from_approved_plan(
     beats: list[dict] = []
     for i, row in enumerate(beats_plan, start=1):
         idx = int(row.get("beat_index") or i)
+        beat_type = str(row.get("beat_type") or "dialogue").lower()
         speaker_raw = (row.get("speaker") or "Character").strip()
         if speaker_raw.lower() in ("[stage direction]", "stage direction"):
             speaker = "[Stage Direction]"
@@ -4725,11 +4729,16 @@ def build_beats_from_approved_plan(
         dialogue = (row.get("dialogue_text") or "").strip()
         emotion = (row.get("emotion") or "neutral").strip() or "neutral"
         scene_notes = (row.get("scene_notes") or "").strip()[:500]
+        is_still = beat_type == "stage_still"
         prompt = (prompt_by_index.get(idx) or "").strip()
-        if prompt and "Only @Image1 is visible" not in prompt:
+        if is_still and not prompt:
+            from beat_extract_policy import build_still_insert_prompt
+            prompt = build_still_insert_prompt(row)
+        if prompt and not is_still and "Only @Image1 is visible" not in prompt:
             prompt = _append_kling_o3_submit_locks(
                 prompt, speaker=speaker, spoken=_kling_o3_normalize_spoken(dialogue),
             )
+        pipeline = "still_insert" if is_still else "kling_o3_omni"
         beat = {
             "beat_id": f"bg_{beat_label}_beat_{idx:02d}",
             "speaker": speaker,
@@ -4738,13 +4747,19 @@ def build_beats_from_approved_plan(
             "emotion": emotion,
             "kling_o3_prompt": prompt,
             "status": "draft",
-            "pipeline": "kling_o3_omni",
+            "pipeline": pipeline,
+            "beat_type": beat_type if is_still else "dialogue",
             "flux_options": [],
             "gpt_options": [],
             "schema_version": 1,
             "beat_plan_source": "claude_extract_v1",
         }
-        if not prompt:
+        if is_still:
+            beat["beat_render_mode"] = "still_insert"
+            if not beat.get("kling_o3_duration_locked"):
+                beat["kling_o3_duration"] = 3
+            beat.setdefault("kling_o3_status", "draft")
+        elif not prompt:
             apply_kling_o3_defaults_to_beat(beat, event_id, phase)
         else:
             align_beat_reference_to_element(beat)

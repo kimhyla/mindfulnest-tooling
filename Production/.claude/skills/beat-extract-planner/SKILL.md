@@ -5,42 +5,53 @@ description: Claude beat planner for MindfulNest Extract beats Phase A.
 
 # Beat extract planner (Phase A)
 
-You convert one **sliced arc skeleton section** into a minimum-necessary beat script plan for a Kling O3 intro or resolution video.
+Convert one **sliced arc skeleton section** into a minimum-necessary, Kling-safe beat script plan.
 
-## Input
+## Cast (global — mandatory)
 
-- One skeleton section only (intro/pre OR resolution/post for one event).
-- Never invent plot outside the section.
+| Retired | Use instead |
+|---------|-------------|
+| Luna, Luna the Owl | **Lorelai** (lemur archaeologist) |
+| Chipper, Guide Bird, Pip | **Arlo** (squirrel guide) |
+
+Never output Luna or Chipper in `story_summary` or `beats_plan`. **Lemur Peace Prize** is intentional.
 
 ## Output JSON
 
-Return `story_summary` plus `beats_plan[]`. Do **not** include `kling_o3_prompt`.
+`story_summary` + `beats_plan[]`. No `kling_o3_prompt`.
 
-## Story summary
+## Story style (Kim-approved)
 
-Cover: plot must-haves, cute/funny moments, emotional peaks, module handoff (if intro).
+- **Conversational back-and-forth** — one speaker per beat; merge skeleton monologues into short Q&A.
+- **Minimum necessary** beats (soft target 6–15 intro); omit skeleton gags: magnifying glass, cartwheel, hover spin, dry Chipper asides unless essential.
+- **Magic Hands backstory** via **Arlo** line explaining real energy between hands (not a separate Tessa injury monologue unless needed).
+- Module handoff: Arlo to camera; **Breath-Squeezers spell name optional**.
+- Preserve `{childName}` / `{childPronounPossessive}` — never "the child".
 
-## Beat count
+## Beat types
 
-Soft target **6–15** for intro-type sections; **3–8** for resolution. Fewer OK when thin.
+| beat_type | When |
+|-----------|------|
+| `dialogue` | Lorelai, Tessa, Arlo — Kling O3 Element clip |
+| `stage_still` | Inscription close-up, runestone glow, MindfulNest still — **GPT still insert**, empty or minimal `dialogue_text` |
+| `stage_direction` | Non-still transitions (rare) |
 
-## Dialogue rules
+## scene_notes (Kling-safe staging)
 
-1. **Verbatim** Kim skeleton quotes where used — character-for-character.
-2. **`[CLAUDE INVENTED]`** prefix on bridge lines not in skeleton.
-3. Not every skeleton quote must appear — compress for pacing.
-4. Preserve `{childName}` placeholders verbatim.
+On **dialogue** beats: micro-expression only — `eyes widen`, `soft smile`, `wing-flutter`, `shrug`, `rooted in place`.
 
-## Stage direction beats
+**Forbidden** on dialogue beats: camera zoom/cut/pan, walks across room, enters frame, second character visible, aerial spin.
 
-Use `beat_type: stage_direction`, `speaker: "[Stage Direction]"`, no spoken dialogue in `dialogue_text`.
+On **stage_still**: describe the still subject (`Inscription 1: "Feel what's real"`) — Kim assigns GPT still in Beat Gen.
 
-## Speakers
+## emotion field
 
-Canonical: Guide Bird → Chipper, Pip → Chipper, Myrrhin → Cedric.
+Short delivery tag: `[disbelieving, breathless]`, `[warm, to camera]`, `[gleeful panic]`.
 
-## Anti-patterns
+## Dialogue
 
-- No therapeutic clinical jargon in kid dialogue.
-- No Phase A/B meditation script.
-- No Kling prompt text in Phase A.
+Verbatim skeleton quotes where useful; compress freely. `[CLAUDE INVENTED]` on bridges only.
+
+## Gold reference
+
+When planning Arc 1 Event 2 intro (`event_id=2`, `phase=pre`), match the structure and density of `EVENT2_INTRO_GOLD.md` bundled with this skill.

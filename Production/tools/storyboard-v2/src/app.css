@@ -1618,6 +1618,36 @@ canvas.mn-lipsync-watercolor-overlay {
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
 }
 .mn-modal-wide { min-width: 720px; }
+.mn-modal-beat-plan {
+  width: min(920px, 92vw);
+  max-height: 88vh;
+}
+.mn-textarea {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 12px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  resize: none;
+}
+.mn-beat-plan-script {
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  min-height: 320px;
+  max-height: min(52vh, 520px);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
 .mn-modal-header {
   display: flex;
   align-items: center;

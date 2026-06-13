@@ -43,9 +43,24 @@ import {
 // is content-lockfiles/voice_profiles.toml. Drift between the two consts
 // is a CI-checkable error (C13 Test D lockfile correctness).
 const KNOWN_SPEAKERS: readonly string[] = [
-  'Cedric', 'Arlo', 'Tessa', 'Luna', 'Benson',
+  'Cedric', 'Arlo', 'Tessa', 'Lorelai', 'Benson',
   'Ember', 'Bork', 'Bramble', 'Grizzle', 'Oliver',
 ] as const;
+
+/** Retired cast names map to canonical roster entries (2026-06-13). */
+const RETIRED_SPEAKER_CANON: Readonly<Record<string, string>> = {
+  Luna: 'Lorelai',
+  Chipper: 'Arlo',
+  'Guide Bird': 'Arlo',
+  Pip: 'Arlo',
+  'Assistant Bird': 'Arlo',
+};
+
+function canonBeatSpeaker(raw?: string): string {
+  const s = (raw ?? '').trim();
+  if (!s) return '';
+  return RETIRED_SPEAKER_CANON[s] ?? RETIRED_SPEAKER_CANON[s.toLowerCase()] ?? s;
+}
 
 // ----------------------------------------------------------------
 // Modal state — single-modal stack invariant per UI_PRIMITIVES_SHARED_V1.
@@ -1693,18 +1708,21 @@ function BeatGenCard({
         <select
           class="mn-beat-speaker"
           data-testid={`bg-beat-speaker-${index}`}
-          value={beat.speaker ?? ''}
+          value={canonBeatSpeaker(beat.speaker) || ''}
           onChange={(e) => {
             const target = e.target as HTMLSelectElement | null;
             const v = (target?.value ?? '').trim();
-            if (v && v !== (beat.speaker ?? '')) onUpdateSpeaker(v);
+            if (v && v !== canonBeatSpeaker(beat.speaker)) onUpdateSpeaker(v);
           }}
           aria-label={`Speaker for beat ${beat.beat_id}`}
           title="Change speaker (will trigger stale-TTS state on regen path)"
         >
-          {(beat.speaker && !KNOWN_SPEAKERS.includes(beat.speaker)) ? (
-            <option value={beat.speaker}>{beat.speaker}</option>
-          ) : null}
+          {(() => {
+            const raw = (beat.speaker ?? '').trim();
+            const canon = canonBeatSpeaker(beat.speaker);
+            const showLegacy = raw && raw === canon && !KNOWN_SPEAKERS.includes(raw as typeof KNOWN_SPEAKERS[number]);
+            return showLegacy ? <option value={raw}>{raw}</option> : null;
+          })()}
           {!beat.speaker ? <option value="">— speaker —</option> : null}
           {KNOWN_SPEAKERS.map((s) => (
             <option key={s} value={s}>{s}</option>

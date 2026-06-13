@@ -76,7 +76,7 @@ def test_merge_policy_preserves_approved(monkeypatch, tmp_path):
     assert len(approved) >= 1
 
 
-def test_normalize_beats_plan_reindexes():
+def test_normalize_beats_plan_reindexes_and_casts():
     from claude_extract_beats import normalize_beats_plan
 
     rows = normalize_beats_plan([
@@ -84,3 +84,34 @@ def test_normalize_beats_plan_reindexes():
         {"speaker": "Chipper", "dialogue_text": "Hey", "beat_index": 2},
     ])
     assert [r["beat_index"] for r in rows] == [1, 2]
+    assert rows[0]["speaker"] == "Lorelai"
+    assert rows[1]["speaker"] == "Arlo"
+
+
+def test_build_beats_stage_still_vs_stage_direction():
+    still_plan = [{
+        "beat_index": 1,
+        "beat_type": "stage_still",
+        "speaker": "[Stage Direction]",
+        "dialogue_text": "",
+        "scene_notes": "Inscription still insert",
+        "emotion": "neutral",
+    }]
+    direction_plan = [{
+        "beat_index": 1,
+        "beat_type": "stage_direction",
+        "speaker": "[Stage Direction]",
+        "dialogue_text": "ambient wind",
+        "scene_notes": "ruins ambience",
+        "emotion": "neutral",
+    }]
+    still_beats = bg.build_beats_from_approved_plan(
+        still_plan, {}, arc_number=1, event_id="2", phase="pre",
+    )
+    direction_beats = bg.build_beats_from_approved_plan(
+        direction_plan, {}, arc_number=1, event_id="2", phase="pre",
+    )
+    assert still_beats[0]["pipeline"] == "still_insert"
+    assert still_beats[0]["beat_render_mode"] == "still_insert"
+    assert direction_beats[0]["pipeline"] == "kling_o3_omni"
+    assert direction_beats[0].get("beat_render_mode") != "still_insert"
