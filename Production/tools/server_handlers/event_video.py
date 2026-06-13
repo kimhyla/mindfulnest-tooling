@@ -19,6 +19,7 @@ from lib.atomic_json_write import atomic_json_write
 # StateManager class referenced by event_create body for fresh state init.
 from tools.production_server import (  # noqa: E402
     StateManager,
+    _bg_module,
 )
 
 
@@ -215,6 +216,9 @@ def handle_event_load(h, body: dict) -> None:
         h.app.invalidate_beats_cache()
         h.app._storyboard_list_cache = None
         h.app._storyboard_list_cache_mtime = 0.0
+        # Rebind BG stills/sidecar paths so /api/cr/library and Beat Gen scan
+        # the loaded event's beat_generator_stills/, not the startup pin.
+        _bg_module().init_bg_paths(new_event_dir)
         # S5.5d (v3): scope-type signal for milestone-aware code paths.
         h.app.scope_type = "event"
         h.app.active_milestone_id = None
