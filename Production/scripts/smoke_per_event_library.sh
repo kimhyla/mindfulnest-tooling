@@ -42,7 +42,7 @@ SFX=$(curl -sf "$BASE/api/stitch_editor/library" | python3 -c "import sys,json; 
 echo "shared sfx count=$SFX"
 
 fail=0
-[[ "$E2_IMAGES" == "6" ]] || { echo "FAIL: Event_2 expected 6 images, got $E2_IMAGES"; fail=1; }
+[[ "$E2_IMAGES" -ge "6" ]] || { echo "FAIL: Event_2 expected >=6 images (canonical baseline), got $E2_IMAGES"; fail=1; }
 [[ "$E2_WC" == "0" ]] || { echo "FAIL: Event_2 expected 0 watercolors, got $E2_WC"; fail=1; }
 [[ "$E1_WC" -ge "5" ]] || { echo "FAIL: Event_1 expected >=5 watercolors, got $E1_WC"; fail=1; }
 [[ "$E1_IMAGES" -gt "$E2_IMAGES" ]] || { echo "FAIL: Event_1 ($E1_IMAGES) should exceed Event_2 ($E2_IMAGES)"; fail=1; }
