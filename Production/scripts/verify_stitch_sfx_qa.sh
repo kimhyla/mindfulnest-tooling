@@ -15,8 +15,13 @@ grep -q 'STITCH_SLOT_VIDEO_DUR_V1' "$WAVEFORM" || fail "missing STITCH_SLOT_VIDE
 grep -q 'mixExtracting' "$WAVEFORM" || fail "missing mixExtracting gating in StitcherSlotWaveform"
 grep -q 'mixExtracting' "$TIMELINE" || fail "missing mixExtracting gating in WaveformTimeline"
 grep -q 'project_root / safe' "$SERVER" || fail "missing legacy project_root audio serve path"
+grep -q 'STITCH_WAVEFORM_MIX_MONO_V1' "$EDITOR" || fail "missing mono mix cache bust marker"
+grep -q 'aformat=channel_layouts=mono' "$EDITOR" || fail "missing mono normalize in stitch mix"
+grep -q 'sync_stitch_slot_video_dur_ms' "$EDITOR" || fail "missing video_dur drift sync"
+grep -q 'apply_stitch_intro_default_whoosh_cue' "$EDITOR" || fail "missing intro default whoosh"
 
 python3 -m pytest "$ROOT/Production/tools/tests/test_stitch_sfx_qa.py" -q
+python3 -m pytest "$ROOT/Production/tools/tests/test_stitch_video_dur_sync.py" -q
 python3 -m pytest "$ROOT/Production/tools/tests/test_stitch_audio_file_serve.py" -q
 
 echo "[stitch-sfx-qa] OK — markers + pytest passed"

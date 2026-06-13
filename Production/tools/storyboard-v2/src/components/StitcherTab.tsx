@@ -874,7 +874,12 @@ export function StitcherTab() {
     const onVideoPlay = () => {
       if (composerVideoSyncSuppressRef.current) return;
       const ctl = composerPlaybackRef.current;
-      if (!ctl?.isReady || ctl.isPlaying) return;
+      if (!ctl?.isReady) {
+        // Waveform still remixing — muted video alone has no slot audio (SFX + ambient).
+        video.pause();
+        return;
+      }
+      if (ctl.isPlaying) return;
       ctl.seekToMs(video.currentTime * 1000);
       ctl.play();
     };

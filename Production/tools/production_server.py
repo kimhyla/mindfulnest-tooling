@@ -11742,6 +11742,7 @@ body {{padding-top:44px!important;}}
             filter_lanes.append(
                 f"[{aidx}:a]aloop=-1:size=2147483647,"
                 f"atrim=duration={slot_dur_s:.3f},"
+                f"aformat=channel_layouts=mono,"
                 f"volume={ambient_volume:.3f}[bed]"
             )
 
@@ -11763,11 +11764,11 @@ body {{padding-top:44px!important;}}
             fadeout_start_s = max(0.0, play_s - fadeout_ms / 1000.0)
             label = f"cue{idx}"
             filter_lanes.append(
-                f"[{cidx}:a]aresample=44100,"
+                f"[{cidx}:a]aresample=44100,aformat=channel_layouts=mono,"
                 f"atrim=duration={play_s:.3f},"
-                f"adelay={offset_ms}|{offset_ms},"
                 f"afade=t=in:st=0:d={fadein_ms / 1000:.3f},"
                 f"afade=t=out:st={fadeout_start_s:.3f}:d={fadeout_ms / 1000:.3f},"
+                f"adelay={offset_ms}:all=1,"
                 f"volume={vol:.3f}[{label}]"
             )
 

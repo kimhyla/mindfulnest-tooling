@@ -29,9 +29,15 @@ class TestStitchSlotVideoDurHydrate(unittest.TestCase):
         from server_handlers.stitch_editor import hydrate_stitch_slot_video_dur_ms
 
         h = MagicMock()
+        h._stitch_resolve_path.return_value = "/proj/Event_1/intro.mp4"
+        h._ffprobe_duration_ms.return_value = 5000
         slot = {"video_path": "Production/Event_1/intro.mp4", "video_dur_ms": 5000}
-        self.assertFalse(hydrate_stitch_slot_video_dur_ms(h, slot))
-        h._ffprobe_duration_ms.assert_not_called()
+        with unittest.mock.patch(
+            "server_handlers.stitch_editor.require_media_under_project",
+            return_value="/proj/Event_1/intro.mp4",
+        ):
+            self.assertFalse(hydrate_stitch_slot_video_dur_ms(h, slot))
+        h._ffprobe_duration_ms.assert_called()
 
 
 class TestLegacyAudioFileServe(unittest.TestCase):
@@ -48,6 +54,18 @@ class TestAudioExtractResponse(unittest.TestCase):
         src = Path(se.__file__).read_text(encoding="utf-8")
         self.assertIn('"video_dur_ms": video_dur_ms', src)
         self.assertIn('slot["_sfx_mixed"] = True', src)
+
+    def test_waveform_mix_normalizes_stereo_lanes_to_mono(self):
+        from server_handlers import stitch_editor as se
+
+        src = Path(se.__file__).read_text(encoding="utf-8")
+        self.assertIn("STITCH_WAVEFORM_MIX_MONO_V1", src)
+        self.assertIn("aformat=channel_layouts=mono", src)
+        self.assertIn("adelay={offset_ms}:all=1", src)
+        self.assertIn("afade=t=in:st=0", src.split("adelay={offset_ms}:all=1", 1)[0])
+        block = src.split("def _mix_stitch_waveform_audio", 1)[1].split("def stitch_migrate_legacy_to_canonical", 1)[0]
+        self.assertIn("if out_path.is_file():", block)
+        self.assertIn('slot["_sfx_mixed"] = True', block)
 
 
 if __name__ == "__main__":

@@ -70,6 +70,9 @@ STITCH_AMBIENT_BED_VOLUME = 0.15
 STITCH_SFX_CUE_DEFAULT_VOLUME = 0.45
 STITCH_SFX_CUE_DEFAULT_FADEIN_MS = 300
 STITCH_SFX_CUE_DEFAULT_FADEOUT_MS = 1200
+# Bust pre-2026-06-13 mix cache: stereo ambient bed + mono speech made amix drop SFX lanes;
+# afade after adelay also silenced cues in the 3-way mix — fade must run before delay.
+STITCH_WAVEFORM_MIX_MONO_V1 = "mono_v2"
 # Canonical ambient bed preset_id per stitch slot (filename stem under sound_library/ambient/).
 STITCH_DEFAULT_AMBIENT_BEDS: dict[str, str] = {
     "intro": "Intro video ambient bed",
@@ -77,6 +80,11 @@ STITCH_DEFAULT_AMBIENT_BEDS: dict[str, str] = {
     "phase_b": "ambient bed pretty option",
     "resolution": "ambien bed pretty option4",
 }
+# Canonical teleport whoosh — auto-placed on intro Send-to-Stitcher (removable in UI).
+STITCH_INTRO_DEFAULT_WHOOSH_FILENAME = "whoosh sound.mp3"
+STITCH_INTRO_DEFAULT_WHOOSH_PLAY_MS = 3104
+# Re-probe when stored duration differs from on-disk file by more than this (ms).
+STITCH_VIDEO_DUR_DRIFT_TOLERANCE_MS = 500
 
 
 def apply_stitch_slot_default_ambient_preset(slot_key: str, slot: dict) -> bool:
@@ -207,43 +215,106 @@ def normalize_job_slots_audio(slots) -> None:
             normalize_slot_audio_mix_levels(slot)
 
 
-def hydrate_stitch_slot_video_dur_ms(h, slot: dict) -> bool:
-    """Probe slot video_path and set video_dur_ms when missing (waveform timeline scale)."""
+def _probe_stitch_slot_video_dur_ms(h, slot: dict) -> int:
+    """Return ffprobe duration (ms) for slot video_path, or 0 when unavailable."""
     if not isinstance(slot, dict):
-        return False
+        return 0
     vp = (slot.get("video_path") or "").strip()
-    if not vp:
+    if not vp or not hasattr(h, "_stitch_resolve_path") or not hasattr(h, "_ffprobe_duration_ms"):
+        return 0
+    try:
+        abs_path = h._stitch_resolve_path(vp)
+        abs_path = require_media_under_project(abs_path, extensions=MEDIA_EXTENSIONS)
+    except (ValueError, FileNotFoundError):
+        return 0
+    return int(h._ffprobe_duration_ms(abs_path) or 0)
+
+
+def sync_stitch_slot_video_dur_ms(h, slot: dict, *, force: bool = False) -> bool:
+    """Probe slot video_path and keep video_dur_ms aligned with the file on disk."""
+    probed = _probe_stitch_slot_video_dur_ms(h, slot)
+    if probed <= 0:
         return False
     try:
         existing = int(slot.get("video_dur_ms") or 0)
     except (TypeError, ValueError):
         existing = 0
-    if existing > 0:
+    if not force and existing > 0 and abs(existing - probed) <= STITCH_VIDEO_DUR_DRIFT_TOLERANCE_MS:
         return False
-    if not hasattr(h, "_stitch_resolve_path") or not hasattr(h, "_ffprobe_duration_ms"):
-        return False
-    try:
-        abs_path = h._stitch_resolve_path(vp)
-        abs_path = require_media_under_project(abs_path, extensions=MEDIA_EXTENSIONS)
-    except (ValueError, FileNotFoundError):
-        return False
-    dur_ms = h._ffprobe_duration_ms(abs_path)
-    if dur_ms > 0:
-        slot["video_dur_ms"] = dur_ms
+    if existing != probed:
+        slot["video_dur_ms"] = probed
         return True
     return False
 
 
+def hydrate_stitch_slot_video_dur_ms(h, slot: dict) -> bool:
+    """Back-compat alias — always syncs when missing or drifted."""
+    return sync_stitch_slot_video_dur_ms(h, slot)
+
+
 def hydrate_job_slot_video_durs(h, slots) -> bool:
-    """Backfill video_dur_ms on all canonical slots. Returns True if any slot changed."""
+    """Reconcile video_dur_ms on all canonical slots. Returns True if any slot changed."""
     if not isinstance(slots, dict):
         return False
     changed = False
     for slot_key in STITCH_SLOT_ORDER:
         slot = slots.get(slot_key)
-        if isinstance(slot, dict) and hydrate_stitch_slot_video_dur_ms(h, slot):
+        if isinstance(slot, dict) and sync_stitch_slot_video_dur_ms(h, slot):
             changed = True
     return changed
+
+
+def _resolve_stitch_intro_whoosh_path(h) -> str:
+    """Canonical project-root whoosh used by stitch library (legacy delivery file)."""
+    project_root = h._stitch_project_root()
+    fp = project_root / STITCH_INTRO_DEFAULT_WHOOSH_FILENAME
+    return str(fp) if fp.is_file() else ""
+
+
+def _slot_has_whoosh_cue(slot: dict) -> bool:
+    for cue in slot.get("sfx_cues") or []:
+        if not isinstance(cue, dict):
+            continue
+        label = f"{cue.get('name', '')} {cue.get('source_path', '')}".lower()
+        if "whoosh" in label:
+            return True
+    return False
+
+
+def apply_stitch_intro_default_whoosh_cue(h, slot: dict) -> bool:
+    """Place canonical whoosh at intro tail when a new intro video lands in Stitcher."""
+    if not isinstance(slot, dict) or not (slot.get("video_path") or "").strip():
+        return False
+    if _slot_has_whoosh_cue(slot):
+        return False
+    whoosh_path = _resolve_stitch_intro_whoosh_path(h)
+    if not whoosh_path:
+        return False
+    sync_stitch_slot_video_dur_ms(h, slot, force=True)
+    video_dur_ms = int(slot.get("video_dur_ms") or 0)
+    if video_dur_ms <= 0:
+        return False
+    file_dur_ms = h._ffprobe_duration_ms(Path(whoosh_path))
+    play_ms = STITCH_INTRO_DEFAULT_WHOOSH_PLAY_MS
+    if file_dur_ms and file_dur_ms < play_ms:
+        play_ms = int(file_dur_ms)
+    play_ms = max(500, min(play_ms, video_dur_ms))
+    offset_ms = max(0, video_dur_ms - play_ms)
+    import secrets as _secrets  # noqa: PLC0415
+
+    cue = {
+        "id": f"cue_{_secrets.token_hex(4)}",
+        "source_path": whoosh_path,
+        "name": STITCH_INTRO_DEFAULT_WHOOSH_FILENAME,
+        "offset_ms": offset_ms,
+        "duration_ms": play_ms,
+        "volume": STITCH_SFX_CUE_DEFAULT_VOLUME,
+        "fadein_ms": STITCH_SFX_CUE_DEFAULT_FADEIN_MS,
+        "fadeout_ms": STITCH_SFX_CUE_DEFAULT_FADEOUT_MS,
+        "auto_default": True,
+    }
+    slot["sfx_cues"] = list(slot.get("sfx_cues") or []) + [cue]
+    return True
 
 
 def stitch_event_job_name(event_id: str) -> str:
@@ -333,7 +404,7 @@ def _mix_stitch_waveform_audio(
     slot_dur_ms = h._ffprobe_duration_ms(base_audio_path)
     slot_dur_s = max(slot_dur_ms, 1) / 1000.0
 
-    sig_parts = [base_sig, ambient_path, f"{ambient_volume:.4f}"]
+    sig_parts = [base_sig, STITCH_WAVEFORM_MIX_MONO_V1, ambient_path, f"{ambient_volume:.4f}"]
     sig_parts += [
         f"{c.get('id', i)}:{c.get('offset_ms', 0)}:{c.get('duration_ms', '')}:"
         f"{c.get('volume', STITCH_SFX_CUE_DEFAULT_VOLUME)}:"
@@ -342,7 +413,17 @@ def _mix_stitch_waveform_audio(
     ]
     mix_hash = _hl.md5("|".join(sig_parts).encode(), usedforsecurity=False).hexdigest()[:12]
     out_path = cache_dir / f"stitch_audio_{mix_hash}.mp3"
+
+    valid_cue_labels: list[str] = []
+    for idx, cue in enumerate(sfx_cues):
+        src = cue.get("source_path") or ""
+        if not src or not os.path.isfile(src):
+            continue
+        valid_cue_labels.append(f"cue{len(valid_cue_labels)}")
+
     if out_path.is_file():
+        if valid_cue_labels:
+            slot["_sfx_mixed"] = True
         return out_path
 
     input_args: list[str] = ["-i", str(base_audio_path.resolve())]
@@ -357,10 +438,10 @@ def _mix_stitch_waveform_audio(
         filter_lanes.append(
             f"[{aidx}:a]aloop=-1:size=2147483647,"
             f"atrim=duration={slot_dur_s:.3f},"
+            f"aformat=channel_layouts=mono,"
             f"volume={ambient_volume:.3f}[bed]"
         )
 
-    valid_cue_labels: list[str] = []
     for idx, cue in enumerate(sfx_cues):
         src = cue.get("source_path") or ""
         if not src or not os.path.isfile(src):
@@ -383,11 +464,11 @@ def _mix_stitch_waveform_audio(
         label = f"cue{len(valid_cue_labels)}"
         valid_cue_labels.append(label)
         filter_lanes.append(
-            f"[{cidx}:a]aresample=44100,"
+            f"[{cidx}:a]aresample=44100,aformat=channel_layouts=mono,"
             f"atrim=duration={play_s:.3f},"
-            f"adelay={offset_ms}|{offset_ms},"
             f"afade=t=in:st=0:d={fadein_ms / 1000:.3f},"
             f"afade=t=out:st={fadeout_start_s:.3f}:d={fadeout_ms / 1000:.3f},"
+            f"adelay={offset_ms}:all=1,"
             f"volume={vol:.3f}[{label}]"
         )
 
@@ -515,9 +596,14 @@ def stitch_upsert_event_slot(
         if not isinstance(job.get("slots"), dict):
             job["slots"] = {}
         slot = job["slots"].setdefault(slot_key, {})
+        old_video_path = (slot.get("video_path") or "").strip()
         slot.update(slot_patch)
-        hydrate_stitch_slot_video_dur_ms(h, slot)
+        new_video_path = (slot.get("video_path") or "").strip()
+        video_path_changed = bool(new_video_path and new_video_path != old_video_path)
+        sync_stitch_slot_video_dur_ms(h, slot, force=video_path_changed)
         apply_stitch_slot_default_ambient_preset(slot_key, slot)
+        if video_path_changed and slot_key == "intro":
+            apply_stitch_intro_default_whoosh_cue(h, slot)
         normalize_slot_audio_mix_levels(slot)
         if beat_boundaries is not None:
             slot["beat_boundaries"] = enrich_beat_boundaries(beat_boundaries)
@@ -1040,7 +1126,7 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
                    )
 
     duration_ms = h._ffprobe_duration_ms(audio_path)
-    video_dur_ms = duration_ms
+    video_dur_ms = h._ffprobe_duration_ms(Path(abs_path)) or duration_ms
     serve_fname = audio_fname
     mix_slot: dict = {}
     ambient_bed = (body.get("ambient_bed") or "").strip()
