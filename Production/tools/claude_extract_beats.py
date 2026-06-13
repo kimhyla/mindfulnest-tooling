@@ -26,16 +26,71 @@ _PLANNER_SKILL = _TOOLING_ROOT / ".claude" / "skills" / "beat-extract-planner" /
 _KLING_AUTHOR_SKILL = _TOOLING_ROOT / ".claude" / "skills" / "beat-kling-prompt-author" / "SKILL.md"
 
 
+def _strip_markdown_fences(text: str) -> str:
+    t = (text or "").strip()
+    if not t.startswith("```"):
+        return t
+    lines = t.splitlines()
+    if lines and lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _extract_json_blob(text: str) -> str:
+    """Return the outermost {...} or [...] substring when Claude adds preamble."""
+    t = _strip_markdown_fences(text)
+    for opener, closer in (("{", "}"), ("[", "]")):
+        start = t.find(opener)
+        if start < 0:
+            continue
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, len(t)):
+            ch = t[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == opener:
+                depth += 1
+            elif ch == closer:
+                depth -= 1
+                if depth == 0:
+                    return t[start : i + 1]
+    return t
+
+
+def _normalize_json_text(text: str) -> str:
+    return (
+        text.replace("\u201c", '"')
+        .replace("\u201d", '"')
+        .replace("\u2018", "'")
+        .replace("\u2019", "'")
+    )
+
+
 def _parse_claude_json(raw: str) -> dict | list:
-    text = (raw or "").strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
-    return json.loads(text)
+    text = _normalize_json_text(_extract_json_blob(raw))
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as first_err:
+        # Common Claude slip: trailing commas before } or ].
+        import re
+
+        repaired = re.sub(r",(\s*[}\]])", r"\1", text)
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError:
+            raise first_err from None
 
 
 def _anthropic_text(resp: dict) -> str:
@@ -46,17 +101,113 @@ def _anthropic_text(resp: dict) -> str:
     return "".join(parts)
 
 
-def _call_anthropic(api_key: str, system: str, user: str, *, max_tokens: int, timeout: int) -> tuple[dict, int]:
+def _anthropic_tool_input(resp: dict, tool_name: str) -> dict | None:
+    for block in resp.get("content") or []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "tool_use" and block.get("name") == tool_name:
+            inp = block.get("input")
+            if isinstance(inp, dict):
+                return inp
+    return None
+
+
+def _call_anthropic(
+    api_key: str,
+    system: str,
+    user: str,
+    *,
+    max_tokens: int,
+    timeout: int,
+    tools: list[dict] | None = None,
+    tool_choice: dict | None = None,
+) -> tuple[dict, int]:
     from server_handlers.phases import _call_anthropic_urllib
 
-    req_body = {
+    req_body: dict[str, Any] = {
         "model": CLAUDE_SONNET_MODEL,
         "max_tokens": max_tokens,
         "system": system,
         "messages": [{"role": "user", "content": user}],
     }
+    if tools:
+        req_body["tools"] = tools
+    if tool_choice:
+        req_body["tool_choice"] = tool_choice
     resp, elapsed_ms = _call_anthropic_urllib(api_key, req_body, timeout=timeout)
     return resp, elapsed_ms
+
+
+_BEAT_PLAN_TOOL = {
+    "name": "submit_beat_plan",
+    "description": "Submit the approved beat plan JSON for this segment.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "story_summary": {"type": "string"},
+            "beats_plan": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "beat_index": {"type": "integer"},
+                        "beat_type": {
+                            "type": "string",
+                            "enum": ["dialogue", "stage_still", "stage_direction"],
+                        },
+                        "speaker": {"type": "string"},
+                        "dialogue_text": {"type": "string"},
+                        "emotion": {"type": "string"},
+                        "scene_notes": {"type": "string"},
+                        "skeleton_quote": {"type": "string"},
+                        "invented": {"type": "boolean"},
+                    },
+                    "required": [
+                        "beat_index",
+                        "beat_type",
+                        "speaker",
+                        "dialogue_text",
+                        "emotion",
+                        "scene_notes",
+                    ],
+                },
+            },
+        },
+        "required": ["story_summary", "beats_plan"],
+    },
+}
+
+_KLING_AUTHOR_TOOL = {
+    "name": "submit_kling_prompts",
+    "description": "Submit Kling O3 prompts for each dialogue beat.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "beats": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "beat_index": {"type": "integer"},
+                        "kling_o3_prompt": {"type": "string"},
+                    },
+                    "required": ["beat_index", "kling_o3_prompt"],
+                },
+            },
+        },
+        "required": ["beats"],
+    },
+}
+
+
+def _parse_structured_response(resp: dict, *, tool_name: str) -> dict:
+    tool_input = _anthropic_tool_input(resp, tool_name)
+    if tool_input is not None:
+        return tool_input
+    parsed = _parse_claude_json(_anthropic_text(resp))
+    if not isinstance(parsed, dict):
+        raise ValueError(f"Claude {tool_name} response must be a JSON object")
+    return parsed
 
 
 def _load_skill(path: Path, fallback: str) -> str:
@@ -138,23 +289,9 @@ def claude_plan_beats(
         f"{skill}\n\n"
         f"{kling_staging_policy_block()}\n\n"
         + (f"GOLD REFERENCE (match this density and style):\n{gold}\n\n" if gold else "")
-        + "Return ONLY valid JSON — no markdown fences, no preamble.\n"
-        "Schema:\n"
-        "{\n"
-        '  "story_summary": "<plot + cute/funny + must-haves; Lorelai lemur + Arlo>",\n'
-        '  "beats_plan": [\n'
-        "    {\n"
-        '      "beat_index": 1,\n'
-        '      "beat_type": "dialogue" | "stage_still" | "stage_direction",\n'
-        '      "speaker": "Lorelai | Tessa | Arlo | [Stage Direction]",\n'
-        '      "dialogue_text": "spoken line or empty for stage_still",\n'
-        '      "emotion": "short delivery phrase",\n'
-        '      "scene_notes": "Kling-safe micro-expression OR still description",\n'
-        '      "skeleton_quote": "optional",\n'
-        '      "invented": false\n'
-        "    }\n"
-        "  ]\n"
-        "}\n"
+        + "Call submit_beat_plan with story_summary and beats_plan.\n"
+        "Use Lorelai (lemur), Tessa, Arlo, or [Stage Direction]. "
+        "Use beat_type stage_still for inscription/runestone still inserts.\n"
     )
     user = (
         f"Segment: arc {meta.get('arc_number')} event {meta.get('event_id')} phase {phase}\n"
@@ -165,9 +302,15 @@ def claude_plan_beats(
         f"---\n{section_text}\n---\n"
     )
     resp, elapsed_ms = _call_anthropic(
-        api_key, system, user, max_tokens=4096, timeout=PLAN_TIMEOUT_S,
+        api_key,
+        system,
+        user,
+        max_tokens=4096,
+        timeout=PLAN_TIMEOUT_S,
+        tools=[_BEAT_PLAN_TOOL],
+        tool_choice={"type": "tool", "name": "submit_beat_plan"},
     )
-    parsed = _parse_claude_json(_anthropic_text(resp))
+    parsed = _parse_structured_response(resp, tool_name="submit_beat_plan")
     if not isinstance(parsed, dict):
         raise ValueError("Claude plan response must be a JSON object")
     beats_plan = parsed.get("beats_plan") or []
@@ -219,15 +362,7 @@ def claude_author_kling_prompts(
             f"Reference camera lock (include verbatim in every prompt):\n{bg.KLING_O3_CAMERA_LOCK}\n\n"
             "Few-shot approved prompts:\n"
             f"{few_shot}\n\n"
-            "Return ONLY valid JSON:\n"
-            "{\n"
-            '  "beats": [\n'
-            "    {\n"
-            '      "beat_index": 1,\n'
-            '      "kling_o3_prompt": "<full multi-line prompt>"\n'
-            "    }\n"
-            "  ]\n"
-            "}\n"
+            "Call submit_kling_prompts with one entry per dialogue beat_index.\n"
             "Every dialogue beat_index must appear exactly once."
         )
         plan_json = json.dumps(
@@ -241,11 +376,15 @@ def claude_author_kling_prompts(
             f"Approved dialogue beats only:\n{plan_json}\n"
         )
         resp, elapsed_ms = _call_anthropic(
-            api_key, system, user, max_tokens=8192, timeout=AUTHOR_TIMEOUT_S,
+            api_key,
+            system,
+            user,
+            max_tokens=8192,
+            timeout=AUTHOR_TIMEOUT_S,
+            tools=[_KLING_AUTHOR_TOOL],
+            tool_choice={"type": "tool", "name": "submit_kling_prompts"},
         )
-        parsed = _parse_claude_json(_anthropic_text(resp))
-        if not isinstance(parsed, dict):
-            raise ValueError("Claude author response must be a JSON object")
+        parsed = _parse_structured_response(resp, tool_name="submit_kling_prompts")
         beats_out = parsed.get("beats") or []
         if not isinstance(beats_out, list) or not beats_out:
             raise ValueError("beats array required in author response")

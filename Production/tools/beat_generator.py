@@ -408,11 +408,23 @@ def write_sidecar(data):
     with _sidecar_lock:
         d = os.path.dirname(path)
         os.makedirs(d, exist_ok=True)
-        with tempfile.NamedTemporaryFile("w", dir=d, delete=False,
-                                         suffix=".tmp", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-            tmp = f.name
-        os.replace(tmp, path)
+        last_err: OSError | None = None
+        for attempt in range(5):
+            try:
+                with tempfile.NamedTemporaryFile(
+                    "w", dir=d, delete=False, suffix=".tmp", encoding="utf-8",
+                ) as f:
+                    json.dump(data, f, indent=2)
+                    tmp = f.name
+                os.replace(tmp, path)
+                return
+            except OSError as exc:
+                last_err = exc
+                if exc.errno not in (11, 35) or attempt >= 4:
+                    raise
+                time.sleep(0.15 * (attempt + 1))
+        if last_err:
+            raise last_err
 
 
 @contextlib.contextmanager

@@ -2065,10 +2065,13 @@ def handle_bg_extract_beats_plan(h, body: dict) -> None:
     except Exception as exc:
         print(f"[BG] extract-beats/plan Claude error: {exc}")
         traceback.print_exc()
+        msg = str(exc)
         return h._send_json(502, {
             "ok": False,
+            "error_code": "CLAUDE_PLAN_FAILED",
+            "error_message": msg,
             "code": "CLAUDE_PLAN_FAILED",
-            "message": str(exc),
+            "message": msg,
             "retry_safe": True,
         })
 
@@ -2082,19 +2085,36 @@ def handle_bg_extract_beats_plan(h, body: dict) -> None:
         "generation_time_ms": plan_result.get("generation_time_ms"),
         "section_meta": section,
     }
-    with bg._sidecar_lock:
-        sidecar = bg.read_sidecar()
-        seg = bg.get_seg_entry(sidecar, arc_number, event_id, phase)
-        seg["beat_plan_draft"] = draft
-        seg["slice_method"] = section.get("slice_method")
-        for s in bg.get_segments(arc_number):
-            if str(s["event_id"]) == event_id and s["phase"] == phase:
-                seg["name"] = s["name"]
-                break
-        sidecar["active_context"] = {
-            "arc_number": arc_number, "event_id": event_id, "phase": phase,
-        }
-        bg.write_sidecar(sidecar)
+    seg_name = None
+    for s in bg.get_segments(arc_number):
+        if str(s["event_id"]) == event_id and s["phase"] == phase:
+            seg_name = s["name"]
+            break
+    try:
+        with bg.sidecar_file_lock():
+            sidecar = bg.read_sidecar()
+            seg = bg.get_seg_entry(sidecar, arc_number, event_id, phase)
+            seg["beat_plan_draft"] = draft
+            seg["slice_method"] = section.get("slice_method")
+            if seg_name:
+                seg["name"] = seg_name
+            sidecar["active_context"] = {
+                "arc_number": arc_number, "event_id": event_id, "phase": phase,
+            }
+            bg.write_sidecar(sidecar)
+    except OSError as exc:
+        msg = f"Could not save beat plan draft: {exc}"
+        print(f"[BG] extract-beats/plan sidecar write error: {exc}")
+        return h._send_json(503, {
+            "ok": False,
+            "error_code": "SIDECAR_WRITE_FAILED",
+            "error_message": msg,
+            "code": "SIDECAR_WRITE_FAILED",
+            "message": msg,
+            "retry_safe": True,
+            "story_summary": story_summary,
+            "beats_plan": beats_plan,
+        })
 
     print(
         f"[BG] extract-beats/plan arc={arc_number} event={event_id} phase={phase} "

@@ -1986,6 +1986,15 @@ canvas.mn-lipsync-watercolor-overlay {
   color: var(--text-strong);
   font-weight: 500;
 }
+.mn-bg-extract-error {
+  flex-basis: 100%;
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(220, 38, 38, 0.12);
+  color: #fecaca;
+  font-size: 13px;
+}
 .mn-bg-beat-list {
   list-style: none;
   margin: 12px 0 0 0;

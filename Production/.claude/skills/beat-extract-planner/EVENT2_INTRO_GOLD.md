@@ -1,63 +1,59 @@
-# Gold reference — Event 2 intro (Kim-approved style)
+# Gold reference — Event 2 intro (Kim-approved script, Kling-safe)
 
-Use this **shape** for Arc 1 Event 2 pre plans: conversational back-and-forth, Lorelai (lemur archaeologist) + Tessa + Arlo guide, Kling-safe micro-expression staging, still inserts for inscriptions/runestone.
+**Cast:** Lorelai (lemur archaeologist), Tessa, Arlo. Never Luna, Chipper, or Guide Bird.
 
-**Cast (mandatory):** Lorelai, Tessa, Arlo. Never Luna, Chipper, or Guide Bird in output.
-
-**Story summary tone:** Lorelai the lemur student discovers MindfulNest/runestone; Tessa explains {childName}'s Magic Hands spell woke a runestone; Lorelai meltdown; inscription riddles; Arlo handoff to next module spell (name optional).
-
-**Beat script pattern (blank line between beats):**
+**Planner note:** Match this dialogue; staging is micro-expression only (no camera moves, no locomotion). Inscriptions/runestone = `[Stage Direction]` + `[Still insert]`.
 
 ```
-[Stage Direction] [quiet establishing]: Mossy ruins in warm forest light. [Still insert — GPT still]
+[Stage Direction] [quiet establishing]: Ancient mossy ruins in warm forest light; Lorelai with archaeological satchel. [Still insert — GPT still]
 
-Lorelai [muttering, lost]: "It's got to be around here somewhere!" [eyes scan, adjusts satchel, scratches head]
+Lorelai [muttering, lost]: "Its got to be around here somewhere!" [eyes scan ruins, adjusts satchel strap, scratches head, rooted in place]
 
-Tessa [curious, gentle]: "Hello ..." [soft smile]
+Tessa [curious, polite]: "Hello ..." [soft smile, gentle wave]
 
-Lorelai [surprised, bright]: "Oh! Hi. Nice to finally see someone else! I'm Lorelai. I'm doing research for my college. Is this the ancient temple of Everdale?" [holds map, glances map then camera]
+Lorelai [surprised, bright]: "Oh! Hi. Nice to finally see someone else around here! I'm Lorelai. I'm doing research for my college. Is this the ancient temple of Everdale?" [holds rolled map up, glances map then camera, rooted in place]
 
-Tessa [thoughtful]: "I think so ... look at this ..." [nods toward MindfulNest]
+Tessa [thoughtful, inviting]: "I think so ... look at this ..." [small nod, gestures toward MindfulNest with one flipper, rooted in place]
 
-Lorelai [awe]: "Oh my goodness ... it's REAL!" [eyes wide]
+Lorelai [awe, breathless]: "Oh my goodness.... it's ... it's REAL!" [eyes wide, mouth open, rooted in place]
 
-Tessa [curious]: "What is it?"
+Tessa [curious]: "What is it?" [tilts head, rooted in place]
 
-Lorelai [excited lecture]: "The MindfulNest! It's in all the stories — the power source for the whole ancient world." [small wing gesture, rooted in place]
+Lorelai [excited lecturing, trailing into reverence]: "The MindfulNest! ... Well don't you know? It's in all the stories. The MindfulNest was the power source for the whole ancient world." [small emphatic hand gesture, rooted in place]
 
-Tessa [curious]: "Power source?"
+Tessa [curious]: "Power source?" [puzzled brow, rooted in place]
 
-Lorelai [scholarly, wistful]: "Light-Magic through Runestones until the Great Storm. The Runestones went dark." [sigh, shoulders drop]
+Lorelai [scholarly, wistful]: "Well, the ancient world was powered by Light-Magic. Through Runestones. Until the Great Storm came, and lightning struck the Heartwood Tree. The whole system failed. The Runestones went dark. There's been very little Light-Magic since then." [sigh, shoulders drop, slow head shake, rooted in place]
 
-[Stage Direction] [neutral]: MindfulNest with one Runestone lit. [Still insert]
+[Stage Direction] [neutral]: Close view of MindfulNest with one Runestone glowing. [Still insert — GPT still]
 
-Lorelai [gasp]: "WHAT ... is THAT??" [eyes snap wide toward glow]
+Lorelai [gasp, stunned]: "WHAT .... is THAT??" [eyes snap wide toward glow, rooted in place]
 
-Tessa [sheepish shrug]: "We found it. {childName} cast a Magic Spell on my shell and it just ... woke up." [half-smile, shrug]
+Tessa [casual, slightly sheepish]: "Well I don't know. We found it. {childName} cast some kind of Magic Spell on my shell, and it just ... woke up." [half-smile, small shrug, rooted in place]
 
-Lorelai [joyful meltdown]: "Are you serious?? This is HUGE!! You WOKE UP A RUNESTONE!!" [excited wing-flutter, huge grin]
+Lorelai [full meltdown excitement, sputtering]: "Are you serious?? This is HUGE!! You WOKE UP A RUNESTONE !!! It's the biggest discovery in a hundred years!! The biggest discovery EVER!" [rapid happy gestures, huge grin, rooted in place]
 
-Tessa [inspecting]: "What do these symbols mean?" [puzzled look toward Nest]
+Tessa [inspecting, puzzled]: "What do these symbols mean?" [leans toward Nest, puzzled look, rooted in place]
 
-[Stage Direction] [neutral]: Inscription 1 — "Feel ... what's ... real". [Still insert]
+[Stage Direction] [neutral]: Inscription 1 close-up — carved text: Feel .... what's.... real. [Still insert — GPT still]
 
-Lorelai [reading slowly]: "Feel ... what's ... real." [reverent]
+Lorelai [reading slowly, reverent]: "Feel .... what's.... real." [lips move deliberately, rooted in place]
 
-Arlo [warm, proud, to camera]: "That's what the Magic Hands Spell did. You felt real magical energy right between your hands." [faces camera, gentle nod]
+Arlo [gentle, explanatory, proud, to camera]: "That's what the Magic Hands Spell did. You felt real magical energy right between your hands." [faces camera, warm nod]
 
-Lorelai [delirious]: "I'll publish a paper! I'll win a Lemur Peace Prize!" [giddy flutter]
+Lorelai [delirious joy]: "Oh this is the most EXCITING THING IN THE WORLD!!! I'll publish a paper about this! I'll win a Lemur Peace Prize!" [giddy bounce, huge smile, rooted in place]
 
-Tessa [curious]: "What's THAT one say?"
+Tessa [curious]: "What's THAT one say?" [points toward second inscription, rooted in place]
 
-[Stage Direction] [neutral]: Inscription 2 — "Stay loose and light". [Still insert]
+[Stage Direction] [neutral]: Inscription 2 close-up — carved text: Stay loose and light. [Still insert — GPT still]
 
-Lorelai [puzzled]: "Ummm ... 'Stay loose and light ...'" [confused brow]
+Lorelai [puzzled, trailing off]: "Ummm ..... 'Stay loose and light ...'" [confused brow, rooted in place]
 
-Tessa [amused]: "Well that's an interesting riddle ..." [small smile]
+Tessa [amused, thoughtful]: "Well that's an interesting riddle..." [small smile, rooted in place]
 
-Lorelai [gleeful panic]: "What does it mean!? I just HAVE to solve this mystery!!" [frantic happy energy]
+Lorelai [gleeful panic, over-excited]: "What does it mean, what does it mean!? Oh I just HAVE to solve this mystery!!" [frantic happy energy, wide eyes, rooted in place]
 
-Arlo [warm, to camera]: "OK, kiddo ... Lorelai's our best chance, but she's so tense she can't think straight. Let's see if the Great Wizard can teach you a Magic Spell for focusing power ..." [module handoff]
+Arlo [warm, conspiratorial, to camera]: "OK, Kiddo ... help us solve this mystery. Lorelai's our best chance. She knows so much about Everdale! But ... she's so tense, she can't think straight. Let's see if the Great Wizard can teach you a Magic Spell for focusing power..." [faces camera, gentle inviting nod]
 ```
 
-**Omit from plans:** magnifying glass gag, cartwheel/hover spin, separate Chipper compliment beat, long ruins camera pull-back, skeleton map confusion as its own beat unless essential.
+**Omit from auto-plans:** magnifying glass gag, cartwheel/hover spin, camera zoom/cut language, wing-flap/spin staging, separate Chipper compliment beat.

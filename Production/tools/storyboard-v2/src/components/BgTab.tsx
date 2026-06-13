@@ -368,6 +368,7 @@ export function BgTab() {
   const [, setAcceptStatus] = useState<'idle' | 'sending' | 'ok' | 'error'>('idle');
   const [stitcherExportStatus, setStitcherExportStatus] = useState<'idle' | 'sending'>('idle');
   const [extractStatus, setExtractStatus] = useState<'idle' | 'sending'>('idle');
+  const [extractError, setExtractError] = useState<string | null>(null);
   const [approveStatus, setApproveStatus] = useState<'idle' | 'sending'>('idle');
   const [beatPlanOpen, setBeatPlanOpen] = useState(false);
   const [beatPlanSummary, setBeatPlanSummary] = useState('');
@@ -680,10 +681,32 @@ export function BgTab() {
     await refreshState();
   };
 
+  const openBeatPlanDraft = async (): Promise<boolean> => {
+    if (!activeSegment) return false;
+    const [event_id, phase] = activeSegment.split('|');
+    const draftRes = await apiGet<{
+      story_summary?: string;
+      beats_plan?: BeatPlanRow[];
+    }>('bg_extract_beats_draft', {
+      arc_number: String(arcNumber),
+      event_id,
+      phase,
+      scope_event_id: activeScope.value.event_id,
+      scope_video_role: activeTargetVideo.value,
+    });
+    const rows = draftRes.data?.beats_plan ?? [];
+    if (!draftRes.ok || rows.length === 0) return false;
+    setBeatPlanSummary(draftRes.data?.story_summary ?? '');
+    setBeatPlanRows(rows);
+    setBeatPlanOpen(true);
+    return true;
+  };
+
   const onExtractBeats = async () => {
     if (!activeSegment) return;
     const [event_id, phase] = activeSegment.split('|');
     setExtractStatus('sending');
+    setExtractError(null);
     const result = await pathappPatch<{
       story_summary?: string;
       beats_plan?: BeatPlanRow[];
@@ -693,17 +716,38 @@ export function BgTab() {
       activeScope.value, 'bg_extract_beats_plan', { arc_number: arcNumber, event_id, phase },
     );
     setExtractStatus('idle');
-    if (result.ok && result.data) {
+    const planRows = result.data?.beats_plan ?? [];
+    if (result.ok && result.data && planRows.length > 0) {
+      setExtractError(null);
       setBeatPlanSummary(result.data.story_summary ?? '');
-      setBeatPlanRows(result.data.beats_plan ?? []);
+      setBeatPlanRows(planRows);
       setBeatPlanOpen(true);
       pushToast({
         kind: 'success',
-        message: `Planned ${result.data.beats_plan?.length ?? 0} beats — review and Approve`,
+        message: `Planned ${planRows.length} beats — review and Approve`,
         source: 'bg-extract-plan',
       });
+    } else if (planRows.length > 0) {
+      setExtractError(null);
+      setBeatPlanSummary(result.data?.story_summary ?? '');
+      setBeatPlanRows(planRows);
+      setBeatPlanOpen(true);
+      pushToast({
+        kind: 'info',
+        message: `Planned ${planRows.length} beats — draft save had an issue; review and Approve`,
+        source: 'bg-extract-plan-partial',
+      });
+    } else if (await openBeatPlanDraft()) {
+      setExtractError(null);
+      pushToast({
+        kind: 'info',
+        message: 'Showing saved plan from last Extract — edit and Approve',
+        source: 'bg-extract-draft',
+      });
     } else {
-      pushToast({ kind: 'error', message: `Extract failed: ${result.error}`, source: 'bg-extract-error' });
+      const msg = result.error_message || result.error || 'Unknown error';
+      setExtractError(msg);
+      pushToast({ kind: 'error', message: `Extract failed: ${msg}`, source: 'bg-extract-error' });
     }
   };
 
@@ -1217,6 +1261,15 @@ export function BgTab() {
         <button
           type="button"
           class="mn-btn"
+          data-testid="bg-review-draft-btn"
+          onClick={() => { void openBeatPlanDraft(); }}
+          disabled={!activeSegment}
+        >
+          Review saved plan
+        </button>
+        <button
+          type="button"
+          class="mn-btn"
           data-testid="bg-add-empty-btn"
           onClick={() => {
             const lastId = beats.length > 0 ? beats[beats.length - 1].beat_id : '';
@@ -1231,6 +1284,11 @@ export function BgTab() {
           <span class="mn-bg-cost-running">${runningCostUsd.toFixed(2)}</span>
           {' • '}This generation: ${lastBatchCostUsd.toFixed(2)}
         </span>
+        {extractError ? (
+          <p class="mn-bg-extract-error" data-testid="bg-extract-error" role="alert">
+            Extract failed: {extractError}
+          </p>
+        ) : null}
       </div>
 
       {loading ? (

@@ -115,3 +115,32 @@ def test_build_beats_stage_still_vs_stage_direction():
     assert still_beats[0]["beat_render_mode"] == "still_insert"
     assert direction_beats[0]["pipeline"] == "kling_o3_omni"
     assert direction_beats[0].get("beat_render_mode") != "still_insert"
+
+
+def test_parse_claude_json_trailing_comma_and_preamble():
+    from claude_extract_beats import _parse_claude_json
+
+    raw = 'Here is the plan:\n```json\n{"story_summary": "ok", "beats_plan": [{"beat_index": 1},],}\n```'
+    parsed = _parse_claude_json(raw)
+    assert parsed["story_summary"] == "ok"
+    assert len(parsed["beats_plan"]) == 1
+
+
+def test_parse_structured_tool_response():
+    from claude_extract_beats import _parse_structured_response
+
+    resp = {
+        "content": [
+            {
+                "type": "tool_use",
+                "name": "submit_beat_plan",
+                "input": {
+                    "story_summary": "Lorelai discovers the Nest.",
+                    "beats_plan": [{"beat_index": 1, "speaker": "Lorelai"}],
+                },
+            }
+        ]
+    }
+    parsed = _parse_structured_response(resp, tool_name="submit_beat_plan")
+    assert parsed["story_summary"].startswith("Lorelai")
+    assert parsed["beats_plan"][0]["speaker"] == "Lorelai"

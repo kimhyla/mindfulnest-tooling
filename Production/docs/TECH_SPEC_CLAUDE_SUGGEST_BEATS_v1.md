@@ -432,4 +432,34 @@ On `/approve`:
 
 ---
 
+## §15 — Durability manifest (do not drop on merge)
+
+**Single-button UX:** `BgTab.tsx` → `onExtractBeats` → `pathappPatch('bg_extract_beats_plan')` → modal → `bg_extract_beats_approve`. No `Suggest beats` button.
+
+**API routes (`production_server.py`):**
+
+| Route | Handler |
+|---|---|
+| `POST /api/bg/extract-beats/plan` | `handle_bg_extract_beats_plan` |
+| `POST /api/bg/extract-beats/approve` | `handle_bg_extract_beats_approve` |
+| `GET /api/bg/extract-beats/draft` | `handle_bg_extract_beats_draft_get` |
+| `POST /api/bg/extract-beats` | deprecated alias → plan |
+
+**Core modules:**
+
+| File | Role |
+|---|---|
+| `claude_extract_beats.py` | Sonnet plan + author; **structured tool** output (`submit_beat_plan`, `submit_kling_prompts`) |
+| `beat_extract_policy.py` | Lorelai/Arlo cast overlay, `stage_still`, staging linter, gold loader |
+| `beat_generator.py` | `slice_skeleton_section`, `apply_approved_extract_plan`, `build_beats_from_approved_plan` |
+| `server_handlers/background.py` | HTTP handlers; plan writes `beat_plan_draft` under `sidecar_file_lock()` |
+| `BeatPlanModal.tsx` + `beatPlanFormat.ts` | Kim script textarea (paragraph = beat) |
+| `EVENT2_INTRO_GOLD.md` | Few-shot shape for Arc1 Event2 pre (not Kim's pasted draft) |
+
+**Plan input sources (important):** Phase A reads **skeleton section text only** + optional gold few-shot. It does **not** read Kim's prior modal edits unless she pastes them before Approve or uses **Review saved plan** (sidecar `beat_plan_draft`).
+
+**Regression tests:** `test_extract_beats_wiring.py`, `test_claude_extract_beats.py`, `test_beat_extract_policy.py` — run in pre-push / CI.
+
+---
+
 *End of spec.*
