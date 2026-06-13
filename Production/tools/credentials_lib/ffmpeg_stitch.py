@@ -362,6 +362,41 @@ def mp4_is_playable(path: Path, *, min_duration_s: float = 0.05) -> bool:
     return dur >= min_duration_s
 
 
+def stitch_audio_cache_is_valid(
+    path: Path,
+    expected_duration_s: float,
+    *,
+    min_ratio: float = 0.85,
+) -> bool:
+    """True when cached stitch waveform extract/mix duration matches source video.
+
+    Guards ``stitch_audio_*.mp3`` LRU hits: interrupted ffmpeg writes can produce
+    ~15s extracts while the slot video is ~40s — WaveSurfer then caps linked playback.
+    """
+    if expected_duration_s <= 0:
+        return path.is_file() and path.stat().st_size > 1024
+    if not path.is_file():
+        return False
+    try:
+        out = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "csv=p=0",
+                str(path.resolve()),
+            ],
+            capture_output=True, check=True, text=True, timeout=15,
+        )
+        dur = float((out.stdout or "").strip())
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        ValueError,
+    ):
+        return False
+    return dur >= expected_duration_s * min_ratio
+
+
 def preview_cache_is_valid(
     path: Path,
     expected_duration_s: float,

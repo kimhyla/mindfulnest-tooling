@@ -11671,6 +11671,277 @@ body {{padding-top:44px!important;}}
             ) from exc
         return out
 
+    def _stitch_overlay_sfx_on_clip(
+        self,
+        clip_path: Path,
+        sfx_path: str,
+        cache_dir: Path,
+        *,
+        offset_ms: int,
+        duration_ms: int,
+        sfx_start_ms: int = 0,
+        volume: float = 0.45,
+    ) -> Path:
+        """Mix one SFX segment onto an existing clip; video stream copied unchanged."""
+        import hashlib as _hl  # noqa: PLC0415
+
+        if duration_ms <= 0 or not sfx_path or not os.path.isfile(sfx_path):
+            return clip_path
+        try:
+            self._stitch_assert_path_in_root(sfx_path, "boundary sfx source_path")
+        except ValueError:
+            return clip_path
+
+        clip_dur_ms = self._ffprobe_duration_ms(clip_path)
+        if clip_dur_ms <= 0:
+            return clip_path
+        offset_ms = max(0, min(int(offset_ms), clip_dur_ms))
+        play_ms = min(int(duration_ms), max(0, clip_dur_ms - offset_ms))
+        if play_ms <= 0:
+            return clip_path
+
+        sig = _hl.md5(
+            (
+                f"{clip_path.name}:{clip_path.stat().st_mtime_ns}:"
+                f"{sfx_path}:{offset_ms}:{play_ms}:{sfx_start_ms}:{volume:.3f}"
+            ).encode(),
+            usedforsecurity=False,
+        ).hexdigest()[:12]
+        out_path = cache_dir / f"se_boundary_sfx_{sig}.mp4"
+        if out_path.is_file():
+            from ffmpeg_stitch import mp4_decodes_cleanly, mp4_is_playable  # noqa: PLC0415
+            if mp4_is_playable(out_path) and mp4_decodes_cleanly(out_path):
+                return out_path
+            try:
+                out_path.unlink()
+            except OSError:
+                pass
+
+        play_s = play_ms / 1000.0
+        sfx_start_s = max(0.0, int(sfx_start_ms) / 1000.0)
+        offset_s = offset_ms / 1000.0
+        filter_complex = (
+            f"[0:a]aresample=44100,aformat=channel_layouts=mono[base];"
+            f"[1:a]aresample=44100,aformat=channel_layouts=mono,"
+            f"atrim=start={sfx_start_s:.3f}:duration={play_s:.3f},"
+            f"asetpts=PTS-STARTPTS,"
+            f"adelay={offset_ms}:all=1,"
+            f"volume={volume:.3f}[sfx];"
+            f"[base][sfx]amix=inputs=2:duration=first:normalize=0[aout]"
+        )
+        cmd = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-i", str(clip_path),
+            "-i", sfx_path,
+            "-filter_complex", filter_complex,
+            "-map", "0:v",
+            "-map", "[aout]",
+            "-c:v", "copy",
+            "-c:a", "aac", "-b:a", "128k", "-ac", "1", "-ar", "44100",
+            str(out_path),
+        ]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, timeout=180)
+        except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or b"")[:400].decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"Boundary SFX overlay failed for {clip_path.name}: {stderr}",
+            ) from exc
+        return out_path
+
+    def _stitch_apply_canonical_boundary_sfx(
+        self,
+        parts: list[Path],
+        pair_fades_ms: list[int],
+        cache_dir: Path,
+        *,
+        visual_out_ms: int,
+        visual_in_ms: int,
+    ) -> list[Path]:
+        """STITCH_CANONICAL_TRANSITION_SFX_V1 — span dissolve: pre-roll, black, post-roll."""
+        from ffmpeg_stitch import allocate_pair_fade_budget  # noqa: PLC0415
+        from server_handlers.stitch_editor import (  # noqa: PLC0415
+            STITCH_CANONICAL_BOUNDARY_SFX,
+            STITCH_TRANSITION_SFX_POST_ROLL_MS,
+            STITCH_TRANSITION_SFX_PRE_ROLL_MS,
+            STITCH_TRANSITION_SFX_VOLUME,
+            resolve_canonical_boundary_sfx_path,
+        )
+
+        if not parts or not pair_fades_ms:
+            return parts
+        out = list(parts)
+        for after_slot, pair_ms in enumerate(pair_fades_ms):
+            if pair_ms <= 0:
+                continue
+            sfx_name = STITCH_CANONICAL_BOUNDARY_SFX.get(after_slot)
+            if not sfx_name:
+                continue
+            sfx_path = resolve_canonical_boundary_sfx_path(self, sfx_name)
+            if not sfx_path:
+                print(
+                    f"[stitch] WARN: canonical boundary SFX missing for "
+                    f"after_slot={after_slot}: {sfx_name}",
+                )
+                continue
+            out_ms, in_ms, black_ms = allocate_pair_fade_budget(
+                pair_ms,
+                visual_out_ms=visual_out_ms,
+                visual_in_ms=visual_in_ms,
+            )
+            pre = STITCH_TRANSITION_SFX_PRE_ROLL_MS
+            post = STITCH_TRANSITION_SFX_POST_ROLL_MS
+            body_out_idx = 2 * after_slot
+            black_idx = 2 * after_slot + 1
+            body_in_idx = 2 * after_slot + 2
+            if body_out_idx >= len(out) or body_in_idx >= len(out):
+                continue
+
+            src_cursor = 0
+            seg1_dur = pre + out_ms
+            clip_dur_ms = self._ffprobe_duration_ms(out[body_out_idx])
+            seg1_offset = max(0, clip_dur_ms - seg1_dur)
+            out[body_out_idx] = self._stitch_overlay_sfx_on_clip(
+                out[body_out_idx],
+                sfx_path,
+                cache_dir,
+                offset_ms=seg1_offset,
+                duration_ms=seg1_dur,
+                sfx_start_ms=src_cursor,
+                volume=STITCH_TRANSITION_SFX_VOLUME,
+            )
+            src_cursor += seg1_dur
+
+            if black_ms > 0 and black_idx < len(out):
+                out[black_idx] = self._stitch_overlay_sfx_on_clip(
+                    out[black_idx],
+                    sfx_path,
+                    cache_dir,
+                    offset_ms=0,
+                    duration_ms=black_ms,
+                    sfx_start_ms=src_cursor,
+                    volume=STITCH_TRANSITION_SFX_VOLUME,
+                )
+                src_cursor += black_ms
+
+            out[body_in_idx] = self._stitch_overlay_sfx_on_clip(
+                out[body_in_idx],
+                sfx_path,
+                cache_dir,
+                offset_ms=0,
+                duration_ms=in_ms + post,
+                sfx_start_ms=src_cursor,
+                volume=STITCH_TRANSITION_SFX_VOLUME,
+            )
+        return out
+
+    def _stitch_apply_resolution_finale(
+        self,
+        parts: list[Path],
+        cache_dir: Path,
+        *,
+        visual_out_ms: int,
+    ) -> list[Path]:
+        """STITCH_RESOLUTION_FINALE_V1 — fade tail to black, then outtro3 until EOF."""
+        import hashlib as _hl  # noqa: PLC0415
+
+        from ffmpeg_stitch import render_black_pause_clip, trim_body_with_fade  # noqa: PLC0415
+        from server_handlers.stitch_editor import (  # noqa: PLC0415
+            STITCH_RESOLUTION_FINALE_FADE_OUT_MS,
+            STITCH_RESOLUTION_FINALE_OUTTRO_FILENAME,
+            STITCH_RESOLUTION_FINALE_OUTTRO_PLAY_MS,
+            STITCH_RESOLUTION_FINALE_OUTTRO_START_BEFORE_END_MS,
+            STITCH_TRANSITION_SFX_VOLUME,
+            resolution_finale_black_hold_ms,
+            resolve_canonical_finale_outtro_path,
+        )
+
+        if not parts:
+            return parts
+        outtro_path = resolve_canonical_finale_outtro_path(
+            self, STITCH_RESOLUTION_FINALE_OUTTRO_FILENAME,
+        )
+        if not outtro_path:
+            print(
+                "[stitch] WARN: resolution finale outtro missing: "
+                f"{STITCH_RESOLUTION_FINALE_OUTTRO_FILENAME}",
+            )
+            return parts
+
+        last = parts[-1]
+        clip_dur_ms = self._ffprobe_duration_ms(last)
+        if clip_dur_ms <= 0:
+            return parts
+
+        fade_out_ms = min(
+            int(visual_out_ms),
+            STITCH_RESOLUTION_FINALE_FADE_OUT_MS,
+            clip_dur_ms,
+        )
+        if fade_out_ms <= 0:
+            return parts
+
+        outtro_start_ms = min(
+            STITCH_RESOLUTION_FINALE_OUTTRO_START_BEFORE_END_MS,
+            clip_dur_ms,
+        )
+        outtro_on_clip_ms = min(outtro_start_ms, clip_dur_ms)
+        outtro_on_black_ms = max(
+            0,
+            STITCH_RESOLUTION_FINALE_OUTTRO_PLAY_MS - outtro_on_clip_ms,
+        )
+        black_hold_ms = resolution_finale_black_hold_ms()
+        if outtro_on_black_ms > 0:
+            black_hold_ms = max(black_hold_ms, outtro_on_black_ms)
+
+        sig = _hl.md5(
+            (
+                f"{last.name}:{last.stat().st_mtime_ns}:"
+                f"{fade_out_ms}:{outtro_start_ms}:{black_hold_ms}"
+            ).encode(),
+            usedforsecurity=False,
+        ).hexdigest()[:12]
+        faded_path = cache_dir / f"se_finale_fade_{sig}.mp4"
+        if not faded_path.is_file():
+            trim_body_with_fade(
+                last,
+                faded_path,
+                head_remove_s=0.0,
+                tail_remove_s=0.0,
+                fade_in_s=0.0,
+                fade_out_s=fade_out_ms / 1000.0,
+                fade_audio=False,
+            )
+
+        clip_offset_ms = max(0, clip_dur_ms - outtro_start_ms)
+        faded_with_outtro = self._stitch_overlay_sfx_on_clip(
+            faded_path,
+            outtro_path,
+            cache_dir,
+            offset_ms=clip_offset_ms,
+            duration_ms=outtro_on_clip_ms,
+            sfx_start_ms=0,
+            volume=STITCH_TRANSITION_SFX_VOLUME,
+        )
+
+        out = list(parts[:-1]) + [faded_with_outtro]
+        if black_hold_ms > 0:
+            black_path = cache_dir / f"se_finale_black_{black_hold_ms}ms_{sig}.mp4"
+            if not black_path.is_file():
+                render_black_pause_clip(black_hold_ms / 1000.0, black_path)
+            if outtro_on_black_ms > 0:
+                black_path = self._stitch_overlay_sfx_on_clip(
+                    black_path,
+                    outtro_path,
+                    cache_dir,
+                    offset_ms=0,
+                    duration_ms=outtro_on_black_ms,
+                    sfx_start_ms=outtro_on_clip_ms,
+                    volume=STITCH_TRANSITION_SFX_VOLUME,
+                )
+            out.append(black_path)
+        return out
+
     def _stitch_mix_slot_audio(
         self, norm_path: Path, slot: dict, cache_dir: Path
     ) -> Path:
@@ -11918,6 +12189,8 @@ body {{padding-top:44px!important;}}
         #                 head; audio_xfade_ms=0 → hard audio cut;
         #                 audio_xfade_ms>0 → afade out/in across the boundary
         transitions = body.get("transitions") or []
+        from server_handlers.stitch_editor import canonical_stitch_transitions_for_pipeline  # noqa: PLC0415
+        transitions = canonical_stitch_transitions_for_pipeline(transitions)
         trans_by_after = {
             int(t.get("after_slot", 0)): t for t in transitions if isinstance(t, dict)
         }
@@ -11993,6 +12266,19 @@ body {{padding-top:44px!important;}}
                 visual_in_ms=_VISUAL_IN_MS,
                 fade_audio=False,
             )
+            slot_finals = self._stitch_apply_canonical_boundary_sfx(
+                slot_finals,
+                pair_fades_ms,
+                cache_dir,
+                visual_out_ms=_VISUAL_OUT_MS,
+                visual_in_ms=_VISUAL_IN_MS,
+            )
+
+        slot_finals = self._stitch_apply_resolution_finale(
+            slot_finals,
+            cache_dir,
+            visual_out_ms=_VISUAL_OUT_MS,
+        )
 
         from ffmpeg_stitch import module_slot_start_offsets_ms  # noqa: PLC0415
 

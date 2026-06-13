@@ -241,6 +241,233 @@ def _phase_clear_lipsync_derived(state: dict, phase: str, *, requires_regen: boo
         nested[f"phase_{phase}_lipsync_requires_regen"] = requires_regen
 
 
+# ---------------------------------------------------------------------------
+# Voice stem pin durability (PHASE_VOICE_STEM_PIN_DURABILITY_V1)
+# ---------------------------------------------------------------------------
+# Incident 2026-06-13: lipsync baked June 6 "I don't know." while June 13 regen
+# existed on disk — stale production_state pin + no preflight before lipsync.
+
+PHASE_VOICE_STEM_PIN_DURABILITY_V1 = "PHASE_VOICE_STEM_PIN_DURABILITY_V1"
+
+
+def _phase_nested_block(state: dict, phase: str) -> dict:
+    nested = state.get(f"phase_{phase}")
+    return nested if isinstance(nested, dict) else {}
+
+
+def _phase_resolve_voice_stem_name(state: dict, phase: str) -> str:
+    """Canonical stem filename — top-level wins over nested mirror."""
+    top = (state.get(f"phase_{phase}_voice_stem_file") or "").strip()
+    if top:
+        return top
+    nested = _phase_nested_block(state, phase)
+    return (nested.get(f"phase_{phase}_voice_stem_file") or "").strip()
+
+
+def _phase_resolve_voice_stem_mtime(state: dict, phase: str) -> int | None:
+    top = state.get(f"phase_{phase}_voice_stem_mtime")
+    if isinstance(top, (int, float)):
+        return int(top)
+    nested = _phase_nested_block(state, phase)
+    nested_m = nested.get(f"phase_{phase}_voice_stem_mtime")
+    if isinstance(nested_m, (int, float)):
+        return int(nested_m)
+    return None
+
+
+def _phase_set_voice_stem_keys(state: dict, phase: str, filename: str, mtime: int) -> None:
+    """Write voice stem pin to top-level AND nested phase block (mirror parity)."""
+    state[f"phase_{phase}_voice_stem_file"] = filename
+    state[f"phase_{phase}_voice_stem_mtime"] = mtime
+    nested = state.setdefault(f"phase_{phase}", {})
+    if isinstance(nested, dict):
+        nested[f"phase_{phase}_voice_stem_file"] = filename
+        nested[f"phase_{phase}_voice_stem_mtime"] = mtime
+
+
+def _phase_voice_stem_mirror_drift(state: dict, phase: str) -> str | None:
+    top = (state.get(f"phase_{phase}_voice_stem_file") or "").strip()
+    nested_name = (_phase_nested_block(state, phase).get(f"phase_{phase}_voice_stem_file") or "").strip()
+    if top and nested_name and top != nested_name:
+        return nested_name
+    return None
+
+
+def _phase_list_newer_voice_stems_on_disk(
+    event_dir: Path, phase: str, pinned_name: str,
+) -> list[str]:
+    """Orphan stems newer than the pinned file (mtime), excluding pinned."""
+    pinned_path = event_dir / pinned_name
+    pinned_mtime = pinned_path.stat().st_mtime if pinned_path.is_file() else 0.0
+    newer: list[tuple[float, str]] = []
+    for p in event_dir.glob(f"phase_{phase}_voice_stem_*.mp3"):
+        if p.name == pinned_name:
+            continue
+        try:
+            mt = p.stat().st_mtime
+        except OSError:
+            continue
+        if mt > pinned_mtime + 0.5:
+            newer.append((mt, p.name))
+    newer.sort(reverse=True)
+    return [name for _, name in newer]
+
+
+def _phase_lipsync_sidecar_audio_source(event_dir: Path, lipsync_name: str) -> str:
+    sidecar = event_dir / Path(lipsync_name).with_suffix(".json")
+    if not sidecar.is_file():
+        return ""
+    try:
+        data = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    src = data.get("audio_source")
+    return src if isinstance(src, str) else ""
+
+
+def _phase_voice_stem_pin_issues(
+    h,
+    state: dict,
+    phase: str,
+    *,
+    for_lipsync: bool = False,
+) -> list[dict]:
+    issues: list[dict] = []
+    pinned = _phase_resolve_voice_stem_name(state, phase)
+    if not pinned:
+        issues.append({"code": "STEM_UNSET", "message": f"phase_{phase}_voice_stem_file unset"})
+        return issues
+
+    mirror_other = _phase_voice_stem_mirror_drift(state, phase)
+    if mirror_other:
+        issues.append({
+            "code": "STEM_MIRROR_DRIFT",
+            "message": f"top-level pin {pinned!r} != nested {mirror_other!r}",
+            "pinned": pinned,
+            "nested": mirror_other,
+        })
+
+    stem_path = h.app.event_dir / pinned
+    if not stem_path.is_file():
+        issues.append({
+            "code": "STEM_MISSING",
+            "message": f"pinned stem missing on disk: {pinned}",
+            "pinned": pinned,
+        })
+        return issues
+
+    pinned_mtime_state = _phase_resolve_voice_stem_mtime(state, phase)
+    if pinned_mtime_state is not None:
+        disk_mtime = int(stem_path.stat().st_mtime)
+        if abs(disk_mtime - pinned_mtime_state) > 2:
+            issues.append({
+                "code": "STEM_MTIME_DRIFT",
+                "message": f"state mtime {pinned_mtime_state} != disk {disk_mtime} for {pinned}",
+                "pinned": pinned,
+            })
+
+    newer = _phase_list_newer_voice_stems_on_disk(h.app.event_dir, phase, pinned)
+    if newer:
+        issues.append({
+            "code": "STEM_PIN_STALE",
+            "message": f"newer voice stem(s) on disk than pin {pinned}",
+            "pinned": pinned,
+            "newer_stems": newer,
+        })
+
+    if for_lipsync:
+        lipsync_name = (state.get(f"phase_{phase}_lipsync_file") or "").strip()
+        if lipsync_name and not state.get(f"phase_{phase}_lipsync_requires_regen"):
+            sidecar_src = _phase_lipsync_sidecar_audio_source(h.app.event_dir, lipsync_name)
+            sidecar_base = Path(sidecar_src).name if sidecar_src else ""
+            if sidecar_base and sidecar_base != pinned:
+                issues.append({
+                    "code": "LIPSYNC_AUDIO_LINEAGE_STALE",
+                    "message": (
+                        f"lipsync {lipsync_name} built from {sidecar_base}, "
+                        f"pin is {pinned}"
+                    ),
+                    "lipsync_file": lipsync_name,
+                    "audio_source": sidecar_base,
+                    "pinned": pinned,
+                })
+
+    return issues
+
+
+def _phase_repair_voice_stem_mirror(h, phase: str) -> None:
+    """Sync nested mirror to top-level canonical pin."""
+
+    def _repair(st):
+        pinned = (st.get(f"phase_{phase}_voice_stem_file") or "").strip()
+        if not pinned:
+            return st.get("_module_version", 0)
+        mtime = st.get(f"phase_{phase}_voice_stem_mtime")
+        nested = st.setdefault(f"phase_{phase}", {})
+        if isinstance(nested, dict):
+            nested[f"phase_{phase}_voice_stem_file"] = pinned
+            if mtime is not None:
+                nested[f"phase_{phase}_voice_stem_mtime"] = mtime
+        return st.get("_module_version", 0)
+
+    h.app.state.mutate_state(_repair)
+
+
+def _phase_preflight_voice_stem_for_lipsync(h, state: dict, phase: str):
+    """Return None on success, or a V59 error response tuple from _send_error_v59."""
+    if _phase_voice_stem_mirror_drift(state, phase):
+        _phase_repair_voice_stem_mirror(h, phase)
+        state = h.app.state.read_state()
+
+    issues = _phase_voice_stem_pin_issues(h, state, phase, for_lipsync=True)
+    blocking_codes = {"STEM_UNSET", "STEM_MISSING", "STEM_PIN_STALE"}
+    blocking = [i for i in issues if i["code"] in blocking_codes]
+    if not blocking:
+        return None
+
+    first = blocking[0]
+    code_map = {
+        "STEM_PIN_STALE": "PHASE_VOICE_STEM_PIN_STALE",
+        "STEM_MISSING": "PHASE_VOICE_STEM_MISSING",
+        "STEM_UNSET": "GENERIC_ERROR",
+    }
+    return h._send_error_v59(
+        409,
+        error_code=code_map.get(first["code"], "PHASE_VOICE_STEM_PIN_STALE"),
+        error_message=first["message"],
+        retry_safe=False,
+        extra={
+            "code": PHASE_VOICE_STEM_PIN_DURABILITY_V1,
+            "issues": issues,
+            "hint": (
+                "Regen Audio to repin the current script delivery before "
+                "Send for Lipsync. Do not manually swap to an older stem file."
+            ),
+        },
+    )
+
+
+def _phase_assert_voice_stem_pin_persisted(h, phase: str, expected_name: str):
+    """Return V59 error response if mutate_state did not persist the new stem pin."""
+    actual = _phase_resolve_voice_stem_name(h.app.state.read_state(), phase)
+    if actual == expected_name:
+        return None
+    return h._send_error_v59(
+        500,
+        error_code="PHASE_VOICE_STEM_PIN_PERSIST_FAILED",
+        error_message=(
+            f"voice stem written to disk as {expected_name} but state pin is {actual!r}"
+        ),
+        retry_safe=True,
+        extra={
+            "code": PHASE_VOICE_STEM_PIN_DURABILITY_V1,
+            "expected": expected_name,
+            "actual": actual,
+            "hint": "Retry Regen Audio; if it persists, check production_state.json permissions.",
+        },
+    )
+
+
 def _apply_phase_audio_trim(
     h,
     audio_path: Path,
@@ -1183,8 +1410,7 @@ def handle_phase_apply_stem_cut(h, body: dict) -> None:
     mtime = int(os.path.getmtime(str(out_path)))
 
     def _apply(st, _p=phase, _n=out_name, _m=mtime):
-        st[f"phase_{_p}_voice_stem_file"] = _n
-        st[f"phase_{_p}_voice_stem_mtime"] = _m
+        _phase_set_voice_stem_keys(st, _p, _n, _m)
         _phase_clear_stem_cut_keys(st, _p)
         _phase_clear_lipsync_derived(st, _p, requires_regen=True)
         st["_module_version"] = int(st.get("_module_version", 0) or 0) + 1
@@ -1200,6 +1426,10 @@ def handle_phase_apply_stem_cut(h, body: dict) -> None:
             error_message=f"mutate_state failed: {type(exc).__name__}: {exc}",
             retry_safe=True,
         )
+
+    pin_err = _phase_assert_voice_stem_pin_persisted(h, phase, out_name)
+    if pin_err is not None:
+        return pin_err
 
     return h._send_json(200, {
         "ok": True,
@@ -1463,8 +1693,7 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
 
     # Patch state via mutate_state.
     def _apply(state, _p=phase, _n=out_name, _m=mtime):
-        state[f"phase_{_p}_voice_stem_file"] = _n
-        state[f"phase_{_p}_voice_stem_mtime"] = _m
+        _phase_set_voice_stem_keys(state, _p, _n, _m)
         # Fresh stem invalidates lipsync/mix/stitch derived from the old audio.
         _phase_clear_lipsync_derived(state, _p, requires_regen=True)
         _phase_clear_stem_cut_keys(state, _p)
@@ -1481,6 +1710,10 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
                    retry_safe=True,
                    extra={"hint": "State.json could not be persisted. File was written to disk."},
                )
+
+    pin_err = _phase_assert_voice_stem_pin_persisted(h, phase, out_name)
+    if pin_err is not None:
+        return pin_err
 
     return h._send_json(200, {
         "status": "ok",
@@ -1564,7 +1797,27 @@ def handle_phase_b_mix_audio(h, body: dict)-> None:
                )
     # Resolve voice stem from state.
     state = h.app.state.read_state()
-    voice_stem_name = state.get(f"phase_{phase}_voice_stem_file")
+    if _phase_voice_stem_mirror_drift(state, phase):
+        _phase_repair_voice_stem_mirror(h, phase)
+        state = h.app.state.read_state()
+    voice_stem_name = _phase_resolve_voice_stem_name(state, phase)
+    stale_issues = [
+        i for i in _phase_voice_stem_pin_issues(h, state, phase)
+        if i["code"] == "STEM_PIN_STALE"
+    ]
+    if stale_issues:
+        first = stale_issues[0]
+        return h._send_error_v59(
+            409,
+            error_code="PHASE_VOICE_STEM_PIN_STALE",
+            error_message=first["message"],
+            retry_safe=False,
+            extra={
+                "code": PHASE_VOICE_STEM_PIN_DURABILITY_V1,
+                "issues": stale_issues,
+                "hint": "Regen Audio to repin before mixing.",
+            },
+        )
     if not voice_stem_name:
         return h._send_error_v59(
                    400,
@@ -1910,11 +2163,12 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
         or state.get("phase_a_empty_desk_bg_id")
     )
 
-    audio_name = (
-        state.get("phase_a_voice_stem_file")
-        or (state.get("phase_a") or {}).get("phase_a_voice_stem_file")
-        or state.get("phase_a_mixed_audio_file")
-    )
+    preflight_err = _phase_preflight_voice_stem_for_lipsync(h, state, "a")
+    if preflight_err is not None:
+        return preflight_err
+    state = h.app.state.read_state()
+
+    audio_name = _phase_resolve_voice_stem_name(state, "a") or state.get("phase_a_mixed_audio_file")
     if not audio_name:
         return h._send_error_v59(
             400,
@@ -2857,6 +3111,24 @@ def handle_phase_export_stitcher(h, body: dict) -> None:
             retry_safe=False,
         )
 
+    from server_handlers.stitch_editor import (  # noqa: PLC0415
+        STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1,
+        stitch_slot_export_media_preflight,
+    )
+
+    try:
+        export_dur_ms, export_warnings = stitch_slot_export_media_preflight(
+            h, video_rel, slot_key,
+        )
+    except ValueError as exc:
+        return h._send_error_v59(
+            409,
+            error_code="STITCH_SLOT_EXPORT_MEDIA_BLOCKED",
+            error_message=str(exc),
+            retry_safe=False,
+            extra={"code": STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1},
+        )
+
     job_name = stitch_upsert_event_slot(
         h,
         event_id,
@@ -2873,6 +3145,9 @@ def handle_phase_export_stitcher(h, body: dict) -> None:
         "slot_key": slot_key,
         "video_path": video_rel,
         "overlay_baked": overlay_baked,
+        "video_dur_ms": export_dur_ms,
+        "warnings": export_warnings,
+        "code": STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1,
     })
 
 

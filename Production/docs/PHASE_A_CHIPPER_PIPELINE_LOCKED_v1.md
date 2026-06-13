@@ -140,8 +140,26 @@ Dependency order:
 | `phase_a_lipsync_file` | Pinned middle (raw, no `withbed`) |
 | `phase_a_stitched_file` | Canonical stitched output (UI player) |
 | `phase_a_chipper_sitting_clip_id` | Library base for lipsync |
-| `phase_a_voice_stem_file` | TTS source |
+| `phase_a_voice_stem_file` | TTS source (top-level pin is canonical; nested `phase_a` block mirrors it) |
 | `phase_a_ambient_preset_id` | Bed at stitch |
+
+---
+
+## Voice stem pin durability (`PHASE_VOICE_STEM_PIN_DURABILITY_V1`)
+
+**Incident 2026-06-13:** Regen produced `phase_a_voice_stem_20260613-124825.mp3` (“I don’t know!”) but `production_state.json` stayed pinned to `phase_a_voice_stem_20260606-234239.mp3` (old “I don’t know.”). Lipsync + stitch baked the old delivery because nothing blocked a stale pin when a newer stem existed on disk.
+
+| Guard | Where | Behavior |
+|-------|-------|----------|
+| STEM-PIN-1 | `handle_phase_b_regen_audio`, `handle_phase_apply_stem_cut` | `_phase_set_voice_stem_keys` writes top-level **and** nested `phase_a` mirror; post-mutate verify |
+| STEM-PIN-2 | `handle_phase_a_lipsync` preflight | **409 `PHASE_VOICE_STEM_PIN_STALE`** if any `phase_a_voice_stem_*.mp3` on disk is newer than pin |
+| STEM-PIN-3 | `handle_phase_b_mix_audio` | Same stale-pin block before mix |
+| STEM-PIN-4 | `sync_stitch_phase_a_from_phase_tab` | Refuses stitch slot sync when lipsync sidecar `audio_source` ≠ stem pin |
+| STEM-PIN-5 | Regen / apply cut | `_phase_assert_voice_stem_pin_persisted` after `mutate_state` |
+
+**Operator rule:** Never manually repin to an older stem to “fix duration.” Regen Audio, then lipsync. If lipsync is blocked with `PHASE_VOICE_STEM_PIN_STALE`, run Regen Audio — do not point state at an older file.
+
+Regression: `verify_phase_voice_stem_pin_durability.sh`, `tests/test_phase_voice_stem_pin_durability.py`.
 
 ---
 

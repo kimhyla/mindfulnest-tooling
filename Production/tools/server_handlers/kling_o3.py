@@ -912,6 +912,24 @@ def handle_bg_export_to_stitcher(h, body: dict) -> None:
             retry_safe=False,
         )
 
+    from server_handlers.stitch_editor import (  # noqa: PLC0415
+        STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1,
+        stitch_slot_export_media_preflight,
+    )
+
+    try:
+        export_dur_ms, export_warnings = stitch_slot_export_media_preflight(
+            h, video_rel, slot_key,
+        )
+    except ValueError as exc:
+        return h._send_error_v59(
+            409,
+            error_code="STITCH_SLOT_EXPORT_MEDIA_BLOCKED",
+            error_message=str(exc),
+            retry_safe=False,
+            extra={"code": STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1},
+        )
+
     job_name = stitch_upsert_event_slot(
         h,
         event_name,
@@ -929,6 +947,9 @@ def handle_bg_export_to_stitcher(h, body: dict) -> None:
         "slot_key": slot_key,
         "video_path": video_rel,
         "duration_s": duration_s,
+        "video_dur_ms": export_dur_ms,
+        "warnings": export_warnings,
         "beat_count": len(beats),
         "beat_boundaries": boundaries,
+        "code": STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1,
     })

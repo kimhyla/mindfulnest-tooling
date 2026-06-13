@@ -16,20 +16,9 @@ export function defaultStitchTransitions(): Transition[] {
   }));
 }
 
-export function resolveStitchTransitions(existing?: Transition[] | null): Transition[] {
-  const defaults = defaultStitchTransitions();
-  if (!existing?.length) return defaults;
-  return defaults.map((d) => {
-    const found = existing.find((t) => t.after_slot === d.after_slot);
-    if (!found) return d;
-    return {
-      ...found,
-      kind: found.kind ?? d.kind,
-      fade_ms: found.fade_ms ?? d.fade_ms,
-      // Dissolve boundaries use fade-through-black; never duck dialogue at tail.
-      audio_xfade_ms: 0,
-    };
-  });
+export function resolveStitchTransitions(_existing?: Transition[] | null): Transition[] {
+  // STITCH_CANONICAL_TRANSITIONS_V1 — pipeline always uses these; UI mirrors canonical.
+  return defaultStitchTransitions();
 }
 
 export interface StitchSlotLike {

@@ -762,10 +762,14 @@ export function StitcherTab() {
   };
 
   useEffect(() => {
-    if (standaloneMode || !job?.name || !job?.slots) return;
-    if (job.transitions?.length) return;
-    void saveJobTransitions(defaultStitchTransitions());
-  }, [standaloneMode, job?.name, job?.transitions?.length]);
+    if (standaloneMode || !job?.name) return;
+    const canonical = defaultStitchTransitions();
+    const current = resolveStitchTransitions(job.transitions);
+    const needsSync =
+      !job.transitions?.length
+      || JSON.stringify(current) !== JSON.stringify(canonical);
+    if (needsSync) void saveJobTransitions(canonical);
+  }, [standaloneMode, job?.name, JSON.stringify(job?.transitions)]);
 
   useEffect(() => {
     if (!job?.transitions?.length || !job?.name) return;
@@ -1418,7 +1422,12 @@ export function StitcherTab() {
 
           {/* Per-boundary transitions (G7-G8). Apply on Bake / slot Preview only. */}
           {!standaloneMode ? (
-            <div class="mn-stitcher-transitions-row" data-testid="stitcher-transitions-row">
+            <div
+              class="mn-stitcher-transitions-row"
+              data-testid="stitcher-transitions-row"
+              data-stitch-canonical-transitions="STITCH_CANONICAL_TRANSITIONS_V1"
+              data-stitch-canonical-transition-sfx="STITCH_CANONICAL_TRANSITION_SFX_V1"
+            >
               {[0, 1, 2].map((afterSlot) => (
                 <StitcherTransitionSelector
                   key={`trans-${afterSlot}`}

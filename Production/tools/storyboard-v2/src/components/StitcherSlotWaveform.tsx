@@ -105,13 +105,29 @@ export function StitcherSlotWaveform({
       );
       if (cancelled || requestId !== mixRequestRef.current) return;
       if (res.ok && res.data?.audio_url) {
-        setAudioSrc(res.data.audio_url);
-        const dur =
+        const videoDur =
           typeof res.data.video_dur_ms === 'number' && res.data.video_dur_ms > 0
             ? res.data.video_dur_ms
-            : typeof res.data.duration_ms === 'number' && res.data.duration_ms > 0
-              ? res.data.duration_ms
-              : videoDurMs;
+            : videoDurMs;
+        const extractDur =
+          typeof res.data.duration_ms === 'number' && res.data.duration_ms > 0
+            ? res.data.duration_ms
+            : videoDur;
+        if (
+          videoDur > 0
+          && extractDur > 0
+          && Math.abs(videoDur - extractDur) > 2000
+        ) {
+          setAudioSrc(null);
+          setExtractDurMs(null);
+          setExtractError(
+            `audio duration ${(extractDur / 1000).toFixed(1)}s ≠ video ${(videoDur / 1000).toFixed(1)}s — refresh or re-export slot`,
+          );
+          setMixExtracting(false);
+          return;
+        }
+        setAudioSrc(res.data.audio_url);
+        const dur = videoDur > 0 ? videoDur : extractDur;
         setExtractDurMs(dur);
         setTimelineDurMs(dur);
         setMixExtracting(false);

@@ -17,6 +17,7 @@
 // Server default if audio_xfade_ms absent: fade_ms (audio matches visual).
 
 import { useState } from 'preact/hooks';
+import { DEFAULT_PHASE_TRANSITION_FADE_MS } from '../utils/stitchModulePreview';
 
 export type TransitionKind = 'crossfade' | 'cut' | 'dissolve';
 
@@ -42,7 +43,7 @@ const KIND_CHOICES: Array<{ value: TransitionKind; label: string }> = [
   { value: 'dissolve', label: 'Dissolve' },
 ];
 
-const DEFAULT_FADE_MS = 500;
+const DEFAULT_FADE_MS = DEFAULT_PHASE_TRANSITION_FADE_MS;
 
 export function StitcherTransitionSelector({
   afterSlot,
@@ -51,9 +52,9 @@ export function StitcherTransitionSelector({
 }: StitcherTransitionSelectorProps) {
   const initial: Transition = transition ?? {
     after_slot: afterSlot,
-    kind: 'crossfade',
+    kind: 'dissolve',
     fade_ms: DEFAULT_FADE_MS,
-    audio_xfade_ms: DEFAULT_FADE_MS,
+    audio_xfade_ms: 0,
     source_path: '',
   };
   const [kind, setKind] = useState<TransitionKind>(initial.kind);

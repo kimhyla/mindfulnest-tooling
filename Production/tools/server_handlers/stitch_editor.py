@@ -85,6 +85,9 @@ STITCH_INTRO_DEFAULT_WHOOSH_FILENAME = "whoosh sound.mp3"
 STITCH_INTRO_DEFAULT_WHOOSH_PLAY_MS = 3104
 # Re-probe when stored duration differs from on-disk file by more than this (ms).
 STITCH_VIDEO_DUR_DRIFT_TOLERANCE_MS = 500
+# STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1 — export/sync must not serve truncated audio extracts.
+STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1 = "STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1"
+STITCH_AUDIO_DUR_MIN_RATIO = 0.85
 
 
 def apply_stitch_slot_default_ambient_preset(slot_key: str, slot: dict) -> bool:
@@ -329,6 +332,50 @@ def ensure_stitch_intro_default_whoosh_cue(h, slot: dict) -> bool:
 apply_stitch_intro_default_whoosh_cue = ensure_stitch_intro_default_whoosh_cue
 
 
+def stitch_slot_export_media_preflight(h, video_path_str: str, slot_key: str) -> tuple[int, list[str]]:
+    """Probe export target; block stale Phase A lineage before upsert."""
+    try:
+        abs_path = h._stitch_resolve_path(video_path_str)
+        require_media_under_project(abs_path, extensions=MEDIA_EXTENSIONS)
+    except (ValueError, FileNotFoundError) as exc:
+        raise ValueError(str(exc)) from exc
+
+    probed_ms = _probe_stitch_slot_video_dur_ms(h, {"video_path": video_path_str})
+    if probed_ms <= 0:
+        raise ValueError(f"{slot_key}: export video unreadable or zero duration")
+
+    if slot_key == "phase_a" and hasattr(h.app, "state"):
+        from server_handlers.phases import (  # noqa: PLC0415
+            PHASE_VOICE_STEM_PIN_DURABILITY_V1,
+            _phase_lipsync_sidecar_audio_source,
+            _phase_preflight_voice_stem_for_lipsync,
+            _phase_resolve_voice_stem_name,
+        )
+
+        state = h.app.state.read_state() or {}
+        stem = _phase_resolve_voice_stem_name(state, "a")
+        lipsync = (state.get("phase_a_lipsync_file") or "").strip()
+        if stem and lipsync and not state.get("phase_a_lipsync_requires_regen"):
+            sidecar = _phase_lipsync_sidecar_audio_source(h.app.event_dir, lipsync)
+            sidecar_base = Path(sidecar).name if sidecar else ""
+            if sidecar_base and sidecar_base != stem:
+                raise ValueError(
+                    f"phase_a export blocked: lipsync built from {sidecar_base!r} "
+                    f"but stem pin is {stem!r} ({PHASE_VOICE_STEM_PIN_DURABILITY_V1})",
+                )
+        preflight_err = _phase_preflight_voice_stem_for_lipsync(h, state, "a")
+        if preflight_err is not None:
+            raise ValueError(
+                f"phase_a export blocked: stale voice stem pin "
+                f"({PHASE_VOICE_STEM_PIN_DURABILITY_V1})",
+            )
+
+    warnings = stitch_slot_duration_warnings(
+        h, slot_key, {"video_path": video_path_str},
+    )
+    return probed_ms, warnings
+
+
 def stitch_slot_duration_warnings(h, slot_key: str, slot: dict) -> list[str]:
     """Detect stale metadata / truncated files before they confuse slot review."""
     if not isinstance(slot, dict):
@@ -422,6 +469,37 @@ def sync_stitch_phase_a_from_phase_tab(h, slot: dict) -> bool:
     event_id = _stitch_scope_event_id(h)
     if not fname or not event_id:
         return False
+
+    # PHASE_VOICE_STEM_PIN_DURABILITY_V1 — do not sync stitched output whose
+    # lipsync lineage does not match the pinned voice stem.
+    try:
+        from server_handlers.phases import (  # noqa: PLC0415
+            PHASE_VOICE_STEM_PIN_DURABILITY_V1,
+            _phase_lipsync_sidecar_audio_source,
+            _phase_resolve_voice_stem_name,
+        )
+
+        state = h.app.state.read_state() or {}
+        stem = _phase_resolve_voice_stem_name(state, "a")
+        lipsync = (state.get("phase_a_lipsync_file") or "").strip()
+        if (
+            stem
+            and lipsync
+            and not state.get("phase_a_lipsync_requires_regen")
+        ):
+            sidecar_src = _phase_lipsync_sidecar_audio_source(h.app.event_dir, lipsync)
+            sidecar_base = Path(sidecar_src).name if sidecar_src else ""
+            if sidecar_base and sidecar_base != stem:
+                print(
+                    "[stitch] phase_a sync blocked — lipsync audio_source "
+                    f"{sidecar_base!r} != stem pin {stem!r} "
+                    f"({PHASE_VOICE_STEM_PIN_DURABILITY_V1})",
+                    flush=True,
+                )
+                return False
+    except Exception:  # noqa: BLE001
+        pass
+
     canonical_path = f"Production/{event_id}/{fname}"
     current = (slot.get("video_path") or "").strip()
     if current == canonical_path:
@@ -506,9 +584,12 @@ def _mix_stitch_waveform_audio(
     slot: dict,
     cache_dir: Path,
     base_sig: str,
+    *,
+    expected_video_dur_ms: int,
 ) -> Path | None:
     """Mix ambient bed + SFX cues into extracted slot audio for composer waveform (all slots)."""
     import hashlib as _hl  # noqa: PLC0415
+    from credentials_lib.ffmpeg_stitch import stitch_audio_cache_is_valid  # noqa: PLC0415
 
     normalize_slot_audio_mix_levels(slot)
     ambient_path = (slot.get("ambient_bed_path") or "").strip()
@@ -520,10 +601,19 @@ def _mix_stitch_waveform_audio(
     if ambient_path and not os.path.isfile(ambient_path):
         ambient_path = ""
 
-    slot_dur_ms = h._ffprobe_duration_ms(base_audio_path)
-    slot_dur_s = max(slot_dur_ms, 1) / 1000.0
+    video_dur_ms = max(int(expected_video_dur_ms or 0), 0)
+    if video_dur_ms <= 0:
+        video_dur_ms = h._ffprobe_duration_ms(base_audio_path)
+    expected_s = max(video_dur_ms, 1) / 1000.0
+    slot_dur_s = expected_s
 
-    sig_parts = [base_sig, STITCH_WAVEFORM_MIX_MONO_V1, ambient_path, f"{ambient_volume:.4f}"]
+    sig_parts = [
+        base_sig,
+        STITCH_WAVEFORM_MIX_MONO_V1,
+        str(video_dur_ms),
+        ambient_path,
+        f"{ambient_volume:.4f}",
+    ]
     sig_parts += [
         f"{c.get('id', i)}:{c.get('offset_ms', 0)}:{c.get('duration_ms', '')}:"
         f"{c.get('volume', STITCH_SFX_CUE_DEFAULT_VOLUME)}:"
@@ -541,9 +631,17 @@ def _mix_stitch_waveform_audio(
         valid_cue_labels.append(f"cue{len(valid_cue_labels)}")
 
     if out_path.is_file():
-        if valid_cue_labels:
-            slot["_sfx_mixed"] = True
-        return out_path
+        if not stitch_audio_cache_is_valid(
+            out_path, expected_s, min_ratio=STITCH_AUDIO_DUR_MIN_RATIO,
+        ):
+            try:
+                out_path.unlink()
+            except OSError:
+                pass
+        elif valid_cue_labels or ambient_path:
+            if valid_cue_labels:
+                slot["_sfx_mixed"] = True
+            return out_path
 
     input_args: list[str] = ["-i", str(base_audio_path.resolve())]
     filter_lanes: list[str] = []
@@ -619,6 +717,17 @@ def _mix_stitch_waveform_audio(
     except subprocess.CalledProcessError as exc:
         stderr = (exc.stderr or b"")[:400].decode("utf-8", errors="replace")
         raise RuntimeError(f"waveform audio mix failed: {stderr}") from exc
+    if not stitch_audio_cache_is_valid(
+        out_path, expected_s, min_ratio=STITCH_AUDIO_DUR_MIN_RATIO,
+    ):
+        try:
+            out_path.unlink()
+        except OSError:
+            pass
+        raise RuntimeError(
+            f"waveform mix truncated: expected ~{expected_s:.1f}s "
+            f"({STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1})",
+        )
     return out_path
 
 
@@ -719,7 +828,7 @@ def stitch_upsert_event_slot(
         slot.update(slot_patch)
         new_video_path = (slot.get("video_path") or "").strip()
         video_path_changed = bool(new_video_path and new_video_path != old_video_path)
-        sync_stitch_slot_video_dur_ms(h, slot, force=video_path_changed)
+        sync_stitch_slot_video_dur_ms(h, slot, force=True)
         apply_stitch_slot_default_ambient_preset(slot_key, slot)
         if video_path_changed and slot_key == "intro":
             slot.pop("intro_whoosh_default_dismissed", None)
@@ -1149,7 +1258,9 @@ def handle_stitch_save_job(h, body: dict)-> None:
             "created_at": existing.get("created_at", now_iso),
             "updated_at": now_iso,
             "slots": slots_out,
-            "transitions": transitions if transitions else existing.get("transitions", []),
+            "transitions": canonical_stitch_transitions_for_pipeline(
+                transitions or existing.get("transitions"),
+            ),
         }
 
     h.app.stitch_state.mutate_state(upsert)
@@ -1225,6 +1336,27 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
     audio_fname = f"stitch_audio_{cache_key}.mp3"
     audio_path = cache_dir / audio_fname
 
+    video_dur_ms = h._ffprobe_duration_ms(Path(abs_path))
+    if video_dur_ms <= 0:
+        return h._send_error_v59(
+            400,
+            error_code="STITCH_SLOT_VIDEO_UNREADABLE",
+            error_message=f"cannot probe video duration: {video_path_str}",
+            retry_safe=False,
+            extra={"code": STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1},
+        )
+    expected_s = video_dur_ms / 1000.0
+
+    from credentials_lib.ffmpeg_stitch import stitch_audio_cache_is_valid  # noqa: PLC0415
+
+    if audio_path.is_file() and not stitch_audio_cache_is_valid(
+        audio_path, expected_s, min_ratio=STITCH_AUDIO_DUR_MIN_RATIO,
+    ):
+        try:
+            audio_path.unlink()
+        except OSError:
+            pass
+
     if not audio_path.is_file():
         safe_ffmpeg_src = os.path.realpath(abs_path)
         ffmpeg_dst = str(audio_path.resolve())
@@ -1253,7 +1385,24 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
                    )
 
     duration_ms = h._ffprobe_duration_ms(audio_path)
-    video_dur_ms = h._ffprobe_duration_ms(Path(abs_path)) or duration_ms
+    if not stitch_audio_cache_is_valid(
+        audio_path, expected_s, min_ratio=STITCH_AUDIO_DUR_MIN_RATIO,
+    ):
+        return h._send_error_v59(
+            500,
+            error_code="STITCH_SLOT_AUDIO_EXTRACT_TRUNCATED",
+            error_message=(
+                f"slot audio extract {duration_ms}ms ≠ video {video_dur_ms}ms — "
+                "re-extract failed"
+            ),
+            retry_safe=True,
+            extra={
+                "code": STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1,
+                "duration_ms": duration_ms,
+                "video_dur_ms": video_dur_ms,
+            },
+        )
+
     serve_fname = audio_fname
     mix_slot: dict = {}
     ambient_bed = (body.get("ambient_bed") or "").strip()
@@ -1272,6 +1421,7 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
                 mix_slot,
                 cache_dir,
                 cache_key,
+                expected_video_dur_ms=video_dur_ms,
             )
         except RuntimeError as exc:
             return h._send_error_v59(
@@ -1279,11 +1429,28 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
                        error_code="SLOT_AUDIO_MIX_FAILED",
                        error_message=str(exc),
                        retry_safe=True,
+                       extra={"code": STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1},
                    )
         if mixed_path is not None:
             serve_fname = mixed_path.name
             duration_ms = h._ffprobe_duration_ms(mixed_path)
             sfx_mixed = bool(mix_slot.get("_sfx_mixed"))
+            if not stitch_audio_cache_is_valid(
+                mixed_path, expected_s, min_ratio=STITCH_AUDIO_DUR_MIN_RATIO,
+            ):
+                return h._send_error_v59(
+                    500,
+                    error_code="STITCH_SLOT_AUDIO_MIX_TRUNCATED",
+                    error_message=(
+                        f"slot audio mix {duration_ms}ms ≠ video {video_dur_ms}ms"
+                    ),
+                    retry_safe=True,
+                    extra={
+                        "code": STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1,
+                        "duration_ms": duration_ms,
+                        "video_dur_ms": video_dur_ms,
+                    },
+                )
 
     return h._send_json(200, {
         "audio_url": f"http://localhost:5111/api/stitch_editor/audio_file/{serve_fname}",
@@ -1291,11 +1458,56 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
         "video_dur_ms": video_dur_ms,
         "ambient_mixed": bool(mix_slot.get("ambient_bed_path")),
         "sfx_mixed": sfx_mixed,
+        "code": STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1,
     })
 
 
 _STITCH_SLOT_ORDER = ["intro", "phase_a", "phase_b", "resolution"]
 _DEFAULT_PHASE_TRANSITION_FADE_MS = 2800
+
+# STITCH_CANONICAL_TRANSITIONS_V1 — module boundaries always fade-through-black like intro.
+STITCH_CANONICAL_TRANSITIONS_V1 = "STITCH_CANONICAL_TRANSITIONS_V1"
+
+# STITCH_CANONICAL_TRANSITION_SFX_V1 — magic/windy SFX span each dissolve (pipeline-injected).
+STITCH_CANONICAL_TRANSITION_SFX_V1 = "STITCH_CANONICAL_TRANSITION_SFX_V1"
+STITCH_TRANSITION_SFX_PRE_ROLL_MS = 500
+STITCH_TRANSITION_SFX_POST_ROLL_MS = 500
+STITCH_TRANSITION_SFX_VOLUME = STITCH_SFX_CUE_DEFAULT_VOLUME
+STITCH_CANONICAL_BOUNDARY_SFX: dict[int, str] = {
+    0: "magic_sound.mp3",   # intro → phase_a
+    1: "windy_magic.mp3",   # phase_a → phase_b
+    2: "magic_sound.mp3",   # phase_b → resolution
+}
+
+# STITCH_RESOLUTION_FINALE_V1 — tail fade-to-black + outtro3 on black; MP4 ends when outtro ends.
+STITCH_RESOLUTION_FINALE_V1 = "STITCH_RESOLUTION_FINALE_V1"
+STITCH_RESOLUTION_FINALE_OUTTRO_FILENAME = "outtro3.mp3"
+STITCH_RESOLUTION_FINALE_FADE_OUT_MS = 500
+STITCH_RESOLUTION_FINALE_OUTTRO_START_BEFORE_END_MS = 750
+STITCH_RESOLUTION_FINALE_OUTTRO_PLAY_MS = 3250
+
+
+def resolution_finale_black_hold_ms() -> int:
+    """Black tail after resolution content ends; outtro finishes when hold ends."""
+    return max(
+        0,
+        STITCH_RESOLUTION_FINALE_OUTTRO_PLAY_MS
+        - STITCH_RESOLUTION_FINALE_OUTTRO_START_BEFORE_END_MS,
+    )
+
+
+def resolve_canonical_finale_outtro_path(h, filename: str) -> str:
+    """Resolve outtro SFX (transitions tier, then sfx, then project root)."""
+    project_root = h._stitch_project_root()
+    candidates = [
+        project_root / "Production" / "assets" / "sound_library" / "transitions" / filename,
+        project_root / "Production" / "assets" / "sound_library" / "sfx" / filename,
+        project_root / filename,
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate.resolve())
+    return ""
 
 
 def default_stitch_transitions() -> list[dict]:
@@ -1309,6 +1521,24 @@ def default_stitch_transitions() -> list[dict]:
         }
         for i in range(3)
     ]
+
+
+def canonical_stitch_transitions_for_pipeline(_existing=None) -> list[dict]:
+    """Preview/bake always use dissolve / 2800ms / hard audio cut — ignore UI drift."""
+    return default_stitch_transitions()
+
+
+def resolve_canonical_boundary_sfx_path(h, filename: str) -> str:
+    """Resolve library SFX under project root for pipeline boundary overlays."""
+    project_root = h._stitch_project_root()
+    candidates = [
+        project_root / "Production" / "assets" / "sound_library" / "sfx" / filename,
+        project_root / filename,
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate.resolve())
+    return ""
 
 
 def hydrate_stitch_pipeline_body(h, body: dict) -> dict:
@@ -1352,8 +1582,9 @@ def hydrate_stitch_pipeline_body(h, body: dict) -> dict:
     if "transitions" not in _body and job:
         _body["transitions"] = job.get("transitions") or []
 
-    if not _body.get("transitions"):
-        _body["transitions"] = default_stitch_transitions()
+    _body["transitions"] = canonical_stitch_transitions_for_pipeline(
+        _body.get("transitions") or (job or {}).get("transitions"),
+    )
 
     return _body
 

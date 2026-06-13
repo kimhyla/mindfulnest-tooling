@@ -84,6 +84,9 @@ MARKERS=(
     "LD-829|Preview (canonical stitched — lipsync + ambient bed):"
     # STITCH_SLOT_PREVIEW_VIDEO_PLAYABLE_V1 — decode-validated preview cache + black-video fallback
     "STITCH_SLOT_PREVIEW|STITCH_SLOT_PREVIEW_VIDEO_PLAYABLE_V1"
+    # STITCH_CANONICAL_TRANSITIONS_V1 + boundary magic SFX on dissolve
+    "STITCH_CANONICAL_TRANSITIONS|STITCH_CANONICAL_TRANSITIONS_V1"
+    "STITCH_CANONICAL_TRANSITIONS|STITCH_CANONICAL_TRANSITION_SFX_V1"
     # Library audio preview (sfx/ambient/transitions tiers)
     "LIBRARY_AUDIO_PREVIEW|LIBRARY_AUDIO_PREVIEW_V1"
     "LIBRARY_AUDIO_PREVIEW|library-preview-audio"
