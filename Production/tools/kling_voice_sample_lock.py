@@ -31,6 +31,11 @@ DEFAULT_ELEMENT_SAMPLE_LINES: dict[str, list[str]] = {
         "....that's awesome",
         "Well.... Do you think she can really help?",
     ],
+    "Lorelai": [
+        "Fascinating! The patterns match exactly!",
+        "Wait — look at this! The nest stones are glowing!",
+        "I think I know what the Great Wizard meant!",
+    ],
 }
 
 SESSION_FILENAME = "session.json"

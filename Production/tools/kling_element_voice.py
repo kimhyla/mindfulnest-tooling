@@ -63,6 +63,15 @@ ELEVENLABS_VOICE_ROSTER: dict[str, dict[str, Any]] = {
         "speed": 1.15,
         "model": "eleven_v3",
     },
+    "Lorelai": {
+        "elevenlabs_voice_id": "PoHUWWWMHFrA8z7Q88pu",
+        "elevenlabs_voice_name": "Miranda",
+        "stability": 0.30,
+        "similarity_boost": 0.80,
+        "style": 0.30,
+        "speed": 1.15,
+        "model": "eleven_v3",
+    },
     "Ember": {
         "elevenlabs_voice_id": "T720RsqorTx4ZZWohrNN",
         "elevenlabs_voice_name": "Katie",
@@ -142,6 +151,7 @@ ELEVENLABS_VOICE_ROSTER: dict[str, dict[str, Any]] = {
 ARC1_SAMPLE_SOURCES: dict[str, str] = {
     "Tessa": "Production/Event_1/line_03_tessa.mp3",
     "Luna": "video_pipeline/audio/arc_1_v3/event_2_luna_intro/luna_04.mp3",
+    "Lorelai": "video_pipeline/audio/arc_1_v3/event_2_luna_intro/luna_04.mp3",
     "Ember": "video_pipeline/audio/arc_1_v3/event_3_ember_intro/ember_03.mp3",
     "Bramble": "video_pipeline/audio/arc_1_v3/event_4_bramble_intro/bramble_28.mp3",
     "Bork": "video_pipeline/audio/arc_1_v3/event_6_bork_intro/bork_07.mp3",

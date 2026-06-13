@@ -27,6 +27,7 @@ _SPEAKER_REGISTRY_ALIAS: dict[str, str] = {
     "lady willow": "Willow",
     "grizzle/agent": "Grizzle",
     "agent": "Grizzle",
+    "luna": "Lorelai",
 }
 
 
