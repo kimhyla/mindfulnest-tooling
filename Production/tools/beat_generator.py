@@ -4214,6 +4214,15 @@ def _kling_o3_visual_action_clause(beat: dict, spoken: str) -> str:
         else:
             base = _emotion_action_clause(beat)
         return base + _kling_o3_viewer_staging_clause(spoken)
+    if speaker in ("Luna", "Lorelai"):
+        if "discovery" in scene or any(k in emotion for k in ("upset", "shock", "excited", "happy")):
+            base = (
+                "Lorelai — Discovery. Excitable lemur scholar with glasses and backpack, "
+                "wide expressive eyes, reacting in the heartwood grove"
+            )
+        else:
+            base = f"Lorelai — {_emotion_action_clause(beat)}"
+        return base + _kling_o3_viewer_staging_clause(spoken)
     return _emotion_action_clause(beat) + _kling_o3_viewer_staging_clause(spoken)
 
 

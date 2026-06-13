@@ -2075,6 +2075,9 @@ def handle_bg_extract_beats(h, body: dict)-> None:
                 for field in _PRESERVE:
                     if field in saved and saved[field] is not None:
                         b.setdefault(field, saved[field])
+        for b in beats:
+            if not (b.get("kling_o3_prompt") or "").strip():
+                bg.apply_kling_o3_defaults_to_beat(b, event_id, phase)
         seg["beats"] = beats
         # Find segment name from listing
         for s in bg.get_segments(arc_number):

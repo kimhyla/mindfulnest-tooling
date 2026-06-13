@@ -260,7 +260,9 @@ def handle_bg_generate_kling_prompts(h, body: dict) -> None:
         sidecar = bg.read_sidecar()
         count = bg.generate_kling_prompts_for_segment(sidecar, arc_number, event_id, phase)
         bg.write_sidecar(sidecar)
-    return h._send_json(200, {"ok": True, "count": count})
+        seg = bg.get_seg_entry(sidecar, arc_number, event_id, phase)
+        beats = seg.get("beats") or []
+    return h._send_json(200, {"ok": True, "count": count, "beats": beats})
 
 
 def handle_bg_import_locked_lines(h, body: dict) -> None:

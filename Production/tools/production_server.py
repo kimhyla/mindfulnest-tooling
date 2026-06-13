@@ -6197,6 +6197,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_bg_set_active_context(body)
             if path == "/api/bg/extract-beats":
                 return self._handle_bg_extract_beats(body)
+            if path == "/api/bg/generate-kling-prompts":
+                return self._handle_bg_generate_kling_prompts(body)
             if path == "/api/bg/inject-beats":
                 return self._handle_bg_inject_beats(body)
             if path == "/api/bg/update-beat":
@@ -7621,6 +7623,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_bg_extract_beats(self, body: dict) -> None:
         from server_handlers.background import handle_bg_extract_beats
         return handle_bg_extract_beats(self, body)
+
+    def _handle_bg_generate_kling_prompts(self, body: dict) -> None:
+        from server_handlers.kling_o3 import handle_bg_generate_kling_prompts
+        return handle_bg_generate_kling_prompts(self, body)
 
     def _handle_bg_inject_beats(self, body: dict) -> None:
         from server_handlers.background import handle_bg_inject_beats

@@ -91,6 +91,7 @@ interface BgBeat {
   gpt_options?: GptOption[];
   bg_gpt_batch_job_id?: string | null;
   kling_o3_status?: string;
+  kling_o3_prompt?: string;
   kling_o3_video_path?: string;
   kling_o3_options?: GptOption[];
   kling_o3_replace_slot_index?: number;
@@ -351,6 +352,7 @@ export function BgTab() {
   const [, setAcceptStatus] = useState<'idle' | 'sending' | 'ok' | 'error'>('idle');
   const [stitcherExportStatus, setStitcherExportStatus] = useState<'idle' | 'sending'>('idle');
   const [extractStatus, setExtractStatus] = useState<'idle' | 'sending'>('idle');
+  const [suggestStatus, setSuggestStatus] = useState<'idle' | 'sending'>('idle');
   // Running cost across this session (only counts batches submitted from this UI).
   const [runningCostUsd, setRunningCostUsd] = useState<number>(0);
   const [lastBatchCostUsd, setLastBatchCostUsd] = useState<number>(0);
@@ -672,6 +674,31 @@ export function BgTab() {
       pushToast({ kind: 'success', message: `Extracted ${result.data.count} beats`, source: 'bg-extract' });
     } else {
       pushToast({ kind: 'error', message: `Extract failed: ${result.error}`, source: 'bg-extract-error' });
+    }
+  };
+
+  /** Build Kling O3 prompt boxes from beat dialogue + skeleton scene metadata (Suggest beats). */
+  const onSuggestBeats = async () => {
+    if (!activeSegment) return;
+    const [event_id, phase] = activeSegment.split('|');
+    if (beats.length === 0) {
+      pushToast({ kind: 'info', message: 'Extract beats first, then Suggest beats.', source: 'bg-suggest-empty' });
+      return;
+    }
+    setSuggestStatus('sending');
+    const result = await pathappPatch<{ beats: BgBeat[]; count: number }>(
+      activeScope.value, 'bg_generate_kling_prompts', { arc_number: arcNumber, event_id, phase },
+    );
+    setSuggestStatus('idle');
+    if (result.ok && result.data) {
+      setBeats(result.data.beats ?? []);
+      pushToast({
+        kind: 'success',
+        message: `Suggested Kling O3 prompts for ${result.data.count ?? beats.length} beats`,
+        source: 'bg-suggest',
+      });
+    } else {
+      pushToast({ kind: 'error', message: `Suggest beats failed: ${result.error}`, source: 'bg-suggest-error' });
     }
   };
 
@@ -1158,6 +1185,18 @@ export function BgTab() {
           {extractStatus === 'sending' ? (
             <><Spinner size="sm" inline /> Extracting…</>
           ) : '+ Extract Beats from script'}
+        </button>
+        <button
+          type="button"
+          class="mn-btn"
+          data-testid="bg-suggest-beats-btn"
+          onClick={onSuggestBeats}
+          disabled={!activeSegment || beats.length === 0 || suggestStatus === 'sending'}
+          title="Build Kling O3 prompt boxes from dialogue + scene metadata for every beat in this segment"
+        >
+          {suggestStatus === 'sending' ? (
+            <><Spinner size="sm" inline /> Suggesting…</>
+          ) : 'Suggest beats'}
         </button>
         <button
           type="button"
@@ -1682,6 +1721,12 @@ function BeatGenCard({
         rows={2}
         spellcheck={true}
       />
+      {(beat.kling_o3_prompt ?? '').trim() ? (
+        <details class="mn-bg-kling-prompt" data-testid={`bg-kling-prompt-${index}`}>
+          <summary class="mn-dim">Kling O3 prompt (Suggest beats)</summary>
+          <pre class="mn-bg-kling-prompt-body">{beat.kling_o3_prompt}</pre>
+        </details>
+      ) : null}
       {o3FailureMessage ? (
         <div
           class="mn-bg-o3-failure"
