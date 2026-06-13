@@ -12,11 +12,15 @@
 //
 // Resolution order for event_id (highest priority first):
 //   1. forceEventId prop (test override)
-//   2. GET /api/event/current — server's truth
-//   3. ?event=Event_1 URL query param
+//   2. GET /api/event/current — server's truth (when no ?event= deep link)
+//   3. ?event=Event_1 URL query param — when present AND mismatched with the
+//      server pin, POST /api/event/load to honor shareable deep links
 //   4. <body data-event-id="Event_1"> attribute
 //   5. window.__MN_EVENT_ID__ global (set by production_server.py at render time)
 //   6. Hardcoded fallback "Event_1"
+//
+// When ?event= is absent, server truth wins (S5.5b Bug 4 fix A — stale URL
+// after EventSelector cannot override the live server pin).
 //
 // On mount, ScopeBoundary writes the resolved event_id into activeScope and
 // also seeds activeVideoRole from server's state.active_video (display hint
@@ -33,7 +37,7 @@ import {
   scopeKey,
 } from '../state/scope';
 import { READ_ENDPOINTS } from '../api/endpoints';
-import { pathappPatch } from '../api/client';
+import { pathappPatch, loadEvent, emitScopeEventChanged } from '../api/client';
 
 export interface ScopeBoundaryProps {
   children: ComponentChildren;
@@ -109,8 +113,67 @@ export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
         // Network unreachable — fall through to local fallback.
       }
       if (cancelled) return;
-      const eventId = serverEventId ?? resolveLocalFallback();
-      activeScope.value = makeScope(eventId, null, serverGeneration);
+
+      const urlEventId = (() => {
+        try {
+          return new URLSearchParams(window.location.search).get('event');
+        } catch {
+          return null;
+        }
+      })();
+
+      let eventId = serverEventId ?? resolveLocalFallback();
+      let resolvedGeneration = serverGeneration;
+
+      // Deep-link bootstrap: ?event= requests a specific event. When it
+      // differs from the process startup pin, swap server scope before any
+      // tab fetches /api/v2/event/<id>/state (avoids scope_mismatch 409).
+      if (urlEventId && urlEventId !== serverEventId) {
+        try {
+          const loadRes = await loadEvent(urlEventId);
+          if (loadRes.ok && loadRes.data?.event_id) {
+            eventId = loadRes.data.event_id;
+            resolvedGeneration = loadRes.data.event_generation;
+            try {
+              const res2 = await fetch(READ_ENDPOINTS.event_current);
+              if (res2.ok) {
+                const data2 = (await res2.json()) as EventCurrentResponse;
+                serverActiveVideo = data2.active_video ?? null;
+                serverScopeType = data2.scope_type;
+                serverMilestoneId = data2.active_milestone_id;
+              }
+            } catch {
+              // Non-fatal — activeScope still matches the loaded event.
+            }
+            emitScopeEventChanged({
+              event_id: eventId,
+              event_generation: resolvedGeneration,
+              scope_key: scopeKey(makeScope(eventId, null, resolvedGeneration)),
+              source: 'scope-boundary-url-bootstrap',
+            });
+          } else if (serverEventId) {
+            // Target missing or load failed — keep server pin (Bug 4 safety).
+            eventId = serverEventId;
+          }
+        } catch {
+          if (serverEventId) eventId = serverEventId;
+        }
+      } else if (!serverEventId && urlEventId) {
+        // Cold boot with ?event= but no server pin yet.
+        try {
+          const loadRes = await loadEvent(urlEventId);
+          if (loadRes.ok && loadRes.data?.event_id) {
+            eventId = loadRes.data.event_id;
+            resolvedGeneration = loadRes.data.event_generation;
+          } else {
+            eventId = urlEventId;
+          }
+        } catch {
+          eventId = urlEventId;
+        }
+      }
+
+      activeScope.value = makeScope(eventId, null, resolvedGeneration);
       // F-PROJECT-001: milestone scope survives reload — hydrate from server
       // (GET /api/event/current) and/or ?milestone= when server is still on event.
       let milestoneId: string | null = null;
