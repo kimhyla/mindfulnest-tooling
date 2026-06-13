@@ -26,6 +26,7 @@ run "$SCRIPTS/verify_stitch_slot_export_full_media_durability.sh"
 run "$SCRIPTS/verify_event_canonical_module.sh"
 run "$SCRIPTS/verify_event_library_scope_durability.sh"
 run "$SCRIPTS/verify_scope_deep_link_durability.sh"
+run "$SCRIPTS/verify_scope_mismatch_auto_heal_durability.sh"
 run "$SCRIPTS/verify_per_event_library_durability.sh"
 run "$SCRIPTS/verify_bg_ref_app_context_durability.sh"
 
