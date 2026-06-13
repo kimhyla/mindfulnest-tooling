@@ -919,6 +919,7 @@ export function BgTab() {
 
   const onGenerateBatch = async (beatId: string) => {
     const beat = beats.find((b) => b.beat_id === beatId);
+    if (!beat) return;
     if (isStillInsertBeat(beat)) {
       await onRenderStillClip(beatId);
       return;
