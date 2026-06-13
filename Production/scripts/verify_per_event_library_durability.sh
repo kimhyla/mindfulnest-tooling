@@ -22,7 +22,7 @@ grep -q 'library/images' "$PATHS" \
   || fail "bg_paths must use Event_N/library/images for per-event stills"
 grep -q 'def event_images_dir' "$EVENT_LIB" \
   || fail "event_library.py missing event_images_dir"
-grep -q 'canonical_image_registry' "$CROPPER" \
+grep -q 'canonical_meta_for_arc' "$CROPPER" \
   || fail "cropper handle_cr_library must inject canonical tier"
 
 python3 -m pytest "$TEST" -q
