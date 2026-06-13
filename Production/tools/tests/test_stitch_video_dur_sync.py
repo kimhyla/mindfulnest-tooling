@@ -144,5 +144,36 @@ class TestPhaseATabCanonicalSync(unittest.TestCase):
         self.assertEqual(slot["video_dur_ms"], 38333)
 
 
+class TestPhaseAPathPersistOnLoad(unittest.TestCase):
+    def test_persist_writes_synced_video_path(self):
+        from server_handlers.stitch_editor import _persist_stitch_job_canonical_audio
+
+        state = {
+            "jobs": {
+                "Event_1_stitch": {
+                    "slots": {
+                        "phase_a": {
+                            "video_path": "Production/Event_1/phase_a_stitched_20260609-153516.mp4",
+                            "video_dur_ms": 50908,
+                        },
+                    },
+                },
+            },
+        }
+        normalized = {
+            "phase_a": {
+                "video_path": "Production/Event_1/phase_a_stitched_20260611-175925.mp4",
+                "video_dur_ms": 38333,
+            },
+        }
+        _persist_stitch_job_canonical_audio(state, "Event_1_stitch", normalized)
+        pa = state["jobs"]["Event_1_stitch"]["slots"]["phase_a"]
+        self.assertEqual(
+            pa["video_path"],
+            "Production/Event_1/phase_a_stitched_20260611-175925.mp4",
+        )
+        self.assertEqual(pa["video_dur_ms"], 38333)
+
+
 if __name__ == "__main__":
     unittest.main()

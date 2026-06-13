@@ -194,7 +194,13 @@ function pickPhaseSlice(state: EventStateResponse, phase: 'a' | 'b'): PhaseState
   return slice;
 }
 
-type AudioSourceLabel = 'lipsync' | 'mixed' | 'stem';
+type AudioSourceLabel = 'lipsync' | 'mixed' | 'stem' | 'stitched';
+
+type PhasePreviewFile = {
+  name: string;
+  label: AudioSourceLabel;
+  kind: 'stitched' | 'lipsync';
+};
 
 /** Server statuses while a phase lipsync job is still in flight. */
 const PHASE_LIPSYNC_IN_FLIGHT = new Set(['running', 'polling', 'submitting', 'submitted']);
@@ -238,6 +244,30 @@ function stitchedPreviewStale(slice: PhaseStateSlice): boolean {
   const lm = slice.lipsync_mtime ?? 0;
   const sm = slice.stitched_mtime ?? 0;
   return lm > 0 && (sm === 0 || lm > sm);
+}
+
+/** Phase A canonical player: stitched when fresh, else lipsync while producing. */
+function phaseAPreviewFile(slice: PhaseStateSlice): PhasePreviewFile | null {
+  if (slice.stitched_file && !stitchedPreviewStale(slice)) {
+    return { name: slice.stitched_file, label: 'stitched', kind: 'stitched' };
+  }
+  if (slice.lipsync_file) {
+    return { name: slice.lipsync_file, label: 'lipsync', kind: 'lipsync' };
+  }
+  return null;
+}
+
+function priorityAudioFileForPhase(
+  phase: 'a' | 'b',
+  slice: PhaseStateSlice,
+): { name: string; label: AudioSourceLabel } | null {
+  if (phase === 'a') {
+    const preview = phaseAPreviewFile(slice);
+    if (preview?.kind === 'stitched') {
+      return { name: preview.name, label: 'stitched' };
+    }
+  }
+  return priorityAudioFile(slice);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -737,8 +767,14 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   // ── Preview with Overlay ─────────────────────────────────────────────────
   // One surface: lipsync frame + canvas-chromakey animated overlays on cue timing.
   const onPreviewOverlay = () => {
-    if (!lipsyncFile) {
-      setStatusMsg('No lipsync video yet — run Send for Lipsync first.');
+    const overlayVideo =
+      phase === 'a'
+        ? phaseAPreviewFile(stateSlice)
+        : lipsyncFile
+          ? { name: lipsyncFile, label: 'lipsync' as const, kind: 'lipsync' as const }
+          : null;
+    if (!overlayVideo) {
+      setStatusMsg('No preview video yet — run Send for Lipsync first.');
       return;
     }
     if (!priorityAudio) {
@@ -1089,12 +1125,18 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     }
   };
 
-  const priorityAudio = priorityAudioFile(stateSlice);
+  const priorityAudio = priorityAudioFileForPhase(phase, stateSlice);
   const waveformAudio =
     stemTrimMode && stateSlice.voice_stem_file
       ? { name: stateSlice.voice_stem_file, label: 'stem' as const }
       : priorityAudio;
   const lipsyncFile = stateSlice.lipsync_file ?? null;
+  const previewVideo: PhasePreviewFile | null =
+    phase === 'a'
+      ? phaseAPreviewFile(stateSlice)
+      : lipsyncFile
+        ? { name: lipsyncFile, label: 'lipsync', kind: 'lipsync' }
+        : null;
   const canEditStemCut = Boolean(stemTrimMode && stateSlice.voice_stem_file);
   const stemCutStartMs = Math.round((stateSlice.voice_stem_cut_start_s ?? 0) * 1000);
   const stemCutEndMs = Math.round((stateSlice.voice_stem_cut_end_s ?? 0) * 1000);
@@ -1117,6 +1159,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       data-testid={`phase-producer-${phase}`}
       data-phase-producer-ab="PHASE_PRODUCER_AB_V1"
       data-phase-watercolor-overlay="PHASE_WATERCOLOR_OVERLAY_V1"
+      {...(phase === 'a' ? { 'data-phase-a-single-player': 'PHASE_A_SINGLE_PLAYER_V1' } : {})}
     >
       <div class='mn-phase-status-header'>
         <span class='mn-dim mn-phase-status-tag' data-testid={`phase-${phase}-status-header`}>
@@ -1417,7 +1460,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             class="mn-btn mn-btn-preview-overlay"
             data-testid={`phase-${phase}-preview-overlay-btn`}
             onClick={onPreviewOverlay}
-            disabled={busyAction !== null || !lipsyncFile}
+            disabled={busyAction !== null || !previewVideo}
             title="Play from the start — animated watercolors render on the lipsync frame above."
           >
             🎨 Preview with Overlay
@@ -1434,16 +1477,22 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           </div>
         ) : null}
 
-        {/* Primary preview — lipsync video + live CSS watercolor overlays.
+        {/* Primary preview — one player per phase (Phase A: canonical stitched when fresh).
             Muted: WaveSurfer (above) owns audio. Waveform ▶/⏸ is the control point.
             Drag watercolors onto the waveform; overlays appear here during playback. */}
         <div
           class="mn-phase-lipsync mn-phase-lipsync-primary"
           data-testid={`phase-${phase}-lipsync-player`}
         >
-          {lipsyncFile ? (
+          {previewVideo ? (
             <>
-              <strong>Preview (lipsync + overlay cues):</strong>
+              <strong>
+                {phase === 'a' && previewVideo.kind === 'stitched'
+                  ? 'Preview (canonical stitched — lipsync + ambient bed):'
+                  : phase === 'a'
+                    ? 'Preview (lipsync — Re-stitch to add ambient bed):'
+                    : 'Preview (lipsync + overlay cues):'}
+              </strong>
               <div class="mn-lipsync-video-wrapper">
                 <video
                   ref={videoRef}
@@ -1451,7 +1500,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                   playsInline
                   preload="auto"
                   class="mn-lipsync-preview-video"
-                  src={fileUrl(lipsyncFile)}
+                  src={fileUrl(previewVideo.name)}
                 />
                 {(stateSlice.watercolor_cues ?? [])
                   .filter(
@@ -1497,7 +1546,18 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                     );
                   })}
               </div>
-              <span class="mn-dim">{lipsyncFile}</span>
+              <span class="mn-dim">{previewVideo.name}</span>
+              {phase === 'a' && stateSlice.stitched_file && stitchedPreviewStale(stateSlice) ? (
+                <div class="mn-phase-stitched-stale mn-dim" data-testid="phase-a-stitched-stale">
+                  Stitched file ({stateSlice.stitched_file}) is older than current lipsync.
+                  Run <strong>Re-stitch</strong> to refresh the canonical preview.
+                </div>
+              ) : null}
+              {phase === 'a' && !stateSlice.stitched_file && lipsyncFile ? (
+                <div class="mn-dim" data-testid="phase-a-stitched-placeholder">
+                  Run <strong>Re-stitch</strong> after lipsync to bake the ambient bed into the canonical preview.
+                </div>
+              ) : null}
             </>
           ) : (
             <div
@@ -1566,29 +1626,6 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                 Regen base clip
               </button>
             </div>
-            {stateSlice.stitched_file && !stitchedPreviewStale(stateSlice) ? (
-              <div
-                class="mn-phase-stitched-preview"
-                data-testid="phase-a-stitched-preview"
-              >
-                <strong>Stitched preview (lipsync + ambient bed):</strong>
-                <video
-                  controls
-                  src={fileUrl(stateSlice.stitched_file)}
-                  class="mn-phase-stitched-video"
-                />
-                <span class="mn-dim">{stateSlice.stitched_file}</span>
-              </div>
-            ) : stateSlice.stitched_file && stitchedPreviewStale(stateSlice) ? (
-              <div class="mn-phase-stitched-stale mn-dim" data-testid="phase-a-stitched-stale">
-                Stitched preview is from before the current lipsync ({stateSlice.stitched_file}).
-                Run <strong>Mix Audio</strong> or <strong>Re-stitch</strong> to refresh.
-              </div>
-            ) : (
-              <div class="mn-dim" data-testid="phase-a-stitched-placeholder">
-                Stitched preview appears here after Mix Audio (lipsync + ambient).
-              </div>
-            )}
             <BaseClipPicker
               open={pickerPosition !== null}
               positionLabel={pickerPosition ? PHASE_A_CLIP_LABELS[pickerPosition] : ''}

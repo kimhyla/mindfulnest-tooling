@@ -31,7 +31,7 @@
 
 **Stitch order:** fly-in + **raw** lipsync middle + fly-out + continuous ambient bed (`meditation_pretty_v1` default).
 
-**Storyboard player:** Phase A tab shows **stitched** video (`phase_a_stitched_file`).
+**Storyboard player:** Phase A tab shows **one** canonical player — `phase_a_stitched_file` when fresh, else raw lipsync while producing. **LD-829** (`PHASE_A_SINGLE_PLAYER_V1`): no second stitched `<video>` block; regression gates in `verify_phase_a_single_player_durability.sh`, `test_phase_a_single_player.py`, and Playwright F17.
 
 ---
 

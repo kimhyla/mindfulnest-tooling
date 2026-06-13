@@ -664,6 +664,59 @@ test.describe('F12 — Phase A re-stitch', () => {
   });
 });
 
+test.describe('F17 — Phase A single canonical player (LD-829)', () => {
+  test('F17.1 — fresh stitched: one video, stitched src + waveform label', async ({ page }) => {
+    await mockAudioFiles(page);
+    await mockPhaseState(page, {
+      phase_a_lipsync_file: 'phase_a_lipsync_e2e.mp4',
+      phase_a_lipsync_mtime: 1_000,
+      phase_a_stitched_file: 'phase_a_stitched_e2e.mp4',
+      phase_a_stitched_mtime: 2_000,
+    });
+    await gotoApp(page);
+    await openPhaseA(page);
+
+    await expect(page.locator('[data-testid="phase-producer-a"]')).toHaveAttribute(
+      'data-phase-a-single-player',
+      'PHASE_A_SINGLE_PLAYER_V1',
+    );
+    await expect(page.locator('[data-testid="phase-a-stitched-preview"]')).toHaveCount(0);
+    const videos = page.locator('[data-testid="phase-producer-a"] video');
+    await expect(videos).toHaveCount(1);
+    await expect(videos.first()).toHaveAttribute('src', /phase_a_stitched_e2e\.mp4/);
+    await expect(page.locator('[data-testid="waveform-timeline"]')).toHaveAttribute(
+      'data-source-label',
+      'stitched',
+    );
+  });
+
+  test('F17.2 — stale stitched: one lipsync video + stale banner, no second player', async ({
+    page,
+  }) => {
+    await mockAudioFiles(page);
+    await mockPhaseState(page, {
+      phase_a_lipsync_file: 'phase_a_lipsync_e2e.mp4',
+      phase_a_lipsync_mtime: 2_000,
+      phase_a_stitched_file: 'phase_a_stitched_stale.mp4',
+      phase_a_stitched_mtime: 1_000,
+    });
+    await gotoApp(page);
+    await openPhaseA(page);
+
+    await expect(page.locator('[data-testid="phase-a-stitched-preview"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="phase-producer-a"] video')).toHaveCount(1);
+    await expect(page.locator('[data-testid="phase-producer-a"] video')).toHaveAttribute(
+      'src',
+      /phase_a_lipsync_e2e\.mp4/,
+    );
+    await expect(page.locator('[data-testid="phase-a-stitched-stale"]')).toBeVisible();
+    await expect(page.locator('[data-testid="waveform-timeline"]')).toHaveAttribute(
+      'data-source-label',
+      'lipsync',
+    );
+  });
+});
+
 test.describe('F13 — Phase A vs Phase B branching', () => {
   test('F13 — Phase B does NOT render the 3-clip section', async ({ page }) => {
     await mockAudioFiles(page);

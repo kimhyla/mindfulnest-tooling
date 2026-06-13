@@ -269,7 +269,7 @@ test.describe('G17 — Stitcher multi-phase track persistence', () => {
     })).toBe('phase_b');
   });
 
-  test('G17.3 — segment click seeks module preview (not intro t=0)', async ({ page }) => {
+  test('G17.3 — segment click switches slot composer to that phase', async ({ page }) => {
     await mockStitcherJob(page);
     await mockSnapshot(page);
     await mockStitchSaveJob(page);
@@ -280,18 +280,19 @@ test.describe('G17 — Stitcher multi-phase track persistence', () => {
     await openStitcher(page);
 
     await page.waitForFunction(() => {
-      const v = document.querySelector('[data-testid="stitcher-video-player"]') as HTMLVideoElement | null;
+      const v = document.querySelector('[data-testid="stitcher-composer-video"]') as HTMLVideoElement | null;
       return v?.src?.includes('mock_preview') ?? false;
     }, { timeout: 15000 });
 
+    await expect(page.locator('[data-testid="stitcher-video-player"]')).toHaveCount(0);
+
     await page.locator('[data-testid="stitcher-multiphase-segment-phase_a"]').click();
 
-    await expect.poll(async () => {
-      return page.evaluate(() => {
-        const v = document.querySelector('[data-testid="stitcher-video-player"]') as HTMLVideoElement | null;
-        return v?.currentTime ?? 0;
-      });
-    }).toBeGreaterThan(25);
+    await expect(page.locator('[data-testid="stitcher-multiphase-segment-phase_a"]')).toHaveClass(/is-active/);
+    await expect.poll(() => page.evaluate(() => {
+      const header = document.querySelector('.mn-stitcher-slot-composer-header strong')?.textContent ?? '';
+      return header.includes('Phase A');
+    })).toBe(true);
   });
 });
 

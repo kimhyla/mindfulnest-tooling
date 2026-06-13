@@ -136,11 +136,14 @@ def _job_canonical_audio_needs_persist(live_slots, normalized_slots: dict) -> bo
                 return True
             if norm_dur > 0 and live_dur != norm_dur:
                 return True
+        src_path = (src.get("video_path") or "").strip()
+        if src_path and (dst.get("video_path") or "").strip() != src_path:
+            return True
     return False
 
 
 def _persist_stitch_job_canonical_audio(state: dict, name: str, normalized_slots: dict) -> None:
-    """Write canonical ambient_bed + STITCH_AMBIENT_BED_VOLUME (+ SFX defaults) into persisted stitch job."""
+    """Write canonical slot fields (ambient, duration, phase_a path) into persisted stitch job."""
     live = state.get("jobs", {}).get(name)
     if not isinstance(live, dict) or not isinstance(live.get("slots"), dict):
         return
@@ -170,6 +173,9 @@ def _persist_stitch_job_canonical_audio(state: dict, name: str, normalized_slots
                 dur_i = 0
             if dur_i > 0:
                 dst["video_dur_ms"] = dur_i
+        src_path = (src.get("video_path") or "").strip()
+        if src_path:
+            dst["video_path"] = src_path
         normalize_slot_audio_mix_levels(dst)
     live["updated_at"] = datetime.now(timezone.utc).isoformat()
 

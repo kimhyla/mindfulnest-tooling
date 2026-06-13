@@ -1,4 +1,4 @@
-"""Stitcher module preview seek — LD-828 durability contracts."""
+"""Stitcher single slot composer — LD-828 durability contracts."""
 
 from __future__ import annotations
 
@@ -10,17 +10,18 @@ MOD = REPO / "tools" / "storyboard-v2" / "src" / "utils" / "stitchModulePreview.
 STITCH_EDITOR = REPO / "tools" / "server_handlers" / "stitch_editor.py"
 
 
-def test_stitcher_gates_module_seek_on_module_preview_url() -> None:
+def test_stitcher_builds_per_slot_preview_for_composer() -> None:
     src = STITCHER.read_text(encoding="utf-8")
-    assert "if (!modulePreviewUrl)" in src
-    assert "video.currentTime = 0" in src
-    assert "LD-827 fallback" in src
+    assert "buildSlotPreview" in src
+    assert "seekComposerTo" in src
+    assert "stitcher-composer-video" in src
 
 
-def test_stitcher_stable_video_key_for_module_preview() -> None:
+def test_stitcher_multiphase_click_switches_slot_not_module_offset() -> None:
     src = STITCHER.read_text(encoding="utf-8")
-    assert "stitcher-module-preview" in src
-    assert "key={modulePreviewUrl ? 'stitcher-module-preview'" in src
+    assert "onMultiPhaseSegmentClick" in src
+    assert "seekComposerTo(0" in src
+    assert "STITCHER_SINGLE_COMPOSER_V1" in src
 
 
 def test_preview_api_returns_slot_start_offsets_ms() -> None:

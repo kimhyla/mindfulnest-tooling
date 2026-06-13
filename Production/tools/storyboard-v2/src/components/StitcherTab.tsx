@@ -38,16 +38,8 @@ import {
 } from '../utils/stitchConstants';
 import { stopAllPhasePlayback } from '../utils/waveformPlaybackBus';
 import {
-  allStitchSlotsReady,
-  cumulativeSlotOffsetsMs,
   defaultStitchTransitions,
-  modulePreviewCacheKey,
-  modulePreviewSeekOffsetMs,
-  orderedStitchSlots,
-  readCachedModulePreview,
-  resolveModuleViewerVideoUrl,
   resolveStitchTransitions,
-  writeCachedModulePreview,
 } from '../utils/stitchModulePreview';
 
 type SlotKey = 'intro' | 'phase_a' | 'phase_b' | 'resolution';
@@ -289,10 +281,7 @@ export function StitcherTab() {
   const [previewUrls, setPreviewUrls] = useState<Partial<Record<SlotKey, string>>>({});
   const [previewLoadingSlot, setPreviewLoadingSlot] = useState<SlotKey | null>(null);
   /** Full module reel: intro → phase_a → phase_b → resolution with dissolve transitions. */
-  const [modulePreviewUrl, setModulePreviewUrl] = useState<string | undefined>(undefined);
-  const [modulePreviewLoading, setModulePreviewLoading] = useState(false);
-  const [moduleSlotOffsetsMs, setModuleSlotOffsetsMs] = useState<number[]>([]);
-  const modulePreviewGenRef = useRef(0);
+  const slotPreviewGenRef = useRef(0);
   const [refreshTick, setRefreshTick] = useState(0);
   // ST-14: derive standaloneMode from canonical activeProjectType signal —
   // reactive on signal change. Milestone scope is always 1-slot standalone
@@ -309,7 +298,6 @@ export function StitcherTab() {
   const [trackFocusedSlot, setTrackFocusedSlot] = useState<SlotKey | null>(null);
   const [beatBoundaries, setBeatBoundaries] = useState<BeatBoundary[]>([]);
   const [beatBoundariesLoading, setBeatBoundariesLoading] = useState(false);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
   const composerVideoRef = useRef<HTMLVideoElement | null>(null);
   const composerPlaybackRef = useRef<WaveformPlaybackControl | null>(null);
   const composerVideoSyncSuppressRef = useRef(false);
@@ -317,16 +305,6 @@ export function StitcherTab() {
   // Leaving Stitcher / fresh mount: never auto-play module preview or slot waveforms.
   useEffect(() => {
     stopAllPhasePlayback();
-    const video = videoRef.current;
-    if (video) {
-      video.pause();
-      video.muted = true;
-      try {
-        video.currentTime = 0;
-      } catch {
-        // ignore
-      }
-    }
     composerPlaybackRef.current?.pause();
     const composerVideo = composerVideoRef.current;
     if (composerVideo) {
@@ -549,23 +527,17 @@ export function StitcherTab() {
   const viewerSlot: SlotKey = trackFocusedSlot ?? multiPhaseSlots[0]?.key ?? 'intro';
   const viewerSlotData = job?.slots?.[viewerSlot];
   const viewerSourceUrl = resolveStitchSlotSourceVideoUrl(viewerSlotData?.video_path);
-  const viewerProcessedUrl = previewUrls[viewerSlot];
-  /** Multi-phase: module preview when ready; instant /files fallback while baking (LD-827). */
-  const viewerVideoUrl = resolveModuleViewerVideoUrl({
-    standaloneMode,
-    modulePreviewUrl,
-    viewerProcessedUrl,
-    viewerSourceUrl,
-  });
-  const viewerLoading = modulePreviewLoading
-    || previewLoadingSlot === viewerSlot
+  /** Processed slot preview (ambient + SFX baked) when ready; raw /files while building. */
+  const composerVideoUrl = previewUrls[viewerSlot] ?? viewerSourceUrl;
+  const composerLoading =
+    previewLoadingSlot === viewerSlot
     || (busySlot?.slot === viewerSlot && busySlot.action === 'preview');
 
   // Waveforms mount async after job/audio extract — re-silence once they appear.
   useEffect(() => {
     if (!job?.name) return;
     stopAllPhasePlayback();
-    const video = videoRef.current;
+    const video = composerVideoRef.current;
     if (video) {
       video.pause();
       video.muted = true;
@@ -618,9 +590,7 @@ export function StitcherTab() {
     const nextArr = idx >= 0
       ? existing.map((t, i) => (i === idx ? next : t))
       : [...existing, next];
-    void saveJobTransitions(nextArr).then((ok) => {
-      if (ok) void buildModulePreview({ quiet: true });
-    });
+    void saveJobTransitions(nextArr);
   };
 
   const findTransition = (afterSlot: number): Transition | null => {
@@ -658,7 +628,7 @@ export function StitcherTab() {
   };
 
   const onTimelineClick = (e: MouseEvent) => {
-    const video = videoRef.current;
+    const video = composerVideoRef.current;
     if (!video) return;
     const el = e.currentTarget as HTMLElement;
     const box = el.getBoundingClientRect();
@@ -672,104 +642,43 @@ export function StitcherTab() {
     video.currentTime = (ratio * seekMs) / 1000;
   };
 
-  const buildModulePreview = async (opts?: { quiet?: boolean }): Promise<boolean> => {
-    if (standaloneMode || !job?.name || !job?.slots) return false;
-    if (!allStitchSlotsReady(job.slots)) {
-      if (!opts?.quiet) {
-        setStatusMsg('Assign videos to all four slots (intro, Phase A, B, resolution) first.');
-      }
-      return false;
-    }
-    const transitions = resolveStitchTransitions(job.transitions);
-    const slotsList = orderedStitchSlots(job.slots);
-    const cacheKey = modulePreviewCacheKey(job.slots, transitions);
-    const cached = readCachedModulePreview(activeScope.value.event_id);
-    if (cached?.cache_key === cacheKey) {
-      setModulePreviewUrl(cached.preview_url);
-      setModuleSlotOffsetsMs(
-        cached.slot_start_offsets_ms?.length
-          ? cached.slot_start_offsets_ms
-          : cumulativeSlotOffsetsMs(cached.slot_durations),
-      );
-      return true;
-    }
-
-    const gen = ++modulePreviewGenRef.current;
-    setModulePreviewLoading(true);
-    if (!opts?.quiet) {
-      setStatusMsg('Building module preview — all 4 phases with transitions (may take ~1 min)…');
-    }
-    const res = await pathappPatch(activeScope.value, 'stitch_preview', {
-      name: job.name,
-      slots: slotsList,
-      transitions,
-    });
-    if (gen !== modulePreviewGenRef.current) return false;
-    setModulePreviewLoading(false);
-
-    if (res.ok) {
-      const data = res.data as {
-        preview_url?: string;
-        slot_durations?: number[];
-        slot_start_offsets_ms?: number[];
-      } | undefined;
-      if (data?.preview_url) {
-        const durs = data.slot_durations ?? [];
-        const starts = data.slot_start_offsets_ms?.length
-          ? data.slot_start_offsets_ms
-          : cumulativeSlotOffsetsMs(durs);
-        setModulePreviewUrl(data.preview_url);
-        setModuleSlotOffsetsMs(starts);
-        writeCachedModulePreview(activeScope.value.event_id, {
-          cache_key: cacheKey,
-          preview_url: data.preview_url,
-          slot_durations: durs,
-          slot_start_offsets_ms: starts,
-        });
-      }
-      if (!opts?.quiet) setStatusMsg('✓ Module preview ready — press play to review transitions');
-      return true;
-    }
-    const data = res.data as { error?: string } | undefined;
-    if (!opts?.quiet) {
-      setStatusMsg(`✗ Module preview HTTP ${res.status}: ${data?.error ?? res.error ?? ''}`);
-    }
-    return false;
-  };
-
-  const onPreviewSlot = async (slot: SlotKey, opts?: { quiet?: boolean }) => {
-    if (!standaloneMode) {
-      const built = await buildModulePreview(opts);
-      if (built) onMultiPhaseSegmentClick(slot, { playModulePreview: true });
-      return built;
-    }
+  const buildSlotPreview = async (slot: SlotKey, opts?: { quiet?: boolean }): Promise<boolean> => {
+    if (!job?.name) return false;
     const slotData = job?.slots?.[slot];
     if (!slotData?.video_path) {
       if (!opts?.quiet) setStatusMsg(`Slot ${slot} has no video assigned.`);
       return false;
     }
+    const eventId = activeScope.value.event_id;
+    const cached = readCachedStitcherPreview(eventId, slot);
+    if (cached?.video_path === slotData.video_path && cached.preview_url) {
+      setPreviewUrls((prev) => ({ ...prev, [slot]: cached.preview_url }));
+      return true;
+    }
+
+    const gen = ++slotPreviewGenRef.current;
     setPreviewLoadingSlot(slot);
-    setBusySlot({ slot, action: 'preview' });
-    if (!opts?.quiet) setStatusMsg(null);
+    if (!opts?.quiet) {
+      setBusySlot({ slot, action: 'preview' });
+      setStatusMsg(null);
+    }
     const res = await pathappPatch(activeScope.value, 'stitch_preview', {
-      name: job?.name,
+      name: job.name,
       slot,
       slots: [slotData],
     });
-    setBusySlot(null);
+    if (gen !== slotPreviewGenRef.current) return false;
     setPreviewLoadingSlot(null);
+    if (!opts?.quiet) setBusySlot(null);
+
     if (res.ok) {
       const data = res.data as { preview_url?: string } | undefined;
       if (data?.preview_url) {
         setPreviewUrls((prev) => ({ ...prev, [slot]: data.preview_url! }));
-        writeCachedStitcherPreview(activeScope.value.event_id, slot, {
+        writeCachedStitcherPreview(eventId, slot, {
           video_path: slotData.video_path,
           preview_url: data.preview_url,
         });
-        setActivePreviewSlot(slot);
-        setTrackFocusedSlot(slot);
-        writePersistedTrackSlot(activeScope.value.event_id, slot);
-        void fetchBeatBoundaries(slot);
       }
       if (!opts?.quiet) setStatusMsg(`✓ Preview ${slot} ready`);
       return true;
@@ -781,20 +690,11 @@ export function StitcherTab() {
     return false;
   };
 
-  const seekModulePreviewTo = (offsetMs: number, opts?: { play?: boolean }) => {
-    const video = videoRef.current;
+  const seekComposerTo = (offsetMs: number, opts?: { play?: boolean }) => {
+    const video = composerVideoRef.current;
     if (!video) return;
     const shouldPlay = opts?.play === true;
-    // Module review stays muted until user explicitly presses Review (avoids ghost audio).
     video.muted = !shouldPlay;
-    // LD-827 fallback: per-slot /files URL is NOT the module reel — never apply
-    // module offsets (that was the "always jumps to intro" regression class).
-    if (!modulePreviewUrl) {
-      video.pause();
-      video.currentTime = 0;
-      if (shouldPlay) void video.play().catch(() => {});
-      return;
-    }
     const apply = () => {
       video.currentTime = Math.max(0, offsetMs / 1000);
       if (shouldPlay) {
@@ -810,22 +710,27 @@ export function StitcherTab() {
     video.addEventListener('loadedmetadata', apply, { once: true });
   };
 
+  const onPreviewSlot = async (slot: SlotKey, opts?: { quiet?: boolean }) => {
+    const built = await buildSlotPreview(slot, opts);
+    if (built) {
+      setActivePreviewSlot(slot);
+      setTrackFocusedSlot(slot);
+      writePersistedTrackSlot(activeScope.value.event_id, slot);
+      void fetchBeatBoundaries(slot);
+      seekComposerTo(0, { play: opts?.quiet !== true });
+    }
+    return built;
+  };
+
   const onMultiPhaseSegmentClick = (slot: SlotKey, opts?: { playModulePreview?: boolean }) => {
     setTrackFocusedSlot(slot);
     setActivePreviewSlot(slot);
     writePersistedTrackSlot(activeScope.value.event_id, slot);
     void fetchBeatBoundaries(slot);
-    const offsetMs = modulePreviewSeekOffsetMs(slot, moduleSlotOffsetsMs, []);
-    seekModulePreviewTo(offsetMs, { play: opts?.playModulePreview === true });
+    void buildSlotPreview(slot, { quiet: true }).then(() => {
+      seekComposerTo(0, { play: opts?.playModulePreview === true });
+    });
   };
-
-  // After module preview finishes baking, seek to persisted track selection.
-  useEffect(() => {
-    if (!modulePreviewUrl || trackFocusedSlot == null) return;
-    if (!moduleSlotOffsetsMs.length) return;
-    const offsetMs = modulePreviewSeekOffsetMs(trackFocusedSlot, moduleSlotOffsetsMs, []);
-    seekModulePreviewTo(offsetMs);
-  }, [modulePreviewUrl, moduleSlotOffsetsMs, trackFocusedSlot]);
 
   useEffect(() => {
     if (standaloneMode || !job?.name || !job?.slots) return;
@@ -842,24 +747,16 @@ export function StitcherTab() {
 
   useEffect(() => {
     if (standaloneMode || !job?.slots) return;
-    if (!allStitchSlotsReady(job.slots)) {
-      setModulePreviewUrl(undefined);
-      setModuleSlotOffsetsMs([]);
-      return;
-    }
-    void buildModulePreview({ quiet: true });
+    const slotData = job.slots[viewerSlot];
+    if (!slotData?.video_path) return;
+    void buildSlotPreview(viewerSlot, { quiet: true });
   }, [
     standaloneMode,
+    viewerSlot,
     job?.name,
-    job?.slots?.['intro']?.video_path,
-    job?.slots?.['phase_a']?.video_path,
-    job?.slots?.['phase_b']?.video_path,
-    job?.slots?.['resolution']?.video_path,
-    job?.slots?.['intro']?.ambient_bed,
-    job?.slots?.['phase_a']?.ambient_bed,
-    job?.slots?.['phase_b']?.ambient_bed,
-    job?.slots?.['resolution']?.ambient_bed,
-    JSON.stringify(job?.transitions ?? []),
+    viewerSlotData?.video_path,
+    viewerSlotData?.ambient_bed,
+    JSON.stringify(viewerSlotData?.sfx_cues ?? []),
   ]);
 
   const focusedSlotVideoPath =
@@ -910,7 +807,7 @@ export function StitcherTab() {
       video.removeEventListener('play', onVideoPlay);
       video.removeEventListener('seeked', onVideoSeeked);
     };
-  }, [viewerSlot, viewerSourceUrl]);
+  }, [viewerSlot, composerVideoUrl]);
 
   useEffect(() => {
     composerPlaybackRef.current?.pause();
@@ -922,7 +819,7 @@ export function StitcherTab() {
     } catch {
       // ignore seek before metadata
     }
-  }, [viewerSlot, viewerSourceUrl]);
+  }, [viewerSlot, composerVideoUrl]);
 
   const onBake = async () => {
     if (!job?.name) {
@@ -1243,11 +1140,11 @@ export function StitcherTab() {
           <div
             class="mn-stitcher-multiphase-track"
             data-testid="stitcher-multiphase-track"
-            data-stitcher-module-seek="STITCHER_MODULE_SEEK_V1"
+            data-stitcher-single-composer="STITCHER_SINGLE_COMPOSER_V1"
           >
             <div class="mn-stitcher-multiphase-track-header">
               <strong>Multi-phase view track</strong>
-              <span class="mn-dim">click a phase to jump in the module preview · selection persists per event</span>
+              <span class="mn-dim">click a phase to switch slot review · selection persists per event</span>
             </div>
             <div class="mn-stitcher-multiphase-track-rail">
               {multiPhaseSlots.map((sd) => {
@@ -1287,15 +1184,17 @@ export function StitcherTab() {
                 </strong>
                 <span class="mn-dim">
                   Video + waveform stay in sync · ▶ Play or drag the red playhead · pause either surface to pause both
+                  {composerLoading ? ' · building processed preview…' : ''}
                 </span>
               </div>
               <div class="mn-stitcher-slot-composer-body">
                 <video
                   ref={composerVideoRef}
-                  key={`composer-${viewerSlot}-${viewerSourceUrl ?? 'empty'}`}
+                  key={`composer-${viewerSlot}-${composerVideoUrl ?? 'empty'}`}
                   controls
                   muted
-                  src={viewerSourceUrl}
+                  preload="metadata"
+                  src={composerVideoUrl}
                   class="mn-stitcher-composer-video"
                   data-testid="stitcher-composer-video"
                 />
@@ -1313,6 +1212,39 @@ export function StitcherTab() {
                   onCueRangeChange={onSfxCueRangeChangeOnSlot(viewerSlot)}
                   onCueClick={onSfxClickOnSlot(viewerSlot)}
                 />
+              </div>
+              <div
+                class={`mn-beat-timeline${beatBoundariesLoading ? ' mn-beat-timeline-loading' : ''}`}
+                data-testid="mn-beat-timeline"
+                onClick={onTimelineClick}
+                title="Click to seek"
+              >
+                {beatBoundaries.length > 0 ? (() => {
+                  const video = composerVideoRef.current;
+                  const boundaryTotal = beatBoundaries[beatBoundaries.length - 1].end_ms;
+                  const videoMs = video && Number.isFinite(video.duration)
+                    ? video.duration * 1000
+                    : boundaryTotal;
+                  const totalMs = videoMs > 0 ? Math.min(boundaryTotal, videoMs) : boundaryTotal;
+                  return beatBoundaries.map((b, i) => {
+                    const leftPct = (b.start_ms / totalMs) * 100;
+                    const widthPct = (b.duration_ms / totalMs) * 100;
+                    return (
+                      <div
+                        key={b.beat_id}
+                        class={`mn-beat-segment ${i % 2 === 0 ? 'mn-beat-even' : 'mn-beat-odd'}`}
+                        style={`left:${leftPct.toFixed(2)}%;width:${widthPct.toFixed(2)}%`}
+                        title={`${b.beat_id}: ${(b.start_ms / 1000).toFixed(1)}s – ${(b.end_ms / 1000).toFixed(1)}s`}
+                      >
+                        <span class="mn-beat-segment-label">{b.beat_id.replace('beat_', '')}</span>
+                      </div>
+                    );
+                  });
+                })() : (
+                  <span class="mn-dim" style="padding:0 8px">
+                    {beatBoundariesLoading ? 'Loading beat markers…' : 'No beat markers (non-assembled slot)'}
+                  </span>
+                )}
               </div>
             </div>
           ) : null}
@@ -1442,86 +1374,18 @@ export function StitcherTab() {
             })}
           </div>
 
-          {/* Always-on roadmap viewer — full module reel below slot grid. */}
-          {!standaloneMode ? (
-            <div class="mn-stitcher-preview-area" data-testid="stitcher-preview-area">
-              <div class="mn-stitcher-preview-header">
-                <span class="mn-dim">
-                  Module review
-                  {viewerLoading ? ' — building all-phase preview…' : ''}
-                  {!viewerLoading && modulePreviewUrl ? ' — all 4 phases + dissolve transitions' : ''}
-                  {!viewerLoading && !modulePreviewUrl && viewerSourceUrl
-                    ? ' — LD-827 instant slot preview (module preview building…)'
-                    : ''}
-                  {!viewerLoading && !modulePreviewUrl && !viewerSourceUrl
-                    ? ' — waiting for all four slot videos'
-                    : ''}
-                </span>
-              </div>
-              <video
-                ref={videoRef}
-                key={modulePreviewUrl ? 'stitcher-module-preview' : `${viewerSlot}-${viewerVideoUrl ?? 'empty'}`}
-                controls
-                muted
-                preload="metadata"
-                src={viewerVideoUrl}
-                class="mn-stitcher-video-player mn-stitcher-module-preview-video"
-                data-testid="stitcher-video-player"
-              />
-              {!viewerVideoUrl && !viewerLoading ? (
-                <p class="mn-dim mn-stitcher-preview-placeholder">
-                  No video in this slot yet — black frame until Send to Stitcher.
-                </p>
-              ) : null}
-              <div
-                class={`mn-beat-timeline${beatBoundariesLoading ? ' mn-beat-timeline-loading' : ''}`}
-                data-testid="mn-beat-timeline"
-                onClick={onTimelineClick}
-                title="Click to seek"
-              >
-                {beatBoundaries.length > 0 ? (() => {
-                  const video = videoRef.current;
-                  const boundaryTotal = beatBoundaries[beatBoundaries.length - 1].end_ms;
-                  const videoMs = video && Number.isFinite(video.duration)
-                    ? video.duration * 1000
-                    : boundaryTotal;
-                  const totalMs = videoMs > 0 ? Math.min(boundaryTotal, videoMs) : boundaryTotal;
-                  return beatBoundaries.map((b, i) => {
-                    const leftPct = (b.start_ms / totalMs) * 100;
-                    const widthPct = (b.duration_ms / totalMs) * 100;
-                    return (
-                      <div
-                        key={b.beat_id}
-                        class={`mn-beat-segment ${i % 2 === 0 ? 'mn-beat-even' : 'mn-beat-odd'}`}
-                        style={`left:${leftPct.toFixed(2)}%;width:${widthPct.toFixed(2)}%`}
-                        title={`${b.beat_id}: ${(b.start_ms / 1000).toFixed(1)}s – ${(b.end_ms / 1000).toFixed(1)}s`}
-                      >
-                        <span class="mn-beat-segment-label">{b.beat_id.replace('beat_', '')}</span>
-                      </div>
-                    );
-                  });
-                })() : (
-                  <span class="mn-dim" style="padding:0 8px">
-                    {beatBoundariesLoading ? 'Loading beat markers…' : 'No beat markers (non-assembled slot)'}
-                  </span>
-                )}
-              </div>
-            </div>
-          ) : null}
-
-          {/* Legacy single-slot Preview still opens the same cached URL in the roadmap viewer. */}
           {standaloneMode && activePreviewSlot && previewUrls[activePreviewSlot] ? (
             <div class="mn-stitcher-preview-area" data-testid="stitcher-preview-area-standalone">
               <video
                 controls
                 src={previewUrls[activePreviewSlot]}
                 class="mn-stitcher-video-player"
+                data-testid="stitcher-video-player"
               />
             </div>
           ) : null}
 
-          {/* Per-boundary transitions (G7-G8). Apply on Bake / slot Preview only —
-              not the roadmap viewer above (one slot at a time). */}
+          {/* Per-boundary transitions (G7-G8). Apply on Bake / slot Preview only. */}
           {!standaloneMode ? (
             <div class="mn-stitcher-transitions-row" data-testid="stitcher-transitions-row">
               {[0, 1, 2].map((afterSlot) => (

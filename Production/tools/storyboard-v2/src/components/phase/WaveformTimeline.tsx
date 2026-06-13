@@ -49,7 +49,7 @@ export interface WatercolorCue {
 
 export interface WaveformTimelineProps {
   audioSrc: string | null;
-  sourceLabel: 'lipsync' | 'mixed' | 'stem' | null;
+  sourceLabel: 'lipsync' | 'mixed' | 'stem' | 'stitched' | null;
   sourceFilename?: string | null;
   cues: ReadonlyArray<WatercolorCue>;
   onCueClick?: (cueId: string, anchor: { x: number; y: number }) => void;

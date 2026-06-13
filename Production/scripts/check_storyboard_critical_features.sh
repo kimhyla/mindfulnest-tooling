@@ -74,11 +74,14 @@ MARKERS=(
     # LD-826 — Stitcher multi-phase track + persisted selection
     "LD-826|stitcher-multiphase-track"
     "LD-826|selection persists per event"
-    # LD-827 — Stitcher viewer instant /files fallback while module preview bakes
-    "LD-827|LD-827 instant slot preview"
-    # LD-828 — module preview phase jump seek (regression: LD-827 + wrong offsets + video remount)
-    "LD-828|STITCHER_MODULE_SEEK_V1"
-    "LD-828|stitcher-module-preview"
+    # LD-827 — processed per-slot preview in composer (raw /files fallback while baking)
+    "LD-827|building processed preview"
+    # LD-828 — single slot composer (multi-phase track switches processed preview)
+    "LD-828|STITCHER_SINGLE_COMPOSER_V1"
+    "LD-828|click a phase to switch slot review"
+    # LD-829 — Phase A tab single canonical player (stitched when fresh; no duplicate video)
+    "LD-829|PHASE_A_SINGLE_PLAYER_V1"
+    "LD-829|Preview (canonical stitched — lipsync + ambient bed):"
     # Library audio preview (sfx/ambient/transitions tiers)
     "LIBRARY_AUDIO_PREVIEW|LIBRARY_AUDIO_PREVIEW_V1"
     "LIBRARY_AUDIO_PREVIEW|library-preview-audio"

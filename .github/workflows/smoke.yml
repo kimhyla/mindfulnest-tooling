@@ -27,6 +27,8 @@ jobs:
       - name: Build dist
         working-directory: Production/tools/storyboard-v2
         run: npm run build
+      - name: Storyboard UI regression guard (LD markers incl. LD-829 Phase A single player)
+        run: bash Production/scripts/check_storyboard_critical_features.sh
 
   body-key-contract:
     # Counter-B Option B — closes prod_blockers id=140 + LD
@@ -87,6 +89,7 @@ jobs:
             tests/test_o3_stuck_job_recovery.py \
             tests/test_arlo_canonical_registry.py \
             tests/test_intro_export_api_contract.py \
+            tests/test_phase_a_single_player.py \
             -q
       - name: O3 intro contract shell gate
         run: bash Production/scripts/verify_o3_intro_contract.sh

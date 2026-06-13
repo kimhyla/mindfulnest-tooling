@@ -1,4 +1,4 @@
-"""LD-827 — Stitcher multi-phase viewer must fall back to direct slot /files URLs."""
+"""LD-827 — Stitcher slot composer falls back to direct slot /files URLs."""
 
 from __future__ import annotations
 
@@ -18,11 +18,13 @@ def test_resolve_module_viewer_video_url_falls_back_to_source() -> None:
     assert "return opts.modulePreviewUrl ?? opts.viewerSourceUrl" in src
 
 
-def test_stitcher_tab_wires_viewer_fallback_helper() -> None:
+def test_stitcher_tab_uses_single_composer_with_processed_fallback() -> None:
     src = STITCHER_TAB.read_text(encoding="utf-8")
-    assert "resolveModuleViewerVideoUrl" in src
-    assert "modulePreviewUrl" in src
+    assert "STITCHER_SINGLE_COMPOSER_V1" in src
+    assert "composerVideoUrl" in src
+    assert "previewUrls[viewerSlot]" in src
     assert "viewerSourceUrl" in src
+    assert "buildSlotPreview" in src
 
 
 def test_beat_gen_preview_trim_is_browser_side_not_server_src_swap() -> None:
