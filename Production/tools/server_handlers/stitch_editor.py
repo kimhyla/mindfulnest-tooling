@@ -281,9 +281,11 @@ def _slot_has_whoosh_cue(slot: dict) -> bool:
     return False
 
 
-def apply_stitch_intro_default_whoosh_cue(h, slot: dict) -> bool:
-    """Place canonical whoosh at intro tail when a new intro video lands in Stitcher."""
+def ensure_stitch_intro_default_whoosh_cue(h, slot: dict) -> bool:
+    """Ensure intro tail whoosh exists until the operator explicitly deletes it."""
     if not isinstance(slot, dict) or not (slot.get("video_path") or "").strip():
+        return False
+    if slot.get("intro_whoosh_default_dismissed"):
         return False
     if _slot_has_whoosh_cue(slot):
         return False
@@ -315,6 +317,76 @@ def apply_stitch_intro_default_whoosh_cue(h, slot: dict) -> bool:
     }
     slot["sfx_cues"] = list(slot.get("sfx_cues") or []) + [cue]
     return True
+
+
+# Back-compat alias (tests + external imports).
+apply_stitch_intro_default_whoosh_cue = ensure_stitch_intro_default_whoosh_cue
+
+
+def stitch_slot_duration_warnings(h, slot_key: str, slot: dict) -> list[str]:
+    """Detect stale metadata / truncated files before they confuse slot review."""
+    if not isinstance(slot, dict):
+        return []
+    probed = _probe_stitch_slot_video_dur_ms(h, slot)
+    if probed <= 0:
+        return []
+    warnings: list[str] = []
+    try:
+        stored = int(slot.get("video_dur_ms") or 0)
+    except (TypeError, ValueError):
+        stored = 0
+    if stored > 0 and abs(stored - probed) > STITCH_VIDEO_DUR_DRIFT_TOLERANCE_MS:
+        warnings.append(
+            f"{slot_key}: stored duration {stored}ms ≠ file {probed}ms — timeline was out of sync",
+        )
+    boundaries = slot.get("beat_boundaries") or []
+    if boundaries:
+        beat_end = 0
+        for b in boundaries:
+            if not isinstance(b, dict):
+                continue
+            try:
+                beat_end = max(beat_end, int(b.get("end_ms") or 0))
+            except (TypeError, ValueError):
+                continue
+        if beat_end > probed + STITCH_VIDEO_DUR_DRIFT_TOLERANCE_MS:
+            warnings.append(
+                f"{slot_key}: beat map ends at {beat_end}ms but file is only {probed}ms — clip may be truncated",
+            )
+    return warnings
+
+
+def ensure_job_slot_defaults(h, slots) -> bool:
+    """Sync durations, ambient presets, and intro whoosh across all canonical slots."""
+    if not isinstance(slots, dict):
+        return False
+    changed = False
+    for slot_key in STITCH_SLOT_ORDER:
+        slot = slots.get(slot_key)
+        if not isinstance(slot, dict):
+            continue
+        if sync_stitch_slot_video_dur_ms(h, slot):
+            changed = True
+        if apply_stitch_slot_default_ambient_preset(slot_key, slot):
+            changed = True
+        if slot_key == "intro" and ensure_stitch_intro_default_whoosh_cue(h, slot):
+            changed = True
+        normalize_slot_audio_mix_levels(slot)
+    return changed
+
+
+def collect_stitch_job_slot_warnings(h, slots) -> dict[str, list[str]]:
+    if not isinstance(slots, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for slot_key in STITCH_SLOT_ORDER:
+        slot = slots.get(slot_key)
+        if not isinstance(slot, dict):
+            continue
+        warnings = stitch_slot_duration_warnings(h, slot_key, slot)
+        if warnings:
+            out[slot_key] = warnings
+    return out
 
 
 def stitch_event_job_name(event_id: str) -> str:
@@ -603,7 +675,9 @@ def stitch_upsert_event_slot(
         sync_stitch_slot_video_dur_ms(h, slot, force=video_path_changed)
         apply_stitch_slot_default_ambient_preset(slot_key, slot)
         if video_path_changed and slot_key == "intro":
-            apply_stitch_intro_default_whoosh_cue(h, slot)
+            slot.pop("intro_whoosh_default_dismissed", None)
+        if slot_key == "intro":
+            ensure_stitch_intro_default_whoosh_cue(h, slot)
         normalize_slot_audio_mix_levels(slot)
         if beat_boundaries is not None:
             slot["beat_boundaries"] = enrich_beat_boundaries(beat_boundaries)
@@ -893,22 +967,28 @@ def handle_stitch_load_job(h, name: str)-> None:
     if isinstance(response_job, dict):
         slots = response_job.get("slots")
         if isinstance(slots, dict):
-            backfilled = apply_stitch_job_default_ambient_presets(slots)
             normalize_job_slots_audio(slots)
-            durs_hydrated = hydrate_job_slot_video_durs(h, slots)
+            defaults_changed = ensure_job_slot_defaults(h, slots)
             for slot in slots.values():
                 if isinstance(slot, dict) and slot.get("beat_boundaries"):
                     slot["beat_boundaries"] = enrich_beat_boundaries(
                         slot["beat_boundaries"],
                     )
             live_slots = (job.get("slots") if isinstance(job, dict) else None)
-            if backfilled or durs_hydrated or _job_canonical_audio_needs_persist(live_slots, slots):
+            if defaults_changed or _job_canonical_audio_needs_persist(live_slots, slots):
 
                 def persist_defaults(state: dict) -> None:
                     _persist_stitch_job_canonical_audio(state, name, slots)
 
                 h.app.stitch_state.mutate_state(persist_defaults)
-    return h._send_json(200, {"job": response_job, "name": name})
+    payload = {"job": response_job, "name": name}
+    if isinstance(response_job, dict):
+        slots = response_job.get("slots")
+        if isinstance(slots, dict):
+            warnings = collect_stitch_job_slot_warnings(h, slots)
+            if warnings:
+                payload["slot_warnings"] = warnings
+    return h._send_json(200, payload)
 
 
 def handle_stitch_save_job(h, body: dict)-> None:
@@ -1016,7 +1096,7 @@ def handle_stitch_save_job(h, body: dict)-> None:
         else:
             slots_out = slots
         if isinstance(slots_out, dict):
-            hydrate_job_slot_video_durs(h, slots_out)
+            ensure_job_slot_defaults(h, slots_out)
         normalize_job_slots_audio(slots_out if isinstance(slots_out, dict) else {})
         jobs[name] = {
             "created_at": existing.get("created_at", now_iso),

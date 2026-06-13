@@ -67,6 +67,7 @@ interface StitchSlot {
   ambient_bed_path?: string;
   ambient_volume?: number;
   loudnorm_already_applied?: boolean;
+  intro_whoosh_default_dismissed?: boolean;
   sfx_cues?: SfxCue[];
   trim_in_ms?: number;
   trim_out_ms?: number | null;
@@ -426,7 +427,11 @@ export function StitcherTab() {
         };
 
         // Prefer canonical per-event job (server upserts preserve all slots).
-        const canonicalDetailRes = await apiGet<{ job?: StitchJob; name?: string }>(
+        const canonicalDetailRes = await apiGet<{
+          job?: StitchJob;
+          name?: string;
+          slot_warnings?: Record<string, string[]>;
+        }>(
           'stitch_editor_job',
           { job_name: canonicalName },
         );
@@ -442,6 +447,13 @@ export function StitcherTab() {
               slots: canonicalSlots,
               transitions: canonicalJob.transitions ?? [],
             });
+            const warns = canonicalDetailRes.data.slot_warnings;
+            if (warns && Object.keys(warns).length > 0) {
+              const flat = Object.entries(warns).flatMap(([k, list]) =>
+                list.map((w) => `${k}: ${w}`),
+              );
+              setStatusMsg(`⚠ ${flat.join(' · ')}`);
+            }
             setError(null);
             setLoading(false);
             return;
@@ -1097,10 +1109,16 @@ export function StitcherTab() {
     const slotKey = popover.slotKey;
     const slot = job.slots[slotKey];
     if (!slot) return;
+    const deletedCue = (slot.sfx_cues ?? []).find((c) => c.id === popover.cueId);
     const nextCues = (slot.sfx_cues ?? []).filter((c) => c.id !== popover.cueId);
+    const whooshLabel = `${deletedCue?.name ?? ''} ${deletedCue?.source_path ?? ''}`.toLowerCase();
+    const nextSlot: StitchSlot = { ...slot, sfx_cues: nextCues };
+    if (slotKey === 'intro' && whooshLabel.includes('whoosh')) {
+      nextSlot.intro_whoosh_default_dismissed = true;
+    }
     const nextSlots: Record<string, StitchSlot> = {
       ...job.slots,
-      [slotKey]: { ...slot, sfx_cues: nextCues },
+      [slotKey]: nextSlot,
     };
     void saveJobSlots(nextSlots);
     setPopover(null);
