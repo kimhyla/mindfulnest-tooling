@@ -20,7 +20,7 @@ count_watercolors() {
 }
 
 canonical_keys() {
-  python3 -c "import sys,json; d=json.load(sys.stdin); print(','.join(sorted(i.get('key','') for i in d.get('images',[]) if i.get('tier')=='canonical'))))"
+  python3 -c "import sys,json; d=json.load(sys.stdin); print(','.join(sorted(i.get('key','') for i in d.get('images',[]) if i.get('tier')=='canonical')))"
 }
 
 echo "=== per-event library smoke ==="
