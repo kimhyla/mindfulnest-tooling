@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import unittest
+import unittest.mock as mock
 
 from server_handlers.stitch_editor import (
     stitch_event_job_name,
@@ -70,12 +71,22 @@ class StitchCanonicalJobTests(unittest.TestCase):
                 },
             },
         )
-        stitch_upsert_event_slot(
-            h,
-            "Event_1",
-            "phase_b",
-            {"video_path": "Production/Event_1/preview/phase_b/phase_b_preview_abc.mp4"},
-        )
+        with mock.patch(
+            "server_handlers.stitch_editor.stitch_slot_export_media_preflight",
+            return_value=(60_000, []),
+        ), mock.patch(
+            "server_handlers.stitch_editor.sync_stitch_slot_video_dur_ms",
+            return_value=False,
+        ), mock.patch(
+            "server_handlers.stitch_editor.apply_stitch_slot_default_ambient_preset",
+            return_value=False,
+        ):
+            stitch_upsert_event_slot(
+                h,
+                "Event_1",
+                "phase_b",
+                {"video_path": "Production/Event_1/preview/phase_b/phase_b_preview_abc.mp4"},
+            )
         slots = h.app.stitch_state.state["jobs"]["Event_1_stitch"]["slots"]
         self.assertIn("resolution", slots)
         self.assertIn("phase_b", slots)

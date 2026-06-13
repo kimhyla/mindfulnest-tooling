@@ -87,6 +87,8 @@ STITCH_INTRO_DEFAULT_WHOOSH_PLAY_MS = 3104
 STITCH_VIDEO_DUR_DRIFT_TOLERANCE_MS = 500
 # STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1 — export/sync must not serve truncated audio extracts.
 STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1 = "STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1"
+# STITCH_SLOT_EXPORT_FULL_MEDIA_V1 — all four tab exports must upsert full playable slot video.
+STITCH_SLOT_EXPORT_FULL_MEDIA_V1 = "STITCH_SLOT_EXPORT_FULL_MEDIA_V1"
 STITCH_AUDIO_DUR_MIN_RATIO = 0.85
 
 
@@ -332,17 +334,59 @@ def ensure_stitch_intro_default_whoosh_cue(h, slot: dict) -> bool:
 apply_stitch_intro_default_whoosh_cue = ensure_stitch_intro_default_whoosh_cue
 
 
-def stitch_slot_export_media_preflight(h, video_path_str: str, slot_key: str) -> tuple[int, list[str]]:
-    """Probe export target; block stale Phase A lineage before upsert."""
+def stitch_slot_export_media_preflight(
+    h,
+    video_path_str: str,
+    slot_key: str,
+    *,
+    beat_boundaries: list | None = None,
+) -> tuple[int, list[str]]:
+    """Probe export target; reject corrupt/truncated files before any stitch slot upsert."""
+    from credentials_lib.ffmpeg_stitch import mp4_decodes_cleanly, mp4_is_playable  # noqa: PLC0415
+
     try:
         abs_path = h._stitch_resolve_path(video_path_str)
-        require_media_under_project(abs_path, extensions=MEDIA_EXTENSIONS)
+        abs_path = Path(
+            require_media_under_project(abs_path, extensions=MEDIA_EXTENSIONS),
+        )
     except (ValueError, FileNotFoundError) as exc:
         raise ValueError(str(exc)) from exc
 
+    if abs_path.suffix.lower() in (".mp4", ".mov", ".webm"):
+        if not mp4_is_playable(abs_path):
+            raise ValueError(
+                f"{slot_key}: export video is not a playable file "
+                f"({STITCH_SLOT_EXPORT_FULL_MEDIA_V1})",
+            )
+        if not mp4_decodes_cleanly(abs_path, timeout_s=45):
+            raise ValueError(
+                f"{slot_key}: export video fails decode smoke test "
+                f"({STITCH_SLOT_EXPORT_FULL_MEDIA_V1})",
+            )
+
     probed_ms = _probe_stitch_slot_video_dur_ms(h, {"video_path": video_path_str})
     if probed_ms <= 0:
-        raise ValueError(f"{slot_key}: export video unreadable or zero duration")
+        raise ValueError(
+            f"{slot_key}: export video unreadable or zero duration "
+            f"({STITCH_SLOT_EXPORT_FULL_MEDIA_V1})",
+        )
+
+    if beat_boundaries:
+        enriched = enrich_beat_boundaries(beat_boundaries)
+        beat_end = 0
+        for b in enriched:
+            if not isinstance(b, dict):
+                continue
+            try:
+                beat_end = max(beat_end, int(b.get("end_ms") or 0))
+            except (TypeError, ValueError):
+                continue
+        if beat_end > probed_ms + STITCH_VIDEO_DUR_DRIFT_TOLERANCE_MS:
+            raise ValueError(
+                f"{slot_key}: beat map ends at {beat_end}ms but file is only "
+                f"{probed_ms}ms — export would truncate beats "
+                f"({STITCH_SLOT_EXPORT_FULL_MEDIA_V1})",
+            )
 
     if slot_key == "phase_a" and hasattr(h.app, "state"):
         from server_handlers.phases import (  # noqa: PLC0415
@@ -809,10 +853,31 @@ def stitch_upsert_event_slot(
     slot_patch: dict,
     *,
     beat_boundaries: list | None = None,
-) -> str:
-    """Upsert one slot into the canonical per-event stitch job."""
+) -> tuple[str, int, list[str]]:
+    """Upsert one slot into the canonical per-event stitch job.
+
+    STITCH_SLOT_EXPORT_FULL_MEDIA_V1: every caller (Beat Gen intro/resolution,
+    Phase A/B export, scene assemble) must pass video_path; full file is probed,
+    playability-checked, and video_dur_ms is written before persist.
+    """
     if slot_key not in STITCH_SLOT_ORDER:
         raise ValueError(f"invalid stitch slot key: {slot_key!r}")
+
+    new_video_path = (slot_patch.get("video_path") or "").strip()
+    if not new_video_path:
+        raise ValueError(
+            f"{slot_key}: video_path required for stitch export "
+            f"({STITCH_SLOT_EXPORT_FULL_MEDIA_V1})",
+        )
+
+    probed_ms, export_warnings = stitch_slot_export_media_preflight(
+        h,
+        new_video_path,
+        slot_key,
+        beat_boundaries=beat_boundaries,
+    )
+    patched = dict(slot_patch)
+    patched["video_dur_ms"] = probed_ms
 
     now_iso = datetime.now(timezone.utc).isoformat()
     job_name = stitch_event_job_name(event_id)
@@ -825,10 +890,13 @@ def stitch_upsert_event_slot(
             job["slots"] = {}
         slot = job["slots"].setdefault(slot_key, {})
         old_video_path = (slot.get("video_path") or "").strip()
-        slot.update(slot_patch)
-        new_video_path = (slot.get("video_path") or "").strip()
-        video_path_changed = bool(new_video_path and new_video_path != old_video_path)
+        slot.update(patched)
+        new_path = (slot.get("video_path") or "").strip()
+        video_path_changed = bool(new_path and new_path != old_video_path)
         sync_stitch_slot_video_dur_ms(h, slot, force=True)
+        stored_ms = int(slot.get("video_dur_ms") or 0)
+        if abs(stored_ms - probed_ms) > STITCH_VIDEO_DUR_DRIFT_TOLERANCE_MS:
+            slot["video_dur_ms"] = probed_ms
         apply_stitch_slot_default_ambient_preset(slot_key, slot)
         if video_path_changed and slot_key == "intro":
             slot.pop("intro_whoosh_default_dismissed", None)
@@ -840,7 +908,7 @@ def stitch_upsert_event_slot(
         job["updated_at"] = now_iso
 
     h.app.stitch_state.mutate_state(upsert)
-    return job_name
+    return job_name, probed_ms, export_warnings
 
 
 def handle_stitch_loudnorm(h, body: dict)-> None:

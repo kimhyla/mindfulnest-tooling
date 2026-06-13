@@ -3035,8 +3035,6 @@ def _phase_ensure_overlay_mp4(h, phase: str) -> tuple[Path, str]:
 
 def handle_phase_export_stitcher(h, body: dict) -> None:
     """POST /api/phase/export_stitcher — bake overlays (Phase B) and upsert stitch slot."""
-    from server_handlers.stitch_editor import stitch_upsert_event_slot
-
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
         return
 
@@ -3112,13 +3110,21 @@ def handle_phase_export_stitcher(h, body: dict) -> None:
         )
 
     from server_handlers.stitch_editor import (  # noqa: PLC0415
+        STITCH_SLOT_EXPORT_FULL_MEDIA_V1,
         STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1,
-        stitch_slot_export_media_preflight,
+        stitch_upsert_event_slot,
     )
 
     try:
-        export_dur_ms, export_warnings = stitch_slot_export_media_preflight(
-            h, video_rel, slot_key,
+        job_name, export_dur_ms, export_warnings = stitch_upsert_event_slot(
+            h,
+            event_id,
+            slot_key,
+            {
+                "video_path": video_rel,
+                "overlay_baked": overlay_baked,
+                "source": f"phase_{phase}_export",
+            },
         )
     except ValueError as exc:
         return h._send_error_v59(
@@ -3126,19 +3132,12 @@ def handle_phase_export_stitcher(h, body: dict) -> None:
             error_code="STITCH_SLOT_EXPORT_MEDIA_BLOCKED",
             error_message=str(exc),
             retry_safe=False,
-            extra={"code": STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1},
+            extra={
+                "code": STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1,
+                "export_full_media": STITCH_SLOT_EXPORT_FULL_MEDIA_V1,
+            },
         )
 
-    job_name = stitch_upsert_event_slot(
-        h,
-        event_id,
-        slot_key,
-        {
-            "video_path": video_rel,
-            "overlay_baked": overlay_baked,
-            "source": f"phase_{phase}_export",
-        },
-    )
     return h._send_json(200, {
         "ok": True,
         "job_name": job_name,
@@ -3148,6 +3147,7 @@ def handle_phase_export_stitcher(h, body: dict) -> None:
         "video_dur_ms": export_dur_ms,
         "warnings": export_warnings,
         "code": STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1,
+        "export_full_media": STITCH_SLOT_EXPORT_FULL_MEDIA_V1,
     })
 
 

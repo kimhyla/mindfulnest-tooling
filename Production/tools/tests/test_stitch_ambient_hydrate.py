@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import unittest
+import unittest.mock as mock
 from pathlib import Path
 
 from server_handlers.stitch_editor import (
@@ -118,12 +119,19 @@ class StitchSlotAudioMixTests(unittest.TestCase):
     def test_default_ambient_applied_on_upsert_when_empty(self):
         h = _MockHandler()
         h.app = type("A", (), {"stitch_state": _MockStitchState()})()
-        stitch_upsert_event_slot(
-            h,
-            "Event_test",
-            "phase_b",
-            {"video_path": "Production/Event_test/phase_b.mp4"},
-        )
+        with mock.patch(
+            "server_handlers.stitch_editor.stitch_slot_export_media_preflight",
+            return_value=(60_000, []),
+        ), mock.patch(
+            "server_handlers.stitch_editor.sync_stitch_slot_video_dur_ms",
+            return_value=False,
+        ):
+            stitch_upsert_event_slot(
+                h,
+                "Event_test",
+                "phase_b",
+                {"video_path": "Production/Event_test/phase_b.mp4"},
+            )
         slot = h.app.stitch_state.state["jobs"]["Event_test_stitch"]["slots"]["phase_b"]
         self.assertEqual(slot["ambient_bed"], STITCH_DEFAULT_AMBIENT_BEDS["phase_b"])
         self.assertEqual(slot["ambient_volume"], STITCH_AMBIENT_BED_VOLUME)

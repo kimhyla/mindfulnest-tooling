@@ -828,8 +828,6 @@ def handle_bg_export_to_stitcher(h, body: dict) -> None:
     sidecar) are materialized at export via ``_kling_o3_export_clip_path`` — never
     the untrimmed source file when a trim window is active.
     """
-    from server_handlers.stitch_editor import stitch_upsert_event_slot
-
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
         return
     arc_number = int(body.get("arc_number", 1))
@@ -913,13 +911,22 @@ def handle_bg_export_to_stitcher(h, body: dict) -> None:
         )
 
     from server_handlers.stitch_editor import (  # noqa: PLC0415
+        STITCH_SLOT_EXPORT_FULL_MEDIA_V1,
         STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1,
-        stitch_slot_export_media_preflight,
+        stitch_upsert_event_slot,
     )
 
     try:
-        export_dur_ms, export_warnings = stitch_slot_export_media_preflight(
-            h, video_rel, slot_key,
+        job_name, export_dur_ms, export_warnings = stitch_upsert_event_slot(
+            h,
+            event_name,
+            slot_key,
+            {
+                "video_path": video_rel,
+                "overlay_baked": False,
+                "source": f"kling_o3_export_{phase}",
+            },
+            beat_boundaries=boundaries,
         )
     except ValueError as exc:
         return h._send_error_v59(
@@ -927,20 +934,12 @@ def handle_bg_export_to_stitcher(h, body: dict) -> None:
             error_code="STITCH_SLOT_EXPORT_MEDIA_BLOCKED",
             error_message=str(exc),
             retry_safe=False,
-            extra={"code": STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1},
+            extra={
+                "code": STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1,
+                "export_full_media": STITCH_SLOT_EXPORT_FULL_MEDIA_V1,
+            },
         )
 
-    job_name = stitch_upsert_event_slot(
-        h,
-        event_name,
-        slot_key,
-        {
-            "video_path": video_rel,
-            "overlay_baked": False,
-            "source": f"kling_o3_export_{phase}",
-        },
-        beat_boundaries=boundaries,
-    )
     return h._send_json(200, {
         "ok": True,
         "job_name": job_name,
@@ -952,4 +951,5 @@ def handle_bg_export_to_stitcher(h, body: dict) -> None:
         "beat_count": len(beats),
         "beat_boundaries": boundaries,
         "code": STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1,
+        "export_full_media": STITCH_SLOT_EXPORT_FULL_MEDIA_V1,
     })
