@@ -11716,8 +11716,8 @@ body {{padding-top:44px!important;}}
         mix_hash = _hl.md5("|".join(sig_parts).encode(), usedforsecurity=False).hexdigest()[:12]
         out_path = cache_dir / f"se_slot_{mix_hash}.mp4"
         if out_path.is_file():
-            from ffmpeg_stitch import mp4_is_playable  # noqa: PLC0415
-            if mp4_is_playable(out_path):
+            from ffmpeg_stitch import mp4_decodes_cleanly, mp4_is_playable  # noqa: PLC0415
+            if mp4_is_playable(out_path) and mp4_decodes_cleanly(out_path):
                 return out_path
             try:
                 out_path.unlink()
@@ -12011,8 +12011,14 @@ body {{padding-top:44px!important;}}
             },
             sort_keys=True,
         ).encode()
+        # Fingerprint slot finals by path + mtime + size so rebuilt se_slot_* files
+        # invalidate stale stitch_preview_* LRU hits (STITCH_SLOT_PREVIEW_VIDEO_PLAYABLE_V1).
+        final_fp = "|".join(
+            f"{p.resolve()}:{p.stat().st_mtime_ns}:{p.stat().st_size}"
+            for p in slot_finals
+        )
         out_hash = _hl.md5(
-            f"{[str(f) for f in slot_finals]}".encode() + job_sig,
+            final_fp.encode() + job_sig,
             usedforsecurity=False,
         ).hexdigest()[:12]
 
@@ -12028,7 +12034,17 @@ body {{padding-top:44px!important;}}
                 pass
 
         if not out_path.is_file():
-            concat_with_xfade_clips(slot_finals, out_path)
+            if len(slot_finals) == 1:
+                import shutil as _shutil  # noqa: PLC0415
+
+                tmp = out_path.parent / (
+                    f"{out_path.stem}.tmp.{os.getpid()}{out_path.suffix}"
+                )
+                # copy (not copy2): fresh mtime so lru_cleanup keeps the new preview.
+                _shutil.copy(slot_finals[0], tmp)
+                os.replace(tmp, out_path)
+            else:
+                concat_with_xfade_clips(slot_finals, out_path)
 
         if not preview_cache_is_valid(out_path, expected_s):
             actual_ms = self._ffprobe_duration_ms(out_path)

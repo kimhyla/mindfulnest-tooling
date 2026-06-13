@@ -299,6 +299,33 @@ def beat_is_assemblable(beat: dict, event_dir: "Path | None" = None) -> bool:
 # ---------------------------------------------------------------------------
 # Normalization (LD-284 recipe)
 # ---------------------------------------------------------------------------
+def mp4_decodes_cleanly(path: Path, *, timeout_s: int = 120) -> bool:
+    """Return True when ffmpeg can decode every frame without H.264/AAC errors.
+
+    Guards stitch preview LRU hits: ffprobe-only checks pass on truncated or
+    bitstream-corrupt MP4s that render as a black <video> while WaveSurfer
+    audio still plays (STITCH_SLOT_PREVIEW_VIDEO_PLAYABLE_V1).
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "ffmpeg", "-v", "error",
+                "-i", str(path.resolve()),
+                "-f", "null", "-",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+    except (
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+        OSError,
+    ):
+        return False
+    return proc.returncode == 0 and not (proc.stderr or "").strip()
+
+
 def mp4_is_playable(path: Path, *, min_duration_s: float = 0.05) -> bool:
     """Return True when path is a readable MP4 with streams and positive duration.
 
@@ -349,6 +376,8 @@ def preview_cache_is_valid(
     if expected_duration_s <= 0:
         return mp4_is_playable(path)
     if not mp4_is_playable(path):
+        return False
+    if not mp4_decodes_cleanly(path):
         return False
     try:
         out = subprocess.run(

@@ -279,6 +279,8 @@ export function StitcherTab() {
   // Per-slot preview URL — set after a successful Preview call. Renders as a
   // visible "▶ Watch" link directly in the slot so popup-blocker doesn't swallow it.
   const [previewUrls, setPreviewUrls] = useState<Partial<Record<SlotKey, string>>>({});
+  /** Raw /files fallback when processed preview MP4 fails browser decode (black video). */
+  const [previewVideoFallback, setPreviewVideoFallback] = useState<Partial<Record<SlotKey, boolean>>>({});
   const [previewLoadingSlot, setPreviewLoadingSlot] = useState<SlotKey | null>(null);
   /** Full module reel: intro → phase_a → phase_b → resolution with dissolve transitions. */
   const slotPreviewGenRef = useRef(0);
@@ -528,7 +530,9 @@ export function StitcherTab() {
   const viewerSlotData = job?.slots?.[viewerSlot];
   const viewerSourceUrl = resolveStitchSlotSourceVideoUrl(viewerSlotData?.video_path);
   /** Processed slot preview (ambient + SFX baked) when ready; raw /files while building. */
-  const composerVideoUrl = previewUrls[viewerSlot] ?? viewerSourceUrl;
+  const composerVideoUrl = previewVideoFallback[viewerSlot]
+    ? viewerSourceUrl
+    : (previewUrls[viewerSlot] ?? viewerSourceUrl);
   const composerLoading =
     previewLoadingSlot === viewerSlot
     || (busySlot?.slot === viewerSlot && busySlot.action === 'preview');
@@ -675,6 +679,11 @@ export function StitcherTab() {
       const data = res.data as { preview_url?: string } | undefined;
       if (data?.preview_url) {
         setPreviewUrls((prev) => ({ ...prev, [slot]: data.preview_url! }));
+        setPreviewVideoFallback((prev) => {
+          const next = { ...prev };
+          delete next[slot];
+          return next;
+        });
         writeCachedStitcherPreview(eventId, slot, {
           video_path: slotData.video_path,
           preview_url: data.preview_url,
@@ -708,6 +717,26 @@ export function StitcherTab() {
       return;
     }
     video.addEventListener('loadedmetadata', apply, { once: true });
+  };
+
+  const onComposerVideoError = () => {
+    const eventId = activeScope.value.event_id;
+    clearCachedStitcherPreview(eventId, viewerSlot);
+    setPreviewUrls((prev) => {
+      const next = { ...prev };
+      delete next[viewerSlot];
+      return next;
+    });
+    setPreviewVideoFallback((prev) => ({ ...prev, [viewerSlot]: true }));
+    void buildSlotPreview(viewerSlot, { quiet: true }).then((ok) => {
+      if (ok) {
+        setPreviewVideoFallback((prev) => {
+          const next = { ...prev };
+          delete next[viewerSlot];
+          return next;
+        });
+      }
+    });
   };
 
   const onPreviewSlot = async (slot: SlotKey, opts?: { quiet?: boolean }) => {
@@ -1175,6 +1204,7 @@ export function StitcherTab() {
               class="mn-stitcher-slot-composer"
               data-testid="stitcher-slot-composer"
               data-stitcher-slot-composer="STITCHER_SLOT_COMPOSER_V1"
+              data-stitch-slot-preview-video-playable="STITCH_SLOT_PREVIEW_VIDEO_PLAYABLE_V1"
             >
               <div class="mn-stitcher-slot-composer-header">
                 <strong>
@@ -1197,6 +1227,7 @@ export function StitcherTab() {
                   src={composerVideoUrl}
                   class="mn-stitcher-composer-video"
                   data-testid="stitcher-composer-video"
+                  onError={onComposerVideoError}
                 />
                 <StitcherSlotWaveform
                   slotKey={viewerSlot}
