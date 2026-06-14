@@ -19,5 +19,6 @@ python3 -m pytest \
   Production/tools/tests/test_beat_ref_drop_lock.py \
   Production/tools/tests/test_library_sources_immutable.py \
   Production/tools/tests/test_still_insert_render.py \
+  Production/tools/tests/test_bg_add_beat_sidecar_lock.py \
   -q
 echo "[o3-intro-contract] all gates passed"

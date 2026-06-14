@@ -1652,7 +1652,7 @@ def handle_bg_session_state(h)-> None:
     # Strip the "Event_" prefix so get_seg_entry looks up "event_1_post" not "event_Event_1_post".
     if scope_event_id is not None:
         scope_event_id = bg.normalize_bg_event_id(scope_event_id)
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
         reconcile_stuck_o3_voice_beats(sidecar)
@@ -2496,7 +2496,7 @@ def handle_bg_update_beat(h, body: dict)-> None:
         if not beat:
             return h._send_error_v59(
                        404,
-                       error_code="GENERIC_ERROR",
+                       error_code="BEAT_NOT_FOUND",
                        error_message=f"beat {beat_id} not found",
                        retry_safe=False,
                    )
@@ -4695,8 +4695,10 @@ def handle_bg_add_beat(h, body: dict)-> None:
     after_beat_id = body.get("after_beat_id", "")
 
     bg = _bg_module()
-    with bg._sidecar_lock:
+    event_id_str = str(event_id_int)
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
+        sidecar = bg._migrate_sidecar(sidecar)
         seg = bg.get_seg_entry(sidecar, arc_number=arc_number, event_id=event_id_int, phase=phase)
         beats = seg.get("beats", [])
 
@@ -4708,7 +4710,6 @@ def handle_bg_add_beat(h, body: dict)-> None:
                 break
 
         # Generate beat_id: max(N)+1 across ALL beats in this segment.
-        # Prefix derived from scope (formerly hardcoded "bg_arc1_event2_pre_beat_").
         prefix = f"bg_arc{arc_number}_event{event_id_int}_{phase}_beat_"
         existing_nums = []
         for b in beats:
@@ -4721,16 +4722,7 @@ def handle_bg_add_beat(h, body: dict)-> None:
         new_num = (max(existing_nums) + 1) if existing_nums else 1
         new_beat_id = f"{prefix}{new_num:02d}"
 
-        new_beat = {
-            "beat_id": new_beat_id,
-            "speaker": "",
-            "dialogue_text": "",
-            "emotion": "",
-            "scene_notes": "",
-            "status": "new",
-            "flux_options": [],
-            "gpt_options": [],
-        }
+        new_beat = bg.create_blank_bg_beat(new_beat_id, event_id_str, phase)
         beats.insert(insert_after + 1, new_beat)
         bg.write_sidecar(sidecar)
 

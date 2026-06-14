@@ -450,6 +450,8 @@ export function BgTab() {
   // re-fires the fetch. First mount runs sync; subsequent runs are debounced
   // 200ms (counter Q6 — first-run-sync gate via prevDepsRef).
   const prevDepsRef = useRef<string | null>(null);
+  const beatSaveNotFoundToastRef = useRef(new Set<string>());
+  const beatSaveBlockedRef = useRef(new Set<string>());
   useEffect(() => {
     let cancelled = false;
     let timer: number | null = null;
@@ -716,6 +718,10 @@ export function BgTab() {
     if (stateRes.ok && stateRes.data) {
       const nextBeats = stateRes.data.beats ?? [];
       setBeats(nextBeats);
+      const liveIds = new Set(nextBeats.map((b) => b.beat_id));
+      beatSaveBlockedRef.current.forEach((id) => {
+        if (liveIds.has(id)) beatSaveBlockedRef.current.delete(id);
+      });
       setActiveJobId((prev) => prev ?? collectActiveStillJobFromBeats(nextBeats));
       setActiveO3Jobs(collectActiveO3JobsFromBeats(nextBeats));
       setActiveNativeLipSyncJobs(collectActiveNativeLipSyncJobsFromBeats(nextBeats));
@@ -957,6 +963,7 @@ export function BgTab() {
   };
 
   const onUpdateBeatText = async (beatId: string, nextText: string): Promise<boolean> => {
+    if (beatSaveBlockedRef.current.has(beatId)) return false;
     setBeats((bs) => bs.map((b) => (
       b.beat_id === beatId ? { ...b, kling_o3_prompt: nextText } : b
     )));
@@ -970,6 +977,25 @@ export function BgTab() {
     });
     if (!result.ok) {
       const err = (result.error || '').trim();
+      const beatMissing = result.error_code === 'BEAT_NOT_FOUND'
+        || /beat .* not found/i.test(err);
+      if (beatMissing) {
+        beatSaveBlockedRef.current.add(beatId);
+        if (!beatSaveNotFoundToastRef.current.has(beatId)) {
+          beatSaveNotFoundToastRef.current.add(beatId);
+          pushToast({
+            kind: 'warning',
+            message: (
+              `${beatId} is not saved on the server yet — your text is only in this tab. `
+              + 'Hard-refresh, then use + Insert after the beat above and paste your dialogue back in.'
+            ),
+            source: 'bg-update-beat-missing',
+            ttlMs: 12000,
+          });
+        }
+        await refreshState();
+        return false;
+      }
       const msg = /failed to fetch|networkerror|load failed/i.test(err)
         ? 'Save failed — server was restarting. Wait for “server is back”, then click Generate again (your text is still in the box).'
         : `Save failed: ${result.error}`;
