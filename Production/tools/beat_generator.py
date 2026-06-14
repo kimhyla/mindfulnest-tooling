@@ -4951,6 +4951,53 @@ BEAT_REF_LOCK_FIELDS: dict[str, str] = {
 }
 
 
+def _is_event_library_char_ref(char_path: str) -> bool:
+    """True when @Image1 path is an uploaded per-event library still (not Element pose dir)."""
+    if not char_path:
+        return False
+    norm = os.path.normpath(char_path)
+    marker = f"{os.sep}library{os.sep}images{os.sep}"
+    if marker not in norm:
+        return False
+    # Exclude paths already under Production/<Char>/poses/ (Element registration).
+    if f"{os.sep}poses{os.sep}" in norm:
+        return False
+    return True
+
+
+def heal_locked_char_ref_to_element(beat: dict) -> bool:
+    """Point locked library @Image1 at registered Element pose when bytes differ.
+
+    Re-register copies processed pose bytes into Production/<Char>/poses/ but
+    library/sources/ may still hold the pre-register upload (different sha256).
+    """
+    if not beat.get("reference_image_locked"):
+        return False
+    speaker = str(beat.get("speaker") or "").strip()
+    if not speaker:
+        return False
+    char_path = resolve_beat_char_ref_path(beat)
+    if not char_path or not _is_event_library_char_ref(char_path):
+        return False
+    try:
+        from tools import kling_character_registry as reg
+
+        if not reg.is_speaker_voice_ready(speaker):
+            return False
+        if reg.char_ref_matches_element_images(char_path, speaker)[0]:
+            return False
+        element_paths = reg.element_image_paths(speaker)
+        if not element_paths:
+            return False
+        chosen_str = str(_pick_element_ref_path(beat, element_paths).resolve())
+        if os.path.normpath(char_path) == os.path.normpath(chosen_str):
+            return False
+        beat["reference_image"] = _ref_dict_from_path(chosen_str)
+        return True
+    except Exception:
+        return False
+
+
 def apply_user_beat_ref_update(beat: dict, field: str, value) -> None:
     """Apply explicit user ref drop/clear — lock so auto-align won't revert."""
     lock_field = BEAT_REF_LOCK_FIELDS.get(field)
@@ -4961,6 +5008,7 @@ def apply_user_beat_ref_update(beat: dict, field: str, value) -> None:
         beat[field] = value
         beat[lock_field] = True
         if field == "reference_image":
+            heal_locked_char_ref_to_element(beat)
             sync_element_char_ref_status(beat)
     elif value is None:
         beat[field] = None
@@ -5083,6 +5131,8 @@ def sync_element_char_ref_status(beat: dict) -> bool:
         beat.pop("element_char_ref_ok", None)
         beat.pop("element_char_ref_error", None)
         return True
+    if beat.get("reference_image_locked"):
+        heal_locked_char_ref_to_element(beat)
     ok, detail = element_char_ref_gate(beat)
     beat["element_char_ref_ok"] = ok
     if ok:

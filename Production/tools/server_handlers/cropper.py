@@ -303,6 +303,37 @@ def handle_cr_library(h)-> None:
                     item["speaker"] = speaker
                     _append(item)
 
+    # --- Tier 3b: Element registration poses (Production/<Char>/poses/) ---
+    try:
+        from tools import kling_character_registry as reg
+
+        seen_pose: set[str] = set()
+        for char_name, cfg in (reg.load_character_subjects().get("characters") or {}).items():
+            if cfg.get("status") != "active" or not cfg.get("element_id"):
+                continue
+            rels: list[str] = []
+            frontal = cfg.get("frontal_image")
+            if frontal:
+                rels.append(str(frontal))
+            rels.extend(str(r) for r in (cfg.get("refer_images") or []))
+            for rel in rels:
+                fp = prod_root / rel
+                if not fp.is_file():
+                    continue
+                real_fp = os.path.realpath(str(fp))
+                if real_fp in seen_pose:
+                    continue
+                seen_pose.add(real_fp)
+                item = _read_image(real_fp, "element_pose", extra={
+                    "speaker": char_name,
+                    "tags": ["element", "char_ref"],
+                    "asset_type": "element_pose",
+                    "display_name": fp.name,
+                })
+                _append(item)
+    except Exception as e:
+        print(f"[library] element pose scan warning: {e}", flush=True)
+
     # --- Tier 4: canonical images (global, arc-filtered) ---
     can_dir = canonical_images_dir(prod_root)
     for meta in canonical_meta_for_arc(prod_root, arc_number):
