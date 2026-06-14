@@ -187,7 +187,7 @@ def test_validate_element_bound_voice_prompt_accepts_locked_delivery():
     from tools import kling_o3_prompt as o3p
 
     good = (
-        'Tessa speaks in a warm gentle conversational pace, soft and vulnerable but clear: "Hello?"'
+        f'Tessa speaks in a {o3p.KLING_O3_TESSA_VOICE_DELIVERY}: "Hello?"'
     )
     assert o3p.validate_element_bound_voice_prompt("Tessa", good) == []
 
@@ -199,14 +199,55 @@ LORELAI_EVENT2_VOICE_LINE = (
 )
 
 
-def test_validate_element_bound_voice_prompt_accepts_author_delivery_line(monkeypatch):
+def test_upgrade_element_bound_voice_prompt_fixes_author_delivery_line(monkeypatch):
     from tools import kling_o3_prompt as o3p
+    import beat_generator as bg
 
     monkeypatch.setattr(
         "tools.kling_character_registry.is_speaker_voice_ready",
         lambda _s: True,
     )
-    assert o3p.validate_element_bound_voice_prompt("Lorelai", LORELAI_EVENT2_VOICE_LINE) == []
+    upgraded, spoken, changed = o3p.upgrade_element_bound_voice_prompt(
+        "Lorelai",
+        LORELAI_EVENT2_VOICE_LINE,
+        extract_spoken=bg.extract_spoken_dialogue_from_kling_prompt,
+    )
+    assert changed is True
+    assert spoken.startswith("Oh! Hi.")
+    assert "Lorelai speaks in a warm excited conversational pace" in upgraded
+    assert o3p.validate_element_bound_voice_prompt("Lorelai", upgraded) == []
+
+
+ARLO_BEAT24_BAD_PROMPT = """@Image1 (Arlo) Arlo — Transition to Spell. Arlo speaks directly to the camera; the child viewer is off-screen. Scene from @Image2.
+
+Camera: static locked shot, no zoom, no dolly, no pan, no camera movement, stable eye-level medium shot.
+
+Arlo speaks [warm, conspiratorial, to camera]: "OK, Kiddo ... help us solve this mystery. Lorelai's our best chance. She knows so much about Everdale! But ... she's so tense, she can't think straight. Let's see if the Great Wizard can teach you a Magic Spell for focusing power..."
+
+Children's illustrated fantasy storybook style, warm soft lighting."""
+
+
+def test_upgrade_element_bound_voice_prompt_fixes_arlo_beat24_bracket_delivery(monkeypatch):
+    from tools import kling_o3_prompt as o3p
+    import beat_generator as bg
+
+    monkeypatch.setattr(
+        "tools.kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+    errs = o3p.validate_element_bound_voice_prompt("Arlo", ARLO_BEAT24_BAD_PROMPT)
+    assert errs
+    upgraded, spoken, changed = o3p.upgrade_element_bound_voice_prompt(
+        "Arlo",
+        ARLO_BEAT24_BAD_PROMPT,
+        extract_spoken=bg.extract_spoken_dialogue_from_kling_prompt,
+    )
+    assert changed is True
+    assert spoken.startswith("OK, Kiddo")
+    assert "warm calm conversational pace" in upgraded
+    assert "not bubbly or hyper" in upgraded
+    assert "[warm, conspiratorial" not in upgraded.lower()
+    assert o3p.validate_element_bound_voice_prompt("Arlo", upgraded) == []
 
 
 def test_extract_single_quoted_lorelai_voice_line():

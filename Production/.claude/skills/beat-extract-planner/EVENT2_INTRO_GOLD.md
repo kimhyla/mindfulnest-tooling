@@ -39,7 +39,7 @@ Tessa [inspecting, puzzled]: "What do these symbols mean?" [leans toward Nest, p
 
 Lorelai [reading slowly, reverent]: "Feel .... what's.... real." [lips move deliberately, rooted in place]
 
-Arlo [gentle, explanatory, proud, to camera]: "That's what the Magic Hands Spell did. You felt real magical energy right between your hands." [faces camera, warm nod]
+Arlo speaks in a warm calm conversational pace, steady and natural, clear delivery, brisk but not rushed, not bubbly or hyper, not slow, not dramatic, not childlike or baby-talk: "That's what the Magic Hands Spell did. You felt real magical energy right between your hands." [faces camera, warm nod]
 
 Lorelai [delirious joy]: "Oh this is the most EXCITING THING IN THE WORLD!!! I'll publish a paper about this! I'll win a Lemur Peace Prize!" [giddy bounce, huge smile, rooted in place]
 
@@ -53,7 +53,7 @@ Tessa [amused, thoughtful]: "Well that's an interesting riddle..." [small smile,
 
 Lorelai [gleeful panic, over-excited]: "What does it mean, what does it mean!? Oh I just HAVE to solve this mystery!!" [frantic happy energy, wide eyes, rooted in place]
 
-Arlo [warm, conspiratorial, to camera]: "OK, Kiddo ... help us solve this mystery. Lorelai's our best chance. She knows so much about Everdale! But ... she's so tense, she can't think straight. Let's see if the Great Wizard can teach you a Magic Spell for focusing power..." [faces camera, gentle inviting nod]
+Arlo speaks in a warm calm conversational pace, steady and natural, clear delivery, brisk but not rushed, not bubbly or hyper, not slow, not dramatic, not childlike or baby-talk: "OK, Kiddo ... help us solve this mystery. Lorelai's our best chance. She knows so much about Everdale! But ... she's so tense, she can't think straight. Let's see if the Great Wizard can teach you a Magic Spell for focusing power..." [faces camera, gentle inviting nod]
 ```
 
 **Omit from auto-plans:** magnifying glass gag, cartwheel/hover spin, camera zoom/cut language, wing-flap/spin staging, separate Chipper compliment beat.

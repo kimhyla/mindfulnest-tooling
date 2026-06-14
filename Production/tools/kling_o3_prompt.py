@@ -35,6 +35,102 @@ _DELIVERY_BY_SPEAKER: dict[str, str] = {
     "Laurel": KLING_O3_LORELAI_VOICE_DELIVERY,
 }
 
+_VOICE_SPEAKER_NAMES = "|".join(re.escape(name) for name in _DELIVERY_BY_SPEAKER)
+_BRACKET_PERFORMANCE_TAG_RE = re.compile(
+    rf"\b(?:{_VOICE_SPEAKER_NAMES})\s+\[[^\]]+\]\s*:",
+    re.I,
+)
+_SPEAKS_BRACKET_TAG_RE = re.compile(r"\bspeaks\s*\[[^\]]+\]\s*:", re.I)
+_VOICE_LINE_VERB_RE = re.compile(r"\b(speaks|says)\b", re.I)
+
+
+def delivery_for_speaker(speaker: str) -> str | None:
+    """Canonical O3 delivery phrase for a locked speaker, if any."""
+    canon = (speaker or "").strip()
+    if canon == "Laurel":
+        canon = "Lorelai"
+    return _DELIVERY_BY_SPEAKER.get(canon)
+
+
+def voice_line_has_bracket_performance_tags(line: str) -> bool:
+    """Detect author bracket delivery tags on the voice line (not canonical lock)."""
+    text = (line or "").strip()
+    if not text:
+        return False
+    if _SPEAKS_BRACKET_TAG_RE.search(text):
+        return True
+    if _BRACKET_PERFORMANCE_TAG_RE.search(text):
+        return True
+    return False
+
+
+def voice_line_has_canonical_delivery(speaker: str, line: str) -> bool:
+    """True when the line uses speaks-in-a plus the speaker's canonical delivery lock."""
+    delivery = delivery_for_speaker(speaker)
+    if not delivery:
+        return True
+    lower = (line or "").lower()
+    if "speaks in a" not in lower:
+        return False
+    return delivery.lower() in lower
+
+
+def _voice_line_candidate_score(line: str) -> int:
+    """Rank prompt lines — prefer explicit dialogue delivery over staging 'speaks to camera'."""
+    text = (line or "").strip()
+    if not text:
+        return 0
+    if voice_line_has_bracket_performance_tags(text):
+        return 100
+    low = text.lower()
+    if "<<<voice_" in low:
+        return 90
+    if re.search(r":\s*[\"']", text):
+        return 80
+    if "speaks in a" in low:
+        return 70
+    if _VOICE_LINE_VERB_RE.search(text):
+        return 10
+    return 0
+
+
+def _find_voice_delivery_line(lines: list[str]) -> tuple[int, str] | None:
+    """Return (index, line) for the strongest voice-delivery candidate in the prompt."""
+    best_idx = -1
+    best_score = 0
+    for idx, line in enumerate(lines):
+        score = _voice_line_candidate_score(line)
+        if score > best_score:
+            best_score = score
+            best_idx = idx
+    if best_idx < 0 or best_score <= 0:
+        return None
+    return best_idx, lines[best_idx]
+
+
+def _is_voice_candidate_line(line: str) -> bool:
+    return _voice_line_candidate_score(line) > 0
+
+
+def _prompt_needs_locked_voice_upgrade(speaker: str, prompt: str) -> bool:
+    """True when an Element-bound prompt still uses non-canonical delivery wording."""
+    text = (prompt or "").strip()
+    if not text or not delivery_for_speaker(speaker):
+        return False
+    lower = text.lower()
+    if "<<<voice_" in lower:
+        return True
+    lines = text.splitlines()
+    found = _find_voice_delivery_line(lines)
+    if not found:
+        return False
+    _idx, voice_line = found
+    if voice_line_has_bracket_performance_tags(voice_line):
+        return True
+    if not voice_line_has_canonical_delivery(speaker, voice_line):
+        return True
+    return False
+
 
 def _voice_line_display_name(speaker: str, element_name: str | None) -> str:
     """Must match element_list element_name so Kling binds Element voice (not generic TTS)."""
@@ -63,24 +159,24 @@ def inject_locked_voice_line(prompt: str, speaker: str, spoken: str) -> str:
     """Replace legacy <<<voice_N>>> / author verb lines with Element locked delivery."""
     locked = voice_block(speaker, spoken)
     lines = prompt.splitlines()
+    found = _find_voice_delivery_line(lines)
+    if found is not None:
+        idx, line = found
+        low = line.lower()
+        if voice_line_has_canonical_delivery(speaker, line) and "speaks in a" in low:
+            colon = re.search(r":\s*", line)
+            if colon:
+                head = line[: colon.end()].rstrip()
+                lines[idx] = f'{head} "{spoken}"'
+            else:
+                lines[idx] = locked
+        else:
+            lines[idx] = locked
+        return "\n".join(lines)
     out: list[str] = []
     replaced = False
-    voice_line_re = re.compile(r"\b(speaks|says)\b", re.I)
     for line in lines:
-        low = line.lower()
-        if not replaced and (voice_line_re.search(line) or "<<<voice_" in low):
-            if "speaks in a" in low:
-                colon = re.search(r":\s*", line)
-                if colon:
-                    head = line[: colon.end()].rstrip()
-                    out.append(f'{head} "{spoken}"')
-                else:
-                    out.append(locked)
-            else:
-                out.append(locked)
-            replaced = True
-        elif not replaced and re.search(r":\s*[\"']", line):
-            # Author verbs (bursts out, cries, etc.) with quoted dialogue after colon.
+        if not replaced and _is_voice_candidate_line(line):
             out.append(locked)
             replaced = True
         else:
@@ -119,6 +215,7 @@ def upgrade_element_bound_voice_prompt(
     needs_upgrade = (
         "<<<voice_" in lower
         or not re.search(r"\b(?:speaks|says)\b", text, re.I)
+        or _prompt_needs_locked_voice_upgrade(speaker, text)
     )
     if not needs_upgrade or not spoken:
         return text, spoken, False
@@ -144,6 +241,25 @@ def validate_element_bound_voice_prompt(speaker: str, prompt: str) -> list[str]:
         return errors
     if "<<<voice_" in lower:
         errors.append("prompt contains <<<voice_N>>> (generic Kling TTS tags)")
-    if not re.search(r"\b(?:speaks|says)\b", text, re.I):
-        errors.append("prompt missing voice line (speaks/says …)")
+    lines = text.splitlines()
+    found = _find_voice_delivery_line(lines)
+    voice_line = found[1] if found else ""
+    if voice_line and voice_line_has_bracket_performance_tags(voice_line):
+        errors.append(
+            "prompt voice line uses bracket performance tags (use speaks in a {delivery})"
+        )
+    if not found or not _VOICE_LINE_VERB_RE.search(voice_line):
+        if not voice_line and not any(
+            voice_line_has_bracket_performance_tags(line) for line in lines
+        ):
+            errors.append("prompt missing voice line (speaks/says …)")
+        elif not voice_line:
+            errors.append("prompt missing voice line (speaks/says …)")
+    delivery = delivery_for_speaker(speaker)
+    if delivery and voice_line:
+        voice_lower = voice_line.lower()
+        if "speaks in a" not in voice_lower:
+            errors.append("prompt voice line must use 'speaks in a {canonical delivery}'")
+        elif delivery.lower() not in voice_lower:
+            errors.append("prompt voice line missing canonical delivery lock")
     return errors

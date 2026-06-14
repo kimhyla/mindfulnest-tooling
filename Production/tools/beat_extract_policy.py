@@ -611,10 +611,9 @@ def event1_kling_voice_delivery(speaker: str) -> str | None:
     if canon in ("Lorelai", "Laurel"):
         return bg.KLING_O3_LORELAI_VOICE_DELIVERY
     if canon == "Arlo":
-        return (
-            "warm natural conversational pace, clear friendly delivery, "
-            "steady and not slow, not bubbly or hyper"
-        )
+        from tools import kling_o3_prompt as o3p
+
+        return o3p.KLING_O3_ARLO_VOICE_DELIVERY
     return None
 
 
