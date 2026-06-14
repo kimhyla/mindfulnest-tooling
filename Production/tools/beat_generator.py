@@ -396,9 +396,20 @@ def read_sidecar():
     path = os.path.abspath(BG_SIDECAR_PATH)
     if not os.path.exists(path):
         return _EMPTY_SIDECAR()
-    with _sidecar_lock:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+    last_err: OSError | None = None
+    for attempt in range(5):
+        try:
+            with _sidecar_lock:
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except OSError as exc:
+            last_err = exc
+            if exc.errno not in (11, 35) or attempt >= 4:
+                raise
+            time.sleep(0.15 * (attempt + 1))
+    if last_err:
+        raise last_err
+    return _EMPTY_SIDECAR()
 
 
 def write_sidecar(data):
@@ -5005,11 +5016,38 @@ def apply_approved_extract_plan(
     append_intro_canonical_tail_beats(merged, beat_label, phase)
     merged = normalize_segment_beat_order(merged)
     seg["beats"] = merged
-    seg["beat_plan_draft"] = None
+    seg["beat_plan_draft"] = {
+        "story_summary": story_summary,
+        "beats_plan": beats_plan,
+        "approved_at": datetime.now(timezone.utc).isoformat(),
+        "source": "approved_snapshot",
+    }
     seg["beat_plan_approved_at"] = datetime.now(timezone.utc).isoformat()
     if story_summary:
         seg["beat_plan_story_summary"] = story_summary
     return merged
+
+
+def segment_beats_to_plan_rows(beats: list[dict]) -> list[dict]:
+    """Rebuild Beat Plan modal rows from populated segment beats (Review saved plan fallback)."""
+    rows: list[dict] = []
+    for i, beat in enumerate(beats or [], start=1):
+        if not isinstance(beat, dict):
+            continue
+        speaker = str(beat.get("speaker") or "").strip()
+        is_stage = (
+            beat_is_still_insert(beat)
+            or speaker.lower() in ("[stage direction]", "stage direction", "narrator")
+        )
+        rows.append({
+            "beat_index": i,
+            "beat_type": "stage_direction" if is_stage else "dialogue",
+            "speaker": speaker or ("[Stage Direction]" if is_stage else "Character"),
+            "dialogue_text": beat.get("dialogue_text") or "",
+            "emotion": beat.get("emotion") or "neutral",
+            "scene_notes": beat.get("scene_notes") or "",
+        })
+    return rows
 
 
 def generate_kling_prompts_for_segment(sidecar: dict, arc_number: int, event_id: str, phase: str) -> int:

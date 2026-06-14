@@ -2199,7 +2199,7 @@ def handle_bg_extract_beats_approve(h, body: dict) -> None:
 
     prompt_by_index = author_result.get("prompt_by_index") or {}
     beats_plan_final = author_result.get("beats_plan_enriched") or beats_plan
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         beats = bg.apply_approved_extract_plan(
             sidecar, arc_number, event_id, phase,
@@ -2241,17 +2241,42 @@ def handle_bg_extract_beats_draft_get(h, qs: dict) -> None:
     event_id = str((qs.get("event_id") or ["1"])[0])
     phase = str((qs.get("phase") or ["full"])[0])
     bg = _bg_module()
-    sidecar = bg.read_sidecar()
-    seg = bg.get_seg_entry(sidecar, arc_number, event_id, phase)
-    draft = seg.get("beat_plan_draft") or {}
-    if not draft:
-        return h._send_json(200, {"ok": True, "beat_plan_draft": None})
-    return h._send_json(200, {
+    draft: dict = {}
+    try:
+        with bg.sidecar_file_lock():
+            sidecar = bg.read_sidecar()
+            seg = bg.get_seg_entry(sidecar, arc_number, event_id, phase)
+            draft = seg.get("beat_plan_draft") or {}
+            story_summary = (
+                (draft.get("story_summary") if isinstance(draft, dict) else None)
+                or seg.get("beat_plan_story_summary")
+                or ""
+            )
+            beats_plan = (draft.get("beats_plan") if isinstance(draft, dict) else None) or []
+            reconstructed = False
+            if not beats_plan:
+                beats = seg.get("beats") or []
+                if beats:
+                    beats_plan = bg.segment_beats_to_plan_rows(beats)
+                    reconstructed = bool(beats_plan)
+    except OSError as exc:
+        return h._send_error_v59(
+            503,
+            error_code="SIDECAR_READ_FAILED",
+            error_message=str(exc),
+            retry_safe=True,
+        )
+    if not beats_plan:
+        return h._send_json(200, {"ok": True, "beat_plan_draft": None, "beats_plan": []})
+    payload = {
         "ok": True,
-        "beat_plan_draft": draft,
-        "story_summary": draft.get("story_summary"),
-        "beats_plan": draft.get("beats_plan"),
-    })
+        "story_summary": story_summary,
+        "beats_plan": beats_plan,
+        "reconstructed_from_beats": reconstructed,
+    }
+    if draft:
+        payload["beat_plan_draft"] = draft
+    return h._send_json(200, payload)
 
 
 def handle_bg_inject_beats(h, body: dict)-> None:
@@ -3970,6 +3995,10 @@ def handle_bg_render_still_clip(h, body: dict) -> None:
         (body.get("scope_target_video") or body.get("scope_video_role") or "intro") or "intro"
     ).strip()
     bg = _bg_module()
+    production_state = h.app.state.read_state()
+
+    import copy
+
     with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
@@ -3988,33 +4017,70 @@ def handle_bg_render_still_clip(h, body: dict) -> None:
                 error_message="render-still-clip only applies to still_insert beats",
                 retry_safe=False,
             )
-        production_state = h.app.state.read_state()
-        try:
-            result = bg.render_still_insert_o3_clip(
-                beat,
-                h.app.event_dir,
-                method=method,
-                duration=duration,
-                slot_index=slot_index,
-                sidecar=sidecar,
-                production_state=production_state,
-                video_role=video_role,
-            )
-        except ValueError as exc:
+        if bg.resolve_still_source_abs_path(beat) is None:
             return h._send_error_v59(
                 400,
                 error_code="STILL_SOURCE_MISSING",
-                error_message=str(exc),
+                error_message="No still image — drop a library image in option 1 or set char/BG ref first",
                 retry_safe=False,
             )
-        except Exception as exc:
+        work_beat = copy.deepcopy(beat)
+        work_sidecar = sidecar
+
+    try:
+        result = bg.render_still_insert_o3_clip(
+            work_beat,
+            h.app.event_dir,
+            method=method,
+            duration=duration,
+            slot_index=slot_index,
+            sidecar=work_sidecar,
+            production_state=production_state,
+            video_role=video_role,
+        )
+    except ValueError as exc:
+        return h._send_error_v59(
+            400,
+            error_code="STILL_SOURCE_MISSING",
+            error_message=str(exc),
+            retry_safe=False,
+        )
+    except Exception as exc:
+        return h._send_error_v59(
+            500,
+            error_code="STILL_CLIP_RENDER_FAILED",
+            error_message=str(exc),
+            retry_safe=True,
+        )
+
+    _STILL_RENDER_FIELDS = (
+        "kling_o3_options", "kling_o3_video_path", "kling_o3_status", "status",
+        "kling_o3_selected_option_key", "kling_o3_selected_at",
+        "kling_o3_trim_start", "kling_o3_trim_back", "kling_o3_trim_end",
+        "local_render_params",
+    )
+
+    def _apply_render(target, _sidecar):
+        for field in _STILL_RENDER_FIELDS:
+            if field in work_beat:
+                target[field] = work_beat[field]
+
+    try:
+        ok, _ = bg.update_beat_locked(beat_id, _apply_render)
+        if not ok:
             return h._send_error_v59(
-                500,
-                error_code="STILL_CLIP_RENDER_FAILED",
-                error_message=str(exc),
-                retry_safe=True,
+                404,
+                error_code="BEAT_NOT_FOUND",
+                error_message=f"beat {beat_id} not found on write-back",
+                retry_safe=False,
             )
-        bg.write_sidecar(sidecar)
+    except OSError as exc:
+        return h._send_error_v59(
+            503,
+            error_code="SIDECAR_WRITE_FAILED",
+            error_message=str(exc),
+            retry_safe=True,
+        )
     return h._send_json(200, {"ok": True, "beat_id": beat_id, **result})
 
 

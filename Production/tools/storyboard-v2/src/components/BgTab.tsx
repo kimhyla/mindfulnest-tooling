@@ -709,11 +709,16 @@ export function BgTab() {
   };
 
   const openBeatPlanDraft = async (): Promise<boolean> => {
-    if (!activeSegment) return false;
+    if (!activeSegment) {
+      pushToast({ kind: 'info', message: 'Select a segment first.', source: 'bg-review-plan' });
+      return false;
+    }
     const [event_id, phase] = activeSegment.split('|');
     const draftRes = await apiGet<{
       story_summary?: string;
       beats_plan?: BeatPlanRow[];
+      beat_plan_draft?: { story_summary?: string; beats_plan?: BeatPlanRow[] };
+      reconstructed_from_beats?: boolean;
     }>('bg_extract_beats_draft', {
       arc_number: String(arcNumber),
       event_id,
@@ -721,11 +726,35 @@ export function BgTab() {
       scope_event_id: activeScope.value.event_id,
       scope_video_role: activeTargetVideo.value,
     });
-    const rows = draftRes.data?.beats_plan ?? [];
-    if (!draftRes.ok || rows.length === 0) return false;
+    if (!draftRes.ok) {
+      pushToast({
+        kind: 'error',
+        message: `Could not load saved plan: ${draftRes.error_message || draftRes.error || 'unknown error'}`,
+        source: 'bg-review-plan-error',
+      });
+      return false;
+    }
+    const rows = draftRes.data?.beats_plan
+      ?? draftRes.data?.beat_plan_draft?.beats_plan
+      ?? [];
+    if (rows.length === 0) {
+      pushToast({
+        kind: 'info',
+        message: 'No saved plan for this segment — run Extract Beats from script first.',
+        source: 'bg-review-plan-empty',
+      });
+      return false;
+    }
     setBeatPlanSummary(draftRes.data?.story_summary ?? '');
     setBeatPlanRows(rows);
     setBeatPlanOpen(true);
+    if (draftRes.data?.reconstructed_from_beats) {
+      pushToast({
+        kind: 'info',
+        message: 'Rebuilt plan from current beats — edit and Approve to re-run Kling author.',
+        source: 'bg-review-plan-reconstructed',
+      });
+    }
     return true;
   };
 
