@@ -6095,6 +6095,25 @@ def stash_prior_kling_o3_before_redo(
     return True
 
 
+def restore_active_kling_o3_after_failed_redo(beat: dict) -> bool:
+    """Re-pin the last on-disk approved clip when an O3 redo fails mid-flight."""
+    options = [
+        o for o in (beat.get("kling_o3_options") or [])
+        if isinstance(o, dict)
+    ]
+    active = next((o for o in options if o.get("active")), None)
+    video_path = str((active or {}).get("video_path") or beat.get("kling_o3_video_path") or "")
+    if not video_path or not Path(video_path).is_file():
+        return False
+    beat["kling_o3_video_path"] = video_path
+    beat["kling_o3_status"] = "approved"
+    beat["status"] = "approved"
+    for opt in options:
+        opt["active"] = opt.get("video_path") == video_path
+    beat["kling_o3_options"] = options[:3]
+    return True
+
+
 def _kling_o3_option_key(beat_id: str, video_path: str) -> str:
     digest = hashlib.sha1(video_path.encode("utf-8")).hexdigest()[:10]
     return f"{beat_id}_o3_video_{digest}"

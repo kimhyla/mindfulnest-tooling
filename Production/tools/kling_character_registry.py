@@ -266,6 +266,25 @@ def assign_voice(character: str, voice_id: str, voice_label: str | None = None) 
     return chars[key]
 
 
+MAX_ELEMENT_REFER_IMAGES = 3
+
+
+def trim_refer_images_for_element(
+    refer: list[str],
+    *,
+    keep: str | None = None,
+    max_count: int = MAX_ELEMENT_REFER_IMAGES,
+) -> list[str]:
+    """Kling elements API accepts at most 3 refer_images (frontal is separate)."""
+    ordered = [str(r) for r in refer if r]
+    if keep and keep in ordered:
+        ordered.remove(keep)
+        ordered.append(keep)
+    while len(ordered) > max_count:
+        ordered.pop(0)
+    return ordered
+
+
 def slugify(name: str) -> str:
     s = re.sub(r"[^a-zA-Z0-9_-]+", "_", name.strip())
     return s.strip("_").lower() or "unknown"
@@ -326,7 +345,7 @@ def add_element_pose(
     refer = [str(r) for r in (cfg.get("refer_images") or [])]
     if rel_pose not in refer:
         refer.append(rel_pose)
-    cfg["refer_images"] = refer
+    cfg["refer_images"] = trim_refer_images_for_element(refer, keep=rel_pose)
     if not cfg.get("frontal_image"):
         cfg["frontal_image"] = rel_pose
 

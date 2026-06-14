@@ -310,23 +310,43 @@ def run_pipeline(
         "prompt_voice_excerpt": prompt[:500],
         "kling_o3_duration": duration,
     }), flush=True)
-    result = o3.run_beat_generation(
-        api_key,
-        prompt,
-        char_path,
-        bg_path,
-        master,
-        duration=duration,
-        speaker=speaker,
-    )
+    try:
+        result = o3.run_beat_generation(
+            api_key,
+            prompt,
+            char_path,
+            bg_path,
+            master,
+            duration=duration,
+            speaker=speaker,
+        )
+    except Exception as exc:
+        msg = str(exc)
+        transient = any(token in msg for token in ("Poll HTTP 502", "Poll HTTP 503", "Poll HTTP 504", "Poll HTTP 500", "Poll HTTP 429", "transport failed after retries"))
+        fail_fields = {
+            "kling_o3_voice_fix_status": "failed_o3",
+            "kling_o3_voice_fix_error": msg[:1500],
+            "kling_o3_voice_fix_error_code": "WAVESPEED_GATEWAY" if transient else "O3_RUNTIME",
+            "kling_o3_voice_fix_phase": "failed",
+            "kling_o3_voice_fix_completed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if not bg_sidecar.restore_active_kling_o3_after_failed_redo(beat):
+            fail_fields["status"] = "o3_element_failed"
+            fail_fields["kling_o3_status"] = "failed"
+        persist(fail_fields, remove=("kling_o3_voice_fix_ui_job_id",))
+        raise
     if not result.get("ok"):
-        persist({
+        fail_fields = {
             "status": "o3_element_failed",
             "kling_o3_status": "failed",
             "kling_o3_voice_fix_status": "failed_o3",
             "kling_o3_voice_fix_error": json.dumps(result)[:1500],
             "kling_o3_voice_fix_completed_at": datetime.now(timezone.utc).isoformat(),
-        }, remove=("kling_o3_voice_fix_ui_job_id",))
+        }
+        if bg_sidecar.restore_active_kling_o3_after_failed_redo(beat):
+            fail_fields.pop("status", None)
+            fail_fields.pop("kling_o3_status", None)
+        persist(fail_fields, remove=("kling_o3_voice_fix_ui_job_id",))
         raise RuntimeError(f"O3 element generation failed: {result}")
 
     raw_probe = _probe(master)

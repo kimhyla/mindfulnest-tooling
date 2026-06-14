@@ -547,6 +547,90 @@ def test_add_element_pose_appends_refer_and_reregisters(tmp_path: Path, monkeypa
     assert Path(result["pose_abs_path"]).is_file()
 
 
+def test_add_element_pose_trims_refer_images_at_kling_cap(tmp_path: Path, monkeypatch):
+    from tools import kling_character_registry as reg
+
+    poses = tmp_path / "Tessa" / "poses"
+    poses.mkdir(parents=True)
+    (poses / "tessa_happy_ref.png").write_bytes(b"happy")
+    (poses / "tessa_sad_ref.png").write_bytes(b"sad")
+    (poses / "tessa_extra_ref.png").write_bytes(b"extra")
+    source = tmp_path / "library" / "new_pose.png"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"new")
+
+    registry = {
+        "characters": {
+            "Tessa": {
+                "status": "active",
+                "element_id": "old_element",
+                "kling_voice_id": "voice123",
+                "frontal_image": "Tessa/poses/tessa_happy_ref.png",
+                "refer_images": [
+                    "Tessa/poses/tessa_happy_ref.png",
+                    "Tessa/poses/tessa_sad_ref.png",
+                    "Tessa/poses/tessa_extra_ref.png",
+                ],
+                "element_name": "Tessa",
+            },
+        },
+    }
+    (tmp_path / "character_subjects.json").write_text(json.dumps(registry), encoding="utf-8")
+    reg.set_prod_root(tmp_path)
+
+    captured: dict = {}
+
+    def fake_register(char_name, cfg, voice_id, wavespeed_key):
+        captured["refer_images"] = list(cfg.get("refer_images") or [])
+        return "new_element", "pred-1"
+
+    monkeypatch.setattr("tools.kling_element_voice.register_kling_element", fake_register)
+
+    result = reg.add_element_pose("Tessa", source, "ws-key")
+    assert result["ok"] is True
+    refs = captured["refer_images"]
+    assert len(refs) == 3
+    assert any("new_pose" in r for r in refs)
+    assert "Tessa/poses/tessa_happy_ref.png" not in refs
+
+
+def test_register_kling_element_uses_registry_prod_root(tmp_path: Path, monkeypatch):
+    """Pose copy + Element re-register must share runtime Production/ (not __file__ parent)."""
+    from tools import kling_character_registry as reg
+    from tools.kling_element_voice import register_kling_element
+
+    poses = tmp_path / "Tessa" / "poses"
+    poses.mkdir(parents=True)
+    (poses / "tessa_front.png").write_bytes(b"front")
+    (poses / "tessa_pose.png").write_bytes(b"pose")
+    reg.set_prod_root(tmp_path)
+
+    cfg = {
+        "frontal_image": "Tessa/poses/tessa_front.png",
+        "refer_images": ["Tessa/poses/tessa_pose.png"],
+        "element_name": "Tessa",
+    }
+    uploaded: list[str] = []
+
+    monkeypatch.setattr(
+        "tools.kling_element_voice.upload_catbox",
+        lambda p: uploaded.append(str(p.resolve())) or "http://catbox/fake",
+    )
+    monkeypatch.setattr(
+        "tools.kling_element_voice.curl_json",
+        lambda *a, **k: {"data": {"id": "pred-1"}},
+    )
+    monkeypatch.setattr(
+        "tools.kling_element_voice.poll_wavespeed",
+        lambda *a, **k: {"element_id": "el-new", "outputs": []},
+    )
+
+    element_id, _ = register_kling_element("Tessa", cfg, "voice1", "ws-key")
+    assert element_id == "el-new"
+    assert uploaded
+    assert all(str(tmp_path) in path for path in uploaded)
+
+
 def test_bg_add_element_pose_handler_registered():
     text = (TOOLS / "server_handlers" / "background.py").read_text(encoding="utf-8")
     assert "def handle_bg_add_element_pose" in text

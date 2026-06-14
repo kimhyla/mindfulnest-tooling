@@ -163,6 +163,13 @@ def prod_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def _character_asset_root() -> Path:
+    """Runtime Production/ for poses + Element refer images (Dropbox when server-bound)."""
+    from tools import kling_character_registry as reg
+
+    return reg.prod_root()
+
+
 def dropbox_root() -> Path:
     from lib.paths import DROPBOX_ROOT
     return DROPBOX_ROOT
@@ -388,8 +395,14 @@ def register_kling_element(
     wavespeed_key: str,
 ) -> tuple[str, str]:
     """Register image_refer Element with bound custom voice. Returns (element_id, prediction_id)."""
-    frontal_path = prod_root() / cfg["frontal_image"]
-    refer_paths = [prod_root() / p for p in (cfg.get("refer_images") or [])]
+    from tools.kling_character_registry import trim_refer_images_for_element
+
+    root = _character_asset_root()
+    frontal_path = root / cfg["frontal_image"]
+    refer_rels = trim_refer_images_for_element(
+        [str(r) for r in (cfg.get("refer_images") or [])],
+    )
+    refer_paths = [root / p for p in refer_rels]
     if not frontal_path.is_file():
         raise FileNotFoundError(f"Missing frontal_image: {frontal_path}")
     for rp in refer_paths:
@@ -410,7 +423,9 @@ def register_kling_element(
     resp = curl_json("POST", ELEMENTS_URL, wavespeed_key, payload)
     prediction_id = str((resp.get("data") or {}).get("id") or "")
     if not prediction_id:
-        raise RuntimeError(f"elements: no prediction id: {resp}")
+        msg = resp.get("message") or (resp.get("data") or {}).get("message")
+        detail = msg or resp
+        raise RuntimeError(f"elements: {detail}")
     data = poll_wavespeed(prediction_id, wavespeed_key, "element", timeout_s=120)
     outputs = data.get("outputs") or []
     element_id = data.get("element_id")

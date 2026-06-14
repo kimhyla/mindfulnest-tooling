@@ -21,6 +21,9 @@ ENDPOINT_PRO_ITV = "https://api.wavespeed.ai/api/v3/kwaivgi/kling-video-o3-pro/i
 POLL_TIMEOUT_S = int(os.environ.get("KLING_O3_POLL_TIMEOUT_S", "1800"))
 POLL_TIMEOUT_RETRY_S = int(os.environ.get("KLING_O3_POLL_TIMEOUT_RETRY_S", "900"))
 POLL_INTERVAL_S = 10
+POLL_TRANSIENT_HTTP = (429, 500, 502, 503, 504)
+POLL_TRANSIENT_MAX_RETRIES = int(os.environ.get("KLING_O3_POLL_TRANSIENT_RETRIES", "12"))
+POLL_TRANSIENT_BACKOFF_S = (3, 6, 12, 24, 30, 45, 60, 90, 120, 120, 150, 180)
 
 KLING_O3_AUDIO_LOCK = (
     "Audio: spoken character dialogue only — absolutely no background music, "
@@ -285,6 +288,57 @@ def submit_reference_to_video(
     return task_id, tier
 
 
+def is_transient_poll_http(status: int) -> bool:
+    return status in POLL_TRANSIENT_HTTP
+
+
+def _poll_result_url(task_id: str) -> str:
+    return f"https://api.wavespeed.ai/api/v3/predictions/{task_id}/result"
+
+
+def _poll_once_with_transient_retry(
+    url: str,
+    api_key: str,
+    *,
+    label: str = "poll",
+) -> tuple[int, dict]:
+    """GET poll with backoff on WaveSpeed gateway 5xx / curl transport failures."""
+    transient_attempt = 0
+    while True:
+        try:
+            status, body = curl_json("GET", url, api_key)
+        except RuntimeError as exc:
+            transient_attempt += 1
+            if transient_attempt > POLL_TRANSIENT_MAX_RETRIES:
+                raise RuntimeError(f"{label} transport failed after retries: {exc}") from exc
+            wait_s = POLL_TRANSIENT_BACKOFF_S[
+                min(transient_attempt - 1, len(POLL_TRANSIENT_BACKOFF_S) - 1)
+            ]
+            print(
+                f"[kling-o3] {label} transport error attempt {transient_attempt}/"
+                f"{POLL_TRANSIENT_MAX_RETRIES}: {exc} — retry in {wait_s}s",
+                flush=True,
+            )
+            time.sleep(wait_s)
+            continue
+
+        if status < 400 or not is_transient_poll_http(status):
+            return status, body
+
+        transient_attempt += 1
+        if transient_attempt > POLL_TRANSIENT_MAX_RETRIES:
+            return status, body
+        wait_s = POLL_TRANSIENT_BACKOFF_S[
+            min(transient_attempt - 1, len(POLL_TRANSIENT_BACKOFF_S) - 1)
+        ]
+        print(
+            f"[kling-o3] {label} HTTP {status} attempt {transient_attempt}/"
+            f"{POLL_TRANSIENT_MAX_RETRIES} — retry in {wait_s}s",
+            flush=True,
+        )
+        time.sleep(wait_s)
+
+
 def poll_until_done(
     task_id: str,
     api_key: str,
@@ -292,10 +346,10 @@ def poll_until_done(
     *,
     retry_on_timeout: bool = True,
 ) -> dict:
-    url = f"https://api.wavespeed.ai/api/v3/predictions/{task_id}/result"
+    url = _poll_result_url(task_id)
     start = time.time()
     while time.time() - start < timeout_s:
-        status, body = curl_json("GET", url, api_key)
+        status, body = _poll_once_with_transient_retry(url, api_key, label=f"poll {task_id}")
         if status >= 400:
             raise RuntimeError(f"Poll HTTP {status}: {body}")
         inner = body.get("data") or body
@@ -306,7 +360,9 @@ def poll_until_done(
     if retry_on_timeout:
         retry_start = time.time()
         while time.time() - retry_start < POLL_TIMEOUT_RETRY_S:
-            status, body = curl_json("GET", url, api_key)
+            status, body = _poll_once_with_transient_retry(
+                url, api_key, label=f"poll-retry {task_id}",
+            )
             if status >= 400:
                 raise RuntimeError(f"Poll HTTP {status}: {body}")
             inner = body.get("data") or body

@@ -3867,6 +3867,16 @@ def _summarize_o3_job_error(error: str | None) -> str:
             "WaveSpeed queued the lipsync job too long and timed out. "
             "Previous approved clip was kept active."
         )
+    if "Poll HTTP 502" in text or "502 Bad Gateway" in text:
+        return (
+            "WaveSpeed gateway returned 502 while polling the O3 job — transient provider outage. "
+            "Previous approved clip was kept active; click Generate again in a minute."
+        )
+    if any(token in text for token in ("Poll HTTP 503", "Poll HTTP 504", "Poll HTTP 500", "Poll HTTP 429")):
+        return (
+            "WaveSpeed returned a transient gateway error while polling the O3 job. "
+            "Previous approved clip was kept active; retry shortly."
+        )
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     return (lines[-1] if lines else text)[:500]
 
@@ -4168,6 +4178,11 @@ def _clear_o3_job_metadata(job_id: str, *, status: str, result: dict | None = No
                     beat["kling_o3_voice_fix_phase"] = "failed"
                     if error:
                         beat["kling_o3_voice_fix_error"] = _summarize_o3_job_error(str(error))
+                    try:
+                        bg = _bg_module()
+                        bg.restore_active_kling_o3_after_failed_redo(beat)
+                    except Exception:
+                        pass
                 changed = True
             if changed:
                 bg.write_sidecar(sidecar)
