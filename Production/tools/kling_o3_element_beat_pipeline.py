@@ -72,11 +72,16 @@ def _find_beat(sidecar: dict, beat_id: str):
     return None
 
 
-def _event_dir_for_segment(segment_key: str) -> Path:
+def _runtime_prod_root() -> Path:
+    """Dropbox Production root when MN_PROD_ROOT is set (server subprocess path)."""
+    return Path(os.environ.get("MN_PROD_ROOT", "").strip() or PROD).resolve()
+
+
+def _event_dir_for_segment(prod_root: Path, segment_key: str) -> Path:
     match = re.match(r"event_(\d+)_", segment_key or "")
     if match:
-        return PROD / f"Event_{match.group(1)}"
-    return PROD / "Event_1"
+        return prod_root / f"Event_{match.group(1)}"
+    return prod_root / "Event_1"
 
 
 def _ref_path(value) -> Path:
@@ -148,14 +153,15 @@ def run_pipeline(
     attempt_id = attempt_id or os.environ.get("MN_O3_ATTEMPT_ID") or __import__("uuid").uuid4().hex
     print(json.dumps({"phase": "starting", "beat_id": beat_id, "route": "o3_element_native_voice", "attempt_id": attempt_id}), flush=True)
 
-    prod_root = Path(os.environ.get("MN_PROD_ROOT", "").strip() or PROD)
+    prod_root = _runtime_prod_root()
+    reg.set_prod_root(prod_root)
     sidecar_path = prod_root / "beat_generator_state.json"
     sc = json.loads(sidecar_path.read_text(encoding="utf-8"))
     found = _find_beat(sc, beat_id)
     if not found:
         raise RuntimeError(f"beat not found: {beat_id}")
     beat, segment_key = found
-    event_dir = _event_dir_for_segment(segment_key)
+    event_dir = _event_dir_for_segment(prod_root, segment_key)
     bg_sidecar.init_bg_paths(event_dir)
     sidecar_path = Path(bg_sidecar.BG_SIDECAR_PATH)
     with bg_sidecar._sidecar_lock:
@@ -204,6 +210,21 @@ def run_pipeline(
         prompt = _inject_locked_voice(stored_prompt, speaker, spoken)
     else:
         prompt = _inject_locked_voice(build_prompt(beat), speaker, spoken)
+    from tools import kling_o3_prompt as o3p
+
+    prompt_errors = o3p.validate_element_bound_voice_prompt(speaker, prompt)
+    if prompt_errors:
+        raise RuntimeError(
+            "ELEMENT_VOICE_PROMPT: "
+            + "; ".join(prompt_errors)
+            + " — fix prompt before O3 submit (generic Kling TTS otherwise)."
+        )
+    element_entry = reg.get_element_list_entry(speaker)
+    if not element_entry:
+        raise RuntimeError(
+            f"{speaker!r} has no active element_list entry — "
+            "run setup_all_kling_character_voices.py before O3 Element generate."
+        )
     duration = int(beat.get("kling_o3_duration") or 8)
 
     creds = load_credentials()
@@ -258,9 +279,13 @@ def run_pipeline(
         "phase": "o3_submit",
         "beat_id": beat_id,
         "speaker": speaker,
-        "element": reg.get_element_list_entry(speaker),
+        "element": element_entry,
+        "kling_voice_id": reg.get_bound_voice_id(speaker),
+        "prod_root": str(prod_root),
+        "event_dir": str(event_dir),
         "char_ref_aligned": aligned,
         "char_ref": str(char_path),
+        "voice_line_locked": "speaks in a" in prompt.lower(),
     }), flush=True)
     result = o3.run_beat_generation(
         api_key,

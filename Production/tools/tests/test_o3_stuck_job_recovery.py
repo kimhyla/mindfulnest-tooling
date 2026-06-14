@@ -90,11 +90,18 @@ def test_reconcile_recovers_done_element_log_after_dead_subprocess(monkeypatch, 
     log_path = tmp_path / "job.log"
     log_path.write_text(
         json.dumps({
+            "phase": "starting",
+            "route": "o3_element_native_voice",
+            "beat_id": "bg_arc1_event2_pre_beat_02",
+        })
+        + "\n"
+        + json.dumps({
             "phase": "done",
             "beat_id": "bg_arc1_event2_pre_beat_02",
             "video": str(delivery),
             "delivery": {"width": 1280, "height": 720},
-        }) + "\n",
+        })
+        + "\n",
         encoding="utf-8",
     )
     sidecar = {

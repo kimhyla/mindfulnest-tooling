@@ -4134,6 +4134,15 @@ def validate_kling_o3_beat_for_submit(
                     f"Run: python3 scripts/setup_all_kling_character_voices.py --char {key}"
                 ),
             })
+        else:
+            from tools import kling_o3_prompt as o3p
+
+            for msg in o3p.validate_element_bound_voice_prompt(speaker, stored_prompt):
+                errors.append({
+                    "beat_id": beat_id,
+                    "code": "ELEMENT_VOICE_PROMPT",
+                    "message": msg,
+                })
     except Exception as exc:
         errors.append({
             "beat_id": beat_id,

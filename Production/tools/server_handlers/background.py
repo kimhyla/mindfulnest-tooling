@@ -3266,6 +3266,7 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                                     error_message=detail,
                                     retry_safe=False,
                                 )
+                        beat["reference_image_locked"] = True
                 except Exception as exc:
                     return h._send_error_v59(
                         500,
@@ -3273,6 +3274,22 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                         error_message=str(exc),
                         retry_safe=True,
                     )
+            from tools import kling_o3_prompt as o3p
+
+            voice_prompt_errors = o3p.validate_element_bound_voice_prompt(
+                speaker,
+                str(beat.get("kling_o3_prompt") or ""),
+            )
+            if voice_prompt_errors:
+                return h._send_error_v59(
+                    400,
+                    error_code="ELEMENT_VOICE_PROMPT",
+                    error_message=(
+                        "Bound Element voice requires locked delivery line in prompt — "
+                        + "; ".join(voice_prompt_errors)
+                    ),
+                    retry_safe=False,
+                )
             bg.sync_beat_dialogue_from_kling_prompt(beat)
             replace_slot = body.get("replace_slot_index", beat.get("kling_o3_replace_slot_index", 0))
             try:
@@ -3749,9 +3766,18 @@ def reconcile_stuck_o3_voice_beats(sidecar: dict) -> int:
 
         # Subprocess exited but sidecar never got final persist (server restart / poll miss).
         if pid_dead and _beat_o3_job_looks_running(beat):
-            log_result = _parse_o3_pipeline_result_from_log(beat.get("kling_o3_voice_fix_job_log_path"))
+            log_path = beat.get("kling_o3_voice_fix_job_log_path")
+            log_text = ""
+            if log_path and Path(str(log_path)).is_file():
+                log_text = Path(str(log_path)).read_text(encoding="utf-8", errors="replace")
+            is_element_job = (
+                "o3_element_native_voice" in log_text
+                or '"element_id"' in log_text
+                or beat.get("kling_o3_mode") == "o3_element_native_voice"
+            )
+            log_result = _parse_o3_pipeline_result_from_log(log_path)
             video_path = str((log_result or {}).get("video") or "")
-            if log_result and video_path and Path(video_path).is_file():
+            if log_result and video_path and Path(video_path).is_file() and is_element_job:
                 now = datetime.now(timezone.utc).isoformat()
                 beat["kling_o3_video_path"] = video_path
                 beat["kling_o3_status"] = "approved"

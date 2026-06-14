@@ -56,3 +56,28 @@ def voice_block(speaker: str, spoken: str) -> str:
     if delivery:
         return f'{voice_name} speaks in a {delivery}: "{spoken}"'
     return f'{voice_name} speaks clearly at a natural pace, steady and not bubbly or hyper: "{spoken}"'
+
+
+def validate_element_bound_voice_prompt(speaker: str, prompt: str) -> list[str]:
+    """Hard gates before O3 Pro + element_list — generic TTS if these fail."""
+    errors: list[str] = []
+    try:
+        from tools import kling_character_registry as reg
+
+        if not reg.is_speaker_voice_ready(speaker):
+            return errors
+    except Exception:
+        return errors
+    text = (prompt or "").strip()
+    lower = text.lower()
+    if not text:
+        errors.append("empty prompt")
+        return errors
+    if "<<<voice_" in lower:
+        errors.append("prompt contains <<<voice_N>>> (generic Kling TTS tags)")
+    if "speaks in a" not in lower:
+        errors.append("prompt missing locked Element delivery line (speaks in a …)")
+    delivery = _DELIVERY_BY_SPEAKER.get((speaker or "").strip())
+    if delivery and delivery.split(",")[0].strip().lower() not in lower:
+        errors.append("prompt missing canonical delivery adjectives for this speaker")
+    return errors

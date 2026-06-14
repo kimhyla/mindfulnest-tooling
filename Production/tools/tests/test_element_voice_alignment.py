@@ -49,3 +49,29 @@ def test_extract_spoken_used_for_element_prompt_inject():
     assert "speaks in a warm gentle conversational pace" in locked
     assert "speaks warmly and politely" not in locked
     assert "<<<voice_" not in locked
+
+
+def test_validate_element_bound_voice_prompt_rejects_generic_tags():
+    from tools import kling_o3_prompt as o3p
+
+    bad = '@Image1 (Tessa) <<<voice_1>>> speaks: "Hi"'
+    errs = o3p.validate_element_bound_voice_prompt("Tessa", bad)
+    assert any("<<<voice_" in e for e in errs)
+
+
+def test_validate_element_bound_voice_prompt_accepts_locked_delivery():
+    from tools import kling_o3_prompt as o3p
+
+    good = (
+        'Tessa speaks in a warm gentle conversational pace, soft and vulnerable but clear: "Hello?"'
+    )
+    assert o3p.validate_element_bound_voice_prompt("Tessa", good) == []
+
+
+def test_event_dir_uses_mn_prod_root(monkeypatch):
+    from kling_o3_element_beat_pipeline import _event_dir_for_segment, _runtime_prod_root
+
+    dropbox = Path("/tmp/dropbox_production")
+    monkeypatch.setenv("MN_PROD_ROOT", str(dropbox))
+    assert _runtime_prod_root() == dropbox.resolve()
+    assert _event_dir_for_segment(_runtime_prod_root(), "event_2_pre").resolve() == (dropbox / "Event_2").resolve()
