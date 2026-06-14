@@ -1691,14 +1691,22 @@ def handle_bg_session_state(h)-> None:
 
     scope_active_context = None
     beats = []
+    ref_hydrated = False
     if scope_arc is not None and scope_event_id is not None:
         seg = bg.get_seg_entry(sidecar, scope_arc, scope_event_id, scope_phase)
         beats = seg.get("beats", [])
+        approved_roots = h.app._library_root_dirs()
+        for beat in beats:
+            if bg.hydrate_beat_ref_images(beat, approved_roots):
+                ref_hydrated = True
         scope_active_context = {
             "arc_number": scope_arc,
             "event_id": scope_event_id,
             "phase": scope_phase,
         }
+    if ref_hydrated:
+        with bg._sidecar_lock:
+            bg.write_sidecar(sidecar)
 
     # Migration warning if scope and sidecar's active_context disagree
     # (debug aid — surfaces the divergence Bug 2 + Bug 4 trip on).
@@ -2511,37 +2519,14 @@ def handle_bg_update_beat(h, body: dict)-> None:
                 # thumb_b64 so BgRefSlot can <img src=...> after refresh.
                 if field in ("reference_image", "bg_ref_image") and isinstance(value, dict):
                     abs_path = value.get("abs_path") or ""
-                    # CodeQL py/path-injection gate (LD CODEQL_PATH_INJECTION_NATIVE_PATTERN_REFACTOR_V1
-                    # — supersedes LD-702/706). Inline realpath + startswith check on the SAME
-                    # dataflow node that feeds os.path.exists / PIL.open. CodeQL's path-injection
-                    # query recognizes realpath + startswith(ROOT + os.sep) as a native sanitizer;
-                    # bool-returning helpers (is_path_under_library_root) get stripped by CodeQL's
-                    # interprocedural analysis. Same safety guarantee, native signal.
-                    _abs_resolved = os.path.realpath(abs_path) if isinstance(abs_path, str) and abs_path else ""
-                    _safe = False
-                    if _abs_resolved:
-                        for _r in h.app._library_root_dirs():
-                            if _r and (_abs_resolved == _r or _abs_resolved.startswith(_r + os.sep)):
-                                _safe = True
-                                break
-                    if _safe and _abs_resolved:
-                        _safe_open_path = os.path.realpath(_abs_resolved)
-                    else:
-                        _safe_open_path = ""
-                    if _safe and _safe_open_path and os.path.exists(_safe_open_path) and not value.get("thumb_b64"):
-                        try:
-                            from PIL import Image as _PILImage
-                            import io as _io_thumb
-                            with _PILImage.open(_safe_open_path) as im:
-                                im.thumbnail((200, 150), _PILImage.LANCZOS)
-                                buf = _io_thumb.BytesIO()
-                                im.convert("RGB").save(buf, "JPEG", quality=72)
-                            _t = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+                    if not value.get("thumb_b64"):
+                        from lib.event_library import ref_image_thumb_b64
+
+                        _t = ref_image_thumb_b64(abs_path, h.app._library_root_dirs())
+                        if _t:
                             value = dict(value)
                             value["thumb_b64"] = _t
                             thumb_b64 = _t
-                        except (OSError, ImportError) as _thumb_err:
-                            print(f"[REFDROP] thumbnail skipped for {_abs_resolved!r}: {_thumb_err}", flush=True)
                 beat[field] = value
                 written.append(field)
                 if field == "kling_o3_prompt" and isinstance(value, str):

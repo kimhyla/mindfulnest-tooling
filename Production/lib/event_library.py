@@ -98,7 +98,67 @@ def library_image_roots(event_dir: Path | str, prod_root: Path | str) -> list[st
     ]
     if char_assets.is_dir():
         roots.append(os.path.realpath(str(char_assets)))
+    # Element @Image1 pose PNGs live under Production/<Char>/poses/ — not in
+    # per-event library/ but must render Char ref thumbnails after migrate align.
+    try:
+        for child in prod.iterdir():
+            if not child.is_dir():
+                continue
+            poses = child / "poses"
+            if poses.is_dir():
+                roots.append(os.path.realpath(str(poses)))
+    except OSError:
+        pass
+    stills_root = prod / "beat_generator_stills"
+    if stills_root.is_dir():
+        roots.append(os.path.realpath(str(stills_root)))
+        for sub in ("crops", "sources"):
+            sub_dir = stills_root / sub
+            if sub_dir.is_dir():
+                roots.append(os.path.realpath(str(sub_dir)))
     return roots
+
+
+def resolve_ref_image_open_path(abs_path: str, approved_roots: list[str]) -> str:
+    """Return realpath safe to open when abs_path is under an approved root, else ''."""
+    if not isinstance(abs_path, str) or not abs_path:
+        return ""
+    try:
+        resolved = os.path.realpath(abs_path)
+    except OSError:
+        return ""
+    if not resolved:
+        return ""
+    for root in approved_roots:
+        if not root:
+            continue
+        try:
+            root_resolved = os.path.realpath(root)
+        except OSError:
+            continue
+        if resolved == root_resolved or resolved.startswith(root_resolved + os.sep):
+            return resolved
+    return ""
+
+
+def ref_image_thumb_b64(abs_path: str, approved_roots: list[str]) -> str | None:
+    """Render a JPEG data-URI thumbnail for an approved ref image path."""
+    safe_path = resolve_ref_image_open_path(abs_path, approved_roots)
+    if not safe_path or not os.path.isfile(safe_path):
+        return None
+    try:
+        import base64
+        import io
+
+        from PIL import Image
+
+        with Image.open(safe_path) as im:
+            im.thumbnail((200, 150), Image.LANCZOS)
+            buf = io.BytesIO()
+            im.convert("RGB").save(buf, "JPEG", quality=72)
+        return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+    except (OSError, ImportError, ValueError):
+        return None
 
 
 def resolve_library_image_path(

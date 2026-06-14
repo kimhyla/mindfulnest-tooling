@@ -2290,7 +2290,7 @@ interface BgRefSlotPropsExt extends BgRefSlotProps {
 }
 
 function BgRefSlot({ label, refImg, testId, beatId, refField, onRemoveRef, onRefresh, onPatchRefImage }: BgRefSlotPropsExt) {
-  const hasImage = !!refImg && (refImg.thumb_b64 || refImg.key);
+  const hasImage = !!refImg && (refImg.thumb_b64 || refImg.abs_path || refImg.key);
   // R2 fix: drop target for library-image drag → POST bg_update_beat with the
   // ref field (reference_image or bg_ref_image) per server _BG_BEAT_WRITABLE
   // (production_server.py:8744).
@@ -2374,6 +2374,12 @@ function BgRefSlot({ label, refImg, testId, beatId, refField, onRemoveRef, onRef
       ) : null}
       {refImg?.thumb_b64 ? (
         <img src={refImg.thumb_b64} alt={label} class="mn-bg-ref-thumb" />
+      ) : refImg?.abs_path ? (
+        <img
+          src={`${SERVER_BASE}/files?path=${encodeURIComponent(refImg.abs_path)}`}
+          alt={label}
+          class="mn-bg-ref-thumb"
+        />
       ) : refImg?.key ? (
         <span class="mn-dim">{refImg.key}</span>
       ) : (

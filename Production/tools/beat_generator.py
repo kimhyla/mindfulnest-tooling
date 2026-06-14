@@ -4812,6 +4812,28 @@ def _ref_dict_from_path(abs_path: str) -> dict:
     return {"abs_path": abs_path, "key": Path(abs_path).stem}
 
 
+def hydrate_beat_ref_images(beat: dict, approved_roots: list[str]) -> bool:
+    """Ensure reference_image / bg_ref_image have thumb_b64 when abs_path is set.
+
+    Returns True when any ref dict was updated (caller may persist sidecar).
+    """
+    changed = False
+    for field in ("reference_image", "bg_ref_image"):
+        ref = beat.get(field)
+        if not isinstance(ref, dict) or ref.get("thumb_b64"):
+            continue
+        abs_path = ref.get("abs_path") or ""
+        if not abs_path:
+            continue
+        from lib.event_library import ref_image_thumb_b64
+
+        thumb = ref_image_thumb_b64(abs_path, approved_roots)
+        if thumb:
+            ref["thumb_b64"] = thumb
+            changed = True
+    return changed
+
+
 def _pick_element_ref_path(beat: dict, element_paths: list[Path]) -> Path:
     """Choose Element-set still closest to beat emotion (else frontal)."""
     if not element_paths:
