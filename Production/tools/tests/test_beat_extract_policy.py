@@ -14,6 +14,7 @@ from beat_extract_policy import (  # noqa: E402
     normalize_plan_row,
     postprocess_beats_plan,
     postprocess_plan_result,
+    repair_corrupted_plan_dialogue,
 )
 
 
@@ -55,6 +56,28 @@ def test_classify_beat_type_dialogue_stays_dialogue():
         "scene_notes": "eyes widen",
     }
     assert classify_beat_type(row) == "dialogue"
+
+
+def test_repair_corrupted_plan_dialogue_strips_double_bracket_prefix():
+    speaker, dialogue = repair_corrupted_plan_dialogue(
+        "Character [[curious, polite]]: Tessa [[curious, polite]]: Hello ...",
+        "Tessa",
+    )
+    assert speaker == "Tessa"
+    assert dialogue == "Hello ..."
+    assert "[[" not in dialogue
+
+
+def test_normalize_plan_row_strips_bracketed_emotion():
+    row, _warnings = normalize_plan_row({
+        "speaker": "Tessa",
+        "dialogue_text": "Character [[curious, polite]]: Tessa [[curious, polite]]: Hello ...",
+        "emotion": "[curious, polite]",
+        "beat_type": "dialogue",
+    }, beat_index=3)
+    assert row["speaker"] == "Tessa"
+    assert row["dialogue_text"] == "Hello ..."
+    assert row["emotion"] == "curious, polite"
 
 
 def test_normalize_plan_row_cast_and_staging_warning():

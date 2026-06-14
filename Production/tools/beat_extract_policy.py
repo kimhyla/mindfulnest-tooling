@@ -71,6 +71,81 @@ def canon_plan_speaker(raw: str) -> str:
     return _SPEAKER_CANON.get(key.lower(), key)
 
 
+_DIALOGUE_SPEAKER_RE = re.compile(
+    r"([A-Za-z][A-Za-z\s'-]*?)\s*(?:\[\[[^\]]+\]\]|\[[^\]]+\])*\s*:\s*",
+    re.MULTILINE,
+)
+
+
+def extract_spoken_from_dialogue(dialogue: str) -> tuple[str | None, str]:
+    """Parse ``scene… Speaker [[emo]]: "line" [staging]`` → speaker + spoken line only."""
+    text = apply_cast_text((dialogue or "").strip())
+    if not text:
+        return None, ""
+
+    quoted = list(re.finditer(r'"([^"]*)"', text))
+    if quoted:
+        spoken = quoted[-1].group(1).strip()
+        prefix = text[: quoted[-1].start()]
+        sm = _DIALOGUE_SPEAKER_RE.search(prefix.strip())
+        speaker = canon_plan_speaker(sm.group(1).strip()) if sm else None
+        if spoken:
+            return speaker, spoken
+
+    spoken_matches = list(_DIALOGUE_SPEAKER_RE.finditer(text))
+    if spoken_matches:
+        m = spoken_matches[-1]
+        speaker = canon_plan_speaker(m.group(1).strip())
+        tail = text[m.end() :].strip()
+        stage_tail = re.search(r"\s+\[([^\]]+)\]\s*$", tail)
+        if stage_tail:
+            tail = tail[: stage_tail.start()].strip()
+        if tail.startswith('"') and tail.endswith('"'):
+            tail = tail[1:-1].strip()
+        elif tail.startswith("'") and tail.endswith("'"):
+            tail = tail[1:-1].strip()
+        return speaker, tail
+
+    return None, text
+
+
+def infer_speaker_from_dialogue(dialogue: str) -> str | None:
+    speaker, _spoken = extract_spoken_from_dialogue(dialogue)
+    if speaker and speaker not in ("Character", "[Stage Direction]"):
+        return speaker
+    return None
+
+
+_CORRUPT_CHARACTER_PREFIX_RE = re.compile(
+    r"^Character\s+(?:\[\[[^\]]+\]\]|\[[^\]]+\]):\s*",
+    re.I,
+)
+
+
+def _strip_bracket_emotion(emotion: str) -> str:
+    emo = (emotion or "neutral").strip() or "neutral"
+    if emo.startswith("[") and emo.endswith("]"):
+        return emo[1:-1].strip() or "neutral"
+    return emo
+
+
+def repair_corrupted_plan_dialogue(dialogue: str, speaker: str) -> tuple[str, str]:
+    """Heal approve-round-trip garbage like ``Character [[emo]]: Name [[emo]]: line``."""
+    text = apply_cast_text((dialogue or "").strip())
+    if not text:
+        return speaker, text
+    inferred, spoken = extract_spoken_from_dialogue(text)
+    sp = canon_plan_speaker(speaker)
+    if sp in ("Character", "") and inferred:
+        sp = inferred
+    if _CORRUPT_CHARACTER_PREFIX_RE.match(text) or "[[" in text:
+        if spoken:
+            return sp, spoken
+    if inferred and spoken and len(spoken) < len(text) * 0.85:
+        return sp, spoken
+    return sp, text
+
+
 def load_gold_example(arc_number: int, event_id: str, phase: str) -> str:
     if str(arc_number) == "1" and str(event_id) == "2" and str(phase) == "pre":
         try:
@@ -133,13 +208,24 @@ def normalize_plan_row(row: dict, *, beat_index: int) -> tuple[dict, list[str]]:
     beat_type = classify_beat_type(row)
     speaker_raw = apply_cast_text(str(row.get("speaker") or "Character").strip())
     speaker = canon_plan_speaker(speaker_raw)
+    if speaker == "Character":
+        inferred = infer_speaker_from_dialogue(str(row.get("dialogue_text") or ""))
+        if inferred:
+            speaker = inferred
     if beat_type in ("stage_still", "stage_direction"):
         speaker = "[Stage Direction]"
 
     dialogue = apply_cast_text(str(row.get("dialogue_text") or "").strip())
-    emotion = apply_cast_text(str(row.get("emotion") or "neutral").strip()) or "neutral"
+    emotion = _strip_bracket_emotion(apply_cast_text(str(row.get("emotion") or "neutral").strip()) or "neutral")
     scene_notes, w = _simplify_staging(str(row.get("scene_notes") or ""), beat_type=beat_type)
     warnings.extend(w)
+
+    if beat_type == "dialogue":
+        speaker, dialogue = repair_corrupted_plan_dialogue(dialogue, speaker)
+        if speaker == "Character":
+            inferred = infer_speaker_from_dialogue(dialogue)
+            if inferred:
+                speaker = inferred
 
     if beat_type == "stage_still" and not scene_notes and dialogue:
         scene_notes, dialogue = dialogue, ""
@@ -307,9 +393,20 @@ def postprocess_kling_author_row(plan_row: dict, prompt: str) -> dict[str, str]:
             out = out.rstrip() + f"\n\n{staging}\n"
 
     vm = _VOICE_LINE_RE.search(out)
-    if vm and dialogue and not _prompt_spoken_matches_dialogue(out, dialogue):
+    _inferred_speaker, spoken_only = extract_spoken_from_dialogue(dialogue)
+    if speaker == "Character" and _inferred_speaker:
+        speaker = _inferred_speaker
+        out = _IMAGE1_SPEAKER_RE.sub(f"@Image1 ({speaker})", out, count=1)
+        out = re.sub(
+            rf"(@Image1 \({re.escape(speaker)}\))\s+\w+\s+—",
+            rf"\1 {speaker} —",
+            out,
+            count=1,
+        )
+    spoken_for_voice = spoken_only or dialogue
+    if vm and spoken_for_voice and not _prompt_spoken_matches_dialogue(out, spoken_for_voice):
         enriched = _inject_emotion_into_spoken(
-            _kling_o3_normalize_spoken(dialogue), emotion,
+            _kling_o3_normalize_spoken(spoken_for_voice), emotion,
         )
         out = out[: vm.start(2)] + enriched + out[vm.end(2) :]
     elif vm:

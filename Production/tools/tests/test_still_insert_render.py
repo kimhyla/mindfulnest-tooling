@@ -46,7 +46,44 @@ def test_extract_still_insert_tts_parses_embedded_speaker():
     }
 
 
-def test_extract_still_insert_tts_rejects_stage_direction_speaker_only():
+def test_extract_still_insert_tts_double_bracket_emotion_and_scene_prefix():
+    beat = {
+        "dialogue_text": (
+            "Ancient mossy ruins in warm forest light; Lorelai with archaeological satchel. "
+            'Lorelai [[muttering, lost]]: "Oooh [pause] ... Its got to be around here somewhere!"'
+        ),
+        "speaker": "Lorelai",
+    }
+    parsed = bg.extract_still_insert_tts(beat)
+    assert parsed == {
+        "speaker": "Lorelai",
+        "text": "Oooh . Its got to be around here somewhere!",
+    }
+
+
+def test_extract_still_insert_tts_from_kling_o3_prompt_when_dialogue_empty():
+    beat = {
+        "dialogue_text": "",
+        "kling_o3_prompt": "[muttering, lost]: Oooh .... Its got to be around here somewhere!",
+        "speaker": "Lorelai",
+        "pipeline": "still_insert",
+    }
+    parsed = bg.extract_still_insert_tts(beat)
+    assert parsed == {
+        "speaker": "Lorelai",
+        "text": "Oooh . Its got to be around here somewhere!",
+    }
+
+
+def test_sync_beat_dialogue_from_kling_prompt_still_insert():
+    beat = {
+        "pipeline": "still_insert",
+        "dialogue_text": "",
+        "kling_o3_prompt": '[muttering, lost]: "Hello ruins!"',
+        "speaker": "Lorelai",
+    }
+    assert bg.sync_beat_dialogue_from_kling_prompt(beat) is True
+    assert beat["dialogue_text"] == "Hello ruins!"
     beat = {
         "dialogue_text": "Wide establishing shot of the forest.",
         "speaker": "[Stage Direction]",

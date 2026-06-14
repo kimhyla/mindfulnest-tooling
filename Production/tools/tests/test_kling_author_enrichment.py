@@ -8,10 +8,44 @@ from unittest.mock import patch
 import pytest
 
 TOOLS = Path(__file__).resolve().parent.parent
+STORYBOARD_SRC = TOOLS / "storyboard-v2" / "src"
 sys.path.insert(0, str(TOOLS))
 
 import beat_generator as bg  # noqa: E402
-from beat_extract_policy import postprocess_kling_author_row, postprocess_kling_author_results  # noqa: E402
+from beat_extract_policy import (  # noqa: E402
+    extract_spoken_from_dialogue,
+    normalize_plan_row,
+    postprocess_kling_author_row,
+    postprocess_kling_author_results,
+    repair_corrupted_plan_dialogue,
+)
+
+
+def test_extract_spoken_from_dialogue_ignores_scene_prefix_and_double_brackets():
+    dialogue = (
+        "Ancient mossy ruins in warm forest light. "
+        'Lorelai [[muttering, lost]]: "Oooh ... Its got to be around here somewhere!"'
+    )
+    speaker, spoken = extract_spoken_from_dialogue(dialogue)
+    assert speaker == "Lorelai"
+    assert spoken == "Oooh ... Its got to be around here somewhere!"
+
+
+def test_postprocess_infers_lorelai_and_spoken_only_in_voice_line():
+    row = {
+        "speaker": "Character",
+        "dialogue_text": "Lorelai [[surprised, bright]]: Oh! Hi there!",
+        "emotion": "[surprised, bright]",
+        "scene_notes": "Eyes wide",
+        "beat_type": "dialogue",
+    }
+    prompt = (
+        "@Image1 (Character) Character — Discovery. Scene from @Image2.\n\n"
+        'Lorelai speaks with warm energy: "wrong line"'
+    )
+    merged = postprocess_kling_author_row(row, prompt)
+    assert "@Image1 (Lorelai)" in merged["kling_o3_prompt"]
+    assert "Oh! Hi there!" in merged["kling_o3_prompt"]
 
 
 def test_postprocess_injects_emotion_staging_and_cast():
@@ -61,6 +95,26 @@ def test_postprocess_kling_author_results_wires_all_indices():
     assert "[awe, breathless]" in enriched_prompts[1]
     assert "eyes wide" in enriched_prompts[1]
     assert enriched_plan[0]["emotion"] == "awe, breathless"
+
+
+def test_build_beats_from_approved_plan_strips_corrupted_dialogue():
+    plan = [{
+        "beat_index": 4,
+        "beat_type": "dialogue",
+        "speaker": "Lorelai",
+        "dialogue_text": "Character [[surprised, bright]]: Lorelai [[surprised, bright]]: Oh! Hi there!",
+        "emotion": "[surprised, bright]",
+        "scene_notes": "eyes wide",
+    }]
+    beats = bg.build_beats_from_approved_plan(
+        plan, {4: "@Image1 (Lorelai) Lorelai says: Oh! Hi there!"},
+        arc_number=1, event_id="2", phase="pre",
+    )
+    beat = beats[0]
+    assert beat["speaker"] == "Lorelai"
+    assert beat["dialogue_text"] == "Oh! Hi there!"
+    assert beat["emotion"] == "surprised, bright"
+    assert "[[" not in beat["dialogue_text"]
 
 
 def test_extract_approve_replaces_stale_kling_prompt(monkeypatch, tmp_path):
@@ -194,3 +248,48 @@ def test_wiring_author_tool_includes_emotion_fields():
     assert '"emotion"' in text
     assert '"scene_notes"' in text
     assert "_EXTRACT_APPROVE_MERGE_PRESERVE" in (TOOLS / "beat_generator.py").read_text(encoding="utf-8")
+
+
+def test_repair_corrupted_plan_dialogue_strips_character_wrapper():
+    speaker, dialogue = repair_corrupted_plan_dialogue(
+        "Character [[curious, polite]]: Tessa [[curious, polite]]: Hello ...",
+        "Character",
+    )
+    assert speaker == "Tessa"
+    assert dialogue == "Hello ..."
+
+
+def test_normalize_plan_row_strips_bracket_emotion_and_repairs_dialogue():
+    row, _warnings = normalize_plan_row({
+        "beat_type": "dialogue",
+        "speaker": "Character",
+        "dialogue_text": "Character [[surprised, bright]]: Lorelai [[surprised, bright]]: Oh! Hi.",
+        "emotion": "[surprised, bright]",
+        "scene_notes": "eyes wide",
+    }, beat_index=1)
+    assert row["speaker"] == "Lorelai"
+    assert row["emotion"] == "surprised, bright"
+    assert row["dialogue_text"] == "Oh! Hi."
+    assert "[[" not in row["dialogue_text"]
+
+
+def test_beat_plan_format_parser_uses_dialogue_tail_not_emotion():
+    fmt = (TOOLS / "storyboard-v2" / "src" / "components" / "beatPlanFormat.ts").read_text(
+        encoding="utf-8",
+    )
+    assert "headerMatch[4].trim()" in fmt
+    assert "headerMatch[3].trim()" not in fmt.replace("headerMatch[4].trim()", "")
+
+
+def test_bgtab_prompt_box_is_kling_o3_prompt():
+    text = (STORYBOARD_SRC / "components" / "BgTab.tsx").read_text(encoding="utf-8")
+    assert "beatPromptText" in text
+    assert "kling_o3_prompt: nextText" in text
+    assert "mn-bg-kling-prompt-editor" in text
+    assert "mn-bg-kling-prompt-body" not in text
+
+
+def test_update_beat_accepts_kling_o3_prompt():
+    text = (TOOLS / "server_handlers" / "background.py").read_text(encoding="utf-8")
+    assert '"kling_o3_prompt"' in text.split("_BG_BEAT_WRITABLE")[1][:200]
+    assert "sync_beat_dialogue_from_kling_prompt" in text

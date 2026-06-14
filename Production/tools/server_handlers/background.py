@@ -2302,6 +2302,16 @@ def handle_bg_extract_beats_draft_get(h, qs: dict) -> None:
         )
     if not beats_plan:
         return h._send_json(200, {"ok": True, "beat_plan_draft": None, "beats_plan": []})
+    from beat_extract_policy import normalize_plan_row
+
+    repaired_plan: list[dict] = []
+    for i, row in enumerate(beats_plan, start=1):
+        if not isinstance(row, dict):
+            continue
+        beat_index = int(row.get("beat_index") or i)
+        normalized, _warnings = normalize_plan_row(row, beat_index=beat_index)
+        repaired_plan.append(normalized)
+    beats_plan = repaired_plan
     payload = {
         "ok": True,
         "story_summary": story_summary,
@@ -2440,6 +2450,7 @@ def handle_bg_update_beat(h, body: dict)-> None:
     bg = _bg_module()
     _BG_BEAT_WRITABLE = frozenset({
         "speaker", "dialogue_text", "scene_notes", "emotion",
+        "kling_o3_prompt",
         "accepted_image_key", "reference_image", "bg_ref_image",
         "kling_o3_replace_slot_index",
     })
@@ -2533,6 +2544,8 @@ def handle_bg_update_beat(h, body: dict)-> None:
                             print(f"[REFDROP] thumbnail skipped for {_abs_resolved!r}: {_thumb_err}", flush=True)
                 beat[field] = value
                 written.append(field)
+                if field == "kling_o3_prompt" and isinstance(value, str):
+                    bg.sync_beat_dialogue_from_kling_prompt(beat)
         bg.write_sidecar(sidecar)
     return h._send_json(200, {"ok": True, "written": written, "thumb_b64": thumb_b64})
 
@@ -4161,6 +4174,7 @@ def handle_bg_render_still_clip(h, body: dict) -> None:
         dialogue_override = (body.get("dialogue_text") or "").strip()
         if dialogue_override:
             work_beat["dialogue_text"] = dialogue_override
+        bg.sync_beat_dialogue_from_kling_prompt(work_beat)
         work_sidecar = sidecar
 
     tts_result: dict = {"ok": False, "skipped": True}
@@ -4171,6 +4185,10 @@ def handle_bg_render_still_clip(h, body: dict) -> None:
     except Exception as exc:  # noqa: BLE001
         print(f"[still-clip] TTS ensure failed: {exc}")
         tts_result = {"ok": False, "error": str(exc)}
+
+    if not tts_result.get("ok") and not tts_result.get("unchanged"):
+        work_beat.pop("audio_file", None)
+        work_beat.pop("still_tts_source_text", None)
 
     try:
         result = bg.render_still_insert_o3_clip(

@@ -2832,22 +2832,36 @@ _STILL_INSERT_SPOKEN_RE = re.compile(
 
 
 def extract_still_insert_tts(beat: dict) -> dict | None:
-    """Parse ``Speaker [tags]: 'line'`` from still-insert dialogue_text."""
+    """Parse spoken line for still-insert TTS — quoted dialogue only, not scene setup."""
+    from beat_extract_policy import extract_spoken_from_dialogue, infer_speaker_from_dialogue
+
     dialogue = (beat.get("dialogue_text") or "").strip()
     if not dialogue:
+        prompt = (beat.get("kling_o3_prompt") or "").strip()
+        if prompt.startswith("STILL INSERT"):
+            dialogue = (beat.get("scene_notes") or "").strip() or prompt
+        else:
+            dialogue = prompt
+    if not dialogue:
         return None
-    matches = list(_STILL_INSERT_SPOKEN_RE.finditer(dialogue))
-    if matches:
-        m = matches[-1]
-        speaker = m.group(1).strip()
-        text = m.group(3).strip()
-        if speaker and text:
-            return {"speaker": speaker, "text": text}
-    spoken = _spoken_from_beat_dialogue(beat)
-    speaker = (beat.get("speaker") or "").strip()
-    if spoken and speaker and "stage direction" not in speaker.lower():
-        return {"speaker": speaker, "text": spoken}
-    return None
+
+    speaker, spoken = extract_spoken_from_dialogue(dialogue)
+    emo_only = re.match(r"^(?:\[[^\]]+\]\s*)+:\s*(.+)$", (spoken or dialogue).strip(), re.DOTALL)
+    if emo_only:
+        spoken = emo_only.group(1).strip()
+    if not spoken:
+        return None
+    if not speaker or speaker in ("Character", "[Stage Direction]"):
+        speaker = infer_speaker_from_dialogue(dialogue) or (beat.get("speaker") or "").strip()
+    speaker = _canon_speaker(speaker) or speaker
+    if not speaker or "stage direction" in speaker.lower():
+        return None
+    spoken = _kling_o3_normalize_spoken(spoken)
+    spoken = re.sub(r"\[(?:pause|beat|breath|short pause)[^\]]*\]", " ", spoken, flags=re.I)
+    spoken = re.sub(r"\s+", " ", spoken).strip()
+    if not spoken:
+        return None
+    return {"speaker": speaker, "text": spoken}
 
 
 def render_still_insert_o3_clip(
@@ -4548,7 +4562,7 @@ def apply_live_kling_o3_prompts(sidecar: dict, beat_prompts: dict) -> int:
             continue
         text = prompt.strip()
         beat["kling_o3_prompt"] = text
-        sync_dialogue_text_from_kling_prompt(beat)
+        sync_beat_dialogue_from_kling_prompt(beat)
         # Preserve manual duration lock — only re-estimate when unlocked.
         if not beat.get("kling_o3_duration_locked"):
             prepared = prepare_kling_o3_prompt_for_submit(beat, text)
@@ -4595,13 +4609,23 @@ def _dialogue_has_legacy_chipper_content(text: str) -> bool:
     return any(m in raw for m in _CHIPPER_LEGACY_DIALOGUE_MARKERS)
 
 
-def sync_dialogue_text_from_kling_prompt(beat: dict) -> bool:
-    """When dialogue_text still has Pip/Alex imports but the prompt box is clean, align them."""
-    dialogue = (beat.get("dialogue_text") or "").strip()
-    if not _dialogue_has_legacy_chipper_content(dialogue):
+def sync_beat_dialogue_from_kling_prompt(beat: dict) -> bool:
+    """Align ``dialogue_text`` with quoted speech in the prompt box (TTS / still path)."""
+    if beat_is_still_insert(beat):
+        tts = extract_still_insert_tts(beat)
+        if tts and tts.get("text"):
+            spoken = tts["text"]
+            if (beat.get("dialogue_text") or "").strip() != spoken:
+                beat["dialogue_text"] = spoken
+                return True
         return False
-    spoken = extract_spoken_dialogue_from_kling_prompt(beat.get("kling_o3_prompt") or "")
-    if not spoken or _dialogue_has_legacy_chipper_content(spoken):
+    prompt = (beat.get("kling_o3_prompt") or "").strip()
+    if not prompt:
+        return False
+    spoken = extract_spoken_dialogue_from_kling_prompt(prompt)
+    if not spoken:
+        return False
+    if (beat.get("dialogue_text") or "").strip() == spoken:
         return False
     beat["dialogue_text"] = spoken
     return True
@@ -5013,13 +5037,25 @@ def build_beats_from_approved_plan(
     for i, row in enumerate(beats_plan, start=1):
         idx = int(row.get("beat_index") or i)
         beat_type = str(row.get("beat_type") or "dialogue").lower()
+        dialogue = (row.get("dialogue_text") or "").strip()
         speaker_raw = (row.get("speaker") or "Character").strip()
+        from beat_extract_policy import (
+            _strip_bracket_emotion,
+            extract_spoken_from_dialogue,
+            infer_speaker_from_dialogue,
+            repair_corrupted_plan_dialogue,
+        )
         if speaker_raw.lower() in ("[stage direction]", "stage direction"):
             speaker = "[Stage Direction]"
         else:
             speaker = _canon_speaker(speaker_raw) or speaker_raw
-        dialogue = (row.get("dialogue_text") or "").strip()
-        emotion = (row.get("emotion") or "neutral").strip() or "neutral"
+            if speaker in ("Character", ""):
+                inferred = infer_speaker_from_dialogue(dialogue)
+                if inferred:
+                    speaker = _canon_speaker(inferred) or inferred
+        if beat_type not in ("stage_still", "stage_direction"):
+            speaker, dialogue = repair_corrupted_plan_dialogue(dialogue, speaker)
+        emotion = _strip_bracket_emotion((row.get("emotion") or "neutral").strip() or "neutral")
         scene_notes = (row.get("scene_notes") or "").strip()[:500]
         is_still = beat_type == "stage_still"
         prompt = (prompt_by_index.get(idx) or "").strip()
@@ -5027,8 +5063,10 @@ def build_beats_from_approved_plan(
             from beat_extract_policy import build_still_insert_prompt
             prompt = build_still_insert_prompt(row)
         if prompt and not is_still and "Only @Image1 is visible" not in prompt:
+            _spk, spoken_only = extract_spoken_from_dialogue(dialogue)
+            spoken = spoken_only or dialogue
             prompt = _append_kling_o3_submit_locks(
-                prompt, speaker=speaker, spoken=_kling_o3_normalize_spoken(dialogue),
+                prompt, speaker=speaker, spoken=_kling_o3_normalize_spoken(spoken),
             )
         pipeline = "still_insert" if is_still else "kling_o3_omni"
         beat = {
@@ -5082,6 +5120,16 @@ def apply_approved_extract_plan(
     """Write approved Claude extract plan into segment beats with merge policy."""
     seg = get_seg_entry(sidecar, arc_number, event_id, phase)
     existing = list(seg.get("beats") or [])
+    from beat_extract_policy import normalize_plan_row
+
+    repaired_plan: list[dict] = []
+    for i, row in enumerate(beats_plan or [], start=1):
+        if not isinstance(row, dict):
+            continue
+        beat_index = int(row.get("beat_index") or i)
+        normalized, _warnings = normalize_plan_row(row, beat_index=beat_index)
+        repaired_plan.append(normalized)
+    beats_plan = repaired_plan
     incoming = build_beats_from_approved_plan(
         beats_plan, prompt_by_index,
         arc_number=arc_number, event_id=event_id, phase=phase,
@@ -5132,7 +5180,12 @@ def apply_approved_extract_plan(
 
     beat_label = f"arc{arc_number}_event{event_id}_{phase}"
     append_intro_canonical_tail_beats(merged, beat_label, phase)
+    for b in merged:
+        role = b.get("intro_beat_role")
+        if role in (INTRO_BEAT_ROLE_SEMI_CANONICAL, INTRO_BEAT_ROLE_CANONICAL_MIRROR):
+            _apply_intro_canonical_beat_defaults(b, event_id, phase, role)
     merged = normalize_segment_beat_order(merged)
+    heal_segment_dialogue_fields(merged)
     seg["beats"] = merged
     seg["beat_plan_draft"] = {
         "story_summary": story_summary,
@@ -5176,6 +5229,33 @@ def audit_kling_author_enrichment(beats: list[dict]) -> list[str]:
     return warnings
 
 
+def heal_segment_dialogue_fields(beats: list[dict]) -> int:
+    """Repair corrupted dialogue_text / speaker / emotion on populated beats."""
+    from beat_extract_policy import _strip_bracket_emotion, repair_corrupted_plan_dialogue
+
+    fixed = 0
+    for beat in beats or []:
+        if not isinstance(beat, dict) or beat_is_still_insert(beat):
+            continue
+        speaker = str(beat.get("speaker") or "")
+        dialogue = str(beat.get("dialogue_text") or "")
+        new_speaker, new_dialogue = repair_corrupted_plan_dialogue(dialogue, speaker)
+        new_emotion = _strip_bracket_emotion(str(beat.get("emotion") or "neutral"))
+        changed = False
+        if new_speaker and new_speaker != speaker:
+            beat["speaker"] = new_speaker
+            changed = True
+        if new_dialogue != dialogue:
+            beat["dialogue_text"] = new_dialogue
+            changed = True
+        if new_emotion != beat.get("emotion"):
+            beat["emotion"] = new_emotion
+            changed = True
+        if changed:
+            fixed += 1
+    return fixed
+
+
 def segment_beats_to_plan_rows(beats: list[dict]) -> list[dict]:
     """Rebuild Beat Plan modal rows from populated segment beats (Review saved plan fallback)."""
     rows: list[dict] = []
@@ -5188,12 +5268,17 @@ def segment_beats_to_plan_rows(beats: list[dict]) -> list[dict]:
             is_still
             or speaker.lower() in ("[stage direction]", "stage direction", "narrator")
         )
+        dialogue = str(beat.get("dialogue_text") or "")
+        from beat_extract_policy import _strip_bracket_emotion, repair_corrupted_plan_dialogue
+        emotion = _strip_bracket_emotion(str(beat.get("emotion") or "neutral"))
+        if not is_still and not is_stage:
+            speaker, dialogue = repair_corrupted_plan_dialogue(dialogue, speaker)
         rows.append({
             "beat_index": i,
             "beat_type": "stage_still" if is_still else ("stage_direction" if is_stage else "dialogue"),
             "speaker": speaker or ("[Stage Direction]" if is_stage else "Character"),
-            "dialogue_text": beat.get("dialogue_text") or "",
-            "emotion": beat.get("emotion") or "neutral",
+            "dialogue_text": dialogue,
+            "emotion": emotion,
             "scene_notes": beat.get("scene_notes") or "",
         })
     return rows

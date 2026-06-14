@@ -14,7 +14,7 @@ Convert approved **dialogue** beats into Event-1-quality `kling_o3_prompt` strin
 
 ## Required structure (dialogue beats)
 
-1. `@Image1 ({Speaker}) {Role}. Scene from @Image2.`
+1. `@Image1 ({Speaker}) {Role with full physical appearance — match Event 1 density, e.g. fur/feather color, clothing, props}. Scene from @Image2.`
 2. **Camera:** static locked medium shot (verbatim lock block).
 3. Micro-expression staging from `scene_notes` — face/body only, solo @Image1.
 4. Voice/delivery + spoken dialogue with **emotion bracket tag** inside quotes, e.g. `"[warm, to camera] Hello..."`.

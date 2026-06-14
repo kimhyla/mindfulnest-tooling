@@ -60,7 +60,8 @@ def test_beat_plan_modal_and_format_present():
     assert (STORYBOARD_SRC / "components" / "BeatPlanModal.tsx").is_file()
     assert (STORYBOARD_SRC / "components" / "beatPlanFormat.ts").is_file()
     fmt = (STORYBOARD_SRC / "components" / "beatPlanFormat.ts").read_text(encoding="utf-8")
-    assert "beatPlanRowsToText" in fmt
+    assert "formatEmotionForLine" in fmt
+    assert "headerMatch[4]" in fmt
     assert "parseBeatPlanText" in fmt
 
 

@@ -11,11 +11,20 @@ import type { BeatPlanRow } from './BeatPlanModal';
  */
 const STILL_INSERT_HINT_RE = /\b(still insert|gpt still|inscription|runestone|carved text|pre-?made still)\b/i;
 
+/** Strip outer brackets so we never emit ``[[emotion]]`` in plan lines. */
+function formatEmotionForLine(emotion: string): string {
+  const e = (emotion || 'neutral').trim();
+  if (e.startsWith('[') && e.endsWith(']')) {
+    return e.slice(1, -1).trim();
+  }
+  return e;
+}
+
 export function beatPlanRowToLine(row: BeatPlanRow): string {
   const speaker = (row.beat_type === 'stage_direction' || row.beat_type === 'stage_still')
     ? '[Stage Direction]'
     : (row.speaker || 'Character').trim();
-  const emotion = (row.emotion || 'neutral').trim();
+  const emotion = formatEmotionForLine(row.emotion || 'neutral');
   const dialogue = (row.dialogue_text || '').trim();
   const scene = (row.scene_notes || '').trim();
   let line = `${speaker} [${emotion}]: ${dialogue}`;
@@ -39,7 +48,9 @@ function parseBeatPlanLine(line: string, beatIndex: number): BeatPlanRow {
   const trimmed = line.trim();
   const invented = trimmed.includes('[CLAUDE INVENTED]');
 
-  const headerMatch = trimmed.match(/^(.+?)\s+\[([^\]]+)\]:\s*(.+)$/);
+  const headerMatch = trimmed.match(
+    /^(.+?)\s+(?:\[\[([^\]]+)\]\]|\[([^\]]+)\]):\s*(.+)$/,
+  );
   if (!headerMatch) {
     return {
       beat_index: beatIndex,
@@ -53,8 +64,8 @@ function parseBeatPlanLine(line: string, beatIndex: number): BeatPlanRow {
   }
 
   const speakerRaw = headerMatch[1].trim();
-  const emotion = headerMatch[2].trim();
-  let tail = headerMatch[3].trim();
+  const emotion = (headerMatch[2] || headerMatch[3] || 'neutral').trim();
+  let tail = headerMatch[4].trim();
 
   let scene_notes = '';
   const sceneMatch = tail.match(/\s+\[([^\]]+)\]\s*$/);

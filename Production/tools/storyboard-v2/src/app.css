@@ -2040,6 +2040,13 @@ canvas.mn-lipsync-watercolor-overlay {
   width: 100%;
   box-sizing: border-box;
 }
+.mn-bg-kling-prompt-editor {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+  min-height: 220px;
+  white-space: pre-wrap;
+}
 .mn-bg-stage-chips {
   display: flex;
   gap: 6px;

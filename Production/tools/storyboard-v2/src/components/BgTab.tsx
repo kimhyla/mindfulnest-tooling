@@ -75,6 +75,14 @@ function isO3VoiceBeat(beat?: BgBeat | null): boolean {
   return true;
 }
 
+/** Prompt-box is law — UI edits the same field Kling submit reads from sidecar. */
+function beatPromptText(beat?: BgBeat | null): string {
+  if (!beat) return '';
+  const prompt = (beat.kling_o3_prompt ?? '').trim();
+  if (prompt) return beat.kling_o3_prompt ?? '';
+  return beat.dialogue_text ?? '';
+}
+
 // ----------------------------------------------------------------
 // Modal state — single-modal stack invariant per UI_PRIMITIVES_SHARED_V1.
 // BG-9 (delete confirm), BG-34/35 (Accept All warn + confirm), BG-5 (edit chip),
@@ -849,7 +857,10 @@ export function BgTab() {
         setBeatPlanOpen(false);
         pushToast({
           kind: 'success',
-          message: `Populated ${result.data.count ?? 0} beats with Kling author prompts (emotion + staging)`,
+          message: (
+            `Populated ${result.data.count ?? 0} beats — each beat card shows the full `
+            + `Kling O3 prompt (editable; what you see is what submits)`
+          ),
           source: 'bg-extract-approve',
         });
       } else {
@@ -912,10 +923,10 @@ export function BgTab() {
 
   const onUpdateBeatText = async (beatId: string, nextText: string): Promise<boolean> => {
     setBeats((bs) => bs.map((b) => (
-      b.beat_id === beatId ? { ...b, dialogue_text: nextText } : b
+      b.beat_id === beatId ? { ...b, kling_o3_prompt: nextText } : b
     )));
     const result = await pathappPatch(activeScope.value, 'bg_update_beat', {
-      beat_id: beatId, dialogue_text: nextText,
+      beat_id: beatId, kling_o3_prompt: nextText,
     });
     if (!result.ok) {
       pushToast({ kind: 'error', message: `Save failed: ${result.error}`, source: 'bg-update-text' });
@@ -968,9 +979,9 @@ export function BgTab() {
       return;
     }
     const beat = beats.find((b) => b.beat_id === beatId);
-    const pendingDialogue = (dialogueText ?? '').trim();
-    const savedDialogue = (beat?.dialogue_text ?? '').trim();
-    if (pendingDialogue && pendingDialogue !== savedDialogue) {
+    const pendingPrompt = (dialogueText ?? '').trim();
+    const savedPrompt = beatPromptText(beat).trim();
+    if (pendingPrompt && pendingPrompt !== savedPrompt) {
       const saved = await onUpdateBeatText(beatId, dialogueText!);
       if (!saved) return;
     }
@@ -983,7 +994,6 @@ export function BgTab() {
         method: 'ken_burns',
         duration: 4.0,
         slot_index: beat?.kling_o3_replace_slot_index ?? 0,
-        ...(pendingDialogue ? { dialogue_text: pendingDialogue } : {}),
       },
     );
     setActiveStillRenderJobs((prev) => {
@@ -991,20 +1001,21 @@ export function BgTab() {
       delete next[beatId];
       return next;
     });
-    if (result.ok) {
+    if (result.ok && result.data) {
       const ttsMixed = !!result.data?.tts_mixed;
       const ttsErr = (result.data?.tts_error || '').trim();
       const ttsRegen = !!result.data?.tts_regenerated;
+      const ttsOk = result.data?.tts_ok !== false && !ttsErr;
       let message = 'Still clip rebuilt — trim below, then Approve still for stitch.';
       if (ttsMixed && ttsRegen) {
         message = 'Still clip rebuilt with fresh TTS — trim below, then Approve still for stitch.';
       } else if (ttsMixed && result.data?.tts_unchanged) {
-        message = 'Still clip rebuilt (TTS unchanged — edit dialogue to regen audio) — trim below.';
+        message = 'Still clip rebuilt (TTS unchanged — edit prompt line to regen audio) — trim below.';
       } else if (ttsErr) {
         message = `Still clip rebuilt without audio (${ttsErr}) — trim below.`;
       }
       pushToast({
-        kind: ttsMixed ? 'success' : 'info',
+        kind: ttsOk && ttsMixed ? 'success' : (result.data?.ok ? 'info' : 'error'),
         message,
         source: 'bg-still-clip',
       });
@@ -1026,6 +1037,12 @@ export function BgTab() {
       return;
     }
     if (isO3VoiceBeat(beat)) {
+      const pendingPrompt = (dialogueText ?? '').trim();
+      const savedPrompt = beatPromptText(beat).trim();
+      if (pendingPrompt && pendingPrompt !== savedPrompt) {
+        const saved = await onUpdateBeatText(beatId, dialogueText!);
+        if (!saved) return;
+      }
       const result = await pathappPatch<ArloO3SubmitResponse>(
         activeScope.value, 'bg_submit_arlo_o3_voice', {
           beat_id: beatId,
@@ -1116,23 +1133,22 @@ export function BgTab() {
     closeModal();
     const beat = beats.find((b) => b.beat_id === beatId);
     if (!beat) return;
-    const currentText = beat.dialogue_text ?? '';
+    const currentText = beatPromptText(beat);
     const oldEsc = oldChipText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const re = new RegExp(`\\(${oldEsc}\\)`);
     const nextText = currentText.replace(re, `(${trimmed})`);
     if (nextText === currentText) {
       pushToast({
         kind: 'error',
-        message: `Could not locate chip "${oldChipText}" in dialogue`,
+        message: `Could not locate chip "${oldChipText}" in prompt`,
         source: 'bg-chip-edit-miss',
       });
       return;
     }
-    // Optimistic local update.
-    setBeats((bs) => bs.map((b) => (b.beat_id === beatId ? { ...b, dialogue_text: nextText } : b)));
+    setBeats((bs) => bs.map((b) => (b.beat_id === beatId ? { ...b, kling_o3_prompt: nextText } : b)));
     const result = await pathappPatch(activeScope.value, 'bg_update_beat', {
       beat_id: beatId,
-      dialogue_text: nextText,
+      kling_o3_prompt: nextText,
     });
     if (!result.ok) {
       pushToast({
@@ -1890,13 +1906,13 @@ function BeatGenCard({
   onEditChip, onInsertAfter, onRemoveRef, onRefresh,
   onPatchOptionTile, onPatchRefImage,
 }: BeatGenCardProps) {
-  const [localText, setLocalText] = useState<string>(beat.dialogue_text ?? '');
-  const [chips, setChips] = useState<string[]>(extractStageChips(beat.dialogue_text ?? ''));
-  // Sync local text when the beat prop changes (server-driven update).
+  const [localText, setLocalText] = useState<string>(beatPromptText(beat));
+  const [chips, setChips] = useState<string[]>(extractStageChips(beatPromptText(beat)));
   useEffect(() => {
-    setLocalText(beat.dialogue_text ?? '');
-    setChips(extractStageChips(beat.dialogue_text ?? ''));
-  }, [beat.dialogue_text]);
+    const next = beatPromptText(beat);
+    setLocalText(next);
+    setChips(extractStageChips(next));
+  }, [beat.kling_o3_prompt, beat.dialogue_text]);
 
   const onTextInput = (e: Event) => {
     const t = (e.target as HTMLTextAreaElement).value;
@@ -1905,7 +1921,7 @@ function BeatGenCard({
   };
 
   const onTextBlur = () => {
-    if (localText !== (beat.dialogue_text ?? '')) {
+    if (localText !== beatPromptText(beat)) {
       onUpdateText(localText);
     }
   };
@@ -2002,20 +2018,15 @@ function BeatGenCard({
       </div>
 
       <textarea
-        class="mn-bg-beat-text"
+        class="mn-bg-beat-text mn-bg-kling-prompt-editor"
         data-testid={`bg-beat-text-${index}`}
         value={localText}
         onInput={onTextInput}
         onBlur={onTextBlur}
-        rows={2}
+        rows={14}
         spellcheck={true}
+        aria-label={`Kling O3 prompt for beat ${beat.beat_id}`}
       />
-      {(beat.kling_o3_prompt ?? '').trim() ? (
-        <details class="mn-bg-kling-prompt" data-testid={`bg-kling-prompt-${index}`}>
-          <summary class="mn-dim">Kling O3 prompt (Suggest beats)</summary>
-          <pre class="mn-bg-kling-prompt-body">{beat.kling_o3_prompt}</pre>
-        </details>
-      ) : null}
       {o3FailureMessage ? (
         <div
           class="mn-bg-o3-failure"
