@@ -2484,8 +2484,11 @@ def _migrate_sidecar(sidecar: dict) -> dict:
             for row in draft.get("beats_plan") or []:
                 humanize_kling_body_parts_on_plan_row(row)
             for beat in seg.get("beats", []):
-                if not beat.get("reference_image_locked"):
+                if not beat.get("reference_image_locked") and not beat_is_still_insert(beat):
                     align_beat_reference_to_element(beat)
+                elif beat_is_still_insert(beat) and beat.get("reference_image"):
+                    # Still inserts use library still in option 1 — not Element @Image1.
+                    beat.pop("reference_image", None)
     migration_warnings = []
     for arc_key, arc in sidecar.get("arcs", {}).items():
         for seg_key, seg in arc.get("segments", {}).items():

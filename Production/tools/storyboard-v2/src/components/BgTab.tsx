@@ -929,7 +929,11 @@ export function BgTab() {
       beat_id: beatId, kling_o3_prompt: nextText,
     });
     if (!result.ok) {
-      pushToast({ kind: 'error', message: `Save failed: ${result.error}`, source: 'bg-update-text' });
+      const err = (result.error || '').trim();
+      const msg = /failed to fetch|networkerror|load failed/i.test(err)
+        ? 'Save failed — server was restarting. Wait for “server is back”, then click Generate again (your text is still in the box).'
+        : `Save failed: ${result.error}`;
+      pushToast({ kind: 'error', message: msg, source: 'bg-update-text' });
       return false;
     }
     return true;

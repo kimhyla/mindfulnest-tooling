@@ -87,6 +87,8 @@ function v59ErrorFromBody(d: Record<string, unknown>): V59Error {
 interface RawPostOptions {
   /** When true, SCOPE_MISMATCH does not emit mn:scope-mismatch (caller may heal+retry). */
   suppressScopeDispatch?: boolean;
+  /** Internal — one retry after server restart blip (NETWORK_RESTART_RETRY_V1). */
+  _networkRetry?: boolean;
 }
 
 interface ApiGetOptions {
@@ -465,7 +467,12 @@ async function apiPostRaw<T = unknown>(
       ...(data === undefined ? {} : { data }),
     };
   } catch (e) {
-    return { ok: false, status: 0, error: String(e) };
+    const err = String(e);
+    if (!opts._networkRetry && /failed to fetch|networkerror|load failed/i.test(err)) {
+      await new Promise((resolve) => { setTimeout(resolve, 2000); });
+      return apiPostRaw(url, payload, method, { ...opts, _networkRetry: true });
+    }
+    return { ok: false, status: 0, error: err };
   }
 }
 

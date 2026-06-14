@@ -1,0 +1,36 @@
+# Kling Element + bound voice (O3 Pro)
+
+## Rule
+
+Dialogue beats with an **active Element + create-voice** must submit with:
+
+1. **`@Image1` = registered Element pose** (frontal or emotion-matched refer) — not a random library PNG
+2. **Locked voice line** in prompt (`Tessa speaks in a warm gentle conversational pace…`) — not generic `<<<voice_N>>>` or ad-hoc “speaks warmly”
+3. **`element_list`** on WaveSpeed O3 Pro submit (Jessica/Miranda/etc.)
+
+Mismatch → generic Kling TTS even when logs show correct `element_id`.
+
+## Enforcement
+
+| Layer | Location |
+|---|---|
+| Submit handler | `handle_bg_submit_arlo_o3_voice` — align + `ELEMENT_VISUAL_MISMATCH` gate |
+| Element pipeline | `kling_o3_element_beat_pipeline.run_pipeline` |
+| Sidecar migrate | `align_beat_reference_to_element` (skip **still_insert** beats) |
+| Registry paths | `kling_character_registry.set_prod_root()` via `init_bg_paths` |
+
+## Still inserts
+
+Do **not** auto-align `reference_image` on `still_insert` beats — they use library still in option 1 + ElevenLabs TTS, not Element O3.
+
+## Lorelai Element
+
+Poses: `Lorelai/poses/lorelai_canonical_neutral.png`, `lorelai_explaining.png`, `lorelai_shocked.png`
+
+Re-register after pose swap: `python3 scripts/setup_all_kling_character_voices.py --char Lorelai --force`
+
+## Deploy
+
+Kim uses **Event_2**: `bash Production/scripts/deploy_storyboard_v59.sh --event Event_2`
+
+Hard refresh after deploy — confirm header `build-sha` matches latest commit.
