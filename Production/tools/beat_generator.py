@@ -2717,11 +2717,12 @@ def run_ken_burns(
         f":d={total_frames}:s=1280x720:fps={fps}"
     )
     cmd = [
-        "ffmpeg", "-y", "-loop", "1", "-i", still_path,
+        "ffmpeg", "-y",
+        "-loop", "1", "-i", still_path,
+        "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
         "-vf", zoompan, "-t", str(duration),
         "-c:v", "libx264", "-profile:v", "high", "-pix_fmt", "yuv420p",
         "-r", str(fps), "-movflags", "+faststart",
-        "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
         "-shortest", "-c:a", "aac", "-b:a", "128k",
         video_path,
     ]
@@ -2746,11 +2747,12 @@ def run_static_hold(beat, still_path, duration, fps=24, *, out_path: str | Path 
     ts = int(time.time())
     video_path = str(out_path) if out_path else str(out_dir / f"{beat['beat_id']}_static_{ts}.mp4")
     cmd = [
-        "ffmpeg", "-y", "-loop", "1", "-i", still_path,
+        "ffmpeg", "-y",
+        "-loop", "1", "-i", still_path,
+        "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
         "-t", str(duration),
         "-c:v", "libx264", "-profile:v", "high", "-pix_fmt", "yuv420p",
         "-s", "1280x720", "-r", str(fps), "-movflags", "+faststart",
-        "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
         "-shortest", "-c:a", "aac", "-b:a", "128k",
         video_path,
     ]
