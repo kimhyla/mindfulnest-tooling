@@ -2660,6 +2660,7 @@ def _migrate_sidecar(sidecar: dict) -> dict:
                 )
                 sync_element_char_ref_status(beat, heal_mismatch=not locked_lib)
                 heal_kling_o3_stored_duration(beat)
+                heal_element_bound_voice_prompt(beat)
     for arc_key, arc in sidecar.get("arcs", {}).items():
         for seg_key, seg in arc.get("segments", {}).items():
             m = re.match(r"^event_(\d+)_(\w+)$", seg_key or "")
@@ -5053,6 +5054,34 @@ def heal_kling_o3_stored_duration(beat: dict) -> bool:
         beat["kling_o3_duration"] = resolved
         return True
     return False
+
+
+def heal_element_bound_voice_prompt(beat: dict) -> bool:
+    """Upgrade legacy author voice lines (bracket delivery, <<<voice_N>>>) on load."""
+    speaker = str(beat.get("speaker") or "").strip()
+    if not speaker:
+        return False
+    prompt = (beat.get("kling_o3_prompt") or "").strip()
+    if not prompt:
+        return False
+    try:
+        from tools import kling_character_registry as reg
+        from tools import kling_o3_prompt as o3p
+
+        if not reg.is_speaker_voice_ready(speaker):
+            return False
+        upgraded, _spoken, changed = o3p.upgrade_element_bound_voice_prompt(
+            speaker,
+            prompt,
+            extract_spoken=extract_spoken_dialogue_from_kling_prompt,
+        )
+    except Exception:
+        return False
+    if not changed:
+        return False
+    beat["kling_o3_prompt"] = upgraded
+    sync_beat_dialogue_from_kling_prompt(beat)
+    return True
 
 
 def apply_live_kling_o3_prompts(sidecar: dict, beat_prompts: dict) -> int:
