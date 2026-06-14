@@ -2675,7 +2675,7 @@ def handle_bg_add_element_pose(h, body: dict) -> None:
     try:
         from tools import kling_character_registry as reg
 
-        reg.set_prod_root(h.app._prod_root)
+        bg.init_bg_paths(h.app.event_dir)
         result = reg.add_element_pose(speaker, abs_path, wavespeed_key)
     except Exception as exc:
         return h._send_error_v59(

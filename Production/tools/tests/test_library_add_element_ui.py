@@ -37,6 +37,14 @@ def test_library_add_element_pose_accepts_library_path_without_beat():
     assert "reg.add_element_pose(speaker, abs_path, wavespeed_key)" in block
 
 
+def test_library_add_element_pose_binds_prod_root_via_init_bg_paths():
+    """Regression: handler must not reference AppContext._prod_root (500)."""
+    text = BG.read_text(encoding="utf-8")
+    block = text.split("def handle_bg_add_element_pose")[1].split("\ndef handle_bg_reorder_beats")[0]
+    assert "_prod_root" not in block
+    assert "init_bg_paths(h.app.event_dir)" in block
+
+
 def test_library_element_pose_classification_rules():
     """Document expected allow/deny matrix (mirrors libraryElementPose.ts)."""
     text = UTIL.read_text(encoding="utf-8")
