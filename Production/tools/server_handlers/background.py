@@ -2412,7 +2412,7 @@ def handle_bg_update_beat(h, body: dict)-> None:
     # ensures BgRefSlot displays the IMAGE (not the lib_key string).
     # Mirrors _handle_bg_accept_lib_image's thumbnail pattern.
     thumb_b64 = None
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg._load_sidecar_migrated()
         _, beat = bg.find_beat(sidecar, beat_id)
         if not beat:
