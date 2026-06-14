@@ -593,6 +593,7 @@ SIDECAR_MERGE_PRESERVE_FIELDS: tuple[str, ...] = (
     "kling_o3_actual_duration_s", "kling_o3_completed_at",
     "reference_image", "bg_ref_image", "reference_image_locked",
     "bg_ref_image_locked", "start_frame_image_locked", "end_frame_image_locked",
+    "element_char_ref_ok", "element_char_ref_error",
     "pipeline",
     "intro_beat_role", "canonical_intro_tail",
     "magic_manual_path", "magic_video_path", "magic_path_authored_against",
@@ -2494,6 +2495,7 @@ def _migrate_sidecar(sidecar: dict) -> dict:
                 elif beat_is_still_insert(beat) and beat.get("reference_image"):
                     # Still inserts use library still in option 1 — not Element @Image1.
                     beat.pop("reference_image", None)
+                sync_element_char_ref_status(beat)
     migration_warnings = []
     for arc_key, arc in sidecar.get("arcs", {}).items():
         for seg_key, seg in arc.get("segments", {}).items():
@@ -4958,9 +4960,13 @@ def apply_user_beat_ref_update(beat: dict, field: str, value) -> None:
     if isinstance(value, dict) and (value.get("abs_path") or value.get("key")):
         beat[field] = value
         beat[lock_field] = True
+        if field == "reference_image":
+            sync_element_char_ref_status(beat)
     elif value is None:
         beat[field] = None
         beat[lock_field] = False
+        if field == "reference_image":
+            sync_element_char_ref_status(beat)
     else:
         beat[field] = value
 
@@ -5036,6 +5042,7 @@ def align_beat_reference_to_element(beat: dict) -> bool:
         if current and os.path.normpath(current) == os.path.normpath(chosen_str):
             return False
         beat["reference_image"] = _ref_dict_from_path(chosen_str)
+        sync_element_char_ref_status(beat)
         return True
     except Exception:
         return False
@@ -5060,6 +5067,36 @@ def element_char_ref_gate(beat: dict) -> tuple[bool, str]:
         return True, ""
     except Exception as exc:
         return False, str(exc)
+
+
+def sync_element_char_ref_status(beat: dict) -> bool:
+    """Persist element_char_ref_ok/error on beat for UI + submit gates."""
+    speaker = str(beat.get("speaker") or "").strip()
+    try:
+        from tools import kling_character_registry as reg
+
+        if not speaker or not reg.is_speaker_voice_ready(speaker):
+            beat.pop("element_char_ref_ok", None)
+            beat.pop("element_char_ref_error", None)
+            return True
+    except Exception:
+        beat.pop("element_char_ref_ok", None)
+        beat.pop("element_char_ref_error", None)
+        return True
+    ok, detail = element_char_ref_gate(beat)
+    beat["element_char_ref_ok"] = ok
+    if ok:
+        beat.pop("element_char_ref_error", None)
+    else:
+        beat["element_char_ref_error"] = detail
+    return ok
+
+
+def require_element_char_ref_for_o3(beat: dict) -> None:
+    """Raise before any Element O3 subprocess/API work if @Image1 is wrong."""
+    if not sync_element_char_ref_status(beat):
+        detail = beat.get("element_char_ref_error") or "char ref does not match Element poses"
+        raise RuntimeError(f"ELEMENT_VISUAL_MISMATCH: {detail}")
 
 
 def ensure_beat_element_aligned_reference(beat: dict) -> bool:

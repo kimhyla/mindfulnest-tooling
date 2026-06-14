@@ -126,6 +126,8 @@ interface BgBeat {
   accepted_image_key?: string | null;
   reference_image?: { key?: string; abs_path?: string; thumb_b64?: string } | null;
   bg_ref_image?: { key?: string; abs_path?: string; thumb_b64?: string } | null;
+  element_char_ref_ok?: boolean;
+  element_char_ref_error?: string;
   flux_options?: GptOption[];
   gpt_options?: GptOption[];
   bg_gpt_batch_job_id?: string | null;
@@ -1041,6 +1043,14 @@ export function BgTab() {
       return;
     }
     if (isO3VoiceBeat(beat)) {
+      if (beat.element_char_ref_ok === false) {
+        pushToast({
+          kind: 'error',
+          message: beat.element_char_ref_error ?? 'Char ref must match Element pose images before O3 generate.',
+          source: 'bg-element-ref-block',
+        });
+        return;
+      }
       const promptToSave = (dialogueText ?? beatPromptText(beat)).trim();
       if (promptToSave) {
         const saved = await onUpdateBeatText(beatId, promptToSave);
@@ -2008,6 +2018,7 @@ function BeatGenCard({
   const hasStillSource = !!magicStillSource
     || optionsToShow.some((o) => o?.local_path || o?.thumb_b64);
   const showStillClipHint = stillInsert && !beat.kling_o3_video_path && hasStillSource;
+  const elementCharRefBlocked = isO3VoiceBeat(beat) && beat.element_char_ref_ok === false;
 
   return (
     <li class="mn-bg-beat-card" data-testid={`bg-beat-card-${index}`} data-beat-id={beat.beat_id}>
@@ -2146,6 +2157,7 @@ function BeatGenCard({
           testId={`bg-char-ref-${index}`}
           beatId={beat.beat_id}
           refField="reference_image"
+          elementRefError={elementCharRefBlocked ? beat.element_char_ref_error : undefined}
           onRemoveRef={onRemoveRef}
           onRefresh={onRefresh}
           onPatchRefImage={onPatchRefImage}
@@ -2165,7 +2177,8 @@ function BeatGenCard({
           class="mn-btn mn-btn-primary"
           data-testid={`bg-generate-btn-${index}`}
           onClick={() => onGenerate(localText)}
-          disabled={busy}
+          disabled={busy || elementCharRefBlocked}
+          title={elementCharRefBlocked ? (beat.element_char_ref_error ?? 'Char ref must match Element poses') : undefined}
         >
           {busy ? (
             <><Spinner size="sm" inline /> Generating…</>
@@ -2307,6 +2320,7 @@ interface BgRefSlotProps {
 interface BgRefSlotPropsExt extends BgRefSlotProps {
   beatId: string;
   refField: 'reference_image' | 'bg_ref_image';
+  elementRefError?: string;
   // BG-18 — visible × button to remove the ref (NOT right-click per Kim 2026-05-06).
   onRemoveRef: (refField: 'reference_image' | 'bg_ref_image', label: string) => void;
   // 2026-05-11 fix — parent refreshState() to repaint stale beats[] after drop success.
@@ -2318,7 +2332,7 @@ interface BgRefSlotPropsExt extends BgRefSlotProps {
   ) => void;
 }
 
-function BgRefSlot({ label, refImg, testId, beatId, refField, onRemoveRef, onRefresh, onPatchRefImage }: BgRefSlotPropsExt) {
+function BgRefSlot({ label, refImg, testId, beatId, refField, elementRefError, onRemoveRef, onRefresh, onPatchRefImage }: BgRefSlotPropsExt) {
   const hasImage = !!refImg && (refImg.thumb_b64 || refImg.abs_path || refImg.key);
   // R2 fix: drop target for library-image drag → POST bg_update_beat with the
   // ref field (reference_image or bg_ref_image) per server _BG_BEAT_WRITABLE
@@ -2354,6 +2368,11 @@ function BgRefSlot({ label, refImg, testId, beatId, refField, onRemoveRef, onRef
           source: 'bg-ref-drop-error',
         });
       } else if (refField === 'reference_image' && result.data?.element_ref_warning) {
+        onPatchRefImage(refField, {
+          key: payload.lib_key,
+          abs_path: payload.abs_path ?? '',
+          ...(result.data.thumb_b64 ? { thumb_b64: result.data.thumb_b64 } : {}),
+        });
         pushToast({
           kind: 'error',
           message: result.data.element_ref_warning,
@@ -2421,6 +2440,11 @@ function BgRefSlot({ label, refImg, testId, beatId, refField, onRemoveRef, onRef
       ) : (
         <span class="mn-dim">drop here</span>
       )}
+      {elementRefError ? (
+        <div class="mn-bg-ref-element-error" data-testid={`${testId}-element-error`}>
+          {elementRefError}
+        </div>
+      ) : null}
     </div>
   );
 }

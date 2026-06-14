@@ -2535,10 +2535,10 @@ def handle_bg_update_beat(h, body: dict)-> None:
                 written.append(field)
                 if field == "kling_o3_prompt" and isinstance(value, str):
                     bg.sync_beat_dialogue_from_kling_prompt(beat)
-        if "reference_image" in written:
-            ok, detail = bg.element_char_ref_gate(beat)
-            if not ok:
-                element_ref_warning = detail
+        if any(f in written for f in ("reference_image", "speaker")):
+            bg.sync_element_char_ref_status(beat)
+        if beat.get("element_char_ref_ok") is False:
+            element_ref_warning = beat.get("element_char_ref_error")
         bg.write_sidecar(sidecar)
     return h._send_json(200, {
         "ok": True,
@@ -3270,12 +3270,11 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                 if speaker and reg.is_speaker_voice_ready(speaker):
                     if not beat.get("reference_image_locked"):
                         bg.ensure_beat_element_aligned_reference(beat)
-                    ok, detail = bg.element_char_ref_gate(beat)
-                    if not ok:
+                    if not bg.sync_element_char_ref_status(beat):
                         return h._send_error_v59(
                             400,
                             error_code="ELEMENT_VISUAL_MISMATCH",
-                            error_message=detail,
+                            error_message=str(beat.get("element_char_ref_error") or ""),
                             retry_safe=False,
                         )
                     if not beat.get("reference_image_locked"):

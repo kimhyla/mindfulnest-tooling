@@ -222,9 +222,7 @@ def run_pipeline(
     if not char_path.is_file() or not bg_path.is_file():
         raise RuntimeError("reference_image and bg_ref_image must exist on disk")
 
-    aligned, align_detail = reg.char_ref_matches_element_images(str(char_path), speaker)
-    if not aligned:
-        raise RuntimeError(f"ELEMENT_VISUAL_MISMATCH: {align_detail}")
+    bg_sidecar.require_element_char_ref_for_o3(beat)
 
     stored_prompt = (beat.get("kling_o3_prompt") or "").strip()
     prompt, spoken = resolve_element_o3_submit_prompt(beat)
@@ -301,7 +299,7 @@ def run_pipeline(
         "kling_voice_id": reg.get_bound_voice_id(speaker),
         "prod_root": str(prod_root),
         "event_dir": str(event_dir),
-        "char_ref_aligned": aligned,
+        "char_ref_aligned": True,
         "char_ref": str(char_path),
         "voice_line_locked": "speaks in a" in prompt.lower(),
         "spoken_sent": spoken,
