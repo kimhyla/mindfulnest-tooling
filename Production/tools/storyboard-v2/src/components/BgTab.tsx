@@ -2533,15 +2533,18 @@ function BgRefSlot({ label, refImg, testId, beatId, refField, elementRefError, o
           source: 'bg-ref-drop-error',
         });
       } else if (refField === 'reference_image' && result.data?.element_ref_warning) {
-        onPatchRefImage(refField, {
-          key: payload.lib_key,
-          abs_path: payload.abs_path ?? '',
-          ...(result.data.thumb_b64 ? { thumb_b64: result.data.thumb_b64 } : {}),
-        });
+        if (result.data.thumb_b64) {
+          onPatchRefImage(refField, {
+            key: payload.lib_key,
+            abs_path: payload.abs_path ?? '',
+            thumb_b64: result.data.thumb_b64,
+          });
+        }
         pushToast({
-          kind: 'error',
+          kind: 'warning',
           message: result.data.element_ref_warning,
-          source: 'bg-ref-element-mismatch',
+          source: 'bg-ref-element-gate',
+          ttlMs: 14000,
         });
         onRefresh();
       } else {

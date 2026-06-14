@@ -2538,7 +2538,14 @@ def handle_bg_update_beat(h, body: dict)-> None:
         if written:
             bg.sync_element_char_ref_status(beat, heal_mismatch=False)
         if beat.get("element_char_ref_ok") is False:
-            element_ref_warning = beat.get("element_char_ref_error")
+            detail = (beat.get("element_char_ref_error") or "").strip()
+            element_ref_warning = (
+                "Char ref saved — your library still is kept on this beat. "
+                "O3 Generate requires a registered Element pose: drag from Library "
+                "items tagged element/char_ref (Production/<Char>/poses/), not a "
+                "custom sources/ upload."
+                + (f" ({detail})" if detail else "")
+            )
         bg.write_sidecar(sidecar)
     return h._send_json(200, {
         "ok": True,
@@ -3321,6 +3328,12 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                         retry_safe=False,
                     )
             bg.sync_beat_dialogue_from_kling_prompt(beat)
+            stored_prompt = str(beat.get("kling_o3_prompt") or "").strip()
+            if stored_prompt and not beat.get("kling_o3_duration_locked"):
+                prepared = bg.prepare_kling_o3_prompt_for_submit(beat, stored_prompt)
+                beat["kling_o3_duration"] = bg.resolve_kling_o3_submit_duration(
+                    beat, prepared,
+                )
             replace_slot = body.get("replace_slot_index", beat.get("kling_o3_replace_slot_index", 0))
             try:
                 replace_slot = max(0, min(2, int(replace_slot)))

@@ -241,7 +241,10 @@ def run_pipeline(
             f"{speaker!r} has no active element_list entry — "
             "run setup_all_kling_character_voices.py before O3 Element generate."
         )
-    duration = int(beat.get("kling_o3_duration") or 8)
+    prepared = bg_sidecar.prepare_kling_o3_prompt_for_submit(beat, prompt)
+    duration = bg_sidecar.resolve_kling_o3_submit_duration(beat, prepared)
+    if not beat.get("kling_o3_duration_locked"):
+        beat["kling_o3_duration"] = duration
 
     creds = load_credentials()
     api_key = creds.get("wavespeed_key") or creds.get("wavespeed")
@@ -305,6 +308,7 @@ def run_pipeline(
         "spoken_sent": spoken,
         "prompt_verbatim": bool(stored_prompt),
         "prompt_voice_excerpt": prompt[:500],
+        "kling_o3_duration": duration,
     }), flush=True)
     result = o3.run_beat_generation(
         api_key,

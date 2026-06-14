@@ -20,5 +20,6 @@ python3 -m pytest \
   Production/tools/tests/test_library_sources_immutable.py \
   Production/tools/tests/test_still_insert_render.py \
   Production/tools/tests/test_bg_add_beat_sidecar_lock.py \
+  Production/tools/tests/test_o3_element_pipeline_duration.py \
   -q
 echo "[o3-intro-contract] all gates passed"
