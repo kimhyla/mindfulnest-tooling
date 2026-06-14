@@ -36,6 +36,7 @@ def test_apply_cast_text_lemur_peace_prize():
 
 def test_canon_plan_speaker_legacy_aliases():
     assert canon_plan_speaker("luna") == "Lorelai"
+    assert canon_plan_speaker("laurel") == "Lorelai"
     assert canon_plan_speaker("Chipper") == "Arlo"
     assert canon_plan_speaker("Guide Bird") == "Arlo"
 
@@ -133,10 +134,20 @@ def test_humanize_kling_body_parts_flipper_and_paw():
     assert "one hand" in humanize_kling_body_parts(
         "one paw holds a rolled map", speaker="Lorelai",
     )
-    assert "hands" in humanize_kling_body_parts(
+
+
+def test_normalize_identity_footer_canonicalizes_after_humanize_drift():
+    import beat_generator as bg
+
+    drifted = humanize_kling_body_parts(
         "Match @Image1 character appearance, proportions, shell, flippers, and facial expression",
         speaker="Tessa",
     )
+    assert "hands" in drifted
+    fixed = bg.normalize_kling_o3_identity_footer(drifted)
+    assert fixed == bg.KLING_O3_IDENTITY_LOCK
+    assert "flipper" not in fixed.lower()
+    assert "shell" not in fixed.lower()
 
 
 def test_humanize_kling_body_parts_keeps_tail_and_shell():

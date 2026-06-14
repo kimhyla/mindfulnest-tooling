@@ -117,6 +117,8 @@ _STILL_INSERT_RE = re.compile(
 
 _SPEAKER_CANON = {
     "luna": "Lorelai",
+    "lorelai": "Lorelai",
+    "laurel": "Lorelai",
     "chipper": "Arlo",
     "guide bird": "Arlo",
     "pip": "Arlo",
@@ -568,9 +570,21 @@ _EXTRA_WAIST_FRAMING_RE = re.compile(
     re.I,
 )
 _WEAK_SPEAKS_COLON_RE = re.compile(
-    r"\b(Tessa|Lorelai|Arlo|Chipper)\s+speaks:\s*",
+    r"\b(Tessa|Lorelai|Laurel|Arlo|Chipper)\s+speaks:\s*",
     re.I,
 )
+_WEAK_SAYS_COLON_RE = re.compile(
+    r"\b(Tessa|Lorelai|Laurel|Arlo|Chipper)\s+says:\s*",
+    re.I,
+)
+
+
+def _event1_voice_line_upgrade(speaker: str, delivery: str) -> str:
+    """Canonical weak-line upgrade prefix — Laurel not Lorelai for TTS pronunciation."""
+    canon = (speaker or "").strip()
+    if canon in ("Lorelai", "Laurel"):
+        return f"Laurel speaks in a {delivery}: "
+    return f"{canon} speaks in a {delivery}: "
 
 
 def event1_kling_voice_delivery(speaker: str) -> str | None:
@@ -582,6 +596,8 @@ def event1_kling_voice_delivery(speaker: str) -> str | None:
         return bg.KLING_O3_TESSA_VOICE_DELIVERY
     if canon == "Chipper":
         return bg.KLING_O3_CHIPPER_VOICE_DELIVERY
+    if canon in ("Lorelai", "Laurel"):
+        return bg.KLING_O3_LORELAI_VOICE_DELIVERY
     if canon == "Arlo":
         return (
             "warm natural conversational pace, clear friendly delivery, "
@@ -609,14 +625,16 @@ def normalize_kling_o3_prompt_event1_quality(
     out = _EXTRA_WAIST_FRAMING_RE.sub("\n\n", out)
 
     delivery = event1_kling_voice_delivery(speaker)
-    if delivery and _WEAK_SPEAKS_COLON_RE.search(out):
-        out = _WEAK_SPEAKS_COLON_RE.sub(
-            rf"\1 speaks in a {delivery}: ",
-            out,
-            count=1,
-        )
+    if delivery:
+        upgrade = _event1_voice_line_upgrade(speaker, delivery)
+        if _WEAK_SPEAKS_COLON_RE.search(out):
+            out = _WEAK_SPEAKS_COLON_RE.sub(upgrade, out, count=1)
+        if _WEAK_SAYS_COLON_RE.search(out):
+            out = _WEAK_SAYS_COLON_RE.sub(upgrade, out, count=1)
 
     import beat_generator as bg
+
+    out = bg.normalize_kling_o3_identity_footer(out)
 
     beat_stub = {
         "speaker": speaker,

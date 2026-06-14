@@ -3113,6 +3113,12 @@ KLING_O3_IDENTITY_LOCK = (
     "Do not change the character design from @Image1."
 )
 
+_KLING_O3_IDENTITY_LOCK_LINE_RE = re.compile(
+    r"Match @Image1 character appearance[^\n]*"
+    r"(?:\.\s*Do not change the character design from @Image1\.)?",
+    re.I,
+)
+
 # Segment-level default background PNGs (Dropbox project root filenames).
 _SEGMENT_BG_DEFAULTS: dict[tuple[str, str], str] = {
     ("1", "pre"): "bg_entry_streamside.png",
@@ -3842,9 +3848,31 @@ def _kling_o3_addressee_offscreen_clause(speaker: str, spoken: str) -> str:
     return " ".join(parts)
 
 
+def normalize_kling_o3_identity_footer(prompt: str) -> str:
+    """Replace drifted identity footer lines with canonical KLING_O3_IDENTITY_LOCK."""
+    text = (prompt or "").strip()
+    if not text or not _KLING_O3_IDENTITY_LOCK_LINE_RE.search(text):
+        return text
+    text = _KLING_O3_IDENTITY_LOCK_LINE_RE.sub(KLING_O3_IDENTITY_LOCK, text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def identity_footer_is_canonical(prompt: str) -> bool:
+    """True when prompt has no identity footer or footer matches KLING_O3_IDENTITY_LOCK."""
+    text = (prompt or "").strip()
+    if not text or "match @image1 character appearance" not in text.lower():
+        return True
+    match = _KLING_O3_IDENTITY_LOCK_LINE_RE.search(text)
+    if not match:
+        return False
+    found = re.sub(r"\s+", " ", match.group(0).strip())
+    canonical = re.sub(r"\s+", " ", KLING_O3_IDENTITY_LOCK.strip())
+    return found == canonical
+
+
 def _append_kling_o3_submit_locks(raw: str, *, speaker: str, spoken: str) -> str:
     """Append solo-shot, viewer, addressee, identity, and speech-only locks once."""
-    out = raw.rstrip()
+    out = normalize_kling_o3_identity_footer(raw.rstrip())
     lower = out.lower()
     if "only @image1 is visible" not in lower:
         out = f"{out}\n\n{KLING_O3_SOLO_SHOT_LOCK}"
@@ -4631,6 +4659,13 @@ KLING_O3_TESSA_VOICE_DELIVERY = (
     "steady and not slow, not dragging, not whispered, not childlike or baby-talk"
 )
 
+# Laurel (lemur scholar; registry key Lorelai — "Laurel" in voice lines for TTS pronunciation).
+KLING_O3_LORELAI_VOICE_DELIVERY = (
+    "warm excited conversational pace, clear scholarly delivery, measured deliberate cadence, "
+    "slower steady rhythm, not rushed or frantic, not hyper or sputtering, "
+    "not dragging, not childlike or baby-talk"
+)
+
 # Locked-line imports still carry pre-rename Pip/Alex copy — replace only when
 # auto-building a prompt from dialogue_text (never on manual prompt-box submit).
 _CHIPPER_LEGACY_DIALOGUE_MARKERS = (
@@ -4742,6 +4777,14 @@ def _kling_o3_visual_action_clause(beat: dict, spoken: str) -> str:
     return _emotion_action_clause(beat) + _kling_o3_viewer_staging_clause(spoken)
 
 
+def _kling_o3_voice_line_display_name(speaker: str, element_name: str | None) -> str:
+    """Spoken-name in O3 voice lines — Laurel not Lorelai for clone pronunciation."""
+    canon = (speaker or "").strip()
+    if canon in ("Lorelai", "Laurel"):
+        return "Laurel"
+    return (element_name or canon or "Character").strip()
+
+
 def _kling_o3_voice_block(speaker: str, spoken: str) -> str:
     """Dialogue block for Kling native audio.
 
@@ -4756,15 +4799,20 @@ def _kling_o3_voice_block(speaker: str, spoken: str) -> str:
         from tools import kling_character_registry as reg
         element_name = reg.get_element_name(canon)
         if element_name:
+            voice_name = _kling_o3_voice_line_display_name(canon, element_name)
             if canon == "Tessa":
                 return (
-                    f'{element_name} speaks in a {KLING_O3_TESSA_VOICE_DELIVERY}: "{spoken}"'
+                    f'{voice_name} speaks in a {KLING_O3_TESSA_VOICE_DELIVERY}: "{spoken}"'
                 )
             if canon == "Chipper":
                 return (
-                    f'{element_name} speaks in a {KLING_O3_CHIPPER_VOICE_DELIVERY}: "{spoken}"'
+                    f'{voice_name} speaks in a {KLING_O3_CHIPPER_VOICE_DELIVERY}: "{spoken}"'
                 )
-            return f'{element_name} says: "{spoken}"'
+            if canon in ("Lorelai", "Laurel"):
+                return (
+                    f'{voice_name} speaks in a {KLING_O3_LORELAI_VOICE_DELIVERY}: "{spoken}"'
+                )
+            return f'{voice_name} says: "{spoken}"'
     except Exception:
         pass
 
@@ -4776,6 +4824,11 @@ def _kling_o3_voice_block(speaker: str, spoken: str) -> str:
     if canon == "Tessa":
         return (
             f'@Image1 <<<voice_1>>> speaks in a {KLING_O3_TESSA_VOICE_DELIVERY}: "{spoken}"'
+        )
+
+    if canon in ("Lorelai", "Laurel"):
+        return (
+            f'Laurel speaks in a {KLING_O3_LORELAI_VOICE_DELIVERY}: "{spoken}"'
         )
 
     return f'@Image1 <<<voice_1>>> speaks clearly at a natural pace: "{spoken}"'
@@ -5288,8 +5341,10 @@ def audit_kling_author_enrichment(beats: list[dict]) -> list[str]:
             warnings.append(f"{beat_id}: stale Luna cast leaked into prompt")
         if re.search(r"\bis a small green sea turtle\b", prompt, re.I):
             warnings.append(f"{beat_id}: species taxonomy in prompt — use @Image1 only")
-        if re.search(r"\b(?:Tessa|Lorelai|Arlo|Chipper)\s+is\s+a\s+", prompt, re.I):
+        if re.search(r"\b(?:Tessa|Lorelai|Laurel|Arlo|Chipper)\s+is\s+a\s+", prompt, re.I):
             warnings.append(f"{beat_id}: species anatomy block in prompt — Event-1 shape violation")
+        if "@Image1" in prompt and not identity_footer_is_canonical(prompt):
+            warnings.append(f"{beat_id}: identity footer drift from KLING_O3_IDENTITY_LOCK")
         if re.search(r"\bChipper\b", prompt) and "Arlo" not in (b.get("speaker") or ""):
             warnings.append(f"{beat_id}: stale Chipper cast leaked into prompt")
         emotion = (b.get("emotion") or "").strip()

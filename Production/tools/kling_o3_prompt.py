@@ -19,24 +19,40 @@ KLING_O3_TESSA_VOICE_DELIVERY = (
     "steady and not slow, not dragging, not whispered, not childlike or baby-talk"
 )
 
+KLING_O3_LORELAI_VOICE_DELIVERY = (
+    "warm excited conversational pace, clear scholarly delivery, measured deliberate cadence, "
+    "slower steady rhythm, not rushed or frantic, not hyper or sputtering, "
+    "not dragging, not childlike or baby-talk"
+)
+
 _DELIVERY_BY_SPEAKER: dict[str, str] = {
     "Chipper": KLING_O3_CHIPPER_VOICE_DELIVERY,
     "Arlo": KLING_O3_ARLO_VOICE_DELIVERY,
     "Tessa": KLING_O3_TESSA_VOICE_DELIVERY,
+    "Lorelai": KLING_O3_LORELAI_VOICE_DELIVERY,
+    "Laurel": KLING_O3_LORELAI_VOICE_DELIVERY,
 }
+
+
+def _voice_line_display_name(speaker: str, element_name: str | None) -> str:
+    canon = (speaker or "").strip()
+    if canon in ("Lorelai", "Laurel"):
+        return "Laurel"
+    return (element_name or canon or "Character").strip()
 
 
 def voice_block(speaker: str, spoken: str) -> str:
     """Return the canonical O3 voice line for a speaker (Element-bound delivery)."""
     canon = (speaker or "Character").strip()
     delivery = _DELIVERY_BY_SPEAKER.get(canon)
-    name = canon
+    element_name = canon
     try:
         from tools import kling_character_registry as reg
 
-        name = reg.get_element_name(canon) or canon
+        element_name = reg.get_element_name(canon) or canon
     except Exception:
         pass
+    voice_name = _voice_line_display_name(canon, element_name)
     if delivery:
-        return f'{name} speaks in a {delivery}: "{spoken}"'
-    return f'{name} speaks clearly at a natural pace, steady and not bubbly or hyper: "{spoken}"'
+        return f'{voice_name} speaks in a {delivery}: "{spoken}"'
+    return f'{voice_name} speaks clearly at a natural pace, steady and not bubbly or hyper: "{spoken}"'

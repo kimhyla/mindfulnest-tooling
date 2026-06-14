@@ -334,6 +334,62 @@ def test_heal_beat_migrate_rewrites_event2_tessa_prompt():
     assert "speaks in a warm gentle conversational pace" in beat["kling_o3_prompt"]
 
 
+def test_normalize_identity_footer_replaces_drifted_species_anatomy():
+    drifted = (
+        "@Image1 (Tessa) Tessa — Discovery. Scene from @Image2.\n\n"
+        "Match @Image1 character appearance, proportions, shell, flippers, and facial expression "
+        "exactly. Do not change the character design from @Image1.\n\n"
+        "Silent world except speech."
+    )
+    out = normalize_kling_o3_prompt_event1_quality(
+        drifted,
+        speaker="Tessa",
+        dialogue="Hello",
+        emotion="curious",
+        scene_notes="soft smile",
+    )
+    assert "shell" not in out.lower() or "shell" not in out.split("Match @Image1")[1].split("\n\n")[0]
+    assert bg.KLING_O3_IDENTITY_LOCK in out
+    assert bg.identity_footer_is_canonical(out)
+
+
+def test_audit_flags_identity_footer_drift():
+    beats = [{
+        "beat_id": "bg_arc1_event2_pre_beat_03",
+        "speaker": "Lorelai",
+        "dialogue_text": "Oh my goodness!",
+        "emotion": "awe",
+        "scene_notes": "eyes wide, rooted in place",
+        "kling_o3_prompt": (
+            "@Image1 (Lorelai) Lorelai — Discovery. Scene from @Image2.\n\n"
+            "Match @Image1 character appearance, proportions, paws, and facial expression exactly.\n\n"
+            'Laurel speaks in a warm excited conversational pace: "Oh my goodness!"'
+        ),
+        "pipeline": "kling_o3_omni",
+    }]
+    warnings = bg.audit_kling_author_enrichment(beats)
+    assert any("identity footer drift" in w for w in warnings)
+
+
+def test_normalize_upgrades_lorelai_voice_delivery_to_laurel_slower():
+    stale = (
+        "@Image1 (Lorelai) Lorelai — Discovery. Scene from @Image2.\n\n"
+        "Camera: static locked shot.\n\n"
+        'Lorelai says: "[awe, breathless] Oh my goodness!"'
+    )
+    out = normalize_kling_o3_prompt_event1_quality(
+        stale,
+        speaker="Lorelai",
+        dialogue="Oh my goodness!",
+        emotion="awe, breathless",
+        scene_notes="eyes wide, mouth open",
+    )
+    assert "Lorelai says:" not in out
+    assert "Laurel speaks in a warm excited conversational pace" in out
+    assert "slower steady rhythm" in out
+    assert "not rushed or frantic" in out
+
+
 def test_update_beat_accepts_kling_o3_prompt():
     text = (TOOLS / "server_handlers" / "background.py").read_text(encoding="utf-8")
     assert '"kling_o3_prompt"' in text.split("_BG_BEAT_WRITABLE")[1][:200]
