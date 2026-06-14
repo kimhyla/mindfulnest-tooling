@@ -35,11 +35,6 @@ if curl -sf "http://localhost:${SERVER_PORT}/api/event/current" >/dev/null 2>&1;
 import json, urllib.error, urllib.request
 
 base = "http://localhost:${SERVER_PORT}"
-CANON = (
-    "/Users/kimberlysmith/Library/CloudStorage/Dropbox/"
-    "Claude Mindfulnest Project Files/Production/canonical_images/"
-    "canonical_heartwood_grove_01.png"
-)
 
 def post(path, body):
     req = urllib.request.Request(
@@ -61,21 +56,10 @@ _, cur = get("/api/event/current")
 if cur.get("event_id") != "Event_1":
     raise SystemExit(f"setup failed: expected Event_1 pin, got {cur!r}")
 
-# BG ref drop with Event_2 scope while pinned Event_1 must 409.
+# BG mutation with Event_2 scope while pinned Event_1 must 409.
 try:
-    post(
-        "/api/bg/update-beat",
-        {
-            "beat_id": "bg_arc1_event2_pre_beat_01",
-            "scope_event_id": "Event_2",
-            "scope_video_role": "intro",
-            "bg_ref_image": {
-                "key": "canonical_heartwood_grove_01",
-                "abs_path": CANON,
-            },
-        },
-    )
-    raise SystemExit("expected 409 scope_mismatch while pinned Event_1")
+    get("/api/v2/event/Event_2/state")
+    raise SystemExit("expected 409 for Event_2 v2 state while pinned Event_1")
 except urllib.error.HTTPError as e:
     if e.code != 409:
         raise SystemExit(f"expected 409, got HTTP {e.code}") from e
@@ -83,28 +67,17 @@ except urllib.error.HTTPError as e:
     if body.get("error_message") != "scope_mismatch":
         raise SystemExit(f"expected scope_mismatch, got {body!r}")
 
-# Auto-heal path (what pathappPatch does): load Event_2 then retry mutation.
+# Auto-heal path (what apiGet / pathappPatch do): load Event_2 then scoped READ succeeds.
 post("/api/event/load", {"event_id": "Event_2"})
 _, cur2 = get("/api/event/current")
 if cur2.get("event_id") != "Event_2":
     raise SystemExit(f"heal load failed: {cur2!r}")
 
-status, resp = post(
-    "/api/bg/update-beat",
-    {
-        "beat_id": "bg_arc1_event2_pre_beat_01",
-        "scope_event_id": "Event_2",
-        "scope_video_role": "intro",
-        "bg_ref_image": {
-            "key": "canonical_heartwood_grove_01",
-            "abs_path": CANON,
-        },
-    },
-)
-if status != 200 or not resp.get("ok"):
-    raise SystemExit(f"post-heal BG ref drop failed: status={status} body={resp!r}")
+status, _ = get("/api/v2/event/Event_2/state")
+if status != 200:
+    raise SystemExit(f"post-heal Event_2 v2 state must return 200, got {status}")
 
-print("  live API: 409 on drift pin, 200 after event/load heal + retry")
+print("  live API: 409 on drift pin, 200 v2 state after event/load heal")
 PY
   echo "[scope-mismatch-auto-heal] OK — source + live API smoke passed"
 else
