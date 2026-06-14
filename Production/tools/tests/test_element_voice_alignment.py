@@ -68,6 +68,30 @@ def test_validate_element_bound_voice_prompt_accepts_locked_delivery():
     assert o3p.validate_element_bound_voice_prompt("Tessa", good) == []
 
 
+LORELAI_EVENT2_VOICE_LINE = (
+    "Lorelai speaks with bright, bubbling surprise: [surprised, bright, warm and eager] "
+    "'Oh! Hi. Nice to finally see someone else around here! [pause] I'm Laurel. "
+    "I'm doing research for the Racoon College. Is this the ancient temple of Everdale?'"
+)
+
+
+def test_validate_element_bound_voice_prompt_accepts_author_delivery_line(monkeypatch):
+    from tools import kling_o3_prompt as o3p
+
+    monkeypatch.setattr(
+        "tools.kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+    assert o3p.validate_element_bound_voice_prompt("Lorelai", LORELAI_EVENT2_VOICE_LINE) == []
+
+
+def test_extract_single_quoted_lorelai_voice_line():
+    spoken = bg.extract_spoken_dialogue_from_kling_prompt(LORELAI_EVENT2_VOICE_LINE)
+    assert spoken.startswith("Oh! Hi.")
+    assert "Everdale" in spoken
+    assert "surprised" not in spoken
+
+
 TESSA_EVENT2_VOICE_LINE = (
     "Tessa speaks in a warm gentle conversational pace, soft and vulnerable but clear, "
     "natural delivery, steady and not slow, not dragging, not whispered, not childlike or "

@@ -6,6 +6,8 @@ delivery steady and prevent bubbly/hyper reads (Chipper fix reused for Arlo).
 
 from __future__ import annotations
 
+import re
+
 KLING_O3_CHIPPER_VOICE_DELIVERY = (
     "warm calm conversational pace, steady and natural, clear delivery, "
     "brisk but not rushed, not bubbly or hyper, not slow, not dramatic, not childlike or baby-talk"
@@ -59,7 +61,7 @@ def voice_block(speaker: str, spoken: str) -> str:
 
 
 def validate_element_bound_voice_prompt(speaker: str, prompt: str) -> list[str]:
-    """Hard gates before O3 Pro + element_list — generic TTS if these fail."""
+    """Hard gates before O3 Pro + element_list — prompt box is law for delivery wording."""
     errors: list[str] = []
     try:
         from tools import kling_character_registry as reg
@@ -75,9 +77,6 @@ def validate_element_bound_voice_prompt(speaker: str, prompt: str) -> list[str]:
         return errors
     if "<<<voice_" in lower:
         errors.append("prompt contains <<<voice_N>>> (generic Kling TTS tags)")
-    if "speaks in a" not in lower:
-        errors.append("prompt missing locked Element delivery line (speaks in a …)")
-    delivery = _DELIVERY_BY_SPEAKER.get((speaker or "").strip())
-    if delivery and delivery.split(",")[0].strip().lower() not in lower:
-        errors.append("prompt missing canonical delivery adjectives for this speaker")
+    if not re.search(r"\b(?:speaks|says)\b", text, re.I):
+        errors.append("prompt missing voice line (speaks/says …)")
     return errors

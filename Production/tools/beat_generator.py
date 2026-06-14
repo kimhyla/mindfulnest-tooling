@@ -3704,7 +3704,9 @@ def _extract_unquoted_spoken_after_voice_colon(text: str) -> str:
     if not colon:
         return ""
     after = tail[colon.end():].strip()
-    if not after or after.startswith('"'):
+    if not after:
+        return ""
+    if after.startswith('"') and re.search(r':\s*"', tail, re.I):
         return ""
     skip_prefixes = _kling_o3_voice_line_stop_prefixes()
     parts: list[str] = []
@@ -3727,6 +3729,8 @@ def _extract_unquoted_spoken_after_voice_colon(text: str) -> str:
         return ""
     spoken_raw = re.sub(r"^(?:\[[^\]]+\]\s*)+", "", spoken_raw).strip()
     spoken_raw = re.sub(r"\s*\[[^\]]+\]\s*$", "", spoken_raw).strip()
+    if len(spoken_raw) >= 2 and spoken_raw[0] == spoken_raw[-1] and spoken_raw[0] in "'\"":
+        spoken_raw = spoken_raw[1:-1].strip()
     return _kling_o3_normalize_spoken(spoken_raw) if spoken_raw else ""
 
 
@@ -3745,13 +3749,23 @@ def _extract_spoken_dialogue_detail(prompt: str) -> tuple[str, str | None]:
         segments.append(m.group(1).strip())
     if not segments:
         for m in re.finditer(
-            r"\b(?:says|speaks|continues|adds)[^:\"]*:\s*\"([^\"]+)\"",
+            r"\b(?:says|speaks|continues|adds)[^:\"']*:\s*\"([^\"]+)\"",
+            text,
+            re.IGNORECASE,
+        ):
+            segments.append(m.group(1).strip())
+    if not segments:
+        for m in re.finditer(
+            r"\b(?:says|speaks|continues|adds)[^:\"']*:\s*'([^']+)'",
             text,
             re.IGNORECASE,
         ):
             segments.append(m.group(1).strip())
     if not segments:
         for m in re.finditer(r"\"([^\"]{3,})\"", text):
+            segments.append(m.group(1).strip())
+    if not segments:
+        for m in re.finditer(r"'([^']{3,})'", text):
             segments.append(m.group(1).strip())
 
     if not segments:
