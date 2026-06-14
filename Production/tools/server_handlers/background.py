@@ -3410,9 +3410,12 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
     job_id = str(_stdlib_uuid.uuid4())[:8]
     attempt_id = _stdlib_uuid.uuid4().hex
     prod = _data_root(h)
-    script = prod / "tools" / "kling_o3_element_beat_pipeline.py"
+    # Canonical code lives in the tooling repo (_PSERVER_TOOLS_DIR). Dropbox
+    # Production/tools/ is a runtime mirror that drifts until deploy — O3 subprocess
+    # must not import stale beat_generator duration logic from Dropbox alone.
+    script = _PSERVER_TOOLS_DIR / "kling_o3_element_beat_pipeline.py"
     if not script.is_file():
-        script = _PSERVER_TOOLS_DIR / "kling_o3_element_beat_pipeline.py"
+        script = prod / "tools" / "kling_o3_element_beat_pipeline.py"
     if not script.is_file():
         return h._send_error_v59(
             500,
@@ -3614,6 +3617,11 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
     subprocess_env = os.environ.copy()
     subprocess_env["MN_PROD_ROOT"] = str(prod)
     subprocess_env["MN_O3_ATTEMPT_ID"] = attempt_id
+    subprocess_env["MN_TOOLING_TOOLS"] = str(_PSERVER_TOOLS_DIR)
+    _pp = subprocess_env.get("PYTHONPATH", "")
+    subprocess_env["PYTHONPATH"] = os.pathsep.join(
+        p for p in (str(_PSERVER_TOOLS_DIR), str(prod / "tools"), str(prod), _pp) if p
+    )
     proc = subprocess.Popen(
         cmd,
         cwd=str(prod),

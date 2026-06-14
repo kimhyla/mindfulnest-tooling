@@ -2659,6 +2659,7 @@ def _migrate_sidecar(sidecar: dict) -> dict:
                     and os.path.isfile(char_path)
                 )
                 sync_element_char_ref_status(beat, heal_mismatch=not locked_lib)
+                heal_kling_o3_stored_duration(beat)
     for arc_key, arc in sidecar.get("arcs", {}).items():
         for seg_key, seg in arc.get("segments", {}).items():
             m = re.match(r"^event_(\d+)_(\w+)$", seg_key or "")
@@ -4348,7 +4349,11 @@ def _kling_o3_has_pre_speech_staging(prompt: str) -> bool:
     text = (prompt or "").strip()
     if not text:
         return False
-    m = re.search(r"<<<voice_\d+>>>|\bsays\b", text, re.IGNORECASE)
+    m = re.search(
+        r"<<<voice_\d+>>>|\b(?:speaks|says)\b",
+        text,
+        re.IGNORECASE,
+    )
     if not m:
         return False
     head = text[: m.start()].strip()
@@ -5029,6 +5034,25 @@ def _spoken_for_duration_estimate(prompt: str, *, beat: dict | None = None) -> s
     if not candidates:
         return ""
     return max(candidates, key=lambda s: len(re.findall(r"\S+", s)))
+
+
+def heal_kling_o3_stored_duration(beat: dict) -> bool:
+    """Re-sync sidecar kling_o3_duration from prompt when not manually locked."""
+    if beat.get("kling_o3_duration_locked"):
+        return False
+    prompt = (beat.get("kling_o3_prompt") or "").strip()
+    if not prompt:
+        return False
+    prepared = prepare_kling_o3_prompt_for_submit(beat, prompt)
+    resolved = resolve_kling_o3_submit_duration(beat, prepared)
+    try:
+        stored = int(beat.get("kling_o3_duration") or 0)
+    except (TypeError, ValueError):
+        stored = 0
+    if stored != resolved:
+        beat["kling_o3_duration"] = resolved
+        return True
+    return False
 
 
 def apply_live_kling_o3_prompts(sidecar: dict, beat_prompts: dict) -> int:

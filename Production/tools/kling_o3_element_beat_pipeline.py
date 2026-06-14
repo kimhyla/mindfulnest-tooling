@@ -21,6 +21,13 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 PROD = HERE.parent
+_tooling_tools = os.environ.get("MN_TOOLING_TOOLS", "").strip()
+if _tooling_tools:
+    _tooling_path = Path(_tooling_tools).resolve()
+    if _tooling_path.is_dir() and str(_tooling_path) not in sys.path:
+        sys.path.insert(0, str(_tooling_path))
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
 if str(PROD) not in sys.path:
     sys.path.insert(0, str(PROD))
 

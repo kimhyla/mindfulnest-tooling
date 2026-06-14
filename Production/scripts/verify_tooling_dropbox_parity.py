@@ -14,6 +14,8 @@ from pathlib import Path
 
 CRITICAL_REL_PATHS: tuple[str, ...] = (
     "Production/tools/beat_generator.py",
+    "Production/tools/kling_o3_prompt.py",
+    "Production/tools/kling_character_registry.py",
     "Production/tools/production_server.py",
     "Production/tools/kling_o3_element_beat_pipeline.py",
     "Production/tools/arlo_o3_voice_pipeline.py",
