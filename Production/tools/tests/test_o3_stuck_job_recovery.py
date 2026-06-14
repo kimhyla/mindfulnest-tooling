@@ -50,6 +50,106 @@ def test_reconcile_clears_stale_running_with_failed_voice_fix(monkeypatch, tmp_p
     assert beat.get("kling_o3_voice_fix_ui_job_id") is None
 
 
+def test_reconcile_clears_stale_pid_after_approved_element_pipeline(monkeypatch, tmp_path) -> None:
+    bg_mod = _import_background()
+    delivery = tmp_path / "bg_arc1_event2_pre_beat_02_g5_element_o3_master_delivery.mp4"
+    delivery.write_bytes(b"fake mp4")
+    sidecar = {
+        "schema_version": 1,
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [
+                            {
+                                "beat_id": "bg_arc1_event2_pre_beat_02",
+                                "status": "approved",
+                                "kling_o3_status": "approved",
+                                "kling_o3_video_path": str(delivery),
+                                "kling_o3_voice_fix_status": "approved",
+                                "kling_o3_voice_fix_job_pid": 96015,
+                                "kling_o3_voice_fix_ui_job_id": None,
+                            }
+                        ],
+                    },
+                },
+            },
+        },
+    }
+    monkeypatch.setattr(bg_mod, "_pid_is_running", lambda _pid: False)
+    changed = bg_mod.reconcile_stuck_o3_voice_beats(sidecar)
+    beat = sidecar["arcs"]["arc_1"]["segments"]["event_2_pre"]["beats"][0]
+    assert changed == 1
+    assert beat.get("kling_o3_voice_fix_job_pid") is None
+
+
+def test_reconcile_recovers_done_element_log_after_dead_subprocess(monkeypatch, tmp_path) -> None:
+    bg_mod = _import_background()
+    delivery = tmp_path / "bg_arc1_event2_pre_beat_02_g5_element_o3_master_delivery.mp4"
+    delivery.write_bytes(b"fake mp4")
+    log_path = tmp_path / "job.log"
+    log_path.write_text(
+        json.dumps({
+            "phase": "done",
+            "beat_id": "bg_arc1_event2_pre_beat_02",
+            "video": str(delivery),
+            "delivery": {"width": 1280, "height": 720},
+        }) + "\n",
+        encoding="utf-8",
+    )
+    sidecar = {
+        "schema_version": 1,
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [
+                            {
+                                "beat_id": "bg_arc1_event2_pre_beat_02",
+                                "status": "o3_element_running",
+                                "kling_o3_status": "submitted",
+                                "kling_o3_voice_fix_status": "o3_running",
+                                "kling_o3_voice_fix_job_pid": 424242,
+                                "kling_o3_voice_fix_ui_job_id": "8cde7a99",
+                                "kling_o3_voice_fix_job_log_path": str(log_path),
+                            }
+                        ],
+                    },
+                },
+            },
+        },
+    }
+    monkeypatch.setattr(bg_mod, "_pid_is_running", lambda _pid: False)
+    changed = bg_mod.reconcile_stuck_o3_voice_beats(sidecar)
+    beat = sidecar["arcs"]["arc_1"]["segments"]["event_2_pre"]["beats"][0]
+    assert changed == 1
+    assert beat["status"] == "approved"
+    assert beat["kling_o3_status"] == "approved"
+    assert beat["kling_o3_voice_fix_status"] == "approved"
+    assert beat["kling_o3_video_path"] == str(delivery)
+    assert beat.get("kling_o3_voice_fix_ui_job_id") is None
+
+
+def test_parse_element_pipeline_done_log(tmp_path) -> None:
+    bg_mod = _import_background()
+    log_path = tmp_path / "run.log"
+    log_path.write_text(
+        '{"phase": "delivery_encode"}\n'
+        + json.dumps({
+            "phase": "done",
+            "beat_id": "bg_arc1_event2_pre_beat_02",
+            "video": "/tmp/out.mp4",
+            "delivery": {"width": 1280, "height": 720},
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+    parsed = bg_mod._parse_o3_pipeline_result_from_log(log_path)
+    assert parsed is not None
+    assert parsed.get("ok") is True
+    assert parsed.get("video") == "/tmp/out.mp4"
+
+
 def test_session_state_handler_calls_reconcile() -> None:
     src = (TOOLS / "server_handlers" / "background.py").read_text(encoding="utf-8")
     assert "reconcile_stuck_o3_voice_beats" in src

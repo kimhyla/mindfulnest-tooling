@@ -148,13 +148,22 @@ def run_pipeline(
     attempt_id = attempt_id or os.environ.get("MN_O3_ATTEMPT_ID") or __import__("uuid").uuid4().hex
     print(json.dumps({"phase": "starting", "beat_id": beat_id, "route": "o3_element_native_voice", "attempt_id": attempt_id}), flush=True)
 
-    sidecar_path = PROD / "beat_generator_state.json"
+    prod_root = Path(os.environ.get("MN_PROD_ROOT", "").strip() or PROD)
+    sidecar_path = prod_root / "beat_generator_state.json"
     sc = json.loads(sidecar_path.read_text(encoding="utf-8"))
     found = _find_beat(sc, beat_id)
     if not found:
         raise RuntimeError(f"beat not found: {beat_id}")
     beat, segment_key = found
     event_dir = _event_dir_for_segment(segment_key)
+    bg_sidecar.init_bg_paths(event_dir)
+    sidecar_path = Path(bg_sidecar.BG_SIDECAR_PATH)
+    with bg_sidecar._sidecar_lock:
+        sc = bg_sidecar.read_sidecar()
+        found = _find_beat(sc, beat_id)
+        if not found:
+            raise RuntimeError(f"beat not found after init_bg_paths: {beat_id}")
+        beat, segment_key = found
     backup_dir = event_dir / "_o3_element_backups" / (
         datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + f"_{beat_id}"
     )
@@ -323,7 +332,13 @@ def run_pipeline(
     }
     _upsert_option(beat, video_path=str(delivery), label="latest O3 Element voice", now=now)
     final["kling_o3_options"] = beat.get("kling_o3_options")
-    persist(final, remove=("kling_o3_voice_fix_ui_job_id", "kling_o3_voice_fix_error", "kling_o3_voice_fix_error_code"))
+    persist(final, remove=(
+        "kling_o3_voice_fix_ui_job_id",
+        "kling_o3_voice_fix_job_pid",
+        "kling_o3_voice_fix_job_started_at",
+        "kling_o3_voice_fix_error",
+        "kling_o3_voice_fix_error_code",
+    ))
     bg_sidecar.auto_pin_approved_kling_o3_delivery(beat, event_dir)
     print(json.dumps({"phase": "done", "beat_id": beat_id, "video": str(delivery), "raw": raw_probe, "delivery": delivery_probe}), flush=True)
     return {"ok": True, "beat_id": beat_id, "video": str(delivery), "raw_probe": raw_probe, "delivery_probe": delivery_probe}

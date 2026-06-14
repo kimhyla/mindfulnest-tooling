@@ -3185,7 +3185,9 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
     job_id = str(_stdlib_uuid.uuid4())[:8]
     attempt_id = _stdlib_uuid.uuid4().hex
     prod = _data_root(h)
-    script = prod / "tools" / "kling_o3_element_beat_pipeline.py"
+    script = _PSERVER_TOOLS_DIR / "kling_o3_element_beat_pipeline.py"
+    if not script.is_file():
+        script = prod / "tools" / "kling_o3_element_beat_pipeline.py"
     if not script.is_file():
         return h._send_error_v59(
             500,
@@ -3280,10 +3282,15 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
             beat["kling_o3_replace_slot_index"] = replace_slot
             existing_job_id = str(beat.get("kling_o3_voice_fix_ui_job_id") or "")
             existing_status = str(beat.get("kling_o3_voice_fix_status") or "")
+            existing_pid = beat.get("kling_o3_voice_fix_job_pid")
+            pid_running = (
+                existing_pid is not None
+                and _pid_is_running(int(existing_pid))
+            )
             if existing_job_id and existing_status not in {"approved", "failed", "failed_o3", "failed_provider_fetch", "failed_provider_sub720"}:
                 existing_job = _ARLO_O3_JOBS.get(existing_job_id)
                 existing_proc = existing_job.get("proc") if existing_job else None
-                if existing_proc and existing_job.get("status") == "running" and existing_proc.poll() is None:
+                if (existing_proc and existing_job.get("status") == "running" and existing_proc.poll() is None) or pid_running:
                     return h._send_json(200, {
                         "ok": True,
                         "job_id": existing_job_id,
@@ -3323,6 +3330,9 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
         cmd.append("--no-sharpen")
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_fh = open(log_path, "w", encoding="utf-8")
+    subprocess_env = os.environ.copy()
+    subprocess_env["MN_PROD_ROOT"] = str(prod)
+    subprocess_env["MN_O3_ATTEMPT_ID"] = attempt_id
     proc = subprocess.Popen(
         cmd,
         cwd=str(prod),
@@ -3330,6 +3340,7 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
         stderr=subprocess.STDOUT,
         text=True,
         start_new_session=True,
+        env=subprocess_env,
     )
     _ARLO_O3_JOBS[job_id] = {
         "status": "running",
@@ -3392,14 +3403,7 @@ def handle_bg_poll_arlo_o3_voice_status(h) -> None:
             log_text = Path(job["log_path"]).read_text(encoding="utf-8", errors="replace")
             if rc == 0:
                 job["status"] = "done"
-                result = None
-                try:
-                    start = log_text.rfind("{")
-                    if start >= 0:
-                        result = json.loads(log_text[start:])
-                except Exception:
-                    result = None
-                job["result"] = result
+                job["result"] = _parse_o3_pipeline_result_from_log(job.get("log_path"))
             else:
                 job["status"] = "failed"
                 job["error"] = _summarize_o3_job_error(log_text[-4000:])
@@ -3586,20 +3590,35 @@ def handle_bg_poll_kling_native_lipsync_experiment_status(h) -> None:
 
 
 def _parse_o3_pipeline_result_from_log(log_path: str | Path | None) -> dict | None:
+    """Parse subprocess log — Arlo lipsync returns ``{"ok": true}``; element pipeline ``phase: done``."""
     if not log_path:
         return None
     path = Path(log_path)
     if not path.is_file():
         return None
     log_text = path.read_text(encoding="utf-8", errors="replace")
-    start = log_text.rfind("{")
-    if start >= 0:
+    for line in reversed(log_text.splitlines()):
+        stripped = line.strip()
+        if not stripped.startswith("{"):
+            continue
         try:
-            parsed = json.loads(log_text[start:])
-            if isinstance(parsed, dict) and parsed.get("ok"):
-                return parsed
+            parsed = json.loads(stripped)
         except Exception:
-            pass
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        if parsed.get("ok"):
+            return parsed
+        if parsed.get("phase") == "done" and parsed.get("video"):
+            delivery = parsed.get("delivery") or {}
+            return {
+                "ok": True,
+                "beat_id": parsed.get("beat_id"),
+                "video": parsed.get("video"),
+                "raw_probe": parsed.get("raw"),
+                "delivery_probe": delivery,
+                "duration_s": delivery.get("duration_s"),
+            }
     return None
 
 
@@ -3667,26 +3686,94 @@ _STUCK_O3_CLEAR_FIELDS = (
 )
 
 
+_O3_VOICE_FIX_RUNNING_STATUSES = frozenset({
+    "o3_running",
+    "job_running",
+    "job_starting",
+    "visual_running",
+    "lipsync_running",
+    "tts_ready",
+})
+
+
+def _beat_has_stale_o3_job_pointers(beat: dict) -> bool:
+    return any(
+        beat.get(key)
+        for key in (
+            "kling_o3_voice_fix_job_pid",
+            "kling_o3_voice_fix_ui_job_id",
+            "kling_o3_voice_fix_job_started_at",
+        )
+    )
+
+
+def _clear_stale_o3_job_pointers(beat: dict) -> None:
+    for key in _STUCK_O3_CLEAR_FIELDS:
+        beat.pop(key, None)
+
+
+def _beat_o3_job_looks_running(beat: dict) -> bool:
+    status = str(beat.get("status") or "")
+    voice_fix = str(beat.get("kling_o3_voice_fix_status") or "")
+    if any(status.startswith(prefix) for prefix in _STUCK_O3_JOB_STATUS_PREFIXES):
+        return True
+    if voice_fix in _O3_VOICE_FIX_RUNNING_STATUSES:
+        return True
+    if beat.get("kling_o3_voice_fix_ui_job_id") and not voice_fix.startswith("failed"):
+        if voice_fix != "approved":
+            return True
+    return False
+
+
 def reconcile_stuck_o3_voice_beats(sidecar: dict) -> int:
     """Clear beats stuck in running UI state after a dead subprocess or stale error."""
     changed = 0
     for beat in _iter_bg_beats(sidecar):
         status = str(beat.get("status") or "")
         voice_fix = str(beat.get("kling_o3_voice_fix_status") or "")
-        if not any(status.startswith(p) for p in _STUCK_O3_JOB_STATUS_PREFIXES):
-            if not (voice_fix.startswith("failed") and beat.get("kling_o3_voice_fix_ui_job_id")):
-                continue
+        kling_status = str(beat.get("kling_o3_status") or "")
+
+        # Pipeline finished and sidecar is terminal — drop stale subprocess pointers.
+        if voice_fix == "approved" or kling_status == "approved":
+            if _beat_has_stale_o3_job_pointers(beat) or status.startswith(_STUCK_O3_JOB_STATUS_PREFIXES):
+                _clear_stale_o3_job_pointers(beat)
+                if beat.get("kling_o3_video_path") and kling_status == "approved":
+                    beat["status"] = "approved"
+                    beat["kling_o3_voice_fix_status"] = "approved"
+                changed += 1
+            continue
+
         pid = beat.get("kling_o3_voice_fix_job_pid")
         pid_dead = pid is not None and not _pid_is_running(int(pid))
         voice_failed = voice_fix.startswith("failed")
+
+        # Subprocess exited but sidecar never got final persist (server restart / poll miss).
+        if pid_dead and _beat_o3_job_looks_running(beat):
+            log_result = _parse_o3_pipeline_result_from_log(beat.get("kling_o3_voice_fix_job_log_path"))
+            video_path = str((log_result or {}).get("video") or "")
+            if log_result and video_path and Path(video_path).is_file():
+                now = datetime.now(timezone.utc).isoformat()
+                beat["kling_o3_video_path"] = video_path
+                beat["kling_o3_status"] = "approved"
+                beat["status"] = "approved"
+                beat["kling_o3_voice_fix_status"] = "approved"
+                beat["kling_o3_voice_fix_phase"] = "finalize"
+                beat["kling_o3_voice_fix_completed_at"] = now
+                beat["kling_o3_completed_at"] = beat.get("kling_o3_completed_at") or now
+                _clear_stale_o3_job_pointers(beat)
+                changed += 1
+                continue
+
+        if not any(status.startswith(p) for p in _STUCK_O3_JOB_STATUS_PREFIXES):
+            if not (voice_failed and beat.get("kling_o3_voice_fix_ui_job_id")):
+                continue
         missing_api_error = "update_beat_locked" in str(beat.get("kling_o3_voice_fix_error") or "")
         stale_process = voice_failed and (pid_dead or missing_api_error)
         if not stale_process and not (voice_failed and beat.get("kling_o3_voice_fix_ui_job_id") and pid_dead):
             if not (voice_failed and status.startswith("o3_") and pid_dead):
                 continue
-        for key in _STUCK_O3_CLEAR_FIELDS:
-            beat.pop(key, None)
-        if beat.get("kling_o3_video_path") and str(beat.get("kling_o3_status") or "") == "approved":
+        _clear_stale_o3_job_pointers(beat)
+        if beat.get("kling_o3_video_path") and kling_status == "approved":
             beat["status"] = "approved"
             beat["kling_o3_voice_fix_status"] = "approved"
         elif voice_failed:
@@ -3824,12 +3911,16 @@ def _clear_o3_job_metadata(job_id: str, *, status: str, result: dict | None = No
                     continue
                 if status == "done":
                     beat.pop("kling_o3_voice_fix_ui_job_id", None)
+                    beat.pop("kling_o3_voice_fix_job_pid", None)
+                    beat.pop("kling_o3_voice_fix_job_started_at", None)
                     beat["kling_o3_voice_fix_job_completed_at"] = datetime.now(timezone.utc).isoformat()
                     beat["kling_o3_voice_fix_phase"] = "done"
                     if result:
                         beat["kling_o3_voice_fix_job_result"] = result
                 elif status == "failed":
                     beat.pop("kling_o3_voice_fix_ui_job_id", None)
+                    beat.pop("kling_o3_voice_fix_job_pid", None)
+                    beat.pop("kling_o3_voice_fix_job_started_at", None)
                     beat["kling_o3_voice_fix_status"] = "failed"
                     beat["kling_o3_voice_fix_error_code"] = beat.get("kling_o3_voice_fix_error_code") or "SUBPROCESS_FAILED"
                     beat["kling_o3_voice_fix_phase"] = "failed"
