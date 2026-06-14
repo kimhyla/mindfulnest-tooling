@@ -591,7 +591,9 @@ SIDECAR_MERGE_PRESERVE_FIELDS: tuple[str, ...] = (
     "kling_o3_options", "kling_o3_replace_slot_index", "kling_o3_selected_option_key",
     "kling_o3_task_id", "kling_o3_trim_start", "kling_o3_trim_back",
     "kling_o3_actual_duration_s", "kling_o3_completed_at",
-    "reference_image", "bg_ref_image", "reference_image_locked", "pipeline",
+    "reference_image", "bg_ref_image", "reference_image_locked",
+    "bg_ref_image_locked", "start_frame_image_locked", "end_frame_image_locked",
+    "pipeline",
     "intro_beat_role", "canonical_intro_tail",
     "magic_manual_path", "magic_video_path", "magic_path_authored_against",
     "storyboard_clip_import",
@@ -4940,13 +4942,37 @@ def _ref_dict_from_path(abs_path: str) -> dict:
     return {"abs_path": abs_path, "key": Path(abs_path).stem}
 
 
+BEAT_REF_LOCK_FIELDS: dict[str, str] = {
+    "reference_image": "reference_image_locked",
+    "bg_ref_image": "bg_ref_image_locked",
+    "start_frame_image": "start_frame_image_locked",
+    "end_frame_image": "end_frame_image_locked",
+}
+
+
+def apply_user_beat_ref_update(beat: dict, field: str, value) -> None:
+    """Apply explicit user ref drop/clear — lock so auto-align won't revert."""
+    lock_field = BEAT_REF_LOCK_FIELDS.get(field)
+    if lock_field is None:
+        beat[field] = value
+        return
+    if isinstance(value, dict) and (value.get("abs_path") or value.get("key")):
+        beat[field] = value
+        beat[lock_field] = True
+    elif value is None:
+        beat[field] = None
+        beat[lock_field] = False
+    else:
+        beat[field] = value
+
+
 def hydrate_beat_ref_images(beat: dict, approved_roots: list[str]) -> bool:
     """Ensure reference_image / bg_ref_image have thumb_b64 when abs_path is set.
 
     Returns True when any ref dict was updated (caller may persist sidecar).
     """
     changed = False
-    for field in ("reference_image", "bg_ref_image"):
+    for field in ("reference_image", "bg_ref_image", "start_frame_image", "end_frame_image"):
         ref = beat.get(field)
         if not isinstance(ref, dict) or ref.get("thumb_b64"):
             continue
@@ -5152,7 +5178,7 @@ def apply_kling_o3_defaults_to_beat(beat: dict, event_id: str, phase: str) -> No
     bg_path = resolve_beat_bg_ref_path(beat, event_id, phase)
     if char_path and not beat.get("reference_image"):
         beat["reference_image"] = _ref_dict_from_path(char_path)
-    if bg_path and not beat.get("bg_ref_image"):
+    if bg_path and not beat.get("bg_ref_image") and not beat.get("bg_ref_image_locked"):
         beat["bg_ref_image"] = _ref_dict_from_path(bg_path)
 
 

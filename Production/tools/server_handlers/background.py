@@ -2517,7 +2517,7 @@ def handle_bg_update_beat(h, body: dict)-> None:
                 # For reference_image / bg_ref_image: if abs_path is set
                 # and the file exists, render a PIL thumbnail and inject
                 # thumb_b64 so BgRefSlot can <img src=...> after refresh.
-                if field in ("reference_image", "bg_ref_image") and isinstance(value, dict):
+                if field in bg.BEAT_REF_LOCK_FIELDS and isinstance(value, dict):
                     abs_path = value.get("abs_path") or ""
                     if not value.get("thumb_b64"):
                         from lib.event_library import ref_image_thumb_b64
@@ -2527,7 +2527,10 @@ def handle_bg_update_beat(h, body: dict)-> None:
                             value = dict(value)
                             value["thumb_b64"] = _t
                             thumb_b64 = _t
-                beat[field] = value
+                if field in bg.BEAT_REF_LOCK_FIELDS:
+                    bg.apply_user_beat_ref_update(beat, field, value)
+                else:
+                    beat[field] = value
                 written.append(field)
                 if field == "kling_o3_prompt" and isinstance(value, str):
                     bg.sync_beat_dialogue_from_kling_prompt(beat)
