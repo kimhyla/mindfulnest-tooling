@@ -133,6 +133,32 @@ def test_get_element_list_entry_includes_voice_id(monkeypatch):
 
 
 def test_trim_refer_images_preserves_canonical_pin():
+    """New pose (keep) survives even when anchor pins already fill the Kling cap."""
+    from tools import kling_character_registry as reg
+
+    cfg = {
+        "refer_images": [
+            "Lorelai/poses/lorelai_canonical_neutral.png",
+            "Lorelai/poses/lorelai_explaining.png",
+            "Lorelai/poses/lorelai_shocked.png",
+        ],
+        "refer_pins": [
+            "Lorelai/poses/lorelai_explaining.png",
+            "Lorelai/poses/lorelai_shocked.png",
+        ],
+    }
+    refer = list(cfg["refer_images"])
+    pin = reg.pinned_refer_paths(cfg, "Lorelai")
+    trimmed = reg.trim_refer_images_for_element(
+        refer + ["Lorelai/poses/new_pose.png"],
+        keep="Lorelai/poses/new_pose.png",
+        pin=pin,
+    )
+    assert len(trimmed) == 3
+    assert "Lorelai/poses/new_pose.png" in trimmed
+
+
+def test_trim_refer_images_preserves_canonical_pin_legacy():
     from tools import kling_character_registry as reg
 
     cfg = {

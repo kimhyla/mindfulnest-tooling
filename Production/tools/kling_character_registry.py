@@ -2,6 +2,15 @@
 
 Loads Production/character_subjects.json.
 Beat Gen requires active element_id per dialogue speaker (O3 Pro + bound voice).
+
+Pose / Element model (three stores — keep in sync):
+  1. Beat sidecar ``reference_image`` — often Event_*/library/... (user-locked still)
+  2. Disk ``Production/<Char>/poses/*.png`` — copies from Add to Element (unbounded)
+  3. Registry ``character_subjects.json`` ``refer_images`` — max 3 paths uploaded to Kling
+
+``refer_images`` is the Kling API subset, not a full inventory of poses/. Orphan poses
+(files on disk but not in refer_images) caused @Image1 gate failures until reconcile.
+Add to Element must always leave the new pose in refer_images after trim.
 """
 
 from __future__ import annotations
@@ -423,24 +432,96 @@ def trim_refer_images_for_element(
     max_count: int = MAX_ELEMENT_REFER_IMAGES,
     pin: set[str] | frozenset[str] | None = None,
 ) -> list[str]:
-    """Kling elements API accepts at most 3 refer_images (frontal is separate)."""
-    pin_set = set(pin or ())
+    """Kling elements API accepts at most 3 refer_images (frontal is separate).
+
+    Eviction order when over cap: unpinned first, then heuristic pins, then explicit
+    refer_pins/anchors. ``keep`` (the pose just added) is never evicted.
+    """
+    strict_pins = frozenset(pin or ())
+    pin_set = set(strict_pins)
     if keep:
         pin_set.add(keep)
-    ordered = [str(r) for r in refer if r]
-    pinned = [r for r in ordered if r in pin_set]
-    unpinned = [r for r in ordered if r not in pin_set]
-    if keep and keep in unpinned:
-        unpinned.remove(keep)
-        unpinned.append(keep)
-    while len(pinned) + len(unpinned) > max_count:
-        if unpinned:
-            unpinned.pop(0)
-        elif len(pinned) > max_count:
-            pinned.pop(0)
-        else:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for rel in refer:
+        rel_s = str(rel)
+        if rel_s and rel_s not in seen:
+            seen.add(rel_s)
+            ordered.append(rel_s)
+
+    result = list(ordered)
+    while len(result) > max_count:
+        evict: str | None = None
+        for rel in result:
+            if keep and rel == keep:
+                continue
+            if rel not in pin_set:
+                evict = rel
+                break
+        if evict is None:
+            for rel in result:
+                if keep and rel == keep:
+                    continue
+                if rel not in strict_pins:
+                    evict = rel
+                    break
+        if evict is None:
+            for rel in result:
+                if keep and rel == keep:
+                    continue
+                evict = rel
+                break
+        if evict is None:
             break
-    return pinned + unpinned
+        result.remove(evict)
+    return result
+
+
+def refer_images_contain_path_or_hash(
+    refer_rel_paths: list[str],
+    char_path: str,
+    *,
+    frontal_rel: str | None = None,
+) -> bool:
+    """True when char_path matches any Production-relative refer path by path or sha256."""
+    root = prod_root()
+    check_paths: list[Path] = []
+    for rel in ([frontal_rel] if frontal_rel else []) + list(refer_rel_paths):
+        if not rel:
+            continue
+        p = root / str(rel)
+        if p.is_file():
+            check_paths.append(p.resolve())
+    if not check_paths:
+        return False
+    norm_char = os.path.normpath(os.path.realpath(char_path))
+    for ep in check_paths:
+        if norm_char == os.path.normpath(str(ep)):
+            return True
+    char_hash = file_sha256(char_path)
+    if not char_hash:
+        return False
+    return char_hash in {file_sha256(p) for p in check_paths}
+
+
+def assert_pose_in_refer_images(
+    char_key: str,
+    rel_pose: str,
+    refer_images: list[str],
+    source_abs_path: str | Path,
+    *,
+    frontal_rel: str | None = None,
+) -> None:
+    """Raise when Add to Element copied a pose but trim dropped it from Kling refer set."""
+    if refer_images_contain_path_or_hash(
+        refer_images, str(source_abs_path), frontal_rel=frontal_rel,
+    ):
+        return
+    raise RuntimeError(
+        f"Add to Element failed invariant: {Path(source_abs_path).name} was copied to "
+        f"{rel_pose} but is not in refer_images after trim ({refer_images!r}). "
+        f"Kling Element would reject @Image1 — try removing unused poses or refer_pins."
+    )
 
 
 def slugify(name: str) -> str:
@@ -507,6 +588,13 @@ def add_element_pose(
     pin_refs = pinned_refer_paths(cfg, char_key)
     cfg["refer_images"] = trim_refer_images_for_element(
         refer, keep=rel_pose, pin=pin_refs,
+    )
+    assert_pose_in_refer_images(
+        char_key,
+        rel_pose,
+        list(cfg["refer_images"] or []),
+        source,
+        frontal_rel=str(cfg.get("frontal_image") or "") or None,
     )
     if not cfg.get("frontal_image"):
         cfg["frontal_image"] = rel_pose

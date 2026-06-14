@@ -2738,7 +2738,7 @@ def handle_bg_add_element_pose(h, body: dict) -> None:
             if beat:
                 ref = beat.get("reference_image")
                 if isinstance(ref, dict) and (ref.get("abs_path") or "") == abs_path:
-                    bg.sync_element_char_ref_status(beat, heal_mismatch=False)
+                    bg.ensure_beat_element_char_ref_for_o3(beat, wavespeed_key)
                     element_char_ref_ok = beat.get("element_char_ref_ok")
                     if not ref.get("thumb_b64"):
                         from lib.event_library import ref_image_thumb_b64
