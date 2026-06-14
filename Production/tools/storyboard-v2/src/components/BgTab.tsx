@@ -2157,7 +2157,9 @@ function BeatGenCard({
           testId={`bg-char-ref-${index}`}
           beatId={beat.beat_id}
           refField="reference_image"
-          elementRefError={elementCharRefBlocked ? beat.element_char_ref_error : undefined}
+          {...(elementCharRefBlocked
+            ? { elementRefError: beat.element_char_ref_error ?? 'Char ref must match Element poses' }
+            : {})}
           onRemoveRef={onRemoveRef}
           onRefresh={onRefresh}
           onPatchRefImage={onPatchRefImage}
