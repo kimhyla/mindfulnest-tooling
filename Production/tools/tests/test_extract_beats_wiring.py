@@ -43,6 +43,7 @@ def test_claude_extract_uses_structured_tools():
     text = (TOOLS / "claude_extract_beats.py").read_text(encoding="utf-8")
     assert "submit_beat_plan" in text
     assert "submit_kling_prompts" in text
+    assert "postprocess_kling_author_results" in text
     assert "_parse_structured_response" in text
     assert 'tool_choice={"type": "tool"' in text
 

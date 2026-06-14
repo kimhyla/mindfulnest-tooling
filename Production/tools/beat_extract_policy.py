@@ -198,6 +198,160 @@ def build_still_insert_prompt(beat: dict) -> str:
     )
 
 
+_IMAGE1_SPEAKER_RE = re.compile(r"@Image1(?:\s+<<<voice_\d+>>>)?\s*\([^)]+\)", re.I)
+_VOICE_LINE_RE = re.compile(
+    r"((?:@Image1(?:\s+<<<voice_\d+>>>)?|Arlo|Lorelai|Tessa|Chipper)\s+(?:speaks|says)[^:]*:\s*)"
+    r'("([^"]*)")',
+    re.I | re.S,
+)
+
+
+def _format_emotion_tag(emotion: str) -> str:
+    emo = (emotion or "").strip()
+    if not emo or emo.lower() == "neutral":
+        return ""
+    if emo.startswith("[") and emo.endswith("]"):
+        return emo
+    return f"[{emo}]"
+
+
+def _staging_paragraph(speaker: str, scene_notes: str, emotion: str) -> str:
+    """Turn plan scene_notes into a Kling-safe micro-expression staging line."""
+    scene = apply_cast_text((scene_notes or "").strip())
+    if scene:
+        if scene.lower().endswith("rooted in place"):
+            return scene if scene.endswith(".") else f"{scene}."
+        return f"{scene}, rooted in place."
+    tag = _format_emotion_tag(emotion)
+    if tag:
+        inner = tag.strip("[]")
+        return f"{speaker} — {inner}, rooted in place."
+    return ""
+
+
+def _inject_emotion_into_spoken(spoken: str, emotion: str) -> str:
+    text = (spoken or "").strip()
+    if not text:
+        return text
+    tag = _format_emotion_tag(emotion)
+    if not tag:
+        return text
+    if re.search(r"^\[[^\]]+\]", text):
+        return text
+    return f"{tag} {text}"
+
+
+def _prompt_contains_staging(prompt: str, scene_notes: str) -> bool:
+    scene = (scene_notes or "").strip().lower()
+    if not scene:
+        return True
+    probe = scene[:24].lower()
+    return probe in (prompt or "").lower()
+
+
+def _prompt_spoken_matches_dialogue(prompt: str, dialogue: str) -> bool:
+    dlg = re.sub(r"\s+", " ", (dialogue or "").strip().lower())
+    if not dlg:
+        return True
+    m = _VOICE_LINE_RE.search(prompt or "")
+    if not m:
+        return dlg[:12] in (prompt or "").lower()
+    spoken = re.sub(r"\s+", " ", m.group(2).strip().lower())
+    spoken = re.sub(r"^\[[^\]]+\]\s*", "", spoken)
+    return dlg[:16] in spoken or spoken[:16] in dlg
+
+
+def postprocess_kling_author_row(plan_row: dict, prompt: str) -> dict[str, str]:
+    """Merge approved plan emotion/staging into Phase B Kling prompt (deterministic)."""
+    speaker = canon_plan_speaker(str(plan_row.get("speaker") or "Character").strip())
+    beat_type = str(plan_row.get("beat_type") or "dialogue").lower()
+    dialogue = apply_cast_text(str(plan_row.get("dialogue_text") or "").strip())
+    emotion = apply_cast_text(str(plan_row.get("emotion") or "neutral").strip()) or "neutral"
+    scene_notes = apply_cast_text(str(plan_row.get("scene_notes") or "").strip())
+
+    if beat_type == "stage_still":
+        return {
+            "kling_o3_prompt": build_still_insert_prompt(plan_row),
+            "emotion": emotion,
+            "scene_notes": scene_notes[:500],
+        }
+
+    out = apply_cast_text((prompt or "").strip())
+    if not out and beat_type == "stage_direction":
+        out = (
+            f"@Image1 ({speaker}) Scene beat. Scene from @Image2.\n\n"
+            f"Camera: static locked shot, no zoom, no dolly, no pan, "
+            f"no camera movement, stable eye-level medium shot.\n\n"
+            f"{dialogue or scene_notes or 'Ambient storybook moment.'}"
+        )
+    if not out:
+        return {
+            "kling_o3_prompt": "",
+            "emotion": emotion,
+            "scene_notes": scene_notes[:500],
+        }
+
+    out = _IMAGE1_SPEAKER_RE.sub(f"@Image1 ({speaker})", out, count=1)
+    out = re.sub(
+        rf"(@Image1 \({re.escape(speaker)}\))\s+\w+\s+—",
+        rf"\1 {speaker} —",
+        out,
+        count=1,
+    )
+    staging = _staging_paragraph(speaker, scene_notes, emotion)
+    if staging and not _prompt_contains_staging(out, scene_notes):
+        vm = _VOICE_LINE_RE.search(out)
+        if vm:
+            out = out[: vm.start()].rstrip() + f"\n\n{staging}\n\n" + out[vm.start() :].lstrip()
+        else:
+            out = out.rstrip() + f"\n\n{staging}\n"
+
+    vm = _VOICE_LINE_RE.search(out)
+    if vm and dialogue and not _prompt_spoken_matches_dialogue(out, dialogue):
+        enriched = _inject_emotion_into_spoken(
+            _kling_o3_normalize_spoken(dialogue), emotion,
+        )
+        out = out[: vm.start(2)] + enriched + out[vm.end(2) :]
+    elif vm:
+        inner = vm.group(2)
+        enriched = _inject_emotion_into_spoken(inner, emotion)
+        if enriched != inner:
+            out = out[: vm.start(2)] + enriched + out[vm.end(2) :]
+
+    return {
+        "kling_o3_prompt": out.strip(),
+        "emotion": emotion,
+        "scene_notes": scene_notes[:500],
+    }
+
+
+def postprocess_kling_author_results(
+    beats_plan: list[dict],
+    prompt_by_index: dict[int, str],
+) -> tuple[dict[int, str], list[dict]]:
+    """Apply cast/staging/emotion enrichment for every plan row after Claude author."""
+    enriched_prompts: dict[int, str] = dict(prompt_by_index)
+    enriched_plan: list[dict] = []
+    for row in beats_plan:
+        idx = int(row.get("beat_index") or 0)
+        if not idx:
+            continue
+        merged = postprocess_kling_author_row(row, prompt_by_index.get(idx, ""))
+        if merged.get("kling_o3_prompt"):
+            enriched_prompts[idx] = merged["kling_o3_prompt"]
+        enriched_plan.append({**row, **merged})
+    return enriched_prompts, enriched_plan
+
+
+def _kling_o3_normalize_spoken(spoken: str) -> str:
+    """Light dialogue normalize — full implementation lives in beat_generator."""
+    s = (spoken or "").strip()
+    s = re.sub(r"\s+", " ", re.sub(r"\([^)]*\)", " ", s)).strip()
+    s = re.sub(r"\.{2,}", ".", s)
+    s = re.sub(r"…+", ".", s)
+    return s
+
+
 def kling_staging_policy_block() -> str:
     return (
         "KLING O3 STAGING (mandatory for scene_notes on dialogue beats):\n"

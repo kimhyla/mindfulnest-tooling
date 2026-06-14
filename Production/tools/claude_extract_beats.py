@@ -14,6 +14,7 @@ from beat_extract_policy import (
     kling_staging_policy_block,
     load_gold_example,
     postprocess_beats_plan,
+    postprocess_kling_author_results,
     postprocess_plan_result,
 )
 
@@ -190,8 +191,10 @@ _KLING_AUTHOR_TOOL = {
                     "properties": {
                         "beat_index": {"type": "integer"},
                         "kling_o3_prompt": {"type": "string"},
+                        "emotion": {"type": "string"},
+                        "scene_notes": {"type": "string"},
                     },
-                    "required": ["beat_index", "kling_o3_prompt"],
+                    "required": ["beat_index", "kling_o3_prompt", "emotion", "scene_notes"],
                 },
             },
         },
@@ -343,6 +346,7 @@ def claude_author_kling_prompts(
     few_shot = _few_shot_kling_examples()
 
     prompt_by_index: dict[int, str] = {}
+    author_fields: dict[int, dict] = {}
     dialogue_beats: list[dict] = []
     for row in beats_plan:
         idx = int(row.get("beat_index") or 0)
@@ -363,7 +367,10 @@ def claude_author_kling_prompts(
             "Few-shot approved prompts:\n"
             f"{few_shot}\n\n"
             "Call submit_kling_prompts with one entry per dialogue beat_index.\n"
-            "Every dialogue beat_index must appear exactly once."
+            "Every dialogue beat_index must appear exactly once.\n"
+            "Include emotion (delivery tag) and scene_notes (micro-expression staging) "
+            "on every beat; weave both into kling_o3_prompt (bracket tags in spoken line, "
+            "staging paragraph before voice block)."
         )
         plan_json = json.dumps(
             {"story_summary": story_summary, "beats_plan": dialogue_beats},
@@ -395,14 +402,31 @@ def claude_author_kling_prompts(
             prompt = str(row.get("kling_o3_prompt") or "").strip()
             if idx and prompt:
                 prompt_by_index[idx] = prompt
+            if idx:
+                author_fields[idx] = row
         if len([i for i in prompt_by_index if i in {b.get("beat_index") for b in dialogue_beats}]) < len(dialogue_beats):
             raise ValueError(
                 f"Claude returned incomplete dialogue prompts "
                 f"({len(dialogue_beats)} beats expected)"
             )
 
+    merged_plan: list[dict] = []
+    for row in beats_plan:
+        idx = int(row.get("beat_index") or 0)
+        extra = author_fields.get(idx) or {}
+        merged = dict(row)
+        if extra.get("emotion"):
+            merged["emotion"] = extra["emotion"]
+        if extra.get("scene_notes"):
+            merged["scene_notes"] = extra["scene_notes"]
+        merged_plan.append(merged)
+
+    prompt_by_index, enriched_plan = postprocess_kling_author_results(
+        merged_plan, prompt_by_index,
+    )
     return {
         "prompt_by_index": prompt_by_index,
+        "beats_plan_enriched": enriched_plan,
         "model_used": CLAUDE_SONNET_MODEL,
         "generation_time_ms": elapsed_ms,
     }

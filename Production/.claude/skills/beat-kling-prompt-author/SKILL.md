@@ -17,8 +17,16 @@ Convert approved **dialogue** beats into Event-1-quality `kling_o3_prompt` strin
 1. `@Image1 ({Speaker}) {Role}. Scene from @Image2.`
 2. **Camera:** static locked medium shot (verbatim lock block).
 3. Micro-expression staging from `scene_notes` — face/body only, solo @Image1.
-4. Voice/delivery + spoken dialogue.
+4. Voice/delivery + spoken dialogue with **emotion bracket tag** inside quotes, e.g. `"[warm, to camera] Hello..."`.
 5. Storybook style tail + audio/solo-shot locks.
+
+## Tool output (`submit_kling_prompts`)
+
+Return for every dialogue beat_index:
+
+- `kling_o3_prompt` — full multi-line prompt
+- `emotion` — delivery tag (bracket form OK)
+- `scene_notes` — simple micro-expression staging (eyes widen, rooted in place)
 
 ## Cast
 

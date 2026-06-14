@@ -581,6 +581,36 @@ SIDECAR_MERGE_PRESERVE_FIELDS: tuple[str, ...] = (
     "magic_still_path",
 )
 
+# Extract-beats /approve must replace draft Kling prompts — not preserve stale sidecar text.
+_EXTRACT_APPROVE_MERGE_PRESERVE: tuple[str, ...] = tuple(
+    f for f in SIDECAR_MERGE_PRESERVE_FIELDS
+    if f not in (
+        "kling_o3_prompt",
+        "kling_o3_duration",
+        "kling_o3_duration_locked",
+        "kling_o3_status",
+        "pipeline",
+    )
+)
+
+_KLING_APPROVED_RESTORE_FIELDS: tuple[str, ...] = (
+    "kling_o3_prompt",
+    "kling_o3_duration",
+    "kling_o3_duration_locked",
+    "kling_o3_status",
+    "kling_o3_video_path",
+    "kling_o3_generation",
+    "kling_o3_options",
+    "kling_o3_replace_slot_index",
+    "kling_o3_selected_option_key",
+    "kling_o3_task_id",
+    "kling_o3_trim_start",
+    "kling_o3_trim_back",
+    "kling_o3_actual_duration_s",
+    "kling_o3_completed_at",
+    "pipeline",
+)
+
 _TELEPORT_INTRO_MANIFEST_REL = "Production/templates/chipper_teleport_intro/manifest.json"
 # Tooling tree copy — survives init_bg_paths() pointing _PROD_DIR at Dropbox.
 _TOOLING_TELEPORT_INTRO_MANIFEST = (
@@ -4953,7 +4983,18 @@ def apply_approved_extract_plan(
             and beat_is_kling_approved_protected(b)
         ])
 
-    merged = merge_incoming_segment_beats(existing, incoming)
+    merged = merge_incoming_segment_beats(
+        existing, incoming, preserve_fields=_EXTRACT_APPROVE_MERGE_PRESERVE,
+    )
+    existing_map = {b["beat_id"]: b for b in existing if b.get("beat_id")}
+    for b in merged:
+        saved = existing_map.get(b.get("beat_id") or "")
+        if not saved or not beat_is_kling_approved_protected(saved):
+            continue
+        for field in _KLING_APPROVED_RESTORE_FIELDS:
+            val = saved.get(field)
+            if val not in (None, "", [], {}):
+                b[field] = val
     merged_ids = {b.get("beat_id") for b in merged}
     for b in kept_orphans:
         if b.get("beat_id") and b["beat_id"] not in merged_ids:

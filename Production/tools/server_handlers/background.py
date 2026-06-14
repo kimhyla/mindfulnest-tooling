@@ -2198,11 +2198,12 @@ def handle_bg_extract_beats_approve(h, body: dict) -> None:
         })
 
     prompt_by_index = author_result.get("prompt_by_index") or {}
+    beats_plan_final = author_result.get("beats_plan_enriched") or beats_plan
     with bg._sidecar_lock:
         sidecar = bg.read_sidecar()
         beats = bg.apply_approved_extract_plan(
             sidecar, arc_number, event_id, phase,
-            story_summary, beats_plan, prompt_by_index,
+            story_summary, beats_plan_final, prompt_by_index,
             force=force,
         )
         sidecar["active_context"] = {
