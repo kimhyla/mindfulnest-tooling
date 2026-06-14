@@ -295,7 +295,7 @@
       }
     },
     "Lorelai": {
-      "element_id": "313387775241527",
+      "element_id": "313390553209506",
       "status": "active",
       "element_name": "Lorelai",
       "description": "Cartoon 3D Pixar-style raccoon archaeologist, round glasses, leather backpack, excitable academic personality",
@@ -306,12 +306,12 @@
       ],
       "elevenlabs_voice_id": "PoHUWWWMHFrA8z7Q88pu",
       "elevenlabs_voice_name": "Miranda",
-      "kling_voice_id": "895013151912763464",
+      "kling_voice_id": "895024801360777292",
       "kling_voice_label": "ElevenLabs Miranda (create-voice)",
-      "created_at": "2026-06-14T05:51:37.402237+00:00",
-      "wavespeed_prediction_id": "8bc3b542262a463a975eea90170252e8",
+      "created_at": "2026-06-14T06:37:54.191641+00:00",
+      "wavespeed_prediction_id": "9cd5bc91b851402a8b86781eac4cacc3",
       "audition_line": "Fascinating! The patterns match exactly!",
-      "audition_speed": 1.0,
+      "audition_speed": 0.93,
       "element_sample_lines": [
         "Fascinating! The patterns match exactly!",
         "Wait — look at this! The nest stones are glowing!",
@@ -320,7 +320,7 @@
       "element_sample_text": "Fascinating! The patterns match exactly! ... Wait — look at this! The nest stones are glowing! ... I think I know what the Great Wizard meant!",
       "voice_sample_lock": {
         "schema_version": 1,
-        "session_id": "laurel_speed_1.0_20260613",
+        "session_id": "speed_compare_20260614",
         "audition_line": "Fascinating! The patterns match exactly!",
         "element_sample_lines": [
           "Fascinating! The patterns match exactly!",
@@ -328,9 +328,9 @@
           "I think I know what the Great Wizard meant!"
         ],
         "element_sample_text": "Fascinating! The patterns match exactly! ... Wait — look at this! The nest stones are glowing! ... I think I know what the Great Wizard meant!",
-        "locked_speed": 1.0,
-        "locked_at": "2026-06-14T04:01:05.395542+00:00",
-        "sample_text_fingerprint": "735b5f7db5964566"
+        "locked_speed": 0.93,
+        "locked_at": "2026-06-14T06:37:20.089087+00:00",
+        "sample_text_fingerprint": "00be811d1ce3979b"
       },
       "elevenlabs_voice_sample_path": "kling_voice_samples/lorelai.mp3"
     }
