@@ -21,6 +21,7 @@ from beat_extract_policy import (
 CLAUDE_SONNET_MODEL = "claude-sonnet-4-6"
 PLAN_TIMEOUT_S = 90
 AUTHOR_TIMEOUT_S = 120
+AUTHOR_DIALOGUE_BATCH_SIZE = 8
 
 _TOOLING_ROOT = Path(__file__).resolve().parent.parent
 _PLANNER_SKILL = _TOOLING_ROOT / ".claude" / "skills" / "beat-extract-planner" / "SKILL.md"
@@ -366,48 +367,65 @@ def claude_author_kling_prompts(
             f"Reference camera lock (include verbatim in every prompt):\n{bg.KLING_O3_CAMERA_LOCK}\n\n"
             "Few-shot approved prompts:\n"
             f"{few_shot}\n\n"
-            "Call submit_kling_prompts with one entry per dialogue beat_index.\n"
-            "Every dialogue beat_index must appear exactly once.\n"
+            "Call submit_kling_prompts with one entry per dialogue beat_index in THIS batch only.\n"
+            "Every dialogue beat_index in the batch must appear exactly once.\n"
             "Include emotion (delivery tag) and scene_notes (micro-expression staging) "
             "on every beat; weave both into kling_o3_prompt (bracket tags in spoken line, "
             "staging paragraph before voice block)."
         )
-        plan_json = json.dumps(
-            {"story_summary": story_summary, "beats_plan": dialogue_beats},
-            ensure_ascii=False,
-            indent=2,
-        )
-        user = (
-            f"Segment: arc {meta.get('arc_number')} event {meta.get('event_id')} "
-            f"phase {meta.get('phase')}\n\n"
-            f"Approved dialogue beats only:\n{plan_json}\n"
-        )
-        resp, elapsed_ms = _call_anthropic(
-            api_key,
-            system,
-            user,
-            max_tokens=8192,
-            timeout=AUTHOR_TIMEOUT_S,
-            tools=[_KLING_AUTHOR_TOOL],
-            tool_choice={"type": "tool", "name": "submit_kling_prompts"},
-        )
-        parsed = _parse_structured_response(resp, tool_name="submit_kling_prompts")
-        beats_out = parsed.get("beats") or []
-        if not isinstance(beats_out, list) or not beats_out:
-            raise ValueError("beats array required in author response")
-        for row in beats_out:
-            if not isinstance(row, dict):
-                continue
-            idx = int(row.get("beat_index") or 0)
-            prompt = str(row.get("kling_o3_prompt") or "").strip()
-            if idx and prompt:
-                prompt_by_index[idx] = prompt
-            if idx:
-                author_fields[idx] = row
-        if len([i for i in prompt_by_index if i in {b.get("beat_index") for b in dialogue_beats}]) < len(dialogue_beats):
+        expected_indices = {int(b.get("beat_index") or 0) for b in dialogue_beats}
+        batch_size = AUTHOR_DIALOGUE_BATCH_SIZE
+        total_batches = (len(dialogue_beats) + batch_size - 1) // batch_size
+        for batch_start in range(0, len(dialogue_beats), batch_size):
+            batch = dialogue_beats[batch_start:batch_start + batch_size]
+            batch_num = batch_start // batch_size + 1
+            print(
+                f"[BG] kling-author batch {batch_num}/{total_batches} "
+                f"beats={len(batch)} idx={batch[0].get('beat_index')}..{batch[-1].get('beat_index')}",
+                flush=True,
+            )
+            plan_json = json.dumps(
+                {"story_summary": story_summary, "beats_plan": batch},
+                ensure_ascii=False,
+                indent=2,
+            )
+            user = (
+                f"Segment: arc {meta.get('arc_number')} event {meta.get('event_id')} "
+                f"phase {meta.get('phase')}\n\n"
+                f"Approved dialogue beats only (batch {batch_start // AUTHOR_DIALOGUE_BATCH_SIZE + 1}):\n"
+                f"{plan_json}\n"
+            )
+            resp, batch_ms = _call_anthropic(
+                api_key,
+                system,
+                user,
+                max_tokens=8192,
+                timeout=AUTHOR_TIMEOUT_S,
+                tools=[_KLING_AUTHOR_TOOL],
+                tool_choice={"type": "tool", "name": "submit_kling_prompts"},
+            )
+            elapsed_ms += batch_ms
+            parsed = _parse_structured_response(resp, tool_name="submit_kling_prompts")
+            beats_out = parsed.get("beats") or []
+            if not isinstance(beats_out, list) or not beats_out:
+                raise ValueError(
+                    f"beats array required in author response (batch starting beat_index "
+                    f"{batch[0].get('beat_index')})"
+                )
+            for row in beats_out:
+                if not isinstance(row, dict):
+                    continue
+                idx = int(row.get("beat_index") or 0)
+                prompt = str(row.get("kling_o3_prompt") or "").strip()
+                if idx and prompt:
+                    prompt_by_index[idx] = prompt
+                if idx:
+                    author_fields[idx] = row
+        authored = [i for i in expected_indices if i in prompt_by_index]
+        if len(authored) < len(dialogue_beats):
             raise ValueError(
                 f"Claude returned incomplete dialogue prompts "
-                f"({len(dialogue_beats)} beats expected)"
+                f"({len(dialogue_beats)} beats expected, got {len(authored)})"
             )
 
     merged_plan: list[dict] = []

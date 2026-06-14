@@ -97,6 +97,59 @@ def test_extract_approve_replaces_stale_kling_prompt(monkeypatch, tmp_path):
     assert beat["emotion"] == "curious, polite"
 
 
+def test_approved_beat_keeps_video_but_not_stale_prompt(monkeypatch):
+    sidecar = {"arcs": {"arc_1": {"segments": {}}}}
+    seg = bg.get_seg_entry(sidecar, 1, "2", "pre")
+    stale_video = "/tmp/still_trimmed.mp4"
+    seg["beats"] = [{
+        "beat_id": "bg_arc1_event2_pre_beat_01",
+        "speaker": "[Stage Direction]",
+        "pipeline": "still_insert",
+        "beat_render_mode": "still_insert",
+        "kling_o3_prompt": '@Image1 (Luna) stale wrong prompt',
+        "kling_o3_status": "approved",
+        "kling_o3_video_path": stale_video,
+        "kling_o3_options": [{"key": "x", "video_path": stale_video, "slot_index": 0}],
+    }]
+    plan = [{
+        "beat_index": 1,
+        "beat_type": "stage_still",
+        "speaker": "[Stage Direction]",
+        "dialogue_text": "Ancient ruins. [Still insert — GPT still]. Lorelai: hi",
+        "emotion": "quiet establishing",
+        "scene_notes": "eyes scan ruins, rooted in place",
+    }]
+    fresh_still = (
+        "STILL INSERT — use pre-made GPT still from library; do not submit to Kling O3 Element.\n"
+        "eyes scan ruins, rooted in place\n\n"
+        "Assign the still image in Beat Gen. No @Image1 character clip for this beat."
+    )
+    monkeypatch.setattr(bg, "append_intro_canonical_tail_beats", lambda *a, **k: None)
+    merged = bg.apply_approved_extract_plan(
+        sidecar, 1, "2", "pre", "summary", plan, {1: fresh_still}, force=False,
+    )
+    beat = next(b for b in merged if b["beat_id"] == "bg_arc1_event2_pre_beat_01")
+    assert "Luna" not in beat["kling_o3_prompt"]
+    assert "STILL INSERT" in beat["kling_o3_prompt"]
+    assert beat["kling_o3_video_path"] == stale_video
+    assert beat["kling_o3_status"] == "approved"
+    assert bg.audit_kling_author_enrichment(merged) == []
+
+
+def test_audit_flags_stale_luna_prompt():
+    beats = [{
+        "beat_id": "bg_arc1_event2_pre_beat_02",
+        "speaker": "Tessa",
+        "dialogue_text": "Hello",
+        "emotion": "curious",
+        "scene_notes": "soft smile, rooted in place",
+        "kling_o3_prompt": '@Image1 (Luna) Luna says: "Hello"',
+        "pipeline": "kling_o3_omni",
+    }]
+    warnings = bg.audit_kling_author_enrichment(beats)
+    assert any("Luna" in w for w in warnings)
+
+
 def test_claude_author_calls_postprocess():
     from claude_extract_beats import claude_author_kling_prompts
 

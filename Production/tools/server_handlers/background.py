@@ -2176,6 +2176,15 @@ def handle_bg_extract_beats_approve(h, body: dict) -> None:
     beats_plan = normalize_beats_plan(beats_plan_raw)
     bg = _bg_module()
     section = bg.slice_skeleton_section(arc_number, event_id, phase)
+    dialogue_count = len([
+        r for r in beats_plan
+        if str(r.get("beat_type") or "dialogue").lower() not in ("stage_still", "stage_direction")
+    ])
+    print(
+        f"[BG] extract-beats/approve starting arc={arc_number} event={event_id} phase={phase} "
+        f"plan_beats={len(beats_plan)} dialogue_beats={dialogue_count}",
+        flush=True,
+    )
     meta = {
         "arc_number": arc_number,
         "event_id": event_id,
@@ -2206,6 +2215,29 @@ def handle_bg_extract_beats_approve(h, body: dict) -> None:
             story_summary, beats_plan_final, prompt_by_index,
             force=force,
         )
+        author_audit = bg.audit_kling_author_enrichment(beats)
+        if author_audit:
+            print(
+                f"[BG] extract-beats/approve AUTHOR AUDIT FAILED arc={arc_number} "
+                f"event={event_id} phase={phase}: {author_audit}",
+                flush=True,
+            )
+            return h._send_json(502, {
+                "ok": False,
+                "code": "KLING_AUTHOR_AUDIT_FAILED",
+                "message": (
+                    "Kling author enrichment did not stick — beats were NOT saved. "
+                    "Re-open the plan and Approve again; report if this repeats."
+                ),
+                "author_audit": author_audit,
+                "author_dialogue_beats": len([
+                    r for r in beats_plan
+                    if str(r.get("beat_type") or "dialogue").lower() not in (
+                        "stage_still", "stage_direction",
+                    )
+                ]),
+                "retry_safe": True,
+            })
         sidecar["active_context"] = {
             "arc_number": arc_number, "event_id": event_id, "phase": phase,
         }
@@ -2221,6 +2253,8 @@ def handle_bg_extract_beats_approve(h, body: dict) -> None:
         "count": len(beats),
         "model_used": author_result.get("model_used"),
         "generation_time_ms": author_result.get("generation_time_ms"),
+        "author_dialogue_beats": len(author_result.get("prompt_by_index") or {}),
+        "kling_author_applied": True,
     })
 
 
@@ -3884,6 +3918,25 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                 beat["kling_o3_trim_back"] = work_beat.get("kling_o3_trim_back")
                 beat.pop("kling_o3_trim_end", None)
         if not preview_only:
+            if (
+                not body.get("clear")
+                and bg.beat_is_still_insert(beat)
+                and bg.still_insert_sidecar_trim_pending(beat)
+            ):
+                try:
+                    bake = bg.bake_still_insert_trim_into_clip(beat)
+                    result["trim_baked"] = bool(bake.get("baked"))
+                    if bake.get("video_path"):
+                        result["video_path"] = bake["video_path"]
+                        result["trim_start"] = 0.0
+                        result["trim_back"] = None
+                except Exception as exc:
+                    return h._send_error_v59(
+                        500,
+                        error_code="STILL_TRIM_BAKE_FAILED",
+                        error_message=str(exc),
+                        retry_safe=True,
+                    )
             bg.write_sidecar(sidecar)
     preview_url = _trim_preview_url(work_beat)
     if preview_url:
@@ -3963,6 +4016,86 @@ def handle_bg_select_o3_video(h, body: dict) -> None:
     return h._send_json(200, {"ok": True, "beat_id": beat_id, "option_key": option_key, "video_path": video_path})
 
 
+def _load_elevenlabs_key():
+    try:
+        _libdir = os.path.normpath(
+            os.path.join(os.path.dirname(__file__), "..", "credentials_lib"),
+        )
+        if _libdir not in sys.path:
+            sys.path.insert(0, _libdir)
+        from credentials import load_credentials  # type: ignore
+
+        creds = load_credentials()
+        return creds.get("elevenlabs_key") or ""
+    except Exception as exc:  # noqa: BLE001
+        print(f"[still-clip] elevenlabs key load failed: {exc}")
+        return ""
+
+
+def _ensure_still_insert_tts(h, beat: dict, sidecar: dict, production_state: dict, video_role: str) -> dict:
+    """Generate TTS for embedded still-insert dialogue; regen when dialogue changes."""
+    from tools.production_server import _tts_regenerate_for_beat
+
+    beat_id = beat.get("beat_id") or ""
+    bg = _bg_module()
+    tts_info = bg.extract_still_insert_tts(beat)
+    if not tts_info:
+        return {"ok": False, "error": "no spoken line in still-insert dialogue"}
+
+    current_text = tts_info["text"].strip()
+    cached_text = (beat.get("still_tts_source_text") or "").strip()
+    existing = bg.resolve_bg_beat_tts_audio_path(
+        h.app.event_dir,
+        beat,
+        sidecar=sidecar,
+        production_state=production_state,
+        video_role=video_role,
+    )
+    if (
+        existing is not None
+        and existing.is_file()
+        and cached_text
+        and cached_text == current_text
+    ):
+        return {
+            "ok": True,
+            "audio_file": existing.name,
+            "skipped": True,
+            "unchanged": True,
+        }
+
+    sb_id = bg.storyboard_beat_id_for_bg_beat(
+        beat_id,
+        sidecar=sidecar,
+        production_state=production_state,
+        video_role=video_role,
+    ) or bg.storyboard_beat_id_from_bg_beat(beat_id)
+    if not sb_id:
+        return {"ok": False, "error": f"could not map {beat_id} to storyboard beat id"}
+
+    el_key = _load_elevenlabs_key()
+    if not el_key:
+        return {"ok": False, "error": "elevenlabs key unavailable"}
+
+    print(
+        f"[still-clip] TTS regen for {beat_id} ({sb_id}) speaker={tts_info['speaker']!r} "
+        f"({len(current_text)}c)",
+    )
+    result = _tts_regenerate_for_beat(
+        h.app,
+        beat_id,
+        tts_info["text"],
+        el_key,
+        video_role=video_role,
+        speaker_override=tts_info["speaker"],
+        storyboard_beat_id=sb_id,
+    )
+    if result.get("ok") and result.get("audio_file"):
+        beat["audio_file"] = result["audio_file"]
+        beat["still_tts_source_text"] = current_text
+    return result
+
+
 def handle_bg_render_still_clip(h, body: dict) -> None:
     """POST /api/bg/render-still-clip — Ken Burns / static hold still → O3 slot mp4."""
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
@@ -4025,7 +4158,19 @@ def handle_bg_render_still_clip(h, body: dict) -> None:
                 retry_safe=False,
             )
         work_beat = copy.deepcopy(beat)
+        dialogue_override = (body.get("dialogue_text") or "").strip()
+        if dialogue_override:
+            work_beat["dialogue_text"] = dialogue_override
         work_sidecar = sidecar
+
+    tts_result: dict = {"ok": False, "skipped": True}
+    try:
+        tts_result = _ensure_still_insert_tts(
+            h, work_beat, work_sidecar, production_state, video_role,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[still-clip] TTS ensure failed: {exc}")
+        tts_result = {"ok": False, "error": str(exc)}
 
     try:
         result = bg.render_still_insert_o3_clip(
@@ -4057,7 +4202,7 @@ def handle_bg_render_still_clip(h, body: dict) -> None:
         "kling_o3_options", "kling_o3_video_path", "kling_o3_status", "status",
         "kling_o3_selected_option_key", "kling_o3_selected_at",
         "kling_o3_trim_start", "kling_o3_trim_back", "kling_o3_trim_end",
-        "local_render_params",
+        "local_render_params", "audio_file", "still_tts_source_text", "dialogue_text",
     )
 
     def _apply_render(target, _sidecar):
@@ -4081,7 +4226,16 @@ def handle_bg_render_still_clip(h, body: dict) -> None:
             error_message=str(exc),
             retry_safe=True,
         )
-    return h._send_json(200, {"ok": True, "beat_id": beat_id, **result})
+    return h._send_json(200, {
+        "ok": True,
+        "beat_id": beat_id,
+        **result,
+        "tts_ok": bool(tts_result.get("ok")),
+        "tts_error": None if tts_result.get("ok") else tts_result.get("error"),
+        "tts_skipped": bool(tts_result.get("skipped")),
+        "tts_regenerated": bool(tts_result.get("ok") and not tts_result.get("skipped")),
+        "tts_unchanged": bool(tts_result.get("unchanged")),
+    })
 
 
 def handle_bg_accept_option(h, body: dict)-> None:

@@ -24,7 +24,7 @@ def test_segment_beats_to_plan_rows_reconstructs_stage_and_dialogue():
     ]
     rows = bg.segment_beats_to_plan_rows(beats)
     assert len(rows) == 2
-    assert rows[0]["beat_type"] == "stage_direction"
+    assert rows[0]["beat_type"] == "stage_still"
     assert rows[1]["speaker"] == "Lorelai"
 
 

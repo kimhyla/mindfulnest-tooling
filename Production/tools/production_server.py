@@ -3912,6 +3912,9 @@ def _resolve_voice_profile(speaker: str) -> dict | None:
     canonical = _SPEAKER_ALIAS.get(key_lc)
     if canonical and canonical in cache:
         return cache[canonical]
+    # Lorelai renamed from Luna — Directus may still key the lemur voice as Luna.
+    if canonical == "Lorelai" and "Luna" in cache:
+        return cache["Luna"]
     # Direct match
     for name in cache:
         if name.lower() == key_lc:
@@ -3993,7 +3996,10 @@ def _clean_text_for_tts(text: str) -> str:
 
 def _tts_regenerate_for_beat(app, beat_id: str, text: str,
                              elevenlabs_key: str,
-                             video_role: str = "intro") -> dict:
+                             video_role: str = "intro",
+                             *,
+                             speaker_override: str | None = None,
+                             storyboard_beat_id: str | None = None) -> dict:
     """Synchronously regenerate TTS audio for a beat via ElevenLabs v3.
 
     Rule 11 source fidelity: text preserved verbatim, voice profile locked
@@ -4007,16 +4013,26 @@ def _tts_regenerate_for_beat(app, beat_id: str, text: str,
     Raises nothing — all failures go in the return dict.
     """
     beat_num_s = ""
+    id_for_line = (storyboard_beat_id or beat_id or "").strip()
     try:
-        beat_num = int(beat_id.split("_")[1])
+        if id_for_line.startswith("beat_"):
+            beat_num = int(id_for_line.split("_")[1])
+        else:
+            m = re.search(r"_beat_(\d+)$", beat_id or "")
+            if m:
+                beat_num = int(m.group(1))
+            else:
+                beat_num = int(beat_id.split("_")[1])
         beat_num_s = f"{beat_num:02d}"
     except (IndexError, ValueError):
         return {"ok": False, "error": f"unparseable beat_id: {beat_id!r}"}
 
+    state_beat_id = storyboard_beat_id or beat_id
+
     # Resolve speaker -> voice profile. Read from the caller's actual partition.
     beats = app.state.get_beats(video_role)
-    beat_state = beats.get(beat_id) or {}
-    speaker = beat_state.get("speaker") or ""
+    beat_state = beats.get(state_beat_id) or beats.get(beat_id) or {}
+    speaker = (speaker_override or beat_state.get("speaker") or "").strip()
     if not speaker:
         # Fallback: parse from storyboard L[] s: field
         try:
@@ -4155,7 +4171,7 @@ def _tts_regenerate_for_beat(app, beat_id: str, text: str,
     # Update state: audio_file, audio_duration_s, clear text_modified_after_tts,
     # mark lipsync.audio_changed if a completed lipsync exists.
     now_iso = datetime.now(timezone.utc).isoformat()
-    def _update(partition, _bid=beat_id, _af=out_path.name, _d=dur, _iso=now_iso):
+    def _update(partition, _bid=state_beat_id, _af=out_path.name, _d=dur, _iso=now_iso):
         b = partition.setdefault("beats", {}).setdefault(_bid, {})
         b["audio_file"] = _af
         b["audio_duration_s"] = round(_d, 3)

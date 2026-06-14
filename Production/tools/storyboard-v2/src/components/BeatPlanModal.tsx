@@ -5,7 +5,7 @@ import { beatPlanRowsToText, countBeatPlanBlocks, parseBeatPlanText } from './be
 
 export interface BeatPlanRow {
   beat_index: number;
-  beat_type: 'dialogue' | 'stage_direction';
+  beat_type: 'dialogue' | 'stage_direction' | 'stage_still';
   speaker: string;
   dialogue_text: string;
   emotion: string;
@@ -19,6 +19,7 @@ export interface BeatPlanModalProps {
   storySummary: string;
   beatsPlan: BeatPlanRow[];
   approveStatus: 'idle' | 'sending';
+  approveStartedAt?: number | null;
   onClose: () => void;
   onApprove: (storySummary: string, beatsPlan: BeatPlanRow[]) => void;
 }
@@ -33,6 +34,7 @@ export function BeatPlanModal({
   storySummary: initialSummary,
   beatsPlan: initialPlan,
   approveStatus,
+  approveStartedAt = null,
   onClose,
   onApprove,
 }: BeatPlanModalProps) {
@@ -53,6 +55,16 @@ export function BeatPlanModal({
   };
 
   const beatCount = countBeatPlanBlocks(beatScript);
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (approveStatus !== 'sending' || !approveStartedAt) return undefined;
+    const id = window.setInterval(() => setTick((t) => t + 1), 1000);
+    return () => window.clearInterval(id);
+  }, [approveStatus, approveStartedAt]);
+  const approveElapsedS = approveStatus === 'sending' && approveStartedAt
+    ? Math.max(0, Math.floor((Date.now() - approveStartedAt) / 1000))
+    : 0;
+  void tick;
 
   return (
     <Modal
@@ -74,7 +86,7 @@ export function BeatPlanModal({
             onClick={handleApprove}
           >
             {approveStatus === 'sending' ? (
-              <><Spinner size="sm" inline /> Building Kling prompts…</>
+              <><Spinner size="sm" inline /> Building Kling prompts… ({approveElapsedS}s)</>
             ) : 'Approve & populate beats'}
           </button>
         </>
@@ -83,6 +95,9 @@ export function BeatPlanModal({
       <p class="mn-dim">
         Claude read the skeleton section for this video only. Edit the summary and beat script below,
         then Approve to generate rich Kling O3 prompts.
+        {approveStatus === 'sending' ? (
+          <> Large plans (~20+ beats) may take <strong>3–6 minutes</strong> — the timer above shows progress.</>
+        ) : null}
       </p>
       <label class="mn-label" for="beat-plan-summary">Story summary</label>
       <textarea

@@ -124,6 +124,7 @@ interface BgBeat {
   kling_o3_status?: string;
   kling_o3_prompt?: string;
   kling_o3_video_path?: string;
+  kling_o3_selected_at?: string;
   kling_o3_options?: GptOption[];
   kling_o3_replace_slot_index?: number;
   kling_o3_trim_start?: number;
@@ -207,6 +208,11 @@ interface StillClipRenderResponse {
   method?: string;
   duration_s?: number;
   tts_mixed?: boolean;
+  tts_ok?: boolean;
+  tts_error?: string | null;
+  tts_skipped?: boolean;
+  tts_regenerated?: boolean;
+  tts_unchanged?: boolean;
   still_path?: string;
 }
 
@@ -308,13 +314,20 @@ function resolveO3OptionKey(opt: GptOption, beatId: string, slotIndex: number): 
 function buildFixedO3OptionSlots(beat: BgBeat): (GptOption | null)[] {
   const slots: (GptOption | null)[] = [null, null, null];
   const o3History = (beat.kling_o3_options ?? []).filter((o) => isUserSelectableO3Video(o?.video_path));
-  o3History.forEach((opt, i) => {
-    const idx = typeof opt.slot_index === 'number' && opt.slot_index >= 0 && opt.slot_index < 3
-      ? opt.slot_index
-      : i;
-    if (idx < 3 && !slots[idx]) slots[idx] = opt;
-  });
   const activeO3Path = isUserSelectableO3Video(beat.kling_o3_video_path) ? beat.kling_o3_video_path! : null;
+  const slotIndexFor = (opt: GptOption, fallback: number) => (
+    typeof opt.slot_index === 'number' && opt.slot_index >= 0 && opt.slot_index < 3
+      ? opt.slot_index
+      : fallback
+  );
+  for (let si = 0; si < 3; si += 1) {
+    const candidates = o3History.filter((opt, i) => slotIndexFor(opt, i) === si);
+    if (!candidates.length) continue;
+    const activeMatch = activeO3Path
+      ? candidates.find((o) => o.video_path === activeO3Path)
+      : null;
+    slots[si] = activeMatch ?? candidates[candidates.length - 1];
+  }
   const activeListed = activeO3Path && o3History.some((o) => o.video_path === activeO3Path);
   if (beat.kling_o3_status === 'approved' && activeO3Path && !activeListed) {
     const firstEmpty = slots.findIndex((s) => !s);
@@ -397,6 +410,7 @@ export function BgTab() {
   const [extractStatus, setExtractStatus] = useState<'idle' | 'sending'>('idle');
   const [extractError, setExtractError] = useState<string | null>(null);
   const [approveStatus, setApproveStatus] = useState<'idle' | 'sending'>('idle');
+  const [approveStartedAt, setApproveStartedAt] = useState<number | null>(null);
   const [beatPlanOpen, setBeatPlanOpen] = useState(false);
   const [beatPlanSummary, setBeatPlanSummary] = useState('');
   const [beatPlanRows, setBeatPlanRows] = useState<BeatPlanRow[]>([]);
@@ -807,26 +821,59 @@ export function BgTab() {
     }
   };
 
+  const closeBeatPlanModal = () => {
+    setBeatPlanOpen(false);
+    setApproveStatus('idle');
+    setApproveStartedAt(null);
+  };
+
   const onApproveBeatPlan = async (storySummary: string, beatsPlan: BeatPlanRow[]) => {
     if (!activeSegment) return;
     const [event_id, phase] = activeSegment.split('|');
     setApproveStatus('sending');
-    const result = await pathappPatch<{ beats: BgBeat[]; count: number }>(
-      activeScope.value, 'bg_extract_beats_approve', {
-        arc_number: arcNumber, event_id, phase, story_summary: storySummary, beats_plan: beatsPlan,
-      },
-    );
-    setApproveStatus('idle');
-    if (result.ok && result.data) {
-      setBeats(result.data.beats ?? []);
-      setBeatPlanOpen(false);
+    setApproveStartedAt(Date.now());
+    try {
+      const result = await pathappPatch<{
+        beats: BgBeat[];
+        count: number;
+        kling_author_applied?: boolean;
+        author_audit?: string[];
+        message?: string;
+      }>(
+        activeScope.value, 'bg_extract_beats_approve', {
+          arc_number: arcNumber, event_id, phase, story_summary: storySummary, beats_plan: beatsPlan,
+        },
+      );
+      if (result.ok && result.data) {
+        setBeats(result.data.beats ?? []);
+        setBeatPlanOpen(false);
+        pushToast({
+          kind: 'success',
+          message: `Populated ${result.data.count ?? 0} beats with Kling author prompts (emotion + staging)`,
+          source: 'bg-extract-approve',
+        });
+      } else {
+        const audit = result.data?.author_audit;
+        const detail = audit?.length
+          ? `: ${audit.slice(0, 2).join('; ')}`
+          : (result.error_message || result.error || '');
+        pushToast({
+          kind: 'error',
+          message: detail
+            ? `Approve failed — Kling author pass did not stick (${detail})`
+            : 'Approve failed — Kling author returned an empty or invalid response. Beats were not saved.',
+          source: 'bg-approve-error',
+        });
+      }
+    } catch (err) {
       pushToast({
-        kind: 'success',
-        message: `Populated ${result.data.count ?? 0} beats with Kling O3 prompts`,
-        source: 'bg-extract-approve',
+        kind: 'error',
+        message: `Approve failed — ${err instanceof Error ? err.message : 'network error while building Kling prompts'}`,
+        source: 'bg-approve-error',
       });
-    } else {
-      pushToast({ kind: 'error', message: `Approve failed: ${result.error}`, source: 'bg-approve-error' });
+    } finally {
+      setApproveStatus('idle');
+      setApproveStartedAt(null);
     }
   };
 
@@ -863,13 +910,18 @@ export function BgTab() {
     }
   };
 
-  const onUpdateBeatText = async (beatId: string, nextText: string) => {
+  const onUpdateBeatText = async (beatId: string, nextText: string): Promise<boolean> => {
+    setBeats((bs) => bs.map((b) => (
+      b.beat_id === beatId ? { ...b, dialogue_text: nextText } : b
+    )));
     const result = await pathappPatch(activeScope.value, 'bg_update_beat', {
       beat_id: beatId, dialogue_text: nextText,
     });
     if (!result.ok) {
       pushToast({ kind: 'error', message: `Save failed: ${result.error}`, source: 'bg-update-text' });
+      return false;
     }
+    return true;
   };
 
   // Speaker dropdown handler (LD CHARACTER_DROPDOWN_RESTORED_V1).
@@ -910,12 +962,18 @@ export function BgTab() {
     }
   };
 
-  const onRenderStillClip = async (beatId: string) => {
+  const onRenderStillClip = async (beatId: string, dialogueText?: string) => {
     if (activeStillRenderJobs[beatId]) {
       pushToast({ kind: 'info', message: 'Still clip is already rendering.', source: 'bg-still-clip-busy' });
       return;
     }
     const beat = beats.find((b) => b.beat_id === beatId);
+    const pendingDialogue = (dialogueText ?? '').trim();
+    const savedDialogue = (beat?.dialogue_text ?? '').trim();
+    if (pendingDialogue && pendingDialogue !== savedDialogue) {
+      const saved = await onUpdateBeatText(beatId, dialogueText!);
+      if (!saved) return;
+    }
     setActiveStillRenderJobs((prev) => ({ ...prev, [beatId]: true }));
     const result = await pathappPatch<StillClipRenderResponse>(
       activeScope.value,
@@ -925,6 +983,7 @@ export function BgTab() {
         method: 'ken_burns',
         duration: 4.0,
         slot_index: beat?.kling_o3_replace_slot_index ?? 0,
+        ...(pendingDialogue ? { dialogue_text: pendingDialogue } : {}),
       },
     );
     setActiveStillRenderJobs((prev) => {
@@ -933,11 +992,20 @@ export function BgTab() {
       return next;
     });
     if (result.ok) {
+      const ttsMixed = !!result.data?.tts_mixed;
+      const ttsErr = (result.data?.tts_error || '').trim();
+      const ttsRegen = !!result.data?.tts_regenerated;
+      let message = 'Still clip rebuilt — trim below, then Approve still for stitch.';
+      if (ttsMixed && ttsRegen) {
+        message = 'Still clip rebuilt with fresh TTS — trim below, then Approve still for stitch.';
+      } else if (ttsMixed && result.data?.tts_unchanged) {
+        message = 'Still clip rebuilt (TTS unchanged — edit dialogue to regen audio) — trim below.';
+      } else if (ttsErr) {
+        message = `Still clip rebuilt without audio (${ttsErr}) — trim below.`;
+      }
       pushToast({
-        kind: 'success',
-        message: result.data?.tts_mixed
-          ? 'Still clip rendered with TTS — use trim / magic on video below.'
-          : 'Still clip rendered — use trim / magic on video below.',
+        kind: ttsMixed ? 'success' : 'info',
+        message,
         source: 'bg-still-clip',
       });
       await refreshState();
@@ -946,11 +1014,11 @@ export function BgTab() {
     }
   };
 
-  const onGenerateBatch = async (beatId: string) => {
+  const onGenerateBatch = async (beatId: string, dialogueText?: string) => {
     const beat = beats.find((b) => b.beat_id === beatId);
     if (!beat) return;
     if (isStillInsertBeat(beat)) {
-      await onRenderStillClip(beatId);
+      await onRenderStillClip(beatId, dialogueText);
       return;
     }
     if (activeO3Jobs[beatId]) {
@@ -1116,12 +1184,18 @@ export function BgTab() {
     }
   };
 
-  const onSelectO3Video = async (beatId: string, optionKey: string) => {
+  const onSelectO3Video = async (beatId: string, optionKey: string, opts?: { stillApprove?: boolean }) => {
     const result = await pathappPatch(activeScope.value, 'bg_select_o3_video', {
       beat_id: beatId, option_key: optionKey,
     });
     if (result.ok) {
-      pushToast({ kind: 'success', message: 'Selected preserved O3 video', source: 'bg-select-o3' });
+      pushToast({
+        kind: 'success',
+        message: opts?.stillApprove
+          ? 'Still clip approved for stitch export'
+          : 'Selected preserved O3 video',
+        source: 'bg-select-o3',
+      });
       await refreshState();
     } else {
       pushToast({ kind: 'error', message: `Select O3 video failed: ${result.error}`, source: 'bg-select-o3-error' });
@@ -1134,6 +1208,8 @@ export function BgTab() {
       trim_back?: number | null;
       effective_duration_s?: number | null;
       preview_video_url?: string;
+      trim_baked?: boolean;
+      video_path?: string;
     }>(activeScope.value, 'bg_kling_o3_trim', {
       beat_id: beatId,
       trim_start: trimStart,
@@ -1147,6 +1223,16 @@ export function BgTab() {
             ...b,
             kling_o3_trim_start: result.data?.trim_start ?? 0,
             kling_o3_trim_back: result.data?.trim_back ?? null,
+            ...(result.data?.video_path ? { kling_o3_video_path: result.data.video_path } : {}),
+            ...(result.data?.trim_baked && result.data?.video_path
+              ? {
+                kling_o3_options: (b.kling_o3_options ?? []).map((o) => (
+                  o?.video_path === b.kling_o3_video_path
+                    ? { ...o, video_path: result.data!.video_path! }
+                    : o
+                )),
+              }
+              : {}),
           }
           : b
       )));
@@ -1155,9 +1241,16 @@ export function BgTab() {
         kind: 'success',
         message: clear
           ? 'Trim cleared — full clip restored for export (switch O3 option separately if needed)'
-          : (dur != null ? `Trim saved (${dur.toFixed(1)}s effective)` : 'Trim saved'),
+          : result.data?.trim_baked
+            ? (dur != null
+              ? `Trim baked into clip (${dur.toFixed(1)}s) — audio/video updated in place`
+              : 'Trim baked into clip — audio/video updated in place')
+            : (dur != null ? `Trim saved (${dur.toFixed(1)}s effective)` : 'Trim saved'),
         source: 'bg-o3-trim',
       });
+      if (result.data?.trim_baked || result.data?.video_path) {
+        await refreshState();
+      }
       return result.data?.preview_video_url;
     }
     pushToast({ kind: 'error', message: `Trim failed: ${result.error}`, source: 'bg-o3-trim-error' });
@@ -1414,9 +1507,10 @@ export function BgTab() {
               onDelete={() => onDeleteBeat(b.beat_id)}
               onUpdateText={(t) => onUpdateBeatText(b.beat_id, t)}
               onUpdateSpeaker={(s) => onUpdateBeatSpeaker(b.beat_id, s)}
-              onGenerate={() => onGenerateBatch(b.beat_id)}
+              onGenerate={(dialogueText) => onGenerateBatch(b.beat_id, dialogueText)}
               onAccept={(optionKey) => onAcceptOption(b.beat_id, optionKey)}
               onSelectO3Video={(optionKey) => onSelectO3Video(b.beat_id, optionKey)}
+              onApproveStill={(optionKey) => onSelectO3Video(b.beat_id, optionKey, { stillApprove: true })}
               onApplyO3Trim={(trimStart, trimBack, clear) => onApplyO3Trim(b.beat_id, trimStart, trimBack, clear)}
               onSetReplaceSlot={(slotIndex) => onSetReplaceSlot(b.beat_id, slotIndex)}
               onSubmitNativeLipSyncExperiment={() => onSubmitNativeLipSyncExperiment(b.beat_id)}
@@ -1486,7 +1580,8 @@ export function BgTab() {
         storySummary={beatPlanSummary}
         beatsPlan={beatPlanRows}
         approveStatus={approveStatus}
-        onClose={() => setBeatPlanOpen(false)}
+        approveStartedAt={approveStartedAt}
+        onClose={closeBeatPlanModal}
         onApprove={onApproveBeatPlan}
       />
 
@@ -1759,12 +1854,13 @@ interface BeatGenCardProps {
   busy: boolean;
   nativeExperimentBusy: boolean;
   onDelete: () => void;
-  onUpdateText: (next: string) => void;
+  onUpdateText: (next: string) => void | Promise<boolean>;
   // LD CHARACTER_DROPDOWN_RESTORED_V1 — speaker dropdown change.
   onUpdateSpeaker: (next: string) => void;
-  onGenerate: () => void;
+  onGenerate: (dialogueText?: string) => void;
   onAccept: (optionKey: string) => void;
   onSelectO3Video: (optionKey: string) => void;
+  onApproveStill: (optionKey: string) => void;
   onApplyO3Trim: (trimStart: number, trimBack: number | null, clear?: boolean) => Promise<string | undefined>;
   onSetReplaceSlot: (slotIndex: number) => void;
   onSubmitNativeLipSyncExperiment: () => void;
@@ -1790,7 +1886,7 @@ interface BeatGenCardProps {
 function BeatGenCard({
   index, beat, eventId, videoRole, pollResultForBeat, busy, nativeExperimentBusy,
   onDelete, onUpdateText, onUpdateSpeaker, onGenerate, onAccept,
-  onSelectO3Video, onApplyO3Trim, onSetReplaceSlot, onSubmitNativeLipSyncExperiment,
+  onSelectO3Video, onApproveStill, onApplyO3Trim, onSetReplaceSlot, onSubmitNativeLipSyncExperiment,
   onEditChip, onInsertAfter, onRemoveRef, onRefresh,
   onPatchOptionTile, onPatchRefImage,
 }: BeatGenCardProps) {
@@ -2024,13 +2120,13 @@ function BeatGenCard({
           type="button"
           class="mn-btn mn-btn-primary"
           data-testid={`bg-generate-btn-${index}`}
-          onClick={onGenerate}
+          onClick={() => onGenerate(localText)}
           disabled={busy}
         >
           {busy ? (
             <><Spinner size="sm" inline /> Generating…</>
           ) : isStillInsertBeat(beat) ? (
-            'Build still video (+ TTS) → trim & approve'
+            'Build still video (+ TTS)'
           ) : isO3VoiceBeat(beat) ? (
             'Generate padded O3 voice video'
           ) : (
@@ -2042,7 +2138,7 @@ function BeatGenCard({
       {showStillClipHint ? (
         <p class="mn-dim mn-bg-still-clip-hint" data-testid={`bg-still-clip-hint-${index}`}>
           Still ready — click <strong>Build still video (+ TTS)</strong> above to Ken Burns the
-          image, mux dialogue audio, and unlock trim / magic-on-video in the option slot below.
+          image and mux dialogue audio. Trim below, then use <strong>Approve still for stitch</strong>.
         </p>
       ) : null}
 
@@ -2108,11 +2204,19 @@ function BeatGenCard({
             onClick={() => {
               if (!opt) return;
               const optionKey = resolveO3OptionKey(opt, beat.beat_id, i);
-              if (opt.video_path) onSelectO3Video(optionKey);
-              else if (opt.key) onAccept(opt.key);
+              if (opt.video_path) {
+                if (isStillInsertBeat(beat) && beat.kling_o3_status !== 'approved') {
+                  return;
+                }
+                onSelectO3Video(optionKey);
+              } else if (opt.key) onAccept(opt.key);
             }}
             onRefresh={onRefresh}
             onPatchOptionTile={onPatchOptionTile}
+            stillInsert={stillInsert}
+            klingO3Status={beat.kling_o3_status ?? null}
+            videoCacheKey={beat.kling_o3_selected_at ?? beat.kling_o3_video_path ?? beat.beat_id}
+            onApproveStill={(optionKey) => onApproveStill(optionKey)}
             trimStart={beat.kling_o3_trim_start ?? 0}
             trimBack={beat.kling_o3_trim_back ?? null}
             onApplyO3Trim={onApplyO3Trim}
@@ -2278,9 +2382,7 @@ interface BgOptionTileProps {
 
 interface BgOptionTilePropsExt extends BgOptionTileProps {
   beatId: string;
-  // 2026-05-11 fix — parent refreshState() to repaint stale option slot after drop.
   onRefresh: () => void;
-  // 2026-05-11 Rule 26 fix — optimistic local-state patcher (see BeatGenCardProps).
   onPatchOptionTile: (slotIndex: number, patch: Partial<GptOption> & { key?: string; thumb_b64?: string }) => void;
   trimStart: number;
   trimBack: number | null;
@@ -2289,11 +2391,16 @@ interface BgOptionTilePropsExt extends BgOptionTileProps {
   onSetReplaceSlot: () => void;
   showReplaceOnRegen: boolean;
   overrideVideoUrl?: string | null;
+  stillInsert?: boolean;
+  klingO3Status?: string | null;
+  videoCacheKey?: string;
+  onApproveStill?: (optionKey: string) => void;
 }
 
 function BgOptionTile({
   beatIndex, optionIndex, option, selected, onClick, beatId, onRefresh, onPatchOptionTile,
-  trimStart, trimBack, onApplyO3Trim, replaceSelected, onSetReplaceSlot, showReplaceOnRegen, overrideVideoUrl,
+  trimStart, trimBack, onApplyO3Trim, replaceSelected, onSetReplaceSlot, showReplaceOnRegen,
+  overrideVideoUrl, stillInsert, klingO3Status, videoCacheKey, onApproveStill,
 }: BgOptionTilePropsExt) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const trimPlaybackListenerRef = useRef<((this: HTMLVideoElement, ev: Event) => void) | null>(null);
@@ -2406,11 +2513,22 @@ function BgOptionTile({
   // Without this gate the click silently no-ops or 400s server-side because
   // bg_accept_option requires option_key on the wire.
   const keyMissing = !option.key;
-  const isApprovedVideo = !!option.video_path;
+  const isStitchApproved = klingO3Status === 'approved';
+  const isStillDraft = !!stillInsert && !!option.video_path && !isStitchApproved;
+  const hasClipVideo = !!option.video_path;
+  const showTrimControls = selected && hasClipVideo;
+  const optionLabel = isStitchApproved
+    ? 'approved O3 video'
+    : isStillDraft
+      ? 'still clip (draft — approve below)'
+      : hasClipVideo
+        ? 'O3 clip (select to approve)'
+        : `option ${optionIndex + 1}`;
   const tooltip = keyMissing ? 'Option missing key — regenerate beat' : undefined;
+  const cacheBust = videoCacheKey ? `&v=${encodeURIComponent(String(videoCacheKey))}` : '';
   const canonicalVideoUrl = option.video_path
     ? (overrideVideoUrl
-      ?? `${SERVER_BASE}/files?path=${encodeURIComponent(option.video_path)}`)
+      ?? `${SERVER_BASE}/files?path=${encodeURIComponent(option.video_path)}${cacheBust}`)
     : null;
   const waitForVideoMetadata = (video: HTMLVideoElement) => new Promise<void>((resolve, reject) => {
     if (Number.isFinite(video.duration) && video.duration > 0) {
@@ -2445,6 +2563,9 @@ function BgOptionTile({
       // leave for user refresh
     }
   };
+  useEffect(() => {
+    void resetVideoToCanonical();
+  }, [canonicalVideoUrl]);
   const parseDraft = (value: string) => {
     const parsed = parseFloat(value);
     return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
@@ -2474,7 +2595,7 @@ function BgOptionTile({
     if (!selected) {
       pushToast({
         kind: 'error',
-        message: 'Select this clip as approved O3 video before trimming',
+        message: 'Select this clip before trimming',
         source: 'bg-o3-trim-preview-not-active',
       });
       return;
@@ -2520,7 +2641,7 @@ function BgOptionTile({
     if (!selected) {
       pushToast({
         kind: 'error',
-        message: 'Select this clip as approved O3 video before applying trim',
+        message: 'Select this clip before applying trim',
         source: 'bg-o3-trim-apply-not-active',
       });
       return;
@@ -2549,10 +2670,10 @@ function BgOptionTile({
   };
   return (
     <div
-      class={`mn-bg-option mn-drop-target${selected ? ' is-selected' : ''}${keyMissing ? ' is-disabled' : ''}${isApprovedVideo ? ' is-approved-video' : ''}`}
+      class={`mn-bg-option mn-drop-target${selected ? ' is-selected' : ''}${keyMissing ? ' is-disabled' : ''}${isStitchApproved && hasClipVideo ? ' is-approved-video' : ''}${isStillDraft ? ' is-still-draft' : ''}`}
       data-testid={`bg-option-${beatIndex}-${optionIndex}`}
       data-option-key={option.key ?? ''}
-      onClick={keyMissing ? undefined : onClick}
+      onClick={keyMissing || isStillDraft ? undefined : onClick}
       onDragOver={dropHandlers.onDragOver}
       onDragLeave={dropHandlers.onDragLeave}
       onDrop={dropHandlers.onDrop}
@@ -2578,7 +2699,7 @@ function BgOptionTile({
               attachTrimStopListener(video, stopAt);
             }}
           />
-          {selected && isApprovedVideo ? (
+          {showTrimControls ? (
           <div class="mn-bg-o3-trim-controls" data-testid={`bg-o3-trim-controls-${beatIndex}-${optionIndex}`}>
             <span class="mn-dim">
               trim front
@@ -2668,6 +2789,19 @@ function BgOptionTile({
             </button>
           </div>
           ) : null}
+          {isStillDraft && onApproveStill && option.key ? (
+            <button
+              type="button"
+              class="mn-btn mn-btn-small mn-btn-primary"
+              data-testid={`bg-approve-still-${beatIndex}-${optionIndex}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onApproveStill(resolveO3OptionKey(option, beatId, optionIndex));
+              }}
+            >
+              Approve still for stitch
+            </button>
+          ) : null}
         </>
       ) : option.thumb_b64 ? (
         <img src={option.thumb_b64} alt={`option ${optionIndex + 1}`} />
@@ -2679,13 +2813,13 @@ function BgOptionTile({
           type="radio"
           name={`bg-opt-${beatIndex}`}
           checked={selected}
-          onChange={keyMissing ? undefined : onClick}
-          disabled={keyMissing}
-          title={tooltip}
-          aria-label={isApprovedVideo ? `approved O3 video ${optionIndex + 1}` : (tooltip ?? `option ${optionIndex + 1}`)}
+          onChange={isStillDraft ? undefined : (keyMissing ? undefined : onClick)}
+          disabled={keyMissing || isStillDraft}
+          title={isStillDraft ? 'Draft still clip — use Approve still for stitch below' : tooltip}
+          aria-label={optionLabel}
           data-testid={`bg-option-radio-${beatIndex}-${optionIndex}`}
         />
-        {' '}{isApprovedVideo ? 'approved O3 video' : `option ${optionIndex + 1}`}
+        {' '}{optionLabel}
       </label>
       {showReplaceOnRegen && option?.video_path ? (
         <label class="mn-dim" style="font-size:11px;display:block;margin-top:2px">

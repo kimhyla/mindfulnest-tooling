@@ -27,6 +27,9 @@ export function beatStitchExportBlockLabel(b: BgBeatStitchFields): string | null
   if (b.magic_still_path && b.magic_still_path_exists === false) {
     return 'Magic still file missing';
   }
+  if (b.kling_o3_video_path && b.kling_o3_status === 'still_rendered') {
+    return 'Approve still clip';
+  }
   if (b.kling_o3_video_path && b.kling_o3_status !== 'approved') {
     return 'Approve Kling clip';
   }

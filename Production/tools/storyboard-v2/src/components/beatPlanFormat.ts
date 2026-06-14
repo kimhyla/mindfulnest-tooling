@@ -9,8 +9,10 @@ import type { BeatPlanRow } from './BeatPlanModal';
  *
  * Brackets match how delivery + staging read in Kling prompts.
  */
+const STILL_INSERT_HINT_RE = /\b(still insert|gpt still|inscription|runestone|carved text|pre-?made still)\b/i;
+
 export function beatPlanRowToLine(row: BeatPlanRow): string {
-  const speaker = row.beat_type === 'stage_direction'
+  const speaker = (row.beat_type === 'stage_direction' || row.beat_type === 'stage_still')
     ? '[Stage Direction]'
     : (row.speaker || 'Character').trim();
   const emotion = (row.emotion || 'neutral').trim();
@@ -70,9 +72,11 @@ function parseBeatPlanLine(line: string, beatIndex: number): BeatPlanRow {
   }
 
   const isStage = /^(\[Stage Direction\]|Stage Direction)$/i.test(speakerRaw);
+  const combined = `${tail} ${scene_notes}`;
+  const isStill = STILL_INSERT_HINT_RE.test(combined) || STILL_INSERT_HINT_RE.test(trimmed);
   return {
     beat_index: beatIndex,
-    beat_type: isStage ? 'stage_direction' : 'dialogue',
+    beat_type: isStill ? 'stage_still' : (isStage ? 'stage_direction' : 'dialogue'),
     speaker: isStage ? '[Stage Direction]' : speakerRaw,
     dialogue_text,
     emotion: emotion || 'neutral',

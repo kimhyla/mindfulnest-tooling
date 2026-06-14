@@ -604,10 +604,8 @@ _EXTRACT_APPROVE_MERGE_PRESERVE: tuple[str, ...] = tuple(
     )
 )
 
+# Extract approve: restore approved clip/media only — never clobber fresh author text.
 _KLING_APPROVED_RESTORE_FIELDS: tuple[str, ...] = (
-    "kling_o3_prompt",
-    "kling_o3_duration",
-    "kling_o3_duration_locked",
     "kling_o3_status",
     "kling_o3_video_path",
     "kling_o3_generation",
@@ -619,7 +617,9 @@ _KLING_APPROVED_RESTORE_FIELDS: tuple[str, ...] = (
     "kling_o3_trim_back",
     "kling_o3_actual_duration_s",
     "kling_o3_completed_at",
-    "pipeline",
+    "accepted_library_ref",
+    "accepted_image_key",
+    "audio_file",
 )
 
 _TELEPORT_INTRO_MANIFEST_REL = "Production/templates/chipper_teleport_intro/manifest.json"
@@ -2410,6 +2410,30 @@ def _new_group_id() -> str:
     return "grp_" + uuid.uuid4().hex[:8]
 
 
+def normalize_still_insert_approval_status(beat: dict) -> bool:
+    """Demote legacy still renders that were auto-marked approved on build."""
+    if not beat_is_still_insert(beat):
+        return False
+    if str(beat.get("kling_o3_status") or "") != "approved":
+        return False
+    still_sources = ("still_insert_static_hold", "still_insert_ken_burns")
+    active_path = str(beat.get("kling_o3_video_path") or "")
+    for opt in beat.get("kling_o3_options") or []:
+        if not isinstance(opt, dict):
+            continue
+        if opt.get("source") in still_sources and str(opt.get("video_path") or "") == active_path:
+            beat["kling_o3_status"] = "still_rendered"
+            if beat.get("status") == "approved":
+                beat["status"] = "draft"
+            return True
+    if active_path and "_still_insert_" in active_path:
+        beat["kling_o3_status"] = "still_rendered"
+        if beat.get("status") == "approved":
+            beat["status"] = "draft"
+        return True
+    return False
+
+
 def _migrate_sidecar(sidecar: dict) -> dict:
     """Add new fields to old sidecars without breaking existing state."""
     sidecar.setdefault("groups", {})
@@ -2423,6 +2447,7 @@ def _migrate_sidecar(sidecar: dict) -> dict:
                 beat.setdefault("local_render_params", None)
                 beat.setdefault("reference_image", None)
                 beat.setdefault("bg_ref_image", None)
+                normalize_still_insert_approval_status(beat)
     if sidecar.get("schema_version", 1) < 2:
         sidecar["schema_version"] = 2
     migration_warnings = []
@@ -2799,6 +2824,32 @@ def beat_is_still_insert(beat: dict) -> bool:
     )
 
 
+_STILL_INSERT_SPOKEN_RE = re.compile(
+    r"([A-Za-z][A-Za-z\s'-]*?)\s*(?:\[[^\]]+\])*\s*:\s*"
+    r"(['\"])(.*?)\2",
+    re.DOTALL,
+)
+
+
+def extract_still_insert_tts(beat: dict) -> dict | None:
+    """Parse ``Speaker [tags]: 'line'`` from still-insert dialogue_text."""
+    dialogue = (beat.get("dialogue_text") or "").strip()
+    if not dialogue:
+        return None
+    matches = list(_STILL_INSERT_SPOKEN_RE.finditer(dialogue))
+    if matches:
+        m = matches[-1]
+        speaker = m.group(1).strip()
+        text = m.group(3).strip()
+        if speaker and text:
+            return {"speaker": speaker, "text": text}
+    spoken = _spoken_from_beat_dialogue(beat)
+    speaker = (beat.get("speaker") or "").strip()
+    if spoken and speaker and "stage direction" not in speaker.lower():
+        return {"speaker": speaker, "text": spoken}
+    return None
+
+
 def render_still_insert_o3_clip(
     beat: dict,
     event_dir: str | Path,
@@ -2819,6 +2870,9 @@ def render_still_insert_o3_clip(
     event_dir = Path(event_dir)
     clips_dir = kling_o3_clips_dir(event_dir)
     ts = int(time.time())
+    saved_trim_start = float(beat.get("kling_o3_trim_start") or 0.0)
+    saved_trim_back = beat.get("kling_o3_trim_back")
+    had_sidecar_trim = still_insert_sidecar_trim_pending(beat)
     silent_path = clips_dir / f"{beat['beat_id']}_still_insert_{ts}.mp4"
     if method == "static_hold":
         run_static_hold(beat, str(still), duration, out_path=silent_path)
@@ -2855,16 +2909,34 @@ def render_still_insert_o3_clip(
         "slot_index": slot_index,
         "active": True,
     }
-    options = [o for o in (beat.get("kling_o3_options") or []) if isinstance(o, dict)]
+    still_sources = ("still_insert_static_hold", "still_insert_ken_burns")
+    options = [
+        o for o in (beat.get("kling_o3_options") or [])
+        if isinstance(o, dict)
+        and not (
+            o.get("source") in still_sources
+            and o.get("slot_index") == slot_index
+        )
+    ]
     options.append(option)
     now = datetime.now(timezone.utc).isoformat()
     beat["kling_o3_options"] = options
     beat["kling_o3_video_path"] = str(final_path)
-    beat["kling_o3_status"] = "approved"
-    beat["status"] = "approved"
+    # Build still ≠ stitch approve — explicit select-o3 / Approve still sets approved.
+    beat["kling_o3_status"] = "still_rendered"
+    beat["status"] = "draft"
     beat["kling_o3_selected_option_key"] = opt_key
     beat["kling_o3_selected_at"] = now
-    clear_kling_o3_beat_trim(beat)
+    if had_sidecar_trim:
+        beat["kling_o3_trim_start"] = round(saved_trim_start, 2)
+        if saved_trim_back is not None:
+            beat["kling_o3_trim_back"] = round(float(saved_trim_back), 2)
+        baked = bake_still_insert_trim_into_clip(beat, source_path=final_path)
+        final_path = Path(baked["video_path"])
+        beat["kling_o3_video_path"] = str(final_path)
+        option["video_path"] = str(final_path)
+    else:
+        clear_kling_o3_beat_trim(beat)
     for o in options:
         o["active"] = o.get("key") == opt_key or o.get("video_path") == str(final_path)
     return {
@@ -2874,6 +2946,7 @@ def render_still_insert_o3_clip(
         "duration_s": duration,
         "tts_mixed": tts_mixed,
         "still_path": str(still),
+        "trim_baked": had_sidecar_trim,
     }
 
 
@@ -3328,6 +3401,47 @@ def set_kling_o3_beat_trim(
 def clear_kling_o3_beat_trim(beat: dict) -> None:
     for key in ("kling_o3_trim_start", "kling_o3_trim_back", "kling_o3_trim_end"):
         beat.pop(key, None)
+
+
+def still_insert_sidecar_trim_pending(beat: dict) -> bool:
+    """True when beat has unsaved-to-file trim metadata (front/back > 0)."""
+    start = float(beat.get("kling_o3_trim_start") or 0.0)
+    back = beat.get("kling_o3_trim_back")
+    if start > 0.01:
+        return True
+    if back is not None and float(back) > 0.05:
+        return True
+    return False
+
+
+def bake_still_insert_trim_into_clip(
+    beat: dict,
+    *,
+    source_path: Path | str | None = None,
+) -> dict:
+    """Materialize trim window into the active still-insert mp4; clear trim metadata."""
+    src = Path(source_path or beat.get("kling_o3_video_path") or "")
+    if not src.is_file():
+        raise ValueError(f"missing still clip: {src}")
+    raw_dur = _ffprobe_duration(src)
+    if not kling_o3_trim_is_active(beat, raw_dur=raw_dur):
+        return {"baked": False, "video_path": str(src.resolve())}
+    stem = src.stem
+    if stem.endswith("_trimmed"):
+        dest = src.with_name(f"{stem}_{int(time.time())}{src.suffix}")
+    else:
+        dest = src.with_name(f"{stem}_trimmed{src.suffix}")
+    materialize_kling_o3_trimmed_clip(beat, dest, source_path=src)
+    new_path = str(dest.resolve())
+    old_path = str(src.resolve())
+    beat["kling_o3_video_path"] = new_path
+    for o in beat.get("kling_o3_options") or []:
+        if not isinstance(o, dict):
+            continue
+        if (o.get("video_path") or "") in (old_path, str(src)):
+            o["video_path"] = new_path
+    clear_kling_o3_beat_trim(beat)
+    return {"baked": True, "video_path": new_path, "source_path": old_path}
 
 
 def clear_kling_o3_redo_generation_slot(beat: dict, event_dir: str | Path) -> None:
@@ -4867,6 +4981,8 @@ def beat_is_kling_approved_protected(beat: dict) -> bool:
     status = (beat.get("kling_o3_status") or "").strip().lower()
     if status == "approved":
         return True
+    if status == "still_rendered":
+        return False
     vpath = (beat.get("kling_o3_video_path") or "").strip()
     if vpath and os.path.isfile(vpath):
         return True
@@ -5030,6 +5146,36 @@ def apply_approved_extract_plan(
     return merged
 
 
+def audit_kling_author_enrichment(beats: list[dict]) -> list[str]:
+    """Post-approve guard — dialogue beats must carry author emotion/staging in prompts."""
+    warnings: list[str] = []
+    for b in beats or []:
+        if not isinstance(b, dict):
+            continue
+        beat_id = b.get("beat_id") or "?"
+        if beat_is_still_insert(b) or beat_is_canonical_mirror_protected(b):
+            continue
+        prompt = (b.get("kling_o3_prompt") or "").strip()
+        if not prompt:
+            warnings.append(f"{beat_id}: missing kling_o3_prompt after approve")
+            continue
+        if re.search(r"\bLuna\b", prompt) and "Lorelai" not in (b.get("speaker") or ""):
+            warnings.append(f"{beat_id}: stale Luna cast leaked into prompt")
+        if re.search(r"\bChipper\b", prompt) and "Arlo" not in (b.get("speaker") or ""):
+            warnings.append(f"{beat_id}: stale Chipper cast leaked into prompt")
+        emotion = (b.get("emotion") or "").strip()
+        if emotion and emotion.lower() not in ("neutral", "[neutral]"):
+            emo_key = emotion.strip("[]").lower()
+            if "[" not in prompt and emo_key not in prompt.lower():
+                warnings.append(f"{beat_id}: emotion not woven into kling_o3_prompt")
+        scene = (b.get("scene_notes") or "").strip()
+        if len(scene) > 12:
+            snippet = scene[:24].lower()
+            if snippet not in prompt.lower() and "rooted in place" not in prompt.lower():
+                warnings.append(f"{beat_id}: scene_notes missing from kling_o3_prompt")
+    return warnings
+
+
 def segment_beats_to_plan_rows(beats: list[dict]) -> list[dict]:
     """Rebuild Beat Plan modal rows from populated segment beats (Review saved plan fallback)."""
     rows: list[dict] = []
@@ -5037,13 +5183,14 @@ def segment_beats_to_plan_rows(beats: list[dict]) -> list[dict]:
         if not isinstance(beat, dict):
             continue
         speaker = str(beat.get("speaker") or "").strip()
+        is_still = beat_is_still_insert(beat)
         is_stage = (
-            beat_is_still_insert(beat)
+            is_still
             or speaker.lower() in ("[stage direction]", "stage direction", "narrator")
         )
         rows.append({
             "beat_index": i,
-            "beat_type": "stage_direction" if is_stage else "dialogue",
+            "beat_type": "stage_still" if is_still else ("stage_direction" if is_stage else "dialogue"),
             "speaker": speaker or ("[Stage Direction]" if is_stage else "Character"),
             "dialogue_text": beat.get("dialogue_text") or "",
             "emotion": beat.get("emotion") or "neutral",
