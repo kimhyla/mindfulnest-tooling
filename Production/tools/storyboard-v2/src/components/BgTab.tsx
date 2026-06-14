@@ -275,12 +275,26 @@ function collectActiveO3JobsFromBeats(beats: BgBeat[]): Record<string, string> {
   const jobs: Record<string, string> = {};
   for (const beat of beats) {
     const jobId = (beat.kling_o3_voice_fix_ui_job_id ?? '').trim();
-    const status = (beat.kling_o3_voice_fix_status ?? beat.kling_o3_status ?? '').toLowerCase();
-    if (jobId && status !== 'approved' && !status.startsWith('failed')) {
-      jobs[beat.beat_id] = jobId;
-    }
+    const voiceFix = (beat.kling_o3_voice_fix_status ?? '').toLowerCase();
+    const klingStatus = (beat.kling_o3_status ?? '').toLowerCase();
+    if (!jobId) continue;
+    if (voiceFix === 'approved' || klingStatus === 'approved') continue;
+    if (voiceFix.startsWith('failed')) continue;
+    jobs[beat.beat_id] = jobId;
   }
   return jobs;
+}
+
+function isNetworkPollBlip(res: { ok: boolean; status: number; error?: string }): boolean {
+  return !res.ok
+    && res.status === 0
+    && /failed to fetch|networkerror|load failed/i.test(res.error ?? '');
+}
+
+function isStaleO3JobPoll(res: { ok: boolean; status: number; error?: string; error_code?: string }): boolean {
+  if (res.ok) return false;
+  return res.error_code === 'ARLO_JOB_NOT_FOUND'
+    || (res.status === 404 && /job.*not in server memory|unknown.*job_id/i.test(res.error ?? ''));
 }
 
 function collectActiveNativeLipSyncJobsFromBeats(beats: BgBeat[]): Record<string, string> {
@@ -441,34 +455,38 @@ export function BgTab() {
     let timer: number | null = null;
     const fetchData = async () => {
       setLoading(true);
-      const segRes = await apiGet<BgSegmentsResponse>('bg_segments', { arc_number: String(arcNumber) });
-      if (cancelled) return;
-      const segs = segRes.data?.segments ?? [];
-      setSegments(segs);
+      setActiveO3Jobs({});
+      try {
+        const segRes = await apiGet<BgSegmentsResponse>('bg_segments', { arc_number: String(arcNumber) });
+        if (cancelled) return;
+        const segs = segRes.data?.segments ?? [];
+        setSegments(segs);
 
-      // LD-545 Option B — scope_event_id + scope_video_role derive the segment
-      // (intro→pre, resolution→post). Without scope_video_role the server falls
-      // back to stale sidecar active_context and shows the wrong beats.
-      const stateRes = await apiGet<BgSessionState>('bg_session_state', {
-        scope_event_id: activeScope.value.event_id,
-        scope_video_role: activeTargetVideo.value,
-      });
-      if (cancelled) return;
-      const ctx = stateRes.data?.scope_active_context ?? stateRes.data?.active_context;
-      if (ctx) {
-        setArcNumber(Number(ctx.arc_number) || arcNumber);
-        setActiveSegment(`${ctx.event_id}|${ctx.phase}`);
-      } else if (segs.length > 0) {
-        setActiveSegment(`${segs[0].event_id}|${segs[0].phase}`);
+        // LD-545 Option B — scope_event_id + scope_video_role derive the segment
+        // (intro→pre, resolution→post). Without scope_video_role the server falls
+        // back to stale sidecar active_context and shows the wrong beats.
+        const stateRes = await apiGet<BgSessionState>('bg_session_state', {
+          scope_event_id: activeScope.value.event_id,
+          scope_video_role: activeTargetVideo.value,
+        });
+        if (cancelled) return;
+        const ctx = stateRes.data?.scope_active_context ?? stateRes.data?.active_context;
+        if (ctx) {
+          setArcNumber(Number(ctx.arc_number) || arcNumber);
+          setActiveSegment(`${ctx.event_id}|${ctx.phase}`);
+        } else if (segs.length > 0) {
+          setActiveSegment(`${segs[0].event_id}|${segs[0].phase}`);
+        }
+        const initialBeats = stateRes.data?.beats ?? [];
+        setBeats(initialBeats);
+        setActiveJobId((prev) => prev ?? collectActiveStillJobFromBeats(initialBeats));
+        // Server sidecar is the source of truth. Do not merge old local active
+        // jobs back in, or a tab can keep showing "Generating..." after the
+        // backend has failed/cleared the job.
+        setActiveO3Jobs(collectActiveO3JobsFromBeats(initialBeats));
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-      const initialBeats = stateRes.data?.beats ?? [];
-      setBeats(initialBeats);
-      setActiveJobId((prev) => prev ?? collectActiveStillJobFromBeats(initialBeats));
-      // Server sidecar is the source of truth. Do not merge old local active
-      // jobs back in, or a tab can keep showing "Generating..." after the
-      // backend has failed/cleared the job.
-      setActiveO3Jobs(collectActiveO3JobsFromBeats(initialBeats));
-      setLoading(false);
     };
 
     const depKey = [
@@ -561,6 +579,7 @@ export function BgTab() {
       let anyStillRunning = false;
       const completedBeatIds: string[] = [];
       const failedBeatIds: string[] = [];
+      const staleBeatIds: string[] = [];
 
       await Promise.all(jobs.map(async ([beatId, jobId]) => {
         const res = await apiGet<ArloO3PollResponse>('bg_poll_arlo_o3_voice_status', { job_id: jobId });
@@ -587,15 +606,23 @@ export function BgTab() {
           anyStillRunning = true;
           return;
         }
+        if (isNetworkPollBlip(res)) {
+          anyStillRunning = true;
+          return;
+        }
+        if (isStaleO3JobPoll(res)) {
+          staleBeatIds.push(beatId);
+          return;
+        }
         failedBeatIds.push(beatId);
         pushToast({ kind: 'error', message: `O3 poll error: ${res.error}`, source: 'bg-o3-poll-error' });
       }));
       if (cancelled) return;
 
-      if (completedBeatIds.length > 0 || failedBeatIds.length > 0) {
+      if (completedBeatIds.length > 0 || failedBeatIds.length > 0 || staleBeatIds.length > 0) {
         setActiveO3Jobs((prev) => {
           const next = { ...prev };
-          for (const beatId of [...completedBeatIds, ...failedBeatIds]) {
+          for (const beatId of [...completedBeatIds, ...failedBeatIds, ...staleBeatIds]) {
             delete next[beatId];
           }
           return next;
@@ -613,6 +640,12 @@ export function BgTab() {
       if (timer !== null) clearTimeout(timer);
     };
   }, [activeO3Jobs]);
+
+  // After server restart, drop stale poll ids once sidecar reloads.
+  useEffect(() => {
+    if (serverRehydrateTick.value <= 0) return;
+    void refreshState();
+  }, [serverRehydrateTick.value]);
 
   // Poll isolated native Kling-compatible lipsync experiments. These jobs
   // never approve or replace the current O3 clip; they only report raw proof.

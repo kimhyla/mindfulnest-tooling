@@ -161,3 +161,55 @@ def test_session_state_handler_calls_reconcile() -> None:
     src = (TOOLS / "server_handlers" / "background.py").read_text(encoding="utf-8")
     assert "reconcile_stuck_o3_voice_beats" in src
     assert "handle_bg_session_state" in src
+
+
+def test_recover_o3_job_from_sidecar_matches_log_path_when_ui_job_id_cleared(
+    monkeypatch, tmp_path,
+) -> None:
+    bg_mod = _import_background()
+    delivery = tmp_path / "bg_arc1_event2_pre_beat_03_g4_element_o3_master_delivery.mp4"
+    delivery.write_bytes(b"fake mp4")
+    log_path = tmp_path / "f9d7dc09_bg_arc1_event2_pre_beat_03.log"
+    log_path.write_text(
+        json.dumps({"phase": "done", "video": str(delivery), "beat_id": "bg_arc1_event2_pre_beat_03"})
+        + "\n",
+        encoding="utf-8",
+    )
+    sidecar = {
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [{
+                            "beat_id": "bg_arc1_event2_pre_beat_03",
+                            "kling_o3_status": "approved",
+                            "kling_o3_voice_fix_status": "approved",
+                            "kling_o3_video_path": str(delivery),
+                            "kling_o3_voice_fix_job_log_path": str(log_path),
+                        }],
+                    },
+                },
+            },
+        },
+    }
+
+    class _FakeBg:
+        @staticmethod
+        def sidecar_file_lock():
+            import contextlib
+            return contextlib.nullcontext()
+
+        @staticmethod
+        def read_sidecar():
+            return sidecar
+
+        @staticmethod
+        def _migrate_sidecar(data):
+            return data
+
+    monkeypatch.setattr(bg_mod, "_bg_module", lambda: _FakeBg())
+    recovered = bg_mod._recover_o3_job_from_sidecar("f9d7dc09")
+    assert recovered is not None
+    assert recovered["status"] == "done"
+    assert recovered["beat_id"] == "bg_arc1_event2_pre_beat_03"
+    assert recovered.get("recovered") is True

@@ -3432,7 +3432,10 @@ def handle_bg_poll_arlo_o3_voice_status(h) -> None:
         return h._send_error_v59(
             404,
             error_code="ARLO_JOB_NOT_FOUND",
-            error_message=f"unknown Arlo job_id: {job_id}",
+            error_message=(
+                f"O3 job {job_id} is not in server memory (likely after restart). "
+                "Refresh Beat Gen — sidecar will rehydrate active jobs."
+            ),
             retry_safe=True,
         )
     job = _ARLO_O3_JOBS[job_id]
@@ -3834,6 +3837,19 @@ def reconcile_stuck_o3_voice_beats(sidecar: dict) -> int:
     return changed
 
 
+def _beat_matches_o3_ui_job_id(beat: dict, job_id: str) -> bool:
+    """Match in-memory poll id to sidecar — ui_job_id or arlo_o3_jobs log filename."""
+    if not job_id:
+        return False
+    if beat.get("kling_o3_voice_fix_ui_job_id") == job_id:
+        return True
+    log_path = str(beat.get("kling_o3_voice_fix_job_log_path") or "")
+    if not log_path:
+        return False
+    # .../arlo_o3_jobs/{job_id}_bg_arc1_event2_pre_beat_03.log
+    return f"/{job_id}_" in log_path or log_path.endswith(f"/{job_id}.log")
+
+
 def _recover_o3_job_from_sidecar(job_id: str) -> dict | None:
     if not job_id:
         return None
@@ -3843,7 +3859,7 @@ def _recover_o3_job_from_sidecar(job_id: str) -> dict | None:
             sidecar = bg.read_sidecar()
             sidecar = bg._migrate_sidecar(sidecar)
             for beat in _iter_bg_beats(sidecar):
-                if beat.get("kling_o3_voice_fix_ui_job_id") != job_id:
+                if not _beat_matches_o3_ui_job_id(beat, job_id):
                     continue
                 result = _parse_o3_pipeline_result_from_log(beat.get("kling_o3_voice_fix_job_log_path"))
                 if result or beat.get("kling_o3_voice_fix_status") == "approved":

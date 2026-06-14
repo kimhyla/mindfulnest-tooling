@@ -94,6 +94,8 @@ interface RawPostOptions {
 interface ApiGetOptions {
   /** Internal — set during READ scope-mismatch auto-heal retry (READ_SCOPE_HEAL_V1). */
   _scopeHealRetry?: boolean;
+  /** Internal — one retry after server restart blip (NETWORK_RESTART_RETRY_V1). */
+  _networkRetry?: boolean;
 }
 
 export const SCOPE_HEALED_EVENT = 'mn:scope-healed';
@@ -201,7 +203,12 @@ export async function apiGet<T = unknown>(
       ...(data === undefined ? {} : { data }),
     };
   } catch (e) {
-    return { ok: false, status: 0, error: String(e) };
+    const err = String(e);
+    if (!opts._networkRetry && /failed to fetch|networkerror|load failed/i.test(err)) {
+      await new Promise((resolve) => { setTimeout(resolve, 2000); });
+      return apiGet(endpoint, query, { ...opts, _networkRetry: true });
+    }
+    return { ok: false, status: 0, error: err };
   }
 }
 
