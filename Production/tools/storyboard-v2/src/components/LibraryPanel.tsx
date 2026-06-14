@@ -28,6 +28,10 @@ import { AssetTile } from './ui/AssetTile';
 import { pushToast } from './ui/Toast';
 import type { DragPayload } from '../utils/dragdrop';
 import { openCropper } from '../state/cropper';
+import {
+  ELEMENT_SPEAKERS,
+  libraryItemCanAddToElement,
+} from '../utils/libraryElementPose';
 
 // ----------------------------------------------------------------
 // Types
@@ -57,6 +61,9 @@ interface LibItem {
   has_crop?: boolean;
   /** Audio items from stitch_editor/library (ms). */
   duration_ms?: number;
+  /** Element pose tier / character_master — from cr_library. */
+  speaker?: string;
+  element_pose_contaminated?: boolean;
 }
 
 interface StitchLibraryAudioItem {
@@ -298,6 +305,8 @@ export function LibraryPanel() {
   const [refreshTick, setRefreshTick] = useState(0);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [elementSpeaker, setElementSpeaker] = useState<string>('Lorelai');
+  const [elementAdding, setElementAdding] = useState(false);
 
   // CC-17 — tier state, persisted to localStorage
   const [tier, setTier] = useState<LibraryTier>(loadPersistedTier);
@@ -370,6 +379,43 @@ export function LibraryPanel() {
     window.addEventListener('click', onDocClick);
     return () => window.removeEventListener('click', onDocClick);
   }, [preview]);
+
+  useEffect(() => {
+    if (!preview?.item) return;
+    const sp = (preview.item.speaker ?? '').trim();
+    if (sp && ELEMENT_SPEAKERS.includes(sp as typeof ELEMENT_SPEAKERS[number])) {
+      setElementSpeaker(sp);
+    }
+  }, [preview?.item?.key, preview?.item?.abs_path]);
+
+  const onAddLibraryItemToElement = async () => {
+    if (!preview?.item?.abs_path || elementAdding) return;
+    setElementAdding(true);
+    const result = await pathappPatch<{
+      ok: boolean;
+      pose_rel?: string;
+      element_id?: string;
+    }>(activeScope.value, 'bg_add_element_pose', {
+      speaker: elementSpeaker,
+      abs_path: preview.item.abs_path,
+    });
+    setElementAdding(false);
+    if (!result.ok) {
+      pushToast({
+        kind: 'error',
+        message: result.error ?? 'Could not add pose to Element',
+        source: 'library-add-element-error',
+      });
+      return;
+    }
+    pushToast({
+      kind: 'success',
+      message: `Registered on ${elementSpeaker} Element`
+        + (result.data?.pose_rel ? ` (${result.data.pose_rel})` : ''),
+      source: 'library-add-element',
+    });
+    setRefreshTick((n) => n + 1);
+  };
 
   // mn:library-refresh — fired by CropperModal onSaved after a crop is saved.
   useEffect(() => {
@@ -817,6 +863,34 @@ export function LibraryPanel() {
           })()}
           {preview.item.iteration_notes ? (
             <p class="mn-dim mn-library-preview-notes">{preview.item.iteration_notes}</p>
+          ) : null}
+          {libraryItemCanAddToElement(preview.item) ? (
+            <div class="mn-library-element-add" data-testid="library-add-element-row">
+              <label class="mn-dim" for="library-element-speaker">Element speaker</label>
+              <select
+                id="library-element-speaker"
+                class="mn-library-element-speaker"
+                data-testid="library-element-speaker"
+                value={elementSpeaker}
+                onChange={(e) => setElementSpeaker((e.target as HTMLSelectElement).value)}
+              >
+                {ELEMENT_SPEAKERS.map((sp) => (
+                  <option key={sp} value={sp}>{sp}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                class="mn-btn mn-btn-small mn-library-element-add-btn"
+                data-testid="library-add-element-btn"
+                disabled={elementAdding}
+                onClick={() => { void onAddLibraryItemToElement(); }}
+              >
+                {elementAdding ? 'Registering…' : 'Add to Element'}
+              </button>
+              <p class="mn-dim mn-library-element-add-hint">
+                Registers this library still on the speaker&apos;s Kling Element — then drag it onto any beat char ref.
+              </p>
+            </div>
           ) : null}
         </div>
       ) : null}

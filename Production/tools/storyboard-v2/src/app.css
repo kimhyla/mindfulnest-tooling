@@ -2600,6 +2600,29 @@ canvas.mn-lipsync-watercolor-overlay {
 .mn-crop-btn:hover {
   background: rgba(0, 0, 0, 0.80);
 }
+.mn-library-element-add {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle, #444);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mn-library-element-speaker {
+  width: 100%;
+  padding: 4px 6px;
+  font-size: 13px;
+}
+.mn-library-element-add-btn {
+  align-self: flex-start;
+  background: var(--success-muted, #1a4d2e);
+  border-color: var(--success, #3d9970);
+}
+.mn-library-element-add-hint {
+  font-size: 11px;
+  line-height: 1.35;
+  margin: 0;
+}
 .mn-library-preview {
   position: fixed;
   bottom: 12px;
