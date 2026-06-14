@@ -4302,6 +4302,10 @@ def handle_bg_render_still_clip(h, body: dict) -> None:
             error_message="method must be ken_burns or static_hold",
             retry_safe=False,
         )
+    video_role = (
+        (body.get("scope_target_video") or body.get("scope_video_role") or "intro") or "intro"
+    ).strip()
+    bg = _bg_module()
     try:
         requested_duration = float(body.get("duration") or bg.STILL_INSERT_DEFAULT_DURATION_S)
     except (TypeError, ValueError):
@@ -4310,10 +4314,6 @@ def handle_bg_render_still_clip(h, body: dict) -> None:
         slot_index = int(body.get("slot_index") or 0)
     except (TypeError, ValueError):
         slot_index = 0
-    video_role = (
-        (body.get("scope_target_video") or body.get("scope_video_role") or "intro") or "intro"
-    ).strip()
-    bg = _bg_module()
     production_state = h.app.state.read_state()
 
     import copy

@@ -275,6 +275,21 @@ def test_endpoints_and_bgtab_wiring():
     assert "bg_render_still_clip" in bgtab
 
 
+def test_render_still_clip_handler_initializes_bg_before_use():
+    """Regression: ff53fd7 used bg.STILL_INSERT_DEFAULT_DURATION_S before bg = _bg_module()."""
+    text = (
+        Path(__file__).resolve().parent.parent / "server_handlers" / "background.py"
+    ).read_text(encoding="utf-8")
+    start = text.index("def handle_bg_render_still_clip(")
+    end = text.index("\ndef handle_bg_accept_option", start)
+    block = text[start:end]
+    bg_assign = block.index("bg = _bg_module()")
+    first_bg_use = block.index("bg.")
+    assert bg_assign < first_bg_use, (
+        "handle_bg_render_still_clip must assign bg = _bg_module() before any bg.* access"
+    )
+
+
 def test_normalize_still_insert_approval_status_demotes_legacy_auto_approve():
     beat = {
         "pipeline": "still_insert",
