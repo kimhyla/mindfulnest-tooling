@@ -2480,6 +2480,9 @@ def _migrate_sidecar(sidecar: dict) -> dict:
         for seg in arc.get("segments", {}).values():
             for beat in seg.get("beats", []):
                 humanize_kling_body_parts_on_beat(beat)
+                from beat_extract_policy import heal_beat_kling_o3_prompt_event1_shape
+
+                heal_beat_kling_o3_prompt_event1_shape(beat)
             draft = seg.get("beat_plan_draft") or {}
             for row in draft.get("beats_plan") or []:
                 humanize_kling_body_parts_on_plan_row(row)
@@ -5283,6 +5286,10 @@ def audit_kling_author_enrichment(beats: list[dict]) -> list[str]:
             continue
         if re.search(r"\bLuna\b", prompt) and "Lorelai" not in (b.get("speaker") or ""):
             warnings.append(f"{beat_id}: stale Luna cast leaked into prompt")
+        if re.search(r"\bis a small green sea turtle\b", prompt, re.I):
+            warnings.append(f"{beat_id}: species taxonomy in prompt — use @Image1 only")
+        if re.search(r"\b(?:Tessa|Lorelai|Arlo|Chipper)\s+is\s+a\s+", prompt, re.I):
+            warnings.append(f"{beat_id}: species anatomy block in prompt — Event-1 shape violation")
         if re.search(r"\bChipper\b", prompt) and "Arlo" not in (b.get("speaker") or ""):
             warnings.append(f"{beat_id}: stale Chipper cast leaked into prompt")
         emotion = (b.get("emotion") or "").strip()

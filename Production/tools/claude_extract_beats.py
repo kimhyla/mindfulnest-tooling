@@ -232,11 +232,22 @@ def _few_shot_kling_examples() -> str:
         seg = bg.get_seg_entry(sidecar, 1, "1", "pre")
         beats = seg.get("beats") or []
         examples: list[str] = []
+        # Gold Tessa intro first — Event-1 personality density reference.
+        for beat in beats:
+            if beat.get("beat_id") == "bg_arc1_event1_pre_tessa_o3_canonical":
+                prompt = (beat.get("kling_o3_prompt") or "").strip()
+                if len(prompt) >= 120:
+                    examples.append(
+                        f"--- GOLD Tessa intro ({beat.get('beat_id')}) ---\n{prompt[:2200]}"
+                    )
+                break
         for beat in beats:
             prompt = (beat.get("kling_o3_prompt") or "").strip()
             if len(prompt) < 120:
                 continue
             if beat.get("intro_beat_role"):
+                continue
+            if beat.get("beat_id") == "bg_arc1_event1_pre_tessa_o3_canonical":
                 continue
             examples.append(
                 f"--- beat {beat.get('beat_id')} ({beat.get('speaker')}) ---\n{prompt[:1800]}"
@@ -365,6 +376,8 @@ def claude_author_kling_prompts(
             f"{skill}\n\n"
             f"{kling_staging_policy_block()}\n\n"
             f"Reference camera lock (include verbatim in every prompt):\n{bg.KLING_O3_CAMERA_LOCK}\n\n"
+            "EVENT-1 PROMPT LAW: @Image1 header = speaker + beat label only (NO species anatomy). "
+            "Rich staging paragraph before voice line. Voice line uses 'speaks in a {delivery}: \"…\"'.\n\n"
             "Few-shot approved prompts:\n"
             f"{few_shot}\n\n"
             "Call submit_kling_prompts with one entry per dialogue beat_index in THIS batch only.\n"

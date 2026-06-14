@@ -492,6 +492,14 @@ def postprocess_kling_author_row(plan_row: dict, prompt: str) -> dict[str, str]:
     out = humanize_kling_body_parts(out, speaker=speaker)
     scene_notes = humanize_kling_body_parts(scene_notes, speaker=speaker)
 
+    out = normalize_kling_o3_prompt_event1_quality(
+        out.strip(),
+        speaker=speaker,
+        dialogue=dialogue,
+        emotion=emotion,
+        scene_notes=scene_notes,
+    )
+
     return {
         "kling_o3_prompt": out.strip(),
         "emotion": emotion,
@@ -540,4 +548,105 @@ def kling_staging_policy_block() -> str:
         "- Lemur Peace Prize is intentional humor.\n"
         "- Compress skeleton gags (magnifying glass, cartwheel, hover spin) unless essential.\n"
         "- Arlo explains Magic Hands via dialogue; module spell name optional on handoff.\n"
+        "EVENT-1 PROMPT LAW (mandatory on every kling_o3_prompt):\n"
+        "- @Image1 header: speaker name + beat label ONLY — then Scene from @Image2.\n"
+        "- NEVER describe species anatomy in prose (no 'is a small green sea turtle', "
+        "no shell/fur/paw color blocks). @Image1 + Element lock appearance.\n"
+        "- Rich micro-expression staging paragraph BEFORE the voice line.\n"
+        "- Voice line: '{Name} speaks in a {delivery adjectives}: \"[emotion] dialogue\"'.\n"
+        "- Do NOT add extra waist-up / framing clauses beyond the camera lock block.\n"
     )
+
+
+# Claude-author drift: species taxonomy fights @Image1/Element (Event 2 Tessa regression).
+_SPECIES_TAXONOMY_SENTENCE_RE = re.compile(
+    r"\.\s*(?:Tessa|Lorelai|Arlo|Chipper)\s+is\s+a\s+[^.]+\.\s*",
+    re.I,
+)
+_EXTRA_WAIST_FRAMING_RE = re.compile(
+    r"\s*(?:Tessa|Lorelai|Arlo|Chipper)\s+shown from (?:the )?waist up[^.\n]*\.\s*",
+    re.I,
+)
+_WEAK_SPEAKS_COLON_RE = re.compile(
+    r"\b(Tessa|Lorelai|Arlo|Chipper)\s+speaks:\s*",
+    re.I,
+)
+
+
+def event1_kling_voice_delivery(speaker: str) -> str | None:
+    """Event-1 delivery adjective phrase for canonical voice lines."""
+    import beat_generator as bg
+
+    canon = (speaker or "").strip()
+    if canon == "Tessa":
+        return bg.KLING_O3_TESSA_VOICE_DELIVERY
+    if canon == "Chipper":
+        return bg.KLING_O3_CHIPPER_VOICE_DELIVERY
+    if canon == "Arlo":
+        return (
+            "warm natural conversational pace, clear friendly delivery, "
+            "steady and not slow, not bubbly or hyper"
+        )
+    return None
+
+
+def normalize_kling_o3_prompt_event1_quality(
+    prompt: str,
+    *,
+    speaker: str = "",
+    dialogue: str = "",
+    emotion: str = "",
+    scene_notes: str = "",
+) -> str:
+    """Strip author species taxonomy; enforce Event-1 @Image1-trust prompt shape."""
+    out = (prompt or "").strip()
+    if not out:
+        return out
+
+    while _SPECIES_TAXONOMY_SENTENCE_RE.search(out):
+        out = _SPECIES_TAXONOMY_SENTENCE_RE.sub(". ", out, count=1)
+    out = re.sub(r"\.\s+\.", ".", out)
+    out = _EXTRA_WAIST_FRAMING_RE.sub("\n\n", out)
+
+    delivery = event1_kling_voice_delivery(speaker)
+    if delivery and _WEAK_SPEAKS_COLON_RE.search(out):
+        out = _WEAK_SPEAKS_COLON_RE.sub(
+            rf"\1 speaks in a {delivery}: ",
+            out,
+            count=1,
+        )
+
+    import beat_generator as bg
+
+    beat_stub = {
+        "speaker": speaker,
+        "dialogue_text": dialogue,
+        "emotion": emotion,
+        "scene_notes": scene_notes,
+        "kling_o3_prompt": out,
+    }
+    return bg.prepare_kling_o3_prompt_for_submit(beat_stub, out)
+
+
+def heal_beat_kling_o3_prompt_event1_shape(beat: dict) -> bool:
+    """Migrate-sidecar heal: rewrite stored prompts to Event-1 quality shape."""
+    if not isinstance(beat, dict):
+        return False
+    import beat_generator as bg
+
+    if bg.beat_is_still_insert(beat) or bg.beat_is_canonical_mirror_protected(beat):
+        return False
+    prompt = (beat.get("kling_o3_prompt") or "").strip()
+    if not prompt or len(prompt) < 40:
+        return False
+    new = normalize_kling_o3_prompt_event1_quality(
+        prompt,
+        speaker=str(beat.get("speaker") or ""),
+        dialogue=str(beat.get("dialogue_text") or ""),
+        emotion=str(beat.get("emotion") or ""),
+        scene_notes=str(beat.get("scene_notes") or ""),
+    )
+    if new != prompt:
+        beat["kling_o3_prompt"] = new
+        return True
+    return False

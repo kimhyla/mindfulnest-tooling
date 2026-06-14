@@ -14,6 +14,8 @@ sys.path.insert(0, str(TOOLS))
 import beat_generator as bg  # noqa: E402
 from beat_extract_policy import (  # noqa: E402
     extract_spoken_from_dialogue,
+    heal_beat_kling_o3_prompt_event1_shape,
+    normalize_kling_o3_prompt_event1_quality,
     normalize_plan_row,
     postprocess_kling_author_row,
     postprocess_kling_author_results,
@@ -287,6 +289,49 @@ def test_bgtab_prompt_box_is_kling_o3_prompt():
     assert "kling_o3_prompt: nextText" in text
     assert "mn-bg-kling-prompt-editor" in text
     assert "mn-bg-kling-prompt-body" not in text
+
+
+def test_normalize_strips_species_taxonomy_and_upgrades_voice_delivery():
+    stale = (
+        "@Image1 (Tessa) Tessa — arc 1 event 2 pre, beat 02. Tessa is a small green sea turtle "
+        "with a smooth domed shell, gentle dark eyes, and small front hands. Scene from @Image2.\n\n"
+        "Camera: static locked shot, no zoom, no dolly, no pan, no camera movement, "
+        "stable eye-level medium shot.  Tessa shown from waist up near front of the screen.\n\n"
+        "Tessa holds a soft polite smile, one small hand rising in a gentle wave hello.\n\n"
+        'Tessa speaks: "[curious, wary of danger] Hello...?"\n\n'
+        "Children's illustrated fantasy storybook style, warm golden Everdale light."
+    )
+    out = normalize_kling_o3_prompt_event1_quality(
+        stale,
+        speaker="Tessa",
+        dialogue="Hello ...",
+        emotion="curious, polite",
+        scene_notes="soft smile, gentle wave",
+    )
+    assert "is a small green sea turtle" not in out
+    assert "waist up near front" not in out
+    assert "speaks in a warm gentle conversational pace" in out
+    assert "Silent world except speech" in out
+    assert "Match @Image1 character appearance" in out
+
+
+def test_heal_beat_migrate_rewrites_event2_tessa_prompt():
+    beat = {
+        "beat_id": "bg_arc1_event2_pre_beat_02",
+        "speaker": "Tessa",
+        "dialogue_text": "Hello ...",
+        "emotion": "curious, polite",
+        "scene_notes": "Soft polite smile; one hand rises in a small gentle wave",
+        "kling_o3_prompt": (
+            "@Image1 (Tessa) Tessa — arc 1 event 2 pre, beat 02. Tessa is a small green sea turtle "
+            "with a smooth domed shell. Scene from @Image2.\n\n"
+            'Tessa speaks: "[curious] Hello...?"'
+        ),
+        "pipeline": "kling_o3_omni",
+    }
+    assert heal_beat_kling_o3_prompt_event1_shape(beat) is True
+    assert "is a small green sea turtle" not in beat["kling_o3_prompt"]
+    assert "speaks in a warm gentle conversational pace" in beat["kling_o3_prompt"]
 
 
 def test_update_beat_accepts_kling_o3_prompt():
