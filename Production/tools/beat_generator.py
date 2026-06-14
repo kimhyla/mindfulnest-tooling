@@ -3935,6 +3935,64 @@ def _kling_o3_voice_line_stop_prefixes() -> tuple[str, ...]:
     )
 
 
+_BRACKET_TAG_DIALOGUE_RE = re.compile(
+    r"(?:^|\n)\s*[A-Za-z][\w'.\-]+(?:\s+[A-Za-z][\w'.\-]+)*\s+(?:\[[^\]]+\]\s*)+:\s*",
+    re.MULTILINE,
+)
+
+
+def _collect_spoken_after_colon(after: str) -> str:
+    """Shared tail collector for speaks/says and [tag]: author delivery lines."""
+    after = (after or "").strip()
+    if not after:
+        return ""
+    if after.startswith('"') and after[0] == '"':
+        return ""
+    skip_prefixes = _kling_o3_voice_line_stop_prefixes()
+    parts: list[str] = []
+    for line in after.splitlines():
+        chunk = line.strip()
+        if not chunk:
+            if parts:
+                break
+            continue
+        low = chunk.lower()
+        if any(low.startswith(p) for p in skip_prefixes):
+            break
+        if chunk.startswith("@") or "@image" in low:
+            break
+        if parts and re.search(r"\b(?:says|speaks|continues|adds)\b", chunk, re.I) and ":" in chunk:
+            break
+        if _BRACKET_TAG_DIALOGUE_RE.match(chunk):
+            break
+        parts.append(chunk)
+    spoken_raw = " ".join(parts).strip()
+    if not spoken_raw:
+        return ""
+    spoken_raw = re.split(
+        r"\s+\[(?:Faces|Stage|Expression|Camera|Only|Match|Audio|Children|Show|Rooted)",
+        spoken_raw,
+        maxsplit=1,
+        flags=re.I,
+    )[0].strip()
+    spoken_raw = re.sub(r"^(?:\[[^\]]+\]\s*)+", "", spoken_raw).strip()
+    spoken_raw = re.sub(r"\s*\[[^\]]+\]\s*$", "", spoken_raw).strip()
+    if len(spoken_raw) >= 2 and spoken_raw[0] == spoken_raw[-1] and spoken_raw[0] in "'\"":
+        spoken_raw = spoken_raw[1:-1].strip()
+    return _kling_o3_normalize_spoken(spoken_raw) if spoken_raw else ""
+
+
+def _extract_bracket_tag_dialogue(text: str) -> str:
+    """Pull dialogue from author format: ``Arlo [warm, to camera]: line…``."""
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    m = _BRACKET_TAG_DIALOGUE_RE.search(raw)
+    if not m:
+        return ""
+    return _collect_spoken_after_colon(raw[m.end():])
+
+
 def _extract_unquoted_spoken_after_voice_colon(text: str) -> str:
     """Pull dialogue after speaks/says colon when Kim omits double quotes."""
     raw = (text or "").strip()
@@ -3952,30 +4010,7 @@ def _extract_unquoted_spoken_after_voice_colon(text: str) -> str:
         return ""
     if after.startswith('"') and re.search(r':\s*"', tail, re.I):
         return ""
-    skip_prefixes = _kling_o3_voice_line_stop_prefixes()
-    parts: list[str] = []
-    for line in after.splitlines():
-        chunk = line.strip()
-        if not chunk:
-            if parts:
-                break
-            continue
-        low = chunk.lower()
-        if any(low.startswith(p) for p in skip_prefixes):
-            break
-        if chunk.startswith("@") or "@image" in low:
-            break
-        if parts and re.search(r"\b(?:says|speaks|continues|adds)\b", chunk, re.I) and ":" in chunk:
-            break
-        parts.append(chunk)
-    spoken_raw = " ".join(parts).strip()
-    if not spoken_raw:
-        return ""
-    spoken_raw = re.sub(r"^(?:\[[^\]]+\]\s*)+", "", spoken_raw).strip()
-    spoken_raw = re.sub(r"\s*\[[^\]]+\]\s*$", "", spoken_raw).strip()
-    if len(spoken_raw) >= 2 and spoken_raw[0] == spoken_raw[-1] and spoken_raw[0] in "'\"":
-        spoken_raw = spoken_raw[1:-1].strip()
-    return _kling_o3_normalize_spoken(spoken_raw) if spoken_raw else ""
+    return _collect_spoken_after_colon(after)
 
 
 def _extract_spoken_dialogue_detail(prompt: str) -> tuple[str, str | None]:
@@ -3983,6 +4018,10 @@ def _extract_spoken_dialogue_detail(prompt: str) -> tuple[str, str | None]:
     text = (prompt or "").strip()
     if not text:
         return "", None
+
+    bracket = _extract_bracket_tag_dialogue(text)
+    if bracket:
+        return bracket, None
 
     segments: list[str] = []
     for m in re.finditer(
@@ -4009,7 +4048,7 @@ def _extract_spoken_dialogue_detail(prompt: str) -> tuple[str, str | None]:
         for m in re.finditer(r"\"([^\"]{3,})\"", text):
             segments.append(m.group(1).strip())
     if not segments:
-        for m in re.finditer(r"'([^']{3,})'", text):
+        for m in re.finditer(r"(?<![A-Za-z])'([^']{3,})'(?![A-Za-z])", text):
             segments.append(m.group(1).strip())
 
     if not segments:
@@ -4052,6 +4091,7 @@ def _kling_o3_voice_block_start(pattern: str) -> re.Match[str] | None:
         return None
     for expr in (
         r"<<<voice_\d+>>>",
+        _BRACKET_TAG_DIALOGUE_RE.pattern,
         r"\bspeaks in a\b",
         r"\bspeaks[^:\n]{0,120}:\s*",
         r"\bsays[^:\"]*:\s*",
@@ -4278,11 +4318,17 @@ def prepare_kling_o3_prompt_for_submit(beat: dict, prompt: str | None = None) ->
     return _append_kling_o3_submit_locks(raw, speaker=speaker, spoken=spoken or "")
 
 
-def apply_kling_o3_duration_floor(prompt: str, estimated: int) -> int:
+def apply_kling_o3_duration_floor(
+    prompt: str,
+    estimated: int,
+    *,
+    spoken: str | None = None,
+) -> int:
     """Validated-recipe guard: long multi-chunk dialogue must not bucket to 5s."""
-    spoken = _normalize_spoken_for_duration(
-        extract_spoken_dialogue_from_kling_prompt(prompt) or "",
-    )
+    if not spoken:
+        spoken = _normalize_spoken_for_duration(
+            extract_spoken_dialogue_from_kling_prompt(prompt) or "",
+        )
     word_count = len(re.findall(r"\S+", spoken)) if spoken else 0
     pause_markers = len(re.findall(r"\[\s*(?:pause|break|silence)\s*\]", spoken, re.I))
     pause_markers += len(re.findall(r"\.{2,}|…+", spoken))
@@ -4377,9 +4423,14 @@ def estimate_kling_o3_duration_from_prompt(prompt: str) -> int:
     )
 
 
-def _cap_kling_o3_auto_duration(prompt: str, duration: int) -> int:
+def _cap_kling_o3_auto_duration(
+    prompt: str,
+    duration: int,
+    *,
+    beat: dict | None = None,
+) -> int:
     """Keep concise single-chunk dialogue out of 10–12s buckets."""
-    spoken = _spoken_for_duration_estimate(prompt)
+    spoken = _spoken_for_duration_estimate(prompt, beat=beat)
     word_count = len(re.findall(r"\S+", spoken)) if spoken else 0
     if word_count and word_count <= _KLING_O3_AUTO_CAP_MAX_WORDS:
         return min(duration, 8)
@@ -4395,9 +4446,14 @@ def resolve_kling_o3_submit_duration(beat: dict, prompt: str) -> int:
             locked = 0
         if KLING_O3_MIN_DURATION <= locked <= KLING_O3_MAX_DURATION:
             return locked
-    estimated = estimate_kling_o3_duration_from_prompt(prompt)
-    estimated = apply_kling_o3_duration_floor(prompt, estimated)
-    return _cap_kling_o3_auto_duration(prompt, estimated)
+    spoken = _spoken_for_duration_estimate(prompt, beat=beat)
+    staging = _kling_o3_has_pre_speech_staging(prompt)
+    estimated = estimate_kling_o3_duration_from_spoken(
+        spoken,
+        has_pre_speech_staging=staging,
+    ) if spoken else KLING_O3_MIN_DURATION
+    estimated = apply_kling_o3_duration_floor(prompt, estimated, spoken=spoken)
+    return _cap_kling_o3_auto_duration(prompt, estimated, beat=beat)
 
 
 def validate_kling_o3_beat_for_submit(
@@ -4518,7 +4574,7 @@ def validate_kling_o3_beat_for_submit(
             })
 
     duration = resolve_kling_o3_submit_duration(beat, prompt)
-    spoken = _spoken_for_duration_estimate(prompt)
+    spoken = _spoken_for_duration_estimate(prompt, beat=beat)
     if spoken:
         staging = _kling_o3_has_pre_speech_staging(prompt)
         unsnapped = estimate_kling_o3_seconds_unsnapped(
@@ -4943,11 +4999,22 @@ def _normalize_spoken_for_duration(spoken: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-def _spoken_for_duration_estimate(prompt: str) -> str:
-    """Duration validation uses quoted dialogue from the prompt box only."""
-    return _normalize_spoken_for_duration(
-        extract_spoken_dialogue_from_kling_prompt(prompt) or "",
-    )
+def _spoken_for_duration_estimate(prompt: str, *, beat: dict | None = None) -> str:
+    """Best spoken text for duration math — longest trustworthy source wins."""
+    candidates: list[str] = []
+    extracted = extract_spoken_dialogue_from_kling_prompt(prompt) or ""
+    if extracted:
+        candidates.append(_normalize_spoken_for_duration(extracted))
+    bracket = _extract_bracket_tag_dialogue(prompt)
+    if bracket:
+        candidates.append(_normalize_spoken_for_duration(bracket))
+    if beat:
+        beat_spoken = _spoken_from_beat_dialogue(beat)
+        if beat_spoken:
+            candidates.append(_normalize_spoken_for_duration(beat_spoken))
+    if not candidates:
+        return ""
+    return max(candidates, key=lambda s: len(re.findall(r"\S+", s)))
 
 
 def apply_live_kling_o3_prompts(sidecar: dict, beat_prompts: dict) -> int:
