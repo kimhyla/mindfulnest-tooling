@@ -13,7 +13,7 @@ Tessa [curious, polite]: "Hello ..." [soft smile, gentle wave]
 
 Lorelai [surprised, bright]: "Oh! Hi. Nice to finally see someone else around here! I'm Lorelai. I'm doing research for my college. Is this the ancient temple of Everdale?" [holds rolled map up, glances map then camera, rooted in place]
 
-Tessa [thoughtful, inviting]: "I think so ... look at this ..." [small nod, gestures toward MindfulNest with one flipper, rooted in place]
+Tessa [thoughtful, inviting]: "I think so ... look at this ..." [small nod, gestures toward MindfulNest with one hand, rooted in place]
 
 Lorelai [awe, breathless]: "Oh my goodness.... it's ... it's REAL!" [eyes wide, mouth open, rooted in place]
 

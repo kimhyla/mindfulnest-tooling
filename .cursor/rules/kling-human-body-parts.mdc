@@ -1,0 +1,28 @@
+# Kling O3 — human gesture vocabulary
+
+## Rule
+
+All **Kling O3 staging and gesture language** uses **human body-part names** (`hand`, `arm`) — not species-specific terms (`flipper`, `paw`, `talon`).
+
+**Keep** parts humans lack an equivalent for: `tail`, `shell`, `horns`, `beak` (on birds), `fur`, `feathers`, etc.
+
+**Exception:** legacy **bird / Chipper** beats must **not** say `hand` — wing vocabulary only (see `CHIPPER_VIDEO_RELIABILITY_SPEC_v1.md`).
+
+## Why
+
+Kling animates micro-gestures from text; human terms produce reliable waves/shrugs/points. `@Image1` Element still locks species appearance.
+
+## Enforcement (code — do not rely on prompts alone)
+
+| Layer | Location |
+|---|---|
+| Plan normalize | `beat_extract_policy.humanize_kling_body_parts()` in `normalize_plan_row` |
+| Author postprocess | `postprocess_kling_author_row` |
+| Approve heal | `heal_segment_dialogue_fields` |
+| Submit gate | `prepare_kling_o3_prompt_for_submit` |
+| Sidecar migrate v3 | `_migrate_sidecar` → heals existing beats without re-approve |
+
+## Authoring
+
+- Planner SKILL + EVENT2 gold: hand not flipper/paw
+- `kling_staging_policy_block()`: hand flutter, not wing-flutter (except birds)

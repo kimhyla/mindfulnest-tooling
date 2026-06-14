@@ -26,6 +26,77 @@ _CAST_SPEAKER_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bowl archaeolog", re.I), "lemur archaeolog"),
 )
 
+# Bird speakers keep wing vocabulary — human "hand" terms cause Kling hand hallucination.
+_BIRD_KLING_SPEAKERS = frozenset(
+    {"chipper", "guide bird", "assistant bird", "pip"},
+)
+
+# Gestural body-part terms → human animation vocabulary for Kling O3 (flipper/paw/talon).
+# Non-human-only parts (tail, shell, beak, horns, ears, fur, wings on birds) are untouched.
+_KLING_GESTURE_BODY_PART_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bflippers\b", re.I), "hands"),
+    (re.compile(r"\bflipper\b", re.I), "hand"),
+    (re.compile(r"\bpaws\b", re.I), "hands"),
+    (re.compile(r"\bpaw\b", re.I), "hand"),
+    (re.compile(r"\btalons\b", re.I), "hands"),
+    (re.compile(r"\btalon\b", re.I), "hand"),
+    (re.compile(r"\bwing-flutter\b", re.I), "hand flutter"),
+    (re.compile(r"\bwing flutter\b", re.I), "hand flutter"),
+)
+
+
+def humanize_kling_body_parts(text: str, *, speaker: str = "") -> str:
+    """Rewrite species-specific gesture terms to human body-part names for Kling staging.
+
+    Kling animates micro-gestures more reliably with hand/arm language. @Image1 still
+    locks species appearance. Bird characters (Chipper lineage) skip this — their
+    prompts must not say "hand" (see CHIPPER_VIDEO_RELIABILITY_SPEC).
+    """
+    if not text or not str(text).strip():
+        return text
+    speaker_key = (speaker or "").strip().lower()
+    if speaker_key in _BIRD_KLING_SPEAKERS:
+        return text
+    out = str(text)
+    for pattern, repl in _KLING_GESTURE_BODY_PART_REPLACEMENTS:
+        out = pattern.sub(repl, out)
+    return out
+
+
+def humanize_kling_body_parts_on_beat(beat: dict) -> bool:
+    """Apply gesture humanization to sidecar beat text fields. Returns True if any field changed."""
+    if not isinstance(beat, dict):
+        return False
+    speaker = str(beat.get("speaker") or "")
+    changed = False
+    for field in ("dialogue_text", "scene_notes", "kling_o3_prompt"):
+        raw = beat.get(field)
+        if raw in (None, ""):
+            continue
+        new_val = humanize_kling_body_parts(str(raw), speaker=speaker)
+        if new_val != raw:
+            beat[field] = new_val
+            changed = True
+    return changed
+
+
+def humanize_kling_body_parts_on_plan_row(row: dict) -> bool:
+    """Humanize gesture vocabulary on Beat Plan draft rows."""
+    if not isinstance(row, dict):
+        return False
+    speaker = str(row.get("speaker") or "")
+    changed = False
+    for field in ("dialogue_text", "scene_notes", "skeleton_quote"):
+        raw = row.get(field)
+        if raw in (None, ""):
+            continue
+        new_val = humanize_kling_body_parts(str(raw), speaker=speaker)
+        if new_val != raw:
+            row[field] = new_val
+            changed = True
+    return changed
+
+
 # Staging phrases to strip or flag on dialogue beats (Kling O3 solo medium-shot).
 _BANNED_STAGING_RE = re.compile(
     r"\b("
@@ -235,6 +306,9 @@ def normalize_plan_row(row: dict, *, beat_index: int) -> tuple[dict, list[str]]:
         dialogue = re.sub(r"\bthis child\b", "{childName}", dialogue, flags=re.I)
         warnings.append("replaced 'this child' with {childName}")
 
+    dialogue = humanize_kling_body_parts(dialogue, speaker=speaker)
+    scene_notes = humanize_kling_body_parts(scene_notes, speaker=speaker)
+
     out = {
         "beat_index": beat_index,
         "beat_type": beat_type,
@@ -415,6 +489,9 @@ def postprocess_kling_author_row(plan_row: dict, prompt: str) -> dict[str, str]:
         if enriched != inner:
             out = out[: vm.start(2)] + enriched + out[vm.end(2) :]
 
+    out = humanize_kling_body_parts(out, speaker=speaker)
+    scene_notes = humanize_kling_body_parts(scene_notes, speaker=speaker)
+
     return {
         "kling_o3_prompt": out.strip(),
         "emotion": emotion,
@@ -452,7 +529,9 @@ def _kling_o3_normalize_spoken(spoken: str) -> str:
 def kling_staging_policy_block() -> str:
     return (
         "KLING O3 STAGING (mandatory for scene_notes on dialogue beats):\n"
-        "- Static medium shot; micro-expression only (eyes widen, smile, wing-flutter, shrug).\n"
+        "- Static medium shot; micro-expression only (eyes widen, smile, hand flutter, shrug).\n"
+        "- Gesture vocabulary: use human body-part names (hand, arm) — not flipper/paw/talon.\n"
+        "- Keep non-human-only parts as-is (tail, shell, horns, beak on birds, etc.).\n"
         "- NO: camera zoom/cut/pan, walks across room, enters frame, second character on screen.\n"
         "- One speaker per beat; back-and-forth = separate beats.\n"
         "- beat_type stage_still for inscription/runestone/MindfulNest close-ups (GPT stills).\n"

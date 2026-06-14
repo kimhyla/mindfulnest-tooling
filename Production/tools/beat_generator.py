@@ -2450,6 +2450,32 @@ def _migrate_sidecar(sidecar: dict) -> dict:
                 normalize_still_insert_approval_status(beat)
     if sidecar.get("schema_version", 1) < 2:
         sidecar["schema_version"] = 2
+    if sidecar.get("schema_version", 1) < 3:
+        from beat_extract_policy import humanize_kling_body_parts_on_beat
+
+        healed = 0
+        for arc in sidecar.get("arcs", {}).values():
+            for seg in arc.get("segments", {}).values():
+                for beat in seg.get("beats", []):
+                    if humanize_kling_body_parts_on_beat(beat):
+                        healed += 1
+        sidecar["schema_version"] = 3
+        if healed:
+            sidecar.setdefault("migration_notes", []).append(
+                f"v3: humanized Kling gesture body parts on {healed} beat(s)",
+            )
+    from beat_extract_policy import (
+        humanize_kling_body_parts_on_beat,
+        humanize_kling_body_parts_on_plan_row,
+    )
+
+    for arc in sidecar.get("arcs", {}).values():
+        for seg in arc.get("segments", {}).values():
+            for beat in seg.get("beats", []):
+                humanize_kling_body_parts_on_beat(beat)
+            draft = seg.get("beat_plan_draft") or {}
+            for row in draft.get("beats_plan") or []:
+                humanize_kling_body_parts_on_plan_row(row)
     migration_warnings = []
     for arc_key, arc in sidecar.get("arcs", {}).items():
         for seg_key, seg in arc.get("segments", {}).items():
@@ -2835,24 +2861,29 @@ def extract_still_insert_tts(beat: dict) -> dict | None:
     """Parse spoken line for still-insert TTS — quoted dialogue only, not scene setup."""
     from beat_extract_policy import extract_spoken_from_dialogue, infer_speaker_from_dialogue
 
+    prompt = (beat.get("kling_o3_prompt") or "").strip()
     dialogue = (beat.get("dialogue_text") or "").strip()
-    if not dialogue:
-        prompt = (beat.get("kling_o3_prompt") or "").strip()
-        if prompt.startswith("STILL INSERT"):
-            dialogue = (beat.get("scene_notes") or "").strip() or prompt
-        else:
-            dialogue = prompt
-    if not dialogue:
+
+    # Prompt-box is law: the editable textarea drives still-insert TTS when present.
+    if prompt and not prompt.startswith("STILL INSERT"):
+        source = prompt
+    elif dialogue:
+        source = dialogue
+    elif prompt:
+        source = (beat.get("scene_notes") or "").strip() or prompt
+    else:
+        source = ""
+    if not source:
         return None
 
-    speaker, spoken = extract_spoken_from_dialogue(dialogue)
-    emo_only = re.match(r"^(?:\[[^\]]+\]\s*)+:\s*(.+)$", (spoken or dialogue).strip(), re.DOTALL)
+    speaker, spoken = extract_spoken_from_dialogue(source)
+    emo_only = re.match(r"^(?:\[[^\]]+\]\s*)+:\s*(.+)$", (spoken or source).strip(), re.DOTALL)
     if emo_only:
         spoken = emo_only.group(1).strip()
     if not spoken:
         return None
     if not speaker or speaker in ("Character", "[Stage Direction]"):
-        speaker = infer_speaker_from_dialogue(dialogue) or (beat.get("speaker") or "").strip()
+        speaker = infer_speaker_from_dialogue(source) or (beat.get("speaker") or "").strip()
     speaker = _canon_speaker(speaker) or speaker
     if not speaker or "stage direction" in speaker.lower():
         return None
@@ -3878,6 +3909,9 @@ def prepare_kling_o3_prompt_for_submit(beat: dict, prompt: str | None = None) ->
         return ""
 
     speaker = beat.get("speaker") or "Character"
+    from beat_extract_policy import humanize_kling_body_parts
+
+    raw = humanize_kling_body_parts(raw, speaker=speaker)
     spoken = extract_spoken_dialogue_from_kling_prompt(raw)
     return _append_kling_o3_submit_locks(raw, speaker=speaker, spoken=spoken or "")
 
@@ -5231,7 +5265,11 @@ def audit_kling_author_enrichment(beats: list[dict]) -> list[str]:
 
 def heal_segment_dialogue_fields(beats: list[dict]) -> int:
     """Repair corrupted dialogue_text / speaker / emotion on populated beats."""
-    from beat_extract_policy import _strip_bracket_emotion, repair_corrupted_plan_dialogue
+    from beat_extract_policy import (
+        _strip_bracket_emotion,
+        humanize_kling_body_parts_on_beat,
+        repair_corrupted_plan_dialogue,
+    )
 
     fixed = 0
     for beat in beats or []:
@@ -5250,6 +5288,8 @@ def heal_segment_dialogue_fields(beats: list[dict]) -> int:
             changed = True
         if new_emotion != beat.get("emotion"):
             beat["emotion"] = new_emotion
+            changed = True
+        if humanize_kling_body_parts_on_beat(beat):
             changed = True
         if changed:
             fixed += 1

@@ -39,3 +39,5 @@ Never Luna or Chipper in prompts.
 ## Staging rules
 
 Same as planner: no camera moves, no locomotion, no second character in frame.
+
+**Body-part vocabulary:** Kling micro-gestures use **human names** (`hand`, `arm`) — not `flipper`, `paw`, or `talon`. `@Image1` locks species appearance. Keep non-human-only parts (`tail`, `shell`, `horns`) unchanged. Do not write "hand" for legacy bird/Chipper beats.

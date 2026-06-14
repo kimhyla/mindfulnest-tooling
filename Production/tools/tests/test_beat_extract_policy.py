@@ -11,6 +11,8 @@ from beat_extract_policy import (  # noqa: E402
     apply_cast_text,
     canon_plan_speaker,
     classify_beat_type,
+    humanize_kling_body_parts,
+    humanize_kling_body_parts_on_beat,
     normalize_plan_row,
     postprocess_beats_plan,
     postprocess_plan_result,
@@ -122,3 +124,54 @@ def test_postprocess_plan_result_includes_staging_warnings():
     assert result["cast_policy"] == "Lorelai+Arlo (Luna/Chipper retired)"
     assert "staging_warnings" in result
     assert result["gold_reference_used"] is True
+
+
+def test_humanize_kling_body_parts_flipper_and_paw():
+    assert "one hand" in humanize_kling_body_parts(
+        "one flipper rises in a gentle wave", speaker="Tessa",
+    )
+    assert "one hand" in humanize_kling_body_parts(
+        "one paw holds a rolled map", speaker="Lorelai",
+    )
+    assert "hands" in humanize_kling_body_parts(
+        "Match @Image1 character appearance, proportions, shell, flippers, and facial expression",
+        speaker="Tessa",
+    )
+
+
+def test_humanize_kling_body_parts_keeps_tail_and_shell():
+    text = "small sheepish shrug of one hand on her shell, tail still"
+    out = humanize_kling_body_parts(
+        "small sheepish shrug of one flipper on her shell, tail still",
+        speaker="Tessa",
+    )
+    assert out == text
+
+
+def test_humanize_kling_body_parts_skips_bird_speakers():
+    raw = "subtle wing-flutter at chest level"
+    assert humanize_kling_body_parts(raw, speaker="Chipper") == raw
+
+
+def test_normalize_plan_row_humanizes_scene_notes():
+    row, _ = normalize_plan_row({
+        "speaker": "Tessa",
+        "dialogue_text": "Hello",
+        "emotion": "polite",
+        "scene_notes": "one flipper rises in a small gentle wave",
+        "beat_type": "dialogue",
+    }, beat_index=2)
+    assert "flipper" not in row["scene_notes"].lower()
+    assert "hand" in row["scene_notes"].lower()
+
+
+def test_humanize_kling_body_parts_on_beat_sidecar_fields():
+    beat = {
+        "speaker": "Tessa",
+        "dialogue_text": "[one flipper wave]",
+        "scene_notes": "one flipper rises",
+        "kling_o3_prompt": "small front flippers and one flipper rising",
+    }
+    assert humanize_kling_body_parts_on_beat(beat) is True
+    assert "flipper" not in beat["kling_o3_prompt"].lower()
+    assert humanize_kling_body_parts_on_beat(beat) is False

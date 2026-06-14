@@ -75,6 +75,21 @@ def test_extract_still_insert_tts_from_kling_o3_prompt_when_dialogue_empty():
     }
 
 
+def test_extract_still_insert_tts_prefers_kling_prompt_over_stale_dialogue():
+    beat = {
+        "dialogue_text": "Oooh . Its got to be around here somewhere!",
+        "kling_o3_prompt": "[worried]: Hmmm .... Its gotta be around here somewhere!",
+        "speaker": "Lorelai",
+        "pipeline": "still_insert",
+        "still_tts_source_text": "Oooh . Its got to be around here somewhere!",
+    }
+    parsed = bg.extract_still_insert_tts(beat)
+    assert parsed is not None
+    assert parsed["text"].startswith("Hmmm")
+    assert bg.sync_beat_dialogue_from_kling_prompt(beat) is True
+    assert beat["dialogue_text"].startswith("Hmmm")
+
+
 def test_sync_beat_dialogue_from_kling_prompt_still_insert():
     beat = {
         "pipeline": "still_insert",
