@@ -16,5 +16,7 @@ python3 -m pytest \
   Production/tools/tests/test_intro_final_pair_fade.py \
   Production/tools/tests/test_stitch_cache_and_boundaries.py \
   Production/tools/tests/test_stitch_canonical_job.py \
+  Production/tools/tests/test_beat_ref_drop_lock.py \
+  Production/tools/tests/test_library_sources_immutable.py \
   -q
 echo "[o3-intro-contract] all gates passed"

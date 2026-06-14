@@ -10,6 +10,18 @@ Dialogue beats with an **active Element + create-voice** must submit with:
 
 Mismatch → generic Kling TTS even when logs show correct `element_id`.
 
+## Char ref gate (locked library drops)
+
+| Action | Heal behavior |
+|---|---|
+| User drops library tile on Char ref | **Validate only** — `sync_element_char_ref_status(..., heal_mismatch=False)` |
+| O3 Generate / submit | **Validate only** — same; mismatch → `ELEMENT_VISUAL_MISMATCH` toast |
+| Sidecar migrate / session-state load | May **redirect sidecar pointer** to Element pose path only |
+
+**NEVER** `shutil.copy2` (or any write) into `Event_*/library/images/sources/` from heal/sync/align code. Overwriting library tiles replaced neutral uploads with Element pose bytes (2026-06-14 regression). Library inventory bytes are immutable; sidecar `reference_image.abs_path` may point at Element poses under `Production/<Char>/poses/`.
+
+Regression: `Production/tools/tests/test_library_sources_immutable.py`, `test_beat_ref_drop_lock.py`.
+
 ## Enforcement
 
 | Layer | Location |
