@@ -37,9 +37,8 @@ _DELIVERY_BY_SPEAKER: dict[str, str] = {
 
 
 def _voice_line_display_name(speaker: str, element_name: str | None) -> str:
+    """Must match element_list element_name so Kling binds Element voice (not generic TTS)."""
     canon = (speaker or "").strip()
-    if canon in ("Lorelai", "Laurel"):
-        return "Laurel"
     return (element_name or canon or "Character").strip()
 
 

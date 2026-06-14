@@ -363,7 +363,7 @@ def test_audit_flags_identity_footer_drift():
         "kling_o3_prompt": (
             "@Image1 (Lorelai) Lorelai — Discovery. Scene from @Image2.\n\n"
             "Match @Image1 character appearance, proportions, paws, and facial expression exactly.\n\n"
-            'Laurel speaks in a warm excited conversational pace: "Oh my goodness!"'
+            'Lorelai speaks in a warm excited conversational pace: "Oh my goodness!"'
         ),
         "pipeline": "kling_o3_omni",
     }]
@@ -385,7 +385,7 @@ def test_normalize_upgrades_lorelai_voice_delivery_to_laurel_slower():
         scene_notes="eyes wide, mouth open",
     )
     assert "Lorelai says:" not in out
-    assert "Laurel speaks in a warm excited conversational pace" in out
+    assert "Lorelai speaks in a warm excited conversational pace" in out
     assert "slower steady rhythm" in out
     assert "not rushed or frantic" in out
 
@@ -400,7 +400,7 @@ def test_submit_locks_append_lighting_when_image1_and_image2():
     raw = (
         "@Image1 (Lorelai) Lorelai — Discovery. Scene from @Image2.\n\n"
         "Camera: static locked shot.\n\n"
-        'Laurel speaks in a warm excited conversational pace: "Hello!"'
+        'Lorelai speaks in a warm excited conversational pace: "Hello!"'
     )
     out = bg.prepare_kling_o3_prompt_for_submit({"speaker": "Lorelai"}, raw)
     assert bg.KLING_O3_LIGHTING_LOCK in out

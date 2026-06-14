@@ -592,10 +592,10 @@ _WEAK_SAYS_COLON_RE = re.compile(
 
 
 def _event1_voice_line_upgrade(speaker: str, delivery: str) -> str:
-    """Canonical weak-line upgrade prefix — Laurel not Lorelai for TTS pronunciation."""
+    """Canonical weak-line upgrade prefix — must match element_name for Kling bind."""
     canon = (speaker or "").strip()
     if canon in ("Lorelai", "Laurel"):
-        return f"Laurel speaks in a {delivery}: "
+        return f"Lorelai speaks in a {delivery}: "
     return f"{canon} speaks in a {delivery}: "
 
 

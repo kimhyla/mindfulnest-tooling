@@ -529,29 +529,21 @@ def test_add_element_pose_appends_refer_and_reregisters(tmp_path: Path, monkeypa
 
     captured: dict = {}
 
-    def fake_refresh(char_name, cfg, wavespeed_key, elevenlabs_key=None):
+    def fake_register(char_name, cfg, voice_id, wavespeed_key):
         captured["char_name"] = char_name
+        captured["voice_id"] = voice_id
         captured["refer_images"] = list(cfg.get("refer_images") or [])
-        updated = dict(cfg)
-        updated["kling_voice_id"] = "voice_new_456"
-        updated["element_id"] = "new_element_999"
-        return updated
+        return "new_element_999", "pred-1"
 
-    monkeypatch.setattr(
-        "tools.kling_element_voice.refresh_voice_and_register_element",
-        fake_refresh,
-    )
+    monkeypatch.setattr("tools.kling_element_voice.register_kling_element", fake_register)
 
     result = reg.add_element_pose("Arlo", source, "ws-key-test")
     assert result["ok"] is True
     assert result["element_id"] == "new_element_999"
-    assert result["kling_voice_id"] == "voice_new_456"
-    assert result.get("voice_rebound") is True
-    assert captured["char_name"] == "Arlo"
+    assert captured["voice_id"] == "voice123"
     assert any("custom_pose" in r for r in captured["refer_images"])
     saved = json.loads((tmp_path / "character_subjects.json").read_text(encoding="utf-8"))
     assert saved["characters"]["Arlo"]["element_id"] == "new_element_999"
-    assert saved["characters"]["Arlo"]["kling_voice_id"] == "voice_new_456"
     assert Path(result["pose_abs_path"]).is_file()
 
 
@@ -588,24 +580,19 @@ def test_add_element_pose_trims_refer_images_at_kling_cap(tmp_path: Path, monkey
 
     captured: dict = {}
 
-    def fake_refresh(char_name, cfg, wavespeed_key, elevenlabs_key=None):
+    def fake_register(char_name, cfg, voice_id, wavespeed_key):
         captured["refer_images"] = list(cfg.get("refer_images") or [])
-        updated = dict(cfg)
-        updated["kling_voice_id"] = "voice_new"
-        updated["element_id"] = "new_element"
-        return updated
+        return "new_element", "pred-1"
 
-    monkeypatch.setattr(
-        "tools.kling_element_voice.refresh_voice_and_register_element",
-        fake_refresh,
-    )
+    monkeypatch.setattr("tools.kling_element_voice.register_kling_element", fake_register)
 
     result = reg.add_element_pose("Tessa", source, "ws-key")
     assert result["ok"] is True
     refs = captured["refer_images"]
     assert len(refs) == 3
     assert any("new_pose" in r for r in refs)
-    assert "Tessa/poses/tessa_happy_ref.png" not in refs
+    assert "Tessa/poses/tessa_happy_ref.png" in refs  # frontal_image pinned
+    assert "Tessa/poses/tessa_sad_ref.png" not in refs
 
 
 def test_register_kling_element_uses_registry_prod_root(tmp_path: Path, monkeypatch):

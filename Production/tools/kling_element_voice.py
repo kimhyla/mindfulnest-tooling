@@ -425,7 +425,7 @@ def register_kling_element(
 
     refer_rels = trim_refer_images_for_element(
         [str(r) for r in (cfg.get("refer_images") or [])],
-        pin=pinned_refer_paths(cfg),
+        pin=pinned_refer_paths(cfg, char_name),
     )
     refer_paths = [root / p for p in refer_rels]
     if not frontal_path.is_file():

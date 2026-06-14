@@ -5151,7 +5151,7 @@ def _kling_o3_voice_block(speaker: str, spoken: str) -> str:
 
     if canon in ("Lorelai", "Laurel"):
         return (
-            f'Laurel speaks in a {KLING_O3_LORELAI_VOICE_DELIVERY}: "{spoken}"'
+            f'Lorelai speaks in a {KLING_O3_LORELAI_VOICE_DELIVERY}: "{spoken}"'
         )
 
     return f'@Image1 <<<voice_1>>> speaks clearly at a natural pace: "{spoken}"'

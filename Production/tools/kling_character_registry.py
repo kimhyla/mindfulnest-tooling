@@ -162,10 +162,14 @@ def get_element_list_entry(speaker: str) -> dict | None:
     eid = entry.get("element_id")
     if not eid:
         return None
-    return {
+    out: dict[str, str] = {
         "element_id": str(eid),
         "element_name": entry.get("element_name") or speaker,
     }
+    vid = entry.get("kling_voice_id")
+    if vid:
+        out["voice_id"] = str(vid)
+    return out
 
 
 def get_bound_voice_id(speaker: str) -> str | None:
@@ -268,18 +272,57 @@ def assign_voice(character: str, voice_id: str, voice_label: str | None = None) 
 
 MAX_ELEMENT_REFER_IMAGES = 3
 
+# Identity anchors that must stay in refer_images when Add to Element trims to 3.
+CHARACTER_REFER_ANCHORS: dict[str, tuple[str, ...]] = {
+    "Lorelai": (
+        "Lorelai/poses/lorelai_explaining.png",
+        "Lorelai/poses/lorelai_shocked.png",
+    ),
+}
 
-def pinned_refer_paths(cfg: dict) -> set[str]:
+
+def refer_anchor_paths(char_key: str, cfg: dict | None = None) -> list[str]:
+    """On-disk canonical refer paths for a character (never evicted on trim)."""
+    cfg = cfg or {}
+    root = prod_root()
+    out: list[str] = []
+    seen: set[str] = set()
+    for rel in cfg.get("refer_pins") or []:
+        rel_s = str(rel)
+        if rel_s not in seen and (root / rel_s).is_file():
+            seen.add(rel_s)
+            out.append(rel_s)
+    for rel in CHARACTER_REFER_ANCHORS.get(char_key, ()):
+        if rel not in seen and (root / rel).is_file():
+            seen.add(rel)
+            out.append(rel)
+    frontal = str(cfg.get("frontal_image") or "")
+    if frontal and frontal not in seen and (root / frontal).is_file():
+        out.insert(0, frontal)
+    return out
+
+
+def pinned_refer_paths(cfg: dict, char_key: str = "") -> set[str]:
     """Refer paths that must survive Kling's 3-pose cap (canonical identity anchors)."""
     pins: set[str] = set()
-    frontal = str(cfg.get("frontal_image") or "")
-    if frontal and "canonical" in frontal.lower():
-        pins.add(frontal)
+    key = char_key or ""
+    for rel in refer_anchor_paths(key, cfg):
+        pins.add(rel)
     for rel in cfg.get("refer_images") or []:
         rel_s = str(rel)
-        if "canonical" in rel_s.lower():
+        low = rel_s.lower()
+        if "canonical" in low or "_explaining" in low or "_shocked" in low:
             pins.add(rel_s)
     return pins
+
+
+def ensure_refer_anchors(char_key: str, refer: list[str], cfg: dict) -> list[str]:
+    """Re-insert canonical emotion refer poses before trim (Add to Element safety)."""
+    out = [str(r) for r in refer if r]
+    for rel in refer_anchor_paths(char_key, cfg):
+        if rel not in out:
+            out.insert(0, rel)
+    return out
 
 
 def trim_refer_images_for_element(
@@ -331,13 +374,12 @@ def add_element_pose(
     source_abs_path: str | Path,
     wavespeed_key: str,
 ) -> dict[str, Any]:
-    """Copy a pose PNG into Production/<Char>/poses and re-bind voice + Element.
+    """Copy a pose PNG into Production/<Char>/poses and re-register Element.
 
-    Runs fresh create-voice + Element register so the new Element reliably
-    inherits the locked ElevenLabs clone (pose-only re-register with a stale
-    voice_id often yields generic/male TTS on O3).
+    Preserves the locked kling_voice_id (ElevenLabs clone) but re-uploads Element
+    with canonical refer anchors pinned so identity + voice bind stay intact.
     """
-    from tools.kling_element_voice import refresh_voice_and_register_element
+    from tools.kling_element_voice import register_kling_element
 
     source = Path(source_abs_path).resolve()
     if not source.is_file():
@@ -366,27 +408,22 @@ def add_element_pose(
     dest, rel_pose = _unique_pose_dest(char_key, source)
     shutil.copy2(source, dest)
 
-    refer = [str(r) for r in (cfg.get("refer_images") or [])]
+    refer = ensure_refer_anchors(char_key, [str(r) for r in (cfg.get("refer_images") or [])], cfg)
     if rel_pose not in refer:
         refer.append(rel_pose)
-    pin_refs = pinned_refer_paths(cfg)
+    pin_refs = pinned_refer_paths(cfg, char_key)
     cfg["refer_images"] = trim_refer_images_for_element(
         refer, keep=rel_pose, pin=pin_refs,
     )
     if not cfg.get("frontal_image"):
         cfg["frontal_image"] = rel_pose
 
-    try:
-        from credentials import load_credentials  # type: ignore
-    except ImportError:
-        from tools.credentials_lib.credentials import load_credentials  # type: ignore
-    creds = load_credentials()
-    elevenlabs_key = creds.get("elevenlabs_key") or creds.get("elevenlabs")
-
-    cfg = refresh_voice_and_register_element(
-        char_key, cfg, wavespeed_key, elevenlabs_key,
+    element_id, _prediction_id = register_kling_element(
+        char_key, cfg, str(voice_id), wavespeed_key,
     )
-    element_id = str(cfg.get("element_id") or "")
+    cfg["element_id"] = element_id
+    cfg["status"] = "active"
+    element_id = str(element_id)
     chars[char_key] = cfg
     data["characters"] = chars
     save_character_subjects(data)
@@ -398,7 +435,7 @@ def add_element_pose(
         "element_id": element_id,
         "kling_voice_id": cfg.get("kling_voice_id"),
         "character": char_key,
-        "voice_rebound": True,
+        "refer_images": list(cfg.get("refer_images") or []),
     }
 
 

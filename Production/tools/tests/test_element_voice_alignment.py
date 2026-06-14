@@ -103,8 +103,29 @@ def test_upgrade_element_bound_voice_prompt_fixes_author_verb_line(monkeypatch):
     )
     assert changed is True
     assert "EXCITING THING" in spoken
-    assert "Laurel speaks in a warm excited conversational pace" in upgraded
+    assert "Lorelai speaks in a warm excited conversational pace" in upgraded
     assert o3p.validate_element_bound_voice_prompt("Lorelai", upgraded) == []
+
+
+def test_get_element_list_entry_includes_voice_id(monkeypatch):
+    from tools import kling_character_registry as reg
+
+    monkeypatch.setattr(
+        reg,
+        "get_character_entry",
+        lambda _s: {
+            "status": "active",
+            "element_id": "elem123",
+            "element_name": "Lorelai",
+            "kling_voice_id": "voice456",
+        },
+    )
+    entry = reg.get_element_list_entry("Lorelai")
+    assert entry == {
+        "element_id": "elem123",
+        "element_name": "Lorelai",
+        "voice_id": "voice456",
+    }
 
 
 def test_trim_refer_images_preserves_canonical_pin():
@@ -119,7 +140,7 @@ def test_trim_refer_images_preserves_canonical_pin():
             "Lorelai/poses/old_c.png",
         ],
     }
-    pin = reg.pinned_refer_paths(cfg)
+    pin = reg.pinned_refer_paths(cfg, "Lorelai")
     refer = list(cfg["refer_images"])
     refer.append("Lorelai/poses/new_pose.png")
     trimmed = reg.trim_refer_images_for_element(
