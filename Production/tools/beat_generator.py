@@ -4992,6 +4992,16 @@ def heal_locked_char_ref_to_element(beat: dict) -> bool:
         chosen_str = str(_pick_element_ref_path(beat, element_paths).resolve())
         if os.path.normpath(char_path) == os.path.normpath(chosen_str):
             return False
+        # Re-register updates Element poses but leaves library/sources/ uploads stale.
+        # Sync bytes onto the locked library tile first so @Image1 path + hash both match.
+        try:
+            import shutil
+
+            shutil.copy2(chosen_str, char_path)
+            if reg.char_ref_matches_element_images(char_path, speaker)[0]:
+                return True
+        except OSError:
+            pass
         beat["reference_image"] = _ref_dict_from_path(chosen_str)
         return True
     except Exception:

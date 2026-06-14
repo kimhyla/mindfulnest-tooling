@@ -250,7 +250,9 @@ def test_sync_element_char_ref_status_persists_mismatch_on_beat(tmp_path: Path, 
     )
     monkeypatch.setattr(
         "tools.kling_character_registry.file_sha256",
-        lambda p: "hash_library" if "ChatGPT" in str(p) else "hash_canonical",
+        lambda p: "hash_library"
+        if "ChatGPT" in str(p) and Path(p).read_bytes() == b"library"
+        else "hash_canonical",
     )
 
     beat = {
@@ -285,7 +287,9 @@ def test_migrate_sidecar_heals_locked_library_ref_to_element_pose(tmp_path: Path
     )
     monkeypatch.setattr(
         "tools.kling_character_registry.file_sha256",
-        lambda p: "hash_library" if "ChatGPT" in str(p) else "hash_canonical",
+        lambda p: "hash_library"
+        if "ChatGPT" in str(p) and Path(p).read_bytes() == b"library"
+        else "hash_canonical",
     )
 
     sidecar = {
@@ -307,8 +311,41 @@ def test_migrate_sidecar_heals_locked_library_ref_to_element_pose(tmp_path: Path
     }
     bg._migrate_sidecar(sidecar)
     beat = sidecar["arcs"]["arc_1"]["segments"]["event_2_pre"]["beats"][0]
-    assert beat["reference_image"]["abs_path"] == str(canonical.resolve())
+    assert beat["reference_image"]["abs_path"] == str(library.resolve())
+    assert library.read_bytes() == b"canonical"
     assert beat["element_char_ref_ok"] is True
+
+
+def test_sync_clears_stale_element_char_ref_error_when_hashes_match(tmp_path: Path, monkeypatch):
+    canonical = tmp_path / "lorelai_canonical_neutral.png"
+    library = tmp_path / "Event_2" / "library" / "images" / "sources" / "ChatGPT_Image.png"
+    library.parent.mkdir(parents=True, exist_ok=True)
+    canonical.write_bytes(b"canonical")
+    library.write_bytes(b"canonical")
+
+    monkeypatch.setattr(
+        "tools.kling_character_registry.element_image_paths",
+        lambda _s: [canonical],
+    )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.file_sha256",
+        lambda _p: "hash_canonical",
+    )
+
+    beat = {
+        "speaker": "Lorelai",
+        "reference_image": {"abs_path": str(library)},
+        "reference_image_locked": True,
+        "element_char_ref_ok": False,
+        "element_char_ref_error": "stale mismatch from pre-sync library upload",
+    }
+    assert bg.sync_element_char_ref_status(beat) is True
+    assert beat["element_char_ref_ok"] is True
+    assert "element_char_ref_error" not in beat
 
 
 def test_apply_user_beat_ref_heals_library_drop_to_element_pose(tmp_path: Path, monkeypatch):
@@ -329,7 +366,9 @@ def test_apply_user_beat_ref_heals_library_drop_to_element_pose(tmp_path: Path, 
     )
     monkeypatch.setattr(
         "tools.kling_character_registry.file_sha256",
-        lambda p: "hash_library" if "ChatGPT" in str(p) else "hash_canonical",
+        lambda p: "hash_library"
+        if "ChatGPT" in str(p) and Path(p).read_bytes() == b"library"
+        else "hash_canonical",
     )
 
     beat: dict = {"speaker": "Lorelai"}
@@ -338,7 +377,8 @@ def test_apply_user_beat_ref_heals_library_drop_to_element_pose(tmp_path: Path, 
         "reference_image",
         {"abs_path": str(library), "key": "ChatGPT_Image"},
     )
-    assert beat["reference_image"]["abs_path"] == str(canonical.resolve())
+    assert beat["reference_image"]["abs_path"] == str(library.resolve())
+    assert library.read_bytes() == b"canonical"
     assert beat["reference_image_locked"] is True
     assert beat["element_char_ref_ok"] is True
 
@@ -359,7 +399,9 @@ def test_require_element_char_ref_for_o3_raises_before_api(tmp_path: Path, monke
     )
     monkeypatch.setattr(
         "tools.kling_character_registry.file_sha256",
-        lambda p: "hash_library" if "ChatGPT" in str(p) else "hash_canonical",
+        lambda p: "hash_library"
+        if "ChatGPT" in str(p) and Path(p).read_bytes() == b"library"
+        else "hash_canonical",
     )
 
     beat = {
