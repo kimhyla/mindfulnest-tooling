@@ -2535,7 +2535,7 @@ def handle_bg_update_beat(h, body: dict)-> None:
                 written.append(field)
                 if field == "kling_o3_prompt" and isinstance(value, str):
                     bg.sync_beat_dialogue_from_kling_prompt(beat)
-        if any(f in written for f in ("reference_image", "speaker")):
+        if written:
             bg.sync_element_char_ref_status(beat)
         if beat.get("element_char_ref_ok") is False:
             element_ref_warning = beat.get("element_char_ref_error")
@@ -2545,6 +2545,8 @@ def handle_bg_update_beat(h, body: dict)-> None:
         "written": written,
         "thumb_b64": thumb_b64,
         "element_ref_warning": element_ref_warning,
+        "element_char_ref_ok": beat.get("element_char_ref_ok"),
+        "element_char_ref_error": beat.get("element_char_ref_error"),
     })
 
 

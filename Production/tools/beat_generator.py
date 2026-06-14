@@ -5019,6 +5019,12 @@ def heal_locked_char_ref_to_element(beat: dict) -> bool:
     if not speaker:
         return False
     char_path = resolve_beat_char_ref_path(beat)
+    if not char_path:
+        ref = beat.get("reference_image")
+        if isinstance(ref, dict):
+            pending = str(ref.get("abs_path") or "").strip()
+            if pending and _is_event_library_char_ref(pending):
+                char_path = os.path.normpath(pending)
     if not char_path or not _is_event_library_char_ref(char_path):
         return False
     try:
@@ -5026,7 +5032,7 @@ def heal_locked_char_ref_to_element(beat: dict) -> bool:
 
         if not reg.is_speaker_voice_ready(speaker):
             return False
-        if reg.char_ref_matches_element_images(char_path, speaker)[0]:
+        if os.path.isfile(char_path) and reg.char_ref_matches_element_images(char_path, speaker)[0]:
             return False
         element_paths = reg.element_image_paths(speaker)
         if not element_paths:

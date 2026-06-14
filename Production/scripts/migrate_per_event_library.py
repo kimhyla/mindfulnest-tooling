@@ -45,7 +45,7 @@ CANONICAL_SOURCES = [
     ),
     (
         "canonical_arlo_neutral_v1.png",
-        ASSETS / "40edc382-c44c-4a0b-a9bc-6a6147e60ad3-bb75a8df-ed4d-4b67-8801-1ad60a2065c2.png",
+        DROPBOX_ROOT / "Production" / "Arlo" / "poses" / "arlo_canonical_neutral_vest.png",
     ),
     (
         "canonical_heartwood_grove_01.png",

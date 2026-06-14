@@ -960,7 +960,12 @@ export function BgTab() {
     setBeats((bs) => bs.map((b) => (
       b.beat_id === beatId ? { ...b, kling_o3_prompt: nextText } : b
     )));
-    const result = await pathappPatch(activeScope.value, 'bg_update_beat', {
+    const result = await pathappPatch<{
+      ok: boolean;
+      element_char_ref_ok?: boolean;
+      element_char_ref_error?: string | null;
+      element_ref_warning?: string | null;
+    }>(activeScope.value, 'bg_update_beat', {
       beat_id: beatId, kling_o3_prompt: nextText,
     });
     if (!result.ok) {
@@ -970,6 +975,17 @@ export function BgTab() {
         : `Save failed: ${result.error}`;
       pushToast({ kind: 'error', message: msg, source: 'bg-update-text' });
       return false;
+    }
+    if (result.data && typeof result.data.element_char_ref_ok === 'boolean') {
+      const gateOk = result.data.element_char_ref_ok;
+      const gateErr = result.data.element_char_ref_error ?? null;
+      setBeats((bs) => bs.map((b): BgBeat => {
+        if (b.beat_id !== beatId) return b;
+        const next: BgBeat = { ...b, element_char_ref_ok: gateOk };
+        if (gateErr) next.element_char_ref_error = gateErr;
+        else delete next.element_char_ref_error;
+        return next;
+      }));
     }
     return true;
   };

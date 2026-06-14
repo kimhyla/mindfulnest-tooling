@@ -414,3 +414,38 @@ def test_require_element_char_ref_for_o3_raises_before_api(tmp_path: Path, monke
         assert False, "expected ELEMENT_VISUAL_MISMATCH"
     except RuntimeError as exc:
         assert "ELEMENT_VISUAL_MISMATCH" in str(exc)
+
+
+def test_heal_locked_char_ref_restores_missing_library_file(tmp_path: Path, monkeypatch):
+    canonical = tmp_path / "Lorelai" / "poses" / "lorelai_canonical_neutral.png"
+    library = tmp_path / "Event_2" / "library" / "images" / "sources" / "ChatGPT_Image.png"
+    library.parent.mkdir(parents=True, exist_ok=True)
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    canonical.write_bytes(b"canonical")
+    assert not library.is_file()
+
+    monkeypatch.setattr(
+        "tools.kling_character_registry.element_image_paths",
+        lambda _s: [canonical],
+    )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.file_sha256",
+        lambda _p: "hash_canonical",
+    )
+
+    beat = {
+        "speaker": "Lorelai",
+        "reference_image": {"abs_path": str(library)},
+        "reference_image_locked": True,
+        "element_char_ref_ok": False,
+        "element_char_ref_error": "Missing character reference image for 'Lorelai'",
+    }
+    assert bg.heal_locked_char_ref_to_element(beat) is True
+    assert library.read_bytes() == b"canonical"
+    assert bg.sync_element_char_ref_status(beat) is True
+    assert beat["element_char_ref_ok"] is True
+    assert "element_char_ref_error" not in beat

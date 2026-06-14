@@ -14,8 +14,8 @@
         {
           "key": "canonical_arlo_neutral_v1",
           "filename": "canonical_arlo_neutral_v1.png",
-          "display_name": "Arlo neutral (canonical)",
-          "tags": ["character", "arlo", "canonical"]
+          "display_name": "Arlo neutral (canonical, Element-aligned)",
+          "tags": ["character", "arlo", "canonical", "element_pose"]
         },
         {
           "key": "canonical_heartwood_grove_01",
