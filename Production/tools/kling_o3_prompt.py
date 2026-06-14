@@ -349,4 +349,19 @@ def validate_element_bound_voice_prompt(speaker: str, prompt: str) -> list[str]:
                 errors.append(
                     f"prompt voice line name must match Element display name ({display})"
                 )
+    try:
+        from tools import beat_generator as bg
+
+        if bg.prompt_voice_quote_has_performance_staging(text):
+            errors.append(
+                "prompt voice quote contains performance staging ([Faces camera…]); "
+                "keep staging out of spoken quotes"
+            )
+        if bg.prompt_body_has_performance_staging(text):
+            errors.append(
+                "prompt body contains performance staging ([Faces camera…]) before the voice line; "
+                "remove bracket staging — it biases O3 toward hyper delivery"
+            )
+    except Exception:
+        pass
     return errors

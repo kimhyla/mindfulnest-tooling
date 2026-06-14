@@ -3522,6 +3522,7 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
             if voice_upgraded:
                 beat["kling_o3_prompt"] = upgraded
                 bg.sync_beat_dialogue_from_kling_prompt(beat)
+            bg.heal_spoken_staging_in_voice_prompt(beat)
 
             voice_prompt_errors = o3p.validate_element_bound_voice_prompt(
                 speaker,

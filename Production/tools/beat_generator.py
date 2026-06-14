@@ -2661,6 +2661,7 @@ def _migrate_sidecar(sidecar: dict) -> dict:
                 sync_element_char_ref_status(beat, heal_mismatch=not locked_lib)
                 heal_kling_o3_stored_duration(beat)
                 heal_element_bound_voice_prompt(beat)
+                heal_spoken_staging_in_voice_prompt(beat)
     for arc_key, arc in sidecar.get("arcs", {}).items():
         for seg_key, seg in arc.get("segments", {}).items():
             m = re.match(r"^event_(\d+)_(\w+)$", seg_key or "")
@@ -4322,6 +4323,7 @@ def prepare_kling_o3_prompt_for_submit(beat: dict, prompt: str | None = None) ->
     from beat_extract_policy import humanize_kling_body_parts
 
     raw = humanize_kling_body_parts(raw, speaker=speaker)
+    raw = strip_performance_staging_from_kling_prompt(raw)
     spoken = extract_spoken_dialogue_from_kling_prompt(raw)
     return _append_kling_o3_submit_locks(raw, speaker=speaker, spoken=spoken or "")
 
@@ -4997,9 +4999,123 @@ def _emotion_action_clause(beat: dict) -> str:
     return mapping.get(emotion, f"{emotion} expression")
 
 
+def _strip_bracket_staging_from_spoken(text: str) -> str:
+    """Remove [Faces camera…] performance blocks from spoken; keep [pause] rhythm markers."""
+    s = (text or "").strip()
+    if not s:
+        return ""
+
+    def _bracket_repl(match: re.Match[str]) -> str:
+        if match.group(1).strip().lower() == "pause":
+            return match.group(0)
+        return " "
+
+    s = re.sub(r"\[([^\]]+)\]", _bracket_repl, s)
+    s = re.split(
+        r"\s+\[(?:Faces|Stage|Expression|Camera|Only|Match|Audio|Children|Show|Rooted)",
+        s,
+        maxsplit=1,
+        flags=re.I,
+    )[0].strip()
+    s = re.sub(r"^(?:\[[^\]]+\]\s*)+", "", s).strip()
+    s = re.sub(r"\s*\[[^\]]+\]\s*$", "", s).strip()
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def spoken_has_performance_staging(text: str) -> bool:
+    """True when dialogue still contains bracketed stage directions (not [pause])."""
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    for match in re.finditer(r"\[([^\]]+)\]", raw):
+        inner = match.group(1).strip().lower()
+        if inner == "pause":
+            continue
+        if any(
+            token in inner
+            for token in (
+                "faces",
+                "camera",
+                "rooted",
+                "expression",
+                "eyebrow",
+                "gesture",
+                "nod",
+                "smile",
+                "hand raised",
+                "stage",
+            )
+        ):
+            return True
+    return False
+
+
+def prompt_voice_quote_has_performance_staging(prompt: str) -> bool:
+    """Detect author staging baked into the quoted O3 voice line."""
+    text = (prompt or "").strip()
+    if not text:
+        return False
+    for match in re.finditer(
+        r"\b(?:speaks|says)[^:\"']*:\s*\"([^\"]+)\"",
+        text,
+        re.IGNORECASE,
+    ):
+        if spoken_has_performance_staging(match.group(1)):
+            return True
+    return False
+
+
+def _is_voice_delivery_line(line: str) -> bool:
+    return bool(re.search(r"\b(?:speaks|says)\b", line or "", re.I) and ":" in line)
+
+
+def prompt_body_has_performance_staging(prompt: str) -> bool:
+    """True when [Faces camera…] staging sits in the prompt body outside the voice quote."""
+    for line in (prompt or "").splitlines():
+        stripped = line.strip()
+        if not stripped or _is_voice_delivery_line(stripped):
+            continue
+        if spoken_has_performance_staging(stripped):
+            return True
+    return False
+
+
+def strip_performance_staging_from_kling_prompt(prompt: str) -> str:
+    """Remove author performance brackets from non-voice prompt lines before O3 submit."""
+    lines = (prompt or "").splitlines()
+    out: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if out and out[-1].strip():
+                out.append("")
+            continue
+        if _is_voice_delivery_line(stripped):
+            out.append(line)
+            continue
+        cleaned = stripped
+        while True:
+            next_clean = re.sub(
+                r"\s*\[[^\]]*(?:faces|camera|rooted|expression|eyebrow|gesture|nod|smile|hand raised)[^\]]*\]\s*\"?\s*",
+                " ",
+                cleaned,
+                count=1,
+                flags=re.I,
+            )
+            if next_clean == cleaned:
+                break
+            cleaned = next_clean
+        cleaned = cleaned.strip().strip('"').strip()
+        if cleaned:
+            out.append(cleaned)
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+    return text
+
+
 def _kling_o3_normalize_spoken(spoken: str) -> str:
     """Normalize dialogue for Kling TTS — ellipses and runaway dots cause drag/baby-talk."""
     s = (spoken or "").strip()
+    s = _strip_bracket_staging_from_spoken(s)
     s = _strip_parenthetical_actions(s)
     s = re.sub(r"\.{2,}", ".", s)
     s = re.sub(r"…+", ".", s)
@@ -5054,6 +5170,48 @@ def heal_kling_o3_stored_duration(beat: dict) -> bool:
         beat["kling_o3_duration"] = resolved
         return True
     return False
+
+
+def heal_spoken_staging_in_voice_prompt(beat: dict) -> bool:
+    """Strip [Faces camera…] staging from prompt body and voice quotes before O3 submit."""
+    speaker = str(beat.get("speaker") or "").strip()
+    prompt = (beat.get("kling_o3_prompt") or "").strip()
+    if not speaker or not prompt:
+        return False
+    dialogue = (beat.get("dialogue_text") or "").strip()
+    needs_heal = (
+        prompt_voice_quote_has_performance_staging(prompt)
+        or spoken_has_performance_staging(dialogue)
+        or prompt_body_has_performance_staging(prompt)
+    )
+    if not needs_heal:
+        return False
+    spoken = extract_spoken_dialogue_from_kling_prompt(prompt)
+    if not spoken:
+        spoken = _spoken_from_beat_dialogue(beat)
+    if not spoken:
+        return False
+    try:
+        import kling_o3_prompt as o3p
+
+        body_clean = strip_performance_staging_from_kling_prompt(prompt)
+        upgraded = o3p.inject_locked_voice_line(body_clean, speaker, spoken)
+        upgraded = strip_performance_staging_from_kling_prompt(upgraded)
+    except Exception:
+        try:
+            from tools import kling_o3_prompt as o3p
+
+            body_clean = strip_performance_staging_from_kling_prompt(prompt)
+            upgraded = o3p.inject_locked_voice_line(body_clean, speaker, spoken)
+            upgraded = strip_performance_staging_from_kling_prompt(upgraded)
+        except Exception:
+            return False
+    if upgraded == prompt and dialogue == spoken:
+        return False
+    beat["kling_o3_prompt"] = upgraded
+    beat["dialogue_text"] = spoken
+    heal_kling_o3_stored_duration(beat)
+    return True
 
 
 def heal_element_bound_voice_prompt(beat: dict) -> bool:
@@ -6794,6 +6952,22 @@ def enrich_beat_kling_o3_pinned(beat: dict, event_dir: str | Path) -> dict:
     beat_id = beat.get("beat_id")
     if beat_id:
         out["kling_o3_pinned_preserve"] = has_pinned_kling_o3_preserve(beat_id, event_dir)
+    o3_video = (beat.get("kling_o3_video_path") or "").strip()
+    if o3_video:
+        out["kling_o3_video_path_exists"] = _kling_o3_video_path_exists(o3_video)
+    options = out.get("kling_o3_options")
+    if isinstance(options, list):
+        enriched_options: list[dict] = []
+        for opt in options:
+            if not isinstance(opt, dict):
+                enriched_options.append(opt)
+                continue
+            opt_copy = dict(opt)
+            vp = (opt_copy.get("video_path") or "").strip()
+            if vp:
+                opt_copy["video_path_exists"] = _kling_o3_video_path_exists(vp)
+            enriched_options.append(opt_copy)
+        out["kling_o3_options"] = enriched_options
     magic_name = beat.get("magic_video_path")
     if magic_name:
         magic_path = Path(magic_name)
@@ -6905,10 +7079,24 @@ def restore_pinned_kling_o3_beat(
 
 
 def _kling_o3_gen_from_video_path(video_path: str | None) -> int | None:
+    """Parse generation counter from O3 clip filenames (legacy and Element delivery)."""
     if not video_path:
         return None
-    m = re.search(r"_g(\d+)\.mp4$", Path(video_path).name, re.IGNORECASE)
+    name = Path(video_path).name
+    m = re.search(r"_g(\d+)(?:_(?:element|kling)|\.mp4)", name, re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"_g(\d+)\.mp4$", name, re.IGNORECASE)
     return int(m.group(1)) if m else None
+
+
+def _kling_o3_video_path_exists(video_path: str | None) -> bool:
+    if not video_path:
+        return False
+    try:
+        return Path(video_path).is_file()
+    except OSError:
+        return False
 
 
 def reconcile_kling_o3_beat(beat: dict, event_dir: str | Path) -> bool:
@@ -6922,6 +7110,29 @@ def reconcile_kling_o3_beat(beat: dict, event_dir: str | Path) -> bool:
     gen = int(beat.get("kling_o3_generation") or 0)
     clip_path = kling_o3_clips_dir(event_dir) / f"{beat_id}_g{gen}.mp4"
     status = beat.get("kling_o3_status") or "draft"
+    stored_raw = (beat.get("kling_o3_video_path") or "").strip()
+    stored_path = Path(stored_raw) if stored_raw else None
+
+    # Element / delivery clips — never drop an on-disk approved path because gen
+    # ran ahead on a failed redo.
+    if stored_path and stored_path.is_file():
+        target_status = "approved" if beat.get("status") == "approved" else "completed"
+        changed = False
+        if beat.get("kling_o3_video_path") != str(stored_path.resolve()):
+            beat["kling_o3_video_path"] = str(stored_path.resolve())
+            changed = True
+        path_gen = _kling_o3_gen_from_video_path(stored_raw)
+        if path_gen is not None and gen != path_gen:
+            if beat.get("status") == "approved" or status in ("approved", "completed"):
+                beat["kling_o3_generation"] = path_gen
+                changed = True
+        if status not in ("completed", "approved"):
+            beat["kling_o3_status"] = target_status
+            changed = True
+        if beat.get("status") not in ("approved",) and target_status == "completed":
+            beat["status"] = "video_ready"
+            changed = True
+        return changed
 
     if clip_path.is_file():
         resolved = str(clip_path.resolve())
@@ -6950,15 +7161,19 @@ def reconcile_kling_o3_beat(beat: dict, event_dir: str | Path) -> bool:
             beat.pop("kling_o3_error", None)
             changed = True
 
-    # Redo increments generation before the new clip lands. If the in-flight
-    # job dies (refresh, server restart), sidecar can still point at g{N-1}.
-    path_gen = _kling_o3_gen_from_video_path(beat.get("kling_o3_video_path"))
-    if path_gen is not None and path_gen < gen:
+    # Redo increments generation before the new clip lands. Only clear the path
+    # when the referenced file is actually missing — not while g{N-1} still exists.
+    path_gen = _kling_o3_gen_from_video_path(stored_raw)
+    if stored_raw and not _kling_o3_video_path_exists(stored_raw):
         beat.pop("kling_o3_video_path", None)
         beat.pop("kling_o3_completed_at", None)
         beat.pop("kling_o3_task_id", None)
         if beat.get("status") == "video_ready":
             beat["status"] = "draft"
+        changed = True
+    elif path_gen is not None and path_gen < gen and not stored_raw:
+        beat.pop("kling_o3_completed_at", None)
+        beat.pop("kling_o3_task_id", None)
         changed = True
     return changed
 

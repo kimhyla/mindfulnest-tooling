@@ -74,3 +74,61 @@ def test_lorelai_beat09_thirty_word_pause_line_resolves_to_12s():
 def test_short_single_chunk_still_caps_at_8s():
     short = 'Laurel speaks in a warm excited conversational pace: "Oh my goodness!"'
     assert bg.resolve_kling_o3_submit_duration({}, short) <= 8
+
+
+ARLO_BEAT24_QUOTED_STAGING = (
+    'Arlo speaks in a warm calm conversational pace, steady and natural, clear delivery, '
+    "brisk but not rushed, not bubbly or hyper, not slow, not dramatic, not childlike or "
+    'baby-talk: "OK, Kiddo . Lorelai\'s our best chance. [Faces camera; gentle inviting nod '
+    '— rooted in place.]"'
+)
+
+
+def test_quoted_voice_line_strips_performance_staging_from_spoken():
+    spoken = bg.extract_spoken_dialogue_from_kling_prompt(ARLO_BEAT24_QUOTED_STAGING)
+    assert spoken.startswith("OK, Kiddo")
+    assert "Lorelai's our best chance" in spoken
+    assert "Faces camera" not in spoken
+    assert "rooted in place" not in spoken
+
+
+def test_heal_spoken_staging_rewrites_prompt_quote():
+    beat = {
+        "speaker": "Arlo",
+        "dialogue_text": (
+            "OK, Kiddo . Lorelai's our best chance. [Faces camera; gentle inviting nod "
+            "— rooted in place.]"
+        ),
+        "kling_o3_prompt": ARLO_BEAT24_QUOTED_STAGING,
+    }
+    assert bg.heal_spoken_staging_in_voice_prompt(beat) is True
+    assert "Faces camera" not in beat["kling_o3_prompt"]
+    assert "Faces camera" not in beat["dialogue_text"]
+
+
+BEAT24_BODY_STAGING = """@Image1 (Arlo) Arlo — Transition to Spell. Scene from @Image2.
+
+Camera: static shot, stable eye-level medium shot.
+[Faces camera; gentle inviting nod, expression knowing and warmly conspiratorial — rooted in place.] [Faces camera directly ; gentle knowing smile — rooted in place, all warmth in face and that one quiet hand gesture.]"
+
+Arlo speaks in a warm calm conversational pace, steady and natural, clear delivery, brisk but not rushed, not bubbly or hyper, not slow, not dramatic, not childlike or baby-talk: "OK, Kiddo . Lorelai's our best chance to solve this mystery. She knows so much about the MindfulNest! [pause] But [pause] she seems kinda stressed out. Let's see if the Great Wizard can teach you a Magic Spell for calming down, so she can help us figure it out!"
+
+Children's illustrated fantasy storybook style, warm soft lighting."""
+
+
+def test_strip_performance_staging_from_prompt_body():
+    cleaned = bg.strip_performance_staging_from_kling_prompt(BEAT24_BODY_STAGING)
+    assert "Faces camera" not in cleaned
+    assert "warm calm conversational pace" in cleaned
+    assert bg.prompt_body_has_performance_staging(BEAT24_BODY_STAGING) is True
+    assert bg.prompt_body_has_performance_staging(cleaned) is False
+
+
+def test_heal_spoken_staging_strips_body_staging():
+    beat = {
+        "speaker": "Arlo",
+        "dialogue_text": "OK, Kiddo . Lorelai's our best chance.",
+        "kling_o3_prompt": BEAT24_BODY_STAGING,
+    }
+    assert bg.heal_spoken_staging_in_voice_prompt(beat) is True
+    assert "Faces camera" not in beat["kling_o3_prompt"]

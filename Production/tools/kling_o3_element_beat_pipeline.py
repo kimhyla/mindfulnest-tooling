@@ -354,10 +354,14 @@ def run_pipeline(
         "prompt_voice_excerpt": prompt[:500],
         "kling_o3_duration": duration,
     }), flush=True)
+    submit_prompt = prepared or prompt
+    if submit_prompt != prompt:
+        beat["kling_o3_prompt"] = submit_prompt
+        prompt = submit_prompt
     try:
         result = o3.run_beat_generation(
             api_key,
-            prompt,
+            submit_prompt,
             char_path,
             bg_path,
             master,

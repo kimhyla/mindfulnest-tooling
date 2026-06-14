@@ -127,6 +127,7 @@ interface GptOption {
   label?: string;
   local_path?: string;
   video_path?: string;
+  video_path_exists?: boolean;
   source?: string;
   slot_index?: number;
   thumb_b64?: string;
@@ -155,6 +156,7 @@ interface BgBeat {
   kling_o3_status?: string;
   kling_o3_prompt?: string;
   kling_o3_video_path?: string;
+  kling_o3_video_path_exists?: boolean;
   kling_o3_selected_at?: string;
   kling_o3_options?: GptOption[];
   kling_o3_replace_slot_index?: number;
@@ -2846,6 +2848,8 @@ function BgOptionTile({
 }: BgOptionTilePropsExt) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const trimPlaybackListenerRef = useRef<((this: HTMLVideoElement, ev: Event) => void) | null>(null);
+  const [videoLoadError, setVideoLoadError] = useState(false);
+  const clipMissingOnDisk = option?.video_path_exists === false;
   const [trimStartDraft, setTrimStartDraft] = useState<string>(String(trimStart || 0));
   const [trimBackDraft, setTrimBackDraft] = useState<string>(String(trimBack || 0));
   useEffect(() => {
@@ -3008,6 +3012,9 @@ function BgOptionTile({
   useEffect(() => {
     void resetVideoToCanonical();
   }, [canonicalVideoUrl]);
+  useEffect(() => {
+    setVideoLoadError(false);
+  }, [canonicalVideoUrl]);
   const parseDraft = (value: string) => {
     const parsed = parseFloat(value);
     return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
@@ -3121,7 +3128,7 @@ function BgOptionTile({
       onDrop={dropHandlers.onDrop}
       title={tooltip}
     >
-      {canonicalVideoUrl ? (
+      {canonicalVideoUrl && !clipMissingOnDisk ? (
         <>
           <video
             ref={videoRef}
@@ -3130,6 +3137,8 @@ function BgOptionTile({
             src={canonicalVideoUrl}
             data-testid={`bg-option-video-${beatIndex}-${optionIndex}`}
             onPause={() => clearTrimPlaybackListener()}
+            onError={() => setVideoLoadError(true)}
+            onLoadedData={() => setVideoLoadError(false)}
             onPlay={() => {
               const video = videoRef.current;
               if (!video) return;
@@ -3141,6 +3150,22 @@ function BgOptionTile({
               attachTrimStopListener(video, stopAt);
             }}
           />
+          {videoLoadError ? (
+            <div class="mn-bg-option-empty" data-testid={`bg-option-video-error-${beatIndex}-${optionIndex}`}>
+              Clip failed to load — server may have restarted.
+              <button
+                type="button"
+                class="mn-btn mn-btn-small"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setVideoLoadError(false);
+                  void resetVideoToCanonical();
+                }}
+              >
+                Retry
+              </button>
+            </div>
+          ) : null}
           {showTrimControls ? (
           <div class="mn-bg-o3-trim-controls" data-testid={`bg-o3-trim-controls-${beatIndex}-${optionIndex}`}>
             <span class="mn-dim">
@@ -3245,6 +3270,10 @@ function BgOptionTile({
             </button>
           ) : null}
         </>
+      ) : clipMissingOnDisk ? (
+        <div class="mn-bg-option-empty" data-testid={`bg-option-video-missing-${beatIndex}-${optionIndex}`}>
+          Clip missing on disk — regenerate O3 or pick another slot.
+        </div>
       ) : option.thumb_b64 ? (
         <img src={option.thumb_b64} alt={`option ${optionIndex + 1}`} />
       ) : (
