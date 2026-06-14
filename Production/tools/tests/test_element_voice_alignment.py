@@ -96,6 +96,26 @@ def test_inject_locked_voice_preserves_delivery_and_quotes_spoken():
     assert "[curious, wary of danger]" not in locked
 
 
+def test_element_o3_submit_prompt_is_sidecar_verbatim():
+    from kling_o3_element_beat_pipeline import resolve_element_o3_submit_prompt
+
+    stored = (
+        "@Image1 (Tessa) Scene.\n\n"
+        f"{TESSA_EVENT2_VOICE_LINE}\n\n"
+        "Audio: spoken character dialogue only — absolutely no background music.\n"
+        "Silent world except speech."
+    )
+    beat = {
+        "speaker": "Tessa",
+        "kling_o3_prompt": stored,
+        "dialogue_text": "Hello ... [wave]",
+    }
+    prompt, spoken = resolve_element_o3_submit_prompt(beat)
+    assert prompt == stored
+    assert spoken == "Hello there . how are you?"
+    assert "Hello ." not in spoken
+
+
 def test_event_dir_uses_mn_prod_root(monkeypatch):
     from kling_o3_element_beat_pipeline import _event_dir_for_segment, _runtime_prod_root
 

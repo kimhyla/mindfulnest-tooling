@@ -3240,6 +3240,9 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                         beat[ref_field] = ref_value
                     else:
                         beat[ref_field] = None
+            if "kling_o3_prompt" in body:
+                beat["kling_o3_prompt"] = str(body.get("kling_o3_prompt") or "")
+                bg.sync_beat_dialogue_from_kling_prompt(beat)
             for required_field, label in (("reference_image", "Char ref"), ("bg_ref_image", "BG ref")):
                 ref_value = beat.get(required_field)
                 ref_path = Path(ref_value.get("abs_path") or "") if isinstance(ref_value, dict) else Path(str(ref_value or ""))

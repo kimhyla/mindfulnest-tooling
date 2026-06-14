@@ -71,6 +71,27 @@ def _spoken_from_beat(beat: dict, normalize_fn) -> str:
     return spoken or normalize_fn(dialogue)
 
 
+def resolve_element_o3_submit_prompt(beat: dict) -> tuple[str, str]:
+    """Return (kling_prompt, spoken_log). Sidecar ``kling_o3_prompt`` is sent verbatim."""
+    stored_prompt = (beat.get("kling_o3_prompt") or "").strip()
+    build_prompt, normalize_spoken = _load_build_prompt()
+    speaker = str(beat.get("speaker") or "").strip()
+    if stored_prompt:
+        spoken = (
+            bg_sidecar.extract_spoken_dialogue_from_kling_prompt(stored_prompt)
+            if stored_prompt
+            else ""
+        )
+        if not spoken and re.search(r"\b(?:speaks|says)\b", stored_prompt, re.I):
+            raise RuntimeError(
+                "ELEMENT_VOICE_PROMPT: could not extract spoken dialogue from the "
+                "voice line — put the full line in double quotes after speaks…:"
+            )
+        return stored_prompt, spoken or ""
+    spoken = _spoken_from_beat(beat, normalize_spoken)
+    return _inject_locked_voice(build_prompt(beat), speaker, spoken), spoken
+
+
 def _find_beat(sidecar: dict, beat_id: str):
     for arc in (sidecar.get("arcs") or {}).values():
         for segment_key, segment in (arc.get("segments") or {}).items():
@@ -206,27 +227,7 @@ def run_pipeline(
         raise RuntimeError(f"ELEMENT_VISUAL_MISMATCH: {align_detail}")
 
     stored_prompt = (beat.get("kling_o3_prompt") or "").strip()
-    build_prompt, normalize_spoken = _load_build_prompt()
-    spoken = (
-        bg_sidecar.extract_spoken_dialogue_from_kling_prompt(stored_prompt)
-        if stored_prompt
-        else ""
-    )
-    if not spoken:
-        has_voice_line = bool(
-            stored_prompt
-            and re.search(r"\b(?:speaks|says)\b", stored_prompt, re.I)
-        )
-        if has_voice_line:
-            raise RuntimeError(
-                "ELEMENT_VOICE_PROMPT: could not extract spoken dialogue from the "
-                "voice line — put the full line in double quotes after speaks…:"
-            )
-        spoken = _spoken_from_beat(beat, normalize_spoken)
-    if stored_prompt:
-        prompt = _inject_locked_voice(stored_prompt, speaker, spoken)
-    else:
-        prompt = _inject_locked_voice(build_prompt(beat), speaker, spoken)
+    prompt, spoken = resolve_element_o3_submit_prompt(beat)
     from tools import kling_o3_prompt as o3p
 
     prompt_errors = o3p.validate_element_bound_voice_prompt(speaker, prompt)
@@ -304,6 +305,7 @@ def run_pipeline(
         "char_ref": str(char_path),
         "voice_line_locked": "speaks in a" in prompt.lower(),
         "spoken_sent": spoken,
+        "prompt_verbatim": bool(stored_prompt),
         "prompt_voice_excerpt": prompt[:500],
     }), flush=True)
     result = o3.run_beat_generation(

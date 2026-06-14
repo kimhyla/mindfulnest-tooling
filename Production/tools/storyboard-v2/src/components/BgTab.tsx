@@ -1041,15 +1041,15 @@ export function BgTab() {
       return;
     }
     if (isO3VoiceBeat(beat)) {
-      const pendingPrompt = (dialogueText ?? '').trim();
-      const savedPrompt = beatPromptText(beat).trim();
-      if (pendingPrompt && pendingPrompt !== savedPrompt) {
-        const saved = await onUpdateBeatText(beatId, dialogueText!);
+      const promptToSave = (dialogueText ?? beatPromptText(beat)).trim();
+      if (promptToSave) {
+        const saved = await onUpdateBeatText(beatId, promptToSave);
         if (!saved) return;
       }
       const result = await pathappPatch<ArloO3SubmitResponse>(
         activeScope.value, 'bg_submit_arlo_o3_voice', {
           beat_id: beatId,
+          kling_o3_prompt: promptToSave || beatPromptText(beat),
           model: 'pro',
           replace_slot_index: beat.kling_o3_replace_slot_index ?? 0,
           reference_image: beat.reference_image ?? null,
@@ -1912,23 +1912,52 @@ function BeatGenCard({
 }: BeatGenCardProps) {
   const [localText, setLocalText] = useState<string>(beatPromptText(beat));
   const [chips, setChips] = useState<string[]>(extractStageChips(beatPromptText(beat)));
+  const promptDirtyRef = useRef(false);
+  const saveTimerRef = useRef<number | null>(null);
+
   useEffect(() => {
+    if (promptDirtyRef.current) return;
     const next = beatPromptText(beat);
     setLocalText(next);
     setChips(extractStageChips(next));
-  }, [beat.kling_o3_prompt, beat.dialogue_text]);
+  }, [beat.kling_o3_prompt, beat.dialogue_text, beat.beat_id]);
+
+  const flushPromptSave = useCallback(async (text: string) => {
+    if (saveTimerRef.current !== null) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    if (text === beatPromptText(beat)) {
+      promptDirtyRef.current = false;
+      return;
+    }
+    const ok = await onUpdateText(text);
+    if (ok !== false) promptDirtyRef.current = false;
+  }, [beat, onUpdateText]);
+
+  const schedulePromptSave = useCallback((text: string) => {
+    if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = window.setTimeout(() => {
+      saveTimerRef.current = null;
+      void flushPromptSave(text);
+    }, 350);
+  }, [flushPromptSave]);
 
   const onTextInput = (e: Event) => {
     const t = (e.target as HTMLTextAreaElement).value;
+    promptDirtyRef.current = true;
     setLocalText(t);
     setChips(extractStageChips(t));
+    schedulePromptSave(t);
   };
 
   const onTextBlur = () => {
-    if (localText !== beatPromptText(beat)) {
-      onUpdateText(localText);
-    }
+    void flushPromptSave(localText);
   };
+
+  useEffect(() => () => {
+    if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
+  }, []);
 
   const onRemoveChip = (chipText: string) => {
     // Remove the FIRST occurrence of the chip's parenthesized form from the
