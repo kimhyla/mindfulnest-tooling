@@ -76,5 +76,5 @@ def test_endpoints_and_bgtab_wiring():
     assert "bg_render_still_clip" in endpoints
     bgtab = (root / "components" / "BgTab.tsx").read_text(encoding="utf-8")
     assert "isStillInsertBeat" in bgtab
-    assert "Render still clip (Ken Burns + TTS)" in bgtab
+    assert "Build still video (+ TTS)" in bgtab
     assert "bg_render_still_clip" in bgtab

@@ -1830,6 +1830,10 @@ function BeatGenCard({
     && beat.magic_video_path_exists !== false;
   const [magicPreviewMode, setMagicPreviewMode] = useState<'still' | 'video' | null>(null);
   const [stillPreviewAutoplay, setStillPreviewAutoplay] = useState(false);
+  const stillInsert = isStillInsertBeat(beat);
+  const hasStillSource = !!magicStillSource
+    || optionsToShow.some((o) => o?.local_path || o?.thumb_b64);
+  const showStillClipHint = stillInsert && !beat.kling_o3_video_path && hasStillSource;
 
   return (
     <li class="mn-bg-beat-card" data-testid={`bg-beat-card-${index}`} data-beat-id={beat.beat_id}>
@@ -1997,7 +2001,7 @@ function BeatGenCard({
           {busy ? (
             <><Spinner size="sm" inline /> Generating…</>
           ) : isStillInsertBeat(beat) ? (
-            'Render still clip (Ken Burns + TTS)'
+            'Build still video (+ TTS) → trim & approve'
           ) : isO3VoiceBeat(beat) ? (
             'Generate padded O3 voice video'
           ) : (
@@ -2005,6 +2009,13 @@ function BeatGenCard({
           )}
         </button>
       </div>
+
+      {showStillClipHint ? (
+        <p class="mn-dim mn-bg-still-clip-hint" data-testid={`bg-still-clip-hint-${index}`}>
+          Still ready — click <strong>Build still video (+ TTS)</strong> above to Ken Burns the
+          image, mux dialogue audio, and unlock trim / magic-on-video in the option slot below.
+        </p>
+      ) : null}
 
       <BeatMagicButtons
         index={index}

@@ -23,7 +23,7 @@ export function ServerRehydrateWatcher() {
       reachableRef.current = probe.ok;
 
       if (probe.ok) {
-        syncScopeFromProbe(probe);
+        await syncScopeFromProbe(probe);
         if (wasReachable === false) {
           triggerServerRehydrate(reason);
           pushToast({

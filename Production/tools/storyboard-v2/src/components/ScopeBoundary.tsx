@@ -38,7 +38,7 @@ import {
   scopeKey,
 } from '../state/scope';
 import { READ_ENDPOINTS } from '../api/endpoints';
-import { pathappPatch, loadEvent, emitScopeEventChanged } from '../api/client';
+import { pathappPatch, loadEvent, emitScopeEventChanged, ensureServerPinnedTo } from '../api/client';
 
 export interface ScopeBoundaryProps {
   children: ComponentChildren;
@@ -160,17 +160,37 @@ export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
           if (serverEventId) eventId = serverEventId;
         }
       } else if (!serverEventId && urlEventId) {
-        // Cold boot with ?event= but no server pin yet.
+        // Cold boot with ?event= but no server pin yet — must not render tabs
+        // until loadEvent succeeds (READ_SCOPE_HEAL_V1 / deep-link durability).
         try {
           const loadRes = await loadEvent(urlEventId);
           if (loadRes.ok && loadRes.data?.event_id) {
             eventId = loadRes.data.event_id;
             resolvedGeneration = loadRes.data.event_generation;
           } else {
-            eventId = urlEventId;
+            eventId = resolveLocalFallback();
           }
         } catch {
-          eventId = urlEventId;
+          eventId = resolveLocalFallback();
+        }
+      }
+
+      // Final guard: never mount tabs until server pin matches resolved eventId.
+      const pinOk = await ensureServerPinnedTo(eventId);
+      if (!pinOk && serverEventId && serverEventId !== eventId) {
+        eventId = serverEventId;
+        resolvedGeneration = serverGeneration;
+      } else if (pinOk) {
+        try {
+          const resPin = await fetch(READ_ENDPOINTS.event_current);
+          if (resPin.ok) {
+            const pinData = (await resPin.json()) as EventCurrentResponse;
+            if (typeof pinData.event_generation === 'number') {
+              resolvedGeneration = pinData.event_generation;
+            }
+          }
+        } catch {
+          // Non-fatal — activeScope still matches loaded event.
         }
       }
 

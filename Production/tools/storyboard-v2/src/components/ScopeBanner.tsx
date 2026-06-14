@@ -10,7 +10,7 @@
 
 import { useEffect } from 'preact/hooks';
 import { signal } from '@preact/signals';
-import { SCOPE_EVENT_MISMATCH, SCOPE_EVENT_CHANGED } from '../api/client';
+import { SCOPE_EVENT_MISMATCH, SCOPE_EVENT_CHANGED, SCOPE_HEALED_EVENT } from '../api/client';
 import { pushToast } from './ui/Toast';
 
 interface BannerState {
@@ -78,11 +78,16 @@ export function ScopeBanner() {
         }
       }
     };
+    const onHealed = () => {
+      banner.value = { kind: null, message: '' };
+    };
     window.addEventListener(SCOPE_EVENT_MISMATCH, onMismatch);
     window.addEventListener(SCOPE_EVENT_CHANGED, onChanged);
+    window.addEventListener(SCOPE_HEALED_EVENT, onHealed);
     return () => {
       window.removeEventListener(SCOPE_EVENT_MISMATCH, onMismatch);
       window.removeEventListener(SCOPE_EVENT_CHANGED, onChanged);
+      window.removeEventListener(SCOPE_HEALED_EVENT, onHealed);
     };
   }, []);
 

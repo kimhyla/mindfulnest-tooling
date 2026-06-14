@@ -89,6 +89,19 @@ interface RawPostOptions {
   suppressScopeDispatch?: boolean;
 }
 
+interface ApiGetOptions {
+  /** Internal — set during READ scope-mismatch auto-heal retry (READ_SCOPE_HEAL_V1). */
+  _scopeHealRetry?: boolean;
+}
+
+export const SCOPE_HEALED_EVENT = 'mn:scope-healed';
+
+function emitScopeHealed(detail: Record<string, unknown> = {}): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(SCOPE_HEALED_EVENT, { detail }));
+  }
+}
+
 /** Parse non-OK JSON: V59 canonical shape first, then legacy {error} / {error_code}. */
 function parseApiError<T>(
   status: number,
@@ -140,6 +153,7 @@ export function emitScopeEventChanged(detail: Record<string, unknown> = {}): voi
 export async function apiGet<T = unknown>(
   endpoint: ReadEndpoint,
   query: Record<string, string> = {},
+  opts: ApiGetOptions = {},
 ): Promise<ApiResult<T>> {
   // Substitute {placeholder} tokens in the URL template with values from
   // the query dict. Substituted keys are CONSUMED so they don't ALSO end
@@ -167,7 +181,17 @@ export async function apiGet<T = unknown>(
       // non-JSON or empty body
     }
     if (!res.ok) {
-      return parseApiError(res.status, data, res.statusText);
+      const result = parseApiError(res.status, data, res.statusText, {
+        suppressScopeDispatch: !opts._scopeHealRetry,
+      });
+      // READ_SCOPE_HEAL_V1 — LibraryPanel / StoryboardTab v2_event_state GETs
+      // must heal server pin the same way pathappPatch does (SCOPE_MISMATCH_AUTO_HEAL_V1).
+      if (isScopeMismatchResult(result) && !opts._scopeHealRetry) {
+        if (await healServerScopeIfNeeded(activeScope.value)) {
+          return apiGet(endpoint, query, { _scopeHealRetry: true });
+        }
+      }
+      return result;
     }
     return {
       ok: true,
@@ -238,7 +262,14 @@ async function healServerScopeIfNeeded(scope: Scope): Promise<boolean> {
     scope_key: `${load.data.event_id}:${scope.beat_id ?? 'global'}:v${load.data.event_generation}`,
     source: 'scope-mismatch-auto-heal',
   });
+  emitScopeHealed({ event_id: load.data.event_id, source: 'scope-mismatch-auto-heal' });
   return true;
+}
+
+/** Ensure server process pin matches eventId before tabs fetch scoped READ endpoints. */
+export async function ensureServerPinnedTo(eventId: string): Promise<boolean> {
+  const scope = makeScope(eventId, activeScope.value.beat_id, activeScope.value.version);
+  return healServerScopeIfNeeded(scope);
 }
 
 function isScopeMismatchResult<T>(result: ApiResult<T>): boolean {

@@ -23,6 +23,10 @@ grep -q '_scopeHealRetry' "$CLIENT" \
   || fail "_scopeHealRetry retry flag missing"
 grep -q 'suppressScopeDispatch' "$CLIENT" \
   || fail "suppressScopeDispatch missing (snapshot heal must not flash banner)"
+grep -q 'READ_SCOPE_HEAL_V1' "$CLIENT" \
+  || fail "READ_SCOPE_HEAL_V1 marker missing (apiGet must heal scope on GET 409)"
+grep -q 'ensureServerPinnedTo' "$CLIENT" \
+  || fail "ensureServerPinnedTo missing (ScopeBoundary pin guard)"
 
 echo "[scope-mismatch-auto-heal] source guards OK"
 

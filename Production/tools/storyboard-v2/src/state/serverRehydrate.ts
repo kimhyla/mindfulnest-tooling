@@ -3,7 +3,7 @@
 // so Phase A/B, Stitcher, Storyboard, LibraryPanel refresh without a manual reload.
 
 import { READ_ENDPOINTS } from '../api/endpoints';
-import { emitScopeEventChanged } from '../api/client';
+import { emitScopeEventChanged, loadEvent } from '../api/client';
 import { activeScope, makeScope } from './scope';
 import { serverRehydrateTick, stitcherRefreshTick } from './refreshSignals';
 
@@ -52,11 +52,28 @@ export function triggerServerRehydrate(reason: string): void {
   }
 }
 
-/** Sync activeScope version from server when event_id matches. */
-export function syncScopeFromProbe(probe: ServerProbeResult): void {
+/** Sync activeScope version from server when event_id matches; re-pin server after restart drift. */
+export async function syncScopeFromProbe(probe: ServerProbeResult): Promise<void> {
   if (!probe.ok || !probe.eventId) return;
   const cur = activeScope.value;
-  if (probe.eventId !== cur.event_id) return;
+  if (probe.eventId !== cur.event_id) {
+    // Server restart / deploy defaults to Event_1 while tab stays on Event_2.
+    // Re-pin to the client's active event (same policy as pathappPatch heal).
+    const load = await loadEvent(cur.event_id);
+    if (load.ok && load.data?.event_id) {
+      activeScope.value = makeScope(
+        load.data.event_id,
+        cur.beat_id,
+        load.data.event_generation,
+      );
+      emitScopeEventChanged({
+        event_id: load.data.event_id,
+        event_generation: load.data.event_generation,
+        source: 'server-rehydrate-scope-heal',
+      });
+    }
+    return;
+  }
   const gen = probe.eventGeneration ?? cur.version;
   if (gen !== cur.version) {
     activeScope.value = makeScope(probe.eventId, cur.beat_id, gen);
