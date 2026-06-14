@@ -2576,8 +2576,9 @@ def handle_bg_reorder_beats(h, body: dict)-> None:
                    retry_safe=False,
                )
     bg = _bg_module()
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
+        sidecar = bg._migrate_sidecar(sidecar)
         ctx = sidecar.get("active_context")
 
         # LD-545 Option B — derive segment from request scope; fall
@@ -2665,8 +2666,9 @@ def handle_bg_delete_beat(h, body: dict)-> None:
                    retry_safe=False,
                )
     bg = _bg_module()
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
+        sidecar = bg._migrate_sidecar(sidecar)
         for arc in sidecar.get("arcs", {}).values():
             for seg in arc.get("segments", {}).values():
                 seg["beats"] = [b for b in seg.get("beats", []) if b.get("beat_id") != beat_id]

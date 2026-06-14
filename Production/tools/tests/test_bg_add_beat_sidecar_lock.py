@@ -33,6 +33,36 @@ def test_handle_bg_session_state_migrate_write_uses_sidecar_file_lock():
     ), "session-state migrate+write must hold cross-process lock"
 
 
+def test_handle_bg_delete_beat_uses_sidecar_file_lock():
+    block = _handler_block("handle_bg_delete_beat")
+    assert "with bg.sidecar_file_lock():" in block
+    assert "with bg._sidecar_lock:" not in block
+
+
+def test_handle_bg_reorder_beats_uses_sidecar_file_lock():
+    block = _handler_block("handle_bg_reorder_beats")
+    assert "with bg.sidecar_file_lock():" in block
+    assert "with bg._sidecar_lock:" not in block
+
+
+def test_bgtab_wires_beat_missing_guard_helpers():
+    text = (
+        Path(__file__).resolve().parent.parent / "storyboard-v2" / "src" / "components" / "BgTab.tsx"
+    ).read_text(encoding="utf-8")
+    assert "function isBeatNotFoundResult" in text
+    assert "guardBeatPatchResult" in text
+    assert "onBeatMissing={handleBeatMissingOnSave}" in text
+    for needle in (
+        "bg-o3-submit-error",
+        "bg-native-lipsync-submit-error",
+        "bg-accept-opt-error",
+        "bg-select-o3-error",
+        "bg-o3-trim-error",
+        "bg-still-clip-error",
+    ):
+        assert needle in text, f"missing beat-missing guard wiring near {needle}"
+
+
 def test_handle_bg_update_beat_returns_beat_not_found_code():
     block = _handler_block("handle_bg_update_beat")
     assert 'error_code="BEAT_NOT_FOUND"' in block

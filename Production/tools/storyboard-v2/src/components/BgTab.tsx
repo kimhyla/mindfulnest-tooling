@@ -16,7 +16,7 @@ import {
   activeProjectType, activeMilestoneId, activeTargetVideo,
 } from '../state/scope';
 import { setActiveVideoRole, videoRoleForBgPhase } from '../state/videoRole';
-import { apiGet, pathappPatch } from '../api/client';
+import { apiGet, pathappPatch, type ApiResult } from '../api/client';
 import { SERVER_BASE } from '../api/endpoints';
 import { makeDropTarget } from '../utils/dragdrop';
 import { openCropper } from '../state/cropper';
@@ -37,6 +37,22 @@ import {
   allBeatsStitchExportReady,
   stitchExportBlockTooltip,
 } from '../utils/bgStitchExport';
+
+const BEAT_MISSING_TOAST_MS = 12000;
+
+function isBeatNotFoundResult(result: Pick<ApiResult, 'ok' | 'error' | 'error_code'>): boolean {
+  return !result.ok && (
+    result.error_code === 'BEAT_NOT_FOUND'
+    || /beat .* not found/i.test(result.error ?? '')
+  );
+}
+
+function beatMissingToastMessage(beatId: string): string {
+  return (
+    `${beatId} is not on the server — edits in this tab are not saved. `
+    + 'Hard-refresh, use + Insert after the beat above if needed, then paste your text back.'
+  );
+}
 
 // Canonical speaker roster (LD CHARACTER_DROPDOWN_RESTORED_V1).
 // Kept identical to StoryboardTab.KNOWN_SPEAKERS — single source of truth
@@ -739,6 +755,35 @@ export function BgTab() {
     return () => window.removeEventListener('message', onMsg);
   }, []);
 
+  const handleBeatMissingOnSave = useCallback(async (beatId: string) => {
+    beatSaveBlockedRef.current.add(beatId);
+    if (!beatSaveNotFoundToastRef.current.has(beatId)) {
+      beatSaveNotFoundToastRef.current.add(beatId);
+      pushToast({
+        kind: 'warning',
+        message: beatMissingToastMessage(beatId),
+        source: 'bg-beat-missing',
+        ttlMs: BEAT_MISSING_TOAST_MS,
+      });
+    }
+    await refreshState();
+  }, [activeScope.value.event_id, activeTargetVideo.value]);
+
+  const guardBeatPatchResult = useCallback(async (
+    beatId: string,
+    result: Pick<ApiResult, 'ok' | 'error' | 'error_code'>,
+    errorMessage: string,
+    source: string,
+  ): Promise<boolean> => {
+    if (result.ok) return true;
+    if (isBeatNotFoundResult(result)) {
+      await handleBeatMissingOnSave(beatId);
+      return false;
+    }
+    pushToast({ kind: 'error', message: errorMessage, source });
+    return false;
+  }, [handleBeatMissingOnSave]);
+
   // ----------------------------------------------------------------
   // Mutations
   // ----------------------------------------------------------------
@@ -977,23 +1022,8 @@ export function BgTab() {
     });
     if (!result.ok) {
       const err = (result.error || '').trim();
-      const beatMissing = result.error_code === 'BEAT_NOT_FOUND'
-        || /beat .* not found/i.test(err);
-      if (beatMissing) {
-        beatSaveBlockedRef.current.add(beatId);
-        if (!beatSaveNotFoundToastRef.current.has(beatId)) {
-          beatSaveNotFoundToastRef.current.add(beatId);
-          pushToast({
-            kind: 'warning',
-            message: (
-              `${beatId} is not saved on the server yet — your text is only in this tab. `
-              + 'Hard-refresh, then use + Insert after the beat above and paste your dialogue back in.'
-            ),
-            source: 'bg-update-beat-missing',
-            ttlMs: 12000,
-          });
-        }
-        await refreshState();
+      if (isBeatNotFoundResult(result)) {
+        await handleBeatMissingOnSave(beatId);
         return false;
       }
       const msg = /failed to fetch|networkerror|load failed/i.test(err)
@@ -1022,22 +1052,23 @@ export function BgTab() {
   // update so the dropdown reflects the new value before refreshState()
   // (matches the 2026-05-11 Rule 26 fix pattern for ref-image drops).
   const onUpdateBeatSpeaker = async (beatId: string, nextSpeaker: string) => {
+    if (beatSaveBlockedRef.current.has(beatId)) return;
     setBeats((bs) => bs.map((b) => (
       b.beat_id === beatId ? { ...b, speaker: nextSpeaker } : b
     )));
     const result = await pathappPatch(activeScope.value, 'bg_update_beat', {
       beat_id: beatId, speaker: nextSpeaker,
     });
-    if (!result.ok) {
-      pushToast({
-        kind: 'error',
-        message: `Speaker save failed: ${result.error}`,
-        source: 'bg-update-speaker',
-      });
-    }
+    await guardBeatPatchResult(
+      beatId,
+      result,
+      `Speaker save failed: ${result.error}`,
+      'bg-update-speaker',
+    );
   };
 
   const onSetReplaceSlot = async (beatId: string, slotIndex: number) => {
+    if (beatSaveBlockedRef.current.has(beatId)) return;
     setBeats((prev) => prev.map((b) => (
       b.beat_id === beatId ? { ...b, kling_o3_replace_slot_index: slotIndex } : b
     )));
@@ -1045,13 +1076,12 @@ export function BgTab() {
       beat_id: beatId,
       kling_o3_replace_slot_index: slotIndex,
     });
-    if (!result.ok) {
-      pushToast({
-        kind: 'error',
-        message: `Replace slot save failed: ${result.error}`,
-        source: 'bg-replace-slot',
-      });
-    }
+    await guardBeatPatchResult(
+      beatId,
+      result,
+      `Replace slot save failed: ${result.error}`,
+      'bg-replace-slot',
+    );
   };
 
   const onRenderStillClip = async (beatId: string, dialogueText?: string) => {
@@ -1100,6 +1130,8 @@ export function BgTab() {
         source: 'bg-still-clip',
       });
       await refreshState();
+    } else if (isBeatNotFoundResult(result)) {
+      await handleBeatMissingOnSave(beatId);
     } else {
       pushToast({ kind: 'error', message: `Still clip failed: ${result.error}`, source: 'bg-still-clip-error' });
     }
@@ -1149,8 +1181,13 @@ export function BgTab() {
             : `Submitted ${beat.speaker} O3 Pro + Element voice (720 delivery encode)`,
           source: 'bg-o3-submit',
         });
-      } else {
-        pushToast({ kind: 'error', message: `O3 submit failed: ${result.error}`, source: 'bg-o3-submit-error' });
+      } else if (!(await guardBeatPatchResult(
+        beatId,
+        result,
+        `O3 submit failed: ${result.error}`,
+        'bg-o3-submit-error',
+      ))) {
+        return;
       }
       return;
     }
@@ -1198,7 +1235,12 @@ export function BgTab() {
       });
       await refreshState();
     } else {
-      pushToast({ kind: 'error', message: `Native lipsync submit failed: ${result.error}`, source: 'bg-native-lipsync-submit-error' });
+      await guardBeatPatchResult(
+        beatId,
+        result,
+        `Native lipsync submit failed: ${result.error}`,
+        'bg-native-lipsync-submit-error',
+      );
     }
   };
 
@@ -1238,12 +1280,13 @@ export function BgTab() {
       beat_id: beatId,
       kling_o3_prompt: nextText,
     });
-    if (!result.ok) {
-      pushToast({
-        kind: 'error',
-        message: `Chip edit save failed: ${result.error}`,
-        source: 'bg-chip-edit-error',
-      });
+    if (!await guardBeatPatchResult(
+      beatId,
+      result,
+      `Chip edit save failed: ${result.error}`,
+      'bg-chip-edit-error',
+    )) {
+      return;
     }
   };
 
@@ -1267,12 +1310,13 @@ export function BgTab() {
     if (result.ok) {
       pushToast({ kind: 'info', message: `${label} cleared`, source: 'bg-ref-remove' });
       await refreshState();
-    } else {
-      pushToast({
-        kind: 'error',
-        message: `${label} remove failed: ${result.error}`,
-        source: 'bg-ref-remove-error',
-      });
+    } else if (!(await guardBeatPatchResult(
+      beatId,
+      result,
+      `${label} remove failed: ${result.error}`,
+      'bg-ref-remove-error',
+    ))) {
+      await refreshState();
     }
   };
 
@@ -1284,7 +1328,12 @@ export function BgTab() {
       pushToast({ kind: 'success', message: `Locked ${optionKey}`, source: 'bg-accept-opt' });
       await refreshState();
     } else {
-      pushToast({ kind: 'error', message: `Lock failed: ${result.error}`, source: 'bg-accept-opt-error' });
+      await guardBeatPatchResult(
+        beatId,
+        result,
+        `Lock failed: ${result.error}`,
+        'bg-accept-opt-error',
+      );
     }
   };
 
@@ -1302,7 +1351,12 @@ export function BgTab() {
       });
       await refreshState();
     } else {
-      pushToast({ kind: 'error', message: `Select O3 video failed: ${result.error}`, source: 'bg-select-o3-error' });
+      await guardBeatPatchResult(
+        beatId,
+        result,
+        `Select O3 video failed: ${result.error}`,
+        'bg-select-o3-error',
+      );
     }
   };
 
@@ -1357,7 +1411,12 @@ export function BgTab() {
       }
       return result.data?.preview_video_url;
     }
-    pushToast({ kind: 'error', message: `Trim failed: ${result.error}`, source: 'bg-o3-trim-error' });
+    await guardBeatPatchResult(
+      beatId,
+      result,
+      `Trim failed: ${result.error}`,
+      'bg-o3-trim-error',
+    );
     return undefined;
   };
 
@@ -1622,6 +1681,7 @@ export function BgTab() {
               onInsertAfter={() => onAddBeat(b.beat_id)}
               onRemoveRef={(refField, label) => requestRemoveRef(b.beat_id, refField, label)}
               onRefresh={() => refreshState()}
+              onBeatMissing={handleBeatMissingOnSave}
               // 2026-05-11 Rule 26 fix — optimistic local-state patchers so the
               // UI updates IMMEDIATELY from the server response, independent
               // of the follow-up bg_session_state GET. Eliminates the
@@ -1974,6 +2034,7 @@ interface BeatGenCardProps {
   onRemoveRef: (refField: 'reference_image' | 'bg_ref_image', label: string) => void;
   // 2026-05-11 fix — parent refreshState() threaded into BgRefSlot + BgOptionTile.
   onRefresh: () => void;
+  onBeatMissing: (beatId: string) => void | Promise<void>;
   // 2026-05-11 Rule 26 fix — optimistic local-state patchers per beat.
   // BgOptionTile calls onPatchOptionTile(slotIndex, {key, thumb_b64, ...}) on
   // successful library-image drop to update the gpt_options[slot] entry +
@@ -1991,7 +2052,7 @@ function BeatGenCard({
   index, beat, eventId, videoRole, pollResultForBeat, busy, nativeExperimentBusy,
   onDelete, onUpdateText, onUpdateSpeaker, onGenerate, onAccept,
   onSelectO3Video, onApproveStill, onApplyO3Trim, onSetReplaceSlot, onSubmitNativeLipSyncExperiment,
-  onEditChip, onInsertAfter, onRemoveRef, onRefresh,
+  onEditChip, onInsertAfter, onRemoveRef, onRefresh, onBeatMissing,
   onPatchOptionTile, onPatchRefImage,
 }: BeatGenCardProps) {
   const [localText, setLocalText] = useState<string>(beatPromptText(beat));
@@ -2236,6 +2297,7 @@ function BeatGenCard({
             : {})}
           onRemoveRef={onRemoveRef}
           onRefresh={onRefresh}
+          onBeatMissing={onBeatMissing}
           onPatchRefImage={onPatchRefImage}
         />
         <BgRefSlot
@@ -2246,6 +2308,7 @@ function BeatGenCard({
           refField="bg_ref_image"
           onRemoveRef={onRemoveRef}
           onRefresh={onRefresh}
+          onBeatMissing={onBeatMissing}
           onPatchRefImage={onPatchRefImage}
         />
         <button
@@ -2401,6 +2464,7 @@ interface BgRefSlotPropsExt extends BgRefSlotProps {
   onRemoveRef: (refField: 'reference_image' | 'bg_ref_image', label: string) => void;
   // 2026-05-11 fix — parent refreshState() to repaint stale beats[] after drop success.
   onRefresh: () => void;
+  onBeatMissing: (beatId: string) => void | Promise<void>;
   // 2026-05-11 Rule 26 fix — optimistic local-state patcher (see BeatGenCardProps).
   onPatchRefImage: (
     refField: 'reference_image' | 'bg_ref_image',
@@ -2408,7 +2472,7 @@ interface BgRefSlotPropsExt extends BgRefSlotProps {
   ) => void;
 }
 
-function BgRefSlot({ label, refImg, testId, beatId, refField, elementRefError, onRemoveRef, onRefresh, onPatchRefImage }: BgRefSlotPropsExt) {
+function BgRefSlot({ label, refImg, testId, beatId, refField, elementRefError, onRemoveRef, onRefresh, onBeatMissing, onPatchRefImage }: BgRefSlotPropsExt) {
   const hasImage = !!refImg && (refImg.thumb_b64 || refImg.abs_path || refImg.key);
   // R2 fix: drop target for library-image drag → POST bg_update_beat with the
   // ref field (reference_image or bg_ref_image) per server _BG_BEAT_WRITABLE
@@ -2436,8 +2500,11 @@ function BgRefSlot({ label, refImg, testId, beatId, refField, elementRefError, o
         },
       );
       if (!result.ok) {
-        // ROLLBACK on server failure — clear the optimistic patch.
         onPatchRefImage(refField, null);
+        if (isBeatNotFoundResult(result)) {
+          await onBeatMissing(beatId);
+          return;
+        }
         pushToast({
           kind: 'error',
           message: `${label} drop failed: ${result.error ?? `HTTP ${result.status}`}`,
