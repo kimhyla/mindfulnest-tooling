@@ -6108,6 +6108,10 @@ def restore_active_kling_o3_after_failed_redo(beat: dict) -> bool:
     beat["kling_o3_video_path"] = video_path
     beat["kling_o3_status"] = "approved"
     beat["status"] = "approved"
+    beat["kling_o3_voice_fix_status"] = "approved"
+    beat.pop("kling_o3_voice_fix_error", None)
+    beat.pop("kling_o3_voice_fix_error_code", None)
+    beat.pop("kling_o3_voice_fix_phase", None)
     for opt in options:
         opt["active"] = opt.get("video_path") == video_path
     beat["kling_o3_options"] = options[:3]

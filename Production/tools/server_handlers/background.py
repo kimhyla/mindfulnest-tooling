@@ -3366,9 +3366,9 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
     job_id = str(_stdlib_uuid.uuid4())[:8]
     attempt_id = _stdlib_uuid.uuid4().hex
     prod = _data_root(h)
-    script = _PSERVER_TOOLS_DIR / "kling_o3_element_beat_pipeline.py"
+    script = prod / "tools" / "kling_o3_element_beat_pipeline.py"
     if not script.is_file():
-        script = prod / "tools" / "kling_o3_element_beat_pipeline.py"
+        script = _PSERVER_TOOLS_DIR / "kling_o3_element_beat_pipeline.py"
     if not script.is_file():
         return h._send_error_v59(
             500,

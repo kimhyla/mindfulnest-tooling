@@ -2288,6 +2288,7 @@ function BeatGenCard({
   })();
   const replaceSlotIndex = beat.kling_o3_replace_slot_index ?? 0;
   const o3FailureMessage = (beat.kling_o3_voice_fix_status ?? '').startsWith('failed')
+    && beat.kling_o3_status !== 'approved'
     ? formatO3JobFailure(beat.kling_o3_voice_fix_error)
     : null;
   const nativeProfile = beat.kling_native_lipsync_experiment_output_profile;

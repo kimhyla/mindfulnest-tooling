@@ -264,6 +264,38 @@ def run_pipeline(
     gen = int(beat.get("kling_o3_generation") or 0) + 1
     master = clips_dir / f"{beat_id}_g{gen}_element_o3_master.mp4"
 
+    def persist_o3_redo_failure(error_text: str, *, error_code: str, task_id: str | None = None) -> None:
+        fail_fields: dict = {
+            "kling_o3_voice_fix_completed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if task_id:
+            fail_fields["kling_o3_task_id"] = task_id
+        restored = bg_sidecar.restore_active_kling_o3_after_failed_redo(beat)
+        if restored:
+            persist(fail_fields, remove=(
+                "kling_o3_voice_fix_ui_job_id",
+                "kling_o3_voice_fix_error",
+                "kling_o3_voice_fix_error_code",
+                "kling_o3_voice_fix_phase",
+            ))
+            print(json.dumps({
+                "phase": "o3_redo_failed_kept_prior",
+                "beat_id": beat_id,
+                "error_code": error_code,
+                "task_id": task_id,
+                "message": error_text[:500],
+            }), flush=True)
+            return
+        fail_fields.update({
+            "status": "o3_element_failed",
+            "kling_o3_status": "failed",
+            "kling_o3_voice_fix_status": "failed_o3",
+            "kling_o3_voice_fix_error": error_text[:1500],
+            "kling_o3_voice_fix_error_code": error_code,
+            "kling_o3_voice_fix_phase": "failed",
+        })
+        persist(fail_fields, remove=("kling_o3_voice_fix_ui_job_id",))
+
     def persist(fields: dict | None = None, *, remove: tuple[str, ...] = ()):
         if fields:
             beat.update(fields)
@@ -323,31 +355,21 @@ def run_pipeline(
     except Exception as exc:
         msg = str(exc)
         transient = any(token in msg for token in ("Poll HTTP 502", "Poll HTTP 503", "Poll HTTP 504", "Poll HTTP 500", "Poll HTTP 429", "transport failed after retries"))
-        fail_fields = {
-            "kling_o3_voice_fix_status": "failed_o3",
-            "kling_o3_voice_fix_error": msg[:1500],
-            "kling_o3_voice_fix_error_code": "WAVESPEED_GATEWAY" if transient else "O3_RUNTIME",
-            "kling_o3_voice_fix_phase": "failed",
-            "kling_o3_voice_fix_completed_at": datetime.now(timezone.utc).isoformat(),
-        }
-        if not bg_sidecar.restore_active_kling_o3_after_failed_redo(beat):
-            fail_fields["status"] = "o3_element_failed"
-            fail_fields["kling_o3_status"] = "failed"
-        persist(fail_fields, remove=("kling_o3_voice_fix_ui_job_id",))
+        persist_o3_redo_failure(
+            msg,
+            error_code="WAVESPEED_GATEWAY" if transient else "O3_RUNTIME",
+        )
         raise
     if not result.get("ok"):
-        fail_fields = {
-            "status": "o3_element_failed",
-            "kling_o3_status": "failed",
-            "kling_o3_voice_fix_status": "failed_o3",
-            "kling_o3_voice_fix_error": json.dumps(result)[:1500],
-            "kling_o3_voice_fix_completed_at": datetime.now(timezone.utc).isoformat(),
-        }
-        if bg_sidecar.restore_active_kling_o3_after_failed_redo(beat):
-            fail_fields.pop("status", None)
-            fail_fields.pop("kling_o3_status", None)
-        persist(fail_fields, remove=("kling_o3_voice_fix_ui_job_id",))
-        raise RuntimeError(f"O3 element generation failed: {result}")
+        task_id = str(result.get("task_id") or "")
+        if task_id and result.get("retry_safe"):
+            print(json.dumps({"phase": "o3_resume", "beat_id": beat_id, "task_id": task_id}), flush=True)
+            result = o3.resume_task_to_mp4(api_key, task_id, master)
+        if not result.get("ok"):
+            err_text = result.get("error") or json.dumps(result)
+            code = "WAVESPEED_GATEWAY" if result.get("retry_safe") or result.get("status") == "poll_gateway_error" else "O3_PROVIDER"
+            persist_o3_redo_failure(str(err_text), error_code=code, task_id=task_id or None)
+            raise RuntimeError(f"O3 element generation failed: {result}")
 
     raw_probe = _probe(master)
     if not raw_probe["gate_pass"]:

@@ -459,7 +459,21 @@ def run_beat_generation(
     task_id, tier = submit_reference_to_video(
         api_key, prompt, char_image_path, bg_image_path, duration=duration, speaker=speaker,
     )
-    result = poll_until_done(task_id, api_key)
+    try:
+        result = poll_until_done(task_id, api_key)
+    except RuntimeError as exc:
+        msg = str(exc)
+        if "Poll HTTP" in msg or "transport failed after retries" in msg:
+            return {
+                "ok": False,
+                "task_id": task_id,
+                "status": "poll_gateway_error",
+                "tier": tier,
+                "error": msg,
+                "retry_safe": True,
+                "result": {"error": msg},
+            }
+        raise
     status = (result.get("status") or "").lower()
     if status != "completed":
         return {"ok": False, "task_id": task_id, "status": status, "tier": tier, "result": result}
