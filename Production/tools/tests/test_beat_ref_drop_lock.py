@@ -59,6 +59,16 @@ def test_migrate_sidecar_preserves_locked_library_char_ref(tmp_path: Path, monke
         "tools.kling_character_registry.get_character_entry",
         lambda _s: {"status": "active", "element_id": "123"},
     )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.file_sha256",
+        lambda p: "hash_library"
+        if Path(p).read_bytes() == b"library"
+        else "hash_canonical",
+    )
 
     sidecar = {
         "arcs": {
@@ -79,7 +89,8 @@ def test_migrate_sidecar_preserves_locked_library_char_ref(tmp_path: Path, monke
     }
     bg._migrate_sidecar(sidecar)
     beat = sidecar["arcs"]["arc_1"]["segments"]["event_2_pre"]["beats"][0]
-    assert beat["reference_image"]["abs_path"] == str(library)
+    assert beat["reference_image"]["abs_path"] == str(canonical.resolve())
+    assert library.read_bytes() == b"library"
 
 
 def test_migrate_sidecar_realigns_unlocked_char_ref(tmp_path: Path, monkeypatch):
@@ -260,7 +271,7 @@ def test_sync_element_char_ref_status_persists_mismatch_on_beat(tmp_path: Path, 
         "reference_image": {"abs_path": str(library)},
         "reference_image_locked": True,
     }
-    assert bg.sync_element_char_ref_status(beat) is False
+    assert bg.sync_element_char_ref_status(beat, heal_mismatch=False) is False
     assert beat["element_char_ref_ok"] is False
     assert "does not match Element images" in beat["element_char_ref_error"]
 
@@ -311,8 +322,8 @@ def test_migrate_sidecar_heals_locked_library_ref_to_element_pose(tmp_path: Path
     }
     bg._migrate_sidecar(sidecar)
     beat = sidecar["arcs"]["arc_1"]["segments"]["event_2_pre"]["beats"][0]
-    assert beat["reference_image"]["abs_path"] == str(library.resolve())
-    assert library.read_bytes() == b"canonical"
+    assert beat["reference_image"]["abs_path"] == str(canonical.resolve())
+    assert library.read_bytes() == b"library"
     assert beat["element_char_ref_ok"] is True
 
 
@@ -348,7 +359,7 @@ def test_sync_clears_stale_element_char_ref_error_when_hashes_match(tmp_path: Pa
     assert "element_char_ref_error" not in beat
 
 
-def test_apply_user_beat_ref_heals_library_drop_to_element_pose(tmp_path: Path, monkeypatch):
+def test_apply_user_beat_ref_keeps_library_bytes_on_mismatch(tmp_path: Path, monkeypatch):
     canonical = tmp_path / "Lorelai" / "poses" / "lorelai_canonical_neutral.png"
     library = tmp_path / "Event_2" / "library" / "images" / "sources" / "ChatGPT_Image.png"
     canonical.parent.mkdir(parents=True)
@@ -378,9 +389,10 @@ def test_apply_user_beat_ref_heals_library_drop_to_element_pose(tmp_path: Path, 
         {"abs_path": str(library), "key": "ChatGPT_Image"},
     )
     assert beat["reference_image"]["abs_path"] == str(library.resolve())
-    assert library.read_bytes() == b"canonical"
+    assert library.read_bytes() == b"library"
     assert beat["reference_image_locked"] is True
-    assert beat["element_char_ref_ok"] is True
+    assert beat["element_char_ref_ok"] is False
+    assert "does not match Element images" in beat["element_char_ref_error"]
 
 
 def test_require_element_char_ref_for_o3_raises_before_api(tmp_path: Path, monkeypatch):
@@ -416,7 +428,9 @@ def test_require_element_char_ref_for_o3_raises_before_api(tmp_path: Path, monke
         assert "ELEMENT_VISUAL_MISMATCH" in str(exc)
 
 
-def test_heal_locked_char_ref_restores_missing_library_file(tmp_path: Path, monkeypatch):
+def test_heal_locked_char_ref_redirects_missing_library_path_without_overwrite(
+    tmp_path: Path, monkeypatch,
+):
     canonical = tmp_path / "Lorelai" / "poses" / "lorelai_canonical_neutral.png"
     library = tmp_path / "Event_2" / "library" / "images" / "sources" / "ChatGPT_Image.png"
     library.parent.mkdir(parents=True, exist_ok=True)
@@ -445,7 +459,8 @@ def test_heal_locked_char_ref_restores_missing_library_file(tmp_path: Path, monk
         "element_char_ref_error": "Missing character reference image for 'Lorelai'",
     }
     assert bg.heal_locked_char_ref_to_element(beat) is True
-    assert library.read_bytes() == b"canonical"
+    assert not library.is_file()
+    assert beat["reference_image"]["abs_path"] == str(canonical.resolve())
     assert bg.sync_element_char_ref_status(beat) is True
     assert beat["element_char_ref_ok"] is True
     assert "element_char_ref_error" not in beat

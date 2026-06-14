@@ -5008,10 +5008,11 @@ def _is_event_library_char_ref(char_path: str) -> bool:
 
 
 def heal_locked_char_ref_to_element(beat: dict) -> bool:
-    """Point locked library @Image1 at registered Element pose when bytes differ.
+    """Redirect locked beat @Image1 to a registered Element pose when misaligned.
 
-    Re-register copies processed pose bytes into Production/<Char>/poses/ but
-    library/sources/ may still hold the pre-register upload (different sha256).
+    Never writes into Event_*/library/images/sources/ — overwriting library tiles
+    destroyed user uploads (neutral stills replaced by Element pose bytes).
+    Sidecar pointer update only; library inventory bytes stay immutable.
     """
     if not beat.get("reference_image_locked"):
         return False
@@ -5025,7 +5026,7 @@ def heal_locked_char_ref_to_element(beat: dict) -> bool:
             pending = str(ref.get("abs_path") or "").strip()
             if pending and _is_event_library_char_ref(pending):
                 char_path = os.path.normpath(pending)
-    if not char_path or not _is_event_library_char_ref(char_path):
+    if not char_path:
         return False
     try:
         from tools import kling_character_registry as reg
@@ -5040,16 +5041,6 @@ def heal_locked_char_ref_to_element(beat: dict) -> bool:
         chosen_str = str(_pick_element_ref_path(beat, element_paths).resolve())
         if os.path.normpath(char_path) == os.path.normpath(chosen_str):
             return False
-        # Re-register updates Element poses but leaves library/sources/ uploads stale.
-        # Sync bytes onto the locked library tile first so @Image1 path + hash both match.
-        try:
-            import shutil
-
-            shutil.copy2(chosen_str, char_path)
-            if reg.char_ref_matches_element_images(char_path, speaker)[0]:
-                return True
-        except OSError:
-            pass
         beat["reference_image"] = _ref_dict_from_path(chosen_str)
         return True
     except Exception:
@@ -5066,8 +5057,8 @@ def apply_user_beat_ref_update(beat: dict, field: str, value) -> None:
         beat[field] = value
         beat[lock_field] = True
         if field == "reference_image":
-            heal_locked_char_ref_to_element(beat)
-            sync_element_char_ref_status(beat)
+            # User explicitly chose this tile — validate gate only; never rewrite library bytes.
+            sync_element_char_ref_status(beat, heal_mismatch=False)
     elif value is None:
         beat[field] = None
         beat[lock_field] = False
@@ -5175,7 +5166,7 @@ def element_char_ref_gate(beat: dict) -> tuple[bool, str]:
         return False, str(exc)
 
 
-def sync_element_char_ref_status(beat: dict) -> bool:
+def sync_element_char_ref_status(beat: dict, *, heal_mismatch: bool = True) -> bool:
     """Persist element_char_ref_ok/error on beat for UI + submit gates."""
     speaker = str(beat.get("speaker") or "").strip()
     try:
@@ -5189,7 +5180,7 @@ def sync_element_char_ref_status(beat: dict) -> bool:
         beat.pop("element_char_ref_ok", None)
         beat.pop("element_char_ref_error", None)
         return True
-    if beat.get("reference_image_locked"):
+    if heal_mismatch and beat.get("reference_image_locked"):
         heal_locked_char_ref_to_element(beat)
     ok, detail = element_char_ref_gate(beat)
     beat["element_char_ref_ok"] = ok
@@ -5202,7 +5193,7 @@ def sync_element_char_ref_status(beat: dict) -> bool:
 
 def require_element_char_ref_for_o3(beat: dict) -> None:
     """Raise before any Element O3 subprocess/API work if @Image1 is wrong."""
-    if not sync_element_char_ref_status(beat):
+    if not sync_element_char_ref_status(beat, heal_mismatch=False):
         detail = beat.get("element_char_ref_error") or "char ref does not match Element poses"
         raise RuntimeError(f"ELEMENT_VISUAL_MISMATCH: {detail}")
 
