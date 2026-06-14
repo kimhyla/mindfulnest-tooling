@@ -1031,7 +1031,6 @@ export function BgTab() {
       {
         beat_id: beatId,
         method: 'ken_burns',
-        duration: 4.0,
         slot_index: beat?.kling_o3_replace_slot_index ?? 0,
       },
     );

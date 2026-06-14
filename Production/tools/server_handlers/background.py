@@ -4301,9 +4301,9 @@ def handle_bg_render_still_clip(h, body: dict) -> None:
             retry_safe=False,
         )
     try:
-        duration = float(body.get("duration") or 4.0)
+        requested_duration = float(body.get("duration") or bg.STILL_INSERT_DEFAULT_DURATION_S)
     except (TypeError, ValueError):
-        duration = 4.0
+        requested_duration = bg.STILL_INSERT_DEFAULT_DURATION_S
     try:
         slot_index = int(body.get("slot_index") or 0)
     except (TypeError, ValueError):
@@ -4360,6 +4360,20 @@ def handle_bg_render_still_clip(h, body: dict) -> None:
     if not tts_result.get("ok") and not tts_result.get("unchanged"):
         work_beat.pop("audio_file", None)
         work_beat.pop("still_tts_source_text", None)
+
+    duration = bg.resolve_still_insert_render_duration(
+        work_beat,
+        h.app.event_dir,
+        sidecar=work_sidecar,
+        production_state=production_state,
+        video_role=video_role,
+        fallback=requested_duration,
+    )
+    print(
+        f"[still-clip] {beat_id} render duration={duration:.2f}s "
+        f"(requested={requested_duration:.2f}s, tts_ok={tts_result.get('ok')})",
+        flush=True,
+    )
 
     try:
         result = bg.render_still_insert_o3_clip(

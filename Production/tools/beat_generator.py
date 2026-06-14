@@ -701,6 +701,9 @@ INTRO_PAIR_FADE_MS_MAX = 4000
 # freeze_tail dead air between beats (that was the old 2.5s pause problem).
 MAGIC_STILL_STITCH_EXPORT_FREEZE_TAIL_S = 0.0
 MAGIC_STILL_TTS_EXPORT_RECIPE = "full_still_v1"
+STILL_INSERT_DEFAULT_DURATION_S = 4.0
+STILL_INSERT_AUDIO_TAIL_PAD_S = 0.25
+STILL_INSERT_MIN_DURATION_S = 1.0
 INTRO_VISUAL_FADE_MS_MAX = 1200
 
 
@@ -2915,12 +2918,47 @@ def extract_still_insert_tts(beat: dict) -> dict | None:
     return {"speaker": speaker, "text": spoken}
 
 
+def resolve_still_insert_render_duration_from_audio(
+    audio_path: Path,
+    *,
+    fallback: float = STILL_INSERT_DEFAULT_DURATION_S,
+) -> float:
+    """Still clip length = full TTS + small tail pad (never hard-cap at 4s)."""
+    audio_dur = _ffprobe_duration(audio_path)
+    if audio_dur > 0:
+        return max(STILL_INSERT_MIN_DURATION_S, audio_dur + STILL_INSERT_AUDIO_TAIL_PAD_S)
+    return fallback
+
+
+def resolve_still_insert_render_duration(
+    beat: dict,
+    event_dir: str | Path,
+    *,
+    sidecar: dict | None = None,
+    production_state: dict | None = None,
+    video_role: str = "intro",
+    fallback: float | None = None,
+) -> float:
+    """Pick Ken Burns / static-hold duration from TTS when present."""
+    base = STILL_INSERT_DEFAULT_DURATION_S if fallback is None else float(fallback)
+    audio = resolve_bg_beat_tts_audio_path(
+        event_dir,
+        beat,
+        sidecar=sidecar,
+        production_state=production_state,
+        video_role=video_role,
+    )
+    if audio is not None and audio.is_file():
+        return resolve_still_insert_render_duration_from_audio(audio, fallback=base)
+    return base
+
+
 def render_still_insert_o3_clip(
     beat: dict,
     event_dir: str | Path,
     *,
     method: str = "ken_burns",
-    duration: float = 4.0,
+    duration: float = STILL_INSERT_DEFAULT_DURATION_S,
     slot_index: int = 0,
     sidecar: dict | None = None,
     production_state: dict | None = None,
@@ -2933,6 +2971,14 @@ def render_still_insert_o3_clip(
             "No still image — drop a library image in option 1 or set char/BG ref first"
         )
     event_dir = Path(event_dir)
+    audio = resolve_bg_beat_tts_audio_path(
+        event_dir, beat, sidecar=sidecar,
+        production_state=production_state, video_role=video_role,
+    )
+    if audio is not None and audio.is_file():
+        duration = resolve_still_insert_render_duration_from_audio(
+            audio, fallback=duration,
+        )
     clips_dir = kling_o3_clips_dir(event_dir)
     ts = int(time.time())
     saved_trim_start = float(beat.get("kling_o3_trim_start") or 0.0)
@@ -2946,10 +2992,6 @@ def render_still_insert_o3_clip(
             beat, str(still), 20, 20, 1.0, 1.15, duration, out_path=silent_path,
         )
     final_path = silent_path.resolve()
-    audio = resolve_bg_beat_tts_audio_path(
-        event_dir, beat, sidecar=sidecar,
-        production_state=production_state, video_role=video_role,
-    )
     tts_mixed = False
     if audio is not None and audio.is_file():
         muxed = clips_dir / f"{beat['beat_id']}_still_insert_{ts}_tts.mp4"
@@ -2961,7 +3003,7 @@ def render_still_insert_o3_clip(
             trim_end=None,
             mix_audio_path=audio,
             audio_delay=0.0,
-            freeze_tail_s=0.0,
+            freeze_tail_s=STILL_INSERT_AUDIO_TAIL_PAD_S,
         )
         final_path = muxed.resolve()
         tts_mixed = True

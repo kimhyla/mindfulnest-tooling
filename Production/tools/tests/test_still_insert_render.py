@@ -106,6 +106,57 @@ def test_sync_beat_dialogue_from_kling_prompt_still_insert():
     assert bg.extract_still_insert_tts(beat) is None
 
 
+def test_resolve_still_insert_render_duration_from_audio(tmp_path: Path):
+    audio = tmp_path / "line.mp3"
+    audio.write_bytes(b"mp3")
+    with patch.object(bg, "_ffprobe_duration", return_value=7.5):
+        dur = bg.resolve_still_insert_render_duration_from_audio(audio)
+    assert dur == 7.5 + bg.STILL_INSERT_AUDIO_TAIL_PAD_S
+
+
+def test_resolve_still_insert_render_duration_without_audio(tmp_path: Path):
+    beat = {"beat_id": "bg_test", "pipeline": "still_insert"}
+    with patch.object(bg, "resolve_bg_beat_tts_audio_path", return_value=None):
+        dur = bg.resolve_still_insert_render_duration(beat, tmp_path, fallback=4.0)
+    assert dur == 4.0
+
+
+def test_render_still_insert_o3_clip_uses_tts_duration(tmp_path: Path):
+    event_dir = tmp_path / "Event_2"
+    event_dir.mkdir()
+    still = event_dir / "still.png"
+    still.write_bytes(b"png")
+    audio = event_dir / "tts.mp3"
+    audio.write_bytes(b"mp3")
+    beat = {
+        "beat_id": "bg_arc1_event2_pre_beat_10",
+        "pipeline": "still_insert",
+        "bg_ref_image": {"abs_path": str(still)},
+    }
+    captured: dict = {}
+
+    def _fake_ken_burns(_beat, _still_path, *_args, **kwargs):
+        captured["duration"] = _args[-1] if _args else kwargs.get("duration")
+        out = Path(kwargs["out_path"])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"mp4")
+        return {"video_path": str(out), "preview_path": _still_path}
+
+    with patch.object(bg, "run_ken_burns", side_effect=_fake_ken_burns), patch.object(
+        bg, "resolve_bg_beat_tts_audio_path", return_value=audio,
+    ), patch.object(bg, "_ffprobe_duration", return_value=6.8), patch.object(
+        bg, "_ffmpeg_stitch_module",
+    ) as mock_fs_mod:
+        mock_fs_mod.return_value.trim_normalized = lambda *a, **k: None
+        result = bg.render_still_insert_o3_clip(
+            beat, event_dir, method="ken_burns", duration=4.0, slot_index=0,
+        )
+
+    assert captured["duration"] == 6.8 + bg.STILL_INSERT_AUDIO_TAIL_PAD_S
+    assert result["duration_s"] == 6.8 + bg.STILL_INSERT_AUDIO_TAIL_PAD_S
+    assert result["tts_mixed"] is True
+
+
 def test_render_still_insert_replaces_prior_still_in_same_slot(tmp_path: Path):
     event_dir = tmp_path / "Event_2"
     event_dir.mkdir()
