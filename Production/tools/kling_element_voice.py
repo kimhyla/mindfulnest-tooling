@@ -388,6 +388,29 @@ def create_kling_voice(audio_url: str, wavespeed_key: str) -> str:
     return str(voice_id)
 
 
+def refresh_voice_and_register_element(
+    char_name: str,
+    cfg: dict,
+    wavespeed_key: str,
+    elevenlabs_key: str | None = None,
+) -> dict:
+    """Fresh create-voice + Element register — durable voice bind after pose change."""
+    sample_path = ensure_voice_sample(
+        char_name, cfg, elevenlabs_key, force_regenerate=False,
+    )
+    audio_url = upload_catbox(sample_path)
+    kling_voice_id = create_kling_voice(audio_url, wavespeed_key)
+    element_id, prediction_id = register_kling_element(
+        char_name, cfg, kling_voice_id, wavespeed_key,
+    )
+    updated = dict(cfg)
+    updated["kling_voice_id"] = kling_voice_id
+    updated["element_id"] = element_id
+    updated["wavespeed_prediction_id"] = prediction_id
+    updated["status"] = "active"
+    return updated
+
+
 def register_kling_element(
     char_name: str,
     cfg: dict,
@@ -395,12 +418,14 @@ def register_kling_element(
     wavespeed_key: str,
 ) -> tuple[str, str]:
     """Register image_refer Element with bound custom voice. Returns (element_id, prediction_id)."""
-    from tools.kling_character_registry import trim_refer_images_for_element
+    from tools.kling_character_registry import pinned_refer_paths, trim_refer_images_for_element
 
     root = _character_asset_root()
     frontal_path = root / cfg["frontal_image"]
+
     refer_rels = trim_refer_images_for_element(
         [str(r) for r in (cfg.get("refer_images") or [])],
+        pin=pinned_refer_paths(cfg),
     )
     refer_paths = [root / p for p in refer_rels]
     if not frontal_path.is_file():

@@ -60,6 +60,74 @@ def voice_block(speaker: str, spoken: str) -> str:
     return f'{voice_name} speaks clearly at a natural pace, steady and not bubbly or hyper: "{spoken}"'
 
 
+def inject_locked_voice_line(prompt: str, speaker: str, spoken: str) -> str:
+    """Replace legacy <<<voice_N>>> / author verb lines with Element locked delivery."""
+    locked = voice_block(speaker, spoken)
+    lines = prompt.splitlines()
+    out: list[str] = []
+    replaced = False
+    voice_line_re = re.compile(r"\b(speaks|says)\b", re.I)
+    for line in lines:
+        low = line.lower()
+        if not replaced and (voice_line_re.search(line) or "<<<voice_" in low):
+            if "speaks in a" in low:
+                colon = re.search(r":\s*", line)
+                if colon:
+                    head = line[: colon.end()].rstrip()
+                    out.append(f'{head} "{spoken}"')
+                else:
+                    out.append(locked)
+            else:
+                out.append(locked)
+            replaced = True
+        elif not replaced and re.search(r":\s*[\"']", line):
+            # Author verbs (bursts out, cries, etc.) with quoted dialogue after colon.
+            out.append(locked)
+            replaced = True
+        else:
+            out.append(line)
+    if replaced:
+        return "\n".join(out)
+    marker = "Children's illustrated"
+    idx = prompt.find(marker)
+    if idx < 0:
+        return f"{prompt.rstrip()}\n\n{locked}\n"
+    return f"{prompt[:idx].rstrip()}\n\n{locked}\n\n{prompt[idx:]}"
+
+
+def upgrade_element_bound_voice_prompt(
+    speaker: str,
+    prompt: str,
+    *,
+    extract_spoken,
+) -> tuple[str, str, bool]:
+    """Auto-fix legacy <<<voice_N>>> and author-only voice lines before O3 submit."""
+    text = (prompt or "").strip()
+    if not text:
+        return text, "", False
+    try:
+        from tools import kling_character_registry as reg
+
+        if not reg.is_speaker_voice_ready(speaker):
+            spoken = extract_spoken(text) or ""
+            return text, spoken, False
+    except Exception:
+        spoken = extract_spoken(text) or ""
+        return text, spoken, False
+
+    spoken = extract_spoken(text) or ""
+    lower = text.lower()
+    needs_upgrade = (
+        "<<<voice_" in lower
+        or not re.search(r"\b(?:speaks|says)\b", text, re.I)
+    )
+    if not needs_upgrade or not spoken:
+        return text, spoken, False
+
+    upgraded = inject_locked_voice_line(text, speaker, spoken)
+    return upgraded, spoken, upgraded != text
+
+
 def validate_element_bound_voice_prompt(speaker: str, prompt: str) -> list[str]:
     """Hard gates before O3 Pro + element_list — prompt box is law for delivery wording."""
     errors: list[str] = []

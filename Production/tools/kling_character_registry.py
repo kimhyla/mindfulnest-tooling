@@ -269,20 +269,42 @@ def assign_voice(character: str, voice_id: str, voice_label: str | None = None) 
 MAX_ELEMENT_REFER_IMAGES = 3
 
 
+def pinned_refer_paths(cfg: dict) -> set[str]:
+    """Refer paths that must survive Kling's 3-pose cap (canonical identity anchors)."""
+    pins: set[str] = set()
+    frontal = str(cfg.get("frontal_image") or "")
+    if frontal and "canonical" in frontal.lower():
+        pins.add(frontal)
+    for rel in cfg.get("refer_images") or []:
+        rel_s = str(rel)
+        if "canonical" in rel_s.lower():
+            pins.add(rel_s)
+    return pins
+
+
 def trim_refer_images_for_element(
     refer: list[str],
     *,
     keep: str | None = None,
     max_count: int = MAX_ELEMENT_REFER_IMAGES,
+    pin: set[str] | frozenset[str] | None = None,
 ) -> list[str]:
     """Kling elements API accepts at most 3 refer_images (frontal is separate)."""
+    pin_set = set(pin or ())
     ordered = [str(r) for r in refer if r]
-    if keep and keep in ordered:
-        ordered.remove(keep)
-        ordered.append(keep)
-    while len(ordered) > max_count:
-        ordered.pop(0)
-    return ordered
+    pinned = [r for r in ordered if r in pin_set]
+    unpinned = [r for r in ordered if r not in pin_set]
+    if keep and keep in unpinned:
+        unpinned.remove(keep)
+        unpinned.append(keep)
+    while len(pinned) + len(unpinned) > max_count:
+        if unpinned:
+            unpinned.pop(0)
+        elif len(pinned) > max_count:
+            pinned.pop(0)
+        else:
+            break
+    return pinned + unpinned
 
 
 def slugify(name: str) -> str:
@@ -309,11 +331,13 @@ def add_element_pose(
     source_abs_path: str | Path,
     wavespeed_key: str,
 ) -> dict[str, Any]:
-    """Copy a pose PNG into Production/<Char>/poses and re-register Element only.
+    """Copy a pose PNG into Production/<Char>/poses and re-bind voice + Element.
 
-    Does not call setup_character_voice — preserves existing kling_voice_id.
+    Runs fresh create-voice + Element register so the new Element reliably
+    inherits the locked ElevenLabs clone (pose-only re-register with a stale
+    voice_id often yields generic/male TTS on O3).
     """
-    from tools.kling_element_voice import register_kling_element
+    from tools.kling_element_voice import refresh_voice_and_register_element
 
     source = Path(source_abs_path).resolve()
     if not source.is_file():
@@ -345,15 +369,24 @@ def add_element_pose(
     refer = [str(r) for r in (cfg.get("refer_images") or [])]
     if rel_pose not in refer:
         refer.append(rel_pose)
-    cfg["refer_images"] = trim_refer_images_for_element(refer, keep=rel_pose)
+    pin_refs = pinned_refer_paths(cfg)
+    cfg["refer_images"] = trim_refer_images_for_element(
+        refer, keep=rel_pose, pin=pin_refs,
+    )
     if not cfg.get("frontal_image"):
         cfg["frontal_image"] = rel_pose
 
-    element_id, _prediction_id = register_kling_element(
-        char_key, cfg, str(voice_id), wavespeed_key,
+    try:
+        from credentials import load_credentials  # type: ignore
+    except ImportError:
+        from tools.credentials_lib.credentials import load_credentials  # type: ignore
+    creds = load_credentials()
+    elevenlabs_key = creds.get("elevenlabs_key") or creds.get("elevenlabs")
+
+    cfg = refresh_voice_and_register_element(
+        char_key, cfg, wavespeed_key, elevenlabs_key,
     )
-    cfg["element_id"] = element_id
-    cfg["status"] = "active"
+    element_id = str(cfg.get("element_id") or "")
     chars[char_key] = cfg
     data["characters"] = chars
     save_character_subjects(data)
@@ -363,7 +396,9 @@ def add_element_pose(
         "pose_rel": rel_pose,
         "pose_abs_path": str(dest),
         "element_id": element_id,
+        "kling_voice_id": cfg.get("kling_voice_id"),
         "character": char_key,
+        "voice_rebound": True,
     }
 
 

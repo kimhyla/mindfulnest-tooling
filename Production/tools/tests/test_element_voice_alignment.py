@@ -59,6 +59,79 @@ def test_validate_element_bound_voice_prompt_rejects_generic_tags():
     assert any("<<<voice_" in e for e in errs)
 
 
+def test_upgrade_element_bound_voice_prompt_fixes_legacy_voice_tags(monkeypatch):
+    from tools import kling_o3_prompt as o3p
+    import beat_generator as bg
+
+    monkeypatch.setattr(
+        "tools.kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+    raw = (
+        '@Image1 (Character) calm and attentive. Scene from @Image2.\n\n'
+        'Camera: slow zoom-in\n\n'
+        '@Image1 <<<voice_1>>> speaks clearly at a natural pace: "What\'s THAT one say?"'
+    )
+    upgraded, spoken, changed = o3p.upgrade_element_bound_voice_prompt(
+        "Tessa",
+        raw,
+        extract_spoken=bg.extract_spoken_dialogue_from_kling_prompt,
+    )
+    assert changed is True
+    assert spoken == "What's THAT one say?"
+    assert "<<<voice_" not in upgraded
+    assert "Tessa speaks in a warm gentle conversational pace" in upgraded
+    assert o3p.validate_element_bound_voice_prompt("Tessa", upgraded) == []
+
+
+def test_upgrade_element_bound_voice_prompt_fixes_author_verb_line(monkeypatch):
+    from tools import kling_o3_prompt as o3p
+    import beat_generator as bg
+
+    monkeypatch.setattr(
+        "tools.kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+    raw = (
+        'Lorelai bursts out in a giddy, barely-contained squeal of academic rapture: '
+        '"[delirious joy] Oh this is the most EXCITING THING IN THE WORLD!!!"'
+    )
+    upgraded, spoken, changed = o3p.upgrade_element_bound_voice_prompt(
+        "Lorelai",
+        raw,
+        extract_spoken=bg.extract_spoken_dialogue_from_kling_prompt,
+    )
+    assert changed is True
+    assert "EXCITING THING" in spoken
+    assert "Laurel speaks in a warm excited conversational pace" in upgraded
+    assert o3p.validate_element_bound_voice_prompt("Lorelai", upgraded) == []
+
+
+def test_trim_refer_images_preserves_canonical_pin():
+    from tools import kling_character_registry as reg
+
+    cfg = {
+        "frontal_image": "Lorelai/poses/lorelai_canonical_neutral.png",
+        "refer_images": [
+            "Lorelai/poses/lorelai_canonical_neutral.png",
+            "Lorelai/poses/old_a.png",
+            "Lorelai/poses/old_b.png",
+            "Lorelai/poses/old_c.png",
+        ],
+    }
+    pin = reg.pinned_refer_paths(cfg)
+    refer = list(cfg["refer_images"])
+    refer.append("Lorelai/poses/new_pose.png")
+    trimmed = reg.trim_refer_images_for_element(
+        refer,
+        keep="Lorelai/poses/new_pose.png",
+        pin=pin,
+    )
+    assert len(trimmed) == 3
+    assert "Lorelai/poses/lorelai_canonical_neutral.png" in trimmed
+    assert trimmed[-1] == "Lorelai/poses/new_pose.png"
+
+
 def test_validate_element_bound_voice_prompt_accepts_locked_delivery():
     from tools import kling_o3_prompt as o3p
 

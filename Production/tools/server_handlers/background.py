@@ -3456,6 +3456,16 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                 )
             from tools import kling_o3_prompt as o3p
 
+            stored_for_voice = str(beat.get("kling_o3_prompt") or "")
+            upgraded, _spoken_upgraded, voice_upgraded = o3p.upgrade_element_bound_voice_prompt(
+                speaker,
+                stored_for_voice,
+                extract_spoken=bg.extract_spoken_dialogue_from_kling_prompt,
+            )
+            if voice_upgraded:
+                beat["kling_o3_prompt"] = upgraded
+                bg.sync_beat_dialogue_from_kling_prompt(beat)
+
             voice_prompt_errors = o3p.validate_element_bound_voice_prompt(
                 speaker,
                 str(beat.get("kling_o3_prompt") or ""),

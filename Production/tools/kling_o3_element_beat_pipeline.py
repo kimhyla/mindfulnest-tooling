@@ -72,22 +72,27 @@ def _spoken_from_beat(beat: dict, normalize_fn) -> str:
 
 
 def resolve_element_o3_submit_prompt(beat: dict) -> tuple[str, str]:
-    """Return (kling_prompt, spoken_log). Sidecar ``kling_o3_prompt`` is sent verbatim."""
+    """Return (kling_prompt, spoken_log). Upgrades legacy voice tags before submit."""
     stored_prompt = (beat.get("kling_o3_prompt") or "").strip()
     build_prompt, normalize_spoken = _load_build_prompt()
     speaker = str(beat.get("speaker") or "").strip()
     if stored_prompt:
-        spoken = (
-            bg_sidecar.extract_spoken_dialogue_from_kling_prompt(stored_prompt)
-            if stored_prompt
-            else ""
+        from tools import kling_o3_prompt as o3p
+
+        upgraded, spoken, changed = o3p.upgrade_element_bound_voice_prompt(
+            speaker,
+            stored_prompt,
+            extract_spoken=bg_sidecar.extract_spoken_dialogue_from_kling_prompt,
         )
-        if not spoken and re.search(r"\b(?:speaks|says)\b", stored_prompt, re.I):
+        prompt = upgraded if changed else stored_prompt
+        if changed:
+            beat["kling_o3_prompt"] = prompt
+        if not spoken and re.search(r"\b(?:speaks|says)\b", prompt, re.I):
             raise RuntimeError(
                 "ELEMENT_VOICE_PROMPT: could not extract spoken dialogue from the "
                 "voice line — put the full line in double quotes after speaks…:"
             )
-        return stored_prompt, spoken or ""
+        return prompt, spoken or ""
     spoken = _spoken_from_beat(beat, normalize_spoken)
     return _inject_locked_voice(build_prompt(beat), speaker, spoken), spoken
 
