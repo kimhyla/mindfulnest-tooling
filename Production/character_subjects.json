@@ -295,10 +295,10 @@
       }
     },
     "Lorelai": {
-      "element_id": "313381239316325",
+      "element_id": "313387775241527",
       "status": "active",
       "element_name": "Lorelai",
-      "description": "Cartoon 3D Pixar-style lemur scholar, glasses, backpack, excitable academic personality",
+      "description": "Cartoon 3D Pixar-style raccoon archaeologist, round glasses, leather backpack, excitable academic personality",
       "frontal_image": "Lorelai/poses/lorelai_canonical_neutral.png",
       "refer_images": [
         "Lorelai/poses/lorelai_explaining.png",
@@ -306,10 +306,10 @@
       ],
       "elevenlabs_voice_id": "PoHUWWWMHFrA8z7Q88pu",
       "elevenlabs_voice_name": "Miranda",
-      "kling_voice_id": "894985515831795792",
+      "kling_voice_id": "895013151912763464",
       "kling_voice_label": "ElevenLabs Miranda (create-voice)",
-      "created_at": "2026-06-14T04:02:40.437037+00:00",
-      "wavespeed_prediction_id": "9b6fd010440d4beaa1e12839fc124cb9",
+      "created_at": "2026-06-14T05:51:37.402237+00:00",
+      "wavespeed_prediction_id": "8bc3b542262a463a975eea90170252e8",
       "audition_line": "Fascinating! The patterns match exactly!",
       "audition_speed": 1.0,
       "element_sample_lines": [
