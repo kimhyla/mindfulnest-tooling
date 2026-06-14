@@ -37,6 +37,8 @@ Do **not** auto-align `reference_image` on `still_insert` beats — they use lib
 
 ## Lorelai Element
 
+**Kling display name:** `Laurel` (Kling cannot pronounce "Lorelai"). Registry key, sidecar `speaker`, and pose paths stay `Lorelai`. All Kling surfaces — `element_list.element_name`, O3 voice lines (`Laurel speaks in a …`), and `@Image1 (Laurel)` — use **Laurel** via `kling_element_display_name()`.
+
 Poses: `Lorelai/poses/lorelai_canonical_neutral.png`, `lorelai_explaining.png`, `lorelai_shocked.png`
 
 Re-register after pose swap: `python3 scripts/setup_all_kling_character_voices.py --char Lorelai --force`

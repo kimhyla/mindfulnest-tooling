@@ -594,8 +594,14 @@ _WEAK_SAYS_COLON_RE = re.compile(
 def _event1_voice_line_upgrade(speaker: str, delivery: str) -> str:
     """Canonical weak-line upgrade prefix — must match element_name for Kling bind."""
     canon = (speaker or "").strip()
-    if canon in ("Lorelai", "Laurel"):
-        return f"Lorelai speaks in a {delivery}: "
+    try:
+        from tools import kling_character_registry as reg
+
+        display = reg.kling_element_display_name(speaker)
+        if display:
+            return f"{display} speaks in a {delivery}: "
+    except Exception:
+        pass
     return f"{canon} speaks in a {delivery}: "
 
 
@@ -644,8 +650,10 @@ def normalize_kling_o3_prompt_event1_quality(
             out = _WEAK_SAYS_COLON_RE.sub(upgrade, out, count=1)
 
     import beat_generator as bg
+    from tools import kling_o3_prompt as o3p
 
     out = bg.normalize_kling_o3_identity_footer(out)
+    out = o3p.normalize_kling_speaker_names_in_prompt(out, speaker)
 
     beat_stub = {
         "speaker": speaker,

@@ -117,6 +117,8 @@ def _prompt_needs_locked_voice_upgrade(speaker: str, prompt: str) -> bool:
     text = (prompt or "").strip()
     if not text or not delivery_for_speaker(speaker):
         return False
+    if _prompt_needs_kling_name_normalization(speaker, text):
+        return True
     lower = text.lower()
     if "<<<voice_" in lower:
         return True
@@ -129,7 +131,65 @@ def _prompt_needs_locked_voice_upgrade(speaker: str, prompt: str) -> bool:
         return True
     if not voice_line_has_canonical_delivery(speaker, voice_line):
         return True
+    if not _voice_line_matches_kling_display_name(speaker, voice_line):
+        return True
     return False
+
+
+def _kling_display_name_for_speaker(speaker: str) -> str | None:
+    try:
+        from tools import kling_character_registry as reg
+
+        return reg.kling_element_display_name(speaker)
+    except Exception:
+        return None
+
+
+def _voice_line_matches_kling_display_name(speaker: str, voice_line: str) -> bool:
+    display = _kling_display_name_for_speaker(speaker)
+    if not display:
+        return True
+    return bool(re.search(rf"\b{re.escape(display)}\s+(?:speaks|says)\b", voice_line, re.I))
+
+
+def _prompt_needs_kling_name_normalization(speaker: str, prompt: str) -> bool:
+    display = _kling_display_name_for_speaker(speaker)
+    if not display or display == (speaker or "").strip():
+        return False
+    text = prompt or ""
+    if re.search(r"@Image1\s*\(\s*Lorelai\s*\)", text, re.I):
+        return True
+    if re.search(r"\bLorelai\s+(?:speaks|says)\b", text, re.I):
+        return True
+    lines = text.splitlines()
+    found = _find_voice_delivery_line(lines)
+    if found and not _voice_line_matches_kling_display_name(speaker, found[1]):
+        return True
+    return False
+
+
+def normalize_kling_speaker_names_in_prompt(prompt: str, speaker: str) -> str:
+    """Map registry speaker names to Kling Element display names (Lorelai → Laurel)."""
+    display = _kling_display_name_for_speaker(speaker)
+    if not display:
+        return prompt
+    try:
+        from tools import kling_character_registry as reg
+
+        reg_key = reg.resolve_registry_key(speaker) or (speaker or "").strip()
+        if reg_key not in reg._KLING_ELEMENT_DISPLAY_NAME:
+            return prompt
+    except Exception:
+        return prompt
+    out = prompt or ""
+    out = re.sub(r"@Image1\s*\(\s*Lorelai\s*\)", f"@Image1 ({display})", out, flags=re.I)
+    out = re.sub(
+        r"\bLorelai(\s+(?:speaks|says|looks|bursts|cries|whispers|shouts)\b)",
+        rf"{display}\1",
+        out,
+        flags=re.I,
+    )
+    return out
 
 
 def _voice_line_display_name(speaker: str, element_name: str | None) -> str:
@@ -141,12 +201,12 @@ def _voice_line_display_name(speaker: str, element_name: str | None) -> str:
 def voice_block(speaker: str, spoken: str) -> str:
     """Return the canonical O3 voice line for a speaker (Element-bound delivery)."""
     canon = (speaker or "Character").strip()
-    delivery = _DELIVERY_BY_SPEAKER.get(canon)
+    delivery = delivery_for_speaker(canon)
     element_name = canon
     try:
         from tools import kling_character_registry as reg
 
-        element_name = reg.get_element_name(canon) or canon
+        element_name = reg.kling_element_display_name(canon) or reg.get_element_name(canon) or canon
     except Exception:
         pass
     voice_name = _voice_line_display_name(canon, element_name)
@@ -216,11 +276,16 @@ def upgrade_element_bound_voice_prompt(
         "<<<voice_" in lower
         or not re.search(r"\b(?:speaks|says)\b", text, re.I)
         or _prompt_needs_locked_voice_upgrade(speaker, text)
+        or _prompt_needs_kling_name_normalization(speaker, text)
     )
     if not needs_upgrade or not spoken:
+        normalized_only = normalize_kling_speaker_names_in_prompt(text, speaker)
+        if normalized_only != text:
+            return normalized_only, spoken, True
         return text, spoken, False
 
     upgraded = inject_locked_voice_line(text, speaker, spoken)
+    upgraded = normalize_kling_speaker_names_in_prompt(upgraded, speaker)
     return upgraded, spoken, upgraded != text
 
 
@@ -262,4 +327,14 @@ def validate_element_bound_voice_prompt(speaker: str, prompt: str) -> list[str]:
             errors.append("prompt voice line must use 'speaks in a {canonical delivery}'")
         elif delivery.lower() not in voice_lower:
             errors.append("prompt voice line missing canonical delivery lock")
+        display = _kling_display_name_for_speaker(speaker)
+        if display and not _voice_line_matches_kling_display_name(speaker, voice_line):
+            if re.search(r"\bLorelai\s+(?:speaks|says)\b", voice_line, re.I):
+                errors.append(
+                    "prompt voice line must use 'Laurel' (Kling display name), not 'Lorelai'"
+                )
+            else:
+                errors.append(
+                    f"prompt voice line name must match Element display name ({display})"
+                )
     return errors

@@ -48,3 +48,29 @@ def test_stale_sidecar_dialogue_does_not_shrink_duration_when_prompt_is_long():
         "kling_o3_duration": 8,
     }
     assert bg.resolve_kling_o3_submit_duration(beat, ARLO_TRANSITION_PROMPT) == 12
+
+
+LORELAI_BEAT09_PROMPT = """@Image1 (Laurel) Lorelai — arc 1 event 2 pre, beat 09. Scene from @Image2.
+
+Camera: Slow zoom in, stable eye-level medium shot.  Laurel looks directly at the camera as she speaks
+
+Laurel speaks in a slow, dramatic, friendly, scholarly tone: "[dramatic, scholarly, friendly, conspiratorial] Well, the ancient world was powered by Light-Magic. [pause] And the Light Magic came through the Rune stones. That's why I'm here, I'm researching the MindfulNest ... for my school project."
+
+Children's illustrated fantasy storybook style, warm golden Everdale light."""
+
+
+def test_lorelai_beat09_thirty_word_pause_line_resolves_to_12s():
+    beat = {
+        "dialogue_text": (
+            "[dramatic, scholarly, friendly, conspiratorial] Well, the ancient world was "
+            "powered by Light-Magic. [pause] And the Light Magic came through the Rune "
+            "stones. That's why I'm here, I'm researching the MindfulNest . for my school project."
+        ),
+        "kling_o3_duration": 8,
+    }
+    assert bg.resolve_kling_o3_submit_duration(beat, LORELAI_BEAT09_PROMPT) == 12
+
+
+def test_short_single_chunk_still_caps_at_8s():
+    short = 'Laurel speaks in a warm excited conversational pace: "Oh my goodness!"'
+    assert bg.resolve_kling_o3_submit_duration({}, short) <= 8

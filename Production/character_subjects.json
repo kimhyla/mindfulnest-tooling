@@ -5,24 +5,25 @@
   "_image_selection_rationale": "Primary: neutral or happy pose. Refer: different emotion(s). All images 1024x1024 PNG, Rule 6 compliant.",
   "characters": {
     "Tessa": {
-      "element_id": "312596343017315",
+      "element_id": "313439312648503",
       "status": "active",
       "element_name": "Tessa",
       "description": "Cartoon 3D Pixar-style turtle, orange-brown patterned shell, friendly expressive eyes, small green body",
       "frontal_image": "Tessa/poses/tessa_event1_canonical.png",
       "refer_images": [
-        "Tessa/poses/tessa_happy_ref.png",
-        "Tessa/poses/tessa_sad_ref.png"
+        "Tessa/poses/tessa_event1_canonical.png",
+        "Tessa/poses/chatgpt_image_jun_14_2026_04_40_57_am_20260614T192152Z.png",
+        "Tessa/poses/b90f4652-eb38-4ecd-a126-fd801e8d1a14.png"
       ],
       "elevenlabs_voice_id": "cgSgspJ2msm6clMCkdW9",
       "elevenlabs_voice_name": "Jessica",
       "elevenlabs_voice_sample_path": "kling_voice_samples/tessa.mp3",
       "audition_line": "Well.... Do you think she can really help?",
       "audition_speed": 1.15,
-      "kling_voice_id": "891693631709511724",
+      "kling_voice_id": "895206617015918675",
       "kling_voice_label": "ElevenLabs Jessica (create-voice)",
       "created_at": "2026-06-05T02:01:05.803963+00:00",
-      "wavespeed_prediction_id": "7fa1485cd46448afa828fbdd2f6669ba",
+      "wavespeed_prediction_id": "2f5c1313c8724b939d4ff0677bf492e9",
       "element_sample_lines": [
         "Oh ... hi. I'm Tessa.",
         "....that's awesome",
@@ -295,21 +296,26 @@
       }
     },
     "Lorelai": {
-      "element_id": "313390553209506",
+      "element_id": "313439756737302",
       "status": "active",
-      "element_name": "Lorelai",
-      "description": "Cartoon 3D Pixar-style raccoon archaeologist, round glasses, leather backpack, excitable academic personality",
+      "element_name": "Laurel",
+      "description": "Cartoon 3D Pixar-style lemur scholar, glasses, backpack, excitable academic personality",
       "frontal_image": "Lorelai/poses/lorelai_canonical_neutral.png",
       "refer_images": [
+        "Lorelai/poses/lorelai_explaining.png",
+        "Lorelai/poses/lorelai_shocked.png",
+        "Lorelai/poses/chatgpt_image_jun_14_2026_04_36_22_am_20260614T201746Z.png"
+      ],
+      "refer_pins": [
         "Lorelai/poses/lorelai_explaining.png",
         "Lorelai/poses/lorelai_shocked.png"
       ],
       "elevenlabs_voice_id": "PoHUWWWMHFrA8z7Q88pu",
       "elevenlabs_voice_name": "Miranda",
-      "kling_voice_id": "895024801360777292",
+      "kling_voice_id": "895210468825628751",
       "kling_voice_label": "ElevenLabs Miranda (create-voice)",
-      "created_at": "2026-06-14T06:37:54.191641+00:00",
-      "wavespeed_prediction_id": "9cd5bc91b851402a8b86781eac4cacc3",
+      "created_at": "2026-06-14T18:55:40.424166+00:00",
+      "wavespeed_prediction_id": "93c7cf2684b84d868f3f03fe806b1954",
       "audition_line": "Fascinating! The patterns match exactly!",
       "audition_speed": 0.93,
       "element_sample_lines": [

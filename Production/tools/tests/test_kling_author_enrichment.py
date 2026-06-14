@@ -46,7 +46,9 @@ def test_postprocess_infers_lorelai_and_spoken_only_in_voice_line():
         'Lorelai speaks with warm energy: "wrong line"'
     )
     merged = postprocess_kling_author_row(row, prompt)
-    assert "@Image1 (Lorelai)" in merged["kling_o3_prompt"]
+    assert "@Image1 (Laurel)" in merged["kling_o3_prompt"]
+    assert "Laurel speaks" in merged["kling_o3_prompt"]
+    assert "Lorelai speaks" not in merged["kling_o3_prompt"]
     assert "Oh! Hi there!" in merged["kling_o3_prompt"]
 
 
@@ -385,7 +387,9 @@ def test_normalize_upgrades_lorelai_voice_delivery_to_laurel_slower():
         scene_notes="eyes wide, mouth open",
     )
     assert "Lorelai says:" not in out
-    assert "Lorelai speaks in a warm excited conversational pace" in out
+    assert "Laurel speaks in a warm excited conversational pace" in out
+    assert "@Image1 (Laurel)" in out
+    assert "Lorelai speaks" not in out
     assert "slower steady rhythm" in out
     assert "not rushed or frantic" in out
 

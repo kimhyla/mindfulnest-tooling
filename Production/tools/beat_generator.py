@@ -4287,8 +4287,14 @@ def _kling_o3_staging_stale(staging: str, beat: dict) -> bool:
 def _kling_o3_element_staging_block(beat: dict, speaker: str, spoken: str) -> str:
     """Canonical visual staging + camera for Element speakers."""
     action = _kling_o3_visual_action_clause(beat, spoken)
+    try:
+        from tools import kling_character_registry as reg
+
+        image1_label = reg.kling_image1_speaker_label(speaker)
+    except Exception:
+        image1_label = speaker
     staging = (
-        f"@Image1 ({speaker}) {action}. Scene from @Image2.\n\n"
+        f"@Image1 ({image1_label}) {action}. Scene from @Image2.\n\n"
         f"{KLING_O3_CAMERA_LOCK}"
     )
     if _is_chipper_intro_beat(beat):
@@ -4429,10 +4435,18 @@ def _cap_kling_o3_auto_duration(
     *,
     beat: dict | None = None,
 ) -> int:
-    """Keep concise single-chunk dialogue out of 10–12s buckets."""
+    """Keep concise single-chunk dialogue out of 10–12s buckets when timing fits 8s."""
     spoken = _spoken_for_duration_estimate(prompt, beat=beat)
     word_count = len(re.findall(r"\S+", spoken)) if spoken else 0
-    if word_count and word_count <= _KLING_O3_AUTO_CAP_MAX_WORDS:
+    if not word_count or word_count > _KLING_O3_AUTO_CAP_MAX_WORDS:
+        return duration
+    staging = _kling_o3_has_pre_speech_staging(prompt)
+    unsnapped = estimate_kling_o3_seconds_unsnapped(
+        spoken,
+        has_pre_speech_staging=staging,
+    )
+    # Word-count alone is not enough — 30-word lines with [pause] can need 12s (beat #9).
+    if snap_kling_o3_duration(unsnapped) <= 8:
         return min(duration, 8)
     return duration
 
@@ -5168,11 +5182,16 @@ def _kling_o3_visual_action_clause(beat: dict, spoken: str) -> str:
 
 
 def _kling_o3_voice_line_display_name(speaker: str, element_name: str | None) -> str:
-    """Spoken-name in O3 voice lines — Laurel not Lorelai for clone pronunciation."""
-    canon = (speaker or "").strip()
-    if canon in ("Lorelai", "Laurel"):
-        return "Laurel"
-    return (element_name or canon or "Character").strip()
+    """Kling O3 voice line name — must match element_list element_name."""
+    try:
+        from tools import kling_character_registry as reg
+
+        display = reg.kling_element_display_name(speaker)
+        if display:
+            return display
+    except Exception:
+        pass
+    return (element_name or (speaker or "").strip() or "Character").strip()
 
 
 def _kling_o3_voice_block(speaker: str, spoken: str) -> str:
@@ -5218,7 +5237,7 @@ def _kling_o3_voice_block(speaker: str, spoken: str) -> str:
 
     if canon in ("Lorelai", "Laurel"):
         return (
-            f'Lorelai speaks in a {KLING_O3_LORELAI_VOICE_DELIVERY}: "{spoken}"'
+            f'Laurel speaks in a {KLING_O3_LORELAI_VOICE_DELIVERY}: "{spoken}"'
         )
 
     return f'@Image1 <<<voice_1>>> speaks clearly at a natural pace: "{spoken}"'
@@ -5238,12 +5257,18 @@ def build_kling_o3_prompt(beat: dict) -> str:
 
     action = _kling_o3_visual_action_clause(beat, spoken)
     voice_block = _kling_o3_voice_block(speaker, spoken)
+    try:
+        from tools import kling_character_registry as reg
+
+        image1_label = reg.kling_image1_speaker_label(speaker)
+    except Exception:
+        image1_label = speaker
     intro_staging = ""
     if _is_chipper_intro_beat(beat):
         intro_staging = f"\n\n{_kling_o3_chipper_intro_staging()}"
     return _append_kling_o3_submit_locks(
         (
-            f"@Image1 ({speaker}) {action}. Scene from @Image2.\n\n"
+            f"@Image1 ({image1_label}) {action}. Scene from @Image2.\n\n"
             f"{KLING_O3_CAMERA_LOCK}"
             f"{intro_staging}\n\n"
             f"{voice_block}\n\n"

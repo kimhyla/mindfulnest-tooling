@@ -43,6 +43,23 @@ _SPEAKER_REGISTRY_ALIAS: dict[str, str] = {
     "laurel": "Lorelai",
 }
 
+# Kling cannot pronounce "Lorelai"; Element + O3 voice lines must use "Laurel".
+# Internal registry key, sidecar speaker, and paths stay Lorelai.
+_KLING_ELEMENT_DISPLAY_NAME: dict[str, str] = {
+    "Lorelai": "Laurel",
+}
+
+
+def kling_element_display_name(speaker: str) -> str | None:
+    """Name for element_list.element_name and O3 voice/@Image1 lines — not registry keys."""
+    entry = get_character_entry(speaker)
+    if not entry or entry.get("status") != "active" or not entry.get("element_id"):
+        return None
+    reg_key = resolve_registry_key(speaker) or (speaker or "").strip()
+    if reg_key in _KLING_ELEMENT_DISPLAY_NAME:
+        return _KLING_ELEMENT_DISPLAY_NAME[reg_key]
+    return entry.get("element_name") or reg_key or speaker
+
 
 def prod_root() -> Path:
     global _PROD_ROOT
@@ -171,9 +188,10 @@ def get_element_list_entry(speaker: str) -> dict | None:
     eid = entry.get("element_id")
     if not eid:
         return None
+    display = kling_element_display_name(speaker) or entry.get("element_name") or speaker
     out: dict[str, str] = {
         "element_id": str(eid),
-        "element_name": entry.get("element_name") or speaker,
+        "element_name": display,
     }
     vid = entry.get("kling_voice_id")
     if vid:
@@ -189,11 +207,17 @@ def get_bound_voice_id(speaker: str) -> str | None:
     return str(vid) if vid else None
 
 
+def kling_image1_speaker_label(speaker: str) -> str:
+    """@Image1 header label — Kling display name when Element-bound."""
+    display = kling_element_display_name(speaker)
+    if display:
+        return display
+    return (speaker or "Character").strip()
+
+
 def get_element_name(speaker: str) -> str | None:
-    entry = get_character_entry(speaker)
-    if not entry or entry.get("status") != "active" or not entry.get("element_id"):
-        return None
-    return entry.get("element_name") or speaker
+    """Kling-facing Element display name (Laurel for Lorelai), not registry key."""
+    return kling_element_display_name(speaker)
 
 
 def file_sha256(path: str | Path) -> str | None:
