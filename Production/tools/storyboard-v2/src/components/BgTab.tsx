@@ -757,6 +757,7 @@ export function BgTab() {
 
   const handleBeatMissingOnSave = useCallback(async (beatId: string) => {
     beatSaveBlockedRef.current.add(beatId);
+    setBeats((bs) => bs.filter((b) => b.beat_id !== beatId));
     if (!beatSaveNotFoundToastRef.current.has(beatId)) {
       beatSaveNotFoundToastRef.current.add(beatId);
       pushToast({
@@ -977,11 +978,32 @@ export function BgTab() {
   const onAddBeat = async (afterBeatId: string) => {
     if (!activeSegment) return;
     const [event_id, phase] = activeSegment.split('|');
-    const result = await pathappPatch(activeScope.value, 'bg_add_beat', {
+    const result = await pathappPatch<{ beat?: BgBeat }>(activeScope.value, 'bg_add_beat', {
       after_beat_id: afterBeatId,
       segment: `event_${event_id}_${phase}`,
     });
-    if (result.ok) {
+    if (result.ok && result.data?.beat) {
+      const newBeat = result.data.beat;
+      setBeats((bs) => {
+        if (bs.some((b) => b.beat_id === newBeat.beat_id)) return bs;
+        const idx = bs.findIndex((b) => b.beat_id === afterBeatId);
+        const next = [...bs];
+        next.splice(idx >= 0 ? idx + 1 : next.length, 0, newBeat);
+        return next;
+      });
+      pushToast({ kind: 'info', message: `Added ${newBeat.beat_id}`, source: 'bg-add' });
+      await refreshState();
+      if (!beatSaveBlockedRef.current.has(newBeat.beat_id)) {
+        const verify = await apiGet<BgSessionState>('bg_session_state', {
+          scope_event_id: activeScope.value.event_id,
+          scope_video_role: activeTargetVideo.value,
+        });
+        const liveIds = new Set((verify.data?.beats ?? []).map((b) => b.beat_id));
+        if (verify.ok && !liveIds.has(newBeat.beat_id)) {
+          await handleBeatMissingOnSave(newBeat.beat_id);
+        }
+      }
+    } else if (result.ok) {
       pushToast({ kind: 'info', message: 'Beat added', source: 'bg-add' });
       await refreshState();
     } else {

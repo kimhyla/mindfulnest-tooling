@@ -605,7 +605,7 @@ def _persist_magic_fields_to_bg_sidecar(
     try:
         bg = _bg_module()
         arc, evt, phase = _resolve_bg_segment_for_scope(h.app.event_id, video_role)
-        with bg._sidecar_lock:
+        with bg.sidecar_file_lock():
             sidecar = bg.read_sidecar()
             ok = bg.persist_magic_fields_on_bg_sidecar(
                 sidecar,
@@ -1705,7 +1705,7 @@ def handle_bg_session_state(h)-> None:
             "phase": scope_phase,
         }
     if ref_hydrated:
-        with bg._sidecar_lock:
+        with bg.sidecar_file_lock():
             bg.write_sidecar(sidecar)
 
     # Migration warning if scope and sidecar's active_context disagree
@@ -1807,7 +1807,7 @@ def handle_bg_poll_flux(h)-> None:
                 )
                 key = f"bg_{beat_id}_opt{opt_idx}"
                 # Persist to sidecar
-                with bg._sidecar_lock:
+                with bg.sidecar_file_lock():
                     sc2 = bg.read_sidecar()
                     _, beat_obj = bg.find_beat(sc2, beat_id)
                     if beat_obj:
@@ -1908,7 +1908,7 @@ def switch_bg_context_for_video_role(
                 scope_event_id, from_video_role,
             )
             evt_o_str = str(evt_o)
-            with bg._sidecar_lock:
+            with bg.sidecar_file_lock():
                 sidecar = bg.read_sidecar()
                 seg_o = bg.get_seg_entry(sidecar, arc_o, evt_o_str, phase_o)
                 beat_count = len(seg_o.get("beats") or [])
@@ -1942,7 +1942,7 @@ def switch_bg_context_for_video_role(
     evt_t_str = str(evt_t)
     beat_label = f"arc{arc_t}_event{evt_t}_{phase_t}"
 
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         sidecar["active_context"] = {
             "arc_number": arc_t,
@@ -2003,7 +2003,7 @@ def handle_bg_set_active_context(h, body: dict)-> None:
     event_id   = str(body.get("event_id", "1"))
     phase      = str(body.get("phase", "full"))
     bg = _bg_module()
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         sidecar["active_context"] = {
             "arc_number": arc_number, "event_id": event_id, "phase": phase
@@ -2379,7 +2379,7 @@ def handle_bg_inject_beats(h, body: dict)-> None:
             "bg_ref_image": None,
         })
     # Write to sidecar with merge logic
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         seg = bg.get_seg_entry(sidecar, arc_number, event_id, phase)
         existing = {b["beat_id"]: b for b in (seg.get("beats") or [])}
@@ -2708,7 +2708,7 @@ def handle_bg_accept_beats(h, body: dict)-> None:
         )
     beat_ids = [b["beat_id"] for b in body.get("beats", []) if "beat_id" in b]
     bg = _bg_module()
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         for bid in beat_ids:
             _, beat = bg.find_beat(sidecar, bid)
@@ -2998,7 +2998,7 @@ def handle_bg_submit_flux(h, body: dict)-> None:
                )
 
     bg = _bg_module()
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg._load_sidecar_migrated()
 
     task_map = {}
@@ -3022,7 +3022,7 @@ def handle_bg_submit_flux(h, body: dict)-> None:
                       flush=True)
                 continue
             # Store request IDs in sidecar for poll lookups
-            with bg._sidecar_lock:
+            with bg.sidecar_file_lock():
                 sc2 = bg.read_sidecar()
                 _, b2 = bg.find_beat(sc2, beat["beat_id"])
                 if b2:
@@ -3078,7 +3078,7 @@ def handle_bg_submit_gpt_batch(h, body: dict)-> None:
 
     job_id = str(_uuid.uuid4())[:8]
     bg = _bg_module()
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg._load_sidecar_migrated()
 
     beats_to_run = []
@@ -3089,7 +3089,7 @@ def handle_bg_submit_gpt_batch(h, body: dict)-> None:
 
     _GPT_JOBS[job_id] = {"status": "running", "results": {}, "total": len(beats_to_run) * 3}
     started_at = datetime.now(timezone.utc).isoformat()
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sc = bg.read_sidecar()
         for beat in beats_to_run:
             _, beat_obj = bg.find_beat(sc, beat["beat_id"])
@@ -3111,7 +3111,7 @@ def handle_bg_submit_gpt_batch(h, body: dict)-> None:
             bid = futures[future]
             try:
                 results = future.result()
-                with bg._sidecar_lock:
+                with bg.sidecar_file_lock():
                     sc = bg.read_sidecar()
                     _, beat_obj = bg.find_beat(sc, bid)
                     if beat_obj:
@@ -3128,7 +3128,7 @@ def handle_bg_submit_gpt_batch(h, body: dict)-> None:
             except Exception as e:
                 print(f"[GPT] job {job_id} beat {bid} error: {e}")
                 _GPT_JOBS[job_id]["results"][bid] = [{"error": str(e)}]
-                with bg._sidecar_lock:
+                with bg.sidecar_file_lock():
                     sc = bg.read_sidecar()
                     _, beat_obj = bg.find_beat(sc, bid)
                     if beat_obj:
@@ -4066,7 +4066,7 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
         rel = f"Production/{event_dir.name}/assembled/_kling_o3_trim_scratch/{dest.name}"
         return f"/files?path={quote(rel)}"
 
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
         _, beat = bg.find_beat(sidecar, beat_id)
@@ -4151,7 +4151,7 @@ def handle_bg_select_o3_video(h, body: dict) -> None:
             retry_safe=False,
         )
     bg = _bg_module()
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
         _, beat = bg.find_beat(sidecar, beat_id)
@@ -4462,7 +4462,7 @@ def handle_bg_accept_option(h, body: dict)-> None:
                    retry_safe=False,
                )
     bg = _bg_module()
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
         _, beat = bg.find_beat(sidecar, beat_id)
@@ -4516,7 +4516,7 @@ def handle_bg_accept_lib_image(h, body: dict)-> None:
                    retry_safe=False,
                )
     bg = _bg_module()
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
         _, beat = bg.find_beat(sidecar, beat_id)
@@ -4604,7 +4604,7 @@ def handle_bg_groups(h)-> None:
     qs = urllib.parse.parse_qs(urllib.parse.urlparse(h.path).query)
     arc_n = int((qs.get("arc") or [1])[0])
     bg = _bg_module()
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
         groups = bg.list_groups(sidecar, arc_n)
@@ -4664,7 +4664,7 @@ def handle_bg_add_beat(h, body: dict)-> None:
     # Priority 2: sidecar active_context (BG dropdown's persisted choice).
     if event_id_int is None or phase is None:
         bg_module = _bg_module()
-        with bg_module._sidecar_lock:
+        with bg_module.sidecar_file_lock():
             _ctx_sidecar = bg_module.read_sidecar()
             _ctx = _ctx_sidecar.get("active_context") or {}
         if _ctx:
@@ -4768,7 +4768,7 @@ def handle_bg_create_group(h, body: dict)-> None:
                    extra={"ok": False},
                )
     bg = _bg_module()
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
         try:
@@ -4802,7 +4802,7 @@ def handle_bg_delete_group(h, body: dict)-> None:
                    extra={"ok": False},
                )
     bg = _bg_module()
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
         if not bg.delete_group(sidecar, gid):
@@ -4834,7 +4834,7 @@ def handle_bg_update_group(h, body: dict)-> None:
                    extra={"ok": False},
                )
     bg = _bg_module()
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
         if gid not in sidecar.get("groups", {}):
@@ -4887,7 +4887,7 @@ def handle_bg_assemble_group(h, body: dict)-> None:
                    extra={"ok": False},
                )
     bg = _bg_module()
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
         g = sidecar.get("groups", {}).get(gid)
@@ -4915,7 +4915,7 @@ def handle_bg_assemble_group(h, body: dict)-> None:
 
     def _run():
         try:
-            with bg._sidecar_lock:
+            with bg.sidecar_file_lock():
                 s2 = bg.read_sidecar()
                 s2 = bg._migrate_sidecar(s2)
                 clip_path, duration, size = bg.assemble_group(s2, gid, output_dir)
@@ -5007,7 +5007,7 @@ def handle_bg_run_local_animation(h, body: dict)-> None:
                    extra={"ok": False},
                )
     bg = _bg_module()
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
         ctx = sidecar.get("active_context") or {}
@@ -5164,7 +5164,7 @@ def handle_bg_update_beat_anim_method(h, body: dict)-> None:
                    extra={"ok": False},
                )
     bg = _bg_module()
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
         _, b = bg.find_beat(sidecar, beat_id)
@@ -5228,7 +5228,7 @@ def handle_bg_accept_local_animation(h, body: dict)-> None:
                    retry_safe=False,
                    extra={"ok": False},
                )
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
         _, b = bg.find_beat(sidecar, beat_id)

@@ -38,7 +38,7 @@ def _apply_kling_beat_result(
     event_dir: Path,
 ) -> None:
     beat_obj_for_preserve = None
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         _, beat_obj = bg.find_beat(sidecar, beat_id)
         if beat_obj:
@@ -129,7 +129,7 @@ def recover_kling_o3_jobs_on_startup(event_dir: Path, api_key: str | None) -> in
     if not api_key:
         return 0
     bg = _bg_module()
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         bg.reconcile_kling_o3_sidecar(sidecar, event_dir)
         bg.write_sidecar(sidecar)
@@ -158,7 +158,7 @@ def recover_kling_o3_jobs_on_startup(event_dir: Path, api_key: str | None) -> in
             ctx=job.get("context") or {},
         ):
             for beat_id, meta in submit_beats:
-                with bg._sidecar_lock:
+                with bg.sidecar_file_lock():
                     sc = bg.read_sidecar()
                     _, live = bg.find_beat(sc, beat_id)
                     if not live:
@@ -256,7 +256,7 @@ def handle_bg_generate_kling_prompts(h, body: dict) -> None:
     event_id = str(body.get("event_id", "1"))
     phase = str(body.get("phase", "full"))
     bg = _bg(h)
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         count = bg.generate_kling_prompts_for_segment(sidecar, arc_number, event_id, phase)
         bg.write_sidecar(sidecar)
@@ -284,7 +284,7 @@ def handle_bg_import_locked_lines(h, body: dict) -> None:
         )
     bg = _bg(h)
     beats = bg.import_locked_lines_beats(locked_path, arc_number, event_id, phase)
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         seg = bg.get_seg_entry(sidecar, arc_number, event_id, phase)
         merged = bg.merge_incoming_segment_beats(seg.get("beats") or [], beats)
@@ -380,7 +380,7 @@ def _run_single_beat(
                 submit_mode=submit_mode,
             )
 
-        with bg._sidecar_lock:
+        with bg.sidecar_file_lock():
             sidecar = bg.read_sidecar()
             _, beat_obj = bg.find_beat(sidecar, beat_id)
             if beat_obj:
@@ -472,7 +472,7 @@ def handle_bg_submit_kling_o3_batch(h, body: dict) -> None:
     beat_prompts = body.get("beat_prompts") or {}
     beats_to_run = []
     skipped_done: list[str] = []
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         if beat_prompts:
             bg.apply_live_kling_o3_prompts(sidecar, beat_prompts)
@@ -518,7 +518,7 @@ def handle_bg_submit_kling_o3_batch(h, body: dict) -> None:
             extra={"errors": validation_errors},
         )
 
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         run_ids = {b["beat_id"] for b in beats_to_run}
         for bid in run_ids:
@@ -568,7 +568,7 @@ def handle_bg_submit_kling_o3_batch(h, body: dict) -> None:
             if not h._check_event_pin(pin, "kling_o3_beat_start"):
                 return {"beat_id": beat["beat_id"], "ok": False, "error": "event_changed"}
             job_store.update_job_beat(event_dir, job_id, beat["beat_id"], status="processing")
-            with bg._sidecar_lock:
+            with bg.sidecar_file_lock():
                 sc = bg.read_sidecar()
                 _, live = bg.find_beat(sc, beat["beat_id"])
                 if live:
@@ -640,7 +640,7 @@ def handle_bg_approve_kling_o3(h, body: dict) -> None:
             400, error_code="MISSING_BEAT_ID", error_message="beat_id required", retry_safe=False,
         )
     bg = _bg(h)
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         _, beat = bg.find_beat(sidecar, beat_id)
         if not beat:
@@ -666,7 +666,7 @@ def handle_bg_redo_kling_o3(h, body: dict) -> None:
             400, error_code="MISSING_BEAT_ID", error_message="beat_id required", retry_safe=False,
         )
     bg = _bg(h)
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         _, beat = bg.find_beat(sidecar, beat_id)
         if not beat:
@@ -691,7 +691,7 @@ def handle_bg_pin_kling_o3(h, body: dict) -> None:
         )
     bg = _bg(h)
     event_dir = Path(h.app.event_dir)
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         _, beat = bg.find_beat(sidecar, beat_id)
         if not beat:
@@ -721,7 +721,7 @@ def handle_bg_restore_kling_o3(h, body: dict) -> None:
         )
     bg = _bg(h)
     event_dir = Path(h.app.event_dir)
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         ok, err, beat_out = bg.restore_pinned_kling_o3_beat(beat_id, event_dir, sidecar)
         if not ok:
@@ -749,7 +749,7 @@ def handle_bg_kling_o3_preview(h, body: dict) -> None:
     event_id = str(body.get("event_id") or "1")
     phase = str(body.get("phase") or "full")
     bg = _bg(h)
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         _, beat = bg.find_beat(sidecar, beat_id)
         if not beat:
@@ -802,7 +802,7 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
         )
 
     bg = _bg(h)
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         _, beat = bg.find_beat(sidecar, beat_id)
         if not beat:
@@ -853,7 +853,7 @@ def handle_bg_export_to_stitcher(h, body: dict) -> None:
             retry_safe=False,
         )
 
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         seg = bg.get_seg_entry(sidecar, arc_number, event_id, phase)
         beats = list(seg.get("beats") or [])

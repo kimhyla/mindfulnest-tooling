@@ -8561,7 +8561,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         # 2. Write accepted_video_path to bg sidecar (same pattern as _handle_bg_accept_option)
         try:
             bg = _bg_module()
-            with bg._sidecar_lock:
+            with bg.sidecar_file_lock():
                 sidecar = bg.read_sidecar()
                 sidecar = bg._migrate_sidecar(sidecar)
                 _, b_entry = bg.find_beat(sidecar, beat_id)
@@ -10233,7 +10233,7 @@ body {{padding-top:44px!important;}}
         # bg sidecar: same pattern as raw_option final.
         try:
             bg = _bg_module()
-            with bg._sidecar_lock:
+            with bg.sidecar_file_lock():
                 sidecar = bg.read_sidecar()
                 sidecar = bg._migrate_sidecar(sidecar)
                 _, b_entry = bg.find_beat(sidecar, beat_id)
