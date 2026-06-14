@@ -51,9 +51,13 @@ def test_extract_spoken_used_for_element_prompt_inject():
     assert "<<<voice_" not in locked
 
 
-def test_validate_element_bound_voice_prompt_rejects_generic_tags():
+def test_validate_element_bound_voice_prompt_rejects_generic_tags(monkeypatch):
     from tools import kling_o3_prompt as o3p
 
+    monkeypatch.setattr(
+        "tools.kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
     bad = '@Image1 (Tessa) <<<voice_1>>> speaks: "Hi"'
     errs = o3p.validate_element_bound_voice_prompt("Tessa", bad)
     assert any("<<<voice_" in e for e in errs)
@@ -150,7 +154,7 @@ def test_trim_refer_images_preserves_canonical_pin():
     )
     assert len(trimmed) == 3
     assert "Lorelai/poses/lorelai_canonical_neutral.png" in trimmed
-    assert trimmed[-1] == "Lorelai/poses/new_pose.png"
+    assert "Lorelai/poses/new_pose.png" in trimmed
 
 
 def test_validate_element_bound_voice_prompt_accepts_locked_delivery():

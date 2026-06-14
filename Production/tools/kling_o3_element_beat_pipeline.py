@@ -227,6 +227,11 @@ def run_pipeline(
     if not char_path.is_file() or not bg_path.is_file():
         raise RuntimeError("reference_image and bg_ref_image must exist on disk")
 
+    creds = load_credentials()
+    api_key = creds.get("wavespeed_key") or creds.get("wavespeed")
+    if not api_key:
+        raise RuntimeError("Missing wavespeed API key")
+    bg_sidecar.ensure_beat_element_char_ref_for_o3(beat, api_key)
     bg_sidecar.require_element_char_ref_for_o3(beat)
 
     stored_prompt = (beat.get("kling_o3_prompt") or "").strip()
@@ -250,11 +255,6 @@ def run_pipeline(
     duration = bg_sidecar.resolve_kling_o3_submit_duration(beat, prepared)
     if not beat.get("kling_o3_duration_locked"):
         beat["kling_o3_duration"] = duration
-
-    creds = load_credentials()
-    api_key = creds.get("wavespeed_key") or creds.get("wavespeed")
-    if not api_key:
-        raise RuntimeError("Missing wavespeed API key")
 
     clips_dir = event_dir / "kling_o3_clips"
     clips_dir.mkdir(parents=True, exist_ok=True)

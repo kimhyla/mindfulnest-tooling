@@ -248,6 +248,97 @@ def char_ref_matches_element_images(char_path: str, speaker: str) -> tuple[bool,
     )
 
 
+def find_pose_rel_by_hash(char_key: str, char_path: str) -> str | None:
+    """Return Production-relative pose path when char ref bytes already exist on disk."""
+    root = prod_root()
+    char_hash = file_sha256(char_path)
+    if not char_hash:
+        return None
+    poses_dir = root / char_key / "poses"
+    if not poses_dir.is_dir():
+        return None
+    matches: list[str] = []
+    for pose in poses_dir.iterdir():
+        if not pose.is_file():
+            continue
+        if file_sha256(pose) == char_hash:
+            matches.append(str(pose.relative_to(root)))
+    if not matches:
+        return None
+    matches.sort(key=lambda rel: (len(rel), rel))
+    return matches[0]
+
+
+def reconcile_char_ref_with_element(
+    speaker: str,
+    char_path: str,
+    wavespeed_key: str,
+) -> dict[str, Any]:
+    """Re-register an on-disk pose onto Element when beat @Image1 bytes match but refer dropped.
+
+    Typical after canonical Element restore: library still matches
+    Production/<Char>/poses/<copy>.png but refer_images no longer lists it.
+    """
+    from tools.kling_element_voice import register_kling_element
+
+    if char_ref_matches_element_images(char_path, speaker)[0]:
+        entry = get_character_entry(speaker) or {}
+        return {
+            "ok": True,
+            "reconciled": False,
+            "element_id": entry.get("element_id"),
+        }
+
+    char_key = resolve_registry_key(speaker) or speaker
+    if not is_speaker_voice_ready(char_key):
+        raise RuntimeError(f"{char_key!r} is not voice-ready")
+
+    rel_pose = find_pose_rel_by_hash(char_key, char_path)
+    if not rel_pose:
+        raise FileNotFoundError(
+            f"No matching pose under {char_key}/poses/ for {Path(char_path).name}"
+        )
+
+    data = load_character_subjects()
+    chars = data.get("characters") or {}
+    cfg = dict(chars[char_key])
+    voice_id = cfg.get("kling_voice_id")
+    if not voice_id:
+        raise RuntimeError(f"{char_key!r} has no kling_voice_id")
+
+    refer = ensure_refer_anchors(
+        char_key, [str(r) for r in (cfg.get("refer_images") or [])], cfg,
+    )
+    if rel_pose not in refer:
+        refer.append(rel_pose)
+    pin_refs = pinned_refer_paths(cfg, char_key)
+    cfg["refer_images"] = trim_refer_images_for_element(
+        refer, keep=rel_pose, pin=pin_refs,
+    )
+
+    element_id, _prediction_id = register_kling_element(
+        char_key, cfg, str(voice_id), wavespeed_key,
+    )
+    cfg["element_id"] = element_id
+    cfg["status"] = "active"
+    chars[char_key] = cfg
+    data["characters"] = chars
+    save_character_subjects(data)
+
+    if not char_ref_matches_element_images(char_path, speaker)[0]:
+        raise RuntimeError(
+            f"Reconcile failed: {Path(char_path).name} still not in Element set after re-register"
+        )
+
+    return {
+        "ok": True,
+        "reconciled": True,
+        "element_id": str(element_id),
+        "pose_rel": rel_pose,
+        "refer_images": list(cfg.get("refer_images") or []),
+    }
+
+
 def assign_voice(character: str, voice_id: str, voice_label: str | None = None) -> dict:
     data = load_character_subjects()
     chars = data.get("characters") or {}
@@ -334,6 +425,8 @@ def trim_refer_images_for_element(
 ) -> list[str]:
     """Kling elements API accepts at most 3 refer_images (frontal is separate)."""
     pin_set = set(pin or ())
+    if keep:
+        pin_set.add(keep)
     ordered = [str(r) for r in refer if r]
     pinned = [r for r in ordered if r in pin_set]
     unpinned = [r for r in ordered if r not in pin_set]

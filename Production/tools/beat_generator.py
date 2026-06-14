@@ -5409,6 +5409,25 @@ def require_element_char_ref_for_o3(beat: dict) -> None:
         raise RuntimeError(f"ELEMENT_VISUAL_MISMATCH: {detail}")
 
 
+def ensure_beat_element_char_ref_for_o3(beat: dict, wavespeed_key: str) -> bool:
+    """Sync Element char-ref gate; auto-reconcile on-disk pose copies before O3 submit."""
+    if sync_element_char_ref_status(beat, heal_mismatch=True):
+        return True
+    speaker = str(beat.get("speaker") or "").strip()
+    char_path = resolve_beat_char_ref_path(beat)
+    if not speaker or not char_path:
+        return False
+    try:
+        from tools import kling_character_registry as reg
+
+        if not reg.is_speaker_voice_ready(speaker):
+            return sync_element_char_ref_status(beat, heal_mismatch=False)
+        reg.reconcile_char_ref_with_element(speaker, char_path, wavespeed_key)
+    except Exception:
+        return sync_element_char_ref_status(beat, heal_mismatch=False)
+    return sync_element_char_ref_status(beat, heal_mismatch=False)
+
+
 def ensure_beat_element_aligned_reference(beat: dict) -> bool:
     """Auto-heal mismatched @Image1 before submit (unless user locked ref)."""
     return align_beat_reference_to_element(beat)

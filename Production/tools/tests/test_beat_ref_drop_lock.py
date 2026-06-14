@@ -396,6 +396,108 @@ def test_apply_user_beat_ref_keeps_library_bytes_on_mismatch(tmp_path: Path, mon
     assert "does not match Element images" in beat["element_char_ref_error"]
 
 
+def test_reconcile_char_ref_with_element_readds_on_disk_pose(tmp_path: Path, monkeypatch):
+    from tools import kling_character_registry as reg
+
+    poses = tmp_path / "Lorelai" / "poses"
+    poses.mkdir(parents=True)
+    library = tmp_path / "Event_2" / "library" / "sources" / "ChatGPT_Image.png"
+    library.parent.mkdir(parents=True, exist_ok=True)
+    payload = b"same-bytes-pose"
+    library.write_bytes(payload)
+    pose_rel = "Lorelai/poses/chatgpt_image.png"
+    (tmp_path / pose_rel).write_bytes(payload)
+    (poses / "lorelai_explaining.png").write_bytes(b"explaining")
+    (poses / "lorelai_shocked.png").write_bytes(b"shocked")
+    (tmp_path / "Lorelai" / "poses" / "lorelai_canonical_neutral.png").write_bytes(b"frontal")
+
+    registry = {
+        "characters": {
+            "Lorelai": {
+                "status": "active",
+                "element_id": "old_element",
+                "kling_voice_id": "voice123",
+                "frontal_image": "Lorelai/poses/lorelai_canonical_neutral.png",
+                "refer_images": [
+                    "Lorelai/poses/lorelai_explaining.png",
+                    "Lorelai/poses/lorelai_shocked.png",
+                ],
+                "refer_pins": [
+                    "Lorelai/poses/lorelai_explaining.png",
+                    "Lorelai/poses/lorelai_shocked.png",
+                ],
+                "element_name": "Lorelai",
+            },
+        },
+    }
+    (tmp_path / "character_subjects.json").write_text(json.dumps(registry), encoding="utf-8")
+    reg.set_prod_root(tmp_path)
+
+    captured: dict = {}
+
+    def fake_register(char_name, cfg, voice_id, wavespeed_key):
+        captured["refer_images"] = list(cfg.get("refer_images") or [])
+        return "new_element", "pred-1"
+
+    monkeypatch.setattr("tools.kling_element_voice.register_kling_element", fake_register)
+
+    result = reg.reconcile_char_ref_with_element("Lorelai", str(library), "ws-key")
+    assert result["ok"] is True
+    assert result["reconciled"] is True
+    assert result["element_id"] == "new_element"
+    assert pose_rel in captured["refer_images"]
+    ok, _ = reg.char_ref_matches_element_images(str(library), "Lorelai")
+    assert ok is True
+
+
+def test_ensure_beat_element_char_ref_for_o3_reconciles_locked_library(
+    tmp_path: Path, monkeypatch,
+):
+    library = tmp_path / "Event_2" / "library" / "sources" / "ChatGPT_Image.png"
+    library.parent.mkdir(parents=True, exist_ok=True)
+    library.write_bytes(b"same-bytes")
+    pose = tmp_path / "Lorelai" / "poses" / "chatgpt_image.png"
+    pose.parent.mkdir(parents=True, exist_ok=True)
+    pose.write_bytes(b"same-bytes")
+    (tmp_path / "Lorelai" / "poses" / "lorelai_canonical_neutral.png").write_bytes(b"f")
+    (tmp_path / "Lorelai" / "poses" / "lorelai_explaining.png").write_bytes(b"e")
+    (tmp_path / "Lorelai" / "poses" / "lorelai_shocked.png").write_bytes(b"s")
+
+    registry = {
+        "characters": {
+            "Lorelai": {
+                "status": "active",
+                "element_id": "old",
+                "kling_voice_id": "v1",
+                "frontal_image": "Lorelai/poses/lorelai_canonical_neutral.png",
+                "refer_images": [
+                    "Lorelai/poses/lorelai_explaining.png",
+                    "Lorelai/poses/lorelai_shocked.png",
+                ],
+                "element_name": "Lorelai",
+            },
+        },
+    }
+    (tmp_path / "character_subjects.json").write_text(json.dumps(registry), encoding="utf-8")
+
+    from tools import kling_character_registry as reg
+
+    reg.set_prod_root(tmp_path)
+    monkeypatch.setattr(
+        "tools.kling_element_voice.register_kling_element",
+        lambda *a, **k: ("elem_new", "pred"),
+    )
+
+    beat = {
+        "speaker": "Lorelai",
+        "reference_image": {"abs_path": str(library)},
+        "reference_image_locked": True,
+        "element_char_ref_ok": False,
+    }
+    assert bg.ensure_beat_element_char_ref_for_o3(beat, "ws-key") is True
+    assert beat["element_char_ref_ok"] is True
+
+
 def test_require_element_char_ref_for_o3_raises_before_api(tmp_path: Path, monkeypatch):
     library = tmp_path / "ChatGPT_Image_Jun_14.png"
     library.write_bytes(b"library")

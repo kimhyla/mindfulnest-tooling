@@ -2584,16 +2584,60 @@ def handle_bg_align_element_ref(h, body: dict) -> None:
                 error_message=f"beat {beat_id} not found",
                 retry_safe=False,
             )
-        if beat.get("reference_image_locked"):
+        speaker = str(beat.get("speaker") or "").strip()
+        try:
+            from credentials import load_credentials  # type: ignore
+        except ImportError:
+            from tools.credentials_lib.credentials import load_credentials  # type: ignore
+        creds = load_credentials()
+        ws_key = creds.get("wavespeed_key") or creds.get("wavespeed")
+        reconciled = False
+        if speaker and ws_key:
+            char_path = bg.resolve_beat_char_ref_path(beat) or ""
+            if char_path:
+                try:
+                    from tools import kling_character_registry as reg
+
+                    if reg.is_speaker_voice_ready(speaker):
+                        result = reg.reconcile_char_ref_with_element(
+                            speaker, char_path, ws_key,
+                        )
+                        reconciled = bool(result.get("reconciled"))
+                        bg.sync_element_char_ref_status(beat, heal_mismatch=False)
+                except Exception:
+                    pass
+        if reconciled and beat.get("element_char_ref_ok"):
+            bg.write_sidecar(sidecar)
+            ref = beat.get("reference_image")
+            if isinstance(ref, dict) and ref.get("abs_path") and not ref.get("thumb_b64"):
+                from lib.event_library import ref_image_thumb_b64
+
+                _t = ref_image_thumb_b64(ref["abs_path"], h.app._library_root_dirs())
+                if _t:
+                    beat["reference_image"] = dict(ref)
+                    beat["reference_image"]["thumb_b64"] = _t
+                    thumb_b64 = _t
+            return h._send_json(200, {
+                "ok": True,
+                "aligned": False,
+                "reconciled": True,
+                "reference_image": beat.get("reference_image"),
+                "thumb_b64": thumb_b64,
+                "element_char_ref_ok": beat.get("element_char_ref_ok"),
+                "element_char_ref_error": beat.get("element_char_ref_error"),
+            })
+        if beat.get("reference_image_locked") and body.get("force") is not True:
             return h._send_error_v59(
                 409,
                 error_code="REFERENCE_IMAGE_LOCKED",
                 error_message=(
                     "Char ref is locked to your library upload. Clear the ref first, "
-                    "then use Use Element pose."
+                    "then use Use Element pose — or reconcile will run automatically on O3 submit."
                 ),
                 retry_safe=False,
             )
+        if beat.get("reference_image_locked"):
+            beat["reference_image_locked"] = False
         aligned = bg.align_beat_reference_to_element(beat)
         bg.sync_element_char_ref_status(beat, heal_mismatch=False)
         ref = beat.get("reference_image")
@@ -3436,9 +3480,19 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                 from tools import kling_character_registry as reg
 
                 if speaker and reg.is_speaker_voice_ready(speaker):
+                    try:
+                        from credentials import load_credentials  # type: ignore
+                    except ImportError:
+                        from tools.credentials_lib.credentials import load_credentials  # type: ignore
+                    creds = load_credentials()
+                    ws_key = creds.get("wavespeed_key") or creds.get("wavespeed")
                     if not beat.get("reference_image_locked"):
                         bg.ensure_beat_element_aligned_reference(beat)
-                    if not bg.sync_element_char_ref_status(beat):
+                    if ws_key:
+                        char_ok = bg.ensure_beat_element_char_ref_for_o3(beat, ws_key)
+                    else:
+                        char_ok = bg.sync_element_char_ref_status(beat, heal_mismatch=True)
+                    if not char_ok:
                         return h._send_error_v59(
                             400,
                             error_code="ELEMENT_VISUAL_MISMATCH",
