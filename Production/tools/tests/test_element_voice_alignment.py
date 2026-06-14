@@ -71,6 +71,10 @@ def test_upgrade_element_bound_voice_prompt_fixes_legacy_voice_tags(monkeypatch)
         "tools.kling_character_registry.is_speaker_voice_ready",
         lambda _s: True,
     )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.kling_element_display_name",
+        lambda _s: "Tessa",
+    )
     raw = (
         '@Image1 (Character) calm and attentive. Scene from @Image2.\n\n'
         'Camera: slow zoom-in\n\n'
@@ -84,6 +88,7 @@ def test_upgrade_element_bound_voice_prompt_fixes_legacy_voice_tags(monkeypatch)
     assert changed is True
     assert spoken == "What's THAT one say?"
     assert "<<<voice_" not in upgraded
+    assert "@Image1 (Tessa)" in upgraded
     assert "Tessa speaks in a warm gentle conversational pace" in upgraded
     assert o3p.validate_element_bound_voice_prompt("Tessa", upgraded) == []
 
@@ -158,7 +163,7 @@ Laurel speaks in a warm excited conversational pace, clear scholarly delivery, m
 Children's illustrated fantasy storybook style."""
 
 
-def test_lorelai_beat27_laurel_prompt_passes_element_name_validation(monkeypatch):
+def test_lorelai_beat27_stale_character_header_fails_validation(monkeypatch):
     from tools import kling_o3_prompt as o3p
 
     monkeypatch.setattr(
@@ -169,7 +174,53 @@ def test_lorelai_beat27_laurel_prompt_passes_element_name_validation(monkeypatch
         "tools.kling_character_registry.kling_element_display_name",
         lambda _s: "Laurel",
     )
-    assert o3p.validate_element_bound_voice_prompt("Lorelai", LORELAI_BEAT27_PROMPT) == []
+    errors = o3p.validate_element_bound_voice_prompt("Lorelai", LORELAI_BEAT27_PROMPT)
+    assert any("Character" in e for e in errors)
+
+
+def test_upgrade_rewrites_beat27_character_header_to_laurel(monkeypatch):
+    from tools import kling_o3_prompt as o3p
+    import beat_generator as bg
+
+    monkeypatch.setattr(
+        "tools.kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.kling_element_display_name",
+        lambda _s: "Laurel",
+    )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.resolve_registry_key",
+        lambda _s: "Lorelai",
+    )
+    upgraded, spoken, changed = o3p.upgrade_element_bound_voice_prompt(
+        "Lorelai",
+        LORELAI_BEAT27_PROMPT,
+        extract_spoken=bg.extract_spoken_dialogue_from_kling_prompt,
+    )
+    assert changed is True
+    assert "@Image1 (Laurel)" in upgraded
+    assert "@Image1 (Character)" not in upgraded
+    assert "RUNE STONE" in spoken
+    assert o3p.validate_element_bound_voice_prompt("Lorelai", upgraded) == []
+
+
+def test_normalize_kling_speaker_names_rewrites_character_header_to_laurel(monkeypatch):
+    from tools import kling_o3_prompt as o3p
+
+    monkeypatch.setattr(
+        "tools.kling_character_registry.kling_element_display_name",
+        lambda _s: "Laurel",
+    )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.resolve_registry_key",
+        lambda _s: "Lorelai",
+    )
+    raw = '@Image1 (Character) calm. Laurel speaks in a warm excited conversational pace: "Hi"'
+    out = o3p.normalize_kling_speaker_names_in_prompt(raw, "Lorelai")
+    assert "@Image1 (Laurel)" in out
+    assert "@Image1 (Character)" not in out
 
 
 def test_normalize_kling_speaker_names_rewrites_lorelai_to_laurel(monkeypatch):

@@ -154,9 +154,13 @@ def _voice_line_matches_kling_display_name(speaker: str, voice_line: str) -> boo
 
 def _prompt_needs_kling_name_normalization(speaker: str, prompt: str) -> bool:
     display = _kling_display_name_for_speaker(speaker)
-    if not display or display == (speaker or "").strip():
+    if not display:
         return False
     text = prompt or ""
+    if re.search(r"@Image1\s*\(\s*Character\s*\)", text, re.I):
+        return True
+    if display == (speaker or "").strip():
+        return False
     if re.search(r"@Image1\s*\(\s*Lorelai\s*\)", text, re.I):
         return True
     if re.search(r"\bLorelai\s+(?:speaks|says)\b", text, re.I):
@@ -173,22 +177,22 @@ def normalize_kling_speaker_names_in_prompt(prompt: str, speaker: str) -> str:
     display = _kling_display_name_for_speaker(speaker)
     if not display:
         return prompt
+    out = prompt or ""
+    out = re.sub(r"@Image1\s*\(\s*Character\s*\)", f"@Image1 ({display})", out, flags=re.I)
     try:
         from tools import kling_character_registry as reg
 
         reg_key = reg.resolve_registry_key(speaker) or (speaker or "").strip()
-        if reg_key not in reg._KLING_ELEMENT_DISPLAY_NAME:
-            return prompt
+        if reg_key in reg._KLING_ELEMENT_DISPLAY_NAME:
+            out = re.sub(r"@Image1\s*\(\s*Lorelai\s*\)", f"@Image1 ({display})", out, flags=re.I)
+            out = re.sub(
+                r"\bLorelai(\s+(?:speaks|says|looks|bursts|cries|whispers|shouts)\b)",
+                rf"{display}\1",
+                out,
+                flags=re.I,
+            )
     except Exception:
-        return prompt
-    out = prompt or ""
-    out = re.sub(r"@Image1\s*\(\s*Lorelai\s*\)", f"@Image1 ({display})", out, flags=re.I)
-    out = re.sub(
-        r"\bLorelai(\s+(?:speaks|says|looks|bursts|cries|whispers|shouts)\b)",
-        rf"{display}\1",
-        out,
-        flags=re.I,
-    )
+        pass
     return out
 
 
@@ -304,6 +308,15 @@ def validate_element_bound_voice_prompt(speaker: str, prompt: str) -> list[str]:
     if not text:
         errors.append("empty prompt")
         return errors
+    display = _kling_display_name_for_speaker(speaker)
+    if display and re.search(r"@Image1\s*\(\s*Character\s*\)", text, re.I):
+        errors.append(
+            f"prompt @Image1 header must use Element display name ({display}), not 'Character'"
+        )
+    elif display and re.search(r"@Image1\s*\(\s*Lorelai\s*\)", text, re.I):
+        errors.append(
+            f"prompt @Image1 header must use Element display name ({display}), not 'Lorelai'"
+        )
     if "<<<voice_" in lower:
         errors.append("prompt contains <<<voice_N>>> (generic Kling TTS tags)")
     lines = text.splitlines()
@@ -327,7 +340,6 @@ def validate_element_bound_voice_prompt(speaker: str, prompt: str) -> list[str]:
             errors.append("prompt voice line must use 'speaks in a {canonical delivery}'")
         elif delivery.lower() not in voice_lower:
             errors.append("prompt voice line missing canonical delivery lock")
-        display = _kling_display_name_for_speaker(speaker)
         if display and not _voice_line_matches_kling_display_name(speaker, voice_line):
             if re.search(r"\bLorelai\s+(?:speaks|says)\b", voice_line, re.I):
                 errors.append(
