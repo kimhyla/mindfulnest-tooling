@@ -34,9 +34,19 @@ _SPEAKER_REGISTRY_ALIAS: dict[str, str] = {
 def prod_root() -> Path:
     global _PROD_ROOT
     if _PROD_ROOT is None:
-        here = Path(__file__).resolve()
-        _PROD_ROOT = here.parent.parent
+        env = os.environ.get("MN_PROD_ROOT", "").strip()
+        if env:
+            _PROD_ROOT = Path(env).resolve()
+        else:
+            here = Path(__file__).resolve()
+            _PROD_ROOT = here.parent.parent
     return _PROD_ROOT
+
+
+def set_prod_root(path: str | Path) -> None:
+    """Bind registry paths to runtime Production/ root (Dropbox when server runs)."""
+    global _PROD_ROOT
+    _PROD_ROOT = Path(path).resolve()
 
 
 def character_subjects_path() -> Path:

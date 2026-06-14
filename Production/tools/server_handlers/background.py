@@ -3260,6 +3260,33 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                         error_message=f"{label} must be set before generating O3 video",
                         retry_safe=False,
                     )
+            speaker = str(beat.get("speaker") or "").strip()
+            if speaker and not beat.get("reference_image_locked"):
+                bg.ensure_beat_element_aligned_reference(beat)
+                try:
+                    from tools import kling_character_registry as reg
+
+                    if reg.is_speaker_voice_ready(speaker):
+                        char_path = bg.resolve_beat_char_ref_path(beat)
+                        if char_path:
+                            aligned, detail = reg.char_ref_matches_element_images(
+                                char_path, speaker,
+                            )
+                            if not aligned:
+                                return h._send_error_v59(
+                                    400,
+                                    error_code="ELEMENT_VISUAL_MISMATCH",
+                                    error_message=detail,
+                                    retry_safe=False,
+                                )
+                except Exception as exc:
+                    return h._send_error_v59(
+                        500,
+                        error_code="ELEMENT_ALIGN_CHECK_FAILED",
+                        error_message=str(exc),
+                        retry_safe=True,
+                    )
+            bg.sync_beat_dialogue_from_kling_prompt(beat)
             replace_slot = body.get("replace_slot_index", beat.get("kling_o3_replace_slot_index", 0))
             try:
                 replace_slot = max(0, min(2, int(replace_slot)))

@@ -95,6 +95,13 @@ def init_bg_paths(event_dir) -> None:
     _CANON_BASE = str(bp.canon_base)
     _LOCAL_STILLS_DIR = Path(bp.local_stills_dir)
 
+    try:
+        from tools import kling_character_registry as _reg
+
+        _reg.set_prod_root(_PROD_DIR)
+    except Exception:
+        pass
+
     # Rebuild the two character-pose dicts that were baked at import time
     # with the (now stale) tooling-anchored _PROD_CHARS. Keys + per-emotion
     # structure preserved exactly per beat_generator.py:127-172.
@@ -2476,6 +2483,9 @@ def _migrate_sidecar(sidecar: dict) -> dict:
             draft = seg.get("beat_plan_draft") or {}
             for row in draft.get("beats_plan") or []:
                 humanize_kling_body_parts_on_plan_row(row)
+            for beat in seg.get("beats", []):
+                if not beat.get("reference_image_locked"):
+                    align_beat_reference_to_element(beat)
     migration_warnings = []
     for arc_key, arc in sidecar.get("arcs", {}).items():
         for seg_key, seg in arc.get("segments", {}).items():

@@ -39,9 +39,10 @@ def _inject_locked_voice(prompt: str, speaker: str, spoken: str) -> str:
     lines = prompt.splitlines()
     out: list[str] = []
     replaced = False
+    voice_line_re = re.compile(r"\b(speaks|says)\b", re.I)
     for line in lines:
         low = line.lower()
-        if not replaced and (" says:" in low or " speaks in a " in low or "<<<voice_" in low):
+        if not replaced and (voice_line_re.search(line) or "<<<voice_" in low):
             out.append(locked)
             replaced = True
         else:
@@ -169,14 +170,31 @@ def run_pipeline(
             f"Run: python3 scripts/setup_all_kling_character_voices.py --char {speaker}"
         )
 
+    if not beat.get("reference_image_locked"):
+        bg_sidecar.ensure_beat_element_aligned_reference(beat)
+
     char_path = _ref_path(beat.get("reference_image"))
     bg_path = _ref_path(beat.get("bg_ref_image"))
     if not char_path.is_file() or not bg_path.is_file():
         raise RuntimeError("reference_image and bg_ref_image must exist on disk")
 
+    aligned, align_detail = reg.char_ref_matches_element_images(str(char_path), speaker)
+    if not aligned:
+        raise RuntimeError(f"ELEMENT_VISUAL_MISMATCH: {align_detail}")
+
+    stored_prompt = (beat.get("kling_o3_prompt") or "").strip()
     build_prompt, normalize_spoken = _load_build_prompt()
-    spoken = _spoken_from_beat(beat, normalize_spoken)
-    prompt = _inject_locked_voice(build_prompt(beat), speaker, spoken)
+    spoken = (
+        bg_sidecar.extract_spoken_dialogue_from_kling_prompt(stored_prompt)
+        if stored_prompt
+        else ""
+    )
+    if not spoken:
+        spoken = _spoken_from_beat(beat, normalize_spoken)
+    if stored_prompt:
+        prompt = _inject_locked_voice(stored_prompt, speaker, spoken)
+    else:
+        prompt = _inject_locked_voice(build_prompt(beat), speaker, spoken)
     duration = int(beat.get("kling_o3_duration") or 8)
 
     creds = load_credentials()
@@ -227,7 +245,14 @@ def run_pipeline(
         "kling_o3_voice_fix_updated_at": datetime.now(timezone.utc).isoformat(),
     })
 
-    print(json.dumps({"phase": "o3_submit", "beat_id": beat_id, "speaker": speaker, "element": reg.get_element_list_entry(speaker)}), flush=True)
+    print(json.dumps({
+        "phase": "o3_submit",
+        "beat_id": beat_id,
+        "speaker": speaker,
+        "element": reg.get_element_list_entry(speaker),
+        "char_ref_aligned": aligned,
+        "char_ref": str(char_path),
+    }), flush=True)
     result = o3.run_beat_generation(
         api_key,
         prompt,
