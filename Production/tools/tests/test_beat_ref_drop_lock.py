@@ -172,3 +172,63 @@ def test_apply_kling_o3_defaults_respects_bg_ref_locked(tmp_path: Path, monkeypa
     }
     bg.apply_kling_o3_defaults_to_beat(beat, "2", "pre")
     assert beat.get("bg_ref_image") is None
+
+
+def test_element_char_ref_gate_rejects_locked_library_still(tmp_path: Path, monkeypatch):
+    canonical = tmp_path / "lorelai_canonical_neutral.png"
+    library = tmp_path / "ChatGPT_Image_Jun_14.png"
+    canonical.write_bytes(b"canonical")
+    library.write_bytes(b"library")
+
+    monkeypatch.setattr(
+        "tools.kling_character_registry.element_image_paths",
+        lambda _s: [canonical],
+    )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+
+    def fake_hash(path):
+        p = str(path)
+        if "ChatGPT" in p or "library" in p.lower():
+            return "hash_library"
+        return "hash_canonical"
+
+    monkeypatch.setattr("tools.kling_character_registry.file_sha256", fake_hash)
+
+    beat = {
+        "speaker": "Lorelai",
+        "reference_image": {"abs_path": str(library)},
+        "reference_image_locked": True,
+    }
+    ok, detail = bg.element_char_ref_gate(beat)
+    assert ok is False
+    assert "does not match Element images" in detail
+
+
+def test_element_char_ref_gate_accepts_element_pose(tmp_path: Path, monkeypatch):
+    canonical = tmp_path / "lorelai_canonical_neutral.png"
+    canonical.write_bytes(b"canonical")
+
+    monkeypatch.setattr(
+        "tools.kling_character_registry.element_image_paths",
+        lambda _s: [canonical],
+    )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.file_sha256",
+        lambda _p: "hash_canonical",
+    )
+
+    beat = {
+        "speaker": "Lorelai",
+        "reference_image": {"abs_path": str(canonical)},
+        "reference_image_locked": True,
+    }
+    ok, detail = bg.element_char_ref_gate(beat)
+    assert ok is True
+    assert detail == ""

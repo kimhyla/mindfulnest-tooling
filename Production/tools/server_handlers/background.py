@@ -2501,6 +2501,7 @@ def handle_bg_update_beat(h, body: dict)-> None:
                        retry_safe=False,
                    )
         written = []
+        element_ref_warning = None
         for field in _BG_BEAT_WRITABLE:
             if field in body:
                 value = body[field]
@@ -2534,8 +2535,17 @@ def handle_bg_update_beat(h, body: dict)-> None:
                 written.append(field)
                 if field == "kling_o3_prompt" and isinstance(value, str):
                     bg.sync_beat_dialogue_from_kling_prompt(beat)
+        if "reference_image" in written:
+            ok, detail = bg.element_char_ref_gate(beat)
+            if not ok:
+                element_ref_warning = detail
         bg.write_sidecar(sidecar)
-    return h._send_json(200, {"ok": True, "written": written, "thumb_b64": thumb_b64})
+    return h._send_json(200, {
+        "ok": True,
+        "written": written,
+        "thumb_b64": thumb_b64,
+        "element_ref_warning": element_ref_warning,
+    })
 
 
 def handle_bg_reorder_beats(h, body: dict)-> None:
@@ -3254,32 +3264,29 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                         retry_safe=False,
                     )
             speaker = str(beat.get("speaker") or "").strip()
-            if speaker and not beat.get("reference_image_locked"):
-                bg.ensure_beat_element_aligned_reference(beat)
-                try:
-                    from tools import kling_character_registry as reg
+            try:
+                from tools import kling_character_registry as reg
 
-                    if reg.is_speaker_voice_ready(speaker):
-                        char_path = bg.resolve_beat_char_ref_path(beat)
-                        if char_path:
-                            aligned, detail = reg.char_ref_matches_element_images(
-                                char_path, speaker,
-                            )
-                            if not aligned:
-                                return h._send_error_v59(
-                                    400,
-                                    error_code="ELEMENT_VISUAL_MISMATCH",
-                                    error_message=detail,
-                                    retry_safe=False,
-                                )
+                if speaker and reg.is_speaker_voice_ready(speaker):
+                    if not beat.get("reference_image_locked"):
+                        bg.ensure_beat_element_aligned_reference(beat)
+                    ok, detail = bg.element_char_ref_gate(beat)
+                    if not ok:
+                        return h._send_error_v59(
+                            400,
+                            error_code="ELEMENT_VISUAL_MISMATCH",
+                            error_message=detail,
+                            retry_safe=False,
+                        )
+                    if not beat.get("reference_image_locked"):
                         beat["reference_image_locked"] = True
-                except Exception as exc:
-                    return h._send_error_v59(
-                        500,
-                        error_code="ELEMENT_ALIGN_CHECK_FAILED",
-                        error_message=str(exc),
-                        retry_safe=True,
-                    )
+            except Exception as exc:
+                return h._send_error_v59(
+                    500,
+                    error_code="ELEMENT_ALIGN_CHECK_FAILED",
+                    error_message=str(exc),
+                    retry_safe=True,
+                )
             from tools import kling_o3_prompt as o3p
 
             voice_prompt_errors = o3p.validate_element_bound_voice_prompt(

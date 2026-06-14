@@ -4251,28 +4251,14 @@ def validate_kling_o3_beat_for_submit(
                 "code": "MISSING_CHAR_REF",
                 "message": f"Missing character reference image for {speaker!r}",
             })
-        elif speaker and not beat.get("reference_image_locked"):
-            try:
-                from tools import kling_character_registry as reg
-                entry = reg.get_character_entry(speaker)
-                if (
-                    entry
-                    and entry.get("status") == "active"
-                    and entry.get("element_id")
-                ):
-                    aligned, detail = reg.char_ref_matches_element_images(char_path, speaker)
-                    if not aligned:
-                        errors.append({
-                            "beat_id": beat_id,
-                            "code": "ELEMENT_VISUAL_MISMATCH",
-                            "message": detail,
-                            "char_ref": char_path,
-                        })
-            except Exception as exc:
+        elif speaker:
+            ok, detail = element_char_ref_gate(beat)
+            if not ok:
                 errors.append({
                     "beat_id": beat_id,
-                    "code": "ELEMENT_ALIGNMENT_CHECK_FAILED",
-                    "message": str(exc),
+                    "code": "ELEMENT_VISUAL_MISMATCH",
+                    "message": detail,
+                    "char_ref": char_path,
                 })
         if not bg_path:
             errors.append({
@@ -4595,23 +4581,29 @@ def audit_kling_o3_beat(beat: dict, *, event_id: str = "1", phase: str = "full")
         })
 
     char_path = resolve_beat_char_ref_path(beat)
-    if char_path and speaker and not beat.get("reference_image_locked"):
+    if char_path and speaker:
         try:
             from tools import kling_character_registry as reg
-            entry = reg.get_character_entry(speaker)
-            if (
-                entry
-                and entry.get("status") == "active"
-                and entry.get("element_id")
-            ):
-                aligned, detail = reg.char_ref_matches_element_images(char_path, speaker)
-                if not aligned:
+
+            if reg.is_speaker_voice_ready(speaker):
+                ok, detail = element_char_ref_gate(beat)
+                if not ok:
                     findings.append({
                         "beat_id": beat_id,
                         "code": "ELEMENT_VISUAL_MISMATCH",
                         "severity": "error",
                         "message": detail,
                         "char_ref": char_path,
+                    })
+                elif beat.get("reference_image_locked"):
+                    findings.append({
+                        "beat_id": beat_id,
+                        "code": "REFERENCE_IMAGE_LOCKED",
+                        "severity": "info",
+                        "message": (
+                            "Char ref locked — your library still is kept; "
+                            "it must still match Element poses for O3 voice."
+                        ),
                     })
         except Exception as exc:
             findings.append({
@@ -4620,13 +4612,6 @@ def audit_kling_o3_beat(beat: dict, *, event_id: str = "1", phase: str = "full")
                 "severity": "error",
                 "message": str(exc),
             })
-    elif char_path and speaker and beat.get("reference_image_locked"):
-        findings.append({
-            "beat_id": beat_id,
-            "code": "REFERENCE_IMAGE_LOCKED",
-            "severity": "info",
-            "message": "Char ref locked — manual library still will not be auto-aligned to Element.",
-        })
 
     submit_errors = validate_kling_o3_beat_for_submit(beat, event_id=event_id, phase=phase)
     for err in submit_errors:
@@ -5054,6 +5039,27 @@ def align_beat_reference_to_element(beat: dict) -> bool:
         return True
     except Exception:
         return False
+
+
+def element_char_ref_gate(beat: dict) -> tuple[bool, str]:
+    """Element O3 requires @Image1 to match registered Element pose files."""
+    speaker = str(beat.get("speaker") or "").strip()
+    if not speaker:
+        return True, ""
+    try:
+        from tools import kling_character_registry as reg
+
+        if not reg.is_speaker_voice_ready(speaker):
+            return True, ""
+        char_path = resolve_beat_char_ref_path(beat)
+        if not char_path:
+            return False, f"Missing character reference image for {speaker!r}"
+        aligned, detail = reg.char_ref_matches_element_images(char_path, speaker)
+        if not aligned:
+            return False, detail
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
 
 
 def ensure_beat_element_aligned_reference(beat: dict) -> bool:

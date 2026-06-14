@@ -568,7 +568,7 @@ export function BgTab() {
             completedBeatIds.push(beatId);
             pushToast({
               kind: 'success',
-              message: `O3 voice video ready${res.data.result?.duration_s ? ` (${res.data.result.duration_s.toFixed(2)}s)` : ''}`,
+              message: `${beatId}: O3 voice video ready${res.data.result?.duration_s ? ` (${res.data.result.duration_s.toFixed(2)}s)` : ''}`,
               source: 'bg-o3-done',
             });
             return;
@@ -577,7 +577,7 @@ export function BgTab() {
             failedBeatIds.push(beatId);
             pushToast({
               kind: 'error',
-              message: `O3 voice job failed: ${formatO3JobFailure(res.data.error)}`,
+              message: `${beatId}: O3 voice job failed: ${formatO3JobFailure(res.data.error)}`,
               source: 'bg-o3-error',
             });
             return;
@@ -2336,7 +2336,7 @@ function BgRefSlot({ label, refImg, testId, beatId, refField, onRemoveRef, onRef
         key: payload.lib_key,
         abs_path: payload.abs_path ?? '',
       });
-      const result = await pathappPatch<{ ok: boolean; thumb_b64?: string }>(
+      const result = await pathappPatch<{ ok: boolean; thumb_b64?: string; element_ref_warning?: string }>(
         activeScope.value, 'bg_update_beat', {
           beat_id: beatId,
           [refField]: {
@@ -2353,6 +2353,13 @@ function BgRefSlot({ label, refImg, testId, beatId, refField, onRemoveRef, onRef
           message: `${label} drop failed: ${result.error ?? `HTTP ${result.status}`}`,
           source: 'bg-ref-drop-error',
         });
+      } else if (refField === 'reference_image' && result.data?.element_ref_warning) {
+        pushToast({
+          kind: 'error',
+          message: result.data.element_ref_warning,
+          source: 'bg-ref-element-mismatch',
+        });
+        onRefresh();
       } else {
         // Layer thumb_b64 onto the optimistic update if server returned one.
         // Server side _handle_bg_update_beat was patched 2026-05-11 to mirror
