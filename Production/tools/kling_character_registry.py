@@ -10,6 +10,8 @@ import hashlib
 import json
 import os
 import re
+import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -267,6 +269,83 @@ def assign_voice(character: str, voice_id: str, voice_label: str | None = None) 
 def slugify(name: str) -> str:
     s = re.sub(r"[^a-zA-Z0-9_-]+", "_", name.strip())
     return s.strip("_").lower() or "unknown"
+
+
+def _unique_pose_dest(char_key: str, source: Path) -> tuple[Path, str]:
+    """Return (absolute dest, rel path under Production/) for a new pose PNG."""
+    poses_dir = prod_root() / char_key / "poses"
+    poses_dir.mkdir(parents=True, exist_ok=True)
+    stem = slugify(source.stem) or "pose"
+    rel = f"{char_key}/poses/{stem}.png"
+    dest = prod_root() / rel
+    if dest.is_file():
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        rel = f"{char_key}/poses/{stem}_{ts}.png"
+        dest = prod_root() / rel
+    return dest.resolve(), rel
+
+
+def add_element_pose(
+    character: str,
+    source_abs_path: str | Path,
+    wavespeed_key: str,
+) -> dict[str, Any]:
+    """Copy a pose PNG into Production/<Char>/poses and re-register Element only.
+
+    Does not call setup_character_voice — preserves existing kling_voice_id.
+    """
+    from tools.kling_element_voice import register_kling_element
+
+    source = Path(source_abs_path).resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"Pose source missing: {source}")
+    if source.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp"):
+        raise ValueError(f"Pose source must be an image file: {source.name}")
+
+    data = load_character_subjects()
+    chars = data.get("characters") or {}
+    char_key = character
+    if char_key not in chars:
+        matches = [k for k in chars if k.lower() == character.lower()]
+        if not matches:
+            raise KeyError(f"Unknown character: {character!r}")
+        char_key = matches[0]
+    cfg = dict(chars[char_key])
+
+    if not is_speaker_voice_ready(char_key):
+        raise RuntimeError(
+            f"{char_key!r} is not voice-ready — run setup_character_voice first."
+        )
+    voice_id = cfg.get("kling_voice_id")
+    if not voice_id:
+        raise RuntimeError(f"{char_key!r} has no kling_voice_id — cannot re-register Element.")
+
+    dest, rel_pose = _unique_pose_dest(char_key, source)
+    shutil.copy2(source, dest)
+
+    refer = [str(r) for r in (cfg.get("refer_images") or [])]
+    if rel_pose not in refer:
+        refer.append(rel_pose)
+    cfg["refer_images"] = refer
+    if not cfg.get("frontal_image"):
+        cfg["frontal_image"] = rel_pose
+
+    element_id, _prediction_id = register_kling_element(
+        char_key, cfg, str(voice_id), wavespeed_key,
+    )
+    cfg["element_id"] = element_id
+    cfg["status"] = "active"
+    chars[char_key] = cfg
+    data["characters"] = chars
+    save_character_subjects(data)
+
+    return {
+        "ok": True,
+        "pose_rel": rel_pose,
+        "pose_abs_path": str(dest),
+        "element_id": element_id,
+        "character": char_key,
+    }
 
 
 def build_audition_manifest() -> dict[str, Any]:

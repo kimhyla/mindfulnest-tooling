@@ -93,7 +93,7 @@ function isO3VoiceBeat(beat?: BgBeat | null): boolean {
 
 /** Short inline gate hint — full server detail stays in yellow toast only. */
 function elementCharRefInlineHint(_full?: string | null): string {
-  return 'Needs Element pose — drag from Library tier element/char_ref';
+  return 'Needs registered Element pose — @Image1 must match Production/<Char>/poses/ (or re-register a new pose)';
 }
 
 /** Prompt-box is law — UI edits the same field Kling submit reads from sidecar. */
@@ -1182,6 +1182,49 @@ export function BgTab() {
     await refreshState();
   };
 
+  const onAddElementPose = async (beatId: string) => {
+    if (beatSaveBlockedRef.current.has(beatId)) return;
+    const beat = beats.find((b) => b.beat_id === beatId);
+    const result = await pathappPatch<{
+      ok: boolean;
+      pose_rel?: string;
+      element_id?: string;
+      element_char_ref_ok?: boolean;
+      element_char_ref_error?: string | null;
+    }>(activeScope.value, 'bg_add_element_pose', { beat_id: beatId });
+    if (!result.ok) {
+      if (isBeatNotFoundResult(result)) {
+        await handleBeatMissingOnSave(beatId);
+        return;
+      }
+      pushToast({
+        kind: 'error',
+        message: result.error ?? 'Could not add pose to Element',
+        source: 'bg-add-element-pose-error',
+      });
+      return;
+    }
+    const data = result.data;
+    const gateOk = data?.element_char_ref_ok;
+    if (typeof gateOk === 'boolean') {
+      setBeats((bs) => bs.map((b): BgBeat => {
+        if (b.beat_id !== beatId) return b;
+        const next: BgBeat = { ...b, element_char_ref_ok: gateOk };
+        const gateErr = data?.element_char_ref_error ?? null;
+        if (gateErr) next.element_char_ref_error = gateErr;
+        else delete next.element_char_ref_error;
+        return next;
+      }));
+    }
+    pushToast({
+      kind: 'success',
+      message: `Pose registered on ${beat?.speaker ?? 'speaker'} Element`
+        + (data?.pose_rel ? ` (${data.pose_rel})` : ''),
+      source: 'bg-add-element-pose',
+    });
+    await refreshState();
+  };
+
   const onSetReplaceSlot = async (beatId: string, slotIndex: number) => {
     if (beatSaveBlockedRef.current.has(beatId)) return;
     setBeats((prev) => prev.map((b) => (
@@ -1796,6 +1839,7 @@ export function BgTab() {
               onInsertAfter={() => onAddBeat(b.beat_id)}
               onRemoveRef={(refField, label) => requestRemoveRef(b.beat_id, refField, label)}
               onAlignElementRef={() => onAlignElementRef(b.beat_id)}
+              onAddElementPose={() => onAddElementPose(b.beat_id)}
               onRefresh={() => refreshState()}
               onBeatMissing={handleBeatMissingOnSave}
               // 2026-05-11 Rule 26 fix — optimistic local-state patchers so the
@@ -2147,6 +2191,7 @@ interface BeatGenCardProps {
   onInsertAfter: () => void;
   onRemoveRef: (refField: 'reference_image' | 'bg_ref_image', label: string) => void;
   onAlignElementRef?: () => void;
+  onAddElementPose: () => void;
   // 2026-05-11 fix — parent refreshState() threaded into BgRefSlot + BgOptionTile.
   onRefresh: () => void;
   onBeatMissing: (beatId: string) => void | Promise<void>;
@@ -2167,7 +2212,7 @@ function BeatGenCard({
   index, beat, eventId, videoRole, pollResultForBeat, busy, nativeExperimentBusy,
   onDelete, onUpdateText, onUpdateSpeaker, onGenerate, onAccept,
   onSelectO3Video, onApproveStill, onApplyO3Trim, onSetReplaceSlot, onSubmitNativeLipSyncExperiment,
-  onEditChip, onInsertAfter, onRemoveRef, onAlignElementRef, onRefresh, onBeatMissing,
+  onEditChip, onInsertAfter, onRemoveRef, onAlignElementRef, onAddElementPose, onRefresh, onBeatMissing,
   onPatchOptionTile, onPatchRefImage,
 }: BeatGenCardProps) {
   const [localText, setLocalText] = useState<string>(beatPromptText(beat));
@@ -2269,6 +2314,11 @@ function BeatGenCard({
     || optionsToShow.some((o) => o?.local_path || o?.thumb_b64);
   const showStillClipHint = stillInsert && !beat.kling_o3_video_path && hasStillSource;
   const elementCharRefBlocked = isO3VoiceBeat(beat) && beat.element_char_ref_ok === false;
+  const charRefHasImage = !!(
+    beat.reference_image
+    && (beat.reference_image.thumb_b64 || beat.reference_image.abs_path || beat.reference_image.key)
+  );
+  const showAddElementPose = isO3VoiceBeat(beat) && charRefHasImage;
 
   return (
     <li class="mn-bg-beat-card" data-testid={`bg-beat-card-${index}`} data-beat-id={beat.beat_id}>
@@ -2414,6 +2464,9 @@ function BeatGenCard({
               showAlignElementRef: true,
               onAlignElementRef,
             }
+            : {})}
+          {...(showAddElementPose
+            ? { showAddElementPose: true, onAddElementPose }
             : {})}
           onRemoveRef={onRemoveRef}
           onRefresh={onRefresh}
@@ -2583,6 +2636,8 @@ interface BgRefSlotPropsExt extends BgRefSlotProps {
   elementRefErrorDetail?: string;
   showAlignElementRef?: boolean;
   onAlignElementRef?: () => void;
+  showAddElementPose?: boolean;
+  onAddElementPose?: () => void;
   // BG-18 — visible × button to remove the ref (NOT right-click per Kim 2026-05-06).
   onRemoveRef: (refField: 'reference_image' | 'bg_ref_image', label: string) => void;
   // 2026-05-11 fix — parent refreshState() to repaint stale beats[] after drop success.
@@ -2597,7 +2652,7 @@ interface BgRefSlotPropsExt extends BgRefSlotProps {
 
 function BgRefSlot({
   label, refImg, testId, beatId, refField, elementRefError, elementRefErrorDetail,
-  showAlignElementRef, onAlignElementRef,
+  showAlignElementRef, onAlignElementRef, showAddElementPose, onAddElementPose,
   onRemoveRef, onRefresh, onBeatMissing, onPatchRefImage,
 }: BgRefSlotPropsExt) {
   const hasImage = !!refImg && (refImg.thumb_b64 || refImg.abs_path || refImg.key);
@@ -2715,6 +2770,19 @@ function BgRefSlot({
           <span class="mn-dim">drop here</span>
         )}
       </div>
+      {showAddElementPose && onAddElementPose && refField === 'reference_image' ? (
+        <button
+          type="button"
+          class="mn-btn mn-btn-small mn-bg-ref-add-element-btn"
+          data-testid={`${testId}-add-element`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onAddElementPose();
+          }}
+        >
+          Add to Element
+        </button>
+      ) : null}
       {elementRefError ? (
         <div
           class="mn-bg-ref-element-error"

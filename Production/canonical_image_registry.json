@@ -18,6 +18,12 @@
           "tags": ["character", "arlo", "canonical", "element_pose"]
         },
         {
+          "key": "canonical_arlo_studio_bg_v1",
+          "filename": "canonical_arlo_studio_bg_v1.png",
+          "display_name": "Arlo wizard study gold BG (canonical)",
+          "tags": ["background", "arlo", "canonical", "studio"]
+        },
+        {
           "key": "canonical_heartwood_grove_01",
           "filename": "canonical_heartwood_grove_01.png",
           "display_name": "Heartwood grove 01 (canonical)",

@@ -49,6 +49,11 @@ def _resolve_dropbox_root() -> Path:
 DROPBOX_ROOT: Path = _resolve_dropbox_root()
 
 
+def dropbox_root() -> Path:
+    """Callable accessor — re-resolves env so tests/runtime overrides apply."""
+    return _resolve_dropbox_root()
+
+
 def _resolve_tooling_root() -> Path:
     env = os.environ.get("MN_TOOLING_ROOT")
     if env:

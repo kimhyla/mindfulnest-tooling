@@ -19,6 +19,7 @@ ENDPOINT_PRO = "https://api.wavespeed.ai/api/v3/kwaivgi/kling-video-o3-pro/refer
 ENDPOINT_STD_ITV = "https://api.wavespeed.ai/api/v3/kwaivgi/kling-video-o3-std/image-to-video"
 ENDPOINT_PRO_ITV = "https://api.wavespeed.ai/api/v3/kwaivgi/kling-video-o3-pro/image-to-video"
 POLL_TIMEOUT_S = int(os.environ.get("KLING_O3_POLL_TIMEOUT_S", "1800"))
+POLL_TIMEOUT_RETRY_S = int(os.environ.get("KLING_O3_POLL_TIMEOUT_RETRY_S", "900"))
 POLL_INTERVAL_S = 10
 
 KLING_O3_AUDIO_LOCK = (
@@ -284,7 +285,13 @@ def submit_reference_to_video(
     return task_id, tier
 
 
-def poll_until_done(task_id: str, api_key: str, timeout_s: int = POLL_TIMEOUT_S) -> dict:
+def poll_until_done(
+    task_id: str,
+    api_key: str,
+    timeout_s: int = POLL_TIMEOUT_S,
+    *,
+    retry_on_timeout: bool = True,
+) -> dict:
     url = f"https://api.wavespeed.ai/api/v3/predictions/{task_id}/result"
     start = time.time()
     while time.time() - start < timeout_s:
@@ -296,7 +303,26 @@ def poll_until_done(task_id: str, api_key: str, timeout_s: int = POLL_TIMEOUT_S)
         if job_status in ("completed", "failed", "error"):
             return inner
         time.sleep(POLL_INTERVAL_S)
-    return {"status": "timeout", "id": task_id}
+    if retry_on_timeout:
+        retry_start = time.time()
+        while time.time() - retry_start < POLL_TIMEOUT_RETRY_S:
+            status, body = curl_json("GET", url, api_key)
+            if status >= 400:
+                raise RuntimeError(f"Poll HTTP {status}: {body}")
+            inner = body.get("data") or body
+            job_status = (inner.get("status") or "unknown").lower()
+            if job_status in ("completed", "failed", "error"):
+                inner.setdefault("poll_retry", True)
+                return inner
+            time.sleep(POLL_INTERVAL_S)
+    return {
+        "status": "timeout",
+        "id": task_id,
+        "error": (
+            f"WaveSpeed poll timed out after {timeout_s + (POLL_TIMEOUT_RETRY_S if retry_on_timeout else 0)}s "
+            f"— task {task_id} may still be running; use Redo or wait and poll again"
+        ),
+    }
 
 
 def extract_output_url(result: dict) -> str | None:

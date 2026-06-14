@@ -1,0 +1,52 @@
+{
+  "version": 2,
+  "variant": "B",
+  "guide": "Arlo",
+  "clip_b_locked_line": "Ready? .... Just focus on my Teleport Glass.... Here we go!",
+  "clip_b_kling_duration_s": 6,
+  "clip_b_whiteout_hold_s": 2.5,
+  "clip_a_default_duration_s": 8,
+  "canonical_variant_count": 1,
+  "assets": {
+    "mirror_char": "Production/beat_generator_stills/sources/ChatGPT Image Jun 10, 2026, 10_25_11 AM.png",
+    "studio_bg": "Production/canonical_images/canonical_arlo_studio_bg_v1.png",
+    "neutral_char": "Production/beat_generator_stills/sources/ChatGPT Image Jun 10, 2026, 10_25_11 AM.png"
+  },
+  "outputs": {
+    "clip_b_master": "Production/templates/arlo_teleport_intro/clip_b_master.mp4",
+    "clip_b_speak": "Production/templates/arlo_teleport_intro/_scratch/clip_b_speak.mp4",
+    "clip_b_glass": "Production/templates/arlo_teleport_intro/_scratch/clip_b_glass_shared.mp4",
+    "modules_dir": "Production/templates/arlo_teleport_intro/modules",
+    "canonical_dir": "Production/templates/arlo_teleport_intro/canonical"
+  },
+  "teleport_glass": {
+    "recipe_ld": "LD-737",
+    "duration_s": 5
+  },
+  "intro_canonical_beats": {
+    "pre_penultimate_pair_fade_ms": 1500,
+    "final_pair_fade_ms": 2800,
+    "fade_out_video_tail_ms": 600,
+    "fade_in_video_head_ms": 600,
+    "semi_canonical_transition": {
+      "scene_notes": "Transition to Spell",
+      "speaker": "Arlo",
+      "emotion": "warm",
+      "dialogue_placeholder": "ENTER TEXT HERE",
+      "char_ref_asset": "neutral_char",
+      "bg_ref_asset": "studio_bg",
+      "reference_image_locked": true,
+      "prompt_template": "@Image1 (Arlo) Arlo — Transition to Spell. Arlo speaks directly to the camera; the child viewer is off-screen. Scene from @Image2.\n\nCamera: static locked shot, no zoom, no dolly, no pan, no camera movement, stable eye-level medium shot.\n\nArlo speaks in a warm natural conversational pace, clear friendly delivery: \"Alright Kiddo. ENTER TEXT HERE.\"\n\nChildren's illustrated fantasy storybook style, warm soft lighting.\n\nOnly @Image1 is visible in the frame. No other characters, creatures, or people on screen.\n\nMatch @Image1 character appearance, proportions, paws, tail, scarf, vest, and facial design exactly.\n\nAudio: spoken character dialogue only — absolutely no background music, no ambient bed, no environmental audio, no soundtrack, no score, no music of any kind. Silent world except speech."
+    },
+    "canonical_mirror_video": {
+      "scene_notes": "Teleport mirror",
+      "speaker": "Arlo",
+      "emotion": "warm",
+      "dialogue_text": "Ready? .... Just focus on my Teleport Glass.... Here we go!",
+      "char_ref_asset": "mirror_char",
+      "bg_ref_asset": "studio_bg",
+      "reference_image_locked": true,
+      "prompt": "@Image1 (Arlo) Arlo — Teleport mirror. Arlo is a friendly red squirrel guide with orange fur, a big fluffy tail, small paws, large expressive eyes, blue scarf, and green vest. Scene from @Image2.\n\nCamera: static locked shot, no zoom, no dolly, no pan, no camera movement, stable eye-level medium shot.\n\nArlo appears naturally in the cozy wizard study from @Image2. Only @Image1 is visible in the frame. No other characters, creatures, people, or duplicate squirrels on screen.\n\nMatch @Image1 character appearance, proportions, paws, tail, scarf, vest, and facial design exactly. Do not change the character design from @Image1. Squirrel anatomy stays consistent with @Image1. Paws stay small and relaxed.\n\nArlo speaks in a warm natural conversational pace, clear friendly delivery: \"Ready? .... Just focus on my Teleport Glass.... Here we go!\"\n\nChildren's illustrated fantasy storybook style, warm soft lighting. Audio: spoken character dialogue only — absolutely no background music, no ambient bed, no environmental audio, no soundtrack, no score, no music of any kind. Silent world except speech."
+    }
+  }
+}

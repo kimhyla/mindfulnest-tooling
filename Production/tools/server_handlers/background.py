@@ -2543,9 +2543,10 @@ def handle_bg_update_beat(h, body: dict)-> None:
             detail = (beat.get("element_char_ref_error") or "").strip()
             element_ref_warning = (
                 "Char ref saved — your library still is kept on this beat. "
-                "O3 Generate requires a registered Element pose: drag from Library "
-                "items tagged element/char_ref (Production/<Char>/poses/), not a "
-                "custom sources/ upload."
+                "O3 Generate requires @Image1 to match a pose registered on this "
+                "character's Kling Element (Production/<Char>/poses/). Library "
+                "uploads work when bytes match; new poses must be added via "
+                "Element re-register."
                 + (f" ({detail})" if detail else "")
             )
         bg.write_sidecar(sidecar)
@@ -2615,6 +2616,102 @@ def handle_bg_align_element_ref(h, body: dict) -> None:
         "element_char_ref_ok": beat.get("element_char_ref_ok"),
         "element_char_ref_error": beat.get("element_char_ref_error"),
     })
+
+
+def handle_bg_add_element_pose(h, body: dict) -> None:
+    """POST /api/bg/add-element-pose — register beat/library PNG as Element pose."""
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+    beat_id = body.get("beat_id")
+    speaker = (body.get("speaker") or "").strip()
+    abs_path = (body.get("abs_path") or "").strip()
+    bg = _bg_module()
+
+    with bg.sidecar_file_lock():
+        sidecar = bg._load_sidecar_migrated()
+        beat = None
+        if beat_id:
+            _, beat = bg.find_beat(sidecar, beat_id)
+            if not beat:
+                return h._send_error_v59(
+                    404,
+                    error_code="BEAT_NOT_FOUND",
+                    error_message=f"beat {beat_id} not found",
+                    retry_safe=False,
+                )
+            speaker = (beat.get("speaker") or "").strip()
+            ref = beat.get("reference_image")
+            if isinstance(ref, dict):
+                abs_path = (ref.get("abs_path") or "").strip()
+        if not speaker:
+            return h._send_error_v59(
+                400,
+                error_code="MISSING_SPEAKER",
+                error_message="speaker or beat_id with speaker required",
+                retry_safe=False,
+            )
+        if not abs_path or not os.path.isfile(abs_path):
+            return h._send_error_v59(
+                400,
+                error_code="MISSING_POSE_SOURCE",
+                error_message="abs_path to pose PNG required (or beat with reference_image)",
+                retry_safe=False,
+            )
+
+    try:
+        from credentials import load_credentials  # type: ignore
+    except ImportError:
+        from tools.credentials_lib.credentials import load_credentials  # type: ignore
+    creds = load_credentials()
+    wavespeed_key = creds.get("wavespeed_key") or creds.get("wavespeed")
+    if not wavespeed_key:
+        return h._send_error_v59(
+            503,
+            error_code="WAVESPEED_NOT_CONFIGURED",
+            error_message="WAVESPEED_API_KEY not configured",
+            retry_safe=False,
+        )
+
+    try:
+        from tools import kling_character_registry as reg
+
+        reg.set_prod_root(h.app._prod_root)
+        result = reg.add_element_pose(speaker, abs_path, wavespeed_key)
+    except Exception as exc:
+        return h._send_error_v59(
+            500,
+            error_code="ADD_ELEMENT_POSE_FAILED",
+            error_message=str(exc),
+            retry_safe=True,
+        )
+
+    thumb_b64 = None
+    element_char_ref_ok = None
+    with bg.sidecar_file_lock():
+        sidecar = bg._load_sidecar_migrated()
+        if beat_id:
+            _, beat = bg.find_beat(sidecar, beat_id)
+            if beat:
+                ref = beat.get("reference_image")
+                if isinstance(ref, dict) and (ref.get("abs_path") or "") == abs_path:
+                    bg.sync_element_char_ref_status(beat, heal_mismatch=False)
+                    element_char_ref_ok = beat.get("element_char_ref_ok")
+                    if not ref.get("thumb_b64"):
+                        from lib.event_library import ref_image_thumb_b64
+
+                        _t = ref_image_thumb_b64(abs_path, h.app._library_root_dirs())
+                        if _t:
+                            beat["reference_image"] = dict(ref)
+                            beat["reference_image"]["thumb_b64"] = _t
+                            thumb_b64 = _t
+                    bg.write_sidecar(sidecar)
+
+    payload = dict(result)
+    if element_char_ref_ok is not None:
+        payload["element_char_ref_ok"] = element_char_ref_ok
+    if thumb_b64:
+        payload["thumb_b64"] = thumb_b64
+    return h._send_json(200, payload)
 
 
 def handle_bg_reorder_beats(h, body: dict)-> None:

@@ -1,6 +1,7 @@
 """User-dropped Beat Gen refs must survive sidecar migration / auto-align."""
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -499,3 +500,58 @@ def test_bg_align_element_ref_handler_registered():
     assert "align_beat_reference_to_element(beat)" in text
     server = (TOOLS / "production_server.py").read_text(encoding="utf-8")
     assert "/api/bg/align-element-ref" in server
+
+
+def test_add_element_pose_appends_refer_and_reregisters(tmp_path: Path, monkeypatch):
+    from tools import kling_character_registry as reg
+
+    poses = tmp_path / "Arlo" / "poses"
+    poses.mkdir(parents=True)
+    (poses / "arlo_canonical_neutral_vest.png").write_bytes(b"frontal")
+    source = tmp_path / "Event_2" / "library" / "sources" / "custom_pose.png"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"library-pose")
+
+    registry = {
+        "characters": {
+            "Arlo": {
+                "status": "active",
+                "element_id": "old_element",
+                "kling_voice_id": "voice123",
+                "frontal_image": "Arlo/poses/arlo_canonical_neutral_vest.png",
+                "refer_images": ["Arlo/poses/arlo_happy_vest.png"],
+                "element_name": "Arlo",
+            },
+        },
+    }
+    (tmp_path / "character_subjects.json").write_text(json.dumps(registry), encoding="utf-8")
+    reg.set_prod_root(tmp_path)
+
+    captured: dict = {}
+
+    def fake_register(char_name, cfg, voice_id, wavespeed_key):
+        captured["char_name"] = char_name
+        captured["voice_id"] = voice_id
+        captured["refer_images"] = list(cfg.get("refer_images") or [])
+        return "new_element_999", "pred-1"
+
+    monkeypatch.setattr("tools.kling_element_voice.register_kling_element", fake_register)
+
+    result = reg.add_element_pose("Arlo", source, "ws-key-test")
+    assert result["ok"] is True
+    assert result["element_id"] == "new_element_999"
+    assert captured["voice_id"] == "voice123"
+    assert any("custom_pose" in r for r in captured["refer_images"])
+    saved = json.loads((tmp_path / "character_subjects.json").read_text(encoding="utf-8"))
+    assert saved["characters"]["Arlo"]["element_id"] == "new_element_999"
+    assert Path(result["pose_abs_path"]).is_file()
+
+
+def test_bg_add_element_pose_handler_registered():
+    text = (TOOLS / "server_handlers" / "background.py").read_text(encoding="utf-8")
+    assert "def handle_bg_add_element_pose" in text
+    assert "add_element_pose" in text
+    server = (TOOLS / "production_server.py").read_text(encoding="utf-8")
+    assert "/api/bg/add-element-pose" in server
+    endpoints = (TOOLS / "storyboard-v2" / "src" / "api" / "endpoints.ts").read_text(encoding="utf-8")
+    assert "bg_add_element_pose" in endpoints

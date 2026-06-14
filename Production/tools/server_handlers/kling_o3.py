@@ -402,7 +402,15 @@ def _run_single_beat(
                 "status": status,
                 "tier": tier,
                 "result": poll_result,
-                "error": status if status == "timeout" else None,
+                "error": (
+                    poll_result.get("error")
+                    or (
+                        f"WaveSpeed poll timed out (task {resume_task_id}) — "
+                        "approved options preserved; retry Generate when ready"
+                        if status == "timeout"
+                        else status
+                    )
+                ),
             }
         else:
             url = kling_o3_client.extract_output_url(poll_result)

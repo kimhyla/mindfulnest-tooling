@@ -6236,6 +6236,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_bg_update_beat(body)
             if path == "/api/bg/align-element-ref":
                 return self._handle_bg_align_element_ref(body)
+            if path == "/api/bg/add-element-pose":
+                return self._handle_bg_add_element_pose(body)
             if path == "/api/bg/reorder-beats":
                 return self._handle_bg_reorder_beats(body)
             if path == "/api/bg/delete-beat":
@@ -7682,6 +7684,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_bg_align_element_ref(self, body: dict) -> None:
         from server_handlers.background import handle_bg_align_element_ref
         return handle_bg_align_element_ref(self, body)
+
+    def _handle_bg_add_element_pose(self, body: dict) -> None:
+        from server_handlers.background import handle_bg_add_element_pose
+        return handle_bg_add_element_pose(self, body)
 
     def _handle_bg_reorder_beats(self, body: dict) -> None:
         from server_handlers.background import handle_bg_reorder_beats

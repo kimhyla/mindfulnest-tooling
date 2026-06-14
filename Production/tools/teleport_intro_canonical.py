@@ -154,6 +154,41 @@ def resolve_canonical_tail_for_event(
     return p if p.is_file() else None
 
 
+def infer_guide_from_sidecar_segment(sidecar: dict | None, segment_key: str | None) -> str | None:
+    """Infer Chipper vs Arlo intro manifest from canonical mirror beat speaker."""
+    if not sidecar or not segment_key:
+        return None
+    for arc in (sidecar.get("arcs") or {}).values():
+        seg = (arc.get("segments") or {}).get(segment_key)
+        if not seg:
+            continue
+        for beat in seg.get("beats") or []:
+            if (beat.get("intro_beat_role") or "") != "canonical_mirror_video":
+                continue
+            speaker = (beat.get("speaker") or "").strip()
+            if speaker.lower() == "arlo":
+                return "Arlo"
+            if speaker.lower() == "chipper":
+                return "Chipper"
+            if speaker:
+                return speaker
+        break
+    return None
+
+
+def default_guide_for_project(project_root: Path) -> str | None:
+    """Prefer Arlo when only Arlo registry has variants (Event_2+ context)."""
+    arlo_ok = _registry_has_variants(project_root, ARLO_REGISTRY_REL)
+    chipper_ok = _registry_has_variants(project_root, CHIPPER_REGISTRY_REL)
+    if arlo_ok and not chipper_ok:
+        return "Arlo"
+    if chipper_ok:
+        return "Chipper"
+    if arlo_ok:
+        return "Arlo"
+    return None
+
+
 def upsert_variant(
     registry: dict,
     *,

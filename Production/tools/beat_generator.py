@@ -637,24 +637,60 @@ _TELEPORT_INTRO_MANIFEST_REL = "Production/templates/chipper_teleport_intro/mani
 _TOOLING_TELEPORT_INTRO_MANIFEST = (
     Path(__file__).resolve().parent.parent / "templates" / "chipper_teleport_intro" / "manifest.json"
 )
+_TOOLING_ARLO_TELEPORT_INTRO_MANIFEST = (
+    Path(__file__).resolve().parent.parent / "templates" / "arlo_teleport_intro" / "manifest.json"
+)
 
 
-def _teleport_intro_manifest_path() -> Path:
+def _infer_teleport_intro_guide(
+    sidecar: dict | None = None,
+    segment_key: str | None = None,
+) -> str | None:
+    """Detect guide character for intro manifest (Arlo vs Chipper)."""
+    try:
+        from teleport_intro_canonical import (
+            default_guide_for_project,
+            infer_guide_from_sidecar_segment,
+        )
+        from lib.paths import dropbox_root
+
+        guide = infer_guide_from_sidecar_segment(sidecar, segment_key)
+        if guide:
+            return guide
+        return default_guide_for_project(dropbox_root())
+    except Exception:
+        return None
+
+
+def _teleport_intro_manifest_path(
+    *,
+    guide: str | None = None,
+    sidecar: dict | None = None,
+    segment_key: str | None = None,
+) -> Path:
+    if not guide:
+        guide = _infer_teleport_intro_guide(sidecar, segment_key)
     env = os.environ.get("TELEPORT_INTRO_MANIFEST")
     if env:
         return Path(env)
     try:
         from teleport_intro_canonical import active_manifest_path
+        from lib.paths import dropbox_root
 
-        active = active_manifest_path(_project_root())
+        active = active_manifest_path(dropbox_root(), guide=guide)
         if active.is_file():
             return active
     except Exception:
         pass
+    arlo_manifest = _TOOLING_ARLO_TELEPORT_INTRO_MANIFEST
+    if (guide or "").strip().lower() == "arlo" and arlo_manifest.is_file():
+        return arlo_manifest
     candidates = [
         _project_root() / _TELEPORT_INTRO_MANIFEST_REL,
         Path(_PROD_DIR) / "templates" / "chipper_teleport_intro" / "manifest.json",
+        Path(_PROD_DIR) / "templates" / "arlo_teleport_intro" / "manifest.json",
         _TOOLING_TELEPORT_INTRO_MANIFEST,
+        arlo_manifest,
     ]
     seen: set[str] = set()
     unique: list[Path] = []
@@ -678,8 +714,13 @@ def _teleport_intro_manifest_path() -> Path:
     return unique[0] if unique else Path(_PROD_DIR) / "templates" / "chipper_teleport_intro" / "manifest.json"
 
 
-def _load_intro_canonical_beats_manifest() -> dict[str, Any]:
-    path = _teleport_intro_manifest_path()
+def _load_intro_canonical_beats_manifest(
+    *,
+    guide: str | None = None,
+    sidecar: dict | None = None,
+    segment_key: str | None = None,
+) -> dict[str, Any]:
+    path = _teleport_intro_manifest_path(guide=guide, sidecar=sidecar, segment_key=segment_key)
     if not path.is_file():
         return {}
     try:
@@ -707,9 +748,16 @@ STILL_INSERT_MIN_DURATION_S = 1.0
 INTRO_VISUAL_FADE_MS_MAX = 1200
 
 
-def _load_intro_pair_fade_ms(block_key: str, *, default_ms: int) -> int:
+def _load_intro_pair_fade_ms(
+    block_key: str,
+    *,
+    default_ms: int,
+    guide: str | None = None,
+    sidecar: dict | None = None,
+    segment_key: str | None = None,
+) -> int:
     """Load one intro export crossfade duration (ms) from teleport intro manifest."""
-    path = _teleport_intro_manifest_path()
+    path = _teleport_intro_manifest_path(guide=guide, sidecar=sidecar, segment_key=segment_key)
     if not path.is_file():
         return default_ms
     try:
@@ -743,9 +791,16 @@ def _load_intro_final_pair_fade_ms() -> int:
     )
 
 
-def _load_intro_visual_fade_ms(block_key: str, *, default_ms: int) -> int:
+def _load_intro_visual_fade_ms(
+    block_key: str,
+    *,
+    default_ms: int,
+    guide: str | None = None,
+    sidecar: dict | None = None,
+    segment_key: str | None = None,
+) -> int:
     """Short video-only fade tail/head (ms) — dialogue stays fully visible until ~last word."""
-    path = _teleport_intro_manifest_path()
+    path = _teleport_intro_manifest_path(guide=guide, sidecar=sidecar, segment_key=segment_key)
     if not path.is_file():
         return default_ms
     try:
@@ -792,26 +847,43 @@ def _intro_visual_fade_in_s(pair_fade_ms: int) -> float:
     return head_ms / 1000.0
 
 
-def _resolve_intro_manifest_asset(asset_key: str) -> dict | None:
+def _resolve_intro_manifest_asset(
+    asset_key: str,
+    *,
+    guide: str | None = None,
+    sidecar: dict | None = None,
+    segment_key: str | None = None,
+) -> dict | None:
     if not asset_key:
         return None
     try:
-        manifest = json.loads(_teleport_intro_manifest_path().read_text(encoding="utf-8"))
+        manifest_path = _teleport_intro_manifest_path(
+            guide=guide, sidecar=sidecar, segment_key=segment_key,
+        )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     rel = (manifest.get("assets") or {}).get(asset_key)
     if not rel:
         return None
-    for root in (_project_root(), Path(_PROD_DIR).parent):
+    for root in (_project_root(), Path(_PROD_DIR).parent, Path(_PROD_DIR)):
         candidate = root / rel
         if candidate.is_file():
             return _ref_dict_from_path(str(candidate.resolve()))
     return None
 
 
-def build_intro_semi_canonical_transition_prompt(dialogue_var: str | None = None) -> str:
+def build_intro_semi_canonical_transition_prompt(
+    dialogue_var: str | None = None,
+    *,
+    guide: str | None = None,
+    sidecar: dict | None = None,
+    segment_key: str | None = None,
+) -> str:
     """Fixed Kling prompt shell for penultimate intro beat; dialogue slot is per-event."""
-    cfg = _load_intro_canonical_beats_manifest().get("semi_canonical_transition") or {}
+    cfg = _load_intro_canonical_beats_manifest(
+        guide=guide, sidecar=sidecar, segment_key=segment_key,
+    ).get("semi_canonical_transition") or {}
     template = (cfg.get("prompt_template") or "").strip()
     if not template:
         return ""
@@ -834,12 +906,19 @@ def _has_populated_intro_mirror_beat(beat: dict) -> bool:
     return bool(vp) and os.path.isfile(vp)
 
 
-def _single_canonical_intro_mode() -> bool:
+def _single_canonical_intro_mode(
+    *,
+    guide: str | None = None,
+    sidecar: dict | None = None,
+    segment_key: str | None = None,
+) -> bool:
+    if not guide:
+        guide = _infer_teleport_intro_guide(sidecar, segment_key)
     try:
         from lib.paths import dropbox_root
         from teleport_intro_canonical import load_registry
 
-        return bool(load_registry(dropbox_root()).get("single_canonical"))
+        return bool(load_registry(dropbox_root(), guide=guide).get("single_canonical"))
     except Exception:
         return False
 
@@ -946,40 +1025,114 @@ def _apply_intro_canonical_beat_defaults(
     event_id: str,
     phase: str,
     role: str,
+    *,
+    guide: str | None = None,
+    sidecar: dict | None = None,
+    segment_key: str | None = None,
 ) -> None:
-    manifest = _load_intro_canonical_beats_manifest()
+    if not guide:
+        guide = _infer_teleport_intro_guide(sidecar, segment_key) or (beat.get("speaker") or "")
+    manifest = _load_intro_canonical_beats_manifest(
+        guide=guide, sidecar=sidecar, segment_key=segment_key,
+    )
+    manifest_kw = {"guide": guide, "sidecar": sidecar, "segment_key": segment_key}
     if role == INTRO_BEAT_ROLE_CANONICAL_MIRROR:
         cfg = manifest.get("canonical_mirror_video") or {}
         beat["kling_o3_prompt"] = cfg.get("prompt") or ""
         beat["dialogue_text"] = cfg.get("dialogue_text") or beat.get("dialogue_text") or ""
-        ref = _resolve_intro_manifest_asset(cfg.get("char_ref_asset") or "mirror_char")
+        beat["speaker"] = cfg.get("speaker") or beat.get("speaker") or "Arlo"
+        ref = _resolve_intro_manifest_asset(cfg.get("char_ref_asset") or "mirror_char", **manifest_kw)
         if ref:
             beat["reference_image"] = ref
         beat["reference_image_locked"] = True
-        bg_ref = _resolve_intro_manifest_asset(cfg.get("bg_ref_asset") or "studio_bg")
+        bg_ref = _resolve_intro_manifest_asset(cfg.get("bg_ref_asset") or "studio_bg", **manifest_kw)
         if bg_ref:
             beat["bg_ref_image"] = bg_ref
     elif role == INTRO_BEAT_ROLE_SEMI_CANONICAL:
         cfg = manifest.get("semi_canonical_transition") or {}
+        beat["speaker"] = cfg.get("speaker") or beat.get("speaker") or "Arlo"
         existing = (beat.get("kling_o3_prompt") or "").strip()
         placeholder = cfg.get("dialogue_placeholder") or INTRO_DIALOGUE_PLACEHOLDER
-        if not existing or placeholder in existing:
+        cfg_speaker = (cfg.get("speaker") or beat.get("speaker") or "").strip()
+        stale_cast = bool(
+            cfg_speaker
+            and existing
+            and cfg_speaker.lower() not in existing.lower()
+        )
+        if not existing or placeholder in existing or stale_cast:
             beat["kling_o3_prompt"] = build_intro_semi_canonical_transition_prompt(
                 beat.get("dialogue_text"),
+                guide=guide,
+                sidecar=sidecar,
+                segment_key=segment_key,
             )
-        ref = _resolve_intro_manifest_asset(cfg.get("char_ref_asset") or "neutral_char")
+        ref = _resolve_intro_manifest_asset(cfg.get("char_ref_asset") or "neutral_char", **manifest_kw)
         if ref and not beat.get("reference_image_locked"):
             beat["reference_image"] = ref
         if cfg.get("reference_image_locked"):
             beat["reference_image_locked"] = True
-        bg_path = resolve_beat_bg_ref_path(beat, event_id, phase)
-        if bg_path and not beat.get("bg_ref_image"):
-            beat["bg_ref_image"] = _ref_dict_from_path(bg_path)
+        bg_ref = _resolve_intro_manifest_asset(cfg.get("bg_ref_asset") or "studio_bg", **manifest_kw)
+        if bg_ref:
+            beat["bg_ref_image"] = bg_ref
+        elif not beat.get("bg_ref_image"):
+            bg_path = resolve_beat_bg_ref_path(beat, event_id, phase)
+            if bg_path:
+                beat["bg_ref_image"] = _ref_dict_from_path(bg_path)
     if not beat.get("kling_o3_duration_locked"):
         beat["kling_o3_duration"] = resolve_kling_o3_submit_duration(
             beat, beat.get("kling_o3_prompt") or "",
         )
     beat.setdefault("kling_o3_status", "draft")
+
+
+def hydrate_intro_canonical_mirror_beat(
+    beat: dict,
+    event_id: str,
+    phase: str,
+    *,
+    sidecar: dict | None = None,
+    segment_key: str | None = None,
+) -> bool:
+    """Insert built intro_tail.mp4 + Arlo manifest prompts on canonical mirror row."""
+    if beat.get("intro_beat_role") != INTRO_BEAT_ROLE_CANONICAL_MIRROR:
+        return False
+    guide = (beat.get("speaker") or _infer_teleport_intro_guide(sidecar, segment_key) or "Arlo").strip()
+    _apply_intro_canonical_beat_defaults(
+        beat, event_id, phase, INTRO_BEAT_ROLE_CANONICAL_MIRROR,
+        guide=guide, sidecar=sidecar, segment_key=segment_key,
+    )
+    if _has_populated_intro_mirror_beat(beat):
+        return True
+    try:
+        from lib.paths import dropbox_root
+        from teleport_intro_canonical import resolve_canonical_tail_for_event
+
+        tail = resolve_canonical_tail_for_event(
+            str(event_id),
+            dropbox_root(),
+            phase=phase,
+            event_id=str(event_id),
+            guide=guide,
+        )
+    except Exception:
+        tail = None
+    if not tail or not tail.is_file():
+        return False
+    tail_str = str(tail.resolve())
+    now = datetime.now(timezone.utc).isoformat()
+    beat["kling_o3_video_path"] = tail_str
+    beat["kling_o3_status"] = "approved"
+    beat["canonical_intro_tail"] = True
+    beat["status"] = "video_ready"
+    assign_kling_o3_option_to_slot(
+        beat,
+        0,
+        video_path=tail_str,
+        label="Canonical intro tail",
+        source="canonical_intro_tail",
+        now=now,
+    )
+    return True
 
 
 def merge_incoming_segment_beats(
@@ -2506,6 +2659,27 @@ def _migrate_sidecar(sidecar: dict) -> dict:
                     and os.path.isfile(char_path)
                 )
                 sync_element_char_ref_status(beat, heal_mismatch=not locked_lib)
+    for arc_key, arc in sidecar.get("arcs", {}).items():
+        for seg_key, seg in arc.get("segments", {}).items():
+            m = re.match(r"^event_(\d+)_(\w+)$", seg_key or "")
+            if not m:
+                continue
+            event_id, phase = m.group(1), m.group(2)
+            if phase not in ("pre", "intro"):
+                continue
+            guide = _infer_teleport_intro_guide(sidecar, seg_key)
+            for beat in seg.get("beats", []):
+                role = beat.get("intro_beat_role")
+                if role == INTRO_BEAT_ROLE_SEMI_CANONICAL:
+                    _apply_intro_canonical_beat_defaults(
+                        beat, event_id, phase, role,
+                        guide=guide, sidecar=sidecar, segment_key=seg_key,
+                    )
+                elif role == INTRO_BEAT_ROLE_CANONICAL_MIRROR:
+                    hydrate_intro_canonical_mirror_beat(
+                        beat, event_id, phase,
+                        sidecar=sidecar, segment_key=seg_key,
+                    )
     migration_warnings = []
     for arc_key, arc in sidecar.get("arcs", {}).items():
         for seg_key, seg in arc.get("segments", {}).items():
@@ -5359,6 +5533,8 @@ def apply_kling_o3_defaults_to_beat(beat: dict, event_id: str, phase: str) -> No
     role = beat.get("intro_beat_role")
     if role in (INTRO_BEAT_ROLE_SEMI_CANONICAL, INTRO_BEAT_ROLE_CANONICAL_MIRROR):
         _apply_intro_canonical_beat_defaults(beat, event_id, phase, role)
+        if role == INTRO_BEAT_ROLE_CANONICAL_MIRROR:
+            hydrate_intro_canonical_mirror_beat(beat, event_id, phase)
         return
     align_beat_reference_to_element(beat)
     beat["kling_o3_prompt"] = build_kling_o3_prompt(beat)
