@@ -2536,7 +2536,7 @@ def handle_bg_update_beat(h, body: dict)-> None:
                 if field == "kling_o3_prompt" and isinstance(value, str):
                     bg.sync_beat_dialogue_from_kling_prompt(beat)
         if written:
-            bg.sync_element_char_ref_status(beat)
+            bg.sync_element_char_ref_status(beat, heal_mismatch=False)
         if beat.get("element_char_ref_ok") is False:
             element_ref_warning = beat.get("element_char_ref_error")
         bg.write_sidecar(sidecar)

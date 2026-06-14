@@ -276,6 +276,19 @@ def handle_cr_library(h)-> None:
         print(f"[library] sidecar scan warning: {e}")
 
     # --- Tier 1b: manually uploaded source images (event-scoped) ---
+    element_source_hashes: set[str] = set()
+    reg = None
+    try:
+        from tools import kling_character_registry as reg
+
+        for char_name in (reg.load_character_subjects().get("characters") or {}):
+            for ep in reg.element_image_paths(char_name):
+                eh = reg.file_sha256(ep)
+                if eh:
+                    element_source_hashes.add(eh)
+    except Exception as e:
+        print(f"[library] element hash scan warning: {e}", flush=True)
+
     sources_dir = str(event_images_sources_dir(h.app.event_dir))
     if os.path.isdir(sources_dir):
         _src_names = [f for f in os.listdir(sources_dir)
@@ -283,7 +296,17 @@ def handle_cr_library(h)-> None:
         _src_names.sort(
             key=lambda f: -os.path.getmtime(os.path.join(sources_dir, f)))
         for fname in _src_names:
-            _append(_read_image(os.path.join(sources_dir, fname), "source"))
+            fp = os.path.join(sources_dir, fname)
+            item = _read_image(fp, "source")
+            if item and element_source_hashes and reg is not None:
+                src_hash = reg.file_sha256(fp)
+                if src_hash and src_hash in element_source_hashes:
+                    item["element_pose_contaminated"] = True
+                    item["contamination_warning"] = (
+                        "Bytes match an Element pose file (legacy overwrite). "
+                        "Delete this tile and re-upload your original still."
+                    )
+            _append(item)
 
     # --- Tier 2: cropped delivery images (event-scoped) ---
     crops_dir = str(event_images_crops_dir(h.app.event_dir))

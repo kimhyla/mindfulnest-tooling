@@ -45,6 +45,18 @@ def test_handle_bg_reorder_beats_uses_sidecar_file_lock():
     assert "with bg._sidecar_lock:" not in block
 
 
+def test_handle_bg_update_beat_syncs_without_heal_redirect():
+    text = (
+        Path(__file__).resolve().parent.parent / "server_handlers" / "background.py"
+    ).read_text(encoding="utf-8")
+    block = text[text.index("def handle_bg_update_beat"):text.index("\ndef handle_bg_reorder_beats")]
+    assert "sync_element_char_ref_status(beat, heal_mismatch=False)" in block
+    assert re.search(
+        r"if written:\s*\n\s*bg\.sync_element_char_ref_status\(beat, heal_mismatch=False\)",
+        block,
+    ), "bg_update_beat must not re-heal locked library drops after apply_user_beat_ref_update"
+
+
 def test_bgtab_wires_beat_missing_guard_helpers():
     text = (
         Path(__file__).resolve().parent.parent / "storyboard-v2" / "src" / "components" / "BgTab.tsx"

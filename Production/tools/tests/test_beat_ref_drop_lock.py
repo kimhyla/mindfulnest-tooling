@@ -276,7 +276,7 @@ def test_sync_element_char_ref_status_persists_mismatch_on_beat(tmp_path: Path, 
     assert "does not match Element images" in beat["element_char_ref_error"]
 
 
-def test_migrate_sidecar_heals_locked_library_ref_to_element_pose(tmp_path: Path, monkeypatch):
+def test_migrate_sidecar_preserves_locked_library_ref_when_file_exists(tmp_path: Path, monkeypatch):
     canonical = tmp_path / "Lorelai" / "poses" / "lorelai_canonical.png"
     library = tmp_path / "Event_2" / "library" / "images" / "sources" / "ChatGPT_Image_Jun_14.png"
     canonical.parent.mkdir(parents=True)
@@ -322,9 +322,9 @@ def test_migrate_sidecar_heals_locked_library_ref_to_element_pose(tmp_path: Path
     }
     bg._migrate_sidecar(sidecar)
     beat = sidecar["arcs"]["arc_1"]["segments"]["event_2_pre"]["beats"][0]
-    assert beat["reference_image"]["abs_path"] == str(canonical.resolve())
+    assert beat["reference_image"]["abs_path"] == str(library.resolve())
     assert library.read_bytes() == b"library"
-    assert beat["element_char_ref_ok"] is True
+    assert beat["element_char_ref_ok"] is False
 
 
 def test_sync_clears_stale_element_char_ref_error_when_hashes_match(tmp_path: Path, monkeypatch):

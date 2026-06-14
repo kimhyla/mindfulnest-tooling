@@ -2498,7 +2498,14 @@ def _migrate_sidecar(sidecar: dict) -> dict:
                 elif beat_is_still_insert(beat) and beat.get("reference_image"):
                     # Still inserts use library still in option 1 — not Element @Image1.
                     beat.pop("reference_image", None)
-                sync_element_char_ref_status(beat)
+                char_path = resolve_beat_char_ref_path(beat) or ""
+                locked_lib = (
+                    beat.get("reference_image_locked")
+                    and char_path
+                    and _is_event_library_char_ref(char_path)
+                    and os.path.isfile(char_path)
+                )
+                sync_element_char_ref_status(beat, heal_mismatch=not locked_lib)
     migration_warnings = []
     for arc_key, arc in sidecar.get("arcs", {}).items():
         for seg_key, seg in arc.get("segments", {}).items():
@@ -5034,6 +5041,11 @@ def heal_locked_char_ref_to_element(beat: dict) -> bool:
         if not reg.is_speaker_voice_ready(speaker):
             return False
         if os.path.isfile(char_path) and reg.char_ref_matches_element_images(char_path, speaker)[0]:
+            return False
+        # Locked per-event library uploads: never redirect sidecar pointer when the
+        # tile still exists on disk — user chose that still; gate stays false until
+        # they pick an Element pose or re-upload. (Redirect only when path is broken.)
+        if _is_event_library_char_ref(char_path) and os.path.isfile(char_path):
             return False
         element_paths = reg.element_image_paths(speaker)
         if not element_paths:
