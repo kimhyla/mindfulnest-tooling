@@ -2533,6 +2533,8 @@ def handle_bg_update_beat(h, body: dict)-> None:
                 else:
                     beat[field] = value
                 written.append(field)
+                if field == "speaker" and not beat.get("reference_image_locked"):
+                    bg.align_beat_reference_to_element(beat)
                 if field == "kling_o3_prompt" and isinstance(value, str):
                     bg.sync_beat_dialogue_from_kling_prompt(beat)
         if written:
@@ -2552,6 +2554,64 @@ def handle_bg_update_beat(h, body: dict)-> None:
         "written": written,
         "thumb_b64": thumb_b64,
         "element_ref_warning": element_ref_warning,
+        "element_char_ref_ok": beat.get("element_char_ref_ok"),
+        "element_char_ref_error": beat.get("element_char_ref_error"),
+    })
+
+
+def handle_bg_align_element_ref(h, body: dict) -> None:
+    """POST /api/bg/align-element-ref {beat_id} -> canonical Element pose for speaker."""
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+    beat_id = body.get("beat_id")
+    if not beat_id:
+        return h._send_error_v59(
+            400,
+            error_code="MISSING_BEAT_ID",
+            error_message="beat_id required",
+            retry_safe=False,
+        )
+    bg = _bg_module()
+    thumb_b64 = None
+    with bg.sidecar_file_lock():
+        sidecar = bg._load_sidecar_migrated()
+        _, beat = bg.find_beat(sidecar, beat_id)
+        if not beat:
+            return h._send_error_v59(
+                404,
+                error_code="BEAT_NOT_FOUND",
+                error_message=f"beat {beat_id} not found",
+                retry_safe=False,
+            )
+        if beat.get("reference_image_locked"):
+            return h._send_error_v59(
+                409,
+                error_code="REFERENCE_IMAGE_LOCKED",
+                error_message=(
+                    "Char ref is locked to your library upload. Clear the ref first, "
+                    "then use Use Element pose."
+                ),
+                retry_safe=False,
+            )
+        aligned = bg.align_beat_reference_to_element(beat)
+        bg.sync_element_char_ref_status(beat, heal_mismatch=False)
+        ref = beat.get("reference_image")
+        if isinstance(ref, dict):
+            abs_path = ref.get("abs_path") or ""
+            if abs_path and not ref.get("thumb_b64"):
+                from lib.event_library import ref_image_thumb_b64
+
+                _t = ref_image_thumb_b64(abs_path, h.app._library_root_dirs())
+                if _t:
+                    beat["reference_image"] = dict(ref)
+                    beat["reference_image"]["thumb_b64"] = _t
+                    thumb_b64 = _t
+        bg.write_sidecar(sidecar)
+    return h._send_json(200, {
+        "ok": True,
+        "aligned": aligned,
+        "reference_image": beat.get("reference_image"),
+        "thumb_b64": thumb_b64,
         "element_char_ref_ok": beat.get("element_char_ref_ok"),
         "element_char_ref_error": beat.get("element_char_ref_error"),
     })

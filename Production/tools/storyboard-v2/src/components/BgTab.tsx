@@ -91,6 +91,11 @@ function isO3VoiceBeat(beat?: BgBeat | null): boolean {
   return true;
 }
 
+/** Short inline gate hint — full server detail stays in yellow toast only. */
+function elementCharRefInlineHint(_full?: string | null): string {
+  return 'Needs Element pose — drag from Library tier element/char_ref';
+}
+
 /** Prompt-box is law — UI edits the same field Kling submit reads from sidecar. */
 function beatPromptText(beat?: BgBeat | null): string {
   if (!beat) return '';
@@ -1073,20 +1078,107 @@ export function BgTab() {
   // production_server.py _BG_BEAT_WRITABLE (line ~9937). Optimistic local
   // update so the dropdown reflects the new value before refreshState()
   // (matches the 2026-05-11 Rule 26 fix pattern for ref-image drops).
+  const onPatchRefImageForBeat = (
+    beatId: string,
+    refField: 'reference_image' | 'bg_ref_image',
+    patch: { key?: string; abs_path?: string; thumb_b64?: string } | null,
+  ) => {
+    setBeats((bs) => bs.map((b): BgBeat => {
+      if (b.beat_id !== beatId) return b;
+      return { ...b, [refField]: patch };
+    }));
+  };
+
   const onUpdateBeatSpeaker = async (beatId: string, nextSpeaker: string) => {
     if (beatSaveBlockedRef.current.has(beatId)) return;
     setBeats((bs) => bs.map((b) => (
       b.beat_id === beatId ? { ...b, speaker: nextSpeaker } : b
     )));
-    const result = await pathappPatch(activeScope.value, 'bg_update_beat', {
+    const result = await pathappPatch<{
+      ok: boolean;
+      element_char_ref_ok?: boolean;
+      element_char_ref_error?: string | null;
+    }>(activeScope.value, 'bg_update_beat', {
       beat_id: beatId, speaker: nextSpeaker,
     });
+    if (result.ok) {
+      const gateOk = result.data?.element_char_ref_ok;
+      const gateErr = result.data?.element_char_ref_error ?? null;
+      if (typeof gateOk === 'boolean') {
+        setBeats((bs) => bs.map((b): BgBeat => {
+          if (b.beat_id !== beatId) return b;
+          const next: BgBeat = { ...b, element_char_ref_ok: gateOk };
+          if (gateErr) next.element_char_ref_error = gateErr;
+          else delete next.element_char_ref_error;
+          return next;
+        }));
+      }
+      await refreshState();
+    }
     await guardBeatPatchResult(
       beatId,
       result,
       `Speaker save failed: ${result.error}`,
       'bg-update-speaker',
     );
+  };
+
+  const onAlignElementRef = async (beatId: string) => {
+    if (beatSaveBlockedRef.current.has(beatId)) return;
+    const beat = beats.find((b) => b.beat_id === beatId);
+    const result = await pathappPatch<{
+      ok: boolean;
+      aligned?: boolean;
+      reference_image?: BgBeat['reference_image'];
+      thumb_b64?: string;
+      element_char_ref_ok?: boolean;
+      element_char_ref_error?: string | null;
+    }>(activeScope.value, 'bg_align_element_ref', { beat_id: beatId });
+    if (!result.ok) {
+      if (isBeatNotFoundResult(result)) {
+        await handleBeatMissingOnSave(beatId);
+        return;
+      }
+      pushToast({
+        kind: 'error',
+        message: result.error ?? 'Could not align char ref to Element pose',
+        source: 'bg-align-element-ref-error',
+      });
+      return;
+    }
+    const data = result.data;
+    if (data?.reference_image) {
+      onPatchRefImageForBeat(beatId, 'reference_image', {
+        ...data.reference_image,
+        ...(data.thumb_b64 ? { thumb_b64: data.thumb_b64 } : {}),
+      });
+    }
+    if (typeof data?.element_char_ref_ok === 'boolean') {
+      setBeats((bs) => bs.map((b): BgBeat => {
+        if (b.beat_id !== beatId) return b;
+        const next: BgBeat = { ...b, element_char_ref_ok: data.element_char_ref_ok };
+        const gateErr = data.element_char_ref_error ?? null;
+        if (gateErr) next.element_char_ref_error = gateErr;
+        else delete next.element_char_ref_error;
+        return next;
+      }));
+    }
+    if (data?.element_char_ref_ok) {
+      pushToast({
+        kind: 'success',
+        message: `Char ref aligned to Element pose for ${beat?.speaker ?? 'speaker'}`,
+        source: 'bg-align-element-ref',
+      });
+    } else {
+      pushToast({
+        kind: 'warning',
+        message: data?.element_char_ref_error
+          ?? 'Element pose alignment did not pass gate — check speaker registration',
+        source: 'bg-align-element-ref-warn',
+        ttlMs: 14000,
+      });
+    }
+    await refreshState();
   };
 
   const onSetReplaceSlot = async (beatId: string, slotIndex: number) => {
@@ -1702,6 +1794,7 @@ export function BgTab() {
               onEditChip={(c) => requestEditChip(b.beat_id, c)}
               onInsertAfter={() => onAddBeat(b.beat_id)}
               onRemoveRef={(refField, label) => requestRemoveRef(b.beat_id, refField, label)}
+              onAlignElementRef={() => onAlignElementRef(b.beat_id)}
               onRefresh={() => refreshState()}
               onBeatMissing={handleBeatMissingOnSave}
               // 2026-05-11 Rule 26 fix — optimistic local-state patchers so the
@@ -1736,9 +1829,7 @@ export function BgTab() {
                 });
               }}
               onPatchRefImage={(refField, patch) => {
-                setBeats((bs) => bs.map((bb) =>
-                  bb.beat_id === b.beat_id ? { ...bb, [refField]: patch } : bb,
-                ));
+                onPatchRefImageForBeat(b.beat_id, refField, patch);
               }}
             />
           ))}
@@ -2054,6 +2145,7 @@ interface BeatGenCardProps {
   onEditChip: (chipText: string) => void;
   onInsertAfter: () => void;
   onRemoveRef: (refField: 'reference_image' | 'bg_ref_image', label: string) => void;
+  onAlignElementRef?: () => void;
   // 2026-05-11 fix — parent refreshState() threaded into BgRefSlot + BgOptionTile.
   onRefresh: () => void;
   onBeatMissing: (beatId: string) => void | Promise<void>;
@@ -2074,7 +2166,7 @@ function BeatGenCard({
   index, beat, eventId, videoRole, pollResultForBeat, busy, nativeExperimentBusy,
   onDelete, onUpdateText, onUpdateSpeaker, onGenerate, onAccept,
   onSelectO3Video, onApproveStill, onApplyO3Trim, onSetReplaceSlot, onSubmitNativeLipSyncExperiment,
-  onEditChip, onInsertAfter, onRemoveRef, onRefresh, onBeatMissing,
+  onEditChip, onInsertAfter, onRemoveRef, onAlignElementRef, onRefresh, onBeatMissing,
   onPatchOptionTile, onPatchRefImage,
 }: BeatGenCardProps) {
   const [localText, setLocalText] = useState<string>(beatPromptText(beat));
@@ -2315,7 +2407,12 @@ function BeatGenCard({
           beatId={beat.beat_id}
           refField="reference_image"
           {...(elementCharRefBlocked
-            ? { elementRefError: beat.element_char_ref_error ?? 'Char ref must match Element poses' }
+            ? {
+              elementRefError: elementCharRefInlineHint(beat.element_char_ref_error),
+              elementRefErrorDetail: beat.element_char_ref_error,
+              showAlignElementRef: true,
+              onAlignElementRef,
+            }
             : {})}
           onRemoveRef={onRemoveRef}
           onRefresh={onRefresh}
@@ -2339,7 +2436,7 @@ function BeatGenCard({
           data-testid={`bg-generate-btn-${index}`}
           onClick={() => onGenerate(localText)}
           disabled={busy || elementCharRefBlocked}
-          title={elementCharRefBlocked ? (beat.element_char_ref_error ?? 'Char ref must match Element poses') : undefined}
+          title={elementCharRefBlocked ? elementCharRefInlineHint(beat.element_char_ref_error) : undefined}
         >
           {busy ? (
             <><Spinner size="sm" inline /> Generating…</>

@@ -144,6 +144,18 @@ def canon_plan_speaker(raw: str) -> str:
     return _SPEAKER_CANON.get(key.lower(), key)
 
 
+_SPEAKER_WEAK_SUFFIX_RE = re.compile(r"\s+(?:says|speaks)\s*$", re.I)
+
+
+def normalize_dialogue_speaker(raw: str) -> str:
+    """Strip trailing ``says``/``speaks`` from parsed speaker labels (``Lorelai says:``)."""
+    key = (raw or "").strip()
+    if not key:
+        return "Character"
+    key = _SPEAKER_WEAK_SUFFIX_RE.sub("", key).strip()
+    return canon_plan_speaker(key)
+
+
 _DIALOGUE_SPEAKER_RE = re.compile(
     r"([A-Za-z][A-Za-z\s'-]*?)\s*(?:\[\[[^\]]+\]\]|\[[^\]]+\])*\s*:\s*",
     re.MULTILINE,
@@ -161,14 +173,14 @@ def extract_spoken_from_dialogue(dialogue: str) -> tuple[str | None, str]:
         spoken = quoted[-1].group(1).strip()
         prefix = text[: quoted[-1].start()]
         sm = _DIALOGUE_SPEAKER_RE.search(prefix.strip())
-        speaker = canon_plan_speaker(sm.group(1).strip()) if sm else None
+        speaker = normalize_dialogue_speaker(sm.group(1).strip()) if sm else None
         if spoken:
             return speaker, spoken
 
     spoken_matches = list(_DIALOGUE_SPEAKER_RE.finditer(text))
     if spoken_matches:
         m = spoken_matches[-1]
-        speaker = canon_plan_speaker(m.group(1).strip())
+        speaker = normalize_dialogue_speaker(m.group(1).strip())
         tail = text[m.end() :].strip()
         stage_tail = re.search(r"\s+\[([^\]]+)\]\s*$", tail)
         if stage_tail:

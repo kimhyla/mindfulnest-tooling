@@ -61,6 +61,29 @@ def test_extract_still_insert_tts_double_bracket_emotion_and_scene_prefix():
     }
 
 
+def test_extract_still_insert_tts_lorelai_says_colon_format():
+    beat = {
+        "kling_o3_prompt": (
+            'Lorelai says:  "[proud] Well I can read the picture-writing [pause]... '
+            "it says ... Feel ... What's ... Real.\""
+        ),
+        "speaker": "Lorelai",
+        "pipeline": "still_insert",
+    }
+    parsed = bg.extract_still_insert_tts(beat)
+    assert parsed == {
+        "speaker": "Lorelai",
+        "text": "Well I can read the picture-writing . it says . Feel . What's . Real.",
+    }
+
+
+def test_normalize_dialogue_speaker_strips_says_suffix():
+    from beat_extract_policy import normalize_dialogue_speaker
+
+    assert normalize_dialogue_speaker("Lorelai says") == "Lorelai"
+    assert normalize_dialogue_speaker("Arlo speaks") == "Arlo"
+
+
 def test_extract_still_insert_tts_from_kling_o3_prompt_when_dialogue_empty():
     beat = {
         "dialogue_text": "",

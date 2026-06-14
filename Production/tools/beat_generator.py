@@ -2912,9 +2912,21 @@ def extract_still_insert_tts(beat: dict) -> dict | None:
         spoken = emo_only.group(1).strip()
     if not spoken:
         return None
+    spoken = re.sub(r"^(?:\[[^\]]+\]\s*)+", "", spoken).strip()
     if not speaker or speaker in ("Character", "[Stage Direction]"):
         speaker = infer_speaker_from_dialogue(source) or (beat.get("speaker") or "").strip()
     speaker = _canon_speaker(speaker) or speaker
+    try:
+        from tools import kling_character_registry as reg
+
+        if not reg.is_speaker_voice_ready(speaker):
+            beat_sp = _canon_speaker((beat.get("speaker") or "").strip()) or (
+                beat.get("speaker") or ""
+            ).strip()
+            if beat_sp and reg.is_speaker_voice_ready(beat_sp):
+                speaker = beat_sp
+    except Exception:
+        pass
     if not speaker or "stage direction" in speaker.lower():
         return None
     spoken = _kling_o3_normalize_spoken(spoken)
@@ -3164,6 +3176,13 @@ def ensure_kling_o3_speech_only_prompt(prompt: str) -> str:
 KLING_O3_IDENTITY_LOCK = (
     "Match @Image1 character appearance, proportions, and facial expression exactly. "
     "Do not change the character design from @Image1."
+)
+
+KLING_O3_LIGHTING_LOCK = (
+    "Match the natural lighting on @Image1 to @Image2 exactly — same warm golden direction, "
+    "same soft shadow depth, same color temperature on character and background. "
+    "Character must look physically present in the scene, not pasted on or separately lit. "
+    "No rim-light mismatch, no saturation jump between foreground and background."
 )
 
 _KLING_O3_IDENTITY_LOCK_LINE_RE = re.compile(
@@ -4009,6 +4028,12 @@ def _append_kling_o3_submit_locks(raw: str, *, speaker: str, spoken: str) -> str
             out = f"{out} {offscreen}"
     if "@Image1" in out and "match @image1" not in lower:
         out = f"{out}\n\n{KLING_O3_IDENTITY_LOCK}"
+    if (
+        "@Image1" in out
+        and "@Image2" in out
+        and "natural lighting on @image1" not in lower
+    ):
+        out = f"{out}\n\n{KLING_O3_LIGHTING_LOCK}"
     if (speaker or "").strip() == "Chipper" and "no companion bird" not in lower:
         out = f"{out}\n\n{KLING_O3_CHIPPER_SOLO_BIRD_LOCK}"
     return ensure_kling_o3_speech_only_prompt(out).strip()
