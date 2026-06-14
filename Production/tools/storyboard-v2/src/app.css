@@ -2082,6 +2082,13 @@ canvas.mn-lipsync-watercolor-overlay {
   align-items: flex-start;
   flex-wrap: wrap;
 }
+.mn-bg-ref-slot-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 120px;
+  flex-shrink: 0;
+}
 .mn-bg-ref-slot {
   width: 120px;
   height: 120px;
@@ -2150,6 +2157,25 @@ canvas.mn-lipsync-watercolor-overlay {
   font-size: 10px;
   border-radius: 2px;
   z-index: 2;
+}
+.mn-bg-ref-element-error {
+  font-size: 10px;
+  line-height: 1.35;
+  color: #fecaca;
+  background: rgba(69, 10, 10, 0.92);
+  border: 1px solid rgba(248, 113, 113, 0.55);
+  border-radius: 4px;
+  padding: 5px 6px;
+  word-break: break-word;
+}
+.mn-bg-ref-element-error p {
+  margin: 0;
+}
+.mn-bg-ref-element-align-btn {
+  margin-top: 5px;
+  width: 100%;
+  font-size: 10px;
+  padding: 3px 4px;
 }
 .mn-bg-options-row {
   display: grid;

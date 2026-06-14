@@ -1153,17 +1153,18 @@ export function BgTab() {
         ...(data.thumb_b64 ? { thumb_b64: data.thumb_b64 } : {}),
       });
     }
-    if (typeof data?.element_char_ref_ok === 'boolean') {
+    const gateOk = data?.element_char_ref_ok;
+    if (typeof gateOk === 'boolean') {
       setBeats((bs) => bs.map((b): BgBeat => {
         if (b.beat_id !== beatId) return b;
-        const next: BgBeat = { ...b, element_char_ref_ok: data.element_char_ref_ok };
-        const gateErr = data.element_char_ref_error ?? null;
+        const next: BgBeat = { ...b, element_char_ref_ok: gateOk };
+        const gateErr = data?.element_char_ref_error ?? null;
         if (gateErr) next.element_char_ref_error = gateErr;
         else delete next.element_char_ref_error;
         return next;
       }));
     }
-    if (data?.element_char_ref_ok) {
+    if (gateOk) {
       pushToast({
         kind: 'success',
         message: `Char ref aligned to Element pose for ${beat?.speaker ?? 'speaker'}`,
@@ -2579,6 +2580,9 @@ interface BgRefSlotPropsExt extends BgRefSlotProps {
   beatId: string;
   refField: 'reference_image' | 'bg_ref_image';
   elementRefError?: string;
+  elementRefErrorDetail?: string;
+  showAlignElementRef?: boolean;
+  onAlignElementRef?: () => void;
   // BG-18 — visible × button to remove the ref (NOT right-click per Kim 2026-05-06).
   onRemoveRef: (refField: 'reference_image' | 'bg_ref_image', label: string) => void;
   // 2026-05-11 fix — parent refreshState() to repaint stale beats[] after drop success.
@@ -2591,7 +2595,11 @@ interface BgRefSlotPropsExt extends BgRefSlotProps {
   ) => void;
 }
 
-function BgRefSlot({ label, refImg, testId, beatId, refField, elementRefError, onRemoveRef, onRefresh, onBeatMissing, onPatchRefImage }: BgRefSlotPropsExt) {
+function BgRefSlot({
+  label, refImg, testId, beatId, refField, elementRefError, elementRefErrorDetail,
+  showAlignElementRef, onAlignElementRef,
+  onRemoveRef, onRefresh, onBeatMissing, onPatchRefImage,
+}: BgRefSlotPropsExt) {
   const hasImage = !!refImg && (refImg.thumb_b64 || refImg.abs_path || refImg.key);
   // R2 fix: drop target for library-image drag → POST bg_update_beat with the
   // ref field (reference_image or bg_ref_image) per server _BG_BEAT_WRITABLE
@@ -2669,45 +2677,64 @@ function BgRefSlot({ label, refImg, testId, beatId, refField, elementRefError, o
     (p) => p.kind === 'lib-image',
   );
   return (
-    <div
-      class={`mn-bg-ref-slot mn-drop-target${hasImage ? ' has-image' : ''}`}
-      data-testid={testId}
-      onDragOver={dropHandlers.onDragOver}
-      onDragLeave={dropHandlers.onDragLeave}
-      onDrop={dropHandlers.onDrop}
-    >
-      <span class="mn-bg-ref-slot-label">{label}</span>
-      {hasImage ? (
-        <button
-          type="button"
-          class="mn-bg-ref-remove-btn"
-          data-testid={`${testId}-remove`}
-          onClick={(e) => {
-            e.stopPropagation();
-            onRemoveRef(refField, label);
-          }}
-          aria-label={`Remove ${label}`}
-          title={`Remove ${label}`}
-        >
-          ✕
-        </button>
-      ) : null}
-      {refImg?.thumb_b64 ? (
-        <img src={refImg.thumb_b64} alt={label} class="mn-bg-ref-thumb" />
-      ) : refImg?.abs_path ? (
-        <img
-          src={`${SERVER_BASE}/files?path=${encodeURIComponent(refImg.abs_path)}`}
-          alt={label}
-          class="mn-bg-ref-thumb"
-        />
-      ) : refImg?.key ? (
-        <span class="mn-dim">{refImg.key}</span>
-      ) : (
-        <span class="mn-dim">drop here</span>
-      )}
+    <div class="mn-bg-ref-slot-wrap" data-testid={`${testId}-wrap`}>
+      <div
+        class={`mn-bg-ref-slot mn-drop-target${hasImage ? ' has-image' : ''}`}
+        data-testid={testId}
+        onDragOver={dropHandlers.onDragOver}
+        onDragLeave={dropHandlers.onDragLeave}
+        onDrop={dropHandlers.onDrop}
+      >
+        <span class="mn-bg-ref-slot-label">{label}</span>
+        {hasImage ? (
+          <button
+            type="button"
+            class="mn-bg-ref-remove-btn"
+            data-testid={`${testId}-remove`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemoveRef(refField, label);
+            }}
+            aria-label={`Remove ${label}`}
+            title={`Remove ${label}`}
+          >
+            ✕
+          </button>
+        ) : null}
+        {refImg?.thumb_b64 ? (
+          <img src={refImg.thumb_b64} alt={label} class="mn-bg-ref-thumb" />
+        ) : refImg?.abs_path ? (
+          <img
+            src={`${SERVER_BASE}/files?path=${encodeURIComponent(refImg.abs_path)}`}
+            alt={label}
+            class="mn-bg-ref-thumb"
+          />
+        ) : refImg?.key ? (
+          <span class="mn-dim">{refImg.key}</span>
+        ) : (
+          <span class="mn-dim">drop here</span>
+        )}
+      </div>
       {elementRefError ? (
-        <div class="mn-bg-ref-element-error" data-testid={`${testId}-element-error`}>
-          {elementRefError}
+        <div
+          class="mn-bg-ref-element-error"
+          data-testid={`${testId}-element-error`}
+          title={elementRefErrorDetail ?? elementRefError}
+        >
+          <p>{elementRefError}</p>
+          {showAlignElementRef && onAlignElementRef ? (
+            <button
+              type="button"
+              class="mn-btn mn-btn-small mn-bg-ref-element-align-btn"
+              data-testid={`${testId}-align-element`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onAlignElementRef();
+              }}
+            >
+              Use Element pose
+            </button>
+          ) : null}
         </div>
       ) : null}
     </div>

@@ -464,3 +464,38 @@ def test_heal_locked_char_ref_redirects_missing_library_path_without_overwrite(
     assert bg.sync_element_char_ref_status(beat) is True
     assert beat["element_char_ref_ok"] is True
     assert "element_char_ref_error" not in beat
+
+
+def test_align_beat_reference_on_speaker_change_when_unlocked(tmp_path: Path, monkeypatch):
+    canonical = tmp_path / "lorelai_canonical_neutral.png"
+    canonical.write_bytes(b"canonical")
+
+    monkeypatch.setattr(
+        "tools.kling_character_registry.element_image_paths",
+        lambda _s: [canonical],
+    )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.get_character_entry",
+        lambda _s: {"status": "active", "element_id": "123"},
+    )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.file_sha256",
+        lambda _p: "hash_canonical",
+    )
+
+    beat: dict = {"speaker": "Lorelai", "reference_image": None}
+    assert bg.align_beat_reference_to_element(beat) is True
+    assert beat["reference_image"]["abs_path"] == str(canonical.resolve())
+    assert bg.sync_element_char_ref_status(beat, heal_mismatch=False) is True
+
+
+def test_bg_align_element_ref_handler_registered():
+    text = (TOOLS / "server_handlers" / "background.py").read_text(encoding="utf-8")
+    assert "def handle_bg_align_element_ref" in text
+    assert "align_beat_reference_to_element(beat)" in text
+    server = (TOOLS / "production_server.py").read_text(encoding="utf-8")
+    assert "/api/bg/align-element-ref" in server

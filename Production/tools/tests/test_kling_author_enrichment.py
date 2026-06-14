@@ -394,3 +394,25 @@ def test_update_beat_accepts_kling_o3_prompt():
     text = (TOOLS / "server_handlers" / "background.py").read_text(encoding="utf-8")
     assert '"kling_o3_prompt"' in text.split("_BG_BEAT_WRITABLE")[1][:200]
     assert "sync_beat_dialogue_from_kling_prompt" in text
+
+
+def test_submit_locks_append_lighting_when_image1_and_image2():
+    raw = (
+        "@Image1 (Lorelai) Lorelai — Discovery. Scene from @Image2.\n\n"
+        "Camera: static locked shot.\n\n"
+        'Laurel speaks in a warm excited conversational pace: "Hello!"'
+    )
+    out = bg.prepare_kling_o3_prompt_for_submit({"speaker": "Lorelai"}, raw)
+    assert bg.KLING_O3_LIGHTING_LOCK in out
+    assert bg.KLING_O3_IDENTITY_LOCK in out
+
+
+def test_build_kling_o3_prompt_includes_lighting_lock():
+    beat = {
+        "speaker": "Lorelai",
+        "dialogue_text": "Hello!",
+        "emotion": "neutral",
+        "scene_notes": "soft smile",
+    }
+    out = bg.build_kling_o3_prompt(beat)
+    assert bg.KLING_O3_LIGHTING_LOCK in out
