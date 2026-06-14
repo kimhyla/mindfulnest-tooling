@@ -3290,6 +3290,20 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                     ),
                     retry_safe=False,
                 )
+            stored_prompt = str(beat.get("kling_o3_prompt") or "").strip()
+            if stored_prompt and re.search(r"\b(?:speaks|says)\b", stored_prompt, re.I):
+                extracted = bg.extract_spoken_dialogue_from_kling_prompt(stored_prompt)
+                if not extracted:
+                    return h._send_error_v59(
+                        400,
+                        error_code="NO_QUOTED_DIALOGUE",
+                        error_message=(
+                            "No spoken dialogue found in the prompt voice line. "
+                            "Put the full line in double quotes after speaks…: "
+                            'or use unquoted text immediately after the colon.'
+                        ),
+                        retry_safe=False,
+                    )
             bg.sync_beat_dialogue_from_kling_prompt(beat)
             replace_slot = body.get("replace_slot_index", beat.get("kling_o3_replace_slot_index", 0))
             try:

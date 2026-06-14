@@ -43,7 +43,15 @@ def _inject_locked_voice(prompt: str, speaker: str, spoken: str) -> str:
     for line in lines:
         low = line.lower()
         if not replaced and (voice_line_re.search(line) or "<<<voice_" in low):
-            out.append(locked)
+            if "speaks in a" in low:
+                colon = re.search(r":\s*", line)
+                if colon:
+                    head = line[: colon.end()].rstrip()
+                    out.append(f'{head} "{spoken}"')
+                else:
+                    out.append(locked)
+            else:
+                out.append(locked)
             replaced = True
         else:
             out.append(line)
@@ -205,6 +213,15 @@ def run_pipeline(
         else ""
     )
     if not spoken:
+        has_voice_line = bool(
+            stored_prompt
+            and re.search(r"\b(?:speaks|says)\b", stored_prompt, re.I)
+        )
+        if has_voice_line:
+            raise RuntimeError(
+                "ELEMENT_VOICE_PROMPT: could not extract spoken dialogue from the "
+                "voice line — put the full line in double quotes after speaks…:"
+            )
         spoken = _spoken_from_beat(beat, normalize_spoken)
     if stored_prompt:
         prompt = _inject_locked_voice(stored_prompt, speaker, spoken)
@@ -286,6 +303,8 @@ def run_pipeline(
         "char_ref_aligned": aligned,
         "char_ref": str(char_path),
         "voice_line_locked": "speaks in a" in prompt.lower(),
+        "spoken_sent": spoken,
+        "prompt_voice_excerpt": prompt[:500],
     }), flush=True)
     result = o3.run_beat_generation(
         api_key,

@@ -68,6 +68,34 @@ def test_validate_element_bound_voice_prompt_accepts_locked_delivery():
     assert o3p.validate_element_bound_voice_prompt("Tessa", good) == []
 
 
+TESSA_EVENT2_VOICE_LINE = (
+    "Tessa speaks in a warm gentle conversational pace, soft and vulnerable but clear, "
+    "natural delivery, steady and not slow, not dragging, not whispered, not childlike or "
+    "baby-talk: [curious, wary of danger] Hello there ... how are you?"
+)
+
+
+def test_extract_unquoted_tessa_voice_line_not_beat_plan_fallback():
+    spoken = bg.extract_spoken_dialogue_from_kling_prompt(TESSA_EVENT2_VOICE_LINE)
+    assert spoken == "Hello there . how are you?"
+    assert spoken != "Hello ."
+
+
+def test_inject_locked_voice_preserves_delivery_and_quotes_spoken():
+    from kling_o3_element_beat_pipeline import _inject_locked_voice
+
+    stored = (
+        "@Image1 (Tessa) Scene.\n\n"
+        f"{TESSA_EVENT2_VOICE_LINE}\n\n"
+        "Children's illustrated fantasy storybook style."
+    )
+    locked = _inject_locked_voice(stored, "Tessa", "Hello there . how are you?")
+    assert "speaks in a warm gentle conversational pace" in locked
+    assert '"Hello there . how are you?"' in locked
+    assert "Hello ." not in locked
+    assert "[curious, wary of danger]" not in locked
+
+
 def test_event_dir_uses_mn_prod_root(monkeypatch):
     from kling_o3_element_beat_pipeline import _event_dir_for_segment, _runtime_prod_root
 

@@ -3679,6 +3679,55 @@ def _kling_o3_trailing_is_voice_markup(trailing: str) -> bool:
     )
 
 
+def _kling_o3_voice_line_stop_prefixes() -> tuple[str, ...]:
+    return (
+        "children's illustrated",
+        "match @image1",
+        "audio:",
+        "only @image1",
+        "camera:",
+    )
+
+
+def _extract_unquoted_spoken_after_voice_colon(text: str) -> str:
+    """Pull dialogue after speaks/says colon when Kim omits double quotes."""
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    m = _kling_o3_voice_block_start(raw)
+    if not m:
+        return ""
+    tail = raw[m.start():]
+    colon = re.search(r":\s*", tail)
+    if not colon:
+        return ""
+    after = tail[colon.end():].strip()
+    if not after or after.startswith('"'):
+        return ""
+    skip_prefixes = _kling_o3_voice_line_stop_prefixes()
+    parts: list[str] = []
+    for line in after.splitlines():
+        chunk = line.strip()
+        if not chunk:
+            if parts:
+                break
+            continue
+        low = chunk.lower()
+        if any(low.startswith(p) for p in skip_prefixes):
+            break
+        if chunk.startswith("@") or "@image" in low:
+            break
+        if parts and re.search(r"\b(?:says|speaks|continues|adds)\b", chunk, re.I) and ":" in chunk:
+            break
+        parts.append(chunk)
+    spoken_raw = " ".join(parts).strip()
+    if not spoken_raw:
+        return ""
+    spoken_raw = re.sub(r"^(?:\[[^\]]+\]\s*)+", "", spoken_raw).strip()
+    spoken_raw = re.sub(r"\s*\[[^\]]+\]\s*$", "", spoken_raw).strip()
+    return _kling_o3_normalize_spoken(spoken_raw) if spoken_raw else ""
+
+
 def _extract_spoken_dialogue_detail(prompt: str) -> tuple[str, str | None]:
     """Return (spoken, auto_merged_trailing) from a Kling O3 prompt box."""
     text = (prompt or "").strip()
@@ -3704,6 +3753,9 @@ def _extract_spoken_dialogue_detail(prompt: str) -> tuple[str, str | None]:
             segments.append(m.group(1).strip())
 
     if not segments:
+        unquoted = _extract_unquoted_spoken_after_voice_colon(text)
+        if unquoted:
+            return unquoted, None
         return "", None
 
     spoken = _kling_o3_normalize_spoken(" ".join(segments))
@@ -4143,6 +4195,17 @@ def validate_kling_o3_beat_for_submit(
                     "code": "ELEMENT_VOICE_PROMPT",
                     "message": msg,
                 })
+            if re.search(r"\b(?:speaks|says)\b", stored_prompt, re.I):
+                extracted = extract_spoken_dialogue_from_kling_prompt(stored_prompt)
+                if not extracted:
+                    errors.append({
+                        "beat_id": beat_id,
+                        "code": "NO_QUOTED_DIALOGUE",
+                        "message": (
+                            "No spoken dialogue found in the prompt voice line — "
+                            "Kling would fall back to stale beat-plan dialogue."
+                        ),
+                    })
     except Exception as exc:
         errors.append({
             "beat_id": beat_id,
