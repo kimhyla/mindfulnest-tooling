@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
-"""Register all Beat Gen characters: ElevenLabs sample → Kling create-voice → Element.
+"""Register Beat Gen characters: ElevenLabs sample → Kling create-voice → Element.
+
+Voice refresh (create-voice) mints a NEW kling_voice_id — use rarely.
+Pose refresh re-uploads images only and keeps the locked voice_id.
 
 Usage:
   python3 scripts/setup_all_kling_character_voices.py              # pending only
-  python3 scripts/setup_all_kling_character_voices.py --char Chipper
-  python3 scripts/setup_all_kling_character_voices.py --force        # re-register all
-  python3 scripts/setup_all_kling_character_voices.py --samples-only # copy/generate MP3s only
+  python3 scripts/setup_all_kling_character_voices.py --char Lorelai
+  python3 scripts/setup_all_kling_character_voices.py --refresh-poses-only --char Tessa
+  python3 scripts/setup_all_kling_character_voices.py --refresh-voice --char Lorelai \\
+      --confirm-voice-overwrite
+  python3 scripts/setup_all_kling_character_voices.py --rollback-voice --char Lorelai
+  python3 scripts/setup_all_kling_character_voices.py --samples-only
 
 Cost: ~$0.035 create-voice + $0.01 element per character (~$0.50 for all 11).
 """
@@ -13,7 +19,6 @@ Cost: ~$0.035 create-voice + $0.01 element per character (~$0.50 for all 11).
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -29,8 +34,10 @@ from lib.credential_store import get_secret  # noqa: E402
 from kling_element_voice import (  # noqa: E402
     ELEVENLABS_VOICE_ROSTER,
     ensure_voice_sample,
+    refresh_element_poses_only,
     setup_character_voice,
 )
+from kling_voice_bind import rollback_voice_bind  # noqa: E402
 from kling_voice_sample_lock import validate_lock_before_register  # noqa: E402
 from tools import kling_character_registry as reg  # noqa: E402
 
@@ -47,6 +54,8 @@ def _merge_roster_metadata(data: dict) -> None:
     data["_note"] = (
         "Kling Elements + ElevenLabs create-voice registry. "
         "Setup: scripts/setup_all_kling_character_voices.py. "
+        "Pose re-register: --refresh-poses-only (keeps kling_voice_id). "
+        "Voice re-register: --refresh-voice --confirm-voice-overwrite (mints new clone). "
         "Beat Gen requires active element_id per dialogue speaker (O3 Pro + bound voice)."
     )
 
@@ -54,17 +63,54 @@ def _merge_roster_metadata(data: dict) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Setup Kling Elements with ElevenLabs voices")
     parser.add_argument("--char", help="Single character only")
-    parser.add_argument("--force", action="store_true", help="Re-register even if active")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Deprecated alias for --refresh-voice (requires --confirm-voice-overwrite)",
+    )
+    parser.add_argument(
+        "--refresh-voice",
+        action="store_true",
+        help="Full voice refresh: sample → create-voice → element (mints new voice_id)",
+    )
+    parser.add_argument(
+        "--refresh-poses-only",
+        action="store_true",
+        help="Re-upload Element images only; preserve locked kling_voice_id",
+    )
+    parser.add_argument(
+        "--confirm-voice-overwrite",
+        action="store_true",
+        help="Required when replacing an active voice bind (--refresh-voice / --force)",
+    )
+    parser.add_argument(
+        "--rollback-voice",
+        action="store_true",
+        help="Restore previous voice bind from voice_bind_history",
+    )
     parser.add_argument("--samples-only", action="store_true", help="Only ensure kling_voice_samples/")
     parser.add_argument(
         "--skip-lock-check",
         action="store_true",
-        help="Allow --force without voice_sample_lock (dev/emergency only)",
+        help="Allow voice refresh without voice_sample_lock (dev/emergency only)",
     )
     args = parser.parse_args()
 
+    refresh_voice = args.refresh_voice or args.force
+    if args.force and not args.refresh_voice:
+        print("NOTE: --force is deprecated; use --refresh-voice --confirm-voice-overwrite")
+
+    if args.refresh_poses_only and refresh_voice:
+        sys.exit("FATAL: choose --refresh-poses-only OR --refresh-voice, not both")
+
+    if refresh_voice and not args.confirm_voice_overwrite and not args.samples_only:
+        sys.exit(
+            "FATAL: --refresh-voice requires --confirm-voice-overwrite when an active bind may "
+            "be replaced. Pose-only updates: --refresh-poses-only"
+        )
+
     wavespeed_key = get_secret("WAVESPEED_API_KEY")
-    if not wavespeed_key and not args.samples_only:
+    if not wavespeed_key and not args.samples_only and not args.rollback_voice:
         sys.exit("FATAL: WAVESPEED_API_KEY not found")
 
     elevenlabs_key = get_secret("ELEVENLABS_API_KEY")
@@ -81,32 +127,42 @@ def main() -> None:
     else:
         targets = chars
 
+    if args.rollback_voice:
+        if not args.char:
+            sys.exit("FATAL: --rollback-voice requires --char")
+        char_name = next(iter(targets))
+        chars, changed = rollback_voice_bind(chars, char_name)
+        if not changed:
+            sys.exit(f"No voice_bind_history to rollback for {char_name!r}")
+        data["characters"] = chars
+        reg.save_character_subjects(data)
+        cfg = chars[char_name]
+        print(f"Rolled back {char_name}: element_id={cfg.get('element_id')} "
+              f"kling_voice_id={cfg.get('kling_voice_id')}")
+        return
+
     ok = failed = skipped = 0
 
     for char_name, cfg in targets.items():
-        if char_name not in ELEVENLABS_VOICE_ROSTER:
+        if char_name not in ELEVENLABS_VOICE_ROSTER and not args.refresh_poses_only:
             print(f"\nSkipping {char_name}: not in ElevenLabs roster")
             skipped += 1
             continue
 
-        if cfg.get("status") == "active" and cfg.get("element_id") and not args.force:
+        if (
+            not refresh_voice
+            and not args.refresh_poses_only
+            and cfg.get("status") == "active"
+            and cfg.get("element_id")
+        ):
             print(f"\nSkipping {char_name}: already active (element_id={cfg['element_id']})")
             skipped += 1
             continue
 
         print(f"\n{'='*50}\n{char_name}")
 
-        needs_lock = not args.skip_lock_check and (
-            args.force or cfg.get("status") != "active" or not cfg.get("element_id")
-        )
-        if needs_lock and not args.samples_only:
-            lock_errors = validate_lock_before_register(char_name, cfg)
-            if lock_errors:
-                for err in lock_errors:
-                    print(f"  BLOCKED: {err}")
-                failed += 1
-                continue
-        elif needs_lock and args.samples_only and args.force:
+        needs_lock = not args.skip_lock_check and refresh_voice and not args.samples_only
+        if needs_lock:
             lock_errors = validate_lock_before_register(char_name, cfg)
             if lock_errors:
                 for err in lock_errors:
@@ -117,7 +173,7 @@ def main() -> None:
         try:
             if args.samples_only:
                 sample = ensure_voice_sample(
-                    char_name, cfg, elevenlabs_key, force_regenerate=args.force,
+                    char_name, cfg, elevenlabs_key, force_regenerate=refresh_voice,
                 )
                 rel = f"kling_voice_samples/{sample.name}"
                 cfg["elevenlabs_voice_sample_path"] = rel
@@ -128,9 +184,17 @@ def main() -> None:
                 ok += 1
                 continue
 
-            updated = setup_character_voice(
-                char_name, cfg, wavespeed_key, elevenlabs_key, force=args.force,
-            )
+            if args.refresh_poses_only:
+                updated = refresh_element_poses_only(char_name, cfg, wavespeed_key)
+            else:
+                updated = setup_character_voice(
+                    char_name,
+                    cfg,
+                    wavespeed_key,
+                    elevenlabs_key,
+                    force=refresh_voice,
+                    confirm_voice_overwrite=args.confirm_voice_overwrite,
+                )
             chars[char_name] = updated
             data["characters"] = chars
             reg.save_character_subjects(data)

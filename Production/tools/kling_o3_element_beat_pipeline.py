@@ -267,6 +267,15 @@ def run_pipeline(
             + "; ".join(align_errors)
             + " — fix before O3 submit (generic Kling TTS otherwise)."
         )
+    from tools.kling_voice_bind import detect_voice_bind_drift
+
+    drift_msg = detect_voice_bind_drift(
+        beat,
+        speaker,
+        reg.get_bound_voice_id(speaker),
+    )
+    if drift_msg and os.environ.get("MN_ACCEPT_VOICE_DRIFT") != "1":
+        raise RuntimeError(f"VOICE_BIND_DRIFT: {drift_msg}")
     duration = bg_sidecar.resolve_kling_o3_submit_duration(beat, prepared)
     if not beat.get("kling_o3_duration_locked"):
         beat["kling_o3_duration"] = duration

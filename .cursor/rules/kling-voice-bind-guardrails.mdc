@@ -1,0 +1,44 @@
+---
+description: Kling voice bind vs pose re-register — prevent blind voice overwrite
+globs:
+  - Production/tools/kling_element_voice.py
+  - Production/tools/kling_voice_bind.py
+  - Production/scripts/setup_all_kling_character_voices.py
+  - Production/tools/server_handlers/background.py
+  - Production/tools/kling_o3_element_beat_pipeline.py
+alwaysApply: false
+---
+
+# Kling voice bind guardrails
+
+## Two different operations (never conflate)
+
+| Operation | Command / UI | Changes voice_id? | Daily use? |
+|-----------|--------------|-------------------|------------|
+| **Pose re-register** | Beat Gen **Add to Element**; CLI `--refresh-poses-only` | **No** — keeps locked `kling_voice_id` | Yes |
+| **Voice refresh** | CLI `--refresh-voice --confirm-voice-overwrite` | **Yes** — new create-voice clone | Rare |
+
+`create-voice` is **non-deterministic**: the same good `kling_voice_samples/*.mp3` can mint a bad clone. Never `--refresh-voice` to debug a single bad beat — compare to a known-good beat first (e.g. beat 18 vs 27).
+
+## Dependency order (implementation)
+
+1. `kling_voice_bind.py` — `voice_bind_history`, archive, rollback, drift detection, create-voice candidate validation
+2. `setup_all_kling_character_voices.py` — separate flags; `--confirm-voice-overwrite` required for voice refresh
+3. `setup_character_voice()` — archive before overwrite; reject bad create-voice candidates before registry write
+4. O3 submit — `VOICE_BIND_DRIFT` when registry `kling_voice_id` ≠ beat's last approved `o3_element_quality` (unless `accept_voice_drift`)
+
+## Operator recovery
+
+```bash
+# Roll back to previous working bind (after bad voice refresh)
+doppler run -- env MN_PROD_ROOT=<Dropbox/Production> \
+  python3 scripts/setup_all_kling_character_voices.py --rollback-voice --char Lorelai
+```
+
+Listen to `kling_voice_samples/<char>.mp3` before any voice refresh. After refresh, A/B one known-good beat before redoing others.
+
+## Do not regress
+
+- `add_element_pose()` must continue to pass **existing** `kling_voice_id` into `register_kling_element`.
+- Voice refresh must **archive** the active bind to `voice_bind_history` before overwrite.
+- Never run voice refresh without `--confirm-voice-overwrite` when status is active.

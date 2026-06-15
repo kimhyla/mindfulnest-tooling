@@ -462,6 +462,25 @@ def register_kling_element(
     return str(element_id), prediction_id
 
 
+def refresh_element_poses_only(
+    char_name: str,
+    cfg: dict,
+    wavespeed_key: str,
+) -> dict:
+    """Re-upload Element images only — preserve locked kling_voice_id (Add to Element path)."""
+    voice_id = str(cfg.get("kling_voice_id") or "").strip()
+    if not voice_id:
+        raise RuntimeError(
+            f"{char_name!r} has no kling_voice_id — run voice setup first, not pose refresh"
+        )
+    element_id, prediction_id = register_kling_element(char_name, cfg, voice_id, wavespeed_key)
+    updated = dict(cfg)
+    updated["element_id"] = element_id
+    updated["wavespeed_prediction_id"] = prediction_id
+    updated["status"] = "active"
+    return updated
+
+
 def setup_character_voice(
     char_name: str,
     cfg: dict,
@@ -469,10 +488,25 @@ def setup_character_voice(
     elevenlabs_key: str | None = None,
     *,
     force: bool = False,
+    confirm_voice_overwrite: bool = False,
 ) -> dict:
     """Full pipeline: sample → create-voice → element. Returns updated cfg."""
+    from kling_voice_bind import (
+        archive_voice_bind,
+        validate_create_voice_candidate,
+        validate_voice_overwrite_allowed,
+    )
+
+    overwrite_errors = validate_voice_overwrite_allowed(cfg, confirm=confirm_voice_overwrite)
+    if overwrite_errors:
+        raise RuntimeError("; ".join(overwrite_errors))
+
     if cfg.get("status") == "active" and cfg.get("element_id") and not force:
         return cfg
+
+    previous_voice_id = str(cfg.get("kling_voice_id") or "").strip() or None
+    if force and previous_voice_id:
+        cfg = archive_voice_bind(cfg, reason="voice_refresh")
 
     roster = ELEVENLABS_VOICE_ROSTER.get(char_name, {})
     sample_path = ensure_voice_sample(
@@ -482,6 +516,18 @@ def setup_character_voice(
 
     audio_url = upload_catbox(sample_path)
     kling_voice_id = create_kling_voice(audio_url, wavespeed_key)
+    candidate_errors = validate_create_voice_candidate(
+        previous_voice_id=previous_voice_id,
+        new_voice_id=kling_voice_id,
+        sample_size_bytes=sample_path.stat().st_size,
+    )
+    if candidate_errors:
+        raise RuntimeError(
+            "create-voice candidate rejected: "
+            + "; ".join(candidate_errors)
+            + " — active bind unchanged (see voice_bind_history for rollback)"
+        )
+
     element_id, prediction_id = register_kling_element(char_name, cfg, kling_voice_id, wavespeed_key)
 
     updated = dict(cfg)

@@ -3533,6 +3533,20 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                 beat["kling_o3_prompt"] = prepared_for_validate
                 bg.sync_beat_dialogue_from_kling_prompt(beat)
             element_entry = reg.get_element_list_entry(speaker)
+            from tools.kling_voice_bind import detect_voice_bind_drift
+
+            drift_msg = detect_voice_bind_drift(
+                beat,
+                speaker,
+                reg.get_bound_voice_id(speaker),
+            )
+            if drift_msg and not body.get("accept_voice_drift"):
+                return h._send_error_v59(
+                    409,
+                    error_code="VOICE_BIND_DRIFT",
+                    error_message=drift_msg,
+                    retry_safe=True,
+                )
             voice_prompt_errors = o3p.validate_element_list_alignment(
                 speaker,
                 element_entry,
