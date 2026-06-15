@@ -4712,17 +4712,7 @@ def validate_kling_o3_beat_for_submit(
             spoken,
             has_pre_speech_staging=staging,
         )
-        # Block only when estimate clearly exceeds the largest Kling bucket.
-        if unsnapped > float(KLING_O3_MAX_DURATION) + 0.75:
-            errors.append({
-                "beat_id": beat_id,
-                "code": "DIALOGUE_TOO_LONG",
-                "message": (
-                    f"Local length estimate {unsnapped:.1f}s exceeds max bucket "
-                    f"({KLING_O3_MAX_DURATION}s). Shorten dialogue or split the beat."
-                ),
-                "estimated_duration_s": round(unsnapped, 2),
-            })
+        # DIALOGUE_TOO_LONG is advisory only — Kling bucket cap applies at submit.
 
     if duration < KLING_O3_MIN_DURATION or duration > KLING_O3_MAX_DURATION:
         errors.append({
@@ -4894,6 +4884,28 @@ def kling_o3_submit_warnings(
                 "voice line on submit (same as Tessa)."
             ),
         })
+
+    spoken_for_dur = _spoken_for_duration_estimate(prepared or raw, beat=beat)
+    if spoken_for_dur:
+        staging = _kling_o3_has_pre_speech_staging(prepared or raw)
+        unsnapped = estimate_kling_o3_seconds_unsnapped(
+            spoken_for_dur,
+            has_pre_speech_staging=staging,
+        )
+        if unsnapped > float(KLING_O3_MAX_DURATION) + 0.75:
+            bucket = resolve_kling_o3_submit_duration(beat, prepared or raw)
+            warnings.append({
+                "beat_id": beat_id,
+                "code": "DIALOGUE_TOO_LONG",
+                "severity": "warning",
+                "message": (
+                    f"Local length estimate {unsnapped:.1f}s exceeds max bucket "
+                    f"({KLING_O3_MAX_DURATION}s). Submit will use {bucket}s — "
+                    "listen and trim if speech feels rushed."
+                ),
+                "estimated_duration_s": round(unsnapped, 2),
+                "submit_duration_s": bucket,
+            })
 
     return warnings
 

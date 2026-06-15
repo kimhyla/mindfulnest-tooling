@@ -72,7 +72,9 @@ def test_submit_handler_stamps_prompt_box_law_and_subprocess_env():
     text = BACKGROUND.read_text(encoding="utf-8")
     assert "stamp_o3_prompt_box_law" in text
     assert 'subprocess_env["MN_O3_PROMPT_BOX_LAW"] = "1"' in text
+    assert "upgrade_element_bound_voice_prompt" in text
     assert "if not explicit_user_prompt:" in text
+    assert "Prompt-box law still skips heal_o3" in text
 
 
 def test_without_law_normalize_can_rewrite_voice_block():

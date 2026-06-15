@@ -79,6 +79,26 @@ API_KEYS_MASTER_PATH: Path = DROPBOX_ROOT / "Production" / "API_KEYS_MASTER.md"
 # Phase C (2026-05-19) — runtime-data-root helpers + BgPaths
 # ---------------------------------------------------------------------------
 
+def normalize_production_root(prod_root: Path | str) -> Path:
+    """Collapse accidental ``Production/Production`` nesting to one ``Production/``.
+
+    Happens when the server launches with ``cwd`` already inside ``Production/`` and
+    ``--event-dir Production/Event_N`` (relative) — O3 subprocesses then look for
+    ``Production/Production/beat_generator_state.json`` and fail.
+    """
+    p = Path(prod_root).resolve()
+    while p.name == "Production" and p.parent.name == "Production":
+        p = p.parent
+    return p
+
+
+def normalize_event_dir(event_dir: Path | str) -> Path:
+    """Resolve event dir and fix double-``Production/`` launch paths."""
+    p = Path(event_dir).resolve()
+    prod = normalize_production_root(p.parent)
+    return prod / p.name
+
+
 def runtime_production_root(event_dir: Path | str) -> Path:
     """Derive the runtime ``Production/`` directory from a server's event_dir.
 
@@ -88,7 +108,7 @@ def runtime_production_root(event_dir: Path | str) -> Path:
     from the Dropbox tree. Use this for ALL data-path computations — never
     derive runtime data paths from ``__file__`` (see audit C1).
     """
-    return Path(event_dir).parent
+    return normalize_production_root(normalize_event_dir(event_dir).parent)
 
 
 @dataclass(frozen=True)

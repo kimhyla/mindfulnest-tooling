@@ -131,7 +131,10 @@ def handle_event_load(h, body: dict) -> None:
 
     # event_dir is sibling of current — we do NOT allow arbitrary paths.
     # Pattern: Production/<event_id>/ next to current Production/<current>/.
-    new_event_dir = h.app.event_dir.parent / new_event_id
+    from lib.paths import normalize_event_dir, runtime_production_root
+
+    prod_root = runtime_production_root(h.app.event_dir)
+    new_event_dir = normalize_event_dir(prod_root / new_event_id)
     if not new_event_dir.is_dir():
         return h._send_error_v59(
                    404,
@@ -225,6 +228,18 @@ def handle_event_load(h, body: dict) -> None:
         h.app.scope_type = "event"
         h.app.active_milestone_id = None
         new_gen = h.app.event_generation
+        try:
+            from lib.event_pin import write_persisted_event_pin
+
+            write_persisted_event_pin(
+                runtime_production_root(new_event_dir),
+                event_id=new_event_id,
+                storyboard=new_storyboard_path.name,
+                event_dir=new_event_dir,
+                source="event_load",
+            )
+        except Exception as exc:
+            print(f"[event/load] WARN: could not persist event pin: {exc}", flush=True)
 
     print(
         f"[event/load] {old_event_id} (gen={old_gen}, sb={old_storyboard}) -> "

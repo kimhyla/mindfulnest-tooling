@@ -65,8 +65,13 @@ def _data_root(h) -> Path:
 
     Replaces the LD-505-broken `_PSERVER_PRODUCTION_DIR = Path(__file__)...`
     which resolved to the (empty) tooling tree. Audit C1-1 / C1-2 / C1-7.
+
+    Always ``resolve()`` so O3 subprocess env (``MN_PROD_ROOT`` + ``cwd``) never
+    double-applies a relative ``Production/`` segment (Production/Production/ sidecar).
     """
-    return Path(h.app.event_dir).parent
+    from lib.paths import runtime_production_root
+
+    return runtime_production_root(h.app.event_dir)
 
 
 # Project-internal modules imported the same way production_server.py does.
@@ -3559,15 +3564,17 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                 and str(body.get("kling_o3_prompt") or "").strip()
             )
             stored_for_voice = str(beat.get("kling_o3_prompt") or "")
+            # Always auto-fix delivery-lock syntax (Arlo speaks: [warm] → speaks in a …).
+            # Prompt-box law still skips heal_o3 / normalize that rewrite quoted dialogue.
+            upgraded, _spoken_upgraded, voice_upgraded = o3p.upgrade_element_bound_voice_prompt(
+                speaker,
+                stored_for_voice,
+                extract_spoken=bg.extract_spoken_dialogue_from_kling_prompt,
+            )
+            if voice_upgraded:
+                beat["kling_o3_prompt"] = upgraded
+                bg.sync_beat_dialogue_from_kling_prompt(beat)
             if not explicit_user_prompt:
-                upgraded, _spoken_upgraded, voice_upgraded = o3p.upgrade_element_bound_voice_prompt(
-                    speaker,
-                    stored_for_voice,
-                    extract_spoken=bg.extract_spoken_dialogue_from_kling_prompt,
-                )
-                if voice_upgraded:
-                    beat["kling_o3_prompt"] = upgraded
-                    bg.sync_beat_dialogue_from_kling_prompt(beat)
                 bg.heal_spoken_staging_in_voice_prompt(beat)
                 bg.heal_o3_element_submit_prompt(beat)
 

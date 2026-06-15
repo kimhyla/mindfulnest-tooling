@@ -122,7 +122,19 @@ def _find_beat(sidecar: dict, beat_id: str):
 
 def _runtime_prod_root() -> Path:
     """Dropbox Production root when MN_PROD_ROOT is set (server subprocess path)."""
-    return Path(os.environ.get("MN_PROD_ROOT", "").strip() or PROD).resolve()
+    from lib.paths import normalize_production_root
+
+    raw = os.environ.get("MN_PROD_ROOT", "").strip()
+    if raw:
+        root = Path(raw)
+        if not root.is_absolute():
+            cwd = Path.cwd().resolve()
+            # Legacy bug: MN_PROD_ROOT="Production" with cwd already inside Production/.
+            if cwd.name == "Production" and root.name == "Production":
+                return normalize_production_root(cwd)
+            root = cwd / root
+        return normalize_production_root(root.resolve())
+    return normalize_production_root(PROD.resolve())
 
 
 def _event_dir_for_segment(prod_root: Path, segment_key: str) -> Path:
@@ -290,10 +302,13 @@ def run_pipeline(
         event_id=event_id,
         phase="pre" if (segment_key or "").endswith("_pre") else "full",
     )
-    duration_errors = [e for e in submit_errors if e.get("code") == "DIALOGUE_TOO_LONG"]
-    if duration_errors:
+    blocking_errors = [
+        e for e in submit_errors
+        if e.get("code") not in {"DIALOGUE_TOO_LONG"}
+    ]
+    if blocking_errors:
         codes = ", ".join(
-            f"{e.get('code', '?')}: {e.get('message', '')}" for e in duration_errors
+            f"{e.get('code', '?')}: {e.get('message', '')}" for e in blocking_errors
         )
         raise RuntimeError(f"KLING_O3_SUBMIT_BLOCKED: {codes}")
     duration = bg_sidecar.resolve_kling_o3_submit_duration(beat, prepared)

@@ -12865,10 +12865,23 @@ def _check_runtime_capabilities() -> None:
 
 
 def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_event_dir: Path | None = None) -> int:
+    from lib.event_pin import resolve_startup_event
+    from lib.paths import normalize_event_dir
+
+    event_dir, storyboard_name, event_id, pin_source = resolve_startup_event(
+        event_dir, storyboard_name, event_id,
+    )
+    event_dir = normalize_event_dir(event_dir)
     storyboard_path = event_dir / storyboard_name
     if not storyboard_path.is_file():
         print(f"ERROR: storyboard not found: {storyboard_path}", file=sys.stderr)
         return 2
+
+    print(
+        f"[startup] event scope event_id={event_id} pin_source={pin_source} "
+        f"event_dir={event_dir}",
+        flush=True,
+    )
 
     # LD-505 Phase C (2026-05-19): rebind every beat_generator module-level
     # path constant from the runtime event_dir. Replaces the original

@@ -3,29 +3,13 @@
 // CLIENT-SIDE half of the scope guard. The server-side half (HTTP 409 on
 // mismatched event_id) lands in Session 1.5.
 //
-// S5.5b Bug 4 fix A: query GET /api/event/current FIRST as the authoritative
-// source. Server-provided event_id wins over URL/attr/global fallbacks — this
-// closes the bug where EventSelector triggered window.location.reload() and
-// ScopeBoundary read a STALE URL/attr/global on the next mount. Bug 4 fix B
-// (EventSelector updating URL with ?event=<id>) keeps URL accurate for
-// shareable links + Playwright assertions; A is the safety net.
-//
-// Resolution order for event_id (highest priority first):
-//   1. forceEventId prop (test override)
-//   2. GET /api/event/current — server's truth (when no ?event= deep link)
-//   3. ?event=Event_1 URL query param — when present AND mismatched with the
-//      server pin, POST /api/event/load to honor shareable deep links
-//      (SCOPE_DEEP_LINK_DURABILITY_V1 — avoids scope_mismatch 409 on v2 state)
-//   4. <body data-event-id="Event_1"> attribute
-//   5. window.__MN_EVENT_ID__ global (set by production_server.py at render time)
-//   6. Hardcoded fallback "Event_1"
-//
-// When ?event= is absent, server truth wins (S5.5b Bug 4 fix A — stale URL
-// after EventSelector cannot override the live server pin).
-//
-// On mount, ScopeBoundary writes the resolved event_id into activeScope and
-// also seeds activeVideoRole from server's state.active_video (display hint
-// only per LD-474).
+// EVENT_PIN_DURABILITY_V1 + SCOPE_URL_AUTHORITY_V1 (2026-06):
+//   - When ?event=<id> is present, the URL is authoritative — never silently
+//     fall back to Event_1 or the server's stale startup pin.
+//   - Tabs do not mount until POST /api/event/load confirms the server pin
+//     matches the resolved target event_id.
+//   - Server persists last-loaded event in Production/server_event_pin.json so
+//     restarts reopen the same event without drift.
 
 import { useEffect, useState } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
@@ -52,10 +36,15 @@ declare global {
   }
 }
 
-function resolveLocalFallback(): string {
-  const params = new URLSearchParams(window.location.search);
-  const fromQuery = params.get('event');
-  if (fromQuery) return fromQuery;
+function readUrlEventId(): string | null {
+  try {
+    return new URLSearchParams(window.location.search).get('event');
+  } catch {
+    return null;
+  }
+}
+
+function resolveLocalFallbackWithoutUrl(): string {
   const fromBody = document.body.getAttribute('data-event-id');
   if (fromBody) return fromBody;
   if (window.__MN_EVENT_ID__) return window.__MN_EVENT_ID__;
@@ -72,13 +61,25 @@ interface EventCurrentResponse {
   active_milestone_id?: string | null;
 }
 
+async function fetchEventCurrent(): Promise<EventCurrentResponse | null> {
+  try {
+    const res = await fetch(READ_ENDPOINTS.event_current);
+    if (!res.ok) return null;
+    return (await res.json()) as EventCurrentResponse;
+  } catch {
+    return null;
+  }
+}
+
 export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
   const [resolved, setResolved] = useState(false);
+  const [pinError, setPinError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      // 1. Test override wins.
+      setPinError(null);
+
       if (forceEventId) {
         if (!cancelled) {
           activeScope.value = makeScope(forceEventId, null, 1);
@@ -90,113 +91,90 @@ export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
         }
         return;
       }
-      // 2. Ask the server (S5.5b Bug 4 fix A).
-      let serverEventId: string | null = null;
-      let serverGeneration = 1;
-      let serverActiveVideo: string | null = null;
-      let serverScopeType: string | undefined;
-      let serverMilestoneId: string | null | undefined;
-      try {
-        const res = await fetch(READ_ENDPOINTS.event_current);
-        if (res.ok) {
-          const data = (await res.json()) as EventCurrentResponse;
-          if (data && typeof data.event_id === 'string' && data.event_id) {
-            serverEventId = data.event_id;
-            if (typeof data.event_generation === 'number') {
-              serverGeneration = data.event_generation;
-            }
-            serverActiveVideo = data.active_video ?? null;
-            serverScopeType = data.scope_type;
-            serverMilestoneId = data.active_milestone_id;
-          }
-        }
-      } catch {
-        // Network unreachable — fall through to local fallback.
-      }
+
+      const urlEventId = readUrlEventId();
+      const current = await fetchEventCurrent();
       if (cancelled) return;
 
-      const urlEventId = (() => {
-        try {
-          return new URLSearchParams(window.location.search).get('event');
-        } catch {
-          return null;
-        }
-      })();
+      let serverEventId = (
+        current && typeof current.event_id === 'string' && current.event_id
+      ) ? current.event_id : null;
+      let resolvedGeneration = (
+        typeof current?.event_generation === 'number'
+      ) ? current.event_generation : 1;
+      let serverActiveVideo = current?.active_video ?? null;
+      let serverScopeType = current?.scope_type;
+      let serverMilestoneId = current?.active_milestone_id;
 
-      let eventId = serverEventId ?? resolveLocalFallback();
-      let resolvedGeneration = serverGeneration;
+      // Target: URL wins when present (SCOPE_URL_AUTHORITY_V1).
+      let targetEventId = urlEventId ?? serverEventId ?? resolveLocalFallbackWithoutUrl();
 
-      // Deep-link bootstrap: ?event= requests a specific event. When it
-      // differs from the process startup pin, swap server scope before any
-      // tab fetches /api/v2/event/<id>/state (avoids scope_mismatch 409).
-      if (urlEventId && urlEventId !== serverEventId) {
-        try {
-          const loadRes = await loadEvent(urlEventId);
-          if (loadRes.ok && loadRes.data?.event_id) {
-            eventId = loadRes.data.event_id;
-            resolvedGeneration = loadRes.data.event_generation;
-            try {
-              const res2 = await fetch(READ_ENDPOINTS.event_current);
-              if (res2.ok) {
-                const data2 = (await res2.json()) as EventCurrentResponse;
-                serverActiveVideo = data2.active_video ?? null;
-                serverScopeType = data2.scope_type;
-                serverMilestoneId = data2.active_milestone_id;
-              }
-            } catch {
-              // Non-fatal — activeScope still matches the loaded event.
-            }
-            emitScopeEventChanged({
-              event_id: eventId,
-              event_generation: resolvedGeneration,
-              scope_key: scopeKey(makeScope(eventId, null, resolvedGeneration)),
-              source: 'scope-boundary-url-bootstrap',
-            });
-          } else if (serverEventId) {
-            // Target missing or load failed — keep server pin (Bug 4 safety).
-            eventId = serverEventId;
-          }
-        } catch {
-          if (serverEventId) eventId = serverEventId;
+      const pinTarget = async (eventId: string): Promise<boolean> => {
+        if (serverEventId === eventId) {
+          return ensureServerPinnedTo(eventId);
         }
-      } else if (!serverEventId && urlEventId) {
-        // Cold boot with ?event= but no server pin yet — must not render tabs
-        // until loadEvent succeeds (READ_SCOPE_HEAL_V1 / deep-link durability).
-        try {
-          const loadRes = await loadEvent(urlEventId);
-          if (loadRes.ok && loadRes.data?.event_id) {
-            eventId = loadRes.data.event_id;
-            resolvedGeneration = loadRes.data.event_generation;
-          } else {
-            eventId = resolveLocalFallback();
+        const loadRes = await loadEvent(eventId);
+        if (!loadRes.ok || !loadRes.data?.event_id) {
+          return false;
+        }
+        serverEventId = loadRes.data.event_id;
+        resolvedGeneration = loadRes.data.event_generation;
+        emitScopeEventChanged({
+          event_id: loadRes.data.event_id,
+          event_generation: loadRes.data.event_generation,
+          scope_key: scopeKey(makeScope(loadRes.data.event_id, null, loadRes.data.event_generation)),
+          source: urlEventId ? 'scope-boundary-url-authority' : 'scope-boundary-pin',
+        });
+        const refreshed = await fetchEventCurrent();
+        if (refreshed) {
+          serverActiveVideo = refreshed.active_video ?? null;
+          serverScopeType = refreshed.scope_type;
+          serverMilestoneId = refreshed.active_milestone_id;
+          if (typeof refreshed.event_generation === 'number') {
+            resolvedGeneration = refreshed.event_generation;
           }
-        } catch {
-          eventId = resolveLocalFallback();
+        }
+        return ensureServerPinnedTo(eventId);
+      };
+
+      let pinOk = await pinTarget(targetEventId);
+      if (!pinOk && urlEventId) {
+        // One retry — server may have been mid-restart.
+        pinOk = await pinTarget(urlEventId);
+        targetEventId = urlEventId;
+      }
+
+      if (!pinOk) {
+        if (urlEventId) {
+          if (!cancelled) {
+            setPinError(
+              `Could not pin server to ${urlEventId}. `
+              + 'Hard-refresh or pick the event again from the Project menu.',
+            );
+            document.body.setAttribute('data-scope-pin-failed', urlEventId);
+          }
+          return;
+        }
+        if (serverEventId) {
+          targetEventId = serverEventId;
+          pinOk = await ensureServerPinnedTo(targetEventId);
         }
       }
 
-      // Final guard: never mount tabs until server pin matches resolved eventId.
-      const pinOk = await ensureServerPinnedTo(eventId);
-      if (!pinOk && serverEventId && serverEventId !== eventId) {
-        eventId = serverEventId;
-        resolvedGeneration = serverGeneration;
-      } else if (pinOk) {
-        try {
-          const resPin = await fetch(READ_ENDPOINTS.event_current);
-          if (resPin.ok) {
-            const pinData = (await resPin.json()) as EventCurrentResponse;
-            if (typeof pinData.event_generation === 'number') {
-              resolvedGeneration = pinData.event_generation;
-            }
-          }
-        } catch {
-          // Non-fatal — activeScope still matches loaded event.
+      if (!pinOk) {
+        if (!cancelled) {
+          setPinError(
+            `Could not confirm server scope for ${targetEventId}. `
+            + 'Hard-refresh and try again.',
+          );
         }
+        return;
       }
 
-      activeScope.value = makeScope(eventId, null, resolvedGeneration);
-      // F-PROJECT-001: milestone scope survives reload — hydrate from server
-      // (GET /api/event/current) and/or ?milestone= when server is still on event.
+      if (cancelled) return;
+
+      activeScope.value = makeScope(targetEventId, null, resolvedGeneration);
+
       let milestoneId: string | null = null;
       if (serverScopeType === 'milestone' && typeof serverMilestoneId === 'string' && serverMilestoneId) {
         milestoneId = serverMilestoneId;
@@ -214,19 +192,12 @@ export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
               if (typeof loadRes.data === 'object' && loadRes.data !== null) {
                 const eg = (loadRes.data as { event_generation?: number }).event_generation;
                 if (typeof eg === 'number') {
-                  activeScope.value = makeScope(eventId, null, eg);
+                  activeScope.value = makeScope(targetEventId, null, eg);
                 }
               }
             }
           }
         } catch (err) {
-          // F-PROJECT-001 milestone URL bootstrap — Rule 19 escape hatch.
-          // SHORTCUT: SHORTCUT_F_PROJECT_001_MILESTONE_BOOTSTRAP_BEST_EFFORT_V1
-          // (prod_locked_decisions id=679) documents this deferral + closure plan.
-          // Canonical milestone-scope entry is the Project dropdown onChange handler
-          // (ProjectSelector.tsx:414); URL-bootstrap is a secondary deep-link convenience
-          // and fallback to event scope is the safe default.
-          // Observability: console.warn below + mn:milestone-bootstrap-failed CustomEvent.
           // eslint-disable-next-line no-console
           console.warn('[ScopeBoundary] milestone URL bootstrap failed (event scope fallback):', err);
           if (typeof window !== 'undefined') {
@@ -241,6 +212,7 @@ export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
           }
         }
       }
+
       if (milestoneId) {
         activeProjectType.value = 'milestone';
         activeMilestoneId.value = milestoneId;
@@ -250,17 +222,28 @@ export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
         activeMilestoneId.value = null;
         document.body.setAttribute('data-active-project-type', 'event');
       }
-      // S5.5b: seed activeVideoRole from server's state.active_video.
-      // LD-474: this is a DISPLAY HINT only; never use it for partition selection.
+
       if (serverActiveVideo && typeof serverActiveVideo === 'string') {
         activeVideoRole.value = serverActiveVideo;
       }
-      // Surface scope to the DOM for debugging + Playwright assertions.
       document.body.setAttribute('data-resolved-scope', scopeKey(activeScope.value));
+      document.body.removeAttribute('data-scope-pin-failed');
       setResolved(true);
     })();
     return () => { cancelled = true; };
   }, [forceEventId]);
+
+  if (pinError) {
+    return (
+      <div
+        class="scope-boundary-error"
+        data-testid="scope-boundary-error"
+        data-scope-pin-error={pinError}
+      >
+        {pinError}
+      </div>
+    );
+  }
 
   if (!resolved) {
     return (
