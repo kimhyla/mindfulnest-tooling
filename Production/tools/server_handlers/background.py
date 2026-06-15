@@ -5295,6 +5295,40 @@ def handle_bg_insert_beat(h, body: dict) -> None:
                 retry_safe=False,
             )
 
+        element_ref_registered = None
+        element_ref_warning = None
+        if speaker:
+            try:
+                from credentials import load_credentials  # type: ignore
+            except ImportError:
+                from tools.credentials_lib.credentials import load_credentials  # type: ignore
+            creds = load_credentials()
+            ws_key = creds.get("wavespeed_key") or creds.get("wavespeed")
+            if ws_key:
+                reg_result = bg.maybe_auto_register_beat_char_ref(new_beat, ws_key)
+                if reg_result.get("ok") and not reg_result.get("skipped"):
+                    if new_beat.get("element_char_ref_ok"):
+                        try:
+                            from tools import kling_character_registry as reg
+
+                            display = reg.kling_element_display_name(speaker) or speaker
+                        except Exception:
+                            display = speaker
+                        action = reg_result.get("action") or "registered"
+                        pose = reg_result.get("pose_rel") or ""
+                        element_ref_registered = (
+                            f"Registered on {display} Element ({action})"
+                            + (f" — {pose}" if pose else "")
+                            + ". Generate unlocked."
+                        )
+        if new_beat.get("element_char_ref_ok") is False:
+            detail = (new_beat.get("element_char_ref_error") or "").strip()
+            element_ref_warning = (
+                "Char ref saved on this beat, but Element registration failed. "
+                "Try Add to Element from library preview (Loral), or drop the pose again."
+                + (f" ({detail})" if detail else "")
+            )
+
         beats.insert(insert_after + 1, new_beat)
         bg.write_sidecar(sidecar)
 
@@ -5310,6 +5344,10 @@ def handle_bg_insert_beat(h, body: dict) -> None:
         "segment": f"event_{event_id_int}_{phase}",
         "arc_number": arc_number,
         "warnings": norm_warnings,
+        "element_char_ref_ok": new_beat.get("element_char_ref_ok"),
+        "element_char_ref_error": new_beat.get("element_char_ref_error"),
+        "element_ref_registered": element_ref_registered,
+        "element_ref_warning": element_ref_warning,
     })
 
 

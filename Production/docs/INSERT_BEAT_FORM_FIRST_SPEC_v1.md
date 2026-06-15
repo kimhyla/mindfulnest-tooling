@@ -1,6 +1,6 @@
 # Insert Beat (Form-First) — Tech Spec v1
 
-**Status:** Draft — supersedes `MANUAL_INSERT_O3_PARITY_SPEC_v1.md` (patch/wire approach)  
+**Status:** Implemented — form-first insert (`fa1777b`); char-ref gate + durability gates in follow-up commit on this branch  
 **Owner:** mindfulnest-tooling  
 **Incident driver:** Event 2 Beat 13 (`bg_arc1_event2_pre_beat_27`) — manual insert never shared extract wiring; 18+ O3 gens with male voice  
 **User-facing promise:** **No half-built beats.** Operator fills a short form; the server creates a sidecar row through the **same materialization path as Claude extract** — then Generate behaves identically to Beat 18.
@@ -398,6 +398,28 @@ No second birth pipeline on speaker change.
 
 ---
 
+## Durability — never regress
+
+Three layers lock this spec in place:
+
+| Layer | What | When it runs |
+|-------|------|----------------|
+| **pytest** | `Production/tools/tests/test_insert_beat_form_first.py` — materialize parity, proven Laurel contract, insert handler wiring, char-ref gate sync, auto-register hook | `verify_o3_intro_contract.sh`, deploy step (d.6), CI-adjacent smoke |
+| **Source guards** | `Production/scripts/verify_insert_beat_form_first_durability.sh` — greps ban blank rows, require `maybe_auto_register_beat_char_ref` on insert, forbid finalize sync-only-in-else | Agent/operator before merge; optional manual after backup restore |
+| **Cursor rule** | `.cursor/rules/insert-beat-form-first.mdc` — one factory, banned pin/box_law, char-ref auto-register on insert | Every agent edit in mindfulnest-tooling |
+
+**Do not remove** without replacing:
+
+- `materialize_sidecar_beat_from_plan_row` → `build_beats_from_approved_plan`
+- `finalize_proven_element_beat` + unconditional `sync_element_char_ref_status`
+- `maybe_auto_register_beat_char_ref` on `handle_bg_insert_beat` (parity with drag-drop on `handle_bg_update_beat`)
+- `410 INSERT_BEAT_FORM_REQUIRED` on legacy `add-beat`
+- `InsertBeatModal` / `bg_insert_beat` (no `+ Add empty beat`)
+
+**Char-ref parity contract:** Insert must behave like dropping char ref on an extract beat — gate fields (`element_char_ref_ok`, `element_char_ref_error`) persisted on sidecar before insert response returns.
+
+---
+
 ## Practice playbook — recreate Beat 13
 
 **Preconditions:** This spec implemented; storyboard build deployed; server live on Event_2.
@@ -443,6 +465,7 @@ No separate “Phase A/B/C” — form-first **is** the wiring fix.
 | UI | `InsertBeatModal.tsx`, `BgTab.tsx` | modal + toolbar/card triggers |
 | API | `endpoints.ts` | `bg_insert_beat` |
 | Tests | `tests/test_insert_beat_form_first.py` | new |
+| Durability | `scripts/verify_insert_beat_form_first_durability.sh` | source guards + pytest |
 | Rule | `.cursor/rules/insert-beat-form-first.mdc` | agent guardrail |
 
 ---

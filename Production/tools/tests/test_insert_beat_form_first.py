@@ -137,6 +137,49 @@ def test_materialize_lorelai_matches_extract_shape(tmp_path):
         "reference_image"
     ]["abs_path"]
     assert insert_beat["reference_image"]["abs_path"] == src_path
+    assert "element_char_ref_ok" in insert_beat
+
+
+def test_finalize_proven_element_always_syncs_gate(tmp_path, monkeypatch):
+    sidecar = _minimal_sidecar_with_proven_source(tmp_path)
+    beat = {"beat_id": "bg_arc1_event2_pre_beat_99", "speaker": "Lorelai"}
+    monkeypatch.setattr(bg, "sync_element_char_ref_status", lambda b, **kw: b.update(
+        {"element_char_ref_ok": True},
+    ) or True)
+    bg.finalize_proven_element_beat(
+        beat, sidecar, "Lorelai", event_id="2", phase="pre",
+    )
+    assert beat.get("element_char_ref_ok") is True
+
+
+def test_handle_bg_insert_beat_auto_registers_char_ref():
+    block = _handler_block("handle_bg_insert_beat")
+    assert "maybe_auto_register_beat_char_ref" in block
+    assert "element_char_ref_ok" in block
+
+
+def test_finalize_proven_element_sync_not_else_only():
+    text = (TOOLS / "beat_generator.py").read_text(encoding="utf-8")
+    start = text.index("def finalize_proven_element_beat(")
+    end = text.index("\n\n\ndef ", start)
+    block = text[start:end]
+    assert "sync_element_char_ref_status(beat, heal_mismatch=False)" in block
+    assert re.search(
+        r"if changed:\s*\n\s*apply_kling_o3_defaults_to_beat",
+        block,
+    ), "finalize must rebuild prompt when proven refs change"
+    assert not re.search(
+        r"else:\s*\n\s*sync_element_char_ref_status",
+        block,
+    ), "gate sync must run after ref copy, not only when refs unchanged"
+
+
+def test_maybe_auto_register_helper_exists():
+    assert hasattr(bg, "maybe_auto_register_beat_char_ref")
+    src = (TOOLS / "beat_generator.py").read_text(encoding="utf-8")
+    assert "try_register_dropped_char_ref_on_element" in src.split(
+        "def maybe_auto_register_beat_char_ref", 1,
+    )[1].split("\n\n", 1)[0]
 
 
 def test_proven_element_list_uses_laurel():

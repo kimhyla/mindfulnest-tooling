@@ -6389,9 +6389,19 @@ def finalize_proven_element_beat(
     beat.pop("o3_prompt_box_law", None)
     if changed:
         apply_kling_o3_defaults_to_beat(beat, event_id, phase)
-    else:
-        sync_element_char_ref_status(beat, heal_mismatch=False)
+    sync_element_char_ref_status(beat, heal_mismatch=False)
     return changed
+
+
+def maybe_auto_register_beat_char_ref(beat: dict, wavespeed_key: str) -> dict[str, Any]:
+    """Sync Element gate; auto-register char ref when gate fails (same as bg_update_beat drop)."""
+    sync_element_char_ref_status(beat, heal_mismatch=False)
+    if beat.get("element_char_ref_ok") is not False or not wavespeed_key:
+        return {"ok": True, "skipped": True}
+    reg_result = try_register_dropped_char_ref_on_element(beat, wavespeed_key)
+    if reg_result.get("ok"):
+        sync_element_char_ref_status(beat, heal_mismatch=False)
+    return reg_result
 
 
 def upgrade_legacy_bg_beats_to_kling_o3(sidecar: dict) -> int:
