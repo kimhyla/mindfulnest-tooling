@@ -703,3 +703,23 @@ def test_heal_semi_canonical_arlo_compacts_overflow_dialogue(monkeypatch):
     assert beat["dialogue_text"] == bg.ARLO_SEMI_CANONICAL_COMPACT_DIALOGUE
     assert "[upbeat]" not in beat["kling_o3_prompt"].lower()
     assert not bg._beat_dialogue_exceeds_kling_max_bucket(beat)
+
+
+def test_element_bound_voice_allows_display_name_parenthetical_before_speaks():
+    from tools import kling_o3_prompt as o3p
+
+    prompt = (
+        "@Image1 (Loral). Scene from @Image2.\n\n"
+        "Camera: static locked shot, no zoom, no dolly, no pan, no camera movement, "
+        "stable eye-level medium shot.\n\n"
+        f'Loral (female raccoon) speaks in a {o3p.KLING_O3_LORELAI_VOICE_DELIVERY}: '
+        '[excited] "You WOKE UP a RUNE STONE??!"'
+    )
+    beat = {
+        "speaker": "Lorelai",
+        "o3_prompt_box_law": True,
+        "kling_o3_prompt": prompt,
+    }
+    prepared = bg.prepare_kling_o3_prompt_for_submit(beat, prompt)
+    errs = o3p.validate_element_bound_voice_prompt("Lorelai", prepared)
+    assert errs == [], f"unexpected validation errors: {errs}"

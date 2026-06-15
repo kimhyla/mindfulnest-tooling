@@ -190,7 +190,14 @@ def _voice_line_matches_kling_display_name(speaker: str, voice_line: str) -> boo
     display = _kling_display_name_for_speaker(speaker)
     if not display:
         return True
-    return bool(re.search(rf"\b{re.escape(display)}\s+(?:speaks|says)\b", voice_line, re.I))
+    # Allow operator parentheticals after display name, e.g. "Loral (female raccoon) speaks".
+    return bool(
+        re.search(
+            rf"\b{re.escape(display)}(?:\s*\([^)]*\))?\s+(?:speaks|says)\b",
+            voice_line,
+            re.I,
+        )
+    )
 
 
 def _prompt_needs_kling_name_normalization(speaker: str, prompt: str) -> bool:
