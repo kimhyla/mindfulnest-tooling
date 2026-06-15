@@ -2537,6 +2537,7 @@ def handle_bg_update_beat(h, body: dict)-> None:
                     bg.align_beat_reference_to_element(beat)
                 if field == "kling_o3_prompt" and isinstance(value, str):
                     bg.sync_beat_dialogue_from_kling_prompt(beat)
+                    bg.sync_beat_scene_notes_from_kling_prompt(beat)
         if written:
             bg.sync_element_char_ref_status(beat, heal_mismatch=False)
         if beat.get("element_char_ref_ok") is False:
@@ -3468,6 +3469,7 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
             if "kling_o3_prompt" in body:
                 beat["kling_o3_prompt"] = str(body.get("kling_o3_prompt") or "")
                 bg.sync_beat_dialogue_from_kling_prompt(beat)
+                bg.sync_beat_scene_notes_from_kling_prompt(beat)
             for required_field, label in (("reference_image", "Char ref"), ("bg_ref_image", "BG ref")):
                 ref_value = beat.get(required_field)
                 ref_path = Path(ref_value.get("abs_path") or "") if isinstance(ref_value, dict) else Path(str(ref_value or ""))

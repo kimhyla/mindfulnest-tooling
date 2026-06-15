@@ -153,6 +153,54 @@ def test_normalize_o3_element_bound_prompt_strips_arlo_transition_prose(monkeypa
     assert bg.prompt_body_has_performance_staging(normalized) is False
 
 
+def test_normalize_o3_element_preserves_user_framing_when_scene_notes_empty(monkeypatch):
+    monkeypatch.setattr(
+        "kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+    beat = {
+        "speaker": "Lorelai",
+        "scene_notes": "",
+        "dialogue_text": (
+            "You WOKE UP a RUNE STONE?! . This is . "
+            "This is the biggest discovery in a hundred years!"
+        ),
+        "kling_o3_prompt": """@Image1 (Laurel). Scene from @Image2.
+
+Closeup of Laurel, showing her head and torso.
+
+Laurel speaks in a warm excited conversational pace, clear scholarly delivery, measured deliberate cadence, slower steady rhythm, not rushed or frantic, not hyper or sputtering, not dragging, not childlike or baby-talk: "You WOKE UP a RUNE STONE?! . This is . This is the biggest discovery in a hundred years! The biggest discovery ever!"
+
+Children's illustrated fantasy storybook style, warm golden forest light""",
+    }
+    normalized = bg.normalize_o3_element_bound_prompt(beat, beat["kling_o3_prompt"])
+    assert "closeup" in normalized.lower()
+    assert "head and torso" in normalized.lower()
+    assert bg.prompt_body_has_performance_staging(normalized) is False
+    assert bg.heal_o3_element_submit_prompt(beat) is True
+    assert "closeup" in beat["kling_o3_prompt"].lower()
+    assert "head and torso" in beat["kling_o3_prompt"].lower()
+
+
+def test_sync_beat_scene_notes_from_kling_prompt(monkeypatch):
+    monkeypatch.setattr(
+        "kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+    beat = {
+        "speaker": "Lorelai",
+        "scene_notes": "",
+        "kling_o3_prompt": """@Image1 (Laurel). Scene from @Image2.
+
+Medium shot of Laurel at the rune stone.
+
+Laurel speaks in a warm excited conversational pace: "Hello."
+""",
+    }
+    assert bg.sync_beat_scene_notes_from_kling_prompt(beat) is True
+    assert "rune stone" in beat["scene_notes"].lower()
+
+
 def test_heal_o3_element_submit_prompt_persists_minimal_arlo_shell(monkeypatch):
     monkeypatch.setattr(
         "kling_character_registry.is_speaker_voice_ready",

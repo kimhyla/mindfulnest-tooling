@@ -5198,6 +5198,31 @@ def prompt_body_has_performance_staging(prompt: str) -> bool:
     return False
 
 
+def _clean_prompt_body_staging_line(stripped: str) -> str:
+    """Strip delivery-bias brackets/prose from one non-voice prompt line; keep safe framing."""
+    if not stripped or _is_voice_delivery_line(stripped):
+        return ""
+    if re.match(r"^Camera\s*:", stripped, re.IGNORECASE):
+        return ""
+    cleaned = stripped
+    while True:
+        next_clean = re.sub(
+            r"\s*\[[^\]]*(?:faces|camera|rooted|expression|eyebrow|gesture|nod|smile|hand raised)[^\]]*\]\s*\"?\s*",
+            " ",
+            cleaned,
+            count=1,
+            flags=re.I,
+        )
+        if next_clean == cleaned:
+            break
+        cleaned = next_clean
+    cleaned = _strip_o3_body_prose_bias_from_line(cleaned)
+    cleaned = cleaned.strip().strip('"').strip()
+    if cleaned and not _prompt_body_line_has_o3_delivery_bias(cleaned):
+        return cleaned
+    return ""
+
+
 def strip_performance_staging_from_kling_prompt(prompt: str) -> str:
     """Remove author performance brackets and prose bias from non-voice prompt lines."""
     lines = (prompt or "").splitlines()
@@ -5211,26 +5236,69 @@ def strip_performance_staging_from_kling_prompt(prompt: str) -> str:
         if _is_voice_delivery_line(stripped):
             out.append(line)
             continue
-        if re.match(r"^Camera\s*:", stripped, re.IGNORECASE):
-            continue
-        cleaned = stripped
-        while True:
-            next_clean = re.sub(
-                r"\s*\[[^\]]*(?:faces|camera|rooted|expression|eyebrow|gesture|nod|smile|hand raised)[^\]]*\]\s*\"?\s*",
-                " ",
-                cleaned,
-                count=1,
-                flags=re.I,
-            )
-            if next_clean == cleaned:
-                break
-            cleaned = next_clean
-        cleaned = _strip_o3_body_prose_bias_from_line(cleaned)
-        cleaned = cleaned.strip().strip('"').strip()
-        if cleaned and not _prompt_body_line_has_o3_delivery_bias(cleaned):
+        cleaned = _clean_prompt_body_staging_line(stripped)
+        if cleaned:
             out.append(cleaned)
     text = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
     return text
+
+
+_O3_SAFE_FRAMING_STAGING_RE = re.compile(
+    r"(?:"
+    r"close[- ]?up"
+    r"|medium\s+shot"
+    r"|wide\s+shot"
+    r"|full[- ]?body"
+    r"|head\s+and\s+torso"
+    r"|bust(?:\s+shot)?"
+    r"|waist[- ]?up"
+    r"|upper\s+body"
+    r"|showing\s+(?:her|his|their|the)\s+(?:head|torso|face|upper)"
+    r"|(?:head|face)\s+and\s+torso"
+    r"|single\s+character\s+in\s+(?:the\s+)?frame"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _line_is_safe_framing_direction(line: str) -> bool:
+    """True when a prompt-body line is camera/framing direction, not performance acting."""
+    return bool(_O3_SAFE_FRAMING_STAGING_RE.search(line or ""))
+
+
+def _extract_safe_screen_direction_from_prompt(prompt: str, speaker: str) -> str:
+    """Collect safe framing/staging from prompt body when scene_notes is empty."""
+    lines = (prompt or "").splitlines()
+    voice_idx = _find_voice_delivery_line_index(lines)
+    stop = voice_idx if voice_idx is not None else len(lines)
+    kept: list[str] = []
+    for line in lines[:stop]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("@Image"):
+            continue
+        if stripped.lower().startswith("children's illustrated"):
+            continue
+        cleaned = _clean_prompt_body_staging_line(stripped)
+        if cleaned and _line_is_safe_framing_direction(cleaned):
+            kept.append(cleaned)
+    return " ".join(kept).strip()
+
+
+def sync_beat_scene_notes_from_kling_prompt(beat: dict) -> bool:
+    """When scene_notes is empty, persist safe prompt-body staging for Element-bound heals."""
+    if str(beat.get("scene_notes") or "").strip():
+        return False
+    speaker = str(beat.get("speaker") or "").strip()
+    if not speaker or not _speaker_has_element_bound_voice(speaker):
+        return False
+    extracted = _extract_safe_screen_direction_from_prompt(
+        str(beat.get("kling_o3_prompt") or ""),
+        speaker,
+    )
+    if not extracted:
+        return False
+    beat["scene_notes"] = extracted
+    return True
 
 
 def normalize_o3_element_bound_prompt(beat: dict, prompt: str | None = None) -> str:
@@ -5252,6 +5320,8 @@ def normalize_o3_element_bound_prompt(beat: dict, prompt: str | None = None) -> 
 
     emotion = str(beat.get("emotion") or "").strip()
     scene_notes = str(beat.get("scene_notes") or "").strip()
+    if not scene_notes:
+        scene_notes = _extract_safe_screen_direction_from_prompt(raw, speaker)
     header = _minimal_element_o3_header(raw, speaker)
     screen = screen_direction_paragraph(speaker, scene_notes)
     style = _kling_o3_style_line(raw)
