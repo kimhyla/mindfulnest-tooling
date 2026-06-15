@@ -627,6 +627,7 @@ SIDECAR_MERGE_PRESERVE_FIELDS: tuple[str, ...] = (
     "reference_image", "bg_ref_image", "reference_image_locked",
     "bg_ref_image_locked", "start_frame_image_locked", "end_frame_image_locked",
     "element_char_ref_ok", "element_char_ref_error",
+    "o3_prompt_box_law", "o3_prompt_box_law_at",
     "pipeline",
     "intro_beat_role", "canonical_intro_tail",
     "magic_manual_path", "magic_video_path", "magic_path_authored_against",
@@ -4374,6 +4375,27 @@ def _kling_o3_element_staging_block(beat: dict, speaker: str, spoken: str) -> st
     return staging
 
 
+def o3_prompt_box_law_active(beat: dict | None) -> bool:
+    """True when Generate sent an authoritative prompt-box payload for this submit."""
+    if os.environ.get("MN_O3_PROMPT_BOX_LAW") == "1":
+        return True
+    if not isinstance(beat, dict):
+        return False
+    return bool(beat.get("o3_prompt_box_law"))
+
+
+def stamp_o3_prompt_box_law(beat: dict, prompt: str) -> None:
+    """Mark this beat's next O3 submit as prompt-box authoritative."""
+    beat["kling_o3_prompt"] = (prompt or "").strip()
+    beat["o3_prompt_box_law"] = True
+    beat["o3_prompt_box_law_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def clear_o3_prompt_box_law(beat: dict) -> None:
+    beat.pop("o3_prompt_box_law", None)
+    beat.pop("o3_prompt_box_law_at", None)
+
+
 def prepare_kling_o3_prompt_for_submit(beat: dict, prompt: str | None = None) -> str:
     """Prepare beat prompt immediately before WaveSpeed submit.
 
@@ -4381,6 +4403,10 @@ def prepare_kling_o3_prompt_for_submit(beat: dict, prompt: str | None = None) ->
     shell: locked voice line + safety footer locks only — body staging, Camera:
     blocks, and speak-to-camera prose are stripped so they cannot override
     delivery locks (Arlo hyper-voice regression).
+
+    When ``o3_prompt_box_law`` is active (Generate click sent ``kling_o3_prompt``),
+    the prompt box text is authoritative: only append missing safety footer locks;
+    never rebuild voice line or quoted dialogue from sidecar/canon heals.
 
     Non-Element beats keep prompt-box law with append-only safety locks.
 
@@ -4391,6 +4417,15 @@ def prepare_kling_o3_prompt_for_submit(beat: dict, prompt: str | None = None) ->
         return ""
 
     speaker = str(beat.get("speaker") or "Character").strip()
+    if o3_prompt_box_law_active(beat):
+        spoken = extract_spoken_dialogue_from_kling_prompt(raw)
+        element_bound = _speaker_has_element_bound_voice(speaker)
+        return _append_kling_o3_submit_locks(
+            raw,
+            speaker=speaker,
+            spoken=spoken or "",
+            element_bound=element_bound,
+        )
     if _speaker_has_element_bound_voice(speaker):
         return normalize_o3_element_bound_prompt(beat, raw)
 
@@ -5463,6 +5498,8 @@ def heal_semi_canonical_arlo_voice_contract(beat: dict) -> bool:
 
 def heal_o3_element_submit_prompt(beat: dict) -> bool:
     """Persist minimal Element-bound prompt shell (voice lock + footer locks only)."""
+    if o3_prompt_box_law_active(beat):
+        return False
     speaker = str(beat.get("speaker") or "").strip()
     if not _speaker_has_element_bound_voice(speaker):
         return False
@@ -6046,6 +6083,8 @@ def sync_element_char_ref_status(beat: dict, *, heal_mismatch: bool = True) -> b
 
 def require_element_char_ref_for_o3(beat: dict) -> None:
     """Raise before any Element O3 subprocess/API work if @Image1 is wrong."""
+    if o3_voice_stack_pin_active(beat):
+        return
     if not sync_element_char_ref_status(beat, heal_mismatch=False):
         detail = beat.get("element_char_ref_error") or "char ref does not match Element poses"
         raise RuntimeError(f"ELEMENT_VISUAL_MISMATCH: {detail}")
@@ -6053,6 +6092,9 @@ def require_element_char_ref_for_o3(beat: dict) -> None:
 
 def ensure_beat_element_char_ref_for_o3(beat: dict, wavespeed_key: str) -> bool:
     """Sync Element char-ref gate; auto-reconcile on-disk pose copies before O3 submit."""
+    if o3_voice_stack_pin_active(beat):
+        beat.pop("element_char_ref_error", None)
+        return True
     if sync_element_char_ref_status(beat, heal_mismatch=True):
         return True
     speaker = str(beat.get("speaker") or "").strip()
@@ -6104,6 +6146,8 @@ def try_register_dropped_char_ref_on_element(
 
 def ensure_beat_element_aligned_reference(beat: dict) -> bool:
     """Auto-heal mismatched @Image1 before submit (unless user locked ref)."""
+    if o3_voice_stack_pin_active(beat):
+        return False
     return align_beat_reference_to_element(beat)
 
 
@@ -6764,8 +6808,58 @@ def archive_kling_o3_video_before_redo(
     return None
 
 
+def o3_voice_stack_pin_active(beat: dict) -> bool:
+    """True when beat carries an explicit proven Element+voice stack override."""
+    pin = beat.get("o3_voice_stack_pin")
+    if not isinstance(pin, dict):
+        return False
+    return bool(str(pin.get("element_id") or "").strip()) and bool(
+        str(pin.get("kling_voice_id") or "").strip()
+    )
+
+
+def resolve_o3_element_list_entry(beat: dict, speaker: str) -> dict | None:
+    """Registry Element entry, or per-beat ``o3_voice_stack_pin`` when set."""
+    pin = beat.get("o3_voice_stack_pin")
+    if isinstance(pin, dict):
+        element_id = str(pin.get("element_id") or "").strip()
+        voice_id = str(pin.get("kling_voice_id") or "").strip()
+        if element_id and voice_id:
+            element_name = str(pin.get("element_name") or "").strip()
+            if not element_name:
+                try:
+                    from tools import kling_character_registry as reg
+
+                    element_name = (
+                        reg.kling_element_display_name(speaker)
+                        or str(pin.get("element_name") or speaker).strip()
+                    )
+                except Exception:
+                    element_name = speaker
+            return {
+                "element_id": element_id,
+                "element_name": element_name,
+                "voice_id": voice_id,
+            }
+    try:
+        from tools import kling_character_registry as reg
+
+        return reg.get_element_list_entry(speaker)
+    except Exception:
+        return None
+
+
 def _o3_voice_binding_snapshot(beat: dict, speaker: str) -> dict[str, str]:
     """Capture element_id + voice_id stamped onto O3 option rows."""
+    pin = beat.get("o3_voice_stack_pin")
+    if isinstance(pin, dict):
+        binding: dict[str, str] = {}
+        if pin.get("element_id"):
+            binding["element_id"] = str(pin["element_id"])
+        if pin.get("kling_voice_id"):
+            binding["kling_voice_id"] = str(pin["kling_voice_id"])
+        if binding:
+            return binding
     binding: dict[str, str] = {}
     quality = beat.get("o3_element_quality") or {}
     if quality.get("element_id"):

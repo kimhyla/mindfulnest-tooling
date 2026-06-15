@@ -314,8 +314,12 @@ function collectActiveO3JobsFromBeats(beats: BgBeat[]): Record<string, string> {
     const voiceFix = (beat.kling_o3_voice_fix_status ?? '').toLowerCase();
     const klingStatus = (beat.kling_o3_status ?? '').toLowerCase();
     if (!jobId) continue;
-    if (voiceFix === 'approved' || klingStatus === 'approved') continue;
     if (voiceFix.startsWith('failed')) continue;
+    // Redo on an already-approved beat keeps kling_o3_status=approved while job_running;
+    // still poll until voice_fix clears the ui job id.
+    if (voiceFix === 'approved' || klingStatus === 'approved') {
+      if (voiceFix !== 'job_running' && voiceFix !== 'subprocess') continue;
+    }
     jobs[beat.beat_id] = jobId;
   }
   return jobs;
@@ -1425,15 +1429,21 @@ export function BgTab() {
         });
         return;
       }
-      const promptToSave = (dialogueText ?? beatPromptText(beat)).trim();
-      if (promptToSave) {
-        const saved = await onUpdateBeatText(beatId, promptToSave);
-        if (!saved) return;
+      const promptToSave = (dialogueText ?? '').trim();
+      if (!promptToSave) {
+        pushToast({
+          kind: 'error',
+          message: 'Prompt box is empty — type the full O3 prompt before Generate.',
+          source: 'bg-o3-empty-prompt',
+        });
+        return;
       }
+      const saved = await onUpdateBeatText(beatId, promptToSave);
+      if (!saved) return;
       const result = await pathappPatch<ArloO3SubmitResponse>(
         activeScope.value, 'bg_submit_arlo_o3_voice', {
           beat_id: beatId,
-          kling_o3_prompt: promptToSave || beatPromptText(beat),
+          kling_o3_prompt: promptToSave,
           model: 'pro',
           replace_slot_index: beat.kling_o3_replace_slot_index ?? 0,
           reference_image: beat.reference_image ?? null,
@@ -2346,7 +2356,8 @@ function BeatGenCard({
   const saveTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (promptDirtyRef.current) return;
+    // Never clobber in-progress edits or a debounced save waiting to flush.
+    if (promptDirtyRef.current || saveTimerRef.current !== null) return;
     const next = beatPromptText(beat);
     setLocalText(next);
     setChips(extractStageChips(next));
@@ -2614,7 +2625,10 @@ function BeatGenCard({
           type="button"
           class="mn-btn mn-btn-primary"
           data-testid={`bg-generate-btn-${index}`}
-          onClick={() => onGenerate(localText)}
+          onClick={async () => {
+            await flushPromptSave(localText);
+            onGenerate(localText);
+          }}
           disabled={busy || elementCharRefBlocked}
           title={elementCharRefBlocked ? elementCharRefInlineHint(beat.element_char_ref_error) : undefined}
         >

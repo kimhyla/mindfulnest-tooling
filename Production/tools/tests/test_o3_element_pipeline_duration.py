@@ -22,6 +22,12 @@ def test_submit_arlo_o3_voice_sets_duration_before_launch():
     assert section.index("resolve_kling_o3_submit_duration") < section.index("subprocess.Popen")
 
 
+def test_element_pipeline_uses_sidecar_gen_from_delivery_path():
+    text = PIPELINE.read_text(encoding="utf-8")
+    assert "bg_sidecar._kling_o3_gen_from_video_path(str(delivery))" in text
+    assert "\n    recovered_gen = _kling_o3_gen_from_video_path" not in text
+
+
 def test_long_dialogue_resolves_to_12s_not_8():
     import beat_generator as bg
 

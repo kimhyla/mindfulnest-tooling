@@ -257,11 +257,14 @@ def submit_reference_to_video(
     bg_image_path: str | Path,
     duration: int = 8,
     speaker: str | None = None,
+    *,
+    element_entry: dict | None = None,
 ) -> tuple[str, str]:
     """Submit O3 reference-to-video. Uses O3 Pro when speaker has active Element."""
     from tools import kling_character_registry as reg
 
-    element_entry = reg.get_element_list_entry(speaker or "")
+    if element_entry is None:
+        element_entry = reg.get_element_list_entry(speaker or "")
     endpoint = ENDPOINT_PRO if element_entry else ENDPOINT_STD
     tier = "pro" if element_entry else "std"
 
@@ -455,9 +458,12 @@ def run_beat_generation(
     dest_mp4: Path,
     duration: int = 8,
     speaker: str | None = None,
+    *,
+    element_entry: dict | None = None,
 ) -> dict:
     task_id, tier = submit_reference_to_video(
         api_key, prompt, char_image_path, bg_image_path, duration=duration, speaker=speaker,
+        element_entry=element_entry,
     )
     try:
         result = poll_until_done(task_id, api_key)

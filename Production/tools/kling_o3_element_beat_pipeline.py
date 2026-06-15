@@ -83,6 +83,10 @@ def resolve_element_o3_submit_prompt(beat: dict) -> tuple[str, str]:
     stored_prompt = (beat.get("kling_o3_prompt") or "").strip()
     build_prompt, normalize_spoken = _load_build_prompt()
     speaker = str(beat.get("speaker") or "").strip()
+    if bg_sidecar.o3_prompt_box_law_active(beat) and stored_prompt:
+        prepared = bg_sidecar.prepare_kling_o3_prompt_for_submit(beat, stored_prompt)
+        spoken = bg_sidecar.extract_spoken_dialogue_from_kling_prompt(stored_prompt) or ""
+        return prepared, spoken
     if stored_prompt:
         from tools import kling_o3_prompt as o3p
 
@@ -246,11 +250,12 @@ def run_pipeline(
     bg_sidecar.require_element_char_ref_for_o3(beat)
 
     stored_prompt = (beat.get("kling_o3_prompt") or "").strip()
-    bg_sidecar.heal_o3_element_submit_prompt(beat)
+    if not bg_sidecar.o3_prompt_box_law_active(beat):
+        bg_sidecar.heal_o3_element_submit_prompt(beat)
     prompt, spoken = resolve_element_o3_submit_prompt(beat)
     from tools import kling_o3_prompt as o3p
 
-    element_entry = reg.get_element_list_entry(speaker)
+    element_entry = bg_sidecar.resolve_o3_element_list_entry(beat, speaker)
     if not element_entry:
         raise RuntimeError(
             f"{speaker!r} has no active element_list entry — "
@@ -260,7 +265,9 @@ def run_pipeline(
     if prepared and prepared != beat.get("kling_o3_prompt"):
         beat["kling_o3_prompt"] = prepared
         prompt = prepared
-    align_errors = o3p.validate_element_list_alignment(speaker, element_entry, prepared or prompt)
+    align_errors = o3p.validate_element_list_alignment(
+        speaker, element_entry, prepared or prompt, beat=beat,
+    )
     if align_errors:
         raise RuntimeError(
             "ELEMENT_VOICE_ALIGN: "
@@ -374,14 +381,16 @@ def run_pipeline(
         "beat_id": beat_id,
         "speaker": speaker,
         "element": element_entry,
-        "kling_voice_id": reg.get_bound_voice_id(speaker),
+        "kling_voice_id": element_entry.get("voice_id") or reg.get_bound_voice_id(speaker),
+        "o3_voice_stack_pin": beat.get("o3_voice_stack_pin") if bg_sidecar.o3_voice_stack_pin_active(beat) else None,
         "prod_root": str(prod_root),
         "event_dir": str(event_dir),
         "char_ref_aligned": True,
         "char_ref": str(char_path),
         "voice_line_locked": "speaks in a" in prepared.lower(),
         "spoken_sent": spoken,
-        "prompt_verbatim": bool(stored_prompt),
+        "prompt_box_law": bg_sidecar.o3_prompt_box_law_active(beat),
+        "prompt_verbatim": bg_sidecar.o3_prompt_box_law_active(beat) or bool(stored_prompt),
         "prompt_prepared": prepared != prompt,
         "prompt_voice_excerpt": prepared[:500],
         "kling_o3_duration": duration,
@@ -399,6 +408,7 @@ def run_pipeline(
             master,
             duration=duration,
             speaker=speaker,
+            element_entry=element_entry,
         )
     except Exception as exc:
         msg = str(exc)
@@ -437,13 +447,10 @@ def run_pipeline(
     if delivery_probe["width"] != 1280 or delivery_probe["height"] != 720:
         raise RuntimeError(f"Delivery encode did not land at 1280x720: {delivery_probe}")
 
-    binding = {
-        "element_id": str((reg.get_element_list_entry(speaker) or {}).get("element_id") or ""),
-        "kling_voice_id": str(reg.get_bound_voice_id(speaker) or ""),
-    }
+    binding = bg_sidecar._o3_voice_binding_snapshot(beat, speaker)
     binding = {k: v for k, v in binding.items() if v}
 
-    recovered_gen = _kling_o3_gen_from_video_path(str(delivery))
+    recovered_gen = bg_sidecar._kling_o3_gen_from_video_path(str(delivery))
     slot_index = int(beat.get("kling_o3_replace_slot_index") or 0)
     label = f"g{recovered_gen} O3 Element voice" if recovered_gen else "latest O3 Element voice"
     bg_sidecar.persist_o3_delivery_option_checkpoint(
@@ -480,11 +487,19 @@ def run_pipeline(
         "kling_o3_voice_fix_output_duration_s": round(dur, 3),
         "o3_element_quality": {
             "speaker": speaker,
-            "element_id": (reg.get_element_list_entry(speaker) or {}).get("element_id"),
-            "kling_voice_id": reg.get_bound_voice_id(speaker),
+            **{
+                k: v for k, v in bg_sidecar._o3_voice_binding_snapshot(beat, speaker).items()
+                if k in ("element_id", "kling_voice_id")
+            },
             "delivery_profile": "LD-284/LD-296 1280x720 H.264 <=1.9Mbps +faststart",
             "method": "O3 Pro reference-to-video + Element create-voice (no lipsync detour)",
             "applied_at": now,
+            **(
+                {"pinned_from_beat_id": str(beat["o3_voice_stack_pin"].get("pinned_from_beat_id"))}
+                if isinstance(beat.get("o3_voice_stack_pin"), dict)
+                and beat["o3_voice_stack_pin"].get("pinned_from_beat_id")
+                else {}
+            ),
         },
     }
     with bg_sidecar._sidecar_lock:
@@ -502,6 +517,8 @@ def run_pipeline(
             "kling_o3_voice_fix_job_started_at",
             "kling_o3_voice_fix_error",
             "kling_o3_voice_fix_error_code",
+            "o3_prompt_box_law",
+            "o3_prompt_box_law_at",
         ))
         bg_sidecar.auto_pin_approved_kling_o3_delivery(beat, event_dir)
     except Exception as exc:

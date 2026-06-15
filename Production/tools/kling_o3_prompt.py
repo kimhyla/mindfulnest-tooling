@@ -459,10 +459,14 @@ def validate_element_list_alignment(
     speaker: str,
     element_entry: dict | None,
     prompt: str,
+    *,
+    beat: dict | None = None,
 ) -> list[str]:
     """Fail closed when element_list payload would not bind Element voice on Kling."""
     errors: list[str] = []
     if not element_entry:
+        return errors
+    if isinstance(beat, dict) and isinstance(beat.get("o3_voice_stack_pin"), dict):
         return errors
     try:
         from tools import kling_character_registry as reg

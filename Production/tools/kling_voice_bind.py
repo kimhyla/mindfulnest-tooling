@@ -108,8 +108,73 @@ def validate_create_voice_candidate(
     return errors
 
 
+def active_o3_option_voice_binding(beat: dict) -> dict[str, str]:
+    """Return element_id + kling_voice_id from the active O3 option row, if any."""
+    options = [o for o in (beat.get("kling_o3_options") or []) if isinstance(o, dict)]
+    active = next((o for o in options if o.get("active")), None)
+    if active is None:
+        video_path = str(beat.get("kling_o3_video_path") or "").strip()
+        if video_path:
+            active = next(
+                (o for o in options if str(o.get("video_path") or "").strip() == video_path),
+                None,
+            )
+    binding = (active or {}).get("o3_voice_binding") or {}
+    if not isinstance(binding, dict):
+        return {}
+    out: dict[str, str] = {}
+    eid = str(binding.get("element_id") or "").strip()
+    vid = str(binding.get("kling_voice_id") or "").strip()
+    if eid:
+        out["element_id"] = eid
+    if vid:
+        out["kling_voice_id"] = vid
+    return out
+
+
+def reconcile_o3_element_quality_for_submit(
+    beat: dict,
+    speaker: str,
+    *,
+    registry_element_id: str | None,
+    registry_voice_id: str | None,
+) -> bool:
+    """Refresh stale ``o3_element_quality`` when registry matches the active clip bind."""
+    reg_eid = str(registry_element_id or "").strip()
+    reg_vid = str(registry_voice_id or "").strip()
+    if not reg_eid or not reg_vid:
+        return False
+    active_bind = active_o3_option_voice_binding(beat)
+    if (
+        active_bind.get("kling_voice_id") != reg_vid
+        or active_bind.get("element_id") != reg_eid
+    ):
+        return False
+    quality = beat.get("o3_element_quality")
+    if not isinstance(quality, dict):
+        quality = {}
+    if (
+        str(quality.get("speaker") or "").strip() == str(speaker or "").strip()
+        and str(quality.get("element_id") or "").strip() == reg_eid
+        and str(quality.get("kling_voice_id") or "").strip() == reg_vid
+        and not quality.get("pinned_from_beat_id")
+    ):
+        return False
+    updated = dict(quality)
+    updated["speaker"] = str(speaker or "").strip()
+    updated["element_id"] = reg_eid
+    updated["kling_voice_id"] = reg_vid
+    updated["applied_at"] = _now_iso()
+    updated.pop("pinned_from_beat_id", None)
+    beat["o3_element_quality"] = updated
+    return True
+
+
 def detect_voice_bind_drift(beat: dict, speaker: str, registry_voice_id: str | None) -> str | None:
     """Warn when registry voice_id differs from this beat's last approved O3 bind."""
+    pin = beat.get("o3_voice_stack_pin")
+    if isinstance(pin, dict) and str(pin.get("kling_voice_id") or "").strip():
+        return None
     quality = beat.get("o3_element_quality") or {}
     if not isinstance(quality, dict):
         return None

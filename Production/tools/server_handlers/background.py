@@ -3498,7 +3498,12 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                     else:
                         beat[ref_field] = None
             if "kling_o3_prompt" in body:
-                beat["kling_o3_prompt"] = str(body.get("kling_o3_prompt") or "")
+                user_prompt = str(body.get("kling_o3_prompt") or "").strip()
+                if user_prompt:
+                    bg.stamp_o3_prompt_box_law(beat, user_prompt)
+                else:
+                    bg.clear_o3_prompt_box_law(beat)
+                    beat["kling_o3_prompt"] = ""
                 bg.sync_beat_dialogue_from_kling_prompt(beat)
                 bg.sync_beat_scene_notes_from_kling_prompt(beat)
             for required_field, label in (("reference_image", "Char ref"), ("bg_ref_image", "BG ref")):
@@ -3546,28 +3551,50 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                 )
             from tools import kling_o3_prompt as o3p
 
-            stored_for_voice = str(beat.get("kling_o3_prompt") or "")
-            upgraded, _spoken_upgraded, voice_upgraded = o3p.upgrade_element_bound_voice_prompt(
-                speaker,
-                stored_for_voice,
-                extract_spoken=bg.extract_spoken_dialogue_from_kling_prompt,
+            # Prompt-box law: when the client sends kling_o3_prompt on Generate,
+            # that text is authoritative — do not run semi-canonical / normalize
+            # heals that rewrite quoted dialogue back to sidecar or compact canon.
+            explicit_user_prompt = (
+                "kling_o3_prompt" in body
+                and str(body.get("kling_o3_prompt") or "").strip()
             )
-            if voice_upgraded:
-                beat["kling_o3_prompt"] = upgraded
-                bg.sync_beat_dialogue_from_kling_prompt(beat)
-            bg.heal_spoken_staging_in_voice_prompt(beat)
-            bg.heal_o3_element_submit_prompt(beat)
+            stored_for_voice = str(beat.get("kling_o3_prompt") or "")
+            if not explicit_user_prompt:
+                upgraded, _spoken_upgraded, voice_upgraded = o3p.upgrade_element_bound_voice_prompt(
+                    speaker,
+                    stored_for_voice,
+                    extract_spoken=bg.extract_spoken_dialogue_from_kling_prompt,
+                )
+                if voice_upgraded:
+                    beat["kling_o3_prompt"] = upgraded
+                    bg.sync_beat_dialogue_from_kling_prompt(beat)
+                bg.heal_spoken_staging_in_voice_prompt(beat)
+                bg.heal_o3_element_submit_prompt(beat)
 
             prepared_for_validate = bg.prepare_kling_o3_prompt_for_submit(
                 beat,
                 str(beat.get("kling_o3_prompt") or ""),
             )
-            if prepared_for_validate and prepared_for_validate != beat.get("kling_o3_prompt"):
-                beat["kling_o3_prompt"] = prepared_for_validate
-                bg.sync_beat_dialogue_from_kling_prompt(beat)
-            element_entry = reg.get_element_list_entry(speaker)
-            from tools.kling_voice_bind import detect_voice_bind_drift
+            if not explicit_user_prompt:
+                if prepared_for_validate and prepared_for_validate != beat.get("kling_o3_prompt"):
+                    beat["kling_o3_prompt"] = prepared_for_validate
+                    bg.sync_beat_dialogue_from_kling_prompt(beat)
+            element_entry = bg.resolve_o3_element_list_entry(beat, speaker)
+            from tools.kling_voice_bind import (
+                detect_voice_bind_drift,
+                reconcile_o3_element_quality_for_submit,
+            )
 
+            registry_entry = reg.get_element_list_entry(speaker) or {}
+            if reconcile_o3_element_quality_for_submit(
+                beat,
+                speaker,
+                registry_element_id=str(registry_entry.get("element_id") or ""),
+                registry_voice_id=str(
+                    registry_entry.get("voice_id") or reg.get_bound_voice_id(speaker) or ""
+                ),
+            ):
+                bg.write_sidecar(sidecar)
             drift_msg = detect_voice_bind_drift(
                 beat,
                 speaker,
@@ -3584,6 +3611,7 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                 speaker,
                 element_entry,
                 prepared_for_validate,
+                beat=beat,
             )
             if voice_prompt_errors:
                 return h._send_error_v59(
@@ -3678,6 +3706,8 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
     subprocess_env["MN_O3_JOB_LOG"] = str(log_path)
     if body.get("accept_voice_drift"):
         subprocess_env["MN_ACCEPT_VOICE_DRIFT"] = "1"
+    if body.get("kling_o3_prompt") and str(body.get("kling_o3_prompt") or "").strip():
+        subprocess_env["MN_O3_PROMPT_BOX_LAW"] = "1"
     subprocess_env["MN_TOOLING_TOOLS"] = str(_PSERVER_TOOLS_DIR)
     _pp = subprocess_env.get("PYTHONPATH", "")
     subprocess_env["PYTHONPATH"] = os.pathsep.join(
