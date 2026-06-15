@@ -256,7 +256,7 @@
       "elevenlabs_voice_name": "Alisha"
     },
     "Arlo": {
-      "element_id": "313040140095522",
+      "element_id": "313106596591323",
       "status": "active",
       "element_name": "Arlo",
       "description": "Pixar red squirrel, blue scarf, green vest, fluffy tail, small paws. Friendly guide.",
@@ -266,20 +266,32 @@
         "Arlo/poses/arlo_confident_vest.png"
       ],
       "elevenlabs_voice_id": "7o9pyvsN0ob5GO6LBQp6",
-      "elevenlabs_voice_name": "Arlo (Chipper1 interim)",
+      "elevenlabs_voice_name": "Arlo (Event 1 Beat 10 canon)",
       "elevenlabs_voice_sample_path": "kling_voice_samples/chipper.mp3",
       "audition_line": "Ready? Just focus on the Teleport Glass. Here we go!",
       "audition_speed": 1.15,
-      "kling_voice_id": "891326025224429589",
-      "kling_voice_label": "ElevenLabs Chipper1 (reused for Arlo)",
-      "created_at": "2026-06-10T05:17:43.634124+00:00",
-      "wavespeed_prediction_id": "89da7b1984d3402287a1d1b8f9b97657",
+      "kling_voice_id": "893833801724461134",
+      "kling_voice_label": "Event 1 Beat 10 proven Arlo bind (893833801724461134)",
+      "created_at": "2026-06-11T00:21:11.799473+00:00",
+      "wavespeed_prediction_id": "c2224581922e4ababba07b34345b8185",
       "element_sample_lines": [
         "Ready? Just focus on the Teleport Glass. Here we go!",
         "Alright Kiddo. Let's teleport to the Wizarding School and see.",
         "Well, I know some super smart people who have lots of faith in this kid."
       ],
       "element_sample_text": "Ready? Just focus on the Teleport Glass. Here we go! ... Alright Kiddo. Let's teleport to the Wizarding School and see. ... Well, I know some super smart people who have lots of faith in this kid.",
+      "voice_bind_history": [
+        {
+          "element_id": "313040140095522",
+          "kling_voice_id": "891326025224429589",
+          "archived_at": "2026-06-15T04:45:00.000000+00:00",
+          "reason": "event2_chipper_interim_wrong_for_beat_22",
+          "kling_voice_label": "ElevenLabs Chipper1 (reused for Arlo)",
+          "wavespeed_prediction_id": "89da7b1984d3402287a1d1b8f9b97657"
+        }
+      ],
+      "restored_from": "event1_beat_10_o3_element_quality",
+      "restored_at": "2026-06-15T04:45:00.000000+00:00",
       "voice_sample_lock": {
         "schema_version": 1,
         "session_id": "speed_compare_lock_test",
