@@ -3523,10 +3523,20 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                 beat["kling_o3_prompt"] = upgraded
                 bg.sync_beat_dialogue_from_kling_prompt(beat)
             bg.heal_spoken_staging_in_voice_prompt(beat)
+            bg.heal_o3_element_submit_prompt(beat)
 
-            voice_prompt_errors = o3p.validate_element_bound_voice_prompt(
-                speaker,
+            prepared_for_validate = bg.prepare_kling_o3_prompt_for_submit(
+                beat,
                 str(beat.get("kling_o3_prompt") or ""),
+            )
+            if prepared_for_validate and prepared_for_validate != beat.get("kling_o3_prompt"):
+                beat["kling_o3_prompt"] = prepared_for_validate
+                bg.sync_beat_dialogue_from_kling_prompt(beat)
+            element_entry = reg.get_element_list_entry(speaker)
+            voice_prompt_errors = o3p.validate_element_list_alignment(
+                speaker,
+                element_entry,
+                prepared_for_validate,
             )
             if voice_prompt_errors:
                 return h._send_error_v59(

@@ -261,7 +261,7 @@ def _simplify_staging(scene_notes: str, *, beat_type: str) -> tuple[str, list[st
             if _BANNED_STAGING_RE.search(p):
                 continue
             kept.append(p)
-        notes = "; ".join(kept) if kept else "expression shift, rooted in place"
+        notes = "; ".join(kept) if kept else "expression shifts subtly"
     return apply_cast_text(notes), warnings
 
 
@@ -381,38 +381,48 @@ _VOICE_LINE_RE = re.compile(
 
 
 def _format_emotion_tag(emotion: str) -> str:
-    emo = (emotion or "").strip()
-    if not emo or emo.lower() == "neutral":
+    try:
+        import kling_o3_prompt as o3p
+    except ImportError:
+        from tools import kling_o3_prompt as o3p  # type: ignore
+
+    return o3p.format_emotion_tag(emotion)
+
+
+def _clean_scene_notes(scene_notes: str) -> str:
+    try:
+        import kling_o3_prompt as o3p
+    except ImportError:
+        from tools import kling_o3_prompt as o3p  # type: ignore
+
+    return o3p.strip_rooted_in_place(apply_cast_text((scene_notes or "").strip()))
+
+
+def screen_direction_paragraph(speaker: str, scene_notes: str) -> str:
+    """One sentence of on-screen staging — separate paragraph before the voice line."""
+    scene = _clean_scene_notes(scene_notes)
+    if not scene:
         return ""
-    if emo.startswith("[") and emo.endswith("]"):
-        return emo
-    return f"[{emo}]"
+    if re.match(rf"^{re.escape(speaker)}\b", scene, re.I):
+        line = scene
+    else:
+        line = f"{speaker} {scene.lstrip(',').strip()}"
+    return line.rstrip(".") + "."
 
 
 def _staging_paragraph(speaker: str, scene_notes: str, emotion: str) -> str:
-    """Turn plan scene_notes into a Kling-safe micro-expression staging line."""
-    scene = apply_cast_text((scene_notes or "").strip())
-    if scene:
-        if scene.lower().endswith("rooted in place"):
-            return scene if scene.endswith(".") else f"{scene}."
-        return f"{scene}, rooted in place."
-    tag = _format_emotion_tag(emotion)
-    if tag:
-        inner = tag.strip("[]")
-        return f"{speaker} — {inner}, rooted in place."
-    return ""
+    """Turn plan scene_notes into screen-direction paragraph (no 'rooted in place')."""
+    return screen_direction_paragraph(speaker, scene_notes)
 
 
 def _inject_emotion_into_spoken(spoken: str, emotion: str) -> str:
-    text = (spoken or "").strip()
-    if not text:
-        return text
-    tag = _format_emotion_tag(emotion)
-    if not tag:
-        return text
-    if re.search(r"^\[[^\]]+\]", text):
-        return text
-    return f"{tag} {text}"
+    """Legacy helper — emotion belongs OUTSIDE quotes on the voice line, not here."""
+    try:
+        import kling_o3_prompt as o3p
+    except ImportError:
+        from tools import kling_o3_prompt as o3p  # type: ignore
+
+    return o3p.strip_leading_emotion_tags_from_spoken((spoken or "").strip())
 
 
 def _prompt_contains_staging(prompt: str, scene_notes: str) -> bool:
@@ -493,15 +503,15 @@ def postprocess_kling_author_row(plan_row: dict, prompt: str) -> dict[str, str]:
         )
     spoken_for_voice = spoken_only or dialogue
     if vm and spoken_for_voice and not _prompt_spoken_matches_dialogue(out, spoken_for_voice):
-        enriched = _inject_emotion_into_spoken(
+        cleaned = _inject_emotion_into_spoken(
             _kling_o3_normalize_spoken(spoken_for_voice), emotion,
         )
-        out = out[: vm.start(2)] + enriched + out[vm.end(2) :]
+        out = out[: vm.start(2)] + cleaned + out[vm.end(2) :]
     elif vm:
         inner = vm.group(2)
-        enriched = _inject_emotion_into_spoken(inner, emotion)
-        if enriched != inner:
-            out = out[: vm.start(2)] + enriched + out[vm.end(2) :]
+        cleaned = _inject_emotion_into_spoken(inner, emotion)
+        if cleaned != inner:
+            out = out[: vm.start(2)] + cleaned + out[vm.end(2) :]
 
     out = humanize_kling_body_parts(out, speaker=speaker)
     scene_notes = humanize_kling_body_parts(scene_notes, speaker=speaker)
@@ -562,13 +572,14 @@ def kling_staging_policy_block() -> str:
         "- Lemur Peace Prize is intentional humor.\n"
         "- Compress skeleton gags (magnifying glass, cartwheel, hover spin) unless essential.\n"
         "- Arlo explains Magic Hands via dialogue; module spell name optional on handoff.\n"
-        "EVENT-1 PROMPT LAW (mandatory on every kling_o3_prompt):\n"
-        "- @Image1 header: speaker name + beat label ONLY — then Scene from @Image2.\n"
-        "- NEVER describe species anatomy in prose (no 'is a small green sea turtle', "
-        "no shell/fur/paw color blocks). @Image1 + Element lock appearance.\n"
-        "- Rich micro-expression staging paragraph BEFORE the voice line.\n"
-        "- Voice line: '{Name} speaks in a {delivery adjectives}: \"[emotion] dialogue\"'.\n"
-        "- Do NOT add extra waist-up / framing clauses beyond the camera lock block.\n"
+        "KLING O3 CANONICAL PROMPT SHAPE V2 (tooling enforces on approve + submit):\n"
+        "1) @Image1 ({Speaker}). Scene from @Image2. — NO arc/event/beat labels in header.\n"
+        "2) Screen direction paragraph from scene_notes (one sentence, e.g. Tessa stands near the MindfulNest).\n"
+        "3) Voice line: {Name} speaks in a {delivery}: [emotion] \"dialogue with [pause] inside quotes\".\n"
+        "   Emotion tags OUTSIDE quotes (Kling speaks bracket words aloud if inside quotes).\n"
+        "4) Children's illustrated fantasy storybook style line (tooling default).\n"
+        "5) Footer safety locks — tooling appends.\n"
+        "NEVER describe species anatomy in prose. NO 'rooted in place' boilerplate.\n"
     )
 
 

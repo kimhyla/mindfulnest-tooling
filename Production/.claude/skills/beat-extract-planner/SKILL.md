@@ -38,7 +38,7 @@ Never output Luna or Chipper in `story_summary` or `beats_plan`. **Lemur Peace P
 
 ## scene_notes (Kling-safe staging)
 
-On **dialogue** beats: micro-expression only — `eyes widen`, `soft smile`, `hand flutter`, `shrug`, `rooted in place`.
+On **dialogue** beats: one screen-direction sentence — `Tessa stands near the MindfulNest`, `eyes widen`, `soft smile`, `hand flutter`. No "rooted in place" boilerplate.
 
 **Gesture vocabulary (Kling):** use human body-part names for staging — `hand`, `arm` — not species terms (`flipper`, `paw`, `talon`). Keep parts humans lack (`tail`, `shell`, `horns`, etc.) as-is.
 

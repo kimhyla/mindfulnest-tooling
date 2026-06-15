@@ -2662,6 +2662,9 @@ def _migrate_sidecar(sidecar: dict) -> dict:
                 heal_kling_o3_stored_duration(beat)
                 heal_element_bound_voice_prompt(beat)
                 heal_spoken_staging_in_voice_prompt(beat)
+                heal_o3_element_submit_prompt(beat)
+                if _speaker_has_element_bound_voice(str(beat.get("speaker") or "")):
+                    prune_stale_o3_voice_options(beat, str(beat.get("speaker") or ""))
     for arc_key, arc in sidecar.get("arcs", {}).items():
         for seg_key, seg in arc.get("segments", {}).items():
             m = re.match(r"^event_(\d+)_(\w+)$", seg_key or "")
@@ -3313,6 +3316,12 @@ KLING_O3_VIEWER_ADDRESS_LOCK = (
     "The child viewer watching the video is off-screen and must never appear "
     "in the frame. @Image1 may speak directly to the camera and gesture "
     "toward the lens, but no second person is visible on screen."
+)
+
+# Element-bound O3: never encourage speak-to-camera / gesture — Kling treats that
+# as hyper delivery and overrides "not bubbly or hyper" on the locked voice line.
+KLING_O3_ELEMENT_VIEWER_OFFSCREEN_LOCK = (
+    "The child viewer is off-screen and must never appear in the frame."
 )
 
 KLING_O3_PLURAL_ADDRESSEE_LOCK = (
@@ -4225,14 +4234,37 @@ def identity_footer_is_canonical(prompt: str) -> bool:
     return found == canonical
 
 
-def _append_kling_o3_submit_locks(raw: str, *, speaker: str, spoken: str) -> str:
+def _speaker_has_element_bound_voice(speaker: str) -> bool:
+    try:
+        from tools import kling_character_registry as reg
+    except ImportError:
+        import kling_character_registry as reg  # type: ignore
+    try:
+        return bool(reg.is_speaker_voice_ready((speaker or "").strip()))
+    except Exception:
+        return False
+
+
+def _append_kling_o3_submit_locks(
+    raw: str,
+    *,
+    speaker: str,
+    spoken: str,
+    element_bound: bool | None = None,
+) -> str:
     """Append solo-shot, viewer, addressee, identity, and speech-only locks once."""
+    if element_bound is None:
+        element_bound = _speaker_has_element_bound_voice(speaker)
     out = normalize_kling_o3_identity_footer(raw.rstrip())
     lower = out.lower()
     if "only @image1 is visible" not in lower:
         out = f"{out}\n\n{KLING_O3_SOLO_SHOT_LOCK}"
-    viewer = _kling_o3_viewer_address_clause(spoken)
-    if viewer and "child viewer" not in lower:
+    if _kling_o3_viewer_address_clause(spoken) and "child viewer" not in lower:
+        viewer = (
+            KLING_O3_ELEMENT_VIEWER_OFFSCREEN_LOCK
+            if element_bound
+            else _kling_o3_viewer_address_clause(spoken)
+        )
         out = f"{out}\n\n{viewer}"
     if _kling_o3_plural_addressee(spoken) and "any other addressees" not in lower:
         out = f"{out}\n\n{KLING_O3_PLURAL_ADDRESSEE_LOCK}"
@@ -4308,10 +4340,12 @@ def _kling_o3_element_staging_block(beat: dict, speaker: str, spoken: str) -> st
 def prepare_kling_o3_prompt_for_submit(beat: dict, prompt: str | None = None) -> str:
     """Prepare beat prompt immediately before WaveSpeed submit.
 
-    Prompt-box is law: the textarea / ``beat['kling_o3_prompt']`` body is sent
-    verbatim to Kling. Submit prep only appends missing safety locks (solo shot,
-    identity, speech-only audio, viewer/addressee guards) — it never rewrites
-    staging, camera, voice delivery, or quoted dialogue.
+    Element-bound beats (registered Kling voice_id) are normalized to a minimal
+    shell: locked voice line + safety footer locks only — body staging, Camera:
+    blocks, and speak-to-camera prose are stripped so they cannot override
+    delivery locks (Arlo hyper-voice regression).
+
+    Non-Element beats keep prompt-box law with append-only safety locks.
 
     Empty prompt returns "" (validation blocks submit).
     """
@@ -4319,7 +4353,10 @@ def prepare_kling_o3_prompt_for_submit(beat: dict, prompt: str | None = None) ->
     if not raw:
         return ""
 
-    speaker = beat.get("speaker") or "Character"
+    speaker = str(beat.get("speaker") or "Character").strip()
+    if _speaker_has_element_bound_voice(speaker):
+        return normalize_o3_element_bound_prompt(beat, raw)
+
     from beat_extract_policy import humanize_kling_body_parts
 
     raw = humanize_kling_body_parts(raw, speaker=speaker)
@@ -5022,6 +5059,59 @@ def _strip_bracket_staging_from_spoken(text: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+_O3_BODY_PROSE_BIAS_RE = re.compile(
+    r"(?:"
+    r"speaks?\s+directly\s+(?:to|at)\s+(?:the\s+)?camera"
+    r"|directly\s+(?:to|at)\s+(?:the\s+)?camera"
+    r"|child\s+viewer\s+is\s+off[- ]screen"
+    r"|gesture\s+toward\s+the\s+lens"
+    r"|warmly\s+conspiratorial"
+    r"|knowing\s+and\s+warmly"
+    r"|inviting\s+nod"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _prompt_body_line_has_o3_delivery_bias(line: str) -> bool:
+    """Prose staging outside the voice line that biases O3 toward hyper delivery."""
+    stripped = (line or "").strip()
+    if not stripped:
+        return False
+    if re.match(r"^Camera\s*:", stripped, re.IGNORECASE):
+        return True
+    if _O3_BODY_PROSE_BIAS_RE.search(stripped):
+        return True
+    return spoken_has_performance_staging(stripped)
+
+
+def _strip_o3_body_prose_bias_from_line(line: str) -> str:
+    """Remove inline speak-to-camera / viewer staging from a non-voice prompt line."""
+    cleaned = (line or "").strip()
+    if not cleaned or _is_voice_delivery_line(cleaned):
+        return cleaned
+    cleaned = re.sub(
+        r"\s*[;.]\s*[^.]*speaks?\s+directly\s+(?:to|at)\s+(?:the\s+)?camera[^.]*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"\s*[;.]\s*the child viewer is off[- ]screen[^.]*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"\s*@Image1\s+speaks?\s+directly\s+(?:to|at)\s+(?:the\s+)?camera[^.]*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" ;.")
+    return cleaned
+
+
 def spoken_has_performance_staging(text: str) -> bool:
     """True when dialogue still contains bracketed stage directions (not [pause])."""
     raw = (text or "").strip()
@@ -5069,19 +5159,47 @@ def _is_voice_delivery_line(line: str) -> bool:
     return bool(re.search(r"\b(?:speaks|says)\b", line or "", re.I) and ":" in line)
 
 
-def prompt_body_has_performance_staging(prompt: str) -> bool:
-    """True when [Faces camera…] staging sits in the prompt body outside the voice quote."""
+def _find_voice_delivery_line_index(lines: list[str]) -> int | None:
+    for idx, line in enumerate(lines):
+        if _is_voice_delivery_line(line.strip()):
+            return idx
+    return None
+
+
+def _minimal_element_o3_header(prompt: str, speaker: str) -> str:
+    """KLING_O3_CANONICAL_PROMPT_SHAPE_V2 — @Image1 + scene ref only; no arc/beat slug."""
+    try:
+        import kling_character_registry as reg
+    except ImportError:
+        from tools import kling_character_registry as reg  # type: ignore
+    label = reg.kling_image1_speaker_label(speaker) or speaker
+    return f"@Image1 ({label}). Scene from @Image2."
+
+
+def _kling_o3_style_line(prompt: str) -> str:
     for line in (prompt or "").splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("children's illustrated"):
+            return stripped
+    return "Children's illustrated fantasy storybook style, warm golden Everdale light."
+
+
+def prompt_body_has_performance_staging(prompt: str) -> bool:
+    """True when performance staging sits in the prompt body before the voice line."""
+    lines = (prompt or "").splitlines()
+    voice_idx = _find_voice_delivery_line_index(lines)
+    stop = voice_idx if voice_idx is not None else len(lines)
+    for line in lines[:stop]:
         stripped = line.strip()
         if not stripped or _is_voice_delivery_line(stripped):
             continue
-        if spoken_has_performance_staging(stripped):
+        if _prompt_body_line_has_o3_delivery_bias(stripped):
             return True
     return False
 
 
 def strip_performance_staging_from_kling_prompt(prompt: str) -> str:
-    """Remove author performance brackets from non-voice prompt lines before O3 submit."""
+    """Remove author performance brackets and prose bias from non-voice prompt lines."""
     lines = (prompt or "").splitlines()
     out: list[str] = []
     for line in lines:
@@ -5092,6 +5210,8 @@ def strip_performance_staging_from_kling_prompt(prompt: str) -> str:
             continue
         if _is_voice_delivery_line(stripped):
             out.append(line)
+            continue
+        if re.match(r"^Camera\s*:", stripped, re.IGNORECASE):
             continue
         cleaned = stripped
         while True:
@@ -5105,11 +5225,75 @@ def strip_performance_staging_from_kling_prompt(prompt: str) -> str:
             if next_clean == cleaned:
                 break
             cleaned = next_clean
+        cleaned = _strip_o3_body_prose_bias_from_line(cleaned)
         cleaned = cleaned.strip().strip('"').strip()
-        if cleaned:
+        if cleaned and not _prompt_body_line_has_o3_delivery_bias(cleaned):
             out.append(cleaned)
     text = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
     return text
+
+
+def normalize_o3_element_bound_prompt(beat: dict, prompt: str | None = None) -> str:
+    """Rebuild Element-bound O3 prompt: header + screen direction + voice + style + locks."""
+    speaker = str(beat.get("speaker") or "").strip()
+    raw = (prompt if prompt is not None else beat.get("kling_o3_prompt") or "").strip()
+    if not raw or not speaker:
+        return raw
+    from beat_extract_policy import screen_direction_paragraph, humanize_kling_body_parts
+
+    raw = humanize_kling_body_parts(raw, speaker=speaker)
+    spoken = extract_spoken_dialogue_from_kling_prompt(raw)
+    if not spoken:
+        spoken = _spoken_from_beat_dialogue(beat)
+    try:
+        import kling_o3_prompt as o3p
+    except ImportError:
+        from tools import kling_o3_prompt as o3p  # type: ignore
+
+    emotion = str(beat.get("emotion") or "").strip()
+    scene_notes = str(beat.get("scene_notes") or "").strip()
+    header = _minimal_element_o3_header(raw, speaker)
+    screen = screen_direction_paragraph(speaker, scene_notes)
+    style = _kling_o3_style_line(raw)
+    if not spoken:
+        parts = [p for p in (header, screen, style) if p]
+        shell = "\n\n".join(parts)
+        return _append_kling_o3_submit_locks(
+            shell,
+            speaker=speaker,
+            spoken="",
+            element_bound=True,
+        )
+    voice_line = o3p.voice_block(speaker, spoken, emotion=emotion)
+    parts = [header]
+    if screen:
+        parts.append(screen)
+    parts.append(voice_line)
+    parts.append(style)
+    shell = "\n\n".join(parts)
+    return _append_kling_o3_submit_locks(
+        shell,
+        speaker=speaker,
+        spoken=spoken,
+        element_bound=True,
+    )
+
+
+def heal_o3_element_submit_prompt(beat: dict) -> bool:
+    """Persist minimal Element-bound prompt shell (voice lock + footer locks only)."""
+    speaker = str(beat.get("speaker") or "").strip()
+    if not _speaker_has_element_bound_voice(speaker):
+        return False
+    before = (beat.get("kling_o3_prompt") or "").strip()
+    if not before:
+        return False
+    normalized = normalize_o3_element_bound_prompt(beat, before)
+    if normalized == before:
+        return False
+    beat["kling_o3_prompt"] = normalized
+    sync_beat_dialogue_from_kling_prompt(beat)
+    heal_kling_o3_stored_duration(beat)
+    return True
 
 
 def _kling_o3_normalize_spoken(spoken: str) -> str:
@@ -5405,52 +5589,18 @@ def _kling_o3_voice_line_display_name(speaker: str, element_name: str | None) ->
     return (element_name or (speaker or "").strip() or "Character").strip()
 
 
-def _kling_o3_voice_block(speaker: str, spoken: str) -> str:
-    """Dialogue block for Kling native audio.
-
-    When character has an active Element with bound voice_id (Option C),
-    use the element name naturally — voice comes from Element registration.
-    Otherwise fall back to <<<voice_1>>> prompt tags (generic Kling audio).
-    """
+def _kling_o3_voice_block(speaker: str, spoken: str, emotion: str = "") -> str:
+    """Dialogue block for Kling native audio — delegates to kling_o3_prompt.voice_block."""
     spoken = _kling_o3_normalize_spoken(spoken)
-    canon = (speaker or "Character").strip()
-
     try:
-        from tools import kling_character_registry as reg
-        element_name = reg.get_element_name(canon)
-        if element_name:
-            voice_name = _kling_o3_voice_line_display_name(canon, element_name)
-            if canon == "Tessa":
-                return (
-                    f'{voice_name} speaks in a {KLING_O3_TESSA_VOICE_DELIVERY}: "{spoken}"'
-                )
-            if canon == "Chipper":
-                return (
-                    f'{voice_name} speaks in a {KLING_O3_CHIPPER_VOICE_DELIVERY}: "{spoken}"'
-                )
-            if canon in ("Lorelai", "Laurel"):
-                return (
-                    f'{voice_name} speaks in a {KLING_O3_LORELAI_VOICE_DELIVERY}: "{spoken}"'
-                )
-            return f'{voice_name} says: "{spoken}"'
+        from tools import kling_o3_prompt as o3p
+
+        return o3p.voice_block(speaker, spoken, emotion=emotion)
     except Exception:
         pass
-
-    if canon == "Chipper":
-        return (
-            f'@Image1 <<<voice_1>>> speaks in a {KLING_O3_CHIPPER_VOICE_DELIVERY}: "{spoken}"'
-        )
-
+    canon = (speaker or "Character").strip()
     if canon == "Tessa":
-        return (
-            f'@Image1 <<<voice_1>>> speaks in a {KLING_O3_TESSA_VOICE_DELIVERY}: "{spoken}"'
-        )
-
-    if canon in ("Lorelai", "Laurel"):
-        return (
-            f'Laurel speaks in a {KLING_O3_LORELAI_VOICE_DELIVERY}: "{spoken}"'
-        )
-
+        return f'Tessa speaks in a {KLING_O3_TESSA_VOICE_DELIVERY}: "{spoken}"'
     return f'@Image1 <<<voice_1>>> speaks clearly at a natural pace: "{spoken}"'
 
 
@@ -5467,7 +5617,9 @@ def build_kling_o3_prompt(beat: dict) -> str:
             spoken = _kling_o3_normalize_spoken(dialogue)
 
     action = _kling_o3_visual_action_clause(beat, spoken)
-    voice_block = _kling_o3_voice_block(speaker, spoken)
+    voice_block = _kling_o3_voice_block(
+        speaker, spoken, emotion=str(beat.get("emotion") or ""),
+    )
     try:
         from tools import kling_character_registry as reg
 
@@ -6144,7 +6296,7 @@ def audit_kling_author_enrichment(beats: list[dict]) -> list[str]:
         scene = (b.get("scene_notes") or "").strip()
         if len(scene) > 12:
             snippet = scene[:24].lower()
-            if snippet not in prompt.lower() and "rooted in place" not in prompt.lower():
+            if snippet not in prompt.lower():
                 warnings.append(f"{beat_id}: scene_notes missing from kling_o3_prompt")
     return warnings
 
@@ -6385,6 +6537,71 @@ def archive_kling_o3_video_before_redo(
     return None
 
 
+def _o3_voice_binding_snapshot(beat: dict, speaker: str) -> dict[str, str]:
+    """Capture element_id + voice_id stamped onto O3 option rows."""
+    binding: dict[str, str] = {}
+    quality = beat.get("o3_element_quality") or {}
+    if quality.get("element_id"):
+        binding["element_id"] = str(quality["element_id"])
+    if quality.get("kling_voice_id"):
+        binding["kling_voice_id"] = str(quality["kling_voice_id"])
+    if binding:
+        return binding
+    try:
+        from tools import kling_character_registry as reg
+
+        entry = reg.get_element_list_entry(speaker) or {}
+        if entry.get("element_id"):
+            binding["element_id"] = str(entry["element_id"])
+        vid = entry.get("voice_id") or reg.get_bound_voice_id(speaker)
+        if vid:
+            binding["kling_voice_id"] = str(vid)
+    except Exception:
+        pass
+    return binding
+
+
+def prune_stale_o3_voice_options(beat: dict, speaker: str) -> bool:
+    """Drop carousel clips from prior voice/element binds; keep active approved clip."""
+    try:
+        from tools import kling_character_registry as reg
+    except ImportError:
+        import kling_character_registry as reg  # type: ignore
+
+    entry = reg.get_element_list_entry(speaker) or {}
+    current_vid = str(entry.get("voice_id") or reg.get_bound_voice_id(speaker) or "")
+    current_eid = str(entry.get("element_id") or "")
+    active_path = str(beat.get("kling_o3_video_path") or "")
+    options = [o for o in (beat.get("kling_o3_options") or []) if isinstance(o, dict)]
+    if not options:
+        return False
+    kept: list[dict] = []
+    changed = False
+    for opt in options:
+        path = str(opt.get("video_path") or "")
+        if active_path and path == active_path:
+            kept.append(opt)
+            continue
+        binding = opt.get("o3_voice_binding") or {}
+        opt_vid = str(binding.get("kling_voice_id") or "")
+        opt_eid = str(binding.get("element_id") or "")
+        if opt_vid and current_vid and opt_vid != current_vid:
+            changed = True
+            continue
+        if opt_eid and current_eid and opt_eid != current_eid:
+            changed = True
+            continue
+        if not binding and current_vid and beat.get("o3_element_quality"):
+            changed = True
+            continue
+        kept.append(opt)
+    if not changed:
+        return False
+    beat["kling_o3_options"] = kept[:3]
+    normalize_kling_o3_option_slots(beat)
+    return True
+
+
 def stash_prior_kling_o3_before_redo(
     beat: dict,
     event_dir: str | Path,
@@ -6403,14 +6620,19 @@ def stash_prior_kling_o3_before_redo(
     options = [o for o in options if o.get("video_path") != video_path]
     beat_id = str(beat.get("beat_id") or "beat")
     digest = hashlib.sha1(video_path.encode("utf-8")).hexdigest()[:10]
-    options.append({
+    speaker = str(beat.get("speaker") or "").strip()
+    binding = _o3_voice_binding_snapshot(beat, speaker)
+    opt_row: dict = {
         "key": f"{beat_id}_o3_video_{digest}",
         "label": label,
         "video_path": video_path,
         "source": "prior_kling_o3_redo",
         "active": True,
         "created_at": now,
-    })
+    }
+    if binding:
+        opt_row["o3_voice_binding"] = binding
+    options.append(opt_row)
     for opt in options:
         opt["active"] = opt.get("video_path") == video_path
     beat["kling_o3_options"] = options[:3]
@@ -6479,6 +6701,7 @@ def assign_kling_o3_option_to_slot(
     source: str,
     now: str,
     make_active: bool = True,
+    o3_voice_binding: dict | None = None,
 ) -> str:
     """Place a generated clip in container ``slot_index`` (0–2); returns option key."""
     slot_index = max(0, min(2, int(slot_index)))
@@ -6494,6 +6717,8 @@ def assign_kling_o3_option_to_slot(
         "slot_index": slot_index,
         "created_at": now,
     }
+    if o3_voice_binding:
+        new_opt["o3_voice_binding"] = o3_voice_binding
     slots[slot_index] = new_opt
     for opt in slots:
         if opt:

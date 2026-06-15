@@ -94,6 +94,9 @@ def resolve_element_o3_submit_prompt(beat: dict) -> tuple[str, str]:
         prompt = upgraded if changed else stored_prompt
         if changed:
             beat["kling_o3_prompt"] = prompt
+        prompt = bg_sidecar.normalize_o3_element_bound_prompt(beat, prompt)
+        if prompt != stored_prompt:
+            beat["kling_o3_prompt"] = prompt
         if not spoken and re.search(r"\b(?:speaks|says)\b", prompt, re.I):
             raise RuntimeError(
                 "ELEMENT_VOICE_PROMPT: could not extract spoken dialogue from the "
@@ -166,7 +169,7 @@ def _option_key(beat_id: str, video_path: str) -> str:
     return f"{beat_id}_o3_video_{digest}"
 
 
-def _upsert_option(beat: dict, *, video_path: str, label: str, now: str) -> None:
+def _upsert_option(beat: dict, *, video_path: str, label: str, now: str, o3_voice_binding: dict | None = None) -> None:
     import beat_generator as bg_sidecar  # noqa: PLC0415
 
     slot_index = int(beat.get("kling_o3_replace_slot_index") or 0)
@@ -178,6 +181,7 @@ def _upsert_option(beat: dict, *, video_path: str, label: str, now: str) -> None
         source="kling_o3_element_native_voice",
         now=now,
         make_active=True,
+        o3_voice_binding=o3_voice_binding,
     )
 
 
@@ -242,16 +246,10 @@ def run_pipeline(
     bg_sidecar.require_element_char_ref_for_o3(beat)
 
     stored_prompt = (beat.get("kling_o3_prompt") or "").strip()
+    bg_sidecar.heal_o3_element_submit_prompt(beat)
     prompt, spoken = resolve_element_o3_submit_prompt(beat)
     from tools import kling_o3_prompt as o3p
 
-    prompt_errors = o3p.validate_element_bound_voice_prompt(speaker, prompt)
-    if prompt_errors:
-        raise RuntimeError(
-            "ELEMENT_VOICE_PROMPT: "
-            + "; ".join(prompt_errors)
-            + " — fix prompt before O3 submit (generic Kling TTS otherwise)."
-        )
     element_entry = reg.get_element_list_entry(speaker)
     if not element_entry:
         raise RuntimeError(
@@ -259,6 +257,16 @@ def run_pipeline(
             "run setup_all_kling_character_voices.py before O3 Element generate."
         )
     prepared = bg_sidecar.prepare_kling_o3_prompt_for_submit(beat, prompt)
+    if prepared and prepared != beat.get("kling_o3_prompt"):
+        beat["kling_o3_prompt"] = prepared
+        prompt = prepared
+    align_errors = o3p.validate_element_list_alignment(speaker, element_entry, prepared or prompt)
+    if align_errors:
+        raise RuntimeError(
+            "ELEMENT_VOICE_ALIGN: "
+            + "; ".join(align_errors)
+            + " — fix before O3 submit (generic Kling TTS otherwise)."
+        )
     duration = bg_sidecar.resolve_kling_o3_submit_duration(beat, prepared)
     if not beat.get("kling_o3_duration_locked"):
         beat["kling_o3_duration"] = duration
@@ -267,6 +275,7 @@ def run_pipeline(
     clips_dir.mkdir(parents=True, exist_ok=True)
     prior_video = beat.get("kling_o3_video_path")
     if prior_video and Path(str(prior_video)).is_file():
+        bg_sidecar.prune_stale_o3_voice_options(beat, speaker)
         bg_sidecar.stash_prior_kling_o3_before_redo(
             beat,
             event_dir,
@@ -348,10 +357,11 @@ def run_pipeline(
         "event_dir": str(event_dir),
         "char_ref_aligned": True,
         "char_ref": str(char_path),
-        "voice_line_locked": "speaks in a" in prompt.lower(),
+        "voice_line_locked": "speaks in a" in prepared.lower(),
         "spoken_sent": spoken,
         "prompt_verbatim": bool(stored_prompt),
-        "prompt_voice_excerpt": prompt[:500],
+        "prompt_prepared": prepared != prompt,
+        "prompt_voice_excerpt": prepared[:500],
         "kling_o3_duration": duration,
     }), flush=True)
     submit_prompt = prepared or prompt
@@ -436,7 +446,13 @@ def run_pipeline(
             "applied_at": now,
         },
     }
-    _upsert_option(beat, video_path=str(delivery), label="latest O3 Element voice", now=now)
+    binding = {
+        "element_id": str((reg.get_element_list_entry(speaker) or {}).get("element_id") or ""),
+        "kling_voice_id": str(reg.get_bound_voice_id(speaker) or ""),
+    }
+    binding = {k: v for k, v in binding.items() if v}
+    _upsert_option(beat, video_path=str(delivery), label="latest O3 Element voice", now=now, o3_voice_binding=binding or None)
+    bg_sidecar.prune_stale_o3_voice_options(beat, speaker)
     final["kling_o3_options"] = beat.get("kling_o3_options")
     persist(final, remove=(
         "kling_o3_voice_fix_ui_job_id",

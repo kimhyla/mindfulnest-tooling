@@ -29,6 +29,7 @@ run "$SCRIPTS/verify_scope_deep_link_durability.sh"
 run "$SCRIPTS/verify_scope_mismatch_auto_heal_durability.sh"
 run "$SCRIPTS/verify_per_event_library_durability.sh"
 run "$SCRIPTS/verify_bg_ref_app_context_durability.sh"
+run "$SCRIPTS/verify_kling_canonical_prompt_shape_durability.sh"
 
 python3 -m pytest \
   "$ROOT/Production/tools/tests/test_stitch_audio_file_serve.py" \

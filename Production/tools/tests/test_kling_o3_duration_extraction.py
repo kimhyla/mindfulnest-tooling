@@ -3,6 +3,13 @@ from __future__ import annotations
 
 import beat_generator as bg
 
+
+def _validate_prepared(speaker: str, prompt: str) -> list[str]:
+    from tools import kling_o3_prompt as o3p
+
+    prepared = bg.prepare_kling_o3_prompt_for_submit({"speaker": speaker}, prompt)
+    return o3p.validate_element_bound_voice_prompt(speaker, prepared)
+
 ARLO_TRANSITION_PROMPT = """@Image1 (Arlo) Arlo — Transition to Spell. Arlo speaks directly to the camera; the child viewer is off-screen. Scene from @Image2.
 
 Camera: static locked shot, no zoom, no dolly, no pan, no camera movement, stable eye-level medium shot.
@@ -119,12 +126,92 @@ Children's illustrated fantasy storybook style, warm soft lighting."""
 def test_strip_performance_staging_from_prompt_body():
     cleaned = bg.strip_performance_staging_from_kling_prompt(BEAT24_BODY_STAGING)
     assert "Faces camera" not in cleaned
+    assert "Camera:" not in cleaned
     assert "warm calm conversational pace" in cleaned
     assert bg.prompt_body_has_performance_staging(BEAT24_BODY_STAGING) is True
     assert bg.prompt_body_has_performance_staging(cleaned) is False
 
 
-def test_heal_spoken_staging_strips_body_staging():
+def test_normalize_o3_element_bound_prompt_strips_arlo_transition_prose(monkeypatch):
+    monkeypatch.setattr(
+        "kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+    beat = {
+        "speaker": "Arlo",
+        "dialogue_text": (
+            "OK, Kiddo . Lorelai's our best chance to solve this mystery. "
+            "She knows so much about the MindfulNest!"
+        ),
+        "kling_o3_prompt": ARLO_TRANSITION_PROMPT,
+    }
+    normalized = bg.normalize_o3_element_bound_prompt(beat, beat["kling_o3_prompt"])
+    assert "speaks directly to the camera" not in normalized.lower()
+    assert "Camera:" not in normalized
+    assert "not bubbly or hyper" in normalized
+    assert "gesture toward the lens" not in normalized.lower()
+    assert bg.prompt_body_has_performance_staging(normalized) is False
+
+
+def test_heal_o3_element_submit_prompt_persists_minimal_arlo_shell(monkeypatch):
+    monkeypatch.setattr(
+        "kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+    beat = {
+        "speaker": "Arlo",
+        "dialogue_text": "OK, Kiddo . Lorelai's our best chance.",
+        "kling_o3_prompt": ARLO_TRANSITION_PROMPT,
+    }
+    assert bg.heal_o3_element_submit_prompt(beat) is True
+    assert "speaks directly to the camera" not in beat["kling_o3_prompt"].lower()
+    assert "Camera:" not in beat["kling_o3_prompt"]
+
+
+def test_normalize_rebuilds_tessa_beat2_prose_shell(monkeypatch):
+    monkeypatch.setattr(
+        "kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+    beat2 = """@Image1 (Tessa) Tessa — arc 1 event 2 pre, beat 02. Scene from @Image2.
+
+Tessa holds a soft polite smile, one small hand rising in a gentle wave hello.
+
+((Faces camera directly; warm welcome))
+
+Tessa speaks in a warm gentle conversational pace, soft and vulnerable but clear, natural delivery, steady and not slow, not dragging, not whispered, not childlike or baby-talk: "Hello there . how are you?"
+
+Children's illustrated fantasy storybook style, warm golden Everdale light."""
+    beat = {
+        "speaker": "Tessa",
+        "dialogue_text": "Hello there . how are you?",
+        "kling_o3_prompt": beat2,
+    }
+    prepared = bg.prepare_kling_o3_prompt_for_submit(beat, beat2)
+    assert "wave hello" not in prepared.lower()
+    assert "Faces camera" not in prepared
+    assert "Hello there . how are you?" in prepared
+    assert bg.prompt_body_has_performance_staging(prepared) is False
+    assert _validate_prepared("Tessa", beat2) == []
+
+
+def test_validate_does_not_block_healable_body_staging(monkeypatch):
+    from tools import kling_o3_prompt as o3p
+
+    monkeypatch.setattr(
+        "tools.kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+    errs = o3p.validate_element_bound_voice_prompt("Arlo", BEAT24_BODY_STAGING)
+    assert not any("performance staging" in e.lower() for e in errs)
+    prepared = bg.prepare_kling_o3_prompt_for_submit(
+        {
+            "speaker": "Arlo",
+            "dialogue_text": "OK, Kiddo . Lorelai's our best chance.",
+        },
+        BEAT24_BODY_STAGING,
+    )
+    assert bg.prompt_body_has_performance_staging(prepared) is False
     beat = {
         "speaker": "Arlo",
         "dialogue_text": "OK, Kiddo . Lorelai's our best chance.",

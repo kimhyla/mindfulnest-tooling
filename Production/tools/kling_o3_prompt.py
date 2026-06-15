@@ -43,6 +43,41 @@ _BRACKET_PERFORMANCE_TAG_RE = re.compile(
 _SPEAKS_BRACKET_TAG_RE = re.compile(r"\bspeaks\s*\[[^\]]+\]\s*:", re.I)
 _VOICE_LINE_VERB_RE = re.compile(r"\b(speaks|says)\b", re.I)
 
+# Performance tags stay inside quoted dialogue; emotion tags go OUTSIDE quotes (Kling reads
+# bracket words aloud when they sit inside "…").
+_PERFORMANCE_TAG_WORDS = frozenset({"pause", "break", "silence"})
+
+_ROOTED_IN_PLACE_RE = re.compile(r",?\s*rooted in place\.?", re.I)
+
+
+def strip_rooted_in_place(text: str) -> str:
+    """Remove banned 'rooted in place' staging suffix from scene_notes / prompts."""
+    s = _ROOTED_IN_PLACE_RE.sub("", text or "")
+    return re.sub(r"\s+", " ", s).strip(" ,.;")
+
+
+def format_emotion_tag(emotion: str) -> str:
+    emo = (emotion or "").strip()
+    if not emo or emo.lower() == "neutral":
+        return ""
+    if emo.startswith("[") and emo.endswith("]"):
+        return emo
+    return f"[{emo}]"
+
+
+def strip_leading_emotion_tags_from_spoken(spoken: str) -> str:
+    """Move mis-placed [emotion] tags out of quoted dialogue (keep [pause] etc.)."""
+    s = (spoken or "").strip()
+    while True:
+        m = re.match(r"^\[([^\]]+)\]\s*", s)
+        if not m:
+            break
+        inner = m.group(1).strip().lower()
+        if inner in _PERFORMANCE_TAG_WORDS:
+            break
+        s = s[m.end() :].strip()
+    return s
+
 
 def delivery_for_speaker(speaker: str) -> str | None:
     """Canonical O3 delivery phrase for a locked speaker, if any."""
@@ -202,8 +237,12 @@ def _voice_line_display_name(speaker: str, element_name: str | None) -> str:
     return (element_name or canon or "Character").strip()
 
 
-def voice_block(speaker: str, spoken: str) -> str:
-    """Return the canonical O3 voice line for a speaker (Element-bound delivery)."""
+def voice_block(speaker: str, spoken: str, emotion: str = "") -> str:
+    """Return the canonical O3 voice line for a speaker (Element-bound delivery).
+
+    KLING_O3_CANONICAL_PROMPT_SHAPE_V2: emotion tag BEFORE opening quote, never inside:
+      Tessa speaks in a {delivery}: [curious] "Oh, hello. [pause] What's your name?"
+    """
     canon = (speaker or "Character").strip()
     delivery = delivery_for_speaker(canon)
     element_name = canon
@@ -214,26 +253,45 @@ def voice_block(speaker: str, spoken: str) -> str:
     except Exception:
         pass
     voice_name = _voice_line_display_name(canon, element_name)
+    spoken = strip_leading_emotion_tags_from_spoken(spoken)
+    tag = format_emotion_tag(emotion)
     if delivery:
+        if tag:
+            return f'{voice_name} speaks in a {delivery}: {tag} "{spoken}"'
         return f'{voice_name} speaks in a {delivery}: "{spoken}"'
-    return f'{voice_name} speaks clearly at a natural pace, steady and not bubbly or hyper: "{spoken}"'
+    if tag:
+        return (
+            f'{voice_name} speaks clearly at a natural pace, steady and not bubbly or hyper: '
+            f'{tag} "{spoken}"'
+        )
+    return (
+        f'{voice_name} speaks clearly at a natural pace, steady and not bubbly or hyper: "{spoken}"'
+    )
 
 
-def inject_locked_voice_line(prompt: str, speaker: str, spoken: str) -> str:
+def inject_locked_voice_line(
+    prompt: str, speaker: str, spoken: str, emotion: str = "",
+) -> str:
     """Replace legacy <<<voice_N>>> / author verb lines with Element locked delivery."""
-    locked = voice_block(speaker, spoken)
+    locked = voice_block(speaker, spoken, emotion=emotion)
     lines = prompt.splitlines()
     found = _find_voice_delivery_line(lines)
     if found is not None:
         idx, line = found
         low = line.lower()
         if voice_line_has_canonical_delivery(speaker, line) and "speaks in a" in low:
-            colon = re.search(r":\s*", line)
-            if colon:
-                head = line[: colon.end()].rstrip()
-                lines[idx] = f'{head} "{spoken}"'
-            else:
+            # Keep canonical delivery wording only when the speaker prefix matches
+            # Element display name (Laurel). Pronouns like "She speaks" must not
+            # survive auto-heal — Kling binds voice from the name on this line.
+            if not _voice_line_matches_kling_display_name(speaker, line):
                 lines[idx] = locked
+            else:
+                colon = re.search(r":\s*", line)
+                if colon:
+                    head = line[: colon.end()].rstrip()
+                    lines[idx] = f'{head} "{spoken}"'
+                else:
+                    lines[idx] = locked
         else:
             lines[idx] = locked
         return "\n".join(lines)
@@ -357,11 +415,46 @@ def validate_element_bound_voice_prompt(speaker: str, prompt: str) -> list[str]:
                 "prompt voice quote contains performance staging ([Faces camera…]); "
                 "keep staging out of spoken quotes"
             )
-        if bg.prompt_body_has_performance_staging(text):
+        # Body staging is auto-rebuilt by normalize_o3_element_bound_prompt / prepare
+        # before submit — do not block the operator on healable author prose here.
+    except Exception:
+        pass
+    return errors
+
+
+def validate_element_list_alignment(
+    speaker: str,
+    element_entry: dict | None,
+    prompt: str,
+) -> list[str]:
+    """Fail closed when element_list payload would not bind Element voice on Kling."""
+    errors: list[str] = []
+    if not element_entry:
+        return errors
+    try:
+        from tools import kling_character_registry as reg
+
+        if not reg.is_speaker_voice_ready(speaker):
+            return errors
+    except Exception:
+        return errors
+    display = _kling_display_name_for_speaker(speaker)
+    element_name = str(element_entry.get("element_name") or "").strip()
+    if display and element_name and element_name != display:
+        errors.append(
+            f"element_list element_name must be {display!r}, not {element_name!r} "
+            "(misalignment causes generic male Kling TTS)"
+        )
+    voice_id = str(element_entry.get("voice_id") or "").strip()
+    try:
+        from tools import kling_character_registry as reg
+
+        bound = reg.get_bound_voice_id(speaker)
+        if bound and voice_id and voice_id != bound:
             errors.append(
-                "prompt body contains performance staging ([Faces camera…]) before the voice line; "
-                "remove bracket staging — it biases O3 toward hyper delivery"
+                f"element_list voice_id {voice_id} does not match registry {bound}"
             )
     except Exception:
         pass
+    errors.extend(validate_element_bound_voice_prompt(speaker, prompt))
     return errors

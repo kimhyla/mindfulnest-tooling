@@ -420,3 +420,67 @@ def test_build_kling_o3_prompt_includes_lighting_lock():
     }
     out = bg.build_kling_o3_prompt(beat)
     assert bg.KLING_O3_LIGHTING_LOCK in out
+
+
+def test_canonical_prompt_shape_v2_tessa(monkeypatch):
+    """KLING_O3_CANONICAL_PROMPT_SHAPE_V2 — header, screen direction, emotion outside quotes."""
+    monkeypatch.setattr(
+        "tools.kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+    beat = {
+        "beat_index": 2,
+        "beat_type": "dialogue",
+        "speaker": "Tessa",
+        "dialogue_text": 'Tessa [curious, polite]: "Oh, hello.[pause] What\'s your name?"',
+        "emotion": "curious, polite",
+        "scene_notes": "stands near the MindfulNest, soft smile",
+    }
+    author = (
+        "@Image1 (Tessa) Tessa — arc 1 event 2 pre, beat 02. Scene from @Image2.\n\n"
+        'Tessa speaks in a warm gentle conversational pace: "[curious, polite] Oh, hello.[pause] What\'s your name?"'
+    )
+    merged = postprocess_kling_author_row(beat, author)
+    prompt = merged["kling_o3_prompt"]
+    assert prompt.startswith("@Image1 (Tessa). Scene from @Image2.")
+    assert "arc 1 event" not in prompt.lower()
+    assert "rooted in place" not in prompt.lower()
+    assert "Tessa stands near the MindfulNest" in prompt
+    assert '[curious, polite] "Oh, hello.[pause]' in prompt
+    assert '"[curious, polite]' not in prompt
+
+
+@pytest.mark.parametrize(
+    "speaker,header_label,emotion,scene,dialogue",
+    [
+        ("Lorelai", "Laurel", "awe, breathless", "eyes wide, mouth open", "Oh my goodness!"),
+        ("Arlo", "Arlo", "warm, inviting", "faces the camera with a gentle nod", "Ready, Kiddo?"),
+    ],
+)
+def test_canonical_prompt_shape_v2_all_element_speakers(
+    monkeypatch, speaker, header_label, emotion, scene, dialogue,
+):
+    """V2 shape applies to every Element-bound speaker — not Tessa-only."""
+    monkeypatch.setattr(
+        "tools.kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+    beat = {
+        "beat_index": 1,
+        "beat_type": "dialogue",
+        "speaker": speaker,
+        "dialogue_text": f'{speaker} [{emotion}]: "{dialogue}"',
+        "emotion": emotion,
+        "scene_notes": scene,
+    }
+    author = (
+        f"@Image1 ({speaker}) {speaker} — arc 1 event 2 pre, beat 01. Scene from @Image2.\n\n"
+        f'{speaker} speaks: "[{emotion}] {dialogue}"'
+    )
+    merged = postprocess_kling_author_row(beat, author)
+    prompt = merged["kling_o3_prompt"]
+    assert prompt.startswith(f"@Image1 ({header_label}). Scene from @Image2.")
+    assert "arc 1 event" not in prompt.lower()
+    assert "rooted in place" not in prompt.lower()
+    assert f'[{emotion}] "' in prompt
+    assert f'"[{emotion}]' not in prompt

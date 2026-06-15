@@ -375,16 +375,13 @@ def claude_author_kling_prompts(
         system = (
             f"{skill}\n\n"
             f"{kling_staging_policy_block()}\n\n"
-            f"Reference camera lock (include verbatim in every prompt):\n{bg.KLING_O3_CAMERA_LOCK}\n\n"
-            "EVENT-1 PROMPT LAW: @Image1 header = speaker + beat label only (NO species anatomy). "
-            "Rich staging paragraph before voice line. Voice line uses 'speaks in a {delivery}: \"…\"'.\n\n"
             "Few-shot approved prompts:\n"
             f"{few_shot}\n\n"
             "Call submit_kling_prompts with one entry per dialogue beat_index in THIS batch only.\n"
             "Every dialogue beat_index in the batch must appear exactly once.\n"
-            "Include emotion (delivery tag) and scene_notes (micro-expression staging) "
-            "on every beat; weave both into kling_o3_prompt (bracket tags in spoken line, "
-            "staging paragraph before voice block)."
+            "Include emotion and scene_notes on every beat; tooling rebuilds final shape on approve.\n"
+            "Author draft: @Image1 ({Speaker}). Scene from @Image2. + screen direction + voice line.\n"
+            "Emotion tags OUTSIDE quotes: Tessa speaks in a …: [curious] \"Hello. [pause] Hi!\"\n"
         )
         expected_indices = {int(b.get("beat_index") or 0) for b in dialogue_beats}
         batch_size = AUTHOR_DIALOGUE_BATCH_SIZE
