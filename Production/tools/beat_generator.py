@@ -168,7 +168,7 @@ _CREATURE_OUTFIT = {
     # as hard constraints, not optional style notes.
     "Luna":    "wearing round wire-frame glasses and a large overstuffed scholar backpack "
                "packed with books, scrolls, and a ruler (visible in ALL panels of the reference)",
-    "Lorelai": "lemur archaeologist with round glasses and overstuffed scholar backpack "
+    "Lorelai": "raccoon archaeologist with round glasses and overstuffed scholar backpack "
                "(visible in ALL panels of the reference)",
     "Tessa":   "",  # orange shell is the character, no added accessories
     "Benson":  "",
@@ -182,7 +182,7 @@ _CREATURE_OUTFIT = {
 SPECIES_DESC = {
     "Tessa":   "cartoon turtle with a warm orange shell and gentle eyes, Pixar 3D animated style",
     "Luna":    "cartoon owl with big round scholarly eyes and ruffled feathers, Pixar 3D animated style",
-    "Lorelai": "cartoon lemur archaeologist with bright eyes, soft fur, and scholarly glasses, Pixar 3D animated style",
+    "Lorelai": "cartoon raccoon scholar with bright eyes, soft fur, and scholarly glasses, Pixar 3D animated style",
     "Benson":  "cartoon bunny with soft grey fur and a kind anxious expression, Pixar 3D animated style",
     "Ember":   "cartoon fox with bright auburn fur and a lively curious expression, Pixar 3D animated style",
     "Bork":    "cartoon firefly with bioluminescent glow and tiny insect wings, Pixar 3D animated style",
@@ -5082,10 +5082,21 @@ _O3_BODY_PROSE_BIAS_RE = re.compile(
 )
 
 
+_O3_CANONICAL_CAMERA_FRAMING_RE = re.compile(
+    r"^Camera:\s*static locked shot,\s*(?:"
+    r"stable eye-level close-up on @Image1"
+    r"|no zoom, no dolly, no pan, no camera movement, stable eye-level medium shot"
+    r")",
+    re.I,
+)
+
+
 def _prompt_body_line_has_o3_delivery_bias(line: str) -> bool:
     """Prose staging outside the voice line that biases O3 toward hyper delivery."""
     stripped = (line or "").strip()
     if not stripped:
+        return False
+    if _O3_CANONICAL_CAMERA_FRAMING_RE.match(stripped):
         return False
     if re.match(r"^Camera\s*:", stripped, re.IGNORECASE):
         return True
@@ -5316,7 +5327,7 @@ def normalize_o3_element_bound_prompt(beat: dict, prompt: str | None = None) -> 
     raw = (prompt if prompt is not None else beat.get("kling_o3_prompt") or "").strip()
     if not raw or not speaker:
         return raw
-    from beat_extract_policy import screen_direction_paragraph, humanize_kling_body_parts
+    from beat_extract_policy import o3_element_framing_paragraph, humanize_kling_body_parts
 
     raw = humanize_kling_body_parts(raw, speaker=speaker)
     spoken = extract_spoken_dialogue_from_kling_prompt(raw)
@@ -5332,7 +5343,7 @@ def normalize_o3_element_bound_prompt(beat: dict, prompt: str | None = None) -> 
     if not scene_notes:
         scene_notes = _extract_safe_screen_direction_from_prompt(raw, speaker)
     header = _minimal_element_o3_header(raw, speaker)
-    screen = screen_direction_paragraph(speaker, scene_notes)
+    screen = o3_element_framing_paragraph(speaker, scene_notes)
     style = _kling_o3_style_line(raw)
     if not spoken:
         parts = [p for p in (header, screen, style) if p]
@@ -5606,7 +5617,7 @@ KLING_O3_TESSA_VOICE_DELIVERY = (
     "steady and not slow, not dragging, not whispered, not childlike or baby-talk"
 )
 
-# Laurel (lemur scholar; registry key Lorelai — "Laurel" in voice lines for TTS pronunciation).
+# Loral (raccoon scholar; registry key Lorelai — "Loral" in voice lines for Element bind).
 KLING_O3_LORELAI_VOICE_DELIVERY = (
     "warm excited conversational pace, clear scholarly delivery, measured deliberate cadence, "
     "slower steady rhythm, not rushed or frantic, not hyper or sputtering, "
@@ -5715,7 +5726,7 @@ def _kling_o3_visual_action_clause(beat: dict, spoken: str) -> str:
     if speaker in ("Luna", "Lorelai"):
         if "discovery" in scene or any(k in emotion for k in ("upset", "shock", "excited", "happy")):
             base = (
-                "Lorelai — Discovery. Excitable lemur scholar with glasses and backpack, "
+                "Lorelai — Discovery. Excitable raccoon scholar with glasses and backpack, "
                 "wide expressive eyes, reacting in the heartwood grove"
             )
         else:
@@ -6430,7 +6441,7 @@ def audit_kling_author_enrichment(beats: list[dict]) -> list[str]:
             warnings.append(f"{beat_id}: stale Luna cast leaked into prompt")
         if re.search(r"\bis a small green sea turtle\b", prompt, re.I):
             warnings.append(f"{beat_id}: species taxonomy in prompt — use @Image1 only")
-        if re.search(r"\b(?:Tessa|Lorelai|Laurel|Arlo|Chipper)\s+is\s+a\s+", prompt, re.I):
+        if re.search(r"\b(?:Tessa|Lorelai|Loral|Laurel|Arlo|Chipper)\s+is\s+a\s+", prompt, re.I):
             warnings.append(f"{beat_id}: species anatomy block in prompt — Event-1 shape violation")
         if "@Image1" in prompt and not identity_footer_is_canonical(prompt):
             warnings.append(f"{beat_id}: identity footer drift from KLING_O3_IDENTITY_LOCK")

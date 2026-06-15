@@ -43,10 +43,10 @@ _SPEAKER_REGISTRY_ALIAS: dict[str, str] = {
     "laurel": "Lorelai",
 }
 
-# Kling cannot pronounce "Lorelai"; Element + O3 voice lines must use "Laurel".
+# Kling Element display name "Loral" avoids Laurel/Lorelai naming conflicts and TTS drift.
 # Internal registry key, sidecar speaker, and paths stay Lorelai.
 _KLING_ELEMENT_DISPLAY_NAME: dict[str, str] = {
-    "Lorelai": "Laurel",
+    "Lorelai": "Loral",
 }
 
 
@@ -216,7 +216,7 @@ def kling_image1_speaker_label(speaker: str) -> str:
 
 
 def get_element_name(speaker: str) -> str | None:
-    """Kling-facing Element display name (Laurel for Lorelai), not registry key."""
+    """Kling-facing Element display name (Loral for Lorelai), not registry key."""
     return kling_element_display_name(speaker)
 
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # verify_kling_canonical_prompt_shape_durability.sh — KLING_O3_CANONICAL_PROMPT_SHAPE_V2
 #
-# All Element-bound dialogue beats (Tessa, Lorelai/Laurel, Arlo, Chipper, future cast):
+# All Element-bound dialogue beats (Tessa, Lorelai/Loral, Arlo, Chipper, future cast):
 #   @Image1 ({Speaker}). Scene from @Image2.
 #   {screen direction}
 #   {Name} speaks in a {delivery}: [emotion] "dialogue"
@@ -57,7 +57,7 @@ import beat_generator as bg
 
 CASES = [
     ("Tessa", "Tessa", "curious", "stands near the MindfulNest", "Oh, hello."),
-    ("Lorelai", "Laurel", "awe, breathless", "holds her rolled map up", "Oh my goodness!"),
+    ("Lorelai", "Loral", "awe, breathless", "holds her rolled map up", "Oh my goodness!"),
     ("Arlo", "Arlo", "warm, to camera", "faces the camera with a gentle nod", "Ready, Kiddo?"),
 ]
 

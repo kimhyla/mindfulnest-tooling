@@ -305,7 +305,7 @@ def claude_plan_beats(
         f"{kling_staging_policy_block()}\n\n"
         + (f"GOLD REFERENCE (match this density and style):\n{gold}\n\n" if gold else "")
         + "Call submit_beat_plan with story_summary and beats_plan.\n"
-        "Use Lorelai (lemur), Tessa, Arlo, or [Stage Direction]. "
+        "Use Lorelai (raccoon), Tessa, Arlo, or [Stage Direction]. "
         "Use beat_type stage_still for inscription/runestone still inserts.\n"
     )
     user = (

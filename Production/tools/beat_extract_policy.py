@@ -1,6 +1,6 @@
 """Cast, staging, and post-process policy for Claude Extract beats.
 
-Kim decisions 2026-06-13: Lorelai (lemur) + Arlo retired Luna/Chipper globally
+Kim decisions 2026-06-13: Lorelai (raccoon) + Arlo retired Luna/Chipper globally
 for beat planning; inscription/runestone = still inserts (GPT stills).
 """
 from __future__ import annotations
@@ -22,8 +22,8 @@ _CAST_SPEAKER_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bPip\b", re.I), "Arlo"),
     (re.compile(r"\bLuna\b", re.I), "Lorelai"),
     (re.compile(r"\bOwl Peace Prize\b", re.I), "Lemur Peace Prize"),
-    (re.compile(r"\bLuna the Owl\b", re.I), "Lorelai the lemur"),
-    (re.compile(r"\bowl archaeolog", re.I), "lemur archaeolog"),
+    (re.compile(r"\bLuna the Owl\b", re.I), "Lorelai the raccoon"),
+    (re.compile(r"\bowl archaeolog", re.I), "raccoon archaeolog"),
 )
 
 # Bird speakers keep wing vocabulary — human "hand" terms cause Kling hand hallucination.
@@ -399,7 +399,7 @@ def _clean_scene_notes(scene_notes: str) -> str:
 
 
 def _kling_staging_speaker_label(speaker: str) -> str:
-    """Kling-facing name for staging (Laurel for Lorelai) — must match voice line + element_list."""
+    """Kling-facing name for staging (Loral for Lorelai) — must match voice line + element_list."""
     try:
         from tools import kling_character_registry as reg
 
@@ -426,6 +426,37 @@ def screen_direction_paragraph(speaker: str, scene_notes: str) -> str:
     else:
         line = f"{label} {scene.lstrip(',').strip()}"
     return line.rstrip(".") + "."
+
+
+_O3_CLOSEUP_SCENE_RE = re.compile(
+    r"\b(close[- ]?up|head and torso|head and shoulders|head and chest|bust(?:\s+shot)?|"
+    r"waist[- ]?up|upper\s+body)\b",
+    re.I,
+)
+
+_O3_DEFAULT_MEDIUM_CAMERA = (
+    "Camera: static locked shot, no zoom, no dolly, no pan, no camera movement, "
+    "stable eye-level medium shot."
+)
+
+_O3_CLOSEUP_CAMERA = (
+    "Camera: static locked shot, stable eye-level close-up on @Image1 — "
+    "head and torso fill the frame."
+)
+
+
+def _scene_notes_imply_closeup(scene: str) -> bool:
+    return bool(_O3_CLOSEUP_SCENE_RE.search(scene))
+
+
+def o3_element_framing_paragraph(speaker: str, scene_notes: str) -> str:
+    """Element-bound O3 camera framing — close-ups use Camera line only (no speaker prefix)."""
+    scene = _clean_scene_notes(scene_notes)
+    if _scene_notes_imply_closeup(scene):
+        return _O3_CLOSEUP_CAMERA
+    if scene and re.match(r"^camera\s*:", scene, re.I):
+        return scene.rstrip(".") + "."
+    return _O3_DEFAULT_MEDIUM_CAMERA
 
 
 def _staging_paragraph(speaker: str, scene_notes: str, emotion: str) -> str:
@@ -586,8 +617,8 @@ def kling_staging_policy_block() -> str:
         "- One speaker per beat; back-and-forth = separate beats.\n"
         "- beat_type stage_still for inscription/runestone/MindfulNest close-ups (GPT stills).\n"
         "- Preserve {childName} placeholders; never 'the child'.\n"
-        "CAST (mandatory): Lorelai (lemur), Arlo (guide), Tessa. Never Luna or Chipper.\n"
-        "- Lemur Peace Prize is intentional humor.\n"
+        "CAST (mandatory): Lorelai (raccoon), Arlo (guide), Tessa. Never Luna or Chipper.\n"
+        "- Raccoon Peace Prize / Lemur Peace Prize is intentional humor.\n"
         "- Compress skeleton gags (magnifying glass, cartwheel, hover spin) unless essential.\n"
         "- Arlo explains Magic Hands via dialogue; module spell name optional on handoff.\n"
         "KLING O3 CANONICAL PROMPT SHAPE V2 (tooling enforces on approve + submit):\n"
@@ -643,7 +674,7 @@ def event1_kling_voice_delivery(speaker: str) -> str | None:
         return bg.KLING_O3_TESSA_VOICE_DELIVERY
     if canon == "Chipper":
         return bg.KLING_O3_CHIPPER_VOICE_DELIVERY
-    if canon in ("Lorelai", "Laurel"):
+    if canon in ("Lorelai", "Laurel", "Loral"):
         return bg.KLING_O3_LORELAI_VOICE_DELIVERY
     if canon == "Arlo":
         from tools import kling_o3_prompt as o3p

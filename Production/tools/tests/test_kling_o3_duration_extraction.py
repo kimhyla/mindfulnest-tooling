@@ -57,11 +57,11 @@ def test_stale_sidecar_dialogue_does_not_shrink_duration_when_prompt_is_long():
     assert bg.resolve_kling_o3_submit_duration(beat, ARLO_TRANSITION_PROMPT) == 12
 
 
-LORELAI_BEAT09_PROMPT = """@Image1 (Laurel) Lorelai — arc 1 event 2 pre, beat 09. Scene from @Image2.
+LORELAI_BEAT09_PROMPT = """@Image1 (Loral) Lorelai — arc 1 event 2 pre, beat 09. Scene from @Image2.
 
-Camera: Slow zoom in, stable eye-level medium shot.  Laurel looks directly at the camera as she speaks
+Camera: Slow zoom in, stable eye-level medium shot.  Loral looks directly at the camera as she speaks
 
-Laurel speaks in a slow, dramatic, friendly, scholarly tone: "[dramatic, scholarly, friendly, conspiratorial] Well, the ancient world was powered by Light-Magic. [pause] And the Light Magic came through the Rune stones. That's why I'm here, I'm researching the MindfulNest ... for my school project."
+Loral speaks in a slow, dramatic, friendly, scholarly tone: "[dramatic, scholarly, friendly, conspiratorial] Well, the ancient world was powered by Light-Magic. [pause] And the Light Magic came through the Rune stones. That's why I'm here, I'm researching the MindfulNest ... for my school project."
 
 Children's illustrated fantasy storybook style, warm golden Everdale light."""
 
@@ -79,7 +79,7 @@ def test_lorelai_beat09_thirty_word_pause_line_resolves_to_12s():
 
 
 def test_short_single_chunk_still_caps_at_8s():
-    short = 'Laurel speaks in a warm excited conversational pace: "Oh my goodness!"'
+    short = 'Loral speaks in a warm excited conversational pace: "Oh my goodness!"'
     assert bg.resolve_kling_o3_submit_duration({}, short) <= 8
 
 
@@ -147,7 +147,8 @@ def test_normalize_o3_element_bound_prompt_strips_arlo_transition_prose(monkeypa
     }
     normalized = bg.normalize_o3_element_bound_prompt(beat, beat["kling_o3_prompt"])
     assert "speaks directly to the camera" not in normalized.lower()
-    assert "Camera:" not in normalized
+    assert "Camera:" in normalized
+    assert "medium shot" in normalized.lower()
     assert "not bubbly or hyper" in normalized
     assert "gesture toward the lens" not in normalized.lower()
     assert bg.prompt_body_has_performance_staging(normalized) is False
@@ -160,7 +161,7 @@ def test_normalize_o3_element_preserves_user_framing_when_scene_notes_empty(monk
     )
     monkeypatch.setattr(
         "kling_character_registry.kling_element_display_name",
-        lambda _s: "Laurel",
+        lambda _s: "Loral",
     )
     beat = {
         "speaker": "Lorelai",
@@ -169,19 +170,21 @@ def test_normalize_o3_element_preserves_user_framing_when_scene_notes_empty(monk
             "You WOKE UP a RUNE STONE?! . This is . "
             "This is the biggest discovery in a hundred years!"
         ),
-        "kling_o3_prompt": """@Image1 (Laurel). Scene from @Image2.
+        "kling_o3_prompt": """@Image1 (Loral). Scene from @Image2.
 
-Closeup of Laurel, showing her head and torso.
+Closeup of Loral, showing her head and torso.
 
-Laurel speaks in a warm excited conversational pace, clear scholarly delivery, measured deliberate cadence, slower steady rhythm, not rushed or frantic, not hyper or sputtering, not dragging, not childlike or baby-talk: "You WOKE UP a RUNE STONE?! . This is . This is the biggest discovery in a hundred years! The biggest discovery ever!"
+Loral speaks in a warm excited conversational pace, clear scholarly delivery, measured deliberate cadence, slower steady rhythm, not rushed or frantic, not hyper or sputtering, not dragging, not childlike or baby-talk: "You WOKE UP a RUNE STONE?! . This is . This is the biggest discovery in a hundred years! The biggest discovery ever!"
 
 Children's illustrated fantasy storybook style, warm golden forest light""",
     }
     normalized = bg.normalize_o3_element_bound_prompt(beat, beat["kling_o3_prompt"])
-    assert "closeup" in normalized.lower()
+    assert "Camera:" in normalized
+    assert "close-up on @image1" in normalized.lower()
     assert "head and torso" in normalized.lower()
     assert "Lorelai Close-up" not in normalized
-    assert "Laurel Closeup" in normalized
+    assert "Loral Close-up" not in normalized
+    assert "Loral Closeup" not in normalized
     assert bg.prompt_body_has_performance_staging(normalized) is False
     assert bg.sync_beat_scene_notes_from_kling_prompt(beat) is True
     assert "closeup" in beat["scene_notes"].lower()
@@ -197,11 +200,11 @@ def test_sync_beat_scene_notes_from_kling_prompt(monkeypatch):
     beat = {
         "speaker": "Lorelai",
         "scene_notes": "",
-        "kling_o3_prompt": """@Image1 (Laurel). Scene from @Image2.
+        "kling_o3_prompt": """@Image1 (Loral). Scene from @Image2.
 
-Medium shot of Laurel at the rune stone.
+Medium shot of Loral at the rune stone.
 
-Laurel speaks in a warm excited conversational pace: "Hello."
+Loral speaks in a warm excited conversational pace: "Hello."
 """,
     }
     assert bg.sync_beat_scene_notes_from_kling_prompt(beat) is True
@@ -220,7 +223,8 @@ def test_heal_o3_element_submit_prompt_persists_minimal_arlo_shell(monkeypatch):
     }
     assert bg.heal_o3_element_submit_prompt(beat) is True
     assert "speaks directly to the camera" not in beat["kling_o3_prompt"].lower()
-    assert "Camera:" not in beat["kling_o3_prompt"]
+    assert "Camera:" in beat["kling_o3_prompt"]
+    assert "medium shot" in beat["kling_o3_prompt"].lower()
 
 
 def test_normalize_rebuilds_tessa_beat2_prose_shell(monkeypatch):

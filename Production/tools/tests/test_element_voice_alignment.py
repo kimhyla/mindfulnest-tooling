@@ -119,7 +119,7 @@ def test_upgrade_element_bound_voice_prompt_fixes_author_verb_line(monkeypatch):
     )
     assert changed is True
     assert "EXCITING THING" in spoken
-    assert "Laurel speaks in a warm excited conversational pace" in upgraded
+    assert "Loral speaks in a warm excited conversational pace" in upgraded
     assert _validate_prepared("Lorelai", upgraded) == []
 
 
@@ -128,11 +128,11 @@ def test_build_kling_o3_prompt_uses_laurel_for_lorelai(monkeypatch):
 
     monkeypatch.setattr(
         "tools.kling_character_registry.get_element_name",
-        lambda _s: "Laurel",
+        lambda _s: "Loral",
     )
     monkeypatch.setattr(
         "tools.kling_character_registry.kling_image1_speaker_label",
-        lambda _s: "Laurel",
+        lambda _s: "Loral",
     )
     beat = {
         "speaker": "Lorelai",
@@ -141,8 +141,8 @@ def test_build_kling_o3_prompt_uses_laurel_for_lorelai(monkeypatch):
         "scene_notes": "eyes wide",
     }
     prompt = bg.build_kling_o3_prompt(beat)
-    assert "@Image1 (Laurel)" in prompt
-    assert "Laurel speaks in a warm excited conversational pace" in prompt
+    assert "@Image1 (Loral)" in prompt
+    assert "Loral speaks in a warm excited conversational pace" in prompt
     assert "Lorelai speaks" not in prompt
 
 
@@ -161,12 +161,12 @@ def test_get_element_list_entry_uses_laurel_display_name_for_lorelai(monkeypatch
     )
     monkeypatch.setattr(reg, "resolve_registry_key", lambda _s: "Lorelai")
     entry = reg.get_element_list_entry("Lorelai")
-    assert entry["element_name"] == "Laurel"
+    assert entry["element_name"] == "Loral"
 
 
 LORELAI_BEAT27_PROMPT = """@Image1 (Character) calm and attentive. Scene from @Image2.
-Laurel looks directly at camera, with a look of shock.
-Laurel speaks in a warm excited conversational pace, clear scholarly delivery, measured deliberate cadence, slower steady rhythm, not rushed or frantic, not hyper or sputtering, not dragging, not childlike or baby-talk: "You WOKE UP a RUNE STONE?!"
+Loral looks directly at camera, with a look of shock.
+Loral speaks in a warm excited conversational pace, clear scholarly delivery, measured deliberate cadence, slower steady rhythm, not rushed or frantic, not hyper or sputtering, not dragging, not childlike or baby-talk: "You WOKE UP a RUNE STONE?!"
 Children's illustrated fantasy storybook style."""
 
 
@@ -179,7 +179,7 @@ def test_lorelai_beat27_stale_character_header_fails_validation(monkeypatch):
     )
     monkeypatch.setattr(
         "tools.kling_character_registry.kling_element_display_name",
-        lambda _s: "Laurel",
+        lambda _s: "Loral",
     )
     errors = o3p.validate_element_bound_voice_prompt("Lorelai", LORELAI_BEAT27_PROMPT)
     assert any("Character" in e for e in errors)
@@ -195,7 +195,7 @@ def test_upgrade_rewrites_beat27_character_header_to_laurel(monkeypatch):
     )
     monkeypatch.setattr(
         "tools.kling_character_registry.kling_element_display_name",
-        lambda _s: "Laurel",
+        lambda _s: "Loral",
     )
     monkeypatch.setattr(
         "tools.kling_character_registry.resolve_registry_key",
@@ -207,7 +207,7 @@ def test_upgrade_rewrites_beat27_character_header_to_laurel(monkeypatch):
         extract_spoken=bg.extract_spoken_dialogue_from_kling_prompt,
     )
     assert changed is True
-    assert "@Image1 (Laurel)" in upgraded
+    assert "@Image1 (Loral)" in upgraded
     assert "@Image1 (Character)" not in upgraded
     assert "RUNE STONE" in spoken
     assert _validate_prepared("Lorelai", upgraded) == []
@@ -218,15 +218,15 @@ def test_normalize_kling_speaker_names_rewrites_character_header_to_laurel(monke
 
     monkeypatch.setattr(
         "tools.kling_character_registry.kling_element_display_name",
-        lambda _s: "Laurel",
+        lambda _s: "Loral",
     )
     monkeypatch.setattr(
         "tools.kling_character_registry.resolve_registry_key",
         lambda _s: "Lorelai",
     )
-    raw = '@Image1 (Character) calm. Laurel speaks in a warm excited conversational pace: "Hi"'
+    raw = '@Image1 (Character) calm. Loral speaks in a warm excited conversational pace: "Hi"'
     out = o3p.normalize_kling_speaker_names_in_prompt(raw, "Lorelai")
-    assert "@Image1 (Laurel)" in out
+    assert "@Image1 (Loral)" in out
     assert "@Image1 (Character)" not in out
 
 
@@ -235,7 +235,7 @@ def test_normalize_kling_speaker_names_rewrites_lorelai_to_laurel(monkeypatch):
 
     monkeypatch.setattr(
         "tools.kling_character_registry.kling_element_display_name",
-        lambda _s: "Laurel",
+        lambda _s: "Loral",
     )
     monkeypatch.setattr(
         "tools.kling_character_registry.resolve_registry_key",
@@ -243,8 +243,8 @@ def test_normalize_kling_speaker_names_rewrites_lorelai_to_laurel(monkeypatch):
     )
     raw = '@Image1 (Lorelai) Lorelai speaks in a warm excited conversational pace: "Hi"'
     out = o3p.normalize_kling_speaker_names_in_prompt(raw, "Lorelai")
-    assert "@Image1 (Laurel)" in out
-    assert "Laurel speaks in a" in out
+    assert "@Image1 (Loral)" in out
+    assert "Loral speaks in a" in out
     assert "Lorelai speaks" not in out
 
 
@@ -258,7 +258,7 @@ def test_upgrade_rewrites_lorelai_voice_line_to_laurel(monkeypatch):
     )
     monkeypatch.setattr(
         "tools.kling_character_registry.kling_element_display_name",
-        lambda _s: "Laurel",
+        lambda _s: "Loral",
     )
     monkeypatch.setattr(
         "tools.kling_character_registry.resolve_registry_key",
@@ -275,7 +275,7 @@ def test_upgrade_rewrites_lorelai_voice_line_to_laurel(monkeypatch):
         extract_spoken=bg.extract_spoken_dialogue_from_kling_prompt,
     )
     assert changed is True
-    assert "Laurel speaks in a" in upgraded
+    assert "Loral speaks in a" in upgraded
     assert "Lorelai speaks" not in upgraded
     assert _validate_prepared("Lorelai", upgraded) == []
 
@@ -290,7 +290,7 @@ def test_upgrade_rewrites_she_speaks_to_laurel_display_name(monkeypatch):
     )
     monkeypatch.setattr(
         "tools.kling_character_registry.kling_element_display_name",
-        lambda _s: "Laurel",
+        lambda _s: "Loral",
     )
     monkeypatch.setattr(
         "tools.kling_character_registry.resolve_registry_key",
@@ -302,8 +302,8 @@ def test_upgrade_rewrites_she_speaks_to_laurel_display_name(monkeypatch):
         "not dragging, not childlike or baby-talk"
     )
     raw = (
-        "@Image1 (Laurel) calm.\n"
-        "Loralei (aka Laurel) looks directly at camera.\n"
+        "@Image1 (Loral) calm.\n"
+        "Loralei (aka Loral) looks directly at camera.\n"
         f'She speaks in a {delivery}: "You WOKE UP a RUNE STONE?!"'
     )
     upgraded, spoken, changed = o3p.upgrade_element_bound_voice_prompt(
@@ -313,7 +313,7 @@ def test_upgrade_rewrites_she_speaks_to_laurel_display_name(monkeypatch):
     )
     assert changed is True
     assert spoken == "You WOKE UP a RUNE STONE?!"
-    assert "Laurel speaks in a" in upgraded
+    assert "Loral speaks in a" in upgraded
     assert "She speaks in a" not in upgraded
     assert _validate_prepared("Lorelai", upgraded) == []
 
@@ -335,7 +335,7 @@ def test_get_element_list_entry_includes_voice_id(monkeypatch):
     entry = reg.get_element_list_entry("Lorelai")
     assert entry == {
         "element_id": "elem123",
-        "element_name": "Laurel",
+        "element_name": "Loral",
         "voice_id": "voice456",
     }
 
@@ -400,15 +400,15 @@ def test_validate_element_list_alignment_rejects_lorelai_element_name(monkeypatc
     )
     monkeypatch.setattr(
         "tools.kling_character_registry.kling_element_display_name",
-        lambda _s: "Laurel",
+        lambda _s: "Loral",
     )
     monkeypatch.setattr(
         "tools.kling_character_registry.get_bound_voice_id",
         lambda _s: "895210468825628751",
     )
     prompt = (
-        '@Image1 (Laurel) calm. Scene from @Image2.\n'
-        'Laurel speaks in a warm excited conversational pace, clear scholarly delivery, '
+        '@Image1 (Loral) calm. Scene from @Image2.\n'
+        'Loral speaks in a warm excited conversational pace, clear scholarly delivery, '
         'measured deliberate cadence, slower steady rhythm, not rushed or frantic, '
         'not hyper or sputtering, not dragging, not childlike or baby-talk: "Hi"'
     )
@@ -418,7 +418,7 @@ def test_validate_element_list_alignment_rejects_lorelai_element_name(monkeypatc
         "voice_id": "895210468825628751",
     }
     errs = o3p.validate_element_list_alignment("Lorelai", bad_entry, prompt)
-    assert any("element_name must be 'Laurel'" in e for e in errs)
+    assert any("element_name must be 'Loral'" in e for e in errs)
 
 
 def test_prune_stale_o3_voice_options_drops_unbound_legacy_slots(monkeypatch):
@@ -426,7 +426,7 @@ def test_prune_stale_o3_voice_options_drops_unbound_legacy_slots(monkeypatch):
         "tools.kling_character_registry.get_element_list_entry",
         lambda _s: {
             "element_id": "313441038164306",
-            "element_name": "Laurel",
+            "element_name": "Loral",
             "voice_id": "895210468825628751",
         },
     )
@@ -459,7 +459,7 @@ def test_validate_element_bound_voice_prompt_accepts_locked_delivery():
 
 LORELAI_EVENT2_VOICE_LINE = (
     "Lorelai speaks with bright, bubbling surprise: [surprised, bright, warm and eager] "
-    "'Oh! Hi. Nice to finally see someone else around here! [pause] I'm Laurel. "
+    "'Oh! Hi. Nice to finally see someone else around here! [pause] I'm Loral. "
     "I'm doing research for the Racoon College. Is this the ancient temple of Everdale?'"
 )
 
@@ -479,7 +479,7 @@ def test_upgrade_element_bound_voice_prompt_fixes_author_delivery_line(monkeypat
     )
     assert changed is True
     assert spoken.startswith("Oh! Hi.")
-    assert "Laurel speaks in a warm excited conversational pace" in upgraded
+    assert "Loral speaks in a warm excited conversational pace" in upgraded
     assert _validate_prepared("Lorelai", upgraded) == []
 
 
@@ -585,19 +585,30 @@ def test_event_dir_uses_mn_prod_root(monkeypatch):
     assert _event_dir_for_segment(_runtime_prod_root(), "event_2_pre").resolve() == (dropbox / "Event_2").resolve()
 
 
-def test_screen_direction_paragraph_uses_kling_display_name(monkeypatch):
-    from beat_extract_policy import screen_direction_paragraph
+def test_o3_element_framing_paragraph_closeup_uses_camera_line(monkeypatch):
+    from beat_extract_policy import o3_element_framing_paragraph
 
     monkeypatch.setattr(
         "tools.kling_character_registry.kling_element_display_name",
-        lambda _s: "Laurel",
+        lambda _s: "Loral",
     )
-    line = screen_direction_paragraph(
+    line = o3_element_framing_paragraph(
         "Lorelai",
-        "Close-up of Laurel's head and torso area",
+        "Close-up of head and torso area",
     )
-    assert line.startswith("Laurel Close-up")
+    assert line.startswith("Camera:")
+    assert "close-up on @Image1" in line
+    assert "Loral Close-up" not in line
     assert "Lorelai Close-up" not in line
+
+
+def test_o3_element_framing_paragraph_medium_default(monkeypatch):
+    from beat_extract_policy import o3_element_framing_paragraph
+
+    line = o3_element_framing_paragraph("Lorelai", "Medium shot at the rune stone.")
+    assert line.startswith("Camera:")
+    assert "medium shot" in line.lower()
+    assert "Loral" not in line.split("Camera:")[0]
 
 
 def test_validate_rejects_lorelai_staging_before_voice_line(monkeypatch):
@@ -609,18 +620,25 @@ def test_validate_rejects_lorelai_staging_before_voice_line(monkeypatch):
     )
     monkeypatch.setattr(
         "tools.kling_character_registry.kling_element_display_name",
-        lambda _s: "Laurel",
+        lambda _s: "Loral",
     )
     bad = (
-        "@Image1 (Laurel). Scene from @Image2.\n\n"
-        "Lorelai Close-up of Laurel's head and torso area.\n\n"
-        f'Laurel speaks in a {o3p.KLING_O3_LORELAI_VOICE_DELIVERY}: "Hello!"'
+        "@Image1 (Loral). Scene from @Image2.\n\n"
+        "Lorelai Close-up of Loral's head and torso area.\n\n"
+        f'Loral speaks in a {o3p.KLING_O3_LORELAI_VOICE_DELIVERY}: "Hello!"'
     )
     errs = o3p.validate_element_bound_voice_prompt("Lorelai", bad)
     assert any("staging before voice line" in e for e in errs)
-    fixed = o3p.normalize_kling_speaker_names_in_prompt(bad, "Lorelai")
-    assert "Lorelai Close-up" not in fixed
-    assert o3p.validate_element_bound_voice_prompt("Lorelai", fixed) == []
+    beat = {
+        "speaker": "Lorelai",
+        "scene_notes": "Close-up of head and torso area",
+        "dialogue_text": "Hello!",
+        "kling_o3_prompt": bad,
+    }
+    assert bg.heal_o3_element_submit_prompt(beat) is True
+    assert "Lorelai Close-up" not in beat["kling_o3_prompt"]
+    assert "close-up on @Image1" in beat["kling_o3_prompt"]
+    assert o3p.validate_element_bound_voice_prompt("Lorelai", beat["kling_o3_prompt"]) == []
 
 
 def test_heal_semi_canonical_arlo_compacts_overflow_dialogue(monkeypatch):

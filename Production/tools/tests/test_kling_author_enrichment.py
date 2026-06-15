@@ -46,8 +46,8 @@ def test_postprocess_infers_lorelai_and_spoken_only_in_voice_line():
         'Lorelai speaks with warm energy: "wrong line"'
     )
     merged = postprocess_kling_author_row(row, prompt)
-    assert "@Image1 (Laurel)" in merged["kling_o3_prompt"]
-    assert "Laurel speaks" in merged["kling_o3_prompt"]
+    assert "@Image1 (Loral)" in merged["kling_o3_prompt"]
+    assert "Loral speaks" in merged["kling_o3_prompt"]
     assert "Lorelai speaks" not in merged["kling_o3_prompt"]
     assert "Oh! Hi there!" in merged["kling_o3_prompt"]
 
@@ -73,7 +73,8 @@ def test_postprocess_injects_emotion_staging_and_cast():
     prompt = out["kling_o3_prompt"]
     assert "@Image1 (Tessa)" in prompt
     assert "Luna" not in prompt
-    assert "soft smile, gentle wave" in prompt
+    assert "Camera:" in prompt
+    assert "medium shot" in prompt.lower()
     assert "[curious, polite]" in prompt
     assert "Hello" in prompt
     assert "WHAT is THAT" not in prompt
@@ -97,7 +98,7 @@ def test_postprocess_kling_author_results_wires_all_indices():
     )}
     enriched_prompts, enriched_plan = postprocess_kling_author_results(plan, prompts)
     assert "[awe, breathless]" in enriched_prompts[1]
-    assert "eyes wide" in enriched_prompts[1]
+    assert "Camera:" in enriched_prompts[1]
     assert enriched_plan[0]["emotion"] == "awe, breathless"
 
 
@@ -242,7 +243,7 @@ def test_claude_author_calls_postprocess():
             result = claude_author_kling_prompts("summary", plan, meta={"arc_number": 1, "event_id": "2", "phase": "pre"}, api_key="k")
     prompt = result["prompt_by_index"][1]
     assert "[warm, to camera]" in prompt
-    assert "faces camera" in prompt
+    assert "Camera:" in prompt
     assert result.get("beats_plan_enriched")
 
 
@@ -387,8 +388,8 @@ def test_normalize_upgrades_lorelai_voice_delivery_to_laurel_slower():
         scene_notes="eyes wide, mouth open",
     )
     assert "Lorelai says:" not in out
-    assert "Laurel speaks in a warm excited conversational pace" in out
-    assert "@Image1 (Laurel)" in out
+    assert "Loral speaks in a warm excited conversational pace" in out
+    assert "@Image1 (Loral)" in out
     assert "Lorelai speaks" not in out
     assert "slower steady rhythm" in out
     assert "not rushed or frantic" in out
@@ -445,7 +446,8 @@ def test_canonical_prompt_shape_v2_tessa(monkeypatch):
     assert prompt.startswith("@Image1 (Tessa). Scene from @Image2.")
     assert "arc 1 event" not in prompt.lower()
     assert "rooted in place" not in prompt.lower()
-    assert "Tessa stands near the MindfulNest" in prompt
+    assert "Camera:" in prompt
+    assert "medium shot" in prompt.lower()
     assert '[curious, polite] "Oh, hello.[pause]' in prompt
     assert '"[curious, polite]' not in prompt
 
@@ -453,7 +455,7 @@ def test_canonical_prompt_shape_v2_tessa(monkeypatch):
 @pytest.mark.parametrize(
     "speaker,header_label,emotion,scene,dialogue",
     [
-        ("Lorelai", "Laurel", "awe, breathless", "eyes wide, mouth open", "Oh my goodness!"),
+        ("Lorelai", "Loral", "awe, breathless", "eyes wide, mouth open", "Oh my goodness!"),
         ("Arlo", "Arlo", "warm, inviting", "faces the camera with a gentle nod", "Ready, Kiddo?"),
     ],
 )
@@ -482,5 +484,6 @@ def test_canonical_prompt_shape_v2_all_element_speakers(
     assert prompt.startswith(f"@Image1 ({header_label}). Scene from @Image2.")
     assert "arc 1 event" not in prompt.lower()
     assert "rooted in place" not in prompt.lower()
+    assert "Camera:" in prompt
     assert f'[{emotion}] "' in prompt
     assert f'"[{emotion}]' not in prompt

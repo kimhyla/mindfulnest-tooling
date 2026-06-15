@@ -32,6 +32,7 @@ _DELIVERY_BY_SPEAKER: dict[str, str] = {
     "Arlo": KLING_O3_ARLO_VOICE_DELIVERY,
     "Tessa": KLING_O3_TESSA_VOICE_DELIVERY,
     "Lorelai": KLING_O3_LORELAI_VOICE_DELIVERY,
+    "Loral": KLING_O3_LORELAI_VOICE_DELIVERY,
     "Laurel": KLING_O3_LORELAI_VOICE_DELIVERY,
 }
 
@@ -87,7 +88,7 @@ def strip_leading_emotion_tags_from_spoken(spoken: str) -> str:
 def delivery_for_speaker(speaker: str) -> str | None:
     """Canonical O3 delivery phrase for a locked speaker, if any."""
     canon = (speaker or "").strip()
-    if canon == "Laurel":
+    if canon in ("Laurel", "Loral"):
         canon = "Lorelai"
     return _DELIVERY_BY_SPEAKER.get(canon)
 
@@ -203,7 +204,11 @@ def _prompt_needs_kling_name_normalization(speaker: str, prompt: str) -> bool:
         return False
     if re.search(r"@Image1\s*\(\s*Lorelai\s*\)", text, re.I):
         return True
+    if re.search(r"@Image1\s*\(\s*Laurel\s*\)", text, re.I):
+        return True
     if re.search(r"\bLorelai\s+(?:speaks|says)\b", text, re.I):
+        return True
+    if display != "Laurel" and re.search(r"\bLaurel\s+(?:speaks|says)\b", text, re.I):
         return True
     lines = text.splitlines()
     found = _find_voice_delivery_line(lines)
@@ -213,7 +218,7 @@ def _prompt_needs_kling_name_normalization(speaker: str, prompt: str) -> bool:
 
 
 def normalize_kling_speaker_names_in_prompt(prompt: str, speaker: str) -> str:
-    """Map registry speaker names to Kling Element display names (Lorelai → Laurel)."""
+    """Map registry speaker names to Kling Element display names (Lorelai/Laurel → Loral)."""
     display = _kling_display_name_for_speaker(speaker)
     if not display:
         return prompt
@@ -225,14 +230,13 @@ def normalize_kling_speaker_names_in_prompt(prompt: str, speaker: str) -> str:
         reg_key = reg.resolve_registry_key(speaker) or (speaker or "").strip()
         if reg_key in reg._KLING_ELEMENT_DISPLAY_NAME:
             out = re.sub(r"@Image1\s*\(\s*Lorelai\s*\)", f"@Image1 ({display})", out, flags=re.I)
+            out = re.sub(r"@Image1\s*\(\s*Laurel\s*\)", f"@Image1 ({display})", out, flags=re.I)
             out = re.sub(
-                r"\bLorelai(\s+(?:speaks|says|looks|bursts|cries|whispers|shouts)\b)",
+                r"\b(?:Lorelai|Laurel)(\s+(?:speaks|says|looks|bursts|cries|whispers|shouts)\b)",
                 rf"{display}\1",
                 out,
                 flags=re.I,
             )
-            # Staging lines like "Lorelai Close-up …" do not match verb patterns above.
-            out = re.sub(r"(?m)^Lorelai\s+", f"{display} ", out)
     except Exception:
         pass
     return out
@@ -305,7 +309,7 @@ def inject_locked_voice_line(
         low = line.lower()
         if voice_line_has_canonical_delivery(speaker, line) and "speaks in a" in low:
             # Keep canonical delivery wording only when the speaker prefix matches
-            # Element display name (Laurel). Pronouns like "She speaks" must not
+            # Element display name (Loral). Pronouns like "She speaks" must not
             # survive auto-heal — Kling binds voice from the name on this line.
             if not _voice_line_matches_kling_display_name(speaker, line):
                 lines[idx] = locked
@@ -423,9 +427,9 @@ def validate_element_bound_voice_prompt(speaker: str, prompt: str) -> list[str]:
         elif delivery.lower() not in voice_lower:
             errors.append("prompt voice line missing canonical delivery lock")
         if display and not _voice_line_matches_kling_display_name(speaker, voice_line):
-            if re.search(r"\bLorelai\s+(?:speaks|says)\b", voice_line, re.I):
+            if re.search(r"\b(?:Lorelai|Laurel)\s+(?:speaks|says)\b", voice_line, re.I):
                 errors.append(
-                    "prompt voice line must use 'Laurel' (Kling display name), not 'Lorelai'"
+                    f"prompt voice line must use {display!r} (Kling display name), not 'Lorelai' or 'Laurel'"
                 )
             else:
                 errors.append(
