@@ -7,6 +7,7 @@ O3_VOICE_FIX_RUNNING_STATUSES = frozenset({
 })
 O3_BEAT_STATUS_PREFIXES = ("o3_voice_job_", "o3_element_")
 O3_VOICE_FIX_RUNNING_PHASES = frozenset({"subprocess", "o3_element", "queued"})
+INTENT_TERMINAL_STATUSES = frozenset({"done", "failed", "done_with_warning"})
 
 def beat_o3_voice_job_running(beat: dict) -> bool:
     status = str(beat.get("status") or "")

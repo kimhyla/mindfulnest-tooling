@@ -14,3 +14,11 @@ def test_ts_contract_contains_all_python_running_statuses():
         assert f"'{status}'" in src
     for prefix in O3_BEAT_STATUS_PREFIXES:
         assert prefix in src
+
+
+def test_intent_terminal_status_parity():
+    from o3_job_status_contract import INTENT_TERMINAL_STATUSES
+
+    src = TS.read_text(encoding="utf-8")
+    assert "done_with_warning" in INTENT_TERMINAL_STATUSES
+    assert "done_with_warning" in src

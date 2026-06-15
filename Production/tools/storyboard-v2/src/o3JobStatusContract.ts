@@ -4,6 +4,7 @@ export const O3_VOICE_FIX_RUNNING_STATUSES = new Set([
 ]);
 export const O3_BEAT_STATUS_PREFIXES = ['o3_voice_job_', 'o3_element_'] as const;
 export const O3_VOICE_FIX_RUNNING_PHASES = new Set(['subprocess', 'o3_element', 'queued']);
+export const O3_INTENT_TERMINAL_STATUSES = new Set(['done', 'failed', 'done_with_warning']);
 export type O3JobBeatFields = {
   status?: string | null; kling_o3_voice_fix_status?: string | null; kling_o3_status?: string | null;
   kling_o3_voice_fix_phase?: string | null; kling_o3_voice_fix_ui_job_id?: string | null;

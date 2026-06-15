@@ -68,12 +68,12 @@ def test_resolve_element_o3_submit_prompt_preserves_user_line():
     assert CANON_COMPACT not in spoken
 
 
-def test_submit_handler_stamps_prompt_box_law_and_subprocess_env():
+def test_submit_handler_uses_generation_intent_commit():
     text = BACKGROUND.read_text(encoding="utf-8")
-    assert "stamp_o3_prompt_box_law" in text
-    assert 'subprocess_env["MN_O3_PROMPT_BOX_LAW"] = "1"' in text
-    assert "upgrade_element_bound_voice_prompt" in text
-    assert "if not explicit_user_prompt:" in text
+    assert "build_generation_intent" in text
+    assert "write_generation_intent" in text
+    assert 'subprocess_env["MN_O3_INTENT_PATH"]' in text
+    assert "ensure_operator_insert_char_ref_parity" not in text.split("handle_bg_submit_arlo_o3_voice")[1].split("def ")[0]
 
 
 def test_finalize_proven_element_preserves_prompt_box_law(tmp_path):

@@ -2679,9 +2679,22 @@ def _migrate_sidecar(sidecar: dict) -> dict:
         humanize_kling_body_parts_on_plan_row,
     )
 
+    def _migrate_skip_beat_canonical(beat: dict) -> bool:
+        beat_id = str(beat.get("beat_id") or "").strip()
+        if not beat_id:
+            return beat_o3_voice_job_running(beat)
+        try:
+            from o3_generation_intent import beat_has_active_intent
+
+            return beat_has_active_intent(beat_id, event_dir_for_beat_id(beat_id))
+        except Exception:
+            return beat_o3_voice_job_running(beat)
+
     for arc in sidecar.get("arcs", {}).values():
         for seg in arc.get("segments", {}).values():
             for beat in seg.get("beats", []):
+                if _migrate_skip_beat_canonical(beat):
+                    continue
                 humanize_kling_body_parts_on_beat(beat)
                 from beat_extract_policy import heal_beat_kling_o3_prompt_event1_shape
 
@@ -2690,6 +2703,8 @@ def _migrate_sidecar(sidecar: dict) -> dict:
             for row in draft.get("beats_plan") or []:
                 humanize_kling_body_parts_on_plan_row(row)
             for beat in seg.get("beats", []):
+                if _migrate_skip_beat_canonical(beat):
+                    continue
                 if not beat.get("reference_image_locked") and not beat_is_still_insert(beat):
                     align_beat_reference_to_element(beat)
                 elif beat_is_still_insert(beat) and beat.get("reference_image"):
@@ -2722,6 +2737,8 @@ def _migrate_sidecar(sidecar: dict) -> dict:
                 continue
             guide = _infer_teleport_intro_guide(sidecar, seg_key)
             for beat in seg.get("beats", []):
+                if _migrate_skip_beat_canonical(beat):
+                    continue
                 role = beat.get("intro_beat_role")
                 if role == INTRO_BEAT_ROLE_SEMI_CANONICAL:
                     _apply_intro_canonical_beat_defaults(
@@ -6861,6 +6878,26 @@ def event_dir_for_beat_id(beat_id: str) -> Path:
     if match:
         return Path(_PROD_DIR) / f"Event_{int(match.group(1))}"
     return Path(_PROD_DIR) / "Event_1"
+
+
+def highest_o3_generation_on_disk(beat_id: str, event_dir: str | Path) -> int:
+    """Max ``g{N}`` from O3 clip filenames on disk for ``beat_id`` (allocate-only slot math)."""
+    bid = str(beat_id or "").strip()
+    if not bid:
+        return 0
+    clips = kling_o3_clips_dir(event_dir)
+    if not clips.is_dir():
+        return 0
+    best = 0
+    for path in clips.iterdir():
+        if not path.is_file():
+            continue
+        if bid not in path.name:
+            continue
+        gen = _kling_o3_gen_from_video_path(str(path))
+        if gen is not None and gen > best:
+            best = gen
+    return best
 
 
 def kling_o3_preserved_latest_dir(event_dir: str | Path) -> Path:
