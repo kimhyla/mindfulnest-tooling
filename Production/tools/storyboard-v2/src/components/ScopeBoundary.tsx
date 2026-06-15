@@ -22,7 +22,13 @@ import {
   scopeKey,
 } from '../state/scope';
 import { READ_ENDPOINTS } from '../api/endpoints';
-import { pathappPatch, loadEvent, emitScopeEventChanged, ensureServerPinnedTo } from '../api/client';
+import {
+  pathappPatch,
+  loadEvent,
+  emitScopeEventChanged,
+  emitScopeHealed,
+  ensureServerPinnedTo,
+} from '../api/client';
 
 export interface ScopeBoundaryProps {
   children: ComponentChildren;
@@ -230,6 +236,7 @@ export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
       }
       document.body.setAttribute('data-resolved-scope', scopeKey(activeScope.value));
       document.body.removeAttribute('data-scope-pin-failed');
+      emitScopeHealed({ event_id: targetEventId, source: 'scope-boundary-pin-ok' });
       setResolved(true);
     })();
     return () => { cancelled = true; };

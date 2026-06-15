@@ -94,13 +94,15 @@ interface RawPostOptions {
 interface ApiGetOptions {
   /** Internal — set during READ scope-mismatch auto-heal retry (READ_SCOPE_HEAL_V1). */
   _scopeHealRetry?: boolean;
+  /** Internal — cap heal loops so transient restart blips do not stick the red banner. */
+  _scopeHealAttempt?: number;
   /** Internal — one retry after server restart blip (NETWORK_RESTART_RETRY_V1). */
   _networkRetry?: boolean;
 }
 
 export const SCOPE_HEALED_EVENT = 'mn:scope-healed';
 
-function emitScopeHealed(detail: Record<string, unknown> = {}): void {
+export function emitScopeHealed(detail: Record<string, unknown> = {}): void {
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent(SCOPE_HEALED_EVENT, { detail }));
   }
@@ -185,15 +187,30 @@ export async function apiGet<T = unknown>(
       // non-JSON or empty body
     }
     if (!res.ok) {
+      const isScope409 = res.status === 409
+        && typeof (data as Record<string, unknown> | undefined)?.['error_code'] === 'string'
+        && (data as Record<string, unknown>)['error_code'] === 'SCOPE_MISMATCH';
+      const attempt = opts._scopeHealAttempt ?? 0;
       const result = parseApiError(res.status, data, res.statusText, {
-        suppressScopeDispatch: !opts._scopeHealRetry,
+        // Never flash the persistent banner while READ auto-heal is still retrying.
+        suppressScopeDispatch: isScope409 && attempt < 2,
       });
-      // READ_SCOPE_HEAL_V1 — LibraryPanel / StoryboardTab v2_event_state GETs
-      // must heal server pin the same way pathappPatch does (SCOPE_MISMATCH_AUTO_HEAL_V1).
-      if (isScopeMismatchResult(result) && !opts._scopeHealRetry) {
+      if (isScopeMismatchResult(result) && attempt < 2) {
         if (await healServerScopeIfNeeded(activeScope.value)) {
-          return apiGet(endpoint, query, { _scopeHealRetry: true });
+          emitScopeHealed({ event_id: activeScope.value.event_id, source: 'apiGet-heal' });
+          return apiGet(endpoint, query, {
+            _scopeHealRetry: true,
+            _scopeHealAttempt: attempt + 1,
+          });
         }
+      }
+      if (isScopeMismatchResult(result) && attempt >= 2 && typeof window !== 'undefined') {
+        dispatchV59Error({
+          error_code: result.error_code ?? 'SCOPE_MISMATCH',
+          error_message: result.error_message ?? result.error ?? 'scope_mismatch',
+          retry_safe: result.retry_safe !== false,
+          hint: result.hint ?? null,
+        });
       }
       return result;
     }

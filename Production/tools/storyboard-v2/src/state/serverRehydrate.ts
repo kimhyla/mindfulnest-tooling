@@ -3,7 +3,7 @@
 // so Phase A/B, Stitcher, Storyboard, LibraryPanel refresh without a manual reload.
 
 import { READ_ENDPOINTS } from '../api/endpoints';
-import { emitScopeEventChanged, loadEvent } from '../api/client';
+import { emitScopeEventChanged, loadEvent, emitScopeHealed } from '../api/client';
 import { activeScope, makeScope } from './scope';
 import { serverRehydrateTick, stitcherRefreshTick } from './refreshSignals';
 
@@ -71,6 +71,7 @@ export async function syncScopeFromProbe(probe: ServerProbeResult): Promise<void
         event_generation: load.data.event_generation,
         source: 'server-rehydrate-scope-heal',
       });
+      emitScopeHealed({ event_id: load.data.event_id, source: 'server-rehydrate-scope-heal' });
     }
     return;
   }

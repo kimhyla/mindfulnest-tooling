@@ -305,10 +305,19 @@
         "locked_speed": 1.15,
         "locked_at": "2026-06-05T02:17:24.682197+00:00",
         "sample_text_fingerprint": "189c4fe75845a9d5"
-      }
+      },
+      "proven_o3_bind": {
+        "element_id": "313106596591323",
+        "kling_voice_id": "893833801724461134",
+        "proven_from_beat_id": "bg_arc1_event1_pre_beat_10",
+        "lock_element_id": true,
+        "locked_at": "2026-06-15T07:00:00.000000+00:00",
+        "note": "Event 1 Beat 10 canonical Arlo O3 stack — prevents Chipper interim bind drift on Event 2 beats"
+      },
+      "proven_o3_bind_applied_at": "2026-06-15T07:00:00.000000+00:00"
     },
     "Lorelai": {
-      "element_id": "313462933735302",
+      "element_id": "313441038164306",
       "status": "active",
       "element_name": "Loral",
       "description": "Cartoon 3D Pixar-style raccoon scholar, glasses, backpack, excitable academic personality",
@@ -324,7 +333,7 @@
       ],
       "elevenlabs_voice_id": "PoHUWWWMHFrA8z7Q88pu",
       "elevenlabs_voice_name": "Miranda",
-      "kling_voice_id": "895328392260751385",
+      "kling_voice_id": "895210468825628751",
       "kling_voice_label": "ElevenLabs Miranda (create-voice)",
       "created_at": "2026-06-15T02:44:19.085348+00:00",
       "wavespeed_prediction_id": "2bb93f5335334c3381bc550e72022d91",
@@ -360,7 +369,16 @@
           "kling_voice_label": "ElevenLabs Miranda (create-voice)",
           "wavespeed_prediction_id": "93c7cf2684b84d868f3f03fe806b1954"
         }
-      ]
+      ],
+      "proven_o3_bind": {
+        "element_id": "313441038164306",
+        "kling_voice_id": "895210468825628751",
+        "proven_from_beat_id": "bg_arc1_event2_pre_beat_18",
+        "lock_element_id": true,
+        "locked_at": "2026-06-15T06:46:49.454880+00:00",
+        "note": "Event 2 female Lorelai — Beat 18 approved; Miranda/pose refresh must not rotate element_id"
+      },
+      "proven_o3_bind_applied_at": "2026-06-15T06:46:49.454880+00:00"
     }
   }
 }

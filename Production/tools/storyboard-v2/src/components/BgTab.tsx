@@ -3130,13 +3130,14 @@ function BgOptionTile({
   const isStillDraft = !!stillInsert && !!option.video_path && !isStitchApproved;
   const hasClipVideo = !!option.video_path;
   const showTrimControls = selected && hasClipVideo;
-  const optionLabel = isStitchApproved
+  const optionLabel = option.label?.trim()
+    || (isStitchApproved
     ? 'approved O3 video'
     : isStillDraft
       ? 'still clip (draft — approve below)'
       : hasClipVideo
         ? 'O3 clip (select to approve)'
-        : `option ${optionIndex + 1}`;
+        : `option ${optionIndex + 1}`);
   const tooltip = keyMissing ? 'Option missing key — regenerate beat' : undefined;
   const cacheBust = videoCacheKey ? `&v=${encodeURIComponent(String(videoCacheKey))}` : '';
   const canonicalVideoUrl = option.video_path

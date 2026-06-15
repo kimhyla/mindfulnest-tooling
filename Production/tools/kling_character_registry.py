@@ -178,6 +178,38 @@ def get_character_entry(speaker: str) -> dict | None:
     return _resolve_char_entry(chars, speaker)
 
 
+def resolve_proven_o3_bind(entry: dict | None) -> dict[str, str] | None:
+    """Return locked Element+voice bind when character carries ``proven_o3_bind``."""
+    if not entry or not isinstance(entry, dict):
+        return None
+    proven = entry.get("proven_o3_bind")
+    if not isinstance(proven, dict):
+        return None
+    element_id = str(proven.get("element_id") or "").strip()
+    voice_id = str(proven.get("kling_voice_id") or entry.get("kling_voice_id") or "").strip()
+    if not element_id or not voice_id:
+        return None
+    return {"element_id": element_id, "kling_voice_id": voice_id}
+
+
+def apply_element_id_with_proven_lock(cfg: dict, new_element_id: str, *, source: str) -> dict:
+    """Apply Element register result — revert to proven bind when ``lock_element_id`` set."""
+    updated = dict(cfg)
+    proven = resolve_proven_o3_bind(cfg)
+    lock = bool((cfg.get("proven_o3_bind") or {}).get("lock_element_id"))
+    if proven and lock and str(new_element_id) != proven["element_id"]:
+        if os.environ.get("MN_FORCE_ELEMENT_REREGISTER", "").strip() not in ("1", "true", "yes"):
+            updated["element_id"] = proven["element_id"]
+            updated["_proven_bind_element_restore"] = {
+                "source": source,
+                "attempted_element_id": str(new_element_id),
+                "restored_element_id": proven["element_id"],
+            }
+            return updated
+    updated["element_id"] = str(new_element_id)
+    return updated
+
+
 def get_element_list_entry(speaker: str) -> dict | None:
     """Return element_list payload entry for O3 Pro, or None."""
     entry = get_character_entry(speaker)
@@ -185,7 +217,8 @@ def get_element_list_entry(speaker: str) -> dict | None:
         return None
     if entry.get("status") != "active":
         return None
-    eid = entry.get("element_id")
+    proven = resolve_proven_o3_bind(entry)
+    eid = (proven or {}).get("element_id") or entry.get("element_id")
     if not eid:
         return None
     display = kling_element_display_name(speaker) or entry.get("element_name") or speaker
@@ -193,7 +226,7 @@ def get_element_list_entry(speaker: str) -> dict | None:
         "element_id": str(eid),
         "element_name": display,
     }
-    vid = entry.get("kling_voice_id")
+    vid = (proven or {}).get("kling_voice_id") or entry.get("kling_voice_id")
     if vid:
         out["voice_id"] = str(vid)
     return out
@@ -203,7 +236,8 @@ def get_bound_voice_id(speaker: str) -> str | None:
     entry = get_character_entry(speaker)
     if not entry:
         return None
-    vid = entry.get("kling_voice_id")
+    proven = resolve_proven_o3_bind(entry)
+    vid = (proven or {}).get("kling_voice_id") or entry.get("kling_voice_id")
     return str(vid) if vid else None
 
 

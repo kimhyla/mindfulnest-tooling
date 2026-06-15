@@ -43,15 +43,8 @@ _PSERVER_TOOLS_DIR = Path(__file__).resolve().parent.parent  # Production/tools/
 
 
 def _data_root(h) -> Path:
-    """Runtime ``Production/`` root, anchored on the running server's event_dir.
-
-    LD-505 Phase C (2026-05-19): replaces the old module-level
-    `_PSERVER_PRODUCTION_DIR = Path(__file__).resolve().parent.parent.parent`
-    which pointed at the (empty) tooling-side Production/ when CODE was in
-    tooling and DATA was in Dropbox. See lib/paths.runtime_production_root.
-    Audit C1-2/C1-3/C1-4 (live-confirmed empty libraries).
-    """
-    return Path(h.app.event_dir).parent
+    """Runtime ``Production/`` root, anchored on the running server's event_dir."""
+    return Path(h.app.event_dir).resolve().parent
 
 
 # Project-internal modules imported the same way production_server.py does.

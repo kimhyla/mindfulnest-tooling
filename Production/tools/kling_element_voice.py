@@ -403,9 +403,13 @@ def refresh_voice_and_register_element(
     element_id, prediction_id = register_kling_element(
         char_name, cfg, kling_voice_id, wavespeed_key,
     )
+    from tools.kling_character_registry import apply_element_id_with_proven_lock
+
     updated = dict(cfg)
     updated["kling_voice_id"] = kling_voice_id
-    updated["element_id"] = element_id
+    updated = apply_element_id_with_proven_lock(
+        updated, element_id, source="refresh_voice_and_register_element",
+    )
     updated["wavespeed_prediction_id"] = prediction_id
     updated["status"] = "active"
     return updated
@@ -473,9 +477,13 @@ def refresh_element_poses_only(
         raise RuntimeError(
             f"{char_name!r} has no kling_voice_id — run voice setup first, not pose refresh"
         )
+    from tools.kling_character_registry import apply_element_id_with_proven_lock
+
     element_id, prediction_id = register_kling_element(char_name, cfg, voice_id, wavespeed_key)
     updated = dict(cfg)
-    updated["element_id"] = element_id
+    updated = apply_element_id_with_proven_lock(
+        updated, element_id, source="refresh_element_poses_only",
+    )
     updated["wavespeed_prediction_id"] = prediction_id
     updated["status"] = "active"
     return updated
