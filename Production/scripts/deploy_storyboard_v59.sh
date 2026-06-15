@@ -496,6 +496,18 @@ fi
 echo "[deploy] (h) O3 capability smoke ok"
 
 # ----------------------------------------------------------------
+# (h.5) Post-restart Kling canonical prompt shape — migrate heal on session-state
+# ----------------------------------------------------------------
+echo "[deploy] (h.5) Kling canonical prompt shape live smoke (Event_2) ..."
+chmod +x "$SRC_TOOLING/Production/scripts/smoke_kling_canonical_prompt_shape_live.sh"
+if ! bash "$SRC_TOOLING/Production/scripts/smoke_kling_canonical_prompt_shape_live.sh"; then
+    echo "FATAL: Kling canonical prompt shape live smoke failed after restart" >&2
+    tail -30 "$LOG_DIR/server.log" >&2 || true
+    exit 1
+fi
+echo "[deploy] (h.5) Kling canonical prompt shape ok"
+
+# ----------------------------------------------------------------
 # (i) Write .last_deploy timestamp sentinel
 # Per V59_CICD_GAP_FIX_SPEC_v1.md Phase G — pre-commit hook reads this
 # to detect "Dropbox runtime tree edited after last deploy" divergence.
