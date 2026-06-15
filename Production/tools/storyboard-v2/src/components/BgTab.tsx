@@ -519,12 +519,18 @@ export function BgTab() {
   // BG-9 / BG-34/35 / BG-5 / BG-18 — Modal state machine.
   const [modalState, setModalState] = useState<BgModalState>({ kind: 'none' });
   const [activeNavIndex, setActiveNavIndex] = useState<number | null>(null);
+  const navJumpLockUntilRef = useRef<number>(0);
   const closeModal = () => setModalState({ kind: 'none' });
 
   const beatIdsKey = useMemo(
     () => beats.map((b) => b.beat_id).join('|'),
     [beats],
   );
+
+  // Reset highlight when segment/event/arc reload replaces the beat list.
+  useEffect(() => {
+    setActiveNavIndex(null);
+  }, [beatIdsKey]);
 
   // Highlight nav item for the beat most visible in the scroll viewport.
   useEffect(() => {
@@ -545,6 +551,7 @@ export function BgTab() {
           if (!best || ratio > best.ratio) best = { index: idx, ratio };
         }
         if (best && best.ratio >= 0.25) {
+          if (Date.now() < navJumpLockUntilRef.current) return;
           setActiveNavIndex(best.index);
         }
       },
@@ -1912,8 +1919,13 @@ export function BgTab() {
         <div class="mn-bg-body-layout" data-testid="bg-body-layout">
           <BgBeatNav
             beats={beats}
-            activeIndex={activeNavIndex}
+            activeIndex={
+              activeNavIndex !== null && activeNavIndex < beats.length
+                ? activeNavIndex
+                : null
+            }
             onJump={(beatId, index) => {
+              navJumpLockUntilRef.current = Date.now() + 1200;
               setActiveNavIndex(index);
               scrollToBeat(beatId);
             }}

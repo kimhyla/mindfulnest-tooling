@@ -4,6 +4,7 @@
 //   M1 — 3 beats: nav labels, click Beat 3 scrolls card + aria-current
 //   M2 — empty beats: no nav, bg-empty shown
 //   M3 — tab switch: Storyboard → Beat Gen restores nav + jump still works
+//   M4 — beat list swap (simulates event/segment reload): nav re-labels, jump works
 
 import { test, expect, type Page } from '@playwright/test';
 
@@ -125,5 +126,57 @@ test.describe('BG_BEAT_JUMP_NAV_V1 — beat jump navigation', () => {
     await expect(page.getByTestId('bg-beat-nav')).toBeVisible({ timeout: 5_000 });
     await page.getByTestId('bg-beat-nav-1').click();
     await expect(page.getByTestId('bg-beat-card-1')).toBeInViewport({ timeout: 5_000 });
+  });
+
+  test('M4 — arc change reloads beat list and nav re-labels (event/segment parity)', async ({ page }) => {
+    await mockSnapshot(page);
+    let sessionArc = 1;
+    await page.route('**/api/bg/segments**', async (r) => {
+      const url = new URL(r.request().url());
+      sessionArc = Number(url.searchParams.get('arc_number') ?? '1');
+      await r.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          segments: sessionArc === 2
+            ? [{ event_id: 'E1', phase: 'intro', name: 'Arc 2 Intro' }]
+            : [
+              { event_id: 'E1', phase: 'intro', name: 'E1 Intro' },
+              { event_id: 'E2', phase: 'resolution', name: 'E2 Resolution' },
+            ],
+        }),
+      });
+    });
+    await page.route('**/api/bg/session-state**', async (r) => {
+      const beats = sessionArc === 2
+        ? [makeBeat('beat_arc2_only', 'Arc 2 single beat.')]
+        : [
+          makeBeat('beat_arc1_a', 'Arc 1 beat one.'),
+          makeBeat('beat_arc1_b', 'Arc 1 beat two.'),
+        ];
+      await r.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          active_context: { arc_number: sessionArc, event_id: 'E1', phase: 'intro' },
+          scope_active_context: { arc_number: sessionArc, event_id: 'E1', phase: 'intro' },
+          beats,
+          flux_options_complete: false,
+          capabilities: {},
+          migration_warnings: [],
+        }),
+      });
+    });
+
+    await gotoApp(page);
+    await page.click('[data-testid="tab-bg"]');
+    await expect(page.getByTestId('bg-beat-nav-1')).toBeVisible({ timeout: 5_000 });
+
+    await page.getByTestId('select-bg-arc').selectOption('2');
+    await expect(page.getByTestId('bg-beat-nav-1')).toHaveCount(0, { timeout: 5_000 });
+    await expect(page.getByTestId('bg-beat-nav-0')).toHaveText('Beat 1');
+    await page.getByTestId('bg-beat-nav-0').click();
+    await expect(page.getByTestId('bg-beat-card-0')).toBeInViewport({ timeout: 5_000 });
   });
 });
