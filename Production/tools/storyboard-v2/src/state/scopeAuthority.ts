@@ -25,3 +25,14 @@ export function clientMayPinServerTo(eventId: string): boolean {
   if (urlEvent) return urlEvent === eventId;
   return explicitClientEventId === eventId;
 }
+
+/**
+ * True when background scope poll must NOT adopt the server's event pin.
+ * URL ?event= and explicit ScopeBoundary pins beat stale server defaults (Event_1).
+ */
+export function clientScopeOverridesServerPin(serverEventId: string): boolean {
+  const urlEvent = readUrlEventId();
+  if (urlEvent) return urlEvent !== serverEventId;
+  if (explicitClientEventId) return explicitClientEventId !== serverEventId;
+  return false;
+}

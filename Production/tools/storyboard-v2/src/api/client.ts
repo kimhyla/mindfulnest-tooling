@@ -266,7 +266,8 @@ export async function loadEvent(
  * SCOPE_MISMATCH_AUTO_HEAL_V1 — when server pin drifts (restart, QA script),
  * re-pin to the client's activeScope.event_id before surfacing 409 — but only
  * when this tab has pin authority (URL ?event= or explicit Project/ScopeBoundary pin).
- * Background polls adopt server pin instead (SCOPE_POLL_ADOPT_V1).
+ * Background polls adopt server pin only when URL/explicit pin does not override
+ * (SCOPE_POLL_ADOPT_V1 + clientScopeOverridesServerPin).
  */
 async function healServerScopeIfNeeded(scope: Scope): Promise<boolean> {
   try {

@@ -4,6 +4,7 @@
 
 import { READ_ENDPOINTS } from '../api/endpoints';
 import { emitScopeEventChanged } from '../api/client';
+import { clientScopeOverridesServerPin } from './scopeAuthority';
 import { activeScope, makeScope } from './scope';
 import { serverRehydrateTick, stitcherRefreshTick } from './refreshSignals';
 
@@ -54,16 +55,19 @@ export function triggerServerRehydrate(reason: string): void {
 
 /** Sync activeScope from server probe — SCOPE_POLL_ADOPT_V1 (never loadEvent from poll).
 
-Background ServerRehydrateWatcher must not POST /api/event/load when another tab
-owns a different event; that caused Event_1 ↔ Event_2 ping-pong and Failed to fetch
-on O3 select. Polls adopt the server pin; mutation heal (pathappPatch) may loadEvent
-when this tab has URL or explicit pin authority.
+Polls adopt the server pin only when URL ?event= / explicit tab pin does not override
+(clientScopeOverridesServerPin). Prevents ?event=Event_2 tabs jumping to Event_1 when
+the server process still defaults to Event_1. Mutation heal (pathappPatch) may loadEvent
+when clientMayPinServerTo.
 */
 export async function syncScopeFromProbe(probe: ServerProbeResult): Promise<void> {
   if (!probe.ok || !probe.eventId) return;
   const cur = activeScope.value;
   const gen = probe.eventGeneration ?? cur.version;
   if (probe.eventId !== cur.event_id) {
+    if (clientScopeOverridesServerPin(probe.eventId)) {
+      return;
+    }
     activeScope.value = makeScope(probe.eventId, cur.beat_id, gen);
     emitScopeEventChanged({
       event_id: probe.eventId,

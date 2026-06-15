@@ -32,5 +32,9 @@ grep -q 'clientMayPinServerTo' "$AUTHORITY" \
   || fail "clientMayPinServerTo missing"
 grep -q 'clientMayPinServerTo(scope.event_id)' "$CLIENT" \
   || fail "healServerScopeIfNeeded must gate loadEvent on clientMayPinServerTo"
+grep -q 'clientScopeOverridesServerPin' "$REHYDRATE" \
+  || fail "syncScopeFromProbe must skip adopt when URL/explicit pin overrides server"
+grep -q 'clientScopeOverridesServerPin' "$AUTHORITY" \
+  || fail "clientScopeOverridesServerPin missing in scopeAuthority.ts"
 
 echo "[scope-poll-adopt] OK — poll adopt + pin authority guards present"
