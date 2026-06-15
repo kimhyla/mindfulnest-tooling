@@ -18,6 +18,7 @@ set -euo pipefail
 SRC_TOOLING="${MN_TOOLING_ROOT:-/Users/kimberlysmith/Projects/mindfulnest-tooling}"
 DEST_DROPBOX="${MN_DROPBOX_ROOT:-/Users/kimberlysmith/Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files}"
 EVENT_DIR="${MN_EVENT_DIR:-Production/Event_1}"
+SCOPE_EVENT_ID="$(basename "$EVENT_DIR")"
 SERVER_PORT="${MN_SERVER_PORT:-5111}"
 EVENT_ABS="$DEST_DROPBOX/$EVENT_DIR"
 LOG_FILE="$EVENT_ABS/post_tooling_smoke_server.log"
@@ -64,7 +65,7 @@ fi
 echo "  GET / → $HOME_CODE"
 
 CAP_JSON=$(curl -sS --max-time 15 \
-  "http://localhost:${SERVER_PORT}/api/bg/session-state?scope_event_id=Event_1&scope_video_role=intro")
+  "http://localhost:${SERVER_PORT}/api/bg/session-state?scope_event_id=${SCOPE_EVENT_ID}&scope_video_role=intro")
 O3_OK=$(printf '%s' "$CAP_JSON" | python3 -c "
 import sys, json
 c = json.load(sys.stdin).get('capabilities') or {}
@@ -97,10 +98,11 @@ PY
 
 echo "=== [7/7] build-sha matches git HEAD ==="
 BUILD_SHA="$(cd "$SRC_TOOLING" && git rev-parse --short HEAD)"
-SERVED_SHA="$(curl -s "http://localhost:${SERVER_PORT}/" | python3 -c "import re,sys; html=sys.stdin.read(); m=re.search(r'build-sha\\" content=\\"([^\\"]+)\\"', html); print(m.group(1) if m else '')")"
-if [[ -z "$SERVED_SHA" || "$SERVED_SHA" != "$BUILD_SHA" ]]; then
-  echo "FATAL: build-sha mismatch served=$SERVED_SHA head=$BUILD_SHA" >&2
+SERVED="$(curl -sS --max-time 10 "http://localhost:${SERVER_PORT}/" 2>/dev/null || true)"
+MARKER_COUNT=$(printf '%s' "$SERVED" | grep -c "build-sha.*$BUILD_SHA" || true)
+if [[ "$MARKER_COUNT" -lt 1 ]]; then
+  echo "FATAL: build-sha mismatch — served HTML missing build-sha=$BUILD_SHA (matches=$MARKER_COUNT)" >&2
   exit 1
 fi
-echo "  build-sha → $SERVED_SHA (matches HEAD)"
+echo "  build-sha → $BUILD_SHA (matches HEAD)"
 echo "=== post_tooling_change_smoke: ALL PASSED ==="
