@@ -1,6 +1,6 @@
 # O3 Generation Intent Snapshot — Tech Spec v1
 
-**Status:** Draft — ready for implementation  
+**Status:** Implemented (tooling, 2026-06-15) — commit `778e828` on `feat/o3-generation-intent-snapshot`  
 **Owner:** mindfulnest-tooling  
 **Incident driver:** Event 2 Beat 13 (`bg_arc1_event2_pre_beat_30`, Loral) — prompt morph, char-ref ignore, g7 overwrite, silent orphan recovery, UI snap-back  
 **User-facing promise:** **Whatever is in the prompt box and ref tiles when you click Generate is exactly what Kling receives** — prompt, visual identity, voice element, and generation slot — with no silent morphs, leaks, or “success” when something failed.

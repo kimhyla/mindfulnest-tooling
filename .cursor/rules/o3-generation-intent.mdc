@@ -1,0 +1,22 @@
+# O3 Generation Intent Snapshot
+
+Generate commits `{job_id}_intent.json` before subprocess spawn. Pipeline reads **only** that file for prompt, char ref, Element binding, and generation slot.
+
+## Do not regress
+
+- Never call `ensure_operator_insert_char_ref_parity`, `finalize_proven_element_beat`, or prompt heals during intent commit.
+- Char-ref gate at commit uses `allow_pose_dir_fallback=False` — register-or-block.
+- Slot reservation: `max(sidecar_gen, disk_gen) + 1`, allocate-only (no delete).
+- Orphan recovery → poll status `done_with_warning`, not silent `done`.
+- `_migrate_sidecar` skips beats with active intent.
+
+## Key files
+
+- `Production/tools/o3_generation_intent.py`
+- `server_handlers/background.py` — `handle_bg_submit_arlo_o3_voice`
+- `kling_o3_element_beat_pipeline.py` — `run_pipeline_from_intent`
+- `storyboard-v2/src/o3GenerationIntent.ts`, `BgTab.tsx`
+
+## Tests
+
+`pytest Production/tools/tests/test_o3_generation_intent_*.py`
