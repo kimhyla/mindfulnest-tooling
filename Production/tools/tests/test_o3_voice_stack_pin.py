@@ -1,4 +1,4 @@
-"""Per-beat O3 voice stack pin — use proven Element+voice without changing registry."""
+"""Per-beat O3 voice stack pin — legacy rows only; proven registry wins at submit."""
 from __future__ import annotations
 
 import beat_generator as bg
@@ -17,7 +17,11 @@ BEAT3_PIN = {
 }
 
 
-def test_resolve_o3_element_list_entry_uses_pin() -> None:
+def test_resolve_o3_element_list_entry_uses_pin_when_no_proven(monkeypatch):
+    monkeypatch.setattr(
+        "tools.kling_character_registry.get_proven_element_list_entry",
+        lambda _s: None,
+    )
     beat = {
         "speaker": "Lorelai",
         "o3_voice_stack_pin": BEAT3_PIN,
@@ -43,7 +47,11 @@ def test_stack_pin_skips_voice_bind_drift() -> None:
     assert detect_voice_bind_drift(beat, "Lorelai", "895210468825628751") is None
 
 
-def test_stack_pin_skips_registry_alignment_mismatch() -> None:
+def test_stack_pin_does_not_skip_registry_alignment(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tools.kling_character_registry.get_proven_element_list_entry",
+        lambda _s: None,
+    )
     beat = {
         "o3_voice_stack_pin": BEAT3_PIN,
         "kling_o3_prompt": '@Image1 (Lorelai). Lorelai speaks in a warm calm conversational pace: "Hi!"',
@@ -55,7 +63,7 @@ def test_stack_pin_skips_registry_alignment_mismatch() -> None:
         beat["kling_o3_prompt"],
         beat=beat,
     )
-    assert errors == []
+    assert any("element_name must be" in e for e in errors)
 
 
 def test_reconcile_o3_element_quality_from_active_option_binding() -> None:

@@ -18,11 +18,17 @@ def _handler_block(name: str) -> str:
     return text[start:end]
 
 
-def test_handle_bg_add_beat_uses_sidecar_file_lock():
-    block = _handler_block("handle_bg_add_beat")
+def test_handle_bg_insert_beat_uses_sidecar_file_lock():
+    block = _handler_block("handle_bg_insert_beat")
     assert "with bg.sidecar_file_lock():" in block
-    assert "create_blank_bg_beat" in block
-    assert "with bg._sidecar_lock:" not in block
+    assert "materialize_sidecar_beat_from_plan_row" in block
+    assert "create_blank_bg_beat" not in block
+
+
+def test_handle_bg_add_beat_deprecated_410():
+    block = _handler_block("handle_bg_add_beat")
+    assert "INSERT_BEAT_FORM_REQUIRED" in block
+    assert "410" in block
 
 
 def test_handle_bg_session_state_migrate_write_uses_sidecar_file_lock():

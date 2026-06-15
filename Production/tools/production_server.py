@@ -6292,6 +6292,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_bg_accept_lib_image(body)
             if path == "/api/bg/add-beat":
                 return self._handle_bg_add_beat(body)
+            if path == "/api/bg/insert-beat":
+                return self._handle_bg_insert_beat(body)
             if path == "/api/bg/create-group":
                 return self._handle_bg_create_group(body)
             if path == "/api/bg/delete-group":
@@ -7794,6 +7796,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_bg_add_beat(self, body: dict) -> None:
         from server_handlers.background import handle_bg_add_beat
         return handle_bg_add_beat(self, body)
+
+    def _handle_bg_insert_beat(self, body: dict) -> None:
+        from server_handlers.background import handle_bg_insert_beat
+        return handle_bg_insert_beat(self, body)
 
     def _handle_bg_create_group(self, body: dict) -> None:
         from server_handlers.background import handle_bg_create_group

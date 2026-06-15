@@ -6305,22 +6305,93 @@ def apply_kling_o3_defaults_to_segment(seg: dict, event_id: str, phase: str) -> 
 
 
 def create_blank_bg_beat(beat_id: str, event_id: str, phase: str) -> dict:
-    """Blank Beat Gen row with full Kling O3 pipeline fields (Submit/Redo/Duration)."""
-    beat = {
-        "beat_id": beat_id,
-        "speaker": "",
-        "dialogue_text": "",
-        "emotion": "",
-        "scene_notes": "",
-        "status": "new",
-        "beat_type": "dialogue",
-        "beat_plan_source": "manual_insert_v1",
-        "pipeline": "kling_o3_omni",
-        "flux_options": [],
-        "gpt_options": [],
-    }
-    apply_kling_o3_defaults_to_beat(beat, str(event_id), phase)
+    """Deprecated — blank rows bypass extract materialization. Use insert-beat form API."""
+    raise RuntimeError(
+        "create_blank_bg_beat is removed; POST /api/bg/insert-beat with plan_row instead"
+    )
+
+
+def materialize_sidecar_beat_from_plan_row(
+    plan_row: dict,
+    *,
+    beat_id: str,
+    arc_number: int,
+    event_id: str,
+    phase: str,
+    sidecar: dict,
+    prompt_by_index: dict[int, str] | None = None,
+    beat_plan_source: str = "operator_insert_v1",
+) -> dict:
+    """Single-row extract-equivalent beat via ``build_beats_from_approved_plan``."""
+    from beat_extract_policy import normalize_plan_row
+
+    normalized, _warnings = normalize_plan_row(plan_row, beat_index=99)
+    built = build_beats_from_approved_plan(
+        [normalized],
+        prompt_by_index or {},
+        arc_number=arc_number,
+        event_id=str(event_id),
+        phase=phase,
+    )
+    if len(built) != 1:
+        raise ValueError(f"expected 1 beat from plan row, got {len(built)}")
+    beat = built[0]
+    beat["beat_id"] = beat_id
+    beat["beat_plan_source"] = beat_plan_source
+    beat["status"] = "draft"
+    beat.pop("o3_voice_stack_pin", None)
+    beat.pop("o3_prompt_box_law", None)
+    speaker = str(beat.get("speaker") or "").strip()
+    if speaker:
+        finalize_proven_element_beat(beat, sidecar, speaker, event_id=str(event_id), phase=phase)
     return beat
+
+
+def finalize_proven_element_beat(
+    beat: dict,
+    sidecar: dict,
+    speaker: str,
+    *,
+    event_id: str,
+    phase: str,
+) -> bool:
+    """Copy proven char/bg refs from ``proven_from_beat_id``; rebuild prompt when refs change."""
+    try:
+        from tools import kling_character_registry as reg
+
+        proven = reg.resolve_proven_o3_bind(reg.get_character_entry(speaker))
+    except Exception:
+        proven = None
+    if not proven:
+        return False
+    source_id = str(proven.get("proven_from_beat_id") or "").strip()
+    if not source_id:
+        return False
+    _, source = find_beat(sidecar, source_id)
+    if not source:
+        return False
+    changed = False
+    src_ref = source.get("reference_image")
+    if isinstance(src_ref, dict):
+        src_path = str(src_ref.get("abs_path") or "").strip()
+        if src_path and os.path.isfile(src_path):
+            cur = resolve_beat_char_ref_path(beat) or ""
+            if os.path.normpath(cur) != os.path.normpath(src_path):
+                beat["reference_image"] = copy.deepcopy(src_ref)
+                beat["reference_image_locked"] = True
+                changed = True
+    src_bg = source.get("bg_ref_image")
+    if isinstance(src_bg, dict) and not beat.get("bg_ref_image_locked"):
+        if not beat.get("bg_ref_image"):
+            beat["bg_ref_image"] = copy.deepcopy(src_bg)
+            changed = True
+    beat.pop("o3_voice_stack_pin", None)
+    beat.pop("o3_prompt_box_law", None)
+    if changed:
+        apply_kling_o3_defaults_to_beat(beat, event_id, phase)
+    else:
+        sync_element_char_ref_status(beat, heal_mismatch=False)
+    return changed
 
 
 def upgrade_legacy_bg_beats_to_kling_o3(sidecar: dict) -> int:
@@ -6861,7 +6932,25 @@ def apply_proven_char_ref_from_pin_source(beat: dict, sidecar: dict) -> bool:
 
 def proven_char_ref_aligned_with_pin_source(beat: dict, sidecar: dict) -> bool:
     """True when @Image1 matches the pinned proven source beat (Beat 18 path)."""
+    return proven_char_ref_aligned_with_proven_source(
+        beat, sidecar, str(beat.get("speaker") or "").strip(),
+    )
+
+
+def proven_char_ref_aligned_with_proven_source(
+    beat: dict, sidecar: dict, speaker: str,
+) -> bool:
+    """True when @Image1 matches registry or pin proven source beat."""
     source_id = proven_char_ref_source_beat_id(beat)
+    if not source_id and speaker:
+        try:
+            from tools import kling_character_registry as reg
+
+            proven = reg.resolve_proven_o3_bind(reg.get_character_entry(speaker))
+            if proven:
+                source_id = str(proven.get("proven_from_beat_id") or "").strip() or None
+        except Exception:
+            source_id = None
     if not source_id:
         return False
     _, source = find_beat(sidecar, source_id)
@@ -6915,7 +7004,15 @@ def o3_voice_stack_pin_active(beat: dict) -> bool:
 
 
 def resolve_o3_element_list_entry(beat: dict, speaker: str) -> dict | None:
-    """Registry Element entry, or per-beat ``o3_voice_stack_pin`` when set."""
+    """Registry proven contract first; legacy per-beat pin only when no proven bind."""
+    try:
+        from tools import kling_character_registry as reg
+
+        proven_entry = reg.get_proven_element_list_entry(speaker)
+        if proven_entry:
+            return proven_entry
+    except Exception:
+        pass
     pin = beat.get("o3_voice_stack_pin")
     if isinstance(pin, dict):
         element_id = str(pin.get("element_id") or "").strip()

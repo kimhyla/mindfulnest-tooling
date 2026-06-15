@@ -143,6 +143,7 @@ export const MUTATION_ENDPOINTS = {
   // S5.5c — Beat Generator full UI wiring (Phase B0 catalog completeness).
   bg_delete_beat: `${SERVER_BASE}/api/bg/delete-beat`,
   bg_add_beat: `${SERVER_BASE}/api/bg/add-beat`,
+  bg_insert_beat: `${SERVER_BASE}/api/bg/insert-beat`,
   bg_submit_gpt_batch: `${SERVER_BASE}/api/bg/submit-gpt-batch`,
   bg_submit_arlo_o3_voice: `${SERVER_BASE}/api/bg/submit-arlo-o3-voice`,
   bg_submit_kling_native_lipsync_experiment: `${SERVER_BASE}/api/bg/submit-kling-native-lipsync-experiment`,
@@ -216,6 +217,7 @@ export const BG_MUTATION_ENDPOINTS: ReadonlySet<MutationEndpoint> = new Set<Muta
   // scope_event_id (NOT event_id, which BG handlers reuse for segment number).
   'bg_delete_beat',
   'bg_add_beat',
+  'bg_insert_beat',
   'bg_submit_gpt_batch',
   'bg_submit_kling_native_lipsync_experiment',
   'bg_render_still_clip',

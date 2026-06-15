@@ -189,7 +189,34 @@ def resolve_proven_o3_bind(entry: dict | None) -> dict[str, str] | None:
     voice_id = str(proven.get("kling_voice_id") or entry.get("kling_voice_id") or "").strip()
     if not element_id or not voice_id:
         return None
-    return {"element_id": element_id, "kling_voice_id": voice_id}
+    out: dict[str, str] = {"element_id": element_id, "kling_voice_id": voice_id}
+    for key in ("proven_from_beat_id", "proven_element_name"):
+        val = str(proven.get(key) or "").strip()
+        if val:
+            out[key] = val
+    return out
+
+
+def get_proven_element_list_entry(speaker: str) -> dict | None:
+    """O3 submit ``element_list`` row from registry ``proven_o3_bind`` contract."""
+    entry = get_character_entry(speaker)
+    if not entry or entry.get("status") != "active":
+        return None
+    proven = resolve_proven_o3_bind(entry)
+    if not proven:
+        return None
+    element_name = str(proven.get("proven_element_name") or "").strip()
+    if not element_name:
+        element_name = (
+            kling_element_display_name(speaker)
+            or str(entry.get("element_name") or "").strip()
+            or speaker
+        )
+    return {
+        "element_id": proven["element_id"],
+        "element_name": element_name,
+        "voice_id": proven["kling_voice_id"],
+    }
 
 
 def apply_element_id_with_proven_lock(cfg: dict, new_element_id: str, *, source: str) -> dict:

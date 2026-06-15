@@ -23,6 +23,7 @@ import { makeDropTarget } from '../utils/dragdrop';
 import { openCropper } from '../state/cropper';
 import { Modal } from './ui/Modal';
 import { BeatPlanModal, type BeatPlanRow } from './BeatPlanModal';
+import { InsertBeatModal, type InsertBeatPlanRow } from './InsertBeatModal';
 import { Spinner } from './ui/Spinner';
 import { Select } from './ui/Select';
 import { pushToast } from './ui/Toast';
@@ -139,6 +140,7 @@ interface GptOption {
 
 interface BgBeat {
   beat_id: string;
+  beat_plan_source?: string;
   speaker?: string;
   pipeline?: string;
   beat_render_mode?: string;
@@ -526,6 +528,10 @@ export function BgTab() {
   const [lastBatchCostUsd, setLastBatchCostUsd] = useState<number>(0);
   // BG-9 / BG-34/35 / BG-5 / BG-18 — Modal state machine.
   const [modalState, setModalState] = useState<BgModalState>({ kind: 'none' });
+  const [insertAfterBeatId, setInsertAfterBeatId] = useState<string>('');
+  const [insertModalOpen, setInsertModalOpen] = useState(false);
+  const [insertSubmitting, setInsertSubmitting] = useState(false);
+  const [insertError, setInsertError] = useState('');
   const [activeNavIndex, setActiveNavIndex] = useState<number | null>(null);
   const navJumpLockUntilRef = useRef<number>(0);
   const closeModal = () => setModalState({ kind: 'none' });
@@ -1095,39 +1101,49 @@ export function BgTab() {
     }
   };
 
-  const onAddBeat = async (afterBeatId: string) => {
+  const openInsertBeatModal = (afterBeatId: string) => {
+    setInsertAfterBeatId(afterBeatId);
+    setInsertError('');
+    setInsertModalOpen(true);
+  };
+
+  const closeInsertBeatModal = () => {
+    if (insertSubmitting) return;
+    setInsertModalOpen(false);
+    setInsertError('');
+  };
+
+  const executeInsertBeat = async (planRow: InsertBeatPlanRow) => {
     if (!activeSegment) return;
     const [event_id, phase] = activeSegment.split('|');
-    const result = await pathappPatch<{ beat?: BgBeat }>(activeScope.value, 'bg_add_beat', {
-      after_beat_id: afterBeatId,
-      segment: `event_${event_id}_${phase}`,
-    });
+    setInsertSubmitting(true);
+    setInsertError('');
+    const result = await pathappPatch<{ beat?: BgBeat; beat_id?: string }>(
+      activeScope.value,
+      'bg_insert_beat',
+      {
+        after_beat_id: insertAfterBeatId,
+        segment: `event_${event_id}_${phase}`,
+        plan_row: planRow,
+      },
+    );
+    setInsertSubmitting(false);
     if (result.ok && result.data?.beat) {
       const newBeat = result.data.beat;
       setBeats((bs) => {
         if (bs.some((b) => b.beat_id === newBeat.beat_id)) return bs;
-        const idx = bs.findIndex((b) => b.beat_id === afterBeatId);
+        const idx = bs.findIndex((b) => b.beat_id === insertAfterBeatId);
         const next = [...bs];
         next.splice(idx >= 0 ? idx + 1 : next.length, 0, newBeat);
         return next;
       });
-      pushToast({ kind: 'info', message: `Added ${newBeat.beat_id}`, source: 'bg-add' });
-      await refreshState();
-      if (!beatSaveBlockedRef.current.has(newBeat.beat_id)) {
-        const verify = await apiGet<BgSessionState>('bg_session_state', {
-          scope_event_id: activeScope.value.event_id,
-          scope_video_role: activeTargetVideo.value,
-        });
-        const liveIds = new Set((verify.data?.beats ?? []).map((b) => b.beat_id));
-        if (verify.ok && !liveIds.has(newBeat.beat_id)) {
-          await handleBeatMissingOnSave(newBeat.beat_id);
-        }
-      }
-    } else if (result.ok) {
-      pushToast({ kind: 'info', message: 'Beat added', source: 'bg-add' });
+      pushToast({ kind: 'info', message: `Inserted ${newBeat.beat_id}`, source: 'bg-insert' });
+      setInsertModalOpen(false);
       await refreshState();
     } else {
-      pushToast({ kind: 'error', message: `Add failed: ${result.error}`, source: 'bg-add-error' });
+      const msg = formatMutationError(result, 'Insert beat failed');
+      setInsertError(msg);
+      pushToast({ kind: 'error', message: msg, source: 'bg-insert-error' });
     }
   };
 
@@ -1902,14 +1918,14 @@ export function BgTab() {
         <button
           type="button"
           class="mn-btn"
-          data-testid="bg-add-empty-btn"
+          data-testid="bg-insert-btn"
           onClick={() => {
             const lastId = beats.length > 0 ? beats[beats.length - 1].beat_id : '';
-            void onAddBeat(lastId);
+            openInsertBeatModal(lastId);
           }}
-          disabled={!activeSegment}
+          disabled={!activeSegment || insertSubmitting}
         >
-          + Add empty beat
+          + Insert beat
         </button>
         <span class="mn-bg-cost" data-testid="bg-cost">
           Cost this session:{' '}
@@ -1927,7 +1943,7 @@ export function BgTab() {
         <p class="mn-loading"><Spinner size="md" inline /> Loading beat state…</p>
       ) : beats.length === 0 ? (
         <div class="mn-empty" data-testid="bg-empty">
-          <p>No beats yet for this segment. Click <strong>Extract Beats from script</strong> to start.</p>
+          <p>No beats yet for this segment. Click <strong>Extract Beats from script</strong> or <strong>+ Insert beat</strong> to start.</p>
         </div>
       ) : (
         <div class="mn-bg-body-layout" data-testid="bg-body-layout">
@@ -1971,7 +1987,7 @@ export function BgTab() {
               onSetReplaceSlot={(slotIndex) => onSetReplaceSlot(b.beat_id, slotIndex)}
               onSubmitNativeLipSyncExperiment={() => onSubmitNativeLipSyncExperiment(b.beat_id)}
               onEditChip={(c) => requestEditChip(b.beat_id, c)}
-              onInsertAfter={() => onAddBeat(b.beat_id)}
+              onInsertAfter={() => openInsertBeatModal(b.beat_id)}
               onRemoveRef={(refField, label) => requestRemoveRef(b.beat_id, refField, label)}
               onAlignElementRef={() => onAlignElementRef(b.beat_id)}
               onAddElementPose={() => onAddElementPose(b.beat_id)}
@@ -2041,6 +2057,15 @@ export function BgTab() {
         approveStartedAt={approveStartedAt}
         onClose={closeBeatPlanModal}
         onApprove={onApproveBeatPlan}
+      />
+
+      <InsertBeatModal
+        open={insertModalOpen}
+        afterBeatId={insertAfterBeatId}
+        submitting={insertSubmitting}
+        errorMessage={insertError}
+        onClose={closeInsertBeatModal}
+        onSubmit={(planRow) => { void executeInsertBeat(planRow); }}
       />
 
       {/* BG-9 — Delete-beat confirm Modal */}
@@ -2467,13 +2492,18 @@ function BeatGenCard({
           class="mn-beat-speaker"
           data-testid={`bg-beat-speaker-${index}`}
           value={canonBeatSpeaker(beat.speaker) || ''}
+          disabled={beat.beat_plan_source === 'operator_insert_v1'}
           onChange={(e) => {
             const target = e.target as HTMLSelectElement | null;
             const v = (target?.value ?? '').trim();
             if (v && v !== canonBeatSpeaker(beat.speaker)) onUpdateSpeaker(v);
           }}
           aria-label={`Speaker for beat ${beat.beat_id}`}
-          title="Change speaker (will trigger stale-TTS state on regen path)"
+          title={
+            beat.beat_plan_source === 'operator_insert_v1'
+              ? 'Speaker is fixed for inserted beats — delete and re-insert to change'
+              : 'Change speaker (will trigger stale-TTS state on regen path)'
+          }
         >
           {(() => {
             const raw = (beat.speaker ?? '').trim();

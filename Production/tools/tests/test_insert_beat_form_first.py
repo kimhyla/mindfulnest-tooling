@@ -1,0 +1,210 @@
+"""Form-first insert beat — unified extract materialization (INSERT_BEAT_FORM_FIRST_SPEC_v1)."""
+from __future__ import annotations
+
+import json
+import re
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
+
+TOOLS = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(TOOLS))
+
+import beat_generator as bg  # noqa: E402
+from kling_o3_prompt import validate_element_list_alignment  # noqa: E402
+from tools import kling_character_registry as reg  # noqa: E402
+
+BACKGROUND = TOOLS / "server_handlers" / "background.py"
+
+
+def _handler_block(name: str) -> str:
+    text = BACKGROUND.read_text(encoding="utf-8")
+    start = text.index(f"def {name}(")
+    end = text.index("\ndef ", start + 1)
+    return text[start:end]
+
+
+def _minimal_sidecar_with_proven_source(tmp_path: Path) -> dict:
+    char_ref = tmp_path / "lorelai_ref.png"
+    char_ref.write_bytes(b"ref")
+    bg_ref = tmp_path / "bg.png"
+    bg_ref.write_bytes(b"bg")
+    source_beat = {
+        "beat_id": "bg_arc1_event2_pre_beat_18",
+        "speaker": "Lorelai",
+        "dialogue_text": "proven line",
+        "reference_image": {"abs_path": str(char_ref), "key": "ref"},
+        "bg_ref_image": {"abs_path": str(bg_ref), "key": "bg"},
+        "reference_image_locked": True,
+    }
+    return {
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "name": "Event 2 pre",
+                        "beats": [source_beat],
+                    },
+                },
+            },
+        },
+    }
+
+
+def _parity_fields(beat: dict) -> dict:
+    keys = (
+        "pipeline",
+        "speaker",
+        "emotion",
+        "beat_type",
+        "kling_o3_status",
+        "beat_plan_source",
+    )
+    out = {k: beat.get(k) for k in keys}
+    out["has_prompt"] = bool(str(beat.get("kling_o3_prompt") or "").strip())
+    out["has_char_ref"] = bool(beat.get("reference_image"))
+    out["has_bg_ref"] = bool(beat.get("bg_ref_image"))
+    out["no_pin"] = "o3_voice_stack_pin" not in beat
+    out["no_box_law"] = "o3_prompt_box_law" not in beat
+    out["prompt_not_character_shell"] = "Character" not in str(
+        beat.get("kling_o3_prompt") or ""
+    )[:80]
+    return out
+
+
+def test_handle_bg_insert_beat_uses_sidecar_file_lock():
+    block = _handler_block("handle_bg_insert_beat")
+    assert "with bg.sidecar_file_lock():" in block
+    assert "materialize_sidecar_beat_from_plan_row" in block
+    assert "create_blank_bg_beat" not in block
+
+
+def test_handle_bg_add_beat_returns_410():
+    block = _handler_block("handle_bg_add_beat")
+    assert "INSERT_BEAT_FORM_REQUIRED" in block
+    assert "410" in block
+    assert "create_blank_bg_beat" not in block
+
+
+def test_create_blank_bg_beat_raises():
+    with pytest.raises(RuntimeError, match="insert-beat"):
+        bg.create_blank_bg_beat("bg_arc1_event2_pre_beat_99", "2", "pre")
+
+
+def test_materialize_lorelai_matches_extract_shape(tmp_path):
+    sidecar = _minimal_sidecar_with_proven_source(tmp_path)
+    plan_row = {
+        "speaker": "Lorelai",
+        "dialogue_text": "Test dialogue for parity.",
+        "emotion": "neutral",
+        "scene_notes": "close-up head and torso",
+        "beat_type": "dialogue",
+    }
+    insert_beat = bg.materialize_sidecar_beat_from_plan_row(
+        plan_row,
+        beat_id="bg_arc1_event2_pre_beat_28",
+        arc_number=1,
+        event_id="2",
+        phase="pre",
+        sidecar=sidecar,
+    )
+    extract_beat = bg.build_beats_from_approved_plan(
+        [plan_row],
+        {},
+        arc_number=1,
+        event_id="2",
+        phase="pre",
+    )[0]
+    bg.finalize_proven_element_beat(
+        extract_beat, sidecar, "Lorelai", event_id="2", phase="pre",
+    )
+    extract_beat["beat_id"] = "bg_arc1_event2_pre_beat_99"
+    extract_beat["beat_plan_source"] = "claude_extract_v1"
+
+    insert_fields = _parity_fields(insert_beat)
+    extract_fields = _parity_fields(extract_beat)
+    assert insert_fields["pipeline"] == extract_fields["pipeline"] == "kling_o3_omni"
+    assert insert_fields["speaker"] == extract_fields["speaker"] == "Lorelai"
+    assert insert_fields["no_pin"] is True
+    assert insert_fields["no_box_law"] is True
+    assert insert_fields["prompt_not_character_shell"] is True
+    assert insert_beat["beat_plan_source"] == "operator_insert_v1"
+    assert insert_beat.get("reference_image_locked") is True
+    src_path = sidecar["arcs"]["arc_1"]["segments"]["event_2_pre"]["beats"][0][
+        "reference_image"
+    ]["abs_path"]
+    assert insert_beat["reference_image"]["abs_path"] == src_path
+
+
+def test_proven_element_list_uses_laurel():
+    entry = reg.get_proven_element_list_entry("Lorelai")
+    assert entry is not None
+    assert entry["element_name"] == "Laurel"
+    assert entry["element_id"] == "313441038164306"
+    assert entry["voice_id"] == "895210468825628751"
+
+
+def test_validate_alignment_no_pin_bypass():
+    """Legacy pin on beat must not skip element_list alignment checks."""
+    beat = {
+        "o3_voice_stack_pin": {
+            "element_id": "313390553209506",
+            "element_name": "Wrong",
+            "kling_voice_id": "895024801360777292",
+        },
+    }
+    bad_entry = {
+        "element_id": "313441038164306",
+        "element_name": "WrongName",
+        "voice_id": "895210468825628751",
+    }
+    prompt = '@Image1 (Loral). Loral speaks in a warm calm conversational pace: "Hi"'
+    errs = validate_element_list_alignment("Lorelai", bad_entry, prompt, beat=beat)
+    assert any("element_name must be 'Laurel'" in e for e in errs)
+
+
+def test_resolve_o3_element_list_prefers_proven_over_pin():
+    beat = {
+        "speaker": "Lorelai",
+        "o3_voice_stack_pin": {
+            "element_id": "313390553209506",
+            "element_name": "Lorelai",
+            "kling_voice_id": "895024801360777292",
+        },
+    }
+    entry = bg.resolve_o3_element_list_entry(beat, "Lorelai")
+    assert entry["element_name"] == "Laurel"
+    assert entry["element_id"] == "313441038164306"
+
+
+def test_allocate_beat_id_gap_safe():
+    beats = [
+        {"beat_id": "bg_arc1_event2_pre_beat_03"},
+        {"beat_id": "bg_arc1_event2_pre_beat_05"},
+    ]
+    from server_handlers.background import _allocate_bg_beat_id
+
+    new_id = _allocate_bg_beat_id(
+        beats, arc_number=1, event_id_int=2, phase="pre",
+    )
+    assert new_id == "bg_arc1_event2_pre_beat_06"
+
+
+def test_bgtab_uses_insert_modal_wiring():
+    text = (
+        TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx"
+    ).read_text(encoding="utf-8")
+    assert "InsertBeatModal" in text
+    assert "bg_insert_beat" in text
+    assert "bg-add-empty-btn" not in text
+    assert "bg-insert-btn" in text
+    assert "Add empty beat" not in text
+
+
+def test_production_server_routes_insert_beat():
+    text = (TOOLS / "production_server.py").read_text(encoding="utf-8")
+    assert '"/api/bg/insert-beat"' in text
+    assert "_handle_bg_insert_beat" in text

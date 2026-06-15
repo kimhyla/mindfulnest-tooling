@@ -466,8 +466,6 @@ def validate_element_list_alignment(
     errors: list[str] = []
     if not element_entry:
         return errors
-    if isinstance(beat, dict) and isinstance(beat.get("o3_voice_stack_pin"), dict):
-        return errors
     try:
         from tools import kling_character_registry as reg
 
@@ -475,11 +473,21 @@ def validate_element_list_alignment(
             return errors
     except Exception:
         return errors
-    display = _kling_display_name_for_speaker(speaker)
+    expected_name = ""
+    try:
+        from tools import kling_character_registry as reg
+
+        proven_entry = reg.get_proven_element_list_entry(speaker)
+        if proven_entry:
+            expected_name = str(proven_entry.get("element_name") or "").strip()
+    except Exception:
+        pass
+    if not expected_name:
+        expected_name = _kling_display_name_for_speaker(speaker) or ""
     element_name = str(element_entry.get("element_name") or "").strip()
-    if display and element_name and element_name != display:
+    if expected_name and element_name and element_name != expected_name:
         errors.append(
-            f"element_list element_name must be {display!r}, not {element_name!r} "
+            f"element_list element_name must be {expected_name!r}, not {element_name!r} "
             "(misalignment causes generic male Kling TTS)"
         )
     voice_id = str(element_entry.get("voice_id") or "").strip()

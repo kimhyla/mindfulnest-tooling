@@ -3527,15 +3527,20 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                 from tools import kling_character_registry as reg
 
                 if speaker and reg.is_speaker_voice_ready(speaker):
-                    if bg.o3_voice_stack_pin_active(beat):
-                        bg.apply_proven_char_ref_from_pin_source(beat, sidecar)
+                    phase = bg.segment_phase_for_beat(sidecar, str(beat_id)) or "pre"
+                    ev_m = re.match(r"bg_arc\d+_event(\d+)_", str(beat_id))
+                    event_id = ev_m.group(1) if ev_m else ""
+                    if event_id:
+                        bg.finalize_proven_element_beat(
+                            beat, sidecar, speaker, event_id=event_id, phase=phase,
+                        )
                     try:
                         from credentials import load_credentials  # type: ignore
                     except ImportError:
                         from tools.credentials_lib.credentials import load_credentials  # type: ignore
                     creds = load_credentials()
                     ws_key = creds.get("wavespeed_key") or creds.get("wavespeed")
-                    if bg.proven_char_ref_aligned_with_pin_source(beat, sidecar):
+                    if bg.proven_char_ref_aligned_with_proven_source(beat, sidecar, speaker):
                         char_ok = True
                         beat.pop("element_char_ref_error", None)
                     elif not beat.get("reference_image_locked"):
@@ -5115,28 +5120,8 @@ def handle_bg_groups(h)-> None:
     return h._send_json(200, {"ok": True, "groups": groups})
 
 
-def handle_bg_add_beat(h, body: dict)-> None:
-
-    """POST /api/bg/add-beat {after_beat_id, segment} -> {ok, beat}
-    Inserts a blank beat immediately after after_beat_id in the sidecar.
-    beat_id is generated as max(existing_N)+1 (zero-padded to 2 digits)
-    so gaps from prior deletes do not cause collisions.
-
-    Segment derivation per BG_ADD_BEAT_ACTIVE_CONTEXT_V1 (locked
-    2026-05-13): the BG tab is a MULTI-SEGMENT authoring tool by
-    design — its segment dropdown lets the user select any arc/event/
-    phase regardless of which event the storyboard tool is pinned to.
-    Segment for this write is therefore derived from (in priority):
-      1. Client's explicit `segment` field (e.g. "event_2_pre")
-      2. Sidecar `active_context` (server-side memory of last BG dropdown choice)
-      3. Storyboard scope-router fallback (only when BG sidecar has no
-         active_context yet — first-use case).
-    This supersedes the K3 BG_HARDCODED_SCOPE_PURGE_V1 storyboard-pin
-    constraint for BG-add-beat ONLY — storyboard-pin remains canonical
-    for partition writes per scope_router.mutate_partition; BG sidecar
-    is a separate authoring surface keyed by (arc, event_id_int, phase).
-    """
-    # Scope still validated for security (event_id must match running server).
+def _resolve_bg_insert_segment(h, body: dict):
+    """Return (scope, arc_number, event_id_int, phase, segment_raw) or error response."""
     try:
         scope = scope_router.resolve(body, h.app.event_dir.name)
     except scope_router.ScopeError as e:
@@ -5148,8 +5133,6 @@ def handle_bg_add_beat(h, body: dict)-> None:
             extra=e.detail or None,
         )
 
-    # Segment derivation — priority 1: client's explicit `segment` field.
-    # Format "event_<N>_<phase>" matches what BgTab.tsx sends at line ~303.
     segment_raw = (body or {}).get("segment", "")
     arc_number: int | None = None
     event_id_int: int | None = None
@@ -5159,11 +5142,8 @@ def handle_bg_add_beat(h, body: dict)-> None:
         if seg_match:
             event_id_int = int(seg_match.group(1))
             phase = seg_match.group(2)
-            # BG sidecar is single-arc today; arc derives from scope.
-            # When multi-arc lands, the client should pass arc in segment.
             arc_number = 1
 
-    # Priority 2: sidecar active_context (BG dropdown's persisted choice).
     if event_id_int is None or phase is None:
         bg_module = _bg_module()
         with bg_module.sidecar_file_lock():
@@ -5177,8 +5157,6 @@ def handle_bg_add_beat(h, body: dict)-> None:
             except (TypeError, ValueError):
                 pass
 
-    # Priority 3: scope-router fallback (first-use case where BG sidecar
-    # has no active_context yet — usually only triggers in fresh sidecars).
     if event_id_int is None or phase is None:
         try:
             arc_number, event_id_int, phase = _resolve_bg_segment_for_scope(
@@ -5186,61 +5164,152 @@ def handle_bg_add_beat(h, body: dict)-> None:
             )
         except ValueError as exc:
             return h._send_error_v59(
-                       400,
-                       error_code="BG_SEGMENT_UNRESOLVED",
-                       error_message="bg_segment_unresolved",
-                       retry_safe=False,
-                       extra={"detail": str(exc), "hint": "No BG segment could be derived: client did not "
-                    "send `segment` field, sidecar has no active_context, "
-                    "and storyboard scope is unparseable. Pick a segment "
-                    "in the BG dropdown before adding a beat."},
-                   )
+                400,
+                error_code="BG_SEGMENT_UNRESOLVED",
+                error_message="bg_segment_unresolved",
+                retry_safe=False,
+                extra={
+                    "detail": str(exc),
+                    "hint": (
+                        "No BG segment could be derived: client did not send `segment`, "
+                        "sidecar has no active_context, and storyboard scope is unparseable."
+                    ),
+                },
+            )
 
-    after_beat_id = body.get("after_beat_id", "")
+    return scope, int(arc_number or 1), int(event_id_int), str(phase), segment_raw
+
+
+def _allocate_bg_beat_id(
+    beats: list,
+    *,
+    arc_number: int,
+    event_id_int: int,
+    phase: str,
+) -> str:
+    prefix = f"bg_arc{arc_number}_event{event_id_int}_{phase}_beat_"
+    existing_nums: list[int] = []
+    for b in beats:
+        bid = b.get("beat_id", "")
+        if bid.startswith(prefix):
+            try:
+                existing_nums.append(int(bid[len(prefix):]))
+            except ValueError:
+                pass
+    new_num = (max(existing_nums) + 1) if existing_nums else 1
+    return f"{prefix}{new_num:02d}"
+
+
+def handle_bg_add_beat(h, body: dict) -> None:
+    """Deprecated blank-row insert — use POST /api/bg/insert-beat with plan_row."""
+    return h._send_error_v59(
+        410,
+        error_code="INSERT_BEAT_FORM_REQUIRED",
+        error_message=(
+            "Blank add-beat is removed. Use POST /api/bg/insert-beat with "
+            "speaker, dialogue_text, and scene_notes in plan_row."
+        ),
+        retry_safe=False,
+        extra={"replacement_endpoint": "/api/bg/insert-beat"},
+    )
+
+
+def handle_bg_insert_beat(h, body: dict) -> None:
+    """POST /api/bg/insert-beat — materialize one beat via extract builder (form-first)."""
+    resolved = _resolve_bg_insert_segment(h, body)
+    if not isinstance(resolved, tuple):
+        return resolved
+    _scope, arc_number, event_id_int, phase, segment_raw = resolved
+
+    plan_row = (body or {}).get("plan_row")
+    if not isinstance(plan_row, dict):
+        return h._send_error_v59(
+            400,
+            error_code="INSERT_PLAN_INVALID",
+            error_message="plan_row object required",
+            retry_safe=False,
+        )
+
+    from beat_extract_policy import normalize_plan_row
+
+    normalized, norm_warnings = normalize_plan_row(plan_row, beat_index=99)
+    speaker = str(normalized.get("speaker") or "").strip()
+    beat_type = str(normalized.get("beat_type") or "dialogue").lower()
+    dialogue = str(normalized.get("dialogue_text") or "").strip()
+
+    if beat_type not in ("stage_still", "stage_direction"):
+        if not speaker or speaker == "Character":
+            return h._send_error_v59(
+                400,
+                error_code="INSERT_PLAN_INVALID",
+                error_message="speaker required (not Character)",
+                retry_safe=False,
+            )
+        if not dialogue:
+            return h._send_error_v59(
+                400,
+                error_code="INSERT_PLAN_INVALID",
+                error_message="dialogue_text required for dialogue beats",
+                retry_safe=False,
+            )
+
+    after_beat_id = str((body or {}).get("after_beat_id") or "")
 
     bg = _bg_module()
     event_id_str = str(event_id_int)
     with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
-        seg = bg.get_seg_entry(sidecar, arc_number=arc_number, event_id=event_id_int, phase=phase)
+        seg = bg.get_seg_entry(
+            sidecar, arc_number=arc_number, event_id=event_id_int, phase=phase,
+        )
         beats = seg.get("beats", [])
 
-        # Find insertion index
-        insert_after = len(beats) - 1  # default: append at end
+        insert_after = len(beats) - 1
         for i, b in enumerate(beats):
             if b.get("beat_id") == after_beat_id:
                 insert_after = i
                 break
 
-        # Generate beat_id: max(N)+1 across ALL beats in this segment.
-        prefix = f"bg_arc{arc_number}_event{event_id_int}_{phase}_beat_"
-        existing_nums = []
-        for b in beats:
-            bid = b.get("beat_id", "")
-            if bid.startswith(prefix):
-                try:
-                    existing_nums.append(int(bid[len(prefix):]))
-                except ValueError:
-                    pass
-        new_num = (max(existing_nums) + 1) if existing_nums else 1
-        new_beat_id = f"{prefix}{new_num:02d}"
+        new_beat_id = _allocate_bg_beat_id(
+            beats,
+            arc_number=arc_number,
+            event_id_int=event_id_int,
+            phase=phase,
+        )
 
-        new_beat = bg.create_blank_bg_beat(new_beat_id, event_id_str, phase)
+        try:
+            new_beat = bg.materialize_sidecar_beat_from_plan_row(
+                normalized,
+                beat_id=new_beat_id,
+                arc_number=arc_number,
+                event_id=event_id_str,
+                phase=phase,
+                sidecar=sidecar,
+            )
+        except ValueError as exc:
+            return h._send_error_v59(
+                400,
+                error_code="INSERT_PLAN_INVALID",
+                error_message=str(exc),
+                retry_safe=False,
+            )
+
         beats.insert(insert_after + 1, new_beat)
         bg.write_sidecar(sidecar)
 
     print(
-        f"[BG] add-beat: inserted {new_beat_id} into "
-        f"arc{arc_number}/event_{event_id_int}_{phase} "
-        f"after {after_beat_id!r} (segment_source="
-        f"{'client_field' if segment_raw else 'sidecar_ctx_or_scope'})"
+        f"[BG] insert-beat: materialized {new_beat_id} speaker={speaker!r} into "
+        f"arc{arc_number}/event_{event_id_int}_{phase} after {after_beat_id!r}",
+        flush=True,
     )
     return h._send_json(200, {
         "ok": True,
         "beat": new_beat,
+        "beat_id": new_beat_id,
         "segment": f"event_{event_id_int}_{phase}",
         "arc_number": arc_number,
+        "warnings": norm_warnings,
     })
 
 
