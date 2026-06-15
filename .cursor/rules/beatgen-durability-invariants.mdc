@@ -1,0 +1,68 @@
+---
+description: Beat Gen fix categories, proof requirements, and anti-hallucination ship bar
+alwaysApply: true
+---
+
+# Beat Gen durability invariants
+
+## Three fix categories (never conflate in reports)
+
+| Cat | What | Durable how | Safe to ignore? |
+|-----|------|-------------|-----------------|
+| **1 — Code** | Python/UI/heals/submit handlers | Commit + deploy + pytest + `build-sha` | **No** — must land in git |
+| **2 — Runtime data** | `character_subjects.json`, registry binds, sidecar rows | Dropbox on disk; per character/event | **No for that event** — must be set up once per cast/event |
+| **3 — One-off ops** | Manual redo, bind rollback, sidecar edit during triage | **Not durable alone** | **Yes only after** cat-1 test + rule codify the invariant |
+
+**Rule:** Category 3 debugging is **discovery**, not **shipping**. Every cat-3 incident that revealed a cat-1 bug must end with: minimal code diff, pytest, deploy proof. Saying "beat 27 works now" without a commit is **not fixed**.
+
+## Global code paths (apply to ALL beats / events)
+
+These run on every BG session load (`_migrate_sidecar`) and every O3 submit — **not** beat-specific:
+
+- Element-bound prompt normalize + framing extract (`scene_notes` sync)
+- Staging strip / V2 prompt shell
+- Voice bind drift gate (`VOICE_BIND_DRIFT`)
+- Sidecar file lock + phantom-beat guards
+- Locked library char-ref immutability
+- O3 duration, poll/restart reliability
+
+New `Event_N` gets cat-1 behavior automatically **after deploy**. Cat-2 still requires Element registration for that event's cast.
+
+## Mandatory proof block (agent must not skip)
+
+Before telling Kim a Beat Gen fix is done:
+
+1. **Reproduce** — log/curl/sidecar field before change
+2. **Commit** on `foundation/tooling-production-20260611` (or active feature branch)
+3. **`bash Production/scripts/deploy_storyboard_v59.sh --event Event_2`** (or active event)
+4. **`build-sha`** in served HTML = `git rev-parse --short HEAD`
+5. **Pytest** — at minimum `verify_o3_intro_contract.sh` green
+6. **User-path** — one curl or browser proof on the affected flow
+
+Never suggest Cursor Find Issues or Bugbot — CI + deploy gates are the review layer.
+
+## Category 3 → Category 1 extraction checklist
+
+When triaging a single beat (e.g. beat 27):
+
+- [ ] Is the root cause in shared handler/migrate code? → cat-1 fix + test
+- [ ] Was it only wrong sidecar/registry data? → document cat-2 recovery; add guard if recurrence likely
+- [ ] Did we run a one-off CLI/sidecar patch? → add pytest or deploy gate so the bug class cannot return silently
+
+## New event setup
+
+See `Production/docs/BEATGEN_NEW_EVENT_CHECKLIST.md` — code heals prompts; it does not register Kling Elements.
+
+## Deploy gates (ground truth)
+
+| Gate | Covers |
+|------|--------|
+| `verify_o3_intro_contract.sh` | O3 sidecar contract, locks, still insert, voice bind |
+| `verify_storyboard_session_durability.sh` | Prompt shape pytest + scope/library guards |
+| `smoke_kling_canonical_prompt_shape_live.sh` | Live Event_2 intro **and** resolution V2 lint |
+
+## Do not regress
+
+- Pose re-register must not change `kling_voice_id` (see `kling-voice-bind-guardrails.mdc`)
+- User framing in prompt box must survive submit for Element-bound beats (closeup / medium shot / head and torso keywords)
+- `_migrate_sidecar` must not redirect locked library char refs when file still exists

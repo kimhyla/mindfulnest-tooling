@@ -21,5 +21,8 @@ python3 -m pytest \
   Production/tools/tests/test_still_insert_render.py \
   Production/tools/tests/test_bg_add_beat_sidecar_lock.py \
   Production/tools/tests/test_o3_element_pipeline_duration.py \
+  Production/tools/tests/test_kling_voice_bind.py \
+  Production/tools/tests/test_kling_o3_duration_extraction.py \
+  Production/tools/tests/test_element_voice_alignment.py \
   -q
 echo "[o3-intro-contract] all gates passed"

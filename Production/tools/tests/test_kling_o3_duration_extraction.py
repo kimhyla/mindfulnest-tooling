@@ -177,9 +177,10 @@ Children's illustrated fantasy storybook style, warm golden forest light""",
     assert "closeup" in normalized.lower()
     assert "head and torso" in normalized.lower()
     assert bg.prompt_body_has_performance_staging(normalized) is False
-    assert bg.heal_o3_element_submit_prompt(beat) is True
-    assert "closeup" in beat["kling_o3_prompt"].lower()
-    assert "head and torso" in beat["kling_o3_prompt"].lower()
+    assert bg.sync_beat_scene_notes_from_kling_prompt(beat) is True
+    assert "closeup" in beat["scene_notes"].lower()
+    beat["kling_o3_prompt"] = normalized
+    assert bg.heal_o3_element_submit_prompt(beat) is False  # idempotent once normalized
 
 
 def test_sync_beat_scene_notes_from_kling_prompt(monkeypatch):

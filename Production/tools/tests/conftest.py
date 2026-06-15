@@ -35,3 +35,16 @@ os.environ.setdefault("PRODUCTION_SERVER_SINGLE_MACHINE", "1")
 collect_ignore = [
     "test_tier3_browser_e2e.py",
 ]
+
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolate_kling_character_registry_prod_root():
+    """Tests call set_prod_root(tmp_path); reset so later tests see real registry."""
+    from tools import kling_character_registry as reg
+
+    saved = reg._PROD_ROOT  # noqa: SLF001 — test isolation only
+    yield
+    reg._PROD_ROOT = saved  # noqa: SLF001
