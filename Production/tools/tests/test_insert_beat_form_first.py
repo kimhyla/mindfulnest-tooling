@@ -94,8 +94,12 @@ def test_create_blank_bg_beat_raises():
         bg.create_blank_bg_beat("bg_arc1_event2_pre_beat_99", "2", "pre")
 
 
-def test_materialize_lorelai_matches_extract_shape(tmp_path):
+def test_materialize_lorelai_matches_extract_shape(tmp_path, monkeypatch):
     sidecar = _minimal_sidecar_with_proven_source(tmp_path)
+    monkeypatch.setattr(
+        "tools.kling_character_registry.resolve_proven_o3_bind",
+        lambda _entry: {"proven_from_beat_id": "bg_arc1_event2_pre_beat_18"},
+    )
     plan_row = {
         "speaker": "Lorelai",
         "dialogue_text": "Test dialogue for parity.",
@@ -143,6 +147,10 @@ def test_materialize_lorelai_matches_extract_shape(tmp_path):
 def test_finalize_proven_element_always_syncs_gate(tmp_path, monkeypatch):
     sidecar = _minimal_sidecar_with_proven_source(tmp_path)
     beat = {"beat_id": "bg_arc1_event2_pre_beat_99", "speaker": "Lorelai"}
+    monkeypatch.setattr(
+        "tools.kling_character_registry.resolve_proven_o3_bind",
+        lambda _entry: {"proven_from_beat_id": "bg_arc1_event2_pre_beat_18"},
+    )
     monkeypatch.setattr(bg, "sync_element_char_ref_status", lambda b, **kw: b.update(
         {"element_char_ref_ok": True},
     ) or True)
@@ -221,6 +229,154 @@ def test_resolve_o3_element_list_prefers_proven_over_pin():
     entry = bg.resolve_o3_element_list_entry(beat, "Lorelai")
     assert entry["element_name"] == "Loral"
     assert entry["element_id"] == "313441038164306"
+
+
+def test_operator_insert_char_ref_parity_respects_locked_library_drop(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(bg, "_PROD_DIR", str(tmp_path))
+    extract_pose = tmp_path / "Lorelai" / "poses" / "lorelai_canonical_neutral.png"
+    library_pose = tmp_path / "Event_2" / "library" / "chatgpt_still.png"
+    extract_pose.parent.mkdir(parents=True)
+    library_pose.parent.mkdir(parents=True)
+    extract_pose.write_bytes(b"canonical")
+    library_pose.write_bytes(b"library")
+    sidecar = {
+        "arcs": {
+            "1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [
+                            {
+                                "beat_id": "bg_arc1_event2_pre_beat_03",
+                                "speaker": "Lorelai",
+                                "beat_plan_source": "claude_extract_v1",
+                                "reference_image": {
+                                    "abs_path": str(extract_pose.resolve()),
+                                },
+                            },
+                            {
+                                "beat_id": "bg_arc1_event2_pre_beat_30",
+                                "speaker": "Lorelai",
+                                "beat_plan_source": "operator_insert_v1",
+                                "reference_image": {
+                                    "abs_path": str(library_pose.resolve()),
+                                },
+                                "reference_image_locked": True,
+                                "o3_prompt_box_law": True,
+                            },
+                        ],
+                    },
+                },
+            },
+        },
+    }
+    _, insert = bg.find_beat(sidecar, "bg_arc1_event2_pre_beat_30")
+    changed = bg.ensure_operator_insert_char_ref_parity(
+        insert, sidecar, "Lorelai", event_id="2", phase="pre",
+    )
+    assert changed is False
+    assert bg.resolve_beat_char_ref_path(insert) == str(library_pose.resolve())
+    assert insert.get("o3_prompt_box_law") is True
+
+
+def test_operator_insert_char_ref_parity_copies_extract_pose_when_unlocked(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(bg, "_PROD_DIR", str(tmp_path))
+    extract_pose = tmp_path / "Lorelai" / "poses" / "lorelai_canonical_neutral.png"
+    library_pose = tmp_path / "Event_2" / "library" / "chatgpt_still.png"
+    extract_pose.parent.mkdir(parents=True)
+    library_pose.parent.mkdir(parents=True)
+    extract_pose.write_bytes(b"canonical")
+    library_pose.write_bytes(b"library")
+    sidecar = {
+        "arcs": {
+            "1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [
+                            {
+                                "beat_id": "bg_arc1_event2_pre_beat_03",
+                                "speaker": "Lorelai",
+                                "beat_plan_source": "claude_extract_v1",
+                                "reference_image": {
+                                    "abs_path": str(extract_pose.resolve()),
+                                    "thumb_b64": "data:image/jpeg;base64,stale",
+                                },
+                            },
+                            {
+                                "beat_id": "bg_arc1_event2_pre_beat_30",
+                                "speaker": "Lorelai",
+                                "beat_plan_source": "operator_insert_v1",
+                                "reference_image": {
+                                    "abs_path": str(library_pose.resolve()),
+                                },
+                                "reference_image_locked": False,
+                            },
+                        ],
+                    },
+                },
+            },
+        },
+    }
+    _, insert = bg.find_beat(sidecar, "bg_arc1_event2_pre_beat_30")
+    changed = bg.ensure_operator_insert_char_ref_parity(
+        insert, sidecar, "Lorelai", event_id="2", phase="pre",
+    )
+    assert changed is True
+    assert bg.resolve_beat_char_ref_path(insert) == str(extract_pose.resolve())
+    assert "thumb_b64" not in (insert.get("reference_image") or {})
+
+
+def test_finalize_proven_element_respects_locked_char_ref_on_generate(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(bg, "_PROD_DIR", str(tmp_path))
+    proven_pose = tmp_path / "Lorelai" / "poses" / "lorelai_canonical_neutral.png"
+    user_pose = tmp_path / "Event_2" / "library" / "user_drop.png"
+    proven_pose.parent.mkdir(parents=True)
+    user_pose.parent.mkdir(parents=True)
+    proven_pose.write_bytes(b"proven")
+    user_pose.write_bytes(b"user")
+    sidecar = {
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [{
+                            "beat_id": "bg_arc1_event2_pre_beat_03",
+                            "speaker": "Lorelai",
+                            "reference_image": {"abs_path": str(proven_pose.resolve())},
+                        }],
+                    },
+                },
+            },
+        },
+    }
+    beat = {
+        "beat_id": "bg_arc1_event2_pre_beat_30",
+        "speaker": "Lorelai",
+        "beat_plan_source": "operator_insert_v1",
+        "reference_image": {"abs_path": str(user_pose.resolve())},
+        "reference_image_locked": True,
+        "o3_prompt_box_law": True,
+    }
+
+    def fake_proven(_speaker):
+        return {"proven_from_beat_id": "bg_arc1_event2_pre_beat_03"}
+
+    monkeypatch.setattr(
+        "tools.kling_character_registry.resolve_proven_o3_bind",
+        fake_proven,
+    )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.get_character_entry",
+        lambda _s: {},
+    )
+    changed = bg.finalize_proven_element_beat(
+        beat, sidecar, "Lorelai", event_id="2", phase="pre",
+    )
+    bg.ensure_operator_insert_char_ref_parity(
+        beat, sidecar, "Lorelai", event_id="2", phase="pre",
+    )
+    assert changed is False
+    assert bg.resolve_beat_char_ref_path(beat) == str(user_pose.resolve())
+    assert beat.get("o3_prompt_box_law") is True
 
 
 def test_allocate_beat_id_gap_safe():

@@ -6351,6 +6351,21 @@ def materialize_sidecar_beat_from_plan_row(
     return beat
 
 
+def user_locked_char_ref_blocks_proven_overwrite(beat: dict) -> bool:
+    """True when operator locked @Image1 to a live file — skip proven ref copy on Generate."""
+    if not beat.get("reference_image_locked"):
+        return False
+    path = resolve_beat_char_ref_path(beat) or ""
+    return bool(path and os.path.isfile(path))
+
+
+def _proven_reference_image_copy(src_ref: dict) -> dict:
+    """Copy proven ref without stale thumb_b64 from the source beat."""
+    out = copy.deepcopy(src_ref)
+    out.pop("thumb_b64", None)
+    return out
+
+
 def finalize_proven_element_beat(
     beat: dict,
     sidecar: dict,
@@ -6378,10 +6393,14 @@ def finalize_proven_element_beat(
     src_ref = source.get("reference_image")
     if isinstance(src_ref, dict):
         src_path = str(src_ref.get("abs_path") or "").strip()
-        if src_path and os.path.isfile(src_path):
+        if (
+            src_path
+            and os.path.isfile(src_path)
+            and not user_locked_char_ref_blocks_proven_overwrite(beat)
+        ):
             cur = resolve_beat_char_ref_path(beat) or ""
             if os.path.normpath(cur) != os.path.normpath(src_path):
-                beat["reference_image"] = copy.deepcopy(src_ref)
+                beat["reference_image"] = _proven_reference_image_copy(src_ref)
                 beat["reference_image_locked"] = True
                 changed = True
     src_bg = source.get("bg_ref_image")
@@ -6907,6 +6926,72 @@ def archive_kling_o3_video_before_redo(
     return None
 
 
+def resolve_proven_char_ref_source_beat_id_for_speaker(
+    sidecar: dict,
+    speaker: str,
+) -> str | None:
+    """Beat id whose @Image1 is the voice-proven extract row for ``speaker``."""
+    try:
+        from tools import kling_character_registry as reg
+
+        proven = reg.resolve_proven_o3_bind(reg.get_character_entry(speaker))
+        if proven:
+            bid = str(proven.get("proven_from_beat_id") or "").strip()
+            if bid:
+                _, src = find_beat(sidecar, bid)
+                if src and resolve_beat_char_ref_path(src):
+                    return bid
+    except Exception:
+        pass
+    for arc in (sidecar.get("arcs") or {}).values():
+        for seg in (arc.get("segments") or {}).values():
+            for row in seg.get("beats") or []:
+                if str(row.get("speaker") or "").strip() != speaker:
+                    continue
+                if row.get("beat_plan_source") == "operator_insert_v1":
+                    continue
+                if resolve_beat_char_ref_path(row):
+                    return str(row.get("beat_id") or "").strip() or None
+    return None
+
+
+def ensure_operator_insert_char_ref_parity(
+    beat: dict,
+    sidecar: dict,
+    speaker: str,
+    *,
+    event_id: str,
+    phase: str,
+) -> bool:
+    """Point manual-insert @Image1 at the proven extract char ref (voice parity)."""
+    if beat.get("beat_plan_source") != "operator_insert_v1":
+        return False
+    source_id = resolve_proven_char_ref_source_beat_id_for_speaker(sidecar, speaker)
+    if not source_id:
+        return False
+    _, source = find_beat(sidecar, source_id)
+    if not source:
+        return False
+    src_ref = source.get("reference_image")
+    if not isinstance(src_ref, dict):
+        return False
+    src_path = str(src_ref.get("abs_path") or "").strip()
+    if not src_path or not os.path.isfile(src_path):
+        return False
+    if user_locked_char_ref_blocks_proven_overwrite(beat):
+        return False
+    cur = resolve_beat_char_ref_path(beat) or ""
+    if cur and os.path.normpath(cur) == os.path.normpath(src_path):
+        return False
+    beat["reference_image"] = _proven_reference_image_copy(src_ref)
+    beat["reference_image_locked"] = True
+    beat.pop("o3_prompt_box_law", None)
+    beat.pop("o3_prompt_box_law_at", None)
+    apply_kling_o3_defaults_to_beat(beat, event_id, phase)
+    sync_element_char_ref_status(beat, heal_mismatch=False)
+    return True
+
+
 def proven_char_ref_source_beat_id(beat: dict) -> str | None:
     """Beat id to copy @Image1 from when ``o3_voice_stack_pin`` references a proven row."""
     pin = beat.get("o3_voice_stack_pin")
@@ -6936,10 +7021,12 @@ def apply_proven_char_ref_from_pin_source(beat: dict, sidecar: dict) -> bool:
     src_path = str(src_ref.get("abs_path") or "").strip()
     if not src_path or not os.path.isfile(src_path):
         return False
+    if user_locked_char_ref_blocks_proven_overwrite(beat):
+        return False
     cur_path = resolve_beat_char_ref_path(beat) or ""
     if cur_path and os.path.normpath(cur_path) == os.path.normpath(src_path):
         return False
-    beat["reference_image"] = copy.deepcopy(src_ref)
+    beat["reference_image"] = _proven_reference_image_copy(src_ref)
     beat["reference_image_locked"] = True
     sync_element_char_ref_status(beat, heal_mismatch=False)
     return True
@@ -7170,8 +7257,33 @@ def list_o3_element_delivery_paths_on_disk(beat_id: str, event_dir: str | Path) 
     return paths
 
 
+def _canonical_o3_option_label(video_path: str, gen: int | None = None) -> str:
+    """Stable Beat Gen label from delivery filename generation counter."""
+    parsed = gen if gen is not None else _kling_o3_gen_from_video_path(video_path)
+    if parsed is not None:
+        return f"g{parsed} O3 Element voice"
+    return "recovered O3 delivery"
+
+
+def _sync_o3_option_gen_label(opt: dict) -> bool:
+    """Ensure option row generation + label match the delivery filename."""
+    video_path = str(opt.get("video_path") or "")
+    gen = _kling_o3_gen_from_video_path(video_path)
+    if gen is None:
+        return False
+    canonical = _canonical_o3_option_label(video_path, gen)
+    changed = False
+    if opt.get("generation") != gen:
+        opt["generation"] = gen
+        changed = True
+    if opt.get("label") != canonical:
+        opt["label"] = canonical
+        changed = True
+    return changed
+
+
 def refresh_o3_ui_slot_layout(beat: dict) -> bool:
-    """Assign UI containers 0–2 to the three newest on-disk delivery options."""
+    """Assign UI containers 0–2 to the three newest delivery options (by filename gN)."""
     options = [
         o for o in (beat.get("kling_o3_options") or [])
         if isinstance(o, dict) and str(o.get("video_path") or "").strip()
@@ -7183,6 +7295,9 @@ def refresh_o3_ui_slot_layout(beat: dict) -> bool:
         reverse=True,
     )
     changed = False
+    for opt in options:
+        if _sync_o3_option_gen_label(opt):
+            changed = True
     for idx in range(3):
         if idx >= len(options):
             break
@@ -7230,15 +7345,14 @@ def reconcile_o3_disk_deliveries_for_beat(beat: dict, event_dir: str | Path) -> 
         gen = _kling_o3_gen_from_video_path(delivery_str)
         if delivery_str in by_path:
             opt = by_path[delivery_str]
-            if gen is not None and not opt.get("label"):
-                opt["label"] = f"g{gen} O3 Element voice"
+            if _sync_o3_option_gen_label(opt):
                 changed = True
             continue
         log_path = _find_job_log_for_delivery_path(event_dir, beat_id, delivery)
         binding = _o3_voice_binding_from_job_log(log_path, delivery) if log_path else {}
         if not binding and speaker:
             binding = _o3_voice_binding_snapshot(beat, speaker)
-        label = f"g{gen} O3 Element voice" if gen is not None else "recovered O3 delivery"
+        label = _canonical_o3_option_label(delivery_str, gen)
         opt_row: dict = {
             "key": _kling_o3_option_key(beat_id, delivery_str),
             "label": label,
@@ -8056,8 +8170,14 @@ def import_storyboard_clip_to_kling_o3(
 def enrich_beat_kling_o3_pinned(beat: dict, event_dir: str | Path) -> dict:
     """Return beat copy with transient ``kling_o3_pinned_preserve`` for API responses."""
     out = dict(beat)
+    raw_opts = beat.get("kling_o3_options")
+    if isinstance(raw_opts, list):
+        out["kling_o3_options"] = [
+            dict(o) if isinstance(o, dict) else o for o in raw_opts
+        ]
     beat_id = beat.get("beat_id")
     if beat_id:
+        refresh_o3_ui_slot_layout(out)
         out["kling_o3_pinned_preserve"] = has_pinned_kling_o3_preserve(beat_id, event_dir)
         clips_dir = kling_o3_clips_dir(event_dir)
         out["kling_o3_clips_dir"] = str(clips_dir)
