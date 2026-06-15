@@ -421,31 +421,25 @@ def test_validate_element_list_alignment_rejects_lorelai_element_name(monkeypatc
     assert any("element_name must be 'Loral'" in e for e in errs)
 
 
-def test_prune_stale_o3_voice_options_drops_unbound_legacy_slots(monkeypatch):
-    monkeypatch.setattr(
-        "tools.kling_character_registry.get_element_list_entry",
-        lambda _s: {
-            "element_id": "313441038164306",
-            "element_name": "Loral",
-            "voice_id": "895210468825628751",
-        },
-    )
-    monkeypatch.setattr(
-        "tools.kling_character_registry.get_bound_voice_id",
-        lambda _s: "895210468825628751",
-    )
+def test_prune_stale_o3_voice_options_drops_missing_files_only(tmp_path, monkeypatch):
+    """Paid-output spec: prune drops missing paths only — not voice bind mismatches."""
+    g2 = tmp_path / "g2_delivery.mp4"
+    g7 = tmp_path / "g7_delivery.mp4"
+    g2.write_bytes(b"x")
+    g7.write_bytes(b"y")
     beat = {
         "speaker": "Lorelai",
-        "kling_o3_video_path": "/clips/g7_delivery.mp4",
+        "kling_o3_video_path": str(g7),
         "o3_element_quality": {"element_id": "313441038164306", "kling_voice_id": "895210468825628751"},
         "kling_o3_options": [
-            {"video_path": "/clips/g2_delivery.mp4", "label": "old"},
-            {"video_path": "/clips/g7_delivery.mp4", "label": "active"},
+            {"video_path": str(g2), "label": "old"},
+            {"video_path": str(g7), "label": "active"},
+            {"video_path": str(tmp_path / "missing_delivery.mp4"), "label": "ghost"},
         ],
     }
     assert bg.prune_stale_o3_voice_options(beat, "Lorelai") is True
     paths = [o["video_path"] for o in beat["kling_o3_options"]]
-    assert paths == ["/clips/g7_delivery.mp4"]
+    assert paths == [str(g2), str(g7)]
 
 
 def test_validate_element_bound_voice_prompt_accepts_locked_delivery():
