@@ -6078,8 +6078,36 @@ def element_char_ref_gate(beat: dict) -> tuple[bool, str]:
         return False, str(exc)
 
 
+_O3_VOICE_FIX_RUNNING_STATUSES = frozenset({
+    "o3_running",
+    "job_running",
+    "job_starting",
+    "visual_running",
+    "lipsync_running",
+    "tts_ready",
+})
+
+
+def beat_o3_voice_job_running(beat: dict) -> bool:
+    """True while an O3 voice subprocess is in flight (matches server poll reconcile)."""
+    status = str(beat.get("status") or "")
+    voice_fix = str(beat.get("kling_o3_voice_fix_status") or "")
+    if any(status.startswith(prefix) for prefix in ("o3_voice_job_", "o3_element_")):
+        return True
+    if voice_fix in _O3_VOICE_FIX_RUNNING_STATUSES:
+        return True
+    job_id = str(beat.get("kling_o3_voice_fix_ui_job_id") or "").strip()
+    if job_id and not voice_fix.startswith("failed") and voice_fix != "approved":
+        return True
+    return False
+
+
 def sync_element_char_ref_status(beat: dict, *, heal_mismatch: bool = True) -> bool:
     """Persist element_char_ref_ok/error on beat for UI + submit gates."""
+    if beat_o3_voice_job_running(beat):
+        beat["element_char_ref_ok"] = True
+        beat.pop("element_char_ref_error", None)
+        return True
     speaker = str(beat.get("speaker") or "").strip()
     try:
         from tools import kling_character_registry as reg
@@ -6123,6 +6151,14 @@ def ensure_beat_element_char_ref_for_o3(beat: dict, wavespeed_key: str) -> bool:
 
         if not reg.is_speaker_voice_ready(speaker):
             return sync_element_char_ref_status(beat, heal_mismatch=False)
+    except Exception:
+        return sync_element_char_ref_status(beat, heal_mismatch=False)
+    reg_result = try_register_dropped_char_ref_on_element(beat, wavespeed_key)
+    if reg_result.get("ok"):
+        return sync_element_char_ref_status(beat, heal_mismatch=False)
+    try:
+        from tools import kling_character_registry as reg
+
         reg.reconcile_char_ref_with_element(speaker, char_path, wavespeed_key)
     except Exception:
         return sync_element_char_ref_status(beat, heal_mismatch=False)

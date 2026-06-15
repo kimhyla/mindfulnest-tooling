@@ -313,7 +313,12 @@ def element_image_paths(speaker: str) -> list[Path]:
     return out
 
 
-def char_ref_matches_element_images(char_path: str, speaker: str) -> tuple[bool, str]:
+def char_ref_matches_element_images(
+    char_path: str,
+    speaker: str,
+    *,
+    allow_pose_dir_fallback: bool = True,
+) -> tuple[bool, str]:
     """True when beat @Image1 file matches an Element image (path or sha256)."""
     if not char_path or not os.path.isfile(char_path):
         return False, "character reference file missing"
@@ -332,6 +337,11 @@ def char_ref_matches_element_images(char_path: str, speaker: str) -> tuple[bool,
     element_hashes.discard(None)
     if char_hash in element_hashes:
         return True, ""
+    # Library drops often copy bytes into <Char>/poses/ before refer_images catches up.
+    if allow_pose_dir_fallback:
+        char_key = resolve_registry_key(speaker) or speaker
+        if find_pose_rel_by_hash(char_key, char_path):
+            return True, ""
     key = resolve_registry_key(speaker) or speaker
     rels = ", ".join(
         str(p.relative_to(prod_root())) if p.is_relative_to(prod_root()) else str(p)
@@ -376,7 +386,9 @@ def reconcile_char_ref_with_element(
     """
     from tools.kling_element_voice import register_kling_element
 
-    if char_ref_matches_element_images(char_path, speaker)[0]:
+    if char_ref_matches_element_images(
+        char_path, speaker, allow_pose_dir_fallback=False,
+    )[0]:
         entry = get_character_entry(speaker) or {}
         return {
             "ok": True,

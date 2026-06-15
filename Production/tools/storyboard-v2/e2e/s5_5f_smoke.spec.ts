@@ -725,9 +725,11 @@ test.describe('F13 — Phase A vs Phase B branching', () => {
     await gotoApp(page);
     await openPhaseB(page);
 
-    // 3-clip slots are Phase-A-only; under Phase B the section must be absent.
-    await expect(page.locator('[data-testid="phase-a-clip-section"]')).toHaveCount(0);
-    await expect(page.locator('[data-testid="phase-a-clip-slot-flyin"]')).toHaveCount(0);
+    // 3-clip slots are Phase-A-only; under Phase B the section must be absent
+    // from the Phase B pane (Phase A keepalive stays mounted but hidden).
+    const phaseBPane = page.locator('[data-testid="pane-phase-b-keepalive"]');
+    await expect(phaseBPane.locator('[data-testid="phase-a-clip-section"]')).toHaveCount(0);
+    await expect(phaseBPane.locator('[data-testid="phase-a-clip-slot-flyin"]')).toHaveCount(0);
     // Single base-clip select still present for Phase B (existing behavior).
     await expect(page.locator('[data-testid="phase-b-baseclip-select"]')).toBeVisible();
   });

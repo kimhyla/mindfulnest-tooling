@@ -734,6 +734,53 @@ def test_register_kling_element_uses_registry_prod_root(tmp_path: Path, monkeypa
     assert all(str(tmp_path) in path for path in uploaded)
 
 
+def test_char_ref_matches_on_disk_pose_before_refer_images_catch_up(
+    tmp_path: Path, monkeypatch,
+):
+    """Library still bytes copied to poses/ must pass gate even when refer_images lag."""
+    library = tmp_path / "Event_2" / "library" / "sources" / "ChatGPT_Jun_15.png"
+    library.parent.mkdir(parents=True, exist_ok=True)
+    library.write_bytes(b"operator-still")
+    pose = tmp_path / "Lorelai" / "poses" / "chatgpt_jun_15.png"
+    pose.parent.mkdir(parents=True, exist_ok=True)
+    pose.write_bytes(b"operator-still")
+    (tmp_path / "Lorelai" / "poses" / "lorelai_canonical_neutral.png").write_bytes(b"frontal")
+    (tmp_path / "character_subjects.json").write_text(
+        json.dumps({
+            "characters": {
+                "Lorelai": {
+                    "status": "active",
+                    "element_id": "el1",
+                    "kling_voice_id": "v1",
+                    "frontal_image": "Lorelai/poses/lorelai_canonical_neutral.png",
+                    "refer_images": ["Lorelai/poses/lorelai_canonical_neutral.png"],
+                    "element_name": "Lorelai",
+                },
+            },
+        }),
+            encoding="utf-8",
+        )
+    from tools import kling_character_registry as reg
+
+    reg.set_prod_root(tmp_path)
+    ok, detail = reg.char_ref_matches_element_images(str(library), "Lorelai")
+    assert ok is True, detail
+
+
+def test_sync_element_char_ref_ok_while_o3_job_running():
+    beat = {
+        "speaker": "Lorelai",
+        "reference_image_locked": True,
+        "element_char_ref_ok": False,
+        "element_char_ref_error": "stale mismatch",
+        "kling_o3_voice_fix_status": "o3_running",
+        "kling_o3_voice_fix_ui_job_id": "abc123",
+    }
+    assert bg.sync_element_char_ref_status(beat, heal_mismatch=False) is True
+    assert beat["element_char_ref_ok"] is True
+    assert "element_char_ref_error" not in beat
+
+
 def test_bg_add_element_pose_handler_registered():
     text = (TOOLS / "server_handlers" / "background.py").read_text(encoding="utf-8")
     assert "def handle_bg_add_element_pose" in text

@@ -3550,6 +3550,7 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                     ws_key = creds.get("wavespeed_key") or creds.get("wavespeed")
                     if bg.proven_char_ref_aligned_with_proven_source(beat, sidecar, speaker):
                         char_ok = True
+                        beat["element_char_ref_ok"] = True
                         beat.pop("element_char_ref_error", None)
                     elif not beat.get("reference_image_locked"):
                         bg.ensure_beat_element_aligned_reference(beat)

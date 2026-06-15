@@ -228,6 +228,9 @@ test.describe('S5 — library rendering edge cases', () => {
     await page.route('**/api/cr/library**', async (r) => {
       await r.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"server"}' });
     });
+    await page.route('**/api/stitch_editor/library**', async (r) => {
+      await r.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"server"}' });
+    });
     await gotoApp(page);
     await expect(page.locator('[data-testid="library-error"]')).toBeVisible();
     await expect(page.locator('[data-testid="library-empty"]')).toHaveCount(0);

@@ -128,6 +128,9 @@ def _bg_module():
 #   resolution  → post
 #   standalone  → main
 _BG_PHASE_MAP: dict[str, str] = {"intro": "pre", "resolution": "post", "standalone": "main"}
+# Non-numeric Event_* ids used by Playwright fixture (Event_e2e_fixture) map to
+# the BG sidecar segment event_id int the fixture's beats use (arc=1, event=1).
+_BG_EVENT_ID_ALIASES: dict[str, int] = {"e2e_fixture": 1}
 
 
 def _resolve_bg_segment_for_scope(scope_event_id: str, video_role: str) -> tuple[int, int, str]:
@@ -142,7 +145,7 @@ def _resolve_bg_segment_for_scope(scope_event_id: str, video_role: str) -> tuple
         _resolve_bg_segment_for_scope("Event_1", "intro")        → (1, 1, "pre")
         _resolve_bg_segment_for_scope("Event_2", "resolution")    → (1, 2, "post")
         _resolve_bg_segment_for_scope("Event_e2e_fixture", "intro")
-            → ValueError (fixture is non-numeric; tests must mock or skip)
+            → (1, 1, "pre")  # alias e2e_fixture → event_id 1 for fixture sidecar
     """
     arc_number = 1  # current single-arc deployment; refactor when multi-arc lands
     if not scope_event_id.startswith("Event_"):
@@ -151,13 +154,16 @@ def _resolve_bg_segment_for_scope(scope_event_id: str, video_role: str) -> tuple
             f"got {scope_event_id!r}"
         )
     suffix = scope_event_id[len("Event_"):]
-    try:
-        event_id_int = int(suffix)
-    except ValueError as e:
-        raise ValueError(
-            f"cannot parse numeric event id from scope_event_id={scope_event_id!r} "
-            f"(suffix={suffix!r})"
-        ) from e
+    if suffix in _BG_EVENT_ID_ALIASES:
+        event_id_int = _BG_EVENT_ID_ALIASES[suffix]
+    else:
+        try:
+            event_id_int = int(suffix)
+        except ValueError as e:
+            raise ValueError(
+                f"cannot parse numeric event id from scope_event_id={scope_event_id!r} "
+                f"(suffix={suffix!r})"
+            ) from e
     phase = _BG_PHASE_MAP.get(video_role)
     if phase is None:
         raise ValueError(

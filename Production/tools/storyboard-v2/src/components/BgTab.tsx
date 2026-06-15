@@ -311,23 +311,42 @@ function mergeBeatFromO3Poll(beats: BgBeat[], patch: BgBeat): BgBeat[] {
   return next;
 }
 
+const O3_VOICE_FIX_RUNNING_STATUSES = new Set([
+  'o3_running',
+  'job_running',
+  'job_starting',
+  'visual_running',
+  'lipsync_running',
+  'tts_ready',
+  'o3_element_running',
+  'subprocess',
+]);
+
+function beatO3JobLooksRunning(beat: BgBeat): boolean {
+  const status = (beat.status ?? '').toLowerCase();
+  const voiceFix = (beat.kling_o3_voice_fix_status ?? '').toLowerCase();
+  const klingStatus = (beat.kling_o3_status ?? '').toLowerCase();
+  if (status.startsWith('o3_voice_job_') || status.startsWith('o3_element_')) {
+    return true;
+  }
+  if (O3_VOICE_FIX_RUNNING_STATUSES.has(voiceFix)) {
+    return true;
+  }
+  const jobId = (beat.kling_o3_voice_fix_ui_job_id ?? '').trim();
+  if (!jobId || voiceFix.startsWith('failed')) {
+    return false;
+  }
+  if (voiceFix !== 'approved' && klingStatus !== 'approved') {
+    return true;
+  }
+  return O3_VOICE_FIX_RUNNING_STATUSES.has(voiceFix);
+}
+
 function collectActiveO3JobsFromBeats(beats: BgBeat[]): Record<string, string> {
   const jobs: Record<string, string> = {};
   for (const beat of beats) {
     const jobId = (beat.kling_o3_voice_fix_ui_job_id ?? '').trim();
-    const voiceFix = (beat.kling_o3_voice_fix_status ?? '').toLowerCase();
-    const klingStatus = (beat.kling_o3_status ?? '').toLowerCase();
-    if (!jobId) continue;
-    if (voiceFix.startsWith('failed')) continue;
-    const runningVoiceFix = (
-      voiceFix === 'job_running'
-      || voiceFix === 'subprocess'
-      || voiceFix === 'job_starting'
-      || voiceFix === 'o3_element_running'
-    );
-    if (voiceFix === 'approved' || klingStatus === 'approved') {
-      if (!runningVoiceFix) continue;
-    }
+    if (!jobId || !beatO3JobLooksRunning(beat)) continue;
     jobs[beat.beat_id] = jobId;
   }
   return jobs;

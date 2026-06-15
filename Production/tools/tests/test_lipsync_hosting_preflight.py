@@ -117,3 +117,5 @@ def test_ui_active_o3_jobs_reconciles_from_server_truth() -> None:
     assert "setActiveO3Jobs(collectActiveO3JobsFromBeats(nextBeats));" in src
     assert "...collectActiveO3JobsFromBeats(initialBeats), ...prev" not in src
     assert "...collectActiveO3JobsFromBeats(nextBeats), ...prev" not in src
+    assert "'o3_running'" in src
+    assert "function beatO3JobLooksRunning" in src

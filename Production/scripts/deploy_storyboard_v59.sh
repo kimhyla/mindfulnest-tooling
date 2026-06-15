@@ -239,7 +239,7 @@ done
 # new manifests to this list when they're introduced; same dependency-order
 # rule as the rsync subdirs above.
 # ----------------------------------------------------------------
-for manifest in smoke_test_manifest.yaml; do
+for manifest in smoke_test_manifest.yaml character_subjects.json; do
     src="$SRC_TOOLING/Production/$manifest"
     dest="$DEST_DROPBOX/Production/$manifest"
     if [[ -f "$src" ]]; then

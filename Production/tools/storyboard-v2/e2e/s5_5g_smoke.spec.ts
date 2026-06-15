@@ -86,38 +86,61 @@ const DEFAULT_SLOTS: Record<string, MockSlot> = {
   },
 };
 
+const CANONICAL_STITCH_JOB = `${FIXTURE_EVENT}_stitch`;
+
+const DEFAULT_CANONICAL_TRANSITIONS = [
+  { after_slot: 0, kind: 'dissolve', fade_ms: 2800, audio_xfade_ms: 0 },
+  { after_slot: 1, kind: 'dissolve', fade_ms: 2800, audio_xfade_ms: 0 },
+  { after_slot: 2, kind: 'dissolve', fade_ms: 2800, audio_xfade_ms: 0 },
+];
+
 /**
  * Mock /api/stitch_editor/jobs (list summary) + /api/stitch_editor/job/<name>
  * (full detail) so StitcherTab renders with all 4 slots populated.
+ *
+ * StitcherTab prefers `${event_id}_stitch` over legacy phase_* jobs — mock both
+ * so Playwright never reads the real server's empty canonical row from disk.
  */
 async function mockStitcherJob(
   page: Page,
   opts: { slots?: Record<string, MockSlot>; transitions?: Array<Record<string, unknown>> } = {},
 ): Promise<void> {
-  const jobName = 'phase_a_Event_e2e_fixture';
+  const legacyJobName = 'phase_a_Event_e2e_fixture';
   const slots = opts.slots ?? DEFAULT_SLOTS;
-  const transitions = opts.transitions ?? [];
+  const transitions = opts.transitions ?? DEFAULT_CANONICAL_TRANSITIONS;
+  const fulfillJob = async (
+    route: Parameters<Parameters<Page['route']>[1]>[0],
+    name: string,
+  ) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        name,
+        job: { name, slots, transitions },
+      }),
+    });
+  };
   await page.route('**/api/stitch_editor/jobs', async (r) => {
     await r.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
         ok: true,
-        jobs: [{ name: jobName, created_at: 0, updated_at: 0, slot_count: 4 }],
+        jobs: [
+          { name: CANONICAL_STITCH_JOB, created_at: 0, updated_at: 0, slot_count: 4 },
+          { name: legacyJobName, created_at: 0, updated_at: 0, slot_count: 4 },
+        ],
       }),
     });
   });
-  await page.route(`**/api/stitch_editor/job/${jobName}`, async (r) => {
-    await r.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        ok: true,
-        name: jobName,
-        job: { name: jobName, slots, transitions },
-      }),
-    });
-  });
+  await page.route(`**/api/stitch_editor/job/${CANONICAL_STITCH_JOB}`, (r) =>
+    fulfillJob(r, CANONICAL_STITCH_JOB),
+  );
+  await page.route(`**/api/stitch_editor/job/${legacyJobName}`, (r) =>
+    fulfillJob(r, legacyJobName),
+  );
 }
 
 async function mockSnapshot(page: Page): Promise<void> {
@@ -211,6 +234,9 @@ async function openStitcher(page: Page): Promise<void> {
   await expect(page.locator('[data-testid="pane-stitcher"]')).toBeVisible();
   // Wait for the strip to render (job loaded).
   await expect(page.locator('[data-testid="stitcher-strip"]')).toBeVisible();
+  await expect(page.locator('[data-testid="stitcher-slot-trim-in-intro"]')).toBeEnabled({
+    timeout: 10_000,
+  });
 }
 
 // ============================================================================
@@ -369,7 +395,18 @@ test.describe('G3 — SFX drag onto slot waveform creates per-slot cue', () => {
     );
 
     await expect.poll(() => saveJobReqs.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
-    const body = saveJobReqs[0]!.postDataJSON() as Record<string, unknown>;
+    await expect.poll(() => saveJobReqs
+      .map((req) => req.postDataJSON() as Record<string, unknown>)
+      .some((b) => {
+        const intro = (b['slots'] as Record<string, MockSlot> | undefined)?.intro;
+        return Array.isArray(intro?.sfx_cues) && intro!.sfx_cues!.length === 1;
+      }), { timeout: 5_000 }).toBe(true);
+    const body = saveJobReqs
+      .map((req) => req.postDataJSON() as Record<string, unknown>)
+      .find((b) => {
+        const intro = (b['slots'] as Record<string, MockSlot> | undefined)?.intro;
+        return Array.isArray(intro?.sfx_cues) && intro!.sfx_cues!.length === 1;
+      })!;
 
     // Auto-injected scope keys per LD-461 + S5.5b/d.
     expect(body['event_id']).toBeDefined();
@@ -722,15 +759,17 @@ test.describe('G10 — Trim edit saves via stitch_save_job', () => {
     await trimIn.blur();
 
     await expect.poll(() => saveJobReqs.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
-    const body = saveJobReqs[saveJobReqs.length - 1]!.postDataJSON() as Record<string, unknown>;
-
-    // Auto-injected scope keys.
-    expect(body['event_id']).toBeDefined();
-    expect(body['scope_event_id']).toBeDefined();
-    expect(typeof body['scope_version']).toBe('number');
-
-    const slots = body['slots'] as Record<string, MockSlot>;
-    expect(slots).toBeDefined();
+    await expect.poll(() => saveJobReqs
+      .map((req) => req.postDataJSON() as Record<string, unknown>)
+      .some((b) => Number((b['slots'] as Record<string, MockSlot>)?.intro?.trim_in_ms) === 2000),
+      { timeout: 5_000 }).toBe(true);
+    const body = saveJobReqs
+      .map((req) => req.postDataJSON() as Record<string, unknown>)
+      .find((b) => Number((b['slots'] as Record<string, MockSlot>)?.intro?.trim_in_ms) === 2000)!;
+    expect(body!['event_id']).toBeDefined();
+    expect(body!['scope_event_id']).toBeDefined();
+    expect(typeof body!['scope_version']).toBe('number');
+    const slots = body!['slots'] as Record<string, MockSlot>;
     expect(Number(slots.intro!.trim_in_ms)).toBe(2000);
   });
 
@@ -756,8 +795,14 @@ test.describe('G10 — Trim edit saves via stitch_save_job', () => {
     await trimOut.blur();
 
     await expect.poll(() => saveJobReqs.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
-    const body = saveJobReqs[saveJobReqs.length - 1]!.postDataJSON() as Record<string, unknown>;
-    const slots = body['slots'] as Record<string, MockSlot>;
+    await expect.poll(() => saveJobReqs
+      .map((req) => req.postDataJSON() as Record<string, unknown>)
+      .some((b) => Number((b['slots'] as Record<string, MockSlot>)?.intro?.trim_out_ms) === 25000),
+      { timeout: 5_000 }).toBe(true);
+    const body = saveJobReqs
+      .map((req) => req.postDataJSON() as Record<string, unknown>)
+      .find((b) => Number((b['slots'] as Record<string, MockSlot>)?.intro?.trim_out_ms) === 25000)!;
+    const slots = body!['slots'] as Record<string, MockSlot>;
     expect(Number(slots.intro!.trim_out_ms)).toBe(25_000);
   });
 });
