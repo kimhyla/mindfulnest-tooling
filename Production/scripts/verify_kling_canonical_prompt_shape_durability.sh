@@ -76,7 +76,8 @@ def check(speaker, header_label, emotion, scene, dialogue):
     assert out.startswith(f"@Image1 ({header_label}). Scene from @Image2."), (speaker, out[:120])
     assert "arc 99" not in out.lower(), speaker
     assert "rooted in place" not in out.lower(), speaker
-    assert scene.split(",")[0].strip().lower() in out.lower(), (speaker, scene, out)
+    assert "Camera:" in out, (speaker, out[:200])
+    assert "medium shot" in out.lower() or "close-up" in out.lower(), (speaker, out[:200])
     assert f'[{emotion}] "' in out or f"[{emotion}] \"" in out, (speaker, out)
     assert f'"[{emotion}]' not in out, (speaker, out)
 
