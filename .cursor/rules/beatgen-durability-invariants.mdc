@@ -41,6 +41,8 @@ Before telling Kim a Beat Gen fix is done:
 7. **Pytest** — at minimum `verify_o3_intro_contract.sh` green
 8. **User-path** — one curl or browser proof on the affected flow **using Dropbox-loaded modules**
 
+**Deploy must never copy** tooling → Dropbox for `Production/character_subjects.json` (runtime Category-2). See `Production/docs/BEATGEN_OPERATOR_CHAR_REF_VOICE.md`.
+
 Never say “fixed” after editing only `mindfulnest-tooling` — Kim’s server reads **Dropbox** `Production/tools/`.
 
 Never suggest Cursor Find Issues or Bugbot — CI + deploy gates are the review layer.
@@ -61,7 +63,7 @@ See `Production/docs/BEATGEN_NEW_EVENT_CHECKLIST.md` — code heals prompts; it 
 
 | Gate | Covers |
 |------|--------|
-| **`verify_tooling_dropbox_parity.py`** | Tooling repo SHA256 = Dropbox runtime for critical Python (fail = “fixed in git only”) |
+| **`verify_tooling_dropbox_parity.py`** | Tooling repo SHA256 = Dropbox runtime for **code paths** (fail = “fixed in git only”). `character_subjects.json` is **warn-only** unless `MN_REGISTRY_PARITY_STRICT=1`. |
 | `post_tooling_change_smoke.sh` | pytest + rsync + parity + restart + HTTP smoke (full Python deploy loop) |
 | `verify_o3_intro_contract.sh` | O3 sidecar contract, locks, still insert, voice bind |
 | `verify_storyboard_session_durability.sh` | Prompt shape pytest + scope/library guards |

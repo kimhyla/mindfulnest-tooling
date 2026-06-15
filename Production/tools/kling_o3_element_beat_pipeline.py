@@ -391,6 +391,7 @@ def run_pipeline(
         "kling_o3_voice_fix_updated_at": datetime.now(timezone.utc).isoformat(),
     })
 
+    char_gate_ok, char_gate_detail = reg.char_ref_matches_element_images(str(char_path), speaker)
     print(json.dumps({
         "phase": "o3_submit",
         "beat_id": beat_id,
@@ -400,7 +401,8 @@ def run_pipeline(
         "o3_voice_stack_pin": beat.get("o3_voice_stack_pin") if bg_sidecar.o3_voice_stack_pin_active(beat) else None,
         "prod_root": str(prod_root),
         "event_dir": str(event_dir),
-        "char_ref_aligned": True,
+        "char_ref_aligned": char_gate_ok,
+        "char_ref_gate_detail": char_gate_detail or None,
         "char_ref": str(char_path),
         "voice_line_locked": "speaks in a" in prepared.lower(),
         "spoken_sent": spoken,

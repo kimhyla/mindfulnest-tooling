@@ -86,12 +86,28 @@ fi
 # Per CLAUDE.md Rule 19 (no shortcuts): bypass requires MN_ALLOW_DIRTY_DEPLOY=1
 # AND a SHORTCUT LD per the escape-hatch protocol.
 # ----------------------------------------------------------------
+DEPLOY_DIRTY_IGNORE_PATTERNS=(
+    '.last_deploy'
+    'Production/Event_e2e_fixture/'
+    'Production/beat_generator_state.json.lock'
+    'Production/server_event_pin.json'
+)
 (
     cd "$SRC_TOOLING"
-    if [[ -n "$(git status --porcelain)" ]]; then
+    BLOCKING_DIRTY=""
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        path="${line:3}"
+        skip=0
+        for pat in "${DEPLOY_DIRTY_IGNORE_PATTERNS[@]}"; do
+            if [[ "$path" == "$pat" || "$path" == ${pat}* ]]; then skip=1; break; fi
+        done
+        if [[ "$skip" -eq 0 ]]; then BLOCKING_DIRTY+="${line}"$'\n'; fi
+    done < <(git status --porcelain)
+    if [[ -n "$BLOCKING_DIRTY" ]]; then
         echo "FATAL: tooling tree dirty — uncommitted edits will deploy under a stale build-sha" >&2
         echo "  (build-sha = git rev-parse --short HEAD, which does NOT see working-tree changes)" >&2
-        git status --short >&2
+        printf '%s' "$BLOCKING_DIRTY" >&2
         echo "  Resolve: commit/stash the listed paths, or set MN_ALLOW_DIRTY_DEPLOY=1" >&2
         echo "  Bypass requires SHORTCUT LD per CLAUDE.md Rule 19." >&2
         if [[ "${MN_ALLOW_DIRTY_DEPLOY:-}" == "1" ]]; then
@@ -239,7 +255,8 @@ done
 # new manifests to this list when they're introduced; same dependency-order
 # rule as the rsync subdirs above.
 # ----------------------------------------------------------------
-for manifest in smoke_test_manifest.yaml character_subjects.json; do
+# character_subjects.json is runtime Category-2 data on Dropbox — never copy tooling → Dropbox.
+for manifest in smoke_test_manifest.yaml; do
     src="$SRC_TOOLING/Production/$manifest"
     dest="$DEST_DROPBOX/Production/$manifest"
     if [[ -f "$src" ]]; then

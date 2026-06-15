@@ -67,6 +67,16 @@ def test_apply_proven_char_ref_from_pin_source(bg_module):
     _, beat = bg_module.find_beat(sidecar, "bg_arc1_event2_pre_beat_27")
     assert beat is not None
     changed = bg_module.apply_proven_char_ref_from_pin_source(beat, sidecar)
+    assert changed is False
+    assert "wrong.png" in str(beat["reference_image"]["abs_path"])
+    assert beat["reference_image_locked"] is True
+
+
+def test_apply_proven_char_ref_from_pin_source_when_unlocked(bg_module):
+    sidecar = bg_module.read_sidecar()
+    _, beat = bg_module.find_beat(sidecar, "bg_arc1_event2_pre_beat_27")
+    beat["reference_image_locked"] = False
+    changed = bg_module.apply_proven_char_ref_from_pin_source(beat, sidecar)
     assert changed is True
     assert "proven.png" in str(beat["reference_image"]["abs_path"])
     assert beat["reference_image_locked"] is True
@@ -120,3 +130,36 @@ def test_validate_proven_o3_element_submit_blocks_wrong_element(bg_module, monke
     )
     assert err is not None
     assert "313441038164306" in err
+
+
+def test_proven_bypass_denied_when_locked_beat_uses_different_still(bg_module, tmp_path):
+    (tmp_path / "proven.png").write_bytes(b"p")
+    (tmp_path / "operator.png").write_bytes(b"o")
+    sidecar = {
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [
+                            {
+                                "beat_id": "bg_arc1_event2_pre_beat_03",
+                                "speaker": "Lorelai",
+                                "reference_image": {"abs_path": str(tmp_path / "proven.png")},
+                            },
+                            {
+                                "beat_id": "bg_arc1_event2_pre_beat_30",
+                                "speaker": "Lorelai",
+                                "reference_image": {"abs_path": str(tmp_path / "operator.png")},
+                                "reference_image_locked": True,
+                                "o3_voice_stack_pin": {
+                                    "pinned_from_beat_id": "bg_arc1_event2_pre_beat_03",
+                                },
+                            },
+                        ],
+                    },
+                },
+            },
+        },
+    }
+    _, beat = bg_module.find_beat(sidecar, "bg_arc1_event2_pre_beat_30")
+    assert bg_module.proven_bypass_allowed_for_o3_submit(beat, sidecar, "Lorelai") is False

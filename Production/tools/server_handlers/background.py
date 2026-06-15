@@ -1704,6 +1704,7 @@ def handle_bg_session_state(h)-> None:
     scope_active_context = None
     beats = []
     ref_hydrated = False
+    char_ref_healed = False
     if scope_arc is not None and scope_event_id is not None:
         seg = bg.get_seg_entry(sidecar, scope_arc, scope_event_id, scope_phase)
         beats = seg.get("beats", [])
@@ -1711,12 +1712,33 @@ def handle_bg_session_state(h)-> None:
         for beat in beats:
             if bg.hydrate_beat_ref_images(beat, approved_roots):
                 ref_hydrated = True
+        ws_key = None
+        try:
+            try:
+                from credentials import load_credentials  # type: ignore
+            except ImportError:
+                from tools.credentials_lib.credentials import load_credentials  # type: ignore
+            creds = load_credentials()
+            ws_key = creds.get("wavespeed_key") or creds.get("wavespeed")
+        except Exception:
+            ws_key = None
+        for beat in beats:
+            if bg.reconcile_refer_if_pose_hash_matches(beat, ws_key):
+                char_ref_healed = True
+            if (
+                beat.get("element_char_ref_ok") is False
+                and beat.get("reference_image_locked")
+                and ws_key
+            ):
+                reg_result = bg.maybe_auto_register_beat_char_ref(beat, ws_key)
+                if reg_result.get("ok"):
+                    char_ref_healed = True
         scope_active_context = {
             "arc_number": scope_arc,
             "event_id": scope_event_id,
             "phase": scope_phase,
         }
-    if ref_hydrated:
+    if ref_hydrated or char_ref_healed:
         with bg.sidecar_file_lock():
             bg.write_sidecar(sidecar)
 
@@ -3548,7 +3570,7 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                         from tools.credentials_lib.credentials import load_credentials  # type: ignore
                     creds = load_credentials()
                     ws_key = creds.get("wavespeed_key") or creds.get("wavespeed")
-                    if bg.proven_char_ref_aligned_with_proven_source(beat, sidecar, speaker):
+                    if bg.proven_bypass_allowed_for_o3_submit(beat, sidecar, speaker):
                         char_ok = True
                         beat["element_char_ref_ok"] = True
                         beat.pop("element_char_ref_error", None)
@@ -3915,6 +3937,24 @@ def handle_bg_poll_arlo_o3_voice_status(h) -> None:
                 result=job.get("result"),
                 error=job.get("error"),
             )
+        elif job.get("status") == "running":
+            beat_id = str(job.get("beat_id") or "")
+            log_path = job.get("log_path")
+            if beat_id and log_path:
+                log_text = Path(str(log_path)).read_text(encoding="utf-8", errors="replace")
+                if '"phase": "done"' in log_text:
+                    recovered = _try_orphan_o3_delivery_recovery(
+                        beat_id, event_dir, log_path,
+                    )
+                    if recovered:
+                        _finalize_o3_job_after_subprocess_exit(job, event_dir)
+                        if job.get("status") in ("done", "failed"):
+                            _clear_o3_job_metadata(
+                                job_id,
+                                status=job["status"],
+                                result=job.get("result"),
+                                error=job.get("error"),
+                            )
     payload = {k: v for k, v in job.items() if k != "proc"}
     payload = _o3_poll_payload_with_beat_snapshot(payload, event_dir)
     return h._send_json(200, payload)
@@ -4247,16 +4287,9 @@ def _clear_stale_o3_job_pointers(beat: dict) -> None:
 
 
 def _beat_o3_job_looks_running(beat: dict) -> bool:
-    status = str(beat.get("status") or "")
-    voice_fix = str(beat.get("kling_o3_voice_fix_status") or "")
-    if any(status.startswith(prefix) for prefix in _STUCK_O3_JOB_STATUS_PREFIXES):
-        return True
-    if voice_fix in _O3_VOICE_FIX_RUNNING_STATUSES:
-        return True
-    if beat.get("kling_o3_voice_fix_ui_job_id") and not voice_fix.startswith("failed"):
-        if voice_fix != "approved":
-            return True
-    return False
+    from o3_job_status_contract import beat_o3_voice_job_running
+
+    return beat_o3_voice_job_running(beat)
 
 
 def _sidecar_io_error_text(error: str | None) -> bool:
@@ -4337,6 +4370,12 @@ def reconcile_stuck_o3_voice_beats(sidecar: dict) -> int:
                 changed += 1
                 continue
             if is_element_job and _sidecar_io_error_text(log_text):
+                event_dir = _event_dir_from_beat_id(str(beat.get("beat_id") or ""))
+                if _try_orphan_o3_delivery_recovery(str(beat.get("beat_id") or ""), event_dir, log_path):
+                    _clear_stale_o3_job_pointers(beat)
+                    changed += 1
+                    continue
+            if is_element_job and '"phase": "done"' in log_text:
                 event_dir = _event_dir_from_beat_id(str(beat.get("beat_id") or ""))
                 if _try_orphan_o3_delivery_recovery(str(beat.get("beat_id") or ""), event_dir, log_path):
                     _clear_stale_o3_job_pointers(beat)

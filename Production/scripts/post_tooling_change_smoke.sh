@@ -95,4 +95,12 @@ if b.get("kling_o3_voice_fix_error"):
     raise SystemExit("FATAL: beat_07 still has kling_o3_voice_fix_error")
 PY
 
+echo "=== [7/7] build-sha matches git HEAD ==="
+BUILD_SHA="$(cd "$SRC_TOOLING" && git rev-parse --short HEAD)"
+SERVED_SHA="$(curl -s "http://localhost:${SERVER_PORT}/" | python3 -c "import re,sys; html=sys.stdin.read(); m=re.search(r'build-sha\\" content=\\"([^\\"]+)\\"', html); print(m.group(1) if m else '')")"
+if [[ -z "$SERVED_SHA" || "$SERVED_SHA" != "$BUILD_SHA" ]]; then
+  echo "FATAL: build-sha mismatch served=$SERVED_SHA head=$BUILD_SHA" >&2
+  exit 1
+fi
+echo "  build-sha → $SERVED_SHA (matches HEAD)"
 echo "=== post_tooling_change_smoke: ALL PASSED ==="

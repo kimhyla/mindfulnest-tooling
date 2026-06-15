@@ -90,9 +90,8 @@ def test_background_duplicate_guard_and_terminal_statuses_are_explicit() -> None
 
 
 def test_ui_treats_failed_prefixes_as_terminal() -> None:
-    src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
+    src = (TOOLS / "storyboard-v2" / "src" / "o3JobStatusContract.ts").read_text(encoding="utf-8")
     assert "voiceFix.startsWith('failed')" in src
-    assert "(beat.kling_o3_voice_fix_status ?? '').startsWith('failed')" in src
 
 
 def test_o3_poll_returns_enriched_beat_snapshot_on_terminal() -> None:
