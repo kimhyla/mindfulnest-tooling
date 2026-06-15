@@ -44,6 +44,8 @@ for b in beats:
         raise SystemExit(f"legacy arc/beat header on {bid}: {prompt[:100]!r}")
     if "rooted in place" in prompt.lower():
         raise SystemExit(f"rooted in place on {bid}")
+    if "no locomotion" in prompt.lower():
+        raise SystemExit(f"no locomotion on {bid}")
     if not prompt.startswith(f"@Image1 ("):
         raise SystemExit(f"missing V2 header on {bid}: {prompt[:80]!r}")
     if "Scene from @Image2" not in prompt:

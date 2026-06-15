@@ -48,12 +48,17 @@ _VOICE_LINE_VERB_RE = re.compile(r"\b(speaks|says)\b", re.I)
 _PERFORMANCE_TAG_WORDS = frozenset({"pause", "break", "silence"})
 
 _ROOTED_IN_PLACE_RE = re.compile(r",?\s*rooted in place\.?", re.I)
+_NO_LOCOMOTION_RE = re.compile(r",?\s*no locomotion\.?", re.I)
 
 
 def strip_rooted_in_place(text: str) -> str:
-    """Remove banned 'rooted in place' staging suffix from scene_notes / prompts."""
-    s = _ROOTED_IN_PLACE_RE.sub("", text or "")
-    return re.sub(r"\s+", " ", s).strip(" ,.;")
+    """Remove banned staging boilerplate from scene_notes / prompts."""
+    s = text or ""
+    s = _ROOTED_IN_PLACE_RE.sub("", s)
+    s = _NO_LOCOMOTION_RE.sub("", s)
+    s = re.sub(r"\s*—\s*,", " ", s)
+    s = re.sub(r"\s+", " ", s).strip(" ,.;—")
+    return s
 
 
 def format_emotion_tag(emotion: str) -> str:
