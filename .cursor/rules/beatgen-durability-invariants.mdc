@@ -34,10 +34,14 @@ Before telling Kim a Beat Gen fix is done:
 
 1. **Reproduce** — log/curl/sidecar field before change
 2. **Commit** on `foundation/tooling-production-20260611` (or active feature branch)
-3. **`bash Production/scripts/deploy_storyboard_v59.sh --event Event_2`** (or active event)
-4. **`build-sha`** in served HTML = `git rev-parse --short HEAD`
-5. **Pytest** — at minimum `verify_o3_intro_contract.sh` green
-6. **User-path** — one curl or browser proof on the affected flow
+3. **Mirror tooling → Dropbox** — rsync `Production/tools` (and `lib`/`scripts` if touched) **or** `bash Production/scripts/deploy_storyboard_v59.sh --event Event_2`
+4. **`verify_tooling_dropbox_parity.py` exit 0** on changed critical paths — **restart alone is not deploy**
+5. **Restart** production server from Dropbox runtime; confirm HTTP 200
+6. **`build-sha`** in served HTML = `git rev-parse --short HEAD` (when storyboard bundle changed)
+7. **Pytest** — at minimum `verify_o3_intro_contract.sh` green
+8. **User-path** — one curl or browser proof on the affected flow **using Dropbox-loaded modules**
+
+Never say “fixed” after editing only `mindfulnest-tooling` — Kim’s server reads **Dropbox** `Production/tools/`.
 
 Never suggest Cursor Find Issues or Bugbot — CI + deploy gates are the review layer.
 
@@ -57,6 +61,8 @@ See `Production/docs/BEATGEN_NEW_EVENT_CHECKLIST.md` — code heals prompts; it 
 
 | Gate | Covers |
 |------|--------|
+| **`verify_tooling_dropbox_parity.py`** | Tooling repo SHA256 = Dropbox runtime for critical Python (fail = “fixed in git only”) |
+| `post_tooling_change_smoke.sh` | pytest + rsync + parity + restart + HTTP smoke (full Python deploy loop) |
 | `verify_o3_intro_contract.sh` | O3 sidecar contract, locks, still insert, voice bind |
 | `verify_storyboard_session_durability.sh` | Prompt shape pytest + scope/library guards |
 | `smoke_kling_canonical_prompt_shape_live.sh` | Live Event_2 intro **and** resolution V2 lint |
