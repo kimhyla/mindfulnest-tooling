@@ -1637,7 +1637,8 @@ def handle_bg_session_state(h)-> None:
     writes.
     """
     # LD-456 SCOPE_VALIDATION_V1 (no-body handler — query-string fallback inside helper)
-    if not h._assert_event_scope({}, allow_missing=True):
+    # scope_video_role is parsed below from query; do not require it at assert gate.
+    if not h._assert_event_scope({}, allow_missing=True, allow_missing_video_role=True):
         return
 
     # Parse scope from query string. _assert_event_scope already validated
