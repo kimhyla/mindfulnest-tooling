@@ -19,6 +19,12 @@ TOOLS = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(TOOLS))
 sys.path.insert(0, str(TOOLS / "lib"))
 
+
+def _temp_mp3_path() -> Path:
+    fd, path = tempfile.mkstemp(suffix=".mp3", prefix="phase_stem_trim_")
+    os.close(fd)
+    return Path(path)
+
 os.environ["PRODUCTION_SERVER_SINGLE_MACHINE"] = "1"
 os.environ["MINDFULNEST_T1_ENABLED"] = "1"
 os.environ.pop("MINDFULNEST_WRITE_PATH", None)
@@ -152,8 +158,8 @@ class TestPhaseStemCutHelpers(unittest.TestCase):
             self.assertEqual(validator(value), round(float(value), 3))
 
     def test_materialize_cut_out_tail_only(self):
-        src = Path(tempfile.mktemp(suffix=".mp3"))
-        dst = Path(tempfile.mktemp(suffix=".mp3"))
+        src = _temp_mp3_path()
+        dst = _temp_mp3_path()
         src.write_bytes(b"\xff\xfb")
         calls: list[list[str]] = []
 
@@ -172,8 +178,8 @@ class TestPhaseStemCutHelpers(unittest.TestCase):
         self.assertEqual(calls[0][calls[0].index("-ss") + 1], "80.000")
 
     def test_materialize_cut_out_head_only(self):
-        src = Path(tempfile.mktemp(suffix=".mp3"))
-        dst = Path(tempfile.mktemp(suffix=".mp3"))
+        src = _temp_mp3_path()
+        dst = _temp_mp3_path()
         src.write_bytes(b"\xff\xfb")
         calls: list[list[str]] = []
 

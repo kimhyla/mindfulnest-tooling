@@ -7845,14 +7845,28 @@ class ProductionHandler(BaseHTTPRequestHandler):
         from server_handlers.background import handle_bg_stills
         return handle_bg_stills(self, path)
 
+    def _path_under_allowed_serve_roots(self, cand: str) -> str | None:
+        """Realpath containment gate for /files?path= (CodeQL py/path-injection)."""
+        try:
+            drop_root = os.path.realpath(str(DROPBOX_ROOT))
+            repo_root = os.path.realpath(str(_MN_REPO_ROOT))
+            real_path = os.path.realpath(cand)
+            if not os.path.isfile(real_path):
+                return None
+            under_drop = real_path == drop_root or real_path.startswith(drop_root + os.sep)
+            under_repo = real_path == repo_root or real_path.startswith(repo_root + os.sep)
+            if under_drop or under_repo:
+                return real_path
+        except OSError:
+            return None
+        return None
+
     def _resolve_served_file_path(self, file_path: str) -> str | None:
         """Resolve ?path= to an on-disk file under Dropbox, tooling, or event_dir."""
         if not file_path:
             return None
-        if os.path.isfile(file_path):
-            return file_path
         if os.path.isabs(file_path):
-            return None
+            return self._path_under_allowed_serve_roots(file_path)
 
         candidates: list[str] = []
         candidates.append(os.path.join(str(DROPBOX_ROOT), file_path))
@@ -7875,8 +7889,9 @@ class ProductionHandler(BaseHTTPRequestHandler):
             if cand in seen:
                 continue
             seen.add(cand)
-            if os.path.isfile(cand):
-                return cand
+            resolved = self._path_under_allowed_serve_roots(cand)
+            if resolved:
+                return resolved
         return None
 
     def _handle_preview_phase_a_permanent(self) -> None:
@@ -12476,6 +12491,7 @@ body {{padding-top:44px!important;}}
         safe = Path(filename).name
         _ALLOWED_EXTS = (".png", ".mov", ".mp4")
         from lib.event_library import event_watercolors_dir
+        from server_handlers._path_security import require_basename_under_dir, require_resolved_under_root
 
         wc_dir = event_watercolors_dir(self.app.event_dir)
         # Bare key path — no valid extension provided by the caller.
@@ -12494,9 +12510,28 @@ body {{padding-top:44px!important;}}
             # extensions share the same stem (e.g., a thumbnail alongside a video).
             mp4_match = next((m for m in matches if m.suffix.lower() in (".mp4", ".mov")), None)
             png_match = next((m for m in matches if m.suffix.lower() == ".png"), None)
-            target = mp4_match or png_match or matches[0]
+            try:
+                target = require_resolved_under_root(
+                    mp4_match or png_match or matches[0],
+                    wc_dir,
+                )
+            except ValueError:
+                return self._send_error_v59(
+                           403,
+                           error_code="GENERIC_ERROR",
+                           error_message=f"watercolor path outside library: {safe!r}",
+                           retry_safe=False,
+                       )
         else:
-            target = wc_dir / safe
+            try:
+                target = require_basename_under_dir(safe, wc_dir)
+            except ValueError:
+                return self._send_error_v59(
+                           400,
+                           error_code="GENERIC_ERROR",
+                           error_message=f"invalid watercolor filename: {safe!r}",
+                           retry_safe=False,
+                       )
         if not target.is_file():
             return self._send_error_v59(
                        404,

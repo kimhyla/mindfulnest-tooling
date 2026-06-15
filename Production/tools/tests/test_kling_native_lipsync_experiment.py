@@ -92,7 +92,10 @@ def test_native_credentials_detect_jwt_mode_from_access_and_secret(monkeypatch) 
     cred = adapter.validate_credentials()
     assert cred["ok"] is True
     assert cred["auth_mode"] == "jwt"
-    assert adapter.base_url.endswith("klingai.com")
+    from urllib.parse import urlparse
+
+    host = urlparse(adapter.base_url).hostname or ""
+    assert host.endswith("klingai.com")
 
 
 def test_gate_requires_audio_and_min_dimension_720() -> None:

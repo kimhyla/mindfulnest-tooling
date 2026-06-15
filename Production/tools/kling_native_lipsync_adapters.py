@@ -148,6 +148,7 @@ def _kling_jwt_token(access_key: str, signing_key: str) -> str:
     )
     signing_input = f"{header}.{payload}".encode()
     # Kling API requires HMAC-SHA256 JWT signing (not password hashing).
+    # lgtm[py/weak-sensitive-data-hashing]
     signature = _b64url(hmac.new(signing_key.encode(), signing_input, hashlib.sha256).digest())
     return f"{header}.{payload}.{signature}"
 
