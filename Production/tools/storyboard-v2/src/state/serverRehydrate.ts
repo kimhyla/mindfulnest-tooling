@@ -3,7 +3,7 @@
 // so Phase A/B, Stitcher, Storyboard, LibraryPanel refresh without a manual reload.
 
 import { READ_ENDPOINTS } from '../api/endpoints';
-import { emitScopeEventChanged, loadEvent, emitScopeHealed } from '../api/client';
+import { emitScopeEventChanged } from '../api/client';
 import { activeScope, makeScope } from './scope';
 import { serverRehydrateTick, stitcherRefreshTick } from './refreshSignals';
 
@@ -52,30 +52,26 @@ export function triggerServerRehydrate(reason: string): void {
   }
 }
 
-/** Sync activeScope version from server when event_id matches; re-pin server after restart drift. */
+/** Sync activeScope from server probe — SCOPE_POLL_ADOPT_V1 (never loadEvent from poll).
+
+Background ServerRehydrateWatcher must not POST /api/event/load when another tab
+owns a different event; that caused Event_1 ↔ Event_2 ping-pong and Failed to fetch
+on O3 select. Polls adopt the server pin; mutation heal (pathappPatch) may loadEvent
+when this tab has URL or explicit pin authority.
+*/
 export async function syncScopeFromProbe(probe: ServerProbeResult): Promise<void> {
   if (!probe.ok || !probe.eventId) return;
   const cur = activeScope.value;
+  const gen = probe.eventGeneration ?? cur.version;
   if (probe.eventId !== cur.event_id) {
-    // Server restart / deploy defaults to Event_1 while tab stays on Event_2.
-    // Re-pin to the client's active event (same policy as pathappPatch heal).
-    const load = await loadEvent(cur.event_id);
-    if (load.ok && load.data?.event_id) {
-      activeScope.value = makeScope(
-        load.data.event_id,
-        cur.beat_id,
-        load.data.event_generation,
-      );
-      emitScopeEventChanged({
-        event_id: load.data.event_id,
-        event_generation: load.data.event_generation,
-        source: 'server-rehydrate-scope-heal',
-      });
-      emitScopeHealed({ event_id: load.data.event_id, source: 'server-rehydrate-scope-heal' });
-    }
+    activeScope.value = makeScope(probe.eventId, cur.beat_id, gen);
+    emitScopeEventChanged({
+      event_id: probe.eventId,
+      event_generation: gen,
+      source: 'server-rehydrate-adopt-server-pin',
+    });
     return;
   }
-  const gen = probe.eventGeneration ?? cur.version;
   if (gen !== cur.version) {
     activeScope.value = makeScope(probe.eventId, cur.beat_id, gen);
   }

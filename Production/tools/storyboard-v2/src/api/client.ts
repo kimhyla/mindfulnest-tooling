@@ -25,6 +25,7 @@ import {
   activeMilestoneId,
   makeScope,
 } from '../state/scope';
+import { clientMayPinServerTo, noteClientPinnedEvent } from '../state/scopeAuthority';
 import {
   READ_ENDPOINTS,
   MUTATION_ENDPOINTS,
@@ -262,8 +263,10 @@ export async function loadEvent(
 }
 
 /**
- * SCOPE_MISMATCH_AUTO_HEAL_V1 — when server pin drifts (restart, QA script, other
- * tab), re-pin to the client's activeScope.event_id before surfacing 409.
+ * SCOPE_MISMATCH_AUTO_HEAL_V1 — when server pin drifts (restart, QA script),
+ * re-pin to the client's activeScope.event_id before surfacing 409 — but only
+ * when this tab has pin authority (URL ?event= or explicit Project/ScopeBoundary pin).
+ * Background polls adopt server pin instead (SCOPE_POLL_ADOPT_V1).
  */
 async function healServerScopeIfNeeded(scope: Scope): Promise<boolean> {
   try {
@@ -273,10 +276,14 @@ async function healServerScopeIfNeeded(scope: Scope): Promise<boolean> {
       if (data?.event_id === scope.event_id) return true;
     }
   } catch {
-    // Fall through to explicit load.
+    // Fall through to explicit load when authorized.
+  }
+  if (!clientMayPinServerTo(scope.event_id)) {
+    return false;
   }
   const load = await loadEvent(scope.event_id);
   if (!load.ok || !load.data?.event_id) return false;
+  noteClientPinnedEvent(load.data.event_id);
   activeScope.value = makeScope(
     load.data.event_id,
     scope.beat_id,
@@ -291,6 +298,8 @@ async function healServerScopeIfNeeded(scope: Scope): Promise<boolean> {
   emitScopeHealed({ event_id: load.data.event_id, source: 'scope-mismatch-auto-heal' });
   return true;
 }
+
+export { noteClientPinnedEvent } from '../state/scopeAuthority';
 
 /** Ensure server process pin matches eventId before tabs fetch scoped READ endpoints. */
 export async function ensureServerPinnedTo(eventId: string): Promise<boolean> {

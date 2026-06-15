@@ -7,7 +7,7 @@
 //   cells = ✅/⏳/❌ + count + latest filename
 
 import { useEffect, useState } from 'preact/hooks';
-import { apiGet, loadEvent } from '../api/client';
+import { apiGet, loadEvent, noteClientPinnedEvent } from '../api/client';
 import { activeScope, scopeKey, makeScope } from '../state/scope';
 
 // Custom event the App listens for. ProductionMapTab dispatches this on
@@ -178,6 +178,7 @@ export function ProductionMapTab() {
                         const result = await loadEvent(m.event_dir);
                         if (result.ok && result.data) {
                           const data = result.data;
+                          noteClientPinnedEvent(data.event_id);
                           activeScope.value = makeScope(
                             data.event_id, null, data.event_generation,
                           );

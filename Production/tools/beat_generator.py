@@ -439,6 +439,11 @@ def _read_json_file_durable(path: str) -> dict:
     return _EMPTY_SIDECAR()
 
 
+def sidecar_io_transient(exc: BaseException) -> bool:
+    """True when Dropbox/FUSE sidecar I/O may succeed on retry (errno 11/35)."""
+    return isinstance(exc, OSError) and getattr(exc, "errno", None) in _SIDECAR_IO_TRANSIENT_ERRNOS
+
+
 def read_sidecar():
     path = os.path.abspath(BG_SIDECAR_PATH)
     return _read_json_file_durable(path)

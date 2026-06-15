@@ -108,3 +108,10 @@ def test_recover_orphan_o3_delivery_from_log(tmp_path: Path, monkeypatch) -> Non
 def test_sidecar_io_transient_errnos_include_11_and_35() -> None:
     assert 11 in bg._SIDECAR_IO_TRANSIENT_ERRNOS
     assert 35 in bg._SIDECAR_IO_TRANSIENT_ERRNOS
+
+
+def test_sidecar_io_transient_helper() -> None:
+    assert bg.sidecar_io_transient(OSError(11, "Resource deadlock avoided"))
+    assert bg.sidecar_io_transient(OSError(35, "Resource temporarily unavailable"))
+    assert not bg.sidecar_io_transient(OSError(2, "No such file"))
+    assert not bg.sidecar_io_transient(ValueError("nope"))

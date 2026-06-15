@@ -4619,56 +4619,67 @@ def handle_bg_select_o3_video(h, body: dict) -> None:
             retry_safe=False,
         )
     bg = _bg_module()
-    with bg.sidecar_file_lock():
-        sidecar = bg.read_sidecar()
-        sidecar = bg._migrate_sidecar(sidecar)
-        _, beat = bg.find_beat(sidecar, beat_id)
-        if not beat:
-            return h._send_error_v59(
-                404,
-                error_code="BEAT_NOT_FOUND",
-                error_message=f"beat {beat_id} not found",
-                retry_safe=False,
-            )
-        options = [o for o in (beat.get("kling_o3_options") or []) if isinstance(o, dict)]
-        opt = next((o for o in options if o.get("key") == option_key), None)
-        if opt is None:
+    try:
+        with bg.sidecar_file_lock():
+            sidecar = bg.read_sidecar()
+            sidecar = bg._migrate_sidecar(sidecar)
+            _, beat = bg.find_beat(sidecar, beat_id)
+            if not beat:
+                return h._send_error_v59(
+                    404,
+                    error_code="BEAT_NOT_FOUND",
+                    error_message=f"beat {beat_id} not found",
+                    retry_safe=False,
+                )
+            options = [o for o in (beat.get("kling_o3_options") or []) if isinstance(o, dict)]
+            opt = next((o for o in options if o.get("key") == option_key), None)
+            if opt is None:
+                for o in options:
+                    vp = o.get("video_path") or ""
+                    stem = Path(vp).stem if vp else ""
+                    if stem and (stem == option_key or vp.endswith(f"/{option_key}.mp4")):
+                        opt = o
+                        break
+            if opt is None and option_key == f"{beat_id}_approved_o3_video" and beat.get("kling_o3_video_path"):
+                opt = {
+                    "key": option_key,
+                    "label": "approved O3 video",
+                    "video_path": beat.get("kling_o3_video_path"),
+                    "source": "approved_kling_o3_video",
+                }
+                options.insert(0, opt)
+            video_path = (opt or {}).get("video_path")
+            if not video_path or not Path(video_path).is_file():
+                return h._send_error_v59(
+                    404,
+                    error_code="O3_VIDEO_OPTION_NOT_FOUND",
+                    error_message=f"O3 video option {option_key!r} missing on disk",
+                    retry_safe=False,
+                )
+            now = datetime.now(timezone.utc).isoformat()
+            beat["kling_o3_video_path"] = video_path
+            beat["kling_o3_status"] = "approved"
+            beat["status"] = "approved"
+            beat["kling_o3_selected_option_key"] = option_key
+            beat["kling_o3_selected_at"] = now
+            bg.clear_kling_o3_beat_trim(beat)
             for o in options:
-                vp = o.get("video_path") or ""
-                stem = Path(vp).stem if vp else ""
-                if stem and (stem == option_key or vp.endswith(f"/{option_key}.mp4")):
-                    opt = o
-                    break
-        if opt is None and option_key == f"{beat_id}_approved_o3_video" and beat.get("kling_o3_video_path"):
-            opt = {
-                "key": option_key,
-                "label": "approved O3 video",
-                "video_path": beat.get("kling_o3_video_path"),
-                "source": "approved_kling_o3_video",
-            }
-            options.insert(0, opt)
-        video_path = (opt or {}).get("video_path")
-        if not video_path or not Path(video_path).is_file():
+                if not o.get("key"):
+                    vp = o.get("video_path") or ""
+                    o["key"] = Path(vp).stem if vp else f"{beat_id}_o3_{options.index(o)}"
+                o["active"] = (o.get("key") == option_key or o.get("video_path") == video_path)
+            beat["kling_o3_options"] = options
+            bg.write_sidecar(sidecar)
+    except OSError as exc:
+        if bg.sidecar_io_transient(exc):
             return h._send_error_v59(
-                404,
-                error_code="O3_VIDEO_OPTION_NOT_FOUND",
-                error_message=f"O3 video option {option_key!r} missing on disk",
-                retry_safe=False,
+                503,
+                error_code="SIDECAR_IO_TRANSIENT",
+                error_message=str(exc) or "sidecar I/O transient failure",
+                retry_safe=True,
+                extra={"errno": getattr(exc, "errno", None)},
             )
-        now = datetime.now(timezone.utc).isoformat()
-        beat["kling_o3_video_path"] = video_path
-        beat["kling_o3_status"] = "approved"
-        beat["status"] = "approved"
-        beat["kling_o3_selected_option_key"] = option_key
-        beat["kling_o3_selected_at"] = now
-        bg.clear_kling_o3_beat_trim(beat)
-        for o in options:
-            if not o.get("key"):
-                vp = o.get("video_path") or ""
-                o["key"] = Path(vp).stem if vp else f"{beat_id}_o3_{options.index(o)}"
-            o["active"] = (o.get("key") == option_key or o.get("video_path") == video_path)
-        beat["kling_o3_options"] = options
-        bg.write_sidecar(sidecar)
+        raise
     return h._send_json(200, {"ok": True, "beat_id": beat_id, "option_key": option_key, "video_path": video_path})
 
 

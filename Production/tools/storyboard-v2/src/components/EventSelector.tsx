@@ -6,7 +6,7 @@
 
 import { useEffect, useState } from 'preact/hooks';
 import { activeScope, activeProjectType, makeScope, scopeKey } from '../state/scope';
-import { apiGet, emitScopeEventChanged, loadEvent } from '../api/client';
+import { apiGet, emitScopeEventChanged, loadEvent, noteClientPinnedEvent } from '../api/client';
 
 interface EventListItem {
   event_id: string;
@@ -72,6 +72,7 @@ export function EventSelector() {
       }
       setCurrent(data.event_id);
       activeScope.value = makeScope(data.event_id, null, data.event_generation);
+      noteClientPinnedEvent(data.event_id);
       activeProjectType.value = 'event';
       try {
         const url = new URL(window.location.href);

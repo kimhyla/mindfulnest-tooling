@@ -17,6 +17,7 @@ import {
 } from '../state/scope';
 import { setActiveVideoRole, videoRoleForBgPhase } from '../state/videoRole';
 import { apiGet, pathappPatch, type ApiResult } from '../api/client';
+import { formatMutationError } from '../api/mutationErrors';
 import { SERVER_BASE } from '../api/endpoints';
 import { makeDropTarget } from '../utils/dragdrop';
 import { openCropper } from '../state/cropper';
@@ -1632,7 +1633,7 @@ export function BgTab() {
       await guardBeatPatchResult(
         beatId,
         result,
-        `Select O3 video failed: ${result.error}`,
+        formatMutationError(result, 'Select O3 video failed'),
         'bg-select-o3-error',
       );
     }
@@ -1692,7 +1693,7 @@ export function BgTab() {
     await guardBeatPatchResult(
       beatId,
       result,
-      `Trim failed: ${result.error}`,
+      formatMutationError(result, 'Trim failed'),
       'bg-o3-trim-error',
     );
     return undefined;

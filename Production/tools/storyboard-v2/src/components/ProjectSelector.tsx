@@ -14,7 +14,7 @@ import { useEffect, useState } from 'preact/hooks';
 import {
   activeScope, makeScope, activeProjectType, activeMilestoneId,
 } from '../state/scope';
-import { apiGet, pathappPatch, loadEvent } from '../api/client';
+import { apiGet, pathappPatch, loadEvent, noteClientPinnedEvent } from '../api/client';
 import { Modal } from './ui/Modal';
 import { Select } from './ui/Select';
 import { pushToast } from './ui/Toast';
@@ -403,6 +403,7 @@ export function ProjectSelector() {
         return;
       }
       activeScope.value = makeScope(data.event_id, null, data.event_generation);
+      noteClientPinnedEvent(data.event_id);
       activeProjectType.value = 'event';
       activeMilestoneId.value = null;
       try {
@@ -514,6 +515,7 @@ export function ProjectSelector() {
           if (loadRes.ok && loadRes.data) {
             const data = loadRes.data;
             activeScope.value = makeScope(data.event_id, null, data.event_generation);
+            noteClientPinnedEvent(data.event_id);
             activeProjectType.value = 'event';
             activeMilestoneId.value = null;
           } else {

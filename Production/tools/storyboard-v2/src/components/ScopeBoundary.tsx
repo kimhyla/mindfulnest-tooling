@@ -28,6 +28,7 @@ import {
   emitScopeEventChanged,
   emitScopeHealed,
   ensureServerPinnedTo,
+  noteClientPinnedEvent,
 } from '../api/client';
 
 export interface ScopeBoundaryProps {
@@ -127,6 +128,7 @@ export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
         }
         serverEventId = loadRes.data.event_id;
         resolvedGeneration = loadRes.data.event_generation;
+        noteClientPinnedEvent(loadRes.data.event_id);
         emitScopeEventChanged({
           event_id: loadRes.data.event_id,
           event_generation: loadRes.data.event_generation,
@@ -236,6 +238,7 @@ export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
       }
       document.body.setAttribute('data-resolved-scope', scopeKey(activeScope.value));
       document.body.removeAttribute('data-scope-pin-failed');
+      noteClientPinnedEvent(targetEventId);
       emitScopeHealed({ event_id: targetEventId, source: 'scope-boundary-pin-ok' });
       setResolved(true);
     })();
