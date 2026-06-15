@@ -7525,9 +7525,13 @@ def recover_orphan_o3_delivery(
             try:
                 from tools import kling_character_registry as reg
 
+                proven = reg.get_proven_element_list_entry(speaker)
+                entry = proven or reg.get_element_list_entry(speaker) or {}
                 binding = {
-                    "element_id": str((reg.get_element_list_entry(speaker) or {}).get("element_id") or ""),
-                    "kling_voice_id": str(reg.get_bound_voice_id(speaker) or ""),
+                    "element_id": str(entry.get("element_id") or ""),
+                    "kling_voice_id": str(
+                        entry.get("voice_id") or reg.get_bound_voice_id(speaker) or "",
+                    ),
                 }
                 binding = {k: v for k, v in binding.items() if v}
             except Exception:

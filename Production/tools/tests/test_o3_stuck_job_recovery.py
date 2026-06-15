@@ -157,6 +157,104 @@ def test_parse_element_pipeline_done_log(tmp_path) -> None:
     assert parsed.get("video") == "/tmp/out.mp4"
 
 
+def test_parse_delivery_encode_when_subprocess_crashed_before_done(tmp_path) -> None:
+    bg_mod = _import_background()
+    delivery = tmp_path / "bg_arc1_event2_pre_beat_30_g1_element_o3_master_delivery.mp4"
+    delivery.write_bytes(b"mp4")
+    log_path = tmp_path / "crash.log"
+    log_path.write_text(
+        json.dumps({"phase": "delivery_encode", "dst": str(delivery)})
+        + "\nTraceback ... Resource deadlock avoided\n",
+        encoding="utf-8",
+    )
+    parsed = bg_mod._parse_o3_pipeline_result_from_log(log_path)
+    assert parsed is not None
+    assert parsed.get("video") == str(delivery)
+
+
+def test_reconcile_errno11_delivery_encode_only(monkeypatch, tmp_path) -> None:
+    bg_mod = _import_background()
+    delivery = tmp_path / "bg_arc1_event2_pre_beat_30_g1_element_o3_master_delivery.mp4"
+    delivery.write_bytes(b"mp4")
+    log_path = tmp_path / "job.log"
+    log_path.write_text(
+        json.dumps({"phase": "starting", "route": "o3_element_native_voice"})
+        + "\n"
+        + json.dumps({"phase": "delivery_encode", "dst": str(delivery)})
+        + "\nOSError: [Errno 11] Resource deadlock avoided\n",
+        encoding="utf-8",
+    )
+    sidecar = {
+        "schema_version": 1,
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [{
+                            "beat_id": "bg_arc1_event2_pre_beat_30",
+                            "status": "o3_element_running",
+                            "kling_o3_status": "submitted",
+                            "kling_o3_voice_fix_status": "o3_running",
+                            "kling_o3_voice_fix_job_pid": 1,
+                            "kling_o3_voice_fix_job_log_path": str(log_path),
+                        }],
+                    },
+                },
+            },
+        },
+    }
+    monkeypatch.setattr(bg_mod, "_pid_is_running", lambda _pid: False)
+    monkeypatch.setattr(
+        bg_mod,
+        "_try_orphan_o3_delivery_recovery",
+        lambda beat_id, event_dir, log_path, **kw: {
+            "recovered": True,
+            "delivery_path": str(delivery),
+        },
+    )
+    changed = bg_mod.reconcile_stuck_o3_voice_beats(sidecar)
+    assert changed == 1
+
+
+def test_finalize_o3_job_after_subprocess_exit_recovers_orphan(tmp_path, monkeypatch) -> None:
+    bg_mod = _import_background()
+    delivery = tmp_path / "out_delivery.mp4"
+    delivery.write_bytes(b"x")
+    log_path = tmp_path / "job.log"
+    log_path.write_text(
+        json.dumps({"phase": "delivery_encode", "dst": str(delivery)})
+        + "\nResource deadlock avoided\n",
+        encoding="utf-8",
+    )
+    proc = type("P", (), {"poll": lambda self: 1})()
+    job = {
+        "status": "running",
+        "proc": proc,
+        "beat_id": "bg_arc1_event2_pre_beat_30",
+        "log_path": str(log_path),
+    }
+    monkeypatch.setattr(
+        bg_mod,
+        "_try_orphan_o3_delivery_recovery",
+        lambda beat_id, event_dir, log_path, **kw: {
+            "recovered": True,
+            "delivery_path": str(delivery),
+        },
+    )
+    bg_mod._finalize_o3_job_after_subprocess_exit(job, tmp_path)
+    assert job["status"] == "done"
+    assert job["result"]["video"] == str(delivery)
+
+
+def test_element_pipeline_checkpoint_wraps_orphan_recovery():
+    text = (TOOLS / "kling_o3_element_beat_pipeline.py").read_text(encoding="utf-8")
+    start = text.index("    try:\n        bg_sidecar.persist_o3_delivery_option_checkpoint")
+    end = text.index("    now = datetime.now(timezone.utc).isoformat()", start)
+    block = text[start:end]
+    assert "recover_orphan_o3_delivery" in block
+    assert "sidecar_recovered" in block
+
+
 def test_session_state_handler_calls_reconcile() -> None:
     src = (TOOLS / "server_handlers" / "background.py").read_text(encoding="utf-8")
     assert "reconcile_stuck_o3_voice_beats" in src

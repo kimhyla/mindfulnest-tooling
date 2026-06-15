@@ -3831,6 +3831,45 @@ def _o3_poll_payload_with_beat_snapshot(payload: dict, event_dir: Path) -> dict:
     return out
 
 
+def _finalize_o3_job_after_subprocess_exit(job: dict, event_dir: Path) -> None:
+    """Mark in-memory O3 job done/failed; recover delivery mp4 when sidecar persist failed."""
+    proc = job.get("proc")
+    if not proc or job.get("status") != "running":
+        return
+    rc = proc.poll()
+    if rc is None:
+        return
+    job["ended_at"] = datetime.now(timezone.utc).isoformat()
+    job["exit_code"] = rc
+    log_path = job.get("log_path")
+    beat_id = str(job.get("beat_id") or "")
+    log_text = ""
+    if log_path and Path(str(log_path)).is_file():
+        log_text = Path(str(log_path)).read_text(encoding="utf-8", errors="replace")
+    if rc == 0:
+        job["status"] = "done"
+        job["result"] = _parse_o3_pipeline_result_from_log(log_path)
+        return
+    recovered = None
+    if beat_id and (
+        _sidecar_io_error_text(log_text)
+        or _parse_o3_pipeline_result_from_log(log_path)
+    ):
+        recovered = _try_orphan_o3_delivery_recovery(beat_id, event_dir, log_path)
+    if recovered:
+        job["status"] = "done"
+        job["result"] = {
+            "ok": True,
+            "beat_id": beat_id,
+            "video": recovered.get("delivery_path"),
+            "recovered_from_sidecar_io_error": True,
+        }
+        job.pop("error", None)
+        return
+    job["status"] = "failed"
+    job["error"] = _summarize_o3_job_error(log_text[-4000:])
+
+
 def handle_bg_poll_arlo_o3_voice_status(h) -> None:
     """GET /api/bg/poll-arlo-o3-voice-status?job_id=..."""
     qs = urllib.parse.parse_qs(urllib.parse.urlparse(h.path).query)
@@ -3852,25 +3891,20 @@ def handle_bg_poll_arlo_o3_voice_status(h) -> None:
             retry_safe=True,
         )
     job = _ARLO_O3_JOBS[job_id]
-    proc = job.get("proc")
-    if proc and job["status"] == "running":
-        _ensure_o3_job_metadata(job_id, job)
-        rc = proc.poll()
-        if rc is not None:
-            job["ended_at"] = datetime.now(timezone.utc).isoformat()
-            job["exit_code"] = rc
-            log_text = Path(job["log_path"]).read_text(encoding="utf-8", errors="replace")
-            if rc == 0:
-                job["status"] = "done"
-                job["result"] = _parse_o3_pipeline_result_from_log(job.get("log_path"))
-            else:
-                job["status"] = "failed"
-                job["error"] = _summarize_o3_job_error(log_text[-4000:])
-            _clear_o3_job_metadata(job_id, status=job["status"], result=job.get("result"), error=job.get("error"))
-    payload = {k: v for k, v in job.items() if k != "proc"}
     event_dir = Path(h.app.event_dir)
     if not event_dir.is_absolute():
         event_dir = _data_root(h) / event_dir
+    if job.get("proc") and job.get("status") == "running":
+        _ensure_o3_job_metadata(job_id, job)
+        _finalize_o3_job_after_subprocess_exit(job, event_dir)
+        if job.get("status") in ("done", "failed"):
+            _clear_o3_job_metadata(
+                job_id,
+                status=job["status"],
+                result=job.get("result"),
+                error=job.get("error"),
+            )
+    payload = {k: v for k, v in job.items() if k != "proc"}
     payload = _o3_poll_payload_with_beat_snapshot(payload, event_dir)
     return h._send_json(200, payload)
 
@@ -4089,6 +4123,15 @@ def _parse_o3_pipeline_result_from_log(log_path: str | Path | None) -> dict | No
                 "video": parsed.get("video"),
                 "recovered_from_sidecar_io_error": True,
             }
+        if parsed.get("phase") == "delivery_encode" and parsed.get("dst"):
+            dst = str(parsed["dst"])
+            if Path(dst).is_file():
+                return {
+                    "ok": True,
+                    "beat_id": parsed.get("beat_id"),
+                    "video": dst,
+                    "recovered_from_delivery_encode": True,
+                }
     return None
 
 
@@ -4382,6 +4425,24 @@ def _recover_o3_job_from_sidecar(job_id: str) -> dict | None:
                     }
                 pid = beat.get("kling_o3_voice_fix_job_pid")
                 if pid and not _pid_is_running(pid):
+                    log_path = beat.get("kling_o3_voice_fix_job_log_path")
+                    event_dir = _event_dir_from_beat_id(str(beat.get("beat_id") or ""))
+                    if _try_orphan_o3_delivery_recovery(
+                        str(beat.get("beat_id") or ""),
+                        event_dir,
+                        log_path,
+                    ):
+                        result = _parse_o3_pipeline_result_from_log(log_path)
+                        bg.write_sidecar(sidecar)
+                        return {
+                            "status": "done",
+                            "beat_id": beat.get("beat_id"),
+                            "job_id": job_id,
+                            "log_path": log_path,
+                            "result": result,
+                            "recovered": True,
+                            "orphan_sidecar_recovery": True,
+                        }
                     beat.pop("kling_o3_voice_fix_ui_job_id", None)
                     beat["kling_o3_voice_fix_status"] = "failed"
                     beat["kling_o3_voice_fix_error_code"] = "STALE_JOB_PROCESS_GONE"

@@ -468,15 +468,32 @@ def run_pipeline(
     recovered_gen = bg_sidecar._kling_o3_gen_from_video_path(str(delivery))
     slot_index = int(beat.get("kling_o3_replace_slot_index") or 0)
     label = f"g{recovered_gen} O3 Element voice" if recovered_gen else "latest O3 Element voice"
-    bg_sidecar.persist_o3_delivery_option_checkpoint(
-        beat_id,
-        video_path=str(delivery),
-        slot_index=slot_index,
-        label=label,
-        o3_voice_binding=binding or None,
-        attempt_id=attempt_id,
-        generation=recovered_gen,
-    )
+    try:
+        bg_sidecar.persist_o3_delivery_option_checkpoint(
+            beat_id,
+            video_path=str(delivery),
+            slot_index=slot_index,
+            label=label,
+            o3_voice_binding=binding or None,
+            attempt_id=attempt_id,
+            generation=recovered_gen,
+        )
+    except Exception as exc:
+        recovered = bg_sidecar.recover_orphan_o3_delivery(
+            beat_id,
+            event_dir,
+            log_path=os.environ.get("MN_O3_JOB_LOG"),
+            make_active=True,
+        )
+        if not recovered.get("recovered"):
+            raise
+        print(json.dumps({
+            "phase": "sidecar_recovered",
+            "beat_id": beat_id,
+            "video": recovered.get("delivery_path"),
+            "checkpoint": True,
+            "reason": str(exc)[:500],
+        }), flush=True)
 
     now = datetime.now(timezone.utc).isoformat()
     dur = float(subprocess.check_output([
