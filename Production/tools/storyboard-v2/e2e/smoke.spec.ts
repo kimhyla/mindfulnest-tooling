@@ -76,9 +76,9 @@ test.describe('Session 1 smoke — v59 read-only preview', () => {
     expect(
       itemCount,
       'Library must render >=1 item. In CI the global-setup seeds ' +
-        'Production/beat_generator_stills/sources/e2e_fixture_test.png which ' +
+        'Production/Event_e2e_fixture/library/images/sources/e2e_fixture_test.png which ' +
         '/api/cr/library returns under the "source" tier. If this fails, check ' +
-        'global-setup.ts seeding and _handle_cr_library BG_STILLS_DIR/sources/ scan.',
+        'global-setup.ts seeding and handle_cr_library event_images_sources_dir scan.',
     ).toBeGreaterThanOrEqual(1);
     // Counter chip must reflect the rendered count (not "0 items").
     await expect(page.locator('[data-testid="library-count"]')).toContainText(

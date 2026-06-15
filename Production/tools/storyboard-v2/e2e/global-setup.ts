@@ -18,10 +18,14 @@ const __dirname_setup = dirname(__filename);
 const repoRoot = resolve(__dirname_setup, '..', '..', '..', '..');
 const fixtureDir = resolve(repoRoot, 'Production', 'Event_e2e_fixture');
 const pristineDir = resolve(fixtureDir, '.pristine');
-const stillsDir = resolve(repoRoot, 'Production', 'beat_generator_stills');
-const stillsSourcesDir = resolve(stillsDir, 'sources');
+const fixtureLibrarySourcesDir = resolve(
+  fixtureDir,
+  'library',
+  'images',
+  'sources',
+);
 const TEST_PNG_NAME = 'e2e_fixture_test.png';
-const testPngPath = resolve(stillsSourcesDir, TEST_PNG_NAME);
+const testPngPath = resolve(fixtureLibrarySourcesDir, TEST_PNG_NAME);
 
 // 1×1 transparent PNG, ~70 bytes — placeholder image for library tests
 const TINY_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
@@ -60,9 +64,9 @@ async function globalSetup() {
   }
   copyFileSync(builtBundle, resolve(fixtureDir, 'storyboard_v59_prod.html'));
 
-  // Seed library test PNG (BG_STILLS_DIR is project-level not event-scoped)
-  if (!existsSync(stillsSourcesDir)) {
-    mkdirSync(stillsSourcesDir, { recursive: true });
+  // Seed library test PNG (per-event sources/ — matches handle_cr_library Tier 1b).
+  if (!existsSync(fixtureLibrarySourcesDir)) {
+    mkdirSync(fixtureLibrarySourcesDir, { recursive: true });
   }
   writeFileSync(testPngPath, Buffer.from(TINY_PNG_B64, 'base64'));
 
