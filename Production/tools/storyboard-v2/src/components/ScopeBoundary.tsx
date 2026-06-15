@@ -5,7 +5,7 @@
 //
 // EVENT_PIN_DURABILITY_V1 + SCOPE_URL_AUTHORITY_V1 + SCOPE_DEEP_LINK_DURABILITY_V1 (2026-06):
 //   - When ?event=<id> is present, the URL is authoritative — never silently
-//     fall back to Event_1 or the server's stale startup pin.
+//     fall back to Event_1 or the server's stale startup pin (avoids scope_mismatch 409).
 //   - Tabs do not mount until POST /api/event/load confirms the server pin
 //     matches the resolved target event_id.
 //   - Server persists last-loaded event in Production/server_event_pin.json so
@@ -113,7 +113,9 @@ export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
         if (serverEventId === eventId) {
           return ensureServerPinnedTo(eventId);
         }
-        const loadRes = await loadEvent(eventId);
+        const loadRes = urlEventId
+          ? await loadEvent(urlEventId)
+          : await loadEvent(eventId);
         if (!loadRes.ok || !loadRes.data?.event_id) {
           return false;
         }
@@ -123,7 +125,7 @@ export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
           event_id: loadRes.data.event_id,
           event_generation: loadRes.data.event_generation,
           scope_key: scopeKey(makeScope(loadRes.data.event_id, null, loadRes.data.event_generation)),
-          source: urlEventId ? 'scope-boundary-url-authority' : 'scope-boundary-pin',
+          source: urlEventId ? 'scope-boundary-url-bootstrap' : 'scope-boundary-pin',
         });
         const refreshed = await fetchEventCurrent();
         if (refreshed) {
