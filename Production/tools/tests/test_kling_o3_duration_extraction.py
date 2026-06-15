@@ -158,6 +158,10 @@ def test_normalize_o3_element_preserves_user_framing_when_scene_notes_empty(monk
         "kling_character_registry.is_speaker_voice_ready",
         lambda _s: True,
     )
+    monkeypatch.setattr(
+        "kling_character_registry.kling_element_display_name",
+        lambda _s: "Laurel",
+    )
     beat = {
         "speaker": "Lorelai",
         "scene_notes": "",
@@ -176,6 +180,8 @@ Children's illustrated fantasy storybook style, warm golden forest light""",
     normalized = bg.normalize_o3_element_bound_prompt(beat, beat["kling_o3_prompt"])
     assert "closeup" in normalized.lower()
     assert "head and torso" in normalized.lower()
+    assert "Lorelai Close-up" not in normalized
+    assert "Laurel Closeup" in normalized
     assert bg.prompt_body_has_performance_staging(normalized) is False
     assert bg.sync_beat_scene_notes_from_kling_prompt(beat) is True
     assert "closeup" in beat["scene_notes"].lower()

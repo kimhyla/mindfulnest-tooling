@@ -580,6 +580,11 @@ def normalize_segment_beat_order(beats: list[dict]) -> list[dict]:
 INTRO_BEAT_ROLE_SEMI_CANONICAL = "semi_canonical_transition_prompt"
 INTRO_BEAT_ROLE_CANONICAL_MIRROR = "canonical_mirror_video"
 INTRO_DIALOGUE_PLACEHOLDER = "ENTER TEXT HERE"
+# ~22 spoken words — local estimate fits 12s bucket without cramming (beat 24 class).
+ARLO_SEMI_CANONICAL_COMPACT_DIALOGUE = (
+    "OK, Kiddo. Lorelai's our best chance. She knows the MindfulNest! "
+    "But she's stressed. Let's see if the Wizard can teach you a calming spell."
+)
 
 # Sidecar merge + stitch export durability (LD Kling O3 trim persist).
 # Trims saved via Apply Trim MUST survive re-extract/import and MUST be applied
@@ -1078,6 +1083,10 @@ def _apply_intro_canonical_beat_defaults(
             bg_path = resolve_beat_bg_ref_path(beat, event_id, phase)
             if bg_path:
                 beat["bg_ref_image"] = _ref_dict_from_path(bg_path)
+        manifest_emo = str(cfg.get("emotion") or "").strip()
+        beat_emo = str(beat.get("emotion") or "").strip().lower()
+        if manifest_emo and beat_emo in ("", "upbeat", "[upbeat]"):
+            beat["emotion"] = manifest_emo
     if not beat.get("kling_o3_duration_locked"):
         beat["kling_o3_duration"] = resolve_kling_o3_submit_duration(
             beat, beat.get("kling_o3_prompt") or "",
@@ -5349,21 +5358,90 @@ def normalize_o3_element_bound_prompt(beat: dict, prompt: str | None = None) -> 
     )
 
 
+def _beat_dialogue_exceeds_kling_max_bucket(beat: dict, prompt: str | None = None) -> bool:
+    """True when spoken line local estimate exceeds largest Kling duration bucket."""
+    text = (prompt if prompt is not None else beat.get("kling_o3_prompt") or "").strip()
+    spoken = _spoken_for_duration_estimate(text, beat=beat)
+    if not spoken:
+        return False
+    staging = _kling_o3_has_pre_speech_staging(text)
+    unsnapped = estimate_kling_o3_seconds_unsnapped(
+        spoken,
+        has_pre_speech_staging=staging,
+    )
+    return unsnapped > float(KLING_O3_MAX_DURATION) + 0.75
+
+
+def heal_semi_canonical_arlo_voice_contract(beat: dict) -> bool:
+    """Fix semi-canonical transition beat: warm emotion, no upbeat, compact dialogue when overflow."""
+    if beat.get("intro_beat_role") != INTRO_BEAT_ROLE_SEMI_CANONICAL:
+        return False
+    if str(beat.get("speaker") or "").strip() != "Arlo":
+        return False
+    changed = False
+    emo = str(beat.get("emotion") or "").strip().lower()
+    if emo in ("", "upbeat", "[upbeat]"):
+        beat["emotion"] = "warm"
+        changed = True
+    prompt = (beat.get("kling_o3_prompt") or "").strip()
+    compact = ARLO_SEMI_CANONICAL_COMPACT_DIALOGUE
+    if _beat_dialogue_exceeds_kling_max_bucket(beat, prompt):
+        if (beat.get("dialogue_text") or "").strip() != compact:
+            beat["dialogue_text"] = compact
+            changed = True
+        try:
+            import kling_o3_prompt as o3p
+        except ImportError:
+            from tools import kling_o3_prompt as o3p  # type: ignore
+
+        locked = o3p.inject_locked_voice_line(
+            prompt,
+            "Arlo",
+            compact,
+            emotion=str(beat.get("emotion") or "warm"),
+        )
+        if locked != prompt:
+            beat["kling_o3_prompt"] = locked
+            changed = True
+    elif changed or "[upbeat]" in prompt.lower():
+        try:
+            import kling_o3_prompt as o3p
+        except ImportError:
+            from tools import kling_o3_prompt as o3p  # type: ignore
+
+        spoken = extract_spoken_dialogue_from_kling_prompt(prompt) or compact
+        locked = o3p.inject_locked_voice_line(
+            prompt,
+            "Arlo",
+            spoken,
+            emotion=str(beat.get("emotion") or "warm"),
+        )
+        if locked != prompt:
+            beat["kling_o3_prompt"] = locked
+            changed = True
+    return changed
+
+
 def heal_o3_element_submit_prompt(beat: dict) -> bool:
     """Persist minimal Element-bound prompt shell (voice lock + footer locks only)."""
     speaker = str(beat.get("speaker") or "").strip()
     if not _speaker_has_element_bound_voice(speaker):
         return False
+    changed = heal_semi_canonical_arlo_voice_contract(beat)
     before = (beat.get("kling_o3_prompt") or "").strip()
     if not before:
-        return False
+        return changed
     normalized = normalize_o3_element_bound_prompt(beat, before)
-    if normalized == before:
-        return False
-    beat["kling_o3_prompt"] = normalized
-    sync_beat_dialogue_from_kling_prompt(beat)
-    heal_kling_o3_stored_duration(beat)
-    return True
+    if normalized != before:
+        beat["kling_o3_prompt"] = normalized
+        sync_beat_dialogue_from_kling_prompt(beat)
+        heal_kling_o3_stored_duration(beat)
+        return True
+    if changed:
+        sync_beat_dialogue_from_kling_prompt(beat)
+        heal_kling_o3_stored_duration(beat)
+        return True
+    return False
 
 
 def _kling_o3_normalize_spoken(spoken: str) -> str:

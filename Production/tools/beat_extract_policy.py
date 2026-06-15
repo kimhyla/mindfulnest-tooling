@@ -398,15 +398,33 @@ def _clean_scene_notes(scene_notes: str) -> str:
     return o3p.strip_rooted_in_place(apply_cast_text((scene_notes or "").strip()))
 
 
+def _kling_staging_speaker_label(speaker: str) -> str:
+    """Kling-facing name for staging (Laurel for Lorelai) — must match voice line + element_list."""
+    try:
+        from tools import kling_character_registry as reg
+
+        return reg.kling_element_display_name(speaker) or (speaker or "").strip()
+    except Exception:
+        try:
+            from tools import kling_o3_prompt as o3p
+
+            return o3p._kling_display_name_for_speaker(speaker) or (speaker or "").strip()
+        except Exception:
+            return (speaker or "").strip()
+
+
 def screen_direction_paragraph(speaker: str, scene_notes: str) -> str:
     """One sentence of on-screen staging — separate paragraph before the voice line."""
     scene = _clean_scene_notes(scene_notes)
     if not scene:
         return ""
-    if re.match(rf"^{re.escape(speaker)}\b", scene, re.I):
+    label = _kling_staging_speaker_label(speaker)
+    if re.match(rf"^{re.escape(label)}\b", scene, re.I):
         line = scene
+    elif speaker and re.match(rf"^{re.escape(speaker)}\b", scene, re.I):
+        line = re.sub(rf"^{re.escape(speaker)}\b", label, scene, count=1, flags=re.I)
     else:
-        line = f"{speaker} {scene.lstrip(',').strip()}"
+        line = f"{label} {scene.lstrip(',').strip()}"
     return line.rstrip(".") + "."
 
 

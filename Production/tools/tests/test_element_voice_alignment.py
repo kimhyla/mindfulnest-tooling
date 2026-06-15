@@ -583,3 +583,71 @@ def test_event_dir_uses_mn_prod_root(monkeypatch):
     monkeypatch.setenv("MN_PROD_ROOT", str(dropbox))
     assert _runtime_prod_root() == dropbox.resolve()
     assert _event_dir_for_segment(_runtime_prod_root(), "event_2_pre").resolve() == (dropbox / "Event_2").resolve()
+
+
+def test_screen_direction_paragraph_uses_kling_display_name(monkeypatch):
+    from beat_extract_policy import screen_direction_paragraph
+
+    monkeypatch.setattr(
+        "tools.kling_character_registry.kling_element_display_name",
+        lambda _s: "Laurel",
+    )
+    line = screen_direction_paragraph(
+        "Lorelai",
+        "Close-up of Laurel's head and torso area",
+    )
+    assert line.startswith("Laurel Close-up")
+    assert "Lorelai Close-up" not in line
+
+
+def test_validate_rejects_lorelai_staging_before_voice_line(monkeypatch):
+    from tools import kling_o3_prompt as o3p
+
+    monkeypatch.setattr(
+        "tools.kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.kling_element_display_name",
+        lambda _s: "Laurel",
+    )
+    bad = (
+        "@Image1 (Laurel). Scene from @Image2.\n\n"
+        "Lorelai Close-up of Laurel's head and torso area.\n\n"
+        f'Laurel speaks in a {o3p.KLING_O3_LORELAI_VOICE_DELIVERY}: "Hello!"'
+    )
+    errs = o3p.validate_element_bound_voice_prompt("Lorelai", bad)
+    assert any("staging before voice line" in e for e in errs)
+    fixed = o3p.normalize_kling_speaker_names_in_prompt(bad, "Lorelai")
+    assert "Lorelai Close-up" not in fixed
+    assert o3p.validate_element_bound_voice_prompt("Lorelai", fixed) == []
+
+
+def test_heal_semi_canonical_arlo_compacts_overflow_dialogue(monkeypatch):
+    monkeypatch.setattr(
+        "kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+    long_line = (
+        "OK, Kiddo . Lorelai's our best chance to solve this mystery. "
+        "She knows so much about the MindfulNest! [pause] But [pause] she seems kinda "
+        "stressed out. Let's see if the Great Wizard can teach you a Magic Spell for "
+        "calming down, so she can help us figure it out!"
+    )
+    beat = {
+        "speaker": "Arlo",
+        "intro_beat_role": "semi_canonical_transition_prompt",
+        "emotion": "upbeat",
+        "dialogue_text": long_line,
+        "kling_o3_prompt": (
+            "@Image1 (Arlo). Scene from @Image2.\n\n"
+            "Arlo speaks in a warm calm conversational pace, steady and natural, clear delivery, "
+            "brisk but not rushed, not bubbly or hyper, not slow, not dramatic, not childlike or "
+            f'baby-talk: [upbeat] "{long_line}"'
+        ),
+    }
+    assert bg.heal_semi_canonical_arlo_voice_contract(beat) is True
+    assert beat["emotion"] == "warm"
+    assert beat["dialogue_text"] == bg.ARLO_SEMI_CANONICAL_COMPACT_DIALOGUE
+    assert "[upbeat]" not in beat["kling_o3_prompt"].lower()
+    assert not bg._beat_dialogue_exceeds_kling_max_bucket(beat)

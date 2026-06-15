@@ -231,9 +231,28 @@ def normalize_kling_speaker_names_in_prompt(prompt: str, speaker: str) -> str:
                 out,
                 flags=re.I,
             )
+            # Staging lines like "Lorelai Close-up …" do not match verb patterns above.
+            out = re.sub(r"(?m)^Lorelai\s+", f"{display} ", out)
     except Exception:
         pass
     return out
+
+
+def prompt_staging_leaks_registry_speaker_name(speaker: str, prompt: str) -> bool:
+    """True when registry key (e.g. Lorelai) appears in pre-voice staging body."""
+    try:
+        from tools import kling_character_registry as reg
+
+        reg_key = reg.resolve_registry_key(speaker) or (speaker or "").strip()
+        display = _kling_display_name_for_speaker(speaker) or reg_key
+    except Exception:
+        return False
+    if not reg_key or reg_key == display:
+        return False
+    text = prompt or ""
+    m = re.search(r"\b(?:speaks|says)\b", text, re.I)
+    head = text[: m.start()] if m else text
+    return bool(re.search(rf"\b{re.escape(reg_key)}\b", head, re.I))
 
 
 def _voice_line_display_name(speaker: str, element_name: str | None) -> str:
@@ -412,6 +431,11 @@ def validate_element_bound_voice_prompt(speaker: str, prompt: str) -> list[str]:
                 errors.append(
                     f"prompt voice line name must match Element display name ({display})"
                 )
+    if prompt_staging_leaks_registry_speaker_name(speaker, text):
+        errors.append(
+            f"prompt staging before voice line must use Kling display name ({display!r}), "
+            f"not registry speaker name — misalignment causes generic/wrong Kling TTS"
+        )
     try:
         from tools import beat_generator as bg
 

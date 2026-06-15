@@ -276,6 +276,19 @@ def run_pipeline(
     )
     if drift_msg and os.environ.get("MN_ACCEPT_VOICE_DRIFT") != "1":
         raise RuntimeError(f"VOICE_BIND_DRIFT: {drift_msg}")
+    event_match = re.match(r"event_(\d+)_", segment_key or "")
+    event_id = event_match.group(1) if event_match else "1"
+    submit_errors = bg_sidecar.validate_kling_o3_beat_for_submit(
+        beat,
+        event_id=event_id,
+        phase="pre" if (segment_key or "").endswith("_pre") else "full",
+    )
+    duration_errors = [e for e in submit_errors if e.get("code") == "DIALOGUE_TOO_LONG"]
+    if duration_errors:
+        codes = ", ".join(
+            f"{e.get('code', '?')}: {e.get('message', '')}" for e in duration_errors
+        )
+        raise RuntimeError(f"KLING_O3_SUBMIT_BLOCKED: {codes}")
     duration = bg_sidecar.resolve_kling_o3_submit_duration(beat, prepared)
     if not beat.get("kling_o3_duration_locked"):
         beat["kling_o3_duration"] = duration
