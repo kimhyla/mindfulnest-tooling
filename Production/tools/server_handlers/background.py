@@ -4785,6 +4785,7 @@ def handle_bg_select_o3_video(h, body: dict) -> None:
 
 def _load_elevenlabs_key():
     try:
+        # CODE tree — sibling credentials_lib import path (not event data root).
         _libdir = os.path.normpath(
             os.path.join(os.path.dirname(__file__), "..", "credentials_lib"),
         )
