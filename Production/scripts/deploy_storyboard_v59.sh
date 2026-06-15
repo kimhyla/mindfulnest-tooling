@@ -481,6 +481,21 @@ fi
 echo "[deploy] (g) curl smoke ok — server serving fresh build (sha=$BUILD_SHA, marker_matches=$MARKER_COUNT)"
 
 # ----------------------------------------------------------------
+# (g.5) Pin runtime event to deployed event dir (not stale launch argv)
+# ----------------------------------------------------------------
+echo "[deploy] (g.5) post-restart event/load pin for $event_id ..."
+LOAD_HTTP=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 15 \
+    -X POST "http://localhost:${SERVER_PORT}/api/event/load" \
+    -H "Content-Type: application/json" \
+    -d "{\"event_id\":\"${event_id}\"}" || echo "000")
+if [[ "$LOAD_HTTP" != "200" ]]; then
+    echo "FATAL: /api/event/load for $event_id returned HTTP $LOAD_HTTP" >&2
+    tail -20 "$LOG_DIR/server.log" >&2 || true
+    exit 1
+fi
+echo "[deploy] (g.5) event/load ok — runtime pinned to $event_id"
+
+# ----------------------------------------------------------------
 # (h) Post-restart O3 sidecar API smoke — server must expose lock API live
 # ----------------------------------------------------------------
 echo "[deploy] (h) O3 capability smoke via /api/bg/session-state ..."

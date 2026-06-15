@@ -1656,6 +1656,12 @@ def handle_bg_session_state(h)-> None:
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
         reconcile_stuck_o3_voice_beats(sidecar)
+        # Orphan recovery may persist via update_beat_locked — refresh before whole-file write.
+        sidecar = bg.read_sidecar()
+        sidecar = bg._migrate_sidecar(sidecar)
+        event_dir = Path(getattr(h.app, "event_dir", "") or "")
+        if event_dir.is_dir():
+            bg.reconcile_kling_o3_sidecar(sidecar, event_dir)
         bg.write_sidecar(sidecar)
     ctx = sidecar.get("active_context")
 
@@ -2502,6 +2508,7 @@ def handle_bg_update_beat(h, body: dict)-> None:
                    )
         written = []
         element_ref_warning = None
+        element_ref_registered = None
         for field in _BG_BEAT_WRITABLE:
             if field in body:
                 value = body[field]
@@ -2540,14 +2547,37 @@ def handle_bg_update_beat(h, body: dict)-> None:
                     bg.sync_beat_scene_notes_from_kling_prompt(beat)
         if written:
             bg.sync_element_char_ref_status(beat, heal_mismatch=False)
+        if "reference_image" in written and beat.get("element_char_ref_ok") is False:
+            speaker = str(beat.get("speaker") or "").strip()
+            try:
+                from credentials import load_credentials  # type: ignore
+            except ImportError:
+                from tools.credentials_lib.credentials import load_credentials  # type: ignore
+            creds = load_credentials()
+            ws_key = creds.get("wavespeed_key") or creds.get("wavespeed")
+            if ws_key and speaker:
+                reg_result = bg.try_register_dropped_char_ref_on_element(beat, ws_key)
+                if reg_result.get("ok"):
+                    bg.sync_element_char_ref_status(beat, heal_mismatch=False)
+                    if beat.get("element_char_ref_ok"):
+                        try:
+                            from tools import kling_character_registry as reg
+
+                            display = reg.kling_element_display_name(speaker) or speaker
+                        except Exception:
+                            display = speaker
+                        action = reg_result.get("action") or "registered"
+                        pose = reg_result.get("pose_rel") or ""
+                        element_ref_registered = (
+                            f"Registered on {display} Element ({action})"
+                            + (f" — {pose}" if pose else "")
+                            + ". Generate unlocked."
+                        )
         if beat.get("element_char_ref_ok") is False:
             detail = (beat.get("element_char_ref_error") or "").strip()
             element_ref_warning = (
-                "Char ref saved — your library still is kept on this beat. "
-                "O3 Generate requires @Image1 to match a pose registered on this "
-                "character's Kling Element (Production/<Char>/poses/). Library "
-                "uploads work when bytes match; new poses must be added via "
-                "Element re-register."
+                "Char ref saved on this beat, but Element registration failed. "
+                "Try Add to Element from library preview (Loral), or drop the pose again."
                 + (f" ({detail})" if detail else "")
             )
         bg.write_sidecar(sidecar)
@@ -2556,6 +2586,7 @@ def handle_bg_update_beat(h, body: dict)-> None:
         "written": written,
         "thumb_b64": thumb_b64,
         "element_ref_warning": element_ref_warning,
+        "element_ref_registered": element_ref_registered,
         "element_char_ref_ok": beat.get("element_char_ref_ok"),
         "element_char_ref_error": beat.get("element_char_ref_error"),
     })
@@ -3644,6 +3675,9 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
     subprocess_env = os.environ.copy()
     subprocess_env["MN_PROD_ROOT"] = str(prod)
     subprocess_env["MN_O3_ATTEMPT_ID"] = attempt_id
+    subprocess_env["MN_O3_JOB_LOG"] = str(log_path)
+    if body.get("accept_voice_drift"):
+        subprocess_env["MN_ACCEPT_VOICE_DRIFT"] = "1"
     subprocess_env["MN_TOOLING_TOOLS"] = str(_PSERVER_TOOLS_DIR)
     _pp = subprocess_env.get("PYTHONPATH", "")
     subprocess_env["PYTHONPATH"] = os.pathsep.join(
@@ -3696,11 +3730,7 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
 
 def _event_dir_for_beat_id(beat_id: str) -> Path:
     """Derive Production/Event_N from bg_arc1_event2_pre_beat_27 style ids."""
-    bg = _bg_module()
-    match = re.search(r"event(\d+)_", str(beat_id or ""), re.I)
-    if match:
-        return bg.prod_root() / f"Event_{int(match.group(1))}"
-    return bg.prod_root() / "Event_1"
+    return _bg_module().event_dir_for_beat_id(beat_id)
 
 
 def _enriched_beat_snapshot_for_o3_poll(
@@ -3987,6 +4017,13 @@ def _parse_o3_pipeline_result_from_log(log_path: str | Path | None) -> dict | No
                 "delivery_probe": delivery,
                 "duration_s": delivery.get("duration_s"),
             }
+        if parsed.get("phase") == "sidecar_recovered" and parsed.get("video"):
+            return {
+                "ok": True,
+                "beat_id": parsed.get("beat_id"),
+                "video": parsed.get("video"),
+                "recovered_from_sidecar_io_error": True,
+            }
     return None
 
 
@@ -4103,6 +4140,36 @@ def _beat_o3_job_looks_running(beat: dict) -> bool:
     return False
 
 
+def _sidecar_io_error_text(error: str | None) -> bool:
+    text = str(error or "")
+    return "Resource deadlock avoided" in text or "[Errno 11]" in text or "[Errno 35]" in text
+
+
+def _try_orphan_o3_delivery_recovery(
+    beat_id: str,
+    event_dir: Path,
+    log_path: str | Path | None,
+    *,
+    make_active: bool = True,
+) -> dict | None:
+    """Recover delivery mp4 when Kling finished but sidecar finalize hit Dropbox errno 11/35."""
+    if not beat_id:
+        return None
+    try:
+        bg = _bg_module()
+        recovered = bg.recover_orphan_o3_delivery(
+            str(beat_id),
+            event_dir,
+            log_path=log_path,
+            make_active=make_active,
+        )
+        if recovered.get("recovered"):
+            return recovered
+    except Exception as exc:
+        print(f"[bg_o3_job] orphan recovery failed for {beat_id}: {exc}", flush=True)
+    return None
+
+
 def reconcile_stuck_o3_voice_beats(sidecar: dict) -> int:
     """Clear beats stuck in running UI state after a dead subprocess or stale error."""
     changed = 0
@@ -4147,6 +4214,20 @@ def reconcile_stuck_o3_voice_beats(sidecar: dict) -> int:
                 beat["kling_o3_voice_fix_phase"] = "finalize"
                 beat["kling_o3_voice_fix_completed_at"] = now
                 beat["kling_o3_completed_at"] = beat.get("kling_o3_completed_at") or now
+                _clear_stale_o3_job_pointers(beat)
+                changed += 1
+                continue
+            if is_element_job and _sidecar_io_error_text(log_text):
+                event_dir = _event_dir_from_beat_id(str(beat.get("beat_id") or ""))
+                if _try_orphan_o3_delivery_recovery(str(beat.get("beat_id") or ""), event_dir, log_path):
+                    _clear_stale_o3_job_pointers(beat)
+                    changed += 1
+                    continue
+
+        if voice_failed and _sidecar_io_error_text(str(beat.get("kling_o3_voice_fix_error") or "")):
+            log_path = beat.get("kling_o3_voice_fix_job_log_path")
+            event_dir = _event_dir_from_beat_id(str(beat.get("beat_id") or ""))
+            if _try_orphan_o3_delivery_recovery(str(beat.get("beat_id") or ""), event_dir, log_path):
                 _clear_stale_o3_job_pointers(beat)
                 changed += 1
                 continue
@@ -4205,6 +4286,25 @@ def _recover_o3_job_from_sidecar(job_id: str) -> dict | None:
                         "recovered": True,
                     }
                 if beat.get("kling_o3_voice_fix_status") == "failed":
+                    err_text = str(beat.get("kling_o3_voice_fix_error") or "")
+                    log_path = beat.get("kling_o3_voice_fix_job_log_path")
+                    if _sidecar_io_error_text(err_text):
+                        event_dir = _event_dir_from_beat_id(str(beat.get("beat_id") or ""))
+                        if _try_orphan_o3_delivery_recovery(
+                            str(beat.get("beat_id") or ""),
+                            event_dir,
+                            log_path,
+                        ):
+                            result = _parse_o3_pipeline_result_from_log(log_path)
+                            return {
+                                "status": "done",
+                                "beat_id": beat.get("beat_id"),
+                                "job_id": job_id,
+                                "log_path": log_path,
+                                "result": result,
+                                "recovered": True,
+                                "orphan_sidecar_recovery": True,
+                            }
                     beat.pop("kling_o3_voice_fix_ui_job_id", None)
                     bg.write_sidecar(sidecar)
                     return {

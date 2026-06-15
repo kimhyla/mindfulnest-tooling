@@ -159,6 +159,9 @@ interface BgBeat {
   kling_o3_video_path_exists?: boolean;
   kling_o3_selected_at?: string;
   kling_o3_options?: GptOption[];
+  kling_o3_clips_dir?: string;
+  kling_o3_disk_delivery_count?: number;
+  kling_o3_orphan_delivery_count?: number;
   kling_o3_replace_slot_index?: number;
   kling_o3_trim_start?: number;
   kling_o3_trim_back?: number | null;
@@ -2723,6 +2726,16 @@ function BeatGenCard({
           />
         ))}
       </div>
+      {(beat.kling_o3_disk_delivery_count ?? 0) > 0 && beat.kling_o3_clips_dir ? (
+        <p class="mn-dim mn-bg-o3-disk-hint" data-testid={`bg-o3-disk-hint-${index}`}>
+          {(beat.kling_o3_disk_delivery_count ?? 0)} paid O3 clip
+          {(beat.kling_o3_disk_delivery_count ?? 0) === 1 ? '' : 's'} on disk
+          {(beat.kling_o3_orphan_delivery_count ?? 0) > 0
+            ? ` (${beat.kling_o3_orphan_delivery_count} recovered into Beat Gen on refresh)`
+            : ''}
+          . Newest 3 show in video 0–2 above. Review all in Finder: {beat.kling_o3_clips_dir}
+        </p>
+      ) : null}
 
       {/* BG-8 — Insert beat after this card (visible + button per Kim 2026-05-06 lock). */}
       <div class="mn-bg-insert-after" data-testid={`bg-insert-after-${index}`}>
@@ -2795,7 +2808,13 @@ function BgRefSlot({
         key: payload.lib_key,
         abs_path: payload.abs_path ?? '',
       });
-      const result = await pathappPatch<{ ok: boolean; thumb_b64?: string; element_ref_warning?: string }>(
+      const result = await pathappPatch<{
+        ok: boolean;
+        thumb_b64?: string;
+        element_ref_warning?: string;
+        element_ref_registered?: string;
+        element_char_ref_ok?: boolean;
+      }>(
         activeScope.value, 'bg_update_beat', {
           beat_id: beatId,
           [refField]: {
@@ -2815,6 +2834,20 @@ function BgRefSlot({
           message: `${label} drop failed: ${result.error ?? `HTTP ${result.status}`}`,
           source: 'bg-ref-drop-error',
         });
+      } else if (refField === 'reference_image' && result.data?.element_ref_registered) {
+        if (result.data.thumb_b64) {
+          onPatchRefImage(refField, {
+            key: payload.lib_key,
+            abs_path: payload.abs_path ?? '',
+            thumb_b64: result.data.thumb_b64,
+          });
+        }
+        pushToast({
+          kind: 'success',
+          message: result.data.element_ref_registered,
+          source: 'bg-ref-element-registered',
+        });
+        onRefresh();
       } else if (refField === 'reference_image' && result.data?.element_ref_warning) {
         if (result.data.thumb_b64) {
           onPatchRefImage(refField, {

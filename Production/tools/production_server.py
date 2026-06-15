@@ -4235,6 +4235,28 @@ def _tts_regenerate_for_beat(app, beat_id: str, text: str,
 # Server restart (shared by /api/server/restart handler and watchdog)
 # ---------------------------------------------------------------------------
 
+def _argv_with_runtime_event_pin(argv: list[str], app) -> list[str]:
+    """Rewrite --event-dir / --event-id to match runtime-loaded event (not launch argv)."""
+    try:
+        runtime_dir = Path(getattr(app, "event_dir", "") or "").resolve()
+        runtime_id = str(getattr(app, "event_id", "") or "").strip()
+    except Exception:
+        return list(argv)
+    if not runtime_dir.is_dir() or not runtime_id:
+        return list(argv)
+    out = list(argv)
+    for i, arg in enumerate(out):
+        if arg == "--event-dir" and i + 1 < len(out):
+            out[i + 1] = str(runtime_dir)
+        elif arg.startswith("--event-dir="):
+            out[i] = f"--event-dir={runtime_dir}"
+        elif arg == "--event-id" and i + 1 < len(out):
+            out[i + 1] = runtime_id
+        elif arg.startswith("--event-id="):
+            out[i] = f"--event-id={runtime_id}"
+    return out
+
+
 def perform_server_restart(server, app, reason: str = "api") -> None:
     """Cleanly shut down the HTTP server and re-exec the process.
 
@@ -4294,8 +4316,8 @@ def perform_server_restart(server, app, reason: str = "api") -> None:
         print(f"[restart] could not auto-detect latest storyboard: {e}")
 
     # 5. Re-exec with updated arguments (process image is replaced; no return)
-    #    Log sys.executable so pyenv-drift (user switched Python versions
-    #    mid-session) is visible in the log — C3 informational finding.
+    #    Preserve runtime event pin (not only launch argv) so Event_2 work survives restart.
+    new_argv = _argv_with_runtime_event_pin(new_argv, app)
     print(f"[restart] sys.executable={sys.executable}")
     print(f"[restart] os.execv with argv={new_argv}")
     os.execv(sys.executable, [sys.executable] + new_argv)

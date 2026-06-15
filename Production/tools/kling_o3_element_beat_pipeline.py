@@ -437,6 +437,25 @@ def run_pipeline(
     if delivery_probe["width"] != 1280 or delivery_probe["height"] != 720:
         raise RuntimeError(f"Delivery encode did not land at 1280x720: {delivery_probe}")
 
+    binding = {
+        "element_id": str((reg.get_element_list_entry(speaker) or {}).get("element_id") or ""),
+        "kling_voice_id": str(reg.get_bound_voice_id(speaker) or ""),
+    }
+    binding = {k: v for k, v in binding.items() if v}
+
+    recovered_gen = _kling_o3_gen_from_video_path(str(delivery))
+    slot_index = int(beat.get("kling_o3_replace_slot_index") or 0)
+    label = f"g{recovered_gen} O3 Element voice" if recovered_gen else "latest O3 Element voice"
+    bg_sidecar.persist_o3_delivery_option_checkpoint(
+        beat_id,
+        video_path=str(delivery),
+        slot_index=slot_index,
+        label=label,
+        o3_voice_binding=binding or None,
+        attempt_id=attempt_id,
+        generation=recovered_gen,
+    )
+
     now = datetime.now(timezone.utc).isoformat()
     dur = float(subprocess.check_output([
         "ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -468,22 +487,38 @@ def run_pipeline(
             "applied_at": now,
         },
     }
-    binding = {
-        "element_id": str((reg.get_element_list_entry(speaker) or {}).get("element_id") or ""),
-        "kling_voice_id": str(reg.get_bound_voice_id(speaker) or ""),
-    }
-    binding = {k: v for k, v in binding.items() if v}
-    _upsert_option(beat, video_path=str(delivery), label="latest O3 Element voice", now=now, o3_voice_binding=binding or None)
+    with bg_sidecar._sidecar_lock:
+        sc_refresh = bg_sidecar.read_sidecar()
+        found_refresh = _find_beat(sc_refresh, beat_id)
+        if found_refresh:
+            beat["kling_o3_options"] = found_refresh[0].get("kling_o3_options")
     bg_sidecar.prune_stale_o3_voice_options(beat, speaker)
+    bg_sidecar.reconcile_o3_disk_deliveries_for_beat(beat, event_dir)
     final["kling_o3_options"] = beat.get("kling_o3_options")
-    persist(final, remove=(
-        "kling_o3_voice_fix_ui_job_id",
-        "kling_o3_voice_fix_job_pid",
-        "kling_o3_voice_fix_job_started_at",
-        "kling_o3_voice_fix_error",
-        "kling_o3_voice_fix_error_code",
-    ))
-    bg_sidecar.auto_pin_approved_kling_o3_delivery(beat, event_dir)
+    try:
+        persist(final, remove=(
+            "kling_o3_voice_fix_ui_job_id",
+            "kling_o3_voice_fix_job_pid",
+            "kling_o3_voice_fix_job_started_at",
+            "kling_o3_voice_fix_error",
+            "kling_o3_voice_fix_error_code",
+        ))
+        bg_sidecar.auto_pin_approved_kling_o3_delivery(beat, event_dir)
+    except Exception as exc:
+        recovered = bg_sidecar.recover_orphan_o3_delivery(
+            beat_id,
+            event_dir,
+            log_path=os.environ.get("MN_O3_JOB_LOG"),
+            make_active=True,
+        )
+        if not recovered.get("recovered"):
+            raise
+        print(json.dumps({
+            "phase": "sidecar_recovered",
+            "beat_id": beat_id,
+            "video": recovered.get("delivery_path"),
+            "reason": str(exc)[:500],
+        }), flush=True)
     print(json.dumps({"phase": "done", "beat_id": beat_id, "video": str(delivery), "raw": raw_probe, "delivery": delivery_probe}), flush=True)
     return {"ok": True, "beat_id": beat_id, "video": str(delivery), "raw_probe": raw_probe, "delivery_probe": delivery_probe}
 
