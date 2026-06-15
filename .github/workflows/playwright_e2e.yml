@@ -408,6 +408,8 @@ jobs:
             e2e/layer_b_option_b_bg_session_state.spec.ts \
             e2e/divergence_residuals_6_layer.spec.ts \
             e2e/track-b-ld-coverage.spec.ts \
+            e2e/bg_beat_nav_jump.spec.ts \
+            e2e/bg_golden_path.spec.ts \
             e2e/rollback.spec.ts \
             e2e/smoke.spec.ts \
             --reporter=line

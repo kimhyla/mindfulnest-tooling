@@ -133,3 +133,69 @@ def test_enrich_uses_beat_event_not_server_pin(tmp_path: Path, monkeypatch) -> N
     enriched = bg.enrich_beats_kling_o3_pinned([beat], tmp_path / "Event_1")[0]
     assert enriched["kling_o3_disk_delivery_count"] == 1
     assert "Event_2" in enriched["kling_o3_clips_dir"]
+
+
+def test_refresh_o3_ui_slot_layout_newest_three_with_labels(tmp_path: Path) -> None:
+    """Beat 13 pattern: 4 on disk → slots 0–2 are g4, g3, g2 with canonical labels."""
+    beat_id = "bg_arc1_event2_pre_beat_30"
+    clips = tmp_path / "kling_o3_clips"
+    clips.mkdir(parents=True)
+    paths = {}
+    for gen in (1, 2, 3, 4):
+        p = clips / f"{beat_id}_g{gen}_element_o3_master_delivery.mp4"
+        p.write_bytes(f"g{gen}".encode())
+        paths[gen] = str(p.resolve())
+    beat = {
+        "beat_id": beat_id,
+        "kling_o3_options": [
+            {"video_path": paths[1], "label": "recovered O3 delivery", "slot_index": 0},
+            {"video_path": paths[2], "label": "g2 O3 Element voice", "generation": 2, "slot_index": 1},
+            {"video_path": paths[3], "label": "latest O3 Element voice", "slot_index": 2},
+            {"video_path": paths[4], "label": "g4 O3 Element voice", "generation": 4},
+        ],
+    }
+    changed = bg.refresh_o3_ui_slot_layout(beat)
+    assert changed is True
+    slotted = sorted(
+        [o for o in beat["kling_o3_options"] if isinstance(o.get("slot_index"), int)],
+        key=lambda o: o["slot_index"],
+    )
+    assert len(slotted) == 3
+    assert [o.get("generation") for o in slotted] == [4, 3, 2]
+    assert [o.get("label") for o in slotted] == [
+        "g4 O3 Element voice",
+        "g3 O3 Element voice",
+        "g2 O3 Element voice",
+    ]
+    rolled = [o for o in beat["kling_o3_options"] if "slot_index" not in o]
+    assert len(rolled) == 1
+    assert rolled[0].get("generation") == 1
+    assert rolled[0].get("label") == "g1 O3 Element voice"
+
+
+def test_enrich_refreshes_newest_three_for_api(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(bg, "_PROD_DIR", str(tmp_path))
+    beat_id = "bg_arc1_event2_pre_beat_30"
+    event2 = tmp_path / "Event_2"
+    clips = event2 / "kling_o3_clips"
+    clips.mkdir(parents=True)
+    p5 = clips / f"{beat_id}_g5_element_o3_master_delivery.mp4"
+    p4 = clips / f"{beat_id}_g4_element_o3_master_delivery.mp4"
+    p3 = clips / f"{beat_id}_g3_element_o3_master_delivery.mp4"
+    for p in (p3, p4, p5):
+        p.write_bytes(b"v")
+    beat = {
+        "beat_id": beat_id,
+        "kling_o3_options": [
+            {"video_path": str(p3.resolve()), "label": "g3 O3 Element voice", "generation": 3, "slot_index": 0},
+            {"video_path": str(p4.resolve()), "label": "g4 O3 Element voice", "generation": 4, "slot_index": 1},
+            {"video_path": str(p5.resolve()), "label": "latest O3 Element voice", "slot_index": 2},
+        ],
+    }
+    enriched = bg.enrich_beat_kling_o3_pinned(beat, event2)
+    slotted = sorted(
+        [o for o in enriched["kling_o3_options"] if isinstance(o.get("slot_index"), int)],
+        key=lambda o: o["slot_index"],
+    )
+    assert [o.get("generation") for o in slotted] == [5, 4, 3]
+    assert slotted[0].get("label") == "g5 O3 Element voice"

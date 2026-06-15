@@ -467,7 +467,7 @@ def run_pipeline(
 
     recovered_gen = bg_sidecar._kling_o3_gen_from_video_path(str(delivery))
     slot_index = int(beat.get("kling_o3_replace_slot_index") or 0)
-    label = f"g{recovered_gen} O3 Element voice" if recovered_gen else "latest O3 Element voice"
+    label = bg_sidecar._canonical_o3_option_label(str(delivery), recovered_gen)
     try:
         bg_sidecar.persist_o3_delivery_option_checkpoint(
             beat_id,

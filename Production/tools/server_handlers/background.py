@@ -3539,6 +3539,9 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                         bg.finalize_proven_element_beat(
                             beat, sidecar, speaker, event_id=event_id, phase=phase,
                         )
+                        bg.ensure_operator_insert_char_ref_parity(
+                            beat, sidecar, speaker, event_id=event_id, phase=phase,
+                        )
                     try:
                         from credentials import load_credentials  # type: ignore
                     except ImportError:

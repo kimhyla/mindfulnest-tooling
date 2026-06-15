@@ -127,6 +127,7 @@ type BgModalState =
 interface GptOption {
   key: string;
   label?: string;
+  generation?: number;
   local_path?: string;
   video_path?: string;
   video_path_exists?: boolean;
@@ -381,23 +382,24 @@ function resolveO3OptionKey(opt: GptOption, beatId: string, slotIndex: number): 
   return base || `${beatId}_o3_${slotIndex}`;
 }
 
-/** Fixed 3-container layout — slot_index maps to UI column (0=left, 1=middle, 2=right). */
+function o3GenerationFromPath(path?: string | null): number {
+  const name = (path ?? '').split('/').pop() ?? '';
+  const m = name.match(/_g(\d+)(?:_(?:element|kling)|\.mp4)/i) ?? name.match(/_g(\d+)\.mp4$/i);
+  return m ? Number(m[1]) : 0;
+}
+
+/** Fixed 3-container layout — always the three newest paid O3 deliveries (highest gN). */
 function buildFixedO3OptionSlots(beat: BgBeat): (GptOption | null)[] {
   const slots: (GptOption | null)[] = [null, null, null];
   const o3History = (beat.kling_o3_options ?? []).filter((o) => isUserSelectableO3Video(o?.video_path));
   const activeO3Path = isUserSelectableO3Video(beat.kling_o3_video_path) ? beat.kling_o3_video_path! : null;
-  const slotIndexFor = (opt: GptOption, fallback: number) => (
-    typeof opt.slot_index === 'number' && opt.slot_index >= 0 && opt.slot_index < 3
-      ? opt.slot_index
-      : fallback
-  );
+  const sorted = [...o3History].sort((a, b) => {
+    const ga = typeof a.generation === 'number' ? a.generation : o3GenerationFromPath(a.video_path);
+    const gb = typeof b.generation === 'number' ? b.generation : o3GenerationFromPath(b.video_path);
+    return gb - ga;
+  });
   for (let si = 0; si < 3; si += 1) {
-    const candidates = o3History.filter((opt, i) => slotIndexFor(opt, i) === si);
-    if (!candidates.length) continue;
-    const activeMatch = activeO3Path
-      ? candidates.find((o) => o.video_path === activeO3Path)
-      : null;
-    slots[si] = activeMatch ?? candidates[candidates.length - 1];
+    slots[si] = sorted[si] ?? null;
   }
   const activeListed = activeO3Path && o3History.some((o) => o.video_path === activeO3Path);
   if (beat.kling_o3_status === 'approved' && activeO3Path && !activeListed) {
