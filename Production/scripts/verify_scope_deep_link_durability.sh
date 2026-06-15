@@ -46,8 +46,10 @@ def get(path):
     with urllib.request.urlopen(base + path, timeout=30) as r:
         return r.status, json.loads(r.read().decode())
 
-# Establish known pin (deploy defaults to Event_1).
-post("/api/event/load", {"event_id": "Event_1"})
+# Establish known pin (overrides persisted server_event_pin.json from prior session).
+st, load1 = post("/api/event/load", {"event_id": "Event_1"})
+if st != 200 or not load1.get("ok") or load1.get("event_id") != "Event_1":
+    raise SystemExit(f"Event_1 load failed: HTTP {st} body={load1!r}")
 _, cur = get("/api/event/current")
 if cur.get("event_id") != "Event_1":
     raise SystemExit(f"expected Event_1 pin before test, got {cur.get('event_id')!r}")
