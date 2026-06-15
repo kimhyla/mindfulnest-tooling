@@ -1,0 +1,28 @@
+---
+description: Beat Gen beat numbering — use left-nav container index, not filename beat_N
+alwaysApply: true
+---
+
+# Beat container nomenclature (Beat Gen)
+
+When Kim says **"Beat 17"**, **"Container 13"**, or **"the left nav beat"**, she means the **1-based position in the Beat Generator left jump nav** (`mn-bg-beat-nav`), **not** the `beat_id` suffix in filenames.
+
+## Rule
+
+| Kim says | Means |
+|----------|--------|
+| **Beat N** / **Container N** | Nth row in the current scope’s beat list (left nav label "Beat N") |
+| **Not** `beat_N` in `bg_arc1_event2_pre_beat_27` | Filename order ≠ container order |
+
+Event_2 intro has **23 beats**. Container index follows **sidecar list order** after migrate — filenames can skip (e.g. Container 13 = `…_beat_27`, Container 17 = `…_beat_18`).
+
+## Agent communication
+
+- Prefer: **"Container 13 (Lorelai, filename beat_27)"** on first mention in a thread, then **"Container 13"** alone.
+- Never assume `beat_27` in a path equals **Beat 27** in the nav — verify with container map or `bg-beat-nav-{i}` index (0-based in tests, 1-based in labels).
+- O3 **slots**: **slot 0 = left**, **slot 1 = middle**, **slot 2 = right** in the 3-container carousel (unchanged).
+
+## UI reference
+
+- Left nav: `data-testid="bg-beat-nav-{i}"` with visible text `Beat {i+1}`.
+- Card header `#N` is container number in the main column.
