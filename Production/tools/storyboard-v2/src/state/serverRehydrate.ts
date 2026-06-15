@@ -3,8 +3,8 @@
 // so Phase A/B, Stitcher, Storyboard, LibraryPanel refresh without a manual reload.
 
 import { READ_ENDPOINTS } from '../api/endpoints';
-import { emitScopeEventChanged } from '../api/client';
-import { clientScopeOverridesServerPin } from './scopeAuthority';
+import { emitScopeEventChanged, healServerScopeIfAuthorized } from '../api/client';
+import { clientMayPinServerTo, clientScopeOverridesServerPin } from './scopeAuthority';
 import { activeScope, makeScope } from './scope';
 import { serverRehydrateTick, stitcherRefreshTick } from './refreshSignals';
 
@@ -56,16 +56,19 @@ export function triggerServerRehydrate(reason: string): void {
 /** Sync activeScope from server probe — SCOPE_POLL_ADOPT_V1 (never loadEvent from poll).
 
 Polls adopt the server pin only when URL ?event= / explicit tab pin does not override
-(clientScopeOverridesServerPin). Prevents ?event=Event_2 tabs jumping to Event_1 when
-the server process still defaults to Event_1. Mutation heal (pathappPatch) may loadEvent
-when clientMayPinServerTo.
-*/
+(clientScopeOverridesServerPin). When override applies, re-pin server via
+healServerScopeIfAuthorized (never flip client to stale Event_1). Mutation heal
+uses the same helper.
+ */
 export async function syncScopeFromProbe(probe: ServerProbeResult): Promise<void> {
   if (!probe.ok || !probe.eventId) return;
   const cur = activeScope.value;
   const gen = probe.eventGeneration ?? cur.version;
   if (probe.eventId !== cur.event_id) {
     if (clientScopeOverridesServerPin(probe.eventId)) {
+      if (clientMayPinServerTo(cur.event_id)) {
+        await healServerScopeIfAuthorized(cur);
+      }
       return;
     }
     activeScope.value = makeScope(probe.eventId, cur.beat_id, gen);

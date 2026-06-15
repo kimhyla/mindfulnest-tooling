@@ -197,7 +197,7 @@ export async function apiGet<T = unknown>(
         suppressScopeDispatch: isScope409 && attempt < 2,
       });
       if (isScopeMismatchResult(result) && attempt < 2) {
-        if (await healServerScopeIfNeeded(activeScope.value)) {
+        if (await healServerScopeIfAuthorized(activeScope.value)) {
           emitScopeHealed({ event_id: activeScope.value.event_id, source: 'apiGet-heal' });
           return apiGet(endpoint, query, {
             _scopeHealRetry: true,
@@ -269,7 +269,8 @@ export async function loadEvent(
  * Background polls adopt server pin only when URL/explicit pin does not override
  * (SCOPE_POLL_ADOPT_V1 + clientScopeOverridesServerPin).
  */
-async function healServerScopeIfNeeded(scope: Scope): Promise<boolean> {
+/** Re-pin server to scope when this tab has URL/explicit pin authority. Exported for poll heal. */
+export async function healServerScopeIfAuthorized(scope: Scope): Promise<boolean> {
   try {
     const res = await fetch(READ_ENDPOINTS.event_current);
     if (res.ok) {
@@ -305,7 +306,7 @@ export { noteClientPinnedEvent } from '../state/scopeAuthority';
 /** Ensure server process pin matches eventId before tabs fetch scoped READ endpoints. */
 export async function ensureServerPinnedTo(eventId: string): Promise<boolean> {
   const scope = makeScope(eventId, activeScope.value.beat_id, activeScope.value.version);
-  return healServerScopeIfNeeded(scope);
+  return healServerScopeIfAuthorized(scope);
 }
 
 function isScopeMismatchResult<T>(result: ApiResult<T>): boolean {
@@ -372,7 +373,7 @@ export async function pathappPatch<T = unknown>(
       { suppressScopeDispatch: !opts._scopeHealRetry },
     );
     if (isScopeMismatchResult(snap) && !opts._scopeHealRetry) {
-      if (await healServerScopeIfNeeded(scope)) {
+      if (await healServerScopeIfAuthorized(scope)) {
         return pathappPatch(activeScope.value, endpoint, body, { ...opts, _scopeHealRetry: true });
       }
       if (typeof window !== 'undefined' && snap.error_code) {
@@ -431,7 +432,7 @@ export async function pathappPatch<T = unknown>(
 
   // LD-456 — SCOPE_MISMATCH auto-heal (SCOPE_MISMATCH_AUTO_HEAL_V1).
   if (isScopeMismatchResult(result) && !opts._scopeHealRetry) {
-    if (await healServerScopeIfNeeded(scope)) {
+    if (await healServerScopeIfAuthorized(scope)) {
       return pathappPatch(activeScope.value, endpoint, body, { ...opts, _scopeHealRetry: true });
     }
     if (typeof window !== 'undefined' && result.error_code) {

@@ -5765,9 +5765,13 @@ class ProductionHandler(BaseHTTPRequestHandler):
             try:
                 qs = urllib.parse.urlparse(self.path).query
                 params = urllib.parse.parse_qs(qs)
-                qs_val = params.get("event_id")
-                if qs_val:
-                    body_event = qs_val[0]
+                scope_qs = params.get("scope_event_id")
+                if scope_qs:
+                    body_event = scope_qs[0]
+                else:
+                    qs_val = params.get("event_id")
+                    if qs_val:
+                        body_event = qs_val[0]
             except Exception:
                 pass
         server_event = self.app.event_dir.name

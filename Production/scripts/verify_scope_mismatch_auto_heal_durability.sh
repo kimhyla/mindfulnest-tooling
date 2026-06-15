@@ -17,8 +17,8 @@ fail() { echo "[scope-mismatch-auto-heal] FAIL: $1" >&2; exit 1; }
 
 grep -q 'SCOPE_MISMATCH_AUTO_HEAL_V1' "$CLIENT" \
   || fail "SCOPE_MISMATCH_AUTO_HEAL_V1 marker missing in client.ts"
-grep -q 'healServerScopeIfNeeded' "$CLIENT" \
-  || fail "healServerScopeIfNeeded missing"
+grep -q 'healServerScopeIfAuthorized' "$CLIENT" \
+  || fail "healServerScopeIfAuthorized missing"
 grep -q '_scopeHealRetry' "$CLIENT" \
   || fail "_scopeHealRetry retry flag missing"
 grep -q 'suppressScopeDispatch' "$CLIENT" \
