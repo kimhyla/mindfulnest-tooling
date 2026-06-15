@@ -22,7 +22,8 @@
 #   bash Production/scripts/deploy_storyboard_v59.sh
 #     (defaults: MN_TOOLING_ROOT = this Mac's tooling checkout;
 #               MN_DROPBOX_ROOT = Dropbox "Claude Mindfulnest Project Files" — overrides per LD-505 / LD-541)
-#     (default event_dir = Production/Event_1; override via --event flag or MN_EVENT_DIR env)
+#     (default event_dir = persisted server_event_pin.json when present, else Production/Event_1;
+#      override via --event flag or MN_EVENT_DIR env)
 #     Event_0 is intentionally excluded from fanout — it is a Milestone (opening_storybook).
 #
 #   bash Production/scripts/deploy_storyboard_v59.sh --event Event_2
@@ -396,7 +397,18 @@ if [[ -n "${MN_DEPLOY_SKIP_LAUNCH:-}" ]]; then
     exit 0
 fi
 
-EVENT_DIR="${_ARG_EVENT_DIR:-${MN_EVENT_DIR:-Production/Event_1}}"
+EVENT_DIR="${_ARG_EVENT_DIR:-${MN_EVENT_DIR:-}}"
+if [[ -z "$EVENT_DIR" ]]; then
+    PIN_FILE="$DEST_DROPBOX/Production/server_event_pin.json"
+    if [[ -f "$PIN_FILE" ]]; then
+        PIN_EVENT="$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); e=(d.get('event_id') or '').strip(); print(f'Production/{e}' if e else '')" "$PIN_FILE" 2>/dev/null || true)"
+        if [[ -n "$PIN_EVENT" ]]; then
+            EVENT_DIR="$PIN_EVENT"
+            echo "[deploy] (f) default event from server_event_pin.json → $EVENT_DIR"
+        fi
+    fi
+fi
+EVENT_DIR="${EVENT_DIR:-Production/Event_1}"
 # MN_EVENT_DIR is sometimes set to an absolute Dropbox path; production_server
 # expects a path relative to the Dropbox runtime root.
 if [[ "$EVENT_DIR" == "$DEST_DROPBOX/"* ]]; then
@@ -496,11 +508,19 @@ fi
 echo "[deploy] (g.5) event/load ok — runtime pinned to $event_id"
 
 # ----------------------------------------------------------------
+# (g.6) Sync launchd KeepAlive agent to deployed event (EVENT_LAUNCHAGENT_SYNC_V1)
+# ----------------------------------------------------------------
+echo "[deploy] (g.6) syncing production-server launch agent for $event_id ..."
+chmod +x "$SRC_TOOLING/Production/scripts/install_production_server_launchagent.sh"
+bash "$SRC_TOOLING/Production/scripts/install_production_server_launchagent.sh" "$event_id"
+echo "[deploy] (g.6) launch agent ok"
+
+# ----------------------------------------------------------------
 # (h) Post-restart O3 sidecar API smoke — server must expose lock API live
 # ----------------------------------------------------------------
 echo "[deploy] (h) O3 capability smoke via /api/bg/session-state ..."
 O3_OK=$(curl -sS --max-time 15 \
-    "http://localhost:${SERVER_PORT}/api/bg/session-state?scope_event_id=Event_1&scope_video_role=intro" \
+    "http://localhost:${SERVER_PORT}/api/bg/session-state?scope_event_id=${event_id}&scope_video_role=intro" \
     | python3 -c "import sys,json; c=json.load(sys.stdin).get('capabilities') or {}; print('ok' if c.get('update_beat_locked') and c.get('sidecar_file_lock') else 'fail')" \
     2>/dev/null || echo "fail")
 if [[ "$O3_OK" != "ok" ]]; then

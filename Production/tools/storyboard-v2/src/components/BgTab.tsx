@@ -318,10 +318,14 @@ function collectActiveO3JobsFromBeats(beats: BgBeat[]): Record<string, string> {
     const klingStatus = (beat.kling_o3_status ?? '').toLowerCase();
     if (!jobId) continue;
     if (voiceFix.startsWith('failed')) continue;
-    // Redo on an already-approved beat keeps kling_o3_status=approved while job_running;
-    // still poll until voice_fix clears the ui job id.
+    const runningVoiceFix = (
+      voiceFix === 'job_running'
+      || voiceFix === 'subprocess'
+      || voiceFix === 'job_starting'
+      || voiceFix === 'o3_element_running'
+    );
     if (voiceFix === 'approved' || klingStatus === 'approved') {
-      if (voiceFix !== 'job_running' && voiceFix !== 'subprocess') continue;
+      if (!runningVoiceFix) continue;
     }
     jobs[beat.beat_id] = jobId;
   }
