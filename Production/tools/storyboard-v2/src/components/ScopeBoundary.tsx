@@ -3,7 +3,7 @@
 // CLIENT-SIDE half of the scope guard. The server-side half (HTTP 409 on
 // mismatched event_id) lands in Session 1.5.
 //
-// EVENT_PIN_DURABILITY_V1 + SCOPE_URL_AUTHORITY_V1 (2026-06):
+// EVENT_PIN_DURABILITY_V1 + SCOPE_URL_AUTHORITY_V1 + SCOPE_DEEP_LINK_DURABILITY_V1 (2026-06):
 //   - When ?event=<id> is present, the URL is authoritative — never silently
 //     fall back to Event_1 or the server's stale startup pin.
 //   - Tabs do not mount until POST /api/event/load confirms the server pin
