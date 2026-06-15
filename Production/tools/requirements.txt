@@ -8,13 +8,19 @@
 # kling_startend_pipeline.py + ffmpeg_utils.py + lipsync_sender.py modules
 # (imported by production_server) add no further non-stdlib deps.
 #
+# numpy added 2026-05-19 (P2 of LD-505 Phase C cleanup): needed by
+# magic_compositor.py + background.py's /api/magic/resolve_bg endpoint.
+# Without it, the endpoint silently 500s on first user click (audit C4-2).
 # Out of scope for this requirements file (and tracked separately if needed):
-#   - numpy / requests / etc. used by other production tools (geometry_detector,
-#     magic_compositor, build_tts_review) that the e2e gate does NOT exercise
+#   - requests / cv2 / torch / sklearn etc. used by NO runtime-loaded
+#     handler modules; the lazy-import probe at run_server emits a structured
+#     "[startup:capabilities]" line when any soft dep is missing.
 #   - pip-tools / lockfile (`requirements.lock`) — deferred per spec §10
 #
 # CI workflow installs from this file via `pip install -r Production/tools/requirements.txt`.
 
 PyYAML>=6.0
 Pillow>=10.0
+numpy>=1.24
+scipy>=1.10
 python-dateutil>=2.8

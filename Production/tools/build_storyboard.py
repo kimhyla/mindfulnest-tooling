@@ -1075,8 +1075,10 @@ Click <strong>Export</strong> to lock the sequence. Then we generate TTS from yo
         a = line.get("audio_key")
         p = line.get("pause", 0.5)
         g = line.get("section", "")
+        mvp = line.get("magic_video_path")
         a_str = f'"{a}"' if a else "null"
-        lines_js.append(f'{{s:"{s}",t:"{t}",i:"{i}",a:{a_str},p:{p},g:"{g}"}}')
+        mvp_str = f'"{mvp}"' if mvp else "null"
+        lines_js.append(f'{{s:"{s}",t:"{t}",i:"{i}",a:{a_str},p:{p},g:"{g}",magic_video_path:{mvp_str}}}')
     parts.append("var L=[" + ",\n".join(lines_js) + "];")
 
     # Core JS engine (no template literals, pure DOM manipulation)
@@ -1144,6 +1146,13 @@ function mv(i,d){var j=i+d;if(j<0||j>=L.length)return;var t=L[i];L[i]=L[j];L[j]=
 function addLine(){L.push({s:SP[0],t:"(new line)",i:"master",a:null,p:0.5,g:"Custom"});render();window.scrollTo(0,document.body.scrollHeight);}
 
 function playLine(i){
+  if (L[i] && L[i].magic_video_path) {
+      if (paA && paI===i) {
+          var dur = (L[i].p || 3) * 1000;
+          setTimeout(function(){ if (!paA) return; var n=i+1; while(n<L.length&&(!L[n].a||!AU[L[n].a]))n++; if(n<L.length){paI=n;playLine(n);}else{paA=false;document.getElementById("pab").innerHTML="&#9654; Play All (audio lines)";} }, dur);
+      }
+      return;
+  }
 stopAll();var k=L[i].a;if(!k||!AU[k])return;
 cA=new Audio(AU[k]);
 var b=document.getElementById("pb"+i);var r=document.getElementById("r"+i);

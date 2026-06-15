@@ -1,6 +1,21 @@
 // PhaseProducer — shared base for Phase A + Phase B producers.
 // Per LD-462 PHASE_A_PRODUCER_V1 + LD-463 PHASE_B_PRODUCER_V1.
 //
+// ── DURABILITY RULES (PHASE_PRODUCER_AB_V1 — do not regress, 2026-06-12) ────
+// Single component serves BOTH tabs. Enforced by verify_phase_producer_durability.sh
+// + e2e/phase_waveform_playback.spec.ts (Phase A + B sections).
+//
+// Symptom fixes (all shared — never fork phase-a-only / phase-b-only playback UI):
+//   OVERLAY-1  Gigantic overlays → app.css inline-block video wrapper + 35% bbox
+//   OVERLAY-2  Pink frame on anim → WatercolorAnimOverlay canvas chromakey (not <video>)
+//   OVERLAY-3  Still / frozen anim → loop MP4 + onPlayStateChange wave sync
+//   PLAY-*     ▶/⏸, ghost audio, seek jump → WaveformTimeline + waveformPlaybackBus
+//   STEM-*     Amber cut rectangle → WaveformTimeline stem cut (both phases)
+//
+// Preview with Overlay → waveform play from start on lipsync frame (same surface).
+// Export to Stitcher → server ffmpeg bake (chromakey + stream_loop).
+// ─────────────────────────────────────────────────────────────────────────────
+//
 // S4 SCOPE (this file): real producer UX — script editor, audio player
 // (priority lipsync > mixed > stem), Send for Lipsync, lipsync video
 // player, Mix Audio (Phase A only — auto-fires stitch), Export to
@@ -12,21 +27,39 @@
 // The button-based flow ships in S4; Kim can use it end-to-end now;
 // timeline-as-direct-manipulation lands in S5.
 
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { apiGet, pathappPatch } from '../../api/client';
-import { activeScope } from '../../state/scope';
+import { activeScope, activeVideoRole } from '../../state/scope';
 import { SERVER_BASE } from '../../api/endpoints';
-import { WaveformTimeline, type WatercolorCue } from './WaveformTimeline';
+import { stitcherRefreshTick } from '../../app';
+import { serverRehydrateTick } from '../../state/refreshSignals';
+import { SERVER_REHYDRATE_EVENT } from '../../state/serverRehydrate';
+import { WaveformTimeline, type WatercolorCue, type WaveformPlaybackControl } from './WaveformTimeline';
+import { WatercolorAnimOverlay } from './WatercolorAnimOverlay';
 import { CuePopover } from './CuePopover';
+
+// ── Schema translation: frontend ↔ server ───────────────────────────────────
+// Server (bake pipeline) expects: {id, key, timestamp_ms, animation, duration_ms, cue_type, volume}
+// Frontend uses:                  {id, watercolor_key, offset_ms, duration_ms, animation_type, volume}
+// Schema translation is performed server-side by _v2_validate_watercolor_cues_json so the
+// client sends the raw frontend array and the validator normalises before storage.
+function fromServerSchema(raw: Record<string, unknown>): WatercolorCue {
+  return {
+    id: String(raw['id'] ?? `cue_${Math.random().toString(36).slice(2, 10)}`),
+    watercolor_key: String(raw['key'] ?? raw['watercolor_key'] ?? ''),
+    offset_ms: Number(raw['timestamp_ms'] ?? raw['offset_ms'] ?? 0),
+    duration_ms: Number(raw['duration_ms'] ?? 3000),
+    animation_type: String(raw['animation'] ?? raw['animation_type'] ?? 'fade_in'),
+    volume: Number(raw['volume'] ?? 1.0),
+  };
+}
 import { BaseClipPicker } from './BaseClipPicker';
 import { setDragData, type DragPayload } from '../../utils/dragdrop';
 
-type PhaseAClipPosition = 'flyin' | 'sitting' | 'flyout';
-const PHASE_A_CLIP_POSITIONS: ReadonlyArray<PhaseAClipPosition> = ['flyin', 'sitting', 'flyout'];
+type PhaseAClipPosition = 'sitting';
+const PHASE_A_CLIP_POSITIONS: ReadonlyArray<PhaseAClipPosition> = ['sitting'];
 const PHASE_A_CLIP_LABELS: Record<PhaseAClipPosition, string> = {
-  flyin: 'Fly-in',
-  sitting: 'Sitting',
-  flyout: 'Fly-out',
+  sitting: 'Arlo base (talking)',
 };
 
 interface WatercolorItem {
@@ -34,7 +67,10 @@ interface WatercolorItem {
   filename: string;
   ext: string;
   kind: 'static' | 'animation' | string;
+  /** Always an image URL (static PNG or base PNG for animation tiles) — safe for <img>. */
   thumb_url: string;
+  /** For animations: MP4/MOV URL — used by server Preview with Overlay / Stitcher (not raw browser overlay). */
+  animation_url?: string | null;
   mtime: number;
   size_bytes: number;
 }
@@ -74,6 +110,14 @@ interface PhaseStateSlice {
   mixed_audio_mtime?: number;
   lipsync_file?: string;
   lipsync_mtime?: number;
+  lipsync_status?: string;   // "polling" | "done" | "error: ..." from background thread
+  lipsync_requires_regen?: boolean;
+  voice_stem_cut_start_s?: number;
+  voice_stem_cut_end_s?: number;
+  /** @deprecated Legacy keep-region keys — ignored when cut keys present. */
+  voice_stem_trim_start_s?: number;
+  voice_stem_trim_back_s?: number;
+  flyin_flyout_status?: string;
   stitched_file?: string;        // phase A only
   stitched_mtime?: number;
   script?: string;
@@ -82,12 +126,23 @@ interface PhaseStateSlice {
   chipper_flyin_clip_id?: string;
   chipper_sitting_clip_id?: string;
   chipper_flyout_clip_id?: string;
+  /** Phase B — persisted lipsync base clip (phase_b_cedric_base_clip_id). */
+  cedric_base_clip_id?: string;
   // S5.5f — ambient bed preset (LD AMBIENT_PRESET_SELECTOR_INPRODUCER_V1).
   ambient_preset_id?: string;
 }
 interface EventStateResponse {
   beats?: Record<string, unknown>;
   [key: string]: unknown;
+}
+/** Therapeutic brief generated server-side alongside the script suggestion.
+ *  Per Kim 2026-05-25: goal = experience + clinical end; must_hits = ordered
+ *  steps; what_to_evoke = internal state/feeling; watch_outs = contraindications. */
+interface TherapeuticBrief {
+  goal: string;
+  must_hits: string[];
+  what_to_evoke: string[];
+  watch_outs: string[];
 }
 
 export interface PhaseProducerProps {
@@ -104,30 +159,118 @@ function pickPhaseSlice(state: EventStateResponse, phase: 'a' | 'b'): PhaseState
   const mxm = get<number>('mixed_audio_mtime');        if (mxm) slice.mixed_audio_mtime = mxm;
   const ls = get<string>('lipsync_file');              if (ls) slice.lipsync_file = ls;
   const lsm = get<number>('lipsync_mtime');            if (lsm) slice.lipsync_mtime = lsm;
+  const lst = get<string>('lipsync_status');           if (lst) slice.lipsync_status = lst;
+  const lrr = get<boolean>('lipsync_requires_regen');  if (lrr) slice.lipsync_requires_regen = lrr;
+  const tcs = get<number>('voice_stem_cut_start_s'); if (tcs !== undefined) slice.voice_stem_cut_start_s = tcs;
+  const tce = get<number>('voice_stem_cut_end_s');   if (tce !== undefined) slice.voice_stem_cut_end_s = tce;
+  const tss = get<number>('voice_stem_trim_start_s'); if (tss !== undefined) slice.voice_stem_trim_start_s = tss;
+  const tsb = get<number>('voice_stem_trim_back_s');  if (tsb !== undefined) slice.voice_stem_trim_back_s = tsb;
+  const ffst = get<string>('flyin_flyout_status');     if (ffst) slice.flyin_flyout_status = ffst;
   const st = get<string>('stitched_file');             if (st) slice.stitched_file = st;
   const stm = get<number>('stitched_mtime');           if (stm) slice.stitched_mtime = stm;
   const sc = get<string>('script');                    if (sc) slice.script = sc;
-  const cues = get<WatercolorCue[]>('watercolor_cues_json');
-  if (Array.isArray(cues)) slice.watercolor_cues = cues;
+  // phase_b_watercolor_cues_json is stored on the server as a JSON STRING.
+  // get<> returns it as a string (or sometimes a pre-parsed array if state
+  // was written locally). Parse + translate schema in either case.
+  const rawCues = get<unknown>('watercolor_cues_json');
+  let cuesArr: WatercolorCue[] | undefined;
+  try {
+    const parsed: unknown = typeof rawCues === 'string' ? JSON.parse(rawCues)
+      : Array.isArray(rawCues) ? rawCues : undefined;
+    if (Array.isArray(parsed)) {
+      cuesArr = (parsed as Record<string, unknown>[]).map(fromServerSchema);
+    }
+  } catch { /* malformed JSON — treat as no cues */ }
+  if (cuesArr) slice.watercolor_cues = cuesArr;
   if (phase === 'a') {
     const fi = get<string>('chipper_flyin_clip_id');   if (fi) slice.chipper_flyin_clip_id = fi;
     const si = get<string>('chipper_sitting_clip_id'); if (si) slice.chipper_sitting_clip_id = si;
     const fo = get<string>('chipper_flyout_clip_id');  if (fo) slice.chipper_flyout_clip_id = fo;
   }
+  if (phase === 'b') {
+    const bci = get<string>('cedric_base_clip_id'); if (bci) slice.cedric_base_clip_id = bci;
+  }
   const ap = get<string>('ambient_preset_id'); if (ap) slice.ambient_preset_id = ap;
   return slice;
 }
 
-type AudioSourceLabel = 'lipsync' | 'mixed' | 'stem';
+type AudioSourceLabel = 'lipsync' | 'mixed' | 'stem' | 'stitched';
+
+type PhasePreviewFile = {
+  name: string;
+  label: AudioSourceLabel;
+  kind: 'stitched' | 'lipsync';
+};
+
+/** Server statuses while a phase lipsync job is still in flight. */
+const PHASE_LIPSYNC_IN_FLIGHT = new Set(['running', 'polling', 'submitting', 'submitted']);
+
+function isPhaseLipsyncInFlight(status: string | undefined): boolean {
+  return Boolean(status && PHASE_LIPSYNC_IN_FLIGHT.has(status));
+}
+
+function phaseLipsyncProgressMessage(phase: 'a' | 'b'): string {
+  return phase === 'a'
+    ? '⏳ Lipsync processing (~5–20 min). Safe to switch tabs — will auto-update when done.'
+    : '⏳ Lipsync in progress (~8–20 min). Safe to switch tabs — will auto-update when done.';
+}
 
 function priorityAudioFile(
   slice: PhaseStateSlice,
 ): { name: string; label: AudioSourceLabel } | null {
-  if (slice.lipsync_file) return { name: slice.lipsync_file, label: 'lipsync' };
+  const stemMtime = slice.voice_stem_mtime ?? 0;
+  const lipsyncMtime = slice.lipsync_mtime ?? 0;
+  const lipsyncStale =
+    Boolean(slice.lipsync_requires_regen) ||
+    (slice.lipsync_status?.startsWith('error:') ?? false) ||
+    (slice.lipsync_status === 'qa_failed') ||
+    (stemMtime > 0 && lipsyncMtime > 0 && stemMtime > lipsyncMtime);
+
+  // After stem regen, audition the fresh stem — not audio extracted from stale lipsync.
+  if (slice.voice_stem_file && lipsyncStale) {
+    return { name: slice.voice_stem_file, label: 'stem' };
+  }
+  if (slice.lipsync_file && !lipsyncStale) {
+    return { name: slice.lipsync_file, label: 'lipsync' };
+  }
   if (slice.mixed_audio_file) return { name: slice.mixed_audio_file, label: 'mixed' };
   if (slice.voice_stem_file) return { name: slice.voice_stem_file, label: 'stem' };
+  if (slice.lipsync_file) return { name: slice.lipsync_file, label: 'lipsync' };
   return null;
 }
+
+function stitchedPreviewStale(slice: PhaseStateSlice): boolean {
+  if (!slice.stitched_file) return false;
+  const lm = slice.lipsync_mtime ?? 0;
+  const sm = slice.stitched_mtime ?? 0;
+  return lm > 0 && (sm === 0 || lm > sm);
+}
+
+/** Phase A canonical player: stitched when fresh, else lipsync while producing. */
+function phaseAPreviewFile(slice: PhaseStateSlice): PhasePreviewFile | null {
+  if (slice.stitched_file && !stitchedPreviewStale(slice)) {
+    return { name: slice.stitched_file, label: 'stitched', kind: 'stitched' };
+  }
+  if (slice.lipsync_file) {
+    return { name: slice.lipsync_file, label: 'lipsync', kind: 'lipsync' };
+  }
+  return null;
+}
+
+function priorityAudioFileForPhase(
+  phase: 'a' | 'b',
+  slice: PhaseStateSlice,
+): { name: string; label: AudioSourceLabel } | null {
+  if (phase === 'a') {
+    const preview = phaseAPreviewFile(slice);
+    if (preview?.kind === 'stitched') {
+      return { name: preview.name, label: 'stitched' };
+    }
+  }
+  return priorityAudioFile(slice);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 
 function fileUrl(name: string): string {
   // Server's /files endpoint serves arbitrary event_dir files via ?path=.
@@ -138,50 +281,211 @@ function fileUrl(name: string): string {
   return `${SERVER_BASE}/files?path=${encodeURIComponent(`Production/${eventId}/${name}`)}`;
 }
 
+// NOTE: PhaseProducer always renders its full content without collapse.
+// Phase B and Phase A each own an entire tab — collapsing the full tab body
+// is wrong UX. <details>/<summary> removed 2026-05-25. Do NOT re-introduce
+// a collapsed-by-default wrapper here.
 export function PhaseProducer({ phase }: PhaseProducerProps) {
-  const [collapsed, setCollapsed] = useState(true);
   const [watercolors, setWatercolors] = useState<WatercolorItem[]>([]);
   const [baseClips, setBaseClips] = useState<BaseClipItem[]>([]);
   const [stateSlice, setStateSlice] = useState<PhaseStateSlice>({});
   const [scriptDraft, setScriptDraft] = useState<string>('');
   const [suggesting, setSuggesting] = useState(false);
+  const [therapeuticBrief, setTherapeuticBrief] = useState<TherapeuticBrief | null>(null);
+  const [showBrief, setShowBrief] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const [saveBtnLabel, setSaveBtnLabel] = useState<string>('Save Script');
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [selectedBaseClip, setSelectedBaseClip] = useState<string>('');
   const [activeCueId, setActiveCueId] = useState<string | null>(null);
   const [popoverAnchor, setPopoverAnchor] = useState<{ x: number; y: number } | null>(null);
   const [pickerPosition, setPickerPosition] = useState<PhaseAClipPosition | null>(null);
   const [ambientPresets, setAmbientPresets] = useState<AmbientPreset[]>([]);
+  // Playback position in ms — updated by WaveformTimeline via onTimeUpdate.
+  const [currentTimeMs, setCurrentTimeMs] = useState(0);
+  // WaveSurfer play state — drives animated overlay loop + canvas redraw.
+  const [waveIsPlaying, setWaveIsPlaying] = useState(false);
+  // True while Kling lipsync is processing in the background (202 submitted).
+  const [lipsyncing, setLipsyncing] = useState(false);
+  // Mtime of lipsync_file at the moment we submitted — used to detect when
+  // a NEW lipsync result lands (mtime changes → job done).
+  const lipsyncMtimeBefore = useRef<number | null>(null);
+  // Ref to the lipsync <video> element so WaveformTimeline can sync seek/play/pause.
+  // The <video> is muted; WaveSurfer owns the audio output.
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const waveformPlaybackRef = useRef<WaveformPlaybackControl | null>(null);
+  const wcUploadInputRef = useRef<HTMLInputElement>(null);
+  // User toggled "Trim voice stem" — show stem on waveform + amber cut handles even
+  // when a lipsync file would otherwise win audio priority.
+  const [stemTrimMode, setStemTrimMode] = useState(false);
 
-  const refreshAll = async () => {
+  const phaseABaseClipOptions = (items: BaseClipItem[]) =>
+    items
+      .filter((c) => {
+        if (phase !== 'a') return c.character === 'cedric';
+        const id = c.id.toLowerCase();
+        return c.character === 'arlo' || c.character === 'chipper' || id.includes('arlo');
+      })
+      .sort((a, b) => {
+        const rank = (c: BaseClipItem) =>
+          c.character === 'arlo' || c.id.toLowerCase().includes('arlo') ? 0 : 1;
+        return rank(a) - rank(b) || a.id.localeCompare(b.id);
+      });
+
+  const refreshAll = async (): Promise<boolean> => {
     const [wc, bc, st, ap] = await Promise.all([
       apiGet<WatercolorListResponse>('phase_watercolor_list'),
       apiGet<BaseClipsResponse>('phase_base_clips_list'),
       apiGet<EventStateResponse>('v2_event_state', { event_id: activeScope.value.event_id }),
       apiGet<AmbientPresetListResponse>('phase_b_ambient_preset_list'),
     ]);
-    if (wc.ok && wc.data?.items) setWatercolors(wc.data.items);
+    let nextSlice = stateSlice;
+    if (st.ok && st.data) {
+      nextSlice = pickPhaseSlice(st.data, phase);
+      setStateSlice(nextSlice);
+      if (nextSlice.script) setScriptDraft(nextSlice.script);
+    } else if (!st.ok) {
+      setStatusMsg(
+        `⚠ Could not load Phase ${phase.toUpperCase()} state (HTTP ${st.status || 'network'}). `
+        + 'Tabs refresh automatically when the server is back.',
+      );
+    }
+    if (wc.ok && wc.data?.items) {
+      const next = wc.data.items as WatercolorItem[];
+      setWatercolors((prev) => {
+        if (
+          prev.length === next.length &&
+          prev.every((p, i) => p.key === next[i].key && p.mtime === next[i].mtime)
+        ) {
+          return prev;
+        }
+        return next;
+      });
+    }
     if (bc.ok && bc.data?.items) {
       setBaseClips(bc.data.items);
-      // Auto-select character match for the active phase.
-      const wantedChar = phase === 'a' ? 'chipper' : 'cedric';
-      const match = bc.data.items.find((c) => c.character === wantedChar);
-      if (match) setSelectedBaseClip((prev) => prev || match.id);
+      const phaseAChars = new Set(['arlo', 'chipper']);
+      const wantedChar = phase === 'a' ? 'arlo' : 'cedric';
+      const sittingId = phase === 'a' ? nextSlice.chipper_sitting_clip_id : undefined;
+      const savedBaseClipId =
+        phase === 'b'
+          ? nextSlice.cedric_base_clip_id
+          : sittingId;
+      const bySaved = savedBaseClipId
+        ? bc.data.items.find((c) => c.id === savedBaseClipId)
+        : undefined;
+      const bySitting = sittingId
+        ? bc.data.items.find((c) => c.id === sittingId)
+        : undefined;
+      const match = bySaved
+        ?? bySitting
+        ?? bc.data.items.find((c) => c.character === wantedChar)
+        ?? bc.data.items.find((c) => c.character && phaseAChars.has(c.character));
+      if (match) setSelectedBaseClip(match.id);
     }
-    if (st.ok && st.data) {
-      const slice = pickPhaseSlice(st.data, phase);
-      setStateSlice(slice);
-      if (slice.script) setScriptDraft(slice.script);
+    if (ap.ok && ap.data?.items) {
+      setAmbientPresets(ap.data.items);
     }
-    if (ap.ok && ap.data?.items) setAmbientPresets(ap.data.items);
+    const hydrated = Boolean(st.ok && st.data);
+    if (hydrated) {
+      setStatusMsg((prev) => (
+        prev?.startsWith('⚠ Could not load Phase') ? null : prev
+      ));
+    }
+    return hydrated;
   };
 
   useEffect(() => {
-    if (collapsed) return;
     let cancelled = false;
     (async () => { if (!cancelled) await refreshAll(); })();
     return () => { cancelled = true; };
-  }, [collapsed, activeScope.value.event_id]);
+  }, [activeScope.value.event_id, phase, serverRehydrateTick.value]);
+
+  useEffect(() => {
+    const onRehydrate = () => { void refreshAll(); };
+    window.addEventListener(SERVER_REHYDRATE_EVENT, onRehydrate);
+    return () => window.removeEventListener(SERVER_REHYDRATE_EVENT, onRehydrate);
+  }, [activeScope.value.event_id, phase]);
+
+  useEffect(() => {
+    const retry = () => { void refreshAll(); };
+    window.addEventListener('focus', retry);
+    document.addEventListener('visibilitychange', retry);
+    return () => {
+      window.removeEventListener('focus', retry);
+      document.removeEventListener('visibilitychange', retry);
+    };
+  }, [activeScope.value.event_id, phase]);
+
+  // Resume polling after hard refresh OR tab switch while server still reports in-flight.
+  useEffect(() => {
+    const status = stateSlice.lipsync_status;
+    if (isPhaseLipsyncInFlight(status)) {
+      if (lipsyncMtimeBefore.current === null) {
+        lipsyncMtimeBefore.current = stateSlice.lipsync_mtime ?? null;
+      }
+      setLipsyncing(true);
+      setStatusMsg(phaseLipsyncProgressMessage(phase));
+      return;
+    }
+    if (
+      (status === 'needs_manual_visual_review' || status === 'done') &&
+      stateSlice.lipsync_file
+    ) {
+      setLipsyncing(false);
+    }
+  }, [phase, stateSlice.lipsync_status, stateSlice.lipsync_file, stateSlice.lipsync_mtime]);
+
+  const serverLipsyncInFlight = isPhaseLipsyncInFlight(stateSlice.lipsync_status);
+  const lipsyncInFlight = lipsyncing || serverLipsyncInFlight;
+
+  // Poll while in-flight — survives tab unmount/remount because status lives in state.json.
+  useEffect(() => {
+    if (!lipsyncInFlight) return;
+    void refreshAll();
+    const id = setInterval(() => {
+      void refreshAll();
+    }, 15_000);
+    return () => clearInterval(id);
+  }, [lipsyncInFlight, activeScope.value.event_id, phase]);
+
+  // Terminal transitions: error, or new lipsync file landed (mtime / status).
+  useEffect(() => {
+    if (!lipsyncInFlight && !lipsyncing) return;
+    const status = stateSlice.lipsync_status;
+    if (status && status.startsWith('error:')) {
+      setLipsyncing(false);
+      setStatusMsg(`✗ Lipsync failed: ${status.replace(/^error:\s*/, '')}`);
+      return;
+    }
+    if (status === 'done' || status === 'needs_manual_visual_review') {
+      const currentMtime = stateSlice.lipsync_mtime ?? null;
+      const before = lipsyncMtimeBefore.current;
+      if (
+        stateSlice.lipsync_file &&
+        (before === null || currentMtime === null || currentMtime !== before)
+      ) {
+        setLipsyncing(false);
+        lipsyncMtimeBefore.current = null;
+        setStatusMsg('✓ Lipsync complete — video ready.');
+      }
+      return;
+    }
+    const currentMtime = stateSlice.lipsync_mtime ?? null;
+    const before = lipsyncMtimeBefore.current;
+    if (currentMtime !== null && before !== null && currentMtime !== before) {
+      setLipsyncing(false);
+      lipsyncMtimeBefore.current = null;
+      setStatusMsg('✓ Lipsync complete — video ready.');
+    }
+  }, [stateSlice.lipsync_mtime, stateSlice.lipsync_status, stateSlice.lipsync_file, lipsyncInFlight, lipsyncing]);
+
+  // Track latest watercolor cues in a ref so the postMessage handler can read
+  // current cue state without stale closure (handler deps = [phase] only).
+  const latestCuesRef = useRef<WatercolorCue[]>([]);
+  useEffect(() => {
+    latestCuesRef.current = stateSlice.watercolor_cues ?? [];
+  }, [stateSlice.watercolor_cues]);
 
   // Listen for "magic or animate complete" postMessage from path_picker.html
   // (S5 LD-468/469/470 — supersedes S4 mn:watercolor-animated).
@@ -196,14 +500,37 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       if (e.origin !== window.location.origin) return;
       const t = e.data?.type;
       if (t === 'mn-magic-or-animate-complete' || t === 'mn:watercolor-animated') {
-        refreshAll();
+        // RC1 fix: after animation completes, update any existing cue that used
+        // the original static key to point at the new animated key, THEN refresh.
+        const result = (e.data?.payload?.result ?? {}) as {
+          watercolor_key?: string;  // original static key (e.g. "hands_rubbing")
+          animated_path?: string;   // full server path to new MP4
+        };
+        const originalKey = result.watercolor_key ?? null;
+        // Derive new key: strip directory + extension from server path
+        const animatedKey = result.animated_path
+          ? result.animated_path.split('/').pop()?.replace(/\.[^.]+$/, '') ?? null
+          : null;
+        void (async () => {
+          // 1. Update cue keys first so server state is correct before refreshAll reads it back.
+          if (originalKey && animatedKey && animatedKey !== originalKey) {
+            const updatedCues = latestCuesRef.current.map((cue) =>
+              cue.watercolor_key === originalKey
+                ? { ...cue, watercolor_key: animatedKey }
+                : cue,
+            );
+            if (updatedCues.some((c, i) => c !== latestCuesRef.current[i])) {
+              await persistCues(updatedCues);
+            }
+          }
+          // 2. Refresh watercolors library (always).
+          await refreshAll();
+        })();
       }
     };
     window.addEventListener('message', onMsg);
     return () => window.removeEventListener('message', onMsg);
   }, [phase]);
-
-  const phaseLabel = phase === 'a' ? 'Phase A (Chipper)' : 'Phase B (Cedric)';
 
   const onSuggest = async () => {
     setSuggesting(true);
@@ -211,7 +538,12 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     const res = await pathappPatch(activeScope.value, 'phase_suggest_script', { phase });
     setSuggesting(false);
     if (res.ok && res.data) {
-      const data = res.data as { script?: string; tokens_in?: number; tokens_out?: number };
+      const data = res.data as {
+        script?: string;
+        therapeutic_brief?: TherapeuticBrief;
+        tokens_in?: number;
+        tokens_out?: number;
+      };
       if (data.script) {
         setScriptDraft(data.script);
         setStatusMsg(
@@ -219,6 +551,10 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
         );
       } else {
         setStatusMsg('Script suggestion empty — server returned no text');
+      }
+      if (data.therapeutic_brief) {
+        setTherapeuticBrief(data.therapeutic_brief);
+        setShowBrief(true);   // auto-open on first suggest
       }
     } else {
       const data = res.data as { code?: string; message?: string } | undefined;
@@ -230,12 +566,25 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     }
   };
 
+  const onBaseClipChange = (clipId: string) => {
+    setSelectedBaseClip(clipId);
+    if (phase === 'b' && clipId) {
+      setStateSlice((s) => ({ ...s, cedric_base_clip_id: clipId }));
+      void pathappPatch(activeScope.value, 'v2_module_patch', {
+        field: 'phase_b_cedric_base_clip_id',
+        value: clipId,
+      });
+    } else if (phase === 'a' && clipId) {
+      setStateSlice((s) => ({ ...s, chipper_sitting_clip_id: clipId }));
+      void pathappPatch(activeScope.value, 'v2_module_patch', {
+        field: 'phase_a_chipper_sitting_clip_id',
+        value: clipId,
+      });
+    }
+  };
+
   const onSendForLipsync = async () => {
-    // PA-9 (Phase A): lipsync MUST target the sitting clip (the talking-head
-    // segment), not whatever clip happens to be in the base-clip dropdown.
-    // Phase A is a 3-clip sequence (fly-in / sitting / fly-out); only the
-    // sitting clip carries the dialogue audio. Per LD-375 PHASE_A_CANONICAL_PIPELINE_V1.
-    // Phase B is single-clip Cedric — selectedBaseClip is the canonical target.
+    // Phase A: single Arlo base clip carries dialogue (no fly-in/fly-out bookends).
     const lipsyncClipId =
       phase === 'a'
         ? stateSlice.chipper_sitting_clip_id ?? selectedBaseClip
@@ -243,7 +592,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     if (!lipsyncClipId) {
       setStatusMsg(
         phase === 'a'
-          ? 'Pick a sitting clip first (Phase A 3-clip picker → sitting slot).'
+          ? 'Pick an Arlo base clip first (Regen base clip or picker below).'
           : 'Pick a base clip first.',
       );
       return;
@@ -257,19 +606,125 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     });
     setBusyAction(null);
     if (res.ok) {
-      setStatusMsg('✓ Lipsync complete');
+      if (res.status === 202) {
+        // Kling is processing in the background — record mtime before submit
+        // so we can detect when the new file lands, then start polling.
+        lipsyncMtimeBefore.current = stateSlice.lipsync_mtime ?? null;
+        setLipsyncing(true);
+        setStatusMsg(phaseLipsyncProgressMessage(phase));
+      } else {
+        setStatusMsg('✓ Lipsync complete');
+        await refreshAll();
+      }
+    } else if (
+      res.status === 409 &&
+      (res.error_code === 'PHASE_A_LIPSYNC_RUNNING' ||
+        res.error_message?.includes('already running') ||
+        (res.data as { error_code?: string; error_message?: string } | undefined)?.error_code ===
+          'PHASE_A_LIPSYNC_RUNNING' ||
+        (res.data as { error_message?: string } | undefined)?.error_message?.includes('already running'))
+    ) {
+      lipsyncMtimeBefore.current = stateSlice.lipsync_mtime ?? null;
+      setLipsyncing(true);
+      setStatusMsg(phaseLipsyncProgressMessage(phase));
+    } else {
+      const data = res.data as { hint?: string; error_message?: string } | undefined;
+      setStatusMsg(
+        `✗ Lipsync HTTP ${res.status}: ${data?.hint ?? data?.error_message ?? res.error ?? ''}`,
+      );
+    }
+  };
+
+  const onEnterStemTrimMode = () => {
+    if (!stateSlice.voice_stem_file) {
+      setStatusMsg('Generate a voice stem first.');
+      return;
+    }
+    setStemTrimMode(true);
+    setStatusMsg(
+      '✂ Trim mode — gold handles on the waveform. Amber = section to REMOVE. Drag handles, then Apply Cut.',
+    );
+  };
+
+  const onExitStemTrimMode = () => {
+    setStemTrimMode(false);
+    setStatusMsg(
+      lipsyncFile
+        ? 'Trim mode off — waveform shows lipsync audio again.'
+        : 'Trim mode off.',
+    );
+  };
+
+  const onClearStemCutSelection = async () => {
+    setBusyAction('clear_cut');
+    await persistStemCut(0, 0);
+    setBusyAction(null);
+    setStatusMsg('Cut selection cleared — drag gold handles to mark a new region.');
+  };
+
+  const onApplyStemCut = async () => {
+    const cutStart = Math.round((stateSlice.voice_stem_cut_start_s ?? 0) * 1000);
+    const cutEnd = Math.round((stateSlice.voice_stem_cut_end_s ?? 0) * 1000);
+    if (cutEnd <= cutStart + 250) {
+      setStatusMsg('Drag the amber handles to mark the section to remove, then Apply Cut.');
+      return;
+    }
+    setBusyAction('apply_cut');
+    setStatusMsg('Applying stem cut (ffmpeg)…');
+    const cutEp = phase === 'a' ? 'phase_a_apply_stem_cut' : 'phase_b_apply_stem_cut';
+    const res = await pathappPatch(activeScope.value, cutEp, { phase });
+    setBusyAction(null);
+    if (res.ok) {
+      const data = res.data as { file?: string; duration_s?: number } | undefined;
+      setStatusMsg(
+        `✓ Stem cut applied${data?.duration_s ? ` (${data.duration_s.toFixed(1)}s)` : ''} — send for lipsync when ready.`,
+      );
+      setStemTrimMode(false);
+      setStateSlice((s) => {
+        const next = { ...s };
+        delete next.voice_stem_cut_start_s;
+        delete next.voice_stem_cut_end_s;
+        return next;
+      });
       await refreshAll();
     } else {
-      const data = res.data as { hint?: string } | undefined;
-      setStatusMsg(`✗ Lipsync HTTP ${res.status}: ${data?.hint ?? res.error ?? ''}`);
+      const data = res.data as { hint?: string; error_message?: string } | undefined;
+      setStatusMsg(
+        `✗ Apply Cut HTTP ${res.status}: ${data?.hint ?? data?.error_message ?? res.error ?? ''}`,
+      );
+    }
+  };
+
+  const onRejectLipsync = async () => {
+    setBusyAction('reject_lipsync');
+    setStatusMsg('Rejecting lipsync…');
+    const rejectEp = phase === 'a' ? 'phase_a_reject_lipsync' : 'phase_b_reject_lipsync';
+    const res = await pathappPatch(activeScope.value, rejectEp, { phase });
+    setBusyAction(null);
+    if (res.ok) {
+      setStatusMsg('✓ Lipsync rejected — stem on waveform; drag amber handles to trim before resending.');
+      await refreshAll();
+    } else {
+      const data = res.data as { hint?: string; error_message?: string } | undefined;
+      setStatusMsg(
+        `✗ Reject lipsync HTTP ${res.status}: ${data?.hint ?? data?.error_message ?? res.error ?? ''}`,
+      );
     }
   };
 
   const onMixAudio = async () => {
+    const presetId = stateSlice.ambient_preset_id?.trim();
+    if (!presetId) {
+      setStatusMsg('✗ Pick an ambient bed preset first (dropdown above).');
+      return;
+    }
     setBusyAction('mix');
     setStatusMsg('Mix Audio (Phase A auto-fires stitch)…');
     const mixEp = phase === 'a' ? 'phase_a_mix_audio' : 'phase_b_mix_audio';
-    const res = await pathappPatch(activeScope.value, mixEp, { phase });
+    const res = await pathappPatch(activeScope.value, mixEp, {
+      phase,
+      ambient_preset_id: presetId,
+    });
     setBusyAction(null);
     if (res.ok) {
       setStatusMsg('✓ Mix complete (Phase A stitch auto-fired)');
@@ -279,27 +734,148 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     }
   };
 
+  const onPhaseARestitch = async () => {
+    setBusyAction('restitch');
+    setStatusMsg('Re-stitching lipsync + ambient…');
+    const res = await pathappPatch(activeScope.value, 'phase_a_restitch', {});
+    setBusyAction(null);
+    if (res.ok) {
+      setStatusMsg('✓ Phase A re-stitched');
+      await refreshAll();
+    } else {
+      setStatusMsg(`✗ Restitch HTTP ${res.status}: ${res.error ?? ''}`);
+    }
+  };
+
+  const onRegenBaseClip = async () => {
+    setBusyAction('regen_base');
+    setStatusMsg('Kling idle base clip (~6 min)…');
+    const res = await pathappPatch(activeScope.value, 'phase_a_regen_base_clip', {
+      clip_id: stateSlice.chipper_sitting_clip_id ?? selectedBaseClip ?? 'arlo_idle_wizard_desk_v2',
+    });
+    setBusyAction(null);
+    if (res.ok && res.status === 202) {
+      setStatusMsg('⏳ Base clip regenerating — Send for Lipsync when done');
+    } else if (res.ok) {
+      setStatusMsg('✓ Base clip regen complete');
+      await refreshAll();
+    } else {
+      setStatusMsg(`✗ Base clip HTTP ${res.status}: ${res.error ?? ''}`);
+    }
+  };
+
+  // ── Preview with Overlay ─────────────────────────────────────────────────
+  // One surface: lipsync frame + canvas-chromakey animated overlays on cue timing.
+  const onPreviewOverlay = () => {
+    const overlayVideo =
+      phase === 'a'
+        ? phaseAPreviewFile(stateSlice)
+        : lipsyncFile
+          ? { name: lipsyncFile, label: 'lipsync' as const, kind: 'lipsync' as const }
+          : null;
+    if (!overlayVideo) {
+      setStatusMsg('No preview video yet — run Send for Lipsync first.');
+      return;
+    }
+    if (!priorityAudio) {
+      setStatusMsg('No audio on timeline — generate a stem or finish lipsync first.');
+      return;
+    }
+    document
+      .querySelector(`[data-testid="phase-${phase}-lipsync-player"]`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    const ctl = waveformPlaybackRef.current;
+    if (!ctl?.isReady) {
+      setStatusMsg('Audio waveform still loading — wait a moment and try again.');
+      return;
+    }
+    if (!ctl.play({ fromStart: true })) {
+      setStatusMsg('Could not start preview — try the ▶ Play button on the waveform.');
+      return;
+    }
+    const hasCues = (stateSlice.watercolor_cues ?? []).length > 0;
+    setStatusMsg(
+      hasCues
+        ? '▶ Previewing — animated overlays appear on the lipsync frame above.'
+        : '▶ Previewing lipsync — drag watercolors onto the waveform when ready.',
+    );
+  };
+
   const onExportToStitcher = async () => {
-    // The export source for Phase B is the lipsync mp4; for Phase A it's
-    // the stitched mp4.
+    if (phase === 'a' && stitchedPreviewStale(stateSlice)) {
+      setStatusMsg(
+        'Stitched preview is stale — run Mix Audio / Re-stitch before Export to Stitcher.',
+      );
+      return;
+    }
     const srcFile = phase === 'a' ? stateSlice.stitched_file : stateSlice.lipsync_file;
     if (!srcFile) {
       setStatusMsg(`No ${phase === 'a' ? 'stitched' : 'lipsync'} mp4 yet — finish the producer flow first.`);
       return;
     }
     setBusyAction('export');
-    setStatusMsg('Exporting to Stitcher…');
-    const res = await pathappPatch(activeScope.value, 'stitch_save_job', {
-      job_name: `phase_${phase}_${activeScope.value.event_id}`,
-      slot: phase === 'a' ? 'phase_a' : 'phase_b',
-      video_path: `Production/${activeScope.value.event_id}/${srcFile}`,
-    });
+    setStatusMsg(
+      phase === 'b'
+        ? 'Exporting to Stitcher (baking watercolor overlays)…'
+        : 'Exporting to Stitcher…',
+    );
+    const slotKey = phase === 'a' ? 'phase_a' : 'phase_b';
+
+    const res = await pathappPatch<{ job_name?: string; video_path?: string; overlay_baked?: boolean }>(
+      activeScope.value,
+      'phase_export_stitcher',
+      { phase },
+    );
     setBusyAction(null);
     if (res.ok) {
-      setStatusMsg('✓ Exported to Stitcher (see Stitcher tab to bake)');
+      stitcherRefreshTick.value += 1;
+      const baked = res.data?.overlay_baked ? ' (overlays baked in)' : '';
+      setStatusMsg(`✓ Exported to Stitcher → ${slotKey} slot${baked} (open Stitcher tab to preview/bake)`);
     } else {
-      setStatusMsg(`✗ Export HTTP ${res.status}: ${res.error ?? ''}`);
+      setStatusMsg(`✗ Export HTTP ${res.status}: ${res.error ?? 'export failed'}`);
     }
+  };
+
+  const onDeleteWatercolor = async (key: string) => {
+    if (!window.confirm(`Delete "${key}" from watercolor library?`)) return;
+    const res = await pathappPatch(activeScope.value, 'phase_watercolor_delete', { key: key });
+    if (res.ok) {
+      setStatusMsg(`✓ Deleted "${key}"`);
+      await refreshAll();
+    } else {
+      setStatusMsg(`✗ Delete failed: ${res.error ?? res.status}`);
+    }
+  };
+
+  const onWatercolorUpload = async (e: Event) => {
+    const files = (e.target as HTMLInputElement).files;
+    if (!files || files.length === 0) return;
+    let added = 0;
+    for (const file of Array.from(files)) {
+      try {
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(file);
+        });
+        const image_b64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+        const res = await pathappPatch(activeScope.value, 'cr_upload', {
+          filename: file.name,
+          image_b64,
+          tier: 'watercolor',
+        });
+        if (res.ok) added++;
+        else setStatusMsg(`✗ Upload failed: ${res.error ?? res.status}`);
+      } catch (err) {
+        setStatusMsg(`✗ Upload error: ${String(err)}`);
+      }
+    }
+    if (added > 0) {
+      setStatusMsg(`✓ Added ${added} watercolor asset(s)`);
+      await refreshAll();
+    }
+    if (wcUploadInputRef.current) wcUploadInputRef.current.value = '';
   };
 
   const onAnimateThis = (key: string) => {
@@ -310,6 +886,9 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     // [CONFIRMED against api/endpoints.ts SERVER_BASE constant — magic_picker is co-hosted on the production_server.py origin; relative path here resolves identically to ${SERVER_BASE}/api/watercolor/animate]
     url.searchParams.set('return_endpoint', '/api/watercolor/animate');
     url.searchParams.set('scope_event_id', activeScope.value.event_id);
+    // scope_video_role is required by /api/watercolor/animate (LD-474 VIDEO_ROLE_PER_REQUEST_V1).
+    // path_picker.html reads it from the URL param; without it the POST returns video_role_invalid.
+    url.searchParams.set('scope_video_role', activeVideoRole.value);
     window.open(url.toString(), '_blank');
   };
 
@@ -321,6 +900,10 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
 
   const persistCues = async (next: WatercolorCue[]) => {
     setStateSlice((s) => ({ ...s, watercolor_cues: next }));
+    // Send raw frontend-schema array. The server validator (_v2_validate_watercolor_cues_json)
+    // accepts a list directly, normalises to server schema, and stores as JSON string.
+    // Tests F7–F9 assert body['value'] is an array with frontend keys (watercolor_key,
+    // offset_ms, animation_type) — JSON.stringify was breaking that contract.
     const res = await pathappPatch(activeScope.value, 'v2_module_patch', {
       field: cueField,
       value: next,
@@ -331,12 +914,21 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   };
 
   const onWatercolorDrop = (lib_key: string, offset_ms: number) => {
-    const newCue: WatercolorCue = {
+    // RC3 fix: animated watercolors need a longer default duration so they are
+    // visible for a useful window. Static images keep the 3s default.
+    const wcItem = watercolors.find((w) => w.key === lib_key);
+    const defaultDurationMs = wcItem?.kind === 'animation' ? 10000 : 3000;
+    // cue_type fix: server validator defaults cue_type to "png" when not sent.
+    // Animated files are MP4s — must send cue_type:"video" so resolve_watercolor_asset
+    // tries .mp4/.mov extensions instead of .png (which doesn't exist for animated keys).
+    const cueType: string = wcItem?.kind === 'animation' ? 'video' : 'png';
+    const newCue: WatercolorCue & { cue_type: string } = {
       id: `cue_${Math.random().toString(36).slice(2, 10)}`,
       watercolor_key: lib_key,
       offset_ms,
-      duration_ms: 3000,
+      duration_ms: defaultDurationMs,
       animation_type: 'fade_in',
+      cue_type: cueType,
       volume: 1.0,
     };
     const next = [...(stateSlice.watercolor_cues ?? []), newCue];
@@ -353,6 +945,42 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       c.id === updated.id ? updated : c,
     );
     void persistCues(next);
+  };
+
+  const onCueRangeChange = (cueId: string, offsetMs: number, durationMs: number) => {
+    const next = (stateSlice.watercolor_cues ?? []).map((c) =>
+      c.id === cueId ? { ...c, offset_ms: offsetMs, duration_ms: durationMs } : c,
+    );
+    void persistCues(next);
+  };
+
+  const persistStemCut = async (cutStartMs: number, cutEndMs: number) => {
+    const startS = Math.round(cutStartMs) / 1000;
+    const endS = Math.round(cutEndMs) / 1000;
+    setStateSlice((s) => ({
+      ...s,
+      voice_stem_cut_start_s: startS,
+      voice_stem_cut_end_s: endS,
+    }));
+    const startField = `phase_${phase}_voice_stem_cut_start_s`;
+    const endField = `phase_${phase}_voice_stem_cut_end_s`;
+    const legacyStart = `phase_${phase}_voice_stem_trim_start_s`;
+    const legacyBack = `phase_${phase}_voice_stem_trim_back_s`;
+    const [startRes, endRes] = await Promise.all([
+      pathappPatch(activeScope.value, 'v2_module_patch', { field: startField, value: startS }),
+      pathappPatch(activeScope.value, 'v2_module_patch', { field: endField, value: endS }),
+      pathappPatch(activeScope.value, 'v2_module_patch', { field: legacyStart, value: 0 }),
+      pathappPatch(activeScope.value, 'v2_module_patch', { field: legacyBack, value: 0 }),
+    ]);
+    if (!startRes.ok || !endRes.ok) {
+      setStatusMsg(
+        `✗ stem cut patch failed (HTTP ${startRes.status}/${endRes.status})`,
+      );
+    }
+  };
+
+  const onStemCutChange = (cutStartMs: number, cutEndMs: number) => {
+    void persistStemCut(cutStartMs, cutEndMs);
   };
 
   const onCueDelete = () => {
@@ -379,9 +1007,8 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
 
   // ── Phase A 3-clip handling (Phase D) ──────────────────────────────────
   const phaseAClipId = (pos: PhaseAClipPosition): string | undefined => {
-    if (pos === 'flyin') return stateSlice.chipper_flyin_clip_id;
     if (pos === 'sitting') return stateSlice.chipper_sitting_clip_id;
-    return stateSlice.chipper_flyout_clip_id;
+    return undefined;
   };
 
   const onPickPhaseAClip = async (pos: PhaseAClipPosition, clipId: string) => {
@@ -391,6 +1018,9 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       ...s,
       [`chipper_${pos}_clip_id`]: clipId,
     } as PhaseStateSlice));
+    if (pos === 'sitting') {
+      setSelectedBaseClip(clipId);
+    }
     const res = await pathappPatch(activeScope.value, 'v2_module_patch', {
       field,
       value: clipId,
@@ -416,19 +1046,29 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   // Server whitelist accepts phase_a_script + phase_b_script via
   // v2_module_patch (production_server.py:4035, 4048, 4157, 4170).
   // Closes inventory v2 PB-1 + PA-1 WIRED-BUT-BROKEN class.
+  const flashSaveBtn = (label: string) => {
+    setSaveBtnLabel(label);
+    setTimeout(() => setSaveBtnLabel('Save Script'), 2000);
+  };
+
   const onScriptBlur = async () => {
     const currentServer = stateSlice.script ?? '';
-    if (scriptDraft === currentServer) return; // no-op
+    if (scriptDraft === currentServer) {
+      flashSaveBtn('✓ Already saved');
+      return;
+    }
+    flashSaveBtn('Saving…');
     const field = `phase_${phase}_script`;
     const res = await pathappPatch(activeScope.value, 'v2_module_patch', {
       field,
       value: scriptDraft,
     });
     if (res.ok) {
-      // Reflect saved value into stateSlice so subsequent blurs don't re-fire.
       setStateSlice((s) => ({ ...s, script: scriptDraft }));
+      flashSaveBtn('✓ Saved');
       setStatusMsg('✓ Script saved');
     } else {
+      flashSaveBtn(`✗ Error ${res.status}`);
       setStatusMsg(`✗ Script save HTTP ${res.status}: ${res.error ?? ''}`);
     }
   };
@@ -436,6 +1076,22 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   // ── Voice stem (Phase E) — Cursor v8 Q5: misnamed regen_audio writes voice_stem files.
   const onGenerateStem = async () => {
     setBusyAction('stem');
+    // Save scriptDraft to server BEFORE generating — prevents refreshAll() from
+    // overwriting the textarea with the stale server version (race: blur-save and
+    // refreshAll compete; generation wins and resets scriptDraft to old script).
+    const currentServer = stateSlice.script ?? '';
+    if (scriptDraft !== currentServer) {
+      setStatusMsg('Saving script…');
+      const field = `phase_${phase}_script`;
+      const saveRes = await pathappPatch(activeScope.value, 'v2_module_patch', {
+        field,
+        value: scriptDraft,
+      });
+      if (saveRes.ok) {
+        setStateSlice((s) => ({ ...s, script: scriptDraft }));
+      }
+      // Continue even if save fails — generation uses scriptDraft directly.
+    }
     setStatusMsg('Generating stem from script…');
     const regenEp = phase === 'a' ? 'phase_a_regen_audio' : 'phase_b_regen_audio';
     const res = await pathappPatch(activeScope.value, regenEp, {
@@ -469,30 +1125,50 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     }
   };
 
-  const audioFile = priorityAudioFile(stateSlice);
+  const priorityAudio = priorityAudioFileForPhase(phase, stateSlice);
+  const waveformAudio =
+    stemTrimMode && stateSlice.voice_stem_file
+      ? { name: stateSlice.voice_stem_file, label: 'stem' as const }
+      : priorityAudio;
   const lipsyncFile = stateSlice.lipsync_file ?? null;
+  const previewVideo: PhasePreviewFile | null =
+    phase === 'a'
+      ? phaseAPreviewFile(stateSlice)
+      : lipsyncFile
+        ? { name: lipsyncFile, label: 'lipsync', kind: 'lipsync' }
+        : null;
+  const canEditStemCut = Boolean(stemTrimMode && stateSlice.voice_stem_file);
+  const stemCutStartMs = Math.round((stateSlice.voice_stem_cut_start_s ?? 0) * 1000);
+  const stemCutEndMs = Math.round((stateSlice.voice_stem_cut_end_s ?? 0) * 1000);
+  const showRejectLipsync =
+    Boolean(lipsyncFile) &&
+    !lipsyncInFlight;
+  const hasStemCut = stemCutEndMs > stemCutStartMs + 250;
+  const displayStatusMsg =
+    lipsyncInFlight && !statusMsg?.startsWith('✗')
+      ? phaseLipsyncProgressMessage(phase)
+      : statusMsg;
   const activeCue =
     activeCueId
       ? (stateSlice.watercolor_cues ?? []).find((c) => c.id === activeCueId) ?? null
       : null;
 
   return (
-    <details
+    <div
       class={`mn-phase-producer mn-phase-${phase}`}
       data-testid={`phase-producer-${phase}`}
-      open={!collapsed}
-      onToggle={(e: Event) => {
-        const t = e.target as HTMLDetailsElement;
-        setCollapsed(!t.open);
-      }}
+      data-phase-producer-ab="PHASE_PRODUCER_AB_V1"
+      data-phase-watercolor-overlay="PHASE_WATERCOLOR_OVERLAY_V1"
+      {...(phase === 'a' ? { 'data-phase-a-single-player': 'PHASE_A_SINGLE_PLAYER_V1' } : {})}
     >
-      <summary class="mn-phase-summary">
-        {phaseLabel}
-        <span class="mn-dim mn-phase-status-tag">
-          {audioFile ? `audio: ${audioFile.label}` : 'no audio yet'}
-          {lipsyncFile ? ' · lipsync ✓' : ''}
+      <div class='mn-phase-status-header'>
+        <span class='mn-dim mn-phase-status-tag' data-testid={`phase-${phase}-status-header`}>
+          {waveformAudio ? `audio: ${waveformAudio.label}` : 'no audio yet'}
+          {stemTrimMode ? ' · trim mode' : ''}
+          {lipsyncFile && !stemTrimMode && !lipsyncInFlight ? ' · lipsync ✓' : ''}
+          {lipsyncInFlight ? ' · lipsync ⏳' : ''}
         </span>
-      </summary>
+      </div>
 
       <div class="mn-phase-body">
         {/* Script editor + Suggest */}
@@ -506,10 +1182,54 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           >
             {suggesting ? 'Suggesting…' : 'Suggest Script'}
           </button>
+          {therapeuticBrief && (
+            <button
+              type="button"
+              class={`mn-btn mn-brief-toggle-btn${showBrief ? ' mn-brief-toggle-btn--active' : ''}`}
+              data-testid={`phase-${phase}-brief-toggle-btn`}
+              onClick={() => setShowBrief(v => !v)}
+              title="Toggle therapeutic brief"
+            >
+              📋 {showBrief ? 'Hide Brief' : 'Brief'}
+            </button>
+          )}
           <span class="mn-dim">
             {phase === 'a' ? 'reads Phase B + module context' : 'reads arc skeleton + therapeutic'}
           </span>
         </div>
+        {/* Therapeutic brief panel — persists in state, toggled by 📋 button */}
+        {therapeuticBrief && showBrief && (
+          <div class="mn-brief-panel" data-testid={`phase-${phase}-brief-panel`}>
+            <div class="mn-brief-section">
+              <span class="mn-brief-title">🎯 Therapeutic goal</span>
+              <p class="mn-brief-goal">{therapeuticBrief.goal}</p>
+            </div>
+            <div class="mn-brief-section">
+              <span class="mn-brief-title">✅ Must-hits</span>
+              <ul class="mn-brief-list">
+                {therapeuticBrief.must_hits.map((item, i) => (
+                  <li key={i}>{item}</li>
+                ))}
+              </ul>
+            </div>
+            <div class="mn-brief-section">
+              <span class="mn-brief-title">💡 What to evoke</span>
+              <ul class="mn-brief-list">
+                {therapeuticBrief.what_to_evoke.map((item, i) => (
+                  <li key={i}>{item}</li>
+                ))}
+              </ul>
+            </div>
+            <div class="mn-brief-section">
+              <span class="mn-brief-title">⚠️ Watch-outs</span>
+              <ul class="mn-brief-list">
+                {therapeuticBrief.watch_outs.map((item, i) => (
+                  <li key={i}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
         <textarea
           class="mn-phase-script-editor"
           data-testid={`phase-${phase}-script-editor`}
@@ -519,16 +1239,110 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           onBlur={onScriptBlur}
           placeholder={`Phase ${phase.toUpperCase()} script…`}
         />
+        {/* Explicit save — onBlur only fires on focus-leave; this lets Kim
+            paste a script and commit it without clicking elsewhere.
+            Button label self-reports: Saving… → ✓ Saved / ✗ Error / ✓ Already saved */}
+        <div class="mn-phase-row">
+          <button
+            type="button"
+            class="mn-btn"
+            data-testid={`phase-${phase}-save-script-btn`}
+            onClick={onScriptBlur}
+            disabled={saveBtnLabel === 'Saving…'}
+          >
+            {saveBtnLabel}
+          </button>
+        </div>
+
+        {/* Waveform trim toolbar — enter trim mode to show amber cut on stem (not lipsync). */}
+        {stateSlice.voice_stem_file ? (
+          <div class="mn-phase-waveform-trim-toolbar" data-testid={`phase-${phase}-waveform-trim-toolbar`}>
+            {stemTrimMode ? (
+              <>
+                <span class="mn-stem-trim-mode-badge" data-testid={`phase-${phase}-stem-trim-mode-badge`}>
+                  ✂ Trim mode — voice stem on waveform
+                </span>
+                <button
+                  type="button"
+                  class="mn-btn mn-btn-primary"
+                  data-testid={`phase-${phase}-apply-stem-cut-btn`}
+                  onClick={onApplyStemCut}
+                  disabled={busyAction !== null || !hasStemCut}
+                  title="Remove the amber region from the voice stem (ffmpeg)"
+                >
+                  {busyAction === 'apply_cut' ? 'Cutting…' : 'Apply Cut'}
+                </button>
+                {hasStemCut ? (
+                  <button
+                    type="button"
+                    class="mn-btn"
+                    data-testid={`phase-${phase}-clear-stem-cut-btn`}
+                    onClick={() => void onClearStemCutSelection()}
+                    disabled={busyAction !== null}
+                    title="Remove amber selection without changing the stem file"
+                  >
+                    {busyAction === 'clear_cut' ? 'Clearing…' : 'Clear selection'}
+                  </button>
+                ) : null}
+                <span class="mn-dim mn-stem-trim-hint" data-testid={`phase-${phase}-stem-trim-hint`}>
+                  Drag gold handles · amber = section to remove
+                </span>
+                <button
+                  type="button"
+                  class="mn-btn"
+                  data-testid={`phase-${phase}-exit-stem-trim-btn`}
+                  onClick={onExitStemTrimMode}
+                  disabled={busyAction !== null}
+                  title={
+                    lipsyncFile
+                      ? 'Return waveform to lipsync audio'
+                      : 'Hide trim handles and return to normal waveform view'
+                  }
+                >
+                  Exit trim mode
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  class="mn-btn mn-btn-trim-stem"
+                  data-testid={`phase-${phase}-trim-voice-stem-btn`}
+                  onClick={onEnterStemTrimMode}
+                  disabled={busyAction !== null}
+                  title="Switch waveform to voice stem and show amber cut handles"
+                >
+                  Trim voice stem
+                </button>
+                {lipsyncFile ? (
+                  <span class="mn-dim mn-stem-trim-hint">
+                    Lipsync is on the waveform now — click Trim voice stem to edit the stem cut.
+                  </span>
+                ) : null}
+              </>
+            )}
+          </div>
+        ) : null}
 
         {/* Audio waveform — WaveSurfer v7 timeline (LD-330 / LD-472).
-            Priority: lipsync > mixed > stem (resolved by priorityAudioFile). */}
+            Priority: lipsync > mixed > stem (resolved by priorityAudioFile).
+            stemTrimMode forces stem for cut editing. */}
         <WaveformTimeline
-          audioSrc={audioFile ? fileUrl(audioFile.name) : null}
-          sourceLabel={audioFile?.label ?? null}
-          sourceFilename={audioFile?.name ?? null}
+          audioSrc={waveformAudio ? fileUrl(waveformAudio.name) : null}
+          sourceLabel={waveformAudio?.label ?? null}
+          sourceFilename={waveformAudio?.name ?? null}
           cues={stateSlice.watercolor_cues ?? []}
           onCueClick={onCueClick}
           onWatercolorDrop={onWatercolorDrop}
+          onTimeUpdate={(ms) => setCurrentTimeMs(ms)}
+          onPlayStateChange={setWaveIsPlaying}
+          onCueRangeChange={onCueRangeChange}
+          stemCutStartMs={stemCutStartMs}
+          stemCutEndMs={stemCutEndMs}
+          stemCutEditable={canEditStemCut}
+          onStemCutChange={onStemCutChange}
+          {...(stemTrimMode ? {} : { linkedVideo: videoRef })}
+          playbackControl={waveformPlaybackRef}
         />
         {activeCue && popoverAnchor ? (
           <CuePopover
@@ -580,19 +1394,6 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           ) : null}
         </div>
 
-        {/* Lipsync video player */}
-        {lipsyncFile ? (
-          <div class="mn-phase-lipsync" data-testid={`phase-${phase}-lipsync-player`}>
-            <strong>Lipsync video:</strong>
-            <video
-              controls
-              src={fileUrl(lipsyncFile)}
-              style={{ maxHeight: '40vh', display: 'block' }}
-            />
-            <span class="mn-dim">{lipsyncFile}</span>
-          </div>
-        ) : null}
-
         {/* Action row: Base clip select + Send for Lipsync + Mix Audio + Export */}
         <div class="mn-phase-row">
           <label class="mn-dim" for={`phase-${phase}-baseclip`}>Base clip:</label>
@@ -600,12 +1401,10 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             id={`phase-${phase}-baseclip`}
             data-testid={`phase-${phase}-baseclip-select`}
             value={selectedBaseClip}
-            onChange={(e: Event) => setSelectedBaseClip((e.target as HTMLSelectElement).value)}
+            onChange={(e: Event) => onBaseClipChange((e.target as HTMLSelectElement).value)}
           >
             <option value="">— select —</option>
-            {baseClips
-              .filter((c) => phase === 'a' ? c.character === 'chipper' : c.character === 'cedric')
-              .map((c) => (
+            {phaseABaseClipOptions(baseClips).map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.id} ({c.duration_s ?? '?'}s)
                 </option>
@@ -616,10 +1415,26 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             class="mn-btn"
             data-testid={`phase-${phase}-send-lipsync-btn`}
             onClick={onSendForLipsync}
-            disabled={busyAction !== null || !selectedBaseClip}
+            disabled={busyAction !== null || !selectedBaseClip || lipsyncInFlight}
           >
-            {busyAction === 'lipsync' ? 'Sending…' : 'Send for Lipsync'}
+            {busyAction === 'lipsync'
+              ? 'Sending…'
+              : lipsyncInFlight
+                ? 'Lipsync in progress…'
+                : 'Send for Lipsync'}
           </button>
+          {showRejectLipsync ? (
+            <button
+              type="button"
+              class="mn-btn mn-btn-reject-lipsync"
+              data-testid={`phase-${phase}-reject-lipsync-btn`}
+              onClick={onRejectLipsync}
+              disabled={busyAction !== null}
+              title="Clear lipsync video and return waveform to voice stem for trimming"
+            >
+              {busyAction === 'reject_lipsync' ? 'Rejecting…' : 'Reject lipsync'}
+            </button>
+          ) : null}
           {phase === 'a' ? (
             <button
               type="button"
@@ -640,17 +1455,119 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           >
             {busyAction === 'export' ? 'Exporting…' : 'Export to Stitcher'}
           </button>
+          <button
+            type="button"
+            class="mn-btn mn-btn-preview-overlay"
+            data-testid={`phase-${phase}-preview-overlay-btn`}
+            onClick={onPreviewOverlay}
+            disabled={busyAction !== null || !previewVideo}
+            title="Play from the start — animated watercolors render on the lipsync frame above."
+          >
+            🎨 Preview with Overlay
+          </button>
         </div>
 
-        {/* Status line */}
-        {statusMsg ? (
+        {/* Status line — server-driven in-flight message survives tab switches */}
+        {displayStatusMsg ? (
           <div
-            class="mn-phase-status-line"
+            class={`mn-phase-status-line${lipsyncInFlight ? ' mn-phase-status-line--lipsync-pending' : ''}`}
             data-testid={`phase-${phase}-status`}
           >
-            {statusMsg}
+            {displayStatusMsg}
           </div>
         ) : null}
+
+        {/* Primary preview — one player per phase (Phase A: canonical stitched when fresh).
+            Muted: WaveSurfer (above) owns audio. Waveform ▶/⏸ is the control point.
+            Drag watercolors onto the waveform; overlays appear here during playback. */}
+        <div
+          class="mn-phase-lipsync mn-phase-lipsync-primary"
+          data-testid={`phase-${phase}-lipsync-player`}
+        >
+          {previewVideo ? (
+            <>
+              <strong>
+                {phase === 'a' && previewVideo.kind === 'stitched'
+                  ? 'Preview (canonical stitched — lipsync + ambient bed):'
+                  : phase === 'a'
+                    ? 'Preview (lipsync — Re-stitch to add ambient bed):'
+                    : 'Preview (lipsync + overlay cues):'}
+              </strong>
+              <div class="mn-lipsync-video-wrapper">
+                <video
+                  ref={videoRef}
+                  muted
+                  playsInline
+                  preload="auto"
+                  class="mn-lipsync-preview-video"
+                  src={fileUrl(previewVideo.name)}
+                />
+                {(stateSlice.watercolor_cues ?? [])
+                  .filter(
+                    (cue) =>
+                      currentTimeMs >= cue.offset_ms &&
+                      currentTimeMs < cue.offset_ms + (cue.duration_ms ?? 3000),
+                  )
+                  .map((cue) => {
+                    const wcItem = watercolors.find((w) => w.key === cue.watercolor_key);
+                    const isAnimation =
+                      wcItem?.kind === 'animation' ||
+                      cue.watercolor_key.includes('_animated_');
+                    const elapsed = currentTimeMs - cue.offset_ms;
+                    const opacity = Math.min(1.0, elapsed / 300);
+
+                    if (isAnimation) {
+                      const animSrc =
+                        wcItem?.animation_url ??
+                        `${SERVER_BASE}/api/phase_b/watercolor/${encodeURIComponent(cue.watercolor_key)}`;
+                      return (
+                        <WatercolorAnimOverlay
+                          key={cue.id}
+                          src={animSrc}
+                          elapsedMs={elapsed}
+                          isWavePlaying={waveIsPlaying}
+                          opacity={opacity}
+                        />
+                      );
+                    }
+
+                    const pngSrc =
+                      wcItem?.thumb_url ??
+                      `${SERVER_BASE}/api/phase_b/watercolor/${encodeURIComponent(cue.watercolor_key)}`;
+
+                    return (
+                      <img
+                        key={cue.id}
+                        class="mn-lipsync-watercolor-overlay"
+                        src={pngSrc}
+                        alt=""
+                        style={{ opacity }}
+                      />
+                    );
+                  })}
+              </div>
+              <span class="mn-dim">{previewVideo.name}</span>
+              {phase === 'a' && stateSlice.stitched_file && stitchedPreviewStale(stateSlice) ? (
+                <div class="mn-phase-stitched-stale mn-dim" data-testid="phase-a-stitched-stale">
+                  Stitched file ({stateSlice.stitched_file}) is older than current lipsync.
+                  Run <strong>Re-stitch</strong> to refresh the canonical preview.
+                </div>
+              ) : null}
+              {phase === 'a' && !stateSlice.stitched_file && lipsyncFile ? (
+                <div class="mn-dim" data-testid="phase-a-stitched-placeholder">
+                  Run <strong>Re-stitch</strong> after lipsync to bake the ambient bed into the canonical preview.
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <div
+              class="mn-phase-lipsync-placeholder mn-dim"
+              data-testid={`phase-${phase}-lipsync-placeholder`}
+            >
+              Lipsync preview appears here after &quot;Send for Lipsync&quot; completes.
+            </div>
+          )}
+        </div>
 
         {/* Phase A 3-clip section — only when phase==='a' (LD PHASE_A_THREE_CLIP_HANDLING_V1).
             Phase B is single-clip via the existing baseclip select above. */}
@@ -687,20 +1604,32 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             <div class="mn-phase-a-clip-total mn-dim">
               Total: {phaseATotalDurationS().toFixed(1)}s
             </div>
-            <button
-              type="button"
-              class="mn-btn"
-              data-testid="phase-a-restitch-btn"
-              onClick={onMixAudio}
-              disabled={busyAction !== null}
-              title="Re-stitch fly-in / sitting / fly-out into phase_a_stitched_file"
-            >
-              {busyAction === 'mix' ? 'Re-stitching…' : 'Re-stitch (Phase A)'}
-            </button>
+            <div class="mn-phase-a-clip-actions">
+              <button
+                type="button"
+                class="mn-btn"
+                data-testid="phase-a-restitch-btn"
+                onClick={onPhaseARestitch}
+                disabled={busyAction !== null}
+                title="Re-stitch raw lipsync + ambient bed into phase_a_stitched_file"
+              >
+                {busyAction === 'restitch' ? 'Re-stitching…' : 'Re-stitch (Phase A)'}
+              </button>
+              <button
+                type="button"
+                class="mn-btn mn-btn-small"
+                data-testid="phase-a-regen-base-clip-btn"
+                onClick={onRegenBaseClip}
+                disabled={busyAction !== null}
+                title="Regenerate Arlo wizard-desk idle base from still (~6 min Kling)"
+              >
+                Regen base clip
+              </button>
+            </div>
             <BaseClipPicker
               open={pickerPosition !== null}
               positionLabel={pickerPosition ? PHASE_A_CLIP_LABELS[pickerPosition] : ''}
-              character="chipper"
+              character="arlo"
               clips={baseClips}
               onPick={(id) => {
                 if (pickerPosition) void onPickPhaseAClip(pickerPosition, id);
@@ -712,11 +1641,29 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
 
         {/* Watercolor library + Animate-this */}
         <div class="mn-phase-watercolor-list" data-testid={`phase-${phase}-watercolors`}>
-          <strong>Watercolors ({watercolors.length}):</strong>
+          <div class="mn-phase-watercolor-header">
+            <strong>Watercolors ({watercolors.length}):</strong>
+            <label
+              class="mn-library-upload-btn mn-phase-watercolor-add-btn"
+              data-testid={`phase-${phase}-watercolor-add-btn`}
+              title="Upload PNG to watercolor library"
+            >
+              <input
+                ref={wcUploadInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                multiple
+                hidden
+                onChange={(e: Event) => void onWatercolorUpload(e)}
+                data-testid={`phase-${phase}-watercolor-add-input`}
+              />
+              + Add
+            </label>
+          </div>
           <div class="mn-phase-watercolor-grid">
             {watercolors.map((wc) => (
               <div
-                class="mn-phase-watercolor-tile"
+                class={`mn-phase-watercolor-tile${wc.kind === 'animation' ? ' mn-phase-watercolor-tile--animation' : ''}`}
                 key={wc.key}
                 data-testid={`phase-${phase}-watercolor-tile-${wc.key}`}
                 draggable
@@ -724,6 +1671,8 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
               >
                 {/* LD-203 — white interior wraps the centered art. */}
                 <div class="mn-phase-watercolor-thumb-wrap">
+                  {/* thumb_url is always a static PNG image (server resolves base PNG for animations).
+                      This avoids the black-first-frame problem with animation MP4s in thumbnails. */}
                   <img
                     src={wc.thumb_url}
                     alt={wc.filename}
@@ -745,6 +1694,18 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                 >
                   {wc.kind === 'animation' ? '✓ animated' : 'Animate this'}
                 </button>
+                <button
+                  type="button"
+                  class="mn-asset-tile-delete"
+                  data-testid={`phase-${phase}-watercolor-delete-${wc.key}`}
+                  aria-label={`Delete ${wc.key}`}
+                  onClick={(e: MouseEvent) => {
+                    e.stopPropagation();
+                    void onDeleteWatercolor(wc.key);
+                  }}
+                >
+                  &times;
+                </button>
               </div>
             ))}
           </div>
@@ -756,6 +1717,6 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           watercolor onto timeline = S5 polish.
         </p>
       </div>
-    </details>
+    </div>
   );
 }

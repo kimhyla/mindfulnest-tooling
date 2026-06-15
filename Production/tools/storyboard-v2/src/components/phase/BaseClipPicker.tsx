@@ -35,7 +35,19 @@ export function BaseClipPicker({
   onPick,
   onClose,
 }: BaseClipPickerProps) {
-  const filtered = clips.filter((c) => c.character === character);
+  const filtered = clips.filter((c) => {
+    if (c.character === character) return true;
+    // Defensive: show arlo/chipper clips even if server omitted character tag.
+    if (character === 'arlo') {
+      const id = c.id.toLowerCase();
+      return id.includes('arlo') || id.includes('chipper');
+    }
+    return false;
+  }).sort((a, b) => {
+    const rank = (c: BaseClipItem) =>
+      c.character === character || c.id.toLowerCase().includes(character) ? 0 : 1;
+    return rank(a) - rank(b) || a.id.localeCompare(b.id);
+  });
   return (
     <Modal
       id="base-clip-picker"

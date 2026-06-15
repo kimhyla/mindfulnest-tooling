@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """
-lipsync_sender.py — ByteDance LipSync via WaveSpeed API
-========================================================
-Submits animation clips + TTS audio to ByteDance LipSync endpoint.
+lipsync_sender.py — Kling LipSync via WaveSpeed API
+====================================================
+Submits animation clips + TTS audio to Kling LipSync endpoint.
 Returns lip-synced video clips ready for storyboard integration.
 
 Uses the same WaveSpeed API key as animation generation (Kling/Seedance).
-Endpoint: api.wavespeed.ai/api/v3/bytedance/lipsync/audio-to-video
-Cost: ~$0.15 per 5s clip
+Endpoint: api.wavespeed.ai/api/v3/kwaivgi/kling-lipsync/audio-to-video
+Cost: ~$0.35 per job
 
-**Approach:** Uploads video + audio to uguu.se temporary hosting first,
-then submits the URLs to WaveSpeed. This avoids the data URI timeout
-issue caused by embedding large base64 payloads in the JSON body.
-Proven working in test_08_bytedance_on_25d.py (April 12, 2026).
+SWITCH_TO_KLING_LIPSYNC_20260524: switched from bytedance/lipsync/audio-to-video
+to kwaivgi/kling-lipsync/audio-to-video. Kim confirmed Kling lipsync quality is
+visibly better. The current WaveSpeed schema expects URL strings for
+{"video", "audio"}; data_uri remains a guarded fallback for provider fetch
+failures only. No ByteDance 10s training window constraint.
 
 Usage:
     from lipsync_sender import LipSyncClient
@@ -27,6 +28,7 @@ Usage:
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import mimetypes
 import os
@@ -35,6 +37,7 @@ import time
 import urllib.request
 import urllib.error
 import urllib.parse
+import uuid
 from pathlib import Path
 
 # No external dependencies — stdlib only for Mac compatibility
@@ -44,13 +47,22 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 LIPSYNC_BASE_URL = (
-    "https://api.wavespeed.ai/api/v3/bytedance/lipsync"
+    "https://api.wavespeed.ai/api/v3/kwaivgi/kling-lipsync"
 )
 
 LIPSYNC_SUBMIT_URL = f"{LIPSYNC_BASE_URL}/audio-to-video"
+LIPSYNC_PROVIDER_CONTRACT = {
+    "provider": "wavespeed",
+    "model": "kwaivgi/kling-lipsync/audio-to-video",
+    "has_output_resolution_parameter": False,
+    "required_transport": "url",
+    "known_observed_sub720_output": "832x464",
+    "quality_invariant": "Measure raw provider output and reject if min(width,height) < 720 before delivery encode.",
+}
 
 CATBOX_UPLOAD_URL = "https://catbox.moe/user/api.php"
 UGUU_UPLOAD_URL = "https://uguu.se/api.php?action=upload"  # fallback
+FILEBIN_UPLOAD_BASE = "https://filebin.net"
 
 PREDICTIONS_POLL_BASE = "https://api.wavespeed.ai/api/v3/predictions"
 
@@ -58,17 +70,28 @@ def lipsync_poll_url(job_id: str) -> str:
     """Poll endpoint — uses shared predictions endpoint (confirmed by WaveSpeed API response urls.get)."""
     return f"{PREDICTIONS_POLL_BASE}/{job_id}/result"
 
-COST_PER_LIPSYNC = 0.15  # per 5s clip
+COST_PER_LIPSYNC = 0.35  # Kling lipsync per job (SWITCH_TO_KLING_LIPSYNC_20260524)
 MAX_RETRIES = 3
 RETRY_BACKOFF = [5, 10, 20]  # seconds
 POLL_INTERVAL = 10  # seconds between polls
-POLL_TIMEOUT = 600  # max seconds to wait for completion (10 min)
+POLL_TIMEOUT = 1800  # max seconds to wait for completion (30 min — Phase B 132s audio took 22.5 min)
 UGUU_UPLOAD_TIMEOUT = 60  # seconds per file upload
 
 
 # ---------------------------------------------------------------------------
-# Helpers — temp file hosting (catbox.moe primary, uguu.se fallback)
+# Helpers — temp file hosting + byte-complete preflight
 # ---------------------------------------------------------------------------
+
+class LipsyncHostingError(RuntimeError):
+    """Raised when no public URL host can pass the lipsync preflight."""
+
+
+def _sha256_file(file_path: Path) -> str:
+    digest = hashlib.sha256()
+    with file_path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 def _build_multipart(fields: dict, files: dict) -> tuple[bytes, str]:
     """
@@ -125,6 +148,35 @@ def _upload_to_catbox(file_path: Path) -> str | None:
     return None
 
 
+def _upload_to_filebin(file_path: Path) -> str | None:
+    """Upload to filebin.net and return the page URL that redirects to raw storage."""
+    try:
+        mime_type, _ = mimetypes.guess_type(str(file_path))
+        if not mime_type:
+            mime_type = "application/octet-stream"
+
+        bin_id = f"mn{uuid.uuid4().hex[:16]}"
+        safe_name = urllib.parse.quote(file_path.name)
+        upload_url = f"{FILEBIN_UPLOAD_BASE}/{bin_id}/{safe_name}"
+        req = urllib.request.Request(
+            upload_url,
+            data=file_path.read_bytes(),
+            headers={
+                "Content-Type": mime_type,
+                "User-Agent": "curl/8.0",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=UGUU_UPLOAD_TIMEOUT) as resp:
+            if 200 <= resp.status < 300:
+                resp.read()
+                return upload_url
+            print(f"[lipsync] filebin.net upload HTTP {resp.status} for {file_path.name}")
+    except Exception as exc:
+        print(f"[lipsync] filebin.net upload failed for {file_path.name}: {exc}")
+    return None
+
+
 def _upload_to_uguu(file_path: Path) -> str | None:
     """Upload to uguu.se (fallback) using stdlib. Returns URL or None."""
     try:
@@ -154,17 +206,79 @@ def _upload_to_uguu(file_path: Path) -> str | None:
     return None
 
 
-def upload_to_hosting(file_path: Path) -> str | None:
+def _preflight_download_url(file_path: Path, url: str, *, host: str) -> dict | None:
+    """Verify URL resolves to exactly the original bytes before WaveSpeed sees it."""
+    expected_size = file_path.stat().st_size
+    expected_sha256 = _sha256_file(file_path)
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={
+                # filebin.net serves raw redirects for curl-style clients; this
+                # also avoids some hosts returning an HTML landing page.
+                "User-Agent": "curl/8.0",
+                "Accept": "*/*",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = resp.read()
+            final_url = resp.geturl()
+            status = getattr(resp, "status", None)
+            content_type = resp.headers.get("content-type")
+        actual_size = len(data)
+        actual_sha256 = hashlib.sha256(data).hexdigest()
+        if actual_size != expected_size or actual_sha256 != expected_sha256:
+            print(
+                f"[lipsync] preflight failed for {host}: expected "
+                f"{expected_size}/{expected_sha256[:12]}, got "
+                f"{actual_size}/{actual_sha256[:12]} ({content_type})"
+            )
+            return None
+        print(
+            f"[lipsync] preflight ok: host={host} status={status} "
+            f"bytes={actual_size} content_type={content_type}"
+        )
+        return {
+            "host": host,
+            "submitted_url": final_url,
+            "landing_url": url,
+            "bytes": actual_size,
+            "sha256": actual_sha256,
+            "content_type": content_type,
+            "status": status,
+        }
+    except Exception as exc:
+        print(f"[lipsync] preflight failed for {host} {file_path.name}: {exc}")
+        return None
+
+
+def upload_to_hosting(file_path: Path) -> dict:
     """
-    Upload a file to temporary hosting for WaveSpeed submission.
-    Tries catbox.moe first (proven working), falls back to uguu.se.
-    Returns public URL or None if all services fail.
+    Upload a file to public hosting and prove the URL returns exact bytes.
+
+    Filebin is first because it redirects to a presigned raw object URL. Catbox
+    remains as fallback. Uguu is last because it is less reliable from Kim's
+    network and WaveSpeed previously failed to fetch the older temp-host URLs.
     """
-    url = _upload_to_catbox(file_path)
-    if url:
-        return url
-    print(f"[lipsync] catbox.moe failed, trying uguu.se fallback...")
-    return _upload_to_uguu(file_path)
+    attempts = (
+        ("filebin.net", _upload_to_filebin),
+        ("catbox.moe", _upload_to_catbox),
+        ("uguu.se", _upload_to_uguu),
+    )
+    failures = []
+    for host, uploader in attempts:
+        url = uploader(file_path)
+        if not url:
+            failures.append(f"{host}: upload failed")
+            continue
+        proof = _preflight_download_url(file_path, url, host=host)
+        if proof:
+            return proof
+        failures.append(f"{host}: preflight failed")
+    raise LipsyncHostingError(
+        "No lipsync input host returned byte-complete public files. "
+        + "; ".join(failures)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -183,10 +297,12 @@ def file_to_data_uri(path: Path, mime_type: str) -> str:
 # ---------------------------------------------------------------------------
 
 LIPSYNC_PAD_START = 0.5  # seconds of silence before speech
-LIPSYNC_PAD_END = 0.5    # seconds of silence after speech
-# LD LIPSYNC_MAX_DURATION_10S_NO_SILENCE_V1 (id=400): ByteDance LatentSync training
-# window is 5-10s. Longer clips cause scene hallucination + Chinese watermark.
-LIPSYNC_MAX_DURATION_SEC = 10.0
+LIPSYNC_PAD_END = 2.5    # seconds of silence after speech (face-return tail, Kim 2026-05-27)
+# SWITCH_TO_KLING_LIPSYNC_20260524: Kling has no ByteDance 10s training window
+# constraint. Raised from 60s to 180s to support Phase B module-level lipsync
+# (full meditations can be 90-150s after silcomp).
+# (LD LIPSYNC_MAX_DURATION_10S_NO_SILENCE_V1 id=400 was ByteDance-specific.)
+LIPSYNC_MAX_DURATION_SEC = 180.0
 
 
 def _find_ffmpeg() -> str | None:
@@ -304,14 +420,18 @@ def pad_audio_for_lipsync(audio_path: Path) -> Path:
 
 class LipSyncClient:
     """
-    WaveSpeed ByteDance LipSync client.
+    WaveSpeed Kling LipSync client. (SWITCH_TO_KLING_LIPSYNC_20260524)
+    Formerly ByteDance LatentSync — switched 2026-05-24.
     Uses curl via subprocess for WaveSpeed API calls because Python's
     urllib hangs on this endpoint (TLS/HTTP version mismatch on macOS).
     curl works instantly on the same machine — confirmed April 16, 2026.
+    API contract: {"video": url, "audio": url}, same polling. A data_uri fallback
+    remains available for provider-side temporary-host fetch failures.
     """
 
     def __init__(self, api_key: str):
         self.api_key = api_key
+        self.last_url_transport_preflight: dict | None = None
 
     @staticmethod
     def _resolve_host(host: str) -> str | None:
@@ -401,16 +521,20 @@ class LipSyncClient:
             if tmp_file and os.path.exists(tmp_file.name):
                 os.unlink(tmp_file.name)
 
-    def submit(self, video_path: Path, audio_path: Path) -> str:
+    def submit(self, video_path: Path, audio_path: Path, *, transport: str = "data_uri") -> str:
         """
         Submit a lip sync job.
 
-        Uses data URIs (base64-encoded files in JSON body) via curl.
-        This works because:
+        transport="data_uri" uses base64-encoded files in JSON body. This works because:
         - curl handles the WaveSpeed TLS connection fine (urllib doesn't)
         - Data URIs avoid the "connection aborted" error that WaveSpeed
           gets when trying to download from catbox.moe/uguu.se
         - A 3.8MB video → ~5.1MB base64 is fine for curl
+
+        transport="url" uploads temporary public URLs and submits those URLs.
+        This matches the current Kling LipSync schema and is required for
+        quality-sensitive O3 voice videos; data URIs have been observed to
+        complete but return degraded 832x464 output from a valid 720p input.
 
         Returns:
             job_id for polling
@@ -420,8 +544,9 @@ class LipSyncClient:
         print(f"[lipsync] Submitting: video={video_path.name} ({video_size} bytes), "
               f"audio={audio_path.name} ({audio_size} bytes)")
 
-        # HARD GUARD — LD LIPSYNC_MAX_DURATION_10S_NO_SILENCE_V1 (id=400)
-        # ByteDance LatentSync max training window = 10s. Longer = scene hallucination + watermark.
+        # SWITCH_TO_KLING_LIPSYNC_20260524: Kling lipsync has no ByteDance 10s training
+        # window constraint (LIPSYNC_MAX_DURATION_SEC raised to 60s).
+        # Soft guard only — warn rather than hard-block.
         result = subprocess.run(
             [_find_ffmpeg() or "ffmpeg", "-v", "error", "-i", str(video_path),
              "-show_entries", "format=duration", "-of", "csv=p=0"],
@@ -432,27 +557,42 @@ class LipSyncClient:
         except ValueError:
             _vid_dur = 0.0
         if _vid_dur > LIPSYNC_MAX_DURATION_SEC:
-            raise ValueError(
-                f"[lipsync] BLOCKED: video is {_vid_dur:.2f}s, exceeds "
-                f"LIPSYNC_MAX_DURATION_SEC={LIPSYNC_MAX_DURATION_SEC}s. "
-                "Use silence-split + passthrough protocol (CLAUDE.md §8.5) — "
-                "split at silence boundaries, submit speaking segments only (each ≤10s), "
-                "passthrough original frames for silent portions."
+            # Log a warning but don't hard-block — Kling's API enforces its
+            # own duration limit. Our LIPSYNC_MAX_DURATION_SEC is a soft
+            # ceiling; if Kling rejects it, the caller gets a real API error.
+            print(
+                f"[lipsync] WARN: video is {_vid_dur:.2f}s, exceeds soft ceiling "
+                f"LIPSYNC_MAX_DURATION_SEC={LIPSYNC_MAX_DURATION_SEC}s — "
+                "submitting anyway; Kling will enforce its own limit.",
+                flush=True,
             )
 
-        # Pad audio with silence at start/end to prevent boundary artifacts
-        padded_audio = pad_audio_for_lipsync(audio_path)
-        self._padded_audio_tmp = padded_audio  # track for cleanup
+        # SWITCH_TO_KLING_LIPSYNC_20260524: pad_audio_for_lipsync was a ByteDance-specific
+        # boundary artifact fix (silence at start/end). Not needed for Kling — use audio_path directly.
 
-        # Build data URIs — embed files directly in the request
-        print(f"[lipsync] Encoding video as data URI...")
-        video_uri = file_to_data_uri(video_path, "video/mp4")
-        print(f"[lipsync] Encoding audio as data URI...")
-        audio_uri = file_to_data_uri(padded_audio, "audio/mpeg")
-
-        body = {"video": video_uri, "audio": audio_uri}
+        if transport == "url":
+            print("[lipsync] Uploading video/audio for URL-based Kling LipSync submission...")
+            video_preflight = upload_to_hosting(video_path)
+            audio_preflight = upload_to_hosting(audio_path)
+            video_uri = video_preflight["submitted_url"]
+            audio_uri = audio_preflight["submitted_url"]
+            self.last_url_transport_preflight = {
+                "video": video_preflight,
+                "audio": audio_preflight,
+            }
+            body = {"video": video_uri, "audio": audio_uri}
+        elif transport == "data_uri":
+            # Build data URIs — embed files directly in the request
+            print(f"[lipsync] Encoding video as data URI...")
+            video_uri = file_to_data_uri(video_path, "video/mp4")
+            print(f"[lipsync] Encoding audio as data URI...")
+            audio_uri = file_to_data_uri(audio_path, "audio/mpeg")
+            self.last_url_transport_preflight = None
+            body = {"video": video_uri, "audio": audio_uri}
+        else:
+            raise ValueError(f"Unknown lipsync transport: {transport}")
         body_size = len(json.dumps(body))
-        print(f"[lipsync] Payload size: {body_size / 1024 / 1024:.1f} MB (data URIs via curl)")
+        print(f"[lipsync] Payload size: {body_size / 1024 / 1024:.1f} MB ({transport} via curl)")
 
         last_error = None
         for attempt in range(MAX_RETRIES):
@@ -574,15 +714,7 @@ class LipSyncClient:
         result = self.poll_until_done(job_id)
         status = (result.get("status") or "").lower()
 
-        # Clean up padded audio temp file
-        padded = getattr(self, "_padded_audio_tmp", None)
-        if padded and padded != audio_path and padded.exists():
-            try:
-                padded.unlink()
-                print(f"[lipsync] Cleaned up temp padded audio")
-            except Exception:
-                pass
-            self._padded_audio_tmp = None
+        # SWITCH_TO_KLING_LIPSYNC_20260524: pad_audio_for_lipsync removed; no temp file cleanup needed.
 
         if status == "completed" and result.get("outputs"):
             url = result["outputs"][0]

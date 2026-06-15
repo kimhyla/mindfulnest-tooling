@@ -111,12 +111,14 @@ Click cue marker → popover anchored to marker:
 └─────────────────────────┘
 ```
 
-**Animation types** (per LD-470 procedural):
+**Animation types** (cue popover — static PNG entrance presets):
 - `fade` — fade in/out
 - `slide_in` — slide from edge
 - `pulse` — opacity pulse
 - `static` — no animation (just appear)
-- `procedural_drift` — gentle drift (LD-470)
+- `procedural_drift` — gentle drift (legacy LD-470 label; static tile only)
+
+**Animate This** (path picker → MP4): see §15 — **LD-823** `WATERCOLOR_ANIMATE_PIL_RENDERER_V1` (PIL center-split rub, not Claude/ffmpeg).
 
 **Delete:** removes cue from `phase_X_watercolor_cues_json` array via `pathappPatch`.
 
@@ -433,3 +435,33 @@ Append findings as §14.
 Total gates now: 18 (was 17).
 
 **End of S5.5f spec v1 (Cursor v8 folded).**
+
+---
+
+## §15 Amendment — Watercolor Animate PIL renderer (2026-05-28)
+
+**Supersedes LD-470 implementation path** (Claude → ffmpeg filter chain). LD-470 remains in registry as historical; active decision is **`WATERCOLOR_ANIMATE_PIL_RENDERER_V1`**.
+
+| Topic | Canonical source |
+|---|---|
+| Encode algorithm | `Production/docs/WATERCOLOR_ANIMATE_PROCEDURAL_TECH_SPEC_v2.md` |
+| Lessons / regression checklist | `Production/docs/LESSONS_LEARNED_20260528_PHASE_B_WATERCOLOR_ANIMATE_V1.md` |
+| Locked decision | Directus `WATERCOLOR_ANIMATE_PIL_RENDERER_V1` |
+| Compositor recipe pin | `WATERCOLOR_OVERLAY_RECIPE_VERSION = wc_v13_hand_only_split` in `ffmpeg_stitch.py` |
+| Handler | `handle_watercolor_animate` in `background.py` |
+
+**`motion_description` contract (Phase B Animate This):**
+
+- User types intent in path picker (e.g. "hands rub briskly with friction").
+- Server parses keywords **deterministically** — NOT sent to Claude.
+- Controls oscillation frequency only (`_osc_freq`: 2.5 / 1.5 / 0.75 Hz); path geometry from `manual_path`.
+- Response includes `osc_freq_hz` and `renderer: PIL center-split rub`.
+
+**Kim verification gate (manual, every animate change):**
+
+1. Hard refresh path picker / producer after deploy.
+2. Re-run **Animate This** on the watercolor (old MP4s are stale).
+3. **Preview with Overlay** at cue time — frame must not shear; hands rub as opposite halves; no magenta holes under hands.
+
+**Registration:** `python3 Production/scripts/register_watercolor_animate_v2_20260528.py`
+

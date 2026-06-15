@@ -6,13 +6,12 @@
 // Session 1 ships read-only preview. ZERO mutation calls. The single mutation
 // channel pathappPatch() exists in src/api/client.ts but has no callers.
 
-import { signal } from '@preact/signals';
-import { useEffect } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
+import { effect } from '@preact/signals';
 import { ScopeBoundary } from './components/ScopeBoundary';
 import { ScopeBanner } from './components/ScopeBanner';
 import { ToastHost } from './components/ui/Toast';
-import { TabBar, TABS, ACTIVE_TAB_STORAGE_KEY, type TabKey } from './components/TabBar';
-import { StoryboardTab } from './components/StoryboardTab';
+import { TabBar } from './components/TabBar';
 import { BgTab } from './components/BgTab';
 import { CropperModal } from './components/CropperModal';
 import { cropperState } from './state/cropper';
@@ -26,36 +25,60 @@ import { VideoSelector } from './components/VideoSelector';
 import { PhaseATab } from './components/tabs/PhaseATab';
 import { PhaseBTab } from './components/tabs/PhaseBTab';
 import { activeScope, activeProjectType, scopeKey } from './state/scope';
+import { activeTab } from './state/refreshSignals';
+import { ServerRehydrateWatcher } from './components/ServerRehydrateWatcher';
+import { StoryboardTab } from './components/StoryboardTab';
+import { stopAllPhasePlayback } from './utils/waveformPlaybackBus';
 import './app.css';
 
-function readStoredActiveTab(): TabKey {
-  try {
-    const raw = sessionStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
-    if (raw && raw !== 'cropper' && TABS.some((t) => t.key === raw)) return raw as TabKey;
-  } catch {
-    // ignore
+export { stitcherRefreshTick, serverRehydrateTick } from './state/refreshSignals';
+
+/** Phase A/B producers stay mounted (hidden) so lipsync polling never dies on tab switch. */
+function PhaseTabsKeepAlive({ visibleTab }: { visibleTab: string }) {
+  if (activeProjectType.value !== 'event') {
+    if (visibleTab === 'phase_a') return <PhaseATab />;
+    if (visibleTab === 'phase_b') return <PhaseBTab />;
+    return null;
   }
-  return 'storyboard';
+  return (
+    <>
+      <div
+        class="mn-tab-pane-keepalive"
+        hidden={visibleTab !== 'phase_a'}
+        data-testid="pane-phase-a-keepalive"
+      >
+        <PhaseATab />
+      </div>
+      <div
+        class="mn-tab-pane-keepalive"
+        hidden={visibleTab !== 'phase_b'}
+        data-testid="pane-phase-b-keepalive"
+      >
+        <PhaseBTab />
+      </div>
+    </>
+  );
 }
 
-// Top-level signals — cross-tab UI state lives here, NOT in any component
-// closure. This keeps state explicit and inspectable. activeTab is exported
-// so cross-cutting components (e.g. LibraryPanel per LD-682
-// STITCHER_LIBRARY_DEFAULT_SFX_TIER_V1) can react to tab transitions.
-export const activeTab = signal<TabKey>(readStoredActiveTab());
 function ActivePane() {
-  switch (activeTab.value) {
+  const tab = activeTab.value;
+  const isEvent = activeProjectType.value === 'event';
+  const phaseVisible =
+    tab === 'phase_a' || tab === 'phase_b' ? tab : '';
+
+  let main = null as preact.JSX.Element | null;
+  switch (tab) {
     case 'storyboard':
-      return <StoryboardTab />;
+      main = <StoryboardTab />;
+      break;
     case 'bg':
-      return <BgTab />;
+      main = <BgTab />;
+      break;
     case 'cropper':
-      // Cropper "tab" presents as a tab AND can open as a modal from
-      // Storyboard/BG. When on the Cropper tab itself, ensure the modal is open.
       if (!cropperState.value.open) {
         cropperState.value = { ...cropperState.value, open: true };
       }
-      return (
+      main = (
         <section class="mn-tab-pane mn-cropper-pane" data-testid="pane-cropper">
           <header class="mn-pane-header">
             <h2>Cropper</h2>
@@ -67,20 +90,65 @@ function ActivePane() {
           </p>
         </section>
       );
+      break;
     case 'stitcher':
-      return <StitcherTab />;
-    case 'phase_a':
-      return <PhaseATab />;
-    case 'phase_b':
-      return <PhaseBTab />;
+      main = <StitcherTab />;
+      break;
     case 'map':
-      return <ProductionMapTab />;
+      main = <ProductionMapTab />;
+      break;
+    case 'phase_a':
+    case 'phase_b':
+      main = null;
+      break;
     default:
-      return <p class="mn-warn">Unknown tab</p>;
+      main = <p class="mn-warn">Unknown tab</p>;
   }
+
+  return (
+    <>
+      {isEvent ? <PhaseTabsKeepAlive visibleTab={phaseVisible} /> : null}
+      {!isEvent && tab === 'phase_a' ? <PhaseATab /> : null}
+      {!isEvent && tab === 'phase_b' ? <PhaseBTab /> : null}
+      {main}
+    </>
+  );
 }
 
 export function App() {
+  const [buildSha, setBuildSha] = useState('');
+
+  useEffect(() => {
+    setBuildSha(
+      document.querySelector('meta[name="build-sha"]')?.getAttribute('content') ?? '?',
+    );
+    // Page load: silence every keep-alive waveform + preview before tabs mount.
+    stopAllPhasePlayback();
+  }, []);
+
+  // Stop ghost audio on tab change — never call effect() during render (leaks + stops play).
+  const prevTabRef = useRef(activeTab.value);
+  useEffect(() => {
+    const dispose = effect(() => {
+      const tab = activeTab.value;
+      if (tab === 'stitcher') {
+        stopAllPhasePlayback();
+      }
+      if (tab === prevTabRef.current) return;
+      prevTabRef.current = tab;
+      stopAllPhasePlayback();
+    });
+    return dispose;
+  }, []);
+
+  useEffect(() => {
+    const onHidden = () => {
+      if (document.hidden) stopAllPhasePlayback();
+    };
+    document.addEventListener('visibilitychange', onHidden);
+    return () => document.removeEventListener('visibilitychange', onHidden);
+  }, []);
+
   // S4 — Production Map cell click → switch to Storyboard tab.
   useEffect(() => {
     const onMapNavigate = () => {
@@ -92,13 +160,30 @@ export function App() {
   return (
     <ScopeBoundary>
       <div class="mn-app" data-testid="app-root">
+        <ServerRehydrateWatcher />
         <ScopeBanner />
         <ToastHost />
         <header class="mn-app-header">
           <h1>Storyboard v2</h1>
           <span class="mn-app-subhead" data-testid="app-subhead">
             Path C rewrite &middot; Session 4 v3.1 — full producer wiring + animate + stitcher complete
+            {buildSha ? (
+              <>
+                {' '}
+                &middot; build{' '}
+                <span data-testid="app-build-sha">{buildSha}</span>
+              </>
+            ) : null}
           </span>
+          <button
+            type="button"
+            class="mn-btn mn-btn-stop-audio"
+            data-testid="stop-all-audio-btn"
+            title="Stop waveform, Stitcher preview, and library preview audio"
+            onClick={() => stopAllPhasePlayback()}
+          >
+            Stop audio
+          </button>
           <ProjectSelector />
           {/* CC-9: hide VideoSelector in milestone scope — milestones have no
               per-video-role partitioning; their content is the single

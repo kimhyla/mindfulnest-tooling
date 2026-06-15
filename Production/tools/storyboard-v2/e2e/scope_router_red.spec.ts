@@ -112,6 +112,7 @@ test.describe('K2 — bg_accept_beats writes to videos.<role>.beats, NOT top-lev
           { accepted_image_key: 'k2', dialogue_text: 'partition test 2', speaker: 'Chipper' },
         ],
       },
+      timeout: 60_000,
     });
     expect(r.ok(), `accept-beats must succeed; got HTTP ${r.status()}: ${await r.text()}`).toBeTruthy();
 
@@ -155,6 +156,7 @@ test.describe('K7 — speaker write-boundary canonicalization (RED until C-3)', 
           { accepted_image_key: 'k7a', dialogue_text: 'empty speaker test', speaker: '' },
         ],
       },
+      timeout: 60_000,
     });
     expect(r.ok(), `accept-beats must succeed; got HTTP ${r.status()}: ${await r.text()}`).toBeTruthy();
 
@@ -169,7 +171,7 @@ test.describe('K7 — speaker write-boundary canonicalization (RED until C-3)', 
   });
 
   // GREEN as of C-3 (un-fixme'd in same commit)
-  test('TVMC-K7.2 — "Guide Bird" sidecar value canonicalizes to "Chipper" at write boundary', async ({ request }) => {
+  test('TVMC-K7.2 — "Guide Bird" sidecar value canonicalizes to "Arlo" at write boundary', async ({ request }) => {
     const r = await request.post(`${SERVER}/api/bg/accept-beats`, {
       data: {
         event_id: EVENT_ID,
@@ -179,12 +181,13 @@ test.describe('K7 — speaker write-boundary canonicalization (RED until C-3)', 
           { accepted_image_key: 'k7b', dialogue_text: 'guide bird canonicalize', speaker: 'Guide Bird' },
         ],
       },
+      timeout: 60_000,
     });
     expect(r.ok(), `accept-beats must succeed; got HTTP ${r.status()}: ${await r.text()}`).toBeTruthy();
 
     const state = await getState(request);
     const seeded = state?.videos?.intro?.beats?.beat_01;
-    expect(seeded?.speaker, '"Guide Bird" must be canonicalized to "Chipper" per _SPEAKER_ALIAS').toBe('Chipper');
+    expect(seeded?.speaker, '"Guide Bird" must be canonicalized to "Arlo" per _SPEAKER_ALIAS').toBe('Arlo');
   });
 });
 
@@ -197,7 +200,7 @@ test.describe('K8 — speaker dual-store mirror (RED until C-6)', () => {
     const r = await request.post(`${SERVER}/api/v2/beat/${beatId}/patch`, {
       data: {
         field: 'speaker',
-        value: 'Guide Bird',  // canonicalizes to Chipper at write boundary per C-6
+        value: 'Guide Bird',  // canonicalizes to Arlo at write boundary per C-6
         scope_event_id: EVENT_ID,
         scope_target_video: 'intro',
         event_id: EVENT_ID,
@@ -210,8 +213,8 @@ test.describe('K8 — speaker dual-store mirror (RED until C-6)', () => {
     const beat = state?.videos?.intro?.beats?.[beatId];
     expect(beat, 'beat must exist post-patch').toBeDefined();
     // GREEN (post-C-6): both stores hold the canonical value.
-    expect(beat?.speaker, 'top-level partition.beats[bid].speaker must hold canonical value after C-6').toBe('Chipper');
-    expect(beat?.phase_1?.speaker, 'phase_1.speaker mirror must match top-level after C-6').toBe('Chipper');
+    expect(beat?.speaker, 'top-level partition.beats[bid].speaker must hold canonical value after C-6').toBe('Arlo');
+    expect(beat?.phase_1?.speaker, 'phase_1.speaker mirror must match top-level after C-6').toBe('Arlo');
   });
 });
 

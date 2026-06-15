@@ -62,7 +62,7 @@ class TrimVideoHonorsTrimStart(unittest.TestCase):
             self.assertLess(ss_idx, i_idx, f"-ss must precede -i: {cmd}")
             # value is trim_start
             self.assertEqual(cmd[ss_idx + 1], "5.100")
-            # duration = min(audio+0.4, window_len=4.9, remaining=4.94) = 4.9
+            # duration = min(audio+TARGET_TAIL, window_len=4.9, remaining=4.94) = 4.9
             t_idx = cmd.index("-t")
             self.assertEqual(cmd[t_idx + 1], "4.900")
             self.assertAlmostEqual(actual, 4.9, places=3)
@@ -80,7 +80,7 @@ class TrimVideoHonorsTrimEnd(unittest.TestCase):
         try:
             with mock.patch.object(PS, "_ffprobe_duration", return_value=10.0), \
                  mock.patch.object(PS.subprocess, "run") as mrun:
-                # audio 5.2 + 0.4 = 5.6; window 2.0→5.0 = 3.0 → actual=3.0
+                # audio 5.2 + TARGET(3.0) = 8.2; window 2.0→5.0 = 3.0 → actual=3.0
                 _, actual, _, _ = PS._trim_video_to_audio(
                     Path("/tmp/src.mp4"), Path("/tmp/dst.mp4"),
                     audio_duration_s=5.2,
@@ -98,13 +98,14 @@ class TrimVideoHonorsTrimEnd(unittest.TestCase):
         try:
             with mock.patch.object(PS, "_ffprobe_duration", return_value=10.0), \
                  mock.patch.object(PS.subprocess, "run") as mrun:
-                # audio 2.0 + 0.4 = 2.4; window 1.0→9.0 = 8.0 → actual=2.4
+                # audio 2.0 + TARGET(3.0) = 5.0; window 1.0→9.0 = 8.0 → actual=5.0
                 _, actual, _, _ = PS._trim_video_to_audio(
                     Path("/tmp/src.mp4"), Path("/tmp/dst.mp4"),
                     audio_duration_s=2.0,
                     trim_start=1.0, trim_end=9.0,
                 )
-            self.assertAlmostEqual(actual, 2.4, places=3)
+            target = 2.0 + PS._VIDEO_TRIM_TAILROOM_TARGET_S
+            self.assertAlmostEqual(actual, target, places=3)
         finally:
             _disarm_alarm()
 
@@ -117,18 +118,18 @@ class TrimVideoDefaultsPreserveBackcompat(unittest.TestCase):
         try:
             with mock.patch.object(PS, "_ffprobe_duration", return_value=10.0), \
                  mock.patch.object(PS.subprocess, "run") as mrun:
-                # Old: actual = min(5.2+0.4, 10) = 5.6
-                # New w/ defaults: effective_end=10, window=10, remaining=10 → 5.6
+                # actual = min(5.2+TARGET(3.0), window=10, remaining=10) = 8.2
                 _, actual, ts, te = PS._trim_video_to_audio(
                     Path("/tmp/src.mp4"), Path("/tmp/dst.mp4"),
                     audio_duration_s=5.2,
                 )
-            self.assertAlmostEqual(actual, 5.6, places=3)
+            target = 5.2 + PS._VIDEO_TRIM_TAILROOM_TARGET_S
+            self.assertAlmostEqual(actual, target, places=3)
             self.assertEqual(ts, 0.0)
             self.assertEqual(te, 10.0)
             cmd = mrun.call_args[0][0]
             self.assertEqual(cmd[cmd.index("-ss") + 1], "0.000")
-            self.assertEqual(cmd[cmd.index("-t") + 1], "5.600")
+            self.assertEqual(cmd[cmd.index("-t") + 1], f"{target:.3f}")
         finally:
             _disarm_alarm()
 
@@ -150,9 +151,12 @@ class TrimVideoDefaultsPreserveBackcompat(unittest.TestCase):
 class WindowInsufficientFailsLoudInCaller(unittest.TestCase):
     """Caller (_handle_lipsync_submit) must HTTP 400 when audio+tailroom > window.
 
-    We exercise the logic path by instantiating the real handler class against
-    a stub app + state and asserting the 400 body. This also doubles as an
-    integration smoke for the new validation block.
+    LD LIPSYNC_TRIM_WINDOW_HONORED_20260419 is LOCKED — the guard at
+    vendor_jobs.py:257-282 prevents wasted ByteDance submissions ($0.15 each
+    + Chinese watermark per LD-400). This test asserts that guard fires.
+
+    P5 (2026-05-19): un-skipped. Mock surface updated for LD-461 _assert_event_scope
+    (requires .command + .path) + v3 partition state shape.
     """
 
     def _make_handler(self, beats_state, clip_dur=10.0, audio_dur=5.2):
@@ -161,13 +165,24 @@ class WindowInsufficientFailsLoudInCaller(unittest.TestCase):
         app = mock.MagicMock()
         app.client = mock.MagicMock()  # not None → passes early guard
         app.client.api_key = "test_key"
-        app.state.read_state.return_value = {"beats": beats_state}
+        # P5 (2026-05-19): v3 partition state shape per LD-461.
+        app.state.read_state.return_value = {
+            "event_id": "M1E1",
+            "videos": {"intro": {"beats": beats_state, "display_order": list(beats_state.keys())}},
+        }
         app.state.read_spend.return_value = {"budget_remaining": 100.0}
         app.state.clips_dir = Path("/tmp/clips")
-        app.event_dir = Path("/tmp/event")
+        app.event_dir = Path("/tmp/event/M1E1")
         app.event_id = "M1E1"
+        app.event_generation = 1
         handler.server = mock.MagicMock()
         handler.server.app = app
+        # P5 (2026-05-19): LD-461 _assert_event_scope reads self.command / self.path
+        # on the handler. Set them so the scope-guard's 409-error log path doesn't AttributeError.
+        handler.command = "POST"
+        handler.path = "/api/lipsync"
+        handler.headers = mock.MagicMock()
+        handler.headers.get = lambda key, default=None: default
         # capture _send_json calls
         handler._send_json = mock.MagicMock(
             side_effect=lambda code, body: ("SENT", code, body)
@@ -177,37 +192,57 @@ class WindowInsufficientFailsLoudInCaller(unittest.TestCase):
     def test_audio_exceeds_trim_window_returns_400(self):
         _alarm()
         try:
+            # P5 migration (2026-05-19): v3 partition shape so LD-461
+            # scope_video_role validator finds the beat.
             beats = {
                 "beat_07": {
                     "phase_1": {
                         "selected_option": 1,
                         "options": [{"file": "x.mp4"}],
                         "trim_start": 2.0,
-                        "trim_end": 4.0,  # 2.0s window — audio 5.2+0.4 won't fit
+                        "trim_end": 4.0,  # 2.0s window — audio 5.2 won't fit raw 5s clip
                     },
                     "lipsync": None,
                 }
             }
             handler = self._make_handler(beats)
+            # Override handler state to be v3-partitioned
+            handler.server.app.state.read_state.return_value = {
+                "videos": {"intro": {"beats": beats, "display_order": ["beat_07"]}}
+            }
+            # P5 (2026-05-19): the lipsync handler now lives in
+            # server_handlers/vendor_jobs.py which imports _find_beat_audio,
+            # _silcomp_audio, _ffprobe_duration via `from production_server`.
+            # mock.patch.object(PS, ...) only changes the PS attribute, not
+            # the bound name in vendor_jobs. Patch BOTH so either resolution
+            # path catches the mock.
+            from server_handlers import vendor_jobs as VJ
             with mock.patch("pathlib.Path.is_file", return_value=True), \
-                 mock.patch.object(PS, "_find_beat_audio",
+                 mock.patch.object(VJ, "_find_beat_audio",
                                    return_value=Path("/tmp/audio.mp3")), \
-                 mock.patch.object(PS, "_silcomp_audio",
+                 mock.patch.object(VJ, "_silcomp_audio",
                                    return_value=(Path("/tmp/audio_sc.mp3"),
                                                  {"applied": False,
                                                   "reason": "no_silences",
                                                   "source_duration_s": 5.2,
                                                   "compressed_duration_s": 5.2,
                                                   "silences_compressed": []})), \
-                 mock.patch.object(PS, "_ffprobe_duration", return_value=10.0):
-                handler._handle_lipsync_submit({"beat": "beat_07"})
+                 mock.patch.object(VJ, "_ffprobe_duration", return_value=5.0):
+                # LD-461 + LD-474: scope_event_id + scope_video_role required.
+                # raw_dur=5.0 prevents auto-extend (extended=7.2 > raw_dur).
+                handler._handle_lipsync_submit({
+                    "beat": "beat_07",
+                    "scope_event_id": "M1E1",
+                    "scope_video_role": "intro",
+                })
 
             called_code = handler._send_json.call_args[0][0]
             called_body = handler._send_json.call_args[0][1]
             self.assertEqual(called_code, 400)
             self.assertIn("audio exceeds trim window", called_body.get("error", ""))
             self.assertEqual(called_body.get("trim_window_s"), 2.0)
-            self.assertAlmostEqual(called_body.get("needed_s"), 5.6, places=2)
+            need = 5.2 + PS._VIDEO_TRIM_TAILROOM_S
+            self.assertAlmostEqual(called_body.get("needed_s"), need, places=2)
         finally:
             _disarm_alarm()
 
@@ -216,20 +251,28 @@ class RetryResetsTaskIdAndSubmittedAt(unittest.TestCase):
     """On retry (existing lipsync with status in {submitting, polling, failed,
     completed}), init_lipsync must: clear task_id / submitted_at /
     submitted_at_epoch; increment retries; preserve prior task_id into
-    superseded_task_ids[] for audit."""
+    superseded_task_ids[] for audit.
+
+    P5 (2026-05-19): un-skipped. Mock surface updated for LD-461 + LD-474.
+    """
 
     def _exercise_init_lipsync(self, existing_lipsync):
         """Run just the init_lipsync mutation with a synthetic state."""
+        # P5 (2026-05-19): v3 partition shape
         state = {
-            "beats": {
-                "beat_07": {
-                    "phase_1": {
-                        "selected_option": 1,
-                        "options": [{"file": "x.mp4"}],
-                    },
-                    "lipsync": existing_lipsync,
-                }
-            }
+            "event_id": "M1E1",
+            "videos": {"intro": {
+                "beats": {
+                    "beat_07": {
+                        "phase_1": {
+                            "selected_option": 1,
+                            "options": [{"file": "x.mp4"}],
+                        },
+                        "lipsync": existing_lipsync,
+                    }
+                },
+                "display_order": ["beat_07"],
+            }},
         }
         # Inline re-implementation of init_lipsync (mirrors the code). We
         # cannot easily extract it from _handle_lipsync_submit (closure), so
@@ -243,45 +286,63 @@ class RetryResetsTaskIdAndSubmittedAt(unittest.TestCase):
         app.state.read_state.return_value = state
         app.state.read_spend.return_value = {"budget_remaining": 100.0}
         app.state.clips_dir = Path("/tmp/clips")
-        app.event_dir = Path("/tmp/event")
+        app.event_dir = Path("/tmp/event/M1E1")
         app.event_id = "M1E1"
+        app.event_generation = 1
 
-        captured_state = {"beats": {k: dict(v) for k, v in state["beats"].items()}}
-        # Also give the beat the same lipsync dict by reference so mutate works
-        captured_state["beats"]["beat_07"]["lipsync"] = (
+        # P5 (2026-05-19): mutate via v3 partition path. mutate_video_state
+        # passes the partition dict to mut(). mutate_state passes full state.
+        # The lipsync init code path uses mutate_video_state for v3 partitions.
+        captured_state = state  # by-reference so mutations show
+        captured_state["videos"]["intro"]["beats"]["beat_07"]["lipsync"] = (
             dict(existing_lipsync) if existing_lipsync else None
         )
 
         def mutate(fn):
-            result = fn(captured_state)
-            return result
+            return fn(captured_state)
+        def mutate_video(role, fn):
+            partition = captured_state["videos"][role]
+            return fn(partition)
         app.state.mutate_state.side_effect = mutate
+        app.state.mutate_video_state.side_effect = mutate_video
         handler.server = mock.MagicMock()
         handler.server.app = app
+        # LD-461 .command/.path
+        handler.command = "POST"
+        handler.path = "/api/lipsync"
+        handler.headers = mock.MagicMock()
+        handler.headers.get = lambda key, default=None: default
         handler._send_json = mock.MagicMock(
             side_effect=lambda code, body: ("SENT", code, body)
         )
 
         # Submit will try to spawn a lipsync thread — short-circuit it.
+        # P5 (2026-05-19): vendor_jobs.py imports helpers from production_server
+        # — patch at the vendor_jobs name binding.
+        from server_handlers import vendor_jobs as VJ
         with mock.patch("pathlib.Path.is_file", return_value=True), \
-             mock.patch.object(PS, "_find_beat_audio",
+             mock.patch.object(VJ, "_find_beat_audio",
                                return_value=Path("/tmp/audio.mp3")), \
-             mock.patch.object(PS, "_silcomp_audio",
+             mock.patch.object(VJ, "_silcomp_audio",
                                return_value=(Path("/tmp/audio_sc.mp3"),
                                              {"applied": False,
                                               "reason": "no_silences",
                                               "source_duration_s": 3.0,
                                               "compressed_duration_s": 3.0,
                                               "silences_compressed": []})), \
-             mock.patch.object(PS, "_ffprobe_duration", return_value=10.0), \
-             mock.patch.object(PS, "_trim_video_to_audio",
+             mock.patch.object(VJ, "_ffprobe_duration", return_value=10.0), \
+             mock.patch.object(VJ, "_trim_video_to_audio",
                                return_value=(Path("/tmp/trim.mp4"), 3.4, 0.0, 10.0)), \
-             mock.patch.object(PS, "_async_log_lipsync_submit"), \
-             mock.patch.object(PS.threading, "Thread") as mthread, \
-             mock.patch.object(PS, "LipSyncClient"):
+             mock.patch.object(VJ, "_async_log_lipsync_submit", create=True), \
+             mock.patch("threading.Thread") as mthread, \
+             mock.patch.object(VJ, "LipSyncClient", create=True):
             mthread.return_value.start.return_value = None
-            handler._handle_lipsync_submit({"beat": "beat_07"})
-        return captured_state["beats"]["beat_07"]["lipsync"]
+            handler._handle_lipsync_submit({
+                "beat": "beat_07",
+                "scope_event_id": "M1E1",
+                "scope_video_role": "intro",
+            })
+        return captured_state["videos"]["intro"]["beats"]["beat_07"]["lipsync"]
 
     def test_retry_resets_task_id_and_submitted_at(self):
         _alarm()

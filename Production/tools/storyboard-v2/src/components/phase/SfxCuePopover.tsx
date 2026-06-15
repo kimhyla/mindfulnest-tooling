@@ -22,6 +22,8 @@ export interface SfxCue {
   source_path: string;
   name?: string;
   offset_ms: number;
+  /** Playback window on the slot timeline (ms). Default 3000 at drop time. */
+  duration_ms?: number;
   volume: number;
   fadein_ms: number;
   fadeout_ms: number;
@@ -134,6 +136,12 @@ export function SfxCuePopover({ cue, anchor, onPatch, onDelete, onClose }: SfxCu
         <span>Offset</span>
         <span>{(cue.offset_ms / 1000).toFixed(2)}s</span>
       </div>
+      {cue.duration_ms != null && cue.duration_ms > 0 ? (
+        <div class="mn-cue-popover-row mn-dim">
+          <span>Duration</span>
+          <span>{(cue.duration_ms / 1000).toFixed(2)}s</span>
+        </div>
+      ) : null}
       <div class="mn-cue-popover-footer">
         <button
           type="button"

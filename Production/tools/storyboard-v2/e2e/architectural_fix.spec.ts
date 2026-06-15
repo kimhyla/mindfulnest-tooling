@@ -28,39 +28,59 @@ async function gotoApp(page: Page): Promise<void> {
   await expect(page.locator('[data-testid="app-root"]')).toBeVisible();
 }
 
+const FIXTURE_EVENT = 'Event_e2e_fixture';
+const CANONICAL_STITCH_JOB = `${FIXTURE_EVENT}_stitch`;
+
+const DEFAULT_CANONICAL_TRANSITIONS = [
+  { after_slot: 0, kind: 'dissolve', fade_ms: 2800, audio_xfade_ms: 0 },
+  { after_slot: 1, kind: 'dissolve', fade_ms: 2800, audio_xfade_ms: 0 },
+  { after_slot: 2, kind: 'dissolve', fade_ms: 2800, audio_xfade_ms: 0 },
+];
+
 // Mock the stitcher /jobs (list) and /job/<name> (detail) so StitcherTab
 // renders an active job with slots and the buttons are enabled.
 async function mockStitcherJob(
   page: Page,
   jobName = 'phase_a_Event_e2e_fixture',
 ): Promise<void> {
+  const slots = {
+    intro: { video_path: '/abs/path/intro.mp4', video_dur_ms: 30000, ambient_bed: '', sfx_cues: [] },
+    phase_a: { video_path: '/abs/path/phase_a.mp4', video_dur_ms: 60000, ambient_bed: '', sfx_cues: [] },
+    phase_b: { video_path: '/abs/path/phase_b.mp4', video_dur_ms: 45000, ambient_bed: '', sfx_cues: [] },
+    resolution: { video_path: '/abs/path/resolution.mp4', video_dur_ms: 30000, ambient_bed: '', sfx_cues: [] },
+  };
+  const transitions = DEFAULT_CANONICAL_TRANSITIONS;
+  const fulfillJob = async (
+    route: Parameters<Parameters<Page['route']>[1]>[0],
+    name: string,
+  ) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        name,
+        job: { name, slots, transitions },
+      }),
+    });
+  };
   await page.route('**/api/stitch_editor/jobs', async (r) => {
     await r.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
         ok: true,
-        jobs: [{ name: jobName, created_at: 0, updated_at: 0, slot_count: 4 }],
+        jobs: [
+          { name: CANONICAL_STITCH_JOB, created_at: 0, updated_at: 0, slot_count: 4 },
+          { name: jobName, created_at: 0, updated_at: 0, slot_count: 4 },
+        ],
       }),
     });
   });
-  await page.route(`**/api/stitch_editor/job/${jobName}`, async (r) => {
-    await r.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        ok: true,
-        name: jobName,
-        job: {
-          name: jobName,
-          slots: {
-            intro: { video_path: '/abs/path/intro.mp4', ambient_bed: '' },
-          },
-          transitions: [],
-        },
-      }),
-    });
-  });
+  await page.route(`**/api/stitch_editor/job/${CANONICAL_STITCH_JOB}`, (r) =>
+    fulfillJob(r, CANONICAL_STITCH_JOB),
+  );
+  await page.route(`**/api/stitch_editor/job/${jobName}`, (r) => fulfillJob(r, jobName));
 }
 
 // Mock /api/video/list so VideoSelector mounts with predictable options.
@@ -227,6 +247,7 @@ test.describe('AF.1 — StitcherTab mutation channel (F-S2-001)', () => {
     await page.click('[data-testid="tab-stitcher"]');
     const ambientSelect = page.locator('[data-testid="stitcher-amb-intro"]');
     await expect(ambientSelect).toBeVisible();
+    await expect(ambientSelect).toBeEnabled({ timeout: 10_000 });
     // Wait for the fetched preset option to appear before selecting.
     await expect(
       ambientSelect.locator(`option[value="${ambientPresetId}"]`),
@@ -234,19 +255,31 @@ test.describe('AF.1 — StitcherTab mutation channel (F-S2-001)', () => {
     await ambientSelect.selectOption(ambientPresetId);
 
     await expect.poll(() => saveJobReqs.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
+    await expect.poll(() => saveJobReqs.some((req) => {
+      const slots = (req.postDataJSON() as Record<string, unknown>)['slots'] as
+        | Record<string, { ambient_bed?: string }>
+        | undefined;
+      return slots?.intro?.ambient_bed === ambientPresetId;
+    }), { timeout: 5_000 }).toBe(true);
+    const ambientSaveIdx = saveJobReqs.findIndex((req) => {
+      const slots = (req.postDataJSON() as Record<string, unknown>)['slots'] as
+        | Record<string, { ambient_bed?: string }>
+        | undefined;
+      return slots?.intro?.ambient_bed === ambientPresetId;
+    });
     await expect.poll(() => snapReqs.length).toBeGreaterThanOrEqual(1);
     const tSnap = snapReqs[0]!.timing().startTime;
-    const tSave = saveJobReqs[0]!.timing().startTime;
+    const tSave = saveJobReqs[ambientSaveIdx]!.timing().startTime;
     expect(tSnap).toBeLessThanOrEqual(tSave);
 
-    const body = saveJobReqs[0]!.postDataJSON() as Record<string, unknown>;
+    const body = saveJobReqs[ambientSaveIdx]!.postDataJSON() as Record<string, unknown>;
     expect(body['event_id']).toBeDefined();
     expect(body['scope_event_id']).toBeDefined();
     expect(body['scope_target_video']).toBe('intro');
     expect(body['scope_video_role']).toBe('intro');
     expect(typeof body['scope_version']).toBe('number');
-    expect(body['ambient_bed']).toBe(ambientPresetId);
-    expect(body['slot']).toBe('intro');
+    const slots = body['slots'] as Record<string, { ambient_bed?: string }>;
+    expect(slots?.intro?.ambient_bed).toBe(ambientPresetId);
   });
 
   test('AF.1.4 — Preview HTTP 409 → emits mn:scope-mismatch window event (LD-456)', async ({ page }) => {
@@ -258,7 +291,13 @@ test.describe('AF.1 — StitcherTab mutation channel (F-S2-001)', () => {
       await r.fulfill({
         status: 409,
         contentType: 'application/json',
-        body: JSON.stringify({ error: 'scope_mismatch', expected: 'X', got: 'Y' }),
+        body: JSON.stringify({
+          ok: false,
+          error_code: 'SCOPE_MISMATCH',
+          error_message: 'scope_event_id mismatch',
+          retry_safe: false,
+          hint: 'Reload the tab to re-resolve.',
+        }),
       });
     });
 
@@ -287,8 +326,8 @@ test.describe('AF.1 — StitcherTab mutation channel (F-S2-001)', () => {
       () =>
         (window as unknown as { __mn_mismatch?: Array<Record<string, unknown>> }).__mn_mismatch?.[0],
     );
-    expect((detail as Record<string, unknown>)['endpoint']).toBe('stitch_preview');
-    expect((detail as Record<string, unknown>)['status']).toBe(409);
+    expect((detail as Record<string, unknown>)['error_code']).toBe('SCOPE_MISMATCH');
+    expect((detail as Record<string, unknown>)['error_message']).toBe('scope_event_id mismatch');
   });
 
   test('AF.1.5 — Bake HTTP 423 → re-hydrate v2 event-state + retry once succeeds (LD-458/460)', async ({ page }) => {

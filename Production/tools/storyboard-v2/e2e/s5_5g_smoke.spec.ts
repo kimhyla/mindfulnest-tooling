@@ -86,38 +86,61 @@ const DEFAULT_SLOTS: Record<string, MockSlot> = {
   },
 };
 
+const CANONICAL_STITCH_JOB = `${FIXTURE_EVENT}_stitch`;
+
+const DEFAULT_CANONICAL_TRANSITIONS = [
+  { after_slot: 0, kind: 'dissolve', fade_ms: 2800, audio_xfade_ms: 0 },
+  { after_slot: 1, kind: 'dissolve', fade_ms: 2800, audio_xfade_ms: 0 },
+  { after_slot: 2, kind: 'dissolve', fade_ms: 2800, audio_xfade_ms: 0 },
+];
+
 /**
  * Mock /api/stitch_editor/jobs (list summary) + /api/stitch_editor/job/<name>
  * (full detail) so StitcherTab renders with all 4 slots populated.
+ *
+ * StitcherTab prefers `${event_id}_stitch` over legacy phase_* jobs — mock both
+ * so Playwright never reads the real server's empty canonical row from disk.
  */
 async function mockStitcherJob(
   page: Page,
   opts: { slots?: Record<string, MockSlot>; transitions?: Array<Record<string, unknown>> } = {},
 ): Promise<void> {
-  const jobName = 'phase_a_Event_e2e_fixture';
+  const legacyJobName = 'phase_a_Event_e2e_fixture';
   const slots = opts.slots ?? DEFAULT_SLOTS;
-  const transitions = opts.transitions ?? [];
+  const transitions = opts.transitions ?? DEFAULT_CANONICAL_TRANSITIONS;
+  const fulfillJob = async (
+    route: Parameters<Parameters<Page['route']>[1]>[0],
+    name: string,
+  ) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        name,
+        job: { name, slots, transitions },
+      }),
+    });
+  };
   await page.route('**/api/stitch_editor/jobs', async (r) => {
     await r.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
         ok: true,
-        jobs: [{ name: jobName, created_at: 0, updated_at: 0, slot_count: 4 }],
+        jobs: [
+          { name: CANONICAL_STITCH_JOB, created_at: 0, updated_at: 0, slot_count: 4 },
+          { name: legacyJobName, created_at: 0, updated_at: 0, slot_count: 4 },
+        ],
       }),
     });
   });
-  await page.route(`**/api/stitch_editor/job/${jobName}`, async (r) => {
-    await r.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        ok: true,
-        name: jobName,
-        job: { name: jobName, slots, transitions },
-      }),
-    });
-  });
+  await page.route(`**/api/stitch_editor/job/${CANONICAL_STITCH_JOB}`, (r) =>
+    fulfillJob(r, CANONICAL_STITCH_JOB),
+  );
+  await page.route(`**/api/stitch_editor/job/${legacyJobName}`, (r) =>
+    fulfillJob(r, legacyJobName),
+  );
 }
 
 async function mockSnapshot(page: Page): Promise<void> {
@@ -155,6 +178,34 @@ async function mockTimelineCues(page: Page): Promise<void> {
   });
 }
 
+async function mockStitchPreviewAndBoundaries(page: Page): Promise<void> {
+  await page.route('**/api/stitch_editor/preview', async (r) => {
+    await r.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        preview_url: 'http://localhost:5111/api/stitch_editor/preview_file/mock_preview',
+        slot_durations: [30000, 50000, 100000, 30000],
+        slot_start_offsets_ms: [0, 32600, 82600, 182600],
+      }),
+    });
+  });
+  await page.route('**/api/stitch_editor/beat_boundaries**', async (r) => {
+    await r.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        beats: [
+          { beat_id: 'beat_01', start_ms: 0, end_ms: 5000, duration_ms: 5000 },
+          { beat_id: 'beat_02', start_ms: 5000, end_ms: 10000, duration_ms: 5000 },
+        ],
+      }),
+    });
+  });
+}
+
 async function mockSfxLibrary(page: Page): Promise<void> {
   await page.route('**/api/timeline/sfx_library', async (r) => {
     await r.fulfill({
@@ -183,7 +234,93 @@ async function openStitcher(page: Page): Promise<void> {
   await expect(page.locator('[data-testid="pane-stitcher"]')).toBeVisible();
   // Wait for the strip to render (job loaded).
   await expect(page.locator('[data-testid="stitcher-strip"]')).toBeVisible();
+  await expect(page.locator('[data-testid="stitcher-slot-trim-in-intro"]')).toBeEnabled({
+    timeout: 10_000,
+  });
 }
+
+// ============================================================================
+// Phase A0 — Multi-phase track durability (LD-826)
+// ============================================================================
+
+test.describe('G17 — Stitcher multi-phase track persistence', () => {
+  test('G17 — track renders with all 4 persistent segments', async ({ page }) => {
+    await mockStitcherJob(page);
+    await mockSnapshot(page);
+    await mockStitchSaveJob(page);
+    await mockSfxLibrary(page);
+
+    await gotoApp(page);
+    await openStitcher(page);
+
+    await expect(page.locator('[data-testid="stitcher-multiphase-track"]')).toBeVisible();
+    await expect(page.locator('[data-testid="stitcher-multiphase-segment-intro"]')).toBeVisible();
+    await expect(page.locator('[data-testid="stitcher-multiphase-segment-phase_a"]')).toBeVisible();
+    await expect(page.locator('[data-testid="stitcher-multiphase-segment-phase_b"]')).toBeVisible();
+    await expect(page.locator('[data-testid="stitcher-multiphase-segment-resolution"]')).toBeVisible();
+  });
+
+  test('G17.2 — selected segment persists after reload (same event)', async ({ page }) => {
+    await mockStitcherJob(page);
+    await mockSnapshot(page);
+    await mockStitchSaveJob(page);
+    await mockSfxLibrary(page);
+    await mockStitchPreviewAndBoundaries(page);
+
+    await gotoApp(page);
+    await openStitcher(page);
+
+    await page.evaluate(() => {
+      for (const key of Object.keys(window.localStorage)) {
+        if (key.startsWith('storyboard_v2_stitcher_track_slot:')) {
+          window.localStorage.removeItem(key);
+        }
+      }
+    });
+
+    const phaseBSegment = page.locator('[data-testid="stitcher-multiphase-segment-phase_b"]');
+    await phaseBSegment.click();
+    await expect(phaseBSegment).toHaveClass(/is-active/);
+
+    await page.reload();
+    await expect(page.locator('[data-testid="app-root"]')).toBeVisible();
+    await openStitcher(page);
+    await expect(page.locator('[data-testid="stitcher-multiphase-segment-phase_b"]')).toHaveClass(/is-active/);
+
+    await expect.poll(() => page.evaluate(() => {
+      const key = Object.keys(window.localStorage).find((k) =>
+        k.startsWith('storyboard_v2_stitcher_track_slot:'),
+      );
+      return key ? window.localStorage.getItem(key) : null;
+    })).toBe('phase_b');
+  });
+
+  test('G17.3 — segment click switches slot composer to that phase', async ({ page }) => {
+    await mockStitcherJob(page);
+    await mockSnapshot(page);
+    await mockStitchSaveJob(page);
+    await mockSfxLibrary(page);
+    await mockStitchPreviewAndBoundaries(page);
+
+    await gotoApp(page);
+    await openStitcher(page);
+
+    await page.waitForFunction(() => {
+      const v = document.querySelector('[data-testid="stitcher-composer-video"]') as HTMLVideoElement | null;
+      return v?.src?.includes('mock_preview') ?? false;
+    }, { timeout: 15000 });
+
+    await expect(page.locator('[data-testid="stitcher-video-player"]')).toHaveCount(0);
+
+    await page.locator('[data-testid="stitcher-multiphase-segment-phase_a"]').click();
+
+    await expect(page.locator('[data-testid="stitcher-multiphase-segment-phase_a"]')).toHaveClass(/is-active/);
+    await expect.poll(() => page.evaluate(() => {
+      const header = document.querySelector('.mn-stitcher-slot-composer-header strong')?.textContent ?? '';
+      return header.includes('Phase A');
+    })).toBe(true);
+  });
+});
 
 /**
  * Dispatch a synthetic DragEvent('drop') with the given drag payload at the
@@ -258,7 +395,18 @@ test.describe('G3 — SFX drag onto slot waveform creates per-slot cue', () => {
     );
 
     await expect.poll(() => saveJobReqs.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
-    const body = saveJobReqs[0]!.postDataJSON() as Record<string, unknown>;
+    await expect.poll(() => saveJobReqs
+      .map((req) => req.postDataJSON() as Record<string, unknown>)
+      .some((b) => {
+        const intro = (b['slots'] as Record<string, MockSlot> | undefined)?.intro;
+        return Array.isArray(intro?.sfx_cues) && intro!.sfx_cues!.length === 1;
+      }), { timeout: 5_000 }).toBe(true);
+    const body = saveJobReqs
+      .map((req) => req.postDataJSON() as Record<string, unknown>)
+      .find((b) => {
+        const intro = (b['slots'] as Record<string, MockSlot> | undefined)?.intro;
+        return Array.isArray(intro?.sfx_cues) && intro!.sfx_cues!.length === 1;
+      })!;
 
     // Auto-injected scope keys per LD-461 + S5.5b/d.
     expect(body['event_id']).toBeDefined();
@@ -611,15 +759,17 @@ test.describe('G10 — Trim edit saves via stitch_save_job', () => {
     await trimIn.blur();
 
     await expect.poll(() => saveJobReqs.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
-    const body = saveJobReqs[saveJobReqs.length - 1]!.postDataJSON() as Record<string, unknown>;
-
-    // Auto-injected scope keys.
-    expect(body['event_id']).toBeDefined();
-    expect(body['scope_event_id']).toBeDefined();
-    expect(typeof body['scope_version']).toBe('number');
-
-    const slots = body['slots'] as Record<string, MockSlot>;
-    expect(slots).toBeDefined();
+    await expect.poll(() => saveJobReqs
+      .map((req) => req.postDataJSON() as Record<string, unknown>)
+      .some((b) => Number((b['slots'] as Record<string, MockSlot>)?.intro?.trim_in_ms) === 2000),
+      { timeout: 5_000 }).toBe(true);
+    const body = saveJobReqs
+      .map((req) => req.postDataJSON() as Record<string, unknown>)
+      .find((b) => Number((b['slots'] as Record<string, MockSlot>)?.intro?.trim_in_ms) === 2000)!;
+    expect(body!['event_id']).toBeDefined();
+    expect(body!['scope_event_id']).toBeDefined();
+    expect(typeof body!['scope_version']).toBe('number');
+    const slots = body!['slots'] as Record<string, MockSlot>;
     expect(Number(slots.intro!.trim_in_ms)).toBe(2000);
   });
 
@@ -645,8 +795,14 @@ test.describe('G10 — Trim edit saves via stitch_save_job', () => {
     await trimOut.blur();
 
     await expect.poll(() => saveJobReqs.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
-    const body = saveJobReqs[saveJobReqs.length - 1]!.postDataJSON() as Record<string, unknown>;
-    const slots = body['slots'] as Record<string, MockSlot>;
+    await expect.poll(() => saveJobReqs
+      .map((req) => req.postDataJSON() as Record<string, unknown>)
+      .some((b) => Number((b['slots'] as Record<string, MockSlot>)?.intro?.trim_out_ms) === 25000),
+      { timeout: 5_000 }).toBe(true);
+    const body = saveJobReqs
+      .map((req) => req.postDataJSON() as Record<string, unknown>)
+      .find((b) => Number((b['slots'] as Record<string, MockSlot>)?.intro?.trim_out_ms) === 25000)!;
+    const slots = body!['slots'] as Record<string, MockSlot>;
     expect(Number(slots.intro!.trim_out_ms)).toBe(25_000);
   });
 });

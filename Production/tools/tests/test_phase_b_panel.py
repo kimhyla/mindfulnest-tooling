@@ -47,7 +47,18 @@ os.environ.pop("MINDFULNEST_WRITE_PATH", None)
 import production_server as PS  # noqa: E402
 import ffmpeg_stitch as FS  # noqa: E402
 
-PROJECT_ROOT = TOOLS.parent.parent
+# Test-isolation fix (2026-05-19): PROJECT_ROOT used to be TOOLS.parent.parent
+# (tooling repo root). storyboard_v38_prod.html lives ONLY in the Dropbox
+# runtime tree per LD-505 — the tooling-side path doesn't exist. Re-resolve
+# via lib.paths with env saved/restored so we get the real Dropbox path even
+# if test_assemble_module pollutes MN_DROPBOX_ROOT to a tmpdir at module import.
+_saved_mn_root = os.environ.pop("MN_DROPBOX_ROOT", None)
+try:
+    from Production.lib.paths import _resolve_dropbox_root as _rdr
+    PROJECT_ROOT = _rdr()
+finally:
+    if _saved_mn_root is not None:
+        os.environ["MN_DROPBOX_ROOT"] = _saved_mn_root
 
 
 # ---------------------------------------------------------------------------
@@ -80,11 +91,19 @@ def _make_event_fixture(tmp: Path) -> tuple[Path, Path, str]:
         '<body></body></html>\n', encoding="utf-8",
     )
     state = event_dir / "production_state.json"
+    # P5 migration (2026-05-19): legacy state["beats"] shape was invalid
+    # under LD-461 scope_video_role validator (which requires partition to
+    # exist in state.videos). Migrate to v3 partition shape with empty intro.
     state.write_text(json.dumps({
         "event_id": "Event_V3TEST",
-        "beats": {},
-        "display_order": [],
-        "image_overrides": {},
+        "version": 3,
+        "videos": {
+            "intro": {
+                "beats": {},
+                "display_order": [],
+                "image_overrides": {},
+            },
+        },
     }, indent=2))
     # Seed minimal libraries for the panel tests.
     _make_wc_library(proj / "Production" / "assets" / "watercolor_library")
@@ -105,7 +124,11 @@ def _find_free_port() -> int:
 def _start_server(event_dir: Path, storyboard: Path, event_id: str, port: int):
     state_mgr = PS.StateManager(event_dir, event_id)
     # Fake wavespeed client — LipSyncClient.submit_and_wait is patched per-test.
+    # P5 (2026-05-19): LipSyncClient ctor now reads .api_key; add the attribute
+    # so handle_phase_b_lipsync (phases.py:1189) doesn't AttributeError.
     class _FakeClient:
+        api_key = "fake_key_for_test"
+
         def submit_and_wait(self, video_path, audio_path, dest):
             # Used only when patched; unreachable default.
             dest.write_bytes(b"\x00lipsync_fake\x00")
@@ -129,6 +152,12 @@ def _start_server(event_dir: Path, storyboard: Path, event_id: str, port: int):
 
 
 def _http_post(port: int, path: str, body: dict, timeout: float = 15.0):
+    # LD-461 SCOPE_BODY_HELPER_V1 (P5 2026-05-19): v59 mutation endpoints
+    # require event_id + scope_video_role. Tests pre-date LD-461. Fixture's
+    # event_id is "Event_V3TEST"; phase B routes default to "intro" scope.
+    body = dict(body)
+    body.setdefault("event_id", "Event_V3TEST")
+    body.setdefault("scope_video_role", "intro")
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}{path}", data=data,
@@ -182,7 +211,8 @@ class TestC4RenderOverlayParameterization(unittest.TestCase):
             return _R()
 
         out_path = self.tmp / f"out_{frame_x}.mp4"
-        with mock.patch.object(FS.subprocess, "run", side_effect=dispatch):
+        with mock.patch.object(FS, "ffprobe_duration", return_value=10.0), \
+             mock.patch.object(FS.subprocess, "run", side_effect=dispatch):
             FS.render_watercolor_overlay(
                 base_video_path=self.base, cues=cues,
                 frame_x=frame_x, frame_y=180, output_path=out_path,
@@ -226,7 +256,7 @@ class TestC4RenderOverlayParameterization(unittest.TestCase):
         )
         joined = " ".join(cmds[0])
         # Exactly one chromakey filter in the whole filter_complex.
-        self.assertEqual(joined.count("chromakey=0x00FF00:0.1:0.0"), 1,
+        self.assertEqual(joined.count("chromakey=0xFF00FF:0.25:0.0"), 1,
                          f"expected exactly 1 chromakey (video-only); got: {joined}")
         # Chromakey is on the video input branch (input 2), not input 1 (png).
         self.assertIn("[2:v]chromakey", joined)
@@ -358,10 +388,12 @@ class TestWatercolorOverlayRecipeHash(unittest.TestCase):
         self.assertEqual(len(FS.WATERCOLOR_OVERLAY_RECIPE_HASH), 16)
 
     def test_recipe_hash_deterministic(self):
-        # Hash derives from WATERCOLOR_OVERLAY_RECIPE_VERSION. Re-compute.
+        # Hash derives from WATERCOLOR_OVERLAY_RECIPE_VERSION + suffix.
+        # P5 (2026-05-19): recipe added `|scale=bbox_no_pad` for v2_native_aspect
+        # (ffmpeg_stitch.py:95-98). Test was missing the suffix; updated.
         expected = hashlib.sha256(
             f"{FS.WATERCOLOR_OVERLAY_RECIPE_VERSION}:fade_in=0.3s|slide_in=0.5s|"
-            f"gentle_pan=5px_sin|chromakey=0x00FF00:0.1:0.0".encode("utf-8"),
+            f"gentle_pan=5px_sin|chromakey=0xFF00FF:0.1:0.0|scale=bbox_no_pad".encode("utf-8"),
         ).hexdigest()[:16]
         self.assertEqual(FS.WATERCOLOR_OVERLAY_RECIPE_HASH, expected)
 
@@ -457,43 +489,82 @@ class TestPhaseEndpoints(unittest.TestCase):
             return 1
         self.app.state.mutate_state(_apply)
 
+        # P5 (2026-05-19): per Kim — animation must be longer than audio
+        # for lipsync correctness. Return 25s for base-clip probes, 20s
+        # for voice-stem probes. Probe target is the last arg of ffprobe.
         def dispatch(cmd, *a, **kw):
             class _R:
                 returncode = 0
-                # ffprobe duration stub — return "20" for any -show_entries call.
-                stdout = b"20.000\n" if "show_entries" in " ".join(cmd) else b""
                 stderr = b""
-            out = Path(cmd[-1])
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_bytes(b"\x00trim\x00")
+                stdout = b""
+            cmd_str = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+            if "show_entries" in cmd_str:
+                # P5 (2026-05-19): audio MUST be ≤10s (LD LIPSYNC_MAX_DURATION_10S
+                # CLAUDE.md §8.5 — ByteDance training window cap) AND base_clip
+                # MUST be longer than audio (Kim 2026-05-19 padding rule). Use
+                # 4s audio, 8s base clip.
+                last_arg = cmd[-1] if isinstance(cmd, list) else ""
+                if isinstance(last_arg, str) and ("lipsync_base" in last_arg or "_base_v1" in last_arg or last_arg.endswith(".mp4")):
+                    _R.stdout = b"8.000\n"
+                else:
+                    _R.stdout = b"4.000\n"
+            else:
+                out = Path(cmd[-1])
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_bytes(b"\x00trim\x00")
             return _R()
 
-        def fake_submit_and_wait(self_, video, audio, dest):
-            dest.write_bytes(b"\x00bytedance_out\x00")
-            return {"ok": True, "job_id": "fake_job", "cost": 0.15}
+        def _fake_lipsync_client(*_a, **_kw):
+            class _LSC:
+                def submit(self, _video, _audio):
+                    return "fake_task_id"
 
+                def poll_until_done(self, _task_id):
+                    return {"status": "completed", "outputs": ["http://fake/kling.mp4"]}
+
+                def download(self, _url, dest):
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(b"\x00bd_out\x00")
+            return _LSC()
+
+        # Kling async flow: HTTP 202 on submit; bg thread poll+download writes state.
+        _ffp_durations = [4.0, 8.0, 8.0, 8.0]  # voice, base, base, base
         with mock.patch.object(PS.subprocess, "run", side_effect=dispatch), \
-             mock.patch("production_server._ffprobe_duration", return_value=20.0), \
+             mock.patch("production_server._ffprobe_duration", side_effect=lambda *a, **kw: _ffp_durations.pop(0) if _ffp_durations else 8.0), \
              mock.patch("production_server._silcomp_audio",
                         return_value=(vs, {"applied": False,
                                            "source_duration_s": 4.0,
                                            "compressed_duration_s": 4.0,
                                            "silences_compressed": 0})), \
              mock.patch("production_server._trim_video_to_audio",
-                        return_value=(Path("/tmp/fake_trim.mp4"), 4.4, 0.0, 4.4)), \
-             mock.patch.object(type(self.app.client), "submit_and_wait",
-                               fake_submit_and_wait, create=True):
+                        return_value=(Path("/tmp/fake_trim.mp4"), 7.0, 0.0, 8.0)), \
+             mock.patch("server_handlers.phases._apply_whiteout_fade"), \
+             mock.patch("server_handlers.phases.LipSyncClient",
+                        create=True, new=_fake_lipsync_client):
             status, resp, _ = _http_post(
                 self.port, "/api/phase_b/lipsync",
                 {"phase": "b", "base_clip_id": "cedric_base_v1"},
                 timeout=30,
             )
-        self.assertEqual(status, 200, resp)
-        self.assertTrue(resp["file"].startswith("phase_b_lipsync_"))
-        self.assertEqual(resp["base_clip_id"], "cedric_base_v1")
-        state = self.app.state.read_state()
-        self.assertEqual(state.get("phase_b_lipsync_file"), resp["file"])
-        # module-level field for base clip.
+        self.assertEqual(status, 202, resp)
+        self.assertEqual(resp.get("status"), "submitted")
+        self.assertEqual(resp.get("task_id"), "fake_task_id")
+        self.assertEqual(resp.get("base_clip_id"), "cedric_base_v1")
+        # UI resume-after-tab-switch reads polling (not only Phase A "running").
+        state_after_submit = self.app.state.read_state()
+        self.assertEqual(state_after_submit.get("phase_b_lipsync_status"), "polling")
+        self.assertEqual(state_after_submit.get("phase_b_lipsync_task_id"), "fake_task_id")
+        self.assertEqual(state_after_submit.get("phase_b_cedric_base_clip_id"), "cedric_base_v1")
+        # Background thread writes terminal state after poll+download.
+        lipsync_file = None
+        for _ in range(40):
+            state = self.app.state.read_state()
+            lipsync_file = state.get("phase_b_lipsync_file")
+            if lipsync_file:
+                break
+            time.sleep(0.05)
+        self.assertTrue(lipsync_file and lipsync_file.startswith("phase_b_lipsync_"),
+                        f"expected bg thread to write lipsync file; state={state}")
         self.assertEqual(state.get("phase_b_cedric_base_clip_id"), "cedric_base_v1")
 
     # 12. preview fails loud on missing lipsync

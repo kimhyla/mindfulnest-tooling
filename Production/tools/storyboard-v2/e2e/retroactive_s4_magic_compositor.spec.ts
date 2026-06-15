@@ -61,7 +61,7 @@ test.describe('S4 — magic compositor', () => {
     await expect(stillBtn).toContainText(/add magic/i);
   });
 
-  test('S4.2 — BeatMagicButtons: when magic_still_path already exists → button shows "✓ magic on still" and is disabled', async ({ page }) => {
+  test('S4.2 — BeatMagicButtons: when magic_still_path already exists → button shows Redo and stays enabled', async ({ page }) => {
     await page.route('**/api/v2/event/*/state', async (r) => {
       await r.fulfill({
         status: 200,
@@ -78,8 +78,8 @@ test.describe('S4 — magic compositor', () => {
     await page.click('[data-testid="tab-storyboard"]');
     const stillBtn = page.locator('[data-testid="beat-magic-still-0"]');
     await expect(stillBtn).toBeVisible();
-    await expect(stillBtn).toBeDisabled();
-    await expect(stillBtn).toContainText('✓');
+    await expect(stillBtn).not.toBeDisabled();
+    await expect(stillBtn).toContainText(/redo magic on still/i);
   });
 
   test('S4.3 — clicking magic-still button opens window.open() with required params (mode, beat_id, source_image_path, return_endpoint, scope_event_id)', async ({ page, context }) => {

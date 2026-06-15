@@ -218,7 +218,7 @@
     maxlength="500"
   ></textarea>
   <small style="color:#7a8aa0">
-    The drawing tool below captures WHERE the motion happens; this text captures WHAT KIND of motion. Used by Claude API to generate ffmpeg filter chain.
+    The drawing tool captures WHERE the motion happens (path points). This text captures WHAT KIND of motion (rub speed, gentle drift, etc.). The server reads it deterministically in the PIL animate renderer — not sent to Claude.
   </small>
 </div>
 
@@ -277,13 +277,31 @@
   const scopeEventId     = params.get('scope_event_id') || params.get('event_id') || '';
   // S5.5b Bug 3 fix: source scope_video_role for magic POSTs (LD-474).
   // Priority: URL param 'video_role' → URL param 'scope_video_role' →
-  // window.__MN_VIDEO_ROLE__ (set by host page) → 'intro' default.
-  // No reliance on state.active_video — that field is server-side display
-  // hint only (LD-474 forbids using it for partition selection).
+  // window.__MN_VIDEO_ROLE__ (set by host page) → window.opener URL fallback.
+  // Bug-A2 (spec §2 Topic-2, 2026-05-20): NO 'intro' default. If neither own
+  // URL nor opener URL provides scope_video_role, leave scopeVideoRole as the
+  // empty string and let the server return 400 VIDEO_ROLE_REQUIRED. This
+  // prevents the silent wrong-partition writeback Kim hit on resolution beat_01.
+  // The opener fallback covers manually-typed URLs that omit the param —
+  // ordinary "Add magic on still" flow gets the param via Bug-A1 in
+  // StoryboardTab.tsx::openMagicStill.
+  function _readOpenerScopeVideoRole() {
+    try {
+      if (typeof window === 'undefined' || !window.opener || window.opener.closed) return null;
+      const openerUrl = new URL(window.opener.location.href);
+      return openerUrl.searchParams.get('scope_video_role')
+          || openerUrl.searchParams.get('video_role')
+          || null;
+    } catch (_) {
+      // cross-origin or null opener — cannot read; fall through to ''.
+      return null;
+    }
+  }
   const scopeVideoRole   = params.get('video_role')
                         || params.get('scope_video_role')
                         || (typeof window !== 'undefined' && window.__MN_VIDEO_ROLE__)
-                        || 'intro';
+                        || _readOpenerScopeVideoRole()
+                        || '';
 
   // Resolve effective mode (explicit → inferred → legacy → manual).
   let mode = explicitMode;
@@ -338,7 +356,7 @@
       { tag: 'b', text: beatId },
       { text: '…' },
       { tag: 'br' },
-      { tag: 'small', style: 'color:#555', text: 'Draw a 3-8 point path on the still reference; magic will overlay onto the moving video.' },
+      { tag: 'small', style: 'color:#555', text: 'Draw a 3-8 point path on the lipsync video frame below; magic overlays onto the moving video.' },
     ]);
   } else if (mode === 'watercolor_animate') {
     lbl.textContent = `Animate watercolor: ${watercolorKey}`;
@@ -382,10 +400,18 @@
       const url = `http://localhost:5111/api/phase/watercolor_file?key=${encodeURIComponent(watercolorKey)}`;
       loadImageFromURL(url);
     } else if (mode === 'magic_still' || mode === 'magic_video') {
-      // S5 — fetch the still reference image via /files endpoint.
-      // For magic_video, source_image_path is the visual reference (caller
-      // typically passes the beat's still / poster frame).
-      if (sourceImagePath) {
+      if (mode === 'magic_video' && sourceVideoPath) {
+        // CANVAS_MISMATCH_FIX (Kim 2026-05-27): magic_video must draw on a frame
+        // from the SOURCE VIDEO (lipsync clip), NOT the reference still.
+        // Drawing on the still caused a coordinate mismatch — the still crop has
+        // different framing than the lipsync video — so the rendered trail appeared
+        // in completely wrong positions on the final video (flooding the frame pink).
+        // Fix: extract frame 0 from source_video_path client-side via hidden <video>
+        // + canvas.drawImage(), then use that as the canvas background.
+        // Falls back to source_image_path if video fails to load.
+        loadVideoFrameAsBackground(sourceVideoPath);
+      } else if (sourceImagePath) {
+        // magic_still mode, or magic_video fallback when no video path
         loadImageFromURL(`http://localhost:5111/files?path=${encodeURIComponent(sourceImagePath)}`);
       } else {
         setDropText([
@@ -435,6 +461,34 @@
     image.src = url;
   }
 
+  // CANVAS_MISMATCH_FIX (Kim 2026-05-27): extract frame 0 from a video file and
+  // use it as the canvas background. Ensures magic_video draw-surface matches
+  // the actual lipsync video frame, not a differently-framed reference still.
+  function loadVideoFrameAsBackground(videoPath) {
+    // v2: server-side ffmpeg frame extraction — no browser <video> seek timeout.
+    // HARD ERROR if server fails — Rule 19: no silent correctness-degrading fallbacks.
+    setDropText([
+      { text: 'Loading frame from lipsync video…' },
+      { tag: 'br' },
+      { tag: 'small', style: 'color:#888', text: 'Draw your path on the actual video frame below.' },
+    ]);
+    const url = `http://localhost:5111/api/storyboard/video_frame?path=${encodeURIComponent(videoPath)}&t=0`;
+    const image = new Image();
+    image.onload = () => {
+        applyImage(image);
+    };
+    image.onerror = () => {
+        console.error('[path_picker] Server-side frame extract failed — refusing to fall back to still (would cause coordinate mismatch).');
+        setDropText([
+          { text: '⚠️ Could not extract video frame from server.' },
+          { tag: 'br' },
+          { tag: 'small', style: 'color:#f88',
+            text: 'Cannot fall back to still image — different aspect ratio would cause wrong trail position. Check server log.' },
+        ]);
+    };
+    image.src = url;
+  }
+
   function loadImageFromFile(file) {
     const url = URL.createObjectURL(file);
     const image = new Image();
@@ -442,10 +496,16 @@
     image.src = url;
   }
 
+  function evenCanvasDims(w, h) {
+    return [w - (w % 2), h - (h % 2)];
+  }
+
   function applyImage(image) {
     img = image;
-    canvas.width  = image.naturalWidth;
-    canvas.height = image.naturalHeight;
+    let [w, h] = evenCanvasDims(image.naturalWidth, image.naturalHeight);
+    canvas.width  = w;
+    canvas.height = h;
+    window.__pathAuthoredAgainst = { width: w, height: h };
     canvas.style.display = 'block';
     document.getElementById('drop-text').style.display = 'none';
     points = [];
@@ -510,7 +570,7 @@
   function redraw() {
     if (!img) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(img, 0, 0);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
     if (points.length === 0) return;
 
     ctx.beginPath();
@@ -571,7 +631,16 @@
   }
 
   function updateSubmitBtn() {
-    btnSubmit.disabled = !(img && points.length >= 2 && sceneKey);
+    // T4-2 fix (2026-05-19) — accept the S5 v3.1 3-mode dispatch (LD-468/469/470).
+    // Before: gate required legacy `sceneKey` URL param. Modern callers post
+    // `?mode=magic_still&beat_id=...` (no scene_key) → button stayed disabled
+    // forever even after points were placed, blocking the entire magic workflow.
+    // Submit code at submitPath() already handles all 3 modes (line ~646).
+    const modeOk = mode === 'magic_still'
+                || mode === 'magic_video'
+                || mode === 'watercolor_animate'
+                || mode === 'magic_still_legacy';
+    btnSubmit.disabled = !(img && points.length >= 2 && (sceneKey || modeOk));
   }
 
   function updateYAML() {
@@ -622,8 +691,17 @@
 
   async function submitPath() {
     if (points.length < 2) return;
-    if (!animateMode && !sceneKey) {
-      alert('No scene_key or source in URL — cannot submit automatically.\nUse Copy YAML instead.');
+    // T4-2 (2026-05-19): accept the S5 v3.1 3-mode dispatch — submitPath()
+    // below explicitly handles 'magic_still' / 'magic_video' / 'watercolor_animate'
+    // at line ~655. The legacy gate only allowed sceneKey or animateMode, so
+    // mode='magic_still' (Kim's storyboard "Add magic on still" workflow) hit
+    // this alert + bailed before reaching the dispatch.
+    const modeOk = mode === 'magic_still'
+                || mode === 'magic_video'
+                || mode === 'watercolor_animate'
+                || mode === 'magic_still_legacy';
+    if (!animateMode && !sceneKey && !modeOk) {
+      alert('No scene_key, mode, or source in URL — cannot submit automatically.\nUse Copy YAML instead.');
       return;
     }
 
@@ -653,6 +731,7 @@
           source_image_path: sourceImagePath,
           scope_event_id: scopeEventId || 'Event_1',
           scope_video_role: scopeVideoRole,  // S5.5b Bug 3 fix (LD-474)
+          path_authored_against: window.__pathAuthoredAgainst || null,
         };
       } else if (mode === 'magic_video') {
         body = {
@@ -662,6 +741,7 @@
           source_image_path: sourceImagePath,  // drawing reference
           scope_event_id: scopeEventId || 'Event_1',
           scope_video_role: scopeVideoRole,  // S5.5b Bug 3 fix (LD-474)
+          path_authored_against: window.__pathAuthoredAgainst || null,
         };
       } else {  // watercolor_animate
         const motionDesc = (document.getElementById('motion-desc-input').value || '').trim();
@@ -675,6 +755,7 @@
           motion_description: motionDesc,
           scope_event_id: scopeEventId || 'Event_1',
           scope_video_role: scopeVideoRole,  // S5.5b Bug 3 fix (LD-474)
+          path_authored_against: window.__pathAuthoredAgainst || null,
         };
       }
 
@@ -715,7 +796,7 @@
               type: 'mn-magic-or-animate-complete',
               mode: mode,
               payload: { ...body, result: data },
-            }, '*');
+            }, window.opener.location.origin);
           } catch (_) { /* cross-origin — ignore */ }
         }
         videoPath = data.composite_path || data.animated_path || data.output_path || '';
@@ -773,7 +854,13 @@
 
     let jobId;
     try {
-      const resp = await fetch('/api/magic/submit_path', {
+      // C7-4 fix (LD-pending C7_ABSOLUTE_URLS_RULE_32, 2026-05-20): Rule 32
+      // requires absolute http://localhost:5111 URLs in production tool fetch
+      // calls. Relative '/api/magic/submit_path' broke when path_picker.html
+      // was opened from a different origin (file://, browser cache origin,
+      // proxy port). Matches the existing pattern at lines 382/389/721 in
+      // this file.
+      const resp = await fetch('http://localhost:5111/api/magic/submit_path', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),

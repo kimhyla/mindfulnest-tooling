@@ -27,6 +27,8 @@ jobs:
       - name: Build dist
         working-directory: Production/tools/storyboard-v2
         run: npm run build
+      - name: Storyboard UI regression guard (LD markers incl. LD-829 Phase A single player)
+        run: bash Production/scripts/check_storyboard_critical_features.sh
 
   body-key-contract:
     # Counter-B Option B — closes prod_blockers id=140 + LD
@@ -59,3 +61,37 @@ jobs:
         # route registered. Symmetric to body-key-contract; same parsers.
         run: |
           python3 -m pytest Production/scripts/tests/test_endpoint_presence_contract.py -v
+
+  session-lockin-regression:
+    # 2026-05-28 session hardening — stitcher canonical job, magic polyline,
+    # Send Out magic-assemblable beats. Static markers + unit tests; fails CI
+    # if regressions remove lock-in code paths.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pytest + Pillow (magic_compositor tests)
+        run: python3 -m pip install --quiet pytest Pillow numpy scipy imageio imageio-ffmpeg
+      - name: Stitcher lock-in static markers
+        run: python3 Production/scripts/verify_stitcher_lockin_20260528.py
+      - name: Session regression unit tests
+        working-directory: Production/tools
+        run: |
+          python3 -m pytest \
+            tests/test_stitch_canonical_job.py \
+            tests/test_beat_is_assemblable.py \
+            tests/test_magic_path_polyline.py \
+            tests/test_o3_job_state_reliability.py \
+            tests/test_beat_generator_o3_sidecar_contract.py \
+            tests/test_o3_stuck_job_recovery.py \
+            tests/test_arlo_canonical_registry.py \
+            tests/test_intro_export_api_contract.py \
+            tests/test_phase_a_single_player.py \
+            -q
+      - name: O3 intro contract shell gate
+        run: bash Production/scripts/verify_o3_intro_contract.sh
+      - name: Deploy-backup beat_generator contract
+        run: python3 Production/scripts/verify_deploy_backup_contract.py --beat-generator Production/tools/beat_generator.py

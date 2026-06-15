@@ -1,0 +1,30 @@
+# Insert beat — form-first unified pipeline
+
+## One factory
+
+- New BG dialogue beats MUST be created via `POST /api/bg/insert-beat` with validated `plan_row` (speaker + dialogue).
+- Materialization MUST go through `materialize_sidecar_beat_from_plan_row()` → `build_beats_from_approved_plan()`.
+- **Never** restore `create_blank_bg_beat()` or `+ Add empty beat`.
+
+## Banned
+
+- `create_blank_bg_beat` / speaker-empty O3 rows
+- `o3_voice_stack_pin` on new inserts
+- `o3_prompt_box_law` on system-built insert prompts
+- Skipping `validate_element_list_alignment()` because of a pin
+
+## Proven stack
+
+- O3 submit uses `get_proven_element_list_entry(speaker)` when `proven_o3_bind` exists.
+- `finalize_proven_element_beat()` copies char/bg ref from `proven_from_beat_id`.
+- After materialize, **always** `sync_element_char_ref_status(beat, heal_mismatch=False)`.
+- Insert path must call `maybe_auto_register_beat_char_ref()` (same hook as char-ref drop on `bg_update_beat`).
+
+## Regression gates
+
+- `Production/scripts/verify_insert_beat_form_first_durability.sh`
+- `Production/tools/tests/test_insert_beat_form_first.py` (also in `verify_o3_intro_contract.sh`)
+
+## Spec
+
+`Production/docs/INSERT_BEAT_FORM_FIRST_SPEC_v1.md`

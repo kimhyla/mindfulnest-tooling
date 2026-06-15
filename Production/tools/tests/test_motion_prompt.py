@@ -48,45 +48,45 @@ class MotionPromptCoreTests(unittest.TestCase):
         )
         self.assertNotIn(ps.SPRITE_IDLE_TAIL, p)
 
-    def test_02_chipper_neutral_sprite(self) -> None:
-        """Chipper (canonical per LD-183) neutral + lipsync_targeted=False:
-        bird constraint + motion-locking tail."""
+    def test_02_arlo_neutral_sprite(self) -> None:
+        """Arlo (canonical guide per 2026-06-13) neutral + lipsync_targeted=False:
+        lemur constraint + motion-locking tail."""
         beat = {
-            "speaker": "Chipper",
+            "speaker": "Arlo",
             "emotion": "neutral",
             "lipsync_targeted": False,
         }
         p = ps.build_motion_prompt(beat)
-        self.assertIn("Beak closed, no speech, no lip movement.", p)
+        self.assertIn("Mouth closed, no speech.", p)
         self.assertTrue(
             p.endswith(ps.SPRITE_IDLE_TAIL),
             f"expected prompt to end with {ps.SPRITE_IDLE_TAIL!r}: {p!r}",
         )
-        self.assertIn("Cartoon Chipper character", p)
+        self.assertIn("Cartoon Arlo character", p)
 
-    def test_03_legacy_guide_bird_routes_to_chipper(self) -> None:
-        """Legacy 'Guide Bird' canonicalizes to Chipper via _SPEAKER_ALIAS,
-        gets bird constraint, canonical name surfaces in prompt text."""
+    def test_03_legacy_guide_bird_routes_to_arlo(self) -> None:
+        """Legacy 'Guide Bird' canonicalizes to Arlo via _SPEAKER_ALIAS,
+        gets mouth constraint, canonical name surfaces in prompt text."""
         beat = {
             "speaker": "Guide Bird",
             "emotion": "happy_excited",
             "lipsync_targeted": True,
         }
         p = ps.build_motion_prompt(beat)
-        self.assertIn("Beak closed, no speech, no lip movement.", p)
-        self.assertIn("Cartoon Chipper character", p)
+        self.assertIn("Mouth closed, no speech.", p)
+        self.assertIn("Cartoon Arlo character", p)
         self.assertNotIn("Guide Bird", p)
 
-    def test_04_legacy_pip_routes_to_chipper(self) -> None:
-        """Legacy 'Pip' canonicalizes to Chipper via _SPEAKER_ALIAS."""
+    def test_04_legacy_pip_routes_to_arlo(self) -> None:
+        """Legacy 'Pip' canonicalizes to Arlo via _SPEAKER_ALIAS."""
         beat = {
             "speaker": "Pip",
             "emotion": "sad_disappointed",
             "lipsync_targeted": True,
         }
         p = ps.build_motion_prompt(beat)
-        self.assertIn("Beak closed, no speech, no lip movement.", p)
-        self.assertIn("Cartoon Chipper character", p)
+        self.assertIn("Mouth closed, no speech.", p)
+        self.assertIn("Cartoon Arlo character", p)
         self.assertNotIn("Pip character", p)
 
     def test_05_unknown_speaker_known_section(self) -> None:
@@ -104,15 +104,21 @@ class MotionPromptCoreTests(unittest.TestCase):
         self.assertIn(ps.DEFAULT_ACTION, p)
 
     def test_07_invalid_emotion_falls_back_to_neutral(self) -> None:
-        """Invalid emotion string logs warning, falls back to neutral."""
+        """Unknown emotion is promoted to a freeform-action override (not
+        a hard 'unknown emotion' rejection). Per Kim 2026-05-19: silent
+        promotion is the intended behavior — the test was asserting an
+        older error-log shape. Verify the new log shape AND the resulting
+        prompt is still well-formed."""
         beat = {"speaker": "Tessa", "emotion": "bonkers", "lipsync_targeted": True}
         buf = io.StringIO()
         with redirect_stdout(buf):
             p = ps.build_motion_prompt(beat)
         out = buf.getvalue()
-        self.assertIn("unknown emotion", out)
-        self.assertIn("falling back to 'neutral'", out)
-        self.assertIn(ps.SPEAKER_MOTION_PROFILES["Tessa"]["neutral"], p)
+        # New log message documents the promotion, not an unknown-emotion error.
+        self.assertIn("freeform emotion", out)
+        self.assertIn("bonkers", out)
+        # Prompt is well-formed (contains lipsync-safe tail since lipsync_targeted=True).
+        self.assertTrue(p.endswith(ps.LIPSYNC_SAFE_TAIL))
 
     def test_08_missing_lipsync_targeted_defaults_true(self) -> None:
         """Missing lipsync_targeted defaults True (Event_1 default per LD-180)."""
@@ -288,7 +294,9 @@ class SanitizeInteractionTests(unittest.TestCase):
 
     def test_17_sanitize_preserves_vocabulary_across_all_combos(self) -> None:
         for speaker, profiles in ps.SPEAKER_MOTION_PROFILES.items():
-            for emotion, vocab in profiles.items():
+            canonical = ps._canonicalize_speaker(speaker)
+            active_profiles = ps.SPEAKER_MOTION_PROFILES.get(canonical, profiles)
+            for emotion, vocab in active_profiles.items():
                 for lipsync in (True, False):
                     beat = {
                         "speaker": speaker,

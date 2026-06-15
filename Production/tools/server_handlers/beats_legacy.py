@@ -656,113 +656,30 @@ def handle_beat_update_text(h, body: dict)-> None:
         pass  # fire-and-forget
 
     # ==================================================================
-    # Decision 181 TTS_AUTO_REGEN_ON_TEXT_EDIT (April 17 2026):
-    # After a successful text save, synchronously regenerate TTS audio
-    # using the beat's speaker voice profile. Client waits ~5-8s.
-    # On failure we return 200 with tts_regen.ok=false so the text save
-    # is preserved and the user gets a clear error to retry.
-    # Caller can pass {"skip_tts_regen": true} to opt out (e.g., internal
-    # batch text updates that don't need audio regen yet).
+    # LD-803 TTS_NO_AUTO_REGEN_EXPLICIT_BUTTON_ONLY_V1 (2026-05-20):
+    # TTS NEVER auto-regenerates on text edit. Regeneration fires
+    # EXCLUSIVELY via the explicit Regen Audio button
+    # (_handle_beat_regenerate_audio). This block formerly hosted the
+    # synchronous Decision 181 auto-regen (hoisted by LD-734); both LDs
+    # are superseded. The stale-TTS badge (text_modified_after_tts) is
+    # the user-visible signal that audio is out of date and the user
+    # should click Regen Audio.
+    #
+    # Tier 1A debounce helpers + TIER1A_ENABLED gating remain in
+    # production_server.py (lines ~464-566, 726-736) — they are no longer
+    # invoked from this auto-regen path but are retained because _t1_enabled()
+    # is still consulted at production_server.py:2244 (broader runtime gate
+    # beyond auto-regen) and Tier 3 widgets reference TIER1A_ENABLED via
+    # patch_v38_tier3_widgets.py. The skip_tts_regen body flag is irrelevant
+    # under LD-803 (regen is opt-IN via button, not opt-OUT via flag).
     # ==================================================================
-    tts_regen_result = {"ok": False, "skipped": True, "reason": "no_text_change"}
     text_actually_changed = (old_text or "") != new_text
-    skip_flag = bool(body.get("skip_tts_regen"))
-
-    # Tier 1A: 60s-per-beat debounce of AUTO-regen (LD
-    # TTS_REGEN_DEBOUNCE_60S_WINDOW_PER_BEAT). The explicit "🎙 Regen Audio"
-    # button is a SEPARATE handler (_handle_beat_regenerate_audio) and is
-    # intentionally NOT debounced — it's user-initiated opt-in. The
-    # skip_tts_regen body flag remains a client-side force-skip (checked
-    # first below); debounce is a server-side rate limiter that kicks in
-    # only when neither of those apply.
-    debounce_skip, debounce_elapsed = (False, 0.0)
-    if TIER1A_ENABLED and text_actually_changed and not skip_flag:
-        debounce_skip, debounce_elapsed = _tier1a_debounce_should_skip(beat_id)
-
-    if text_actually_changed and not skip_flag and not debounce_skip:
-        # Load ElevenLabs key (cached at first call).
-        try:
-            _libdir = os.path.join(os.path.dirname(__file__), "credentials_lib")
-            if _libdir not in sys.path:
-                sys.path.insert(0, _libdir)
-            from credentials import load_credentials  # type: ignore
-            creds = load_credentials()
-            el_key = creds.get("elevenlabs_key") or ""
-        except Exception as exc:  # noqa: BLE001
-            el_key = ""
-            print(f"[update_text] elevenlabs key load failed: {exc}")
-
-        if not el_key:
-            tts_regen_result = {
-                "ok": False,
-                "error": "elevenlabs key unavailable — TTS regen skipped",
-                "skipped": True,
-                "reason": "no_api_key",
-            }
-        else:
-            print(f"[update_text] {beat_id} firing sync TTS regen (Rule 11 source fidelity)")
-            try:
-                tts_regen_result = _tts_regenerate_for_beat(
-                    h.app, beat_id, new_text, el_key,
-                )
-            except Exception as exc:  # noqa: BLE001
-                traceback.print_exc()
-                tts_regen_result = {
-                    "ok": False,
-                    "error": f"unexpected TTS regen failure: {type(exc).__name__}: {exc}",
-                    "skipped": False,
-                }
-            # Tier 1A: record regen attempt (success OR failure) so the
-            # next keystroke falls inside the debounce window. Rate-limits
-            # retry stampede on failing ElevenLabs calls.
-            # Tier 3 (April 18 2026): when regen_ok, also clears
-            # phase_1.speaker_mismatch because the audio now matches the
-            # speaker. Gated on _t1_enabled() so the rollback flag
-            # MINDFULNEST_T1_ENABLED=0 reverts to pre-Tier-3 behavior too.
-            if TIER1A_ENABLED:
-                _regen_ok = bool(tts_regen_result.get("ok")) and _t1_enabled()
-                _tier1a_mark_regen_fired(
-                    beat_id, app=h.app, regen_ok=_regen_ok,
-                )
-
-        if tts_regen_result.get("ok"):
-            print(f"[update_text] {beat_id} TTS regen OK: "
-                  f"{tts_regen_result['audio_file']} "
-                  f"({tts_regen_result['audio_duration_s']:.2f}s, "
-                  f"{tts_regen_result['elapsed_s']:.1f}s call)")
-        else:
-            print(f"[update_text] {beat_id} TTS regen failed: "
-                  f"{tts_regen_result.get('error', 'unknown')}")
-    elif skip_flag:
-        tts_regen_result = {"ok": False, "skipped": True, "reason": "skip_tts_regen_flag"}
-        print(f"[update_text] {beat_id} TTS regen skipped (skip_tts_regen)")
-    elif debounce_skip:
-        # Tier 1A debounce path. Text save already completed above; we
-        # only skip the downstream TTS render to protect the rate budget.
-        _elapsed_round = round(debounce_elapsed, 2) if debounce_elapsed != float("inf") else None
-        tts_regen_result = {
-            "ok": False,
-            "skipped": True,
-            "reason": "debounced",
-            "elapsed_since_last_s": _elapsed_round,
-            "window_s": TIER1A_DEBOUNCE_WINDOW_SEC,
-        }
-        # Structured [T1] log to stdout for greppability.
-        _iso = datetime.now(timezone.utc).isoformat()
-        print(
-            f"[T1] {_iso} beat={beat_id} action=tts_regen_skipped "
-            f"reason=debounced elapsed_since_last_s={_elapsed_round}",
-            flush=True,
-        )
-        # Directus audit — rate-limited to 1/beat/60s to avoid spam
-        if _tier1a_should_audit(beat_id):
-            try:
-                _tier1a_async_log_debounce(
-                    h.app.event_id, beat_id, debounce_elapsed,
-                )
-            except Exception:  # noqa: BLE001
-                pass  # fire-and-forget
-    # else: text unchanged, skipped message stays as 'no_text_change'
+    tts_regen_result = {
+        "ok": False,
+        "skipped": True,
+        "reason": "no_auto_regen_per_LD_803",
+        "hint": "click 🎙 Regen Audio button to regenerate TTS",
+    }
 
     h._send_json(200, {
         "ok": True,
@@ -770,7 +687,7 @@ def handle_beat_update_text(h, body: dict)-> None:
         "saved_at": now_iso,
         "html_patched": True,
         "text_modified_after_tts": (
-            tts_exists and text_actually_changed and not tts_regen_result.get("ok")
+            tts_exists and text_actually_changed
         ),
         "old_text_preview": (old_text or "")[:100],
         "tts_regen": tts_regen_result,
@@ -1280,7 +1197,13 @@ def handle_beat_regenerate_audio(h, body: dict)-> None:
     this endpoint ensures audio matches current state.text verbatim.
     """
     # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+    # LD-810 AUDIO_REGEN_SCOPE_AUTODISCOVER_V1 — allow_missing_video_role=True
+    # so the autodiscover branch below (lines ~1225-1253) is reachable when
+    # the caller omits scope_video_role. Without this flag the validator
+    # returns VIDEO_ROLE_REQUIRED before autodiscover can fire, making the
+    # LD-810 logic unreachable dead code.
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False,
+                                 allow_missing_video_role=True):
         return
 
     # F-REGEN-AUDIO-001: v59 client (StoryboardTab.tsx:192) sends
@@ -1294,9 +1217,46 @@ def handle_beat_regenerate_audio(h, body: dict)-> None:
                    retry_safe=False,
                )
 
-    video_role = body.get("scope_video_role") or body.get("scope_target_video") or "intro"
+    # Blocker #148 fix (LD pending AUDIO_REGEN_SCOPE_AUTODISCOVER_V1, 2026-05-20):
+    # If the caller didn't pass scope_video_role/scope_target_video, AND the
+    # beat is not present in 'intro' (the legacy default), auto-discover by
+    # scanning all video_roles. If found in exactly one, use that. If found
+    # in zero or multiple, surface explicit 400 (ambiguous beat across
+    # partitions) rather than silent failure with the legacy 'intro' default.
     state = h.app.state.read_state()
-    beat_state = (((state.get("videos") or {}).get(video_role) or {}).get("beats") or {}).get(beat_id) or {}
+    _explicit_role = body.get("scope_video_role") or body.get("scope_target_video")
+    if _explicit_role:
+        video_role = _explicit_role
+        beat_state = (((state.get("videos") or {}).get(video_role) or {}).get("beats") or {}).get(beat_id) or {}
+    else:
+        # No explicit scope. Try 'intro' first (legacy default); fall back
+        # to autodiscovery across all roles.
+        _intro_beats = ((state.get("videos") or {}).get("intro") or {}).get("beats") or {}
+        if beat_id in _intro_beats:
+            video_role = "intro"
+            beat_state = _intro_beats[beat_id]
+        else:
+            _matching_roles = [
+                r for r, partition in (state.get("videos") or {}).items()
+                if beat_id in ((partition or {}).get("beats") or {})
+            ]
+            if len(_matching_roles) == 1:
+                video_role = _matching_roles[0]
+                beat_state = ((state.get("videos") or {}).get(video_role) or {}).get("beats", {}).get(beat_id, {})
+                print(f"[regen_audio] {beat_id} scope_video_role autodiscovered: {video_role}")
+            elif len(_matching_roles) > 1:
+                return h._send_error_v59(
+                           400,
+                           error_code="AMBIGUOUS_BEAT_SCOPE",
+                           error_message=f"beat {beat_id} exists in multiple partitions ({_matching_roles}); pass scope_video_role explicitly",
+                           retry_safe=False,
+                       )
+            else:
+                # Beat not found anywhere; default to 'intro' so downstream
+                # error reporting stays consistent with the legacy path
+                # (will hit 'no dialogue text in state OR storyboard' below).
+                video_role = "intro"
+                beat_state = {}
     text = (beat_state.get("text") or "").strip()
     # Fallback: if state has no text yet (beat never edited+blurred),
     # parse the storyboard L[] t: field. Same pattern
@@ -1344,9 +1304,13 @@ def handle_beat_regenerate_audio(h, body: dict)-> None:
             b["text"] = _t
         h.app.state.mutate_state(_seed_text)
 
-    # Load ElevenLabs key
+    # Load ElevenLabs key — CODE tree (credentials_lib is sibling Python).
+    # Handler lives at Production/tools/server_handlers/, credentials_lib at
+    # Production/tools/credentials_lib/ — go up one level first.
     try:
-        _libdir = os.path.join(os.path.dirname(__file__), "credentials_lib")
+        _libdir = os.path.normpath(
+            os.path.join(os.path.dirname(__file__), "..", "credentials_lib")
+        )
         if _libdir not in sys.path:
             sys.path.insert(0, _libdir)
         from credentials import load_credentials  # type: ignore
@@ -1554,6 +1518,12 @@ def handle_beat_trim(h, body: dict)-> None:
     if raw_trim_end is None:
         raw_trim_end = body.get("trim_out")  # null = use full clip
     trim_end = raw_trim_end
+    # BUG FIX (2026-05-23): trim_back (relative seconds from end) replaces the client-side
+    # trim_out computation which was wrong (used audio_duration instead of video_duration).
+    # When trim_back is present it takes precedence and clears stale trim_end.
+    # vendor_jobs.py reads trim_back and computes effective_end = raw_dur - trim_back.
+    raw_trim_back = body.get("trim_back")  # BODY_KEY_ALLOW: trim_back (2026-05-23 back-trim fix)
+    trim_back = float(raw_trim_back) if raw_trim_back is not None else None
     if trim_start < 0:
         return h._send_error_v59(
                    400,
@@ -1561,7 +1531,14 @@ def handle_beat_trim(h, body: dict)-> None:
                    error_message="trim_start must be >= 0",
                    retry_safe=False,
                )
-    if trim_end is not None:
+    if trim_back is not None and trim_back < 0:
+        return h._send_error_v59(
+                   400,
+                   error_code="TRIM_BACK_MUST_BE",
+                   error_message="trim_back must be >= 0",
+                   retry_safe=False,
+               )
+    if trim_back is None and trim_end is not None:
         trim_end = float(trim_end)
         if trim_end <= trim_start:
             return h._send_error_v59(
@@ -1573,13 +1550,18 @@ def handle_beat_trim(h, body: dict)-> None:
 
     video_role = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
 
-    def update(state, _role=video_role):
+    def update(state, _role=video_role, _trim_back=trim_back):
         b = ((state.get("videos") or {}).get(_role) or {}).get("beats", {}).get(beat_id)
         if not b:
             return False
         p1 = b.setdefault("phase_1", {})
         p1["trim_start"] = round(trim_start, 2)
-        p1["trim_end"] = round(trim_end, 2) if trim_end is not None else None
+        if _trim_back is not None:
+            # New canonical path: store relative back-trim; clear stale absolute trim_end.
+            p1["trim_back"] = round(_trim_back, 2) if _trim_back > 0 else None
+            p1["trim_end"] = None  # clear wrong absolute value from old client bug
+        else:
+            p1["trim_end"] = round(trim_end, 2) if trim_end is not None else None
         return True
 
     found = h.app.state.mutate_state(update)
@@ -1591,17 +1573,22 @@ def handle_beat_trim(h, body: dict)-> None:
                    retry_safe=False,
                )
     result = {"beat": beat_id, "trim_start": round(trim_start, 2)}
-    if trim_end is not None:
+    if trim_back is not None:
+        result["trim_back"] = round(trim_back, 2) if trim_back > 0 else None
+    elif trim_end is not None:
         result["trim_end"] = round(trim_end, 2)
     h._send_json(200, result)
 
 
 def handle_beat_undo_final(h, body: dict) -> None:
-    """Clear Ken Burns still-as-final on a beat (LD-761 undo-final v1).
+    """Clear the `final` block on a beat regardless of source type.
 
     POST {beat|beat_id, scope_event_id, scope_video_role}
-    Only beats with final.source == 'still_image' are in scope; other final
-    sources return NOTHING_TO_UNDO.
+    Kim 2026-05-20 follow-up: originally LD-761 only allowed undo for
+    still_image finals. Broadened to all source types (raw_option, lipsync,
+    still_image) so Kim can un-finalize ANY beat and re-pick. The underlying
+    media files (option mp4s, lipsync mp4, still mp4) stay on disk; only the
+    `final` block on the beat is removed.
     """
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
         return
@@ -1635,11 +1622,15 @@ def handle_beat_undo_final(h, body: dict) -> None:
             outcome["status"] = "missing"
             return
         final = b.get("final") or {}
-        if not final or final.get("source") != "still_image":
+        if not final:
             outcome["status"] = "nothing"
             return
+        # Kim 2026-05-20 follow-up: broadened from still_image-only to all
+        # source types. raw_option / lipsync / still_image — any final can
+        # be undone (the underlying mp4 stays on disk).
         b.pop("final", None)
         outcome["status"] = "ok"
+        outcome["prior_source"] = final.get("source")
 
     h.app.state.mutate_video_state(video_role, mutate)
     if outcome["status"] == "missing":
@@ -1653,7 +1644,7 @@ def handle_beat_undo_final(h, body: dict) -> None:
         return h._send_error_v59(
             400,
             error_code="NOTHING_TO_UNDO",
-            error_message="no still_image final to undo",
+            error_message="beat has no final block to undo",
             retry_safe=False,
         )
 
@@ -1676,5 +1667,171 @@ def handle_beat_undo_final(h, body: dict) -> None:
         )
 
     return h._send_json(200, {"ok": True, "beat": beat_id})
+
+
+def handle_beat_zoom(h, body: dict) -> None:
+    """POST /api/beat/zoom — toggle slow Ken Burns zoom on a beat's final clip.
+
+    Apply:  reads final.file, ffmpeg zoompan 1.0->1.15x center-zoom over full
+            clip, writes {stem}_zoom.mp4, updates final.file + stores original
+            in final.pre_zoom_file + sets final.zoom_applied = True.
+    Undo:   if final.zoom_applied is True, restores final.file from pre_zoom_file.
+
+    Body: { beat_id (or beat), scope_event_id (or event_id), scope_video_role }
+    """
+    import subprocess, pathlib
+
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+
+    beat_id = body.get("beat_id") or body.get("beat")
+    if not beat_id:
+        return h._send_error_v59(400, error_code="MISSING_BEAT_ID",
+                                  error_message="beat_id required", retry_safe=False)
+
+    video_role = (
+        (body or {}).get("scope_video_role")
+        or (body or {}).get("scope_target_video")
+        or "intro"
+    )
+
+    event_dir = h.app.event_dir
+    clips_dir = event_dir / "animation_clips"
+
+    # --- read current final block (read-only snapshot) ---
+    outcome: dict = {"status": "pending"}
+
+    def _read(partition):
+        b = (partition.get("beats") or {}).get(beat_id)
+        if not b:
+            outcome["status"] = "beat_missing"
+            return
+        outcome["final"] = dict(b.get("final") or {})
+        outcome["status"] = "read_ok"
+
+    h.app.state.mutate_video_state(video_role, _read)
+
+    if outcome["status"] == "beat_missing":
+        return h._send_error_v59(404, error_code="BEAT_NOT_FOUND",
+                                  error_message=f"beat {beat_id!r} not found in {video_role}",
+                                  retry_safe=False)
+
+    final = outcome.get("final", {})
+    zoom_applied = bool(final.get("zoom_applied"))
+
+    # --- UNDO path ---
+    if zoom_applied:
+        pre_zoom = final.get("pre_zoom_file")
+        if not pre_zoom:
+            return h._send_error_v59(409, error_code="NO_PRE_ZOOM_FILE",
+                                      error_message="zoom_applied=true but pre_zoom_file missing",
+                                      retry_safe=False)
+
+        def _undo(partition):
+            b = (partition.get("beats") or {}).get(beat_id)
+            if not b:
+                return
+            f = b.setdefault("final", {})
+            f["file"] = pre_zoom
+            f.pop("zoom_applied", None)
+            f.pop("pre_zoom_file", None)
+            f["file_exists"] = (clips_dir / pre_zoom).is_file()
+
+        h.app.state.mutate_video_state(video_role, _undo)
+        return h._send_json(200, {"ok": True, "action": "zoom_removed",
+                                   "beat_id": beat_id, "final_file": pre_zoom})
+
+    # --- APPLY path ---
+    current_file = final.get("file")
+    if not current_file:
+        return h._send_error_v59(409, error_code="NO_FINAL_FILE",
+                                  error_message="beat has no final.file to zoom",
+                                  retry_safe=False)
+
+    src_path = clips_dir / current_file
+    if not src_path.is_file():
+        return h._send_error_v59(404, error_code="FINAL_FILE_MISSING",
+                                  error_message=f"{current_file} not on disk", retry_safe=False)
+
+    # e.g. beat_03_lipsync.mp4 -> beat_03_lipsync_zoom.mp4
+    stem = src_path.stem
+    zoom_filename = f"{stem}_zoom.mp4"
+    dst_path = clips_dir / zoom_filename
+    tmp_path = dst_path.with_suffix(".tmp.mp4")
+
+    # Get duration for per-clip zoom speed
+    try:
+        probe = subprocess.check_output(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(src_path)],
+            stderr=subprocess.DEVNULL
+        )
+        duration_s = float(probe.decode().strip())
+    except Exception as e:
+        return h._send_error_v59(500, error_code="FFPROBE_FAILED",
+                                  error_message=str(e), retry_safe=True)
+
+    fps = 24
+    total_frames = max(int(duration_s * fps), 1)
+    # Zoom 1.0 -> 1.15 over full clip
+    zoom_step = 0.15 / total_frames
+
+    # Normalize to 1280x720 FIRST (same as NORMALIZATION_VF_EXPR in ffmpeg_stitch.py)
+    # using force_original_aspect_ratio=decrease + pad so non-16:9 sources
+    # (e.g. 720x544 ByteDance lipsync output) are letterboxed, not stretched.
+    # Prior: scale=1280:720 with no AR guard → horizontal stretch on 720x544.
+    vf = (
+        f"scale=1280:720:force_original_aspect_ratio=decrease,"
+        f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,"
+        f"setsar=1:1,"
+        f"fps={fps},"
+        f"zoompan=z='min(zoom+{zoom_step:.8f},1.15)':d=1"
+        f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+    )
+
+    cmd = [
+        "ffmpeg", "-y", "-i", str(src_path),
+        "-vf", vf,
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "copy",
+        str(tmp_path),
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=120)
+        if result.returncode != 0:
+            err_tail = result.stderr.decode(errors="replace")[-600:]
+            if tmp_path.exists():
+                tmp_path.unlink()
+            return h._send_error_v59(500, error_code="FFMPEG_FAILED",
+                                      error_message=err_tail, retry_safe=True)
+        tmp_path.rename(dst_path)
+    except subprocess.TimeoutExpired:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        return h._send_error_v59(500, error_code="FFMPEG_TIMEOUT",
+                                  error_message="ffmpeg timed out after 120s", retry_safe=True)
+    except Exception as e:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        return h._send_error_v59(500, error_code="FFMPEG_ERROR",
+                                  error_message=str(e), retry_safe=True)
+
+    # Update state
+    def _apply(partition):
+        b = (partition.get("beats") or {}).get(beat_id)
+        if not b:
+            return
+        f = b.setdefault("final", {})
+        f["pre_zoom_file"] = current_file
+        f["file"] = zoom_filename
+        f["zoom_applied"] = True
+        f["file_exists"] = dst_path.is_file()
+
+    h.app.state.mutate_video_state(video_role, _apply)
+    return h._send_json(200, {"ok": True, "action": "zoom_applied",
+                               "beat_id": beat_id, "zoom_file": zoom_filename,
+                               "duration_s": round(duration_s, 2)})
 
 

@@ -51,9 +51,10 @@ from kling_startend_pipeline import (            # type: ignore
 
 KLING_ELEMENTS_HOST = "api.wavespeed.ai"
 KLING_ELEMENTS_PATH = "/api/v3/kwaivgi/kling-elements-advanced"
-KLING_ELEMENTS_POLL_PATH = "/api/v3/predictions/{prediction_id}"
+KLING_ELEMENTS_POLL_PATH = "/api/v3/predictions/{prediction_id}/result"
 POLL_INTERVAL_SEC = 3
-POLL_TIMEOUT_SEC = 120
+POLL_TIMEOUT_SEC = 180
+MAX_ELEMENT_DESCRIPTION_LEN = 100
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +123,12 @@ def _create_element(char_name: str, cfg: dict, api_key: str, dry_run: bool) -> d
     Never raises — caller decides whether to continue to next character.
     """
     print(f"\n{'[DRY-RUN] ' if dry_run else ''}Registering: {char_name}")
+
+    desc = cfg.get("description", "")
+    if len(desc) > MAX_ELEMENT_DESCRIPTION_LEN:
+        print(f"  [FAIL] description length {len(desc)} > {MAX_ELEMENT_DESCRIPTION_LEN} (Kling limit)")
+        print(f"  [FAIL] Shorten description in character_subjects.json and retry.")
+        return None
 
     # Load and validate all images
     try:
@@ -195,22 +202,21 @@ def _create_element(char_name: str, cfg: dict, api_key: str, dry_run: bool) -> d
         return None
 
     # Extract element_id — try multiple response shapes
-    element_id = (
-        (result.get("data") or {}).get("element_id")
-        or (result.get("data") or {}).get("id")
-        or result.get("element_id")
-        or result.get("id")
-    )
-    prediction_id = (result.get("data") or {}).get("id") or result.get("id")
+    data = result.get("data") or {}
+    prediction_id = data.get("id") or result.get("id")
+    element_id = _element_id_from_poll_data(data)
 
-    # If async (status != completed), poll for completion
-    outer_status = (result.get("data") or {}).get("status") or result.get("status")
-    if outer_status not in ("completed", "succeeded", None) and not element_id:
+    # Always poll /result when we have a prediction id — POST id is NOT the Kling element_id.
+    outer_status = data.get("status") or result.get("status")
+    if prediction_id and (not element_id or outer_status not in ("completed", "succeeded")):
         print(f"  [polling] status={outer_status}, prediction_id={prediction_id}")
         element_id = _poll_for_element_id(prediction_id, api_key)
         if not element_id:
-            print(f"  [FAIL] Polling timed out for prediction_id={prediction_id}")
+            print(f"  [FAIL] Polling timed out or failed for prediction_id={prediction_id}")
             return None
+    elif outer_status in ("failed", "error"):
+        print(f"  [FAIL] Element creation failed: {json.dumps(result)[:400]}")
+        return None
 
     if not element_id:
         print(f"  [FAIL] No element_id in response: {json.dumps(result)[:400]}")
@@ -226,12 +232,25 @@ def _create_element(char_name: str, cfg: dict, api_key: str, dry_run: bool) -> d
     return updated_cfg
 
 
+def _element_id_from_poll_data(data: dict) -> str | None:
+    """Real Kling element_id lives in data.outputs[0].element_id (numeric)."""
+    outputs = data.get("outputs") or []
+    if outputs and isinstance(outputs[0], dict):
+        eid = outputs[0].get("element_id")
+        if eid is not None:
+            return str(int(eid))
+    eid = data.get("element_id")
+    if eid is not None:
+        return str(int(eid))
+    return None
+
+
 def _poll_for_element_id(prediction_id: str, api_key: str) -> str | None:
-    """Poll WaveSpeed until element is ready. Returns element_id or None on timeout."""
+    """Poll WaveSpeed /result until element is ready. Returns element_id or None."""
     deadline = time.time() + POLL_TIMEOUT_SEC
+    poll_path = KLING_ELEMENTS_POLL_PATH.format(prediction_id=prediction_id)
     while time.time() < deadline:
         time.sleep(POLL_INTERVAL_SEC)
-        poll_path = KLING_ELEMENTS_POLL_PATH.format(prediction_id=prediction_id)
         try:
             status, raw = robust_https_request(
                 host=KLING_ELEMENTS_HOST,
@@ -246,9 +265,10 @@ def _poll_for_element_id(prediction_id: str, api_key: str) -> str | None:
             poll_status = data.get("status") or result.get("status")
             print(f"  [poll]  status={poll_status}")
             if poll_status in ("completed", "succeeded"):
-                return data.get("element_id") or data.get("id") or result.get("element_id")
+                return _element_id_from_poll_data(data)
             if poll_status in ("failed", "error"):
-                print(f"  [FAIL]  Element creation failed: {json.dumps(result)[:300]}")
+                err = data.get("error") or result.get("error") or json.dumps(result)[:300]
+                print(f"  [FAIL]  Element creation failed: {err}")
                 return None
         except Exception as exc:
             print(f"  [poll error] {exc} — retrying")

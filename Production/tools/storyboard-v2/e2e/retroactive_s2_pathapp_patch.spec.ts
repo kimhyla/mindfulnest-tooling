@@ -156,7 +156,15 @@ test.describe('S2 — pathappPatch mutation channel', () => {
       await r.fulfill({
         status: 409,
         contentType: 'application/json',
-        body: JSON.stringify({ error: 'scope_mismatch', expected: 'Event_x', got: 'Event_y' }),
+        body: JSON.stringify({
+          ok: false,
+          error_code: 'SCOPE_MISMATCH',
+          error_message: 'scope_event_id mismatch',
+          retry_safe: false,
+          hint: 'Reload the tab to re-resolve.',
+          expected_event_id: 'Event_x',
+          got_event_id: 'Event_y',
+        }),
       });
     });
     await gotoApp(page);
@@ -180,8 +188,8 @@ test.describe('S2 — pathappPatch mutation channel', () => {
     const detail = await page.evaluate(() =>
       (window as unknown as { __mn_scope_mismatch?: Array<Record<string, unknown>> }).__mn_scope_mismatch?.[0],
     );
-    expect((detail as Record<string, unknown>)['endpoint']).toBe('bg_accept_option');
-    expect((detail as Record<string, unknown>)['status']).toBe(409);
+    expect((detail as Record<string, unknown>)['error_code']).toBe('SCOPE_MISMATCH');
+    expect((detail as Record<string, unknown>)['error_message']).toBe('scope_event_id mismatch');
   });
 
   test('S2.4 — pathappPatch handles HTTP 423 by re-hydrating via /api/v2/event/<id>/state and retrying once', async ({ page }) => {

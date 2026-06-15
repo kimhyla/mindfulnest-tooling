@@ -150,7 +150,7 @@ STYLES = {
 
         "blend": "additive",   # additive = visible on bright backgrounds
 
-        "status": "draft",
+        "status": "approved",      # Kim approved for runestone/nest orbital paths (Event 1 res beat 2+)
         "directus_ld": None,
     },
 }
@@ -182,18 +182,25 @@ class MagicCompositor:
         parent_asset_id: int = None,
         tags: list = None,
         scene_key: str = None,
+        path_authored_against: dict = None,
+        path_interp: str = "polyline",
     ):
         if style not in STYLES:
             raise ValueError(f"Unknown style '{style}'. Available: {list(STYLES)}")
 
+        if path_interp not in ("polyline", "bezier"):
+            raise ValueError(f"path_interp must be 'polyline' or 'bezier', got {path_interp!r}")
+
         self.bg_path  = background_path
         self.path_pts = path_pts
+        self.path_interp = path_interp
         self.style    = style
         self.s        = STYLES[style]
         self.duration = duration
         self.fps      = fps
         self.seed     = seed
         self.n_frames = int(fps * duration)
+        self._path_authored_against = path_authored_against
 
         # LD-421 registration metadata
         self.module_id = module_id
@@ -222,8 +229,23 @@ class MagicCompositor:
 
         print(f"Loading background: {os.path.basename(background_path)}", flush=True)
         self.bg_img = Image.open(background_path).convert("RGB")
+        _orig_w, _orig_h = self.bg_img.size
+        # libx264 in yuv420p (the default for codec="h264") requires both
+        # width AND height to be EVEN — chroma subsampling math. Odd-dim
+        # inputs explode with avcodec_open2("libx264", {}) ExternalError 542398533.
+        # Crop 1 px off the right/bottom if needed; visually imperceptible
+        # vs the alternative (silent black-square preview from a 500 error).
+        # Failure mode observed 2026-05-20 on still_3_body_stone_glow_v9.png (1677x938)
+        # and on 22 of 36 generator crops.
+        if _orig_w % 2 or _orig_h % 2:
+            _new_w = _orig_w - (_orig_w % 2)
+            _new_h = _orig_h - (_orig_h % 2)
+            self.bg_img = self.bg_img.crop((0, 0, _new_w, _new_h))
+            print(f"  cropped odd dims {_orig_w}x{_orig_h} -> {_new_w}x{_new_h} (libx264 even-dim requirement)", flush=True)
         self.W, self.H = self.bg_img.size
         print(f"  {self.W}x{self.H}", flush=True)
+
+        self.path_pts = self._aspect_correct(self.path_pts, self._path_authored_against)
 
         self._gain = self._calibrate_brightness()
         self._particles = self._build_particles()
@@ -340,7 +362,7 @@ class MagicCompositor:
         lums = []
         for i in range(20):
             t = i / 19
-            fx, fy = self._bezier(t)
+            fx, fy = self._path_at(t)
             px = min(self.W - 1, int(fx * self.W))
             py = min(self.H - 1, int(fy * self.H))
             r, g, b = self.bg_img.getpixel((px, py))
@@ -397,7 +419,7 @@ class MagicCompositor:
             if alpha < 0.04:
                 continue
 
-            fx, fy = self._bezier(ts)
+            fx, fy = self._path_at(ts)
             pw     = self._path_width(fy)
             px     = int(fx * W + sx_n * pw * s["scatter_x_frac"])
             py     = int(fy * H + sy_n * pw * s["scatter_y_frac"])
@@ -432,12 +454,57 @@ class MagicCompositor:
             raise ValueError(f"Unknown blend: {self.s['blend']}")
         return Image.fromarray(result)
 
+    def _path_at(self, t: float) -> tuple:
+        if self.path_interp == "bezier":
+            return self._bezier(t)
+        return self._polyline(t)
+
+    def _polyline(self, t: float) -> tuple:
+        """Walk path_pts in order with straight segments (matches path_picker lineTo)."""
+        pts = self.path_pts
+        if not pts:
+            return (0.0, 0.0)
+        if len(pts) == 1:
+            return pts[0]
+        t = max(0.0, min(1.0, float(t)))
+        n_seg = len(pts) - 1
+        pos = t * n_seg
+        idx = min(int(pos), n_seg - 1)
+        local = pos - idx
+        x0, y0 = pts[idx]
+        x1, y1 = pts[idx + 1]
+        return (x0 + (x1 - x0) * local, y0 + (y1 - y0) * local)
+
     def _bezier(self, t: float) -> tuple:
         p = list(self.path_pts)
         while len(p) > 1:
             p = [(p[i][0]*(1-t)+p[i+1][0]*t,
                   p[i][1]*(1-t)+p[i+1][1]*t) for i in range(len(p)-1)]
         return p[0]
+
+    def _aspect_correct(self, path_pts, authored):
+        """Remap path_pts when draw-surface dims differ from compositor canvas."""
+        if not authored or "width" not in authored or "height" not in authored:
+            return path_pts
+        pw = int(float(authored.get("width", 0)))
+        ph = int(float(authored.get("height", 0)))
+        if pw <= 0 or ph <= 0:
+            return path_pts
+        pw = pw - (pw % 2)
+        ph = ph - (ph % 2)
+        if pw == self.W and ph == self.H:
+            return path_pts
+        corrected = []
+        for (fx, fy) in path_pts:
+            px = fx * pw
+            py = fy * ph
+            corrected.append((px / self.W, py / self.H))
+        print(
+            f"  [aspect_correct] authored {pw}x{ph} -> compositor {self.W}x{self.H}: "
+            f"remapped {len(corrected)} pts",
+            flush=True,
+        )
+        return corrected
 
     def _path_width(self, y_frac: float) -> int:
         y_near = max(p[1] for p in self.path_pts)
@@ -508,7 +575,16 @@ def render_magic(scene_key: str, bg_still: str = None, preview_only: bool = Fals
         print(result["preview_path"])
     """
     import yaml as _yaml
-    reg_path = _Path(__file__).parent / "scene_registry.yaml"
+    # LD-505 Phase C: anchor scene_registry.yaml on the runtime DROPBOX_ROOT
+    # via lib/paths (env-aware: MN_DROPBOX_ROOT first, then platform default).
+    # Was `_Path(__file__).parent / ...` which resolved to the tooling tree.
+    # CODE tree — finding Production/lib/paths.py (sibling Python module).
+    import sys as _sys, os as _os
+    _lib_parent = _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", ".."))
+    if _lib_parent not in _sys.path:
+        _sys.path.insert(0, _lib_parent)
+    from Production.lib.paths import DROPBOX_ROOT as _DR
+    reg_path = _DR / "Production" / "tools" / "scene_registry.yaml"
     registry = _yaml.safe_load(reg_path.read_text()) or {}
     scene = registry.get(scene_key)
     if scene is None:

@@ -9,8 +9,9 @@
 //   2. Injects scope.event_id under the correct key (`scope_event_id` for BG
 //      endpoints, `event_id` for non-BG) per LD-461.
 //   3. POSTs the request as JSON.
-//   4. Handles HTTP 409 (scope_mismatch) by emitting a window event for the
-//      app to surface a red banner + reload prompt; returns ok=false.
+//   4. Handles HTTP 409 (scope_mismatch) by auto-healing server pin via
+//      POST /api/event/load when client/server drift (SCOPE_MISMATCH_AUTO_HEAL_V1),
+//      then retrying once; only surfaces the red banner if heal+retry fails.
 //   5. Handles HTTP 423 (event_changed_mid_job, async-pin reject) by
 //      re-fetching event-state to refresh local generation, then retrying
 //      the mutation ONCE. If retry also fails, surface red banner.
@@ -22,7 +23,9 @@ import {
   activeTargetVideo,
   activeProjectType,
   activeMilestoneId,
+  makeScope,
 } from '../state/scope';
+import { clientMayPinServerTo, noteClientPinnedEvent } from '../state/scopeAuthority';
 import {
   READ_ENDPOINTS,
   MUTATION_ENDPOINTS,
@@ -61,11 +64,6 @@ export interface ApiResult<T = unknown> {
 export const SCOPE_EVENT_MISMATCH = 'mn:scope-mismatch';
 export const SCOPE_EVENT_CHANGED = 'mn:event-changed';
 
-function emitScopeMismatch(detail: Record<string, unknown>): void {
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent(SCOPE_EVENT_MISMATCH, { detail }));
-  }
-}
 function emitEventChanged(detail: Record<string, unknown>): void {
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent(SCOPE_EVENT_CHANGED, { detail }));
@@ -87,16 +85,43 @@ function v59ErrorFromBody(d: Record<string, unknown>): V59Error {
   };
 }
 
+interface RawPostOptions {
+  /** When true, SCOPE_MISMATCH does not emit mn:scope-mismatch (caller may heal+retry). */
+  suppressScopeDispatch?: boolean;
+  /** Internal — one retry after server restart blip (NETWORK_RESTART_RETRY_V1). */
+  _networkRetry?: boolean;
+}
+
+interface ApiGetOptions {
+  /** Internal — set during READ scope-mismatch auto-heal retry (READ_SCOPE_HEAL_V1). */
+  _scopeHealRetry?: boolean;
+  /** Internal — cap heal loops so transient restart blips do not stick the red banner. */
+  _scopeHealAttempt?: number;
+  /** Internal — one retry after server restart blip (NETWORK_RESTART_RETRY_V1). */
+  _networkRetry?: boolean;
+}
+
+export const SCOPE_HEALED_EVENT = 'mn:scope-healed';
+
+export function emitScopeHealed(detail: Record<string, unknown> = {}): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(SCOPE_HEALED_EVENT, { detail }));
+  }
+}
+
 /** Parse non-OK JSON: V59 canonical shape first, then legacy {error} / {error_code}. */
 function parseApiError<T>(
   status: number,
   data: T | undefined,
   statusText = '',
+  opts: RawPostOptions = {},
 ): ApiResult<T> {
   const d = data as Record<string, unknown> | undefined;
   if (d && isV59ErrorBody(d)) {
     const v59 = v59ErrorFromBody(d);
-    if (typeof window !== 'undefined') {
+    const suppressScope =
+      opts.suppressScopeDispatch === true && v59.error_code === 'SCOPE_MISMATCH';
+    if (typeof window !== 'undefined' && !suppressScope) {
       dispatchV59Error(v59);
     }
     return {
@@ -135,6 +160,7 @@ export function emitScopeEventChanged(detail: Record<string, unknown> = {}): voi
 export async function apiGet<T = unknown>(
   endpoint: ReadEndpoint,
   query: Record<string, string> = {},
+  opts: ApiGetOptions = {},
 ): Promise<ApiResult<T>> {
   // Substitute {placeholder} tokens in the URL template with values from
   // the query dict. Substituted keys are CONSUMED so they don't ALSO end
@@ -162,7 +188,32 @@ export async function apiGet<T = unknown>(
       // non-JSON or empty body
     }
     if (!res.ok) {
-      return parseApiError(res.status, data, res.statusText);
+      const isScope409 = res.status === 409
+        && typeof (data as Record<string, unknown> | undefined)?.['error_code'] === 'string'
+        && (data as Record<string, unknown>)['error_code'] === 'SCOPE_MISMATCH';
+      const attempt = opts._scopeHealAttempt ?? 0;
+      const result = parseApiError(res.status, data, res.statusText, {
+        // Never flash the persistent banner while READ auto-heal is still retrying.
+        suppressScopeDispatch: isScope409 && attempt < 2,
+      });
+      if (isScopeMismatchResult(result) && attempt < 2) {
+        if (await healServerScopeIfAuthorized(activeScope.value)) {
+          emitScopeHealed({ event_id: activeScope.value.event_id, source: 'apiGet-heal' });
+          return apiGet(endpoint, query, {
+            _scopeHealRetry: true,
+            _scopeHealAttempt: attempt + 1,
+          });
+        }
+      }
+      if (isScopeMismatchResult(result) && attempt >= 2 && typeof window !== 'undefined') {
+        dispatchV59Error({
+          error_code: result.error_code ?? 'SCOPE_MISMATCH',
+          error_message: result.error_message ?? result.error ?? 'scope_mismatch',
+          retry_safe: result.retry_safe !== false,
+          hint: result.hint ?? null,
+        });
+      }
+      return result;
     }
     return {
       ok: true,
@@ -170,7 +221,12 @@ export async function apiGet<T = unknown>(
       ...(data === undefined ? {} : { data }),
     };
   } catch (e) {
-    return { ok: false, status: 0, error: String(e) };
+    const err = String(e);
+    if (!opts._networkRetry && /failed to fetch|networkerror|load failed/i.test(err)) {
+      await new Promise((resolve) => { setTimeout(resolve, 2000); });
+      return apiGet(endpoint, query, { ...opts, _networkRetry: true });
+    }
+    return { ok: false, status: 0, error: err };
   }
 }
 
@@ -206,6 +262,57 @@ export async function loadEvent(
   );
 }
 
+/**
+ * SCOPE_MISMATCH_AUTO_HEAL_V1 — when server pin drifts (restart, QA script),
+ * re-pin to the client's activeScope.event_id before surfacing 409 — but only
+ * when this tab has pin authority (URL ?event= or explicit Project/ScopeBoundary pin).
+ * Background polls adopt server pin only when URL/explicit pin does not override
+ * (SCOPE_POLL_ADOPT_V1 + clientScopeOverridesServerPin).
+ */
+/** Re-pin server to scope when this tab has URL/explicit pin authority. Exported for poll heal. */
+export async function healServerScopeIfAuthorized(scope: Scope): Promise<boolean> {
+  try {
+    const res = await fetch(READ_ENDPOINTS.event_current);
+    if (res.ok) {
+      const data = (await res.json()) as { event_id?: string };
+      if (data?.event_id === scope.event_id) return true;
+    }
+  } catch {
+    // Fall through to explicit load when authorized.
+  }
+  if (!clientMayPinServerTo(scope.event_id)) {
+    return false;
+  }
+  const load = await loadEvent(scope.event_id);
+  if (!load.ok || !load.data?.event_id) return false;
+  noteClientPinnedEvent(load.data.event_id);
+  activeScope.value = makeScope(
+    load.data.event_id,
+    scope.beat_id,
+    load.data.event_generation,
+  );
+  emitScopeEventChanged({
+    event_id: load.data.event_id,
+    event_generation: load.data.event_generation,
+    scope_key: `${load.data.event_id}:${scope.beat_id ?? 'global'}:v${load.data.event_generation}`,
+    source: 'scope-mismatch-auto-heal',
+  });
+  emitScopeHealed({ event_id: load.data.event_id, source: 'scope-mismatch-auto-heal' });
+  return true;
+}
+
+export { noteClientPinnedEvent } from '../state/scopeAuthority';
+
+/** Ensure server process pin matches eventId before tabs fetch scoped READ endpoints. */
+export async function ensureServerPinnedTo(eventId: string): Promise<boolean> {
+  const scope = makeScope(eventId, activeScope.value.beat_id, activeScope.value.version);
+  return healServerScopeIfAuthorized(scope);
+}
+
+function isScopeMismatchResult<T>(result: ApiResult<T>): boolean {
+  return !result.ok && result.error_code === 'SCOPE_MISMATCH';
+}
+
 // ============================================================================
 // MUTATE — pathappPatch (single mutation channel)
 // ============================================================================
@@ -218,6 +325,8 @@ export interface PatchOptions {
   method?: 'POST' | 'PATCH';
   /** Internal — set during 423-retry to suppress further retries. */
   _isRetry?: boolean;
+  /** Internal — set during 409 scope-mismatch auto-heal retry. */
+  _scopeHealRetry?: boolean;
 }
 
 /**
@@ -225,7 +334,8 @@ export interface PatchOptions {
  *
  * Status code policy:
  *   - 200/2xx — success.
- *   - 409 — scope_mismatch (LD-456). Emit mn:scope-mismatch event; ok=false.
+ *   - 409 — scope_mismatch (LD-456). Auto-heal server pin + retry once;
+ *           emit mn:scope-mismatch only if heal+retry still fails.
  *   - 423 — event_changed_mid_job (LD-458/460). Re-hydrate scope + retry once.
  *   - 4xx/5xx other — propagate as ok=false with error message.
  */
@@ -260,7 +370,21 @@ export async function pathappPatch<T = unknown>(
         scope_version: scope.version,
       },
       'POST',
+      { suppressScopeDispatch: !opts._scopeHealRetry },
     );
+    if (isScopeMismatchResult(snap) && !opts._scopeHealRetry) {
+      if (await healServerScopeIfAuthorized(scope)) {
+        return pathappPatch(activeScope.value, endpoint, body, { ...opts, _scopeHealRetry: true });
+      }
+      if (typeof window !== 'undefined' && snap.error_code) {
+        dispatchV59Error({
+          error_code: snap.error_code,
+          error_message: snap.error_message ?? snap.error ?? 'scope_mismatch',
+          retry_safe: snap.retry_safe !== false,
+          hint: snap.hint ?? null,
+        });
+      }
+    }
     if (!snap.ok) {
       // Visible in console for debugging; does NOT abort the mutation.
       // (Per spec §3.5: snapshot is "every mutation is rollback-able" — if
@@ -299,21 +423,30 @@ export async function pathappPatch<T = unknown>(
     payload['scope_event_id'] = scope.event_id;
   }
 
-  const result = await apiPostRaw<T>(MUTATION_ENDPOINTS[endpoint], payload, method);
+  const result = await apiPostRaw<T>(
+    MUTATION_ENDPOINTS[endpoint],
+    payload,
+    method,
+    { suppressScopeDispatch: !opts._scopeHealRetry },
+  );
 
-  // LD-456 — HTTP 409 scope mismatch. Surface, do not retry.
-  if (result.status === 409) {
-    // V59 canonical SCOPE_MISMATCH is dispatched from parseApiError via errorBoundary.
-    if (result.error_code !== 'SCOPE_MISMATCH') {
-      emitScopeMismatch({
-        endpoint,
-        status: 409,
-        data: result.data,
-        hint: 'reload tab to re-resolve scope',
+  // LD-456 — SCOPE_MISMATCH auto-heal (SCOPE_MISMATCH_AUTO_HEAL_V1).
+  if (isScopeMismatchResult(result) && !opts._scopeHealRetry) {
+    if (await healServerScopeIfAuthorized(scope)) {
+      return pathappPatch(activeScope.value, endpoint, body, { ...opts, _scopeHealRetry: true });
+    }
+    if (typeof window !== 'undefined' && result.error_code) {
+      dispatchV59Error({
+        error_code: result.error_code,
+        error_message: result.error_message ?? result.error ?? 'scope_mismatch',
+        retry_safe: result.retry_safe !== false,
+        hint: result.hint ?? null,
       });
     }
     return result;
   }
+
+  // LD-456 — other HTTP 409 responses must NOT emit mn:scope-mismatch.
 
   // LD-458/460 — HTTP 423 event_changed_mid_job. Re-hydrate + retry once.
   if (result.status === 423 && !opts._isRetry) {
@@ -346,6 +479,7 @@ async function apiPostRaw<T = unknown>(
   url: string,
   payload: Record<string, unknown>,
   method: 'POST' | 'PATCH' = 'POST',
+  opts: RawPostOptions = {},
 ): Promise<ApiResult<T>> {
   try {
     const res = await fetch(url, {
@@ -360,7 +494,7 @@ async function apiPostRaw<T = unknown>(
       // non-JSON body (e.g., 204 No Content)
     }
     if (!res.ok) {
-      return parseApiError(res.status, data, res.statusText);
+      return parseApiError(res.status, data, res.statusText, opts);
     }
     return {
       ok: true,
@@ -368,7 +502,12 @@ async function apiPostRaw<T = unknown>(
       ...(data === undefined ? {} : { data }),
     };
   } catch (e) {
-    return { ok: false, status: 0, error: String(e) };
+    const err = String(e);
+    if (!opts._networkRetry && /failed to fetch|networkerror|load failed/i.test(err)) {
+      await new Promise((resolve) => { setTimeout(resolve, 2000); });
+      return apiPostRaw(url, payload, method, { ...opts, _networkRetry: true });
+    }
+    return { ok: false, status: 0, error: err };
   }
 }
 

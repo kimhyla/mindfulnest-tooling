@@ -158,13 +158,32 @@ def _from_md_fallback(keys_file=None):
 
 
 def _find_keys_file():
-    """Search standard locations for API_KEYS_MASTER.md."""
+    """Search standard locations for API_KEYS_MASTER.md.
+
+    Bug fix 2026-05-19: API_KEYS_MASTER.md is intentionally NOT in the tooling
+    git repo (contains plaintext credentials per LD-505 / gitignore). It lives
+    only in the Dropbox runtime tree. The candidate list previously only
+    checked relative to credentials.py's location (tooling/Production/tools/
+    credentials_lib/), where the file does NOT exist. Result: server invoked
+    without Doppler env vars couldn't load creds → "Missing critical
+    credentials: directus_email, directus_password" on every endpoint that
+    called load_credentials() (regen audio, lipsync, etc).
+
+    Fix: add the Dropbox runtime tree as a final fallback candidate.
+    MN_DROPBOX_ROOT env var overrides the default Mac path (matches
+    deploy_storyboard_v59.sh convention).
+    """
     script_dir = os.path.dirname(os.path.abspath(__file__))
+    dropbox_root = os.environ.get(
+        "MN_DROPBOX_ROOT",
+        "/Users/kimberlysmith/Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files",
+    )
 
     candidates = [
         os.path.join(script_dir, "..", "..", "API_KEYS_MASTER.md"),   # tools/credentials_lib/ -> Production/
         os.path.join(script_dir, "..", "API_KEYS_MASTER.md"),          # tools/ -> tools/../
         os.path.join(script_dir, "..", "..", "..", "Production", "API_KEYS_MASTER.md"),
+        os.path.join(dropbox_root, "Production", "API_KEYS_MASTER.md"),  # Dropbox runtime tree
     ]
 
     for path in candidates:

@@ -152,7 +152,21 @@ def load_api_keys() -> dict:
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)  # type: ignore
     # parse_api_keys overlays Doppler env (OPENAI_API_KEY, BFL_API_KEY, …) over file.
-    keys = mod.parse_api_keys(PROD_ROOT / "API_KEYS_MASTER.md")
+    # LD-505 (2026-05-20 Bug-1 fix): API_KEYS_MASTER.md is DATA, lives in
+    # the Dropbox runtime tree, NOT in the tooling tree (.gitignored,
+    # Dropbox-only). PROD_ROOT here is tooling/Production/ because
+    # __file__ points at the .py source. Use lib.paths.API_KEYS_MASTER_PATH
+    # (same canonical resolver production_server.py:11741 uses). Bug
+    # surfaced when Kim clicked Regen B+C: 'No such file or directory:
+    # tooling-tree/Production/API_KEYS_MASTER.md' → opt2/opt3 never submitted.
+    if str(HERE.parent.parent) not in sys.path:
+        sys.path.insert(0, str(HERE.parent.parent))
+    try:
+        from lib.paths import API_KEYS_MASTER_PATH  # type: ignore
+        keys = mod.parse_api_keys(API_KEYS_MASTER_PATH)
+    except ImportError:
+        # Fallback: legacy tooling-tree path (will fail loud under LD-505).
+        keys = mod.parse_api_keys(PROD_ROOT / "API_KEYS_MASTER.md")
     # Explicit Doppler-first for end-frame vendors (LD-754 / MN_END_FRAME_VENDOR).
     openai_env = (os.environ.get("OPENAI_API_KEY") or "").strip()
     if openai_env:
@@ -162,8 +176,13 @@ def load_api_keys() -> dict:
         keys["bfl"] = bfl_env
     elif not keys.get("bfl"):
         # BFL file fallback when env unset (legacy direct-invoke path).
+        # LD-505: resolve to Dropbox tree (same fix as above).
         import re
-        content = (PROD_ROOT / "API_KEYS_MASTER.md").read_text(encoding="utf-8")
+        try:
+            from lib.paths import API_KEYS_MASTER_PATH as _AKM
+        except ImportError:
+            _AKM = PROD_ROOT / "API_KEYS_MASTER.md"
+        content = _AKM.read_text(encoding="utf-8")
         m = re.search(
             r"\|\s*\*+(?:Flux|BFL|Black\s*Forest)[^|]*\*+[^|]*\|\s*`([^`]+)`",
             content, re.IGNORECASE,
@@ -411,6 +430,18 @@ def openai_image_edit_generate_end_frame(
         _field("model", "gpt-image-1"),
         _field("prompt", end_prompt),
         _field("quality", "high"),
+        # input_fidelity:high preserves accessories + character details from the
+        # input image (LD-730 + LD-pending BG_MORPH_FIX_V1, ref_doc 231). Without
+        # this, gpt-image-1 re-stages the body composition and silently drops
+        # removable accessories (glasses, backpack, necklace) — same regression
+        # class that LD-730 fixed for FLUX → OpenAI swap, but the
+        # input_fidelity carryover from LD-439 still-gen was missed in the
+        # initial implementation. beat_generator.py:1251 uses it for the
+        # Responses-API still-gen path; this is the matching /v1/images/edits
+        # multipart-form equivalent. [INFERRED — verify against OpenAI docs
+        # https://platform.openai.com/docs/api-reference/images/createEdit;
+        # at write time the parameter is documented as multipart field].
+        _field("input_fidelity", "high"),
         _field("size", size_param),
         _field("n", "1"),
         (
@@ -581,38 +612,25 @@ def flux_kontext_generate_end_frame(
 #  Kling Subject Binding — character element registry loader
 # =========================================================================
 
+def _subjects_prod_root() -> Path:
+    """Production root for character_subjects.json — Dropbox when MN_PROD_ROOT is set."""
+    env = os.environ.get("MN_PROD_ROOT", "").strip()
+    if env:
+        return Path(env).expanduser().resolve()
+    return PROD_ROOT
+
+
 def _load_subject_element(speaker: str) -> "dict | None":
-    """Return element_list entry for speaker from character_subjects.json, or None.
+    """Return element_list entry for speaker, or None.
 
-    Fail-open: any missing config, bad file, or unregistered character returns
-    None — caller proceeds without element_list (identical to current behavior).
-    Never raises. Uses case-insensitive multi-tier lookup so it handles both
-    _canonicalize_speaker() output ('luna') and title-case ('Luna') safely.
-
-    Returns: {"element_id": "...", "element_name": "..."} ready for element_list[],
-             or None if not configured / not yet registered.
+    Fail-open: missing config or unregistered character returns None — caller
+    proceeds without element_list. Never raises. Routes through
+    kling_character_registry so speaker aliases (e.g. luna→Lorelai) match Beat Gen.
     """
     try:
-        subjects_path = PROD_ROOT / "character_subjects.json"
-        if not subjects_path.is_file():
-            return None
-        data = json.loads(subjects_path.read_text(encoding="utf-8"))
-        chars = data.get("characters") or {}
-        # Multi-tier lookup: exact → lowercase → title-case → capitalize
-        entry = (
-            chars.get(speaker)
-            or chars.get(speaker.lower())
-            or chars.get(speaker.title())
-            or chars.get(speaker.capitalize())
-        )
-        if not entry:
-            return None
-        if entry.get("status") != "active":
-            return None
-        eid = entry.get("element_id")
-        if not eid:
-            return None
-        return {"element_id": str(eid), "element_name": entry.get("element_name", speaker)}
+        import kling_character_registry as reg
+
+        return reg.get_element_list_entry(speaker or "")
     except Exception as exc:
         log(f"[subject-binding] _load_subject_element({speaker!r}) failed (non-fatal): {exc}")
         return None

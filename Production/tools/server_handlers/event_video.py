@@ -19,6 +19,7 @@ from lib.atomic_json_write import atomic_json_write
 # StateManager class referenced by event_create body for fresh state init.
 from tools.production_server import (  # noqa: E402
     StateManager,
+    _bg_module,
 )
 
 
@@ -70,6 +71,8 @@ def handle_event_create(h, body: dict) -> None:
     new_event_dir = parent / new_event_id
     # Create dir + initialize state via StateManager (writes v3-shape state.json).
     new_event_dir.mkdir(parents=True, exist_ok=False)
+    from lib.event_library import ensure_event_library_dirs
+    ensure_event_library_dirs(new_event_dir)
     # Storyboard template — copy current event's storyboard if possible,
     # else create minimal placeholder (lets future event_load satisfy
     # the storyboard_v*_prod.html lookup).
@@ -128,7 +131,10 @@ def handle_event_load(h, body: dict) -> None:
 
     # event_dir is sibling of current — we do NOT allow arbitrary paths.
     # Pattern: Production/<event_id>/ next to current Production/<current>/.
-    new_event_dir = h.app.event_dir.parent / new_event_id
+    from lib.paths import normalize_event_dir, runtime_production_root
+
+    prod_root = runtime_production_root(h.app.event_dir)
+    new_event_dir = normalize_event_dir(prod_root / new_event_id)
     if not new_event_dir.is_dir():
         return h._send_error_v59(
                    404,
@@ -215,10 +221,25 @@ def handle_event_load(h, body: dict) -> None:
         h.app.invalidate_beats_cache()
         h.app._storyboard_list_cache = None
         h.app._storyboard_list_cache_mtime = 0.0
+        # Rebind BG stills/sidecar paths so /api/cr/library and Beat Gen scan
+        # the loaded event's beat_generator_stills/, not the startup pin.
+        _bg_module().init_bg_paths(new_event_dir)
         # S5.5d (v3): scope-type signal for milestone-aware code paths.
         h.app.scope_type = "event"
         h.app.active_milestone_id = None
         new_gen = h.app.event_generation
+        try:
+            from lib.event_pin import write_persisted_event_pin
+
+            write_persisted_event_pin(
+                runtime_production_root(new_event_dir),
+                event_id=new_event_id,
+                storyboard=new_storyboard_path.name,
+                event_dir=new_event_dir,
+                source="event_load",
+            )
+        except Exception as exc:
+            print(f"[event/load] WARN: could not persist event pin: {exc}", flush=True)
 
     print(
         f"[event/load] {old_event_id} (gen={old_gen}, sb={old_storyboard}) -> "
@@ -296,17 +317,18 @@ def handle_video_list(h) -> None:
 
 
 def handle_video_set_active(h, body: dict) -> None:
-    """POST /api/video/set_active — write state.active_video (display hint).
+    """POST /api/video/set_active — persist active video + switch Beat Gen context.
 
     Body: {scope_event_id, video_role}. Validates video_role against
     canonical set + presence in state.videos via state.validate_video_role.
 
-    IMPORTANT (LD-474 reminder): state.active_video is a DISPLAY HINT
-    ONLY. It is the write-target of this endpoint so the v59 client can
-    persist Kim's last-selected video role across page reloads. Server
-    handlers MUST NOT read state.active_video for partition selection —
-    partition selection comes ONLY from body['scope_video_role'] on each
-    mutating request. This endpoint exists solely for UX persistence.
+    Writes ``state.active_video`` (display hint for reload UX) AND atomically:
+      - preserves outgoing BG segment (Kling O3 clips + sidecar beats)
+      - switches sidecar ``active_context`` to the target segment
+      - intro-only: seeds canonical mirror tail when loading intro
+
+    Partition selection on other handlers still comes ONLY from
+    ``body['scope_video_role']`` per LD-474 — not from ``state.active_video``.
     """
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
         return
@@ -328,6 +350,19 @@ def handle_video_set_active(h, body: dict) -> None:
                    extra={"ok": False, "code": "VIDEO_ROLE_INVALID", "got": video_role, "valid": sorted(h.app.state._VALID_VIDEO_ROLES), "hint": "must be in canonical set AND exist in state.videos."},
                )
 
+    scope_event_id = h._scope_body(body).get("scope_event_id") or h.app.event_id
+    prior_state = h.app.state.read_state()
+    from_video_role = prior_state.get("active_video")
+
+    from server_handlers.background import switch_bg_context_for_video_role
+
+    bg_switch = switch_bg_context_for_video_role(
+        h,
+        scope_event_id,
+        from_video_role if isinstance(from_video_role, str) else None,
+        video_role,
+    )
+
     # Write state.active_video at the top level (not partition-scoped).
     def _set_active(state, _role=video_role):
         state["active_video"] = _role
@@ -337,6 +372,7 @@ def handle_video_set_active(h, body: dict) -> None:
         "ok": True,
         "event_id": h.app.event_id,
         "active_video": video_role,
+        "bg_switch": bg_switch,
     })
 
 

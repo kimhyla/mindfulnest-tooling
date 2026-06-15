@@ -324,13 +324,13 @@ class ScopeRouterScrambledStateTests(unittest.TestCase):
         self.assertEqual(post_beat.get("text"), new_text, "text must persist")
         # Speaker canonicalized at write boundary (per K8 dual-store + C-6 mirror)
         self.assertEqual(
-            post_beat.get("speaker"), "Chipper",
-            f"K8: top-level speaker MUST canonicalize legacy 'Guide Bird' to 'Chipper' "
+            post_beat.get("speaker"), "Arlo",
+            f"K8: top-level speaker MUST canonicalize legacy 'Guide Bird' to 'Arlo' "
             f"on update_text; got {post_beat.get('speaker')!r}",
         )
-        # phase_1 mirror also Chipper
+        # phase_1 mirror also Arlo
         self.assertEqual(
-            (post_beat.get("phase_1") or {}).get("speaker"), "Chipper",
+            (post_beat.get("phase_1") or {}).get("speaker"), "Arlo",
             f"K8 mirror: phase_1.speaker MUST mirror canonical top-level; "
             f"got {(post_beat.get('phase_1') or {}).get('speaker')!r}",
         )

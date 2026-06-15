@@ -1,0 +1,39 @@
+---
+description: O3 paid deliveries must always appear in Beat Gen — disk/sidecar reconcile
+globs:
+  - Production/tools/beat_generator.py
+  - Production/tools/kling_o3_element_beat_pipeline.py
+  - Production/tools/server_handlers/background.py
+  - Production/tools/tests/test_o3_disk_reconcile.py
+alwaysApply: false
+---
+
+# O3 delivery disk reconcile (LD paid-output visibility)
+
+## Invariant
+
+When Kling O3 Element encode reaches `phase: delivery_encode` or `phase: done`, the delivery mp4 **must** be visible to the operator:
+
+1. **Immediately** — `persist_o3_delivery_option_checkpoint()` writes the option row before heavy finalize persist.
+2. **On failure** — `recover_orphan_o3_delivery()` + full `reconcile_o3_disk_deliveries_for_beat()`.
+3. **On session load** — `reconcile_kling_o3_sidecar()` imports every `{beat_id}_g*_element_o3_master_delivery.mp4` on disk.
+
+Beat Gen shows **newest 3** in video containers 0–2. Full history stays in sidecar `kling_o3_options` and on disk.
+
+## Operator folder (review all paid clips)
+
+`Production/Event_N/kling_o3_clips/{beat_id}_g*_element_o3_master_delivery.mp4`
+
+Example Event 2 Loral Beat 13: filter `*beat_27*` in that folder (internal id suffix only — UI label is Beat 13).
+
+## Never regress
+
+- `assign_kling_o3_option_to_slot()` must **append/merge** options — never replace the list with only 3 slots.
+- `prune_stale_o3_voice_options()` must **only** drop rows whose `video_path` file is missing — never drop on voice_id/element_id mismatch.
+- Job log `o3_submit` binding is authoritative for recovered options — not current registry alone.
+
+## Tests
+
+`Production/tools/tests/test_o3_disk_reconcile.py`
+
+Full spec: `Production/docs/O3_PAID_OUTPUT_VISIBILITY_SPEC_v1.md`

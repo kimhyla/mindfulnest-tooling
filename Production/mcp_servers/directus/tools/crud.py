@@ -27,6 +27,7 @@ from lib.directus import (
     try_post_or_queue,
 )
 from lib.directus_admin_client import DirectusAdminClient, DirectusAdminError
+from tools.sanitize import sanitize_payload  # LD-760 XML-leak token strip
 from lib.payload_validator import (
     RetiredPayloadKeyError,
     SchemaProbeError,
@@ -212,6 +213,8 @@ def register(mcp: Any) -> None:
         ),
     )
     def directus_create(collection: str, payload: dict) -> dict:
+        # LD-760: sanitize XML-leak tokens BEFORE schema validation.
+        payload = sanitize_payload(payload, field_prefix=f"{collection}.create")
         if (
             collection.startswith("prod_")
             or collection.startswith("app_")
@@ -250,6 +253,8 @@ def register(mcp: Any) -> None:
         ),
     )
     def directus_patch(collection: str, item_id: int, payload: dict) -> dict:
+        # LD-760: sanitize XML-leak tokens BEFORE schema validation.
+        payload = sanitize_payload(payload, field_prefix=f"{collection}.patch[{item_id}]")
         if (
             collection.startswith("prod_")
             or collection.startswith("app_")

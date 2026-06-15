@@ -79,8 +79,15 @@ def _seed_beat_with_polling_option(
     submitted_at_epoch: float,
     task_id: str = "FAKE-TASK-123",
 ):
+    # P5 migration (2026-05-19): poller _pending_tasks walks v3 partitions
+    # via _iter_v3_beats — legacy top-level state["beats"] returns 0 tasks.
+    # Seed into videos.intro.beats AND ensure display_order includes beat_id
+    # so DISPLAY_ORDER_STRICT_V2 prune (mutate_state line 1338-1347) doesn't
+    # delete the beat we just seeded.
     def seed(state):
-        state.setdefault("beats", {})[beat_id] = {
+        partition = state.setdefault("videos", {}).setdefault("intro", {})
+        beats = partition.setdefault("beats", {})
+        beats[beat_id] = {
             "phase_1": {
                 "status": "polling",
                 "options": [
@@ -98,6 +105,9 @@ def _seed_beat_with_polling_option(
                 "selected_option": None,
             },
         }
+        do = partition.setdefault("display_order", [])
+        if beat_id not in do:
+            do.append(beat_id)
         return True
     sm.mutate_state(seed)
 
@@ -137,7 +147,7 @@ class TestTier1BStaleTimeout(unittest.TestCase):
             "stale option must NOT be returned for polling"
         )
         st = self.sm.read_state()
-        opt = st["beats"][beat_id]["phase_1"]["options"][0]
+        opt = st["videos"]["intro"]["beats"][beat_id]["phase_1"]["options"][0]
         self.assertEqual(opt["status"], "failed",
                          f"expected status=failed, got {opt.get('status')}")
         self.assertEqual(opt["last_error"], "stale_timeout")
@@ -145,7 +155,7 @@ class TestTier1BStaleTimeout(unittest.TestCase):
         self.assertEqual(opt.get("stale_timeout_threshold_sec"), 900)
         self.assertEqual(opt.get("stale_timeout_source"), "kling")
         # phase_1 rollup should become "partial" (single failed, no polling)
-        self.assertEqual(st["beats"][beat_id]["phase_1"]["status"], "partial")
+        self.assertEqual(st["videos"]["intro"]["beats"][beat_id]["phase_1"]["status"], "partial")
 
     # --- Test 2: stale Kling option WITH on-disk artifact → succeeded_late ---
     def test_stale_with_artifact_recovers_as_succeeded_late(self):
@@ -163,7 +173,7 @@ class TestTier1BStaleTimeout(unittest.TestCase):
         pending = self.poller._pending_tasks()
         self.assertEqual(pending, [], "stale recovered option must not re-poll")
         st = self.sm.read_state()
-        opt = st["beats"][beat_id]["phase_1"]["options"][0]
+        opt = st["videos"]["intro"]["beats"][beat_id]["phase_1"]["options"][0]
         self.assertEqual(opt["status"], "succeeded_late",
                          f"expected status=succeeded_late, got {opt.get('status')}")
         self.assertTrue(opt.get("resurrected"))
@@ -171,14 +181,15 @@ class TestTier1BStaleTimeout(unittest.TestCase):
         self.assertEqual(opt.get("file"), f"{beat_id}_option_1.mp4")
         self.assertGreater(opt.get("size_bytes", 0), 0)
         # phase_1 rollup should be "completed" (only option, now terminal-success)
-        self.assertEqual(st["beats"][beat_id]["phase_1"]["status"], "completed")
+        self.assertEqual(st["videos"]["intro"]["beats"][beat_id]["phase_1"]["status"], "completed")
 
     # --- Test 3: late success on previously-failed option → resurrected -----
     def test_late_callback_on_failed_slot_transitions_to_completed(self):
         beat_id = "beat_03"
-        # Seed as already-failed (simulates: T1 flipped to failed earlier)
+        # P5 migration: seed into v3 partition shape + display_order
         def seed(state):
-            state.setdefault("beats", {})[beat_id] = {
+            partition = state.setdefault("videos", {}).setdefault("intro", {})
+            partition.setdefault("beats", {})[beat_id] = {
                 "phase_1": {
                     "status": "partial",
                     "options": [
@@ -197,6 +208,9 @@ class TestTier1BStaleTimeout(unittest.TestCase):
                     "selected_option": None,
                 },
             }
+            do = partition.setdefault("display_order", [])
+            if beat_id not in do:
+                do.append(beat_id)
             return True
         self.sm.mutate_state(seed)
 
@@ -213,7 +227,7 @@ class TestTier1BStaleTimeout(unittest.TestCase):
         self.assertTrue(ok, "_download_and_mark_completed should return True")
 
         st = self.sm.read_state()
-        opt = st["beats"][beat_id]["phase_1"]["options"][0]
+        opt = st["videos"]["intro"]["beats"][beat_id]["phase_1"]["options"][0]
         self.assertEqual(opt["status"], "completed",
                          f"expected status=completed, got {opt.get('status')}")
         self.assertEqual(opt.get("resurrected_from"), "failed")
@@ -233,7 +247,7 @@ class TestTier1BStaleTimeout(unittest.TestCase):
         self.assertEqual(pending[0][0], beat_id)
         # Status unchanged
         st = self.sm.read_state()
-        self.assertEqual(st["beats"][beat_id]["phase_1"]["options"][0]["status"],
+        self.assertEqual(st["videos"]["intro"]["beats"][beat_id]["phase_1"]["options"][0]["status"],
                          "polling")
 
     # --- Test 5: feature-flag disables T1 entirely --------------------------
@@ -251,7 +265,7 @@ class TestTier1BStaleTimeout(unittest.TestCase):
             # Status should still be 'polling' — no T1 mutation happened.
             st = self.sm.read_state()
             self.assertEqual(
-                st["beats"][beat_id]["phase_1"]["options"][0]["status"],
+                st["videos"]["intro"]["beats"][beat_id]["phase_1"]["options"][0]["status"],
                 "polling",
             )
         finally:
@@ -270,7 +284,7 @@ class TestTier1BStaleTimeout(unittest.TestCase):
         pending = self.poller._pending_tasks()
         self.assertEqual(pending, [])
         st = self.sm.read_state()
-        opt = st["beats"][beat_id]["phase_1"]["options"][0]
+        opt = st["videos"]["intro"]["beats"][beat_id]["phase_1"]["options"][0]
         self.assertEqual(opt["status"], "failed")
         self.assertEqual(opt.get("stale_timeout_threshold_sec"), 300)
         self.assertEqual(opt.get("stale_timeout_source"), "bytedance_lipsync")
@@ -292,7 +306,7 @@ class TestTier1BStaleTimeout(unittest.TestCase):
         pending = self.poller._pending_tasks()
         self.assertEqual(pending, [])
         st = self.sm.read_state()
-        opt = st["beats"][beat_id]["phase_1"]["options"][0]
+        opt = st["videos"]["intro"]["beats"][beat_id]["phase_1"]["options"][0]
         # Must NOT have been claimed as late success — artifact predates submit
         self.assertEqual(opt["status"], "failed",
                          "artifact older than submission should not resurrect")

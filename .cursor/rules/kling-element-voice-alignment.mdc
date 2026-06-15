@@ -1,0 +1,50 @@
+# Kling Element + bound voice (O3 Pro)
+
+## Rule
+
+Dialogue beats with an **active Element + create-voice** must submit with:
+
+1. **`@Image1` = registered Element pose** (frontal or emotion-matched refer) — not a random library PNG
+2. **Locked voice line** in prompt (`Tessa speaks in a warm gentle conversational pace…`) — not generic `<<<voice_N>>>` or ad-hoc “speaks warmly”
+3. **`element_list`** on WaveSpeed O3 Pro submit (Jessica/Miranda/etc.)
+
+Mismatch → generic Kling TTS even when logs show correct `element_id`.
+
+## Char ref gate (locked library drops)
+
+| Action | Heal behavior |
+|---|---|
+| User drops library tile on Char ref | **Validate only** — `sync_element_char_ref_status(..., heal_mismatch=False)` |
+| O3 Generate / submit | **Validate only** — same; mismatch → `ELEMENT_VISUAL_MISMATCH` toast |
+| Sidecar migrate / session-state load | **Do not redirect** locked library refs when the tile file still exists — validate gate only |
+
+**NEVER** redirect a user-locked `library/images/sources/` path to an Element pose when that library file still exists on disk. **NEVER** `shutil.copy2` (or any write) into `Event_*/library/images/sources/` from heal/sync/align code.
+
+Regression: `Production/tools/tests/test_library_sources_immutable.py`, `test_beat_ref_drop_lock.py`.
+
+## Enforcement
+
+| Layer | Location |
+|---|---|
+| Submit handler | `handle_bg_submit_arlo_o3_voice` — align + `ELEMENT_VISUAL_MISMATCH` gate |
+| Element pipeline | `kling_o3_element_beat_pipeline.run_pipeline` |
+| Sidecar migrate | `align_beat_reference_to_element` (skip **still_insert** beats) |
+| Registry paths | `kling_character_registry.set_prod_root()` via `init_bg_paths` |
+
+## Still inserts
+
+Do **not** auto-align `reference_image` on `still_insert` beats — they use library still in option 1 + ElevenLabs TTS, not Element O3.
+
+## Lorelai Element
+
+**Kling display name:** `Loral` (short name bound at Element registration; avoids Lorelai pronunciation drift). Registry key, sidecar `speaker`, and pose paths stay `Lorelai`. All Kling surfaces — `element_list.element_name`, O3 voice lines (`Loral speaks in a …`), and `@Image1 (Loral)` — use **Loral** via `kling_element_display_name()` and `character_subjects.json` `element_name`.
+
+Poses: `Lorelai/poses/lorelai_canonical_neutral.png`, `lorelai_explaining.png`, `lorelai_shocked.png`
+
+Re-register after pose swap: `python3 scripts/setup_all_kling_character_voices.py --char Lorelai --force`
+
+## Deploy
+
+Kim uses **Event_2**: `bash Production/scripts/deploy_storyboard_v59.sh --event Event_2`
+
+Hard refresh after deploy — confirm header `build-sha` matches latest commit.

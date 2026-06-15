@@ -26,8 +26,12 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "Production" / "tools"))
+sys.path.insert(0, str(REPO_ROOT / "Production" / "tools" / "credentials_lib"))
 
-from lib import ffmpeg_stitch as FS  # noqa: E402
+# ffmpeg_stitch lives at Production/tools/credentials_lib/ffmpeg_stitch.py
+# (NOT in Production/lib). All other test files use `import ffmpeg_stitch`
+# directly — this file was the lone outlier with `from lib import ...`.
+import ffmpeg_stitch as FS  # noqa: E402
 
 
 FFMPEG = shutil.which("ffmpeg")

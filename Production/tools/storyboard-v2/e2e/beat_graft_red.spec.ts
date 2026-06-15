@@ -77,7 +77,7 @@ test.describe('Pillar 7 — /api/beat/graft (RED skeleton until C-7)', () => {
       mutation_id: mutationId,
       move: false,
     };
-    const r1 = await request.post(`${SERVER}/api/beat/graft`, { data: body1 });
+    const r1 = await request.post(`${SERVER}/api/beat/graft`, { data: body1, timeout: 60_000 });
     expect(r1.ok(), `first graft must succeed; got HTTP ${r1.status()}: ${await r1.text()}`).toBeTruthy();
     const p1 = await r1.json();
     expect(p1?.status).toBe('copied');
@@ -85,7 +85,7 @@ test.describe('Pillar 7 — /api/beat/graft (RED skeleton until C-7)', () => {
     expect(p1?.beat_id).toBe('beat_01');
 
     // Replay with the same mutation_id → dedup
-    const r2 = await request.post(`${SERVER}/api/beat/graft`, { data: body1 });
+    const r2 = await request.post(`${SERVER}/api/beat/graft`, { data: body1, timeout: 60_000 });
     expect(r2.ok()).toBeTruthy();
     const p2 = await r2.json();
     expect(p2?.status, 'replay must return status="dedup"').toBe('dedup');

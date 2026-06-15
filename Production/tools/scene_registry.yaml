@@ -103,9 +103,11 @@ m1_e1_res_beat_02_runestone:
       status: approved
   style: tessa_ori
 m1_e1_res_bg_arc1_event1_post_beat_02:
-  archetype: ground_left_to_target
-  beat: res_beat_01
+  archetype: stone_activation
+  beat: res_beat_02
   event_id: e1
+  module_id: m1
+  style: tessa_ori
   manual_path:
   - - 0.153
     - 0.645
@@ -127,5 +129,3 @@ m1_e1_res_bg_arc1_event1_post_beat_02:
     - 0.691
   - - 0.438
     - 0.658
-  module_id: m1
-  style: tessa_ori

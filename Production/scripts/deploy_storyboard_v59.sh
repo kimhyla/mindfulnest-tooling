@@ -22,7 +22,8 @@
 #   bash Production/scripts/deploy_storyboard_v59.sh
 #     (defaults: MN_TOOLING_ROOT = this Mac's tooling checkout;
 #               MN_DROPBOX_ROOT = Dropbox "Claude Mindfulnest Project Files" — overrides per LD-505 / LD-541)
-#     (default event_dir = Production/Event_1; override via --event flag or MN_EVENT_DIR env)
+#     (default event_dir = persisted server_event_pin.json when present, else Production/Event_1;
+#      override via --event flag or MN_EVENT_DIR env)
 #     Event_0 is intentionally excluded from fanout — it is a Milestone (opening_storybook).
 #
 #   bash Production/scripts/deploy_storyboard_v59.sh --event Event_2
@@ -163,6 +164,36 @@ fi
 echo "[deploy] (a-pre.5) stale-build check ok ($TSX_COUNT .tsx/.ts source file(s) all older than dist/index.html)"
 
 # ----------------------------------------------------------------
+# (a-pre.6) Storyboard UI Feature Regression Guard — LD-766
+# Greps dist/index.html for critical-feature markers before deploy.
+# Fails loud (exit 1) if any feature regressed silently.
+# Set MN_SKIP_REGRESSION_GUARD=1 to bypass (audit-trail only, NOT for normal use).
+# ----------------------------------------------------------------
+if [[ "${MN_SKIP_REGRESSION_GUARD:-0}" != "1" ]]; then
+    GUARD_SCRIPT="$SRC_TOOLING/Production/scripts/check_storyboard_critical_features.sh"
+    if [[ -x "$GUARD_SCRIPT" ]]; then
+        if ! bash "$GUARD_SCRIPT"; then
+            echo "[deploy] FATAL: regression guard failed — refusing to deploy." >&2
+            echo "[deploy] Fix the missing marker(s) above OR set MN_SKIP_REGRESSION_GUARD=1 with audit reason." >&2
+            exit 1
+        fi
+        echo "[deploy] (a-pre.6) LD-766 regression guard ok"
+    else
+        echo "[deploy] WARN: regression guard script missing at $GUARD_SCRIPT — skipping" >&2
+    fi
+    SESSION_DURABILITY_SCRIPT="$SRC_TOOLING/Production/scripts/verify_storyboard_session_durability.sh"
+    if [[ -x "$SESSION_DURABILITY_SCRIPT" ]]; then
+        if ! bash "$SESSION_DURABILITY_SCRIPT"; then
+            echo "[deploy] FATAL: storyboard session durability guard failed." >&2
+            exit 1
+        fi
+        echo "[deploy] (a-pre.6b) session durability ok (waveform, producer, seek, library audio, phase fades + pytest)"
+    fi
+else
+    echo "[deploy] (a-pre.6) LD-766 regression guard SKIPPED (MN_SKIP_REGRESSION_GUARD=1)"
+fi
+
+# ----------------------------------------------------------------
 # (a) Pre-deploy snapshot — rollback safety net
 # ----------------------------------------------------------------
 mkdir -p "$LOG_DIR"
@@ -189,6 +220,7 @@ for sub in Production/tools Production/lib Production/scripts; do
     fi
     log_safe="$(echo "$sub" | tr '/' '_')"
     rsync -a --delete \
+        --exclude 'stitch_editor_state.json' \
         "$SRC_TOOLING/$sub/" \
         "$DEST_DROPBOX/$sub/" \
         2>&1 | tee "$LOG_DIR/rsync_${log_safe}.log"
@@ -207,7 +239,7 @@ done
 # new manifests to this list when they're introduced; same dependency-order
 # rule as the rsync subdirs above.
 # ----------------------------------------------------------------
-for manifest in smoke_test_manifest.yaml; do
+for manifest in smoke_test_manifest.yaml character_subjects.json; do
     src="$SRC_TOOLING/Production/$manifest"
     dest="$DEST_DROPBOX/Production/$manifest"
     if [[ -f "$src" ]]; then
@@ -304,6 +336,12 @@ echo "[deploy] (d) sha256 verification..."
 verify_files=(
     "Production/tools/production_server.py"
     "Production/tools/scope_router.py"
+    "Production/tools/beat_generator.py"
+    "Production/tools/kling_o3_element_beat_pipeline.py"
+    "Production/tools/arlo_o3_voice_pipeline.py"
+    "Production/tools/server_handlers/background.py"
+    "Production/tools/server_handlers/kling_o3.py"
+    "Production/tools/kling_o3_job_store.py"
     "Production/tools/storyboard-v2/src/api/endpoints.ts"
     "Production/tools/storyboard-v2/src/api/client.ts"
 )
@@ -327,6 +365,19 @@ for f in "${verify_files[@]}"; do
 done
 
 # ----------------------------------------------------------------
+# (d.5) Full-tree sha256 parity for O3 + intro critical paths
+# ----------------------------------------------------------------
+echo "[deploy] (d.5) tooling↔Dropbox parity check..."
+MN_TOOLING_ROOT="$SRC_TOOLING" MN_DROPBOX_ROOT="$DEST_DROPBOX" \
+    python3 "$SRC_TOOLING/Production/scripts/verify_tooling_dropbox_parity.py"
+
+# ----------------------------------------------------------------
+# (d.6) O3 + intro contract pytest gate (blocks partial backup restores)
+# ----------------------------------------------------------------
+echo "[deploy] (d.6) O3/intro contract gate..."
+bash "$SRC_TOOLING/Production/scripts/verify_o3_intro_contract.sh"
+
+# ----------------------------------------------------------------
 # (e) Auto-restart production_server.py if mtime changed
 # ----------------------------------------------------------------
 echo "[deploy] (e) checking running production_server.py..."
@@ -346,7 +397,25 @@ if [[ -n "${MN_DEPLOY_SKIP_LAUNCH:-}" ]]; then
     exit 0
 fi
 
-EVENT_DIR="${_ARG_EVENT_DIR:-${MN_EVENT_DIR:-Production/Event_1}}"
+EVENT_DIR="${_ARG_EVENT_DIR:-${MN_EVENT_DIR:-}}"
+if [[ -z "$EVENT_DIR" ]]; then
+    PIN_FILE="$DEST_DROPBOX/Production/server_event_pin.json"
+    if [[ -f "$PIN_FILE" ]]; then
+        PIN_EVENT="$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); e=(d.get('event_id') or '').strip(); print(f'Production/{e}' if e else '')" "$PIN_FILE" 2>/dev/null || true)"
+        if [[ -n "$PIN_EVENT" ]]; then
+            EVENT_DIR="$PIN_EVENT"
+            echo "[deploy] (f) default event from server_event_pin.json → $EVENT_DIR"
+        fi
+    fi
+fi
+EVENT_DIR="${EVENT_DIR:-Production/Event_1}"
+# MN_EVENT_DIR is sometimes set to an absolute Dropbox path; production_server
+# expects a path relative to the Dropbox runtime root.
+if [[ "$EVENT_DIR" == "$DEST_DROPBOX/"* ]]; then
+    EVENT_DIR="${EVENT_DIR#"$DEST_DROPBOX/"}"
+elif [[ "$EVENT_DIR" == /* && "$EVENT_DIR" =~ /Production/(Event_[^/]+)$ ]]; then
+    EVENT_DIR="Production/${BASH_REMATCH[1]}"
+fi
 echo "[deploy] (f) launching production_server.py against $EVENT_DIR ..."
 cd "$DEST_DROPBOX"
 
@@ -370,7 +439,7 @@ fi
 # Event id derives from event_dir name (e.g. Event_1 → Event_1).
 event_id="$(basename "$EVENT_DIR")"
 
-nohup python3 "$DEST_DROPBOX/Production/tools/production_server.py" \
+nohup env PRODUCTION_SERVER_SINGLE_MACHINE=1 python3 "$DEST_DROPBOX/Production/tools/production_server.py" \
     --event-dir "$EVENT_DIR" \
     --storyboard "$storyboard_html" \
     --event-id "$event_id" \
@@ -424,11 +493,61 @@ fi
 echo "[deploy] (g) curl smoke ok — server serving fresh build (sha=$BUILD_SHA, marker_matches=$MARKER_COUNT)"
 
 # ----------------------------------------------------------------
-# (h) Write .last_deploy timestamp sentinel
+# (g.5) Pin runtime event to deployed event dir (not stale launch argv)
+# ----------------------------------------------------------------
+echo "[deploy] (g.5) post-restart event/load pin for $event_id ..."
+LOAD_HTTP=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 15 \
+    -X POST "http://localhost:${SERVER_PORT}/api/event/load" \
+    -H "Content-Type: application/json" \
+    -d "{\"event_id\":\"${event_id}\"}" || echo "000")
+if [[ "$LOAD_HTTP" != "200" ]]; then
+    echo "FATAL: /api/event/load for $event_id returned HTTP $LOAD_HTTP" >&2
+    tail -20 "$LOG_DIR/server.log" >&2 || true
+    exit 1
+fi
+echo "[deploy] (g.5) event/load ok — runtime pinned to $event_id"
+
+# ----------------------------------------------------------------
+# (g.6) Sync launchd KeepAlive agent to deployed event (EVENT_LAUNCHAGENT_SYNC_V1)
+# ----------------------------------------------------------------
+echo "[deploy] (g.6) syncing production-server launch agent for $event_id ..."
+chmod +x "$SRC_TOOLING/Production/scripts/install_production_server_launchagent.sh"
+bash "$SRC_TOOLING/Production/scripts/install_production_server_launchagent.sh" "$event_id"
+echo "[deploy] (g.6) launch agent ok"
+
+# ----------------------------------------------------------------
+# (h) Post-restart O3 sidecar API smoke — server must expose lock API live
+# ----------------------------------------------------------------
+echo "[deploy] (h) O3 capability smoke via /api/bg/session-state ..."
+O3_OK=$(curl -sS --max-time 15 \
+    "http://localhost:${SERVER_PORT}/api/bg/session-state?scope_event_id=${event_id}&scope_video_role=intro" \
+    | python3 -c "import sys,json; c=json.load(sys.stdin).get('capabilities') or {}; print('ok' if c.get('update_beat_locked') and c.get('sidecar_file_lock') else 'fail')" \
+    2>/dev/null || echo "fail")
+if [[ "$O3_OK" != "ok" ]]; then
+    echo "FATAL: live server capabilities missing update_beat_locked/sidecar_file_lock (got: $O3_OK)" >&2
+    tail -20 "$LOG_DIR/server.log" >&2 || true
+    exit 1
+fi
+echo "[deploy] (h) O3 capability smoke ok"
+
+# ----------------------------------------------------------------
+# (h.5) Post-restart Kling canonical prompt shape — migrate heal on session-state
+# ----------------------------------------------------------------
+echo "[deploy] (h.5) Kling canonical prompt shape live smoke (Event_2) ..."
+chmod +x "$SRC_TOOLING/Production/scripts/smoke_kling_canonical_prompt_shape_live.sh"
+if ! bash "$SRC_TOOLING/Production/scripts/smoke_kling_canonical_prompt_shape_live.sh"; then
+    echo "FATAL: Kling canonical prompt shape live smoke failed after restart" >&2
+    tail -30 "$LOG_DIR/server.log" >&2 || true
+    exit 1
+fi
+echo "[deploy] (h.5) Kling canonical prompt shape ok"
+
+# ----------------------------------------------------------------
+# (i) Write .last_deploy timestamp sentinel
 # Per V59_CICD_GAP_FIX_SPEC_v1.md Phase G — pre-commit hook reads this
 # to detect "Dropbox runtime tree edited after last deploy" divergence.
 # ----------------------------------------------------------------
 date +%s > "$SRC_TOOLING/.last_deploy"
-echo "[deploy] (h) .last_deploy timestamp written: $(cat "$SRC_TOOLING/.last_deploy")"
+echo "[deploy] (i) .last_deploy timestamp written: $(cat "$SRC_TOOLING/.last_deploy")"
 
 echo "[deploy] complete  snapshot=$SNAPSHOT_DIR  log=$LOG_DIR/server.log"

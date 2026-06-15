@@ -20,10 +20,18 @@ name: Playwright e2e
 # deferred existing scaffold which requires fuller fixture data). Per
 # §19.6.1 maintainability trigger: when count exceeds 15, migrate to a
 # Playwright project/tag-based grouping in playwright.config.ts. Current
-# count after V59 gap-fix Phase E = 14 (12 prior + 2 new), still under
-# threshold. DEFERRED specs (behavioral-parity / rollback / smoke /
-# touchpoint-a) reference Event_1 fixtures (sources/, cropped/) that
-# Event_e2e_fixture does not provide — tracked as SPEC_BLOCKED_ON_FIXTURE
+# count after 2026-05-25 CI inclusion sprint = 26 (24 prior + 2 new:
+# rollback / smoke). EXCEEDS 15 threshold — Playwright project/tag-based
+# grouping migration is deferred (tracked as prod_blockers). Current explicit
+# list is still serviceable and fully auditable.
+#   - rollback: auto-skips in CI because Production/Event_1/storyboard_v58_prod.html
+#     is not in the checkout; the built-in test.skip(!v58_present) guard fires.
+#     Added to CI so the spec is compiled + imported every run (catches type errors).
+#   - smoke: fixture-compatible after 3 fixes: (1) Event_1 regex → fixture-agnostic,
+#     (2) cropper-modal → modal-cropper, (3) cropper-close → modal-close-cropper.
+#     Library seeded by global-setup.ts (1 PNG in beat_generator_stills/sources/).
+# DEFERRED specs (behavioral-parity / touchpoint-a) reference Event_1 beats 04-06
+# that Event_e2e_fixture does not provide — tracked as SPEC_BLOCKED_ON_FIXTURE
 # activity log rows, NOT silently mocked (Rule 19).
 
 on:
@@ -361,22 +369,18 @@ jobs:
         # Per spec §19.2 / §19.6 (S5.5f) + §19 / §8.9 (retroactive) — APPEND,
         # not replace, not glob. Each session that ships new e2e specs adds
         # its target file(s) to this list. A glob would silently include the
-        # deferred existing scaffold (smoke/behavioral/rollback/touchpoint-a)
-        # which requires fuller fixture data.
+        # deferred existing scaffold (behavioral-parity / touchpoint-a) which
+        # requires Event_1 beats 04-06 not present in Event_e2e_fixture.
         # Currently includes:
         #   - s5_5ce_proper_fix (13 tests — 5 R-bugs + +NewEvent flow)
         #   - retroactive_s1..s6 (41 tests — 6 surfaces from PR #2)
         #   - s5_5f_smoke (18 tests — F3-F17 from PR #3)
         #   - architectural_fix (9 tests — Wave 1 mutation channel + sidecar)
         #   - s5_5g_smoke (S5.5g G3-G13 functional behavior gates from PR #5)
-        #   - scope_router_red (C-1 RED suite for K1-K8 + D5 prevention claims;
-        #     turns GREEN as C-2..C-7 + C-10 land per handoff §3 test pinning)
-        #   - beat_graft_red (C-1 RED skeleton for /api/beat/graft cornerstone;
-        #     turns GREEN at C-7 per handoff §3)
-        # CI is RED on these two new files until their phase-paired commit
-        # lands (DS-2 expected RED → GREEN). C-7 + C-10 close the suite.
-        # Until C-2/C-3/C-5/C-6 land, the K-prevention tests in
-        # scope_router_red FAIL by design — that is the contract proof.
+        #   - scope_router_red (C-1 RED suite for K1-K8 + D5 prevention claims)
+        #   - beat_graft_red (C-1 RED skeleton for /api/beat/graft cornerstone)
+        #   - rollback (auto-skips; v58 file absent from checkout)
+        #   - smoke (1 test; fixture-compatible after 3 testid/regex fixes)
         run: |
           npx playwright test \
             e2e/s5_5ce_proper_fix.spec.ts \
@@ -400,6 +404,14 @@ jobs:
             e2e/f_phase_a_001_routing.spec.ts \
             e2e/f_phase_b_001_files_serve.spec.ts \
             e2e/delay_durability.spec.ts \
+            e2e/phase_waveform_playback.spec.ts \
+            e2e/layer_b_option_b_bg_session_state.spec.ts \
+            e2e/divergence_residuals_6_layer.spec.ts \
+            e2e/track-b-ld-coverage.spec.ts \
+            e2e/bg_beat_nav_jump.spec.ts \
+            e2e/bg_golden_path.spec.ts \
+            e2e/rollback.spec.ts \
+            e2e/smoke.spec.ts \
             --reporter=line
 
       # F-STALE-LIPSYNC-UI-001 / LD STORYBOARD_LIPSYNC_BUTTON_FRESHNESS_GATE_V1.

@@ -19,6 +19,7 @@ import { useEffect, useState } from 'preact/hooks';
 import { activeScope, activeVideoRole } from '../state/scope';
 import { READ_ENDPOINTS } from '../api/endpoints';
 import { pathappPatch } from '../api/client';
+import { setActiveVideoRole } from '../state/videoRole';
 
 interface VideoListItem {
   video_role: string;
@@ -78,32 +79,15 @@ export function VideoSelector() {
     if (newRole === current) return;
     setLoading(true);
     setErr(null);
-    // V59 architectural-fix (Wave 1, F-S2-002): mutation routes through
-    // pathappPatch so M1 snapshot fires + scope keys auto-inject + 409/423
-    // surface per LD-461 / LD-456 / LD-458/460.
-    const res = await pathappPatch<{ ok: boolean; active_video?: string }>(
-      activeScope.value,
-      'video_set_active',
-      { video_role: newRole },
-    );
+    const res = await setActiveVideoRole(newRole);
     setLoading(false);
     if (!res.ok) {
-      setErr(`HTTP ${res.status}: ${res.error ?? ''}`);
+      setErr(res.error ?? `HTTP ${res.status}`);
       target.value = current;
       return;
     }
-    const data = res.data;
-    if (data?.ok && data.active_video) {
-      setCurrent(data.active_video);
-      activeVideoRole.value = data.active_video;
-      // Update URL with ?video=<role> for shareable links + cold-boot persistence.
-      try {
-        const url = new URL(window.location.href);
-        url.searchParams.set('video', data.active_video);
-        window.history.replaceState({}, '', url.toString());
-      } catch {
-        // window.history not available — no-op.
-      }
+    if (res.activeVideo) {
+      setCurrent(res.activeVideo);
     }
   };
 

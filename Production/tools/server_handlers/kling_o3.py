@@ -1,0 +1,965 @@
+"""Kling O3 Omni handlers for Beat Generator tab."""
+
+from __future__ import annotations
+
+import concurrent.futures as _cf
+import json
+import os
+import threading
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+from lib.paths import API_KEYS_MASTER_PATH
+from tools import kling_o3_client
+from tools import kling_o3_job_store as job_store
+from tools.production_server import _KLING_O3_JOBS, _bg_module, parse_api_keys
+
+
+def _bg(h):
+    return _bg_module()
+
+
+def _api_key() -> str:
+    keys = parse_api_keys(API_KEYS_MASTER_PATH)
+    key = keys.get("wavespeed") or ""
+    if not key:
+        raise RuntimeError("WAVESPEED_API_KEY not configured")
+    return key
+
+
+def _apply_kling_beat_result(
+    bg,
+    beat_id: str,
+    generation: int,
+    prompt: str,
+    duration: int,
+    result: dict,
+    event_dir: Path,
+) -> None:
+    beat_obj_for_preserve = None
+    with bg.sidecar_file_lock():
+        sidecar = bg.read_sidecar()
+        _, beat_obj = bg.find_beat(sidecar, beat_id)
+        if beat_obj:
+            beat_obj["kling_o3_prompt_prepared"] = prompt
+            beat_obj["kling_o3_duration"] = duration
+            if result.get("ok"):
+                beat_obj["kling_o3_status"] = "completed"
+                beat_obj["kling_o3_task_id"] = result.get("task_id")
+                beat_obj["kling_o3_video_path"] = result.get("video_path")
+                beat_obj["kling_o3_completed_at"] = datetime.now(timezone.utc).isoformat()
+                beat_obj["kling_o3_generation"] = generation
+                if result.get("mode"):
+                    beat_obj["kling_o3_mode"] = result.get("mode")
+                elif result.get("submit_mode"):
+                    beat_obj["kling_o3_mode"] = result.get("submit_mode")
+                beat_obj["status"] = "video_ready"
+                bg.clear_kling_o3_beat_trim(beat_obj)
+                vp = result.get("video_path") or ""
+                if vp and os.path.isfile(vp):
+                    trim_info = bg.trim_kling_o3_clip_post_speech(Path(vp))
+                    if trim_info.get("trimmed"):
+                        beat_obj["kling_o3_post_speech_trim"] = trim_info
+                    actual = bg._ffprobe_duration(Path(vp))
+                    if actual > 0:
+                        beat_obj["kling_o3_actual_duration_s"] = round(actual, 3)
+            else:
+                beat_obj["kling_o3_status"] = "failed"
+                beat_obj["kling_o3_error"] = str(
+                    result.get("error") or result.get("status") or result.get("result")
+                )
+            if result.get("ok") and beat_obj.get("kling_o3_video_path"):
+                beat_obj_for_preserve = dict(beat_obj)
+        bg.write_sidecar(sidecar)
+    if beat_obj_for_preserve:
+        bg.preserve_kling_o3_beat_slot(beat_obj_for_preserve, event_dir, reason="generation_complete")
+
+
+def _resume_beat_from_task(
+    event_dir: Path,
+    api_key: str,
+    beat_id: str,
+    task_id: str,
+    dest: Path,
+    *,
+    job_id: str | None = None,
+    generation: int = 0,
+    prompt: str = "",
+    duration: int = 8,
+) -> dict:
+    bg = _bg_module()
+    try:
+        result = kling_o3_client.resume_task_to_mp4(api_key, task_id, dest)
+    except Exception as exc:
+        result = {"ok": False, "task_id": task_id, "error": str(exc)}
+    if job_id:
+        job_store.record_job_result(event_dir, job_id, beat_id, result)
+    _apply_kling_beat_result(bg, beat_id, generation, prompt, duration, result, event_dir)
+    return {"beat_id": beat_id, **result}
+
+
+def _beat_needs_recovery(beat_id: str, meta: dict, results: dict) -> bool:
+    prior = results.get(beat_id)
+    if prior and prior.get("ok"):
+        return False
+    status = (meta.get("status") or "queued").lower()
+    if status in ("queued", "processing", "submitted"):
+        return True
+    # Client poll timed out while WaveSpeed task may still be running.
+    if meta.get("task_id") and (prior or {}).get("status") == "timeout":
+        return True
+    return False
+
+
+def _beat_should_resume_timed_out_task(beat: dict, dest: Path) -> bool:
+    """True when a prior client-side poll timed out but task_id + dest slot remain."""
+    if dest.is_file():
+        return False
+    task_id = beat.get("kling_o3_task_id")
+    if not task_id:
+        return False
+    err = str(beat.get("kling_o3_error") or "").lower()
+    st = str(beat.get("kling_o3_status") or "").lower()
+    return err == "timeout" or (st == "failed" and err == "timeout")
+
+
+def recover_kling_o3_jobs_on_startup(event_dir: Path, api_key: str | None) -> int:
+    """Rehydrate in-flight jobs after server restart; resume WaveSpeed polling."""
+    if not api_key:
+        return 0
+    bg = _bg_module()
+    with bg.sidecar_file_lock():
+        sidecar = bg.read_sidecar()
+        bg.reconcile_kling_o3_sidecar(sidecar, event_dir)
+        bg.write_sidecar(sidecar)
+
+    resumed = 0
+    for job in job_store.list_active_jobs(event_dir):
+        job_id = job.get("job_id")
+        if not job_id:
+            continue
+        _KLING_O3_JOBS[job_id] = job_store.job_to_memory(job)
+        beats = job.get("beats") or {}
+        results = job.get("results") or {}
+        pending_poll = [
+            (bid, meta) for bid, meta in beats.items()
+            if meta.get("task_id") and _beat_needs_recovery(bid, meta, results)
+        ]
+        pending_submit = [
+            (bid, meta) for bid, meta in beats.items()
+            if not meta.get("task_id") and _beat_needs_recovery(bid, meta, results)
+        ]
+
+        def _recover_job(
+            jid=job_id,
+            poll_beats=pending_poll,
+            submit_beats=pending_submit,
+            ctx=job.get("context") or {},
+        ):
+            for beat_id, meta in submit_beats:
+                with bg.sidecar_file_lock():
+                    sc = bg.read_sidecar()
+                    _, live = bg.find_beat(sc, beat_id)
+                    if not live:
+                        res = {"beat_id": beat_id, "ok": False, "error": "beat_not_found_on_recovery"}
+                        job_store.record_job_result(event_dir, jid, beat_id, res)
+                        _KLING_O3_JOBS[jid]["results"][beat_id] = res
+                        _KLING_O3_JOBS[jid]["failed_count"] = int(_KLING_O3_JOBS[jid].get("failed_count") or 0) + 1
+                        continue
+                    beat_copy = dict(live)
+                job_store.update_job_beat(event_dir, jid, beat_id, status="processing")
+                res = _run_single_beat(
+                    _RecoveryHandler(event_dir),
+                    {"context": ctx},
+                    beat_copy,
+                    event_dir,
+                    api_key,
+                    job_id=jid,
+                    skip_pin_check=True,
+                )
+                job_store.record_job_result(event_dir, jid, beat_id, res)
+                _KLING_O3_JOBS[jid]["results"][beat_id] = res
+                if res.get("ok"):
+                    _KLING_O3_JOBS[jid]["done_count"] = int(_KLING_O3_JOBS[jid].get("done_count") or 0) + 1
+                else:
+                    _KLING_O3_JOBS[jid]["failed_count"] = int(_KLING_O3_JOBS[jid].get("failed_count") or 0) + 1
+
+            for beat_id, meta in poll_beats:
+                task_id = meta.get("task_id")
+                dest = Path(meta.get("dest_mp4") or "")
+                if not task_id or not dest:
+                    continue
+                res = _resume_beat_from_task(
+                    event_dir,
+                    api_key,
+                    beat_id,
+                    task_id,
+                    dest,
+                    job_id=jid,
+                    generation=int(meta.get("generation") or 0),
+                    prompt=str(meta.get("prompt_prepared") or ""),
+                    duration=int(meta.get("duration") or 8),
+                )
+                _KLING_O3_JOBS[jid]["results"][beat_id] = res
+                if res.get("ok"):
+                    _KLING_O3_JOBS[jid]["done_count"] = int(_KLING_O3_JOBS[jid].get("done_count") or 0) + 1
+                else:
+                    _KLING_O3_JOBS[jid]["failed_count"] = int(_KLING_O3_JOBS[jid].get("failed_count") or 0) + 1
+            _KLING_O3_JOBS[jid]["status"] = "done"
+            job_store.finalize_job(event_dir, jid, "done")
+
+        if pending_poll or pending_submit:
+            threading.Thread(
+                target=_recover_job,
+                daemon=True,
+                name=f"kling-o3-recover-{job_id}",
+            ).start()
+            resumed += 1
+            print(
+                f"[startup] Kling O3: resuming job {job_id} "
+                f"({len(pending_submit)} re-submit, {len(pending_poll)} poll)"
+            )
+        else:
+            job_store.finalize_job(event_dir, job_id, "done")
+    return resumed
+
+
+class _RecoveryHandler:
+    """Minimal handler stub for startup job recovery (no HTTP request context)."""
+
+    def __init__(self, event_dir: Path) -> None:
+        self.app = type("App", (), {"event_dir": str(event_dir)})()
+
+    def _check_event_pin(self, _pin: dict, _stage: str) -> bool:
+        return True
+
+
+def handle_bg_kling_o3_active_jobs(h) -> None:
+    """GET /api/bg/kling-o3-active-jobs — re-attach client polling after refresh."""
+    if not h._assert_event_scope({}, allow_missing=True):
+        return
+    summaries = job_store.active_jobs_summary(h.app.event_dir)
+    for item in summaries:
+        jid = item.get("job_id")
+        if jid and jid not in _KLING_O3_JOBS:
+            loaded = job_store.load_job(h.app.event_dir, jid)
+            if loaded:
+                _KLING_O3_JOBS[jid] = job_store.job_to_memory(loaded)
+    return h._send_json(200, {"ok": True, "jobs": summaries})
+
+
+def handle_bg_generate_kling_prompts(h, body: dict) -> None:
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+    arc_number = int(body.get("arc_number", 1))
+    event_id = str(body.get("event_id", "1"))
+    phase = str(body.get("phase", "full"))
+    bg = _bg(h)
+    with bg.sidecar_file_lock():
+        sidecar = bg.read_sidecar()
+        count = bg.generate_kling_prompts_for_segment(sidecar, arc_number, event_id, phase)
+        bg.write_sidecar(sidecar)
+        seg = bg.get_seg_entry(sidecar, arc_number, event_id, phase)
+        beats = seg.get("beats") or []
+    return h._send_json(200, {"ok": True, "count": count, "beats": beats})
+
+
+def handle_bg_import_locked_lines(h, body: dict) -> None:
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+    arc_number = int(body.get("arc_number", 1))
+    event_id = str(body.get("event_id", "1"))
+    phase = str(body.get("phase", "pre"))
+    rel_path = body.get("path") or "Event_1/M1E1_locked_lines_v16.json"
+    locked_path = Path(h.app.event_dir).parent / rel_path
+    if not locked_path.is_file():
+        locked_path = Path(h.app.event_dir) / Path(rel_path).name
+    if not locked_path.is_file():
+        return h._send_error_v59(
+            404,
+            error_code="LOCKED_LINES_NOT_FOUND",
+            error_message=f"Locked lines file not found: {rel_path}",
+            retry_safe=False,
+        )
+    bg = _bg(h)
+    beats = bg.import_locked_lines_beats(locked_path, arc_number, event_id, phase)
+    with bg.sidecar_file_lock():
+        sidecar = bg.read_sidecar()
+        seg = bg.get_seg_entry(sidecar, arc_number, event_id, phase)
+        merged = bg.merge_incoming_segment_beats(seg.get("beats") or [], beats)
+        seg["beats"] = merged
+        seg["name"] = seg.get("name") or f"Event {event_id} {phase} (locked lines)"
+        sidecar["active_context"] = {"arc_number": arc_number, "event_id": event_id, "phase": phase}
+        bg.write_sidecar(sidecar)
+    return h._send_json(200, {"ok": True, "beats": merged, "count": len(merged)})
+
+
+def _run_single_beat(
+    h,
+    pin: dict,
+    beat: dict,
+    event_dir: Path,
+    api_key: str,
+    *,
+    job_id: str | None = None,
+    skip_pin_check: bool = False,
+) -> dict:
+    bg = _bg(h)
+    beat_id = beat["beat_id"]
+    raw_prompt = (beat.get("kling_o3_prompt") or "").strip()
+    if not raw_prompt:
+        return {"beat_id": beat_id, "ok": False, "error": "kling_o3_prompt empty"}
+    prompt = bg.prepare_kling_o3_prompt_for_submit(beat, raw_prompt)
+    if not prompt:
+        return {"beat_id": beat_id, "ok": False, "error": "kling_o3_prompt empty after prep"}
+    duration = bg.resolve_kling_o3_submit_duration(beat, prompt)
+    ctx = pin.get("context") or {}
+    event_id = str(ctx.get("event_id", "1"))
+    phase = str(ctx.get("phase", "full"))
+    submit_mode = bg.resolve_kling_o3_submit_mode(beat)
+    char_path = bg.resolve_beat_char_ref_path(beat)
+    bg_path = bg.resolve_beat_bg_ref_path(beat, event_id, phase)
+    start_path = bg.resolve_beat_start_frame_path(beat)
+    end_path = bg.resolve_beat_end_frame_path(beat)
+    if submit_mode == "startend":
+        if not start_path or not end_path:
+            return {
+                "beat_id": beat_id,
+                "ok": False,
+                "error": f"missing start/end frames start={bool(start_path)} end={bool(end_path)}",
+            }
+    elif not char_path or not bg_path:
+        return {
+            "beat_id": beat_id,
+            "ok": False,
+            "error": f"missing refs char={bool(char_path)} bg={bool(bg_path)}",
+        }
+    generation = int(beat.get("kling_o3_generation") or 0)
+    dest = bg.kling_o3_clips_dir(event_dir) / f"{beat_id}_g{generation}.mp4"
+    meta_path = dest.with_suffix(".json")
+
+    resume_task_id = None
+    if _beat_should_resume_timed_out_task(beat, dest):
+        resume_task_id = beat.get("kling_o3_task_id")
+        tier = "pro"
+        try:
+            from tools import kling_character_registry as reg
+            tier = "pro" if reg.get_element_list_entry(beat.get("speaker") or "") else "std"
+        except Exception:
+            pass
+    else:
+        try:
+            if submit_mode == "startend":
+                task_id, tier = kling_o3_client.submit_image_to_video_startend(
+                    api_key,
+                    prompt,
+                    start_path,
+                    end_path,
+                    duration=duration,
+                    speaker=beat.get("speaker"),
+                    sound=True,
+                )
+            else:
+                task_id, tier = kling_o3_client.submit_reference_to_video(
+                    api_key, prompt, char_path, bg_path, duration=duration, speaker=beat.get("speaker"),
+                )
+        except Exception as exc:
+            return {"beat_id": beat_id, "ok": False, "error": str(exc)}
+
+        if job_id:
+            job_store.update_job_beat(
+                event_dir, job_id, beat_id,
+                task_id=task_id,
+                status="submitted",
+                tier=tier,
+                dest_mp4=str(dest),
+                generation=generation,
+                prompt_prepared=prompt,
+                duration=duration,
+                submit_mode=submit_mode,
+            )
+
+        with bg.sidecar_file_lock():
+            sidecar = bg.read_sidecar()
+            _, beat_obj = bg.find_beat(sidecar, beat_id)
+            if beat_obj:
+                beat_obj["kling_o3_task_id"] = task_id
+                beat_obj["kling_o3_status"] = "processing"
+                beat_obj["kling_o3_mode"] = submit_mode
+                beat_obj.pop("kling_o3_error", None)
+                bg.write_sidecar(sidecar)
+
+        resume_task_id = task_id
+
+    try:
+        poll_result = kling_o3_client.poll_until_done(resume_task_id, api_key)
+        status = (poll_result.get("status") or "").lower()
+        if status != "completed":
+            result = {
+                "ok": False,
+                "task_id": resume_task_id,
+                "status": status,
+                "tier": tier,
+                "result": poll_result,
+                "error": (
+                    poll_result.get("error")
+                    or (
+                        f"WaveSpeed poll timed out (task {resume_task_id}) — "
+                        "approved options preserved; retry Generate when ready"
+                        if status == "timeout"
+                        else status
+                    )
+                ),
+            }
+        else:
+            url = kling_o3_client.extract_output_url(poll_result)
+            if not url:
+                result = {
+                    "ok": False,
+                    "task_id": resume_task_id,
+                    "status": "no_output_url",
+                    "tier": tier,
+                    "result": poll_result,
+                }
+            else:
+                kling_o3_client.download_mp4(url, dest)
+                result = {
+                    "ok": True,
+                    "task_id": resume_task_id,
+                    "tier": tier,
+                    "video_path": str(dest),
+                    "video_url": url,
+                    "status": status,
+                    "submit_mode": submit_mode,
+                }
+    except Exception as exc:
+        return {"beat_id": beat_id, "ok": False, "error": str(exc), "task_id": resume_task_id}
+
+    if not skip_pin_check and not h._check_event_pin(pin, "kling_o3_write_sidecar"):
+        return {"beat_id": beat_id, "ok": False, "error": "event_changed_mid_job", "task_id": resume_task_id}
+
+    _apply_kling_beat_result(bg, beat_id, generation, prompt, duration, result, event_dir)
+    meta_path.write_text(json.dumps({
+        "beat_id": beat_id,
+        "result": result,
+        "prompt": prompt,
+        "submit_mode": submit_mode,
+    }, indent=2))
+    return {"beat_id": beat_id, "submit_mode": submit_mode, **result}
+
+
+def handle_bg_submit_kling_o3_batch(h, body: dict) -> None:
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+    beat_ids = body.get("beat_ids") or []
+    if not beat_ids:
+        return h._send_error_v59(
+            400, error_code="MISSING_BEAT_IDS", error_message="beat_ids required", retry_safe=False,
+        )
+    max_parallel = int(body.get("max_parallel") or os.environ.get("KLING_O3_MAX_PARALLEL", "5"))
+    max_parallel = max(1, min(max_parallel, 11))
+
+    pin = {
+        "pinned_generation": h.app.event_generation,
+        "pinned_event_dir": h.app.event_dir,
+        "context": {
+            "event_id": body.get("event_id"),
+            "phase": body.get("phase"),
+        },
+    }
+    if not h._check_event_pin(pin, "kling_o3_batch_pre_work"):
+        return h._send_error_v59(
+            423, error_code="EVENT_CHANGED_PRE_WORK", error_message="event_changed_pre_work", retry_safe=False,
+        )
+
+    job_id = str(uuid.uuid4())[:8]
+    bg = _bg(h)
+    event_id = str(body.get("event_id") or "1")
+    phase = str(body.get("phase") or "full")
+    beat_prompts = body.get("beat_prompts") or {}
+    beats_to_run = []
+    skipped_done: list[str] = []
+    with bg.sidecar_file_lock():
+        sidecar = bg.read_sidecar()
+        if beat_prompts:
+            bg.apply_live_kling_o3_prompts(sidecar, beat_prompts)
+        reconciled = bg.reconcile_kling_o3_sidecar(sidecar, Path(h.app.event_dir))
+        sidecar_dirty = bool(reconciled) or bool(beat_prompts)
+        for bid in beat_ids:
+            _, beat = bg.find_beat(sidecar, bid)
+            if not beat:
+                continue
+            if bg.ensure_beat_element_aligned_reference(beat):
+                sidecar_dirty = True
+            st = beat.get("kling_o3_status") or "draft"
+            if st in ("completed", "approved") and beat.get("kling_o3_video_path"):
+                skipped_done.append(bid)
+                continue
+            beats_to_run.append(dict(beat))
+        if sidecar_dirty:
+            bg.write_sidecar(sidecar)
+
+    if not beats_to_run:
+        return h._send_json(200, {
+            "ok": True,
+            "job_id": None,
+            "beat_ids": [],
+            "skipped_done": skipped_done,
+            "message": "All selected beats already have Kling clips",
+        })
+
+    validation_errors = bg.validate_kling_o3_beats_for_submit(
+        beats_to_run,
+        event_id=event_id,
+        phase=phase,
+    )
+    if validation_errors:
+        return h._send_error_v59(
+            400,
+            error_code="KLING_O3_PRE_SUBMIT_VALIDATION",
+            error_message=(
+                f"{len(validation_errors)} pre-submit check(s) failed — "
+                "fix voice registry or dialogue length before submitting."
+            ),
+            retry_safe=False,
+            extra={"errors": validation_errors},
+        )
+
+    with bg.sidecar_file_lock():
+        sidecar = bg.read_sidecar()
+        run_ids = {b["beat_id"] for b in beats_to_run}
+        for bid in run_ids:
+            _, beat = bg.find_beat(sidecar, bid)
+            if beat:
+                beat["kling_o3_status"] = "queued"
+        bg.write_sidecar(sidecar)
+
+    event_dir = Path(h.app.event_dir)
+    beat_entries: dict[str, dict] = {}
+    for beat in beats_to_run:
+        bid = beat["beat_id"]
+        gen = int(beat.get("kling_o3_generation") or 0)
+        beat_entries[bid] = {
+            "status": "queued",
+            "generation": gen,
+            "dest_mp4": str(bg.kling_o3_clips_dir(event_dir) / f"{bid}_g{gen}.mp4"),
+        }
+    scope_body = h._scope_body(body)
+    scope_event_id = str(scope_body.get("scope_event_id") or h.app.event_id)
+    job_store.create_job(
+        event_dir,
+        job_id=job_id,
+        beat_entries=beat_entries,
+        context={"event_id": event_id, "phase": phase},
+        scope_event_id=scope_event_id,
+    )
+
+    _KLING_O3_JOBS[job_id] = {
+        "status": "running",
+        "results": {},
+        "total": len(beats_to_run),
+        "done_count": 0,
+        "failed_count": 0,
+    }
+
+    def _run_job():
+        try:
+            api_key = _api_key()
+        except Exception as exc:
+            _KLING_O3_JOBS[job_id]["status"] = "failed"
+            _KLING_O3_JOBS[job_id]["error"] = str(exc)
+            job_store.finalize_job(event_dir, job_id, "failed", error=str(exc))
+            return
+
+        def _one(beat):
+            if not h._check_event_pin(pin, "kling_o3_beat_start"):
+                return {"beat_id": beat["beat_id"], "ok": False, "error": "event_changed"}
+            job_store.update_job_beat(event_dir, job_id, beat["beat_id"], status="processing")
+            with bg.sidecar_file_lock():
+                sc = bg.read_sidecar()
+                _, live = bg.find_beat(sc, beat["beat_id"])
+                if live:
+                    live["kling_o3_status"] = "processing"
+                    beat.update(live)
+                bg.write_sidecar(sc)
+            return _run_single_beat(h, pin, beat, event_dir, api_key, job_id=job_id)
+
+        with _cf.ThreadPoolExecutor(max_workers=max_parallel, thread_name_prefix="kling-o3") as pool:
+            futures = {pool.submit(_one, b): b["beat_id"] for b in beats_to_run}
+            for fut in _cf.as_completed(futures):
+                bid = futures[fut]
+                try:
+                    res = fut.result()
+                except Exception as exc:
+                    res = {"beat_id": bid, "ok": False, "error": str(exc)}
+                job_store.record_job_result(event_dir, job_id, bid, res)
+                _KLING_O3_JOBS[job_id]["results"][bid] = res
+                if res.get("ok"):
+                    _KLING_O3_JOBS[job_id]["done_count"] += 1
+                else:
+                    _KLING_O3_JOBS[job_id]["failed_count"] += 1
+        _KLING_O3_JOBS[job_id]["status"] = "done"
+        job_store.finalize_job(event_dir, job_id, "done")
+
+    threading.Thread(target=_run_job, daemon=True, name=f"kling-o3-{job_id}").start()
+    return h._send_json(200, {
+        "ok": True,
+        "job_id": job_id,
+        "beat_ids": beat_ids,
+        "max_parallel": max_parallel,
+    })
+
+
+def handle_bg_poll_kling_o3_status(h) -> None:
+    import urllib.parse
+
+    qs = urllib.parse.parse_qs(urllib.parse.urlparse(h.path).query)
+    job_id = (qs.get("job_id") or [""])[0]
+    if not job_id:
+        return h._send_error_v59(
+            404, error_code="JOB_NOT_FOUND", error_message="job_id required", retry_safe=False,
+        )
+    job = _KLING_O3_JOBS.get(job_id)
+    if not job:
+        stored = job_store.load_job(h.app.event_dir, job_id)
+        if stored:
+            job = job_store.job_to_memory(stored)
+            _KLING_O3_JOBS[job_id] = job
+        else:
+            return h._send_error_v59(
+                404, error_code="JOB_NOT_FOUND", error_message=f"job {job_id!r} not found", retry_safe=False,
+            )
+    return h._send_json(200, {
+        "status": job["status"],
+        "results": job.get("results", {}),
+        "total": job.get("total", 0),
+        "done_count": job.get("done_count", 0),
+        "failed_count": job.get("failed_count", 0),
+    })
+
+
+def handle_bg_approve_kling_o3(h, body: dict) -> None:
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+    beat_id = body.get("beat_id")
+    if not beat_id:
+        return h._send_error_v59(
+            400, error_code="MISSING_BEAT_ID", error_message="beat_id required", retry_safe=False,
+        )
+    bg = _bg(h)
+    with bg.sidecar_file_lock():
+        sidecar = bg.read_sidecar()
+        _, beat = bg.find_beat(sidecar, beat_id)
+        if not beat:
+            return h._send_error_v59(
+                404, error_code="BEAT_NOT_FOUND", error_message=f"beat {beat_id} not found", retry_safe=False,
+            )
+        if not beat.get("kling_o3_video_path"):
+            return h._send_error_v59(
+                400, error_code="NO_VIDEO", error_message="No kling_o3_video_path on beat", retry_safe=False,
+            )
+        beat["status"] = "approved"
+        beat["kling_o3_status"] = "approved"
+        bg.write_sidecar(sidecar)
+    return h._send_json(200, {"ok": True, "beat_id": beat_id})
+
+
+def handle_bg_redo_kling_o3(h, body: dict) -> None:
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+    beat_id = body.get("beat_id")
+    if not beat_id:
+        return h._send_error_v59(
+            400, error_code="MISSING_BEAT_ID", error_message="beat_id required", retry_safe=False,
+        )
+    bg = _bg(h)
+    with bg.sidecar_file_lock():
+        sidecar = bg.read_sidecar()
+        _, beat = bg.find_beat(sidecar, beat_id)
+        if not beat:
+            return h._send_error_v59(
+                404, error_code="BEAT_NOT_FOUND", error_message=f"beat {beat_id} not found", retry_safe=False,
+            )
+        event_dir = Path(h.app.event_dir)
+        bg.preserve_kling_o3_beat_slot(beat, event_dir, reason="redo")
+        bg.reset_kling_o3_beat_for_redo(beat, event_dir)
+        bg.write_sidecar(sidecar)
+    return handle_bg_submit_kling_o3_batch(h, {"beat_ids": [beat_id], **body})
+
+
+def handle_bg_pin_kling_o3(h, body: dict) -> None:
+    """POST /api/bg/pin-kling-o3 — manual preserve before redo."""
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+    beat_id = body.get("beat_id")
+    if not beat_id:
+        return h._send_error_v59(
+            400, error_code="MISSING_BEAT_ID", error_message="beat_id required", retry_safe=False,
+        )
+    bg = _bg(h)
+    event_dir = Path(h.app.event_dir)
+    with bg.sidecar_file_lock():
+        sidecar = bg.read_sidecar()
+        _, beat = bg.find_beat(sidecar, beat_id)
+        if not beat:
+            return h._send_error_v59(
+                404, error_code="BEAT_NOT_FOUND", error_message=f"beat {beat_id} not found", retry_safe=False,
+            )
+        ok, err = bg.pin_kling_o3_beat(beat, event_dir)
+        if not ok:
+            return h._send_error_v59(
+                400,
+                error_code="PIN_FAILED",
+                error_message=f"Could not preserve beat: {err}",
+                retry_safe=False,
+            )
+    beat_out = bg.enrich_beat_kling_o3_pinned(beat, event_dir)
+    return h._send_json(200, {"ok": True, "beat_id": beat_id, "beat": beat_out})
+
+
+def handle_bg_restore_kling_o3(h, body: dict) -> None:
+    """POST /api/bg/restore-kling-o3 — restore pinned clip over current generation."""
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+    beat_id = body.get("beat_id")
+    if not beat_id:
+        return h._send_error_v59(
+            400, error_code="MISSING_BEAT_ID", error_message="beat_id required", retry_safe=False,
+        )
+    bg = _bg(h)
+    event_dir = Path(h.app.event_dir)
+    with bg.sidecar_file_lock():
+        sidecar = bg.read_sidecar()
+        ok, err, beat_out = bg.restore_pinned_kling_o3_beat(beat_id, event_dir, sidecar)
+        if not ok:
+            code = 404 if err == "no_pinned" else 400
+            return h._send_error_v59(
+                code,
+                error_code="RESTORE_FAILED",
+                error_message=f"Could not restore preserved beat: {err}",
+                retry_safe=False,
+            )
+        bg.write_sidecar(sidecar)
+    return h._send_json(200, {"ok": True, "beat_id": beat_id, "beat": beat_out})
+
+
+def handle_bg_kling_o3_preview(h, body: dict) -> None:
+    """POST /api/bg/kling-o3-preview — show extracted dialogue + warnings before submit."""
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+    beat_id = body.get("beat_id")
+    if not beat_id:
+        return h._send_error_v59(
+            400, error_code="MISSING_BEAT_ID", error_message="beat_id required", retry_safe=False,
+        )
+    raw_prompt = (body.get("kling_o3_prompt") or body.get("prompt") or "").strip()
+    event_id = str(body.get("event_id") or "1")
+    phase = str(body.get("phase") or "full")
+    bg = _bg(h)
+    with bg.sidecar_file_lock():
+        sidecar = bg.read_sidecar()
+        _, beat = bg.find_beat(sidecar, beat_id)
+        if not beat:
+            return h._send_error_v59(
+                404, error_code="BEAT_NOT_FOUND", error_message=f"beat {beat_id} not found", retry_safe=False,
+            )
+        beat_copy = dict(beat)
+    if raw_prompt:
+        beat_copy["kling_o3_prompt"] = raw_prompt
+    preview = bg.preview_kling_o3_submit(beat_copy, raw_prompt or beat_copy.get("kling_o3_prompt") or "", event_id=event_id, phase=phase)
+    return h._send_json(200, {"ok": True, **preview})
+
+
+def handle_bg_kling_o3_trim(h, body: dict) -> None:
+    """POST /api/bg/kling-o3-trim — set front/back trim on a Kling O3 beat clip."""
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+    beat_id = body.get("beat_id")
+    if not beat_id:
+        return h._send_error_v59(
+            400, error_code="MISSING_BEAT_ID", error_message="beat_id required", retry_safe=False,
+        )
+    raw_trim_start = body.get("trim_start")
+    if raw_trim_start is None:
+        raw_trim_start = body.get("trim_in", 0)
+    try:
+        trim_start = float(raw_trim_start)
+    except (TypeError, ValueError):
+        return h._send_error_v59(
+            400, error_code="INVALID_TRIM_START", error_message="trim_start must be numeric", retry_safe=False,
+        )
+    raw_trim_back = body.get("trim_back")
+    trim_back: float | None
+    if raw_trim_back is None:
+        trim_back = None
+    else:
+        try:
+            trim_back = float(raw_trim_back)
+        except (TypeError, ValueError):
+            return h._send_error_v59(
+                400, error_code="INVALID_TRIM_BACK", error_message="trim_back must be numeric", retry_safe=False,
+            )
+    if trim_start < 0:
+        return h._send_error_v59(
+            400, error_code="TRIM_START_MUST_BE", error_message="trim_start must be >= 0", retry_safe=False,
+        )
+    if trim_back is not None and trim_back < 0:
+        return h._send_error_v59(
+            400, error_code="TRIM_BACK_MUST_BE", error_message="trim_back must be >= 0", retry_safe=False,
+        )
+
+    bg = _bg(h)
+    with bg.sidecar_file_lock():
+        sidecar = bg.read_sidecar()
+        _, beat = bg.find_beat(sidecar, beat_id)
+        if not beat:
+            return h._send_error_v59(
+                404, error_code="BEAT_NOT_FOUND", error_message=f"beat {beat_id} not found", retry_safe=False,
+            )
+        if beat.get("pipeline") != "kling_o3_omni":
+            return h._send_error_v59(
+                400, error_code="NOT_KLING_O3", error_message="beat is not kling_o3_omni", retry_safe=False,
+            )
+        try:
+            result = bg.set_kling_o3_beat_trim(beat, trim_start=trim_start, trim_back=trim_back)
+        except ValueError as exc:
+            return h._send_error_v59(
+                400, error_code="TRIM_VALIDATION", error_message=str(exc), retry_safe=False,
+            )
+        bg.write_sidecar(sidecar)
+    return h._send_json(200, {"ok": True, "beat_id": beat_id, **result})
+
+
+def handle_bg_export_to_stitcher(h, body: dict) -> None:
+    """POST /api/bg/export-to-stitcher — concat approved Kling O3 clips → stitch slot.
+
+    Per-beat front/back trims (``kling_o3_trim_start`` / ``kling_o3_trim_back`` in
+    sidecar) are materialized at export via ``_kling_o3_export_clip_path`` — never
+    the untrimmed source file when a trim window is active.
+    """
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+    arc_number = int(body.get("arc_number", 1))
+    bg = _bg(h)
+    event_id = bg.normalize_bg_event_id(str(body.get("event_id", "1")))
+    phase = str(body.get("phase", "pre"))
+    video_role = str(body.get("scope_video_role") or body.get("video_role") or "")
+    slot_key = (
+        body.get("slot_key")
+        or bg.resolve_bg_export_stitch_slot(phase=phase, video_role=video_role or None)
+    )
+    if not slot_key:
+        return h._send_error_v59(
+            400,
+            error_code="UNSUPPORTED_PHASE",
+            error_message=(
+                f"no stitch slot mapping for BG phase {phase!r} "
+                f"(supported: pre/intro→intro, post/resolution→resolution, "
+                f"phase_a, phase_b; or set scope_video_role)"
+            ),
+            retry_safe=False,
+        )
+
+    with bg.sidecar_file_lock():
+        sidecar = bg.read_sidecar()
+        seg = bg.get_seg_entry(sidecar, arc_number, event_id, phase)
+        beats = list(seg.get("beats") or [])
+
+    if not beats:
+        return h._send_error_v59(
+            400, error_code="NO_BEATS", error_message="segment has no beats", retry_safe=False,
+        )
+
+    not_ready = []
+    for beat in beats:
+        if not bg.beat_has_stitch_export_clip(beat, h.app.event_dir):
+            not_ready.append(beat.get("beat_id"))
+
+    if not_ready:
+        return h._send_error_v59(
+            400,
+            error_code="BEATS_NOT_APPROVED",
+            error_message=(
+                f"{len(not_ready)} beat(s) not ready for stitch export "
+                "(need approved Kling clip or magic-on-still composite)"
+            ),
+            retry_safe=False,
+            extra={"beat_ids": not_ready},
+        )
+
+    try:
+        out_path, boundaries, duration_s = bg.concat_kling_o3_approved_beats(
+            beats, h.app.event_dir, slot_key,
+            phase=phase,
+            event_id=event_id,
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        return h._send_error_v59(
+            400, error_code="EXPORT_VALIDATION", error_message=str(exc), retry_safe=False,
+        )
+    except RuntimeError as exc:
+        return h._send_error_v59(
+            500, error_code="FFMPEG_CONCAT_FAILED", error_message=str(exc), retry_safe=True,
+        )
+
+    event_name = Path(h.app.event_dir).name
+    root = h._stitch_project_root()
+    try:
+        video_rel = str(out_path.resolve().relative_to(root))
+    except ValueError:
+        video_rel = f"Production/{event_name}/assembled/{out_path.name}"
+
+    try:
+        h._stitch_resolve_path(video_rel)
+    except ValueError:
+        return h._send_error_v59(
+            403,
+            error_code="VIDEO_PATH_OUTSIDE_PROJECT_ROOT",
+            error_message="export video path outside project root",
+            retry_safe=False,
+        )
+
+    from server_handlers.stitch_editor import (  # noqa: PLC0415
+        STITCH_SLOT_EXPORT_FULL_MEDIA_V1,
+        STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1,
+        stitch_upsert_event_slot,
+    )
+
+    try:
+        job_name, export_dur_ms, export_warnings = stitch_upsert_event_slot(
+            h,
+            event_name,
+            slot_key,
+            {
+                "video_path": video_rel,
+                "overlay_baked": False,
+                "source": f"kling_o3_export_{phase}",
+            },
+            beat_boundaries=boundaries,
+        )
+    except ValueError as exc:
+        return h._send_error_v59(
+            409,
+            error_code="STITCH_SLOT_EXPORT_MEDIA_BLOCKED",
+            error_message=str(exc),
+            retry_safe=False,
+            extra={
+                "code": STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1,
+                "export_full_media": STITCH_SLOT_EXPORT_FULL_MEDIA_V1,
+            },
+        )
+
+    return h._send_json(200, {
+        "ok": True,
+        "job_name": job_name,
+        "slot_key": slot_key,
+        "video_path": video_rel,
+        "duration_s": duration_s,
+        "video_dur_ms": export_dur_ms,
+        "warnings": export_warnings,
+        "beat_count": len(beats),
+        "beat_boundaries": boundaries,
+        "code": STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1,
+        "export_full_media": STITCH_SLOT_EXPORT_FULL_MEDIA_V1,
+    })

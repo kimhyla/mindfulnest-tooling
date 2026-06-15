@@ -21,13 +21,17 @@
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { activeScope } from '../state/scope';
-import { activeTab } from '../app';
+import { activeTab, serverRehydrateTick } from '../state/refreshSignals';
 import { apiGet, pathappPatch } from '../api/client';
 import { SERVER_BASE } from '../api/endpoints';
 import { AssetTile } from './ui/AssetTile';
 import { pushToast } from './ui/Toast';
 import type { DragPayload } from '../utils/dragdrop';
 import { openCropper } from '../state/cropper';
+import {
+  ELEMENT_SPEAKERS,
+  libraryItemCanAddToElement,
+} from '../utils/libraryElementPose';
 
 // ----------------------------------------------------------------
 // Types
@@ -55,6 +59,25 @@ interface LibItem {
   // LD-738 LIBRARY_MASTER_ASSET_VISIBILITY_FIX_V1
   is_master?: boolean;
   has_crop?: boolean;
+  /** Audio items from stitch_editor/library (ms). */
+  duration_ms?: number;
+  /** Element pose tier / character_master — from cr_library. */
+  speaker?: string;
+  element_pose_contaminated?: boolean;
+}
+
+interface StitchLibraryAudioItem {
+  filename: string;
+  path: string;
+  duration_ms: number;
+  category: string;
+  source_folder: string;
+}
+
+interface StitchLibraryResponse {
+  ambient?: StitchLibraryAudioItem[];
+  sfx?: StitchLibraryAudioItem[];
+  transitions?: StitchLibraryAudioItem[];
 }
 
 interface LibraryResponse {
@@ -69,6 +92,56 @@ export function flattenLibraryResponse(r: LibraryResponse): LibItem[] {
   if (Array.isArray(r.images)) return r.images;
   if (Array.isArray(r.items)) return r.items;
   return [...(r.sources ?? []), ...(r.crops ?? []), ...(r.masters ?? [])];
+}
+
+/** Map GET /api/stitch_editor/library scan into LibItem rows for sfx/ambient/transitions tiers. */
+export function stitchLibraryToLibItems(data: StitchLibraryResponse): LibItem[] {
+  const out: LibItem[] = [];
+  const push = (list: StitchLibraryAudioItem[] | undefined, category: string) => {
+    for (const item of list ?? []) {
+      const tags =
+        category === 'ambient'
+          ? ['ambient']
+          : category === 'transitions'
+            ? ['transition']
+            : ['sfx'];
+      out.push({
+        key: item.filename,
+        abs_path: item.path,
+        filename: item.filename,
+        display_name: item.filename,
+        asset_type: category === 'ambient' ? 'audio' : category === 'sfx' ? 'sfx' : 'transition',
+        tags,
+        tier: category,
+        duration_ms: item.duration_ms,
+        mtime: 0,
+      });
+    }
+  };
+  push(data.ambient, 'ambient');
+  push(data.sfx, 'sfx');
+  push(data.transitions, 'transitions');
+  return out;
+}
+
+const AUDIO_LIBRARY_TIERS = new Set<LibraryTier>(['ambient', 'sfx', 'transitions']);
+
+/** Preview URL for sound_library audio rows (sfx / ambient / transitions). */
+export function libraryAudioPreviewUrl(item: LibItem): string | undefined {
+  const fname = item.filename ?? item.key;
+  if (!fname) return undefined;
+  const at = inferAssetType(item);
+  const tags = item.tags ?? [];
+  const isAudioRow =
+    at === 'audio' ||
+    at === 'sfx' ||
+    at === 'transition' ||
+    tags.includes('ambient') ||
+    tags.includes('sfx') ||
+    tags.includes('transition') ||
+    AUDIO_LIBRARY_TIERS.has((item.tier ?? '') as LibraryTier);
+  if (!isAudioRow) return undefined;
+  return `/api/stitch_editor/audio_file/${encodeURIComponent(fname)}`;
 }
 
 function thumbSrc(it: LibItem): string | undefined {
@@ -112,6 +185,7 @@ const LIBRARY_TIER_LS_KEY = 'mn.library.tier';
 // / 'character_master' for image disk items today.
 function inferAssetType(it: LibItem): string {
   if (it.asset_type) return it.asset_type;
+  if (it.tier === 'canonical') return 'canonical_image';
   if (it.tier === 'character_master') return 'still_master';
   if (it.tier === 'source' || it.tier === 'cropped') return 'still_delivery';
   return 'image';
@@ -126,14 +200,21 @@ function inferAssetType(it: LibItem): string {
 export const TIER_TO_FILTER_MAP: Record<LibraryTier, (it: LibItem) => boolean> = {
   images: (it) => {
     const at = inferAssetType(it);
-    return at === 'image' || at === 'still_delivery' || at === 'still_master' || at === 'beat_scene';
+    return (
+      at === 'image' ||
+      at === 'still_delivery' ||
+      at === 'still_master' ||
+      at === 'beat_scene' ||
+      at === 'canonical_image' ||
+      it.tier === 'canonical'
+    );
   },
   ambient: (it) => {
     const at = inferAssetType(it);
     const tags = it.tags ?? [];
     return at === 'audio' && tags.includes('ambient');
   },
-  sfx: (it) => inferAssetType(it) === 'sfx',
+  sfx: (it) => inferAssetType(it) === 'sfx' || inferAssetType(it) === 'transition',
   transitions: (it) => (it.tags ?? []).includes('transition'),
   watercolors: (it) => {
     const tags = it.tags ?? [];
@@ -224,6 +305,8 @@ export function LibraryPanel() {
   const [refreshTick, setRefreshTick] = useState(0);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [elementSpeaker, setElementSpeaker] = useState<string>('Lorelai');
+  const [elementAdding, setElementAdding] = useState(false);
 
   // CC-17 — tier state, persisted to localStorage
   const [tier, setTier] = useState<LibraryTier>(loadPersistedTier);
@@ -297,6 +380,43 @@ export function LibraryPanel() {
     return () => window.removeEventListener('click', onDocClick);
   }, [preview]);
 
+  useEffect(() => {
+    if (!preview?.item) return;
+    const sp = (preview.item.speaker ?? '').trim();
+    if (sp && ELEMENT_SPEAKERS.includes(sp as typeof ELEMENT_SPEAKERS[number])) {
+      setElementSpeaker(sp);
+    }
+  }, [preview?.item?.key, preview?.item?.abs_path]);
+
+  const onAddLibraryItemToElement = async () => {
+    if (!preview?.item?.abs_path || elementAdding) return;
+    setElementAdding(true);
+    const result = await pathappPatch<{
+      ok: boolean;
+      pose_rel?: string;
+      element_id?: string;
+    }>(activeScope.value, 'bg_add_element_pose', {
+      speaker: elementSpeaker,
+      abs_path: preview.item.abs_path,
+    });
+    setElementAdding(false);
+    if (!result.ok) {
+      pushToast({
+        kind: 'error',
+        message: result.error ?? 'Could not add pose to Element',
+        source: 'library-add-element-error',
+      });
+      return;
+    }
+    pushToast({
+      kind: 'success',
+      message: `Registered on ${elementSpeaker} Element`
+        + (result.data?.pose_rel ? ` (${result.data.pose_rel})` : ''),
+      source: 'library-add-element',
+    });
+    setRefreshTick((n) => n + 1);
+  };
+
   // mn:library-refresh — fired by CropperModal onSaved after a crop is saved.
   useEffect(() => {
     const onLibRefresh = () => setRefreshTick((n) => n + 1);
@@ -304,25 +424,64 @@ export function LibraryPanel() {
     return () => window.removeEventListener('mn:library-refresh', onLibRefresh);
   }, []);
 
+  // BUG-A real UX fix (Kim 2026-05-20): track which library tiles are
+  // CURRENTLY assigned to any beat in the active video scope, so Kim can
+  // see at a glance which crops are "in use" — distinguishing master vs
+  // delivery of the same crop becomes trivial when only one of them is
+  // highlighted. Set rebuilds from /api/v2/event/<id>/state's
+  // image_overrides per video_role. Refresh whenever scope changes OR
+  // assignment events fire elsewhere.
+  const [inUseKeys, setInUseKeys] = useState<Set<string>>(new Set());
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const res = await apiGet<LibraryResponse>('cr_library', {
-        event_id: activeScope.value.event_id,
-      });
-      if (cancelled) return;
-      setLoading(false);
-      if (res.ok && res.data) {
-        setItems(flattenLibraryResponse(res.data));
-        setError(null);
-      } else {
-        setError(res.error ?? 'unknown error');
+      const res = await apiGet<{
+        videos?: Record<string, { image_overrides?: Record<string, string> }>;
+      }>('v2_event_state', { event_id: activeScope.value.event_id });
+      if (cancelled || !res.ok || !res.data) return;
+      const keys = new Set<string>();
+      for (const partition of Object.values(res.data.videos ?? {})) {
+        for (const v of Object.values(partition?.image_overrides ?? {})) {
+          if (typeof v === 'string' && v) keys.add(v);
+        }
       }
+      setInUseKeys(keys);
     })();
     return () => {
       cancelled = true;
     };
-  }, [refreshTick, activeScope.value.event_id]);
+  }, [refreshTick, serverRehydrateTick.value, activeScope.value.event_id]);
+  // Listen for assign-image refreshes from other parts of the app.
+  useEffect(() => {
+    const onAssign = () => setRefreshTick((n) => n + 1);
+    window.addEventListener('mn:image-assigned', onAssign);
+    return () => window.removeEventListener('mn:image-assigned', onAssign);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [crRes, stitchRes] = await Promise.all([
+        apiGet<LibraryResponse>('cr_library', { event_id: activeScope.value.event_id }),
+        apiGet<StitchLibraryResponse>('stitch_editor_library'),
+      ]);
+      if (cancelled) return;
+      setLoading(false);
+      const imageItems = crRes.ok && crRes.data ? flattenLibraryResponse(crRes.data) : [];
+      const audioItems =
+        stitchRes.ok && stitchRes.data ? stitchLibraryToLibItems(stitchRes.data) : [];
+      if (!crRes.ok && !stitchRes.ok) {
+        setError(crRes.error ?? stitchRes.error ?? 'unknown error');
+        setItems([]);
+        return;
+      }
+      setItems([...imageItems, ...audioItems]);
+      setError(null);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshTick, serverRehydrateTick.value, activeScope.value.event_id]);
 
   const onDelete = async (item: LibItem) => {
     const k = item.key ?? item.abs_path;
@@ -392,6 +551,7 @@ export function LibraryPanel() {
     if (!files || files.length === 0) return;
     setUploading(true);
     let added = 0;
+    const audioTier = AUDIO_LIBRARY_TIERS.has(tier) ? tier : null;
     for (const file of Array.from(files)) {
       try {
         const dataUrl = await new Promise<string>((resolve, reject) => {
@@ -400,11 +560,12 @@ export function LibraryPanel() {
           reader.onerror = () => reject(reader.error);
           reader.readAsDataURL(file);
         });
-        const image_b64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+        const file_b64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
         const result = await pathappPatch(activeScope.value, 'cr_upload', {
           filename: file.name,
-          image_b64,
-          tier: 'source',
+          ...(audioTier
+            ? { file_b64, tier: audioTier }
+            : { image_b64: file_b64, tier: 'source' }),
         });
         if (result.ok) {
           added++;
@@ -431,13 +592,38 @@ export function LibraryPanel() {
     return items.filter((it) => tierFilter(it) && matchesSearch(it, searchQuery));
   }, [items, tier, searchQuery]);
 
+  const uploadAccept = AUDIO_LIBRARY_TIERS.has(tier)
+    ? 'audio/mpeg,audio/wav,audio/mp4,.mp3,.wav,.m4a'
+    : 'image/png,image/jpeg,image/webp';
+  const uploadTitle = AUDIO_LIBRARY_TIERS.has(tier)
+    ? `Upload ${tier} audio to sound_library/${tier}/`
+    : 'Upload image to library';
+
   return (
-    <aside class="mn-library-panel" data-testid="library-panel">
+    <aside class="mn-library-panel" data-testid="library-panel" data-library-audio-preview="LIBRARY_AUDIO_PREVIEW_V1">
       <header class="mn-library-header">
         <h3>Library</h3>
         <span class="mn-dim mn-library-count" data-testid="library-count">
           {loading ? '…' : `${filteredItems.length} / ${items.length} items`}
         </span>
+        {/* CC-20 — upload always in header so narrow rails never clip "+ Add". */}
+        <label
+          class="mn-library-upload-btn"
+          data-testid="library-upload-btn"
+          aria-disabled={uploading ? 'true' : undefined}
+          title={uploadTitle}
+        >
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={uploadAccept}
+            multiple
+            hidden
+            onChange={onUpload}
+            data-testid="library-upload-input"
+          />
+          {uploading ? '…' : '+ Add'}
+        </label>
       </header>
 
       <div class="mn-library-controls" data-testid="library-controls">
@@ -462,24 +648,6 @@ export function LibraryPanel() {
             <option key={t} value={t}>{t}</option>
           ))}
         </select>
-        {/* CC-20 — Add Image upload button (hidden file input behind label) */}
-        <label
-          class="mn-library-upload-btn"
-          data-testid="library-upload-btn"
-          aria-disabled={uploading ? 'true' : undefined}
-          title="Upload image to library"
-        >
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/png,image/jpeg,image/webp"
-            multiple
-            hidden
-            onChange={onUpload}
-            data-testid="library-upload-input"
-          />
-          {uploading ? '…' : '+ Add'}
-        </label>
       </div>
 
       <div class="mn-library-body">
@@ -514,8 +682,9 @@ export function LibraryPanel() {
               // lib-image so existing image-slot drop targets continue working.
               // Built as discriminated-union variants (DragPayload requires
               // source_path on the lib-sfx variant).
-              const isSfxTier = tier === 'sfx' || tier === 'ambient';
-              const dragPayload: DragPayload = isSfxTier
+              const isAudioDragTier =
+                tier === 'sfx' || tier === 'ambient' || tier === 'transitions';
+              const dragPayload: DragPayload = isAudioDragTier
                 ? {
                     kind: 'lib-sfx',
                     lib_key: libKey,
@@ -529,7 +698,12 @@ export function LibraryPanel() {
                     ...(it.abs_path ? { abs_path: it.abs_path } : {}),
                     ...(it.filename ? { filename: it.filename } : {}),
                   };
-              const dimsLabel = it.width && it.height ? `${it.width}×${it.height}` : undefined;
+              const dimsLabel =
+                it.duration_ms != null && it.duration_ms > 0
+                  ? `${(it.duration_ms / 1000).toFixed(1)}s`
+                  : it.width && it.height
+                    ? `${it.width}×${it.height}`
+                    : undefined;
               const isMaster = it.is_master === true;
               const tileTier = isMaster ? 'master' : 'delivery';
               const tileProps: {
@@ -561,12 +735,14 @@ export function LibraryPanel() {
                   : it.thumb_b64
                     ? (it.thumb_b64.startsWith('data:') ? it.thumb_b64 : `data:image/webp;base64,${it.thumb_b64}`)
                     : (it.thumb_url ?? '');
+              const inUse = inUseKeys.has(libKey);
               return (
                 <div
                   key={libKey}
-                  class="mn-library-tile-wrap"
+                  class={`mn-library-tile-wrap${inUse ? ' mn-library-tile-in-use' : ''}`}
                   data-testid={`library-tile-wrap-${i}`}
                   data-tile-tier={tileTier}
+                  data-in-use={inUse ? 'true' : 'false'}
                   onMouseEnter={() => requestPreview(it)}
                   onMouseLeave={cancelPreviewRequest}
                 >
@@ -577,6 +753,13 @@ export function LibraryPanel() {
                     >
                       {isMaster ? 'MASTER' : 'DELIVERY'}
                     </span>
+                    {inUse ? (
+                      <span
+                        class="mn-badge mn-badge-in-use"
+                        title="This image is currently assigned to one or more beats in this video"
+                        data-testid={`library-tile-in-use-${i}`}
+                      >● IN USE</span>
+                    ) : null}
                     {cropSrc ? (
                       <button
                         type="button"
@@ -628,7 +811,22 @@ export function LibraryPanel() {
           </header>
           {(() => {
             const at = inferAssetType(preview.item);
+            const audioUrl = libraryAudioPreviewUrl(preview.item);
             const src = preview.item.gallery_b64 ?? thumbSrc(preview.item);
+            if (audioUrl) {
+              return (
+                <audio
+                  key={audioUrl}
+                  class="mn-library-preview-audio"
+                  data-testid="library-preview-audio"
+                  data-audio-filename={preview.item.filename ?? preview.item.key}
+                  src={audioUrl}
+                  controls
+                  autoPlay
+                  preload="metadata"
+                />
+              );
+            }
             if (at === 'audio' && src) {
               return (
                 <audio
@@ -665,6 +863,34 @@ export function LibraryPanel() {
           })()}
           {preview.item.iteration_notes ? (
             <p class="mn-dim mn-library-preview-notes">{preview.item.iteration_notes}</p>
+          ) : null}
+          {libraryItemCanAddToElement(preview.item) ? (
+            <div class="mn-library-element-add" data-testid="library-add-element-row">
+              <label class="mn-dim" for="library-element-speaker">Element speaker</label>
+              <select
+                id="library-element-speaker"
+                class="mn-library-element-speaker"
+                data-testid="library-element-speaker"
+                value={elementSpeaker}
+                onChange={(e) => setElementSpeaker((e.target as HTMLSelectElement).value)}
+              >
+                {ELEMENT_SPEAKERS.map((sp) => (
+                  <option key={sp} value={sp}>{sp}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                class="mn-btn mn-btn-small mn-library-element-add-btn"
+                data-testid="library-add-element-btn"
+                disabled={elementAdding}
+                onClick={() => { void onAddLibraryItemToElement(); }}
+              >
+                {elementAdding ? 'Registering…' : 'Add to Element'}
+              </button>
+              <p class="mn-dim mn-library-element-add-hint">
+                Registers this library still on the speaker&apos;s Kling Element — then drag it onto any beat char ref.
+              </p>
+            </div>
           ) : null}
         </div>
       ) : null}
