@@ -252,6 +252,7 @@ interface StillClipRenderResponse {
 interface ArloO3PollResponse {
   status: 'running' | 'done' | 'failed';
   beat_id?: string;
+  beat?: BgBeat;
   result?: { video?: string; voice_id?: string; o3_model?: string; duration_s?: number } | null;
   error?: string | null;
 }
@@ -292,7 +293,16 @@ interface NativeLipSyncPollResponse {
 
 // Per LD-440 GPT_IMAGE_2_PRIMARY_MODEL_V1 — gpt-image-2 published unit cost.
 const PER_IMAGE_COST_USD = 0.04;
-const POLL_INTERVAL_MS = 10000; // 10s per Cursor v8 Q6
+const POLL_INTERVAL_MS = 10000; // 10s per Cursor v8 Q6 — GPT batch jobs
+const O3_POLL_INTERVAL_MS = 3000; // O3: faster terminal detection; poll payload carries beat snapshot
+
+function mergeBeatFromO3Poll(beats: BgBeat[], patch: BgBeat): BgBeat[] {
+  const idx = beats.findIndex((b) => b.beat_id === patch.beat_id);
+  if (idx < 0) return beats;
+  const next = [...beats];
+  next[idx] = { ...beats[idx], ...patch };
+  return next;
+}
 
 function collectActiveO3JobsFromBeats(beats: BgBeat[]): Record<string, string> {
   const jobs: Record<string, string> = {};
@@ -431,6 +441,48 @@ function extractStageChips(text: string): string[] {
   return matches;
 }
 
+
+// ----------------------------------------------------------------
+// BG_BEAT_JUMP_NAV_V1 — Word-style persistent left jump column
+// ----------------------------------------------------------------
+
+function scrollToBeat(beatId: string): void {
+  const el = document.querySelector<HTMLElement>(
+    `.mn-bg-beat-list [data-beat-id="${CSS.escape(beatId)}"]`,
+  );
+  if (!el) return;
+  const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    ? 'auto' as const
+    : 'smooth' as const;
+  el.scrollIntoView({ behavior, block: 'start' });
+}
+
+interface BgBeatNavProps {
+  beats: ReadonlyArray<{ beat_id: string }>;
+  activeIndex: number | null;
+  onJump: (beatId: string, index: number) => void;
+}
+
+function BgBeatNav({ beats, activeIndex, onJump }: BgBeatNavProps) {
+  return (
+    <nav class="mn-bg-beat-nav" aria-label="Jump to beat" data-testid="bg-beat-nav">
+      {beats.map((b, i) => (
+        <button
+          type="button"
+          key={b.beat_id}
+          class={`mn-bg-beat-nav-item${activeIndex === i ? ' is-active' : ''}`}
+          data-testid={`bg-beat-nav-${i}`}
+          {...(activeIndex === i ? { 'aria-current': 'true' as const } : {})}
+          title={b.beat_id}
+          onClick={() => onJump(b.beat_id, i)}
+        >
+          Beat {i + 1}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
 // ----------------------------------------------------------------
 // BgTab root
 // ----------------------------------------------------------------
@@ -466,7 +518,45 @@ export function BgTab() {
   const [lastBatchCostUsd, setLastBatchCostUsd] = useState<number>(0);
   // BG-9 / BG-34/35 / BG-5 / BG-18 — Modal state machine.
   const [modalState, setModalState] = useState<BgModalState>({ kind: 'none' });
+  const [activeNavIndex, setActiveNavIndex] = useState<number | null>(null);
   const closeModal = () => setModalState({ kind: 'none' });
+
+  const beatIdsKey = useMemo(
+    () => beats.map((b) => b.beat_id).join('|'),
+    [beats],
+  );
+
+  // Highlight nav item for the beat most visible in the scroll viewport.
+  useEffect(() => {
+    if (beats.length === 0) return;
+    const cards = document.querySelectorAll<HTMLElement>(
+      '.mn-bg-beat-list .mn-bg-beat-card',
+    );
+    if (cards.length === 0) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        let best: { index: number; ratio: number } | null = null;
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const idx = Number((entry.target as HTMLElement).dataset['beatIndex']);
+          if (Number.isNaN(idx)) continue;
+          const ratio = entry.intersectionRatio;
+          if (!best || ratio > best.ratio) best = { index: idx, ratio };
+        }
+        if (best && best.ratio >= 0.25) {
+          setActiveNavIndex(best.index);
+        }
+      },
+      { root: null, rootMargin: '-10% 0px -60% 0px', threshold: [0, 0.25, 0.5, 0.75, 1] },
+    );
+
+    cards.forEach((card, i) => {
+      card.dataset['beatIndex'] = String(i);
+      observer.observe(card);
+    });
+    return () => observer.disconnect();
+  }, [beatIdsKey, beats.length]);
 
   // Initial load + scope-change re-fetch (R1 fix per spec §5 Phase 3.1).
   // Deps include all scope signals so changing event/milestone/partition
@@ -606,12 +696,15 @@ export function BgTab() {
       const failedBeatIds: string[] = [];
       const staleBeatIds: string[] = [];
 
+      const beatPatches: BgBeat[] = [];
+
       await Promise.all(jobs.map(async ([beatId, jobId]) => {
         const res = await apiGet<ArloO3PollResponse>('bg_poll_arlo_o3_voice_status', { job_id: jobId });
         if (cancelled) return;
         if (res.ok && res.data) {
           if (res.data.status === 'done') {
             completedBeatIds.push(beatId);
+            if (res.data.beat) beatPatches.push(res.data.beat);
             pushToast({
               kind: 'success',
               message: `${beatId}: O3 voice video ready${res.data.result?.duration_s ? ` (${res.data.result.duration_s.toFixed(2)}s)` : ''}`,
@@ -621,6 +714,7 @@ export function BgTab() {
           }
           if (res.data.status === 'failed') {
             failedBeatIds.push(beatId);
+            if (res.data.beat) beatPatches.push(res.data.beat);
             pushToast({
               kind: 'error',
               message: `${beatId}: O3 voice job failed: ${formatO3JobFailure(res.data.error)}`,
@@ -652,12 +746,16 @@ export function BgTab() {
           }
           return next;
         });
-        void refreshState();
+        if (beatPatches.length > 0) {
+          setBeats((bs) => beatPatches.reduce((acc, patch) => mergeBeatFromO3Poll(acc, patch), bs));
+        } else {
+          void refreshState();
+        }
       }
       if (!anyStillRunning) {
         return;
       }
-      timer = window.setTimeout(poll, POLL_INTERVAL_MS);
+      timer = window.setTimeout(poll, O3_POLL_INTERVAL_MS);
     };
     poll();
     return () => {
@@ -1811,7 +1909,16 @@ export function BgTab() {
           <p>No beats yet for this segment. Click <strong>Extract Beats from script</strong> to start.</p>
         </div>
       ) : (
-        <ol class="mn-bg-beat-list" data-testid="bg-beat-list">
+        <div class="mn-bg-body-layout" data-testid="bg-body-layout">
+          <BgBeatNav
+            beats={beats}
+            activeIndex={activeNavIndex}
+            onJump={(beatId, index) => {
+              setActiveNavIndex(index);
+              scrollToBeat(beatId);
+            }}
+          />
+          <ol class="mn-bg-beat-list" data-testid="bg-beat-list">
           {beats.map((b, i) => (
             <BeatGenCard
               key={b.beat_id}
@@ -1880,7 +1987,8 @@ export function BgTab() {
               }}
             />
           ))}
-        </ol>
+          </ol>
+        </div>
       )}
 
       <footer class="mn-pane-footer">

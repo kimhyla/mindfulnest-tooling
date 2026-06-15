@@ -93,3 +93,17 @@ def test_ui_treats_failed_prefixes_as_terminal() -> None:
     src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
     assert "voiceFix.startsWith('failed')" in src
     assert "(beat.kling_o3_voice_fix_status ?? '').startsWith('failed')" in src
+
+
+def test_o3_poll_returns_enriched_beat_snapshot_on_terminal() -> None:
+    src = (TOOLS / "server_handlers" / "background.py").read_text(encoding="utf-8")
+    assert "_enriched_beat_snapshot_for_o3_poll" in src
+    assert "_o3_poll_payload_with_beat_snapshot" in src
+    assert 'out["beat"] = snap' in src
+
+
+def test_o3_poll_ui_patches_single_beat_without_full_refresh() -> None:
+    src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
+    assert "mergeBeatFromO3Poll" in src
+    assert "O3_POLL_INTERVAL_MS" in src
+    assert "res.data.beat" in src

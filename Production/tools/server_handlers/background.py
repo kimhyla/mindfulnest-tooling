@@ -3694,6 +3694,48 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
     return h._send_json(200, {"ok": True, "job_id": job_id, "beat_id": beat_id, "log_path": str(log_path), "attempt_id": attempt_id})
 
 
+def _event_dir_for_beat_id(beat_id: str) -> Path:
+    """Derive Production/Event_N from bg_arc1_event2_pre_beat_27 style ids."""
+    bg = _bg_module()
+    match = re.search(r"event(\d+)_", str(beat_id or ""), re.I)
+    if match:
+        return bg.prod_root() / f"Event_{int(match.group(1))}"
+    return bg.prod_root() / "Event_1"
+
+
+def _enriched_beat_snapshot_for_o3_poll(
+    beat_id: str,
+    event_dir: Path,
+    *,
+    migrate: bool = False,
+) -> dict | None:
+    """Single-beat API payload — avoids full session-state migrate on O3 poll done."""
+    bg = _bg_module()
+    with bg.sidecar_file_lock():
+        sidecar = bg.read_sidecar()
+        if migrate:
+            sidecar = bg._migrate_sidecar(sidecar)
+        _, beat = bg.find_beat(sidecar, str(beat_id))
+        if not beat:
+            return None
+        return bg.enrich_beat_kling_o3_pinned(dict(beat), event_dir)
+
+
+def _o3_poll_payload_with_beat_snapshot(payload: dict, event_dir: Path) -> dict:
+    """Attach enriched sidecar beat on terminal O3 poll (done/failed) for fast UI patch."""
+    if payload.get("status") not in ("done", "failed"):
+        return payload
+    beat_id = str(payload.get("beat_id") or "").strip()
+    if not beat_id:
+        return payload
+    snap = _enriched_beat_snapshot_for_o3_poll(beat_id, event_dir, migrate=False)
+    if not snap:
+        return payload
+    out = dict(payload)
+    out["beat"] = snap
+    return out
+
+
 def handle_bg_poll_arlo_o3_voice_status(h) -> None:
     """GET /api/bg/poll-arlo-o3-voice-status?job_id=..."""
     qs = urllib.parse.parse_qs(urllib.parse.urlparse(h.path).query)
@@ -3701,7 +3743,10 @@ def handle_bg_poll_arlo_o3_voice_status(h) -> None:
     if not job_id or job_id not in _ARLO_O3_JOBS:
         recovered = _recover_o3_job_from_sidecar(job_id)
         if recovered:
-            return h._send_json(200, recovered)
+            event_dir = Path(h.app.event_dir)
+            if not event_dir.is_absolute():
+                event_dir = _data_root(h) / event_dir
+            return h._send_json(200, _o3_poll_payload_with_beat_snapshot(recovered, event_dir))
         return h._send_error_v59(
             404,
             error_code="ARLO_JOB_NOT_FOUND",
@@ -3728,6 +3773,10 @@ def handle_bg_poll_arlo_o3_voice_status(h) -> None:
                 job["error"] = _summarize_o3_job_error(log_text[-4000:])
             _clear_o3_job_metadata(job_id, status=job["status"], result=job.get("result"), error=job.get("error"))
     payload = {k: v for k, v in job.items() if k != "proc"}
+    event_dir = Path(h.app.event_dir)
+    if not event_dir.is_absolute():
+        event_dir = _data_root(h) / event_dir
+    payload = _o3_poll_payload_with_beat_snapshot(payload, event_dir)
     return h._send_json(200, payload)
 
 
@@ -4211,7 +4260,6 @@ def _ensure_o3_job_metadata(job_id: str, job: dict) -> None:
         bg = _bg_module()
         with bg.sidecar_file_lock():
             sidecar = bg.read_sidecar()
-            sidecar = bg._migrate_sidecar(sidecar)
             _, beat = bg.find_beat(sidecar, str(beat_id))
             if not beat:
                 return
@@ -4255,7 +4303,6 @@ def _clear_o3_job_metadata(job_id: str, *, status: str, result: dict | None = No
         bg = _bg_module()
         with bg.sidecar_file_lock():
             sidecar = bg.read_sidecar()
-            sidecar = bg._migrate_sidecar(sidecar)
             changed = False
             for beat in _iter_bg_beats(sidecar):
                 if beat.get("kling_o3_voice_fix_ui_job_id") != job_id:
