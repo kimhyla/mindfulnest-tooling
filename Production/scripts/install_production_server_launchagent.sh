@@ -50,7 +50,7 @@ EVENT_DIR="Production/${EVENT_ID}"
 # Preserve secrets/env from an existing plist (never commit keys to git).
 PRESERVE_ENV=""
 if [[ -f "$PLIST" ]]; then
-  PRESERVE_ENV="$(python3 <<'PY' "$PLIST"
+  PRESERVE_ENV="$(python3 - "$PLIST" <<'PY'
 import plistlib, sys
 path = sys.argv[1]
 try:
