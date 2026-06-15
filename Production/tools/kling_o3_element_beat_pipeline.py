@@ -549,8 +549,6 @@ def run_pipeline(
             "kling_o3_voice_fix_job_started_at",
             "kling_o3_voice_fix_error",
             "kling_o3_voice_fix_error_code",
-            "o3_prompt_box_law",
-            "o3_prompt_box_law_at",
         ))
         bg_sidecar.auto_pin_approved_kling_o3_delivery(beat, event_dir)
     except Exception as exc:

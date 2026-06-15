@@ -182,10 +182,10 @@ def test_maybe_auto_register_helper_exists():
     )[1].split("\n\n", 1)[0]
 
 
-def test_proven_element_list_uses_laurel():
+def test_proven_element_list_uses_loral():
     entry = reg.get_proven_element_list_entry("Lorelai")
     assert entry is not None
-    assert entry["element_name"] == "Laurel"
+    assert entry["element_name"] == "Loral"
     assert entry["element_id"] == "313441038164306"
     assert entry["voice_id"] == "895210468825628751"
 
@@ -206,7 +206,7 @@ def test_validate_alignment_no_pin_bypass():
     }
     prompt = '@Image1 (Loral). Loral speaks in a warm calm conversational pace: "Hi"'
     errs = validate_element_list_alignment("Lorelai", bad_entry, prompt, beat=beat)
-    assert any("element_name must be 'Laurel'" in e for e in errs)
+    assert any("element_name must be 'Loral'" in e for e in errs)
 
 
 def test_resolve_o3_element_list_prefers_proven_over_pin():
@@ -219,7 +219,7 @@ def test_resolve_o3_element_list_prefers_proven_over_pin():
         },
     }
     entry = bg.resolve_o3_element_list_entry(beat, "Lorelai")
-    assert entry["element_name"] == "Laurel"
+    assert entry["element_name"] == "Loral"
     assert entry["element_id"] == "313441038164306"
 
 

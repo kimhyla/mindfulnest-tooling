@@ -490,6 +490,14 @@ def validate_element_list_alignment(
             f"element_list element_name must be {expected_name!r}, not {element_name!r} "
             "(misalignment causes generic male Kling TTS)"
         )
+    tag_m = re.search(r"@Image1\s*\(\s*([^)]+)\s*\)", (prompt or ""), re.I)
+    if tag_m and element_name:
+        tag_name = tag_m.group(1).strip()
+        if tag_name.casefold() != element_name.casefold():
+            errors.append(
+                f"prompt @Image1 ({tag_name}) must match element_list element_name "
+                f"{element_name!r} (misalignment causes generic Kling TTS)"
+            )
     voice_id = str(element_entry.get("voice_id") or "").strip()
     try:
         from tools import kling_character_registry as reg

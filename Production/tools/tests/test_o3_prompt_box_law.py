@@ -74,7 +74,60 @@ def test_submit_handler_stamps_prompt_box_law_and_subprocess_env():
     assert 'subprocess_env["MN_O3_PROMPT_BOX_LAW"] = "1"' in text
     assert "upgrade_element_bound_voice_prompt" in text
     assert "if not explicit_user_prompt:" in text
-    assert "Prompt-box law still skips heal_o3" in text
+
+
+def test_finalize_proven_element_preserves_prompt_box_law(tmp_path):
+    sidecar_path = tmp_path / "beat_generator_state.json"
+    src_ref = {"abs_path": str(tmp_path / "char.png")}
+    src_bg = {"abs_path": str(tmp_path / "bg.png")}
+    (tmp_path / "char.png").write_bytes(b"x")
+    (tmp_path / "bg.png").write_bytes(b"y")
+    sidecar = {
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [
+                            {
+                                "beat_id": "bg_arc1_event2_pre_beat_18",
+                                "speaker": "Lorelai",
+                                "reference_image": src_ref,
+                                "bg_ref_image": src_bg,
+                            },
+                        ],
+                    },
+                },
+            },
+        },
+    }
+    sidecar_path.write_text("{}", encoding="utf-8")
+    custom = (
+        '@Image1 (Loral). Scene from @Image2.\n\n'
+        'Loral speaks in a female voice: "Hello kiddo."\n\n'
+        "Children's illustrated fantasy storybook style"
+    )
+    beat = {
+        "beat_id": "bg_arc1_event2_pre_beat_30",
+        "speaker": "Lorelai",
+        "beat_plan_source": "operator_insert_v1",
+        "kling_o3_prompt": custom,
+    }
+    bg.stamp_o3_prompt_box_law(beat, custom)
+    bg.finalize_proven_element_beat(beat, sidecar, "Lorelai", event_id="2", phase="pre")
+    assert bg.o3_prompt_box_law_active(beat)
+    assert "female voice" in (beat.get("kling_o3_prompt") or "")
+    assert beat.get("kling_o3_prompt") == custom
+
+
+def test_heal_element_bound_voice_prompt_skipped_under_prompt_box_law():
+    beat = _semi_canonical_arlo_beat()
+    beat["kling_o3_prompt"] = (
+        '@Image1 (Arlo). Scene from @Image2.\n\n'
+        'Arlo speaks in a CUSTOM delivery pace: "CUSTOM USER LINE ONLY"\n\n'
+        "Children's illustrated fantasy storybook style"
+    )
+    assert bg.heal_element_bound_voice_prompt(beat) is False
+    assert "CUSTOM delivery pace" in (beat.get("kling_o3_prompt") or "")
 
 
 def test_without_law_normalize_can_rewrite_voice_block():

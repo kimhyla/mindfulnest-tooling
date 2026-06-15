@@ -205,13 +205,14 @@ def get_proven_element_list_entry(speaker: str) -> dict | None:
     proven = resolve_proven_o3_bind(entry)
     if not proven:
         return None
-    element_name = str(proven.get("proven_element_name") or "").strip()
-    if not element_name:
-        element_name = (
-            kling_element_display_name(speaker)
-            or str(entry.get("element_name") or "").strip()
-            or speaker
-        )
+    # Single Kling-facing name: display name (registry element_name / _KLING_ELEMENT_DISPLAY_NAME)
+    # wins over legacy proven_element_name snapshots so element_list matches @Image1 (Loral).
+    element_name = (
+        kling_element_display_name(speaker)
+        or str(entry.get("element_name") or "").strip()
+        or str(proven.get("proven_element_name") or "").strip()
+        or speaker
+    )
     return {
         "element_id": proven["element_id"],
         "element_name": element_name,

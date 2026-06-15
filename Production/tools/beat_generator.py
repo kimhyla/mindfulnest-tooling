@@ -5600,6 +5600,8 @@ def heal_kling_o3_stored_duration(beat: dict) -> bool:
 
 def heal_spoken_staging_in_voice_prompt(beat: dict) -> bool:
     """Strip [Faces camera…] staging from prompt body and voice quotes before O3 submit."""
+    if o3_prompt_box_law_active(beat):
+        return False
     speaker = str(beat.get("speaker") or "").strip()
     prompt = (beat.get("kling_o3_prompt") or "").strip()
     if not speaker or not prompt:
@@ -5642,6 +5644,8 @@ def heal_spoken_staging_in_voice_prompt(beat: dict) -> bool:
 
 def heal_element_bound_voice_prompt(beat: dict) -> bool:
     """Upgrade legacy author voice lines (bracket delivery, <<<voice_N>>>) on load."""
+    if o3_prompt_box_law_active(beat):
+        return False
     speaker = str(beat.get("speaker") or "").strip()
     if not speaker:
         return False
@@ -6386,9 +6390,10 @@ def finalize_proven_element_beat(
             beat["bg_ref_image"] = copy.deepcopy(src_bg)
             changed = True
     beat.pop("o3_voice_stack_pin", None)
-    beat.pop("o3_prompt_box_law", None)
-    if changed:
-        apply_kling_o3_defaults_to_beat(beat, event_id, phase)
+    if not o3_prompt_box_law_active(beat):
+        beat.pop("o3_prompt_box_law", None)
+        if changed:
+            apply_kling_o3_defaults_to_beat(beat, event_id, phase)
     sync_element_char_ref_status(beat, heal_mismatch=False)
     return changed
 

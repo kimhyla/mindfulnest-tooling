@@ -98,7 +98,7 @@ def test_o3_voice_binding_from_job_log(tmp_path: Path) -> None:
         json.dumps(
             {
                 "phase": "o3_submit",
-                "element": {"element_id": "313441038164306", "element_name": "Laurel"},
+                "element": {"element_id": "313441038164306", "element_name": "Loral"},
                 "kling_voice_id": "895210468825628751",
             }
         )

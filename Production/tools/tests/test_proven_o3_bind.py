@@ -98,6 +98,14 @@ def test_arlo_get_bound_voice_id_uses_proven_bind(arlo_registry):
     assert arlo_registry.get_bound_voice_id("Arlo") == ARLO_PROVEN_VOICE
 
 
+def test_lorelai_get_proven_element_list_entry_uses_loral_display_name(lorelai_registry):
+    entry = lorelai_registry.get_proven_element_list_entry("Lorelai")
+    assert entry is not None
+    assert entry["element_id"] == LORELAI_PROVEN_ELEMENT
+    assert entry["voice_id"] == LORELAI_PROVEN_VOICE
+    assert entry["element_name"] == "Loral"
+
+
 def test_arlo_pose_refresh_cannot_rotate_locked_element(arlo_registry, monkeypatch):
     cfg = arlo_registry.get_character_entry("Arlo")
     monkeypatch.delenv("MN_FORCE_ELEMENT_REREGISTER", raising=False)

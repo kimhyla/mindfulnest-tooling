@@ -45,7 +45,7 @@ Return for every dialogue beat_index:
 
 ## Cast
 
-- **Lorelai** (lemur) — Kling voice line uses **Laurel**
+- **Lorelai** (raccoon scholar) — Kling voice line uses **Loral** (matches Element registration name)
 - **Arlo** — guide
 - **Tessa** — never describe as "green sea turtle" in prompt text
 

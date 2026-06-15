@@ -374,10 +374,10 @@
         "element_id": "313441038164306",
         "kling_voice_id": "895210468825628751",
         "proven_from_beat_id": "bg_arc1_event2_pre_beat_18",
-        "proven_element_name": "Laurel",
+        "proven_element_name": "Loral",
         "lock_element_id": true,
         "locked_at": "2026-06-15T06:46:49.454880+00:00",
-        "note": "Event 2 female Lorelai — Beat 18 approved g7 submit contract; Miranda/pose refresh must not rotate element_id"
+        "note": "Event 2 female Lorelai — element_id+voice_id from Beat 18 g7; element_name Loral matches Kling Element registration (character_subjects element_name)"
       },
       "proven_o3_bind_applied_at": "2026-06-15T06:46:49.454880+00:00"
     }

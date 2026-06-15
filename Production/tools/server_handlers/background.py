@@ -2549,6 +2549,11 @@ def handle_bg_update_beat(h, body: dict)-> None:
                 if field == "speaker" and not beat.get("reference_image_locked"):
                     bg.align_beat_reference_to_element(beat)
                 if field == "kling_o3_prompt" and isinstance(value, str):
+                    text = value.strip()
+                    if text:
+                        bg.stamp_o3_prompt_box_law(beat, text)
+                    else:
+                        bg.clear_o3_prompt_box_law(beat)
                     bg.sync_beat_dialogue_from_kling_prompt(beat)
                     bg.sync_beat_scene_notes_from_kling_prompt(beat)
         if written:
@@ -3580,16 +3585,18 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                 and str(body.get("kling_o3_prompt") or "").strip()
             )
             stored_for_voice = str(beat.get("kling_o3_prompt") or "")
-            # Always auto-fix delivery-lock syntax (Arlo speaks: [warm] → speaks in a …).
-            # Prompt-box law still skips heal_o3 / normalize that rewrite quoted dialogue.
-            upgraded, _spoken_upgraded, voice_upgraded = o3p.upgrade_element_bound_voice_prompt(
-                speaker,
-                stored_for_voice,
-                extract_spoken=bg.extract_spoken_dialogue_from_kling_prompt,
-            )
-            if voice_upgraded:
-                beat["kling_o3_prompt"] = upgraded
-                bg.sync_beat_dialogue_from_kling_prompt(beat)
+            # Prompt-box law: when the client sends kling_o3_prompt on Generate,
+            # that text is authoritative — do not run delivery-lock upgrades that
+            # rewrite the voice line back to canonical pacing wording.
+            if not explicit_user_prompt:
+                upgraded, _spoken_upgraded, voice_upgraded = o3p.upgrade_element_bound_voice_prompt(
+                    speaker,
+                    stored_for_voice,
+                    extract_spoken=bg.extract_spoken_dialogue_from_kling_prompt,
+                )
+                if voice_upgraded:
+                    beat["kling_o3_prompt"] = upgraded
+                    bg.sync_beat_dialogue_from_kling_prompt(beat)
             if not explicit_user_prompt:
                 bg.heal_spoken_staging_in_voice_prompt(beat)
                 bg.heal_o3_element_submit_prompt(beat)

@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 CRITICAL_REL_PATHS: tuple[str, ...] = (
+    "Production/character_subjects.json",
     "Production/tools/beat_generator.py",
     "Production/tools/kling_o3_prompt.py",
     "Production/tools/kling_character_registry.py",
@@ -29,6 +30,7 @@ CRITICAL_REL_PATHS: tuple[str, ...] = (
     "Production/scripts/verify_tooling_dropbox_parity.py",
     "Production/scripts/verify_o3_intro_contract.sh",
     "Production/scripts/post_tooling_change_smoke.sh",
+    "Production/scripts/verify_lorelai_element_name_durability.sh",
 )
 
 

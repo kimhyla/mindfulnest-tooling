@@ -421,6 +421,46 @@ def test_validate_element_list_alignment_rejects_lorelai_element_name(monkeypatc
     assert any("element_name must be 'Loral'" in e for e in errs)
 
 
+def test_validate_element_list_alignment_prompt_image1_tag_must_match_element_name(monkeypatch):
+    from tools import kling_o3_prompt as o3p
+
+    monkeypatch.setattr(
+        "tools.kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.get_proven_element_list_entry",
+        lambda _s: {
+            "element_id": "313441038164306",
+            "element_name": "Loral",
+            "voice_id": "895210468825628751",
+        },
+    )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.kling_element_display_name",
+        lambda _s: "Loral",
+    )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.get_bound_voice_id",
+        lambda _s: "895210468825628751",
+    )
+    entry = {
+        "element_id": "313441038164306",
+        "element_name": "Loral",
+        "voice_id": "895210468825628751",
+    }
+    aligned = (
+        '@Image1 (Loral). Scene from @Image2.\n'
+        'Loral speaks in a warm excited conversational pace, clear scholarly delivery, '
+        'measured deliberate cadence, slower steady rhythm, not rushed or frantic, '
+        'not hyper or sputtering, not dragging, not childlike or baby-talk: "Hi"'
+    )
+    assert o3p.validate_element_list_alignment("Lorelai", entry, aligned) == []
+    mismatched = aligned.replace("@Image1 (Loral)", "@Image1 (Laurel)")
+    errs = o3p.validate_element_list_alignment("Lorelai", entry, mismatched)
+    assert any("@Image1 (Laurel)" in e and "Loral" in e for e in errs)
+
+
 def test_prune_stale_o3_voice_options_drops_missing_files_only(tmp_path, monkeypatch):
     """Paid-output spec: prune drops missing paths only — not voice bind mismatches."""
     g2 = tmp_path / "g2_delivery.mp4"
