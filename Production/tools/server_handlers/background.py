@@ -3526,18 +3526,28 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                 from tools import kling_character_registry as reg
 
                 if speaker and reg.is_speaker_voice_ready(speaker):
+                    if bg.o3_voice_stack_pin_active(beat):
+                        bg.apply_proven_char_ref_from_pin_source(beat, sidecar)
                     try:
                         from credentials import load_credentials  # type: ignore
                     except ImportError:
                         from tools.credentials_lib.credentials import load_credentials  # type: ignore
                     creds = load_credentials()
                     ws_key = creds.get("wavespeed_key") or creds.get("wavespeed")
-                    if not beat.get("reference_image_locked"):
+                    if bg.proven_char_ref_aligned_with_pin_source(beat, sidecar):
+                        char_ok = True
+                        beat.pop("element_char_ref_error", None)
+                    elif not beat.get("reference_image_locked"):
                         bg.ensure_beat_element_aligned_reference(beat)
-                    if ws_key:
-                        char_ok = bg.ensure_beat_element_char_ref_for_o3(beat, ws_key)
+                        if ws_key:
+                            char_ok = bg.ensure_beat_element_char_ref_for_o3(beat, ws_key)
+                        else:
+                            char_ok = bg.sync_element_char_ref_status(beat, heal_mismatch=True)
                     else:
-                        char_ok = bg.sync_element_char_ref_status(beat, heal_mismatch=True)
+                        if ws_key:
+                            char_ok = bg.ensure_beat_element_char_ref_for_o3(beat, ws_key)
+                        else:
+                            char_ok = bg.sync_element_char_ref_status(beat, heal_mismatch=True)
                     if not char_ok:
                         return h._send_error_v59(
                             400,
@@ -3587,6 +3597,18 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                     beat["kling_o3_prompt"] = prepared_for_validate
                     bg.sync_beat_dialogue_from_kling_prompt(beat)
             element_entry = bg.resolve_o3_element_list_entry(beat, speaker)
+            proven_err = bg.validate_proven_o3_element_submit(
+                beat,
+                speaker,
+                str((element_entry or {}).get("element_id") or ""),
+            )
+            if proven_err:
+                return h._send_error_v59(
+                    409,
+                    error_code="PROVEN_O3_BIND_MISMATCH",
+                    error_message=proven_err,
+                    retry_safe=False,
+                )
             from tools.kling_voice_bind import (
                 detect_voice_bind_drift,
                 reconcile_o3_element_quality_for_submit,

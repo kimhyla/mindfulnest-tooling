@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import concurrent.futures
 import contextlib
+import copy
 import fcntl
 import hashlib
 import http.client
@@ -6100,8 +6101,6 @@ def sync_element_char_ref_status(beat: dict, *, heal_mismatch: bool = True) -> b
 
 def require_element_char_ref_for_o3(beat: dict) -> None:
     """Raise before any Element O3 subprocess/API work if @Image1 is wrong."""
-    if o3_voice_stack_pin_active(beat):
-        return
     if not sync_element_char_ref_status(beat, heal_mismatch=False):
         detail = beat.get("element_char_ref_error") or "char ref does not match Element poses"
         raise RuntimeError(f"ELEMENT_VISUAL_MISMATCH: {detail}")
@@ -6109,9 +6108,6 @@ def require_element_char_ref_for_o3(beat: dict) -> None:
 
 def ensure_beat_element_char_ref_for_o3(beat: dict, wavespeed_key: str) -> bool:
     """Sync Element char-ref gate; auto-reconcile on-disk pose copies before O3 submit."""
-    if o3_voice_stack_pin_active(beat):
-        beat.pop("element_char_ref_error", None)
-        return True
     if sync_element_char_ref_status(beat, heal_mismatch=True):
         return True
     speaker = str(beat.get("speaker") or "").strip()
@@ -6163,8 +6159,6 @@ def try_register_dropped_char_ref_on_element(
 
 def ensure_beat_element_aligned_reference(beat: dict) -> bool:
     """Auto-heal mismatched @Image1 before submit (unless user locked ref)."""
-    if o3_voice_stack_pin_active(beat):
-        return False
     return align_beat_reference_to_element(beat)
 
 
@@ -6319,6 +6313,8 @@ def create_blank_bg_beat(beat_id: str, event_id: str, phase: str) -> dict:
         "emotion": "",
         "scene_notes": "",
         "status": "new",
+        "beat_type": "dialogue",
+        "beat_plan_source": "manual_insert_v1",
         "pipeline": "kling_o3_omni",
         "flux_options": [],
         "gpt_options": [],
@@ -6822,6 +6818,89 @@ def archive_kling_o3_video_before_redo(
         return None
     if preserve_kling_o3_beat_slot(beat, event_dir, reason=reason):
         return str(kling_o3_preserved_latest_dir(event_dir) / f"{beat.get('beat_id')}.mp4")
+    return None
+
+
+def proven_char_ref_source_beat_id(beat: dict) -> str | None:
+    """Beat id to copy @Image1 from when ``o3_voice_stack_pin`` references a proven row."""
+    pin = beat.get("o3_voice_stack_pin")
+    if isinstance(pin, dict):
+        bid = str(pin.get("pinned_from_beat_id") or "").strip()
+        if bid:
+            return bid
+    quality = beat.get("o3_element_quality")
+    if isinstance(quality, dict):
+        bid = str(quality.get("pinned_from_beat_id") or "").strip()
+        if bid:
+            return bid
+    return None
+
+
+def apply_proven_char_ref_from_pin_source(beat: dict, sidecar: dict) -> bool:
+    """Copy proven beat char ref onto a pinned row (Beat 18 stack for Lorelai, etc.)."""
+    source_id = proven_char_ref_source_beat_id(beat)
+    if not source_id:
+        return False
+    _, source = find_beat(sidecar, source_id)
+    if not source:
+        return False
+    src_ref = source.get("reference_image")
+    if not isinstance(src_ref, dict):
+        return False
+    src_path = str(src_ref.get("abs_path") or "").strip()
+    if not src_path or not os.path.isfile(src_path):
+        return False
+    cur_path = resolve_beat_char_ref_path(beat) or ""
+    if cur_path and os.path.normpath(cur_path) == os.path.normpath(src_path):
+        return False
+    beat["reference_image"] = copy.deepcopy(src_ref)
+    beat["reference_image_locked"] = True
+    sync_element_char_ref_status(beat, heal_mismatch=False)
+    return True
+
+
+def proven_char_ref_aligned_with_pin_source(beat: dict, sidecar: dict) -> bool:
+    """True when @Image1 matches the pinned proven source beat (Beat 18 path)."""
+    source_id = proven_char_ref_source_beat_id(beat)
+    if not source_id:
+        return False
+    _, source = find_beat(sidecar, source_id)
+    if not source:
+        return False
+    cur = resolve_beat_char_ref_path(beat)
+    src = resolve_beat_char_ref_path(source)
+    if not cur or not src:
+        return False
+    return os.path.normpath(cur) == os.path.normpath(src)
+
+
+def validate_proven_o3_element_submit(
+    beat: dict,
+    speaker: str,
+    submit_element_id: str,
+) -> str | None:
+    """Return error text when submit element_id drifts from registry ``proven_o3_bind``."""
+    try:
+        from tools import kling_character_registry as reg
+
+        proven = reg.resolve_proven_o3_bind(reg.get_character_entry(speaker))
+    except Exception:
+        proven = None
+    if not proven:
+        return None
+    submit_eid = str(submit_element_id or "").strip()
+    if submit_eid and submit_eid != proven["element_id"]:
+        return (
+            f"O3 submit element {submit_eid} != proven bind {proven['element_id']} "
+            f"for {speaker!r}"
+        )
+    pin = beat.get("o3_voice_stack_pin")
+    if isinstance(pin, dict):
+        pin_eid = str(pin.get("element_id") or "").strip()
+        if pin_eid and pin_eid != proven["element_id"]:
+            return (
+                f"beat pin element {pin_eid} != registry proven bind {proven['element_id']}"
+            )
     return None
 
 
