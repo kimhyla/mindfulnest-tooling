@@ -2548,6 +2548,10 @@ def handle_bg_inject_beats(h, body: dict)-> None:
     return h._send_json(200, {"ok": True, "count": len(mapped_beats), "beat_ids": beat_ids})
 
 
+# Prompt / dialogue / slot edits must not re-run Element @Image1 gate — only identity fields.
+_BG_ELEMENT_CHAR_REF_SYNC_FIELDS = frozenset({"speaker", "reference_image"})
+
+
 def handle_bg_update_beat(h, body: dict)-> None:
 
     """POST /api/bg/update-beat {beat_id, [field...], scope_event_id?} -> { ok }"""
@@ -2597,6 +2601,10 @@ def handle_bg_update_beat(h, body: dict)-> None:
     # ensures BgRefSlot displays the IMAGE (not the lib_key string).
     # Mirrors _handle_bg_accept_lib_image's thumbnail pattern.
     thumb_b64 = None
+    written: list[str] = []
+    element_ref_warning = None
+    element_ref_registered = None
+    identity_fields_written: set[str] = set()
     with bg.sidecar_file_lock():
         sidecar = bg._load_sidecar_migrated()
         _, beat = bg.find_beat(sidecar, beat_id)
@@ -2674,6 +2682,21 @@ def handle_bg_update_beat(h, body: dict)-> None:
                 written.append(field)
                 if field == "speaker" and not beat.get("reference_image_locked"):
                     bg.align_beat_reference_to_element(beat)
+                if field == "speaker":
+                    sp = str(beat.get("speaker") or "").strip()
+                    if sp and bg._speaker_has_element_bound_voice(sp):
+                        from beat_extract_policy import kling_face_scene_notes
+
+                        notes = str(beat.get("scene_notes") or "")
+                        healed_notes = kling_face_scene_notes(sp, notes)
+                        if healed_notes != notes:
+                            beat["scene_notes"] = healed_notes
+                        prompt = beat.get("kling_o3_prompt") or ""
+                        aligned = bg.align_element_bound_kling_display_names(prompt, sp)
+                        if aligned != prompt:
+                            beat["kling_o3_prompt"] = aligned
+                            if bg.o3_prompt_box_law_active(beat):
+                                bg.stamp_o3_prompt_box_law(beat, aligned)
                 if field == "kling_o3_prompt" and isinstance(value, str):
                     text = value.strip()
                     if text:
@@ -2682,7 +2705,8 @@ def handle_bg_update_beat(h, body: dict)-> None:
                         bg.clear_o3_prompt_box_law(beat)
                     bg.sync_beat_dialogue_from_kling_prompt(beat)
                     bg.sync_beat_scene_notes_from_kling_prompt(beat)
-        if written:
+        identity_fields_written = set(written) & _BG_ELEMENT_CHAR_REF_SYNC_FIELDS
+        if identity_fields_written:
             bg.sync_element_char_ref_status(beat, heal_mismatch=False)
         if "reference_image" in written:
             speaker = str(beat.get("speaker") or "").strip()
@@ -2720,7 +2744,7 @@ def handle_bg_update_beat(h, body: dict)-> None:
                             + (f" — {pose}" if pose else "")
                             + ". Generate unlocked."
                         )
-        if beat.get("element_char_ref_ok") is False:
+        if beat.get("element_char_ref_ok") is False and "reference_image" in written:
             detail = (beat.get("element_char_ref_error") or "").strip()
             element_ref_warning = (
                 "Char ref saved on this beat, but Element registration failed. "
@@ -2728,15 +2752,18 @@ def handle_bg_update_beat(h, body: dict)-> None:
                 + (f" ({detail})" if detail else "")
             )
         bg.write_sidecar(sidecar)
-    return h._send_json(200, {
+    payload = {
         "ok": True,
         "written": written,
         "thumb_b64": thumb_b64,
         "element_ref_warning": element_ref_warning,
         "element_ref_registered": element_ref_registered,
-        "element_char_ref_ok": beat.get("element_char_ref_ok"),
-        "element_char_ref_error": beat.get("element_char_ref_error"),
-    })
+    }
+    # Prompt-only saves must not push gate fields — UI keeps prior registration state.
+    if identity_fields_written:
+        payload["element_char_ref_ok"] = beat.get("element_char_ref_ok")
+        payload["element_char_ref_error"] = beat.get("element_char_ref_error")
+    return h._send_json(200, payload)
 
 
 def handle_bg_align_element_ref(h, body: dict) -> None:

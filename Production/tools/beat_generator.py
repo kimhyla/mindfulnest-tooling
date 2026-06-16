@@ -3120,24 +3120,25 @@ def _ken_burns_zoompan_vf(
     out_w: int = 1280,
     out_h: int = 720,
     fps: int = 24,
+    duration_s: float | None = None,
 ) -> str:
-    """2× prescale + focal zoompan — avoids sub-pixel jitter at 720p/1080p."""
-    prescale_w = out_w * 2
-    prescale_h = out_h * 2
-    frame_den = max(1, total_frames - 1)
-    zoom_expr = (
-        f"{zoom_start:.6f}"
-        f"+({zoom_end:.6f}-{zoom_start:.6f})*on/{frame_den}"
-    )
-    focal_x = max(0.0, min(1.0, pan_x_pct / 100.0))
-    focal_y = max(0.0, min(1.0, pan_y_pct / 100.0))
-    x_expr = f"iw*{focal_x:.4f}-(iw/zoom/2)"
-    y_expr = f"ih*{focal_y:.4f}-(ih/zoom/2)"
-    return (
-        f"scale={prescale_w}:{prescale_h}:force_original_aspect_ratio=increase,"
-        f"crop={prescale_w}:{prescale_h},"
-        f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}':"
-        f"d={total_frames}:s={out_w}x{out_h}:fps={fps}"
+    """Smooth Ken Burns vf — delegates to ken_burns_render (all events / still paths)."""
+    try:
+        from tools import ken_burns_render as kb
+    except ImportError:
+        import ken_burns_render as kb  # type: ignore
+
+    if duration_s is None:
+        duration_s = total_frames / max(fps, 1)
+    return kb.ken_burns_smooth_vf(
+        pan_x_pct=pan_x_pct,
+        pan_y_pct=pan_y_pct,
+        zoom_start=zoom_start,
+        zoom_end=zoom_end,
+        duration_s=float(duration_s),
+        out_w=out_w,
+        out_h=out_h,
+        fps=fps,
     )
 
 
@@ -3165,6 +3166,7 @@ def run_ken_burns(
         zoom_end=zoom_end,
         total_frames=total_frames,
         fps=fps,
+        duration_s=float(duration),
     )
     cmd = [
         "ffmpeg", "-y",
@@ -3344,11 +3346,52 @@ def apply_beat_pipeline_still_mode(beat: dict, event_id: str, phase: str) -> Non
     beat.setdefault("kling_o3_status", "draft")
 
 
+def _scrub_still_insert_prompt_labels(beat: dict) -> bool:
+    """Remove still-insert header labels that block O3 submit after pipeline flip."""
+    prompt = (beat.get("kling_o3_prompt") or "").strip()
+    if not prompt:
+        return False
+    cleaned = prompt
+    for pat in (
+        r"\s*[—–-]\s*Still insert\s*[—–-][^\n]*",
+        r"\bStill insert\s*[—–-]\s*",
+        r"\bGPT still\.?\s*",
+        r"^STILL INSERT[^\n]*\n?",
+    ):
+        cleaned = re.sub(pat, "", cleaned, flags=re.I)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    if cleaned == prompt:
+        return False
+    beat["kling_o3_prompt"] = cleaned
+    return True
+
+
 def apply_beat_pipeline_o3_mode(beat: dict, event_id: str, phase: str) -> None:
     beat.pop("beat_render_mode", None)
     beat["pipeline"] = PIPELINE_MODE_O3
     beat["beat_type"] = "dialogue"
+    # Still-insert prompt-box law must not carry into O3 — flip gets native heals.
+    clear_o3_prompt_box_law(beat)
     apply_kling_o3_defaults_to_beat(beat, event_id, phase)
+    beat.pop("kling_o3_still_stitch_approved", None)
+    beat.pop("kling_o3_still_stitch_approved_at", None)
+    if beat.get("kling_o3_status") == "still_rendered":
+        beat["kling_o3_status"] = "draft"
+    speaker = str(beat.get("speaker") or "").strip()
+    if speaker and _speaker_has_element_bound_voice(speaker):
+        from beat_extract_policy import kling_face_scene_notes
+
+        scene = str(beat.get("scene_notes") or "").strip()
+        healed_scene = kling_face_scene_notes(speaker, scene)
+        if healed_scene != scene:
+            beat["scene_notes"] = healed_scene
+        _scrub_still_insert_prompt_labels(beat)
+        aligned = align_element_bound_kling_display_names(
+            beat.get("kling_o3_prompt") or "", speaker,
+        )
+        if aligned != (beat.get("kling_o3_prompt") or ""):
+            beat["kling_o3_prompt"] = aligned
+        heal_o3_element_submit_prompt(beat)
 
 
 def segment_event_phase_for_beat(sidecar: dict, beat_id: str) -> tuple[str, str] | tuple[None, None]:
@@ -3531,7 +3574,7 @@ def render_still_insert_o3_clip(
         run_static_hold(beat, str(still), duration, out_path=silent_path)
     else:
         run_ken_burns(
-            beat, str(still), 50, 50, 1.0, 1.08, duration, out_path=silent_path,
+            beat, str(still), 50, 50, 1.0, 1.06, duration, out_path=silent_path,
         )
     final_path = silent_path.resolve()
     tts_mixed = False
@@ -4590,6 +4633,24 @@ def _speaker_has_element_bound_voice(speaker: str) -> bool:
         return False
 
 
+def align_element_bound_kling_display_names(prompt: str, speaker: str) -> str:
+    """Map registry speaker names to Kling Element display names (Lorelai → Loral).
+
+    Safe under prompt-box law: rewrites staging/@Image1 labels only, never rebuilds
+    voice line or quoted dialogue from sidecar canon.
+    """
+    text = (prompt or "").strip()
+    sp = (speaker or "").strip()
+    if not text or not sp or not _speaker_has_element_bound_voice(sp):
+        return prompt or ""
+    try:
+        from tools import kling_o3_prompt as o3p
+    except ImportError:
+        import kling_o3_prompt as o3p  # type: ignore
+    text = o3p.normalize_kling_speaker_names_in_prompt(text, sp)
+    return o3p.scrub_registry_name_from_pre_voice_staging(text, sp)
+
+
 def _append_kling_o3_submit_locks(
     raw: str,
     *,
@@ -4724,9 +4785,11 @@ def prepare_kling_o3_prompt_for_submit(beat: dict, prompt: str | None = None) ->
         return ""
 
     speaker = str(beat.get("speaker") or "Character").strip()
+    element_bound = _speaker_has_element_bound_voice(speaker)
     if o3_prompt_box_law_active(beat):
         spoken = extract_spoken_dialogue_from_kling_prompt(raw)
-        element_bound = _speaker_has_element_bound_voice(speaker)
+        if element_bound:
+            raw = align_element_bound_kling_display_names(raw, speaker)
         return _append_kling_o3_submit_locks(
             raw,
             speaker=speaker,

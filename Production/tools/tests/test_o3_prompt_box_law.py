@@ -1,6 +1,7 @@
 """Regression — prompt-box law: Generate payload is what Kling hears."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import beat_generator as bg
@@ -193,3 +194,93 @@ def test_without_law_normalize_can_rewrite_voice_block():
     prepared = bg.prepare_kling_o3_prompt_for_submit(beat, USER_PROMPT)
     assert USER_LINE in prepared or CANON_COMPACT in prepared
     assert prepared != USER_PROMPT or "Only @Image1 is visible" in prepared
+
+
+def test_prepare_aligns_registry_staging_name_under_prompt_box_law():
+    """Still→O3 flips often leave Lorelai in pre-voice staging; submit must heal names."""
+    import kling_o3_prompt as o3p
+
+    bad_prompt = (
+        "@Image1 (Lorelai). Scene from @Image2.\n\n"
+        "Lorelai knits her brow in puzzlement, slight head tilt.\n\n"
+        f'Loral speaks in a {o3p.KLING_O3_LORELAI_VOICE_DELIVERY}: '
+        '[excited] "Oh. My. Gosh. Did you — No way. This Rune stone is AWAKE? How?!"'
+    )
+    beat = {
+        "speaker": "Lorelai",
+        "o3_prompt_box_law": True,
+        "kling_o3_prompt": bad_prompt,
+    }
+    prepared = bg.prepare_kling_o3_prompt_for_submit(beat, bad_prompt)
+    assert "Lorelai" not in prepared.split("speaks")[0]
+    assert "@Image1 (Loral)" in prepared
+    errs = o3p.validate_element_list_alignment(
+        "Lorelai",
+        {"element_name": "Loral", "element_id": "1", "voice_id": "895210468825628751"},
+        prepared,
+        beat=beat,
+    )
+    assert errs == [], f"unexpected validation errors: {errs}"
+
+
+def test_still_flip_header_lorelai_scrubbed_for_submit():
+    """Beat 10 shape: still-insert header keeps Lorelai after O3 flip edits."""
+    import kling_o3_prompt as o3p
+
+    prompt = (
+        "@Image1 (Loral) Loral — Lorelai — Still insert — GPT still. Scene from @Image2.\n\n"
+        "Loral is a female raccooon.\n\n"
+        f'Loral speaks in a {o3p.KLING_O3_LORELAI_VOICE_DELIVERY}: "Hi"'
+    )
+    beat = {"speaker": "Lorelai", "o3_prompt_box_law": True, "kling_o3_prompt": prompt}
+    prepared = bg.prepare_kling_o3_prompt_for_submit(beat, prompt)
+    assert "Lorelai" not in prepared.split("speaks")[0]
+    assert o3p.prompt_staging_leaks_registry_speaker_name("Lorelai", prepared) is False
+
+
+def test_still_to_o3_flip_runs_element_bound_heals(monkeypatch):
+    monkeypatch.setattr(
+        "tools.kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.kling_element_display_name",
+        lambda _s: "Loral",
+    )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.kling_image1_speaker_label",
+        lambda _s: "Loral",
+    )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.resolve_registry_key",
+        lambda s: "Lorelai" if (s or "").strip().casefold() == "lorelai" else (s or "").strip(),
+    )
+    beat = {
+        "beat_id": "bg_arc1_event2_pre_beat_08",
+        "speaker": "Lorelai",
+        "pipeline": "still_insert",
+        "beat_render_mode": "still_insert",
+        "scene_notes": "Lorelai knits her brow in puzzlement.",
+        "dialogue_text": "Oh. My. Gosh.",
+        "kling_o3_prompt": "STILL INSERT — Lorelai: \"Oh. My. Gosh.\"",
+        "o3_prompt_box_law": True,
+    }
+    bg.apply_beat_pipeline_o3_mode(beat, "2", "pre")
+    assert beat.get("pipeline") == bg.PIPELINE_MODE_O3
+    assert not bg.o3_prompt_box_law_active(beat)
+    prompt = beat.get("kling_o3_prompt") or ""
+    assert "Lorelai" not in prompt.split("speaks")[0] if "speaks" in prompt else "Lorelai" not in prompt
+    assert beat.get("scene_notes") == "Loral knits her brow in puzzlement."
+
+
+def test_bg_update_beat_prompt_only_skips_element_char_ref_sync():
+    """Prompt textarea debounce must not re-run @Image1 Element gate or emit gate fields."""
+    text = BACKGROUND.read_text(encoding="utf-8")
+    assert "_BG_ELEMENT_CHAR_REF_SYNC_FIELDS" in text
+    assert "speaker" in text.split("_BG_ELEMENT_CHAR_REF_SYNC_FIELDS")[1][:120]
+    assert "reference_image" in text.split("_BG_ELEMENT_CHAR_REF_SYNC_FIELDS")[1][:120]
+    block = text[text.index("def handle_bg_update_beat"):text.index("\ndef handle_bg_reorder_beats")]
+    assert re.search(
+        r"if identity_fields_written:\s*\n\s*payload\[\"element_char_ref_ok\"\]",
+        block,
+    ), "gate fields must be omitted from prompt-only update-beat responses"

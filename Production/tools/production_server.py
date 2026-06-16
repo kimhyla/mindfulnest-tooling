@@ -10246,22 +10246,20 @@ body {{padding-top:44px!important;}}
         )
 
         if not cache_hit:
-            # Render via ffmpeg zoompan. Pre-scale 2x to avoid jitter on
-            # short durations. d = round(dur * 24) frames at 24 fps.
-            # LD STILL_AS_FINAL_HOLD_DURATION_CONTROL_V1: dur is the
-            # user-controlled hold (default 5.0s), NOT audio_duration_s.
-            frames = max(1, int(round(float(hold_duration_s) * 24)))
-            zoom_expr = (
-                f"{kb['zoom_start']:.4f}"
-                f"+({kb['zoom_end']:.4f}-{kb['zoom_start']:.4f})"
-                f"*on/{max(1, frames - 1)}"
-            )
-            vf = (
-                "scale=3840:2160:force_original_aspect_ratio=increase,"
-                "crop=3840:2160,"
-                f"zoompan=z='{zoom_expr}':"
-                "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
-                f"d={frames}:s=1920x1080:fps=24"
+            try:
+                from tools import ken_burns_render as _kb
+            except ImportError:
+                import ken_burns_render as _kb  # type: ignore
+
+            vf = _kb.ken_burns_smooth_vf(
+                pan_x_pct=50.0,
+                pan_y_pct=50.0,
+                zoom_start=float(kb["zoom_start"]),
+                zoom_end=float(kb["zoom_end"]),
+                duration_s=float(hold_duration_s),
+                out_w=1920,
+                out_h=1080,
+                fps=24,
             )
             cmd = [
                 "ffmpeg", "-y",

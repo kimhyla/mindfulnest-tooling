@@ -44,6 +44,22 @@ _BRACKET_PERFORMANCE_TAG_RE = re.compile(
 _SPEAKS_BRACKET_TAG_RE = re.compile(r"\bspeaks\s*\[[^\]]+\]\s*:", re.I)
 _VOICE_LINE_VERB_RE = re.compile(r"\b(speaks|says)\b", re.I)
 
+
+def _import_kling_registry():
+    try:
+        from tools import kling_character_registry as reg
+    except ImportError:
+        import kling_character_registry as reg  # type: ignore
+    return reg
+
+
+def _speaker_kling_display_name(speaker: str) -> str | None:
+    try:
+        reg = _import_kling_registry()
+        return reg.kling_element_display_name(speaker)
+    except Exception:
+        return None
+
 # Performance tags stay inside quoted dialogue; emotion tags go OUTSIDE quotes (Kling reads
 # bracket words aloud when they sit inside "…").
 _PERFORMANCE_TAG_WORDS = frozenset({"pause", "break", "silence"})
@@ -178,12 +194,7 @@ def _prompt_needs_locked_voice_upgrade(speaker: str, prompt: str) -> bool:
 
 
 def _kling_display_name_for_speaker(speaker: str) -> str | None:
-    try:
-        from tools import kling_character_registry as reg
-
-        return reg.kling_element_display_name(speaker)
-    except Exception:
-        return None
+    return _speaker_kling_display_name(speaker)
 
 
 def _voice_line_matches_kling_display_name(speaker: str, voice_line: str) -> bool:
@@ -226,13 +237,13 @@ def _prompt_needs_kling_name_normalization(speaker: str, prompt: str) -> bool:
 
 def normalize_kling_speaker_names_in_prompt(prompt: str, speaker: str) -> str:
     """Map registry speaker names to Kling Element display names (Lorelai/Laurel → Loral)."""
-    display = _kling_display_name_for_speaker(speaker)
+    display = _speaker_kling_display_name(speaker)
     if not display:
         return prompt
     out = prompt or ""
     out = re.sub(r"@Image1\s*\(\s*Character\s*\)", f"@Image1 ({display})", out, flags=re.I)
     try:
-        from tools import kling_character_registry as reg
+        reg = _import_kling_registry()
 
         reg_key = reg.resolve_registry_key(speaker) or (speaker or "").strip()
         if reg_key in reg._KLING_ELEMENT_DISPLAY_NAME:
@@ -253,16 +264,36 @@ def normalize_kling_speaker_names_in_prompt(prompt: str, speaker: str) -> str:
     return out
 
 
+def scrub_registry_name_from_pre_voice_staging(prompt: str, speaker: str) -> str:
+    """Replace registry speaker name in pre-voice staging only (still-flip header cleanup)."""
+    try:
+        reg = _import_kling_registry()
+        reg_key = reg.resolve_registry_key(speaker) or (speaker or "").strip()
+        display = _speaker_kling_display_name(speaker)
+    except Exception:
+        return prompt
+    if not reg_key or not display or reg_key.casefold() == display.casefold():
+        return prompt
+    text = prompt or ""
+    m = re.search(r"\b(?:speaks|says)\b", text, re.I)
+    if m:
+        head, tail = text[: m.start()], text[m.start() :]
+    else:
+        head, tail = text, ""
+    cleaned = re.sub(rf"\b{re.escape(reg_key)}\b", display, head, flags=re.I)
+    return cleaned + tail
+
+
 def prompt_staging_leaks_registry_speaker_name(speaker: str, prompt: str) -> bool:
     """True when registry key (e.g. Lorelai) appears in pre-voice staging body."""
     try:
-        from tools import kling_character_registry as reg
+        reg = _import_kling_registry()
 
         reg_key = reg.resolve_registry_key(speaker) or (speaker or "").strip()
-        display = _kling_display_name_for_speaker(speaker) or reg_key
+        display = _speaker_kling_display_name(speaker)
     except Exception:
         return False
-    if not reg_key or reg_key == display:
+    if not reg_key or not display or reg_key.casefold() == display.casefold():
         return False
     text = prompt or ""
     m = re.search(r"\b(?:speaks|says)\b", text, re.I)

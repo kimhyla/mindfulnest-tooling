@@ -56,11 +56,17 @@ def test_handle_bg_update_beat_syncs_without_heal_redirect():
         Path(__file__).resolve().parent.parent / "server_handlers" / "background.py"
     ).read_text(encoding="utf-8")
     block = text[text.index("def handle_bg_update_beat"):text.index("\ndef handle_bg_reorder_beats")]
+    assert "_BG_ELEMENT_CHAR_REF_SYNC_FIELDS" in block
+    assert "identity_fields_written" in block
     assert "sync_element_char_ref_status(beat, heal_mismatch=False)" in block
     assert re.search(
-        r"if written:\s*\n\s*bg\.sync_element_char_ref_status\(beat, heal_mismatch=False\)",
+        r"if identity_fields_written:\s*\n\s*bg\.sync_element_char_ref_status\(beat, heal_mismatch=False\)",
         block,
-    ), "bg_update_beat must not re-heal locked library drops after apply_user_beat_ref_update"
+    ), "bg_update_beat must sync Element gate only for speaker/reference_image writes"
+    assert "kling_o3_prompt" not in text[
+        text.index("_BG_ELEMENT_CHAR_REF_SYNC_FIELDS"):
+        text.index("_BG_ELEMENT_CHAR_REF_SYNC_FIELDS") + 200
+    ]
 
 
 def test_bgtab_wires_beat_missing_guard_helpers():

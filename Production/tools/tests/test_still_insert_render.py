@@ -22,13 +22,16 @@ def test_ken_burns_zoompan_vf_uses_prescale_and_focal_center():
         zoom_end=1.08,
         total_frames=120,
         fps=24,
+        duration_s=5.0,
     )
-    assert "scale=2560:1440" in vf
-    assert "crop=2560:1440" in vf
-    assert "iw/zoom/2" in vf
-    assert "ih/zoom/2" in vf
-    assert "d=120" in vf
-    assert "s=1280x720" in vf
+    assert "scale=3840:2160" in vf
+    assert "flags=lanczos" in vf
+    assert "zoompan" not in vf
+    assert "min(t/5.000000,1)" in vf
+    assert "(iw-ow)*0.5000" in vf
+    assert "(ih-oh)*0.5000" in vf
+    assert "s=1280x720" not in vf
+    assert "scale=1280:720" in vf
 
 
 def test_resolve_still_source_prefers_library_drop(tmp_path: Path):
