@@ -67,9 +67,17 @@ def humanize_kling_body_parts_on_beat(beat: dict) -> bool:
     """Apply gesture humanization to sidecar beat text fields. Returns True if any field changed."""
     if not isinstance(beat, dict):
         return False
+    try:
+        import beat_generator as bg
+
+        prompt_locked = bg.o3_prompt_box_law_active(beat)
+    except Exception:
+        prompt_locked = bool(beat.get("o3_prompt_box_law"))
     speaker = str(beat.get("speaker") or "")
     changed = False
     for field in ("dialogue_text", "scene_notes", "kling_o3_prompt"):
+        if field == "kling_o3_prompt" and prompt_locked:
+            continue
         raw = beat.get(field)
         if raw in (None, ""):
             continue
@@ -731,6 +739,8 @@ def heal_beat_kling_o3_prompt_event1_shape(beat: dict) -> bool:
         return False
     import beat_generator as bg
 
+    if bg.o3_prompt_box_law_active(beat):
+        return False
     if bg.beat_is_still_insert(beat) or bg.beat_is_canonical_mirror_protected(beat):
         return False
     prompt = (beat.get("kling_o3_prompt") or "").strip()

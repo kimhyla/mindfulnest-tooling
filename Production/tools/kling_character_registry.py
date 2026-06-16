@@ -313,6 +313,13 @@ def element_image_paths(speaker: str) -> list[Path]:
     return out
 
 
+def char_ref_aligned_for_intent_commit(char_path: str, speaker: str) -> tuple[bool, str]:
+    """Strict alignment for generation-intent commit (no poses-dir false positive)."""
+    return char_ref_matches_element_images(
+        char_path, speaker, allow_pose_dir_fallback=False,
+    )
+
+
 def char_ref_matches_element_images(
     char_path: str,
     speaker: str,

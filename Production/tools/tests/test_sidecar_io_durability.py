@@ -14,18 +14,68 @@ def test_read_json_file_durable_retries_errno11(monkeypatch, tmp_path: Path) -> 
     path = tmp_path / "sidecar.json"
     path.write_text('{"schema_version": 1, "arcs": {}}', encoding="utf-8")
     calls = {"n": 0}
-    real_copy = bg.shutil.copy2
+    real_copy = bg._copy_file_chunked
 
-    def flaky_copy2(src, dst):
+    def flaky_copy(src, dst, **kwargs):
         calls["n"] += 1
         if calls["n"] == 1:
             raise OSError(11, "Resource deadlock avoided")
         return real_copy(src, dst)
 
-    monkeypatch.setattr(bg.shutil, "copy2", flaky_copy2)
+    monkeypatch.setattr(bg, "_copy_file_chunked", flaky_copy)
     monkeypatch.setattr(bg.time, "sleep", lambda _s: None)
     data = bg._read_json_file_durable(str(path))
     assert data.get("schema_version") == 1
+    assert calls["n"] == 2
+
+
+def test_read_json_file_durable_avoids_shutil_copy2(monkeypatch, tmp_path: Path) -> None:
+    path = tmp_path / "sidecar.json"
+    path.write_text('{"ok": true}', encoding="utf-8")
+
+    def copy2_should_not_run(*_a, **_k):
+        raise AssertionError("shutil.copy2 must not be used for Dropbox sidecar reads")
+
+    monkeypatch.setattr(bg.shutil, "copy2", copy2_should_not_run)
+    assert bg._read_json_file_durable(str(path)) == {"ok": True}
+
+
+def test_update_beat_locked_retries_transient_sidecar_io(monkeypatch, tmp_path: Path) -> None:
+    sidecar_path = tmp_path / "beat_generator_state.json"
+    sidecar_path.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "arcs": {
+                "arc_1": {
+                    "segments": {
+                        "event_2_pre": {
+                            "beats": [{"beat_id": "bg_test", "speaker": "Lorelai", "status": "draft"}],
+                        },
+                    },
+                },
+            },
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(bg, "BG_SIDECAR_PATH", str(sidecar_path))
+    calls = {"n": 0}
+    real_write = bg.write_sidecar
+
+    def flaky_write(data):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError(11, "Resource deadlock avoided")
+        return real_write(data)
+
+    monkeypatch.setattr(bg, "write_sidecar", flaky_write)
+    monkeypatch.setattr(bg.time, "sleep", lambda _s: None)
+
+    def apply(beat, _sidecar):
+        beat["status"] = "approved"
+
+    ok, beat = bg.update_beat_locked("bg_test", apply)
+    assert ok is True
+    assert beat["status"] == "approved"
     assert calls["n"] == 2
 
 

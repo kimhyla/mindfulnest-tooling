@@ -231,15 +231,6 @@ interface GptPollResponse {
   done_count: number;
 }
 
-interface ArloO3SubmitResponse {
-  ok: boolean;
-  job_id?: string;
-  beat_id?: string;
-  attempt_id?: string;
-  deduped?: boolean;
-  message?: string;
-}
-
 interface StillClipRenderResponse {
   ok: boolean;
   beat_id?: string;
@@ -254,14 +245,6 @@ interface StillClipRenderResponse {
   tts_regenerated?: boolean;
   tts_unchanged?: boolean;
   still_path?: string;
-}
-
-interface ArloO3PollResponse {
-  status: 'running' | 'done' | 'failed';
-  beat_id?: string;
-  beat?: BgBeat;
-  result?: { video?: string; voice_id?: string; o3_model?: string; duration_s?: number } | null;
-  error?: string | null;
 }
 
 interface NativeLipSyncSubmitResponse {
@@ -311,46 +294,13 @@ function mergeBeatFromO3Poll(beats: BgBeat[], patch: BgBeat): BgBeat[] {
   return next;
 }
 
-const O3_VOICE_FIX_RUNNING_STATUSES = new Set([
-  'o3_running',
-  'job_running',
-  'job_starting',
-  'visual_running',
-  'lipsync_running',
-  'tts_ready',
-  'o3_element_running',
-  'subprocess',
-]);
-
-function beatO3JobLooksRunning(beat: BgBeat): boolean {
-  const status = (beat.status ?? '').toLowerCase();
-  const voiceFix = (beat.kling_o3_voice_fix_status ?? '').toLowerCase();
-  const klingStatus = (beat.kling_o3_status ?? '').toLowerCase();
-  if (status.startsWith('o3_voice_job_') || status.startsWith('o3_element_')) {
-    return true;
-  }
-  if (O3_VOICE_FIX_RUNNING_STATUSES.has(voiceFix)) {
-    return true;
-  }
-  const jobId = (beat.kling_o3_voice_fix_ui_job_id ?? '').trim();
-  if (!jobId || voiceFix.startsWith('failed')) {
-    return false;
-  }
-  if (voiceFix !== 'approved' && klingStatus !== 'approved') {
-    return true;
-  }
-  return O3_VOICE_FIX_RUNNING_STATUSES.has(voiceFix);
-}
-
-function collectActiveO3JobsFromBeats(beats: BgBeat[]): Record<string, string> {
-  const jobs: Record<string, string> = {};
-  for (const beat of beats) {
-    const jobId = (beat.kling_o3_voice_fix_ui_job_id ?? '').trim();
-    if (!jobId || !beatO3JobLooksRunning(beat)) continue;
-    jobs[beat.beat_id] = jobId;
-  }
-  return jobs;
-}
+import { collectActiveO3JobsFromBeats } from '../o3JobStatusContract';
+import type {
+  ArloO3PollResponse,
+  ArloO3SubmitResponse,
+  O3GenerationIntentPoll,
+  O3SubmitAudit,
+} from '../o3GenerationIntent';
 
 function isNetworkPollBlip(res: { ok: boolean; status: number; error?: string }): boolean {
   return !res.ok
@@ -536,6 +486,9 @@ export function BgTab() {
   const [loading, setLoading] = useState(true);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [activeO3Jobs, setActiveO3Jobs] = useState<Record<string, string>>({});
+  const [o3IntentByBeat, setO3IntentByBeat] = useState<Record<string, O3GenerationIntentPoll>>({});
+  const [o3SubmitAuditByBeat, setO3SubmitAuditByBeat] = useState<Record<string, O3SubmitAudit>>({});
+  const [o3WarningByBeat, setO3WarningByBeat] = useState<Record<string, string>>({});
   const [activeStillRenderJobs, setActiveStillRenderJobs] = useState<Record<string, boolean>>({});
   const [activeNativeLipSyncJobs, setActiveNativeLipSyncJobs] = useState<Record<string, string>>({});
   const [pollResults, setPollResults] = useState<Record<string, GptOption[]>>({});
@@ -748,9 +701,26 @@ export function BgTab() {
         const res = await apiGet<ArloO3PollResponse>('bg_poll_arlo_o3_voice_status', { job_id: jobId });
         if (cancelled) return;
         if (res.ok && res.data) {
+          if (res.data.intent) {
+            setO3IntentByBeat((prev) => ({ ...prev, [beatId]: res.data!.intent! }));
+          }
+          if (res.data.status === 'done_with_warning') {
+            completedBeatIds.push(beatId);
+            if (res.data.beat) beatPatches.push(res.data.beat as BgBeat);
+            const warnMsg = res.data.warning?.message
+              ?? res.data.terminal?.warning?.message
+              ?? 'Delivery recovered with sidecar warning — verify clip in kling_o3_clips folder.';
+            setO3WarningByBeat((prev) => ({ ...prev, [beatId]: warnMsg }));
+            pushToast({
+              kind: 'info',
+              message: `${beatId}: O3 done with warning — ${warnMsg}`,
+              source: 'bg-o3-warning',
+            });
+            return;
+          }
           if (res.data.status === 'done') {
             completedBeatIds.push(beatId);
-            if (res.data.beat) beatPatches.push(res.data.beat);
+            if (res.data.beat) beatPatches.push(res.data.beat as BgBeat);
             pushToast({
               kind: 'success',
               message: `${beatId}: O3 voice video ready${res.data.result?.duration_s ? ` (${res.data.result.duration_s.toFixed(2)}s)` : ''}`,
@@ -760,7 +730,7 @@ export function BgTab() {
           }
           if (res.data.status === 'failed') {
             failedBeatIds.push(beatId);
-            if (res.data.beat) beatPatches.push(res.data.beat);
+            if (res.data.beat) beatPatches.push(res.data.beat as BgBeat);
             pushToast({
               kind: 'error',
               message: `${beatId}: O3 voice job failed: ${formatO3JobFailure(res.data.error)}`,
@@ -786,6 +756,13 @@ export function BgTab() {
 
       if (completedBeatIds.length > 0 || failedBeatIds.length > 0 || staleBeatIds.length > 0) {
         setActiveO3Jobs((prev) => {
+          const next = { ...prev };
+          for (const beatId of [...completedBeatIds, ...failedBeatIds, ...staleBeatIds]) {
+            delete next[beatId];
+          }
+          return next;
+        });
+        setO3IntentByBeat((prev) => {
           const next = { ...prev };
           for (const beatId of [...completedBeatIds, ...failedBeatIds, ...staleBeatIds]) {
             delete next[beatId];
@@ -1494,11 +1471,18 @@ export function BgTab() {
       );
       if (result.ok && result.data?.job_id) {
         setActiveO3Jobs((prev) => ({ ...prev, [beatId]: result.data!.job_id! }));
+        if (result.data.intent) {
+          setO3IntentByBeat((prev) => ({ ...prev, [beatId]: result.data!.intent! }));
+        }
+        if (result.data.submitted) {
+          setO3SubmitAuditByBeat((prev) => ({ ...prev, [beatId]: result.data!.submitted! }));
+        }
+        const slot = result.data.generation_slot ?? result.data.submitted?.generation_slot;
         pushToast({
           kind: result.data.deduped ? 'info' : 'info',
           message: result.data.deduped
             ? 'This beat already has an O3 voice job running; reattached to the existing job.'
-            : `Submitted ${beat.speaker} O3 Pro + Element voice (720 delivery encode)`,
+            : `Submitted ${beat.speaker} O3 intent${slot ? ` (${slot})` : ''} — prompt locked until job finishes`,
           source: 'bg-o3-submit',
         });
       } else if (!(await guardBeatPatchResult(
@@ -2000,6 +1984,9 @@ export function BgTab() {
                 || !!activeStillRenderJobs[b.beat_id]
                 || !!activeNativeLipSyncJobs[b.beat_id]
               }
+              o3IntentSnapshot={o3IntentByBeat[b.beat_id]}
+              o3SubmitAudit={o3SubmitAuditByBeat[b.beat_id]}
+              o3WarningMessage={o3WarningByBeat[b.beat_id]}
               nativeExperimentBusy={!!activeNativeLipSyncJobs[b.beat_id]}
               onDelete={() => onDeleteBeat(b.beat_id)}
               onUpdateText={(t) => onUpdateBeatText(b.beat_id, t)}
@@ -2361,6 +2348,9 @@ interface BeatGenCardProps {
   pollResultForBeat?: GptOption[];
   busy: boolean;
   nativeExperimentBusy: boolean;
+  o3IntentSnapshot?: O3GenerationIntentPoll;
+  o3SubmitAudit?: O3SubmitAudit;
+  o3WarningMessage?: string;
   onDelete: () => void;
   onUpdateText: (next: string) => void | Promise<boolean>;
   // LD CHARACTER_DROPDOWN_RESTORED_V1 — speaker dropdown change.
@@ -2396,6 +2386,7 @@ interface BeatGenCardProps {
 
 function BeatGenCard({
   index, beat, eventId, videoRole, pollResultForBeat, busy, nativeExperimentBusy,
+  o3IntentSnapshot, o3SubmitAudit, o3WarningMessage,
   onDelete, onUpdateText, onUpdateSpeaker, onGenerate, onAccept,
   onSelectO3Video, onApproveStill, onApplyO3Trim, onSetReplaceSlot, onSubmitNativeLipSyncExperiment,
   onEditChip, onInsertAfter, onRemoveRef, onAlignElementRef, onAddElementPose, onRefresh, onBeatMissing,
@@ -2405,14 +2396,23 @@ function BeatGenCard({
   const [chips, setChips] = useState<string[]>(extractStageChips(beatPromptText(beat)));
   const promptDirtyRef = useRef(false);
   const saveTimerRef = useRef<number | null>(null);
+  const intentLockedPrompt = busy
+    ? (o3IntentSnapshot?.prompt?.verbatim ?? o3SubmitAudit?.prompt_excerpt ?? null)
+    : null;
+  const displayText = intentLockedPrompt ?? localText;
 
   useEffect(() => {
+    if (intentLockedPrompt) {
+      setLocalText(intentLockedPrompt);
+      setChips(extractStageChips(intentLockedPrompt));
+      return;
+    }
     // Never clobber in-progress edits or a debounced save waiting to flush.
     if (promptDirtyRef.current || saveTimerRef.current !== null) return;
     const next = beatPromptText(beat);
     setLocalText(next);
     setChips(extractStageChips(next));
-  }, [beat.kling_o3_prompt, beat.dialogue_text, beat.beat_id]);
+  }, [beat.kling_o3_prompt, beat.dialogue_text, beat.beat_id, intentLockedPrompt]);
 
   const flushPromptSave = useCallback(async (text: string) => {
     if (saveTimerRef.current !== null) {
@@ -2436,6 +2436,7 @@ function BeatGenCard({
   }, [flushPromptSave]);
 
   const onTextInput = (e: Event) => {
+    if (intentLockedPrompt) return;
     const t = (e.target as HTMLTextAreaElement).value;
     promptDirtyRef.current = true;
     setLocalText(t);
@@ -2557,13 +2558,44 @@ function BeatGenCard({
       <textarea
         class="mn-bg-beat-text mn-bg-kling-prompt-editor"
         data-testid={`bg-beat-text-${index}`}
-        value={localText}
+        value={displayText}
+        readOnly={!!intentLockedPrompt}
         onInput={onTextInput}
         onBlur={onTextBlur}
         rows={14}
         spellcheck={true}
+        placeholder={intentLockedPrompt ? 'Generation in progress — prompt locked to submitted intent.' : undefined}
         aria-label={`Kling O3 prompt for beat ${beat.beat_id}`}
       />
+      {o3SubmitAudit || o3IntentSnapshot ? (
+        <div
+          class="mn-bg-o3-intent-audit"
+          data-testid={`bg-o3-intent-audit-${index}`}
+          style="margin: 4px 0 8px; font-size: 11px; color: #94a3b8; font-family: ui-monospace, monospace;"
+        >
+          {o3IntentSnapshot?.generation?.slot || o3SubmitAudit?.generation_slot ? (
+            <div>Slot: {o3IntentSnapshot?.generation?.slot ?? o3SubmitAudit?.generation_slot}</div>
+          ) : null}
+          {o3SubmitAudit?.prompt_excerpt ? (
+            <div>Submitted: {o3SubmitAudit.prompt_excerpt.slice(0, 120)}…</div>
+          ) : null}
+          {o3SubmitAudit?.char_ref ? (
+            <div>Char ref: {o3SubmitAudit.char_ref.split('/').pop()}</div>
+          ) : null}
+          {o3SubmitAudit?.element_id ? (
+            <div>Element: {o3IntentSnapshot?.voice?.element_name ?? beat.speaker} ({o3SubmitAudit.element_id})</div>
+          ) : null}
+        </div>
+      ) : null}
+      {o3WarningMessage ? (
+        <div
+          class="mn-bg-o3-warning-banner"
+          data-testid={`bg-o3-warning-${index}`}
+          style="margin: 4px 0 8px; padding: 8px; background: #422006; border: 1px solid #f59e0b; border-radius: 6px; color: #fcd34d; font-size: 12px;"
+        >
+          {o3WarningMessage}
+        </div>
+      ) : null}
       {o3FailureMessage ? (
         <div
           class="mn-bg-o3-failure"
@@ -2689,7 +2721,7 @@ function BeatGenCard({
           title={elementCharRefBlocked ? elementCharRefInlineHint(beat.element_char_ref_error) : undefined}
         >
           {busy ? (
-            <><Spinner size="sm" inline /> Generating…</>
+            <><Spinner size="sm" inline /> Generating{o3IntentSnapshot?.generation?.slot ? ` ${o3IntentSnapshot.generation.slot}` : ''}…</>
           ) : isStillInsertBeat(beat) ? (
             'Build still video (+ TTS)'
           ) : isO3VoiceBeat(beat) ? (

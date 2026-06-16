@@ -68,12 +68,41 @@ def test_resolve_element_o3_submit_prompt_preserves_user_line():
     assert CANON_COMPACT not in spoken
 
 
-def test_submit_handler_stamps_prompt_box_law_and_subprocess_env():
+def test_submit_handler_uses_generation_intent_commit():
     text = BACKGROUND.read_text(encoding="utf-8")
-    assert "stamp_o3_prompt_box_law" in text
-    assert 'subprocess_env["MN_O3_PROMPT_BOX_LAW"] = "1"' in text
-    assert "upgrade_element_bound_voice_prompt" in text
-    assert "if not explicit_user_prompt:" in text
+    assert "build_generation_intent" in text
+    assert "write_generation_intent" in text
+    assert 'subprocess_env["MN_O3_INTENT_PATH"]' in text
+    assert "stamp_o3_prompt_box_law" in text.split("handle_bg_submit_arlo_o3_voice")[1].split("def ")[0]
+    assert "ensure_operator_insert_char_ref_parity" not in text.split("handle_bg_submit_arlo_o3_voice")[1].split("def ")[0]
+
+
+def test_migrate_sidecar_skips_prompt_morph_when_prompt_box_law():
+    from beat_extract_policy import humanize_kling_body_parts_on_beat, heal_beat_kling_o3_prompt_event1_shape
+
+    custom = "CUSTOM PROMPT LINE XYZ — do not rewrite."
+    sidecar = {
+        "schema_version": 3,
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [{
+                            "beat_id": "bg_arc1_event2_pre_beat_30",
+                            "speaker": "Lorelai",
+                            "kling_o3_prompt": custom,
+                            "o3_prompt_box_law": True,
+                        }],
+                    },
+                },
+            },
+        },
+    }
+    out = bg._migrate_sidecar(sidecar)
+    beat = out["arcs"]["arc_1"]["segments"]["event_2_pre"]["beats"][0]
+    assert beat["kling_o3_prompt"] == custom
+    assert humanize_kling_body_parts_on_beat(beat) is False
+    assert heal_beat_kling_o3_prompt_event1_shape(beat) is False
 
 
 def test_finalize_proven_element_preserves_prompt_box_law(tmp_path):

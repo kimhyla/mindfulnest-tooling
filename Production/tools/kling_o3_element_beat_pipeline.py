@@ -201,6 +201,269 @@ def _upsert_option(beat: dict, *, video_path: str, label: str, now: str, o3_voic
     )
 
 
+def run_pipeline_from_intent(
+    intent: dict,
+    *,
+    sharpen: bool = False,
+) -> dict:
+    """Execute O3 pipeline using immutable generation intent only."""
+    from tools.credentials_lib.credentials import load_credentials
+    from tools import kling_o3_client as o3
+    from o3_generation_intent import write_intent_terminal
+
+    beat_id = str(intent.get("beat_id") or "").strip()
+    attempt_id = str((intent.get("runtime") or {}).get("attempt_id") or "")
+    prompt_block = intent.get("prompt") or {}
+    visual = intent.get("visual") or {}
+    voice = intent.get("voice") or {}
+    generation = intent.get("generation") or {}
+    job_id = str(intent.get("job_id") or "").strip()
+
+    submit_prompt = str(prompt_block.get("prepared_for_api") or prompt_block.get("verbatim") or "")
+    spoken = str(prompt_block.get("spoken_sent") or "")
+    char_path = Path(str(visual.get("char_ref_abs_path") or ""))
+    bg_path = Path(str(visual.get("bg_ref_abs_path") or ""))
+    if not char_path.is_file() or not bg_path.is_file():
+        raise RuntimeError("intent char_ref or bg_ref missing on disk")
+    gen = int(generation.get("slot_index") or 0)
+    if gen < 1:
+        raise RuntimeError("invalid intent generation slot")
+    master = Path(str(generation.get("master_clip_path") or ""))
+    delivery = Path(str(generation.get("delivery_clip_path") or ""))
+    duration = int(generation.get("duration") or 5)
+    element_entry = {
+        "element_id": voice.get("element_id"),
+        "element_name": voice.get("element_name"),
+        "voice_id": voice.get("kling_voice_id"),
+    }
+    speaker = str(voice.get("speaker") or "").strip()
+
+    prod_root = _runtime_prod_root()
+    event_dir = prod_root / str(intent.get("event_id") or "Event_1")
+    bg_sidecar.init_bg_paths(event_dir)
+
+    print(json.dumps({
+        "phase": "o3_submit",
+        "beat_id": beat_id,
+        "intent_id": intent.get("intent_id"),
+        "speaker": speaker,
+        "element": element_entry,
+        "char_ref": str(char_path),
+        "char_ref_aligned": True,
+        "prompt_sha256": prompt_block.get("sha256"),
+        "prompt_verbatim": True,
+        "prompt_prepared": submit_prompt != prompt_block.get("verbatim"),
+        "prompt_voice_excerpt": submit_prompt[:500],
+        "spoken_sent": spoken,
+        "kling_o3_duration": duration,
+        "generation_slot": generation.get("slot"),
+    }), flush=True)
+
+    creds = load_credentials()
+    api_key = creds.get("wavespeed_key") or creds.get("wavespeed")
+    if not api_key:
+        raise RuntimeError("Missing wavespeed API key")
+
+    def persist(fields: dict | None = None, *, remove: tuple[str, ...] = ()):
+        if fields:
+            pass
+
+        def apply(current: dict, _sidecar: dict) -> None:
+            if fields:
+                current.update(fields)
+            for key in remove:
+                current.pop(key, None)
+
+        ok, _ = bg_sidecar.update_beat_locked(
+            beat_id,
+            apply,
+            expected_attempt_id=attempt_id,
+        )
+        if not ok:
+            raise RuntimeError(f"sidecar lost attempt_id race for {beat_id}")
+
+    persist({
+        "status": "o3_element_running",
+        "kling_o3_status": "submitted",
+        "kling_o3_generation": gen,
+        "kling_o3_voice_fix_status": "o3_running",
+        "kling_o3_voice_fix_phase": "o3_element",
+        "kling_o3_voice_fix_attempt_id": attempt_id,
+        "kling_o3_voice_fix_updated_at": datetime.now(timezone.utc).isoformat(),
+        "kling_o3_prompt": str(prompt_block.get("verbatim") or ""),
+    })
+
+    master.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        result = o3.run_beat_generation(
+            api_key,
+            submit_prompt,
+            char_path,
+            bg_path,
+            master,
+            duration=duration,
+            speaker=speaker,
+            element_entry=element_entry,
+        )
+    except Exception as exc:
+        write_intent_terminal(job_id, event_dir, {
+            "intent_id": intent.get("intent_id"),
+            "status": "failed",
+            "sidecar_persist_ok": False,
+            "failure": {"message": str(exc)[:1500]},
+            "submitted": {
+                "prompt_voice_excerpt": submit_prompt[:500],
+                "char_ref": str(char_path),
+                "element_id": voice.get("element_id"),
+            },
+        })
+        raise
+
+    if not result.get("ok"):
+        err_text = result.get("error") or json.dumps(result)
+        write_intent_terminal(job_id, event_dir, {
+            "intent_id": intent.get("intent_id"),
+            "status": "failed",
+            "sidecar_persist_ok": False,
+            "failure": {"message": str(err_text)[:1500]},
+        })
+        raise RuntimeError(f"O3 element generation failed: {result}")
+
+    raw_probe = _probe(master)
+    if not raw_probe["gate_pass"]:
+        write_intent_terminal(job_id, event_dir, {
+            "intent_id": intent.get("intent_id"),
+            "status": "failed",
+            "failure": {"message": f"Raw O3 gate fail: {raw_probe}"},
+        })
+        raise RuntimeError(f"Raw O3 gate fail: {raw_probe}")
+
+    print(json.dumps({"phase": "delivery_encode", "src": str(master), "dst": str(delivery)}), flush=True)
+    encode_delivery_video(master, delivery, include_audio=True, sharpen=sharpen)
+    delivery_probe = _probe(delivery)
+    if delivery_probe["width"] != 1280 or delivery_probe["height"] != 720:
+        raise RuntimeError(f"Delivery encode did not land at 1280x720: {delivery_probe}")
+
+    sidecar_persist_ok = True
+    checkpoint_warning = None
+    try:
+        bg_sidecar.persist_o3_delivery_option_checkpoint(
+            beat_id,
+            video_path=str(delivery),
+            slot_index=int(generation.get("replace_slot_index") or 0),
+            label=bg_sidecar._canonical_o3_option_label(str(delivery), gen),
+            o3_voice_binding={
+                "element_id": voice.get("element_id"),
+                "kling_voice_id": voice.get("kling_voice_id"),
+            },
+            attempt_id=attempt_id,
+            generation=gen,
+        )
+    except Exception as exc:
+        recovered = bg_sidecar.recover_orphan_o3_delivery(
+            beat_id,
+            event_dir,
+            log_path=os.environ.get("MN_O3_JOB_LOG"),
+            make_active=True,
+        )
+        if not recovered.get("recovered"):
+            sidecar_persist_ok = False
+            checkpoint_warning = str(exc)[:500]
+            raise
+        sidecar_persist_ok = False
+        checkpoint_warning = str(exc)[:500]
+
+    now = datetime.now(timezone.utc).isoformat()
+    dur = float(subprocess.check_output([
+        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1", str(delivery),
+    ], text=True).strip())
+
+    final = {
+        "kling_o3_prompt": str(prompt_block.get("verbatim") or ""),
+        "o3_prompt_box_law": True,
+        "kling_o3_video_path": str(delivery),
+        "kling_o3_status": "approved",
+        "status": "approved",
+        "kling_o3_completed_at": now,
+        "kling_o3_mode": "o3_element_native_voice",
+        "kling_o3_voice_fix_status": "approved",
+        "kling_o3_voice_fix_phase": "finalize",
+        "kling_o3_voice_fix_completed_at": now,
+        "kling_o3_voice_fix_output_duration_s": round(dur, 3),
+        "o3_element_quality": {
+            "speaker": speaker,
+            "element_id": voice.get("element_id"),
+            "kling_voice_id": voice.get("kling_voice_id"),
+            "delivery_profile": "LD-284/LD-296 1280x720 H.264 <=1.9Mbps +faststart",
+            "method": "O3 Pro reference-to-video + Element create-voice (intent snapshot)",
+            "applied_at": now,
+        },
+    }
+    try:
+        persist(final, remove=(
+            "kling_o3_voice_fix_ui_job_id",
+            "kling_o3_voice_fix_job_pid",
+            "kling_o3_voice_fix_job_started_at",
+            "kling_o3_voice_fix_error",
+            "kling_o3_voice_fix_error_code",
+            "o3_active_intent_id",
+            "o3_active_intent_job_id",
+        ))
+    except Exception as exc:
+        recovered = bg_sidecar.recover_orphan_o3_delivery(
+            beat_id,
+            event_dir,
+            log_path=os.environ.get("MN_O3_JOB_LOG"),
+            make_active=True,
+        )
+        if not recovered.get("recovered"):
+            sidecar_persist_ok = False
+            write_intent_terminal(job_id, event_dir, {
+                "intent_id": intent.get("intent_id"),
+                "status": "failed",
+                "sidecar_persist_ok": False,
+                "failure": {"message": str(exc)[:1500]},
+            })
+            raise
+        sidecar_persist_ok = False
+        checkpoint_warning = str(exc)[:500]
+
+    terminal_status = "done" if sidecar_persist_ok else "done_with_warning"
+    terminal_body = {
+        "intent_id": intent.get("intent_id"),
+        "status": terminal_status,
+        "phase_last": "finalize",
+        "sidecar_persist_ok": sidecar_persist_ok,
+        "submitted": {
+            "prompt_voice_excerpt": submit_prompt[:500],
+            "char_ref": str(char_path),
+            "element_id": voice.get("element_id"),
+        },
+        "delivered": {
+            "video_path": str(delivery),
+            "duration_s": round(dur, 3),
+            "generation": gen,
+        },
+        "failure": None,
+    }
+    if not sidecar_persist_ok:
+        terminal_body["warning"] = {
+            "code": "ORPHAN_DELIVERY_RECOVERED",
+            "message": checkpoint_warning or "Sidecar persist failed; delivery recovered from disk.",
+            "recovered_from": "orphan_delivery_after_sidecar_io_error",
+        }
+    write_intent_terminal(job_id, event_dir, terminal_body)
+    print(json.dumps({
+        "phase": "done",
+        "beat_id": beat_id,
+        "video": str(delivery),
+        "intent_id": intent.get("intent_id"),
+        "terminal_status": terminal_status,
+    }), flush=True)
+    return {"ok": True, "beat_id": beat_id, "video": str(delivery)}
+
+
 def run_pipeline(
     beat_id: str,
     *,
@@ -391,6 +654,7 @@ def run_pipeline(
         "kling_o3_voice_fix_updated_at": datetime.now(timezone.utc).isoformat(),
     })
 
+    char_gate_ok, char_gate_detail = reg.char_ref_matches_element_images(str(char_path), speaker)
     print(json.dumps({
         "phase": "o3_submit",
         "beat_id": beat_id,
@@ -400,7 +664,8 @@ def run_pipeline(
         "o3_voice_stack_pin": beat.get("o3_voice_stack_pin") if bg_sidecar.o3_voice_stack_pin_active(beat) else None,
         "prod_root": str(prod_root),
         "event_dir": str(event_dir),
-        "char_ref_aligned": True,
+        "char_ref_aligned": char_gate_ok,
+        "char_ref_gate_detail": char_gate_detail or None,
         "char_ref": str(char_path),
         "voice_line_locked": "speaks in a" in prepared.lower(),
         "spoken_sent": spoken,
@@ -576,8 +841,51 @@ def main() -> int:
     parser.add_argument("--no-sharpen", action="store_true")
     parser.add_argument("--attempt-id", default=None)
     args = parser.parse_args()
-    run_pipeline(args.beat_id, sharpen=not args.no_sharpen, attempt_id=args.attempt_id)
-    return 0
+    intent_path = os.environ.get("MN_O3_INTENT_PATH", "").strip()
+    try:
+        if intent_path:
+            from o3_generation_intent import load_generation_intent, write_intent_terminal
+
+            intent = load_generation_intent(Path(intent_path))
+            print(json.dumps({
+                "phase": "starting",
+                "beat_id": args.beat_id,
+                "route": "o3_element_intent_snapshot",
+                "intent_id": intent.get("intent_id"),
+            }), flush=True)
+            run_pipeline_from_intent(intent, sharpen=not args.no_sharpen)
+        else:
+            print(json.dumps({"phase": "legacy_sidecar_submit_path", "beat_id": args.beat_id}), flush=True)
+            run_pipeline(args.beat_id, sharpen=not args.no_sharpen, attempt_id=args.attempt_id)
+        return 0
+    except Exception as exc:
+        import traceback as _tb
+
+        print(json.dumps({
+            "phase": "failed",
+            "beat_id": args.beat_id,
+            "error": str(exc)[:1500],
+            "traceback": _tb.format_exc()[-4000:],
+        }), flush=True)
+        job_id = ""
+        if intent_path:
+            try:
+                from o3_generation_intent import load_generation_intent, write_intent_terminal
+
+                intent = load_generation_intent(Path(intent_path))
+                job_id = str(intent.get("job_id") or "")
+                event_id = str(intent.get("event_id") or "Event_1")
+                prod_root = _runtime_prod_root()
+                if job_id:
+                    write_intent_terminal(job_id, prod_root / event_id, {
+                        "intent_id": intent.get("intent_id"),
+                        "status": "failed",
+                        "sidecar_persist_ok": False,
+                        "failure": {"message": str(exc)[:1500]},
+                    })
+            except Exception:
+                pass
+        return 1
 
 
 if __name__ == "__main__":
