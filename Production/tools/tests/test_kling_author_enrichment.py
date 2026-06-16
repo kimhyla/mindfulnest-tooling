@@ -332,9 +332,9 @@ def test_heal_beat_migrate_rewrites_event2_tessa_prompt():
         ),
         "pipeline": "kling_o3_omni",
     }
-    assert heal_beat_kling_o3_prompt_event1_shape(beat) is True
-    assert "is a small green sea turtle" not in beat["kling_o3_prompt"]
-    assert "speaks in a warm gentle conversational pace" in beat["kling_o3_prompt"]
+    original = beat["kling_o3_prompt"]
+    assert heal_beat_kling_o3_prompt_event1_shape(beat) is False
+    assert beat["kling_o3_prompt"] == original
 
 
 def test_normalize_identity_footer_replaces_drifted_species_anatomy():
@@ -430,9 +430,14 @@ def test_submit_locks_append_lighting_when_image1_and_image2():
         "Camera: static locked shot.\n\n"
         'Lorelai speaks in a warm excited conversational pace: "Hello!"'
     )
-    out = bg.prepare_kling_o3_prompt_for_submit({"speaker": "Lorelai"}, raw)
+    out = normalize_kling_o3_prompt_event1_quality(
+        raw,
+        speaker="Lorelai",
+        dialogue="Hello!",
+        emotion="neutral",
+        scene_notes="soft smile",
+    )
     assert bg.KLING_O3_LIGHTING_LOCK in out
-    assert bg.KLING_O3_BACKGROUND_STABILITY_LOCK in out
     assert bg.KLING_O3_IDENTITY_LOCK in out
 
 
@@ -445,7 +450,6 @@ def test_build_kling_o3_prompt_includes_lighting_lock():
     }
     out = bg.build_kling_o3_prompt(beat)
     assert bg.KLING_O3_LIGHTING_LOCK in out
-    assert bg.KLING_O3_BACKGROUND_STABILITY_LOCK in out
 
 
 def test_canonical_prompt_shape_v2_tessa(monkeypatch):

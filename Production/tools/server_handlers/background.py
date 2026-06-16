@@ -2712,12 +2712,6 @@ def handle_bg_update_beat(h, body: dict)-> None:
                         healed_notes = kling_face_scene_notes(sp, notes)
                         if healed_notes != notes:
                             beat["scene_notes"] = healed_notes
-                        prompt = beat.get("kling_o3_prompt") or ""
-                        aligned = bg.align_element_bound_kling_display_names(prompt, sp)
-                        if aligned != prompt:
-                            beat["kling_o3_prompt"] = aligned
-                            if bg.o3_prompt_box_law_active(beat):
-                                bg.stamp_o3_prompt_box_law(beat, aligned)
                 if field == "kling_o3_prompt" and isinstance(value, str):
                     text = value.strip()
                     if text:

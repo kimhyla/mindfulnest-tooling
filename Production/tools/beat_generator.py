@@ -2770,6 +2770,8 @@ def _migrate_sidecar(sidecar: dict) -> dict:
 
     def _migrate_skip_beat_canonical(beat: dict) -> bool:
         """Skip canonical heals that rewrite operator-owned beat fields."""
+        if beat_has_stored_kling_prompt(beat):
+            return True
         if o3_prompt_box_law_active(beat):
             return True
         beat_id = str(beat.get("beat_id") or "").strip()
@@ -3371,8 +3373,6 @@ def apply_beat_pipeline_o3_mode(beat: dict, event_id: str, phase: str) -> None:
     beat.pop("beat_render_mode", None)
     beat["pipeline"] = PIPELINE_MODE_O3
     beat["beat_type"] = "dialogue"
-    # Still-insert prompt-box law must not carry into O3 — flip gets native heals.
-    clear_o3_prompt_box_law(beat)
     apply_kling_o3_defaults_to_beat(beat, event_id, phase)
     beat.pop("kling_o3_still_stitch_approved", None)
     beat.pop("kling_o3_still_stitch_approved_at", None)
@@ -3386,13 +3386,6 @@ def apply_beat_pipeline_o3_mode(beat: dict, event_id: str, phase: str) -> None:
         healed_scene = kling_face_scene_notes(speaker, scene)
         if healed_scene != scene:
             beat["scene_notes"] = healed_scene
-        _scrub_still_insert_prompt_labels(beat)
-        aligned = align_element_bound_kling_display_names(
-            beat.get("kling_o3_prompt") or "", speaker,
-        )
-        if aligned != (beat.get("kling_o3_prompt") or ""):
-            beat["kling_o3_prompt"] = aligned
-        heal_o3_element_submit_prompt(beat)
 
 
 def segment_event_phase_for_beat(sidecar: dict, beat_id: str) -> tuple[str, str] | tuple[None, None]:
@@ -4764,6 +4757,13 @@ def _kling_o3_element_staging_block(beat: dict, speaker: str, spoken: str) -> st
     return staging
 
 
+def beat_has_stored_kling_prompt(beat: dict | None) -> bool:
+    """True when sidecar already holds operator-authored kling_o3_prompt text."""
+    if not isinstance(beat, dict):
+        return False
+    return bool((beat.get("kling_o3_prompt") or "").strip())
+
+
 def o3_prompt_box_law_active(beat: dict | None) -> bool:
     """True when Generate sent an authoritative prompt-box payload for this submit."""
     if os.environ.get("MN_O3_PROMPT_BOX_LAW") == "1":
@@ -4786,46 +4786,8 @@ def clear_o3_prompt_box_law(beat: dict) -> None:
 
 
 def prepare_kling_o3_prompt_for_submit(beat: dict, prompt: str | None = None) -> str:
-    """Prepare beat prompt immediately before WaveSpeed submit.
-
-    Element-bound beats (registered Kling voice_id) are normalized to a minimal
-    shell: locked voice line + safety footer locks only — body staging, Camera:
-    blocks, and speak-to-camera prose are stripped so they cannot override
-    delivery locks (Arlo hyper-voice regression).
-
-    When ``o3_prompt_box_law`` is active (Generate click sent ``kling_o3_prompt``),
-    the prompt box text is authoritative: only append missing safety footer locks;
-    never rebuild voice line or quoted dialogue from sidecar/canon heals.
-
-    Non-Element beats keep prompt-box law with append-only safety locks.
-
-    Empty prompt returns "" (validation blocks submit).
-    """
-    raw = (prompt if prompt is not None else beat.get("kling_o3_prompt") or "").strip()
-    if not raw:
-        return ""
-
-    speaker = str(beat.get("speaker") or "Character").strip()
-    element_bound = _speaker_has_element_bound_voice(speaker)
-    if o3_prompt_box_law_active(beat):
-        spoken = extract_spoken_dialogue_from_kling_prompt(raw)
-        if element_bound:
-            raw = align_element_bound_kling_display_names(raw, speaker)
-        return _append_kling_o3_submit_locks(
-            raw,
-            speaker=speaker,
-            spoken=spoken or "",
-            element_bound=element_bound,
-        )
-    if _speaker_has_element_bound_voice(speaker):
-        return normalize_o3_element_bound_prompt(beat, raw)
-
-    from beat_extract_policy import humanize_kling_body_parts
-
-    raw = humanize_kling_body_parts(raw, speaker=speaker)
-    raw = strip_performance_staging_from_kling_prompt(raw)
-    spoken = extract_spoken_dialogue_from_kling_prompt(raw)
-    return _append_kling_o3_submit_locks(raw, speaker=speaker, spoken=spoken or "")
+    """Return operator prompt verbatim for WaveSpeed — no rebuild, locks, or name heal."""
+    return (prompt if prompt is not None else beat.get("kling_o3_prompt") or "").strip()
 
 
 def apply_kling_o3_duration_floor(
@@ -5031,14 +4993,6 @@ def validate_kling_o3_beat_for_submit(
                 ),
             })
         else:
-            from tools import kling_o3_prompt as o3p
-
-            for msg in o3p.validate_element_bound_voice_prompt(speaker, stored_prompt):
-                errors.append({
-                    "beat_id": beat_id,
-                    "code": "ELEMENT_VOICE_PROMPT",
-                    "message": msg,
-                })
             if re.search(r"\b(?:speaks|says)\b", stored_prompt, re.I):
                 extracted = extract_spoken_dialogue_from_kling_prompt(stored_prompt)
                 if not extracted:
@@ -5901,28 +5855,12 @@ def heal_semi_canonical_arlo_voice_contract(beat: dict) -> bool:
 
 
 def heal_o3_element_submit_prompt(beat: dict) -> bool:
-    """Persist minimal Element-bound prompt shell (voice lock + footer locks only)."""
-    if o3_prompt_box_law_active(beat):
-        return False
-    if beat_is_still_insert(beat):
-        return False
-    speaker = str(beat.get("speaker") or "").strip()
-    if not _speaker_has_element_bound_voice(speaker):
-        return False
-    changed = heal_semi_canonical_arlo_voice_contract(beat)
-    before = (beat.get("kling_o3_prompt") or "").strip()
-    if not before:
-        return changed
-    normalized = normalize_o3_element_bound_prompt(beat, before)
-    if normalized != before:
-        beat["kling_o3_prompt"] = normalized
-        sync_beat_dialogue_from_kling_prompt(beat)
-        heal_kling_o3_stored_duration(beat)
-        return True
-    if changed:
-        sync_beat_dialogue_from_kling_prompt(beat)
-        heal_kling_o3_stored_duration(beat)
-        return True
+    """Disabled — operator prompt is verbatim; no server-side prompt rebuild."""
+    return False
+
+
+def heal_element_bound_voice_prompt(beat: dict) -> bool:
+    """Disabled — operator prompt is verbatim; no server-side voice-line upgrade."""
     return False
 
 
@@ -5987,81 +5925,8 @@ def heal_kling_o3_stored_duration(beat: dict) -> bool:
 
 
 def heal_spoken_staging_in_voice_prompt(beat: dict) -> bool:
-    """Strip [Faces camera…] staging from prompt body and voice quotes before O3 submit."""
-    if o3_prompt_box_law_active(beat):
-        return False
-    if beat_is_still_insert(beat):
-        return False
-    speaker = str(beat.get("speaker") or "").strip()
-    prompt = (beat.get("kling_o3_prompt") or "").strip()
-    if not speaker or not prompt:
-        return False
-    dialogue = (beat.get("dialogue_text") or "").strip()
-    needs_heal = (
-        prompt_voice_quote_has_performance_staging(prompt)
-        or spoken_has_performance_staging(dialogue)
-        or prompt_body_has_performance_staging(prompt)
-    )
-    if not needs_heal:
-        return False
-    spoken = extract_spoken_dialogue_from_kling_prompt(prompt)
-    if not spoken:
-        spoken = _spoken_from_beat_dialogue(beat)
-    if not spoken:
-        return False
-    try:
-        import kling_o3_prompt as o3p
-
-        body_clean = strip_performance_staging_from_kling_prompt(prompt)
-        upgraded = o3p.inject_locked_voice_line(body_clean, speaker, spoken)
-        upgraded = strip_performance_staging_from_kling_prompt(upgraded)
-    except Exception:
-        try:
-            from tools import kling_o3_prompt as o3p
-
-            body_clean = strip_performance_staging_from_kling_prompt(prompt)
-            upgraded = o3p.inject_locked_voice_line(body_clean, speaker, spoken)
-            upgraded = strip_performance_staging_from_kling_prompt(upgraded)
-        except Exception:
-            return False
-    if upgraded == prompt and dialogue == spoken:
-        return False
-    beat["kling_o3_prompt"] = upgraded
-    beat["dialogue_text"] = spoken
-    heal_kling_o3_stored_duration(beat)
-    return True
-
-
-def heal_element_bound_voice_prompt(beat: dict) -> bool:
-    """Upgrade legacy author voice lines (bracket delivery, <<<voice_N>>>) on load."""
-    if o3_prompt_box_law_active(beat):
-        return False
-    if beat_is_still_insert(beat):
-        return False
-    speaker = str(beat.get("speaker") or "").strip()
-    if not speaker:
-        return False
-    prompt = (beat.get("kling_o3_prompt") or "").strip()
-    if not prompt:
-        return False
-    try:
-        from tools import kling_character_registry as reg
-        from tools import kling_o3_prompt as o3p
-
-        if not reg.is_speaker_voice_ready(speaker):
-            return False
-        upgraded, _spoken, changed = o3p.upgrade_element_bound_voice_prompt(
-            speaker,
-            prompt,
-            extract_spoken=extract_spoken_dialogue_from_kling_prompt,
-        )
-    except Exception:
-        return False
-    if not changed:
-        return False
-    beat["kling_o3_prompt"] = upgraded
-    sync_beat_dialogue_from_kling_prompt(beat)
-    return True
+    """Disabled — operator prompt is verbatim after materialization."""
+    return False
 
 
 def apply_live_kling_o3_prompts(sidecar: dict, beat_prompts: dict) -> int:
@@ -6748,10 +6613,11 @@ def apply_kling_o3_defaults_to_beat(beat: dict, event_id: str, phase: str) -> No
             hydrate_intro_canonical_mirror_beat(beat, event_id, phase)
         return
     align_beat_reference_to_element(beat)
-    beat["kling_o3_prompt"] = build_kling_o3_prompt(beat)
+    if not (beat.get("kling_o3_prompt") or "").strip():
+        beat["kling_o3_prompt"] = build_kling_o3_prompt(beat)
     if not beat.get("kling_o3_duration_locked"):
         beat["kling_o3_duration"] = resolve_kling_o3_submit_duration(
-            beat, beat["kling_o3_prompt"],
+            beat, beat.get("kling_o3_prompt") or "",
         )
     beat.setdefault("kling_o3_status", "draft")
     char_path = resolve_beat_char_ref_path(beat)

@@ -385,16 +385,6 @@ def build_generation_intent(
         )
 
     prepared = bg.prepare_kling_o3_prompt_for_submit(work_beat, user_prompt)
-    align_errors = o3p.validate_element_list_alignment(
-        speaker, element_entry, prepared or user_prompt, beat=work_beat,
-    )
-    if align_errors:
-        raise IntentCommitError(
-            "ELEMENT_VOICE_PROMPT",
-            "Bound Element voice requires locked delivery line in prompt — "
-            + "; ".join(align_errors),
-            http_status=400,
-        )
 
     if prepared and re.search(r"\b(?:speaks|says)\b", prepared, re.I):
         extracted = bg.extract_spoken_dialogue_from_kling_prompt(prepared)

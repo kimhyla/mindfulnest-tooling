@@ -47,12 +47,11 @@ def test_stamp_and_active_helpers():
     assert not bg.o3_prompt_box_law_active(beat)
 
 
-def test_prepare_skips_normalize_rebuild_when_prompt_box_law():
+def test_prepare_returns_prompt_verbatim():
     beat = _semi_canonical_arlo_beat()
     prepared = bg.prepare_kling_o3_prompt_for_submit(beat, USER_PROMPT)
-    assert USER_LINE in prepared
-    assert CANON_COMPACT not in prepared or USER_LINE in prepared
-    assert "Camera: static locked shot" in prepared
+    assert prepared == USER_PROMPT
+    assert "Only @Image1 is visible" not in prepared
 
 
 def test_heal_o3_element_submit_prompt_skipped_under_prompt_box_law():
@@ -134,6 +133,31 @@ def test_migrate_sidecar_skips_prompt_morph_when_prompt_box_law():
     assert heal_beat_kling_o3_prompt_event1_shape(beat) is False
 
 
+def test_migrate_sidecar_skips_prompt_morph_without_prompt_box_law():
+    """Any stored kling_o3_prompt skips migrate heals — law flag not required."""
+    custom = "Lorelai speaks in a CUSTOM pace: \"Keep me verbatim.\""
+    sidecar = {
+        "schema_version": 3,
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [{
+                            "beat_id": "bg_arc1_event2_pre_beat_15",
+                            "speaker": "Lorelai",
+                            "kling_o3_prompt": custom,
+                        }],
+                    },
+                },
+            },
+        },
+    }
+    out = bg._migrate_sidecar(sidecar)
+    beat = out["arcs"]["arc_1"]["segments"]["event_2_pre"]["beats"][0]
+    assert beat["kling_o3_prompt"] == custom
+    assert bg.heal_spoken_staging_in_voice_prompt(beat) is False
+
+
 def test_finalize_proven_element_preserves_prompt_box_law(tmp_path):
     sidecar_path = tmp_path / "beat_generator_state.json"
     src_ref = {"abs_path": str(tmp_path / "char.png")}
@@ -188,22 +212,21 @@ def test_heal_element_bound_voice_prompt_skipped_under_prompt_box_law():
     assert "CUSTOM delivery pace" in (beat.get("kling_o3_prompt") or "")
 
 
-def test_without_law_normalize_can_rewrite_voice_block():
+def test_prepare_is_verbatim_without_law_flag():
     beat = _semi_canonical_arlo_beat()
     beat.pop("o3_prompt_box_law", None)
     prepared = bg.prepare_kling_o3_prompt_for_submit(beat, USER_PROMPT)
-    assert USER_LINE in prepared or CANON_COMPACT in prepared
-    assert prepared != USER_PROMPT or "Only @Image1 is visible" in prepared
+    assert prepared == USER_PROMPT
 
 
-def test_prepare_aligns_registry_staging_name_under_prompt_box_law():
-    """Still→O3 flips often leave Lorelai in pre-voice staging; submit must heal names."""
+def test_prepare_preserves_registry_staging_name_verbatim():
+    """Operator text is never rewritten on submit — including Lorelai in staging."""
     import kling_o3_prompt as o3p
 
     bad_prompt = (
         "@Image1 (Lorelai). Scene from @Image2.\n\n"
         "Lorelai knits her brow in puzzlement, slight head tilt.\n\n"
-        f'Loral speaks in a {o3p.KLING_O3_LORELAI_VOICE_DELIVERY}: '
+        f'Loral speaks in a warm excited conversational pace: '
         '[excited] "Oh. My. Gosh. Did you — No way. This Rune stone is AWAKE? How?!"'
     )
     beat = {
@@ -212,33 +235,23 @@ def test_prepare_aligns_registry_staging_name_under_prompt_box_law():
         "kling_o3_prompt": bad_prompt,
     }
     prepared = bg.prepare_kling_o3_prompt_for_submit(beat, bad_prompt)
-    assert "Lorelai" not in prepared.split("speaks")[0]
-    assert "@Image1 (Loral)" in prepared
-    errs = o3p.validate_element_list_alignment(
-        "Lorelai",
-        {"element_name": "Loral", "element_id": "1", "voice_id": "895210468825628751"},
-        prepared,
-        beat=beat,
-    )
-    assert errs == [], f"unexpected validation errors: {errs}"
+    assert prepared == bad_prompt
+    assert "@Image1 (Lorelai)" in prepared
 
 
-def test_still_flip_header_lorelai_scrubbed_for_submit():
-    """Beat 10 shape: still-insert header keeps Lorelai after O3 flip edits."""
-    import kling_o3_prompt as o3p
-
+def test_still_flip_header_preserved_verbatim_on_submit():
+    """Beat 10 shape: still-insert header stays exactly as operator wrote it."""
     prompt = (
         "@Image1 (Loral) Loral — Lorelai — Still insert — GPT still. Scene from @Image2.\n\n"
         "Loral is a female raccooon.\n\n"
-        f'Loral speaks in a {o3p.KLING_O3_LORELAI_VOICE_DELIVERY}: "Hi"'
+        'Loral speaks in a warm excited conversational pace: "Hi"'
     )
     beat = {"speaker": "Lorelai", "o3_prompt_box_law": True, "kling_o3_prompt": prompt}
     prepared = bg.prepare_kling_o3_prompt_for_submit(beat, prompt)
-    assert "Lorelai" not in prepared.split("speaks")[0]
-    assert o3p.prompt_staging_leaks_registry_speaker_name("Lorelai", prepared) is False
+    assert prepared == prompt
 
 
-def test_still_to_o3_flip_runs_element_bound_heals(monkeypatch):
+def test_still_to_o3_flip_does_not_rewrite_prompt(monkeypatch):
     monkeypatch.setattr(
         "tools.kling_character_registry.is_speaker_voice_ready",
         lambda _s: True,
@@ -247,14 +260,7 @@ def test_still_to_o3_flip_runs_element_bound_heals(monkeypatch):
         "tools.kling_character_registry.kling_element_display_name",
         lambda _s: "Loral",
     )
-    monkeypatch.setattr(
-        "tools.kling_character_registry.kling_image1_speaker_label",
-        lambda _s: "Loral",
-    )
-    monkeypatch.setattr(
-        "tools.kling_character_registry.resolve_registry_key",
-        lambda s: "Lorelai" if (s or "").strip().casefold() == "lorelai" else (s or "").strip(),
-    )
+    original_prompt = "STILL INSERT — Lorelai: \"Oh. My. Gosh.\""
     beat = {
         "beat_id": "bg_arc1_event2_pre_beat_08",
         "speaker": "Lorelai",
@@ -262,18 +268,34 @@ def test_still_to_o3_flip_runs_element_bound_heals(monkeypatch):
         "beat_render_mode": "still_insert",
         "scene_notes": "Lorelai knits her brow in puzzlement.",
         "dialogue_text": "Oh. My. Gosh.",
-        "kling_o3_prompt": "STILL INSERT — Lorelai: \"Oh. My. Gosh.\"",
+        "kling_o3_prompt": original_prompt,
         "o3_prompt_box_law": True,
     }
     bg.apply_beat_pipeline_o3_mode(beat, "2", "pre")
     assert beat.get("pipeline") == bg.PIPELINE_MODE_O3
-    assert not bg.o3_prompt_box_law_active(beat)
-    prompt = beat.get("kling_o3_prompt") or ""
-    assert "Lorelai" not in prompt.split("speaks")[0] if "speaks" in prompt else "Lorelai" not in prompt
-    assert beat.get("scene_notes") == "Loral knits her brow in puzzlement."
+    assert beat.get("kling_o3_prompt") == original_prompt
 
 
-def test_bg_update_beat_prompt_only_skips_element_char_ref_sync():
+def test_beat15_custom_delivery_prompt_submits_verbatim():
+    """Regression: bracket delivery tags + short speaks-in-a line must not block submit."""
+    prompt = (
+        "@Image1 (Loral). Scene from @Image2.\n\n"
+        "Camera: static locked shot.\n\n"
+        'Loral speaks in a warm excited conversational pace: [gleeful panic, frantic, over-excited] '
+        '"Ohhhh what does it MEAN?! [pause]" (thinking it over) '
+        '"Oh, I just HAVE to solve this mystery!!"\n\n'
+        "Children's illustrated fantasy storybook style"
+    )
+    beat = {
+        "speaker": "Lorelai",
+        "o3_prompt_box_law": True,
+        "kling_o3_prompt": prompt,
+    }
+    prepared = bg.prepare_kling_o3_prompt_for_submit(beat, prompt)
+    assert prepared == prompt
+    prompt2, spoken = resolve_element_o3_submit_prompt(beat)
+    assert prompt2 == prompt
+    assert "Ohhhh what does it MEAN" in spoken
     """Prompt textarea debounce must not re-run @Image1 Element gate or emit gate fields."""
     text = BACKGROUND.read_text(encoding="utf-8")
     assert "_BG_ELEMENT_CHAR_REF_SYNC_FIELDS" in text

@@ -606,8 +606,8 @@ def test_element_o3_submit_prompt_normalizes_element_bound_body(monkeypatch):
     prompt, spoken = resolve_element_o3_submit_prompt(beat)
     assert spoken == "Hello there . how are you?"
     assert "Hello ." not in spoken
-    assert "[curious, wary of danger]" not in prompt
-    assert _validate_prepared("Tessa", prompt) == []
+    assert prompt == stored
+    assert "[curious, wary of danger]" in prompt
 
 
 def test_event_dir_uses_mn_prod_root(monkeypatch):
@@ -678,10 +678,8 @@ def test_validate_rejects_lorelai_staging_before_voice_line(monkeypatch):
         "dialogue_text": "Hello!",
         "kling_o3_prompt": bad,
     }
-    assert bg.heal_o3_element_submit_prompt(beat) is True
-    assert "Lorelai Close-up" not in beat["kling_o3_prompt"]
-    assert "torso up" in beat["kling_o3_prompt"].lower()
-    assert o3p.validate_element_bound_voice_prompt("Lorelai", beat["kling_o3_prompt"]) == []
+    assert bg.heal_o3_element_submit_prompt(beat) is False
+    assert beat["kling_o3_prompt"] == bad
 
 
 def test_heal_semi_canonical_arlo_compacts_overflow_dialogue(monkeypatch):

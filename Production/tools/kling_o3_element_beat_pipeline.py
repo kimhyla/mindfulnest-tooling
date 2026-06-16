@@ -79,34 +79,13 @@ def _spoken_from_beat(beat: dict, normalize_fn) -> str:
 
 
 def resolve_element_o3_submit_prompt(beat: dict) -> tuple[str, str]:
-    """Return (kling_prompt, spoken_log). Upgrades legacy voice tags before submit."""
+    """Return (kling_prompt, spoken_log). Operator prompt goes verbatim to WaveSpeed."""
     stored_prompt = (beat.get("kling_o3_prompt") or "").strip()
+    if stored_prompt:
+        spoken = bg_sidecar.extract_spoken_dialogue_from_kling_prompt(stored_prompt) or ""
+        return stored_prompt, spoken
     build_prompt, normalize_spoken = _load_build_prompt()
     speaker = str(beat.get("speaker") or "").strip()
-    if bg_sidecar.o3_prompt_box_law_active(beat) and stored_prompt:
-        prepared = bg_sidecar.prepare_kling_o3_prompt_for_submit(beat, stored_prompt)
-        spoken = bg_sidecar.extract_spoken_dialogue_from_kling_prompt(stored_prompt) or ""
-        return prepared, spoken
-    if stored_prompt:
-        from tools import kling_o3_prompt as o3p
-
-        upgraded, spoken, changed = o3p.upgrade_element_bound_voice_prompt(
-            speaker,
-            stored_prompt,
-            extract_spoken=bg_sidecar.extract_spoken_dialogue_from_kling_prompt,
-        )
-        prompt = upgraded if changed else stored_prompt
-        if changed:
-            beat["kling_o3_prompt"] = prompt
-        prompt = bg_sidecar.normalize_o3_element_bound_prompt(beat, prompt)
-        if prompt != stored_prompt:
-            beat["kling_o3_prompt"] = prompt
-        if not spoken and re.search(r"\b(?:speaks|says)\b", prompt, re.I):
-            raise RuntimeError(
-                "ELEMENT_VOICE_PROMPT: could not extract spoken dialogue from the "
-                "voice line — put the full line in double quotes after speaks…:"
-            )
-        return prompt, spoken or ""
     spoken = _spoken_from_beat(beat, normalize_spoken)
     return _inject_locked_voice(build_prompt(beat), speaker, spoken), spoken
 
@@ -527,29 +506,14 @@ def run_pipeline(
     bg_sidecar.require_element_char_ref_for_o3(beat)
 
     stored_prompt = (beat.get("kling_o3_prompt") or "").strip()
-    if not bg_sidecar.o3_prompt_box_law_active(beat):
-        bg_sidecar.heal_o3_element_submit_prompt(beat)
     prompt, spoken = resolve_element_o3_submit_prompt(beat)
-    from tools import kling_o3_prompt as o3p
+    submit_prompt = bg_sidecar.prepare_kling_o3_prompt_for_submit(beat, prompt)
 
     element_entry = bg_sidecar.resolve_o3_element_list_entry(beat, speaker)
     if not element_entry:
         raise RuntimeError(
             f"{speaker!r} has no active element_list entry — "
             "run setup_all_kling_character_voices.py before O3 Element generate."
-        )
-    prepared = bg_sidecar.prepare_kling_o3_prompt_for_submit(beat, prompt)
-    if prepared and prepared != beat.get("kling_o3_prompt"):
-        beat["kling_o3_prompt"] = prepared
-        prompt = prepared
-    align_errors = o3p.validate_element_list_alignment(
-        speaker, element_entry, prepared or prompt, beat=beat,
-    )
-    if align_errors:
-        raise RuntimeError(
-            "ELEMENT_VOICE_ALIGN: "
-            + "; ".join(align_errors)
-            + " — fix before O3 submit (generic Kling TTS otherwise)."
         )
     from tools.kling_voice_bind import detect_voice_bind_drift
 
@@ -576,7 +540,7 @@ def run_pipeline(
             f"{e.get('code', '?')}: {e.get('message', '')}" for e in blocking_errors
         )
         raise RuntimeError(f"KLING_O3_SUBMIT_BLOCKED: {codes}")
-    duration = bg_sidecar.resolve_kling_o3_submit_duration(beat, prepared)
+    duration = bg_sidecar.resolve_kling_o3_submit_duration(beat, submit_prompt)
     if not beat.get("kling_o3_duration_locked"):
         beat["kling_o3_duration"] = duration
 
@@ -669,18 +633,14 @@ def run_pipeline(
         "char_ref_aligned": char_gate_ok,
         "char_ref_gate_detail": char_gate_detail or None,
         "char_ref": str(char_path),
-        "voice_line_locked": "speaks in a" in prepared.lower(),
+        "voice_line_locked": "speaks in a" in submit_prompt.lower(),
         "spoken_sent": spoken,
         "prompt_box_law": bg_sidecar.o3_prompt_box_law_active(beat),
         "prompt_verbatim": bg_sidecar.o3_prompt_box_law_active(beat) or bool(stored_prompt),
-        "prompt_prepared": prepared != prompt,
-        "prompt_voice_excerpt": prepared[:500],
+        "prompt_prepared": submit_prompt != prompt,
+        "prompt_voice_excerpt": submit_prompt[:500],
         "kling_o3_duration": duration,
     }), flush=True)
-    submit_prompt = prepared or prompt
-    if submit_prompt != prompt:
-        beat["kling_o3_prompt"] = submit_prompt
-        prompt = submit_prompt
     try:
         result = o3.run_beat_generation(
             api_key,

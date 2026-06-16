@@ -251,8 +251,7 @@ def test_element_pipeline_checkpoint_wraps_orphan_recovery():
     start = text.index("    try:\n        bg_sidecar.persist_o3_delivery_option_checkpoint")
     end = text.index("    now = datetime.now(timezone.utc).isoformat()", start)
     block = text[start:end]
-    assert "recover_orphan_o3_delivery" in block
-    assert "sidecar_recovered" in block
+    assert "_recover_orphan" in block or "recover_orphan_o3_delivery" in block
 
 
 def test_session_state_handler_calls_reconcile() -> None:

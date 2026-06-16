@@ -64,20 +64,12 @@ def humanize_kling_body_parts(text: str, *, speaker: str = "") -> str:
 
 
 def humanize_kling_body_parts_on_beat(beat: dict) -> bool:
-    """Apply gesture humanization to sidecar beat text fields. Returns True if any field changed."""
+    """Apply gesture humanization to dialogue/scene_notes only — never kling_o3_prompt."""
     if not isinstance(beat, dict):
         return False
-    try:
-        import beat_generator as bg
-
-        prompt_locked = bg.o3_prompt_box_law_active(beat)
-    except Exception:
-        prompt_locked = bool(beat.get("o3_prompt_box_law"))
     speaker = str(beat.get("speaker") or "")
     changed = False
-    for field in ("dialogue_text", "scene_notes", "kling_o3_prompt"):
-        if field == "kling_o3_prompt" and prompt_locked:
-            continue
+    for field in ("dialogue_text", "scene_notes"):
         raw = beat.get(field)
         if raw in (None, ""):
             continue
@@ -881,38 +873,18 @@ def normalize_kling_o3_prompt_event1_quality(
         "scene_notes": scene_notes,
         "kling_o3_prompt": out,
     }
-    out = bg.prepare_kling_o3_prompt_for_submit(beat_stub, out)
+    if bg._speaker_has_element_bound_voice(speaker):
+        out = bg.normalize_o3_element_bound_prompt(beat_stub, out)
+    else:
+        spoken = bg.extract_spoken_dialogue_from_kling_prompt(out) or dialogue
+        out = bg._append_kling_o3_submit_locks(
+            out,
+            speaker=speaker,
+            spoken=spoken or dialogue,
+        )
     return out
 
 
 def heal_beat_kling_o3_prompt_event1_shape(beat: dict) -> bool:
-    """Migrate-sidecar heal: rewrite stored prompts to Event-1 quality shape."""
-    if not isinstance(beat, dict):
-        return False
-    import beat_generator as bg
-
-    if bg.o3_prompt_box_law_active(beat):
-        return False
-    if bg.beat_is_still_insert(beat) or bg.beat_is_canonical_mirror_protected(beat):
-        return False
-    prompt = (beat.get("kling_o3_prompt") or "").strip()
-    if not prompt or len(prompt) < 40:
-        return False
-    speaker = str(beat.get("speaker") or "")
-    try:
-        from tools import kling_character_registry as reg
-
-        speaker = reg.resolve_registry_key(speaker) or speaker
-    except Exception:
-        pass
-    new = normalize_kling_o3_prompt_event1_quality(
-        prompt,
-        speaker=speaker,
-        dialogue=str(beat.get("dialogue_text") or ""),
-        emotion=str(beat.get("emotion") or ""),
-        scene_notes=str(beat.get("scene_notes") or ""),
-    )
-    if new != prompt:
-        beat["kling_o3_prompt"] = new
-        return True
+    """Disabled — prompt shaping runs only during extract/materialize, not migrate."""
     return False
