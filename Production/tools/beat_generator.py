@@ -2746,6 +2746,7 @@ def _migrate_sidecar(sidecar: dict) -> dict:
                 beat.setdefault("reference_image", None)
                 beat.setdefault("bg_ref_image", None)
                 normalize_still_insert_approval_status(beat)
+                heal_invalid_kling_o3_trim(beat)
     if sidecar.get("schema_version", 1) < 2:
         sidecar["schema_version"] = 2
     if sidecar.get("schema_version", 1) < 3:
@@ -4114,6 +4115,26 @@ def set_kling_o3_beat_trim(
 def clear_kling_o3_beat_trim(beat: dict) -> None:
     for key in ("kling_o3_trim_start", "kling_o3_trim_back", "kling_o3_trim_end"):
         beat.pop(key, None)
+
+
+def heal_invalid_kling_o3_trim(beat: dict) -> bool:
+    """Clear trim when it exceeds the active clip (e.g. g8 trim kept after g9 lands)."""
+    path = beat.get("kling_o3_video_path") or ""
+    if not path or not os.path.isfile(path):
+        return False
+    start = float(beat.get("kling_o3_trim_start") or 0.0)
+    back = beat.get("kling_o3_trim_back")
+    if start <= 0.01 and (back is None or float(back) <= 0.05):
+        return False
+    raw_dur = _ffprobe_duration(Path(path))
+    if raw_dur <= 0:
+        return False
+    trim_start, trim_end, _ = resolve_kling_o3_trim_window(beat, video_path=path)
+    effective = trim_end - trim_start
+    if effective >= 0.25 and trim_end > trim_start + 0.01:
+        return False
+    clear_kling_o3_beat_trim(beat)
+    return True
 
 
 def still_insert_sidecar_trim_pending(beat: dict) -> bool:
@@ -8116,6 +8137,7 @@ def assign_kling_o3_option_to_slot(
         beat["kling_o3_selected_option_key"] = key
         if gen is not None:
             beat["kling_o3_generation"] = max(int(beat.get("kling_o3_generation") or 0), gen)
+        heal_invalid_kling_o3_trim(beat)
     beat["kling_o3_options"] = options
     refresh_o3_ui_slot_layout(beat)
     return key

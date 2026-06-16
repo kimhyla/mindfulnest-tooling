@@ -4858,6 +4858,7 @@ def handle_bg_select_o3_video(h, body: dict) -> None:
             beat["status"] = "approved"
             beat["kling_o3_selected_option_key"] = option_key
             beat["kling_o3_selected_at"] = now
+            bg.heal_invalid_kling_o3_trim(beat)
             if bg.beat_is_still_insert(beat):
                 beat["kling_o3_still_stitch_approved"] = True
                 beat["kling_o3_still_stitch_approved_at"] = now

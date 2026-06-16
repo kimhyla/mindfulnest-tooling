@@ -3451,6 +3451,7 @@ function BgOptionTile({
   const [trimBackDraft, setTrimBackDraft] = useState<string>(String(trimBack || 0));
   /** Server ffmpeg-trimmed preview — WYSIWYG after Apply Trim (browser duration is unreliable). */
   const [trimPreviewUrl, setTrimPreviewUrl] = useState<string | null>(null);
+  const [loadedDuration, setLoadedDuration] = useState<number | null>(null);
   const rawDurationRef = useRef<number | null>(null);
   const savedTrimStart = trimStart || 0;
   const savedTrimBack = trimBack ?? 0;
@@ -3628,6 +3629,7 @@ function BgOptionTile({
     setVideoLoadError(false);
     setTrimPreviewUrl(null);
     rawDurationRef.current = null;
+    setLoadedDuration(null);
   }, [canonicalVideoUrl]);
   const parseDraft = (value: string) => {
     const parsed = parseFloat(value);
@@ -3638,10 +3640,23 @@ function BgOptionTile({
   const trimEndValue = (video: HTMLVideoElement) => {
     const dur = Number.isFinite(video.duration) ? Number(video.duration) : 0;
     if (dur <= 0) return null;
+    const start = trimStartValue();
     const back = trimBackValue();
-    if (back <= 0) return null;
-    return Math.max(trimStartValue() + 0.01, dur - back);
+    if (back <= 0 && start <= 0.01) return null;
+    const end = back > 0 ? dur - back : dur;
+    if (end <= start + 0.05) return null;
+    return Math.max(start + 0.01, end);
   };
+  const trimWindowInvalid = (video: HTMLVideoElement | null) => {
+    const dur = loadedDuration ?? (video && Number.isFinite(video.duration) ? video.duration : 0);
+    if (dur <= 0) return false;
+    const start = savedTrimStart;
+    const back = savedTrimBack;
+    if (start <= 0.01 && back <= 0.05) return false;
+    const end = back > 0 ? dur - back : dur;
+    return end <= start + 0.05;
+  };
+  const savedTrimInvalid = trimWindowInvalid(videoRef.current);
   const attachTrimStopListener = (video: HTMLVideoElement, stopAt: number | null) => {
     clearTrimPlaybackListener(video);
     const onTimeUpdate = () => {
@@ -3805,7 +3820,13 @@ function BgOptionTile({
             data-testid={`bg-option-video-${beatIndex}-${optionIndex}`}
             onPause={() => clearTrimPlaybackListener()}
             onError={() => setVideoLoadError(true)}
-            onLoadedData={() => setVideoLoadError(false)}
+            onLoadedData={() => {
+              setVideoLoadError(false);
+              const v = videoRef.current;
+              if (v && Number.isFinite(v.duration) && v.duration > 0) {
+                setLoadedDuration(v.duration);
+              }
+            }}
             onPlay={() => {
               if (usingTrimmedPreview) {
                 clearTrimPlaybackListener();
@@ -3813,6 +3834,10 @@ function BgOptionTile({
               }
               const video = videoRef.current;
               if (!video) return;
+              if (trimWindowInvalid(video)) {
+                clearTrimPlaybackListener(video);
+                return;
+              }
               const start = trimStartValue();
               const stopAt = trimEndValue(video);
               if (start > 0.01 && video.currentTime < start) {
@@ -3839,6 +3864,11 @@ function BgOptionTile({
           ) : null}
           {showTrimControls ? (
           <div class="mn-bg-o3-trim-controls" data-testid={`bg-o3-trim-controls-${beatIndex}-${optionIndex}`}>
+            {savedTrimInvalid ? (
+              <span class="mn-dim" style={{ color: '#f88' }}>
+                trim invalid for this clip — Clear Trim or Apply a shorter back trim
+              </span>
+            ) : null}
             <span class="mn-dim">
               trim front
             </span>
