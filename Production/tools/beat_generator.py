@@ -405,13 +405,24 @@ _SIDECAR_IO_MAX_ATTEMPTS = 12
 
 
 def _sidecar_io_backoff_s(attempt: int) -> float:
-    return min(2.0, 0.1 * (2 ** attempt))
+    return min(4.0, 0.15 * (2 ** attempt))
+
+
+def _copy_file_chunked(src: str, dst: str, *, chunk_size: int = 1024 * 1024) -> None:
+    """Byte copy without macOS fcopyfile — Dropbox errno 11 hits shutil.copy2."""
+    with open(src, "rb") as fin, open(dst, "wb") as fout:
+        while True:
+            chunk = fin.read(chunk_size)
+            if not chunk:
+                break
+            fout.write(chunk)
 
 
 def _read_json_file_durable(path: str) -> dict:
     """Read JSON from Dropbox-backed paths without failing on transient errno 11/35.
 
-    Copies to a temp file first so we never json.load() a partially-replaced sidecar.
+    Copies to a temp file via chunked read/write (not shutil.copy2 / fcopyfile)
+    so we never json.load() a partially-replaced sidecar.
     """
     path = os.path.abspath(path)
     if not os.path.exists(path):
@@ -423,7 +434,7 @@ def _read_json_file_durable(path: str) -> dict:
             with _sidecar_lock:
                 fd, tmp_path = tempfile.mkstemp(suffix=".json", prefix="mn_sidecar_read_")
                 os.close(fd)
-                shutil.copy2(path, tmp_path)
+                _copy_file_chunked(path, tmp_path)
                 with open(tmp_path, "r", encoding="utf-8") as f:
                     return json.load(f)
         except OSError as exc:
@@ -516,16 +527,27 @@ def update_beat_locked(beat_id, mutator, expected_attempt_id=None):
     ``kling_o3_voice_fix_attempt_id``, the update is skipped and ``(False, beat)``
     is returned so stale subprocesses cannot overwrite newer attempts.
     """
-    with sidecar_file_lock():
-        sidecar = read_sidecar()
-        _seg, beat = find_beat(sidecar, beat_id)
-        if not beat:
-            return False, None
-        if expected_attempt_id is not None and beat.get("kling_o3_voice_fix_attempt_id") != expected_attempt_id:
-            return False, beat
-        mutator(beat, sidecar)
-        write_sidecar(sidecar)
-        return True, beat
+    last_err: OSError | None = None
+    for attempt in range(_SIDECAR_IO_MAX_ATTEMPTS):
+        try:
+            with sidecar_file_lock():
+                sidecar = read_sidecar()
+                _seg, beat = find_beat(sidecar, beat_id)
+                if not beat:
+                    return False, None
+                if expected_attempt_id is not None and beat.get("kling_o3_voice_fix_attempt_id") != expected_attempt_id:
+                    return False, beat
+                mutator(beat, sidecar)
+                write_sidecar(sidecar)
+                return True, beat
+        except OSError as exc:
+            last_err = exc
+            if not sidecar_io_transient(exc) or attempt >= _SIDECAR_IO_MAX_ATTEMPTS - 1:
+                raise
+            time.sleep(_sidecar_io_backoff_s(attempt))
+    if last_err:
+        raise last_err
+    return False, None
 
 
 def normalize_bg_event_id(event_id: str) -> str:
@@ -2680,6 +2702,9 @@ def _migrate_sidecar(sidecar: dict) -> dict:
     )
 
     def _migrate_skip_beat_canonical(beat: dict) -> bool:
+        """Skip canonical heals that rewrite operator-owned beat fields."""
+        if o3_prompt_box_law_active(beat):
+            return True
         beat_id = str(beat.get("beat_id") or "").strip()
         if not beat_id:
             return beat_o3_voice_job_running(beat)
@@ -6090,7 +6115,11 @@ def element_char_ref_gate(beat: dict) -> tuple[bool, str]:
         char_path = resolve_beat_char_ref_path(beat)
         if not char_path:
             return False, f"Missing character reference image for {speaker!r}"
-        aligned, detail = reg.char_ref_matches_element_images(char_path, speaker)
+        aligned, detail = reg.char_ref_matches_element_images(
+            char_path,
+            speaker,
+            allow_pose_dir_fallback=not bool(beat.get("reference_image_locked")),
+        )
         if not aligned:
             return False, detail
         return True, ""
@@ -6227,7 +6256,9 @@ def try_register_dropped_char_ref_on_element(
 
         if not reg.is_speaker_voice_ready(speaker):
             return {"ok": False, "reason": "not_voice_ready"}
-        if reg.char_ref_matches_element_images(char_path, speaker)[0]:
+        if reg.char_ref_matches_element_images(
+            char_path, speaker, allow_pose_dir_fallback=False,
+        )[0]:
             return {"ok": True, "action": "already_matched"}
         try:
             out = reg.reconcile_char_ref_with_element(speaker, char_path, wavespeed_key)
@@ -7079,6 +7110,8 @@ def ensure_operator_insert_char_ref_parity(
     if not src_path or not os.path.isfile(src_path):
         return False
     if user_locked_char_ref_blocks_proven_overwrite(beat):
+        return False
+    if o3_prompt_box_law_active(beat):
         return False
     cur = resolve_beat_char_ref_path(beat) or ""
     if cur and os.path.normpath(cur) == os.path.normpath(src_path):

@@ -19,6 +19,7 @@ CODE_PARITY_PATHS = (
     "Production/tools/credentials_lib/ffmpeg_stitch.py",
     "Production/tools/server_handlers/stitch_editor.py",
     "Production/tools/o3_job_status_contract.py",
+    "Production/tools/o3_generation_intent.py",
     "Production/scripts/verify_tooling_dropbox_parity.py",
     "Production/scripts/verify_o3_intro_contract.sh",
     "Production/scripts/post_tooling_change_smoke.sh",

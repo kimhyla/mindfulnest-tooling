@@ -301,6 +301,18 @@ def build_generation_intent(
     if not aligned:
         if ref_locked and wavespeed_key:
             reg_result = bg.try_register_dropped_char_ref_on_element(work_beat, wavespeed_key)
+            if reg_result.get("ok") and reg_result.get("action") == "already_matched":
+                aligned, gate_detail = reg.char_ref_matches_element_images(
+                    char_path, speaker, allow_pose_dir_fallback=False,
+                )
+                if not aligned:
+                    try:
+                        reg_result = reg.reconcile_char_ref_with_element(
+                            speaker, char_path, wavespeed_key,
+                        )
+                        reg_result["action"] = "reconciled_after_pose_only_match"
+                    except Exception as exc:
+                        reg_result = {"ok": False, "reason": str(exc)}
             if not reg_result.get("ok"):
                 raise IntentCommitError(
                     "ELEMENT_VISUAL_MISMATCH",
@@ -501,6 +513,7 @@ def sidecar_fields_from_intent(intent: dict) -> dict:
     generation = intent.get("generation") or {}
     return {
         "kling_o3_prompt": prompt,
+        "o3_prompt_box_law": True,
         "reference_image": {
             "abs_path": visual.get("char_ref_abs_path"),
         },

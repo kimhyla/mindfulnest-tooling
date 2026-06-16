@@ -262,3 +262,118 @@ def test_active_intent_detected_without_terminal(tmp_path):
     }
     (jobs / "deadbeef_intent.json").write_text(json.dumps(intent), encoding="utf-8")
     assert beat_has_active_intent("bg_arc1_event2_pre_beat_30", event_dir) is True
+
+
+def test_locked_element_char_ref_gate_rejects_pose_only_match(tmp_path):
+    """Locked char ref must align with refer_images, not poses/ bytes alone."""
+    char = tmp_path / "hands_face.png"
+    char.write_bytes(b"operator-still")
+    beat = {
+        "speaker": "Lorelai",
+        "reference_image_locked": True,
+        "reference_image": {"abs_path": str(char)},
+    }
+
+    def _match(_path, _speaker, allow_pose_dir_fallback=True):
+        if allow_pose_dir_fallback:
+            return True, ""
+        return False, "not in refer_images"
+
+    with patch(
+        "tools.kling_character_registry.is_speaker_voice_ready",
+        return_value=True,
+    ), patch(
+        "tools.kling_character_registry.char_ref_matches_element_images",
+        side_effect=_match,
+    ), patch(
+        "beat_generator.resolve_beat_char_ref_path",
+        return_value=str(char),
+    ):
+        ok, detail = bg.element_char_ref_gate(beat)
+    assert ok is False
+    assert "refer_images" in detail
+
+
+def test_try_register_reconciles_when_only_pose_dir_matches(tmp_path):
+    char = tmp_path / "hands_face.png"
+    char.write_bytes(b"operator-still")
+    beat = {
+        "speaker": "Lorelai",
+        "reference_image": {"abs_path": str(char)},
+    }
+
+    def _match(_path, _speaker, allow_pose_dir_fallback=True):
+        if allow_pose_dir_fallback:
+            return True, ""
+        return False, "not in refer_images"
+
+    with patch(
+        "tools.kling_character_registry.is_speaker_voice_ready",
+        return_value=True,
+    ), patch(
+        "tools.kling_character_registry.char_ref_matches_element_images",
+        side_effect=_match,
+    ), patch(
+        "beat_generator.resolve_beat_char_ref_path",
+        return_value=str(char),
+    ), patch(
+        "tools.kling_character_registry.reconcile_char_ref_with_element",
+        return_value={"ok": True, "pose_rel": "Lorelai/poses/hands_face.png"},
+    ) as reconcile:
+        result = bg.try_register_dropped_char_ref_on_element(beat, "ws-key")
+    reconcile.assert_called_once()
+    assert result["ok"] is True
+    assert result["action"] == "reconciled"
+
+
+@patch("tools.kling_character_registry.is_speaker_voice_ready", return_value=True)
+@patch("beat_generator.resolve_o3_element_list_entry")
+@patch("beat_generator.validate_proven_o3_element_submit", return_value=None)
+@patch("tools.kling_voice_bind.detect_voice_bind_drift", return_value=None)
+@patch("tools.kling_o3_prompt.validate_element_list_alignment", return_value=[])
+def test_commit_reconciles_pose_only_already_matched(
+    _align, _drift, _proven, mock_element, _ready, tmp_path,
+):
+    mock_element.return_value = {"element_id": "1", "element_name": "Loral", "voice_id": "v1"}
+    beat = _voice_ready_lorelai_beat(tmp_path)
+    sidecar = _minimal_sidecar(beat)
+    event_dir = tmp_path / "Event_2"
+    event_dir.mkdir()
+    body = {
+        "kling_o3_prompt": beat["kling_o3_prompt"],
+        "reference_image": beat["reference_image"],
+        "bg_ref_image": beat["bg_ref_image"],
+    }
+    char_path = beat["reference_image"]["abs_path"]
+    calls = {"strict": 0}
+
+    def _match(_path, _speaker, allow_pose_dir_fallback=True):
+        if not allow_pose_dir_fallback:
+            calls["strict"] += 1
+            return calls["strict"] >= 3, ""
+        return True, ""
+
+    with patch(
+        "tools.kling_character_registry.char_ref_matches_element_images",
+        side_effect=_match,
+    ), patch(
+        "beat_generator.try_register_dropped_char_ref_on_element",
+        return_value={"ok": True, "action": "already_matched"},
+    ), patch(
+        "tools.kling_character_registry.reconcile_char_ref_with_element",
+        return_value={"ok": True, "pose_rel": "Lorelai/poses/hands_face.png"},
+    ) as reconcile:
+        intent = build_generation_intent(
+            beat=beat,
+            sidecar=sidecar,
+            body=body,
+            beat_id=beat["beat_id"],
+            event_dir=event_dir,
+            job_id="job5",
+            attempt_id="a5",
+            log_path=event_dir / "j.log",
+            pipeline_script=tmp_path / "p.py",
+            wavespeed_key="k",
+        )
+    reconcile.assert_called_once_with("Lorelai", char_path, "k")
+    assert intent["visual"]["element_char_ref_gate"]["registration_action"] == "reconciled_after_pose_only_match"

@@ -2611,7 +2611,7 @@ def handle_bg_update_beat(h, body: dict)-> None:
                     bg.sync_beat_scene_notes_from_kling_prompt(beat)
         if written:
             bg.sync_element_char_ref_status(beat, heal_mismatch=False)
-        if "reference_image" in written and beat.get("element_char_ref_ok") is False:
+        if "reference_image" in written:
             speaker = str(beat.get("speaker") or "").strip()
             try:
                 from credentials import load_credentials  # type: ignore
@@ -2619,7 +2619,17 @@ def handle_bg_update_beat(h, body: dict)-> None:
                 from tools.credentials_lib.credentials import load_credentials  # type: ignore
             creds = load_credentials()
             ws_key = creds.get("wavespeed_key") or creds.get("wavespeed")
-            if ws_key and speaker:
+            needs_register = beat.get("element_char_ref_ok") is False
+            if not needs_register and ws_key and speaker:
+                from tools import kling_character_registry as reg
+
+                char_path = bg.resolve_beat_char_ref_path(beat) or ""
+                if char_path:
+                    strict_ok, _ = reg.char_ref_matches_element_images(
+                        char_path, speaker, allow_pose_dir_fallback=False,
+                    )
+                    needs_register = not strict_ok
+            if needs_register and ws_key and speaker:
                 reg_result = bg.try_register_dropped_char_ref_on_element(beat, ws_key)
                 if reg_result.get("ok"):
                     bg.sync_element_char_ref_status(beat, heal_mismatch=False)
@@ -3591,6 +3601,10 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
             )
             intent_path = write_generation_intent(committed_intent, event_dir)
             beat.update(sidecar_fields_from_intent(committed_intent))
+            bg.stamp_o3_prompt_box_law(
+                beat,
+                str((committed_intent.get("prompt") or {}).get("verbatim") or ""),
+            )
             bg.sync_beat_dialogue_from_kling_prompt(beat)
             beat["status"] = "o3_voice_job_starting"
             beat["kling_o3_voice_fix_status"] = "job_starting"

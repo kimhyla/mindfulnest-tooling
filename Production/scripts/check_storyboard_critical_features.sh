@@ -139,6 +139,10 @@ MARKERS=(
     # Baseline buttons — every beat should have these (displayed text)
     "BASELINE|Regen Audio"
     "BASELINE|Regenerate B"
+    # O3 generation intent snapshot — prompt lock + submit audit strip (2026-06-15)
+    "O3_INTENT_SNAPSHOT|mn-bg-o3-intent-audit"
+    "O3_INTENT_SNAPSHOT|bg-o3-intent-audit"
+    "O3_INTENT_SNAPSHOT|Generation in progress — prompt locked to submitted intent."
 )
 
 missing_count=0

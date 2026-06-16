@@ -380,6 +380,8 @@ def run_pipeline_from_intent(
     ], text=True).strip())
 
     final = {
+        "kling_o3_prompt": str(prompt_block.get("verbatim") or ""),
+        "o3_prompt_box_law": True,
         "kling_o3_video_path": str(delivery),
         "kling_o3_status": "approved",
         "status": "approved",
