@@ -101,6 +101,10 @@ interface ApiGetOptions {
   _scopeHealAttempt?: number;
   /** Internal — one retry after server restart blip (NETWORK_RESTART_RETRY_V1). */
   _networkRetry?: boolean;
+  /** Optional fetch timeout (e.g. bg_session_state under sidecar lock contention). */
+  fetchTimeoutMs?: number;
+  /** Internal — one retry after AbortSignal.timeout (SESSION_LOAD_TIMEOUT_RETRY_V1). */
+  _timeoutRetry?: boolean;
 }
 
 export const SCOPE_HEALED_EVENT = 'mn:scope-healed';
@@ -182,7 +186,11 @@ export async function apiGet<T = unknown>(
   for (const [k, v] of Object.entries(remaining)) url.searchParams.set(k, v);
 
   try {
-    const res = await fetch(url.toString());
+    const fetchInit: RequestInit = {};
+    if (opts.fetchTimeoutMs != null && opts.fetchTimeoutMs > 0 && typeof AbortSignal !== 'undefined') {
+      fetchInit.signal = AbortSignal.timeout(opts.fetchTimeoutMs);
+    }
+    const res = await fetch(url.toString(), fetchInit);
     let data: T | undefined;
     try {
       data = (await res.json()) as T;
@@ -224,6 +232,12 @@ export async function apiGet<T = unknown>(
     };
   } catch (e) {
     const err = String(e);
+    const timedOut = /timeout|aborted|abort/i.test(err)
+      || (e instanceof DOMException && e.name === 'TimeoutError');
+    if (!opts._timeoutRetry && timedOut) {
+      await new Promise((resolve) => { setTimeout(resolve, 2000); });
+      return apiGet(endpoint, query, { ...opts, _timeoutRetry: true });
+    }
     if (!opts._networkRetry && /failed to fetch|networkerror|load failed/i.test(err)) {
       await new Promise((resolve) => { setTimeout(resolve, 2000); });
       return apiGet(endpoint, query, { ...opts, _networkRetry: true });

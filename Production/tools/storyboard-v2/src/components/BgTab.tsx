@@ -315,6 +315,8 @@ interface NativeLipSyncPollResponse {
 const PER_IMAGE_COST_USD = 0.04;
 const POLL_INTERVAL_MS = 10000; // 10s per Cursor v8 Q6 — GPT batch jobs
 const O3_POLL_INTERVAL_MS = 3000; // O3: faster terminal detection; poll payload carries beat snapshot
+const BG_SESSION_LOAD_SLOW_HINT_MS = 8000;
+const BG_SESSION_STATE_FETCH_TIMEOUT_MS = 120_000;
 
 function mergeBeatFromO3Poll(beats: BgBeat[], patch: BgBeat): BgBeat[] {
   const safePatch = stripProtectedPromptFromPatch(patch);
@@ -433,6 +435,56 @@ function formatO3JobFailure(error?: string | null): string {
   return runtime.split('\n').filter(Boolean).pop()?.slice(0, 500) ?? runtime.slice(0, 500);
 }
 
+type O3BeatSlotFields = {
+  kling_o3_video_path?: string | null;
+  kling_o3_options?: Array<{ video_path?: string | null; source?: string | null } | null> | null;
+};
+
+function beatHasPopulatedO3Slot(beat: O3BeatSlotFields | null | undefined): boolean {
+  if (!beat) return false;
+  if (isUserSelectableO3Video(beat.kling_o3_video_path)) return true;
+  return (beat.kling_o3_options ?? []).some((o) => isUserSelectableO3Video(o?.video_path, o?.source));
+}
+
+function o3PollResultHasVideo(res: ArloO3PollResponse): boolean {
+  if (res.result?.video) return true;
+  if (res.terminal?.delivered?.video_path) return true;
+  return beatHasPopulatedO3Slot(res.beat as O3BeatSlotFields);
+}
+
+function beatGenFailureNotifyKey(beat: BgBeat): string | null {
+  const voiceFix = (beat.kling_o3_voice_fix_status ?? '').toLowerCase();
+  if (voiceFix.startsWith('failed')) {
+    return `o3-fail:${beat.beat_id}:${voiceFix}:${(beat.kling_o3_voice_fix_error ?? '').slice(0, 120)}`;
+  }
+  const status = (beat.status ?? '').toLowerCase();
+  if (status.includes('failed') || status.startsWith('o3_voice_job_failed')) {
+    return `status-fail:${beat.beat_id}:${status}`;
+  }
+  return null;
+}
+
+function notifyNewGenFailures(beats: BgBeat[], seenRef: { current: Set<string> }): void {
+  for (const beat of beats) {
+    const key = beatGenFailureNotifyKey(beat);
+    if (!key || seenRef.current.has(key)) continue;
+    seenRef.current.add(key);
+    const detail = beat.kling_o3_voice_fix_error
+      ? formatO3JobFailure(beat.kling_o3_voice_fix_error)
+      : (beat.status ?? 'generation failed');
+    pushToast({
+      kind: 'error',
+      message: `${beat.beat_id}: ${detail}`,
+      source: 'bg-gen-failure',
+    });
+  }
+}
+
+const bgSessionStateQuery = (eventId: string, videoRole: string) => ({
+  scope_event_id: eventId,
+  scope_video_role: videoRole,
+});
+
 // Stage-direction chip extraction.
 // Cursor v8 Q6 amendment: "first two matches after stripping quoted dialogue"
 // + length cap 4-50 chars.
@@ -510,6 +562,7 @@ export function BgTab() {
   // would falsely show the loaded-empty placeholder "(no segments yet)"
   // for one frame before the fetch starts.
   const [loading, setLoading] = useState(true);
+  const [loadingSlowHint, setLoadingSlowHint] = useState(false);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [activeO3Jobs, setActiveO3Jobs] = useState<Record<string, string>>({});
   const [o3IntentByBeat, setO3IntentByBeat] = useState<Record<string, O3GenerationIntentPoll>>({});
@@ -591,12 +644,17 @@ export function BgTab() {
   const prevDepsRef = useRef<string | null>(null);
   const beatSaveNotFoundToastRef = useRef(new Set<string>());
   const beatSaveBlockedRef = useRef(new Set<string>());
+  const genFailureToastRef = useRef(new Set<string>());
   useEffect(() => {
     let cancelled = false;
     let timer: number | null = null;
     const fetchData = async () => {
       setLoading(true);
+      setLoadingSlowHint(false);
       setActiveO3Jobs({});
+      const slowHintTimer = window.setTimeout(() => {
+        if (!cancelled) setLoadingSlowHint(true);
+      }, BG_SESSION_LOAD_SLOW_HINT_MS);
       try {
         const segRes = await apiGet<BgSegmentsResponse>('bg_segments', { arc_number: String(arcNumber) });
         if (cancelled) return;
@@ -606,11 +664,19 @@ export function BgTab() {
         // LD-545 Option B — scope_event_id + scope_video_role derive the segment
         // (intro→pre, resolution→post). Without scope_video_role the server falls
         // back to stale sidecar active_context and shows the wrong beats.
-        const stateRes = await apiGet<BgSessionState>('bg_session_state', {
-          scope_event_id: activeScope.value.event_id,
-          scope_video_role: activeTargetVideo.value,
-        });
+        const stateRes = await apiGet<BgSessionState>(
+          'bg_session_state',
+          bgSessionStateQuery(activeScope.value.event_id, activeTargetVideo.value),
+          { fetchTimeoutMs: BG_SESSION_STATE_FETCH_TIMEOUT_MS },
+        );
         if (cancelled) return;
+        if (!stateRes.ok) {
+          pushToast({
+            kind: 'error',
+            message: `Could not load beat state: ${stateRes.error ?? 'unknown error'}`,
+            source: 'bg-session-load-error',
+          });
+        }
         const ctx = stateRes.data?.scope_active_context ?? stateRes.data?.active_context;
         if (ctx) {
           setArcNumber(Number(ctx.arc_number) || arcNumber);
@@ -620,13 +686,18 @@ export function BgTab() {
         }
         const initialBeats = applyPromptEditsToBeats(stateRes.data?.beats ?? []);
         setBeats(initialBeats);
+        notifyNewGenFailures(initialBeats, genFailureToastRef);
         setActiveJobId((prev) => prev ?? collectActiveStillJobFromBeats(initialBeats));
         // Server sidecar is the source of truth. Do not merge old local active
         // jobs back in, or a tab can keep showing "Generating..." after the
         // backend has failed/cleared the job.
         setActiveO3Jobs(collectActiveO3JobsFromBeats(initialBeats));
       } finally {
-        if (!cancelled) setLoading(false);
+        clearTimeout(slowHintTimer);
+        if (!cancelled) {
+          setLoadingSlowHint(false);
+          setLoading(false);
+        }
       }
     };
 
@@ -734,6 +805,14 @@ export function BgTab() {
           if (res.data.status === 'done_with_warning') {
             completedBeatIds.push(beatId);
             if (res.data.beat) beatPatches.push(res.data.beat as BgBeat);
+            if (!o3PollResultHasVideo(res.data)) {
+              pushToast({
+                kind: 'error',
+                message: `${beatId}: O3 job finished but no clip appeared in slots — check kling_o3_clips or retry Generate.`,
+                source: 'bg-o3-empty',
+              });
+              return;
+            }
             const warnMsg = res.data.warning?.message
               ?? res.data.terminal?.warning?.message
               ?? 'Delivery recovered with sidecar warning — verify clip in kling_o3_clips folder.';
@@ -748,6 +827,14 @@ export function BgTab() {
           if (res.data.status === 'done') {
             completedBeatIds.push(beatId);
             if (res.data.beat) beatPatches.push(res.data.beat as BgBeat);
+            if (!o3PollResultHasVideo(res.data)) {
+              pushToast({
+                kind: 'error',
+                message: `${beatId}: O3 job reported done but no clip appeared in slots — check kling_o3_clips or retry Generate.`,
+                source: 'bg-o3-empty',
+              });
+              return;
+            }
             pushToast({
               kind: 'success',
               message: `${beatId}: O3 voice video ready${res.data.result?.duration_s ? ` (${res.data.result.duration_s.toFixed(2)}s)` : ''}`,
@@ -882,13 +969,15 @@ export function BgTab() {
 
   const refreshState = async () => {
     // LD-545 Option B — include scope_event_id on refresh fetches too.
-    const stateRes = await apiGet<BgSessionState>('bg_session_state', {
-      scope_event_id: activeScope.value.event_id,
-      scope_video_role: activeTargetVideo.value,
-    });
+    const stateRes = await apiGet<BgSessionState>(
+      'bg_session_state',
+      bgSessionStateQuery(activeScope.value.event_id, activeTargetVideo.value),
+      { fetchTimeoutMs: BG_SESSION_STATE_FETCH_TIMEOUT_MS },
+    );
     if (stateRes.ok && stateRes.data) {
       const nextBeats = applyPromptEditsToBeats(stateRes.data.beats ?? []);
       setBeats(nextBeats);
+      notifyNewGenFailures(nextBeats, genFailureToastRef);
       const liveIds = new Set(nextBeats.map((b) => b.beat_id));
       beatSaveBlockedRef.current.forEach((id) => {
         if (liveIds.has(id)) beatSaveBlockedRef.current.delete(id);
@@ -2179,7 +2268,14 @@ export function BgTab() {
       </div>
 
       {loading ? (
-        <p class="mn-loading"><Spinner size="md" inline /> Loading beat state…</p>
+        <p class="mn-loading" data-testid="bg-loading">
+          <Spinner size="md" inline /> Loading beat state…
+          {loadingSlowHint ? (
+            <span class="mn-loading-slow-hint">
+              Still loading — server is busy reconciling sidecar while your WaveSpeed gens keep running.
+            </span>
+          ) : null}
+        </p>
       ) : beats.length === 0 ? (
         <div class="mn-empty" data-testid="bg-empty">
           <p>No beats yet for this segment. Click <strong>Extract Beats from script</strong> or <strong>+ Insert beat</strong> to start.</p>

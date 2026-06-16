@@ -1658,18 +1658,39 @@ def handle_bg_session_state(h)-> None:
     # Strip the "Event_" prefix so get_seg_entry looks up "event_1_post" not "event_Event_1_post".
     if scope_event_id is not None:
         scope_event_id = bg.normalize_bg_event_id(scope_event_id)
+    # Session GET holds the sidecar lock — keep work minimal so parallel O3 jobs
+    # can checkpoint via update_beat_locked(). Full disk reconcile still runs on
+    # trim/submit/select-o3; here it is throttled (not skipped/read-only).
+    _SESSION_O3_RECONCILE_MIN_INTERVAL_S = 45
+    force_reconcile_o3 = str(_q("force_reconcile_o3") or "").strip().lower() in ("1", "true", "yes")
     with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
-        reconcile_stuck_o3_voice_beats(sidecar)
-        # Orphan recovery may persist via update_beat_locked — refresh before whole-file write.
-        sidecar = bg.read_sidecar()
-        sidecar = bg._migrate_sidecar(sidecar)
+        stuck_changed = reconcile_stuck_o3_voice_beats(sidecar)
         event_dir = Path(getattr(h.app, "event_dir", "") or "")
+        o3_reconcile_changed = 0
         if event_dir.is_dir():
-            bg.reconcile_kling_o3_sidecar(sidecar, event_dir)
-        bg.classify_all_sidecar_pipeline_fields(sidecar)
-        bg.write_sidecar(sidecar)
+            runtime = sidecar.setdefault("_runtime", {})
+            should_reconcile = force_reconcile_o3
+            if not should_reconcile:
+                last_at = runtime.get("last_o3_disk_reconcile_at")
+                if not last_at:
+                    should_reconcile = True
+                else:
+                    try:
+                        last_dt = datetime.fromisoformat(str(last_at).replace("Z", "+00:00"))
+                        if last_dt.tzinfo is None:
+                            last_dt = last_dt.replace(tzinfo=timezone.utc)
+                        age_s = (datetime.now(timezone.utc) - last_dt).total_seconds()
+                        should_reconcile = age_s >= _SESSION_O3_RECONCILE_MIN_INTERVAL_S
+                    except (TypeError, ValueError):
+                        should_reconcile = True
+            if should_reconcile:
+                o3_reconcile_changed = bg.reconcile_kling_o3_sidecar(sidecar, event_dir)
+                runtime["last_o3_disk_reconcile_at"] = datetime.now(timezone.utc).isoformat()
+        classify_changed = bg.classify_all_sidecar_pipeline_fields(sidecar)
+        if stuck_changed or o3_reconcile_changed or classify_changed:
+            bg.write_sidecar(sidecar)
     ctx = sidecar.get("active_context")
 
     # LD-545 Option B — scope-derived segment.
