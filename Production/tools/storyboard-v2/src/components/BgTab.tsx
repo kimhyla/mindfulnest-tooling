@@ -40,6 +40,11 @@ import {
   stitchExportBlockTooltip,
 } from '../utils/bgStitchExport';
 import {
+  beatHasActiveNavJob,
+  computeBeatNavItemStatuses,
+  type BeatNavItemStatus,
+} from '../utils/bgBeatNavStatus';
+import {
   applyPromptEditsToBeats,
   stripProtectedPromptFromPatch,
 } from '../state/promptEditRegistry';
@@ -522,26 +527,56 @@ function scrollToBeat(beatId: string): void {
 
 interface BgBeatNavProps {
   beats: ReadonlyArray<{ beat_id: string }>;
+  itemStatuses: ReadonlyArray<BeatNavItemStatus>;
   activeIndex: number | null;
   onJump: (beatId: string, index: number) => void;
 }
 
-function BgBeatNav({ beats, activeIndex, onJump }: BgBeatNavProps) {
+function BgBeatNav({ beats, itemStatuses, activeIndex, onJump }: BgBeatNavProps) {
   return (
     <nav class="mn-bg-beat-nav" aria-label="Jump to beat" data-testid="bg-beat-nav">
-      {beats.map((b, i) => (
-        <button
-          type="button"
-          key={b.beat_id}
-          class={`mn-bg-beat-nav-item${activeIndex === i ? ' is-active' : ''}`}
-          data-testid={`bg-beat-nav-${i}`}
-          {...(activeIndex === i ? { 'aria-current': 'true' as const } : {})}
-          title={b.beat_id}
-          onClick={() => onJump(b.beat_id, i)}
-        >
-          Beat {i + 1}
-        </button>
-      ))}
+      {beats.map((b, i) => {
+        const status = itemStatuses[i] ?? { hasActiveJob: false, isApproved: false, activeJobHint: null };
+        const badgeParts: string[] = [];
+        if (status.hasActiveJob) badgeParts.push('active job');
+        if (status.isApproved) badgeParts.push('approved');
+        const title = badgeParts.length > 0
+          ? `${b.beat_id} (${badgeParts.join(', ')})`
+          : b.beat_id;
+        return (
+          <button
+            type="button"
+            key={b.beat_id}
+            class={`mn-bg-beat-nav-item${activeIndex === i ? ' is-active' : ''}`}
+            data-testid={`bg-beat-nav-${i}`}
+            {...(activeIndex === i ? { 'aria-current': 'true' as const } : {})}
+            title={title}
+            onClick={() => onJump(b.beat_id, i)}
+          >
+            <span class="mn-bg-beat-nav-label">Beat {i + 1}</span>
+            {(status.hasActiveJob || status.isApproved) ? (
+              <span class="mn-bg-beat-nav-badges" aria-hidden="true">
+                {status.hasActiveJob ? (
+                  <span
+                    class="mn-bg-beat-nav-dot"
+                    data-testid={`bg-beat-nav-dot-${i}`}
+                    title={status.activeJobHint ?? 'Job running'}
+                  />
+                ) : null}
+                {status.isApproved ? (
+                  <span
+                    class="mn-bg-beat-nav-check"
+                    data-testid={`bg-beat-nav-check-${i}`}
+                    title="Approved for stitch export"
+                  >
+                    ✓
+                  </span>
+                ) : null}
+              </span>
+            ) : null}
+          </button>
+        );
+      })}
     </nav>
   );
 }
@@ -597,6 +632,19 @@ export function BgTab() {
   const beatIdsKey = useMemo(
     () => beats.map((b) => b.beat_id).join('|'),
     [beats],
+  );
+
+  const beatNavJobContext = useMemo(() => ({
+    activeJobId,
+    activeO3Jobs,
+    o3SubmitPending: {} as Record<string, boolean>,
+    activeStillRenderJobs,
+    activeNativeLipSyncJobs,
+  }), [activeJobId, activeO3Jobs, activeStillRenderJobs, activeNativeLipSyncJobs]);
+
+  const beatNavItemStatuses = useMemo(
+    () => computeBeatNavItemStatuses(beats, beatNavJobContext),
+    [beats, beatNavJobContext],
   );
 
   // Reset highlight when segment/event/arc reload replaces the beat list.
@@ -2284,6 +2332,7 @@ export function BgTab() {
         <div class="mn-bg-body-layout" data-testid="bg-body-layout">
           <BgBeatNav
             beats={beats}
+            itemStatuses={beatNavItemStatuses}
             activeIndex={
               activeNavIndex !== null && activeNavIndex < beats.length
                 ? activeNavIndex
@@ -2304,12 +2353,7 @@ export function BgTab() {
               eventId={activeScope.value.event_id}
               videoRole={activeTargetVideo.value}
               pollResultForBeat={pollResults[b.beat_id]}
-              busy={
-                activeJobId !== null
-                || !!activeO3Jobs[b.beat_id]
-                || !!activeStillRenderJobs[b.beat_id]
-                || !!activeNativeLipSyncJobs[b.beat_id]
-              }
+              busy={beatHasActiveNavJob(b, beatNavJobContext)}
               o3IntentSnapshot={o3IntentByBeat[b.beat_id]}
               o3SubmitAudit={o3SubmitAuditByBeat[b.beat_id]}
               o3WarningMessage={o3WarningByBeat[b.beat_id]}
