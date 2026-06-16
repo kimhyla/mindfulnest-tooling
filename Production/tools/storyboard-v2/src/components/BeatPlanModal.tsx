@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { Modal } from './ui/Modal';
 import { Spinner } from './ui/Spinner';
 import { beatPlanRowsToText, countBeatPlanBlocks, parseBeatPlanText } from './beatPlanFormat';
+
+export type BeatPlanDraftSaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 
 export interface BeatPlanRow {
   beat_index: number;
@@ -20,8 +22,10 @@ export interface BeatPlanModalProps {
   beatsPlan: BeatPlanRow[];
   approveStatus: 'idle' | 'sending';
   approveStartedAt?: number | null;
+  draftSaveStatus?: BeatPlanDraftSaveStatus;
   onClose: () => void;
   onApprove: (storySummary: string, beatsPlan: BeatPlanRow[]) => void;
+  onAutosave?: (storySummary: string, beatsPlan: BeatPlanRow[]) => void | Promise<void>;
 }
 
 const BEAT_SCRIPT_HELP =
@@ -35,18 +39,36 @@ export function BeatPlanModal({
   beatsPlan: initialPlan,
   approveStatus,
   approveStartedAt = null,
+  draftSaveStatus = 'idle',
   onClose,
   onApprove,
+  onAutosave,
 }: BeatPlanModalProps) {
   const [storySummary, setStorySummary] = useState(initialSummary);
   const [beatScript, setBeatScript] = useState('');
+  const skipAutosaveRef = useRef(true);
 
   useEffect(() => {
     if (open) {
       setStorySummary(initialSummary);
       setBeatScript(beatPlanRowsToText(initialPlan));
+      skipAutosaveRef.current = true;
     }
   }, [open, initialSummary, initialPlan]);
+
+  useEffect(() => {
+    if (!open || approveStatus === 'sending' || !onAutosave) return undefined;
+    const beatsPlan = parseBeatPlanText(beatScript);
+    if (beatsPlan.length === 0) return undefined;
+    if (skipAutosaveRef.current) {
+      skipAutosaveRef.current = false;
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      void onAutosave(storySummary, beatsPlan);
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [open, storySummary, beatScript, approveStatus, onAutosave]);
 
   const handleApprove = () => {
     const beatsPlan = parseBeatPlanText(beatScript);
@@ -94,7 +116,16 @@ export function BeatPlanModal({
     >
       <p class="mn-dim">
         Claude read the skeleton section for this video only. Edit the summary and beat script below,
-        then Approve to generate rich Kling O3 prompts.
+        then Approve to generate rich Kling O3 prompts. Edits auto-save to your draft every few seconds.
+        {draftSaveStatus === 'saving' ? (
+          <> <Spinner size="sm" inline /> Saving draft…</>
+        ) : null}
+        {draftSaveStatus === 'saved' ? (
+          <> Draft saved.</>
+        ) : null}
+        {draftSaveStatus === 'error' ? (
+          <> <strong>Draft save failed</strong> — copy your script before closing.</>
+        ) : null}
         {approveStatus === 'sending' ? (
           <> Large plans (~20+ beats) may take <strong>3–6 minutes</strong> — the timer above shows progress.</>
         ) : null}

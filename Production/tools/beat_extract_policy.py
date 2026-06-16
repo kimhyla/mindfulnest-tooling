@@ -482,11 +482,65 @@ def _inject_emotion_into_spoken(spoken: str, emotion: str) -> str:
     return o3p.strip_leading_emotion_tags_from_spoken((spoken or "").strip())
 
 
+_IMAGE1_SCENE_PREFIX_RE = re.compile(
+    r"^@image1\s*\([^)]+\)\s*[.;,]?\s*(?:scene from @image2\s*[.;,]?\s*)?",
+    re.I,
+)
+_VOICE_LINE_PREFIX_RE = re.compile(r"^voice line:\s*", re.I)
+
+
+def _normalize_staging_probe(text: str) -> str:
+    probe = re.sub(r"\s+", " ", (text or "").strip().lower())
+    probe = probe.replace(";", ".")
+    return probe[:24]
+
+
+def substantive_staging_probe(scene_notes: str) -> str:
+    """Distinctive staging fragment — skips @Image1 / Scene from @Image2 boilerplate."""
+    scene = (scene_notes or "").strip()
+    if not scene:
+        return ""
+    body = _IMAGE1_SCENE_PREFIX_RE.sub("", scene, count=1).strip()
+    body = _VOICE_LINE_PREFIX_RE.sub("", body, count=1).strip()
+    if len(body) >= 12:
+        return _normalize_staging_probe(body)
+    return _normalize_staging_probe(scene)
+
+
+def scene_notes_reflected_in_kling_prompt(
+    prompt: str,
+    scene_notes: str,
+    *,
+    speaker: str = "",
+) -> bool:
+    """True when plan staging is represented in the final Kling prompt (audit + postprocess)."""
+    scene = (scene_notes or "").strip()
+    if len(scene) <= 12:
+        return True
+    lower_prompt = (prompt or "").lower()
+    if _prompt_contains_staging(prompt, scene):
+        return True
+    for probe in (substantive_staging_probe(scene), _normalize_staging_probe(scene)):
+        if probe and probe in lower_prompt:
+            return True
+    para = screen_direction_paragraph(speaker, scene)
+    if para:
+        para_probe = _normalize_staging_probe(para)
+        if para_probe and para_probe in lower_prompt:
+            return True
+        label = _kling_staging_speaker_label(speaker)
+        core = re.sub(rf"^{re.escape(label)}\s+", "", para, count=1, flags=re.I).strip()
+        core_probe = _normalize_staging_probe(core)
+        if core_probe and core_probe in lower_prompt:
+            return True
+    return False
+
+
 def _prompt_contains_staging(prompt: str, scene_notes: str) -> bool:
-    scene = (scene_notes or "").strip().lower()
+    scene = (scene_notes or "").strip()
     if not scene:
         return True
-    probe = scene[:24].lower()
+    probe = _normalize_staging_probe(scene)
     return probe in (prompt or "").lower()
 
 

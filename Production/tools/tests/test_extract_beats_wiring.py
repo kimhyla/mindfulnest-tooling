@@ -14,6 +14,7 @@ def test_production_server_registers_extract_routes():
         "/api/bg/extract-beats/plan",
         "/api/bg/extract-beats/approve",
         "/api/bg/extract-beats/draft",
+        "/api/bg/extract-beats/draft/save",
         "/api/bg/extract-beats",
     ):
         assert path in text, f"missing route {path}"
@@ -25,6 +26,7 @@ def test_endpoints_ts_wires_extract_mutations():
         "bg_extract_beats_plan",
         "bg_extract_beats_approve",
         "bg_extract_beats_draft",
+        "bg_extract_beats_draft_save",
     ):
         assert key in text, f"missing endpoint key {key}"
 
@@ -37,6 +39,8 @@ def test_bgtab_single_extract_button_no_suggest():
     assert "onSuggestBeats" not in text
     assert "Review saved plan" in text
     assert "openBeatPlanDraft" in text
+    assert "extract-overwrite-confirm" in text
+    assert "onBeatPlanAutosave" in text
 
 
 def test_claude_extract_uses_structured_tools():
@@ -53,7 +57,7 @@ def test_background_handler_sidecar_lock_on_plan():
     assert "handle_bg_extract_beats_plan" in text
     assert "sidecar_file_lock()" in text
     assert "beat_plan_draft" in text
-    assert "staging_warnings" in text
+    assert "persist_beat_plan_draft" in text
 
 
 def test_beat_plan_modal_and_format_present():

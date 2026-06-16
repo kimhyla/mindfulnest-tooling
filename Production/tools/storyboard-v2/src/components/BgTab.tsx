@@ -22,7 +22,7 @@ import { SERVER_BASE } from '../api/endpoints';
 import { makeDropTarget } from '../utils/dragdrop';
 import { openCropper } from '../state/cropper';
 import { Modal } from './ui/Modal';
-import { BeatPlanModal, type BeatPlanRow } from './BeatPlanModal';
+import { BeatPlanModal, type BeatPlanDraftSaveStatus, type BeatPlanRow } from './BeatPlanModal';
 import { InsertBeatModal, type InsertBeatPlanRow } from './InsertBeatModal';
 import { Spinner } from './ui/Spinner';
 import { Select } from './ui/Select';
@@ -117,6 +117,7 @@ type BgModalState =
   | { kind: 'delete-beat'; beatId: string }
   | { kind: 'accept-all-warn'; unsetIds: string[]; readyCount: number }
   | { kind: 'accept-all-confirm'; readyCount: number }
+  | { kind: 'extract-overwrite-confirm'; beatCount: number }
   | { kind: 'edit-chip'; beatId: string; oldChipText: string; draftText: string }
   | { kind: 'remove-ref'; beatId: string; refField: 'reference_image' | 'bg_ref_image'; label: string };
 
@@ -501,6 +502,7 @@ export function BgTab() {
   const [beatPlanOpen, setBeatPlanOpen] = useState(false);
   const [beatPlanSummary, setBeatPlanSummary] = useState('');
   const [beatPlanRows, setBeatPlanRows] = useState<BeatPlanRow[]>([]);
+  const [beatPlanDraftSaveStatus, setBeatPlanDraftSaveStatus] = useState<BeatPlanDraftSaveStatus>('idle');
   // Running cost across this session (only counts batches submitted from this UI).
   const [runningCostUsd, setRunningCostUsd] = useState<number>(0);
   const [lastBatchCostUsd, setLastBatchCostUsd] = useState<number>(0);
@@ -984,6 +986,7 @@ export function BgTab() {
     }
     setBeatPlanSummary(draftRes.data?.story_summary ?? '');
     setBeatPlanRows(rows);
+    setBeatPlanDraftSaveStatus('saved');
     setBeatPlanOpen(true);
     if (draftRes.data?.reconstructed_from_beats) {
       pushToast({
@@ -998,6 +1001,22 @@ export function BgTab() {
   const onExtractBeats = async () => {
     if (!activeSegment) return;
     const [event_id, phase] = activeSegment.split('|');
+    const draftRes = await apiGet<{ beats_plan?: BeatPlanRow[] }>('bg_extract_beats_draft', {
+      arc_number: String(arcNumber),
+      event_id,
+      phase,
+      scope_event_id: activeScope.value.event_id,
+      scope_video_role: activeTargetVideo.value,
+    });
+    const existingCount = draftRes.data?.beats_plan?.length ?? 0;
+    if (draftRes.ok && existingCount > 0) {
+      setModalState({ kind: 'extract-overwrite-confirm', beatCount: existingCount });
+      return;
+    }
+    await runExtractBeatsPlan(event_id, phase);
+  };
+
+  const runExtractBeatsPlan = async (event_id: string, phase: string) => {
     setExtractStatus('sending');
     setExtractError(null);
     const result = await pathappPatch<{
@@ -1014,6 +1033,7 @@ export function BgTab() {
       setExtractError(null);
       setBeatPlanSummary(result.data.story_summary ?? '');
       setBeatPlanRows(planRows);
+      setBeatPlanDraftSaveStatus('saved');
       setBeatPlanOpen(true);
       pushToast({
         kind: 'success',
@@ -1024,6 +1044,7 @@ export function BgTab() {
       setExtractError(null);
       setBeatPlanSummary(result.data?.story_summary ?? '');
       setBeatPlanRows(planRows);
+      setBeatPlanDraftSaveStatus('saved');
       setBeatPlanOpen(true);
       pushToast({
         kind: 'info',
@@ -1044,10 +1065,47 @@ export function BgTab() {
     }
   };
 
+  const confirmExtractOverwrite = async () => {
+    if (!activeSegment || modalState.kind !== 'extract-overwrite-confirm') return;
+    const [event_id, phase] = activeSegment.split('|');
+    closeModal();
+    await runExtractBeatsPlan(event_id, phase);
+  };
+
+  const onBeatPlanAutosave = useCallback(async (storySummary: string, beatsPlan: BeatPlanRow[]) => {
+    if (!activeSegment) return;
+    const [event_id, phase] = activeSegment.split('|');
+    setBeatPlanDraftSaveStatus('saving');
+    const result = await pathappPatch<{
+      beats_plan?: BeatPlanRow[];
+      saved_at?: string;
+      count?: number;
+    }>(
+      activeScope.value,
+      'bg_extract_beats_draft_save',
+      {
+        arc_number: arcNumber,
+        event_id,
+        phase,
+        story_summary: storySummary,
+        beats_plan: beatsPlan,
+        source: 'modal_autosave',
+      },
+    );
+    if (result.ok) {
+      setBeatPlanDraftSaveStatus('saved');
+      setBeatPlanSummary(storySummary);
+      setBeatPlanRows(beatsPlan);
+      return;
+    }
+    setBeatPlanDraftSaveStatus('error');
+  }, [activeSegment, arcNumber, activeScope.value, activeTargetVideo.value]);
+
   const closeBeatPlanModal = () => {
     setBeatPlanOpen(false);
     setApproveStatus('idle');
     setApproveStartedAt(null);
+    setBeatPlanDraftSaveStatus('idle');
   };
 
   const onApproveBeatPlan = async (storySummary: string, beatsPlan: BeatPlanRow[]) => {
@@ -1066,6 +1124,7 @@ export function BgTab() {
         activeScope.value, 'bg_extract_beats_approve', {
           arc_number: arcNumber, event_id, phase, story_summary: storySummary, beats_plan: beatsPlan,
         },
+        { fetchTimeoutMs: 600_000 },
       );
       if (result.ok && result.data) {
         setBeats(result.data.beats ?? []);
@@ -1078,23 +1137,37 @@ export function BgTab() {
           ),
           source: 'bg-extract-approve',
         });
-      } else {
-        const audit = result.data?.author_audit;
-        const detail = audit?.length
-          ? `: ${audit.slice(0, 2).join('; ')}`
-          : (result.error_message || result.error || '');
+      } else if (isNetworkPollBlip(result)) {
         pushToast({
           kind: 'error',
-          message: detail
-            ? `Approve failed — Kling author pass did not stick (${detail})`
-            : 'Approve failed — Kling author returned an empty or invalid response. Beats were not saved.',
+          message: formatMutationError(result, 'Approve beat plan'),
+          source: 'bg-approve-error',
+        });
+      } else if (
+        Array.isArray((result.data as { author_audit?: string[] } | undefined)?.author_audit)
+        && ((result.data as { author_audit?: string[] }).author_audit?.length ?? 0) > 0
+      ) {
+        const audit = (result.data as { author_audit: string[] }).author_audit;
+        const detail = audit.slice(0, 2).join('; ');
+        pushToast({
+          kind: 'error',
+          message: `Approve failed — Kling author pass did not stick (${detail})`,
+          source: 'bg-approve-error',
+        });
+      } else {
+        pushToast({
+          kind: 'error',
+          message: formatMutationError(result, 'Approve beat plan'),
           source: 'bg-approve-error',
         });
       }
     } catch (err) {
       pushToast({
         kind: 'error',
-        message: `Approve failed — ${err instanceof Error ? err.message : 'network error while building Kling prompts'}`,
+        message: formatMutationError(
+          { ok: false, status: 0, error: err instanceof Error ? err.message : String(err) },
+          'Approve beat plan',
+        ),
         source: 'bg-approve-error',
       });
     } finally {
@@ -2067,8 +2140,10 @@ export function BgTab() {
         beatsPlan={beatPlanRows}
         approveStatus={approveStatus}
         approveStartedAt={approveStartedAt}
+        draftSaveStatus={beatPlanDraftSaveStatus}
         onClose={closeBeatPlanModal}
         onApprove={onApproveBeatPlan}
+        onAutosave={onBeatPlanAutosave}
       />
 
       <InsertBeatModal
@@ -2079,6 +2154,40 @@ export function BgTab() {
         onClose={closeInsertBeatModal}
         onSubmit={(planRow) => { void executeInsertBeat(planRow); }}
       />
+
+      {/* Extract overwrite confirm — saved draft would be replaced by fresh Claude plan */}
+      <Modal
+        id="bg-extract-overwrite"
+        title="Overwrite saved beat plan?"
+        open={modalState.kind === 'extract-overwrite-confirm'}
+        onClose={closeModal}
+        footer={(
+          <>
+            <button type="button" class="mn-btn" data-testid="bg-extract-overwrite-cancel" onClick={closeModal}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="mn-btn mn-btn-primary"
+              data-testid="bg-extract-overwrite-confirm"
+              onClick={() => { void confirmExtractOverwrite(); }}
+            >
+              Overwrite &amp; re-extract
+            </button>
+          </>
+        )}
+      >
+        {modalState.kind === 'extract-overwrite-confirm' ? (
+          <p>
+            You already have a saved plan with{' '}
+            <strong>{modalState.beatCount}</strong>
+            {' '}
+            beat{modalState.beatCount === 1 ? '' : 's'} for this segment.
+            Running Extract again will replace it with a fresh auto-generated plan.
+            Use <strong>Review saved plan</strong> if you want to keep editing your current draft.
+          </p>
+        ) : null}
+      </Modal>
 
       {/* BG-9 — Delete-beat confirm Modal */}
       <Modal
@@ -2950,7 +3059,11 @@ function BgRefSlot({
           source: 'bg-ref-element-registered',
         });
         onRefresh();
-      } else if (refField === 'reference_image' && result.data?.element_ref_warning) {
+      } else if (
+        refField === 'reference_image'
+        && result.data?.element_ref_warning
+        && result.data?.element_char_ref_ok !== true
+      ) {
         if (result.data.thumb_b64) {
           onPatchRefImage(refField, {
             key: payload.lib_key,
@@ -2964,6 +3077,18 @@ function BgRefSlot({
           source: 'bg-ref-element-gate',
           ttlMs: 14000,
         });
+        onRefresh();
+      } else if (
+        refField === 'reference_image'
+        && result.data?.element_char_ref_ok === true
+      ) {
+        if (result.data.thumb_b64) {
+          onPatchRefImage(refField, {
+            key: payload.lib_key,
+            abs_path: payload.abs_path ?? '',
+            thumb_b64: result.data.thumb_b64,
+          });
+        }
         onRefresh();
       } else {
         // Layer thumb_b64 onto the optimistic update if server returned one.

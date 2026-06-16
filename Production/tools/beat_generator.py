@@ -6757,6 +6757,81 @@ def apply_approved_extract_plan(
     return merged
 
 
+def persist_beat_plan_draft(
+    sidecar: dict,
+    arc_number: int,
+    event_id: str,
+    phase: str,
+    story_summary: str,
+    beats_plan: list[dict],
+    *,
+    source: str = "modal_autosave",
+    extra: dict | None = None,
+) -> dict:
+    """Write modal/extract beat plan rows to segment beat_plan_draft (durable sidecar)."""
+    from beat_extract_policy import normalize_plan_row
+
+    seg = get_seg_entry(sidecar, arc_number, event_id, phase)
+    prev = seg.get("beat_plan_draft") if isinstance(seg.get("beat_plan_draft"), dict) else {}
+    repaired: list[dict] = []
+    for i, row in enumerate(beats_plan or [], start=1):
+        if not isinstance(row, dict):
+            continue
+        beat_index = int(row.get("beat_index") or i)
+        normalized, _warnings = normalize_plan_row(row, beat_index=beat_index)
+        repaired.append(normalized)
+    now = datetime.now(timezone.utc).isoformat()
+    draft: dict = {
+        "story_summary": (story_summary or "").strip(),
+        "beats_plan": repaired,
+        "updated_at": now,
+        "source": source,
+    }
+    for key in ("created_at", "model_used", "generation_time_ms", "section_meta"):
+        if isinstance(prev, dict) and prev.get(key) is not None:
+            draft[key] = prev[key]
+    if extra:
+        draft.update(extra)
+    if source == "extract_plan" or not draft.get("created_at"):
+        draft.setdefault("created_at", now)
+    seg["beat_plan_draft"] = draft
+    return draft
+
+
+def resync_kling_author_prompts_pre_audit(beats: list[dict]) -> int:
+    """Re-run deterministic author postprocess so audit matches injected staging."""
+    from beat_extract_policy import postprocess_kling_author_row
+
+    touched = 0
+    for beat in beats or []:
+        if not isinstance(beat, dict):
+            continue
+        if beat_is_still_insert(beat) or beat_is_canonical_mirror_protected(beat):
+            continue
+        prompt = (beat.get("kling_o3_prompt") or "").strip()
+        if not prompt:
+            continue
+        m = re.search(r"beat_(\d+)$", str(beat.get("beat_id") or ""))
+        beat_index = int(m.group(1)) if m else 0
+        row = {
+            "beat_index": beat_index,
+            "beat_type": beat.get("beat_type") or "dialogue",
+            "speaker": beat.get("speaker") or "Character",
+            "dialogue_text": beat.get("dialogue_text") or "",
+            "emotion": beat.get("emotion") or "neutral",
+            "scene_notes": beat.get("scene_notes") or "",
+        }
+        merged = postprocess_kling_author_row(row, prompt)
+        new_prompt = (merged.get("kling_o3_prompt") or "").strip()
+        if new_prompt:
+            if new_prompt != prompt:
+                touched += 1
+            beat["kling_o3_prompt"] = new_prompt
+        if merged.get("scene_notes"):
+            beat["scene_notes"] = merged["scene_notes"]
+    return touched
+
+
 def audit_kling_author_enrichment(beats: list[dict]) -> list[str]:
     """Post-approve guard — dialogue beats must carry author emotion/staging in prompts."""
     warnings: list[str] = []
@@ -6787,8 +6862,11 @@ def audit_kling_author_enrichment(beats: list[dict]) -> list[str]:
                 warnings.append(f"{beat_id}: emotion not woven into kling_o3_prompt")
         scene = (b.get("scene_notes") or "").strip()
         if len(scene) > 12:
-            snippet = scene[:24].lower()
-            if snippet not in prompt.lower():
+            from beat_extract_policy import scene_notes_reflected_in_kling_prompt
+
+            if not scene_notes_reflected_in_kling_prompt(
+                prompt, scene, speaker=str(b.get("speaker") or ""),
+            ):
                 warnings.append(f"{beat_id}: scene_notes missing from kling_o3_prompt")
     return warnings
 

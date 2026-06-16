@@ -2119,14 +2119,6 @@ def handle_bg_extract_beats_plan(h, body: dict) -> None:
 
     beats_plan = normalize_beats_plan(plan_result.get("beats_plan") or [])
     story_summary = plan_result.get("story_summary") or ""
-    draft = {
-        "story_summary": story_summary,
-        "beats_plan": beats_plan,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "model_used": plan_result.get("model_used"),
-        "generation_time_ms": plan_result.get("generation_time_ms"),
-        "section_meta": section,
-    }
     seg_name = None
     for s in bg.get_segments(arc_number):
         if str(s["event_id"]) == event_id and s["phase"] == phase:
@@ -2135,8 +2127,17 @@ def handle_bg_extract_beats_plan(h, body: dict) -> None:
     try:
         with bg.sidecar_file_lock():
             sidecar = bg.read_sidecar()
+            draft = bg.persist_beat_plan_draft(
+                sidecar, arc_number, event_id, phase,
+                story_summary, beats_plan,
+                source="extract_plan",
+                extra={
+                    "model_used": plan_result.get("model_used"),
+                    "generation_time_ms": plan_result.get("generation_time_ms"),
+                    "section_meta": section,
+                },
+            )
             seg = bg.get_seg_entry(sidecar, arc_number, event_id, phase)
-            seg["beat_plan_draft"] = draft
             seg["slice_method"] = section.get("slice_method")
             if seg_name:
                 seg["name"] = seg_name
@@ -2217,6 +2218,23 @@ def handle_bg_extract_beats_approve(h, body: dict) -> None:
 
     beats_plan = normalize_beats_plan(beats_plan_raw)
     bg = _bg_module()
+    try:
+        with bg.sidecar_file_lock():
+            sidecar = bg.read_sidecar()
+            bg.persist_beat_plan_draft(
+                sidecar, arc_number, event_id, phase,
+                story_summary, beats_plan,
+                source="modal_pre_approve",
+            )
+            bg.write_sidecar(sidecar)
+    except OSError as exc:
+        return h._send_error_v59(
+            503,
+            error_code="SIDECAR_WRITE_FAILED",
+            error_message=f"Could not save beat plan draft before approve: {exc}",
+            retry_safe=True,
+        )
+
     section = bg.slice_skeleton_section(arc_number, event_id, phase)
     dialogue_count = len([
         r for r in beats_plan
@@ -2257,6 +2275,7 @@ def handle_bg_extract_beats_approve(h, body: dict) -> None:
             story_summary, beats_plan_final, prompt_by_index,
             force=force,
         )
+        bg.resync_kling_author_prompts_pre_audit(beats)
         author_audit = bg.audit_kling_author_enrichment(beats)
         if author_audit:
             print(
@@ -2363,6 +2382,62 @@ def handle_bg_extract_beats_draft_get(h, qs: dict) -> None:
     if draft:
         payload["beat_plan_draft"] = draft
     return h._send_json(200, payload)
+
+
+def handle_bg_extract_beats_draft_save(h, body: dict) -> None:
+    """POST /api/bg/extract-beats/draft/save — persist modal beat plan edits to sidecar."""
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+    arc_number = int(body.get("arc_number", 1))
+    event_id = str(body.get("event_id", "1"))
+    phase = str(body.get("phase", "full"))
+    story_summary = str(body.get("story_summary") or "").strip()
+    beats_plan_raw = body.get("beats_plan") or []
+    if not beats_plan_raw:
+        return h._send_error_v59(
+            400,
+            error_code="MISSING_BEATS_PLAN",
+            error_message="beats_plan array required",
+            retry_safe=False,
+        )
+
+    from claude_extract_beats import normalize_beats_plan
+
+    beats_plan = normalize_beats_plan(beats_plan_raw)
+    bg = _bg_module()
+    try:
+        with bg.sidecar_file_lock():
+            sidecar = bg.read_sidecar()
+            draft = bg.persist_beat_plan_draft(
+                sidecar, arc_number, event_id, phase,
+                story_summary, beats_plan,
+                source=str(body.get("source") or "modal_autosave"),
+            )
+            sidecar["active_context"] = {
+                "arc_number": arc_number, "event_id": event_id, "phase": phase,
+            }
+            bg.write_sidecar(sidecar)
+    except OSError as exc:
+        return h._send_error_v59(
+            503,
+            error_code="SIDECAR_WRITE_FAILED",
+            error_message=f"Could not save beat plan draft: {exc}",
+            retry_safe=True,
+        )
+
+    print(
+        f"[BG] extract-beats/draft/save arc={arc_number} event={event_id} phase={phase} "
+        f"beats={len(draft.get('beats_plan') or [])}",
+        flush=True,
+    )
+    return h._send_json(200, {
+        "ok": True,
+        "story_summary": draft.get("story_summary") or "",
+        "beats_plan": draft.get("beats_plan") or [],
+        "beat_plan_draft": draft,
+        "saved_at": draft.get("updated_at"),
+        "count": len(draft.get("beats_plan") or []),
+    })
 
 
 def handle_bg_inject_beats(h, body: dict)-> None:

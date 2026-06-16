@@ -90,6 +90,8 @@ interface RawPostOptions {
   suppressScopeDispatch?: boolean;
   /** Internal — one retry after server restart blip (NETWORK_RESTART_RETRY_V1). */
   _networkRetry?: boolean;
+  /** Claude author pass on extract-beats/approve can run several minutes. */
+  fetchTimeoutMs?: number;
 }
 
 interface ApiGetOptions {
@@ -327,6 +329,8 @@ export interface PatchOptions {
   _isRetry?: boolean;
   /** Internal — set during 409 scope-mismatch auto-heal retry. */
   _scopeHealRetry?: boolean;
+  /** Long Claude/server work (e.g. extract-beats/approve). Default browser idle. */
+  fetchTimeoutMs?: number;
 }
 
 /**
@@ -423,11 +427,15 @@ export async function pathappPatch<T = unknown>(
     payload['scope_event_id'] = scope.event_id;
   }
 
+  const rawOpts: RawPostOptions = { suppressScopeDispatch: !opts._scopeHealRetry };
+  if (opts.fetchTimeoutMs != null && opts.fetchTimeoutMs > 0) {
+    rawOpts.fetchTimeoutMs = opts.fetchTimeoutMs;
+  }
   const result = await apiPostRaw<T>(
     MUTATION_ENDPOINTS[endpoint],
     payload,
     method,
-    { suppressScopeDispatch: !opts._scopeHealRetry },
+    rawOpts,
   );
 
   // LD-456 — SCOPE_MISMATCH auto-heal (SCOPE_MISMATCH_AUTO_HEAL_V1).
@@ -482,11 +490,15 @@ async function apiPostRaw<T = unknown>(
   opts: RawPostOptions = {},
 ): Promise<ApiResult<T>> {
   try {
-    const res = await fetch(url, {
+    const fetchInit: RequestInit = {
       method,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-    });
+    };
+    if (opts.fetchTimeoutMs && opts.fetchTimeoutMs > 0 && typeof AbortSignal !== 'undefined') {
+      fetchInit.signal = AbortSignal.timeout(opts.fetchTimeoutMs);
+    }
+    const res = await fetch(url, fetchInit);
     let data: T | undefined;
     try {
       data = (await res.json()) as T;

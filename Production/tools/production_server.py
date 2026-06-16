@@ -6260,6 +6260,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_bg_extract_beats_plan(body)
             if path == "/api/bg/extract-beats/approve":
                 return self._handle_bg_extract_beats_approve(body)
+            if path == "/api/bg/extract-beats/draft/save":
+                return self._handle_bg_extract_beats_draft_save(body)
             if path == "/api/bg/generate-kling-prompts":
                 return self._handle_bg_generate_kling_prompts(body)
             if path == "/api/bg/inject-beats":
@@ -7702,6 +7704,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_bg_extract_beats_approve(self, body: dict) -> None:
         from server_handlers.background import handle_bg_extract_beats_approve
         return handle_bg_extract_beats_approve(self, body)
+
+    def _handle_bg_extract_beats_draft_save(self, body: dict) -> None:
+        from server_handlers.background import handle_bg_extract_beats_draft_save
+        return handle_bg_extract_beats_draft_save(self, body)
 
     def _handle_bg_generate_kling_prompts(self, body: dict) -> None:
         from server_handlers.kling_o3 import handle_bg_generate_kling_prompts
