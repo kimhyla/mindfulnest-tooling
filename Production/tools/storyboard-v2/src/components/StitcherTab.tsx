@@ -817,10 +817,11 @@ export function StitcherTab() {
       if (composerVideoSyncSuppressRef.current) return;
       const ctl = composerPlaybackRef.current;
       if (!ctl?.isReady) {
-        // Waveform still remixing — muted video alone has no slot audio (SFX + ambient).
-        video.pause();
+        // Waveform unavailable (mix drift / extract) — review via slot video audio.
+        video.muted = false;
         return;
       }
+      video.muted = true;
       if (ctl.isPlaying) return;
       ctl.seekToMs(video.currentTime * 1000);
       ctl.play();
@@ -842,6 +843,7 @@ export function StitcherTab() {
     };
   }, [viewerSlot, composerVideoUrl]);
 
+  // Reset composer only when switching slots — not when preview URL refreshes (SFX remix).
   useEffect(() => {
     composerPlaybackRef.current?.pause();
     const video = composerVideoRef.current;
@@ -852,7 +854,7 @@ export function StitcherTab() {
     } catch {
       // ignore seek before metadata
     }
-  }, [viewerSlot, composerVideoUrl]);
+  }, [viewerSlot]);
 
   const onBake = async () => {
     if (!job?.name) {
@@ -1224,10 +1226,10 @@ export function StitcherTab() {
               <div class="mn-stitcher-slot-composer-body">
                 <video
                   ref={composerVideoRef}
-                  key={`composer-${viewerSlot}-${composerVideoUrl ?? 'empty'}`}
+                  key={`composer-${viewerSlot}`}
                   controls
                   muted
-                  preload="metadata"
+                  preload="auto"
                   src={composerVideoUrl}
                   class="mn-stitcher-composer-video"
                   data-testid="stitcher-composer-video"

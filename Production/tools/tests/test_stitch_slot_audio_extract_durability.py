@@ -69,6 +69,8 @@ class StitchSlotAudioExtractDurabilityTests(unittest.TestCase):
         self.assertIn("STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1", editor)
         self.assertIn("STITCH_SLOT_AUDIO_EXTRACT_TRUNCATED", editor)
         self.assertIn("expected_video_dur_ms", editor)
+        self.assertIn("apad=whole_dur", editor)
+        self.assertIn("mono_v3", editor)
 
 
 if __name__ == "__main__":

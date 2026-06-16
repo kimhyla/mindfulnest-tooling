@@ -650,6 +650,7 @@ SIDECAR_MERGE_PRESERVE_FIELDS: tuple[str, ...] = (
     "kling_o3_prompt", "kling_o3_duration", "kling_o3_duration_locked",
     "kling_o3_status", "kling_o3_video_path", "kling_o3_generation",
     "kling_o3_options", "kling_o3_replace_slot_index", "kling_o3_selected_option_key",
+    "kling_o3_still_stitch_approved", "kling_o3_still_stitch_approved_at",
     "kling_o3_task_id", "kling_o3_trim_start", "kling_o3_trim_back",
     "kling_o3_actual_duration_s", "kling_o3_completed_at",
     "reference_image", "bg_ref_image", "reference_image_locked",
@@ -2697,8 +2698,14 @@ def _new_group_id() -> str:
 
 
 def normalize_still_insert_approval_status(beat: dict) -> bool:
-    """Demote legacy still renders that were auto-marked approved on build."""
+    """Demote legacy still renders that were auto-marked approved on build.
+
+    Explicit operator approval via **Approve still for stitch** sets
+    ``kling_o3_still_stitch_approved`` — never demote those beats.
+    """
     if not beat_is_still_insert(beat):
+        return False
+    if beat.get("kling_o3_still_stitch_approved"):
         return False
     if str(beat.get("kling_o3_status") or "") != "approved":
         return False
@@ -3374,6 +3381,8 @@ def render_still_insert_o3_clip(
     # Build still ≠ stitch approve — explicit select-o3 / Approve still sets approved.
     beat["kling_o3_status"] = "still_rendered"
     beat["status"] = "draft"
+    beat.pop("kling_o3_still_stitch_approved", None)
+    beat.pop("kling_o3_still_stitch_approved_at", None)
     beat["kling_o3_selected_option_key"] = opt_key
     beat["kling_o3_selected_at"] = now
     if had_sidecar_trim:

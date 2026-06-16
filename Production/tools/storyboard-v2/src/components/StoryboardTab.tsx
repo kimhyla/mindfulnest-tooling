@@ -2636,7 +2636,7 @@ function FadeDivider({
       // Scope keys: event_id (legacy alias for scope_event_id per scope_router.py:129) +
       //             scope_video_role / scope_target_video (LD-461 canonical pair).
       // Rule 32: absolute URL required (file:// launch context).
-      await fetch(`http://localhost:5111/api/v2/beat/${encodeURIComponent(beatId)}/patch`, {
+      await fetch(`${SERVER_BASE}/api/v2/beat/${encodeURIComponent(beatId)}/patch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

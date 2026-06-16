@@ -1,7 +1,14 @@
-// API endpoint catalog. Rule 32 — absolute http://localhost:5111 URLs only;
-// never relative paths. Every fetch in this app routes through one of these.
+// API endpoint catalog. Rule 32 — absolute URLs on the serving origin so one
+// bundle works on :5111, :5112, etc. (dual-event server workflow).
 
-export const SERVER_BASE = 'http://localhost:5111';
+function resolveServerBase(): string {
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    return window.location.origin;
+  }
+  return 'http://localhost:5111';
+}
+
+export const SERVER_BASE = resolveServerBase();
 
 // READ endpoints (Session 1 uses these for the placeholder render).
 // Note: v2_event_state is intentionally a template; the server expects

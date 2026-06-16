@@ -72,7 +72,7 @@ STITCH_SFX_CUE_DEFAULT_FADEIN_MS = 300
 STITCH_SFX_CUE_DEFAULT_FADEOUT_MS = 1200
 # Bust pre-2026-06-13 mix cache: stereo ambient bed + mono speech made amix drop SFX lanes;
 # afade after adelay also silenced cues in the 3-way mix — fade must run before delay.
-STITCH_WAVEFORM_MIX_MONO_V1 = "mono_v2"
+STITCH_WAVEFORM_MIX_MONO_V1 = "mono_v3"
 # Canonical ambient bed preset_id per stitch slot (filename stem under sound_library/ambient/).
 STITCH_DEFAULT_AMBIENT_BEDS: dict[str, str] = {
     "intro": "Intro video ambient bed",
@@ -745,7 +745,8 @@ def _mix_stitch_waveform_audio(
 
     n_mix = len(mix_inputs)
     filter_lanes.append(
-        f"{''.join(mix_inputs)}amix=inputs={n_mix}:duration=first:normalize=0[aout]"
+        f"{''.join(mix_inputs)}amix=inputs={n_mix}:duration=longest:normalize=0,"
+        f"apad=whole_dur={slot_dur_s:.3f},atrim=duration={slot_dur_s:.3f}[aout]"
     )
     filter_complex = ";".join(filter_lanes)
     mix_cmd = [

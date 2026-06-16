@@ -327,3 +327,20 @@ def test_normalize_still_insert_approval_status_demotes_legacy_auto_approve():
     assert bg.normalize_still_insert_approval_status(beat) is True
     assert beat["kling_o3_status"] == "still_rendered"
     assert beat["status"] == "draft"
+
+
+def test_normalize_still_insert_preserves_explicit_stitch_approve():
+    beat = {
+        "pipeline": "still_insert",
+        "kling_o3_status": "approved",
+        "status": "approved",
+        "kling_o3_still_stitch_approved": True,
+        "kling_o3_video_path": "/tmp/bg_arc1_event2_pre_beat_01_still_insert_123_tts.mp4",
+        "kling_o3_options": [{
+            "source": "still_insert_ken_burns",
+            "video_path": "/tmp/bg_arc1_event2_pre_beat_01_still_insert_123_tts.mp4",
+        }],
+    }
+    assert bg.normalize_still_insert_approval_status(beat) is False
+    assert beat["kling_o3_status"] == "approved"
+    assert beat["status"] == "approved"

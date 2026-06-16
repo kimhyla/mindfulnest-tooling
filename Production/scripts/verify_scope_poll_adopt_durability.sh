@@ -4,8 +4,8 @@
 # Incident 2026-06-15: ServerRehydrateWatcher syncScopeFromProbe called loadEvent
 # on every poll when client/server event_id differed. Two tabs (Event_1 + Event_2)
 # ping-ponged event/load → scope_mismatch + Failed to fetch on O3 clip select.
-# Fix: polls adopt server pin when tab has no URL/explicit override; authorized tabs
-# heal server via healServerScopeIfAuthorized instead of flipping client scope.
+# Fix: polls adopt server pin when tab has no URL/explicit override; never event/load
+# from poll when URL/explicit pin overrides server (SCOPE_POLL_NO_HEAL_V2 — two-tab ping-pong).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,8 +33,10 @@ grep -q 'clientMayPinServerTo' "$AUTHORITY" \
   || fail "clientMayPinServerTo missing"
 grep -q 'clientMayPinServerTo(scope.event_id)' "$CLIENT" \
   || fail "healServerScopeIfAuthorized must gate loadEvent on clientMayPinServerTo"
-grep -q 'healServerScopeIfAuthorized' "$REHYDRATE" \
-  || fail "syncScopeFromProbe must heal server when URL/explicit pin overrides stale server"
+grep -q 'SCOPE_POLL_NO_HEAL_V2' "$REHYDRATE" \
+  || fail "SCOPE_POLL_NO_HEAL_V2 marker missing in serverRehydrate.ts"
+! grep -q 'healServerScopeIfAuthorized' "$REHYDRATE" \
+  || fail "syncScopeFromProbe must not heal from poll (ping-pong regression)"
 grep -q 'clientScopeOverridesServerPin' "$REHYDRATE" \
   || fail "syncScopeFromProbe must skip adopt when URL/explicit pin overrides server"
 grep -q 'clientScopeOverridesServerPin' "$AUTHORITY" \

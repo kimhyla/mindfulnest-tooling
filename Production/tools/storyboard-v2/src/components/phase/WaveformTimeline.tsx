@@ -382,15 +382,24 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     ws.on('audioprocess', () => {
       if (stopPlaybackIfHiddenPane()) return;
       const lv = linkedVideo?.current;
-      if (!lv) return;
-      const drift = Math.abs(lv.currentTime - ws.getCurrentTime());
-      if (!lv.paused && drift > 0.3) {
+      if (!lv || !ws.isPlaying()) return;
+      const t = ws.getCurrentTime();
+      // Recover stalled/ended linked video while WaveSurfer still plays (PLAY-6: only
+      // when ws.isPlaying() — user ⏸ Pause stops ws first, so no restart loop).
+      if (lv.paused || lv.ended) {
         suppressLinkedVideoEvents(() => {
-          lv.currentTime = ws.getCurrentTime();
+          lv.currentTime = t;
+          lv.muted = true;
+          lv.play().catch(() => {});
+        });
+        return;
+      }
+      const drift = Math.abs(lv.currentTime - t);
+      if (drift > 0.3) {
+        suppressLinkedVideoEvents(() => {
+          lv.currentTime = t;
         });
       }
-      // Do NOT lv_play() here — ws 'play' handler owns start; audioprocess restart
-      // fought ▶/⏸ Pause (video play → StitcherTab onVideoPlay → ws.play() loop).
     });
 
     ws.load(audioSrc).catch((err: unknown) => {
@@ -851,6 +860,9 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
           lv.currentTime = clamped / 1000;
         } catch {
           // ignore seek on unloaded media
+        }
+        if (ws.isPlaying()) {
+          lv.play().catch(() => {});
         }
       });
     }

@@ -36,3 +36,5 @@ def test_stitcher_client_falls_back_on_video_error() -> None:
     assert "onComposerVideoError" in src
     assert "onError={onComposerVideoError}" in src
     assert "clearCachedStitcherPreview" in src
+    assert 'key={`composer-${viewerSlot}`}' in src
+    assert "preload=\"auto\"" in src

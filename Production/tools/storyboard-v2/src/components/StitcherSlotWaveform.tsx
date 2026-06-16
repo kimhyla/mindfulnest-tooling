@@ -116,7 +116,7 @@ export function StitcherSlotWaveform({
         if (
           videoDur > 0
           && extractDur > 0
-          && Math.abs(videoDur - extractDur) > 2000
+          && Math.abs(videoDur - extractDur) > Math.max(4000, videoDur * 0.03)
         ) {
           setAudioSrc(null);
           setExtractDurMs(null);

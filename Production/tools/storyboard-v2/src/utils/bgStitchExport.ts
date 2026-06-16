@@ -55,9 +55,23 @@ export function stitchExportBlockTooltip(
     return 'Every beat needs an approved Kling clip or a magic-on-still composite before sending to Stitcher';
   }
   const list = blockers.map((x) => `${x.short}: ${x.label}`).join(' · ');
-  return (
-    `Can't send yet — ${list}. `
-    + 'Magic-on-still beats count as ready once the composite renders (no Approve button). '
-    + 'Kling beats need you to click Approve after reviewing the clip.'
-  );
+  const stillBlockers = blockers.filter((x) => x.label === 'Approve still clip');
+  const klingBlockers = blockers.filter((x) => x.label === 'Approve Kling clip');
+  const hints: string[] = [];
+  if (stillBlockers.length) {
+    hints.push(
+      `Still-insert beats (${stillBlockers.map((x) => x.short).join(', ')}): open the beat, `
+      + 'play the still clip in the option tile, then click **Approve still for stitch** under the video',
+    );
+  }
+  if (klingBlockers.length) {
+    hints.push(
+      `Kling beats (${klingBlockers.map((x) => x.short).join(', ')}): select the clip tile to approve`,
+    );
+  }
+  if (blockers.some((x) => x.label === 'Submit Kling or add magic on still')) {
+    hints.push('Missing clips: generate O3 voice or build a still video first');
+  }
+  const hintText = hints.length ? ` ${hints.join('. ')}.` : '';
+  return `Can't send yet — ${list}.${hintText}`;
 }
