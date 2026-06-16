@@ -1240,13 +1240,18 @@ class StateManager:
             self.file_lock_path.touch()
 
     @staticmethod
-    def _atomic_write_json(path: Path, obj: dict) -> None:
+    def _atomic_write_json(path: Path, obj: dict, *, prod_root: Path | None = None) -> None:
         """Write JSON atomically via the shared Production/lib/atomic_json_write helper.
         Prevents truncated-JSON windows where a concurrent reader sees a partially-
         written file (Tier 3 C2 CRITICAL fix, April 16 2026), AND adds Windows/Dropbox
         PermissionError retry (LD-368 WINDOWS_DROPBOX_ATOMIC_RENAME_RETRY_V1) since
         the project folder is Dropbox-synced on Kim's Windows workstation."""
         atomic_json_write(str(path), obj)
+        try:
+            from lib.production_snapshot import notify_state_write
+            notify_state_write(path, prod_root=prod_root or path.parent.parent)
+        except Exception:
+            pass
 
     def _acquire_file_lock(self, timeout: float = 10.0):
         """Acquire inter-process exclusive lock. Cross-platform: fcntl on Unix, msvcrt on Windows.
@@ -1753,6 +1758,11 @@ class StitchEditorState:
     @staticmethod
     def _atomic_write_json(path: Path, obj: dict) -> None:
         atomic_json_write(str(path), obj)
+        try:
+            from lib.production_snapshot import notify_state_write
+            notify_state_write(path, prod_root=path.parent.parent)
+        except Exception:
+            pass
 
     def _acquire_lock(self, timeout: float = 10.0):
         fd = os.open(str(self.file_lock_path), os.O_RDWR)

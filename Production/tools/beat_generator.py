@@ -477,6 +477,11 @@ def write_sidecar(data):
                     json.dump(data, f, indent=2)
                     tmp = f.name
                 os.replace(tmp, path)
+                try:
+                    from lib.production_snapshot import notify_state_write
+                    notify_state_write(path)
+                except Exception:
+                    pass
                 return
             except OSError as exc:
                 last_err = exc
