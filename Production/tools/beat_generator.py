@@ -3110,6 +3110,37 @@ def run_magic_compositor(beat, background_path, path_pts, style, duration, fps=2
     return {"video_path": video_path, "preview_path": preview_path}
 
 
+def _ken_burns_zoompan_vf(
+    *,
+    pan_x_pct: float,
+    pan_y_pct: float,
+    zoom_start: float,
+    zoom_end: float,
+    total_frames: int,
+    out_w: int = 1280,
+    out_h: int = 720,
+    fps: int = 24,
+) -> str:
+    """2× prescale + focal zoompan — avoids sub-pixel jitter at 720p/1080p."""
+    prescale_w = out_w * 2
+    prescale_h = out_h * 2
+    frame_den = max(1, total_frames - 1)
+    zoom_expr = (
+        f"{zoom_start:.6f}"
+        f"+({zoom_end:.6f}-{zoom_start:.6f})*on/{frame_den}"
+    )
+    focal_x = max(0.0, min(1.0, pan_x_pct / 100.0))
+    focal_y = max(0.0, min(1.0, pan_y_pct / 100.0))
+    x_expr = f"iw*{focal_x:.4f}-(iw/zoom/2)"
+    y_expr = f"ih*{focal_y:.4f}-(ih/zoom/2)"
+    return (
+        f"scale={prescale_w}:{prescale_h}:force_original_aspect_ratio=increase,"
+        f"crop={prescale_w}:{prescale_h},"
+        f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}':"
+        f"d={total_frames}:s={out_w}x{out_h}:fps={fps}"
+    )
+
+
 def run_ken_burns(
     beat,
     still_path,
@@ -3126,11 +3157,14 @@ def run_ken_burns(
     out_dir.mkdir(parents=True, exist_ok=True)
     ts = int(time.time())
     video_path = str(out_path) if out_path else str(out_dir / f"{beat['beat_id']}_kenburns_{ts}.mp4")
-    total_frames = int(duration * fps)
-    zoompan = (
-        f"zoompan=z='{zoom_start}+({zoom_end}-{zoom_start})*on/{total_frames}'"
-        f":x='iw*{pan_x_pct/100.0}':y='ih*{pan_y_pct/100.0}'"
-        f":d={total_frames}:s=1280x720:fps={fps}"
+    total_frames = max(1, int(duration * fps))
+    zoompan = _ken_burns_zoompan_vf(
+        pan_x_pct=pan_x_pct,
+        pan_y_pct=pan_y_pct,
+        zoom_start=zoom_start,
+        zoom_end=zoom_end,
+        total_frames=total_frames,
+        fps=fps,
     )
     cmd = [
         "ffmpeg", "-y",
@@ -3497,7 +3531,7 @@ def render_still_insert_o3_clip(
         run_static_hold(beat, str(still), duration, out_path=silent_path)
     else:
         run_ken_burns(
-            beat, str(still), 20, 20, 1.0, 1.15, duration, out_path=silent_path,
+            beat, str(still), 50, 50, 1.0, 1.08, duration, out_path=silent_path,
         )
     final_path = silent_path.resolve()
     tts_mixed = False
@@ -8017,6 +8051,8 @@ def assign_kling_o3_option_to_slot(
             opt["active"] = str(opt.get("video_path") or "") == video_path
         beat["kling_o3_video_path"] = video_path
         beat["kling_o3_selected_option_key"] = key
+        if gen is not None:
+            beat["kling_o3_generation"] = max(int(beat.get("kling_o3_generation") or 0), gen)
     beat["kling_o3_options"] = options
     refresh_o3_ui_slot_layout(beat)
     return key
@@ -8052,7 +8088,9 @@ def persist_o3_delivery_option_checkpoint(
             beat["kling_o3_generation"] = max(int(beat.get("kling_o3_generation") or 0), generation)
 
     ok, _ = update_beat_locked(beat_id, apply, expected_attempt_id=attempt_id)
-    return bool(ok)
+    if not ok:
+        raise RuntimeError(f"sidecar checkpoint persist failed for {beat_id}")
+    return True
 
 
 def _delivery_path_from_o3_job_log(log_path: str | Path | None) -> str | None:
@@ -8186,6 +8224,9 @@ def recover_orphan_o3_delivery(
         beat.pop("kling_o3_voice_fix_error_code", None)
         beat.pop("kling_o3_voice_fix_ui_job_id", None)
         beat.pop("kling_o3_voice_fix_job_pid", None)
+        job_attempt = (os.environ.get("MN_O3_ATTEMPT_ID") or "").strip()
+        if job_attempt:
+            beat["kling_o3_voice_fix_attempt_id"] = job_attempt
         if binding:
             beat["o3_element_quality"] = {
                 "speaker": speaker,

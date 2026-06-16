@@ -100,6 +100,63 @@ def test_write_sidecar_retries_errno11(monkeypatch, tmp_path: Path) -> None:
     assert calls["n"] == 2
 
 
+def test_persist_o3_delivery_option_checkpoint_raises_on_attempt_race(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    sidecar_path = tmp_path / "beat_generator_state.json"
+    sidecar_path.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "arcs": {
+                "arc_1": {
+                    "segments": {
+                        "event_2_pre": {
+                            "beats": [{
+                                "beat_id": "bg_arc1_event2_pre_beat_27",
+                                "speaker": "Lorelai",
+                                "kling_o3_voice_fix_attempt_id": "other-attempt",
+                                "kling_o3_options": [None, None, None],
+                            }],
+                        },
+                    },
+                },
+            },
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(bg, "BG_SIDECAR_PATH", str(sidecar_path))
+    delivery = tmp_path / "clip_delivery.mp4"
+    delivery.write_bytes(b"mp4")
+    with pytest.raises(RuntimeError, match="checkpoint persist failed"):
+        bg.persist_o3_delivery_option_checkpoint(
+            "bg_arc1_event2_pre_beat_27",
+            video_path=str(delivery),
+            slot_index=0,
+            label="g10 O3 Element voice",
+            o3_voice_binding={"element_id": "e1", "kling_voice_id": "v1"},
+            attempt_id="expected-attempt",
+            generation=10,
+        )
+
+
+def test_assign_kling_o3_option_syncs_top_level_generation() -> None:
+    beat = {
+        "beat_id": "bg_arc1_event2_pre_beat_03",
+        "kling_o3_generation": 7,
+        "kling_o3_options": [],
+    }
+    bg.assign_kling_o3_option_to_slot(
+        beat,
+        0,
+        video_path="/clips/bg_arc1_event2_pre_beat_03_g8_element_o3_master_delivery.mp4",
+        label="g8 O3 Element voice",
+        source="kling_o3_element_native_voice",
+        now="2026-06-16T00:00:00+00:00",
+        make_active=True,
+    )
+    assert beat["kling_o3_generation"] == 8
+
+
 def test_recover_orphan_o3_delivery_from_log(tmp_path: Path, monkeypatch) -> None:
     event_dir = tmp_path / "Event_2"
     clips = event_dir / "kling_o3_clips"

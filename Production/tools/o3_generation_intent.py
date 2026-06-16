@@ -357,12 +357,24 @@ def build_generation_intent(
             http_status=409,
         )
 
-    from tools.kling_voice_bind import detect_voice_bind_drift
+    from tools.kling_voice_bind import (
+        advance_o3_element_quality_for_proven_registry,
+        detect_voice_bind_drift,
+    )
+
+    reg_eid = str(element_entry.get("element_id") or "")
+    reg_vid = str(reg.get_bound_voice_id(speaker) or element_entry.get("voice_id") or "")
+    advance_o3_element_quality_for_proven_registry(
+        work_beat,
+        speaker,
+        registry_element_id=reg_eid,
+        registry_voice_id=reg_vid,
+    )
 
     drift_msg = detect_voice_bind_drift(
         work_beat,
         speaker,
-        reg.get_bound_voice_id(speaker),
+        reg_vid,
     )
     if drift_msg and not body.get("accept_voice_drift"):
         raise IntentCommitError(

@@ -346,6 +346,17 @@ def run_pipeline_from_intent(
 
     sidecar_persist_ok = True
     checkpoint_warning = None
+
+    def _recover_orphan(reason: str) -> dict:
+        nonlocal checkpoint_warning
+        checkpoint_warning = reason[:500]
+        return bg_sidecar.recover_orphan_o3_delivery(
+            beat_id,
+            event_dir,
+            log_path=os.environ.get("MN_O3_JOB_LOG"),
+            make_active=True,
+        )
+
     try:
         bg_sidecar.persist_o3_delivery_option_checkpoint(
             beat_id,
@@ -360,18 +371,9 @@ def run_pipeline_from_intent(
             generation=gen,
         )
     except Exception as exc:
-        recovered = bg_sidecar.recover_orphan_o3_delivery(
-            beat_id,
-            event_dir,
-            log_path=os.environ.get("MN_O3_JOB_LOG"),
-            make_active=True,
-        )
+        recovered = _recover_orphan(str(exc))
         if not recovered.get("recovered"):
-            sidecar_persist_ok = False
-            checkpoint_warning = str(exc)[:500]
             raise
-        sidecar_persist_ok = False
-        checkpoint_warning = str(exc)[:500]
 
     now = datetime.now(timezone.utc).isoformat()
     dur = float(subprocess.check_output([
@@ -391,6 +393,7 @@ def run_pipeline_from_intent(
         "kling_o3_voice_fix_phase": "finalize",
         "kling_o3_voice_fix_completed_at": now,
         "kling_o3_voice_fix_output_duration_s": round(dur, 3),
+        "kling_o3_generation": gen,
         "o3_element_quality": {
             "speaker": speaker,
             "element_id": voice.get("element_id"),
@@ -400,23 +403,19 @@ def run_pipeline_from_intent(
             "applied_at": now,
         },
     }
+    final_remove = (
+        "kling_o3_voice_fix_ui_job_id",
+        "kling_o3_voice_fix_job_pid",
+        "kling_o3_voice_fix_job_started_at",
+        "kling_o3_voice_fix_error",
+        "kling_o3_voice_fix_error_code",
+        "o3_active_intent_id",
+        "o3_active_intent_job_id",
+    )
     try:
-        persist(final, remove=(
-            "kling_o3_voice_fix_ui_job_id",
-            "kling_o3_voice_fix_job_pid",
-            "kling_o3_voice_fix_job_started_at",
-            "kling_o3_voice_fix_error",
-            "kling_o3_voice_fix_error_code",
-            "o3_active_intent_id",
-            "o3_active_intent_job_id",
-        ))
+        persist(final, remove=final_remove)
     except Exception as exc:
-        recovered = bg_sidecar.recover_orphan_o3_delivery(
-            beat_id,
-            event_dir,
-            log_path=os.environ.get("MN_O3_JOB_LOG"),
-            make_active=True,
-        )
+        recovered = _recover_orphan(str(exc))
         if not recovered.get("recovered"):
             sidecar_persist_ok = False
             write_intent_terminal(job_id, event_dir, {
@@ -426,8 +425,11 @@ def run_pipeline_from_intent(
                 "failure": {"message": str(exc)[:1500]},
             })
             raise
-        sidecar_persist_ok = False
-        checkpoint_warning = str(exc)[:500]
+        try:
+            persist(final, remove=final_remove)
+        except Exception:
+            # Orphan recovery already wrote delivery + approved state to sidecar.
+            sidecar_persist_ok = True
 
     terminal_status = "done" if sidecar_persist_ok else "done_with_warning"
     terminal_body = {

@@ -4,6 +4,7 @@ from __future__ import annotations
 import beat_generator as bg
 from kling_o3_prompt import validate_element_list_alignment
 from kling_voice_bind import (
+    advance_o3_element_quality_for_proven_registry,
     detect_voice_bind_drift,
     reconcile_o3_element_quality_for_submit,
 )
@@ -64,6 +65,38 @@ def test_stack_pin_does_not_skip_registry_alignment(monkeypatch) -> None:
         beat=beat,
     )
     assert any("element_name must be" in e for e in errors)
+
+
+def test_proven_registry_migration_skips_voice_bind_drift(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tools.kling_character_registry.get_character_entry",
+        lambda _s: {
+            "proven_o3_bind": {
+                "element_id": "313441038164306",
+                "kling_voice_id": "895210468825628751",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.resolve_proven_o3_bind",
+        lambda entry: (entry or {}).get("proven_o3_bind"),
+    )
+    beat = {
+        "speaker": "Lorelai",
+        "o3_element_quality": {
+            "speaker": "Lorelai",
+            "element_id": "313390553209506",
+            "kling_voice_id": "895024801360777292",
+        },
+    }
+    changed = advance_o3_element_quality_for_proven_registry(
+        beat,
+        "Lorelai",
+        registry_element_id="313441038164306",
+        registry_voice_id="895210468825628751",
+    )
+    assert changed is True
+    assert detect_voice_bind_drift(beat, "Lorelai", "895210468825628751") is None
 
 
 def test_reconcile_o3_element_quality_from_active_option_binding() -> None:

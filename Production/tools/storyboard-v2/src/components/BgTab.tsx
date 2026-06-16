@@ -39,6 +39,18 @@ import {
   allBeatsStitchExportReady,
   stitchExportBlockTooltip,
 } from '../utils/bgStitchExport';
+import {
+  applyPromptEditsToBeats,
+  stripProtectedPromptFromPatch,
+} from '../state/promptEditRegistry';
+import { useProtectedPromptField } from '../hooks/useProtectedPromptField';
+import { collectActiveO3JobsFromBeats } from '../o3JobStatusContract';
+import type {
+  ArloO3PollResponse,
+  ArloO3SubmitResponse,
+  O3GenerationIntentPoll,
+  O3SubmitAudit,
+} from '../o3GenerationIntent';
 
 const BEAT_MISSING_TOAST_MS = 12000;
 
@@ -126,7 +138,16 @@ type BgModalState =
   | { kind: 'accept-all-confirm'; readyCount: number }
   | { kind: 'extract-overwrite-confirm'; beatCount: number }
   | { kind: 'edit-chip'; beatId: string; oldChipText: string; draftText: string }
-  | { kind: 'remove-ref'; beatId: string; refField: 'reference_image' | 'bg_ref_image'; label: string };
+  | { kind: 'remove-ref'; beatId: string; refField: 'reference_image' | 'bg_ref_image'; label: string }
+  | {
+      kind: 'voice-drift-confirm';
+      beatId: string;
+      promptToSave: string;
+      replaceSlotIndex: number;
+      referenceImage: BgBeat['reference_image'];
+      bgRefImage: BgBeat['bg_ref_image'];
+      message: string;
+    };
 
 // ----------------------------------------------------------------
 // Types — derived from server handler shapes (production_server.py:8627+)
@@ -296,20 +317,13 @@ const POLL_INTERVAL_MS = 10000; // 10s per Cursor v8 Q6 — GPT batch jobs
 const O3_POLL_INTERVAL_MS = 3000; // O3: faster terminal detection; poll payload carries beat snapshot
 
 function mergeBeatFromO3Poll(beats: BgBeat[], patch: BgBeat): BgBeat[] {
-  const idx = beats.findIndex((b) => b.beat_id === patch.beat_id);
+  const safePatch = stripProtectedPromptFromPatch(patch);
+  const idx = beats.findIndex((b) => b.beat_id === safePatch.beat_id);
   if (idx < 0) return beats;
   const next = [...beats];
-  next[idx] = { ...beats[idx], ...patch };
+  next[idx] = { ...beats[idx], ...safePatch };
   return next;
 }
-
-import { collectActiveO3JobsFromBeats } from '../o3JobStatusContract';
-import type {
-  ArloO3PollResponse,
-  ArloO3SubmitResponse,
-  O3GenerationIntentPoll,
-  O3SubmitAudit,
-} from '../o3GenerationIntent';
 
 function isNetworkPollBlip(res: { ok: boolean; status: number; error?: string }): boolean {
   return !res.ok
@@ -604,7 +618,7 @@ export function BgTab() {
         } else if (segs.length > 0) {
           setActiveSegment(`${segs[0].event_id}|${segs[0].phase}`);
         }
-        const initialBeats = stateRes.data?.beats ?? [];
+        const initialBeats = applyPromptEditsToBeats(stateRes.data?.beats ?? []);
         setBeats(initialBeats);
         setActiveJobId((prev) => prev ?? collectActiveStillJobFromBeats(initialBeats));
         // Server sidecar is the source of truth. Do not merge old local active
@@ -725,8 +739,8 @@ export function BgTab() {
               ?? 'Delivery recovered with sidecar warning — verify clip in kling_o3_clips folder.';
             setO3WarningByBeat((prev) => ({ ...prev, [beatId]: warnMsg }));
             pushToast({
-              kind: 'info',
-              message: `${beatId}: O3 done with warning — ${warnMsg}`,
+              kind: 'success',
+              message: `${beatId}: O3 voice video ready (recovered after Dropbox sync blip)`,
               source: 'bg-o3-warning',
             });
             return;
@@ -873,7 +887,7 @@ export function BgTab() {
       scope_video_role: activeTargetVideo.value,
     });
     if (stateRes.ok && stateRes.data) {
-      const nextBeats = stateRes.data.beats ?? [];
+      const nextBeats = applyPromptEditsToBeats(stateRes.data.beats ?? []);
       setBeats(nextBeats);
       const liveIds = new Set(nextBeats.map((b) => b.beat_id));
       beatSaveBlockedRef.current.forEach((id) => {
@@ -1136,7 +1150,7 @@ export function BgTab() {
         { fetchTimeoutMs: 600_000 },
       );
       if (result.ok && result.data) {
-        setBeats(result.data.beats ?? []);
+        setBeats(applyPromptEditsToBeats(result.data.beats ?? []));
         setBeatPlanOpen(false);
         pushToast({
           kind: 'success',
@@ -1586,6 +1600,85 @@ export function BgTab() {
     }
   };
 
+  const handleO3SubmitResult = async (
+    beatId: string,
+    beat: BgBeat,
+    result: Awaited<ReturnType<typeof pathappPatch<ArloO3SubmitResponse>>>,
+  ): Promise<boolean> => {
+    if (result.ok && result.data?.job_id) {
+      setActiveO3Jobs((prev) => ({ ...prev, [beatId]: result.data!.job_id! }));
+      if (result.data.intent) {
+        setO3IntentByBeat((prev) => ({ ...prev, [beatId]: result.data!.intent! }));
+      }
+      if (result.data.submitted) {
+        setO3SubmitAuditByBeat((prev) => ({ ...prev, [beatId]: result.data!.submitted! }));
+      }
+      const slot = result.data.generation_slot ?? result.data.submitted?.generation_slot;
+      pushToast({
+        kind: 'info',
+        message: result.data.deduped
+          ? 'This beat already has an O3 voice job running; reattached to the existing job.'
+          : `Submitted ${beat.speaker} O3 intent${slot ? ` (${slot})` : ''} — prompt locked until job finishes`,
+        source: 'bg-o3-submit',
+      });
+      return true;
+    }
+    if (result.error_code === 'VOICE_BIND_DRIFT' && result.retry_safe !== false) {
+      setModalState({
+        kind: 'voice-drift-confirm',
+        beatId,
+        promptToSave: (beat.kling_o3_prompt ?? '').trim(),
+        replaceSlotIndex: beat.kling_o3_replace_slot_index ?? 0,
+        referenceImage: beat.reference_image ?? null,
+        bgRefImage: beat.bg_ref_image ?? null,
+        message: result.error ?? result.error_message ?? 'Registry voice differs from this beat\'s last approved bind.',
+      });
+      return false;
+    }
+    return guardBeatPatchResult(
+      beatId,
+      result,
+      `O3 submit failed: ${result.error}`,
+      'bg-o3-submit-error',
+    );
+  };
+
+  const submitO3Voice = async (
+    beatId: string,
+    beat: BgBeat,
+    promptToSave: string,
+    acceptVoiceDrift = false,
+  ): Promise<boolean> => {
+    const result = await pathappPatch<ArloO3SubmitResponse>(
+      activeScope.value, 'bg_submit_arlo_o3_voice', {
+        beat_id: beatId,
+        kling_o3_prompt: promptToSave,
+        model: 'pro',
+        replace_slot_index: beat.kling_o3_replace_slot_index ?? 0,
+        reference_image: beat.reference_image ?? null,
+        bg_ref_image: beat.bg_ref_image ?? null,
+        ...(acceptVoiceDrift ? { accept_voice_drift: true } : {}),
+      },
+    );
+    return handleO3SubmitResult(beatId, beat, result);
+  };
+
+  const confirmVoiceDriftSubmit = async () => {
+    if (modalState.kind !== 'voice-drift-confirm') return;
+    const { beatId, promptToSave, replaceSlotIndex, referenceImage, bgRefImage } = modalState;
+    closeModal();
+    const beat = beats.find((b) => b.beat_id === beatId);
+    if (!beat) return;
+    const workBeat: BgBeat = {
+      ...beat,
+      kling_o3_prompt: promptToSave,
+      kling_o3_replace_slot_index: replaceSlotIndex,
+      reference_image: referenceImage ?? null,
+      bg_ref_image: bgRefImage ?? null,
+    };
+    await submitO3Voice(beatId, workBeat, promptToSave, true);
+  };
+
   const onGenerateBatch = async (beatId: string, dialogueText?: string) => {
     const beat = beats.find((b) => b.beat_id === beatId);
     if (!beat) return;
@@ -1617,40 +1710,7 @@ export function BgTab() {
       }
       const saved = await onUpdateBeatText(beatId, promptToSave);
       if (!saved) return;
-      const result = await pathappPatch<ArloO3SubmitResponse>(
-        activeScope.value, 'bg_submit_arlo_o3_voice', {
-          beat_id: beatId,
-          kling_o3_prompt: promptToSave,
-          model: 'pro',
-          replace_slot_index: beat.kling_o3_replace_slot_index ?? 0,
-          reference_image: beat.reference_image ?? null,
-          bg_ref_image: beat.bg_ref_image ?? null,
-        },
-      );
-      if (result.ok && result.data?.job_id) {
-        setActiveO3Jobs((prev) => ({ ...prev, [beatId]: result.data!.job_id! }));
-        if (result.data.intent) {
-          setO3IntentByBeat((prev) => ({ ...prev, [beatId]: result.data!.intent! }));
-        }
-        if (result.data.submitted) {
-          setO3SubmitAuditByBeat((prev) => ({ ...prev, [beatId]: result.data!.submitted! }));
-        }
-        const slot = result.data.generation_slot ?? result.data.submitted?.generation_slot;
-        pushToast({
-          kind: result.data.deduped ? 'info' : 'info',
-          message: result.data.deduped
-            ? 'This beat already has an O3 voice job running; reattached to the existing job.'
-            : `Submitted ${beat.speaker} O3 intent${slot ? ` (${slot})` : ''} — prompt locked until job finishes`,
-          source: 'bg-o3-submit',
-        });
-      } else if (!(await guardBeatPatchResult(
-        beatId,
-        result,
-        `O3 submit failed: ${result.error}`,
-        'bg-o3-submit-error',
-      ))) {
-        return;
-      }
+      await submitO3Voice(beatId, beat, promptToSave);
       return;
     }
     if (activeJobId) {
@@ -2316,6 +2376,42 @@ export function BgTab() {
         </p>
       </Modal>
 
+      {/* Voice bind drift — registry voice_id changed since this beat was last approved */}
+      <Modal
+        id="bg-voice-drift-confirm"
+        title="Voice bind changed since last approval"
+        open={modalState.kind === 'voice-drift-confirm'}
+        onClose={closeModal}
+        footer={(
+          <>
+            <button type="button" class="mn-btn" data-testid="bg-voice-drift-cancel" onClick={closeModal}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="mn-btn mn-btn-primary"
+              data-testid="bg-voice-drift-confirm"
+              onClick={() => { void confirmVoiceDriftSubmit(); }}
+            >
+              Generate with current registry voice
+            </button>
+          </>
+        )}
+      >
+        {modalState.kind === 'voice-drift-confirm' ? (
+          <>
+            <p>
+              This beat was approved with an older Element voice bind. The character registry now
+              points at a different <code>kling_voice_id</code>, so a redo may sound different
+              (for Lorelai, the Beat 18 female stack is the current proven voice).
+            </p>
+            <p class="mn-muted" style={{ marginTop: '0.75rem' }}>
+              {modalState.message}
+            </p>
+          </>
+        ) : null}
+      </Modal>
+
       {/* BG-34 — Accept All warn Modal (lists unset beat_ids) */}
       <Modal
         id="bg-accept-all-warn"
@@ -2604,75 +2700,36 @@ function BeatGenCard({
   onEditChip, onInsertAfter, onRemoveRef, onAlignElementRef, onAddElementPose, onRefresh, onBeatMissing,
   onPatchOptionTile, onPatchRefImage,
 }: BeatGenCardProps) {
-  const [localText, setLocalText] = useState<string>(beatPromptText(beat));
-  const [chips, setChips] = useState<string[]>(extractStageChips(beatPromptText(beat)));
-  const promptDirtyRef = useRef(false);
-  const saveTimerRef = useRef<number | null>(null);
   const intentLockedPrompt = busy
     ? (o3IntentSnapshot?.prompt?.verbatim ?? o3SubmitAudit?.prompt_excerpt ?? null)
     : null;
-  const displayText = intentLockedPrompt ?? localText;
+  const externalPrompt = intentLockedPrompt ?? beatPromptText(beat);
+  const savePrompt = useCallback(
+    async (text: string) => {
+      const ok = await onUpdateText(text);
+      return ok !== false;
+    },
+    [onUpdateText],
+  );
+  const promptField = useProtectedPromptField({
+    fieldId: beat.beat_id,
+    externalText: externalPrompt,
+    onSave: savePrompt,
+    lockedExternal: !!intentLockedPrompt,
+  });
+  const [chips, setChips] = useState<string[]>(extractStageChips(beatPromptText(beat)));
 
-  useEffect(() => {
-    if (intentLockedPrompt) {
-      setLocalText(intentLockedPrompt);
-      setChips(extractStageChips(intentLockedPrompt));
-      return;
-    }
-    // Never clobber in-progress edits or a debounced save waiting to flush.
-    if (promptDirtyRef.current || saveTimerRef.current !== null) return;
-    const next = beatPromptText(beat);
-    setLocalText(next);
-    setChips(extractStageChips(next));
-  }, [beat.kling_o3_prompt, beat.dialogue_text, beat.beat_id, intentLockedPrompt]);
-
-  const flushPromptSave = useCallback(async (text: string): Promise<boolean> => {
-    if (saveTimerRef.current !== null) {
-      window.clearTimeout(saveTimerRef.current);
-      saveTimerRef.current = null;
-    }
-    if (text === beatPromptText(beat)) {
-      promptDirtyRef.current = false;
-      return true;
-    }
-    const ok = await onUpdateText(text);
-    if (ok !== false) promptDirtyRef.current = false;
-    return ok !== false;
-  }, [beat, onUpdateText]);
-
-  const schedulePromptSave = useCallback((text: string) => {
-    if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = window.setTimeout(() => {
-      saveTimerRef.current = null;
-      void flushPromptSave(text);
-    }, 350);
-  }, [flushPromptSave]);
-
-  const onTextInput = (e: Event) => {
-    if (intentLockedPrompt) return;
-    const t = (e.target as HTMLTextAreaElement).value;
-    promptDirtyRef.current = true;
-    setLocalText(t);
-    setChips(extractStageChips(t));
-    schedulePromptSave(t);
+  const onPromptInput = (e: Event) => {
+    promptField.onInput(e);
+    setChips(extractStageChips(promptField.getText()));
   };
-
-  const onTextBlur = () => {
-    void flushPromptSave(localText);
-  };
-
-  useEffect(() => () => {
-    if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
-  }, []);
 
   const onRemoveChip = (chipText: string) => {
-    // Remove the FIRST occurrence of the chip's parenthesized form from the
-    // dialogue text. setNext.
     const re = new RegExp(`\\s*\\(${chipText.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\)`);
-    const next = localText.replace(re, '');
-    setLocalText(next);
+    const next = promptField.getText().replace(re, '');
+    promptField.setText(next);
     setChips(extractStageChips(next));
-    onUpdateText(next);
+    void onUpdateText(next);
   };
 
   const optionsToShow: (GptOption | null)[] = (() => {
@@ -2803,18 +2860,30 @@ function BeatGenCard({
         </button>
       </div>
 
-      <textarea
-        class="mn-bg-beat-text mn-bg-kling-prompt-editor"
-        data-testid={`bg-beat-text-${index}`}
-        value={displayText}
-        readOnly={!!intentLockedPrompt}
-        onInput={onTextInput}
-        onBlur={onTextBlur}
-        rows={14}
-        spellcheck={true}
-        placeholder={intentLockedPrompt ? 'Generation in progress — prompt locked to submitted intent.' : undefined}
-        aria-label={`Kling O3 prompt for beat ${beat.beat_id}`}
-      />
+      {promptField.lockedValue !== null ? (
+        <textarea
+          class="mn-bg-beat-text mn-bg-kling-prompt-editor"
+          data-testid={`bg-beat-text-${index}`}
+          value={promptField.lockedValue}
+          readOnly
+          rows={14}
+          spellcheck={true}
+          placeholder="Generation in progress — prompt locked to submitted intent."
+          aria-label={`Kling O3 prompt for beat ${beat.beat_id}`}
+        />
+      ) : (
+        <textarea
+          ref={promptField.textareaRef}
+          class="mn-bg-beat-text mn-bg-kling-prompt-editor"
+          data-testid={`bg-beat-text-${index}`}
+          onFocus={promptField.onFocus}
+          onInput={onPromptInput}
+          onBlur={promptField.onBlur}
+          rows={14}
+          spellcheck={true}
+          aria-label={`Kling O3 prompt for beat ${beat.beat_id}`}
+        />
+      )}
       {o3SubmitAudit || o3IntentSnapshot ? (
         <div
           class="mn-bg-o3-intent-audit"
@@ -2962,9 +3031,9 @@ function BeatGenCard({
           class="mn-btn mn-btn-primary"
           data-testid={`bg-generate-btn-${index}`}
           onClick={async () => {
-            const saved = await flushPromptSave(localText);
+            const saved = await promptField.flushSave();
             if (!saved) return;
-            onGenerate(localText);
+            onGenerate(promptField.getText());
           }}
           disabled={busy || elementCharRefBlocked}
           title={elementCharRefBlocked ? elementCharRefInlineHint(beat.element_char_ref_error) : undefined}
@@ -3180,9 +3249,13 @@ function BgRefSlot({
           await onBeatMissing(beatId);
           return;
         }
+        const err = (result.error ?? `HTTP ${result.status}`).trim();
+        const networkDead = /failed to fetch|networkerror|load failed/i.test(err);
         pushToast({
           kind: 'error',
-          message: `${label} drop failed: ${result.error ?? `HTTP ${result.status}`}`,
+          message: networkDead
+            ? `${label} drop failed — no server on this port. Hard refresh http://localhost:5111/?event=${encodeURIComponent(activeScope.value.event_id)} and retry.`
+            : `${label} drop failed: ${err}`,
           source: 'bg-ref-drop-error',
         });
       } else if (refField === 'reference_image' && result.data?.element_ref_registered) {

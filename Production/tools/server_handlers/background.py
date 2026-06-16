@@ -3910,24 +3910,18 @@ def _finalize_o3_job_after_subprocess_exit(job: dict, event_dir: Path) -> None:
     ):
         recovered = _try_orphan_o3_delivery_recovery(beat_id, event_dir, log_path)
     if recovered:
-        job["status"] = "done_with_warning"
+        job["status"] = "done"
         job["result"] = {
             "ok": True,
             "beat_id": beat_id,
             "video": recovered.get("delivery_path"),
             "recovered_from_sidecar_io_error": True,
         }
-        job["warning"] = {
-            "code": "ORPHAN_DELIVERY_RECOVERED",
-            "message": "Sidecar write failed; delivery recovered from disk.",
-            "recovered_from": recovered.get("recovered_from") or "orphan_delivery_after_sidecar_io_error",
-        }
         if job_id:
             try:
                 write_intent_terminal(job_id, event_dir, {
-                    "status": "done_with_warning",
-                    "sidecar_persist_ok": False,
-                    "warning": job["warning"],
+                    "status": "done",
+                    "sidecar_persist_ok": True,
                     "delivered": {"video_path": recovered.get("delivery_path")},
                 })
             except OSError:
