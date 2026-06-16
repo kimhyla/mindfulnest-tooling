@@ -5805,7 +5805,7 @@ def _beat_dialogue_exceeds_kling_max_bucket(beat: dict, prompt: str | None = Non
 
 
 def heal_semi_canonical_arlo_voice_contract(beat: dict) -> bool:
-    """Fix semi-canonical transition beat: warm emotion, no upbeat, compact dialogue when overflow."""
+    """Fix semi-canonical transition beat emotion/dialogue — never rewrite stored prompt."""
     if beat.get("intro_beat_role") != INTRO_BEAT_ROLE_SEMI_CANONICAL:
         return False
     if str(beat.get("speaker") or "").strip() != "Arlo":
@@ -5820,36 +5820,6 @@ def heal_semi_canonical_arlo_voice_contract(beat: dict) -> bool:
     if _beat_dialogue_exceeds_kling_max_bucket(beat, prompt):
         if (beat.get("dialogue_text") or "").strip() != compact:
             beat["dialogue_text"] = compact
-            changed = True
-        try:
-            import kling_o3_prompt as o3p
-        except ImportError:
-            from tools import kling_o3_prompt as o3p  # type: ignore
-
-        locked = o3p.inject_locked_voice_line(
-            prompt,
-            "Arlo",
-            compact,
-            emotion=str(beat.get("emotion") or "warm"),
-        )
-        if locked != prompt:
-            beat["kling_o3_prompt"] = locked
-            changed = True
-    elif changed or "[upbeat]" in prompt.lower():
-        try:
-            import kling_o3_prompt as o3p
-        except ImportError:
-            from tools import kling_o3_prompt as o3p  # type: ignore
-
-        spoken = extract_spoken_dialogue_from_kling_prompt(prompt) or compact
-        locked = o3p.inject_locked_voice_line(
-            prompt,
-            "Arlo",
-            spoken,
-            emotion=str(beat.get("emotion") or "warm"),
-        )
-        if locked != prompt:
-            beat["kling_o3_prompt"] = locked
             changed = True
     return changed
 

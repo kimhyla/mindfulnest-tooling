@@ -693,23 +693,24 @@ def test_heal_semi_canonical_arlo_compacts_overflow_dialogue(monkeypatch):
         "stressed out. Let's see if the Great Wizard can teach you a Magic Spell for "
         "calming down, so she can help us figure it out!"
     )
+    original_prompt = (
+        "@Image1 (Arlo). Scene from @Image2.\n\n"
+        "Arlo speaks in a warm calm conversational pace, steady and natural, clear delivery, "
+        "brisk but not rushed, not bubbly or hyper, not slow, not dramatic, not childlike or "
+        f'baby-talk: [upbeat] "{long_line}"'
+    )
     beat = {
         "speaker": "Arlo",
         "intro_beat_role": "semi_canonical_transition_prompt",
         "emotion": "upbeat",
         "dialogue_text": long_line,
-        "kling_o3_prompt": (
-            "@Image1 (Arlo). Scene from @Image2.\n\n"
-            "Arlo speaks in a warm calm conversational pace, steady and natural, clear delivery, "
-            "brisk but not rushed, not bubbly or hyper, not slow, not dramatic, not childlike or "
-            f'baby-talk: [upbeat] "{long_line}"'
-        ),
+        "kling_o3_prompt": original_prompt,
     }
     assert bg.heal_semi_canonical_arlo_voice_contract(beat) is True
     assert beat["emotion"] == "warm"
     assert beat["dialogue_text"] == bg.ARLO_SEMI_CANONICAL_COMPACT_DIALOGUE
-    assert "[upbeat]" not in beat["kling_o3_prompt"].lower()
-    assert not bg._beat_dialogue_exceeds_kling_max_bucket(beat)
+    assert beat["kling_o3_prompt"] == original_prompt
+    assert "[upbeat]" in beat["kling_o3_prompt"].lower()
 
 
 def test_element_bound_voice_allows_display_name_parenthetical_before_speaks():

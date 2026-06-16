@@ -29,5 +29,8 @@ python3 -m pytest \
   Production/tools/tests/test_arlo_intro_canonical_hydrate.py \
   Production/tools/tests/test_intro_mirror_write_path_hydrate.py \
   Production/tools/tests/test_beat_plan_draft_autosave.py \
+  Production/tools/tests/test_o3_prompt_box_law.py \
+  Production/tools/tests/test_o3_verbatim_prompt_durability.py \
+  Production/tools/tests/test_o3_generation_intent_commit.py \
   -q
 echo "[o3-intro-contract] all gates passed"

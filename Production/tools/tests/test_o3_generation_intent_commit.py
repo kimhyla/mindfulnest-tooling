@@ -130,6 +130,7 @@ def test_commit_prompt_verbatim_no_morph(
             wavespeed_key="k",
         )
     assert intent["prompt"]["verbatim"] == prompt
+    assert intent["prompt"]["prepared_for_api"] == prompt
 
 
 @patch("tools.kling_character_registry.is_speaker_voice_ready", return_value=True)
