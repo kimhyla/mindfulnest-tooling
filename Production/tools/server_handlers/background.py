@@ -1667,6 +1667,14 @@ def handle_bg_session_state(h)-> None:
         sidecar = bg.read_sidecar()
         sidecar = bg._migrate_sidecar(sidecar)
         stuck_changed = reconcile_stuck_o3_voice_beats(sidecar)
+        intent_lock_changed = 0
+        prod_root = _data_root(h)
+        try:
+            from o3_generation_intent import reconcile_stale_o3_intent_locks_all_events
+
+            intent_lock_changed = reconcile_stale_o3_intent_locks_all_events(sidecar, prod_root)
+        except Exception as exc:
+            print(f"[BG] reconcile_stale_o3_intent_locks_all_events: {exc}", flush=True)
         event_dir = Path(getattr(h.app, "event_dir", "") or "")
         o3_reconcile_changed = 0
         if event_dir.is_dir():
@@ -1689,7 +1697,7 @@ def handle_bg_session_state(h)-> None:
                 o3_reconcile_changed = bg.reconcile_kling_o3_sidecar(sidecar, event_dir)
                 runtime["last_o3_disk_reconcile_at"] = datetime.now(timezone.utc).isoformat()
         classify_changed = bg.classify_all_sidecar_pipeline_fields(sidecar)
-        if stuck_changed or o3_reconcile_changed or classify_changed:
+        if stuck_changed or intent_lock_changed or o3_reconcile_changed or classify_changed:
             bg.write_sidecar(sidecar)
     ctx = sidecar.get("active_context")
 
@@ -4329,6 +4337,8 @@ _STUCK_O3_CLEAR_FIELDS = (
     "kling_o3_voice_fix_error_code",
     "kling_o3_voice_fix_phase",
     "kling_o3_voice_fix_job_completed_at",
+    "o3_active_intent_id",
+    "o3_active_intent_job_id",
 )
 
 

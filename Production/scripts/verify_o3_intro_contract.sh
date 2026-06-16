@@ -32,5 +32,6 @@ python3 -m pytest \
   Production/tools/tests/test_o3_prompt_box_law.py \
   Production/tools/tests/test_o3_verbatim_prompt_durability.py \
   Production/tools/tests/test_o3_generation_intent_commit.py \
+  Production/tools/tests/test_o3_stale_intent_reconcile.py \
   -q
 echo "[o3-intro-contract] all gates passed"

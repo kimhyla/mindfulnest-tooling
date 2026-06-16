@@ -123,8 +123,134 @@ def terminal_status_for_job(job_id: str, event_dir: Path) -> str | None:
     return str(terminal.get("status") or "").strip() or None
 
 
-def beat_has_active_intent(beat_id: str, event_dir: Path) -> bool:
-    return active_intent_path_for_beat(beat_id, event_dir) is not None
+def intent_event_dir_for_beat(beat_id: str, event_dir: Path | None = None) -> Path:
+    """Return ``Event_N`` for intent I/O — ``beat_id`` event number beats server scope."""
+    import beat_generator as bg
+
+    canonical = bg.event_dir_for_beat_id(beat_id)
+    if event_dir is None:
+        return canonical
+    scoped = Path(event_dir)
+    match = re.search(r"event(\d+)_", str(beat_id or ""), re.I)
+    if match and scoped.name == f"Event_{int(match.group(1))}":
+        return scoped
+    if match:
+        return canonical
+    return scoped if scoped.is_dir() else canonical
+
+
+def discover_event_dirs(prod_root: Path) -> list[Path]:
+    """All ``Event_*`` directories under Production (multi-event sidecar reconcile)."""
+    root = Path(prod_root)
+    if not root.is_dir():
+        return []
+    return sorted(
+        (p for p in root.glob("Event_*") if p.is_dir()),
+        key=lambda p: p.name,
+    )
+
+
+def _pipeline_done_from_log(log_path: Path) -> dict | None:
+    """Parse element pipeline ``phase: done`` line from subprocess log."""
+    if not log_path.is_file():
+        return None
+    for line in reversed(log_path.read_text(encoding="utf-8", errors="replace").splitlines()):
+        stripped = line.strip()
+        if not stripped.startswith("{"):
+            continue
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        if parsed.get("phase") == "done" and parsed.get("video"):
+            return parsed
+    return None
+
+
+def _clear_beat_intent_lock_fields(beat: dict) -> None:
+    beat.pop("o3_active_intent_id", None)
+    beat.pop("o3_active_intent_job_id", None)
+
+
+def beat_has_active_intent(beat_id: str, event_dir: Path | None = None) -> bool:
+    return active_intent_path_for_beat(
+        beat_id,
+        intent_event_dir_for_beat(beat_id, event_dir),
+    ) is not None
+
+
+def reconcile_stale_o3_intent_locks(sidecar: dict, event_dir: Path) -> int:
+    """Close intent files that outlived a dead subprocess so ref/prompt drops unlock."""
+    import beat_generator as bg
+
+    jobs_dir = _jobs_dir(event_dir)
+    if not jobs_dir.is_dir():
+        return 0
+    closed = 0
+    for intent_path in jobs_dir.glob("*_intent.json"):
+        job_id = intent_path.name.replace("_intent.json", "")
+        term_path = terminal_path_for_job(job_id, event_dir)
+        if term_path.is_file():
+            continue
+        try:
+            intent = load_generation_intent(intent_path)
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+        beat_id = str(intent.get("beat_id") or "").strip()
+        if not beat_id:
+            continue
+        _, beat = bg.find_beat(sidecar, beat_id)
+        if beat and bg.beat_o3_voice_job_running(beat):
+            continue
+        log_path = Path(str((intent.get("runtime") or {}).get("log_path") or ""))
+        if not log_path.is_file():
+            alt = jobs_dir / f"{job_id}_{beat_id}.log"
+            if alt.is_file():
+                log_path = alt
+        log_text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.is_file() else ""
+        done_row = _pipeline_done_from_log(log_path) if log_path.is_file() else None
+        if done_row:
+            video = str(done_row.get("video") or "")
+            if video and Path(video).is_file():
+                write_intent_terminal(job_id, event_dir, {
+                    "intent_id": intent.get("intent_id"),
+                    "status": "done",
+                    "phase_last": "reconcile_orphan_terminal",
+                    "sidecar_persist_ok": False,
+                    "delivered": {"video_path": video},
+                })
+                if beat:
+                    _clear_beat_intent_lock_fields(beat)
+                closed += 1
+                continue
+        if '"phase": "done"' in log_text:
+            continue
+        write_intent_terminal(job_id, event_dir, {
+            "intent_id": intent.get("intent_id"),
+            "status": "failed",
+            "phase_last": "reconcile_stale_lock",
+            "sidecar_persist_ok": False,
+            "failure": {
+                "message": (
+                    "O3 job ended without terminal record "
+                    "(subprocess lost or server restart)."
+                ),
+            },
+        })
+        if beat:
+            _clear_beat_intent_lock_fields(beat)
+        closed += 1
+    return closed
+
+
+def reconcile_stale_o3_intent_locks_all_events(sidecar: dict, prod_root: Path) -> int:
+    """Reconcile orphaned intent locks under every ``Event_*`` (global sidecar)."""
+    total = 0
+    for event_dir in discover_event_dirs(prod_root):
+        total += reconcile_stale_o3_intent_locks(sidecar, event_dir)
+    return total
 
 
 def active_intent_path_for_beat(beat_id: str, event_dir: Path) -> Path | None:
@@ -159,7 +285,7 @@ def active_intent_path_for_beat(beat_id: str, event_dir: Path) -> Path | None:
     return candidates[0][1]
 
 
-def assert_canonical_mutation_allowed(beat_id: str, event_dir: Path) -> None:
+def assert_canonical_mutation_allowed(beat_id: str, event_dir: Path | None = None) -> None:
     if beat_has_active_intent(beat_id, event_dir):
         raise IntentActiveError(
             f"beat {beat_id} has active generation intent — operator fields are locked"
