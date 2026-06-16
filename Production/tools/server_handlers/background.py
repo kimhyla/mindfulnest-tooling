@@ -1668,6 +1668,7 @@ def handle_bg_session_state(h)-> None:
         event_dir = Path(getattr(h.app, "event_dir", "") or "")
         if event_dir.is_dir():
             bg.reconcile_kling_o3_sidecar(sidecar, event_dir)
+        bg.classify_all_sidecar_pipeline_fields(sidecar)
         bg.write_sidecar(sidecar)
     ctx = sidecar.get("active_context")
 
@@ -4941,6 +4942,89 @@ def _ensure_still_insert_tts(h, beat: dict, sidecar: dict, production_state: dic
     return result
 
 
+def handle_bg_set_pipeline(h, body: dict) -> None:
+    """POST /api/bg/set-pipeline — explicit Still+TTS ↔ O3 Kling toggle per beat."""
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+    beat_id = (body.get("beat_id") or "").strip()
+    pipeline = str(body.get("pipeline") or body.get("mode") or "").strip()
+    if not beat_id:
+        return h._send_error_v59(
+            400,
+            error_code="MISSING_BEAT_ID",
+            error_message="beat_id required",
+            retry_safe=False,
+        )
+    if not pipeline:
+        return h._send_error_v59(
+            400,
+            error_code="MISSING_PIPELINE",
+            error_message="pipeline required (still_insert or kling_o3_omni)",
+            retry_safe=False,
+        )
+    bg = _bg_module()
+    event_dir = Path(getattr(h.app, "event_dir", _data_root(h)))
+    if not event_dir.is_absolute():
+        event_dir = _data_root(h) / event_dir
+    with bg.sidecar_file_lock():
+        sidecar = bg.read_sidecar()
+        sidecar = bg._migrate_sidecar(sidecar)
+        _, beat = bg.find_beat(sidecar, beat_id)
+        if not beat:
+            return h._send_error_v59(
+                404,
+                error_code="BEAT_NOT_FOUND",
+                error_message=f"beat {beat_id} not found",
+                retry_safe=False,
+            )
+        try:
+            from o3_generation_intent import beat_has_active_intent
+
+            if beat_has_active_intent(str(beat_id), event_dir):
+                return h._send_error_v59(
+                    409,
+                    error_code="INTENT_JOB_ACTIVE",
+                    error_message="O3 generation intent is active — pipeline locked until the job finishes.",
+                    retry_safe=True,
+                )
+        except Exception:
+            if bg.beat_o3_voice_job_running(beat):
+                return h._send_error_v59(
+                    409,
+                    error_code="INTENT_JOB_ACTIVE",
+                    error_message="O3 job is running — pipeline locked until it finishes.",
+                    retry_safe=True,
+                )
+        event_id, phase = bg.segment_event_phase_for_beat(sidecar, beat_id)
+        if not event_id or not phase:
+            ctx = sidecar.get("active_context") or {}
+            event_id = bg.normalize_bg_event_id(ctx.get("event_id") or "")
+            phase = ctx.get("phase") or "pre"
+        try:
+            changed = bg.set_beat_pipeline_mode(
+                beat, pipeline, event_id=str(event_id), phase=str(phase),
+            )
+        except bg.PipelineToggleError as exc:
+            return h._send_error_v59(
+                400 if exc.code != "INTENT_JOB_ACTIVE" else 409,
+                error_code=exc.code,
+                error_message=exc.message,
+                retry_safe=exc.code == "INTENT_JOB_ACTIVE",
+            )
+        bg.write_sidecar(sidecar)
+    return h._send_json(200, {
+        "ok": True,
+        "beat_id": beat_id,
+        "pipeline": beat.get("pipeline"),
+        "beat_render_mode": beat.get("beat_render_mode"),
+        "beat_type": beat.get("beat_type"),
+        "kling_o3_prompt": beat.get("kling_o3_prompt"),
+        "changed": changed,
+        "element_char_ref_ok": beat.get("element_char_ref_ok"),
+        "element_char_ref_error": beat.get("element_char_ref_error"),
+    })
+
+
 def handle_bg_render_still_clip(h, body: dict) -> None:
     """POST /api/bg/render-still-clip — Ken Burns / static hold still → O3 slot mp4."""
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
@@ -5006,6 +5090,10 @@ def handle_bg_render_still_clip(h, body: dict) -> None:
         dialogue_override = (body.get("dialogue_text") or "").strip()
         if dialogue_override:
             work_beat["dialogue_text"] = dialogue_override
+        prompt_override = (body.get("kling_o3_prompt") or "").strip()
+        if prompt_override:
+            work_beat["kling_o3_prompt"] = prompt_override
+            bg.stamp_o3_prompt_box_law(work_beat, prompt_override)
         bg.sync_beat_dialogue_from_kling_prompt(work_beat)
         work_sidecar = sidecar
 
@@ -5067,6 +5155,7 @@ def handle_bg_render_still_clip(h, body: dict) -> None:
         "kling_o3_selected_option_key", "kling_o3_selected_at",
         "kling_o3_trim_start", "kling_o3_trim_back", "kling_o3_trim_end",
         "local_render_params", "audio_file", "still_tts_source_text", "dialogue_text",
+        "kling_o3_prompt", "o3_prompt_box_law", "o3_prompt_box_law_at",
     )
 
     def _apply_render(target, _sidecar):

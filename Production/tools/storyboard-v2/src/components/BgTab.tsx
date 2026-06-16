@@ -93,6 +93,13 @@ function isO3VoiceBeat(beat?: BgBeat | null): boolean {
   return true;
 }
 
+function isPipelineToggleable(beat?: BgBeat | null): boolean {
+  if (!beat) return false;
+  const sp = (beat.speaker ?? '').trim().toLowerCase();
+  if (!sp || sp === '[stage direction]' || sp === 'stage direction') return false;
+  return true;
+}
+
 /** Short inline gate hint — full server detail stays in yellow toast only. */
 function elementCharRefInlineHint(_full?: string | null): string {
   return 'Needs registered Element pose — @Image1 must match Production/<Char>/poses/ (or re-register a new pose)';
@@ -160,6 +167,7 @@ interface BgBeat {
   bg_gpt_batch_job_id?: string | null;
   kling_o3_status?: string;
   kling_o3_prompt?: string;
+  o3_prompt_box_law?: boolean;
   kling_o3_video_path?: string;
   kling_o3_video_path_exists?: boolean;
   kling_o3_selected_at?: string;
@@ -1243,9 +1251,6 @@ export function BgTab() {
 
   const onUpdateBeatText = async (beatId: string, nextText: string): Promise<boolean> => {
     if (beatSaveBlockedRef.current.has(beatId)) return false;
-    setBeats((bs) => bs.map((b) => (
-      b.beat_id === beatId ? { ...b, kling_o3_prompt: nextText } : b
-    )));
     const result = await pathappPatch<{
       ok: boolean;
       element_char_ref_ok?: boolean;
@@ -1266,6 +1271,13 @@ export function BgTab() {
       pushToast({ kind: 'error', message: msg, source: 'bg-update-text' });
       return false;
     }
+    setBeats((bs) => bs.map((b): BgBeat => {
+      if (b.beat_id !== beatId) return b;
+      const next: BgBeat = { ...b, kling_o3_prompt: nextText };
+      if (nextText.trim()) next.o3_prompt_box_law = true;
+      else delete next.o3_prompt_box_law;
+      return next;
+    }));
     if (result.data && typeof result.data.element_char_ref_ok === 'boolean') {
       const gateOk = result.data.element_char_ref_ok;
       const gateErr = result.data.element_char_ref_error ?? null;
@@ -1327,6 +1339,78 @@ export function BgTab() {
       result,
       `Speaker save failed: ${result.error}`,
       'bg-update-speaker',
+    );
+  };
+
+  const onSetBeatPipeline = async (beatId: string, pipeline: 'still_insert' | 'kling_o3_omni') => {
+    if (beatSaveBlockedRef.current.has(beatId)) return;
+    const beat = beats.find((b) => b.beat_id === beatId);
+    if (!beat || !isPipelineToggleable(beat)) return;
+    const priorMode = isStillInsertBeat(beat) ? 'still_insert' : 'kling_o3_omni';
+    if (priorMode === pipeline) return;
+    setBeats((bs) => bs.map((b): BgBeat => {
+      if (b.beat_id !== beatId) return b;
+      if (pipeline === 'still_insert') {
+        return {
+          ...b,
+          pipeline: 'still_insert',
+          beat_render_mode: 'still_insert',
+        };
+      }
+      const next: BgBeat = { ...b, pipeline: 'kling_o3_omni' };
+      delete next.beat_render_mode;
+      return next;
+    }));
+    const result = await pathappPatch<{
+      ok: boolean;
+      pipeline?: string;
+      beat_render_mode?: string;
+      beat_type?: string;
+      kling_o3_prompt?: string;
+      element_char_ref_ok?: boolean;
+      element_char_ref_error?: string | null;
+      changed?: boolean;
+    }>(activeScope.value, 'bg_set_pipeline', {
+      beat_id: beatId,
+      pipeline,
+    });
+    if (result.ok && result.data) {
+      setBeats((bs) => bs.map((b): BgBeat => {
+        if (b.beat_id !== beatId) return b;
+        const next: BgBeat = { ...b };
+        if (result.data?.pipeline) next.pipeline = result.data.pipeline;
+        if (result.data?.beat_render_mode) {
+          next.beat_render_mode = result.data.beat_render_mode;
+        } else {
+          delete next.beat_render_mode;
+        }
+        if (result.data?.kling_o3_prompt) {
+          next.kling_o3_prompt = result.data.kling_o3_prompt;
+        }
+        if (typeof result.data?.element_char_ref_ok === 'boolean') {
+          next.element_char_ref_ok = result.data.element_char_ref_ok;
+          if (result.data.element_char_ref_error) {
+            next.element_char_ref_error = result.data.element_char_ref_error;
+          } else {
+            delete next.element_char_ref_error;
+          }
+        }
+        return next;
+      }));
+      pushToast({
+        kind: 'success',
+        message: pipeline === 'still_insert'
+          ? 'Pipeline: Still + TTS — Generate builds Ken Burns still with dialogue audio.'
+          : 'Pipeline: O3 Kling — Generate submits padded O3 voice video.',
+        source: 'bg-set-pipeline',
+      });
+      await refreshState();
+    }
+    await guardBeatPatchResult(
+      beatId,
+      result,
+      `Pipeline switch failed: ${result.error}`,
+      'bg-set-pipeline-error',
     );
   };
 
@@ -1456,8 +1540,7 @@ export function BgTab() {
     }
     const beat = beats.find((b) => b.beat_id === beatId);
     const pendingPrompt = (dialogueText ?? '').trim();
-    const savedPrompt = beatPromptText(beat).trim();
-    if (pendingPrompt && pendingPrompt !== savedPrompt) {
+    if (pendingPrompt) {
       const saved = await onUpdateBeatText(beatId, dialogueText!);
       if (!saved) return;
     }
@@ -1469,6 +1552,7 @@ export function BgTab() {
         beat_id: beatId,
         method: 'ken_burns',
         slot_index: beat?.kling_o3_replace_slot_index ?? 0,
+        ...(pendingPrompt ? { kling_o3_prompt: pendingPrompt } : {}),
       },
     );
     setActiveStillRenderJobs((prev) => {
@@ -2077,6 +2161,7 @@ export function BgTab() {
               onDelete={() => onDeleteBeat(b.beat_id)}
               onUpdateText={(t) => onUpdateBeatText(b.beat_id, t)}
               onUpdateSpeaker={(s) => onUpdateBeatSpeaker(b.beat_id, s)}
+              onSetPipeline={(pipeline) => onSetBeatPipeline(b.beat_id, pipeline)}
               onGenerate={(dialogueText) => onGenerateBatch(b.beat_id, dialogueText)}
               onAccept={(optionKey) => onAcceptOption(b.beat_id, optionKey)}
               onSelectO3Video={(optionKey) => onSelectO3Video(b.beat_id, optionKey)}
@@ -2477,6 +2562,7 @@ interface BeatGenCardProps {
   onUpdateText: (next: string) => void | Promise<boolean>;
   // LD CHARACTER_DROPDOWN_RESTORED_V1 — speaker dropdown change.
   onUpdateSpeaker: (next: string) => void;
+  onSetPipeline: (pipeline: 'still_insert' | 'kling_o3_omni') => void;
   onGenerate: (dialogueText?: string) => void;
   onAccept: (optionKey: string) => void;
   onSelectO3Video: (optionKey: string) => void;
@@ -2513,7 +2599,7 @@ interface BeatGenCardProps {
 function BeatGenCard({
   index, beat, eventId, videoRole, pollResultForBeat, busy, nativeExperimentBusy,
   o3IntentSnapshot, o3SubmitAudit, o3WarningMessage,
-  onDelete, onUpdateText, onUpdateSpeaker, onGenerate, onAccept,
+  onDelete, onUpdateText, onUpdateSpeaker, onSetPipeline, onGenerate, onAccept,
   onSelectO3Video, onApproveStill, onApplyO3Trim, onSetReplaceSlot, onSubmitNativeLipSyncExperiment,
   onEditChip, onInsertAfter, onRemoveRef, onAlignElementRef, onAddElementPose, onRefresh, onBeatMissing,
   onPatchOptionTile, onPatchRefImage,
@@ -2540,17 +2626,18 @@ function BeatGenCard({
     setChips(extractStageChips(next));
   }, [beat.kling_o3_prompt, beat.dialogue_text, beat.beat_id, intentLockedPrompt]);
 
-  const flushPromptSave = useCallback(async (text: string) => {
+  const flushPromptSave = useCallback(async (text: string): Promise<boolean> => {
     if (saveTimerRef.current !== null) {
       window.clearTimeout(saveTimerRef.current);
       saveTimerRef.current = null;
     }
     if (text === beatPromptText(beat)) {
       promptDirtyRef.current = false;
-      return;
+      return true;
     }
     const ok = await onUpdateText(text);
     if (ok !== false) promptDirtyRef.current = false;
+    return ok !== false;
   }, [beat, onUpdateText]);
 
   const schedulePromptSave = useCallback((text: string) => {
@@ -2668,6 +2755,41 @@ function BeatGenCard({
             <option key={s} value={s}>{s}</option>
           ))}
         </select>
+        {isPipelineToggleable(beat) ? (
+          <span
+            class="mn-bg-pipeline-toggle"
+            data-testid={`bg-pipeline-toggle-${index}`}
+            role="group"
+            aria-label={`Pipeline mode for beat ${beat.beat_id}`}
+          >
+            <button
+              type="button"
+              class={`mn-btn mn-btn-small${stillInsert ? ' mn-btn-primary' : ''}`}
+              data-testid={`bg-pipeline-still-${index}`}
+              aria-pressed={stillInsert ? 'true' : 'false'}
+              disabled={busy}
+              title="Still image + TTS audio (Ken Burns), no Kling O3 Element clip"
+              onClick={() => {
+                if (!stillInsert) onSetPipeline('still_insert');
+              }}
+            >
+              Still + TTS
+            </button>
+            <button
+              type="button"
+              class={`mn-btn mn-btn-small${!stillInsert ? ' mn-btn-primary' : ''}`}
+              data-testid={`bg-pipeline-o3-${index}`}
+              aria-pressed={!stillInsert ? 'true' : 'false'}
+              disabled={busy}
+              title="Kling O3 Element voice video with padded lipsync tail"
+              onClick={() => {
+                if (stillInsert) onSetPipeline('kling_o3_omni');
+              }}
+            >
+              O3 Kling
+            </button>
+          </span>
+        ) : null}
         {beat.status ? <span class="mn-dim">[{beat.status}]</span> : null}
         <button
           type="button"
@@ -2840,7 +2962,8 @@ function BeatGenCard({
           class="mn-btn mn-btn-primary"
           data-testid={`bg-generate-btn-${index}`}
           onClick={async () => {
-            await flushPromptSave(localText);
+            const saved = await flushPromptSave(localText);
+            if (!saved) return;
             onGenerate(localText);
           }}
           disabled={busy || elementCharRefBlocked}

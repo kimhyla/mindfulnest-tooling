@@ -157,6 +157,7 @@ export const MUTATION_ENDPOINTS = {
   bg_submit_kling_native_lipsync_experiment: `${SERVER_BASE}/api/bg/submit-kling-native-lipsync-experiment`,
   bg_select_o3_video: `${SERVER_BASE}/api/bg/select-o3-video`,
   bg_render_still_clip: `${SERVER_BASE}/api/bg/render-still-clip`,
+  bg_set_pipeline: `${SERVER_BASE}/api/bg/set-pipeline`,
   bg_kling_o3_trim: `${SERVER_BASE}/api/bg/kling-o3-trim`,
   bg_accept_option: `${SERVER_BASE}/api/bg/accept-option`,
   bg_accept_lib_image: `${SERVER_BASE}/api/bg/accept-lib-image`,
@@ -230,6 +231,7 @@ export const BG_MUTATION_ENDPOINTS: ReadonlySet<MutationEndpoint> = new Set<Muta
   'bg_submit_gpt_batch',
   'bg_submit_kling_native_lipsync_experiment',
   'bg_render_still_clip',
+  'bg_set_pipeline',
   'bg_accept_option',
   'bg_accept_lib_image',
 ]);

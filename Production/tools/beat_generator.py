@@ -3215,6 +3215,160 @@ def beat_is_still_insert(beat: dict) -> bool:
     )
 
 
+PIPELINE_MODE_STILL = "still_insert"
+PIPELINE_MODE_O3 = "kling_o3_omni"
+VALID_PIPELINE_MODES = frozenset({PIPELINE_MODE_STILL, PIPELINE_MODE_O3})
+
+
+class PipelineToggleError(Exception):
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        self.message = message
+        super().__init__(message)
+
+
+def beat_is_stage_direction_only(beat: dict) -> bool:
+    sp = str(beat.get("speaker") or "").strip().lower()
+    bt = str(beat.get("beat_type") or "").lower()
+    return (
+        sp in ("[stage direction]", "stage direction", "")
+        or bt == "stage_direction"
+    )
+
+
+def resolve_beat_pipeline_mode(beat: dict) -> str:
+    """Effective pipeline mode for UI routing."""
+    if beat_is_still_insert(beat):
+        return PIPELINE_MODE_STILL
+    if beat_is_stage_direction_only(beat):
+        return "stage_direction"
+    return PIPELINE_MODE_O3
+
+
+def classify_beat_pipeline_fields(beat: dict) -> bool:
+    """Normalize pipeline-related fields on a beat. Returns True if beat was mutated."""
+    if beat_is_canonical_mirror_protected(beat):
+        return False
+    changed = False
+    if beat_is_stage_direction_only(beat):
+        for field in ("pipeline", "beat_render_mode"):
+            if beat.get(field) == PIPELINE_MODE_STILL:
+                beat.pop(field, None)
+                changed = True
+        bt = str(beat.get("beat_type") or "")
+        if bt in ("stage_still", ""):
+            beat["beat_type"] = "stage_direction"
+            changed = True
+        return changed
+    if beat_is_still_insert(beat):
+        for field, val in (
+            ("pipeline", PIPELINE_MODE_STILL),
+            ("beat_render_mode", PIPELINE_MODE_STILL),
+        ):
+            if beat.get(field) != val:
+                beat[field] = val
+                changed = True
+        if beat.get("beat_type") != "stage_still":
+            beat["beat_type"] = "stage_still"
+            changed = True
+        return changed
+    if beat.get("pipeline") != PIPELINE_MODE_O3:
+        beat["pipeline"] = PIPELINE_MODE_O3
+        changed = True
+    if beat.get("beat_render_mode") == PIPELINE_MODE_STILL:
+        beat.pop("beat_render_mode", None)
+        changed = True
+    bt = str(beat.get("beat_type") or "")
+    if bt in ("stage_still", ""):
+        beat["beat_type"] = "dialogue"
+        changed = True
+    return changed
+
+
+def classify_all_sidecar_pipeline_fields(sidecar: dict) -> bool:
+    """Normalize pipeline fields for every beat in the sidecar."""
+    changed = False
+    for arc in (sidecar.get("arcs") or {}).values():
+        for seg in (arc.get("segments") or {}).values():
+            for beat in seg.get("beats") or []:
+                if classify_beat_pipeline_fields(beat):
+                    changed = True
+    return changed
+
+
+def apply_beat_pipeline_still_mode(beat: dict, event_id: str, phase: str) -> None:
+    from beat_extract_policy import build_still_insert_prompt
+
+    beat["pipeline"] = PIPELINE_MODE_STILL
+    beat["beat_render_mode"] = PIPELINE_MODE_STILL
+    beat["beat_type"] = "stage_still"
+    prompt = (beat.get("kling_o3_prompt") or "").strip()
+    if not prompt.startswith("STILL INSERT"):
+        beat["kling_o3_prompt"] = build_still_insert_prompt(beat)
+    if not beat.get("kling_o3_duration_locked"):
+        beat["kling_o3_duration"] = 3
+    beat.setdefault("kling_o3_status", "draft")
+
+
+def apply_beat_pipeline_o3_mode(beat: dict, event_id: str, phase: str) -> None:
+    beat.pop("beat_render_mode", None)
+    beat["pipeline"] = PIPELINE_MODE_O3
+    beat["beat_type"] = "dialogue"
+    apply_kling_o3_defaults_to_beat(beat, event_id, phase)
+
+
+def segment_event_phase_for_beat(sidecar: dict, beat_id: str) -> tuple[str, str] | tuple[None, None]:
+    for arc in (sidecar.get("arcs") or {}).values():
+        for seg_key, seg in (arc.get("segments") or {}).items():
+            for beat in seg.get("beats") or []:
+                if beat.get("beat_id") == beat_id:
+                    m = re.match(r"^event_(\d+)_(.+)$", seg_key)
+                    if m:
+                        return m.group(1), m.group(2)
+    return None, None
+
+
+def set_beat_pipeline_mode(
+    beat: dict,
+    mode: str,
+    *,
+    event_id: str,
+    phase: str,
+) -> bool:
+    """Switch beat between still_insert and kling_o3_omni. Returns True if mode changed."""
+    mode = str(mode or "").strip()
+    if mode not in VALID_PIPELINE_MODES:
+        raise PipelineToggleError(
+            "INVALID_PIPELINE_MODE",
+            f"pipeline must be one of {sorted(VALID_PIPELINE_MODES)}",
+        )
+    if beat_is_canonical_mirror_protected(beat):
+        raise PipelineToggleError(
+            "CANONICAL_BEAT_PROTECTED",
+            "Canonical intro beats cannot change pipeline mode",
+        )
+    if beat_o3_voice_job_running(beat):
+        raise PipelineToggleError(
+            "INTENT_JOB_ACTIVE",
+            "O3 job is running — pipeline locked until it finishes",
+        )
+    if beat_is_stage_direction_only(beat):
+        raise PipelineToggleError(
+            "STAGE_DIRECTION_BEAT",
+            "Stage-direction beats cannot toggle pipeline — assign a speaker first",
+        )
+    current = resolve_beat_pipeline_mode(beat)
+    if current == mode:
+        classify_beat_pipeline_fields(beat)
+        return False
+    if mode == PIPELINE_MODE_STILL:
+        apply_beat_pipeline_still_mode(beat, event_id, phase)
+    else:
+        apply_beat_pipeline_o3_mode(beat, event_id, phase)
+    classify_beat_pipeline_fields(beat)
+    return True
+
+
 _STILL_INSERT_SPOKEN_RE = re.compile(
     r"([A-Za-z][A-Za-z\s'-]*?)\s*(?:\[[^\]]+\])*\s*:\s*"
     r"(['\"])(.*?)\2",
@@ -5279,6 +5433,7 @@ _O3_BODY_PROSE_BIAS_RE = re.compile(
 _O3_CANONICAL_CAMERA_FRAMING_RE = re.compile(
     r"^Camera:\s*static locked shot,\s*(?:"
     r"stable eye-level close-up on @Image1"
+    r"|no zoom, no dolly, no pan, no camera movement, stable eye-level close-up"
     r"|no zoom, no dolly, no pan, no camera movement, stable eye-level medium shot"
     r")",
     re.I,
@@ -5631,6 +5786,8 @@ def heal_o3_element_submit_prompt(beat: dict) -> bool:
     """Persist minimal Element-bound prompt shell (voice lock + footer locks only)."""
     if o3_prompt_box_law_active(beat):
         return False
+    if beat_is_still_insert(beat):
+        return False
     speaker = str(beat.get("speaker") or "").strip()
     if not _speaker_has_element_bound_voice(speaker):
         return False
@@ -5715,6 +5872,8 @@ def heal_spoken_staging_in_voice_prompt(beat: dict) -> bool:
     """Strip [Faces camera…] staging from prompt body and voice quotes before O3 submit."""
     if o3_prompt_box_law_active(beat):
         return False
+    if beat_is_still_insert(beat):
+        return False
     speaker = str(beat.get("speaker") or "").strip()
     prompt = (beat.get("kling_o3_prompt") or "").strip()
     if not speaker or not prompt:
@@ -5758,6 +5917,8 @@ def heal_spoken_staging_in_voice_prompt(beat: dict) -> bool:
 def heal_element_bound_voice_prompt(beat: dict) -> bool:
     """Upgrade legacy author voice lines (bracket delivery, <<<voice_N>>>) on load."""
     if o3_prompt_box_law_active(beat):
+        return False
+    if beat_is_still_insert(beat):
         return False
     speaker = str(beat.get("speaker") or "").strip()
     if not speaker:

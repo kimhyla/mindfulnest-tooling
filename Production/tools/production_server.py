@@ -6302,6 +6302,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_bg_select_o3_video(body)
             if path == "/api/bg/render-still-clip":
                 return self._handle_bg_render_still_clip(body)
+            if path == "/api/bg/set-pipeline":
+                return self._handle_bg_set_pipeline(body)
             if path == "/api/bg/kling-o3-trim":
                 return self._handle_bg_kling_o3_trim(body)
             if path == "/api/bg/accept-option":
@@ -7790,6 +7792,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_bg_render_still_clip(self, body: dict) -> None:
         from server_handlers.background import handle_bg_render_still_clip
         return handle_bg_render_still_clip(self, body)
+
+    def _handle_bg_set_pipeline(self, body: dict) -> None:
+        from server_handlers.background import handle_bg_set_pipeline
+        return handle_bg_set_pipeline(self, body)
 
     def _handle_bg_kling_o3_trim(self, body: dict) -> None:
         from server_handlers.background import handle_bg_kling_o3_trim
