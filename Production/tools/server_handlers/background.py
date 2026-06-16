@@ -1696,8 +1696,19 @@ def handle_bg_session_state(h)-> None:
             if should_reconcile:
                 o3_reconcile_changed = bg.reconcile_kling_o3_sidecar(sidecar, event_dir)
                 runtime["last_o3_disk_reconcile_at"] = datetime.now(timezone.utc).isoformat()
+        trim_reconcile_changed = 0
+        try:
+            trim_reconcile_changed = bg.reconcile_kling_o3_trim_all_events(sidecar, prod_root)
+        except Exception as exc:
+            print(f"[BG] reconcile_kling_o3_trim_all_events: {exc}", flush=True)
         classify_changed = bg.classify_all_sidecar_pipeline_fields(sidecar)
-        if stuck_changed or intent_lock_changed or o3_reconcile_changed or classify_changed:
+        if (
+            stuck_changed
+            or intent_lock_changed
+            or o3_reconcile_changed
+            or trim_reconcile_changed
+            or classify_changed
+        ):
             bg.write_sidecar(sidecar)
     ctx = sidecar.get("active_context")
 
@@ -3843,6 +3854,9 @@ def _event_dir_for_beat_id(beat_id: str) -> Path:
     return _bg_module().event_dir_for_beat_id(beat_id)
 
 
+_event_dir_from_beat_id = _event_dir_for_beat_id
+
+
 def _enriched_beat_snapshot_for_o3_poll(
     beat_id: str,
     event_dir: Path,
@@ -4006,9 +4020,15 @@ def handle_bg_poll_arlo_o3_voice_status(h) -> None:
     event_dir = Path(h.app.event_dir)
     if not event_dir.is_absolute():
         event_dir = _data_root(h) / event_dir
-    if job.get("proc") and job.get("status") == "running":
+    if job.get("status") == "running":
         _ensure_o3_job_metadata(job_id, job)
-        _finalize_o3_job_after_subprocess_exit(job, event_dir)
+        proc = job.get("proc")
+        pid = job.get("pid")
+        pid_gone = pid is not None and not _pid_is_running(int(pid))
+        if proc is not None and not pid_gone:
+            _finalize_o3_job_after_subprocess_exit(job, event_dir)
+        elif pid_gone or proc is None:
+            _promote_o3_job_from_log_if_terminal(job, event_dir)
         if job.get("status") in ("done", "failed", "done_with_warning"):
             _clear_o3_job_metadata(
                 job_id,
@@ -4021,19 +4041,14 @@ def handle_bg_poll_arlo_o3_voice_status(h) -> None:
             log_path = job.get("log_path")
             if beat_id and log_path:
                 log_text = Path(str(log_path)).read_text(encoding="utf-8", errors="replace")
-                if '"phase": "done"' in log_text:
-                    recovered = _try_orphan_o3_delivery_recovery(
-                        beat_id, event_dir, log_path,
-                    )
-                    if recovered:
-                        _finalize_o3_job_after_subprocess_exit(job, event_dir)
-                        if job.get("status") in ("done", "failed"):
-                            _clear_o3_job_metadata(
-                                job_id,
-                                status=job["status"],
-                                result=job.get("result"),
-                                error=job.get("error"),
-                            )
+                if '"phase": "done"' in log_text or _parse_o3_pipeline_result_from_log(log_path):
+                    if _promote_o3_job_from_log_if_terminal(job, event_dir):
+                        _clear_o3_job_metadata(
+                            job_id,
+                            status=job["status"],
+                            result=job.get("result"),
+                            error=job.get("error"),
+                        )
     payload = {k: v for k, v in job.items() if k != "proc"}
     payload = _enrich_o3_poll_with_intent(payload, event_dir)
     payload = _o3_poll_payload_with_beat_snapshot(payload, event_dir)
@@ -4503,6 +4518,33 @@ def _beat_matches_o3_ui_job_id(beat: dict, job_id: str) -> bool:
     return f"/{job_id}_" in log_path or log_path.endswith(f"/{job_id}.log")
 
 
+def _promote_o3_job_from_log_if_terminal(job: dict, event_dir: Path) -> bool:
+    """Mark in-memory O3 job done when log shows delivery but proc handle is stale."""
+    if job.get("status") != "running":
+        return False
+    log_path = job.get("log_path")
+    beat_id = str(job.get("beat_id") or "")
+    if not beat_id or not log_path:
+        return False
+    log_result = _parse_o3_pipeline_result_from_log(log_path)
+    if not log_result:
+        return False
+    video = str(log_result.get("video") or "")
+    if not video or not Path(video).is_file():
+        return False
+    recovered = _try_orphan_o3_delivery_recovery(beat_id, event_dir, log_path)
+    job["status"] = "done"
+    job["ended_at"] = datetime.now(timezone.utc).isoformat()
+    job["result"] = {
+        "ok": True,
+        "beat_id": beat_id,
+        "video": recovered.get("delivery_path") if recovered else video,
+        "recovered_from_log": True,
+    }
+    job.pop("error", None)
+    return True
+
+
 def _recover_o3_job_from_sidecar(job_id: str) -> dict | None:
     if not job_id:
         return None
@@ -4514,13 +4556,19 @@ def _recover_o3_job_from_sidecar(job_id: str) -> dict | None:
             for beat in _iter_bg_beats(sidecar):
                 if not _beat_matches_o3_ui_job_id(beat, job_id):
                     continue
-                result = _parse_o3_pipeline_result_from_log(beat.get("kling_o3_voice_fix_job_log_path"))
+                log_path = beat.get("kling_o3_voice_fix_job_log_path")
+                result = _parse_o3_pipeline_result_from_log(log_path)
                 if result or beat.get("kling_o3_voice_fix_status") == "approved":
+                    beat_id = str(beat.get("beat_id") or "")
+                    voice_fix = str(beat.get("kling_o3_voice_fix_status") or "")
+                    if result and voice_fix != "approved" and beat_id:
+                        event_dir = _event_dir_from_beat_id(beat_id)
+                        _try_orphan_o3_delivery_recovery(beat_id, event_dir, log_path)
                     return {
                         "status": "done",
                         "beat_id": beat.get("beat_id"),
                         "job_id": job_id,
-                        "log_path": beat.get("kling_o3_voice_fix_job_log_path"),
+                        "log_path": log_path,
                         "started_at": beat.get("kling_o3_voice_fix_job_started_at"),
                         "result": result,
                         "recovered": True,
@@ -4739,8 +4787,9 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
         if not vp or not Path(vp).is_file():
             return None
         event_dir = Path(h.app.event_dir)
-        scratch = event_dir / "assembled" / "_kling_o3_trim_scratch"
-        dest = scratch / f"{beat_id}_ui_trim_preview.mp4"
+        if not event_dir.is_absolute():
+            event_dir = _data_root(h) / event_dir
+        dest = bg.kling_o3_ui_trim_preview_path(beat_id, event_dir, work_beat)
         try:
             if bg.kling_o3_trim_is_active(work_beat):
                 bg.materialize_kling_o3_trimmed_clip(work_beat, dest, source_path=Path(vp))
@@ -4753,7 +4802,8 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
         if not dest.is_file():
             return None
         rel = f"Production/{event_dir.name}/assembled/_kling_o3_trim_scratch/{dest.name}"
-        return f"/files?path={quote(rel)}"
+        mtime = int(dest.stat().st_mtime)
+        return f"/files?path={quote(rel)}&v={mtime}"
 
     with bg.sidecar_file_lock():
         sidecar = bg.read_sidecar()
@@ -4771,6 +4821,7 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
             bg.clear_kling_o3_beat_trim(work_beat)
             if not preview_only:
                 bg.clear_kling_o3_beat_trim(beat)
+                bg.invalidate_kling_o3_trim_scratch(beat_id, Path(h.app.event_dir))
             result = {
                 "trim_start": 0.0,
                 "trim_back": None,
@@ -4794,6 +4845,11 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                 beat["kling_o3_trim_start"] = work_beat.get("kling_o3_trim_start")
                 beat["kling_o3_trim_back"] = work_beat.get("kling_o3_trim_back")
                 beat.pop("kling_o3_trim_end", None)
+                bg.prune_stale_kling_o3_trim_scratch(
+                    beat_id,
+                    Path(h.app.event_dir),
+                    beat,
+                )
         if not preview_only:
             if (
                 not body.get("clear")
@@ -4888,6 +4944,7 @@ def handle_bg_select_o3_video(h, body: dict) -> None:
                 beat["kling_o3_still_stitch_approved"] = True
                 beat["kling_o3_still_stitch_approved_at"] = now
             bg.clear_kling_o3_beat_trim(beat)
+            bg.invalidate_kling_o3_trim_scratch(beat_id, Path(h.app.event_dir))
             for o in options:
                 if not o.get("key"):
                     vp = o.get("video_path") or ""

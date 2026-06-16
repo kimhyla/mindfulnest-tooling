@@ -4110,6 +4110,151 @@ def clear_kling_o3_beat_trim(beat: dict) -> None:
         beat.pop(key, None)
 
 
+def kling_o3_trim_scratch_token(beat: dict) -> str:
+    """Stable filename token for trim scratch files (gen + front/back window)."""
+    start = round(float(beat.get("kling_o3_trim_start") or 0.0), 2)
+    back = beat.get("kling_o3_trim_back")
+    back_val = round(float(back), 2) if back is not None and float(back) > 0 else 0.0
+    return f"s{start}_b{back_val}"
+
+
+def kling_o3_ui_trim_preview_path(
+    beat_id: str,
+    event_dir: str | Path,
+    beat: dict,
+) -> Path:
+    """Scratch path for ffmpeg WYSIWYG trim preview — unique per gen + trim window."""
+    gen = int(beat.get("kling_o3_generation") or 0)
+    token = kling_o3_trim_scratch_token(beat)
+    scratch = Path(event_dir) / "assembled" / "_kling_o3_trim_scratch"
+    return scratch / f"{beat_id}_g{gen}_{token}_ui_preview.mp4"
+
+
+def invalidate_kling_o3_trim_scratch(beat_id: str, event_dir: str | Path) -> None:
+    """Remove stale trim preview/export scratch files when trim clears or clip changes."""
+    scratch = Path(event_dir) / "assembled" / "_kling_o3_trim_scratch"
+    if not scratch.is_dir():
+        return
+    bid = str(beat_id or "").strip()
+    if not bid:
+        return
+    for path in scratch.glob(f"{bid}_*"):
+        name = path.name
+        if (
+            "_ui_preview" in name
+            or "_export_trim" in name
+            or name.endswith("_ui_trim_preview.mp4")
+        ):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def beat_has_kling_o3_sidecar_trim(beat: dict) -> bool:
+    """True when sidecar holds active front/back trim metadata (not baked into file)."""
+    start = float(beat.get("kling_o3_trim_start") or 0.0)
+    back = beat.get("kling_o3_trim_back")
+    if start > 0.01:
+        return True
+    if back is not None and float(back) > 0.05:
+        return True
+    return False
+
+
+def _kling_o3_trim_scratch_keep_paths(
+    beat_id: str,
+    event_dir: str | Path,
+    beat: dict,
+) -> set[Path]:
+    """Preview/export scratch paths that match the beat's current trim window."""
+    scratch = Path(event_dir) / "assembled" / "_kling_o3_trim_scratch"
+    gen = int(beat.get("kling_o3_generation") or 0)
+    token = kling_o3_trim_scratch_token(beat)
+    return {
+        (scratch / f"{beat_id}_g{gen}_{token}_ui_preview.mp4").resolve(),
+        (scratch / f"{beat_id}_g{gen}_{token}_export_trim.mp4").resolve(),
+    }
+
+
+def prune_stale_kling_o3_trim_scratch(
+    beat_id: str,
+    event_dir: str | Path,
+    beat: dict,
+) -> int:
+    """Drop legacy fixed-name and wrong-token trim scratch files for one beat."""
+    scratch = Path(event_dir) / "assembled" / "_kling_o3_trim_scratch"
+    if not scratch.is_dir():
+        return 0
+    bid = str(beat_id or "").strip()
+    if not bid:
+        return 0
+    keep = (
+        _kling_o3_trim_scratch_keep_paths(bid, event_dir, beat)
+        if beat_has_kling_o3_sidecar_trim(beat)
+        else set()
+    )
+    removed = 0
+    for path in scratch.glob(f"{bid}_*"):
+        name = path.name
+        if not (
+            "_ui_preview" in name
+            or "_export_trim" in name
+            or name.endswith("_ui_trim_preview.mp4")
+        ):
+            continue
+        if path.resolve() in keep:
+            continue
+        try:
+            path.unlink(missing_ok=True)
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+def reconcile_kling_o3_trim_all_events(sidecar: dict, prod_root: str | Path | None = None) -> int:
+    """Heal invalid trim metadata and purge stale scratch previews for every beat/event."""
+    changed = 0
+    beats: list[dict] = []
+    for arc in (sidecar.get("arcs") or {}).values():
+        for seg in (arc.get("segments") or {}).values():
+            for beat in seg.get("beats") or []:
+                if isinstance(beat, dict):
+                    beats.append(beat)
+    for beat in beats:
+        beat_id = str(beat.get("beat_id") or "").strip()
+        if not beat_id:
+            continue
+        event_dir = event_dir_for_beat_id(beat_id)
+        if not event_dir.is_dir():
+            continue
+        if heal_invalid_kling_o3_trim(beat):
+            changed += 1
+        has_trim = beat_has_kling_o3_sidecar_trim(beat)
+        scratch = event_dir / "assembled" / "_kling_o3_trim_scratch"
+        if not scratch.is_dir():
+            continue
+        has_stale = any(
+            (
+                "_ui_preview" in p.name
+                or "_export_trim" in p.name
+                or p.name.endswith("_ui_trim_preview.mp4")
+            )
+            for p in scratch.glob(f"{beat_id}_*")
+        )
+        if not has_stale:
+            continue
+        if not has_trim:
+            invalidate_kling_o3_trim_scratch(beat_id, event_dir)
+            changed += 1
+        else:
+            pruned = prune_stale_kling_o3_trim_scratch(beat_id, event_dir, beat)
+            if pruned:
+                changed += 1
+    return changed
+
+
 def heal_invalid_kling_o3_trim(beat: dict) -> bool:
     """Clear trim when it exceeds the active clip (e.g. g8 trim kept after g9 lands)."""
     path = beat.get("kling_o3_video_path") or ""
@@ -4262,7 +4407,8 @@ def _kling_o3_export_clip_path(
         return src.resolve()
     beat_id = beat.get("beat_id") or "beat"
     gen = int(beat.get("kling_o3_generation") or 0)
-    dest = scratch_dir / f"{beat_id}_g{gen}_export_trim.mp4"
+    token = kling_o3_trim_scratch_token(beat)
+    dest = scratch_dir / f"{beat_id}_g{gen}_{token}_export_trim.mp4"
     return materialize_kling_o3_trimmed_clip(beat, dest, source_path=src)
 
 
@@ -7973,7 +8119,10 @@ def assign_kling_o3_option_to_slot(
         beat["kling_o3_selected_option_key"] = key
         if gen is not None:
             beat["kling_o3_generation"] = max(int(beat.get("kling_o3_generation") or 0), gen)
-        heal_invalid_kling_o3_trim(beat)
+        if heal_invalid_kling_o3_trim(beat):
+            invalidate_kling_o3_trim_scratch(beat_id, event_dir_for_beat_id(beat_id))
+        else:
+            prune_stale_kling_o3_trim_scratch(beat_id, event_dir_for_beat_id(beat_id), beat)
     beat["kling_o3_options"] = options
     refresh_o3_ui_slot_layout(beat)
     return key

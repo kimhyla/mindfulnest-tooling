@@ -3589,8 +3589,6 @@ function BgOptionTile({
   const clipMissingOnDisk = option?.video_path_exists === false;
   const [trimStartDraft, setTrimStartDraft] = useState<string>(String(trimStart || 0));
   const [trimBackDraft, setTrimBackDraft] = useState<string>(String(trimBack || 0));
-  /** Server ffmpeg-trimmed preview — WYSIWYG after Apply Trim (browser duration is unreliable). */
-  const [trimPreviewUrl, setTrimPreviewUrl] = useState<string | null>(null);
   const [loadedDuration, setLoadedDuration] = useState<number | null>(null);
   const rawDurationRef = useRef<number | null>(null);
   const savedTrimStart = trimStart || 0;
@@ -3603,11 +3601,6 @@ function BgOptionTile({
   useEffect(() => {
     setTrimBackDraft(String(trimBack || 0));
   }, [trimBack]);
-  useEffect(() => {
-    if (trimDraftDirty) {
-      setTrimPreviewUrl(null);
-    }
-  }, [trimDraftDirty]);
   const clearTrimPlaybackListener = useCallback((video?: HTMLVideoElement | null) => {
     const el = video ?? videoRef.current;
     if (!el) return;
@@ -3727,8 +3720,7 @@ function BgOptionTile({
     ? (overrideVideoUrl
       ?? `${SERVER_BASE}/files?path=${encodeURIComponent(option.video_path)}${cacheBust}`)
     : null;
-  const activeVideoUrl = (!trimDraftDirty && trimPreviewUrl) ? trimPreviewUrl : canonicalVideoUrl;
-  const usingTrimmedPreview = !trimDraftDirty && !!trimPreviewUrl;
+  const activeVideoUrl = canonicalVideoUrl;
   const waitForVideoMetadata = (video: HTMLVideoElement) => new Promise<void>((resolve, reject) => {
     if (Number.isFinite(video.duration) && video.duration > 0) {
       resolve();
@@ -3767,7 +3759,6 @@ function BgOptionTile({
   }, [activeVideoUrl]);
   useEffect(() => {
     setVideoLoadError(false);
-    setTrimPreviewUrl(null);
     rawDurationRef.current = null;
     setLoadedDuration(null);
   }, [canonicalVideoUrl]);
@@ -3777,21 +3768,27 @@ function BgOptionTile({
   };
   const trimStartValue = () => parseDraft(trimStartDraft);
   const trimBackValue = () => parseDraft(trimBackDraft);
-  const trimEndValue = (video: HTMLVideoElement) => {
+  const effectiveTrimStart = () => (trimDraftDirty ? trimStartValue() : savedTrimStart);
+  const effectiveTrimBack = () => (trimDraftDirty ? trimBackValue() : savedTrimBack);
+  const trimEndValue = (
+    video: HTMLVideoElement,
+    start = effectiveTrimStart(),
+    back = effectiveTrimBack(),
+  ) => {
     const dur = Number.isFinite(video.duration) ? Number(video.duration) : 0;
     if (dur <= 0) return null;
-    const start = trimStartValue();
-    const back = trimBackValue();
     if (back <= 0 && start <= 0.01) return null;
     const end = back > 0 ? dur - back : dur;
     if (end <= start + 0.05) return null;
     return Math.max(start + 0.01, end);
   };
-  const trimWindowInvalid = (video: HTMLVideoElement | null) => {
+  const trimWindowInvalid = (
+    video: HTMLVideoElement | null,
+    start = savedTrimStart,
+    back = savedTrimBack,
+  ) => {
     const dur = loadedDuration ?? (video && Number.isFinite(video.duration) ? video.duration : 0);
     if (dur <= 0) return false;
-    const start = savedTrimStart;
-    const back = savedTrimBack;
     if (start <= 0.01 && back <= 0.05) return false;
     const end = back > 0 ? dur - back : dur;
     return end <= start + 0.05;
@@ -3818,32 +3815,12 @@ function BgOptionTile({
       });
       return;
     }
-    if (usingTrimmedPreview) {
-      const video = videoRef.current;
-      if (!video) return;
-      clearTrimPlaybackListener(video);
-      video.currentTime = 0;
-      try {
-        await video.play();
-      } catch {
-        pushToast({
-          kind: 'info',
-          message: 'Preview Trim: press play if autoplay was blocked',
-          source: 'bg-o3-trim-preview-play',
-        });
-      }
-      pushToast({
-        kind: 'info',
-        message: 'Preview Trim: playing applied trim (ffmpeg preview)',
-        source: 'bg-o3-trim-preview',
-      });
-      return;
-    }
     const video = videoRef.current;
     if (!video || !canonicalVideoUrl) return;
     try {
       if (video.src !== canonicalVideoUrl) {
         video.src = canonicalVideoUrl;
+        video.load();
       }
       await waitForVideoMetadata(video);
     } catch {
@@ -3854,8 +3831,8 @@ function BgOptionTile({
       });
       return;
     }
-    const start = trimStartValue();
-    const stopAt = trimEndValue(video);
+    const start = effectiveTrimStart();
+    const stopAt = trimEndValue(video, start, effectiveTrimBack());
     clearTrimPlaybackListener(video);
     video.currentTime = start;
     attachTrimStopListener(video, stopAt);
@@ -3871,8 +3848,8 @@ function BgOptionTile({
     pushToast({
       kind: 'info',
       message: stopAt != null
-        ? `Preview Trim: ${start.toFixed(1)}s → ${stopAt.toFixed(1)}s (draft — Apply Trim to save)`
-        : `Preview Trim: from ${start.toFixed(1)}s (draft — Apply Trim to save)`,
+        ? `Preview Trim: ${start.toFixed(1)}s → ${stopAt.toFixed(1)}s${trimDraftDirty ? ' (draft — Apply Trim to save)' : ''}`
+        : `Preview Trim: from ${start.toFixed(1)}s${trimDraftDirty ? ' (draft — Apply Trim to save)' : ''}`,
       source: 'bg-o3-trim-preview',
     });
   };
@@ -3893,21 +3870,20 @@ function BgOptionTile({
     if (applied?.rawDurationS != null && applied.rawDurationS > 0) {
       rawDurationRef.current = applied.rawDurationS;
     }
-    if (applied?.previewUrl) {
-      setTrimPreviewUrl(applied.previewUrl);
-      const video = videoRef.current;
-      if (video) {
-        video.src = applied.previewUrl;
-        video.load();
-        try {
-          await waitForVideoMetadata(video);
-          video.currentTime = 0;
-        } catch {
-          // user can retry play
-        }
+    const video = videoRef.current;
+    if (video && canonicalVideoUrl) {
+      if (video.src !== canonicalVideoUrl) {
+        video.src = canonicalVideoUrl;
       }
-    } else {
-      setTrimPreviewUrl(null);
+      video.load();
+      try {
+        await waitForVideoMetadata(video);
+        const start = trimStartValue();
+        video.currentTime = start;
+        attachTrimStopListener(video, trimEndValue(video, start, trimBackValue()));
+      } catch {
+        // user can retry play
+      }
     }
   };
   const ensureCanonicalVideoForPlayhead = async () => {
@@ -3968,18 +3944,14 @@ function BgOptionTile({
               }
             }}
             onPlay={() => {
-              if (usingTrimmedPreview) {
-                clearTrimPlaybackListener();
-                return;
-              }
               const video = videoRef.current;
               if (!video) return;
-              if (trimWindowInvalid(video)) {
+              if (trimWindowInvalid(video, effectiveTrimStart(), effectiveTrimBack())) {
                 clearTrimPlaybackListener(video);
                 return;
               }
-              const start = trimStartValue();
-              const stopAt = trimEndValue(video);
+              const start = effectiveTrimStart();
+              const stopAt = trimEndValue(video, start, effectiveTrimBack());
               if (start > 0.01 && video.currentTime < start) {
                 video.currentTime = start;
               }
@@ -4090,9 +4062,14 @@ function BgOptionTile({
                 e.stopPropagation();
                 setTrimStartDraft('0');
                 setTrimBackDraft('0');
-                setTrimPreviewUrl(null);
                 rawDurationRef.current = null;
-                void onApplyO3Trim(0, null, true).then(() => resetVideoToCanonical());
+                const video = videoRef.current;
+                if (video && canonicalVideoUrl) {
+                  clearTrimPlaybackListener(video);
+                  video.src = canonicalVideoUrl;
+                  video.load();
+                }
+                void onApplyO3Trim(0, null, true);
               }}
             >
               Clear Trim
