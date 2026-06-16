@@ -42,6 +42,7 @@ cd "$TOOLS"
 python3 -m pytest \
   tests/test_kling_author_enrichment.py::test_canonical_prompt_shape_v2_tessa \
   tests/test_kling_author_enrichment.py::test_canonical_prompt_shape_v2_all_element_speakers \
+  tests/test_kling_author_enrichment.py::test_postprocess_replaces_lorelai_staging_with_loral \
   tests/test_element_voice_alignment.py \
   tests/test_kling_o3_duration_extraction.py \
   tests/test_kling_voice_bind.py \

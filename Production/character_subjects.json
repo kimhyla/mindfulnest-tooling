@@ -1,7 +1,7 @@
 {
   "_schema_version": 2,
   "_created": "2026-04-24",
-  "_note": "Kling Elements + ElevenLabs create-voice registry. Setup: scripts/setup_all_kling_character_voices.py. Beat Gen requires active element_id per dialogue speaker (O3 Pro + bound voice).",
+  "_note": "Kling Elements + ElevenLabs create-voice registry. Setup: scripts/setup_all_kling_character_voices.py. Pose re-register: --refresh-poses-only (keeps kling_voice_id). Voice re-register: --refresh-voice --confirm-voice-overwrite (mints new clone). Beat Gen requires active element_id per dialogue speaker (O3 Pro + bound voice).",
   "_image_selection_rationale": "Primary: neutral or happy pose. Refer: different emotion(s). All images 1024x1024 PNG, Rule 6 compliant.",
   "characters": {
     "Tessa": {
@@ -142,23 +142,24 @@
       "elevenlabs_voice_name": "Bork2"
     },
     "Bramble": {
-      "element_id": null,
-      "status": "pending",
+      "element_id": "313556315685320",
+      "status": "active",
       "element_name": "Bramble",
-      "description": "Cartoon 3D Pixar-style bear, sturdy brown build, gentle face, craftsman character",
-      "frontal_image": "Bramble/poses/bramble_pose_neutral.png",
+      "description": "Pixar cartoon bear, mossy brown fur, plaid shirt, suspenders, brimmed hat, gentle giant",
+      "frontal_image": "Bramble/poses/bramble_newstyle_pose_1.png",
       "refer_images": [
-        "Bramble/poses/bramble_pose_happy.png",
-        "Bramble/poses/bramble_pose_sad.png"
+        "Bramble/poses/bramble_newstyle_pose_2.png",
+        "Bramble/poses/bramble_newstyle_pose_3.png"
       ],
       "audition_line": "Steady now — I've got you.",
       "audition_speed": 0.9,
-      "kling_voice_id": null,
-      "kling_voice_label": null,
-      "created_at": null,
-      "wavespeed_prediction_id": null,
+      "kling_voice_id": "895720047158239315",
+      "kling_voice_label": "ElevenLabs Northern Terry (create-voice)",
+      "created_at": "2026-06-16T04:40:38.690534+00:00",
+      "wavespeed_prediction_id": "01df8b604533426fb773401360a211d3",
       "elevenlabs_voice_id": "wo6udizrrtpIxWGp2qJk",
-      "elevenlabs_voice_name": "Northern Terry"
+      "elevenlabs_voice_name": "Northern Terry",
+      "elevenlabs_voice_sample_path": "kling_voice_samples/bramble.mp3"
     },
     "Luna": {
       "element_id": null,
@@ -266,7 +267,7 @@
         "Arlo/poses/arlo_confident_vest.png"
       ],
       "elevenlabs_voice_id": "7o9pyvsN0ob5GO6LBQp6",
-      "elevenlabs_voice_name": "Arlo (Event 1 Beat 10 canon)",
+      "elevenlabs_voice_name": "Arlo (Chipper1 interim)",
       "elevenlabs_voice_sample_path": "kling_voice_samples/chipper.mp3",
       "audition_line": "Ready? Just focus on the Teleport Glass. Here we go!",
       "audition_speed": 1.15,

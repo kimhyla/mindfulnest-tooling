@@ -213,7 +213,7 @@ def _prompt_needs_kling_name_normalization(speaker: str, prompt: str) -> bool:
         return True
     if re.search(r"@Image1\s*\(\s*Laurel\s*\)", text, re.I):
         return True
-    if re.search(r"\bLorelai\s+(?:speaks|says)\b", text, re.I):
+    if re.search(r"\bLorelai\s+(?:speaks|says|stands|looks|reacts|turns)\b", text, re.I):
         return True
     if display != "Laurel" and re.search(r"\bLaurel\s+(?:speaks|says)\b", text, re.I):
         return True
@@ -238,8 +238,12 @@ def normalize_kling_speaker_names_in_prompt(prompt: str, speaker: str) -> str:
         if reg_key in reg._KLING_ELEMENT_DISPLAY_NAME:
             out = re.sub(r"@Image1\s*\(\s*Lorelai\s*\)", f"@Image1 ({display})", out, flags=re.I)
             out = re.sub(r"@Image1\s*\(\s*Laurel\s*\)", f"@Image1 ({display})", out, flags=re.I)
+            if display != reg_key:
+                out = re.sub(rf"\b{re.escape(reg_key)}\b", display, out, flags=re.I)
+            if display != "Laurel":
+                out = re.sub(r"\bLaurel\b", display, out, flags=re.I)
             out = re.sub(
-                r"\b(?:Lorelai|Laurel)(\s+(?:speaks|says|looks|bursts|cries|whispers|shouts)\b)",
+                r"\b(?:Lorelai|Laurel)(\s+(?:speaks|says|looks|bursts|cries|whispers|shouts|stands|turns|reacts|gestures|points|glances|watches|nods|shrugs)\b)",
                 rf"{display}\1",
                 out,
                 flags=re.I,

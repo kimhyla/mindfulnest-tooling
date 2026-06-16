@@ -6,8 +6,12 @@ from pathlib import Path
 
 CODE_PARITY_PATHS = (
     "Production/tools/beat_generator.py",
+    "Production/tools/beat_extract_policy.py",
+    "Production/tools/claude_extract_beats.py",
     "Production/tools/kling_o3_prompt.py",
     "Production/tools/kling_character_registry.py",
+    "Production/tools/server_handlers/background.py",
+    "Production/tools/server_handlers/cropper.py",
     "Production/tools/production_server.py",
     "Production/tools/kling_o3_element_beat_pipeline.py",
     "Production/tools/arlo_o3_voice_pipeline.py",
@@ -25,7 +29,11 @@ CODE_PARITY_PATHS = (
     "Production/scripts/post_tooling_change_smoke.sh",
     "Production/scripts/verify_lorelai_element_name_durability.sh",
 )
-REGISTRY_COMPARE_PATHS = ("Production/character_subjects.json",)
+REGISTRY_COMPARE_PATHS = (
+    "Production/character_subjects.json",
+    "Production/canonical_image_registry.json",
+    "Production/lib/event_library.py",
+)
 
 def _sha256(path: Path) -> str:
     h = hashlib.sha256()

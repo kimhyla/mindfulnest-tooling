@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -127,10 +128,15 @@ def test_event4_golden_plan_audit_passes_after_resync(event4_plan_rows, monkeypa
 
             prompts[idx] = build_still_insert_prompt(row)
             continue
+        emo = str(row.get("emotion") or "neutral").strip()
+        emo_prefix = ""
+        if emo and emo.lower() not in ("neutral", "[neutral]"):
+            tags = [t.strip() for t in re.split(r"[,/]", emo.strip("[]")) if t.strip()]
+            emo_prefix = " ".join(f"[{t}]" for t in tags[:2]) + " "
         fake = (
             f"@Image1 ({sp}) {sp} — arc 1 event 4 pre. Scene from @Image2.\n\n"
             "Camera: static locked shot.\n\n"
-            f'Voice line: {sp} speaks: "{(row.get("dialogue_text") or "")[:40]}"\n\n'
+            f'Voice line: {sp} speaks: {emo_prefix}"{(row.get("dialogue_text") or "")[:40]}"\n\n'
             "Children's illustrated fantasy storybook style."
         )
         merged = postprocess_kling_author_row(row, fake)

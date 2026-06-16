@@ -395,6 +395,29 @@ def test_normalize_upgrades_lorelai_voice_delivery_to_laurel_slower():
     assert "not rushed or frantic" in out
 
 
+def test_postprocess_replaces_lorelai_staging_with_loral():
+    beat = {
+        "beat_index": 2,
+        "beat_type": "dialogue",
+        "speaker": "Lorelai",
+        "dialogue_text": "Its got to be around here somewhere!",
+        "emotion": "muttering, lost",
+        "scene_notes": "Lorelai stands near the silent MindfulNest Heartwood, scanning the ruins.",
+    }
+    author = (
+        "@Image1 (Loral). Scene from @Image2.\n\n"
+        "Camera: static locked shot.\n\n"
+        "Lorelai stands near the silent MindfulNest Heartwood, scanning the ruins.\n\n"
+        'Lorelai speaks in a clipped, exasperated conversational pace: '
+        '"[muttering, lost] Its got to be around here somewhere!"'
+    )
+    merged = postprocess_kling_author_row(beat, author)
+    prompt = merged["kling_o3_prompt"]
+    assert "Lorelai" not in prompt
+    assert "Loral stands near" in prompt
+    assert "Loral speaks in a" in prompt
+
+
 def test_update_beat_accepts_kling_o3_prompt():
     text = (TOOLS / "server_handlers" / "background.py").read_text(encoding="utf-8")
     assert '"kling_o3_prompt"' in text.split("_BG_BEAT_WRITABLE")[1][:200]

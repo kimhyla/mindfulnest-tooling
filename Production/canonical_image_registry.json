@@ -3,6 +3,7 @@
   "sets": [
     {
       "id": "arcs_1_2_baseline",
+      "apply_to_all_events": true,
       "arc_numbers": [1, 2],
       "images": [
         {

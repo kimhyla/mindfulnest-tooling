@@ -307,6 +307,9 @@ def claude_plan_beats(
         + "Call submit_beat_plan with story_summary and beats_plan.\n"
         "Use Lorelai (raccoon), Tessa, Arlo, or [Stage Direction]. "
         "Use beat_type stage_still for inscription/runestone still inserts.\n"
+        "beats_plan scene_notes = ONE sentence of on-screen staging only (gesture/expression). "
+        "Put every spoken line in dialogue_text only — never repeat dialogue in scene_notes, "
+        "and never put Voice line:, @Image1, or storybook-style tails in scene_notes.\n"
     )
     user = (
         f"Segment: arc {meta.get('arc_number')} event {meta.get('event_id')} phase {phase}\n"
@@ -446,7 +449,13 @@ def claude_author_kling_prompts(
         if extra.get("emotion"):
             merged["emotion"] = extra["emotion"]
         if extra.get("scene_notes"):
-            merged["scene_notes"] = extra["scene_notes"]
+            from beat_extract_policy import strip_plan_scene_notes_for_editor
+
+            merged["scene_notes"] = strip_plan_scene_notes_for_editor(
+                str(extra["scene_notes"]),
+                dialogue_text=str(merged.get("dialogue_text") or ""),
+                beat_type=str(merged.get("beat_type") or "dialogue"),
+            )
         merged_plan.append(merged)
 
     prompt_by_index, enriched_plan = postprocess_kling_author_results(

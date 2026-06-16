@@ -968,6 +968,45 @@ def _has_populated_intro_mirror_beat(beat: dict) -> bool:
     return bool(vp) and os.path.isfile(vp)
 
 
+def _intro_mirror_option_slot_ready(beat: dict) -> bool:
+    """True when option slot 0 already pins the canonical intro_tail.mp4."""
+    for opt in beat.get("kling_o3_options") or []:
+        if not isinstance(opt, dict):
+            continue
+        slot_idx = opt.get("slot_index", opt.get("slot"))
+        if slot_idx not in (0, "0"):
+            continue
+        src = str(opt.get("source") or "")
+        vp = str(opt.get("video_path") or opt.get("path") or "").strip()
+        if src == "canonical_intro_tail" and vp and os.path.isfile(vp):
+            return True
+    return False
+
+
+def finalize_intro_canonical_tail_beats(
+    beats: list[dict],
+    event_id: str,
+    phase: str,
+    *,
+    sidecar: dict | None = None,
+) -> None:
+    """Write-path: manifest defaults + intro_tail.mp4 on mirror row (not migrate-only)."""
+    if phase != "pre":
+        return
+    segment_key = f"event_{event_id}_{phase}"
+    for beat in beats or []:
+        role = beat.get("intro_beat_role")
+        if role in (INTRO_BEAT_ROLE_SEMI_CANONICAL, INTRO_BEAT_ROLE_CANONICAL_MIRROR):
+            _apply_intro_canonical_beat_defaults(
+                beat, event_id, phase, role,
+                sidecar=sidecar, segment_key=segment_key,
+            )
+        if role == INTRO_BEAT_ROLE_CANONICAL_MIRROR:
+            hydrate_intro_canonical_mirror_beat(
+                beat, event_id, phase, sidecar=sidecar, segment_key=segment_key,
+            )
+
+
 def _single_canonical_intro_mode(
     *,
     guide: str | None = None,
@@ -1167,7 +1206,21 @@ def hydrate_intro_canonical_mirror_beat(
         beat, event_id, phase, INTRO_BEAT_ROLE_CANONICAL_MIRROR,
         guide=guide, sidecar=sidecar, segment_key=segment_key,
     )
+    if _has_populated_intro_mirror_beat(beat) and _intro_mirror_option_slot_ready(beat):
+        return True
     if _has_populated_intro_mirror_beat(beat):
+        tail_str = str(Path(beat["kling_o3_video_path"]).resolve())
+        now = datetime.now(timezone.utc).isoformat()
+        beat.setdefault("kling_o3_status", "approved")
+        beat.setdefault("canonical_intro_tail", True)
+        assign_kling_o3_option_to_slot(
+            beat,
+            0,
+            video_path=tail_str,
+            label="Canonical intro tail",
+            source="canonical_intro_tail",
+            now=now,
+        )
         return True
     try:
         from lib.paths import dropbox_root
@@ -1641,6 +1694,7 @@ def extract_beats(arc_number, event_id, phase="full"):
         beat["beat_id"] = f"bg_{beat_label}_beat_{i+1:02d}"
 
     append_intro_canonical_tail_beats(beats, beat_label, phase)
+    finalize_intro_canonical_tail_beats(beats, str(event_id), phase)
 
     return beats
 
@@ -5856,13 +5910,14 @@ def _kling_o3_visual_action_clause(beat: dict, spoken: str) -> str:
             base = _emotion_action_clause(beat)
         return base + _kling_o3_viewer_staging_clause(spoken)
     if speaker in ("Luna", "Lorelai"):
+        label = "Loral"
         if "discovery" in scene or any(k in emotion for k in ("upset", "shock", "excited", "happy")):
             base = (
-                "Lorelai — Discovery. Excitable raccoon scholar with glasses and backpack, "
+                f"{label} — Discovery. Excitable raccoon scholar with glasses and backpack, "
                 "wide expressive eyes, reacting in the heartwood grove"
             )
         else:
-            base = f"Lorelai — {_emotion_action_clause(beat)}"
+            base = f"{label} — {_emotion_action_clause(beat)}"
         return base + _kling_o3_viewer_staging_clause(spoken)
     return _emotion_action_clause(beat) + _kling_o3_viewer_staging_clause(spoken)
 
@@ -6738,10 +6793,7 @@ def apply_approved_extract_plan(
 
     beat_label = f"arc{arc_number}_event{event_id}_{phase}"
     append_intro_canonical_tail_beats(merged, beat_label, phase)
-    for b in merged:
-        role = b.get("intro_beat_role")
-        if role in (INTRO_BEAT_ROLE_SEMI_CANONICAL, INTRO_BEAT_ROLE_CANONICAL_MIRROR):
-            _apply_intro_canonical_beat_defaults(b, event_id, phase, role)
+    finalize_intro_canonical_tail_beats(merged, str(event_id), phase, sidecar=sidecar)
     merged = normalize_segment_beat_order(merged)
     heal_segment_dialogue_fields(merged)
     seg["beats"] = merged
@@ -6832,6 +6884,30 @@ def resync_kling_author_prompts_pre_audit(beats: list[dict]) -> int:
     return touched
 
 
+def _emotion_reflected_in_kling_prompt(emotion: str, prompt: str) -> bool:
+    """Compound plan emotions (cheerful, oblivious) may appear as [cheerful] in voice line."""
+    _ACTION_EMOTION_TOKENS = frozenset({
+        "wink", "winks", "nod", "nods", "shrug", "shrugs", "smile", "smiles",
+        "laugh", "laughs", "grin", "grins",
+    })
+    emo = (emotion or "").strip().strip("[]")
+    if not emo or emo.lower() == "neutral":
+        return True
+    lower = (prompt or "").lower()
+    if emo.lower() in lower:
+        return True
+    parts = [p.strip().lower() for p in re.split(r"[,/]", emo) if p.strip()]
+    if parts and all(p in _ACTION_EMOTION_TOKENS for p in parts):
+        return True
+    for part in parts:
+        token = part.strip().lower()
+        if not token:
+            continue
+        if token in lower or f"[{token}]" in lower:
+            return True
+    return False
+
+
 def audit_kling_author_enrichment(beats: list[dict]) -> list[str]:
     """Post-approve guard — dialogue beats must carry author emotion/staging in prompts."""
     warnings: list[str] = []
@@ -6856,10 +6932,8 @@ def audit_kling_author_enrichment(beats: list[dict]) -> list[str]:
         if re.search(r"\bChipper\b", prompt) and "Arlo" not in (b.get("speaker") or ""):
             warnings.append(f"{beat_id}: stale Chipper cast leaked into prompt")
         emotion = (b.get("emotion") or "").strip()
-        if emotion and emotion.lower() not in ("neutral", "[neutral]"):
-            emo_key = emotion.strip("[]").lower()
-            if "[" not in prompt and emo_key not in prompt.lower():
-                warnings.append(f"{beat_id}: emotion not woven into kling_o3_prompt")
+        if emotion and not _emotion_reflected_in_kling_prompt(emotion, prompt):
+            warnings.append(f"{beat_id}: emotion not woven into kling_o3_prompt")
         scene = (b.get("scene_notes") or "").strip()
         if len(scene) > 12:
             from beat_extract_policy import scene_notes_reflected_in_kling_prompt

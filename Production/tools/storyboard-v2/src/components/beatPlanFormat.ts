@@ -11,6 +11,33 @@ import type { BeatPlanRow } from './BeatPlanModal';
  */
 const STILL_INSERT_HINT_RE = /\b(still insert|gpt still|inscription|runestone|carved text|pre-?made still)\b/i;
 
+const PLAN_IMAGE_HEADER_RE = /^@Image1\s*\([^)]+\)\s*[.;,]?\s*(?:Scene from @Image2\s*[.;,]?\s*)?/i;
+const PLAN_VOICE_LINE_RE = /\bVoice line:\s*.+?(?:"[^"]*"|'[^']*')\s*\.?\s*/gis;
+const PLAN_STORYBOOK_TAIL_RE = /\s*Children's illustrated fantasy storybook style\.?\s*$/i;
+
+/** Modal edit box: staging only — strip Kling prompt boilerplate Claude sometimes packs in scene_notes. */
+function stripPlanSceneNotesForDisplay(sceneNotes: string): string {
+  let notes = (sceneNotes || '').trim();
+  if (!notes) return '';
+  notes = notes.replace(PLAN_IMAGE_HEADER_RE, '').trim();
+  notes = notes.replace(PLAN_VOICE_LINE_RE, '').trim();
+  notes = notes.replace(PLAN_STORYBOOK_TAIL_RE, '').trim();
+  if (notes.includes(';')) {
+    const kept = notes.split(';')
+      .map((part) => part.trim())
+      .filter((part) => {
+        const lower = part.toLowerCase();
+        return !lower.startsWith('voice line:')
+          && !lower.startsWith('@image1')
+          && !lower.startsWith('scene from @image2');
+      });
+    if (kept.length > 0) {
+      notes = kept.join('. ');
+    }
+  }
+  return notes.replace(/\s+/g, ' ').trim();
+}
+
 /** Strip outer brackets so we never emit ``[[emotion]]`` in plan lines. */
 function formatEmotionForLine(emotion: string): string {
   const e = (emotion || 'neutral').trim();
@@ -26,7 +53,7 @@ export function beatPlanRowToLine(row: BeatPlanRow): string {
     : (row.speaker || 'Character').trim();
   const emotion = formatEmotionForLine(row.emotion || 'neutral');
   const dialogue = (row.dialogue_text || '').trim();
-  const scene = (row.scene_notes || '').trim();
+  const scene = stripPlanSceneNotesForDisplay(row.scene_notes || '');
   let line = `${speaker} [${emotion}]: ${dialogue}`;
   if (scene) {
     line += ` [${scene}]`;

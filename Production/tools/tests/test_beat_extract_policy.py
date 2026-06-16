@@ -176,6 +176,33 @@ def test_normalize_plan_row_humanizes_scene_notes():
     assert "hand" in row["scene_notes"].lower()
 
 
+def test_normalize_plan_row_strips_kling_boilerplate_from_scene_notes():
+    dialogue = (
+        "Oh! Hello there. Good ta meet ya. I'm Bramble — from HoneyPot. "
+        "I was just looking for a spot to take my cubs camping."
+    )
+    bloated = (
+        "@Image1 (Bramble). Scene from @Image2. Bramble stands near the MindfulNest ruins, "
+        "extending one large hand outward in a friendly shake gesture, a broad grin spreading "
+        "across his face. Voice line: Bramble speaks in a warm, jovial rumble: [delighted] "
+        f"\"Oh! Hello there. Good ta meet ya. [pause] I'm Bramble — from HoneyPot. "
+        "I was just looking for a spot to take my cubs camping.\" "
+        "Children's illustrated fantasy storybook style."
+    )
+    row, _ = normalize_plan_row({
+        "speaker": "Bramble",
+        "dialogue_text": dialogue,
+        "emotion": "delighted, easygoing",
+        "scene_notes": bloated,
+        "beat_type": "dialogue",
+    }, beat_index=3)
+    assert "Voice line:" not in row["scene_notes"]
+    assert "@Image1" not in row["scene_notes"]
+    assert "storybook style" not in row["scene_notes"].lower()
+    assert dialogue not in row["scene_notes"]
+    assert "friendly shake gesture" in row["scene_notes"].lower()
+
+
 def test_humanize_kling_body_parts_on_beat_sidecar_fields():
     beat = {
         "speaker": "Tessa",

@@ -273,6 +273,57 @@ def _simplify_staging(scene_notes: str, *, beat_type: str) -> tuple[str, list[st
     return apply_cast_text(notes), warnings
 
 
+_PLAN_IMAGE_HEADER_RE = re.compile(
+    r"^@image1\s*\([^)]+\)\s*[.;,]?\s*(?:scene from @image2\s*[.;,]?\s*)?",
+    re.I,
+)
+_PLAN_VOICE_LINE_RE = re.compile(
+    r"\bvoice line:\s*.+?(?:\"[^\"]*\"|'[^']*')\s*\.?\s*",
+    re.I | re.S,
+)
+_PLAN_STORYBOOK_TAIL_RE = re.compile(
+    r"\s*children'?s illustrated fantasy storybook style\.?\s*$",
+    re.I,
+)
+
+
+def strip_plan_scene_notes_for_editor(
+    scene_notes: str,
+    *,
+    dialogue_text: str = "",
+    beat_type: str = "dialogue",
+) -> str:
+    """Beat-plan modal: staging only — no @Image1 header, Voice line, or dialogue echo."""
+    if beat_type in ("stage_still", "stage_direction"):
+        return apply_cast_text((scene_notes or "").strip())
+    notes = apply_cast_text((scene_notes or "").strip())
+    if not notes:
+        return notes
+    notes = _PLAN_IMAGE_HEADER_RE.sub("", notes, count=1).strip()
+    notes = _PLAN_VOICE_LINE_RE.sub("", notes).strip()
+    notes = _PLAN_STORYBOOK_TAIL_RE.sub("", notes).strip()
+    if ";" in notes:
+        kept: list[str] = []
+        for part in notes.split(";"):
+            piece = part.strip()
+            if not piece:
+                continue
+            lower = piece.lower()
+            if lower.startswith("voice line:"):
+                continue
+            if lower.startswith("@image1"):
+                continue
+            if lower.startswith("scene from @image2"):
+                continue
+            kept.append(piece)
+        if kept:
+            notes = ". ".join(kept)
+    notes = re.sub(r"\s+", " ", notes).strip().rstrip(";,.")
+    if notes and not notes.endswith("."):
+        notes += "."
+    return notes[:500]
+
+
 def classify_beat_type(row: dict) -> str:
     bt = str(row.get("beat_type") or "dialogue").strip().lower()
     speaker = str(row.get("speaker") or "").strip().lower()
@@ -312,6 +363,10 @@ def normalize_plan_row(row: dict, *, beat_index: int) -> tuple[dict, list[str]]:
     emotion = _strip_bracket_emotion(apply_cast_text(str(row.get("emotion") or "neutral").strip()) or "neutral")
     scene_notes, w = _simplify_staging(str(row.get("scene_notes") or ""), beat_type=beat_type)
     warnings.extend(w)
+    if beat_type == "dialogue":
+        scene_notes = strip_plan_scene_notes_for_editor(
+            scene_notes, dialogue_text=dialogue, beat_type=beat_type,
+        )
 
     if beat_type == "dialogue":
         speaker, dialogue = repair_corrupted_plan_dialogue(dialogue, speaker)
@@ -330,6 +385,7 @@ def normalize_plan_row(row: dict, *, beat_index: int) -> tuple[dict, list[str]]:
 
     dialogue = humanize_kling_body_parts(dialogue, speaker=speaker)
     scene_notes = humanize_kling_body_parts(scene_notes, speaker=speaker)
+    scene_notes = kling_face_scene_notes(speaker, scene_notes)
 
     out = {
         "beat_index": beat_index,
@@ -419,6 +475,25 @@ def _kling_staging_speaker_label(speaker: str) -> str:
             return o3p._kling_display_name_for_speaker(speaker) or (speaker or "").strip()
         except Exception:
             return (speaker or "").strip()
+
+
+def kling_face_scene_notes(speaker: str, scene_notes: str) -> str:
+    """Keep plan staging aligned with Kling display name (Lorelai/Laurel → Loral)."""
+    notes = apply_cast_text((scene_notes or "").strip())
+    if not notes:
+        return notes
+    label = _kling_staging_speaker_label(speaker)
+    sp = (speaker or "").strip()
+    out = notes
+    if not label:
+        return out
+    if sp and sp != label:
+        out = re.sub(rf"^{re.escape(sp)}\b", label, out, count=1, flags=re.I)
+        out = re.sub(rf"\b{re.escape(sp)}\b", label, out, flags=re.I)
+    for token in ("Lorelai", "Laurel"):
+        if token != label:
+            out = re.sub(rf"\b{re.escape(token)}\b", label, out, flags=re.I)
+    return out
 
 
 def screen_direction_paragraph(speaker: str, scene_notes: str) -> str:
@@ -586,31 +661,28 @@ def postprocess_kling_author_row(plan_row: dict, prompt: str) -> dict[str, str]:
             "scene_notes": scene_notes[:500],
         }
 
-    out = _IMAGE1_SPEAKER_RE.sub(f"@Image1 ({speaker})", out, count=1)
+    out = _IMAGE1_SPEAKER_RE.sub(f"@Image1 ({_kling_staging_speaker_label(speaker)})", out, count=1)
+    display = _kling_staging_speaker_label(speaker)
     out = re.sub(
-        rf"(@Image1 \({re.escape(speaker)}\))\s+\w+\s+—",
-        rf"\1 {speaker} —",
+        rf"(@Image1 \({re.escape(display)}\))\s+(?:{re.escape(speaker)}|{re.escape(display)})\s+—",
+        rf"\1 {display} —",
         out,
         count=1,
+        flags=re.I,
     )
-    staging = _staging_paragraph(speaker, scene_notes, emotion)
-    if staging and not _prompt_contains_staging(out, scene_notes):
-        vm = _VOICE_LINE_RE.search(out)
-        if vm:
-            out = out[: vm.start()].rstrip() + f"\n\n{staging}\n\n" + out[vm.start() :].lstrip()
-        else:
-            out = out.rstrip() + f"\n\n{staging}\n"
 
     vm = _VOICE_LINE_RE.search(out)
     _inferred_speaker, spoken_only = extract_spoken_from_dialogue(dialogue)
     if speaker == "Character" and _inferred_speaker:
         speaker = _inferred_speaker
-        out = _IMAGE1_SPEAKER_RE.sub(f"@Image1 ({speaker})", out, count=1)
+        display = _kling_staging_speaker_label(speaker)
+        out = _IMAGE1_SPEAKER_RE.sub(f"@Image1 ({display})", out, count=1)
         out = re.sub(
-            rf"(@Image1 \({re.escape(speaker)}\))\s+\w+\s+—",
-            rf"\1 {speaker} —",
+            rf"(@Image1 \({re.escape(display)}\))\s+(?:{re.escape(speaker)}|{re.escape(display)})\s+—",
+            rf"\1 {display} —",
             out,
             count=1,
+            flags=re.I,
         )
     spoken_for_voice = spoken_only or dialogue
     if vm and spoken_for_voice and not _prompt_spoken_matches_dialogue(out, spoken_for_voice):
@@ -626,6 +698,7 @@ def postprocess_kling_author_row(plan_row: dict, prompt: str) -> dict[str, str]:
 
     out = humanize_kling_body_parts(out, speaker=speaker)
     scene_notes = humanize_kling_body_parts(scene_notes, speaker=speaker)
+    scene_notes = kling_face_scene_notes(speaker, scene_notes)
 
     out = normalize_kling_o3_prompt_event1_quality(
         out.strip(),
@@ -634,6 +707,18 @@ def postprocess_kling_author_row(plan_row: dict, prompt: str) -> dict[str, str]:
         emotion=emotion,
         scene_notes=scene_notes,
     )
+
+    staging = _staging_paragraph(speaker, scene_notes, emotion)
+    if staging and not _prompt_contains_staging(out, scene_notes):
+        vm = _VOICE_LINE_RE.search(out)
+        if vm:
+            out = out[: vm.start()].rstrip() + f"\n\n{staging}\n\n" + out[vm.start() :].lstrip()
+        else:
+            out = out.rstrip() + f"\n\n{staging}\n"
+
+    from tools import kling_o3_prompt as o3p
+
+    out = o3p.normalize_kling_speaker_names_in_prompt(out, speaker)
 
     return {
         "kling_o3_prompt": out.strip(),
@@ -800,9 +885,16 @@ def heal_beat_kling_o3_prompt_event1_shape(beat: dict) -> bool:
     prompt = (beat.get("kling_o3_prompt") or "").strip()
     if not prompt or len(prompt) < 40:
         return False
+    speaker = str(beat.get("speaker") or "")
+    try:
+        from tools import kling_character_registry as reg
+
+        speaker = reg.resolve_registry_key(speaker) or speaker
+    except Exception:
+        pass
     new = normalize_kling_o3_prompt_event1_quality(
         prompt,
-        speaker=str(beat.get("speaker") or ""),
+        speaker=speaker,
         dialogue=str(beat.get("dialogue_text") or ""),
         emotion=str(beat.get("emotion") or ""),
         scene_notes=str(beat.get("scene_notes") or ""),

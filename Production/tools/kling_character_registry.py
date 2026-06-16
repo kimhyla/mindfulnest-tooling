@@ -41,6 +41,7 @@ _SPEAKER_REGISTRY_ALIAS: dict[str, str] = {
     "luna": "Lorelai",
     "lorelai": "Lorelai",
     "laurel": "Lorelai",
+    "loral": "Lorelai",
 }
 
 # Kling Element display name "Loral" avoids Laurel/Lorelai naming conflicts and TTS drift.

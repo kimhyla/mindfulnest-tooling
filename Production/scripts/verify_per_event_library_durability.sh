@@ -26,6 +26,10 @@ grep -q 'def event_images_dir' "$EVENT_LIB" \
   || fail "event_library.py missing event_images_dir"
 grep -q 'canonical_meta_for_arc' "$CROPPER" \
   || fail "cropper handle_cr_library must inject canonical tier"
+grep -q 'apply_to_all_events' "${REPO_ROOT}/Production/canonical_image_registry.json" \
+  || fail "canonical_image_registry.json must set apply_to_all_events for all Event_N"
+grep -q 'apply_to_all_events' "$EVENT_LIB" \
+  || fail "event_library canonical_meta_for_arc must honor apply_to_all_events"
 
 python3 -m pytest "$TEST" "$APP_CTX_TEST" -q
 

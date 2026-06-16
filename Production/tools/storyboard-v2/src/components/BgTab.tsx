@@ -1094,8 +1094,6 @@ export function BgTab() {
     );
     if (result.ok) {
       setBeatPlanDraftSaveStatus('saved');
-      setBeatPlanSummary(storySummary);
-      setBeatPlanRows(beatsPlan);
       return;
     }
     setBeatPlanDraftSaveStatus('error');

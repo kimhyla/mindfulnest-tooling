@@ -1988,12 +1988,9 @@ def switch_bg_context_for_video_role(
 
         if phase_t == "pre":
             bg.append_intro_canonical_tail_beats(beats, beat_label, phase_t)
-            for beat in beats:
-                role = beat.get("intro_beat_role")
-                if role:
-                    bg._apply_intro_canonical_beat_defaults(
-                        beat, evt_t_str, phase_t, role,
-                    )
+            bg.finalize_intro_canonical_tail_beats(
+                beats, evt_t_str, phase_t, sidecar=sidecar,
+            )
             seg["beats"] = beats
 
         bg.write_sidecar(sidecar)

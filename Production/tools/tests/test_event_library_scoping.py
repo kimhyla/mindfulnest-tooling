@@ -52,6 +52,21 @@ class TestEventLibraryHelpers(unittest.TestCase):
             self.assertEqual(len(meta2), 1)
             self.assertEqual(len(meta3), 0)
 
+    def test_canonical_meta_apply_to_all_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prod = Path(tmp)
+            registry = {
+                "version": 1,
+                "sets": [{
+                    "id": "global",
+                    "apply_to_all_events": True,
+                    "arc_numbers": [1, 2],
+                    "images": [{"key": "canonical_arlo_mirror_v1", "filename": "canonical_arlo_mirror_v1.png"}],
+                }],
+            }
+            (prod / "canonical_image_registry.json").write_text(json.dumps(registry), encoding="utf-8")
+            self.assertEqual(len(canonical_meta_for_arc(prod, 4)), 1)
+
     def test_resolve_event_scoped_image(self):
         with tempfile.TemporaryDirectory() as tmp:
             ev = Path(tmp) / "Event_1"

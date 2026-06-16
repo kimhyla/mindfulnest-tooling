@@ -47,13 +47,15 @@ export function BeatPlanModal({
   const [storySummary, setStorySummary] = useState(initialSummary);
   const [beatScript, setBeatScript] = useState('');
   const skipAutosaveRef = useRef(true);
+  const wasOpenRef = useRef(false);
 
   useEffect(() => {
-    if (open) {
-      setStorySummary(initialSummary);
-      setBeatScript(beatPlanRowsToText(initialPlan));
-      skipAutosaveRef.current = true;
-    }
+    const justOpened = open && !wasOpenRef.current;
+    wasOpenRef.current = open;
+    if (!justOpened) return;
+    setStorySummary(initialSummary);
+    setBeatScript(beatPlanRowsToText(initialPlan));
+    skipAutosaveRef.current = true;
   }, [open, initialSummary, initialPlan]);
 
   useEffect(() => {

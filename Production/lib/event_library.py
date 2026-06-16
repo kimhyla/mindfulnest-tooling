@@ -1,4 +1,4 @@
-"""Per-event image/watercolor library paths + canonical image registry (arcs 1–2)."""
+"""Per-event image/watercolor library paths + canonical image registry."""
 
 from __future__ import annotations
 
@@ -65,9 +65,10 @@ def canonical_meta_for_arc(prod_root: Path | str, arc_number: int) -> list[dict[
     registry = load_canonical_registry(prod_root)
     out: list[dict[str, Any]] = []
     for entry in registry.get("sets") or []:
-        arcs = entry.get("arc_numbers") or []
-        if arc_number not in arcs:
-            continue
+        if not entry.get("apply_to_all_events"):
+            arcs = entry.get("arc_numbers") or []
+            if arc_number not in arcs:
+                continue
         for img in entry.get("images") or []:
             if isinstance(img, dict) and img.get("filename"):
                 out.append(img)

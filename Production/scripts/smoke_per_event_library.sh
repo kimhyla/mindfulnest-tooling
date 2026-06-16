@@ -47,6 +47,14 @@ fail=0
 [[ "$E2_WC" -ge "0" ]] || { echo "FAIL: Event_2 watercolor count invalid: $E2_WC"; fail=1; }
 [[ "$E1_WC" -ge "0" ]] || { echo "FAIL: Event_1 watercolor count invalid: $E1_WC"; fail=1; }
 [[ "$E1_CANON" == "$E2_CANON" ]] || { echo "FAIL: canonical keys differ Event_1 vs Event_2"; fail=1; }
+
+load_event Event_4
+E4_IMAGES=$(curl -sf "$BASE/api/cr/library?event_id=Event_4" | count_images)
+E4_CANON=$(curl -sf "$BASE/api/cr/library?event_id=Event_4" | canonical_keys)
+echo "Event_4 images=$E4_IMAGES canonical=[$E4_CANON]"
+[[ "$E4_IMAGES" -ge "7" ]] || { echo "FAIL: Event_4 expected >=7 images (canonical baseline), got $E4_IMAGES"; fail=1; }
+[[ "$E4_CANON" == "$E1_CANON" ]] || { echo "FAIL: Event_4 canonical keys differ from Event_1"; fail=1; }
+
 [[ "$SFX" -ge "1" ]] || { echo "FAIL: shared sfx library empty"; fail=1; }
 
 if [[ "$fail" -ne 0 ]]; then

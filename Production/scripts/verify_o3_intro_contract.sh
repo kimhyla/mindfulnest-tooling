@@ -26,5 +26,8 @@ python3 -m pytest \
   Production/tools/tests/test_kling_voice_bind.py \
   Production/tools/tests/test_kling_o3_duration_extraction.py \
   Production/tools/tests/test_element_voice_alignment.py \
+  Production/tools/tests/test_arlo_intro_canonical_hydrate.py \
+  Production/tools/tests/test_intro_mirror_write_path_hydrate.py \
+  Production/tools/tests/test_beat_plan_draft_autosave.py \
   -q
 echo "[o3-intro-contract] all gates passed"
