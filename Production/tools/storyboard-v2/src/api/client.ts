@@ -25,7 +25,7 @@ import {
   activeMilestoneId,
   makeScope,
 } from '../state/scope';
-import { clientMayPinServerTo, noteClientPinnedEvent } from '../state/scopeAuthority';
+import { clientMayPinServerTo, isDedicatedPortForEvent, noteClientPinnedEvent } from '../state/scopeAuthority';
 import {
   READ_ENDPOINTS,
   MUTATION_ENDPOINTS,
@@ -281,6 +281,10 @@ export async function healServerScopeIfAuthorized(scope: Scope): Promise<boolean
     }
   } catch {
     // Fall through to explicit load when authorized.
+  }
+  // Dedicated port servers are CLI-pinned — never POST /api/event/load (ping-pong).
+  if (isDedicatedPortForEvent(scope.event_id)) {
+    return false;
   }
   if (!clientMayPinServerTo(scope.event_id)) {
     return false;

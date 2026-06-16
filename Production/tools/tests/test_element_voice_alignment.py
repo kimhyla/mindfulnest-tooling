@@ -631,9 +631,18 @@ def test_o3_element_framing_paragraph_closeup_uses_camera_line(monkeypatch):
         "Close-up of head and torso area",
     )
     assert line.startswith("Camera:")
-    assert "close-up on @Image1" in line
+    assert "close-up" in line.lower()
+    assert "torso up" in line.lower()
     assert "Loral Close-up" not in line
     assert "Lorelai Close-up" not in line
+
+
+def test_o3_element_framing_paragraph_closeup_default(monkeypatch):
+    from beat_extract_policy import o3_element_framing_paragraph
+
+    line = o3_element_framing_paragraph("Lorelai", "soft smile near the nest")
+    assert line.startswith("Camera:")
+    assert "torso up" in line.lower()
 
 
 def test_o3_element_framing_paragraph_medium_default(monkeypatch):
@@ -671,7 +680,7 @@ def test_validate_rejects_lorelai_staging_before_voice_line(monkeypatch):
     }
     assert bg.heal_o3_element_submit_prompt(beat) is True
     assert "Lorelai Close-up" not in beat["kling_o3_prompt"]
-    assert "close-up on @Image1" in beat["kling_o3_prompt"]
+    assert "torso up" in beat["kling_o3_prompt"].lower()
     assert o3p.validate_element_bound_voice_prompt("Lorelai", beat["kling_o3_prompt"]) == []
 
 

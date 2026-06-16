@@ -261,7 +261,7 @@ def _few_shot_kling_examples() -> str:
     return (
         "@Image1 (Arlo) Arlo — Discovery. Scene from @Image2.\n\n"
         "Camera: static locked shot, no zoom, no dolly, no pan, no camera movement, "
-        "stable eye-level medium shot.\n\n"
+        "stable eye-level close-up — close up view of character, seen from the torso up.\n\n"
         "Arlo speaks in a warm natural conversational pace: \"Hello.... Are you OK...?\"\n\n"
         "Children's illustrated fantasy storybook style, warm golden forest light."
     )

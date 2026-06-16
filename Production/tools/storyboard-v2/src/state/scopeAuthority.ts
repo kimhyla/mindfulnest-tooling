@@ -36,3 +36,29 @@ export function clientScopeOverridesServerPin(serverEventId: string): boolean {
   if (explicitClientEventId) return explicitClientEventId !== serverEventId;
   return false;
 }
+
+/** EVENT_DEDICATED_PORT_V1 — Event_N → localhost:(5110+N). Always on (2026-06). */
+export function eventIdToDedicatedPort(eventId: string): number | null {
+  const m = /^Event_(\d+)$/.exec(eventId.trim());
+  if (!m) return null;
+  return 5110 + parseInt(m[1]!, 10);
+}
+
+/** True when this tab's origin port is the dedicated port for eventId. */
+export function isDedicatedPortForEvent(eventId: string): boolean {
+  if (typeof window === 'undefined') return false;
+  const expected = eventIdToDedicatedPort(eventId);
+  if (expected == null) return false;
+  const port = parseInt(window.location.port || '80', 10);
+  return port === expected;
+}
+
+/** When ?event= is on the wrong port, return the bookmark URL the tab should use. */
+export function dedicatedPortBookmarkUrl(eventId: string): string | null {
+  if (typeof window === 'undefined') return null;
+  const expected = eventIdToDedicatedPort(eventId);
+  if (expected == null) return null;
+  const port = parseInt(window.location.port || '80', 10);
+  if (port === expected) return null;
+  return `http://localhost:${expected}/?event=${encodeURIComponent(eventId)}`;
+}

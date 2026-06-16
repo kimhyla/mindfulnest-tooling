@@ -43,9 +43,8 @@ echo "=== [4/6] Dual-root parity ==="
 MN_TOOLING_ROOT="$SRC_TOOLING" MN_DROPBOX_ROOT="$DEST_DROPBOX" \
   python3 "$SRC_TOOLING/Production/scripts/verify_tooling_dropbox_parity.py"
 
-echo "=== [5/6] Restart production_server.py ==="
+echo "=== [5/6] Restart production_server.py (smoke port only — do not pkill dedicated Event servers) ==="
 lsof -ti:"$SERVER_PORT" | xargs kill -9 2>/dev/null || true
-pkill -f "production_server.py" 2>/dev/null || true
 sleep 2
 cd "$DEST_DROPBOX"
 nohup env PRODUCTION_SERVER_SINGLE_MACHINE=1 python3 "$DEST_DROPBOX/Production/tools/production_server.py" \

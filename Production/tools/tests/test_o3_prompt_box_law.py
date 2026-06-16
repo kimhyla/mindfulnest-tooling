@@ -60,6 +60,34 @@ def test_heal_o3_element_submit_prompt_skipped_under_prompt_box_law():
     assert USER_LINE in (beat.get("kling_o3_prompt") or "")
 
 
+def test_heal_o3_element_submit_prompt_skipped_for_still_insert():
+    custom = (
+        '@Image1 (Loral). Scene from @Image2.\n\n'
+        'Camera: static locked shot.\n\n'
+        'Loral speaks in a warm excited conversational pace: "Hello kiddo."\n\n'
+        "Children's illustrated fantasy storybook style"
+    )
+    beat = {
+        "beat_id": "bg_arc1_event2_pre_beat_01",
+        "speaker": "Lorelai",
+        "pipeline": "still_insert",
+        "kling_o3_prompt": custom,
+    }
+    assert bg.heal_o3_element_submit_prompt(beat) is False
+    assert beat.get("kling_o3_prompt") == custom
+
+
+def test_heal_element_bound_voice_prompt_skipped_for_still_insert():
+    beat = {
+        "beat_id": "bg_arc1_event2_pre_beat_01",
+        "speaker": "Lorelai",
+        "pipeline": "still_insert",
+        "kling_o3_prompt": 'Loral speaks in a CUSTOM delivery pace: "CUSTOM LINE"',
+    }
+    assert bg.heal_element_bound_voice_prompt(beat) is False
+    assert "CUSTOM delivery pace" in (beat.get("kling_o3_prompt") or "")
+
+
 def test_resolve_element_o3_submit_prompt_preserves_user_line():
     beat = _semi_canonical_arlo_beat()
     prompt, spoken = resolve_element_o3_submit_prompt(beat)

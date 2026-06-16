@@ -12937,7 +12937,14 @@ def _check_runtime_capabilities() -> None:
         sys.exit(4)
 
 
-def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_event_dir: Path | None = None) -> int:
+def run_server(
+    event_dir: Path,
+    storyboard_name: str,
+    event_id: str,
+    *,
+    source_event_dir: Path | None = None,
+    port: int = SERVER_PORT,
+) -> int:
     from lib.event_pin import resolve_startup_event
     from lib.paths import normalize_event_dir
 
@@ -12970,10 +12977,10 @@ def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_e
     # line that the UI / log scraper can parse. Audit C4-1/C4-2/C4-3/C4-4.
     _check_runtime_capabilities()
 
-    pid_file = event_dir / "production_server.pid"
+    pid_file = event_dir / f"production_server_{port}.pid"
     cleanup_stale(pid_file)
-    if not port_free(SERVER_PORT):
-        print(f"ERROR: port {SERVER_PORT} already in use", file=sys.stderr)
+    if not port_free(port):
+        print(f"ERROR: port {port} already in use", file=sys.stderr)
         return 3
 
     # Parse API keys — LD-505 Phase C (T1-4, 2026-05-19): API_KEYS_MASTER.md
@@ -13179,7 +13186,7 @@ def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_e
             f"{source_event_dir} (server still write-pinned to {event_dir.name})"
         )
 
-    httpd = ProductionServer(("127.0.0.1", SERVER_PORT), app)
+    httpd = ProductionServer(("127.0.0.1", port), app)
     try:
         pid_file.write_text(str(os.getpid()))
     except PermissionError:
@@ -13217,7 +13224,7 @@ def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_e
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
 
-    print(f"[server] listening on http://localhost:{SERVER_PORT}  event={event_id}")
+    print(f"[server] listening on http://localhost:{port}  event={event_id}")
     print(f"[server] storyboard:  {storyboard_path}")
     print(f"[server] clips dir:   {state.clips_dir}")
     try:
@@ -13342,6 +13349,12 @@ def main() -> int:
     # recovery primitive can move beats between events with explicit operator
     # ceremony (one-time CLI restart per cross-event session per DV-1).
     ap.add_argument(
+        "--port",
+        type=int,
+        default=SERVER_PORT,
+        help="HTTP listen port (Event_N dedicated servers use 5110+N, e.g. Event_2 → 5112)",
+    )
+    ap.add_argument(
         "--source-event",
         type=Path,
         default=None,
@@ -13363,6 +13376,7 @@ def main() -> int:
     return run_server(
         Path(args.event_dir), args.storyboard, args.event_id,
         source_event_dir=args.source_event,
+        port=args.port,
     )
 
 

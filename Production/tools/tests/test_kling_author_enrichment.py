@@ -74,7 +74,7 @@ def test_postprocess_injects_emotion_staging_and_cast():
     assert "@Image1 (Tessa)" in prompt
     assert "Luna" not in prompt
     assert "Camera:" in prompt
-    assert "medium shot" in prompt.lower()
+    assert "torso up" in prompt.lower()
     assert "[curious, polite]" in prompt
     assert "Hello" in prompt
     assert "WHAT is THAT" not in prompt
@@ -432,6 +432,7 @@ def test_submit_locks_append_lighting_when_image1_and_image2():
     )
     out = bg.prepare_kling_o3_prompt_for_submit({"speaker": "Lorelai"}, raw)
     assert bg.KLING_O3_LIGHTING_LOCK in out
+    assert bg.KLING_O3_BACKGROUND_STABILITY_LOCK in out
     assert bg.KLING_O3_IDENTITY_LOCK in out
 
 
@@ -444,6 +445,7 @@ def test_build_kling_o3_prompt_includes_lighting_lock():
     }
     out = bg.build_kling_o3_prompt(beat)
     assert bg.KLING_O3_LIGHTING_LOCK in out
+    assert bg.KLING_O3_BACKGROUND_STABILITY_LOCK in out
 
 
 def test_canonical_prompt_shape_v2_tessa(monkeypatch):
@@ -470,7 +472,7 @@ def test_canonical_prompt_shape_v2_tessa(monkeypatch):
     assert "arc 1 event" not in prompt.lower()
     assert "rooted in place" not in prompt.lower()
     assert "Camera:" in prompt
-    assert "medium shot" in prompt.lower()
+    assert "torso up" in prompt.lower()
     assert '[curious, polite] "Oh, hello.[pause]' in prompt
     assert '"[curious, polite]' not in prompt
 

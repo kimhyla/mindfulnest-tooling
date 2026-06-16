@@ -14,6 +14,23 @@ def test_beat_is_still_insert():
     assert not bg.beat_is_still_insert({})
 
 
+def test_ken_burns_zoompan_vf_uses_prescale_and_focal_center():
+    vf = bg._ken_burns_zoompan_vf(
+        pan_x_pct=50,
+        pan_y_pct=50,
+        zoom_start=1.0,
+        zoom_end=1.08,
+        total_frames=120,
+        fps=24,
+    )
+    assert "scale=2560:1440" in vf
+    assert "crop=2560:1440" in vf
+    assert "iw/zoom/2" in vf
+    assert "ih/zoom/2" in vf
+    assert "d=120" in vf
+    assert "s=1280x720" in vf
+
+
 def test_resolve_still_source_prefers_library_drop(tmp_path: Path):
     still = tmp_path / "scene.png"
     still.write_bytes(b"png")

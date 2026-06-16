@@ -30,6 +30,7 @@ import {
   ensureServerPinnedTo,
   noteClientPinnedEvent,
 } from '../api/client';
+import { isDedicatedPortForEvent, dedicatedPortBookmarkUrl } from '../state/scopeAuthority';
 
 export interface ScopeBoundaryProps {
   children: ComponentChildren;
@@ -100,6 +101,20 @@ export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
       }
 
       const urlEventId = readUrlEventId();
+      if (urlEventId) {
+        const bookmark = dedicatedPortBookmarkUrl(urlEventId);
+        if (bookmark) {
+          if (!cancelled) {
+            setPinError(
+              `Wrong port — use ${bookmark} for this event (then close this tab).`,
+            );
+            document.body.setAttribute('data-scope-pin-failed', urlEventId);
+            document.body.setAttribute('data-scope-correct-url', bookmark);
+          }
+          return;
+        }
+      }
+
       const current = await fetchEventCurrent();
       if (cancelled) return;
 
@@ -117,6 +132,15 @@ export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
       let targetEventId = urlEventId ?? serverEventId ?? resolveLocalFallbackWithoutUrl();
 
       const pinTarget = async (eventId: string): Promise<boolean> => {
+        // Dedicated port (5110+N): server is CLI-pinned to one event — never
+        // POST /api/event/load (two tabs on :5111 used to ping-pong the pin).
+        if (urlEventId && isDedicatedPortForEvent(urlEventId)) {
+          if (serverEventId === urlEventId) {
+            noteClientPinnedEvent(urlEventId);
+            return true;
+          }
+          return false;
+        }
         if (serverEventId === eventId) {
           return ensureServerPinnedTo(eventId);
         }
@@ -246,6 +270,7 @@ export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
   }, [forceEventId]);
 
   if (pinError) {
+    const correctUrl = document.body.getAttribute('data-scope-correct-url');
     return (
       <div
         class="scope-boundary-error"
@@ -253,6 +278,13 @@ export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
         data-scope-pin-error={pinError}
       >
         {pinError}
+        {correctUrl ? (
+          <p style={{ marginTop: '0.75rem' }}>
+            <a href={correctUrl} class="mn-scope-boundary-open-correct-url">
+              Open {correctUrl}
+            </a>
+          </p>
+        ) : null}
       </div>
     );
   }

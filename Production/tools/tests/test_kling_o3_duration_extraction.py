@@ -148,7 +148,7 @@ def test_normalize_o3_element_bound_prompt_strips_arlo_transition_prose(monkeypa
     normalized = bg.normalize_o3_element_bound_prompt(beat, beat["kling_o3_prompt"])
     assert "speaks directly to the camera" not in normalized.lower()
     assert "Camera:" in normalized
-    assert "medium shot" in normalized.lower()
+    assert "torso up" in normalized.lower()
     assert "not bubbly or hyper" in normalized
     assert "gesture toward the lens" not in normalized.lower()
     assert bg.prompt_body_has_performance_staging(normalized) is False
@@ -180,8 +180,8 @@ Children's illustrated fantasy storybook style, warm golden forest light""",
     }
     normalized = bg.normalize_o3_element_bound_prompt(beat, beat["kling_o3_prompt"])
     assert "Camera:" in normalized
-    assert "close-up on @image1" in normalized.lower()
-    assert "head and torso" in normalized.lower()
+    assert "close-up" in normalized.lower()
+    assert "torso up" in normalized.lower()
     assert "Lorelai Close-up" not in normalized
     assert "Loral Close-up" not in normalized
     assert "Loral Closeup" not in normalized
@@ -224,7 +224,7 @@ def test_heal_o3_element_submit_prompt_persists_minimal_arlo_shell(monkeypatch):
     assert bg.heal_o3_element_submit_prompt(beat) is True
     assert "speaks directly to the camera" not in beat["kling_o3_prompt"].lower()
     assert "Camera:" in beat["kling_o3_prompt"]
-    assert "medium shot" in beat["kling_o3_prompt"].lower()
+    assert "torso up" in beat["kling_o3_prompt"].lower()
 
 
 def test_normalize_rebuilds_tessa_beat2_prose_shell(monkeypatch):

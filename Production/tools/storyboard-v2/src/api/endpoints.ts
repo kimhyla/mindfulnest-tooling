@@ -1,5 +1,6 @@
-// API endpoint catalog. Rule 32 — absolute URLs on the serving origin so one
-// bundle works on :5111, :5112, etc. (dual-event server workflow).
+// API endpoint catalog. Rule 32 — absolute URLs on the serving origin.
+// Single-server mode: every Event_N uses http://localhost:5111/?event=Event_N
+// (see scopeAuthority SINGLE_STORYBOARD_PORT + DUAL_EVENT_DEDICATED_PORTS).
 
 function resolveServerBase(): string {
   if (typeof window !== 'undefined' && window.location?.origin) {

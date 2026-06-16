@@ -11,6 +11,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=event_server_port.sh
+source "${SCRIPT_DIR}/event_server_port.sh"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 DROPBOX="${MN_DROPBOX_ROOT:-${HOME}/Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files}"
 PROD_ROOT="${DROPBOX}/Production"
@@ -43,6 +45,7 @@ if [[ -z "$EVENT_ID" ]]; then
   EVENT_ID="Event_1"
 fi
 EVENT_DIR="Production/${EVENT_ID}"
+EVENT_PORT="$(event_id_to_port "$EVENT_ID")"
 
 [[ -x "$PYTHON" ]] || PYTHON="$(command -v python3)"
 [[ -f "$SERVER" ]] || { echo "FATAL: missing $SERVER" >&2; exit 1; }
@@ -59,7 +62,7 @@ try:
 except Exception:
     sys.exit(0)
 env = d.get("EnvironmentVariables") or {}
-skip = {"HOME", "PATH", "LANG", "LC_ALL", "PYENV_VERSION", "PRODUCTION_SERVER_SINGLE_MACHINE"}
+skip = {"HOME", "PATH", "LANG", "LC_ALL", "PYENV_VERSION", "PRODUCTION_SERVER_SINGLE_MACHINE", "MN_EVENT_PIN_IGNORE"}
 for k, v in env.items():
     if k in skip or not v:
         continue
@@ -87,6 +90,8 @@ cat > "$PLIST" <<PLIST
 		<string>${STORYBOARD}</string>
 		<string>--event-id</string>
 		<string>${EVENT_ID}</string>
+		<string>--port</string>
+		<string>${EVENT_PORT}</string>
 	</array>
 	<key>WorkingDirectory</key>
 	<string>${DROPBOX}</string>
@@ -114,6 +119,8 @@ cat > "$PLIST" <<PLIST
 		<string>3.12.7</string>
 		<key>PRODUCTION_SERVER_SINGLE_MACHINE</key>
 		<string>1</string>
+		<key>MN_EVENT_PIN_IGNORE</key>
+		<string>1</string>
 ${PRESERVE_ENV}
 	</dict>
 </dict>
@@ -134,5 +141,6 @@ else
   launchctl load "$PLIST"
 fi
 
-echo "[launchagent] OK — ${LABEL} → ${EVENT_ID} (${EVENT_DIR})"
+echo "[launchagent] OK — ${LABEL} → ${EVENT_ID} (${EVENT_DIR}) port ${EVENT_PORT}"
+echo "[launchagent] URL: $(event_storyboard_url "${EVENT_ID}")"
 echo "[launchagent] plist: ${PLIST}"

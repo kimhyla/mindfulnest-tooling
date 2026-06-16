@@ -522,10 +522,19 @@ _O3_DEFAULT_MEDIUM_CAMERA = (
     "stable eye-level medium shot."
 )
 
-_O3_CLOSEUP_CAMERA = (
-    "Camera: static locked shot, stable eye-level close-up on @Image1 — "
-    "head and torso fill the frame."
+_O3_MEDIUM_WIDE_SCENE_RE = re.compile(
+    r"\b(medium[- ]?wide|medium shot|wide[- ]?shot|full[- ]?body|establishing shot|full scene)\b",
+    re.I,
 )
+
+_O3_CLOSEUP_CAMERA = (
+    "Camera: static locked shot, no zoom, no dolly, no pan, no camera movement, "
+    "stable eye-level close-up — close up view of character, seen from the torso up."
+)
+
+
+def _scene_notes_imply_medium_or_wide(scene: str) -> bool:
+    return bool(_O3_MEDIUM_WIDE_SCENE_RE.search(scene))
 
 
 def _scene_notes_imply_closeup(scene: str) -> bool:
@@ -533,13 +542,15 @@ def _scene_notes_imply_closeup(scene: str) -> bool:
 
 
 def o3_element_framing_paragraph(speaker: str, scene_notes: str) -> str:
-    """Element-bound O3 camera framing — close-ups use Camera line only (no speaker prefix)."""
+    """Element-bound O3 camera framing — default torso-up close-up (Extract Beats / O3 submit)."""
     scene = _clean_scene_notes(scene_notes)
+    if _scene_notes_imply_medium_or_wide(scene):
+        return _O3_DEFAULT_MEDIUM_CAMERA
     if _scene_notes_imply_closeup(scene):
         return _O3_CLOSEUP_CAMERA
     if scene and re.match(r"^camera\s*:", scene, re.I):
         return scene.rstrip(".") + "."
-    return _O3_DEFAULT_MEDIUM_CAMERA
+    return _O3_CLOSEUP_CAMERA
 
 
 def _staging_paragraph(speaker: str, scene_notes: str, emotion: str) -> str:
@@ -757,7 +768,8 @@ def _kling_o3_normalize_spoken(spoken: str) -> str:
 def kling_staging_policy_block() -> str:
     return (
         "KLING O3 STAGING (mandatory for scene_notes on dialogue beats):\n"
-        "- Static medium shot; micro-expression only (eyes widen, smile, hand flutter, shrug).\n"
+        "- Default Camera: static locked torso-up close-up on @Image1; micro-expression only "
+        "(eyes widen, smile, hand flutter, shrug). Use medium/wide only when scene_notes say so.\n"
         "- Gesture vocabulary: use human body-part names (hand, arm) — not flipper/paw/talon.\n"
         "- Keep non-human-only parts as-is (tail, shell, horns, beak on birds, etc.).\n"
         "- NO: camera zoom/cut/pan, walks across room, enters frame, second character on screen.\n"
@@ -869,7 +881,8 @@ def normalize_kling_o3_prompt_event1_quality(
         "scene_notes": scene_notes,
         "kling_o3_prompt": out,
     }
-    return bg.prepare_kling_o3_prompt_for_submit(beat_stub, out)
+    out = bg.prepare_kling_o3_prompt_for_submit(beat_stub, out)
+    return out
 
 
 def heal_beat_kling_o3_prompt_event1_shape(beat: dict) -> bool:

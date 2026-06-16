@@ -41,5 +41,9 @@ grep -q 'clientScopeOverridesServerPin' "$REHYDRATE" \
   || fail "syncScopeFromProbe must skip adopt when URL/explicit pin overrides server"
 grep -q 'clientScopeOverridesServerPin' "$AUTHORITY" \
   || fail "clientScopeOverridesServerPin missing in scopeAuthority.ts"
+grep -q 'eventIdToDedicatedPort' "$AUTHORITY" \
+  || fail "eventIdToDedicatedPort missing (EVENT_DEDICATED_PORT_V1)"
+grep -q 'isDedicatedPortForEvent' "$CLIENT" \
+  || fail "healServerScopeIfAuthorized must gate dedicated-port tabs"
 
 echo "[scope-poll-adopt] OK — poll adopt + pin authority guards present"

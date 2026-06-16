@@ -169,6 +169,10 @@ const KNOWN_SPEAKERS: readonly string[] = [
 function shadowKey(eventId: string, beatId: string): string {
   return `mn:v59:shadow:${eventId}:${beatId}`;
 }
+
+function endFrameAddendumKey(eventId: string, beatId: string): string {
+  return `mn:v59:endframe-addendum:${eventId}:${beatId}`;
+}
 const SHADOW_TTL_MS = 24 * 3600 * 1000;
 
 function readShadow(eventId: string, beatId: string): string | null {
@@ -324,7 +328,22 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
   // Kim previews/uploads the ChatGPT end frame here BEFORE Regen B+C; the
   // server-side Phase 4 refuses Regen B+C unless an approved end_frame_path
   // exists on disk. Addendum textarea is one-shot per click (auto-clears).
-  const [endFrameAddendum, setEndFrameAddendum] = useState<string>('');
+  const [endFrameAddendum, setEndFrameAddendum] = useState<string>(() => {
+    try {
+      return sessionStorage.getItem(endFrameAddendumKey(eventId, beatId)) ?? '';
+    } catch {
+      return '';
+    }
+  });
+  const endFrameDirtyRef = useRef(false);
+  useEffect(() => {
+    if (endFrameDirtyRef.current) return;
+    try {
+      setEndFrameAddendum(sessionStorage.getItem(endFrameAddendumKey(eventId, beatId)) ?? '');
+    } catch {
+      setEndFrameAddendum('');
+    }
+  }, [eventId, beatId]);
   // pendingEndFrameOp keyed by beat_id per cursor R2 (multiple beats may be
   // in-flight simultaneously; using boolean only-while-this-beat-pending).
   const [pendingEndFrameOp, setPendingEndFrameOp] = useState<boolean>(false);
@@ -363,6 +382,12 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
         source: 'preview-end-frame',
       });
       setEndFrameAddendum('');  // auto-clear per spec §2 T1-Phase 6
+      try {
+        sessionStorage.removeItem(endFrameAddendumKey(eventId, beatId));
+      } catch {
+        // ignore
+      }
+      endFrameDirtyRef.current = false;
       onMutated();
     } catch (e) {
       pushToast({
@@ -1145,7 +1170,16 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
             class="mn-beat-trim-input"
             data-testid={`beat-${index}-end-frame-addendum`}
             value={endFrameAddendum}
-            onInput={(e) => setEndFrameAddendum((e.target as HTMLInputElement).value)}
+            onInput={(e) => {
+              const next = (e.target as HTMLInputElement).value;
+              endFrameDirtyRef.current = true;
+              setEndFrameAddendum(next);
+              try {
+                sessionStorage.setItem(endFrameAddendumKey(eventId, beatId), next);
+              } catch {
+                // ignore
+              }
+            }}
             disabled={pendingEndFrameOp || busy !== null}
             placeholder="e.g. ensure all accessories remain (glasses, backpack)"
             title="One-shot prompt addendum sent to ChatGPT. Clears after each Preview click."
