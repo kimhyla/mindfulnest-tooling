@@ -496,6 +496,13 @@ function beatGenFailureNotifyKey(beat: BgBeat): string | null {
   return null;
 }
 
+function seedGenFailureSeenKeys(beats: BgBeat[], seenRef: { current: Set<string> }): void {
+  for (const beat of beats) {
+    const key = beatGenFailureNotifyKey(beat);
+    if (key) seenRef.current.add(key);
+  }
+}
+
 function notifyNewGenFailures(beats: BgBeat[], seenRef: { current: Set<string> }): void {
   for (const beat of beats) {
     const key = beatGenFailureNotifyKey(beat);
@@ -764,7 +771,9 @@ export function BgTab() {
         }
         const initialBeats = applyPromptEditsToBeats(stateRes.data?.beats ?? []);
         setBeats(initialBeats);
-        notifyNewGenFailures(initialBeats, genFailureToastRef);
+        // Stale sidecar failures (e.g. prior localhost lipsync) stay on the beat card
+        // banner only — no error toast on hard refresh / tab open.
+        seedGenFailureSeenKeys(initialBeats, genFailureToastRef);
         setActiveJobId((prev) => prev ?? collectActiveStillJobFromBeats(initialBeats));
         // Server sidecar is the source of truth. Do not merge old local active
         // jobs back in, or a tab can keep showing "Generating..." after the

@@ -113,6 +113,15 @@ def test_bg_failure_banner_visible_when_old_clip_kept() -> None:
     assert "kling_o3_status !== 'approved'" not in snippet
 
 
+def test_bg_stale_failure_does_not_toast_on_session_load() -> None:
+    src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
+    assert "seedGenFailureSeenKeys" in src
+    assert "no error toast on hard refresh" in src
+    load_block = src.split("const initialBeats = applyPromptEditsToBeats", 1)[1][:400]
+    assert "seedGenFailureSeenKeys(initialBeats" in load_block
+    assert "notifyNewGenFailures(initialBeats" not in load_block
+
+
 def test_finalize_respects_sidecar_failed_provider_fetch(monkeypatch, tmp_path) -> None:
     import importlib
 
