@@ -46,6 +46,9 @@ from tools.production_server import (  # noqa: E402
 
 _ARLO_O3_JOBS: dict[str, dict] = {}
 _NATIVE_LIPSYNC_JOBS: dict[str, dict] = {}
+_O3_JOB_METADATA_LAST_STAMP: dict[str, float] = {}
+_O3_JOB_METADATA_STAMP_INTERVAL_S = 30.0
+_O3_LOG_TAIL_BYTES = 16384
 
 # V59 Phase 4 path-depth correction: extracted modules are one level
 # deeper than production_server.py. _PSERVER_TOOLS_DIR is for CODE-tree
@@ -1658,57 +1661,46 @@ def handle_bg_session_state(h)-> None:
     # Strip the "Event_" prefix so get_seg_entry looks up "event_1_post" not "event_Event_1_post".
     if scope_event_id is not None:
         scope_event_id = bg.normalize_bg_event_id(scope_event_id)
-    # Session GET holds the sidecar lock — keep work minimal so parallel O3 jobs
-    # can checkpoint via update_beat_locked(). Full disk reconcile still runs on
-    # trim/submit/select-o3; here it is throttled (not skipped/read-only).
-    _SESSION_O3_RECONCILE_MIN_INTERVAL_S = 45
+    # Session GET must stay fast — Beat Gen polls this on every tab open/refresh.
+    # O3 subprocesses checkpoint via update_beat_locked(); never run ffprobe/disk
+    # reconcile here (submit/select-o3/trim handlers + force_reconcile_o3=1 only).
     force_reconcile_o3 = str(_q("force_reconcile_o3") or "").strip().lower() in ("1", "true", "yes")
-    with bg.sidecar_file_lock():
+    with bg.sidecar_file_lock(timeout_s=30):
         sidecar = bg.read_sidecar()
-        sidecar = bg._migrate_sidecar(sidecar)
-        stuck_changed = reconcile_stuck_o3_voice_beats(sidecar)
-        intent_lock_changed = 0
-        prod_root = _data_root(h)
+        bg.ensure_sidecar_schema_defaults(sidecar)
+    # Lightweight in-memory heals only — no sidecar lock held during this block.
+    stuck_changed = reconcile_stuck_o3_voice_beats(sidecar)
+    intent_lock_changed = 0
+    prod_root = _data_root(h)
+    if force_reconcile_o3:
         try:
             from o3_generation_intent import reconcile_stale_o3_intent_locks_all_events
 
             intent_lock_changed = reconcile_stale_o3_intent_locks_all_events(sidecar, prod_root)
         except Exception as exc:
             print(f"[BG] reconcile_stale_o3_intent_locks_all_events: {exc}", flush=True)
-        event_dir = Path(getattr(h.app, "event_dir", "") or "")
-        o3_reconcile_changed = 0
+    event_dir = Path(getattr(h.app, "event_dir", "") or "")
+    o3_reconcile_changed = 0
+    trim_reconcile_changed = 0
+    runtime = sidecar.setdefault("_runtime", {})
+    if force_reconcile_o3:
         if event_dir.is_dir():
-            runtime = sidecar.setdefault("_runtime", {})
-            should_reconcile = force_reconcile_o3
-            if not should_reconcile:
-                last_at = runtime.get("last_o3_disk_reconcile_at")
-                if not last_at:
-                    should_reconcile = True
-                else:
-                    try:
-                        last_dt = datetime.fromisoformat(str(last_at).replace("Z", "+00:00"))
-                        if last_dt.tzinfo is None:
-                            last_dt = last_dt.replace(tzinfo=timezone.utc)
-                        age_s = (datetime.now(timezone.utc) - last_dt).total_seconds()
-                        should_reconcile = age_s >= _SESSION_O3_RECONCILE_MIN_INTERVAL_S
-                    except (TypeError, ValueError):
-                        should_reconcile = True
-            if should_reconcile:
-                o3_reconcile_changed = bg.reconcile_kling_o3_sidecar(sidecar, event_dir)
-                runtime["last_o3_disk_reconcile_at"] = datetime.now(timezone.utc).isoformat()
-        trim_reconcile_changed = 0
+            o3_reconcile_changed = bg.reconcile_kling_o3_sidecar(sidecar, event_dir)
+            runtime["last_o3_disk_reconcile_at"] = datetime.now(timezone.utc).isoformat()
         try:
             trim_reconcile_changed = bg.reconcile_kling_o3_trim_all_events(sidecar, prod_root)
+            runtime["last_trim_disk_reconcile_at"] = datetime.now(timezone.utc).isoformat()
         except Exception as exc:
             print(f"[BG] reconcile_kling_o3_trim_all_events: {exc}", flush=True)
-        classify_changed = bg.classify_all_sidecar_pipeline_fields(sidecar)
-        if (
-            stuck_changed
-            or intent_lock_changed
-            or o3_reconcile_changed
-            or trim_reconcile_changed
-            or classify_changed
-        ):
+    classify_changed = bg.classify_all_sidecar_pipeline_fields(sidecar)
+    if (
+        stuck_changed
+        or intent_lock_changed
+        or o3_reconcile_changed
+        or trim_reconcile_changed
+        or classify_changed
+    ):
+        with bg.sidecar_file_lock(timeout_s=30):
             bg.write_sidecar(sidecar)
     ctx = sidecar.get("active_context")
 
@@ -1753,34 +1745,15 @@ def handle_bg_session_state(h)-> None:
         for beat in beats:
             if bg.hydrate_beat_ref_images(beat, approved_roots):
                 ref_hydrated = True
-        ws_key = None
-        try:
-            try:
-                from credentials import load_credentials  # type: ignore
-            except ImportError:
-                from tools.credentials_lib.credentials import load_credentials  # type: ignore
-            creds = load_credentials()
-            ws_key = creds.get("wavespeed_key") or creds.get("wavespeed")
-        except Exception:
-            ws_key = None
-        for beat in beats:
-            if bg.reconcile_refer_if_pose_hash_matches(beat, ws_key):
-                char_ref_healed = True
-            if (
-                beat.get("element_char_ref_ok") is False
-                and beat.get("reference_image_locked")
-                and ws_key
-            ):
-                reg_result = bg.maybe_auto_register_beat_char_ref(beat, ws_key)
-                if reg_result.get("ok"):
-                    char_ref_healed = True
+        # Session GET is read-only for Element char-ref gate — WaveSpeed register
+        # belongs on Generate submit, not every Beat Gen refresh/poll cycle.
         scope_active_context = {
             "arc_number": scope_arc,
             "event_id": scope_event_id,
             "phase": scope_phase,
         }
     if ref_hydrated or char_ref_healed:
-        with bg.sidecar_file_lock():
+        with bg.sidecar_file_lock(timeout_s=30):
             bg.write_sidecar(sidecar)
 
     # Migration warning if scope and sidecar's active_context disagree
@@ -3681,9 +3654,9 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
             write_generation_intent,
         )
 
-        with bg.sidecar_file_lock():
+        with bg.sidecar_file_lock(timeout_s=30):
             sidecar = bg.read_sidecar()
-            sidecar = bg._migrate_sidecar(sidecar)
+            bg.ensure_sidecar_schema_defaults(sidecar)
             _, beat = bg.find_beat(sidecar, str(beat_id))
             if not beat:
                 return h._send_error_v59(
@@ -3813,25 +3786,31 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
         "error": None,
     }
     try:
-        bg = _bg_module()
-        with bg.sidecar_file_lock():
-            sidecar = bg.read_sidecar()
-            sidecar = bg._migrate_sidecar(sidecar)
-            _, beat = bg.find_beat(sidecar, str(beat_id))
-            if beat:
-                beat["status"] = "o3_voice_job_running"
-                beat["kling_o3_voice_fix_status"] = "job_running"
-                beat["kling_o3_voice_fix_phase"] = "subprocess"
-                beat["kling_o3_voice_fix_attempt_id"] = attempt_id
-                beat["kling_o3_voice_fix_ui_job_id"] = job_id
-                beat["kling_o3_voice_fix_job_log_path"] = str(log_path)
-                beat["kling_o3_voice_fix_job_started_at"] = started_at
-                beat["kling_o3_voice_fix_job_pid"] = proc.pid
-                beat["kling_o3_voice_fix_updated_at"] = datetime.now(timezone.utc).isoformat()
-                beat.pop("kling_o3_voice_fix_error", None)
-                beat.pop("kling_o3_voice_fix_error_code", None)
-                beat.pop("kling_o3_voice_fix_job_completed_at", None)
-                bg.write_sidecar(sidecar)
+        def _stamp_running_job(b: dict, _sidecar: dict) -> None:
+            if str(b.get("beat_id") or "") != str(beat_id):
+                return
+            if b.get("kling_o3_voice_fix_attempt_id") not in (None, attempt_id):
+                return
+            b["status"] = "o3_voice_job_running"
+            b["kling_o3_voice_fix_status"] = "job_running"
+            b["kling_o3_voice_fix_phase"] = "subprocess"
+            b["kling_o3_voice_fix_attempt_id"] = attempt_id
+            b["kling_o3_voice_fix_ui_job_id"] = job_id
+            b["kling_o3_voice_fix_job_log_path"] = str(log_path)
+            b["kling_o3_voice_fix_job_started_at"] = started_at
+            b["kling_o3_voice_fix_job_pid"] = proc.pid
+            b["kling_o3_voice_fix_updated_at"] = datetime.now(timezone.utc).isoformat()
+            b.pop("kling_o3_voice_fix_error", None)
+            b.pop("kling_o3_voice_fix_error_code", None)
+            b.pop("kling_o3_voice_fix_job_completed_at", None)
+
+        ok, _ = bg.update_beat_locked(
+            str(beat_id),
+            _stamp_running_job,
+            expected_attempt_id=attempt_id,
+        )
+        if not ok:
+            print(f"[bg_o3_job] warning: could not persist running job metadata for {beat_id}", flush=True)
     except Exception as exc:
         print(f"[bg_o3_job] warning: could not persist job metadata for {beat_id}: {exc}", flush=True)
     submitted = submitted_audit_from_intent(committed_intent) if committed_intent else {}
@@ -3864,10 +3843,12 @@ def _enriched_beat_snapshot_for_o3_poll(
 ) -> dict | None:
     """Single-beat API payload — avoids full session-state migrate on O3 poll done."""
     bg = _bg_module()
-    with bg.sidecar_file_lock():
+    with bg.sidecar_file_lock(timeout_s=5):
         sidecar = bg.read_sidecar()
         if migrate:
-            sidecar = bg._migrate_sidecar(sidecar)
+            sidecar = bg._migrate_sidecar(sidecar, heal_trim=False, heavy_heal=False)
+        else:
+            bg.ensure_sidecar_schema_defaults(sidecar)
         _, beat = bg.find_beat(sidecar, str(beat_id))
         if not beat:
             return None
@@ -4039,8 +4020,20 @@ def handle_bg_poll_arlo_o3_voice_status(h) -> None:
             beat_id = str(job.get("beat_id") or "")
             log_path = job.get("log_path")
             if beat_id and log_path:
-                log_text = Path(str(log_path)).read_text(encoding="utf-8", errors="replace")
-                if '"phase": "done"' in log_text or _parse_o3_pipeline_result_from_log(log_path):
+                from o3_generation_intent import load_intent_terminal, terminal_path_for_job
+
+                terminal = load_intent_terminal(terminal_path_for_job(str(job_id), event_dir))
+                terminal_done = str((terminal or {}).get("status") or "") in (
+                    "done",
+                    "done_with_warning",
+                    "failed",
+                )
+                log_tail = _tail_read_text(log_path)
+                if (
+                    terminal_done
+                    or '"phase": "done"' in log_tail
+                    or _parse_o3_pipeline_result_from_log(log_path, tail_bytes=_O3_LOG_TAIL_BYTES)
+                ):
                     if _promote_o3_job_from_log_if_terminal(job, event_dir):
                         _clear_o3_job_metadata(
                             job_id,
@@ -4231,14 +4224,46 @@ def handle_bg_poll_kling_native_lipsync_experiment_status(h) -> None:
     return h._send_json(200, payload)
 
 
-def _parse_o3_pipeline_result_from_log(log_path: str | Path | None) -> dict | None:
+def _tail_read_text(path: str | Path | None, *, max_bytes: int = _O3_LOG_TAIL_BYTES) -> str:
+    """Read only the tail of a growing O3 job log — poll must not slurp multi-MB files."""
+    if not path:
+        return ""
+    p = Path(path)
+    if not p.is_file():
+        return ""
+    try:
+        size = p.stat().st_size
+    except OSError:
+        return ""
+    if size <= max_bytes:
+        return p.read_text(encoding="utf-8", errors="replace")
+    try:
+        with open(p, "rb") as fh:
+            fh.seek(max(0, size - max_bytes))
+            chunk = fh.read()
+    except OSError:
+        return ""
+    text = chunk.decode("utf-8", errors="replace")
+    if size > max_bytes and "\n" in text:
+        text = text.split("\n", 1)[-1]
+    return text
+
+
+def _parse_o3_pipeline_result_from_log(
+    log_path: str | Path | None,
+    *,
+    tail_bytes: int | None = _O3_LOG_TAIL_BYTES,
+) -> dict | None:
     """Parse subprocess log — Arlo lipsync returns ``{"ok": true}``; element pipeline ``phase: done``."""
     if not log_path:
         return None
     path = Path(log_path)
     if not path.is_file():
         return None
-    log_text = path.read_text(encoding="utf-8", errors="replace")
+    if tail_bytes is None:
+        log_text = path.read_text(encoding="utf-8", errors="replace")
+    else:
+        log_text = _tail_read_text(path, max_bytes=int(tail_bytes))
     for line in reversed(log_text.splitlines()):
         stripped = line.strip()
         if not stripped.startswith("{"):
@@ -4418,10 +4443,33 @@ def _try_orphan_o3_delivery_recovery(
     return None
 
 
+def _beat_candidate_for_stuck_o3_reconcile(beat: dict) -> bool:
+    """Session-state stuck heal scans only beats with job pointers or terminal drift."""
+    status = str(beat.get("status") or "")
+    voice_fix = str(beat.get("kling_o3_voice_fix_status") or "")
+    kling_status = str(beat.get("kling_o3_status") or "")
+    if voice_fix == "approved" or kling_status == "approved":
+        return bool(
+            _beat_has_stale_o3_job_pointers(beat)
+            or any(status.startswith(p) for p in _STUCK_O3_JOB_STATUS_PREFIXES)
+        )
+    if beat.get("kling_o3_voice_fix_ui_job_id"):
+        return True
+    if voice_fix.startswith("failed") or voice_fix in {"job_running", "job_starting"}:
+        return True
+    if status.startswith("o3_"):
+        return True
+    if beat.get("kling_o3_voice_fix_job_pid") is not None:
+        return True
+    return False
+
+
 def reconcile_stuck_o3_voice_beats(sidecar: dict) -> int:
     """Clear beats stuck in running UI state after a dead subprocess or stale error."""
     changed = 0
     for beat in _iter_bg_beats(sidecar):
+        if not _beat_candidate_for_stuck_o3_reconcile(beat):
+            continue
         status = str(beat.get("status") or "")
         voice_fix = str(beat.get("kling_o3_voice_fix_status") or "")
         kling_status = str(beat.get("kling_o3_status") or "")
@@ -4443,9 +4491,7 @@ def reconcile_stuck_o3_voice_beats(sidecar: dict) -> int:
         # Subprocess exited but sidecar never got final persist (server restart / poll miss).
         if pid_dead and _beat_o3_job_looks_running(beat):
             log_path = beat.get("kling_o3_voice_fix_job_log_path")
-            log_text = ""
-            if log_path and Path(str(log_path)).is_file():
-                log_text = Path(str(log_path)).read_text(encoding="utf-8", errors="replace")
+            log_text = _tail_read_text(log_path) if log_path else ""
             is_element_job = (
                 "o3_element_native_voice" in log_text
                 or '"element_id"' in log_text
@@ -4471,7 +4517,7 @@ def reconcile_stuck_o3_voice_beats(sidecar: dict) -> int:
                     _clear_stale_o3_job_pointers(beat)
                     changed += 1
                     continue
-            if is_element_job and '"phase": "done"' in log_text:
+            if is_element_job and '"phase": "done"' in log_text and pid_dead:
                 event_dir = _event_dir_from_beat_id(str(beat.get("beat_id") or ""))
                 if _try_orphan_o3_delivery_recovery(str(beat.get("beat_id") or ""), event_dir, log_path):
                     _clear_stale_o3_job_pointers(beat)
@@ -4656,14 +4702,18 @@ def _ensure_o3_job_metadata(job_id: str, job: dict) -> None:
     active jobs from sidecar fields. If those fields are lost by a concurrent
     sidecar write, the backend may still know the job is running while a hard
     refresh shows the beat as idle. Re-stamp the lightweight job pointer on
-    every live poll so the sidecar remains the durable source of truth.
+    live polls (throttled) so the sidecar remains the durable source of truth.
     """
     try:
         beat_id = job.get("beat_id")
         if not beat_id:
             return
+        now = time.monotonic()
+        last = _O3_JOB_METADATA_LAST_STAMP.get(str(job_id), 0.0)
+        if now - last < _O3_JOB_METADATA_STAMP_INTERVAL_S:
+            return
         bg = _bg_module()
-        with bg.sidecar_file_lock():
+        with bg.sidecar_file_lock(timeout_s=5):
             sidecar = bg.read_sidecar()
             _, beat = bg.find_beat(sidecar, str(beat_id))
             if not beat:
@@ -4699,6 +4749,7 @@ def _ensure_o3_job_metadata(job_id: str, job: dict) -> None:
                 changed = True
             if changed:
                 bg.write_sidecar(sidecar)
+        _O3_JOB_METADATA_LAST_STAMP[str(job_id)] = now
     except Exception as exc:
         print(f"[bg_o3_job] ensure metadata failed for {job_id}: {exc}", flush=True)
 

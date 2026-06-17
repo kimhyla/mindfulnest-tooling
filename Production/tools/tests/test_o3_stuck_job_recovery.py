@@ -264,7 +264,7 @@ def test_poll_handler_recovers_orphan_when_log_shows_done() -> None:
     src = (TOOLS / "server_handlers" / "background.py").read_text(encoding="utf-8")
     poll_block = src.split("def handle_bg_poll_arlo_o3_voice_status", 1)[1].split("\ndef ", 1)[0]
     assert '"phase": "done"' in poll_block
-    assert "_try_orphan_o3_delivery_recovery" in poll_block
+    assert "_promote_o3_job_from_log_if_terminal" in poll_block
 
 
 def test_recover_o3_job_from_sidecar_matches_log_path_when_ui_job_id_cleared(

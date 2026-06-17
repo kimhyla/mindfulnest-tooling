@@ -402,6 +402,7 @@ _EMPTY_SIDECAR = lambda: {
 # Dropbox/FUSE can return EAGAIN/EDEADLK (errno 11/35) on read/replace during sync.
 _SIDECAR_IO_TRANSIENT_ERRNOS = frozenset({11, 35})
 _SIDECAR_IO_MAX_ATTEMPTS = 12
+_SIDECAR_LOCK_WAIT_LOG_INTERVAL_S = 5.0
 
 
 def _sidecar_io_backoff_s(attempt: int) -> float:
@@ -496,22 +497,52 @@ def write_sidecar(data):
 
 
 @contextlib.contextmanager
-def sidecar_file_lock():
+def sidecar_file_lock(*, timeout_s: float | None = None):
     """Cross-process lock for Beat Gen sidecar read/modify/write cycles.
 
     ``_sidecar_lock`` protects threads inside one Python process only. O3 voice
     subprocesses and the storyboard server must coordinate on the same lock file,
     otherwise whole-file writes can erase fields from a concurrent beat job.
+
+    When ``timeout_s`` is set, waits up to that many seconds instead of blocking
+    forever — O3 delivery checkpoint must not stall behind a long session-state GET.
     """
+    import errno
+
     path = os.path.abspath(BG_SIDECAR_PATH)
     lock_path = path + ".lock"
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(lock_path, "a+", encoding="utf-8") as lock_fh:
-        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+        fd = lock_fh.fileno()
+        if timeout_s is None:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        else:
+            deadline = time.monotonic() + float(timeout_s)
+            last_log = 0.0
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
+                        raise
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            f"sidecar lock timeout after {timeout_s}s ({lock_path})"
+                        ) from exc
+                    now = time.monotonic()
+                    if now - last_log >= _SIDECAR_LOCK_WAIT_LOG_INTERVAL_S:
+                        print(
+                            f"[sidecar_lock] waiting for {lock_path} "
+                            f"(>{int(now - (deadline - timeout_s))}s)",
+                            flush=True,
+                        )
+                        last_log = now
+                    time.sleep(0.05)
         try:
             yield
         finally:
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 def read_sidecar_locked():
@@ -533,9 +564,10 @@ def update_beat_locked(beat_id, mutator, expected_attempt_id=None):
     is returned so stale subprocesses cannot overwrite newer attempts.
     """
     last_err: OSError | None = None
+    lock_timeout_s = 120.0
     for attempt in range(_SIDECAR_IO_MAX_ATTEMPTS):
         try:
-            with sidecar_file_lock():
+            with sidecar_file_lock(timeout_s=lock_timeout_s):
                 sidecar = read_sidecar()
                 _seg, beat = find_beat(sidecar, beat_id)
                 if not beat:
@@ -2732,11 +2764,11 @@ def normalize_still_insert_approval_status(beat: dict) -> bool:
     return False
 
 
-def _migrate_sidecar(sidecar: dict) -> dict:
-    """Add new fields to old sidecars without breaking existing state."""
+def ensure_sidecar_schema_defaults(sidecar: dict) -> dict:
+    """Lightweight read-path defaults — no ffprobe, registry, or prompt heals."""
     sidecar.setdefault("groups", {})
-    for arc_key, arc in sidecar.get("arcs", {}).items():
-        for seg_key, seg in arc.get("segments", {}).items():
+    for arc in sidecar.get("arcs", {}).values():
+        for seg in arc.get("segments", {}).values():
             for beat in seg.get("beats", []):
                 beat.setdefault("animation_method", "kling")
                 beat.setdefault("group_id", None)
@@ -2746,7 +2778,26 @@ def _migrate_sidecar(sidecar: dict) -> dict:
                 beat.setdefault("reference_image", None)
                 beat.setdefault("bg_ref_image", None)
                 normalize_still_insert_approval_status(beat)
-                heal_invalid_kling_o3_trim(beat)
+    return sidecar
+
+
+def _migrate_sidecar(
+    sidecar: dict,
+    *,
+    heal_trim: bool = True,
+    heavy_heal: bool = True,
+) -> dict:
+    """Add new fields to old sidecars without breaking existing state."""
+    ensure_sidecar_schema_defaults(sidecar)
+    if heal_trim:
+        for arc in sidecar.get("arcs", {}).values():
+            for seg in arc.get("segments", {}).values():
+                for beat in seg.get("beats", []):
+                    heal_invalid_kling_o3_trim(beat)
+    if not heavy_heal:
+        if sidecar.get("schema_version", 1) < 3:
+            sidecar["schema_version"] = max(int(sidecar.get("schema_version", 1)), 3)
+        return sidecar
     if sidecar.get("schema_version", 1) < 2:
         sidecar["schema_version"] = 2
     if sidecar.get("schema_version", 1) < 3:

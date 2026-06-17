@@ -200,9 +200,10 @@ def test_reconcile_kling_o3_trim_all_events_clears_stale_scratch_without_sidecar
     assert not stale.is_file()
 
 
-def test_session_state_wires_trim_reconcile_all_events():
+def test_session_state_trim_reconcile_force_only():
     src = Path(__file__).resolve().parents[1] / "server_handlers" / "background.py"
     text = src.read_text(encoding="utf-8")
     block = text.split("def handle_bg_session_state", 1)[1].split("\ndef ", 1)[0]
+    assert "if force_reconcile_o3:" in block
     assert "reconcile_kling_o3_trim_all_events" in block
     assert "trim_reconcile_changed" in block

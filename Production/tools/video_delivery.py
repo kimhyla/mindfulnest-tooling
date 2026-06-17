@@ -96,7 +96,7 @@ def encode_delivery_video(
     cmd += [
         "-vf", vf,
         "-c:v", "libx264", "-profile:v", "high", "-pix_fmt", "yuv420p",
-        "-preset", "slow", "-g", "48",
+        "-preset", "medium", "-g", "48",
         "-b:v", DELIVERY_VIDEO_BITRATE,
         "-maxrate", DELIVERY_MAXRATE,
         "-bufsize", DELIVERY_BUFSIZE,
