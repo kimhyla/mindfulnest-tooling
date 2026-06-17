@@ -3893,10 +3893,30 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                 except ValueError:
                     public_base = ""
         if public_base:
-            subprocess_env["MN_LIPSYNC_STAGING_PUBLIC_BASE"] = public_base.rstrip("/")
+            try:
+                from lipsync_staging import is_public_staging_base
+            except ImportError:
+                is_public_staging_base = lambda _base: True  # noqa: E731
+            if is_public_staging_base(public_base):
+                subprocess_env["MN_LIPSYNC_STAGING_PUBLIC_BASE"] = public_base.rstrip("/")
+            else:
+                print(
+                    f"[bg_o3] voice_first: skip localhost staging base {public_base!r}; "
+                    "lipsync will use R2/ephemeral public hosts",
+                    flush=True,
+                )
         r2_cdn = os.environ.get("MN_R2_CDN_BASE_URL", "").strip()
         if r2_cdn:
             subprocess_env["MN_R2_CDN_BASE_URL"] = r2_cdn.rstrip("/")
+        for r2_key in (
+            "R2_ACCESS_KEY_ID",
+            "R2_SECRET_ACCESS_KEY",
+            "R2_ACCOUNT_ID",
+            "R2_BUCKET_NAME",
+        ):
+            r2_val = os.environ.get(r2_key, "").strip()
+            if r2_val:
+                subprocess_env[r2_key] = r2_val
     _pp = subprocess_env.get("PYTHONPATH", "")
     subprocess_env["PYTHONPATH"] = os.pathsep.join(
         p for p in (str(_PSERVER_TOOLS_DIR), str(prod / "tools"), str(prod), _pp) if p
@@ -4086,6 +4106,13 @@ def _finalize_o3_job_after_subprocess_exit(job: dict, event_dir: Path) -> None:
     if rc == 0:
         job["status"] = "done"
         job["result"] = _parse_o3_pipeline_result_from_log(log_path)
+        return
+    from o3_job_status_contract import voice_fix_is_terminal_failure
+
+    voice_fix, voice_err = _sidecar_voice_fix_for_beat(beat_id)
+    if voice_fix_is_terminal_failure(voice_fix):
+        job["status"] = "failed"
+        job["error"] = _summarize_o3_job_error(voice_err or log_text[-4000:])
         return
     recovered = None
     if beat_id and (
@@ -4465,6 +4492,11 @@ def _summarize_o3_job_error(error: str | None) -> str:
             "No lipsync input host returned byte-complete public files. "
             "The job was stopped before WaveSpeed submission; previous approved clip was kept active."
         )
+    if "non-public host" in text.lower() or "unsafe url" in text.lower():
+        return (
+            "WaveSpeed rejected the lipsync staging URL (localhost is not public). "
+            "Previous approved clip was kept active; retry after R2 staging is configured."
+        )
     if "queued timeout" in text.lower() or "queued_timeout" in text.lower():
         return (
             "WaveSpeed queued the lipsync job too long and timed out. "
@@ -4490,6 +4522,27 @@ def _iter_bg_beats(sidecar: dict):
             for beat in seg.get("beats") or []:
                 if isinstance(beat, dict):
                     yield beat
+
+
+def _sidecar_voice_fix_for_beat(beat_id: str) -> tuple[str, str]:
+    """Read voice-fix state from sidecar — event/beat agnostic."""
+    if not beat_id:
+        return "", ""
+    try:
+        bg = _bg_module()
+        with bg.sidecar_file_lock(timeout_s=5):
+            sidecar = bg.read_sidecar()
+            sidecar = bg._migrate_sidecar(sidecar)
+            _, beat = bg.find_beat(sidecar, str(beat_id))
+            if not beat:
+                return "", ""
+            return (
+                str(beat.get("kling_o3_voice_fix_status") or ""),
+                str(beat.get("kling_o3_voice_fix_error") or ""),
+            )
+    except Exception as exc:
+        print(f"[bg_o3_job] sidecar voice_fix read failed for {beat_id}: {exc}", flush=True)
+    return "", ""
 
 
 def _pid_is_running(pid_value) -> bool:
@@ -4711,6 +4764,15 @@ def _promote_o3_job_from_log_if_terminal(job: dict, event_dir: Path) -> bool:
     beat_id = str(job.get("beat_id") or "")
     if not beat_id or not log_path:
         return False
+    from o3_job_status_contract import voice_fix_is_terminal_failure
+
+    voice_fix, voice_err = _sidecar_voice_fix_for_beat(beat_id)
+    if voice_fix_is_terminal_failure(voice_fix):
+        job["status"] = "failed"
+        job["ended_at"] = datetime.now(timezone.utc).isoformat()
+        job["error"] = _summarize_o3_job_error(voice_err or "O3 voice job failed")
+        job.pop("result", None)
+        return True
     log_result = _parse_o3_pipeline_result_from_log(log_path)
     if not log_result:
         return False
@@ -4742,8 +4804,24 @@ def _recover_o3_job_from_sidecar(job_id: str) -> dict | None:
                 if not _beat_matches_o3_ui_job_id(beat, job_id):
                     continue
                 log_path = beat.get("kling_o3_voice_fix_job_log_path")
+                voice_fix = str(beat.get("kling_o3_voice_fix_status") or "")
+                from o3_job_status_contract import voice_fix_is_terminal_failure
+
+                if voice_fix_is_terminal_failure(voice_fix):
+                    beat.pop("kling_o3_voice_fix_ui_job_id", None)
+                    bg.write_sidecar(sidecar)
+                    return {
+                        "status": "failed",
+                        "beat_id": beat.get("beat_id"),
+                        "job_id": job_id,
+                        "log_path": log_path,
+                        "error": _summarize_o3_job_error(
+                            beat.get("kling_o3_voice_fix_error") or "O3 voice job failed"
+                        ),
+                        "recovered": True,
+                    }
                 result = _parse_o3_pipeline_result_from_log(log_path)
-                if result or beat.get("kling_o3_voice_fix_status") == "approved":
+                if result or voice_fix == "approved":
                     beat_id = str(beat.get("beat_id") or "")
                     voice_fix = str(beat.get("kling_o3_voice_fix_status") or "")
                     if result and voice_fix != "approved" and beat_id:

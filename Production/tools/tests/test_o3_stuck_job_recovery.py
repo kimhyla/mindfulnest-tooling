@@ -317,3 +317,56 @@ def test_recover_o3_job_from_sidecar_matches_log_path_when_ui_job_id_cleared(
     assert recovered["status"] == "done"
     assert recovered["beat_id"] == "bg_arc1_event2_pre_beat_03"
     assert recovered.get("recovered") is True
+
+
+def test_recover_o3_job_from_sidecar_failed_provider_fetch(
+    monkeypatch, tmp_path,
+) -> None:
+    bg_mod = _import_background()
+    log_path = tmp_path / "1e0c92f8_bg_arc1_event2_pre_beat_01.log"
+    log_path.write_text("Traceback...\n", encoding="utf-8")
+    sidecar = {
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [{
+                            "beat_id": "bg_arc1_event2_pre_beat_01",
+                            "kling_o3_status": "approved",
+                            "kling_o3_voice_fix_status": "failed_provider_fetch",
+                            "kling_o3_voice_fix_error": (
+                                'WaveSpeed response missing job id: '
+                                '{"code": 400, "message": "unsafe url: non-public host"}'
+                            ),
+                            "kling_o3_voice_fix_ui_job_id": "1e0c92f8",
+                            "kling_o3_voice_fix_job_log_path": str(log_path),
+                        }],
+                    },
+                },
+            },
+        },
+    }
+
+    class _FakeBg:
+        @staticmethod
+        def sidecar_file_lock():
+            import contextlib
+            return contextlib.nullcontext()
+
+        @staticmethod
+        def read_sidecar():
+            return sidecar
+
+        @staticmethod
+        def write_sidecar(data):
+            pass
+
+        @staticmethod
+        def _migrate_sidecar(data):
+            return data
+
+    monkeypatch.setattr(bg_mod, "_bg_module", lambda: _FakeBg())
+    recovered = bg_mod._recover_o3_job_from_sidecar("1e0c92f8")
+    assert recovered is not None
+    assert recovered["status"] == "failed"
+    assert "non-public" in recovered["error"].lower() or "localhost" in recovered["error"].lower()

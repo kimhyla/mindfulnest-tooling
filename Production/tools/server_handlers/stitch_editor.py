@@ -105,6 +105,14 @@ STITCH_VIDEO_DUR_DRIFT_TOLERANCE_MS = 500
 STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1 = "STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1"
 # STITCH_SLOT_EXPORT_FULL_MEDIA_V1 — all four tab exports must upsert full playable slot video.
 STITCH_SLOT_EXPORT_FULL_MEDIA_V1 = "STITCH_SLOT_EXPORT_FULL_MEDIA_V1"
+# STITCH_SLOT_ASSEMBLED_DISK_HYDRATE_V1 — empty canonical slots recover from on-disk exports.
+STITCH_SLOT_ASSEMBLED_DISK_HYDRATE_V1 = "STITCH_SLOT_ASSEMBLED_DISK_HYDRATE_V1"
+STITCH_ASSEMBLED_SLOT_GLOBS: dict[str, tuple[str, ...]] = {
+    "intro": ("intro_*.mp4", "intro_kling_o3_*.mp4"),
+    "phase_a": ("phase_a_*.mp4", "phase_a_stitched_*.mp4"),
+    "phase_b": ("phase_b_*.mp4", "phase_b_lipsync_*.mp4"),
+    "resolution": ("resolution_*.mp4", "resolution_kling_o3_*.mp4"),
+}
 STITCH_AUDIO_DUR_MIN_RATIO = 0.85
 
 
@@ -845,6 +853,107 @@ def stitch_migrate_legacy_to_canonical(state: dict, event_id: str) -> bool:
     return changed
 
 
+def _pick_newest_playable_mp4(candidates: list[Path]) -> Path | None:
+    valid = [
+        p for p in candidates
+        if p.is_file() and p.stat().st_size > 0
+    ]
+    if not valid:
+        return None
+    return max(valid, key=lambda p: p.stat().st_mtime)
+
+
+def _phase_production_state_video_rel(h, event_id: str, slot_key: str) -> str | None:
+    """Phase A/B stitch exports live in production_state, not always under assembled/."""
+    if slot_key not in ("phase_a", "phase_b"):
+        return None
+    try:
+        state = h.app.state.read_state()
+    except Exception:
+        return None
+    if slot_key == "phase_a":
+        name = (state.get("phase_a_stitched_file") or "").strip()
+    else:
+        pb = state.get("phase_b") or {}
+        name = (
+            (state.get("phase_b_lipsync_file") or pb.get("lipsync_file") or "")
+            .strip()
+        )
+    if not name or "/" in name or "\\" in name or ".." in name:
+        return None
+    rel = f"Production/{event_id}/{name}"
+    try:
+        h._stitch_resolve_path(rel)
+    except ValueError:
+        return None
+    return rel
+
+
+def _assembled_disk_video_rel(h, event_id: str, slot_key: str) -> str | None:
+    root = h._stitch_project_root()
+    event_dir = root / "Production" / event_id
+    patterns = STITCH_ASSEMBLED_SLOT_GLOBS.get(slot_key, ())
+    search_dirs = [event_dir / "assembled"]
+    if slot_key in ("phase_a", "phase_b"):
+        search_dirs.append(event_dir)
+    candidates: list[Path] = []
+    for directory in search_dirs:
+        if not directory.is_dir():
+            continue
+        for pattern in patterns:
+            candidates.extend(directory.glob(pattern))
+    picked = _pick_newest_playable_mp4(candidates)
+    if picked is None:
+        return None
+    try:
+        return str(picked.resolve().relative_to(root))
+    except ValueError:
+        return None
+
+
+def hydrate_stitch_canonical_slots_from_disk(h, state: dict, event_id: str) -> bool:
+    """Fill empty canonical stitch slots from newest on-disk exports (all events).
+
+    Runs after legacy migration so a partial canonical job (e.g. resolution-only)
+    still shows intro / phase_a / phase_b when their MP4s exist on disk.
+    """
+    stitch_migrate_legacy_to_canonical(state, event_id)
+    job_name = stitch_event_job_name(event_id)
+    jobs = state.setdefault("jobs", {})
+    job = jobs.setdefault(
+        job_name,
+        {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "slots": {},
+            "transitions": [],
+        },
+    )
+    if not isinstance(job.get("slots"), dict):
+        job["slots"] = {}
+
+    changed = False
+    for slot_key in STITCH_SLOT_ORDER:
+        slot = job["slots"].setdefault(slot_key, {})
+        if _slot_has_video(slot):
+            continue
+        rel = _phase_production_state_video_rel(h, event_id, slot_key)
+        if not rel:
+            rel = _assembled_disk_video_rel(h, event_id, slot_key)
+        if not rel:
+            continue
+        slot["video_path"] = rel
+        slot["source"] = STITCH_SLOT_ASSEMBLED_DISK_HYDRATE_V1
+        sync_stitch_slot_video_dur_ms(h, slot, force=True)
+        apply_stitch_slot_default_ambient_preset(slot_key, slot)
+        changed = True
+
+    if changed:
+        normalize_job_slots_audio(job["slots"])
+        job["updated_at"] = datetime.now(timezone.utc).isoformat()
+    return changed
+
+
 def enrich_beat_boundaries(boundaries: list | None) -> list | None:
     """Ensure each boundary has duration_ms (UI roadmap + waveform math)."""
     if not boundaries:
@@ -1189,7 +1298,7 @@ def handle_stitch_load_job(h, name: str)-> None:
         if event_id:
 
             def migrate(state: dict) -> None:
-                stitch_migrate_legacy_to_canonical(state, event_id)
+                hydrate_stitch_canonical_slots_from_disk(h, state, event_id)
 
             h.app.stitch_state.mutate_state(migrate)
 

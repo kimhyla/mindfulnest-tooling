@@ -1,5 +1,7 @@
 /** BG_BEAT_JUMP_NAV_V1 — read-only nav badges (active job dot + approved check). */
 
+import { beatO3JobLooksRunning, type O3JobBeatFields } from '../o3JobStatusContract';
+
 export type BeatNavJobContext = {
   activeJobId: string | null;
   activeO3Jobs: Readonly<Record<string, string>>;
@@ -8,7 +10,9 @@ export type BeatNavJobContext = {
   activeNativeLipSyncJobs: Readonly<Record<string, string>>;
 };
 
-export type BeatNavStatusFields = {
+export type BeatNavStatusFields = BeatNavStatusFieldsBase & O3JobBeatFields;
+
+type BeatNavStatusFieldsBase = {
   beat_id: string;
   status?: string | null;
   bg_gpt_batch_job_id?: string | null;
@@ -28,7 +32,7 @@ export function beatIsStitchApproved(beat: BeatNavStatusFields): boolean {
   return (beat.kling_o3_status ?? '').toLowerCase() === 'approved';
 }
 
-/** Mirrors BeatGenCard busy — per-beat, not global still-job bleed. */
+/** Mirrors BeatGenCard busy — sidecar running fields + in-memory poll map. */
 export function beatHasActiveNavJob(
   beat: BeatNavStatusFields,
   ctx: BeatNavJobContext,
@@ -36,6 +40,7 @@ export function beatHasActiveNavJob(
   const id = beat.beat_id;
   return (
     !!ctx.activeO3Jobs[id]
+    || beatO3JobLooksRunning(beat)
     || !!ctx.o3SubmitPending[id]
     || !!ctx.activeStillRenderJobs[id]
     || !!ctx.activeNativeLipSyncJobs[id]
@@ -49,7 +54,7 @@ export function beatNavActiveJobHint(
 ): string | null {
   const id = beat.beat_id;
   if (ctx.o3SubmitPending[id]) return 'Submitting generation…';
-  if (ctx.activeO3Jobs[id]) return 'O3 / Kling job running';
+  if (ctx.activeO3Jobs[id] || beatO3JobLooksRunning(beat)) return 'O3 / voice job running';
   if (ctx.activeStillRenderJobs[id]) return 'Still render running';
   if (ctx.activeNativeLipSyncJobs[id]) return 'Native lip-sync experiment running';
   if (beatHasActiveStillBatchJob(beat, ctx.activeJobId)) return 'GPT still options generating';

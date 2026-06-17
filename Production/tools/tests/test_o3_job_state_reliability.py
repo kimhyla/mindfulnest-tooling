@@ -94,6 +94,85 @@ def test_ui_treats_failed_prefixes_as_terminal() -> None:
     assert "voiceFix.startsWith('failed')" in src
 
 
+def test_voice_fix_terminal_failure_contract() -> None:
+    from o3_job_status_contract import voice_fix_is_terminal_failure
+
+    assert voice_fix_is_terminal_failure("failed_provider_fetch")
+    assert voice_fix_is_terminal_failure("failed_provider_sub720")
+    assert voice_fix_is_terminal_failure("failed_o3")
+    assert not voice_fix_is_terminal_failure("approved")
+    assert not voice_fix_is_terminal_failure("job_running")
+
+
+def test_bg_failure_banner_visible_when_old_clip_kept() -> None:
+    src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
+    idx = src.find("const o3FailureMessage")
+    assert idx >= 0
+    snippet = src[idx : idx + 220]
+    assert "startsWith('failed')" in snippet
+    assert "kling_o3_status !== 'approved'" not in snippet
+
+
+def test_finalize_respects_sidecar_failed_provider_fetch(monkeypatch, tmp_path) -> None:
+    import importlib
+
+    bg_mod = importlib.import_module("server_handlers.background")
+    beat_id = "bg_arc1_event2_pre_beat_01"
+    sidecar = {
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [{
+                            "beat_id": beat_id,
+                            "kling_o3_status": "approved",
+                            "kling_o3_voice_fix_status": "failed_provider_fetch",
+                            "kling_o3_voice_fix_error": "unsafe url: non-public host",
+                        }],
+                    },
+                },
+            },
+        },
+    }
+
+    class _FakeBg:
+        @staticmethod
+        def sidecar_file_lock(timeout_s=30):
+            import contextlib
+            return contextlib.nullcontext()
+
+        @staticmethod
+        def read_sidecar():
+            return sidecar
+
+        @staticmethod
+        def _migrate_sidecar(data):
+            return data
+
+        @staticmethod
+        def find_beat(data, bid):
+            for beat in data["arcs"]["arc_1"]["segments"]["event_2_pre"]["beats"]:
+                if beat["beat_id"] == bid:
+                    return "event_2_pre", beat
+            return None, None
+
+    class _Proc:
+        def poll(self):
+            return 1
+
+    monkeypatch.setattr(bg_mod, "_bg_module", lambda: _FakeBg())
+    job = {
+        "status": "running",
+        "beat_id": beat_id,
+        "proc": _Proc(),
+        "log_path": str(tmp_path / "job.log"),
+    }
+    (tmp_path / "job.log").write_text("Traceback non-public host\n", encoding="utf-8")
+    bg_mod._finalize_o3_job_after_subprocess_exit(job, tmp_path / "Event_2")
+    assert job["status"] == "failed"
+    assert "non-public" in job["error"].lower() or "localhost" in job["error"].lower()
+
+
 def test_o3_poll_returns_enriched_beat_snapshot_on_terminal() -> None:
     src = (TOOLS / "server_handlers" / "background.py").read_text(encoding="utf-8")
     assert "_enriched_beat_snapshot_for_o3_poll" in src

@@ -15,6 +15,7 @@ def test_nav_status_helpers_are_pure_readonly_module() -> None:
     assert "export function beatIsStitchApproved" in src
     assert "export function computeBeatNavItemStatuses" in src
     assert "beatHasActiveStillBatchJob" in src
+    assert "beatO3JobLooksRunning" in src
     # Nav badges must not call APIs or mutate state.
     assert "pathappPatch" not in src
     assert "apiGet" not in src

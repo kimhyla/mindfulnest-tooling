@@ -18,6 +18,7 @@
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { activeScope, activeProjectType, scopeKey, activeTargetVideo } from '../state/scope';
+import { pushToast } from './ui/Toast';
 import { stitcherRefreshTick } from '../app';
 import { serverRehydrateTick } from '../state/refreshSignals';
 import { apiGet, pathappPatch } from '../api/client';
@@ -29,9 +30,13 @@ import { acceptDragForTarget, makeDropTarget, type DragPayload } from '../utils/
 import { resolveStitchSlotSourceVideoUrl, resolveServerMediaUrl } from '../utils/stitchSlotVideo';
 import {
   pickTrackSlotForJob,
+  resolveTrackSlotForInteraction,
+  slotHasStitchVideo,
+  STITCH_EMPTY_SEGMENT_MS,
   writePersistedTrackSlot,
   type StitchTrackSlotKey,
 } from '../utils/stitchTrackFocus';
+import { syncActiveVideoRoleFromUrl } from '../state/videoRole';
 import {
   STITCH_AMBIENT_BED_VOLUME,
   STITCH_AMBIENT_VOLUME_PERSIST_V1,
@@ -333,11 +338,15 @@ export function StitcherTab() {
   ]);
 
   useEffect(() => {
+    syncActiveVideoRoleFromUrl();
+  }, [activeScope.value.event_id]);
+
+  useEffect(() => {
     if (!job?.slots || standaloneMode) return;
     const eventId = activeScope.value.event_id;
     const best = pickTrackSlotForJob(job.slots, eventId, activeTargetVideo.value);
     setTrackFocusedSlot((prev) => {
-      if (prev && job.slots?.[prev]?.video_path) return prev;
+      if (prev && slotHasStitchVideo(job.slots, prev)) return prev;
       if (best !== prev) writePersistedTrackSlot(eventId, best);
       return best;
     });
@@ -406,37 +415,57 @@ export function StitcherTab() {
           'stitch_editor_job',
           { job_name: canonicalName },
         );
+
+        const canonicalSlots: Record<string, StitchSlot> = {};
+        let mergedTransitions: Transition[] = [];
         if (!cancelled && canonicalDetailRes.ok && canonicalDetailRes.data?.job) {
           const canonicalJob = canonicalDetailRes.data.job;
-          const canonicalSlots: Record<string, StitchSlot> = {};
           mergeSlotsFromJob(canonicalSlots, canonicalJob.slots as Record<string, StitchSlot>);
-          applyDefaultAmbientPresetsToSlots(canonicalSlots);
-          normalizeStitchSlotAmbientVolumesInPlace(canonicalSlots);
-          if (Object.keys(canonicalSlots).length > 0) {
-            setJob({
-              name: canonicalName,
-              slots: canonicalSlots,
-              transitions: canonicalJob.transitions ?? [],
-            });
-            const warns = canonicalDetailRes.data.slot_warnings;
-            if (warns && Object.keys(warns).length > 0) {
-              const flat = Object.entries(warns).flatMap(([k, list]) =>
-                list.map((w) => `${k}: ${w}`),
-              );
-              setStatusMsg(`⚠ ${flat.join(' · ')}`);
-            }
-            setError(null);
-            setLoading(false);
-            return;
-          }
+          mergedTransitions = canonicalJob.transitions ?? [];
         }
 
-        // Legacy fallback: merge auto_* + phase_* jobs (skip empty slots).
+        // Always merge legacy jobs — canonical may only have resolution while intro/phase
+        // exports still live in auto_* jobs or on disk (server hydrates on job load).
         const relevantSummaries = jobs.filter(
           (j) => j.name?.startsWith('auto_') || j.name?.includes(eventName),
         );
+        for (const summary of relevantSummaries) {
+          if (!summary.name || summary.name === canonicalName) continue;
+          const mergeDetailRes = await apiGet<{ job?: StitchJob; name?: string }>(
+            'stitch_editor_job',
+            { job_name: summary.name },
+          );
+          if (cancelled || !mergeDetailRes.ok || !mergeDetailRes.data?.job) continue;
+          const j = mergeDetailRes.data.job;
+          mergeSlotsFromJob(canonicalSlots, j.slots as Record<string, StitchSlot>);
+          if (j.transitions?.length && !mergedTransitions.length) {
+            mergedTransitions = j.transitions;
+          }
+        }
+
+        if (!cancelled && Object.keys(canonicalSlots).length > 0) {
+          applyDefaultAmbientPresetsToSlots(canonicalSlots);
+          normalizeStitchSlotAmbientVolumesInPlace(canonicalSlots);
+          setJob({
+            name: canonicalName,
+            slots: canonicalSlots,
+            transitions: mergedTransitions,
+          });
+          const warns = canonicalDetailRes.data?.slot_warnings;
+          if (warns && Object.keys(warns).length > 0) {
+            const flat = Object.entries(warns).flatMap(([k, list]) =>
+              list.map((w) => `${k}: ${w}`),
+            );
+            setStatusMsg(`⚠ ${flat.join(' · ')}`);
+          }
+          setError(null);
+          setLoading(false);
+          return;
+        }
+
+        // Legacy-only fallback when canonical job does not exist yet.
         const mergedSlots: Record<string, StitchSlot> = {};
-        let mergedTransitions: Transition[] = [];
+        mergedTransitions = [];
         for (const summary of relevantSummaries) {
           if (!summary.name || summary.name === canonicalName) continue;
           const mergeDetailRes = await apiGet<{ job?: StitchJob; name?: string }>(
@@ -513,7 +542,10 @@ export function StitcherTab() {
   const multiPhaseTotalMs = Math.max(
     1,
     multiPhaseSlots.reduce((acc, sd) => {
-      const dur = job?.slots?.[sd.key]?.video_dur_ms ?? DEFAULT_SLOT_DUR_MS;
+      const slot = job?.slots?.[sd.key];
+      const dur = slot?.video_path
+        ? (slot.video_dur_ms ?? DEFAULT_SLOT_DUR_MS)
+        : STITCH_EMPTY_SEGMENT_MS;
       return acc + dur;
     }, 0),
   );
@@ -744,11 +776,21 @@ export function StitcherTab() {
   };
 
   const onMultiPhaseSegmentClick = (slot: SlotKey, opts?: { playModulePreview?: boolean }) => {
-    setTrackFocusedSlot(slot);
-    setActivePreviewSlot(slot);
-    writePersistedTrackSlot(activeScope.value.event_id, slot);
-    void fetchBeatBoundaries(slot);
-    void buildSlotPreview(slot, { quiet: true }).then(() => {
+    const eventId = activeScope.value.event_id;
+    const target = resolveTrackSlotForInteraction(
+      job?.slots,
+      eventId,
+      slot,
+      activeTargetVideo.value,
+    );
+    setTrackFocusedSlot(target);
+    setActivePreviewSlot(target);
+    if (slotHasStitchVideo(job?.slots, target)) {
+      writePersistedTrackSlot(eventId, target);
+    }
+    void fetchBeatBoundaries(target);
+    if (!slotHasStitchVideo(job?.slots, target)) return;
+    void buildSlotPreview(target, { quiet: true }).then(() => {
       seekComposerTo(0, { play: opts?.playModulePreview === true });
     });
   };
@@ -861,10 +903,22 @@ export function StitcherTab() {
     });
     setBusySlot(null);
     if (res.ok) {
-      setStatusMsg(`✓ Baked: ${res.data?.bake_path ?? job.name}`);
+      const path = res.data?.bake_path ?? job.name;
+      setStatusMsg(`✓ Baked: ${path}`);
+      pushToast({
+        kind: 'success',
+        message: `Final MP4 baked → ${path}`,
+        source: 'stitch-bake-done',
+      });
       setRefreshTick((n) => n + 1);
     } else {
-      setStatusMsg(`✗ Bake HTTP ${res.status}`);
+      const detail = res.error ?? `HTTP ${res.status}`;
+      setStatusMsg(`✗ Bake: ${detail}`);
+      pushToast({
+        kind: 'error',
+        message: `Bake failed: ${detail}`,
+        source: 'stitch-bake-error',
+      });
     }
   };
 
@@ -1176,14 +1230,17 @@ export function StitcherTab() {
             <div class="mn-stitcher-multiphase-track-rail">
               {multiPhaseSlots.map((sd) => {
                 const slot = job.slots?.[sd.key];
-                const durMs = slot?.video_dur_ms ?? DEFAULT_SLOT_DUR_MS;
+                const hasVideo = Boolean(slot?.video_path);
+                const durMs = hasVideo
+                  ? (slot?.video_dur_ms ?? DEFAULT_SLOT_DUR_MS)
+                  : STITCH_EMPTY_SEGMENT_MS;
                 const widthPct = (durMs / multiPhaseTotalMs) * 100;
                 const selected = trackFocusedSlot === sd.key;
                 return (
                   <button
                     type="button"
                     key={`track-${sd.key}`}
-                    class={`mn-stitcher-multiphase-segment${selected ? ' is-active' : ''}${slot?.video_path ? '' : ' is-empty'}`}
+                    class={`mn-stitcher-multiphase-segment${selected ? ' is-active' : ''}${hasVideo ? '' : ' is-empty'}`}
                     style={`width:${widthPct.toFixed(3)}%`}
                     data-testid={`stitcher-multiphase-segment-${sd.key}`}
                     onClick={() => onMultiPhaseSegmentClick(sd.key)}

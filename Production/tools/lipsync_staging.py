@@ -36,6 +36,39 @@ def staging_public_base_from_env() -> str:
     return (os.environ.get("MN_LIPSYNC_STAGING_PUBLIC_BASE") or "").strip().rstrip("/")
 
 
+def is_public_staging_base(public_base: str) -> bool:
+    """Return True when WaveSpeed can fetch staged bytes from this base URL.
+
+    Local dev servers (localhost / private LAN) pass local preflight but WaveSpeed
+    rejects them as non-public hosts — skip staging and use R2/ephemeral hosts.
+    """
+    raw = (public_base or "").strip()
+    if not raw:
+        return False
+    parsed = urllib.parse.urlparse(raw)
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False
+    if host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}:
+        return False
+    if host.endswith(".local"):
+        return False
+    if host.startswith("127.") or host.startswith("10."):
+        return False
+    if host.startswith("192.168.") or host.startswith("169.254."):
+        return False
+    if host.startswith("172."):
+        try:
+            second = int(host.split(".")[1])
+        except (IndexError, ValueError):
+            return False
+        if 16 <= second <= 31:
+            return False
+    return True
+
+
 def staging_dir(event_dir: Path, token: str) -> Path:
     safe_token = _safe_segment(token)
     return Path(event_dir) / STAGING_SUBDIR / safe_token

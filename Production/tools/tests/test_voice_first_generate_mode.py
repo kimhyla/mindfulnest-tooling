@@ -94,6 +94,17 @@ def test_submit_handler_stamps_lipsync_staging_env_for_voice_first():
     assert "MN_LIPSYNC_STAGING_EVENT_DIR" in text
     assert "MN_LIPSYNC_STAGING_TOKEN" in text
     assert "MN_LIPSYNC_STAGING_PUBLIC_BASE" in text
+    assert "is_public_staging_base" in text
+    assert "R2_ACCESS_KEY_ID" in text
+
+
+def test_lipsync_staging_skips_localhost_for_all_event_ports():
+    """Event_N default port 5110+N must not become WaveSpeed staging URLs."""
+    import lipsync_staging
+
+    for event_num in (1, 2, 3, 4):
+        port = 5110 + event_num
+        assert not lipsync_staging.is_public_staging_base(f"http://localhost:{port}")
 
 
 def test_production_server_serves_lipsync_staging_route():

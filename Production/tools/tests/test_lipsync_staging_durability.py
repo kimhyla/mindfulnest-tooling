@@ -32,6 +32,38 @@ def test_build_staging_public_url() -> None:
     assert url == "http://localhost:5112/api/lipsync/staging/abc123/line.mp3"
 
 
+def test_is_public_staging_base() -> None:
+    assert not lipsync_staging.is_public_staging_base("")
+    assert not lipsync_staging.is_public_staging_base("http://localhost:5112")
+    assert not lipsync_staging.is_public_staging_base("http://127.0.0.1:5112")
+    assert not lipsync_staging.is_public_staging_base("http://192.168.1.5:5112")
+    assert lipsync_staging.is_public_staging_base("https://cdn.mindfulnest.app")
+    assert lipsync_staging.is_public_staging_base("https://abc123.ngrok-free.app")
+
+
+def test_upload_via_production_staging_skips_localhost(monkeypatch, tmp_path: Path) -> None:
+    sample = tmp_path / "sample.mp4"
+    sample.write_bytes(b"video-bytes")
+    event_dir = tmp_path / "Event_2"
+    event_dir.mkdir()
+    monkeypatch.setenv("MN_LIPSYNC_STAGING_EVENT_DIR", str(event_dir))
+    monkeypatch.setenv("MN_LIPSYNC_STAGING_TOKEN", "tok")
+    monkeypatch.setenv("MN_LIPSYNC_STAGING_PUBLIC_BASE", "http://localhost:5112")
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        lipsync_sender,
+        "_upload_to_r2_staging",
+        lambda path, token: calls.append("r2") or None,
+    )
+    monkeypatch.setattr(lipsync_sender, "_upload_to_filebin", lambda path: calls.append("filebin") or None)
+
+    proof = lipsync_sender._upload_via_production_staging(sample)
+
+    assert proof is None
+    assert calls == []
+
+
 def test_upload_to_hosting_prefers_production_staging(monkeypatch, tmp_path: Path) -> None:
     sample = tmp_path / "sample.mp4"
     sample.write_bytes(b"video-bytes")
@@ -42,8 +74,8 @@ def test_upload_to_hosting_prefers_production_staging(monkeypatch, tmp_path: Pat
         assert path == sample
         return {
             "host": "production_staging",
-            "submitted_url": "http://localhost:5112/api/lipsync/staging/tok/sample.mp4",
-            "landing_url": "http://localhost:5112/api/lipsync/staging/tok/sample.mp4",
+            "submitted_url": "https://cdn.mindfulnest.app/api/lipsync/staging/tok/sample.mp4",
+            "landing_url": "https://cdn.mindfulnest.app/api/lipsync/staging/tok/sample.mp4",
             "bytes": sample.stat().st_size,
             "sha256": "abc",
         }

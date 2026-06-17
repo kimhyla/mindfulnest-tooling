@@ -308,6 +308,16 @@ def _upload_via_production_staging(file_path: Path) -> dict | None:
     if not event_dir or not token or not public_base:
         return None
     try:
+        from lipsync_staging import is_public_staging_base
+    except ImportError:
+        is_public_staging_base = None  # type: ignore[assignment]
+    if is_public_staging_base and not is_public_staging_base(public_base):
+        print(
+            f"[lipsync] skipping production staging: public base is not WaveSpeed-reachable "
+            f"({public_base!r})"
+        )
+        return None
+    try:
         return upload_via_production_staging(
             file_path,
             event_dir=event_dir,

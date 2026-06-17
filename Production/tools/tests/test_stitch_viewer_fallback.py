@@ -32,9 +32,13 @@ def test_stitch_track_focus_skips_empty_persisted_slot() -> None:
     src = focus.read_text(encoding="utf-8")
     assert "STITCH_TRACK_FOCUS_V1" in src
     assert "pickTrackSlotForJob" in src
+    assert "resolveTrackSlotForInteraction" in src
+    assert "STITCH_EMPTY_SEGMENT_MS" in src
     assert "never stay on an empty persisted slot" in src
     stitcher = STITCHER_TAB.read_text(encoding="utf-8")
     assert "pickTrackSlotForJob" in stitcher
+    assert "resolveTrackSlotForInteraction" in stitcher
+    assert "STITCH_EMPTY_SEGMENT_MS" in stitcher
     assert "stitcherRefreshTick.value" in stitcher
     bg = BG_TAB.read_text(encoding="utf-8")
     assert "writePersistedTrackSlot" in bg
