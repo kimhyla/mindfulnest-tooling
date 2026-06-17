@@ -17,7 +17,7 @@
 // All actions go through pathappPatch so scope guards + snapshot fire.
 
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { activeScope, activeProjectType, scopeKey } from '../state/scope';
+import { activeScope, activeProjectType, scopeKey, activeTargetVideo } from '../state/scope';
 import { stitcherRefreshTick } from '../app';
 import { serverRehydrateTick } from '../state/refreshSignals';
 import { apiGet, pathappPatch } from '../api/client';
@@ -27,6 +27,11 @@ import { SfxCuePopover, type SfxCue } from './phase/SfxCuePopover';
 import type { WaveformPlaybackControl } from './phase/WaveformTimeline';
 import { acceptDragForTarget, makeDropTarget, type DragPayload } from '../utils/dragdrop';
 import { resolveStitchSlotSourceVideoUrl, resolveServerMediaUrl } from '../utils/stitchSlotVideo';
+import {
+  pickTrackSlotForJob,
+  writePersistedTrackSlot,
+  type StitchTrackSlotKey,
+} from '../utils/stitchTrackFocus';
 import {
   STITCH_AMBIENT_BED_VOLUME,
   STITCH_AMBIENT_VOLUME_PERSIST_V1,
@@ -42,7 +47,7 @@ import {
   resolveStitchTransitions,
 } from '../utils/stitchModulePreview';
 
-type SlotKey = 'intro' | 'phase_a' | 'phase_b' | 'resolution';
+type SlotKey = StitchTrackSlotKey;
 
 const SLOT_DEFS: Array<{ key: SlotKey; label: string }> = [
   { key: 'intro', label: 'Intro' },
@@ -109,7 +114,6 @@ const SFX_DEFAULTS = {
 // Stitcher slots are typically short; 30s is a safe default that keeps drop
 // math sane until the real duration loads. Tests inject explicit video_dur_ms.
 const DEFAULT_SLOT_DUR_MS = 30000;
-const STITCHER_TRACK_SLOT_LS_PREFIX = 'storyboard_v2_stitcher_track_slot';
 const STITCHER_PREVIEW_LS_PREFIX = 'storyboard_v2_stitcher_preview';
 
 /** Backfill canonical ambient presets on slots that have video but no bed yet. */
@@ -173,34 +177,6 @@ function clearCachedStitcherPreview(eventId: string, slot: SlotKey): void {
     window.localStorage.removeItem(`${STITCHER_PREVIEW_LS_PREFIX}:${eventId}:${slot}`);
   } catch {
     // ignore
-  }
-}
-
-function isSlotKey(value: string): value is SlotKey {
-  return value === 'intro' || value === 'phase_a' || value === 'phase_b' || value === 'resolution';
-}
-
-function readPersistedTrackSlot(eventId: string): SlotKey | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    const raw = window.localStorage.getItem(`${STITCHER_TRACK_SLOT_LS_PREFIX}:${eventId}`);
-    return raw && isSlotKey(raw) ? raw : null;
-  } catch {
-    return null;
-  }
-}
-
-function writePersistedTrackSlot(eventId: string, slot: SlotKey | null): void {
-  if (typeof window === 'undefined') return;
-  try {
-    const key = `${STITCHER_TRACK_SLOT_LS_PREFIX}:${eventId}`;
-    if (slot) {
-      window.localStorage.setItem(key, slot);
-    } else {
-      window.localStorage.removeItem(key);
-    }
-  } catch {
-    // localStorage may be unavailable in some test contexts.
   }
 }
 
@@ -357,10 +333,25 @@ export function StitcherTab() {
   ]);
 
   useEffect(() => {
-    if (trackFocusedSlot) return;
-    const persisted = readPersistedTrackSlot(activeScope.value.event_id);
-    setTrackFocusedSlot(persisted ?? SLOT_DEFS[0].key);
-  }, [trackFocusedSlot, activeScope.value.event_id]);
+    if (!job?.slots || standaloneMode) return;
+    const eventId = activeScope.value.event_id;
+    const best = pickTrackSlotForJob(job.slots, eventId, activeTargetVideo.value);
+    setTrackFocusedSlot((prev) => {
+      if (prev && job.slots?.[prev]?.video_path) return prev;
+      if (best !== prev) writePersistedTrackSlot(eventId, best);
+      return best;
+    });
+  }, [
+    job?.name,
+    job?.slots?.['intro']?.video_path,
+    job?.slots?.['phase_a']?.video_path,
+    job?.slots?.['phase_b']?.video_path,
+    job?.slots?.['resolution']?.video_path,
+    stitcherRefreshTick.value,
+    activeScope.value.event_id,
+    activeTargetVideo.value,
+    standaloneMode,
+  ]);
 
   // One-shot fetch of the ambient catalog. The catalog is module-level static
   // (filesystem inventory of Production/assets/sound_library/ambient/), not

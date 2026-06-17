@@ -10,11 +10,22 @@ export function resolveServerMediaUrl(url: string): string {
   return url;
 }
 
+function normalizeProductionRelativePath(videoPath: string): string | undefined {
+  if (videoPath.startsWith('Production/')) return videoPath;
+  if (videoPath.startsWith('/')) {
+    const marker = '/Production/';
+    const idx = videoPath.indexOf(marker);
+    if (idx >= 0) return videoPath.slice(idx + 1);
+  }
+  return undefined;
+}
+
 /** Instant roadmap playback — serve the slot's on-disk source via /files (Beat Gen parity). */
 export function resolveStitchSlotSourceVideoUrl(
   videoPath?: string | null,
 ): string | undefined {
   if (!videoPath) return undefined;
-  if (!videoPath.startsWith('Production/')) return undefined;
-  return `${SERVER_BASE}/files?path=${encodeURIComponent(videoPath)}`;
+  const rel = normalizeProductionRelativePath(videoPath);
+  if (!rel) return undefined;
+  return `${SERVER_BASE}/files?path=${encodeURIComponent(rel)}`;
 }

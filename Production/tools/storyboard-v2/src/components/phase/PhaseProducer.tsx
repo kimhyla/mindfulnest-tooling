@@ -32,6 +32,7 @@ import { apiGet, pathappPatch } from '../../api/client';
 import { activeScope, activeVideoRole } from '../../state/scope';
 import { SERVER_BASE } from '../../api/endpoints';
 import { stitcherRefreshTick } from '../../app';
+import { writePersistedTrackSlot } from '../../utils/stitchTrackFocus';
 import { serverRehydrateTick } from '../../state/refreshSignals';
 import { SERVER_REHYDRATE_EVENT } from '../../state/serverRehydrate';
 import { WaveformTimeline, type WatercolorCue, type WaveformPlaybackControl } from './WaveformTimeline';
@@ -828,6 +829,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     );
     setBusyAction(null);
     if (res.ok) {
+      writePersistedTrackSlot(activeScope.value.event_id, slotKey);
       stitcherRefreshTick.value += 1;
       const baked = res.data?.overlay_baked ? ' (overlays baked in)' : '';
       setStatusMsg(`✓ Exported to Stitcher → ${slotKey} slot${baked} (open Stitcher tab to preview/bake)`);

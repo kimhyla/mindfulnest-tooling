@@ -28,6 +28,7 @@ import { Spinner } from './ui/Spinner';
 import { Select } from './ui/Select';
 import { pushToast } from './ui/Toast';
 import { stitcherRefreshTick } from '../app';
+import { writePersistedTrackSlot, isStitchTrackSlotKey } from '../utils/stitchTrackFocus';
 import { serverRehydrateTick } from '../state/refreshSignals';
 import {
   BeatMagicButtons,
@@ -2182,6 +2183,9 @@ export function BgTab() {
     setStitcherExportStatus('idle');
     if (result.ok) {
       const slot = result.data?.slot_key ?? stitchSlotForSegment;
+      if (isStitchTrackSlotKey(slot)) {
+        writePersistedTrackSlot(activeScope.value.event_id, slot);
+      }
       stitcherRefreshTick.value += 1;
       pushToast({
         kind: 'success',
