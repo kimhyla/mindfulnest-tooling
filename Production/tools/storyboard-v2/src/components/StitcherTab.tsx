@@ -26,7 +26,7 @@ import { StitcherTransitionSelector, type Transition } from './StitcherTransitio
 import { SfxCuePopover, type SfxCue } from './phase/SfxCuePopover';
 import type { WaveformPlaybackControl } from './phase/WaveformTimeline';
 import { acceptDragForTarget, makeDropTarget, type DragPayload } from '../utils/dragdrop';
-import { resolveStitchSlotSourceVideoUrl } from '../utils/stitchSlotVideo';
+import { resolveStitchSlotSourceVideoUrl, resolveServerMediaUrl } from '../utils/stitchSlotVideo';
 import {
   STITCH_AMBIENT_BED_VOLUME,
   STITCH_AMBIENT_VOLUME_PERSIST_V1,
@@ -678,7 +678,8 @@ export function StitcherTab() {
     if (res.ok) {
       const data = res.data as { preview_url?: string } | undefined;
       if (data?.preview_url) {
-        setPreviewUrls((prev) => ({ ...prev, [slot]: data.preview_url! }));
+        const previewUrl = resolveServerMediaUrl(data.preview_url);
+        setPreviewUrls((prev) => ({ ...prev, [slot]: previewUrl }));
         setPreviewVideoFallback((prev) => {
           const next = { ...prev };
           delete next[slot];

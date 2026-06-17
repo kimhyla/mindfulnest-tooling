@@ -73,6 +73,22 @@ STITCH_SFX_CUE_DEFAULT_FADEOUT_MS = 1200
 # Bust pre-2026-06-13 mix cache: stereo ambient bed + mono speech made amix drop SFX lanes;
 # afade after adelay also silenced cues in the 3-way mix — fade must run before delay.
 STITCH_WAVEFORM_MIX_MONO_V1 = "mono_v3"
+
+
+def _stitch_media_public_url(h, api_path: str) -> str:
+    """Media URL on the active storyboard server origin (5111, 5112, …).
+
+    Hardcoding localhost:5111 breaks Event_2 on :5112 — WaveSurfer then fails with
+    "Failed to fetch" while the slot video (same-origin /files) still plays.
+    """
+    path = api_path if api_path.startswith("/") else f"/{api_path.lstrip('/')}"
+    try:
+        host = (h.headers.get("Host") or "").strip()
+    except Exception:
+        host = ""
+    if host:
+        return f"http://{host}{path}"
+    return path
 # Canonical ambient bed preset_id per stitch slot (filename stem under sound_library/ambient/).
 STITCH_DEFAULT_AMBIENT_BEDS: dict[str, str] = {
     "intro": "Intro video ambient bed",
@@ -1354,7 +1370,7 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
     """POST /api/stitch_editor/audio_extract — extract audio track for WaveSurfer.
 
     Input: {video_path, optional ambient_bed preset_id, optional ambient_volume}
-    Output: {audio_url: "http://localhost:5111/api/stitch_editor/audio_file/<hash>", duration_ms: N}
+    Output: {audio_url: "http://<Host>/api/stitch_editor/audio_file/<hash>", duration_ms: N}
     When ambient_bed is set, mixes the bed under slot video audio for composer waveform parity.
     """
     import hashlib as _hl  # noqa: PLC0415
@@ -1522,7 +1538,7 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
                 )
 
     return h._send_json(200, {
-        "audio_url": f"http://localhost:5111/api/stitch_editor/audio_file/{serve_fname}",
+        "audio_url": _stitch_media_public_url(h, f"/api/stitch_editor/audio_file/{serve_fname}"),
         "duration_ms": duration_ms,
         "video_dur_ms": video_dur_ms,
         "ambient_mixed": bool(mix_slot.get("ambient_bed_path")),
@@ -1699,7 +1715,7 @@ def handle_stitch_preview(h, body: dict)-> None:
     hash_id = out_path.stem.replace("stitch_preview_", "")
     duration_ms = h._ffprobe_duration_ms(out_path)
     return h._send_json(200, {
-        "preview_url": f"http://localhost:5111/api/stitch_editor/preview_file/{hash_id}",
+        "preview_url": _stitch_media_public_url(h, f"/api/stitch_editor/preview_file/{hash_id}"),
         "duration_ms": duration_ms,
         "slot_durations": slot_durations,
         "slot_start_offsets_ms": slot_start_offsets_ms,

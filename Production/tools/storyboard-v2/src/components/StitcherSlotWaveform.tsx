@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { activeScope } from '../state/scope';
 import { pathappPatch } from '../api/client';
 import { STITCH_AMBIENT_BED_VOLUME, STITCH_SLOT_AUDIO_MIX_V1 } from '../utils/stitchConstants';
+import { resolveServerMediaUrl } from '../utils/stitchSlotVideo';
 import {
   WaveformTimeline,
   type WatercolorCue,
@@ -126,7 +127,7 @@ export function StitcherSlotWaveform({
           setMixExtracting(false);
           return;
         }
-        setAudioSrc(res.data.audio_url);
+        setAudioSrc(resolveServerMediaUrl(res.data.audio_url));
         const dur = videoDur > 0 ? videoDur : extractDur;
         setExtractDurMs(dur);
         setTimelineDurMs(dur);

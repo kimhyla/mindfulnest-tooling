@@ -2144,6 +2144,7 @@ export function BgTab() {
         phase,
         slot_key: stitchSlotForSegment,
       },
+      { fetchTimeoutMs: 600_000 },
     );
     setStitcherExportStatus('idle');
     if (result.ok) {
