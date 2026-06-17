@@ -192,6 +192,9 @@ def run_pipeline_from_intent(
 
     beat_id = str(intent.get("beat_id") or "").strip()
     attempt_id = str((intent.get("runtime") or {}).get("attempt_id") or "")
+    env_attempt = (os.environ.get("MN_O3_ATTEMPT_ID") or "").strip()
+    if env_attempt:
+        attempt_id = env_attempt
     prompt_block = intent.get("prompt") or {}
     visual = intent.get("visual") or {}
     voice = intent.get("voice") or {}
@@ -245,20 +248,31 @@ def run_pipeline_from_intent(
         raise RuntimeError("Missing wavespeed API key")
 
     def persist(fields: dict | None = None, *, remove: tuple[str, ...] = ()):
-        if fields:
-            pass
-
         def apply(current: dict, _sidecar: dict) -> None:
             if fields:
                 current.update(fields)
             for key in remove:
                 current.pop(key, None)
 
-        ok, _ = bg_sidecar.update_beat_locked(
+        expected = attempt_id or None
+        ok, live = bg_sidecar.update_beat_locked(
             beat_id,
             apply,
-            expected_attempt_id=attempt_id,
+            expected_attempt_id=expected,
         )
+        if not ok and expected and live:
+            ui_job = str(live.get("kling_o3_voice_fix_ui_job_id") or "")
+            if ui_job == job_id:
+
+                def heal_attempt(b: dict, _sidecar: dict) -> None:
+                    b["kling_o3_voice_fix_attempt_id"] = expected
+
+                bg_sidecar.update_beat_locked(beat_id, heal_attempt)
+                ok, _ = bg_sidecar.update_beat_locked(
+                    beat_id,
+                    apply,
+                    expected_attempt_id=expected,
+                )
         if not ok:
             raise RuntimeError(f"sidecar lost attempt_id race for {beat_id}")
 

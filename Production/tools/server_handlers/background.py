@@ -1693,15 +1693,13 @@ def handle_bg_session_state(h)-> None:
         except Exception as exc:
             print(f"[BG] reconcile_kling_o3_trim_all_events: {exc}", flush=True)
     classify_changed = bg.classify_all_sidecar_pipeline_fields(sidecar)
-    if (
+    persist_heals = bool(
         stuck_changed
         or intent_lock_changed
         or o3_reconcile_changed
         or trim_reconcile_changed
         or classify_changed
-    ):
-        with bg.sidecar_file_lock(timeout_s=30):
-            bg.write_sidecar(sidecar)
+    )
     ctx = sidecar.get("active_context")
 
     # LD-545 Option B — scope-derived segment.
@@ -1752,8 +1750,38 @@ def handle_bg_session_state(h)-> None:
             "event_id": scope_event_id,
             "phase": scope_phase,
         }
-    if ref_hydrated or char_ref_healed:
+    if persist_heals or ref_hydrated:
+        # Re-read under lock before write — stale session GET snapshots must not
+        # wipe kling_o3_voice_fix_attempt_id while an O3 subprocess is checkpointing.
         with bg.sidecar_file_lock(timeout_s=30):
+            sidecar = bg.read_sidecar()
+            bg.ensure_sidecar_schema_defaults(sidecar)
+            reconcile_stuck_o3_voice_beats(sidecar)
+            if force_reconcile_o3:
+                try:
+                    from o3_generation_intent import reconcile_stale_o3_intent_locks_all_events
+
+                    reconcile_stale_o3_intent_locks_all_events(sidecar, prod_root)
+                except Exception as exc:
+                    print(f"[BG] reconcile_stale_o3_intent_locks_all_events: {exc}", flush=True)
+                if event_dir.is_dir():
+                    bg.reconcile_kling_o3_sidecar(sidecar, event_dir)
+                try:
+                    bg.reconcile_kling_o3_trim_all_events(sidecar, prod_root)
+                except Exception as exc:
+                    print(f"[BG] reconcile_kling_o3_trim_all_events: {exc}", flush=True)
+            bg.classify_all_sidecar_pipeline_fields(sidecar)
+            if scope_arc is not None and scope_event_id is not None:
+                seg = bg.get_seg_entry(sidecar, scope_arc, scope_event_id, scope_phase)
+                beats = seg.get("beats", [])
+                approved_roots = h.app._library_root_dirs()
+                for beat in beats:
+                    bg.hydrate_beat_ref_images(beat, approved_roots)
+                scope_active_context = {
+                    "arc_number": scope_arc,
+                    "event_id": scope_event_id,
+                    "phase": scope_phase,
+                }
             bg.write_sidecar(sidecar)
 
     # Migration warning if scope and sidecar's active_context disagree

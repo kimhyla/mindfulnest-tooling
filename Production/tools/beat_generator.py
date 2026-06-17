@@ -6130,8 +6130,8 @@ KLING_O3_TESSA_VOICE_DELIVERY = (
 
 # Loral (raccoon scholar; registry key Lorelai — "Loral" in voice lines for Element bind).
 KLING_O3_LORELAI_VOICE_DELIVERY = (
-    "warm excited conversational pace, clear scholarly delivery, measured deliberate cadence, "
-    "slower steady rhythm, not rushed or frantic, not hyper or sputtering, "
+    "warm calm conversational pace, clear and natural, measured steady cadence, "
+    "not frantic or hyper, not over-emotional or melodramatic, "
     "not dragging, not childlike or baby-talk"
 )
 
