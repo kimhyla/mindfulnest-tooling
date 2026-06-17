@@ -137,6 +137,46 @@ def test_reconcile_writes_done_terminal_when_log_has_done(tmp_path):
     assert intent_mod.beat_has_active_intent(beat_id, event_dir) is False
 
 
+def test_reconcile_closes_intent_when_voice_fix_terminal_failed(tmp_path):
+    prod = tmp_path / "Production"
+    event_dir = prod / "Event_2"
+    jobs = event_dir / "arlo_o3_jobs"
+    jobs.mkdir(parents=True)
+    beat_id = "bg_arc1_event2_pre_beat_01"
+    job_id = "1e0c92f8"
+    intent = {
+        "schema_version": 1,
+        "job_id": job_id,
+        "intent_id": "intent-fail",
+        "beat_id": beat_id,
+        "committed_at": "2026-06-17T22:11:51Z",
+    }
+    (jobs / f"{job_id}_intent.json").write_text(json.dumps(intent), encoding="utf-8")
+    sidecar = {
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [{
+                            "beat_id": beat_id,
+                            "kling_o3_voice_fix_status": "failed_provider_fetch",
+                            "kling_o3_voice_fix_error": "unsafe url: non-public host",
+                        }],
+                    },
+                },
+            },
+        },
+    }
+    with patch("beat_generator._PROD_DIR", str(prod)):
+        assert intent_mod.beat_has_active_intent(beat_id, event_dir) is True
+        closed = intent_mod.reconcile_stale_o3_intent_locks(sidecar, event_dir)
+    assert closed == 1
+    terminal = json.loads((jobs / f"{job_id}_terminal.json").read_text(encoding="utf-8"))
+    assert terminal["status"] == "failed"
+    assert "non-public" in terminal["failure"]["message"]
+    assert intent_mod.beat_has_active_intent(beat_id, event_dir) is False
+
+
 def test_reconcile_skips_when_subprocess_still_running(tmp_path):
     prod = tmp_path / "Production"
     event_dir = prod / "Event_2"

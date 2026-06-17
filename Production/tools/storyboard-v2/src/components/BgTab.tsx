@@ -1455,6 +1455,16 @@ export function BgTab() {
         await handleBeatMissingOnSave(beatId);
         return false;
       }
+      if (result.error_code === 'INTENT_JOB_ACTIVE') {
+        pushToast({
+          kind: 'warning',
+          message:
+            'Previous Generate left a prompt lock after the job failed — refresh the page once, then Generate again.',
+          source: 'bg-intent-stale-lock',
+        });
+        await refreshState();
+        return false;
+      }
       const msg = /failed to fetch|networkerror|load failed/i.test(err)
         ? 'Save failed — server was restarting. Wait for “server is back”, then click Generate again (your text is still in the box).'
         : `Save failed: ${result.error}`;

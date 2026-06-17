@@ -1758,13 +1758,12 @@ def handle_bg_session_state(h)-> None:
     stuck_changed = reconcile_stuck_o3_voice_beats(sidecar)
     intent_lock_changed = 0
     prod_root = _data_root(h)
-    if force_reconcile_o3:
-        try:
-            from o3_generation_intent import reconcile_stale_o3_intent_locks_all_events
+    try:
+        from o3_generation_intent import reconcile_stale_o3_intent_locks_all_events
 
-            intent_lock_changed = reconcile_stale_o3_intent_locks_all_events(sidecar, prod_root)
-        except Exception as exc:
-            print(f"[BG] reconcile_stale_o3_intent_locks_all_events: {exc}", flush=True)
+        intent_lock_changed = reconcile_stale_o3_intent_locks_all_events(sidecar, prod_root)
+    except Exception as exc:
+        print(f"[BG] reconcile_stale_o3_intent_locks_all_events: {exc}", flush=True)
     event_dir = Path(getattr(h.app, "event_dir", "") or "")
     o3_reconcile_changed = 0
     trim_reconcile_changed = 0
@@ -1843,13 +1842,13 @@ def handle_bg_session_state(h)-> None:
             sidecar = bg.read_sidecar()
             bg.ensure_sidecar_schema_defaults(sidecar)
             reconcile_stuck_o3_voice_beats(sidecar)
-            if force_reconcile_o3:
-                try:
-                    from o3_generation_intent import reconcile_stale_o3_intent_locks_all_events
+            try:
+                from o3_generation_intent import reconcile_stale_o3_intent_locks_all_events
 
-                    reconcile_stale_o3_intent_locks_all_events(sidecar, prod_root)
-                except Exception as exc:
-                    print(f"[BG] reconcile_stale_o3_intent_locks_all_events: {exc}", flush=True)
+                reconcile_stale_o3_intent_locks_all_events(sidecar, prod_root)
+            except Exception as exc:
+                print(f"[BG] reconcile_stale_o3_intent_locks_all_events: {exc}", flush=True)
+            if force_reconcile_o3:
                 if event_dir.is_dir():
                     bg.reconcile_kling_o3_sidecar(sidecar, event_dir)
                 try:
@@ -2751,9 +2750,13 @@ def handle_bg_update_beat(h, body: dict)-> None:
                 from o3_generation_intent import (
                     OPERATOR_MUTABLE_FIELDS,
                     beat_has_active_intent,
+                    intent_event_dir_for_beat,
+                    reconcile_stale_o3_intent_locks,
                 )
 
-                if beat_has_active_intent(str(beat_id), event_dir):
+                intent_event = intent_event_dir_for_beat(str(beat_id), event_dir)
+                reconcile_stale_o3_intent_locks(sidecar, intent_event)
+                if beat_has_active_intent(str(beat_id), intent_event):
                     blocked = sorted(OPERATOR_MUTABLE_FIELDS & operator_fields_requested)
                     if blocked:
                         return h._send_error_v59(
@@ -3809,6 +3812,16 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                     })
                 beat.pop("kling_o3_voice_fix_ui_job_id", None)
             try:
+                from o3_generation_intent import (
+                    intent_event_dir_for_beat,
+                    reconcile_stale_o3_intent_locks,
+                )
+
+                intent_event = intent_event_dir_for_beat(str(beat_id), event_dir)
+                reconcile_stale_o3_intent_locks(sidecar, intent_event)
+            except Exception as exc:
+                print(f"[bg_o3_submit] intent reconcile before commit: {exc}", flush=True)
+            try:
                 from credentials import load_credentials  # type: ignore
             except ImportError:
                 from tools.credentials_lib.credentials import load_credentials  # type: ignore
@@ -4113,6 +4126,16 @@ def _finalize_o3_job_after_subprocess_exit(job: dict, event_dir: Path) -> None:
     if voice_fix_is_terminal_failure(voice_fix):
         job["status"] = "failed"
         job["error"] = _summarize_o3_job_error(voice_err or log_text[-4000:])
+        if job_id and event_dir:
+            try:
+                write_intent_terminal(job_id, event_dir, {
+                    "status": "failed",
+                    "phase_last": "subprocess_voice_fix_terminal",
+                    "sidecar_persist_ok": True,
+                    "failure": {"message": job["error"]},
+                })
+            except OSError:
+                pass
         return
     recovered = None
     if beat_id and (
@@ -4141,6 +4164,16 @@ def _finalize_o3_job_after_subprocess_exit(job: dict, event_dir: Path) -> None:
         return
     job["status"] = "failed"
     job["error"] = _summarize_o3_job_error(log_text[-4000:])
+    if job_id and event_dir:
+        try:
+            write_intent_terminal(job_id, event_dir, {
+                "status": "failed",
+                "phase_last": "subprocess_exit",
+                "sidecar_persist_ok": bool(voice_fix_is_terminal_failure(voice_fix)),
+                "failure": {"message": job["error"]},
+            })
+        except OSError:
+            pass
 
 
 def handle_bg_poll_arlo_o3_voice_status(h) -> None:

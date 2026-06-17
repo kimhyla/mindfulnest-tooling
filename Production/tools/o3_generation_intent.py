@@ -227,6 +227,7 @@ def beat_has_active_intent(beat_id: str, event_dir: Path | None = None) -> bool:
 def reconcile_stale_o3_intent_locks(sidecar: dict, event_dir: Path) -> int:
     """Close intent files that outlived a dead subprocess so ref/prompt drops unlock."""
     import beat_generator as bg
+    from o3_job_status_contract import voice_fix_is_terminal_failure
 
     jobs_dir = _jobs_dir(event_dir)
     if not jobs_dir.is_dir():
@@ -246,6 +247,23 @@ def reconcile_stale_o3_intent_locks(sidecar: dict, event_dir: Path) -> int:
             continue
         _, beat = bg.find_beat(sidecar, beat_id)
         if beat and bg.beat_o3_voice_job_running(beat):
+            continue
+        voice_fix = str((beat or {}).get("kling_o3_voice_fix_status") or "")
+        if voice_fix_is_terminal_failure(voice_fix):
+            write_intent_terminal(job_id, event_dir, {
+                "intent_id": intent.get("intent_id"),
+                "status": "failed",
+                "phase_last": "reconcile_voice_fix_terminal",
+                "sidecar_persist_ok": True,
+                "failure": {
+                    "message": str(
+                        (beat or {}).get("kling_o3_voice_fix_error") or voice_fix
+                    )[:500],
+                },
+            })
+            if beat:
+                _clear_beat_intent_lock_fields(beat)
+            closed += 1
             continue
         log_path = Path(str((intent.get("runtime") or {}).get("log_path") or ""))
         if not log_path.is_file():
