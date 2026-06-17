@@ -2394,6 +2394,7 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
         magicVideoPath={beat.magic_video_path}
         onPreviewMagicStill={() => handlePreviewOption(-1, 'still')}
         onPreviewMagicVideo={() => handlePreviewOption(-1, 'video')}
+        onMagicStillCleared={() => { onMutated(); }}
       />
       <div class="mn-sb-insert-after" data-testid={`sb-insert-after-${index}`}>
         <button

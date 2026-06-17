@@ -828,6 +828,7 @@ def handle_magic_still(h, body: dict)-> None:
         if tools_dir not in sys.path:
             sys.path.insert(0, tools_dir)
         from magic_compositor import MagicCompositor  # type: ignore
+        # MAGIC_RENDER_CONTRACT_V2_STILL — see Production/docs/HOW_TO_MAKE_VISIBLE_MAGIC.md
         with _bg_module()._sidecar_lock:
             _sidecar_style = _bg_module().read_sidecar()
         magic_style = _resolve_magic_style(h, beat_id, body, clean_path, _sidecar_style)
@@ -1200,6 +1201,7 @@ def handle_magic_video(h, body: dict)-> None:
         if tools_dir not in sys.path:
             sys.path.insert(0, tools_dir)
         from magic_compositor import MagicCompositor, composite_screen_rgb  # type: ignore
+        # MAGIC_RENDER_CONTRACT_V2_VIDEO — see Production/docs/HOW_TO_MAKE_VISIBLE_MAGIC.md
         with _bg_module()._sidecar_lock:
             _sidecar_style = _bg_module().read_sidecar()
         magic_style = _resolve_magic_style(h, beat_id, body, clean_path, _sidecar_style)
@@ -1311,11 +1313,16 @@ def handle_magic_video(h, body: dict)-> None:
         )
 
         frame_idx = 0
+        path_lum_sampled = False
         while True:
             raw = decode_proc.stdout.read(frame_size)
             if len(raw) < frame_size:
                 break
             bg_arr = _np_mv.frombuffer(raw, dtype=_np_mv.uint8).reshape(comp_h, comp_w, 3).astype(_np_mv.float32)
+
+            if not path_lum_sampled:
+                mc.set_path_luminance_from_array(bg_arr)
+                path_lum_sampled = True
 
             # Map lipsync frame_idx → magic compositor frame (same fps+duration, so 1:1)
             mc_frame_idx = min(frame_idx, mc_n_frames - 1)

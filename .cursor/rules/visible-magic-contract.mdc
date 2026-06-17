@@ -1,0 +1,34 @@
+---
+description: LD-469 visible magic — permanent contract for magic_still + magic_video (all events/arcs)
+alwaysApply: true
+---
+
+# Visible magic contract (never regress)
+
+**Authoritative doc:** `Production/docs/HOW_TO_MAKE_VISIBLE_MAGIC.md`  
+**Code:** `Production/tools/magic_render_contract.py` + `magic_compositor.py`
+
+## Production buttons (Storyboard)
+
+Both **Add magic on still** and **Add magic on video** MUST use the same contract:
+
+- `tessa_ori` + `path_interp="polyline"` + `gain=1.0`
+- RGB `composite_screen_rgb` — **not** additive, **not** ffmpeg YUV screen
+- `handle_magic_video` MUST call `set_path_luminance_from_array()` on first decoded frame
+- Bright stone (≥25% path lum >130): ambient pool only, **no sparkle dots**
+
+## Forbidden in handlers
+
+- `render_video(black_bg=True)` + ffmpeg screen overlay
+- `path_interp="bezier"` on production path picker flows
+- Calibrating gain on black ref for magic-on-video
+
+## Before marking magic work done
+
+1. `bash Production/scripts/verify_visible_magic_contract.sh` — green
+2. Mirror tooling → Dropbox + `verify_tooling_dropbox_parity.py` exit 0
+3. Restart production server; visual proof on **dark path** (beat 1) and **bright stone** (nest orbital)
+
+## Golden oracle
+
+`Production/Event_1/magic_video_beat_01_20260605-211951.mp4` — never overwrite.

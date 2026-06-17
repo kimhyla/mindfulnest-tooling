@@ -4521,19 +4521,6 @@ def resolve_beat_stitch_export_clip_path(
 ) -> Path:
     """Clip for segment concat — magic-on-video, magic-on-still (+TTS), or Kling."""
     event_dir = Path(event_dir)
-    if beat.get("kling_o3_status") == "approved":
-        mv = beat.get("magic_video_path")
-        if mv:
-            mp = Path(mv)
-            if not mp.is_absolute():
-                mp = event_dir / mv
-            if mp.is_file():
-                return mp.resolve()
-    magic_still = beat_magic_still_clip_path(beat, event_dir)
-    if magic_still is not None:
-        if resolve_bg_beat_tts_audio_path(event_dir, beat):
-            return materialize_magic_still_with_tts_export(beat, event_dir, scratch_dir)
-        return magic_still
     mv = beat.get("magic_video_path")
     if mv:
         mp = Path(mv)
@@ -4541,6 +4528,11 @@ def resolve_beat_stitch_export_clip_path(
             mp = event_dir / mv
         if mp.is_file():
             return mp.resolve()
+    magic_still = beat_magic_still_clip_path(beat, event_dir)
+    if magic_still is not None:
+        if resolve_bg_beat_tts_audio_path(event_dir, beat):
+            return materialize_magic_still_with_tts_export(beat, event_dir, scratch_dir)
+        return magic_still
     return _kling_o3_export_clip_path(beat, event_dir, scratch_dir)
 
 
@@ -6738,13 +6730,11 @@ def resolve_beat_dropped_image_path(ref: dict | None) -> str | None:
 
 
 def resolve_beat_magic_still_source_path(beat: dict) -> str | None:
-    """Still for Beat Gen magic_still — any of the four drop slots, then char auto-ref."""
-    for key in (
-        "start_frame_image",
-        "reference_image",
-        "end_frame_image",
-        "bg_ref_image",
-    ):
+    """Still for Beat Gen magic_still — same priority as still_insert render (library slot before char ref)."""
+    still = resolve_still_source_abs_path(beat)
+    if still is not None:
+        return str(still)
+    for key in ("start_frame_image", "bg_ref_image", "end_frame_image", "reference_image"):
         p = resolve_beat_dropped_image_path(beat.get(key))
         if p:
             return p
@@ -8524,6 +8514,25 @@ def resolve_magic_style_for_render(
     return "tessa_ori"
 
 
+def resolve_magic_still_render_duration(
+    bg_beat_id: str,
+    *,
+    scene_registry: dict | None = None,
+    fallback: float = 4.0,
+) -> float:
+    """Duration for magic_still compositor — scene_registry pins approved nest orbital at 6.08s."""
+    if scene_registry:
+        for key in (
+            f"m1_e1_res_{bg_beat_id}",
+            f"m1_e1_res_{bg_beat_id.replace('bg_arc1_event1_post_', '')}",
+        ):
+            scene = scene_registry.get(key) or {}
+            dur = scene.get("magic_still_duration_s")
+            if isinstance(dur, (int, float)) and float(dur) > 0:
+                return float(dur)
+    return float(fallback)
+
+
 def bg_beat_id_from_storyboard_id(
     storyboard_beat_id: str,
     event_id: str,
@@ -8554,15 +8563,14 @@ _AUDIO_SYNC_FIELDS: tuple[str, ...] = (
 def resolve_bg_magic_canonical_kind(beat: dict) -> str | None:
     """Which magic composite is canonical for preview + stitch export.
 
-    O3-approved beats with magic_video use magic-on-video (beat 1 resolution).
-    Still-only beats use magic_still + ElevenLabs TTS at stitch export.
+    Beat 1 resolution canonical (LD-469): magic_video on lipsync when present.
+    Still-insert Ken Burns clips use the same magic-on-video path, not magic_still.
+    magic_still is fallback when no video source exists.
     """
-    if beat.get("kling_o3_status") == "approved" and beat.get("magic_video_path"):
+    if beat.get("magic_video_path"):
         return "video"
     if beat.get("magic_still_path"):
         return "still"
-    if beat.get("magic_video_path"):
-        return "video"
     return None
 
 
@@ -8629,7 +8637,9 @@ def persist_magic_fields_on_bg_sidecar(
     if not beat_obj:
         return False
     for key, val in fields.items():
-        if val is not None:
+        if val is None:
+            beat_obj.pop(key, None)
+        else:
             beat_obj[key] = val
     return True
 

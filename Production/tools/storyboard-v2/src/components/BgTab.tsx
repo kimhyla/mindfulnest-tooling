@@ -1554,7 +1554,7 @@ export function BgTab() {
       pushToast({
         kind: 'success',
         message: pipeline === 'still_insert'
-          ? 'Pipeline: Still + TTS — Generate builds Ken Burns still with dialogue audio.'
+          ? 'Pipeline: Still + TTS — Generate builds smooth zoom still (1.0→1.06×) with dialogue audio.'
           : 'Pipeline: O3 Kling — Generate submits padded O3 voice video.',
         source: 'bg-set-pipeline',
       });
@@ -2987,7 +2987,7 @@ function BeatGenCard({
               data-testid={`bg-pipeline-still-${index}`}
               aria-pressed={stillInsert ? 'true' : 'false'}
               disabled={busy}
-              title="Still image + TTS audio (Ken Burns), no Kling O3 Element clip"
+              title="Still image + TTS (smooth zoom 1.0→1.06×), no Kling O3 Element clip"
               onClick={() => {
                 if (!stillInsert) onSetPipeline('still_insert');
               }}
@@ -3214,8 +3214,8 @@ function BeatGenCard({
 
       {showStillClipHint ? (
         <p class="mn-dim mn-bg-still-clip-hint" data-testid={`bg-still-clip-hint-${index}`}>
-          Still ready — click <strong>Build still video (+ TTS)</strong> above to Ken Burns the
-          image and mux dialogue audio. Trim below, then use <strong>Approve still for stitch</strong>.
+          Still ready — click <strong>Build still video (+ TTS)</strong> above for smooth zoom
+          (1.0→1.06×) and dialogue audio. Trim below, then use <strong>Approve still for stitch</strong>.
         </p>
       ) : null}
 
@@ -3236,6 +3236,11 @@ function BeatGenCard({
           setMagicPreviewMode('still');
         } : undefined}
         onPreviewMagicVideo={magicVideoPreviewUrl ? () => setMagicPreviewMode('video') : undefined}
+        onMagicStillCleared={() => {
+          setMagicPreviewMode(null);
+          setStillPreviewAutoplay(false);
+          onRefresh();
+        }}
       />
       {magicPreviewMode === 'still' && magicStillPreviewUrl && beat.storyboard_beat_id ? (
         <BgMagicStillPreview

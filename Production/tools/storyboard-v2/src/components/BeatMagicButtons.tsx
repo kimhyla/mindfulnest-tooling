@@ -20,6 +20,8 @@ export interface BeatMagicButtonsProps {
   klingO3Status?: string | null | undefined;
   onPreviewMagicStill?: (() => void) | undefined;
   onPreviewMagicVideo?: (() => void) | undefined;
+  /** Called after server clears magic_still_path (refresh beat state). */
+  onMagicStillCleared?: (() => void) | undefined;
 }
 
 export function BeatMagicButtons({
@@ -36,6 +38,7 @@ export function BeatMagicButtons({
   klingO3Status,
   onPreviewMagicStill,
   onPreviewMagicVideo,
+  onMagicStillCleared,
 }: BeatMagicButtonsProps) {
   const hasMagicStill = !!magicStillPath;
   const hasMagicVideo = !!magicVideoPath;
@@ -64,6 +67,32 @@ export function BeatMagicButtons({
     u.searchParams.set('scope_event_id', eventId);
     u.searchParams.set('scope_video_role', videoRole);
     window.open(u.toString(), '_blank');
+  };
+
+  const clearMagicStill = async () => {
+    if (!hasMagicStill) return;
+    if (!window.confirm(
+      'Remove magic on still from this beat? (The old MP4 stays on disk; preview and stitch will ignore it.)',
+    )) return;
+    try {
+      const resp = await fetch(`${SERVER_BASE}/api/storyboard/clear_magic_still`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          beat_id: beatId,
+          scope_event_id: eventId,
+          scope_video_role: videoRole,
+        }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || data.ok === false) {
+        window.alert(data.error_message || data.error || `Clear failed (HTTP ${resp.status})`);
+        return;
+      }
+      onMagicStillCleared?.();
+    } catch (err) {
+      window.alert(`Clear failed: ${String(err)}`);
+    }
   };
 
   const openMagicVideo = () => {
@@ -99,6 +128,17 @@ export function BeatMagicButtons({
           >
             {hasMagicStill ? '↻ Redo magic on still' : '🌟 Add magic on still'}
           </button>
+          {hasMagicStill ? (
+            <button
+              type="button"
+              class="mn-btn mn-btn-small"
+              data-testid={`beat-magic-clear-still-${index}`}
+              onClick={() => { void clearMagicStill(); }}
+              title="Remove magic_still_path from this beat (does not delete the MP4 file)"
+            >
+              ✕ Clear magic on still
+            </button>
+          ) : null}
           {showCanonicalPreview && canonicalKind === 'still' && onPreviewCanonical ? (
             <button
               type="button"
@@ -160,14 +200,27 @@ export function resolveBgMagicStillSourcePath(
     bg_ref_image?: { abs_path?: string } | null;
     start_frame_image?: { abs_path?: string } | null;
     end_frame_image?: { abs_path?: string } | null;
+    gpt_options?: Array<{ local_path?: string; abs_path?: string } | null> | null;
+    flux_options?: Array<{ local_path?: string; abs_path?: string } | null> | null;
+    accepted_library_ref?: { abs_path?: string } | null;
   },
   eventId: string,
 ): string | null {
+  const libAp = beat.accepted_library_ref?.abs_path;
+  if (libAp) {
+    const rel = toProjectRelativeMediaPath(libAp, eventId);
+    if (rel) return rel;
+  }
+  for (const opt of [...(beat.gpt_options ?? []), ...(beat.flux_options ?? [])]) {
+    if (!opt) continue;
+    const ap = opt.local_path || opt.abs_path;
+    if (ap) return toProjectRelativeMediaPath(ap, eventId);
+  }
   for (const ref of [
     beat.start_frame_image,
-    beat.reference_image,
-    beat.end_frame_image,
     beat.bg_ref_image,
+    beat.end_frame_image,
+    beat.reference_image,
   ]) {
     const ap = ref?.abs_path;
     if (ap) return toProjectRelativeMediaPath(ap, eventId);
@@ -188,7 +241,9 @@ export function resolveBgMagicStillPreviewUrl(
   beat: { magic_still_path?: string | null; magic_video_path?: string | null },
   eventId: string,
 ): string | null {
-  return magicPathToPreviewUrl(beat.magic_still_path, eventId);
+  const base = magicPathToPreviewUrl(beat.magic_still_path, eventId);
+  if (!base || !beat.magic_still_path) return base;
+  return `${base}&v=${encodeURIComponent(beat.magic_still_path)}`;
 }
 
 export function resolveBgMagicVideoPreviewUrl(
@@ -207,8 +262,7 @@ export function resolveBgMagicCanonicalKind(beat: {
   if (beat.magic_canonical_kind === 'still' || beat.magic_canonical_kind === 'video') {
     return beat.magic_canonical_kind;
   }
-  if (beat.kling_o3_status === 'approved' && beat.magic_video_path) return 'video';
-  if (beat.magic_still_path) return 'still';
   if (beat.magic_video_path) return 'video';
+  if (beat.magic_still_path) return 'still';
   return null;
 }

@@ -33,5 +33,8 @@ python3 -m pytest \
   Production/tools/tests/test_o3_verbatim_prompt_durability.py \
   Production/tools/tests/test_o3_generation_intent_commit.py \
   Production/tools/tests/test_o3_stale_intent_reconcile.py \
+  Production/tools/tests/test_magic_render_contract_durability.py \
+  Production/tools/tests/test_magic_golden_beat01_replay.py \
   -q
-echo "[o3-intro-contract] all gates passed"
+echo "[o3-intro-contract] visible magic contract..."
+bash Production/scripts/verify_visible_magic_contract.sh

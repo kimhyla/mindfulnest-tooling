@@ -66,6 +66,7 @@ See `Production/docs/BEATGEN_NEW_EVENT_CHECKLIST.md` — code heals prompts; it 
 | **`verify_tooling_dropbox_parity.py`** | Tooling repo SHA256 = Dropbox runtime for **code paths** (fail = “fixed in git only”). `character_subjects.json` is **warn-only** unless `MN_REGISTRY_PARITY_STRICT=1`. |
 | `post_tooling_change_smoke.sh` | pytest + rsync + parity + restart + HTTP smoke (full Python deploy loop) |
 | `verify_o3_intro_contract.sh` | O3 sidecar contract, locks, still insert, voice bind |
+| `verify_visible_magic_contract.sh` | LD-469 magic_still + magic_video (see `Production/docs/HOW_TO_MAKE_VISIBLE_MAGIC.md`) |
 | `verify_storyboard_session_durability.sh` | Prompt shape pytest + scope/library guards |
 | `smoke_kling_canonical_prompt_shape_live.sh` | Live Event_2 intro **and** resolution V2 lint |
 

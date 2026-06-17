@@ -11,6 +11,8 @@ CODE_PARITY_PATHS = (
     "Production/tools/kling_o3_prompt.py",
     "Production/tools/ken_burns_render.py",
     "Production/tools/kling_character_registry.py",
+    "Production/tools/magic_compositor.py",
+    "Production/tools/magic_render_contract.py",
     "Production/tools/server_handlers/background.py",
     "Production/tools/server_handlers/cropper.py",
     "Production/tools/production_server.py",
@@ -27,6 +29,7 @@ CODE_PARITY_PATHS = (
     "Production/tools/o3_generation_intent.py",
     "Production/scripts/verify_tooling_dropbox_parity.py",
     "Production/scripts/verify_o3_intro_contract.sh",
+    "Production/scripts/verify_visible_magic_contract.sh",
     "Production/scripts/post_tooling_change_smoke.sh",
     "Production/scripts/verify_lorelai_element_name_durability.sh",
 )

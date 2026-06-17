@@ -6364,6 +6364,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
             # S5 v3.1 endpoints — LDs 468 + 469.
             if path == "/api/storyboard/magic_still":
                 return self._handle_magic_still(body)
+            if path == "/api/storyboard/clear_magic_still":
+                return self._handle_clear_magic_still(body)
             if path == "/api/storyboard/magic_video":
                 return self._handle_magic_video(body)
             if path == "/api/storyboard/switch":
@@ -7521,6 +7523,11 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_magic_still(self, body: dict) -> None:
         from server_handlers.background import handle_magic_still
         return handle_magic_still(self, body)
+
+    @with_pin_and_drain('_handle_clear_magic_still', track_sync=True)
+    def _handle_clear_magic_still(self, body: dict) -> None:
+        from server_handlers.background import handle_clear_magic_still
+        return handle_clear_magic_still(self, body)
 
     @with_pin_and_drain('_handle_magic_video', track_sync=True)
     def _handle_magic_video(self, body: dict) -> None:
