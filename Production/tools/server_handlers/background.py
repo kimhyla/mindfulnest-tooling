@@ -3635,8 +3635,9 @@ def handle_bg_poll_gpt_status(h)-> None:
 def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
     """POST /api/bg/submit-arlo-o3-voice {beat_id}.
 
-    Canonical Element path: O3 Pro + Element create-voice + native audio in one
-    call, then automatic 1280x720 delivery encode. No lipsync detour.
+    Routes by ``resolve_o3_generate_mode``:
+    - ``voice_first``: ElevenLabs TTS + silent O3 + lipsync → 720 delivery
+    - ``element_native``: O3 Pro Element + native audio (legacy canonical path)
     """
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
         return
@@ -3651,19 +3652,8 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
     job_id = str(_stdlib_uuid.uuid4())[:8]
     attempt_id = _stdlib_uuid.uuid4().hex
     prod = _data_root(h)
-    # Canonical code lives in the tooling repo (_PSERVER_TOOLS_DIR). Dropbox
-    # Production/tools/ is a runtime mirror that drifts until deploy — O3 subprocess
-    # must not import stale beat_generator duration logic from Dropbox alone.
-    script = _PSERVER_TOOLS_DIR / "kling_o3_element_beat_pipeline.py"
-    if not script.is_file():
-        script = prod / "tools" / "kling_o3_element_beat_pipeline.py"
-    if not script.is_file():
-        return h._send_error_v59(
-            500,
-            error_code="O3_ELEMENT_PIPELINE_MISSING",
-            error_message=f"O3 Element pipeline script missing: {script}",
-            retry_safe=False,
-        )
+    script: Path | None = None
+    o3_generate_mode = "element_native"
     # Ref snapshot durability: POST body carries the operator ref box at Generate
     # click. build_generation_intent resolves char/bg via resolve_o3_submit_refs
     # (ref box wins over sidecar when both differ).
@@ -3691,6 +3681,23 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                     404,
                     error_code="BEAT_NOT_FOUND",
                     error_message=f"beat {beat_id} not found",
+                    retry_safe=False,
+                )
+            o3_generate_mode = bg.resolve_o3_generate_mode(beat, sidecar)
+            beat["kling_o3_generate_mode"] = o3_generate_mode
+            if o3_generate_mode == "voice_first":
+                script = _PSERVER_TOOLS_DIR / "arlo_o3_voice_pipeline.py"
+                if not script.is_file():
+                    script = prod / "tools" / "arlo_o3_voice_pipeline.py"
+            else:
+                script = _PSERVER_TOOLS_DIR / "kling_o3_element_beat_pipeline.py"
+                if not script.is_file():
+                    script = prod / "tools" / "kling_o3_element_beat_pipeline.py"
+            if not script or not script.is_file():
+                return h._send_error_v59(
+                    500,
+                    error_code="O3_PIPELINE_MISSING",
+                    error_message=f"O3 pipeline script missing for mode={o3_generate_mode}: {script}",
                     retry_safe=False,
                 )
             existing_job_id = str(beat.get("kling_o3_voice_fix_ui_job_id") or "")
@@ -3849,6 +3856,8 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
         "log_path": str(log_path),
         "attempt_id": attempt_id,
         "intent_id": (committed_intent or {}).get("intent_id"),
+        "o3_generate_mode": o3_generate_mode,
+        "pipeline_script": str(script),
         "generation_slot": submitted.get("generation_slot"),
         "submitted": submitted,
         "intent": committed_intent,

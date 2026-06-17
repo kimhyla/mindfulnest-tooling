@@ -635,6 +635,57 @@ def segment_phase_for_beat(sidecar, beat_id: str) -> str | None:
     return None
 
 
+def segment_key_for_beat(sidecar, beat_id: str) -> str | None:
+    """Return BG segment dict key (e.g. ``event_2_pre``) for a beat_id."""
+    for arc in (sidecar.get("arcs") or {}).values():
+        for seg_key, seg in (arc.get("segments") or {}).items():
+            for beat in seg.get("beats") or []:
+                if beat.get("beat_id") == beat_id:
+                    return seg_key
+    return None
+
+
+def beat_has_spoken_dialogue(beat: dict) -> bool:
+    """True when beat carries operator dialogue for voice-first Generate."""
+    if (beat.get("dialogue_text") or "").strip():
+        return True
+    spoken = extract_spoken_dialogue_from_kling_prompt(beat.get("kling_o3_prompt") or "")
+    return bool((spoken or "").strip())
+
+
+def resolve_o3_generate_mode(
+    beat: dict,
+    sidecar: dict,
+    *,
+    env: dict | None = None,
+) -> str:
+    """Route O3 Generate subprocess: ``voice_first`` (ElevenLabs+silent O3+lipsync) or ``element_native``."""
+    import os
+
+    env = env or os.environ
+    forced = (env.get("MN_O3_GENERATE_MODE") or "").strip().lower()
+    if forced in ("voice_first", "element_native"):
+        return forced
+
+    bid = str(beat.get("beat_id") or "")
+    seg_key = segment_key_for_beat(sidecar, bid)
+    if seg_key:
+        for arc in (sidecar.get("arcs") or {}).values():
+            seg = (arc.get("segments") or {}).get(seg_key) or {}
+            seg_mode = (seg.get("o3_generate_mode") or "").strip().lower()
+            if seg_mode in ("voice_first", "element_native"):
+                return seg_mode
+
+    beat_mode = (beat.get("o3_generate_mode") or "").strip().lower()
+    if beat_mode in ("voice_first", "element_native"):
+        return beat_mode
+
+    # v1 rollout: Event_2 intro speak beats only (see VOICE_FIRST_BEAT_GEN_SPEC_v1.md).
+    if seg_key == "event_2_pre" and beat_has_spoken_dialogue(beat):
+        return "voice_first"
+    return "element_native"
+
+
 _CANONICAL_LEAD_BEAT_MARKERS = ("_o3_canonical",)
 
 

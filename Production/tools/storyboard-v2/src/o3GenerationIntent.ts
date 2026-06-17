@@ -34,6 +34,8 @@ export type ArloO3SubmitResponse = {
   job_id?: string;
   beat_id?: string;
   intent_id?: string;
+  o3_generate_mode?: 'voice_first' | 'element_native' | string;
+  pipeline_script?: string;
   generation_slot?: string;
   submitted?: O3SubmitAudit;
   intent?: O3GenerationIntentPoll;

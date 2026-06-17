@@ -1754,11 +1754,13 @@ export function BgTab() {
         setO3SubmitAuditByBeat((prev) => ({ ...prev, [beatId]: result.data!.submitted! }));
       }
       const slot = result.data.generation_slot ?? result.data.submitted?.generation_slot;
+      const mode = result.data.o3_generate_mode;
+      const modeLabel = mode === 'voice_first' ? 'ElevenLabs voice-first' : 'Element native O3';
       pushToast({
         kind: 'info',
         message: result.data.deduped
           ? 'This beat already has an O3 voice job running; reattached to the existing job.'
-          : `Submitted ${beat.speaker} O3 intent${slot ? ` (${slot})` : ''} — prompt locked until job finishes`,
+          : `Submitted ${beat.speaker} ${modeLabel}${slot ? ` (${slot})` : ''} — prompt locked until job finishes`,
         source: 'bg-o3-submit',
       });
       return true;
@@ -2108,6 +2110,11 @@ export function BgTab() {
     return { event_id, phase };
   };
 
+  const isVoiceFirstSegment = useMemo(() => {
+    const { event_id, phase } = segmentCtx();
+    return event_id === '2' && phase === 'pre';
+  }, [activeSegment]);
+
   const allBeatsExportReady = useMemo(
     () => allBeatsStitchExportReady(beats),
     [beats],
@@ -2250,6 +2257,11 @@ export function BgTab() {
         <span class="mn-scope-chip" data-testid="bg-scope-chip">
           scope: {scopeKey(activeScope.value)}
         </span>
+        {isVoiceFirstSegment ? (
+          <span class="mn-scope-chip" data-testid="bg-voice-first-badge" title="Generate uses ElevenLabs TTS + silent O3 + lipsync (720 delivery)">
+            Voice: ElevenLabs
+          </span>
+        ) : null}
       </header>
 
       <div class="mn-bg-toolbar" data-testid="bg-toolbar">
