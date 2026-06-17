@@ -2815,6 +2815,24 @@ def normalize_still_insert_approval_status(beat: dict) -> bool:
     return False
 
 
+def heal_still_insert_option_keys(beat: dict) -> bool:
+    """Ensure every still-insert option row has a stable ``key`` for Approve still UI."""
+    if not beat_is_still_insert(beat):
+        return False
+    beat_id = str(beat.get("beat_id") or "beat")
+    changed = False
+    for i, opt in enumerate(beat.get("kling_o3_options") or []):
+        if not isinstance(opt, dict) or opt.get("key"):
+            continue
+        vp = str(opt.get("video_path") or "").strip()
+        if not vp:
+            continue
+        stem = Path(vp).stem
+        opt["key"] = stem or f"{beat_id}_still_{i}"
+        changed = True
+    return changed
+
+
 def ensure_sidecar_schema_defaults(sidecar: dict) -> dict:
     """Lightweight read-path defaults — no ffprobe, registry, or prompt heals."""
     sidecar.setdefault("groups", {})
@@ -2829,6 +2847,7 @@ def ensure_sidecar_schema_defaults(sidecar: dict) -> dict:
                 beat.setdefault("reference_image", None)
                 beat.setdefault("bg_ref_image", None)
                 normalize_still_insert_approval_status(beat)
+                heal_still_insert_option_keys(beat)
     return sidecar
 
 

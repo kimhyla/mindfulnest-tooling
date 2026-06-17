@@ -364,3 +364,27 @@ def test_normalize_still_insert_preserves_explicit_stitch_approve():
     assert bg.normalize_still_insert_approval_status(beat) is False
     assert beat["kling_o3_status"] == "approved"
     assert beat["status"] == "approved"
+
+
+def test_heal_still_insert_option_keys_assigns_stable_key_from_path():
+    beat = {
+        "pipeline": "still_insert",
+        "beat_id": "bg_arc1_event1_post_beat_21",
+        "kling_o3_options": [{
+            "source": "still_insert_ken_burns",
+            "video_path": "/tmp/bg_arc1_event1_post_beat_21_still_insert_123_tts.mp4",
+        }],
+    }
+    assert bg.heal_still_insert_option_keys(beat) is True
+    assert beat["kling_o3_options"][0]["key"] == "bg_arc1_event1_post_beat_21_still_insert_123_tts"
+
+
+def test_bgtab_still_approve_banner_and_keyless_tile_button():
+    bgtab = (
+        Path(__file__).resolve().parent.parent / "storyboard-v2" / "src" / "components" / "BgTab.tsx"
+    ).read_text(encoding="utf-8")
+    assert "bg-still-approve-banner" in bgtab
+    assert "stillBeatNeedsStitchApprove" in bgtab
+    assert "resolveStillStitchApproveOptionKey" in bgtab
+    assert "isStillDraft && onApproveStill ? (" in bgtab
+    assert "isStillDraft && onApproveStill && option.key" not in bgtab

@@ -159,7 +159,7 @@ type BgModalState =
 // ----------------------------------------------------------------
 
 interface GptOption {
-  key: string;
+  key?: string;
   label?: string;
   generation?: number;
   local_path?: string;
@@ -192,6 +192,7 @@ interface BgBeat {
   gpt_options?: GptOption[];
   bg_gpt_batch_job_id?: string | null;
   kling_o3_status?: string;
+  kling_o3_still_stitch_approved?: boolean;
   kling_o3_prompt?: string;
   o3_prompt_box_law?: boolean;
   kling_o3_video_path?: string;
@@ -231,6 +232,31 @@ interface BgBeat {
   audio_file_exists?: boolean;
   start_frame_image?: { abs_path?: string } | null;
   end_frame_image?: { abs_path?: string } | null;
+}
+
+/** Option key for **Approve still for stitch** — works even when sidecar row lacks ``key``. */
+function resolveStillStitchApproveOptionKey(beat: BgBeat): string | null {
+  if (!isStillInsertBeat(beat)) return null;
+  const activePath = (beat.kling_o3_video_path ?? '').trim();
+  if (!activePath) return null;
+  const opts = beat.kling_o3_options ?? [];
+  const matched = opts.find((o) => o?.video_path === activePath);
+  if (matched) {
+    const idx = Math.max(0, opts.indexOf(matched));
+    return resolveO3OptionKey(matched, beat.beat_id, idx);
+  }
+  const slot = buildFixedO3OptionSlots(beat).find((s) => s?.video_path === activePath);
+  if (slot) {
+    return resolveO3OptionKey(slot, beat.beat_id, slot.slot_index ?? 0);
+  }
+  return resolveO3OptionKey({ video_path: activePath }, beat.beat_id, 0);
+}
+
+function stillBeatNeedsStitchApprove(beat: BgBeat): boolean {
+  if (!isStillInsertBeat(beat)) return false;
+  if (beat.kling_o3_still_stitch_approved) return false;
+  if (beat.kling_o3_status === 'approved') return false;
+  return Boolean((beat.kling_o3_video_path ?? '').trim());
 }
 
 interface BgSegment {
@@ -2934,6 +2960,10 @@ function BeatGenCard({
   const hasStillSource = !!magicStillSource
     || optionsToShow.some((o) => o?.local_path || o?.thumb_b64);
   const showStillClipHint = stillInsert && !beat.kling_o3_video_path && hasStillSource;
+  const stillNeedsStitchApprove = stillBeatNeedsStitchApprove(beat);
+  const stillApproveOptionKey = stillNeedsStitchApprove
+    ? resolveStillStitchApproveOptionKey(beat)
+    : null;
   const elementCharRefBlocked = isO3VoiceBeat(beat) && beat.element_char_ref_ok === false;
   const charRefHasImage = !!(
     beat.reference_image
@@ -3217,6 +3247,26 @@ function BeatGenCard({
           Still ready — click <strong>Build still video (+ TTS)</strong> above for smooth zoom
           (1.0→1.06×) and dialogue audio. Trim below, then use <strong>Approve still for stitch</strong>.
         </p>
+      ) : null}
+
+      {stillNeedsStitchApprove && stillApproveOptionKey ? (
+        <div
+          class="mn-bg-still-approve-banner"
+          data-testid={`bg-still-approve-banner-${index}`}
+        >
+          <p class="mn-dim">
+            Still clip built — trim in the option tile if needed, then approve so
+            <strong> Send Beat Gen to Stitcher</strong> can include this beat.
+          </p>
+          <button
+            type="button"
+            class="mn-btn mn-btn-primary"
+            data-testid={`bg-still-approve-banner-btn-${index}`}
+            onClick={() => onApproveStill(stillApproveOptionKey)}
+          >
+            Approve still for stitch
+          </button>
+        </div>
       ) : null}
 
       <BeatMagicButtons
@@ -4103,7 +4153,7 @@ function BgOptionTile({
             </button>
           </div>
           ) : null}
-          {isStillDraft && onApproveStill && option.key ? (
+          {isStillDraft && onApproveStill ? (
             <button
               type="button"
               class="mn-btn mn-btn-small mn-btn-primary"
