@@ -591,6 +591,9 @@ export function BgTab() {
   const [segments, setSegments] = useState<BgSegment[]>([]);
   const [activeSegment, setActiveSegment] = useState<string>(''); // "<event_id>|<phase>"
   const [beats, setBeats] = useState<BgBeat[]>([]);
+  /** Mirror beats state for Generate submit — ref box must not lag one render behind. */
+  const beatsRef = useRef<BgBeat[]>([]);
+  beatsRef.current = beats;
   // F-BG-001 fix: initial state is `true` because the data-load useEffect
   // fires synchronously on first mount (prevDepsRef === null branch) and
   // immediately sets loading=true. Without `true` here, the first paint
@@ -1780,38 +1783,44 @@ export function BgTab() {
     );
   };
 
+  const beatForO3Submit = (beatId: string, beat: BgBeat): BgBeat => (
+    beatsRef.current.find((b) => b.beat_id === beatId) ?? beat
+  );
+
   const submitO3Voice = async (
     beatId: string,
     beat: BgBeat,
     promptToSave: string,
     acceptVoiceDrift = false,
   ): Promise<boolean> => {
+    const refBeat = beatForO3Submit(beatId, beat);
     const result = await pathappPatch<ArloO3SubmitResponse>(
       activeScope.value, 'bg_submit_arlo_o3_voice', {
         beat_id: beatId,
         kling_o3_prompt: promptToSave,
         model: 'pro',
-        replace_slot_index: beat.kling_o3_replace_slot_index ?? 0,
-        reference_image: beat.reference_image ?? null,
-        bg_ref_image: beat.bg_ref_image ?? null,
+        replace_slot_index: refBeat.kling_o3_replace_slot_index ?? 0,
+        reference_image: refBeat.reference_image ?? null,
+        bg_ref_image: refBeat.bg_ref_image ?? null,
         ...(acceptVoiceDrift ? { accept_voice_drift: true } : {}),
       },
     );
-    return handleO3SubmitResult(beatId, beat, result);
+    return handleO3SubmitResult(beatId, refBeat, result);
   };
 
   const confirmVoiceDriftSubmit = async () => {
     if (modalState.kind !== 'voice-drift-confirm') return;
     const { beatId, promptToSave, replaceSlotIndex, referenceImage, bgRefImage } = modalState;
     closeModal();
-    const beat = beats.find((b) => b.beat_id === beatId);
+    const beat = beatsRef.current.find((b) => b.beat_id === beatId)
+      ?? beats.find((b) => b.beat_id === beatId);
     if (!beat) return;
     const workBeat: BgBeat = {
       ...beat,
       kling_o3_prompt: promptToSave,
       kling_o3_replace_slot_index: replaceSlotIndex,
-      reference_image: referenceImage ?? null,
-      bg_ref_image: bgRefImage ?? null,
+      reference_image: referenceImage ?? beat.reference_image ?? null,
+      bg_ref_image: bgRefImage ?? beat.bg_ref_image ?? null,
     };
     await submitO3Voice(beatId, workBeat, promptToSave, true);
   };
@@ -1847,7 +1856,7 @@ export function BgTab() {
       }
       const saved = await onUpdateBeatText(beatId, promptToSave);
       if (!saved) return;
-      await submitO3Voice(beatId, beat, promptToSave);
+      await submitO3Voice(beatId, beatForO3Submit(beatId, beat), promptToSave);
       return;
     }
     if (activeJobId) {

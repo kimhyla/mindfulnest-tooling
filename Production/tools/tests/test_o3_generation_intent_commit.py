@@ -378,3 +378,49 @@ def test_commit_reconciles_pose_only_already_matched(
         )
     reconcile.assert_called_once_with("Lorelai", char_path, "k")
     assert intent["visual"]["element_char_ref_gate"]["registration_action"] == "reconciled_after_pose_only_match"
+
+
+@patch("tools.kling_character_registry.is_speaker_voice_ready", return_value=True)
+@patch("tools.kling_character_registry.char_ref_matches_element_images", return_value=(True, ""))
+@patch("beat_generator.resolve_o3_element_list_entry")
+@patch("beat_generator.validate_proven_o3_element_submit", return_value=None)
+@patch("tools.kling_voice_bind.detect_voice_bind_drift", return_value=None)
+@patch("tools.kling_o3_prompt.validate_element_list_alignment", return_value=[])
+def test_commit_prefers_ref_box_bg_over_sidecar_when_body_differs(
+    _align, _drift, _proven, mock_element, _ready, _char_ok, tmp_path,
+):
+    mock_element.return_value = {
+        "element_id": "313441038164306",
+        "element_name": "Loral",
+        "voice_id": "895210468825628751",
+    }
+    char = tmp_path / "char.png"
+    sidecar_bg = tmp_path / "sidecar_bg.png"
+    ref_box_bg = tmp_path / "ref_box_bg.png"
+    char.write_bytes(b"char")
+    sidecar_bg.write_bytes(b"sidecar")
+    ref_box_bg.write_bytes(b"refbox")
+    beat = _voice_ready_lorelai_beat(tmp_path)
+    beat["reference_image"] = {"abs_path": str(char)}
+    beat["bg_ref_image"] = {"abs_path": str(sidecar_bg)}
+    sidecar = _minimal_sidecar(beat)
+    event_dir = tmp_path / "Event_2"
+    event_dir.mkdir()
+    body = {
+        "kling_o3_prompt": beat["kling_o3_prompt"],
+        "reference_image": {"abs_path": str(char)},
+        "bg_ref_image": {"abs_path": str(ref_box_bg)},
+    }
+    intent = build_generation_intent(
+        beat=beat,
+        sidecar=sidecar,
+        body=body,
+        beat_id=beat["beat_id"],
+        event_dir=event_dir,
+        job_id="refbox01",
+        attempt_id="a-ref-box",
+        log_path=event_dir / "j.log",
+        pipeline_script=tmp_path / "p.py",
+        wavespeed_key="k",
+    )
+    assert intent["visual"]["bg_ref_abs_path"] == str(ref_box_bg.resolve())

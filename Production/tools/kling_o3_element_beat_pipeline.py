@@ -228,6 +228,7 @@ def run_pipeline_from_intent(
         "speaker": speaker,
         "element": element_entry,
         "char_ref": str(char_path),
+        "bg_ref": str(bg_path),
         "char_ref_aligned": True,
         "prompt_sha256": prompt_block.get("sha256"),
         "prompt_verbatim": True,

@@ -3663,10 +3663,9 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
             error_message=f"O3 Element pipeline script missing: {script}",
             retry_safe=False,
         )
-    # Ref snapshot durability: the UI may optimistically show a just-dropped
-    # char/BG ref before the async bg_update_beat request has completed. Accept
-    # the visible refs on submit and persist them before launching the subprocess
-    # so Kling uses the boxes Kim sees, not stale sidecar refs.
+    # Ref snapshot durability: POST body carries the operator ref box at Generate
+    # click. build_generation_intent resolves char/bg via resolve_o3_submit_refs
+    # (ref box wins over sidecar when both differ).
     event_dir = Path(getattr(h.app, "event_dir", prod / "Event_1"))
     log_path = event_dir / "arlo_o3_jobs" / f"{job_id}_{beat_id}.log"
     started_at = datetime.now(timezone.utc).isoformat()

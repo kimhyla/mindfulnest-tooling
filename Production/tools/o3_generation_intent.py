@@ -50,6 +50,49 @@ def _jobs_dir(event_dir: Path) -> Path:
     return event_dir / "arlo_o3_jobs"
 
 
+def _ref_abs_path(ref: Any) -> str:
+    if not isinstance(ref, dict):
+        return ""
+    return str(ref.get("abs_path") or "").strip()
+
+
+def resolve_o3_submit_ref(field: str, *, body: dict, beat: dict) -> dict | None:
+    """Operator ref box wins on Generate; sidecar only when POST omits the field."""
+    sidecar_ref = beat.get(field)
+    if field in body:
+        body_ref = body.get(field)
+        if body_ref is None:
+            return None
+        if isinstance(body_ref, dict):
+            body_path = _ref_abs_path(body_ref)
+            sidecar_path = _ref_abs_path(sidecar_ref) if isinstance(sidecar_ref, dict) else ""
+            if body_path and sidecar_path and body_path != sidecar_path:
+                print(
+                    f"[o3_intent] {field} ref box wins over sidecar "
+                    f"({Path(body_path).name} not {Path(sidecar_path).name})",
+                    flush=True,
+                )
+            if isinstance(sidecar_ref, dict) and _ref_abs_path(sidecar_ref) == body_path:
+                merged = dict(sidecar_ref)
+                merged.update({k: v for k, v in body_ref.items() if v not in (None, "")})
+                return merged
+            return dict(body_ref)
+    if isinstance(sidecar_ref, dict):
+        return dict(sidecar_ref)
+    return None
+
+
+def resolve_o3_submit_refs(body: dict, beat: dict) -> tuple[dict | None, dict | None]:
+    """Resolve char + BG refs for O3 intent commit (ref box over sidecar)."""
+    char_ref = resolve_o3_submit_ref("reference_image", body=body, beat=beat)
+    bg_ref = resolve_o3_submit_ref("bg_ref_image", body=body, beat=beat)
+    if char_ref is None and isinstance(beat.get("reference_image"), dict):
+        char_ref = dict(beat["reference_image"])
+    if bg_ref is None and isinstance(beat.get("bg_ref_image"), dict):
+        bg_ref = dict(beat["bg_ref_image"])
+    return char_ref, bg_ref
+
+
 def intent_path_for_job(job_id: str, event_dir: Path) -> Path:
     return _jobs_dir(event_dir) / f"{job_id}_intent.json"
 
@@ -390,8 +433,7 @@ def build_generation_intent(
             http_status=400,
         )
 
-    char_ref = body.get("reference_image") if "reference_image" in body else beat.get("reference_image")
-    bg_ref = body.get("bg_ref_image") if "bg_ref_image" in body else beat.get("bg_ref_image")
+    char_ref, bg_ref = resolve_o3_submit_refs(body, beat)
     if not isinstance(char_ref, dict) or not isinstance(bg_ref, dict):
         raise IntentCommitError(
             "MISSING_O3_REF",

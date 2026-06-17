@@ -1,0 +1,182 @@
+"""O3 Generate must use operator ref box paths, not stale sidecar, on every event."""
+from __future__ import annotations
+
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from o3_generation_intent import (
+    build_generation_intent,
+    resolve_o3_submit_ref,
+    resolve_o3_submit_refs,
+)
+
+
+def _minimal_sidecar(beat: dict) -> dict:
+    return {
+        "schema_version": 1,
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [beat],
+                    },
+                },
+            },
+        },
+    }
+
+
+def _voice_ready_beat(tmp_path: Path, beat_id: str, speaker: str = "Lorelai") -> dict:
+    char = tmp_path / f"{beat_id}_char.png"
+    sidecar_bg = tmp_path / f"{beat_id}_sidecar_bg.png"
+    char.write_bytes(b"char-bytes-hands-face")
+    sidecar_bg.write_bytes(b"sidecar-bg")
+    return {
+        "beat_id": beat_id,
+        "speaker": speaker,
+        "beat_plan_source": "operator_insert_v1",
+        "kling_o3_generation": 3,
+        "reference_image_locked": True,
+        "reference_image": {"abs_path": str(char)},
+        "bg_ref_image": {"abs_path": str(sidecar_bg)},
+        "kling_o3_prompt": f'{speaker} speaks: "Hello"',
+    }
+
+
+@patch("tools.kling_character_registry.is_speaker_voice_ready", return_value=True)
+@patch("tools.kling_character_registry.char_ref_matches_element_images", return_value=(True, ""))
+@patch("beat_generator.resolve_o3_element_list_entry")
+@patch("beat_generator.validate_proven_o3_element_submit", return_value=None)
+@patch("tools.kling_voice_bind.detect_voice_bind_drift", return_value=None)
+@patch("tools.kling_o3_prompt.validate_element_list_alignment", return_value=[])
+def test_ref_box_wins_char_and_bg_over_sidecar(
+    _align, _drift, _proven, mock_element, _ready, _char_ok, tmp_path: Path,
+):
+    mock_element.return_value = {
+        "element_id": "313441038164306",
+        "element_name": "Lorelai",
+        "voice_id": "895210468825628751",
+    }
+    beat_id = "bg_arc1_event2_pre_beat_14"
+    beat = _voice_ready_beat(tmp_path, beat_id)
+    ref_box_char = tmp_path / "ref_box_char.png"
+    ref_box_bg = tmp_path / "ref_box_bg.png"
+    ref_box_char.write_bytes(b"ref-char")
+    ref_box_bg.write_bytes(b"ref-bg")
+    body = {
+        "kling_o3_prompt": beat["kling_o3_prompt"],
+        "reference_image": {"abs_path": str(ref_box_char)},
+        "bg_ref_image": {"abs_path": str(ref_box_bg)},
+    }
+    event_dir = tmp_path / "Event_2"
+    event_dir.mkdir()
+    intent = build_generation_intent(
+        beat=beat,
+        sidecar=_minimal_sidecar(beat),
+        body=body,
+        beat_id=beat_id,
+        event_dir=event_dir,
+        job_id="refbox01",
+        attempt_id="a-ref-box",
+        log_path=event_dir / "j.log",
+        pipeline_script=tmp_path / "p.py",
+        wavespeed_key="k",
+    )
+    assert intent["visual"]["char_ref_abs_path"] == str(ref_box_char.resolve())
+    assert intent["visual"]["bg_ref_abs_path"] == str(ref_box_bg.resolve())
+
+
+def test_sidecar_fallback_when_body_omits_ref_fields(tmp_path: Path):
+    beat_id = "bg_arc1_event2_pre_beat_10"
+    beat = _voice_ready_beat(tmp_path, beat_id)
+    char_ref, bg_ref = resolve_o3_submit_refs({"kling_o3_prompt": "x"}, beat)
+    assert char_ref is not None
+    assert bg_ref is not None
+    assert char_ref["abs_path"] == beat["reference_image"]["abs_path"]
+    assert bg_ref["abs_path"] == beat["bg_ref_image"]["abs_path"]
+
+
+def test_resolve_o3_submit_ref_char_box_wins(tmp_path: Path):
+    sidecar_char = tmp_path / "sidecar_char.png"
+    box_char = tmp_path / "box_char.png"
+    sidecar_char.write_bytes(b"a")
+    box_char.write_bytes(b"b")
+    beat = {"reference_image": {"abs_path": str(sidecar_char)}}
+    body = {"reference_image": {"abs_path": str(box_char)}}
+    resolved = resolve_o3_submit_ref("reference_image", body=body, beat=beat)
+    assert resolved is not None
+    assert resolved["abs_path"] == str(box_char)
+
+
+@pytest.mark.parametrize(
+    ("beat_id", "event_name"),
+    [
+        ("bg_arc1_event1_pre_beat_03", "Event_1"),
+        ("bg_arc1_event2_pre_beat_14", "Event_2"),
+        ("bg_arc1_event3_pre_beat_01", "Event_3"),
+    ],
+)
+@patch("tools.kling_character_registry.is_speaker_voice_ready", return_value=True)
+@patch("tools.kling_character_registry.char_ref_matches_element_images", return_value=(True, ""))
+@patch("beat_generator.resolve_o3_element_list_entry")
+@patch("beat_generator.validate_proven_o3_element_submit", return_value=None)
+@patch("tools.kling_voice_bind.detect_voice_bind_drift", return_value=None)
+@patch("tools.kling_o3_prompt.validate_element_list_alignment", return_value=[])
+def test_ref_box_commit_on_all_event_beat_ids(
+    _align,
+    _drift,
+    _proven,
+    mock_element,
+    _ready,
+    _char_ok,
+    tmp_path: Path,
+    beat_id: str,
+    event_name: str,
+):
+    mock_element.return_value = {
+        "element_id": "1",
+        "element_name": "Lorelai",
+        "voice_id": "895210468825628751",
+    }
+    beat = _voice_ready_beat(tmp_path, beat_id)
+    ref_bg = tmp_path / f"{event_name}_ref_box_bg.png"
+    ref_bg.write_bytes(b"operator-bg")
+    body = {
+        "kling_o3_prompt": beat["kling_o3_prompt"],
+        "reference_image": beat["reference_image"],
+        "bg_ref_image": {"abs_path": str(ref_bg)},
+    }
+    event_dir = tmp_path / event_name
+    event_dir.mkdir()
+    intent = build_generation_intent(
+        beat=beat,
+        sidecar=_minimal_sidecar(beat),
+        body=body,
+        beat_id=beat_id,
+        event_dir=event_dir,
+        job_id="evref01",
+        attempt_id="a-ev",
+        log_path=event_dir / "j.log",
+        pipeline_script=tmp_path / "p.py",
+        wavespeed_key="k",
+    )
+    assert intent["event_id"] == event_name
+    assert intent["visual"]["bg_ref_abs_path"] == str(ref_bg.resolve())
+
+
+def test_submit_handler_wires_ref_box_resolver():
+    src = Path(__file__).resolve().parents[1] / "server_handlers" / "background.py"
+    text = src.read_text(encoding="utf-8")
+    block = text.split("def handle_bg_submit_arlo_o3_voice", 1)[1].split("\ndef ", 1)[0]
+    assert "build_generation_intent" in block
+    assert "Ref snapshot durability" in block or "visible refs on submit" in block
+
+
+def test_pipeline_logs_bg_ref_on_intent_submit():
+    src = Path(__file__).resolve().parents[1] / "kling_o3_element_beat_pipeline.py"
+    text = src.read_text(encoding="utf-8")
+    block = text.split("def run_pipeline_from_intent", 1)[1].split("\ndef ", 1)[0]
+    assert '"bg_ref"' in block
+    assert "visual.get(\"bg_ref_abs_path\")" in block or "bg_path" in block
