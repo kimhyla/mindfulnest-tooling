@@ -5966,6 +5966,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._serve_beat_audio(beat_id)
             if path == "/api/lipsync/status":
                 return self._handle_lipsync_status()
+            if path.startswith("/api/lipsync/staging/"):
+                return self._serve_lipsync_staging(path)
             # LD V3 Preview Stitched V3: module-level media + library streams.
             if path.startswith("/api/phase_b/media/"):
                 fname = path[len("/api/phase_b/media/"):]
@@ -8947,6 +8949,49 @@ body {{padding-top:44px!important;}}
     def _serve_beat_audio(self, beat_id: str) -> None:
         from server_handlers.beats_legacy import serve_beat_audio
         return serve_beat_audio(self, beat_id)
+
+    def _serve_lipsync_staging(self, path: str) -> None:
+        """GET /api/lipsync/staging/{token}/{filename} — WaveSpeed-fetchable staging bytes."""
+        import mimetypes
+        from pathlib import Path as _Path
+
+        from lipsync_staging import resolve_staged_file
+
+        rest = path[len("/api/lipsync/staging/"):]
+        parts = rest.split("/", 1)
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            return self._send_error_v59(
+                400,
+                error_code="INVALID_STAGING_PATH",
+                error_message="expected /api/lipsync/staging/{token}/{filename}",
+                retry_safe=False,
+            )
+        token, filename = parts
+        try:
+            staged = resolve_staged_file(_Path(self.app.event_dir), token, filename)
+        except ValueError as exc:
+            return self._send_error_v59(
+                400,
+                error_code="INVALID_STAGING_PATH",
+                error_message=str(exc),
+                retry_safe=False,
+            )
+        if staged is None:
+            return self._send_error_v59(
+                404,
+                error_code="STAGING_NOT_FOUND",
+                error_message=f"no staged file for token={token!r} name={filename!r}",
+                retry_safe=False,
+            )
+        mime, _ = mimetypes.guess_type(str(staged))
+        data = staged.read_bytes()
+        self.send_response(200)
+        self._cors_headers()
+        self.send_header("Content-Type", mime or "application/octet-stream")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=3600")
+        self.end_headers()
+        self.wfile.write(data)
 
     def _beat_id(self, line_number: int) -> str:
         return f"beat_{line_number:02d}"

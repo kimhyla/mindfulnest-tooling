@@ -363,11 +363,7 @@ def _submit_and_poll_lipsync_with_fallback(
     by default for Beat Gen quality-sensitive runs.
     """
     attempts = ["url"]
-    voice_first = (beat.get("kling_o3_generate_mode") or "").strip().lower() == "voice_first"
-    if (
-        os.environ.get("MINDFULNEST_ALLOW_LOW_QUALITY_LIPSYNC_DATA_URI_FALLBACK") == "1"
-        or voice_first
-    ):
+    if os.environ.get("MINDFULNEST_ALLOW_LOW_QUALITY_LIPSYNC_DATA_URI_FALLBACK") == "1":
         attempts.append("data_uri")
     last_result: dict | None = None
     last_task = ""
@@ -706,41 +702,24 @@ def run_pipeline(beat_id: str, *, model: str = "pro", sharpen: bool = True, atte
     try:
         lipsync_quality = _assert_lipsync_quality(out)
     except Exception as exc:
-        voice_first = (beat.get("kling_o3_generate_mode") or "").strip().lower() == "voice_first"
-        if voice_first and lipsync_transport == "data_uri":
-            width, height = _probe_video_size(out)
-            lipsync_quality = {
+        _restore_prior_video_state(beat, prior_video=prior_video, prior_status=prior_status, prior_beat_status=prior_beat_status)
+        width, height = _probe_video_size(out)
+        persist({
+            "status": beat.get("status"),
+            "kling_o3_status": beat.get("kling_o3_status"),
+            "kling_o3_video_path": beat.get("kling_o3_video_path"),
+            "kling_o3_voice_fix_status": "failed_provider_sub720",
+            "kling_o3_voice_fix_error_code": "PROVIDER_SUB720",
+            "kling_o3_voice_fix_error": str(exc),
+            "kling_o3_voice_fix_output_profile": {
+                "path": str(out),
                 "width": width,
                 "height": height,
                 "min_dimension": min(width, height),
-                "warning": str(exc),
-                "voice_first_pilot_warn": True,
-            }
-            print(json.dumps({
-                "phase": "lipsync_quality_warn",
-                "beat_id": beat_id,
-                "warning": str(exc),
-                "transport": lipsync_transport,
-            }), flush=True)
-        else:
-            _restore_prior_video_state(beat, prior_video=prior_video, prior_status=prior_status, prior_beat_status=prior_beat_status)
-            width, height = _probe_video_size(out)
-            persist({
-                "status": beat.get("status"),
-                "kling_o3_status": beat.get("kling_o3_status"),
-                "kling_o3_video_path": beat.get("kling_o3_video_path"),
-                "kling_o3_voice_fix_status": "failed_provider_sub720",
-                "kling_o3_voice_fix_error_code": "PROVIDER_SUB720",
-                "kling_o3_voice_fix_error": str(exc),
-                "kling_o3_voice_fix_output_profile": {
-                    "path": str(out),
-                    "width": width,
-                    "height": height,
-                    "min_dimension": min(width, height),
-                },
-                "kling_o3_voice_fix_completed_at": datetime.now(timezone.utc).isoformat(),
-            }, remove=("kling_o3_voice_fix_ui_job_id",))
-            raise
+            },
+            "kling_o3_voice_fix_completed_at": datetime.now(timezone.utc).isoformat(),
+        }, remove=("kling_o3_voice_fix_ui_job_id",))
+        raise
     active = _delivery_video(out, sharpen=sharpen)
     print(json.dumps({"phase": "finalize", "beat_id": beat_id, "video": str(active)}), flush=True)
     out_dur = float(subprocess.check_output([

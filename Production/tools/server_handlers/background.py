@@ -3880,6 +3880,23 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
     if body.get("accept_voice_drift"):
         subprocess_env["MN_ACCEPT_VOICE_DRIFT"] = "1"
     subprocess_env["MN_TOOLING_TOOLS"] = str(_PSERVER_TOOLS_DIR)
+    if o3_generate_mode == "voice_first":
+        subprocess_env["MN_LIPSYNC_STAGING_EVENT_DIR"] = str(event_dir)
+        subprocess_env["MN_LIPSYNC_STAGING_TOKEN"] = attempt_id
+        public_base = os.environ.get("MN_LIPSYNC_PUBLIC_BASE_URL", "").strip()
+        if not public_base:
+            event_name = event_dir.name
+            if event_name.startswith("Event_"):
+                try:
+                    port = 5110 + int(event_name.replace("Event_", ""))
+                    public_base = f"http://localhost:{port}"
+                except ValueError:
+                    public_base = ""
+        if public_base:
+            subprocess_env["MN_LIPSYNC_STAGING_PUBLIC_BASE"] = public_base.rstrip("/")
+        r2_cdn = os.environ.get("MN_R2_CDN_BASE_URL", "").strip()
+        if r2_cdn:
+            subprocess_env["MN_R2_CDN_BASE_URL"] = r2_cdn.rstrip("/")
     _pp = subprocess_env.get("PYTHONPATH", "")
     subprocess_env["PYTHONPATH"] = os.pathsep.join(
         p for p in (str(_PSERVER_TOOLS_DIR), str(prod / "tools"), str(prod), _pp) if p

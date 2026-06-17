@@ -30,6 +30,8 @@ def test_upload_to_hosting_prefers_filebin_and_requires_preflight(monkeypatch, t
             "sha256": "abc",
         }
 
+    monkeypatch.setattr(lipsync_sender, "_upload_via_production_staging", lambda path: None)
+    monkeypatch.setattr(lipsync_sender, "_upload_to_r2_staging", lambda path, token: None)
     monkeypatch.setattr(lipsync_sender, "_upload_to_filebin", fake_filebin)
     monkeypatch.setattr(lipsync_sender, "_upload_to_catbox", lambda path: calls.append("catbox-upload") or None)
     monkeypatch.setattr(lipsync_sender, "_upload_to_uguu", lambda path: calls.append("uguu-upload") or None)
@@ -46,6 +48,8 @@ def test_upload_to_hosting_fails_closed_when_preflight_rejects_all(monkeypatch, 
     sample = tmp_path / "sample.mp4"
     sample.write_bytes(b"video-bytes")
 
+    monkeypatch.setattr(lipsync_sender, "_upload_via_production_staging", lambda path: None)
+    monkeypatch.setattr(lipsync_sender, "_upload_to_r2_staging", lambda path, token: None)
     monkeypatch.setattr(lipsync_sender, "_upload_to_filebin", lambda path: "https://filebin.net/bin/sample.mp4")
     monkeypatch.setattr(lipsync_sender, "_upload_to_catbox", lambda path: "https://files.catbox.moe/sample.mp4")
     monkeypatch.setattr(lipsync_sender, "_upload_to_uguu", lambda path: None)

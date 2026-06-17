@@ -35,6 +35,9 @@ python3 -m pytest \
   Production/tools/tests/test_o3_stale_intent_reconcile.py \
   Production/tools/tests/test_magic_render_contract_durability.py \
   Production/tools/tests/test_magic_golden_beat01_replay.py \
+  Production/tools/tests/test_voice_first_generate_mode.py \
+  Production/tools/tests/test_lipsync_staging_durability.py \
+  Production/tools/tests/test_lipsync_hosting_preflight.py \
   -q
 echo "[o3-intro-contract] visible magic contract..."
 bash Production/scripts/verify_visible_magic_contract.sh

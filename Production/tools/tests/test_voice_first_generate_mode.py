@@ -72,10 +72,32 @@ def test_submit_handler_selects_arlo_script_for_voice_first():
     assert "o3_generate_mode" in text
 
 
-def test_arlo_pipeline_stamps_generate_mode_and_data_uri_fallback():
+def test_arlo_pipeline_stamps_generate_mode_and_url_only_lipsync():
     src = Path(__file__).resolve().parents[1] / "arlo_o3_voice_pipeline.py"
     text = src.read_text(encoding="utf-8")
     assert "kling_o3_generate_mode" in text
     assert "LipsyncHostingError" in text
-    assert "voice_first_pilot_warn" in text
+    assert "voice_first_pilot_warn" not in text
+    assert "MINDFULNEST_ALLOW_LOW_QUALITY_LIPSYNC_DATA_URI_FALLBACK" in text
     assert 'min(12, math.ceil(float(lipsync_padding["padded_audio_duration_s"]) + 0.25))' in text
+
+
+def test_arlo_voice_first_does_not_auto_enable_data_uri():
+    src = Path(__file__).resolve().parents[1] / "arlo_o3_voice_pipeline.py"
+    text = src.read_text(encoding="utf-8")
+    assert "or voice_first" not in text
+
+
+def test_submit_handler_stamps_lipsync_staging_env_for_voice_first():
+    bg_src = Path(__file__).resolve().parents[1] / "server_handlers" / "background.py"
+    text = bg_src.read_text(encoding="utf-8")
+    assert "MN_LIPSYNC_STAGING_EVENT_DIR" in text
+    assert "MN_LIPSYNC_STAGING_TOKEN" in text
+    assert "MN_LIPSYNC_STAGING_PUBLIC_BASE" in text
+
+
+def test_production_server_serves_lipsync_staging_route():
+    ps = Path(__file__).resolve().parents[1] / "production_server.py"
+    text = ps.read_text(encoding="utf-8")
+    assert "/api/lipsync/staging/" in text
+    assert "_serve_lipsync_staging" in text

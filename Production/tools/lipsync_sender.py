@@ -252,20 +252,101 @@ def _preflight_download_url(file_path: Path, url: str, *, host: str) -> dict | N
         return None
 
 
+def _upload_to_r2_staging(file_path: Path, token: str) -> dict | None:
+    """Upload to R2 CDN when credentials exist; return preflight proof or None."""
+    try:
+        from lipsync_staging import (
+            content_type_for,
+            r2_public_url,
+            r2_staging_key,
+        )
+    except ImportError:
+        return None
+    try:
+        from Production.scripts import r2_upload  # type: ignore
+    except ImportError:
+        try:
+            import sys
+            scripts = Path(__file__).resolve().parents[1] / "scripts"
+            if str(scripts) not in sys.path:
+                sys.path.insert(0, str(scripts.parent))
+            from Production.scripts import r2_upload  # type: ignore
+        except ImportError:
+            return None
+    key = r2_staging_key(token, file_path.name)
+    try:
+        r2_upload.upload(
+            file_path,
+            key,
+            content_type_for(file_path),
+            "public, max-age=3600",
+            log=False,
+        )
+    except r2_upload.R2CredentialsMissingError:
+        return None
+    except r2_upload.R2RequestError as exc:
+        print(f"[lipsync] R2 staging upload failed for {file_path.name}: {exc}")
+        return None
+    url = r2_public_url(key)
+    return _preflight_download_url(file_path, url, host="r2_cdn")
+
+
+def _upload_via_production_staging(file_path: Path) -> dict | None:
+    """Stage under event_dir/_lipsync_staging when subprocess env is set."""
+    try:
+        from lipsync_staging import (
+            staging_event_dir_from_env,
+            staging_public_base_from_env,
+            staging_token_from_env,
+            upload_via_production_staging,
+        )
+    except ImportError:
+        return None
+    event_dir = staging_event_dir_from_env()
+    token = staging_token_from_env()
+    public_base = staging_public_base_from_env()
+    if not event_dir or not token or not public_base:
+        return None
+    try:
+        return upload_via_production_staging(
+            file_path,
+            event_dir=event_dir,
+            token=token,
+            public_base=public_base,
+            preflight_fn=_preflight_download_url,
+        )
+    except Exception as exc:
+        print(f"[lipsync] production staging failed for {file_path.name}: {exc}")
+        return None
+
+
 def upload_to_hosting(file_path: Path) -> dict:
     """
     Upload a file to public hosting and prove the URL returns exact bytes.
 
-    Filebin is first because it redirects to a presigned raw object URL. Catbox
-    remains as fallback. Uguu is last because it is less reliable from Kim's
-    network and WaveSpeed previously failed to fetch the older temp-host URLs.
+    Order (voice-first durability):
+    1. production_server staging (``MN_LIPSYNC_STAGING_*`` env from Beat Gen subprocess)
+    2. R2 CDN when credentials exist (``ops/lipsync-staging/{token}/…``)
+    3. Ephemeral hosts — filebin, catbox, uguu (legacy fallback)
     """
+    failures: list[str] = []
+    token = os.environ.get("MN_LIPSYNC_STAGING_TOKEN", "").strip() or uuid.uuid4().hex
+
+    staging_proof = _upload_via_production_staging(file_path)
+    if staging_proof:
+        return staging_proof
+    failures.append("production_staging: unavailable or preflight failed")
+
+    r2_proof = _upload_to_r2_staging(file_path, token)
+    if r2_proof:
+        return r2_proof
+    failures.append("r2_cdn: unavailable or preflight failed")
+
     attempts = (
         ("filebin.net", _upload_to_filebin),
         ("catbox.moe", _upload_to_catbox),
         ("uguu.se", _upload_to_uguu),
     )
-    failures = []
     for host, uploader in attempts:
         url = uploader(file_path)
         if not url:
