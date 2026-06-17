@@ -629,6 +629,76 @@ def _persist_magic_fields_to_bg_sidecar(
         print(f"[BG] magic sidecar persist failed beat={request_beat_id}: {exc}", flush=True)
 
 
+_MAGIC_STILL_CLEAR_FIELDS = (
+    "magic_still_path",
+    "magic_manual_path",
+    "magic_path_authored_against",
+)
+
+
+def handle_clear_magic_still(h, body: dict) -> None:
+    """POST /api/storyboard/clear_magic_still — drop magic-on-still from partition + sidecar."""
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+    beat_id = (body or {}).get("beat_id")
+    if not beat_id:
+        return h._send_error_v59(
+            400,
+            error_code="MISSING_BEAT_ID",
+            error_message="beat_id required",
+            retry_safe=False,
+        )
+    _video_role_body = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
+    bg = _bg_module()
+    _production_state = h.app.state.read_state()
+    with bg._sidecar_lock:
+        _sidecar_for_map = bg.read_sidecar()
+    sb_beat_id = bg.storyboard_beat_id_for_bg_beat(
+        beat_id,
+        sidecar=_sidecar_for_map,
+        production_state=_production_state,
+        video_role=_video_role_body,
+    ) or beat_id
+    scope = None
+    try:
+        scope = scope_router.resolve(body, h.app.event_dir.name)
+
+        def _clear_magic_still(partition: dict) -> None:
+            beats = partition.setdefault("beats", {})
+            beat = beats.setdefault(sb_beat_id, {})
+            for key in _MAGIC_STILL_CLEAR_FIELDS:
+                beat.pop(key, None)
+
+        scope_router.mutate_partition(h.app.state, scope, _clear_magic_still)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[clear_magic_still] WARN state writeback failed: {exc}", flush=True)
+        return h._send_error_v59(
+            500,
+            error_code="STATE_WRITEBACK_FAILED",
+            error_message=f"Could not clear magic_still_path: {exc}",
+            retry_safe=True,
+        )
+    _video_role_written = getattr(scope, "video_role", None) if scope else None
+    if _video_role_written:
+        _persist_magic_fields_to_bg_sidecar(
+            h,
+            request_beat_id=beat_id,
+            video_role=_video_role_written,
+            fields={key: None for key in _MAGIC_STILL_CLEAR_FIELDS},
+        )
+        try:
+            bg.invalidate_magic_still_tts_scratch(str(beat_id), h.app.event_dir)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[clear_magic_still] WARN scratch invalidate failed: {exc}", flush=True)
+    return h._send_json(200, {
+        "ok": True,
+        "beat_id": beat_id,
+        "storyboard_beat_id": sb_beat_id,
+        "partition_written": _video_role_written,
+        "cleared_fields": list(_MAGIC_STILL_CLEAR_FIELDS),
+    })
+
+
 def handle_magic_still(h, body: dict)-> None:
 
     """POST /api/storyboard/magic_still {beat_id, manual_path, source_image_path, scope_event_id, scope_video_role}
@@ -743,10 +813,15 @@ def handle_magic_still(h, body: dict)-> None:
     out_dir = h.app.event_dir
     out_path = out_dir / f"magic_still_{beat_id}_{ts}.mp4"
 
-    # Canonical magic_still clip is 4.0s silent — TTS is mixed at stitch export
-    # (materialize_magic_still_with_tts_export). Beat 1 approved renders used 4.0s
-    # regardless of dialogue length; extending here adds frames of blocky trail tail.
-    magic_still_duration = 4.0
+    # Canonical magic_still clip is silent — TTS is mixed at stitch export
+    # (materialize_magic_still_with_tts_export). Default 4.0s for tessa_ori floor
+    # trails; nest orbital scenes pin 6.083s via scene_registry.yaml.
+    registry = _load_scene_registry(h)
+    magic_still_duration = _bg_module().resolve_magic_still_render_duration(
+        beat_id,
+        scene_registry=registry,
+        fallback=4.0,
+    )
 
     try:
         tools_dir = str(_PSERVER_TOOLS_DIR)
@@ -769,7 +844,7 @@ def handle_magic_still(h, body: dict)-> None:
             path_authored_against=path_authored_against,
             path_interp="polyline",
         )
-        rendered = mc.render_video(output_path=str(out_path))
+        rendered = mc.render_ld469_on_background(output_path=str(out_path))
     except Exception as exc:
         traceback.print_exc()
         return h._send_error_v59(
@@ -801,7 +876,8 @@ def handle_magic_still(h, body: dict)-> None:
             tags=["magic", "magic_still", "tessa_ori", beat_id],
             notes=(
                 f"Magic trail on still {sip.name} for beat {beat_id} via "
-                f"S5 Workflow A (LD-468). {len(clean_path)} path points."
+                f"LD-469 screen_rgb (same contract as magic_video). "
+                f"{len(clean_path)} path points; path_interp=polyline; gain=1.0."
             ),
             role="library",
         )
@@ -908,6 +984,10 @@ def handle_magic_still(h, body: dict)-> None:
             manual_path=clean_path,
             style=magic_style,
         )
+        try:
+            bg.invalidate_magic_still_tts_scratch(str(beat_id), h.app.event_dir)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[magic_still] WARN scratch invalidate failed: {exc}", flush=True)
 
     return h._send_json(200, {
         "ok": True,
@@ -1119,7 +1199,7 @@ def handle_magic_video(h, body: dict)-> None:
         tools_dir = str(_PSERVER_TOOLS_DIR)
         if tools_dir not in sys.path:
             sys.path.insert(0, tools_dir)
-        from magic_compositor import MagicCompositor  # type: ignore
+        from magic_compositor import MagicCompositor, composite_screen_rgb  # type: ignore
         with _bg_module()._sidecar_lock:
             _sidecar_style = _bg_module().read_sidecar()
         magic_style = _resolve_magic_style(h, beat_id, body, clean_path, _sidecar_style)
@@ -1134,8 +1214,10 @@ def handle_magic_video(h, body: dict)-> None:
             beat_id=beat_id,
             tags=["magic", "magic_video", magic_style],
             path_authored_against=path_authored_against,
+            # path_picker.html draws lineTo segments — polyline matches YAML/knots.
             path_interp="polyline",
         )
+        _composite_screen_rgb = composite_screen_rgb
         # DO NOT call mc.render_video() — we composite directly in Step 2.
     except Exception as exc:
         traceback.print_exc()
@@ -1154,29 +1236,28 @@ def handle_magic_video(h, body: dict)-> None:
     # Lock decode/encode to compositor canvas (may differ from raw ffprobe on odd dims).
     comp_w, comp_h = mc.W, mc.H
 
-    # Step 2: Python-numpy additive composite piped to ffmpeg for h264 encoding.
+    # Step 2: Python-numpy RGB screen composite piped to ffmpeg for h264 encoding.
     #
-    # Root cause of the old ffmpeg blend=screen approach: ffmpeg blend operates on
-    # raw YUV pixel values.  A black background in RGB is Y=16, Cb=128, Cr=128 in
-    # YUV (limited range).  screen(Cb_amber=99, Cb_black=128) = 177 instead of 99,
-    # shifting chroma dramatically and producing magenta output.  Converting to
-    # format=rgb24 in the filter graph does NOT fix this — the decode path still
-    # applies YUV→RGB colour matrix internally.  The fix: decode lipsync to raw
-    # RGB24 via a pipe, composite in Python numpy (correct RGB maths), encode back
-    # via a second ffmpeg pipe that handles audio copy.
+    # LD-469 semantics (beat 1 approved 2026-06-05): trail at gain=1.0 on black,
+    # then screen onto source.  ffmpeg blend=screen on YUV produces magenta; decode
+    # to RGB24, composite in numpy, encode back with audio copy.
     #
     # INVARIANTS:
     #   - decode_proc reads safe_ffmpeg_src → raw RGB24 bytes on stdout
-    #   - encode_proc reads raw RGB24 on stdin → h264 yuv420p + audio from lipsync
+    #   - encode_proc reads raw RGB24 on stdin → h264 yuv420p + audio from source
     #   - mc._make_trail(frame_idx) returns float32 (H,W,3) trail in [0,255]
-    #   - additive blend: clip(bg + trail, 0, 255).astype(uint8)
+    #   - screen blend: 255 - (255-bg)*(255-trail)/255
     frame_size = comp_w * comp_h * 3  # bytes per RGB24 frame
 
     mc_n_frames = mc.n_frames  # set by MagicCompositor.__init__ from duration*fps
 
+    # LD-469: magic-on-video renders trail at full brightness (black_bg semantics).
+    # Calibrating gain on the black ref attenuates the ambient pool → blocky 1px squares.
+    mc._gain = 1.0
+
     print(
         f"[magic_video] compositing {len(clean_path)} path pts on {comp_w}x{comp_h} "
-        f"(authored={path_authored_against})",
+        f"(authored={path_authored_against}, gain=1.0, blend=screen_rgb)",
         flush=True,
     )
 
@@ -1240,9 +1321,7 @@ def handle_magic_video(h, body: dict)-> None:
             mc_frame_idx = min(frame_idx, mc_n_frames - 1)
             trail = mc._make_trail(mc_frame_idx)
 
-            # Additive blend (tessa_ori style = "additive"; black background pixels
-            # have trail≈0, sparkle pixels add brightness — never darkens).
-            result = _np_mv.clip(bg_arr + trail, 0, 255).astype(_np_mv.uint8)
+            result = _composite_screen_rgb(bg_arr, trail)
             encode_proc.stdin.write(result.tobytes())
             frame_idx += 1
 
@@ -1384,7 +1463,7 @@ def handle_magic_video(h, body: dict)-> None:
             notes=(
                 f"Magic trail on video {svp.name} for beat {beat_id} via "
                 f"S5 Workflow B (LD-469). {len(clean_path)} path points; "
-                f"black_bg=True + blend=screen overlay; "
+                f"path_interp=polyline, gain=1.0, rgb_screen composite; "
                 f"source dims {comp_w}x{comp_h}, duration {vid_duration:.2f}s."
             ),
             role="library",

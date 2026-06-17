@@ -85,6 +85,12 @@ except ImportError:
 # Status "draft"    = not yet approved; do not use in production pipeline.
 # Once approved, lock as Directus LD with key MAGIC_STYLE_{NAME}_V{N}.
 
+def composite_screen_rgb(bg_arr: np.ndarray, trail: np.ndarray) -> np.ndarray:
+    """LD-469 RGB screen composite — magic shines through without additive clip on bright stone."""
+    bg = bg_arr.astype(np.float32)
+    return np.clip(255.0 - (255.0 - bg) * (255.0 - trail) / 255.0, 0, 255).astype(np.uint8)
+
+
 STYLES = {
     "tessa_ori": {
         # Palette: golden-white Ori spirit-light (same as composite_magic_overlay.py v4)
@@ -347,6 +353,36 @@ class MagicCompositor:
             self.bg_img = saved_bg
             self._gain = saved_gain
         # LD-421 — register magic clip (asset_type='magic_clip')
+        self._maybe_register(output_path, asset_type='magic_clip', kind='video')
+        return output_path
+
+    def render_ld469_on_background(self, output_path=None) -> str:
+        """LD-469 on still/image: trail at gain=1.0, RGB screen onto self.bg_img.
+
+        Same trail + composite contract as handle_magic_video (not legacy additive).
+        """
+        if output_path is None:
+            output_path = os.path.join(self.output_dir, f"magic_{self.label}.mp4")
+        bg_arr = np.array(self.bg_img.convert("RGB")).astype(np.float32)
+        saved_gain = self._gain
+        self._gain = 1.0
+        print(
+            f"Rendering {self.n_frames} LD-469 frames (gain=1.0, screen_rgb, path_interp={self.path_interp})...",
+            flush=True,
+        )
+        try:
+            frames = []
+            for i in range(self.n_frames):
+                trail = self._make_trail(i)
+                frames.append(composite_screen_rgb(bg_arr, trail))
+                if i % 12 == 0:
+                    t = i / (self.n_frames - 1) if self.n_frames > 1 else 0
+                    print(f"  frame {i}/{self.n_frames}  t={t:.2f}", flush=True)
+            print("Writing video...", flush=True)
+            iio.imwrite(output_path, frames, plugin="pyav", codec="h264", fps=self.fps)
+            print(f"Done → {output_path}  ({os.path.getsize(output_path):,} bytes)", flush=True)
+        finally:
+            self._gain = saved_gain
         self._maybe_register(output_path, asset_type='magic_clip', kind='video')
         return output_path
 

@@ -4,6 +4,58 @@ from __future__ import annotations
 import beat_generator as bg
 
 
+def test_persist_magic_fields_clears_with_none():
+    sidecar = {
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_1_post": {
+                        "beats": [
+                            {
+                                "beat_id": "bg_arc1_event1_post_beat_03",
+                                "magic_still_path": "old.mp4",
+                                "magic_manual_path": [[0.1, 0.2]],
+                            },
+                        ],
+                    },
+                },
+            },
+        },
+    }
+    ok = bg.persist_magic_fields_on_bg_sidecar(
+        sidecar,
+        arc_number=1,
+        event_id="Event_1",
+        phase="post",
+        request_beat_id="bg_arc1_event1_post_beat_03",
+        fields={
+            "magic_still_path": None,
+            "magic_manual_path": None,
+        },
+    )
+    assert ok is True
+    beat = sidecar["arcs"]["arc_1"]["segments"]["event_1_post"]["beats"][0]
+    assert "magic_still_path" not in beat
+    assert "magic_manual_path" not in beat
+
+
+def test_resolve_magic_still_source_prefers_library_still_over_char_ref(tmp_path):
+    forest = tmp_path / "forest.png"
+    tessa = tmp_path / "tessa.png"
+    forest.write_bytes(b"x")
+    tessa.write_bytes(b"y")
+    beat = {
+        "beat_id": "bg_arc1_event1_post_beat_21",
+        "pipeline": "still_insert",
+        "reference_image": {"abs_path": str(tessa)},
+        "bg_ref_image": {"abs_path": str(tmp_path / "bg.png")},
+        "gpt_options": [{"local_path": str(forest), "key": "forest"}],
+    }
+    (tmp_path / "bg.png").write_bytes(b"z")
+    chosen = bg.resolve_beat_magic_still_source_path(beat)
+    assert chosen == str(forest.resolve())
+
+
 def test_merge_storyboard_magic_into_bg_beat_fills_missing_still():
     sidecar_beat = {"beat_id": "bg_arc1_event1_post_beat_01", "magic_video_path": "mv.mp4"}
     production_state = {
@@ -23,6 +75,24 @@ def test_merge_storyboard_magic_into_bg_beat_fills_missing_still():
     )
     assert merged["magic_still_path"] == "magic_still_beat_01_20260605-180641.mp4"
     assert merged["magic_video_path"] == "mv.mp4"
+
+
+def test_stitch_export_prefers_magic_video_when_both_present(tmp_path):
+    event_dir = tmp_path / "Event_1"
+    event_dir.mkdir()
+    magic_video = event_dir / "magic_video_beat_21.mp4"
+    magic_still = event_dir / "magic_still_beat_21.mp4"
+    magic_video.write_bytes(b"mv")
+    magic_still.write_bytes(b"ms")
+    beat = {
+        "beat_id": "bg_arc1_event1_post_beat_21",
+        "kling_o3_status": "still_rendered",
+        "pipeline": "still_insert",
+        "magic_video_path": magic_video.name,
+        "magic_still_path": magic_still.name,
+    }
+    chosen = bg.resolve_beat_stitch_export_clip_path(beat, event_dir, tmp_path / "scratch")
+    assert chosen == magic_video.resolve()
 
 
 def test_stitch_export_prefers_magic_video_when_o3_approved(tmp_path):
@@ -134,6 +204,19 @@ def test_resolve_magic_style_tessa_ori_for_beat_one():
         video_role="resolution",
     )
     assert style == "tessa_ori"
+
+
+def test_resolve_magic_style_tessa_ori_for_nest_beat_21():
+    """Nest beat uses same tessa_ori sparkle river as beat 01 (magic_video canonical)."""
+    style = bg.resolve_magic_style_for_render(
+        "bg_arc1_event1_post_beat_21",
+        scene_registry={"m1_e1_res_beat_02": {"style": "tessa_ori"}},
+    )
+    assert style == "tessa_ori"
+
+
+def test_resolve_magic_still_duration_defaults_to_four():
+    assert bg.resolve_magic_still_render_duration("bg_arc1_event1_post_beat_01") == 4.0
 
 
 def test_persist_magic_fields_on_bg_sidecar_by_storyboard_id():
