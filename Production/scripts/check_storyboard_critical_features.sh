@@ -143,6 +143,8 @@ MARKERS=(
     "O3_INTENT_SNAPSHOT|mn-bg-o3-intent-audit"
     "O3_INTENT_SNAPSHOT|bg-o3-intent-audit"
     "O3_INTENT_SNAPSHOT|Generation in progress — prompt locked to submitted intent."
+    # O3 poll — sidecar lock contention must not fail the poll loop (2026-06-18)
+    "O3_POLL_SIDECAR_LOCK|sidecar lock timeout"
 )
 
 missing_count=0

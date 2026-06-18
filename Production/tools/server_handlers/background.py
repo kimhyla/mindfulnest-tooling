@@ -4241,7 +4241,12 @@ def handle_bg_poll_arlo_o3_voice_status(h) -> None:
             event_dir = Path(h.app.event_dir)
             if not event_dir.is_absolute():
                 event_dir = _data_root(h) / event_dir
-            return h._send_json(200, _o3_poll_payload_with_beat_snapshot(recovered, event_dir))
+            try:
+                body = _o3_poll_payload_with_beat_snapshot(recovered, event_dir)
+            except TimeoutError as exc:
+                print(f"[bg_o3_poll] recovered job snapshot lock timeout for {job_id}: {exc}", flush=True)
+                body = recovered
+            return h._send_json(200, body)
         return h._send_error_v59(
             404,
             error_code="ARLO_JOB_NOT_FOUND",
@@ -4298,7 +4303,10 @@ def handle_bg_poll_arlo_o3_voice_status(h) -> None:
                         )
     payload = {k: v for k, v in job.items() if k != "proc"}
     payload = _enrich_o3_poll_with_intent(payload, event_dir)
-    payload = _o3_poll_payload_with_beat_snapshot(payload, event_dir)
+    try:
+        payload = _o3_poll_payload_with_beat_snapshot(payload, event_dir)
+    except TimeoutError as exc:
+        print(f"[bg_o3_poll] beat snapshot lock timeout for {job_id}: {exc}", flush=True)
     return h._send_json(200, payload)
 
 

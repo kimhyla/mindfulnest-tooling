@@ -57,3 +57,20 @@ def test_ui_treats_sidecar_lock_timeout_as_transient_poll_blip() -> None:
     assert "isSidecarLockPollBlip" in src
     poll_block = src.split("useEffect(() => {", 1)[1].split("// After server restart", 1)[0]
     assert "isSidecarLockPollBlip(res)" in poll_block
+
+
+def test_poll_handler_never_raises_on_snapshot_lock_timeout() -> None:
+    src = (Path(__file__).resolve().parent.parent / "server_handlers" / "background.py").read_text(
+        encoding="utf-8",
+    )
+    poll_block = src.split("def handle_bg_poll_arlo_o3_voice_status", 1)[1].split("\ndef ", 1)[0]
+    assert "except TimeoutError as exc:" in poll_block
+    assert "_o3_poll_payload_with_beat_snapshot(payload, event_dir)" in poll_block
+    assert "return h._send_json(200, payload)" in poll_block
+
+
+def test_read_sidecar_for_poll_snapshot_exported_in_capabilities() -> None:
+    import importlib
+
+    bg = importlib.import_module("beat_generator")
+    assert bg.probe_capabilities().get("read_sidecar_for_poll_snapshot") is True

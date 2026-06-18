@@ -3817,6 +3817,7 @@ def probe_capabilities() -> dict:
         "ffprobe": False,
         "update_beat_locked": callable(globals().get("update_beat_locked")),
         "sidecar_file_lock": callable(globals().get("sidecar_file_lock")),
+        "read_sidecar_for_poll_snapshot": callable(globals().get("read_sidecar_for_poll_snapshot")),
         "magic_compositor_error": None,
     }
     try:
