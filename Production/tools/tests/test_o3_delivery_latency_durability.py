@@ -49,6 +49,13 @@ def test_poll_throttles_metadata_and_tails_log():
     assert "_O3_JOB_METADATA_STAMP_INTERVAL_S" in poll_helpers
     assert "_tail_read_text" in poll_helpers
     assert "load_intent_terminal" in block
+    assert "read_sidecar_for_poll_snapshot" in poll_helpers
+
+
+def test_poll_beat_snapshot_does_not_require_exclusive_lock():
+    text = BACKGROUND.read_text(encoding="utf-8")
+    snap_block = text.split("def _enriched_beat_snapshot_for_o3_poll", 1)[1].split("\ndef ", 1)[0]
+    assert "read_sidecar_for_poll_snapshot" in snap_block
 
 
 def test_ensure_o3_job_metadata_throttled_and_timeout_lock():

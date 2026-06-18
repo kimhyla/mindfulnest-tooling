@@ -581,6 +581,25 @@ def read_sidecar_locked():
         return read_sidecar()
 
 
+def read_sidecar_for_poll_snapshot(*, lock_timeout_s: float = 5.0) -> dict:
+    """Read sidecar for O3 poll UI patches — locked when possible, else best-effort.
+
+    Poll runs every 3s per active job; concurrent subprocess checkpoints and
+    session-state GET can hold ``beat_generator_state.json.lock`` for 30–120s.
+    A hard timeout must not fail the poll (that spuriously clears active jobs in UI).
+    """
+    try:
+        with sidecar_file_lock(timeout_s=lock_timeout_s):
+            return read_sidecar()
+    except TimeoutError:
+        print(
+            f"[sidecar] poll snapshot: lock timeout after {lock_timeout_s}s — "
+            "best-effort unlocked read",
+            flush=True,
+        )
+        return read_sidecar()
+
+
 def write_sidecar_atomic_locked(data):
     with sidecar_file_lock():
         write_sidecar(data)

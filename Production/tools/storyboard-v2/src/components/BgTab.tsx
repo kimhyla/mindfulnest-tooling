@@ -369,6 +369,11 @@ function isNetworkPollBlip(res: { ok: boolean; status: number; error?: string })
     && /failed to fetch|networkerror|load failed/i.test(res.error ?? '');
 }
 
+function isSidecarLockPollBlip(res: { ok: boolean; status: number; error?: string; error_message?: string }): boolean {
+  const msg = `${res.error ?? ''} ${res.error_message ?? ''}`.toLowerCase();
+  return !res.ok && /sidecar lock timeout|beat_generator_state\.json\.lock/i.test(msg);
+}
+
 function isStaleO3JobPoll(res: { ok: boolean; status: number; error?: string; error_code?: string }): boolean {
   if (res.ok) return false;
   return res.error_code === 'ARLO_JOB_NOT_FOUND'
@@ -1014,7 +1019,7 @@ export function BgTab() {
           anyStillRunning = true;
           return;
         }
-        if (isNetworkPollBlip(res)) {
+        if (isNetworkPollBlip(res) || isSidecarLockPollBlip(res)) {
           anyStillRunning = true;
           return;
         }

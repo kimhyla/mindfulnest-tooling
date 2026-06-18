@@ -4064,16 +4064,19 @@ def _enriched_beat_snapshot_for_o3_poll(
 ) -> dict | None:
     """Single-beat API payload — avoids full session-state migrate on O3 poll done."""
     bg = _bg_module()
-    with bg.sidecar_file_lock(timeout_s=5):
-        sidecar = bg.read_sidecar()
-        if migrate:
-            sidecar = bg._migrate_sidecar(sidecar, heal_trim=False, heavy_heal=False)
-        else:
-            bg.ensure_sidecar_schema_defaults(sidecar)
-        _, beat = bg.find_beat(sidecar, str(beat_id))
-        if not beat:
-            return None
-        return bg.enrich_beat_kling_o3_pinned(dict(beat), event_dir)
+    try:
+        sidecar = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=5.0)
+    except Exception as exc:
+        print(f"[bg_o3_poll] sidecar read failed for {beat_id}: {exc}", flush=True)
+        return None
+    if migrate:
+        sidecar = bg._migrate_sidecar(sidecar, heal_trim=False, heavy_heal=False)
+    else:
+        bg.ensure_sidecar_schema_defaults(sidecar)
+    _, beat = bg.find_beat(sidecar, str(beat_id))
+    if not beat:
+        return None
+    return bg.enrich_beat_kling_o3_pinned(dict(beat), event_dir)
 
 
 def _o3_poll_payload_with_beat_snapshot(payload: dict, event_dir: Path) -> dict:
@@ -4084,7 +4087,11 @@ def _o3_poll_payload_with_beat_snapshot(payload: dict, event_dir: Path) -> dict:
     beat_id = str(payload.get("beat_id") or "").strip()
     if not beat_id:
         return payload
-    snap = _enriched_beat_snapshot_for_o3_poll(beat_id, event_dir, migrate=False)
+    try:
+        snap = _enriched_beat_snapshot_for_o3_poll(beat_id, event_dir, migrate=False)
+    except Exception as exc:
+        print(f"[bg_o3_poll] beat snapshot failed for {beat_id}: {exc}", flush=True)
+        snap = None
     if not snap:
         return payload
     out = dict(payload)
