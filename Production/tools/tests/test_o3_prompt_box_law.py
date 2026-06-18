@@ -273,7 +273,9 @@ def test_still_to_o3_flip_does_not_rewrite_prompt(monkeypatch):
     }
     bg.apply_beat_pipeline_o3_mode(beat, "2", "pre")
     assert beat.get("pipeline") == bg.PIPELINE_MODE_O3
-    assert beat.get("kling_o3_prompt") == original_prompt
+    # Prompt-box law: operator dialogue preserved; still-insert header scrubbed only.
+    assert beat.get("kling_o3_prompt") == 'Lorelai: "Oh. My. Gosh."'
+    assert not (beat.get("kling_o3_prompt") or "").startswith("STILL INSERT")
 
 
 def test_beat15_custom_delivery_prompt_submits_verbatim():
