@@ -1757,7 +1757,6 @@ def handle_bg_session_state(h)-> None:
     # Lightweight in-memory heals only — no sidecar lock held during this block.
     stuck_changed = reconcile_stuck_o3_voice_beats(sidecar)
     stale_hosting_changed = reconcile_stale_lipsync_hosting_failures(sidecar)
-    soft_reject_changed = reconcile_soft_reject_kept_approved_clip_failures(sidecar)
     ui_job_rehydrate_changed = rehydrate_o3_ui_job_ids(sidecar)
     intent_lock_changed = 0
     prod_root = _data_root(h)
@@ -1784,7 +1783,6 @@ def handle_bg_session_state(h)-> None:
     persist_heals = bool(
         stuck_changed
         or stale_hosting_changed
-        or soft_reject_changed
         or ui_job_rehydrate_changed
         or intent_lock_changed
         or o3_reconcile_changed
@@ -1849,7 +1847,6 @@ def handle_bg_session_state(h)-> None:
             bg.ensure_sidecar_schema_defaults(sidecar)
             reconcile_stuck_o3_voice_beats(sidecar)
             reconcile_stale_lipsync_hosting_failures(sidecar)
-            reconcile_soft_reject_kept_approved_clip_failures(sidecar)
             rehydrate_o3_ui_job_ids(sidecar)
             try:
                 from o3_generation_intent import reconcile_stale_o3_intent_locks_all_events
@@ -4791,33 +4788,6 @@ def reconcile_stale_lipsync_hosting_failures(sidecar: dict) -> int:
             continue
         video_path = str(beat.get("kling_o3_video_path") or "")
         if not video_path or not Path(video_path).is_file():
-            continue
-        if _beat_o3_job_looks_running(beat):
-            continue
-        beat["kling_o3_voice_fix_status"] = "approved"
-        beat.pop("kling_o3_voice_fix_error", None)
-        beat.pop("kling_o3_voice_fix_error_code", None)
-        beat.pop("kling_o3_voice_fix_url_transport_error", None)
-        changed += 1
-    return changed
-
-
-def reconcile_soft_reject_kept_approved_clip_failures(sidecar: dict) -> int:
-    """Clear soft-reject voice-fix failures when an approved O3 clip is still active.
-
-    Example: Kling LipSync returned 832x464 — we refuse the new output and keep the
-    prior approved delivery clip. The beat is usable; do not persist a scary banner.
-    """
-    try:
-        from o3_job_status_contract import voice_fix_soft_reject_kept_approved_clip
-    except ImportError:
-        return 0
-    changed = 0
-    for beat in _iter_bg_beats(sidecar):
-        voice_fix = str(beat.get("kling_o3_voice_fix_status") or "")
-        if not voice_fix.startswith("failed"):
-            continue
-        if not voice_fix_soft_reject_kept_approved_clip(beat):
             continue
         if _beat_o3_job_looks_running(beat):
             continue
