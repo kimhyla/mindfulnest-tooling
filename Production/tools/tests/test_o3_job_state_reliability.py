@@ -87,6 +87,7 @@ def test_background_duplicate_guard_and_terminal_statuses_are_explicit() -> None
     assert "STALE_JOB_PROCESS_GONE" in src
     assert "failed_provider_sub720" in src
     assert "failed_provider_fetch" in src
+    assert "reconcile_soft_reject_kept_approved_clip_failures" in src
 
 
 def test_ui_treats_failed_prefixes_as_terminal() -> None:
@@ -95,7 +96,10 @@ def test_ui_treats_failed_prefixes_as_terminal() -> None:
 
 
 def test_voice_fix_terminal_failure_contract() -> None:
-    from o3_job_status_contract import voice_fix_is_terminal_failure
+    from o3_job_status_contract import (
+        voice_fix_is_terminal_failure,
+        voice_fix_soft_reject_kept_approved_clip,
+    )
 
     assert voice_fix_is_terminal_failure("failed_provider_fetch")
     assert voice_fix_is_terminal_failure("failed_provider_sub720")
@@ -103,17 +107,38 @@ def test_voice_fix_terminal_failure_contract() -> None:
     assert not voice_fix_is_terminal_failure("approved")
     assert not voice_fix_is_terminal_failure("job_running")
 
+    beat = {
+        "kling_o3_status": "approved",
+        "kling_o3_video_path": "/tmp/clip.mp4",
+        "kling_o3_voice_fix_status": "failed_provider_sub720",
+        "kling_o3_voice_fix_error": "Kling LipSync returned sub-720p output 832x464",
+    }
+    assert voice_fix_soft_reject_kept_approved_clip(beat, video_path_exists=True)
+    assert not voice_fix_soft_reject_kept_approved_clip(
+        {**beat, "kling_o3_status": "draft"},
+        video_path_exists=True,
+    )
+
 
 def test_bg_failure_banner_hidden_for_stale_pre_r2_hosting_when_clip_kept() -> None:
     src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
     assert "isStaleLipsyncHostingFailure" in src
+    assert "isSoftRejectKeptApprovedClipFailure" in src
     assert "resolveVoiceFirstFailureBanner" in src
     banner_block = src.split("function resolveVoiceFirstFailureBanner", 1)[1].split("function beatHasPopulatedO3Slot", 1)[0]
     assert "isStaleLipsyncHostingFailure(beat.kling_o3_voice_fix_error)" in banner_block
+    assert "isSoftRejectKeptApprovedClipFailure(beat)" in banner_block
     assert "return null" in banner_block
 
 
-def test_bg_failure_banner_hidden_for_stale_pre_r2_hosting_when_clip_kept() -> None:
+def test_bg_failure_banner_hidden_for_soft_reject_sub720_when_clip_kept() -> None:
+    src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
+    assert "failed_provider_sub720" in src
+    notify_block = src.split("function beatGenFailureNotifyKey", 1)[1].split("function seedGenFailureSeenKeys", 1)[0]
+    assert "isSoftRejectKeptApprovedClipFailure(beat)" in notify_block
+
+
+def test_bg_failure_banner_resolves_from_session_state() -> None:
     src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
     assert "resolveVoiceFirstFailureBanner" in src
     idx = src.find("const o3FailureMessage")

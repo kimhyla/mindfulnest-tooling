@@ -48,6 +48,12 @@ grep -q 'isStaleLipsyncHostingFailure' "$BGTAB" \
   || fail "BgTab must hide stale pre-R2 hosting failure banners"
 grep -q 'reconcile_stale_lipsync_hosting_failures' "$BG" \
   || fail "background.py must reconcile stale pre-R2 lipsync failures on session load"
+grep -q 'reconcile_soft_reject_kept_approved_clip_failures' "$BG" \
+  || fail "background.py must reconcile soft-reject kept-clip failures on session load"
+grep -q 'isSoftRejectKeptApprovedClipFailure' "$BGTAB" \
+  || fail "BgTab must hide soft-reject kept-clip failure banners"
+grep -q 'voice_fix_soft_reject_kept_approved_clip' "${TOOLS}/o3_job_status_contract.py" \
+  || fail "o3_job_status_contract must classify soft-reject kept-clip failures"
 grep -q 'update_beat_locked' "$BG" \
   || fail "background.py must use update_beat_locked for beat-scoped patches"
 grep -q 'handle_bg_accept_lib_image' "$BG" \

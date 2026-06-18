@@ -412,6 +412,40 @@ def test_reconcile_clears_stale_lipsync_hosting_failure_when_r2_ready(
     assert "kling_o3_voice_fix_error" not in beat
 
 
+def test_reconcile_clears_soft_reject_sub720_when_approved_clip_kept(
+    monkeypatch, tmp_path,
+) -> None:
+    bg_mod = _import_background()
+    video = tmp_path / "beat01_delivery.mp4"
+    video.write_bytes(b"fake-mp4")
+    sidecar = {
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [{
+                            "beat_id": "bg_arc1_event2_pre_beat_01",
+                            "kling_o3_status": "approved",
+                            "kling_o3_video_path": str(video),
+                            "kling_o3_voice_fix_status": "failed_provider_sub720",
+                            "kling_o3_voice_fix_error": (
+                                "Kling LipSync returned sub-720p output 832x464; "
+                                "refusing to approve soft/upscaled delivery video."
+                            ),
+                            "kling_o3_voice_fix_error_code": "PROVIDER_SUB720",
+                        }],
+                    },
+                },
+            },
+        },
+    }
+    changed = bg_mod.reconcile_soft_reject_kept_approved_clip_failures(sidecar)
+    beat = sidecar["arcs"]["arc_1"]["segments"]["event_2_pre"]["beats"][0]
+    assert changed == 1
+    assert beat["kling_o3_voice_fix_status"] == "approved"
+    assert "kling_o3_voice_fix_error" not in beat
+
+
 def test_recover_o3_job_from_sidecar_failed_provider_fetch(
     monkeypatch, tmp_path,
 ) -> None:

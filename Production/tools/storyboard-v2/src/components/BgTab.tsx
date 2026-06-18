@@ -461,6 +461,17 @@ function isStaleLipsyncHostingFailure(error?: string | null): boolean {
   ].some((marker) => raw.includes(marker));
 }
 
+function isSoftRejectKeptApprovedClipFailure(beat: BgBeat): boolean {
+  if ((beat.kling_o3_status ?? '') !== 'approved') return false;
+  if (!isUserSelectableO3Video(beat.kling_o3_video_path)) return false;
+  const voiceFix = (beat.kling_o3_voice_fix_status ?? '').toLowerCase();
+  if (voiceFix === 'failed_provider_sub720') return true;
+  const err = (beat.kling_o3_voice_fix_error ?? '').toLowerCase();
+  if (!voiceFix.startsWith('failed') || !err) return false;
+  return err.includes('kling lipsync returned sub-720p output')
+    || err.includes('previous approved clip was kept active');
+}
+
 function formatO3JobFailure(error?: string | null): string {
   const raw = (error ?? '').trim();
   if (!raw) return 'O3 voice job failed; previous approved clip was kept active.';
@@ -515,6 +526,10 @@ function resolveVoiceFirstFailureBanner(
   if (!isO3VoiceBeat(beat)) return null;
   if (lipsyncHostReady !== true) return null;
   if (!(beat.kling_o3_voice_fix_status ?? '').startsWith('failed')) return null;
+  // Soft-reject failures (e.g. sub-720p lipsync) that kept an approved clip — hide banner.
+  if (isSoftRejectKeptApprovedClipFailure(beat)) {
+    return null;
+  }
   // Pre-R2 hosting failures on beats that kept an approved clip — hide once R2 is live.
   if (
     isStaleLipsyncHostingFailure(beat.kling_o3_voice_fix_error)
@@ -546,6 +561,7 @@ function o3PollResultHasVideo(res: ArloO3PollResponse): boolean {
 function beatGenFailureNotifyKey(beat: BgBeat): string | null {
   const voiceFix = (beat.kling_o3_voice_fix_status ?? '').toLowerCase();
   if (voiceFix.startsWith('failed')) {
+    if (isSoftRejectKeptApprovedClipFailure(beat)) return null;
     return `o3-fail:${beat.beat_id}:${voiceFix}:${(beat.kling_o3_voice_fix_error ?? '').slice(0, 120)}`;
   }
   const status = (beat.status ?? '').toLowerCase();
