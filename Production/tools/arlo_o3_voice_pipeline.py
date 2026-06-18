@@ -36,6 +36,7 @@ from kling_startend_pipeline import (  # noqa: E402
 from lipsync_sender import LIPSYNC_PROVIDER_CONTRACT, LipSyncClient, LipsyncHostingError  # noqa: E402
 from video_delivery import encode_delivery_video, encode_lipsync_input  # noqa: E402
 import beat_generator as bg_sidecar  # noqa: E402
+import kling_character_registry as reg  # noqa: E402
 import production_server as ps  # noqa: E402
 
 O3_MODEL_URLS = {
@@ -79,13 +80,24 @@ def _safe_slug(value: str) -> str:
 
 
 def _visual_prompt(base_prompt: str, *, speaker: str) -> str:
-    prompt = re.sub(
-        rf"{re.escape(speaker)} speaks.*?\".*?\"",
-        f"{speaker} is present as a silent visual base for later lip sync. Mouth relaxed, "
-        "natural friendly expression, small idle head, ear, tail, and paw motion only.",
-        base_prompt or "",
-        flags=re.S,
+    """Strip spoken dialogue for silent O3; use Kling display label (e.g. Loral), not registry key."""
+    display = reg.kling_image1_speaker_label(speaker)
+    silent_base = (
+        f"{display} is present as a silent visual base for later lip sync. Mouth relaxed, "
+        "natural friendly expression, small idle head, ear, tail, and paw motion only."
     )
+    prompt = base_prompt or ""
+    strip_labels: list[str] = []
+    for label in (display, (speaker or "").strip()):
+        if label and label not in strip_labels:
+            strip_labels.append(label)
+    for label in strip_labels:
+        prompt = re.sub(
+            rf"{re.escape(label)} speaks.*?\".*?\"",
+            silent_base,
+            prompt,
+            flags=re.S,
+        )
     prompt = re.sub(
         r"Audio:.*",
         "No audio, no voice, no music, no soundtrack. Silent visual-only base clip for later ElevenLabs lip sync.",
@@ -94,7 +106,7 @@ def _visual_prompt(base_prompt: str, *, speaker: str) -> str:
     )
     prompt += (
         "\n\nSilent visual base only: do not generate speech or sound. "
-        f"Keep {speaker} centered and visible for later lip sync.\n"
+        f"Keep {display} centered and visible for later lip sync.\n"
         "Preserve crisp character-detail from @Image1: sharp eyes, defined fur tufts, "
         "clean clothing folds, crisp edges, detailed character silhouette. "
         "Avoid soft focus, blur, painterly smearing, low-detail fur, or washed-out features."
@@ -362,9 +374,11 @@ def _submit_and_poll_lipsync_with_fallback(
     degraded 832x464 output from valid 1080p input, so the fallback is disabled
     by default for Beat Gen quality-sensitive runs.
     """
-    attempts = ["url"]
-    if os.environ.get("MINDFULNEST_ALLOW_LOW_QUALITY_LIPSYNC_DATA_URI_FALLBACK") == "1":
-        attempts.append("data_uri")
+    # Pilot parity: URL first (R2 staging), then data_uri when hosting/fetch fails.
+    # data_uri often returns 832x464; sub-720 is waived after delivery encode (LD-296).
+    attempts = ["url", "data_uri"]
+    if os.environ.get("MINDFULNEST_DISABLE_LIPSYNC_DATA_URI_FALLBACK") == "1":
+        attempts = ["url"]
     last_result: dict | None = None
     last_task = ""
     for index, transport in enumerate(attempts):
@@ -451,8 +465,8 @@ def _submit_and_poll_lipsync_with_fallback(
                 "kling_o3_voice_fix_status": "failed_provider_fetch",
                 "kling_o3_voice_fix_error_code": "PROVIDER_FETCH_FAILED",
                 "kling_o3_voice_fix_error": (
-                "WaveSpeed could not download the temporary lipsync URL. "
-                "Data-URI fallback is disabled because it returns sub-720p 832x464 output."
+                    "WaveSpeed could not download the temporary lipsync URL and "
+                    "data-URI lipsync fallback did not complete."
                 ),
                 "kling_o3_voice_fix_completed_at": datetime.now(timezone.utc).isoformat(),
             }, remove=("kling_o3_voice_fix_ui_job_id",))
@@ -699,28 +713,55 @@ def run_pipeline(beat_id: str, *, model: str = "pro", sharpen: bool = True, atte
     out = clips_dir / f"{beat_id}_{speaker_slug}_voice_lipsync.mp4"
     client.download((lipsync_result.get("outputs") or [None])[0], out)
     out, lipsync_audio_check = _ensure_lipsync_audio(out, lipsync_audio)
+    raw_width, raw_height = _probe_video_size(out)
     try:
         lipsync_quality = _assert_lipsync_quality(out)
     except Exception as exc:
-        _restore_prior_video_state(beat, prior_video=prior_video, prior_status=prior_status, prior_beat_status=prior_beat_status)
-        width, height = _probe_video_size(out)
-        persist({
-            "status": beat.get("status"),
-            "kling_o3_status": beat.get("kling_o3_status"),
-            "kling_o3_video_path": beat.get("kling_o3_video_path"),
-            "kling_o3_voice_fix_status": "failed_provider_sub720",
-            "kling_o3_voice_fix_error_code": "PROVIDER_SUB720",
-            "kling_o3_voice_fix_error": str(exc),
-            "kling_o3_voice_fix_output_profile": {
+        if lipsync_transport == "data_uri":
+            print(json.dumps({
+                "phase": "lipsync_quality_warn",
+                "beat_id": beat_id,
+                "warning": str(exc),
+                "transport": lipsync_transport,
+            }), flush=True)
+            lipsync_quality = {
                 "path": str(out),
-                "width": width,
-                "height": height,
-                "min_dimension": min(width, height),
-            },
-            "kling_o3_voice_fix_completed_at": datetime.now(timezone.utc).isoformat(),
-        }, remove=("kling_o3_voice_fix_ui_job_id",))
-        raise
+                "width": raw_width,
+                "height": raw_height,
+                "min_dimension": min(raw_width, raw_height),
+                "transport": lipsync_transport,
+                "sub720_waived": True,
+                "waive_reason": str(exc),
+                "rule": "Pilot parity: data_uri sub-720 raw allowed; kid-facing gate is LD-296 delivery encode.",
+            }
+        else:
+            _restore_prior_video_state(beat, prior_video=prior_video, prior_status=prior_status, prior_beat_status=prior_beat_status)
+            persist({
+                "status": beat.get("status"),
+                "kling_o3_status": beat.get("kling_o3_status"),
+                "kling_o3_video_path": beat.get("kling_o3_video_path"),
+                "kling_o3_voice_fix_status": "failed_provider_sub720",
+                "kling_o3_voice_fix_error_code": "PROVIDER_SUB720",
+                "kling_o3_voice_fix_error": str(exc),
+                "kling_o3_voice_fix_output_profile": {
+                    "path": str(out),
+                    "width": raw_width,
+                    "height": raw_height,
+                    "min_dimension": min(raw_width, raw_height),
+                },
+                "kling_o3_voice_fix_completed_at": datetime.now(timezone.utc).isoformat(),
+            }, remove=("kling_o3_voice_fix_ui_job_id",))
+            raise
     active = _delivery_video(out, sharpen=sharpen)
+    del_w, del_h = _probe_video_size(active)
+    lipsync_quality = {
+        **lipsync_quality,
+        "delivery_path": str(active),
+        "delivery_width": del_w,
+        "delivery_height": del_h,
+        "delivery_min_dimension": min(del_w, del_h),
+        "kid_facing_gate": "LD-296 delivery encode",
+    }
     print(json.dumps({"phase": "finalize", "beat_id": beat_id, "video": str(active)}), flush=True)
     out_dur = float(subprocess.check_output([
         "ffprobe", "-v", "error", "-show_entries", "format=duration",

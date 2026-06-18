@@ -472,7 +472,7 @@ function formatO3JobFailure(error?: string | null): string {
       : `${first} Previous approved clip was kept active.`;
   }
   if (runtime.includes('Could not download the input')) {
-    return 'WaveSpeed could not download the lipsync input URL. Data-URI fallback is disabled because it returns sub-720p output; previous approved clip was kept active.';
+    return 'WaveSpeed could not download the lipsync input URL and data-URI fallback did not complete; previous approved clip was kept active.';
   }
   if (runtime.includes('No lipsync input host returned byte-complete public files')) {
     return 'Lipsync could not upload video/audio to a public URL WaveSpeed can fetch. Configure Cloudflare R2 on this server, then restart Event servers.';

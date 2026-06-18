@@ -111,7 +111,7 @@ def test_wavespeed_lipsync_contract_records_no_resolution_parameter() -> None:
 
 def test_ui_failure_copy_does_not_promise_low_quality_fallback() -> None:
     src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
-    assert "Data-URI fallback is disabled because it returns sub-720p output" in src
+    assert "data-URI fallback did not complete" in src
     assert "We retry with embedded data when possible" not in src
 
 

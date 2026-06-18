@@ -3417,11 +3417,16 @@ def handle_bg_accept_beats(h, body: dict)-> None:
                             bg_source = _bg_beat_map.get(fields.get("bg_beat_id") or "", {})
                             quality = bg_source.get("arlo_visual_quality") or {}
                             lipsync_quality = quality.get("lipsync_master_quality") or bg_source.get("kling_o3_voice_fix_lipsync_quality") or {}
-                            min_dim = int(lipsync_quality.get("min_dimension") or 0)
+                            min_dim = int(
+                                lipsync_quality.get("delivery_min_dimension")
+                                or lipsync_quality.get("min_dimension")
+                                or 0
+                            )
                             if min_dim and min_dim < 720:
                                 raise RuntimeError(
-                                    f"{fields.get('bg_beat_id')} lipsync master is sub-720p "
-                                    f"({lipsync_quality.get('width')}x{lipsync_quality.get('height')}); "
+                                    f"{fields.get('bg_beat_id')} kid-facing delivery is sub-720p "
+                                    f"({lipsync_quality.get('delivery_width') or lipsync_quality.get('width')}"
+                                    f"x{lipsync_quality.get('delivery_height') or lipsync_quality.get('height')}); "
                                     "regenerate before sending to Stitcher."
                                 )
                             legacy_lipsync_master = quality.get("lipsync_master_video_path")
@@ -4560,8 +4565,8 @@ def _summarize_o3_job_error(error: str | None) -> str:
         return f"{first} Previous approved clip was kept active."
     if "Could not download the input" in text:
         return (
-            "WaveSpeed could not download the temporary lipsync URL. "
-            "Data-URI fallback is disabled because it returns sub-720p output; previous approved clip was kept active."
+            "WaveSpeed could not download the temporary lipsync URL and data-URI lipsync fallback "
+            "did not complete; previous approved clip was kept active."
         )
     if "No lipsync input host returned byte-complete public files" in text:
         return (

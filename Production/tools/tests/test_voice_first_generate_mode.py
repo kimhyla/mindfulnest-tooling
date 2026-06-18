@@ -44,6 +44,13 @@ def test_resolve_voice_first_for_event2_pre_speak_beat():
     assert bg.resolve_o3_generate_mode(beat, sidecar) == "voice_first"
 
 
+def test_resolve_voice_first_for_event2_pre_when_segment_override():
+    sidecar = _sidecar_event2_pre()
+    sidecar["arcs"]["arc_1"]["segments"]["event_2_pre"]["o3_generate_mode"] = "voice_first"
+    beat = sidecar["arcs"]["arc_1"]["segments"]["event_2_pre"]["beats"][0]
+    assert bg.resolve_o3_generate_mode(beat, sidecar) == "voice_first"
+
+
 def test_resolve_element_native_for_event1():
     sidecar = _sidecar_event2_pre()
     beat = sidecar["arcs"]["arc_1"]["segments"]["event_1_pre"]["beats"][0]
@@ -72,20 +79,24 @@ def test_submit_handler_selects_arlo_script_for_voice_first():
     assert "o3_generate_mode" in text
 
 
-def test_arlo_pipeline_stamps_generate_mode_and_url_only_lipsync():
+def test_arlo_pipeline_stamps_generate_mode_and_pilot_lipsync_fallback():
     src = Path(__file__).resolve().parents[1] / "arlo_o3_voice_pipeline.py"
     text = src.read_text(encoding="utf-8")
     assert "kling_o3_generate_mode" in text
     assert "LipsyncHostingError" in text
     assert "voice_first_pilot_warn" not in text
-    assert "MINDFULNEST_ALLOW_LOW_QUALITY_LIPSYNC_DATA_URI_FALLBACK" in text
+    assert "lipsync_quality_warn" in text
+    assert 'attempts = ["url", "data_uri"]' in text
+    assert "MINDFULNEST_DISABLE_LIPSYNC_DATA_URI_FALLBACK" in text
     assert 'min(12, math.ceil(float(lipsync_padding["padded_audio_duration_s"]) + 0.25))' in text
 
 
-def test_arlo_voice_first_does_not_auto_enable_data_uri():
+def test_arlo_voice_first_enables_data_uri_fallback_by_default():
     src = Path(__file__).resolve().parents[1] / "arlo_o3_voice_pipeline.py"
     text = src.read_text(encoding="utf-8")
-    assert "or voice_first" not in text
+    assert 'attempts = ["url", "data_uri"]' in text
+    assert "sub720_waived" in text
+    assert "lipsync_transport == \"data_uri\"" in text
 
 
 def test_submit_handler_stamps_lipsync_staging_env_for_voice_first():
