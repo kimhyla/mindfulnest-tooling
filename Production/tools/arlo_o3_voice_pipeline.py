@@ -253,7 +253,13 @@ def _make_lipsync_padded_audio(audio: Path, *, audio_dur: float) -> tuple[Path, 
 
 def _delivery_video(src: Path, *, sharpen: bool) -> Path:
     dst = src.with_name(src.stem + "_delivery.mp4")
-    return encode_delivery_video(src, dst, include_audio=True, sharpen=sharpen)
+    return encode_delivery_video(
+        src,
+        dst,
+        include_audio=True,
+        sharpen=sharpen,
+        delivery_profile="voice_first_upscale",
+    )
 
 
 def _probe_video_size(path: Path) -> tuple[int, int]:
@@ -782,7 +788,7 @@ def run_pipeline(beat_id: str, *, model: str = "pro", sharpen: bool = True, atte
     final_fields["arlo_visual_quality"] = {
         "speaker": speaker,
         "model": model,
-        "delivery_profile": "LD-296/LD-284 kid-facing 1280x720 H.264 High yuv420p 24fps <=1.9Mbps +faststart",
+        "delivery_profile": "LD-296/LD-284 kid-facing 1280x720 H.264 High yuv420p 24fps voice_first_upscale <=1.9Mbps +faststart",
         "sharpened_delivery": sharpen,
         "o3_master_video_path": str(base),
         "o3_silent_master_video_path": str(silent),

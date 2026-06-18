@@ -20,6 +20,11 @@ DELIVERY_MAXRATE = "1800k"
 DELIVERY_BUFSIZE = "3000k"
 DELIVERY_AUDIO_BITRATE = "128k"
 DELIVERY_MAX_BITRATE_BPS = 1_900_000
+# Voice-first: lipsync raw is often 832x464 — use full LD-296 budget + lanczos upscale.
+VOICE_FIRST_DELIVERY_VIDEO_BITRATE = "1850k"
+VOICE_FIRST_DELIVERY_MAXRATE = "1900k"
+VOICE_FIRST_DELIVERY_BUFSIZE = "3800k"
+VOICE_FIRST_DELIVERY_MAX_BITRATE_BPS = DELIVERY_MAX_BITRATE_BPS
 LIPSYNC_INPUT_WIDTH = 1920
 LIPSYNC_INPUT_HEIGHT = 1080
 LIPSYNC_INPUT_VIDEO_BITRATE = "4500k"
@@ -32,6 +37,17 @@ DELIVERY_VF = (
     "setsar=1:1,"
     f"fps={DELIVERY_FPS}"
 )
+
+VOICE_FIRST_UPSCALE_VF = (
+    f"scale={DELIVERY_WIDTH}:{DELIVERY_HEIGHT}:flags=lanczos+accurate_rnd+full_chroma_int:"
+    f"force_original_aspect_ratio=decrease,"
+    f"pad={DELIVERY_WIDTH}:{DELIVERY_HEIGHT}:(ow-iw)/2:(oh-ih)/2:black,"
+    "setsar=1:1,"
+    f"fps={DELIVERY_FPS}"
+)
+
+VOICE_FIRST_UPSCALE_UNSHARP = "unsharp=5:5:0.55:3:3:0.22"
+DELIVERY_UNSHARP = "unsharp=5:5:0.45:3:3:0.20"
 
 
 def _has_audio(path: Path) -> bool:
@@ -72,16 +88,36 @@ def encode_delivery_video(
     *,
     include_audio: bool = True,
     sharpen: bool = False,
+    delivery_profile: str = "standard",
     timeout_s: int = 300,
 ) -> Path:
-    """Encode a compact kid-facing delivery MP4 from any source video."""
+    """Encode a compact kid-facing delivery MP4 from any source video.
+
+    ``delivery_profile``:
+    - ``standard`` — LD-296 default (~1.5 Mbps target, bicubic scale)
+    - ``voice_first_upscale`` — lanczos upscale + full 1.9 Mbps cap for sub-720 lipsync raw
+    """
     src = Path(src)
     dst = Path(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.parent / f"{dst.stem}.tmp.{os.getpid()}{dst.suffix}"
-    vf = DELIVERY_VF
-    if sharpen:
-        vf = f"{vf},unsharp=5:5:0.45:3:3:0.20"
+    profile = (delivery_profile or "standard").strip().lower()
+    if profile == "voice_first_upscale":
+        vf = VOICE_FIRST_UPSCALE_VF
+        video_bitrate = VOICE_FIRST_DELIVERY_VIDEO_BITRATE
+        maxrate = VOICE_FIRST_DELIVERY_MAXRATE
+        bufsize = VOICE_FIRST_DELIVERY_BUFSIZE
+        max_bitrate_bps = VOICE_FIRST_DELIVERY_MAX_BITRATE_BPS
+        if sharpen:
+            vf = f"{vf},{VOICE_FIRST_UPSCALE_UNSHARP}"
+    else:
+        vf = DELIVERY_VF
+        video_bitrate = DELIVERY_VIDEO_BITRATE
+        maxrate = DELIVERY_MAXRATE
+        bufsize = DELIVERY_BUFSIZE
+        max_bitrate_bps = DELIVERY_MAX_BITRATE_BPS
+        if sharpen:
+            vf = f"{vf},{DELIVERY_UNSHARP}"
 
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
@@ -97,9 +133,9 @@ def encode_delivery_video(
         "-vf", vf,
         "-c:v", "libx264", "-profile:v", "high", "-pix_fmt", "yuv420p",
         "-preset", "medium", "-g", "48",
-        "-b:v", DELIVERY_VIDEO_BITRATE,
-        "-maxrate", DELIVERY_MAXRATE,
-        "-bufsize", DELIVERY_BUFSIZE,
+        "-b:v", video_bitrate,
+        "-maxrate", maxrate,
+        "-bufsize", bufsize,
     ]
     if include_audio:
         cmd += ["-c:a", "aac", "-b:a", DELIVERY_AUDIO_BITRATE, "-ac", "1", "-ar", "44100"]
@@ -110,9 +146,9 @@ def encode_delivery_video(
     try:
         subprocess.run(cmd, check=True, capture_output=True, timeout=timeout_s)
         bitrate = _probe_bitrate(tmp)
-        if bitrate > DELIVERY_MAX_BITRATE_BPS:
+        if bitrate > max_bitrate_bps:
             raise RuntimeError(
-                f"delivery bitrate {bitrate:,} bps exceeds {DELIVERY_MAX_BITRATE_BPS:,} bps"
+                f"delivery bitrate {bitrate:,} bps exceeds {max_bitrate_bps:,} bps"
             )
         os.replace(tmp, dst)
         return dst
