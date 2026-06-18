@@ -42,3 +42,5 @@ python3 -m pytest \
   -q
 echo "[o3-intro-contract] visible magic contract..."
 bash Production/scripts/verify_visible_magic_contract.sh
+echo "[o3-intro-contract] lipsync public-host durability..."
+bash Production/scripts/verify_lipsync_public_host_durability.sh

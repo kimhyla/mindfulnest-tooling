@@ -73,6 +73,16 @@ fi
 
 mkdir -p "${HOME}/Library/LaunchAgents"
 
+TOOLS_DIR="$(dirname "$SERVER")"
+LIPSYNC_R2_PLIST=""
+while IFS= read -r line; do
+  [[ "$line" =~ ^export\ ([A-Z0-9_]+)=(.+)$ ]] || continue
+  key="${BASH_REMATCH[1]}"
+  val="${BASH_REMATCH[2]}"
+  val="${val#\'}"; val="${val%\'}"
+  LIPSYNC_R2_PLIST+=$'\t\t<key>'"${key}"$'</key>\n\t\t<string>'"${val}"$'</string>\n'
+done < <("$PYTHON" "$TOOLS_DIR/lipsync_public_host.py" --shell-export 2>/dev/null || true)
+
 cat > "$PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -121,8 +131,7 @@ cat > "$PLIST" <<PLIST
 		<string>1</string>
 		<key>MN_EVENT_PIN_IGNORE</key>
 		<string>1</string>
-${PRESERVE_ENV}
-	</dict>
+${PRESERVE_ENV}${LIPSYNC_R2_PLIST}	</dict>
 </dict>
 </plist>
 PLIST

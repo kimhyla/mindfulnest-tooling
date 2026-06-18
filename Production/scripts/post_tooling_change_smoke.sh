@@ -95,6 +95,9 @@ if b.get("kling_o3_voice_fix_error"):
     raise SystemExit("FATAL: beat_07 still has kling_o3_voice_fix_error")
 PY
 
+echo "=== [6.5/7] lipsync public-host live smoke (informational) ==="
+bash "$SRC_TOOLING/Production/scripts/smoke_lipsync_public_host_live.sh"
+
 echo "=== [7/7] build-sha matches git HEAD ==="
 BUILD_SHA="$(cd "$SRC_TOOLING" && git rev-parse --short HEAD)"
 SERVED="$(curl -sS --max-time 10 "http://localhost:${SERVER_PORT}/" 2>/dev/null || true)"

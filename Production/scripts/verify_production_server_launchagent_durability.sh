@@ -28,6 +28,8 @@ grep -q '<string>--port</string>' "$INSTALL" \
   || fail "install script must pass --port for dedicated event servers"
 grep -q 'MN_EVENT_PIN_IGNORE' "$INSTALL" \
   || fail "install script must set MN_EVENT_PIN_IGNORE=1 on launchd agent"
+grep -q 'lipsync_public_host.py' "$INSTALL" \
+  || fail "install script must inject R2 env from lipsync_public_host.py --shell-export"
 
 # event_server_port: Event_2 → :5112 (not shared :5111).
 PORT_SH="${REPO_ROOT}/Production/scripts/event_server_port.sh"

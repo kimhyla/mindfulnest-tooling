@@ -35,6 +35,9 @@ CODE_PARITY_PATHS = (
     "Production/scripts/verify_o3_intro_contract.sh",
     "Production/scripts/verify_visible_magic_contract.sh",
     "Production/scripts/post_tooling_change_smoke.sh",
+    "Production/scripts/verify_lipsync_public_host_durability.sh",
+    "Production/scripts/configure_r2_lipsync_hosting.sh",
+    "Production/scripts/smoke_lipsync_public_host_live.sh",
     "Production/scripts/verify_lorelai_element_name_durability.sh",
 )
 REGISTRY_COMPARE_PATHS = (
