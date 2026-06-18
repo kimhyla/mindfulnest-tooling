@@ -2123,11 +2123,20 @@ canvas.mn-lipsync-watercolor-overlay {
 }
 .mn-bg-beat-meta {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   font-size: 12px;
   color: var(--text-dim);
 }
+
+.mn-bg-pipeline-toggle {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
 .mn-bg-beat-index {
   font-weight: 600;
   color: var(--text-strong);

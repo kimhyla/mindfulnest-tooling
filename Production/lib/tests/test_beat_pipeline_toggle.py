@@ -138,4 +138,91 @@ def test_bgtab_wires_pipeline_toggle():
     assert "bg_set_pipeline" in text
     assert "bg-pipeline-toggle-" in text
     assert "Still + TTS" in text
-    assert "O3 Kling" in text
+    assert "Voice-first" in text
+    assert "Element native" in text
+    assert "generation_mode" in text
+
+
+def test_set_beat_generation_mode_voice_first_persists_o3_mode():
+    sidecar = {
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [_dialogue_beat()],
+                    },
+                },
+            },
+        },
+    }
+    beat = sidecar["arcs"]["arc_1"]["segments"]["event_2_pre"]["beats"][0]
+    changed = bg.set_beat_generation_mode(
+        beat,
+        bg.O3_GENERATE_MODE_ELEMENT_NATIVE,
+        event_id="2",
+        phase="pre",
+        sidecar=sidecar,
+    )
+    assert changed is True
+    assert beat["pipeline"] == bg.PIPELINE_MODE_O3
+    assert beat["o3_generate_mode"] == bg.O3_GENERATE_MODE_ELEMENT_NATIVE
+    assert bg.resolve_beat_generation_mode(beat, sidecar) == bg.O3_GENERATE_MODE_ELEMENT_NATIVE
+
+
+def test_set_beat_generation_mode_still_clears_render_path():
+    sidecar = {
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [_dialogue_beat(o3_generate_mode="voice_first")],
+                    },
+                },
+            },
+        },
+    }
+    beat = sidecar["arcs"]["arc_1"]["segments"]["event_2_pre"]["beats"][0]
+    changed = bg.set_beat_generation_mode(
+        beat,
+        bg.PIPELINE_MODE_STILL,
+        event_id="2",
+        phase="pre",
+        sidecar=sidecar,
+    )
+    assert changed is True
+    assert beat["pipeline"] == bg.PIPELINE_MODE_STILL
+    assert bg.resolve_beat_generation_mode(beat, sidecar) == bg.PIPELINE_MODE_STILL
+
+
+def test_resolve_beat_generation_mode_event2_default_voice_first():
+    sidecar = {
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [_dialogue_beat()],
+                    },
+                },
+            },
+        },
+    }
+    beat = sidecar["arcs"]["arc_1"]["segments"]["event_2_pre"]["beats"][0]
+    assert bg.resolve_beat_generation_mode(beat, sidecar) == bg.O3_GENERATE_MODE_VOICE_FIRST
+
+
+def test_handle_bg_set_pipeline_accepts_generation_mode():
+    bg_src = TOOLS / "server_handlers" / "background.py"
+    text = bg_src.read_text(encoding="utf-8")
+    assert "generation_mode" in text
+    assert "set_beat_generation_mode" in text
+    assert "o3_generate_mode" in text.split("handle_bg_set_pipeline", 1)[1].split("def handle_bg_render_still_clip", 1)[0]
+
+
+def test_session_state_enriches_generation_mode():
+    bg_src = TOOLS / "server_handlers" / "background.py"
+    text = bg_src.read_text(encoding="utf-8")
+    assert "enrich_beats_generation_mode" in text
+
+
+def test_o3_generate_mode_in_sidecar_merge_preserve():
+    assert "o3_generate_mode" in bg.SIDECAR_MERGE_PRESERVE_FIELDS

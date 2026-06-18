@@ -71,12 +71,35 @@ def test_segment_override_element_native_on_event2():
     assert bg.resolve_o3_generate_mode(beat, sidecar) == "element_native"
 
 
+def test_beat_level_override_element_native():
+    sidecar = _sidecar_event2_pre()
+    beat = sidecar["arcs"]["arc_1"]["segments"]["event_2_pre"]["beats"][0]
+    beat["o3_generate_mode"] = "element_native"
+    assert bg.resolve_o3_generate_mode(beat, sidecar) == "element_native"
+    assert bg.resolve_beat_generation_mode(beat, sidecar) == "element_native"
+
+
+def test_beat_level_override_voice_first():
+    sidecar = _sidecar_event2_pre()
+    beat = sidecar["arcs"]["arc_1"]["segments"]["event_1_pre"]["beats"][0]
+    beat["o3_generate_mode"] = "voice_first"
+    assert bg.resolve_o3_generate_mode(beat, sidecar) == "voice_first"
+    assert bg.resolve_beat_generation_mode(beat, sidecar) == "voice_first"
+
+
 def test_submit_handler_selects_arlo_script_for_voice_first():
     bg_src = Path(__file__).resolve().parents[1] / "server_handlers" / "background.py"
     text = bg_src.read_text(encoding="utf-8")
     assert "resolve_o3_generate_mode" in text
     assert "arlo_o3_voice_pipeline.py" in text
     assert "o3_generate_mode" in text
+
+
+def test_submit_handler_routes_element_native_script():
+    bg_src = Path(__file__).resolve().parents[1] / "server_handlers" / "background.py"
+    text = bg_src.read_text(encoding="utf-8")
+    assert "kling_o3_element_beat_pipeline.py" in text
+    assert 'if o3_generate_mode == "voice_first"' in text
 
 
 def test_arlo_pipeline_stamps_generate_mode_and_pilot_lipsync_fallback():

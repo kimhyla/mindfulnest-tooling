@@ -1910,6 +1910,8 @@ def handle_bg_session_state(h)-> None:
             beats = bg.enrich_beats_kling_o3_pinned(beats, h.app.event_dir)
         except Exception as exc:  # noqa: BLE001
             print(f"[BG] magic merge enrich failed: {exc}", flush=True)
+    if beats:
+        bg.enrich_beats_generation_mode(beats, sidecar)
     return h._send_json(200, {
         # `active_context` retained for backward compat (BG segment
         # dropdown reads it as secondary filter).
@@ -5476,10 +5478,17 @@ def _ensure_still_insert_tts(h, beat: dict, sidecar: dict, production_state: dic
 
 
 def handle_bg_set_pipeline(h, body: dict) -> None:
-    """POST /api/bg/set-pipeline — explicit Still+TTS ↔ O3 Kling toggle per beat."""
+    """POST /api/bg/set-pipeline — per-beat generation mode toggle.
+
+    Accepts ``generation_mode`` (still_insert | voice_first | element_native) or
+    legacy ``pipeline`` (still_insert | kling_o3_omni).
+    """
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
         return
     beat_id = (body.get("beat_id") or "").strip()
+    generation_mode = str(
+        body.get("generation_mode") or body.get("o3_generate_mode") or "",
+    ).strip().lower()
     pipeline = str(body.get("pipeline") or body.get("mode") or "").strip()
     if not beat_id:
         return h._send_error_v59(
@@ -5488,14 +5497,36 @@ def handle_bg_set_pipeline(h, body: dict) -> None:
             error_message="beat_id required",
             retry_safe=False,
         )
-    if not pipeline:
+    bg = _bg_module()
+    if not generation_mode and not pipeline:
         return h._send_error_v59(
             400,
             error_code="MISSING_PIPELINE",
-            error_message="pipeline required (still_insert or kling_o3_omni)",
+            error_message=(
+                "generation_mode (still_insert | voice_first | element_native) "
+                "or pipeline (still_insert | kling_o3_omni) required"
+            ),
             retry_safe=False,
         )
-    bg = _bg_module()
+    if generation_mode and generation_mode not in bg.VALID_GENERATION_MODES:
+        return h._send_error_v59(
+            400,
+            error_code="INVALID_GENERATION_MODE",
+            error_message=f"generation_mode must be one of {sorted(bg.VALID_GENERATION_MODES)}",
+            retry_safe=False,
+        )
+    if not generation_mode:
+        if pipeline == bg.PIPELINE_MODE_STILL:
+            generation_mode = bg.PIPELINE_MODE_STILL
+        elif pipeline == bg.PIPELINE_MODE_O3:
+            generation_mode = ""
+        else:
+            return h._send_error_v59(
+                400,
+                error_code="INVALID_PIPELINE",
+                error_message="pipeline must be still_insert or kling_o3_omni",
+                retry_safe=False,
+            )
     event_dir = Path(getattr(h.app, "event_dir", _data_root(h)))
     if not event_dir.is_absolute():
         event_dir = _data_root(h) / event_dir
@@ -5534,9 +5565,18 @@ def handle_bg_set_pipeline(h, body: dict) -> None:
             event_id = bg.normalize_bg_event_id(ctx.get("event_id") or "")
             phase = ctx.get("phase") or "pre"
         try:
-            changed = bg.set_beat_pipeline_mode(
-                beat, pipeline, event_id=str(event_id), phase=str(phase),
-            )
+            if generation_mode:
+                changed = bg.set_beat_generation_mode(
+                    beat,
+                    generation_mode,
+                    event_id=str(event_id),
+                    phase=str(phase),
+                    sidecar=sidecar,
+                )
+            else:
+                changed = bg.set_beat_pipeline_mode(
+                    beat, bg.PIPELINE_MODE_O3, event_id=str(event_id), phase=str(phase),
+                )
         except bg.PipelineToggleError as exc:
             return h._send_error_v59(
                 400 if exc.code != "INTENT_JOB_ACTIVE" else 409,
@@ -5545,6 +5585,7 @@ def handle_bg_set_pipeline(h, body: dict) -> None:
                 retry_safe=exc.code == "INTENT_JOB_ACTIVE",
             )
         bg.write_sidecar(sidecar)
+        bg.enrich_beat_generation_mode(beat, sidecar)
     return h._send_json(200, {
         "ok": True,
         "beat_id": beat_id,
@@ -5552,6 +5593,8 @@ def handle_bg_set_pipeline(h, body: dict) -> None:
         "beat_render_mode": beat.get("beat_render_mode"),
         "beat_type": beat.get("beat_type"),
         "kling_o3_prompt": beat.get("kling_o3_prompt"),
+        "o3_generate_mode": beat.get("o3_generate_mode"),
+        "generation_mode": beat.get("generation_mode"),
         "changed": changed,
         "element_char_ref_ok": beat.get("element_char_ref_ok"),
         "element_char_ref_error": beat.get("element_char_ref_error"),

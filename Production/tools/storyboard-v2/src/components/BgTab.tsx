@@ -103,6 +103,21 @@ function isStillInsertBeat(beat?: BgBeat | null): boolean {
   return beat.pipeline === 'still_insert' || beat.beat_render_mode === 'still_insert';
 }
 
+type BeatGenerationMode = 'still_insert' | 'voice_first' | 'element_native';
+
+function effectiveGenerationMode(beat?: BgBeat | null): BeatGenerationMode {
+  if (!beat || isStillInsertBeat(beat)) return 'still_insert';
+  const gm = (beat.generation_mode ?? beat.o3_generate_mode ?? '').trim().toLowerCase();
+  if (gm === 'voice_first' || gm === 'element_native') return gm;
+  return 'element_native';
+}
+
+const GENERATION_MODE_TOAST: Record<BeatGenerationMode, string> = {
+  still_insert: 'Pipeline: Still + TTS — Generate builds smooth zoom still (1.0→1.06×) with dialogue audio.',
+  voice_first: 'Pipeline: Voice-first — Generate runs ElevenLabs → silent O3 → lipsync → 720 delivery.',
+  element_native: 'Pipeline: Element native O3 — Generate runs O3 Pro with Element voice baked in.',
+};
+
 function isO3VoiceBeat(beat?: BgBeat | null): boolean {
   if (!beat) return false;
   if (isStillInsertBeat(beat)) return false;
@@ -180,6 +195,8 @@ interface BgBeat {
   speaker?: string;
   pipeline?: string;
   beat_render_mode?: string;
+  o3_generate_mode?: string;
+  generation_mode?: BeatGenerationMode | string;
   dialogue_text?: string;
   scene_notes?: string;
   emotion?: string;
@@ -1635,22 +1652,27 @@ export function BgTab() {
     );
   };
 
-  const onSetBeatPipeline = async (beatId: string, pipeline: 'still_insert' | 'kling_o3_omni') => {
+  const onSetBeatGenerationMode = async (beatId: string, mode: BeatGenerationMode) => {
     if (beatSaveBlockedRef.current.has(beatId)) return;
     const beat = beats.find((b) => b.beat_id === beatId);
     if (!beat || !isPipelineToggleable(beat)) return;
-    const priorMode = isStillInsertBeat(beat) ? 'still_insert' : 'kling_o3_omni';
-    if (priorMode === pipeline) return;
+    if (effectiveGenerationMode(beat) === mode) return;
     setBeats((bs) => bs.map((b): BgBeat => {
       if (b.beat_id !== beatId) return b;
-      if (pipeline === 'still_insert') {
+      if (mode === 'still_insert') {
         return {
           ...b,
           pipeline: 'still_insert',
           beat_render_mode: 'still_insert',
+          generation_mode: 'still_insert',
         };
       }
-      const next: BgBeat = { ...b, pipeline: 'kling_o3_omni' };
+      const next: BgBeat = {
+        ...b,
+        pipeline: 'kling_o3_omni',
+        o3_generate_mode: mode,
+        generation_mode: mode,
+      };
       delete next.beat_render_mode;
       return next;
     }));
@@ -1660,12 +1682,14 @@ export function BgTab() {
       beat_render_mode?: string;
       beat_type?: string;
       kling_o3_prompt?: string;
+      o3_generate_mode?: string;
+      generation_mode?: BeatGenerationMode;
       element_char_ref_ok?: boolean;
       element_char_ref_error?: string | null;
       changed?: boolean;
     }>(activeScope.value, 'bg_set_pipeline', {
       beat_id: beatId,
-      pipeline,
+      generation_mode: mode,
     });
     if (result.ok && result.data) {
       setBeats((bs) => bs.map((b): BgBeat => {
@@ -1676,6 +1700,12 @@ export function BgTab() {
           next.beat_render_mode = result.data.beat_render_mode;
         } else {
           delete next.beat_render_mode;
+        }
+        if (result.data?.o3_generate_mode) {
+          next.o3_generate_mode = result.data.o3_generate_mode;
+        }
+        if (result.data?.generation_mode) {
+          next.generation_mode = result.data.generation_mode;
         }
         if (result.data?.kling_o3_prompt) {
           next.kling_o3_prompt = result.data.kling_o3_prompt;
@@ -1692,9 +1722,7 @@ export function BgTab() {
       }));
       pushToast({
         kind: 'success',
-        message: pipeline === 'still_insert'
-          ? 'Pipeline: Still + TTS — Generate builds smooth zoom still (1.0→1.06×) with dialogue audio.'
-          : 'Pipeline: O3 Kling — Generate submits padded O3 voice video.',
+        message: GENERATION_MODE_TOAST[mode],
         source: 'bg-set-pipeline',
       });
       await refreshState();
@@ -2571,7 +2599,7 @@ export function BgTab() {
               onDelete={() => onDeleteBeat(b.beat_id)}
               onUpdateText={(t) => onUpdateBeatText(b.beat_id, t)}
               onUpdateSpeaker={(s) => onUpdateBeatSpeaker(b.beat_id, s)}
-              onSetPipeline={(pipeline) => onSetBeatPipeline(b.beat_id, pipeline)}
+              onSetGenerationMode={(mode) => onSetBeatGenerationMode(b.beat_id, mode)}
               onGenerate={(dialogueText) => onGenerateBatch(b.beat_id, dialogueText)}
               onAccept={(optionKey) => onAcceptOption(b.beat_id, optionKey)}
               onSelectO3Video={(optionKey) => onSelectO3Video(b.beat_id, optionKey)}
@@ -3010,7 +3038,7 @@ interface BeatGenCardProps {
   onUpdateText: (next: string) => void | Promise<boolean>;
   // LD CHARACTER_DROPDOWN_RESTORED_V1 — speaker dropdown change.
   onUpdateSpeaker: (next: string) => void;
-  onSetPipeline: (pipeline: 'still_insert' | 'kling_o3_omni') => void;
+  onSetGenerationMode: (mode: BeatGenerationMode) => void;
   onGenerate: (dialogueText?: string) => void;
   onAccept: (optionKey: string) => void;
   onSelectO3Video: (optionKey: string) => void;
@@ -3047,7 +3075,7 @@ interface BeatGenCardProps {
 function BeatGenCard({
   index, beat, eventId, videoRole, pollResultForBeat, busy, nativeExperimentBusy,
   o3IntentSnapshot, o3SubmitAudit, o3WarningMessage, lipsyncPublicHostReady,
-  onDelete, onUpdateText, onUpdateSpeaker, onSetPipeline, onGenerate, onAccept,
+  onDelete, onUpdateText, onUpdateSpeaker, onSetGenerationMode, onGenerate, onAccept,
   onSelectO3Video, onApproveStill, onApplyO3Trim, onSetReplaceSlot, onSubmitNativeLipSyncExperiment,
   onEditChip, onInsertAfter, onRemoveRef, onAlignElementRef, onAddElementPose, onRefresh, onBeatMissing,
   onPatchOptionTile, onPatchRefImage,
@@ -3118,6 +3146,7 @@ function BeatGenCard({
   const [magicPreviewMode, setMagicPreviewMode] = useState<'still' | 'video' | null>(null);
   const [stillPreviewAutoplay, setStillPreviewAutoplay] = useState(false);
   const stillInsert = isStillInsertBeat(beat);
+  const generationMode = effectiveGenerationMode(beat);
   const hasStillSource = !!magicStillSource
     || optionsToShow.some((o) => o?.local_path || o?.thumb_b64);
   const showStillClipHint = stillInsert && !beat.kling_o3_video_path && hasStillSource;
@@ -3170,33 +3199,46 @@ function BeatGenCard({
             class="mn-bg-pipeline-toggle"
             data-testid={`bg-pipeline-toggle-${index}`}
             role="group"
-            aria-label={`Pipeline mode for beat ${beat.beat_id}`}
+            aria-label={`Generation mode for beat ${beat.beat_id}`}
           >
             <button
               type="button"
-              class={`mn-btn mn-btn-small${stillInsert ? ' mn-btn-primary' : ''}`}
+              class={`mn-btn mn-btn-small${generationMode === 'still_insert' ? ' mn-btn-primary' : ''}`}
               data-testid={`bg-pipeline-still-${index}`}
-              aria-pressed={stillInsert ? 'true' : 'false'}
+              aria-pressed={generationMode === 'still_insert' ? 'true' : 'false'}
               disabled={busy}
-              title="Still image + TTS (smooth zoom 1.0→1.06×), no Kling O3 Element clip"
+              title="Still image + TTS (smooth zoom 1.0→1.06×), no Kling O3"
               onClick={() => {
-                if (!stillInsert) onSetPipeline('still_insert');
+                if (generationMode !== 'still_insert') onSetGenerationMode('still_insert');
               }}
             >
               Still + TTS
             </button>
             <button
               type="button"
-              class={`mn-btn mn-btn-small${!stillInsert ? ' mn-btn-primary' : ''}`}
-              data-testid={`bg-pipeline-o3-${index}`}
-              aria-pressed={!stillInsert ? 'true' : 'false'}
+              class={`mn-btn mn-btn-small${generationMode === 'voice_first' ? ' mn-btn-primary' : ''}`}
+              data-testid={`bg-pipeline-voice-first-${index}`}
+              aria-pressed={generationMode === 'voice_first' ? 'true' : 'false'}
               disabled={busy}
-              title="Kling O3 Element voice video with padded lipsync tail"
+              title="ElevenLabs TTS → silent O3 → lipsync → 720 delivery"
               onClick={() => {
-                if (stillInsert) onSetPipeline('kling_o3_omni');
+                if (generationMode !== 'voice_first') onSetGenerationMode('voice_first');
               }}
             >
-              O3 Kling
+              Voice-first
+            </button>
+            <button
+              type="button"
+              class={`mn-btn mn-btn-small${generationMode === 'element_native' ? ' mn-btn-primary' : ''}`}
+              data-testid={`bg-pipeline-element-native-${index}`}
+              aria-pressed={generationMode === 'element_native' ? 'true' : 'false'}
+              disabled={busy}
+              title="O3 Pro Element with native voice baked in"
+              onClick={() => {
+                if (generationMode !== 'element_native') onSetGenerationMode('element_native');
+              }}
+            >
+              Element native
             </button>
           </span>
         ) : null}

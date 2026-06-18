@@ -796,6 +796,7 @@ SIDECAR_MERGE_PRESERVE_FIELDS: tuple[str, ...] = (
     "element_char_ref_ok", "element_char_ref_error",
     "o3_prompt_box_law", "o3_prompt_box_law_at",
     "pipeline",
+    "o3_generate_mode",
     "intro_beat_role", "canonical_intro_tail",
     "magic_manual_path", "magic_video_path", "magic_path_authored_against",
     "storyboard_clip_import",
@@ -3428,6 +3429,17 @@ def beat_is_still_insert(beat: dict) -> bool:
 PIPELINE_MODE_STILL = "still_insert"
 PIPELINE_MODE_O3 = "kling_o3_omni"
 VALID_PIPELINE_MODES = frozenset({PIPELINE_MODE_STILL, PIPELINE_MODE_O3})
+O3_GENERATE_MODE_VOICE_FIRST = "voice_first"
+O3_GENERATE_MODE_ELEMENT_NATIVE = "element_native"
+VALID_O3_GENERATE_MODES = frozenset({
+    O3_GENERATE_MODE_VOICE_FIRST,
+    O3_GENERATE_MODE_ELEMENT_NATIVE,
+})
+VALID_GENERATION_MODES = frozenset({
+    PIPELINE_MODE_STILL,
+    O3_GENERATE_MODE_VOICE_FIRST,
+    O3_GENERATE_MODE_ELEMENT_NATIVE,
+})
 
 
 class PipelineToggleError(Exception):
@@ -3609,6 +3621,73 @@ def set_beat_pipeline_mode(
         apply_beat_pipeline_o3_mode(beat, event_id, phase)
     classify_beat_pipeline_fields(beat)
     return True
+
+
+def resolve_beat_generation_mode(beat: dict, sidecar: dict) -> str:
+    """Effective per-beat generation mode for UI + routing preview."""
+    if beat_is_still_insert(beat):
+        return PIPELINE_MODE_STILL
+    return resolve_o3_generate_mode(beat, sidecar)
+
+
+def enrich_beat_generation_mode(beat: dict, sidecar: dict) -> None:
+    """Stamp resolved generation_mode on beat dict for Beat Gen session-state."""
+    beat["generation_mode"] = resolve_beat_generation_mode(beat, sidecar)
+
+
+def enrich_beats_generation_mode(beats: list[dict], sidecar: dict) -> None:
+    for beat in beats:
+        enrich_beat_generation_mode(beat, sidecar)
+
+
+def set_beat_generation_mode(
+    beat: dict,
+    mode: str,
+    *,
+    event_id: str,
+    phase: str,
+    sidecar: dict,
+) -> bool:
+    """Switch beat among still_insert, voice_first, element_native."""
+    mode = str(mode or "").strip().lower()
+    if mode not in VALID_GENERATION_MODES:
+        raise PipelineToggleError(
+            "INVALID_GENERATION_MODE",
+            f"generation_mode must be one of {sorted(VALID_GENERATION_MODES)}",
+        )
+    if beat_is_canonical_mirror_protected(beat):
+        raise PipelineToggleError(
+            "CANONICAL_BEAT_PROTECTED",
+            "Canonical intro beats cannot change pipeline mode",
+        )
+    if beat_o3_voice_job_running(beat):
+        raise PipelineToggleError(
+            "INTENT_JOB_ACTIVE",
+            "O3 job is running — pipeline locked until it finishes",
+        )
+    if beat_is_stage_direction_only(beat):
+        raise PipelineToggleError(
+            "STAGE_DIRECTION_BEAT",
+            "Stage-direction beats cannot toggle pipeline — assign a speaker first",
+        )
+    current = resolve_beat_generation_mode(beat, sidecar)
+    if current == mode:
+        classify_beat_pipeline_fields(beat)
+        return False
+    changed = False
+    if mode == PIPELINE_MODE_STILL:
+        if resolve_beat_pipeline_mode(beat) != PIPELINE_MODE_STILL:
+            apply_beat_pipeline_still_mode(beat, event_id, phase)
+            changed = True
+    else:
+        if resolve_beat_pipeline_mode(beat) != PIPELINE_MODE_O3:
+            apply_beat_pipeline_o3_mode(beat, event_id, phase)
+            changed = True
+        if (beat.get("o3_generate_mode") or "").strip().lower() != mode:
+            beat["o3_generate_mode"] = mode
+            changed = True
+    classify_beat_pipeline_fields(beat)
+    return changed
 
 
 _STILL_INSERT_SPOKEN_RE = re.compile(
