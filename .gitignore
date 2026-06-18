@@ -53,6 +53,7 @@ Production/tools/bin/res/
 .env.local
 .env.*.local
 .doppler/
+.wrangler/
 API_KEYS_MASTER.md
 
 # Media — never ship

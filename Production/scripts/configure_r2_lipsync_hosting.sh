@@ -54,6 +54,11 @@ rows = [
     ("Secret Access Key", os.environ["R2_SECRET_ACCESS_KEY"], "Env: R2_SECRET_ACCESS_KEY. Rotate via Cloudflare R2 API tokens."),
     ("Account ID", os.environ["R2_ACCOUNT_ID"], "Env: R2_ACCOUNT_ID. Cloudflare dashboard → R2 overview."),
     ("Bucket Name", os.environ["R2_BUCKET_NAME"], "Env: R2_BUCKET_NAME. Lipsync staging objects (voice-first Beat Gen)."),
+    (
+        "S3 API Endpoint",
+        f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+        "S3-compatible PUT endpoint for r2_upload.py (region auto).",
+    ),
 ]
 cdn = (os.environ.get("MN_R2_CDN_BASE_URL") or "").strip()
 if cdn:
@@ -93,16 +98,31 @@ else
   echo "[configure-r2-lipsync] WARN: doppler CLI not found — API_KEYS_MASTER.md fallback only"
 fi
 
-echo "[configure-r2-lipsync] mirroring tooling → Dropbox (lipsync modules)..."
-for rel in Production/tools/lipsync_public_host.py Production/tools/credentials_lib/credentials.py; do
-  src="${REPO_ROOT}/${rel}"
-  dst="${DROPBOX}/${rel}"
-  [[ -f "$src" ]] || fail "missing tooling file ${rel}"
-  cp "$src" "$dst"
+echo "[configure-r2-lipsync] mirroring tooling → Dropbox (tools/lib/scripts)..."
+SRC_TOOLING="${REPO_ROOT}"
+for sub in Production/tools Production/lib Production/scripts; do
+  rsync -a --delete \
+    --exclude 'stitch_editor_state.json' \
+    "${SRC_TOOLING}/${sub}/" \
+    "${DROPBOX}/${sub}/"
+  echo "  mirrored: ${sub}"
 done
 
-echo "[configure-r2-lipsync] restarting dedicated Event servers..."
-bash "${SCRIPT_DIR}/start_event_server.sh" Event_1 Event_2 Event_4
+echo "[configure-r2-lipsync] restarting all dedicated event servers..."
+DEDICATED_EVENTS=()
+for ev_dir in "${DROPBOX}"/Production/Event_*/; do
+  ev_id="$(basename "$ev_dir")"
+  [[ "$ev_id" == "Event_0" ]] && continue
+  [[ -f "${ev_dir}/storyboard_v59_prod.html" ]] || continue
+  # Dedicated ports follow Event_N → 5110+N; skip Milestone/plan dirs without numeric suffix.
+  if [[ "$ev_id" =~ ^Event_[0-9]+$ ]]; then
+    DEDICATED_EVENTS+=("$ev_id")
+  fi
+done
+if ((${#DEDICATED_EVENTS[@]} == 0)); then
+  DEDICATED_EVENTS=(Event_1 Event_2 Event_4)
+fi
+bash "${SCRIPT_DIR}/start_event_server.sh" "${DEDICATED_EVENTS[@]}"
 
 echo "[configure-r2-lipsync] live smoke (strict)..."
 MN_LIPSYNC_SMOKE_STRICT=1 bash "${SCRIPT_DIR}/smoke_lipsync_public_host_live.sh"

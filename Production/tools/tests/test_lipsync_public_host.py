@@ -19,7 +19,8 @@ def test_lipsync_ready_when_r2_env_complete():
 
 def test_lipsync_not_ready_without_r2_or_public_base():
     assert host.lipsync_public_host_ready(env={}) is False
-    caps = host.probe_lipsync_public_host_capabilities(creds={})
+    with patch("lipsync_public_host._merged_source", return_value={}):
+        caps = host.probe_lipsync_public_host_capabilities(creds={})
     assert caps["lipsync_public_host_ready"] is False
     assert caps["lipsync_public_host_message"]
 
