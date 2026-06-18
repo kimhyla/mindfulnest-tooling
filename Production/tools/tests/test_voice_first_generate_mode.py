@@ -91,12 +91,12 @@ def test_arlo_pipeline_stamps_generate_mode_and_pilot_lipsync_fallback():
     assert 'min(12, math.ceil(float(lipsync_padding["padded_audio_duration_s"]) + 0.25))' in text
 
 
-def test_arlo_voice_first_enables_data_uri_fallback_by_default():
+def test_arlo_voice_first_waives_sub720_after_lipsync_for_any_transport():
     src = Path(__file__).resolve().parents[1] / "arlo_o3_voice_pipeline.py"
     text = src.read_text(encoding="utf-8")
-    assert 'attempts = ["url", "data_uri"]' in text
     assert "sub720_waived" in text
-    assert "lipsync_transport == \"data_uri\"" in text
+    assert "lipsync_quality_warn" in text
+    assert "if lipsync_transport == \"data_uri\":" not in text.split("_assert_lipsync_quality")[1].split("active = _delivery_video")[0]
 
 
 def test_submit_handler_stamps_lipsync_staging_env_for_voice_first():

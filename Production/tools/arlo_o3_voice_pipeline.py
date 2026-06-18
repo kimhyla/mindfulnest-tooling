@@ -673,7 +673,7 @@ def run_pipeline(beat_id: str, *, model: str = "pro", sharpen: bool = True, atte
         "kling_o3_voice_fix_lipsync_input_path": str(lipsync_input),
         "kling_o3_voice_fix_lipsync_input_profile": {
             "resolution": "1920x1080",
-            "reason": "Kling LipSync has no resolution parameter; submit 1080p as best source and reject any sub-720p provider output.",
+            "reason": "Kling LipSync has no resolution parameter; submit 1080p source; sub-720 raw waived → LD-296 delivery encode.",
         },
         "kling_o3_voice_fix_provider_contract": LIPSYNC_PROVIDER_CONTRACT,
     })
@@ -717,41 +717,24 @@ def run_pipeline(beat_id: str, *, model: str = "pro", sharpen: bool = True, atte
     try:
         lipsync_quality = _assert_lipsync_quality(out)
     except Exception as exc:
-        if lipsync_transport == "data_uri":
-            print(json.dumps({
-                "phase": "lipsync_quality_warn",
-                "beat_id": beat_id,
-                "warning": str(exc),
-                "transport": lipsync_transport,
-            }), flush=True)
-            lipsync_quality = {
-                "path": str(out),
-                "width": raw_width,
-                "height": raw_height,
-                "min_dimension": min(raw_width, raw_height),
-                "transport": lipsync_transport,
-                "sub720_waived": True,
-                "waive_reason": str(exc),
-                "rule": "Pilot parity: data_uri sub-720 raw allowed; kid-facing gate is LD-296 delivery encode.",
-            }
-        else:
-            _restore_prior_video_state(beat, prior_video=prior_video, prior_status=prior_status, prior_beat_status=prior_beat_status)
-            persist({
-                "status": beat.get("status"),
-                "kling_o3_status": beat.get("kling_o3_status"),
-                "kling_o3_video_path": beat.get("kling_o3_video_path"),
-                "kling_o3_voice_fix_status": "failed_provider_sub720",
-                "kling_o3_voice_fix_error_code": "PROVIDER_SUB720",
-                "kling_o3_voice_fix_error": str(exc),
-                "kling_o3_voice_fix_output_profile": {
-                    "path": str(out),
-                    "width": raw_width,
-                    "height": raw_height,
-                    "min_dimension": min(raw_width, raw_height),
-                },
-                "kling_o3_voice_fix_completed_at": datetime.now(timezone.utc).isoformat(),
-            }, remove=("kling_o3_voice_fix_ui_job_id",))
-            raise
+        # WaveSpeed Kling lipsync often returns 832x464 even from 1080p input (URL or data_uri).
+        # Voice-first pilot parity: warn, LD-296 delivery encode is the kid-facing quality gate.
+        print(json.dumps({
+            "phase": "lipsync_quality_warn",
+            "beat_id": beat_id,
+            "warning": str(exc),
+            "transport": lipsync_transport,
+        }), flush=True)
+        lipsync_quality = {
+            "path": str(out),
+            "width": raw_width,
+            "height": raw_height,
+            "min_dimension": min(raw_width, raw_height),
+            "transport": lipsync_transport,
+            "sub720_waived": True,
+            "waive_reason": str(exc),
+            "rule": "Voice-first pilot parity: sub-720 raw waived; kid-facing gate is LD-296 delivery encode.",
+        }
     active = _delivery_video(out, sharpen=sharpen)
     del_w, del_h = _probe_video_size(active)
     lipsync_quality = {
@@ -787,7 +770,7 @@ def run_pipeline(beat_id: str, *, model: str = "pro", sharpen: bool = True, atte
         "kling_o3_voice_fix_lipsync_input_path": str(lipsync_input),
         "kling_o3_voice_fix_lipsync_input_profile": {
             "resolution": "1920x1080",
-            "reason": "Kling LipSync has no resolution parameter; submit 1080p as best source and reject any sub-720p provider output.",
+            "reason": "Kling LipSync has no resolution parameter; submit 1080p source; sub-720 raw waived → LD-296 delivery encode.",
         },
         "kling_o3_voice_fix_provider_contract": LIPSYNC_PROVIDER_CONTRACT,
         "kling_o3_voice_fix_output_duration_s": round(out_dur, 3),
