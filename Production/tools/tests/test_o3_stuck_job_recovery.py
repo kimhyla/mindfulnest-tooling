@@ -319,6 +319,99 @@ def test_recover_o3_job_from_sidecar_matches_log_path_when_ui_job_id_cleared(
     assert recovered.get("recovered") is True
 
 
+def test_reconcile_stale_hosting_uses_credentials_not_process_env(monkeypatch, tmp_path) -> None:
+    bg_mod = _import_background()
+    video = tmp_path / "beat01.mp4"
+    video.write_bytes(b"fake-mp4")
+    sidecar = {
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [{
+                            "beat_id": "bg_arc1_event2_pre_beat_01",
+                            "kling_o3_status": "approved",
+                            "kling_o3_video_path": str(video),
+                            "kling_o3_voice_fix_status": "failed_provider_fetch",
+                            "kling_o3_voice_fix_error": (
+                                "No lipsync input host returned byte-complete public files."
+                            ),
+                        }],
+                    },
+                },
+            },
+        },
+    }
+
+    def _ready(*, creds=None, env=None):
+        return bool(creds)
+
+    monkeypatch.setattr("lipsync_public_host.lipsync_public_host_ready", _ready)
+    monkeypatch.setattr(
+        bg_mod,
+        "load_credentials",
+        lambda: {"r2_access_key_id": "x"},
+        raising=False,
+    )
+
+    import server_handlers.background as bg_pkg
+
+    monkeypatch.setattr(
+        bg_pkg,
+        "load_credentials",
+        lambda: {"r2_access_key_id": "x"},
+        raising=False,
+    )
+
+    # Patch import inside reconcile via credentials module path used there
+    import sys
+    fake_creds = type(sys)("credentials")
+    fake_creds.load_credentials = lambda: {"r2_access_key_id": "x"}
+    monkeypatch.setitem(sys.modules, "credentials", fake_creds)
+
+    changed = bg_mod.reconcile_stale_lipsync_hosting_failures(sidecar)
+    beat = sidecar["arcs"]["arc_1"]["segments"]["event_2_pre"]["beats"][0]
+    assert changed == 1
+    assert beat["kling_o3_voice_fix_status"] == "approved"
+
+
+def test_reconcile_clears_stale_lipsync_hosting_failure_when_r2_ready(
+    monkeypatch, tmp_path,
+) -> None:
+    bg_mod = _import_background()
+    video = tmp_path / "beat01.mp4"
+    video.write_bytes(b"fake-mp4")
+    sidecar = {
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [{
+                            "beat_id": "bg_arc1_event2_pre_beat_01",
+                            "kling_o3_status": "approved",
+                            "kling_o3_video_path": str(video),
+                            "kling_o3_voice_fix_status": "failed_provider_fetch",
+                            "kling_o3_voice_fix_error": (
+                                "No lipsync input host returned byte-complete public files. "
+                                "r2_cdn: unavailable or preflight failed"
+                            ),
+                        }],
+                    },
+                },
+            },
+        },
+    }
+    monkeypatch.setattr(
+        "lipsync_public_host.lipsync_public_host_ready",
+        lambda **_: True,
+    )
+    changed = bg_mod.reconcile_stale_lipsync_hosting_failures(sidecar)
+    beat = sidecar["arcs"]["arc_1"]["segments"]["event_2_pre"]["beats"][0]
+    assert changed == 1
+    assert beat["kling_o3_voice_fix_status"] == "approved"
+    assert "kling_o3_voice_fix_error" not in beat
+
+
 def test_recover_o3_job_from_sidecar_failed_provider_fetch(
     monkeypatch, tmp_path,
 ) -> None:

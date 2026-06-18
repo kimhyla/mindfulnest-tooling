@@ -17,6 +17,13 @@ def test_lipsync_ready_when_r2_env_complete():
     assert host.lipsync_public_host_ready(env=env) is True
 
 
+def test_is_stale_lipsync_hosting_failure_detects_pre_r2_errors():
+    assert host.is_stale_lipsync_hosting_failure(
+        "No lipsync input host returned byte-complete public files. r2_cdn: unavailable"
+    )
+    assert not host.is_stale_lipsync_hosting_failure("Kling LipSync returned sub-720p output")
+
+
 def test_lipsync_not_ready_without_r2_or_public_base():
     assert host.lipsync_public_host_ready(env={}) is False
     with patch("lipsync_public_host._merged_source", return_value={}):

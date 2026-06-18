@@ -26,6 +26,15 @@ LIPSYNC_HOSTING_BLOCK_MESSAGE = (
     "in Doppler or Production/API_KEYS_MASTER.md, then restart Event servers."
 )
 
+# Errors stamped before R2 was configured — obsolete once lipsync_public_host_ready().
+_STALE_LIPSYNC_HOSTING_MARKERS = (
+    "no lipsync input host returned byte-complete public files",
+    "r2_cdn: unavailable or preflight failed",
+    "production_staging: unavailable or preflight failed",
+    "unsafe url: non-public host",
+    "lipsync_hosting_not_configured",
+)
+
 
 def _merged_source(creds: Mapping[str, str] | None = None) -> dict[str, str]:
     merged = dict(os.environ)
@@ -64,6 +73,14 @@ def lipsync_public_host_ready(*, creds: Mapping[str, str] | None = None, env: Ma
 
 def lipsync_public_host_block_message() -> str:
     return LIPSYNC_HOSTING_BLOCK_MESSAGE
+
+
+def is_stale_lipsync_hosting_failure(error_text: str | None) -> bool:
+    """True when a persisted voice-fix error was caused by missing R2/public staging."""
+    raw = str(error_text or "").strip().lower()
+    if not raw:
+        return False
+    return any(marker in raw for marker in _STALE_LIPSYNC_HOSTING_MARKERS)
 
 
 def inject_lipsync_r2_env(target: dict[str, str], creds: Mapping[str, str] | None = None) -> None:

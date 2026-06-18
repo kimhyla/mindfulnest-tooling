@@ -449,6 +449,18 @@ function buildFixedO3OptionSlots(beat: BgBeat): (GptOption | null)[] {
   return slots;
 }
 
+function isStaleLipsyncHostingFailure(error?: string | null): boolean {
+  const raw = (error ?? '').trim().toLowerCase();
+  if (!raw) return false;
+  return [
+    'no lipsync input host returned byte-complete public files',
+    'r2_cdn: unavailable or preflight failed',
+    'production_staging: unavailable or preflight failed',
+    'unsafe url: non-public host',
+    'lipsync_hosting_not_configured',
+  ].some((marker) => raw.includes(marker));
+}
+
 function formatO3JobFailure(error?: string | null): string {
   const raw = (error ?? '').trim();
   if (!raw) return 'O3 voice job failed; previous approved clip was kept active.';
@@ -503,6 +515,14 @@ function resolveVoiceFirstFailureBanner(
   if (!isO3VoiceBeat(beat)) return null;
   if (lipsyncHostReady !== true) return null;
   if (!(beat.kling_o3_voice_fix_status ?? '').startsWith('failed')) return null;
+  // Pre-R2 hosting failures on beats that kept an approved clip — hide once R2 is live.
+  if (
+    isStaleLipsyncHostingFailure(beat.kling_o3_voice_fix_error)
+    && beat.kling_o3_status === 'approved'
+    && isUserSelectableO3Video(beat.kling_o3_video_path)
+  ) {
+    return null;
+  }
   return formatO3JobFailure(beat.kling_o3_voice_fix_error);
 }
 

@@ -104,6 +104,15 @@ def test_voice_fix_terminal_failure_contract() -> None:
     assert not voice_fix_is_terminal_failure("job_running")
 
 
+def test_bg_failure_banner_hidden_for_stale_pre_r2_hosting_when_clip_kept() -> None:
+    src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
+    assert "isStaleLipsyncHostingFailure" in src
+    assert "resolveVoiceFirstFailureBanner" in src
+    banner_block = src.split("function resolveVoiceFirstFailureBanner", 1)[1].split("function beatHasPopulatedO3Slot", 1)[0]
+    assert "isStaleLipsyncHostingFailure(beat.kling_o3_voice_fix_error)" in banner_block
+    assert "return null" in banner_block
+
+
 def test_bg_failure_banner_visible_when_old_clip_kept() -> None:
     src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
     assert "resolveVoiceFirstFailureBanner" in src

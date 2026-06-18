@@ -1756,6 +1756,7 @@ def handle_bg_session_state(h)-> None:
         bg.ensure_sidecar_schema_defaults(sidecar)
     # Lightweight in-memory heals only — no sidecar lock held during this block.
     stuck_changed = reconcile_stuck_o3_voice_beats(sidecar)
+    stale_hosting_changed = reconcile_stale_lipsync_hosting_failures(sidecar)
     ui_job_rehydrate_changed = rehydrate_o3_ui_job_ids(sidecar)
     intent_lock_changed = 0
     prod_root = _data_root(h)
@@ -1781,6 +1782,7 @@ def handle_bg_session_state(h)-> None:
     classify_changed = bg.classify_all_sidecar_pipeline_fields(sidecar)
     persist_heals = bool(
         stuck_changed
+        or stale_hosting_changed
         or ui_job_rehydrate_changed
         or intent_lock_changed
         or o3_reconcile_changed
@@ -1844,6 +1846,7 @@ def handle_bg_session_state(h)-> None:
             sidecar = bg.read_sidecar()
             bg.ensure_sidecar_schema_defaults(sidecar)
             reconcile_stuck_o3_voice_beats(sidecar)
+            reconcile_stale_lipsync_hosting_failures(sidecar)
             rehydrate_o3_ui_job_ids(sidecar)
             try:
                 from o3_generation_intent import reconcile_stale_o3_intent_locks_all_events
@@ -4730,6 +4733,52 @@ def _beat_candidate_for_stuck_o3_reconcile(beat: dict) -> bool:
     if beat.get("kling_o3_voice_fix_job_pid") is not None:
         return True
     return False
+
+
+def reconcile_stale_lipsync_hosting_failures(sidecar: dict) -> int:
+    """Clear pre-R2 hosting failures once lipsync public host is configured.
+
+    Beats that kept an approved O3 clip after a failed lipsync upload attempt should
+    not show stale \"configure R2\" errors after R2 is live on this machine.
+    """
+    try:
+        from lipsync_public_host import (
+            is_stale_lipsync_hosting_failure,
+            lipsync_public_host_ready,
+        )
+    except ImportError:
+        return 0
+    creds = None
+    try:
+        try:
+            from credentials import load_credentials  # type: ignore
+        except ImportError:
+            from tools.credentials_lib.credentials import load_credentials  # type: ignore
+        creds = load_credentials()
+    except Exception:
+        creds = None
+    if not lipsync_public_host_ready(creds=creds):
+        return 0
+    changed = 0
+    for beat in _iter_bg_beats(sidecar):
+        voice_fix = str(beat.get("kling_o3_voice_fix_status") or "")
+        if not voice_fix.startswith("failed"):
+            continue
+        if not is_stale_lipsync_hosting_failure(str(beat.get("kling_o3_voice_fix_error") or "")):
+            continue
+        if str(beat.get("kling_o3_status") or "") != "approved":
+            continue
+        video_path = str(beat.get("kling_o3_video_path") or "")
+        if not video_path or not Path(video_path).is_file():
+            continue
+        if _beat_o3_job_looks_running(beat):
+            continue
+        beat["kling_o3_voice_fix_status"] = "approved"
+        beat.pop("kling_o3_voice_fix_error", None)
+        beat.pop("kling_o3_voice_fix_error_code", None)
+        beat.pop("kling_o3_voice_fix_url_transport_error", None)
+        changed += 1
+    return changed
 
 
 def reconcile_stuck_o3_voice_beats(sidecar: dict) -> int:

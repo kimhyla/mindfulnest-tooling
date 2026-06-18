@@ -44,6 +44,10 @@ grep -q '\-\-shell-export' "$START" \
 
 grep -q 'voiceFirstLipsyncHostBlocked' "$BGTAB" \
   || fail "BgTab must gate Generate when lipsync public host is not ready"
+grep -q 'isStaleLipsyncHostingFailure' "$BGTAB" \
+  || fail "BgTab must hide stale pre-R2 hosting failure banners"
+grep -q 'reconcile_stale_lipsync_hosting_failures' "$BG" \
+  || fail "background.py must reconcile stale pre-R2 lipsync failures on session load"
 grep -q 'mn-bg-lipsync-host-setup' "$BGTAB" \
   || fail "BgTab must render full-width lipsync setup banner"
 
