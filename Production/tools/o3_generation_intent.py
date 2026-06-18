@@ -193,11 +193,36 @@ def discover_event_dirs(prod_root: Path) -> list[Path]:
     )
 
 
+def _last_json_blob(log_text: str) -> dict | None:
+    """Parse the last JSON object in a subprocess log (supports pretty-printed blocks)."""
+    text = (log_text or "").rstrip()
+    if not text:
+        return None
+    start = text.rfind("\n{")
+    if start >= 0:
+        start += 1
+    else:
+        start = text.find("{")
+    if start < 0:
+        return None
+    try:
+        parsed = json.loads(text[start:])
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 def _pipeline_done_from_log(log_path: Path) -> dict | None:
-    """Parse element pipeline ``phase: done`` line from subprocess log."""
+    """Parse terminal success from element ``phase: done`` or voice-first ``ok: true`` JSON."""
     if not log_path.is_file():
         return None
-    for line in reversed(log_path.read_text(encoding="utf-8", errors="replace").splitlines()):
+    log_text = log_path.read_text(encoding="utf-8", errors="replace")
+    last = _last_json_blob(log_text)
+    if last and last.get("ok") is True:
+        video = str(last.get("video") or last.get("playback_video") or "")
+        if video:
+            return last
+    for line in reversed(log_text.splitlines()):
         stripped = line.strip()
         if not stripped.startswith("{"):
             continue
@@ -208,6 +233,8 @@ def _pipeline_done_from_log(log_path: Path) -> dict | None:
         if not isinstance(parsed, dict):
             continue
         if parsed.get("phase") == "done" and parsed.get("video"):
+            return parsed
+        if parsed.get("phase") == "finalize" and parsed.get("video"):
             return parsed
     return None
 
@@ -282,7 +309,8 @@ def log_indicates_active_o3_pipeline(log_text: str) -> bool:
     """True when subprocess log shows in-flight work (not terminal done/failed)."""
     if not log_text.strip():
         return False
-    if '"phase": "done"' in log_text:
+    last = _last_json_blob(log_text)
+    if last and last.get("ok") is True and (last.get("video") or last.get("playback_video")):
         return False
     for line in reversed(log_text.splitlines()):
         stripped = line.strip()
@@ -294,13 +322,16 @@ def log_indicates_active_o3_pipeline(log_text: str) -> bool:
             continue
         if not isinstance(row, dict):
             continue
+        if row.get("phase") == "done" and row.get("video"):
+            return False
+        if row.get("phase") == "finalize" and row.get("video"):
+            return False
+        if row.get("ok") is True and (row.get("video") or row.get("playback_video")):
+            return False
         phase = str(row.get("phase") or "").lower()
         if phase in _TERMINAL_PIPELINE_LOG_PHASES:
             return False
         if phase in _ACTIVE_PIPELINE_LOG_PHASES or phase:
-            return True
-    for phase in _ACTIVE_PIPELINE_LOG_PHASES:
-        if f'"phase": "{phase}"' in log_text:
             return True
     return False
 
@@ -345,11 +376,28 @@ def reconcile_stale_o3_intent_locks(sidecar: dict, event_dir: Path) -> int:
         pid = (beat or {}).get("kling_o3_voice_fix_job_pid")
         if pid is not None and _pid_is_running(pid):
             continue
-        if log_indicates_active_o3_pipeline(log_text):
-            continue
         if subprocess_running_for_o3_job(job_id, beat_id):
             continue
         voice_fix = str((beat or {}).get("kling_o3_voice_fix_status") or "")
+        if voice_fix == "approved":
+            done_row = _pipeline_done_from_log(log_path) if log_path.is_file() else None
+            if not done_row and beat:
+                video = str(beat.get("kling_o3_video_path") or "")
+                if video and Path(video).is_file():
+                    done_row = {"video": video}
+            if done_row:
+                video = str(done_row.get("video") or "")
+                write_intent_terminal(job_id, event_dir, {
+                    "intent_id": intent.get("intent_id"),
+                    "status": "done",
+                    "phase_last": "reconcile_voice_fix_approved",
+                    "sidecar_persist_ok": True,
+                    "delivered": {"video_path": video},
+                })
+                if beat:
+                    _clear_beat_intent_lock_fields(beat)
+                closed += 1
+                continue
         if voice_fix_is_terminal_failure(voice_fix):
             beat_job_id = job_id_from_beat(beat)
             if beat_job_id and beat_job_id != job_id:
@@ -384,6 +432,14 @@ def reconcile_stale_o3_intent_locks(sidecar: dict, event_dir: Path) -> int:
                     _clear_beat_intent_lock_fields(beat)
                 closed += 1
                 continue
+        if log_path.is_file():
+            import time
+
+            log_age_s = max(0.0, time.time() - log_path.stat().st_mtime)
+        else:
+            log_age_s = 0.0
+        if log_age_s <= 600 and log_indicates_active_o3_pipeline(log_text):
+            continue
         if '"phase": "done"' in log_text:
             continue
         write_intent_terminal(job_id, event_dir, {

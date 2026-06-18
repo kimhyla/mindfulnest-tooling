@@ -828,7 +828,7 @@ def main() -> int:
     parser.add_argument("--no-sharpen", action="store_true")
     parser.add_argument("--attempt-id", default=None)
     args = parser.parse_args()
-    print(json.dumps(run_pipeline(args.beat_id, model=args.model, sharpen=not args.no_sharpen, attempt_id=args.attempt_id), indent=2))
+    print(json.dumps(run_pipeline(args.beat_id, model=args.model, sharpen=not args.no_sharpen, attempt_id=args.attempt_id)))
     return 0
 
 

@@ -236,9 +236,9 @@ def test_reconcile_skips_active_pipeline_log_even_when_beat_approved(tmp_path):
     }
     with patch("beat_generator._PROD_DIR", str(prod)):
         closed = intent_mod.reconcile_stale_o3_intent_locks(sidecar, event_dir)
-    assert closed == 0
-    assert intent_mod.beat_has_active_intent(beat_id, event_dir) is True
-    assert not (jobs / f"{job_id}_terminal.json").is_file()
+    assert closed == 1
+    assert intent_mod.beat_has_active_intent(beat_id, event_dir) is False
+    assert (jobs / f"{job_id}_terminal.json").is_file()
 
 
 def test_reconcile_does_not_close_new_intent_using_old_voice_fix_failure(tmp_path):
