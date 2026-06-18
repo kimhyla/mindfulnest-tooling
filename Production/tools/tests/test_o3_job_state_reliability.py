@@ -251,6 +251,7 @@ def test_o3_poll_payload_attaches_beat_snapshot_for_running_status(monkeypatch, 
 def test_o3_poll_ui_patches_beat_while_running_and_on_terminal() -> None:
     src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
     assert "mergeBeatFromO3Poll" in src
+    assert "preserveLockedRefsOnO3PollMerge" in src
     assert "O3_POLL_INTERVAL_MS" in src
     assert "res.data.beat" in src
     poll_block = src.split("useEffect(() => {", 1)[1]
