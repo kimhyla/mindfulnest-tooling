@@ -4683,14 +4683,19 @@ _STUCK_O3_CLEAR_FIELDS = (
 )
 
 
-_O3_VOICE_FIX_RUNNING_STATUSES = frozenset({
-    "o3_running",
-    "job_running",
-    "job_starting",
-    "visual_running",
-    "lipsync_running",
-    "tts_ready",
-})
+def _reconcile_must_preserve_active_o3_job(beat: dict) -> bool:
+    """True when a live redo owns this beat — reconcile must not clear attempt_id/ui_job_id."""
+    from o3_job_status_contract import voice_fix_is_terminal_failure
+
+    voice_fix = str(beat.get("kling_o3_voice_fix_status") or "")
+    if voice_fix_is_terminal_failure(voice_fix):
+        return False
+    if _beat_o3_job_looks_running(beat):
+        return True
+    pid = beat.get("kling_o3_voice_fix_job_pid")
+    if pid is not None and _pid_is_running(int(pid)):
+        return True
+    return False
 
 
 def _beat_has_stale_o3_job_pointers(beat: dict) -> bool:
@@ -4843,7 +4848,11 @@ def reconcile_stuck_o3_voice_beats(sidecar: dict) -> int:
         kling_status = str(beat.get("kling_o3_status") or "")
 
         # Pipeline finished and sidecar is terminal — drop stale subprocess pointers.
+        # Invariant: never clear pointers while a redo is actively running (kling_o3_status
+        # may still be "approved" from the prior generation until the new clip lands).
         if voice_fix == "approved" or kling_status == "approved":
+            if _reconcile_must_preserve_active_o3_job(beat):
+                continue
             if _beat_has_stale_o3_job_pointers(beat) or status.startswith(_STUCK_O3_JOB_STATUS_PREFIXES):
                 _clear_stale_o3_job_pointers(beat)
                 if beat.get("kling_o3_video_path") and kling_status == "approved":

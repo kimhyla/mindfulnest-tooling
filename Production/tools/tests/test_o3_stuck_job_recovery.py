@@ -50,6 +50,86 @@ def test_reconcile_clears_stale_running_with_failed_voice_fix(monkeypatch, tmp_p
     assert beat.get("kling_o3_voice_fix_ui_job_id") is None
 
 
+def _event2_pre_beat_02_golden_redo_beat(tmp_path: Path) -> dict:
+    """Shape from ca50c145 — approved g11 clip + fresh g12 element-native redo."""
+    delivery = tmp_path / "bg_arc1_event2_pre_beat_02_g11_element_o3_master_delivery.mp4"
+    delivery.write_bytes(b"fake mp4")
+    return {
+        "beat_id": "bg_arc1_event2_pre_beat_02",
+        "speaker": "Tessa",
+        "status": "o3_voice_job_starting",
+        "kling_o3_status": "approved",
+        "kling_o3_video_path": str(delivery),
+        "kling_o3_generation": 11,
+        "kling_o3_voice_fix_status": "job_starting",
+        "kling_o3_voice_fix_phase": "queued",
+        "kling_o3_voice_fix_ui_job_id": "ca50c145",
+        "kling_o3_voice_fix_attempt_id": "250b93742bd5488c9a7fdd0c4c3060d2",
+        "o3_active_intent_id": "de6ecddd22fb499fadcdff04b17bf4dd",
+        "o3_active_intent_job_id": "ca50c145",
+        "kling_o3_voice_fix_job_log_path": str(
+            tmp_path / "arlo_o3_jobs" / "ca50c145_bg_arc1_event2_pre_beat_02.log"
+        ),
+        "o3_generate_mode": "element_native",
+    }
+
+
+def test_reconcile_preserves_active_redo_on_approved_kling_clip(monkeypatch, tmp_path) -> None:
+    """Session GET must not wipe attempt_id while g12 redo is starting on approved g11."""
+    bg_mod = _import_background()
+    beat = _event2_pre_beat_02_golden_redo_beat(tmp_path)
+    sidecar = {
+        "schema_version": 1,
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [beat],
+                    },
+                },
+            },
+        },
+    }
+    changed = bg_mod.reconcile_stuck_o3_voice_beats(sidecar)
+    live = sidecar["arcs"]["arc_1"]["segments"]["event_2_pre"]["beats"][0]
+    assert changed == 0
+    assert live["kling_o3_voice_fix_attempt_id"] == "250b93742bd5488c9a7fdd0c4c3060d2"
+    assert live["kling_o3_voice_fix_ui_job_id"] == "ca50c145"
+    assert live["kling_o3_voice_fix_status"] == "job_starting"
+    assert live["status"] == "o3_voice_job_starting"
+
+
+def test_reconcile_preserves_active_redo_when_only_kling_status_is_approved(
+    monkeypatch, tmp_path,
+) -> None:
+    """Poisoned shape: voice_fix drifted to approved while status still o3_voice_job_*."""
+    bg_mod = _import_background()
+    beat = _event2_pre_beat_02_golden_redo_beat(tmp_path)
+    beat["kling_o3_voice_fix_status"] = "approved"
+    beat["status"] = "o3_voice_job_running"
+    beat["kling_o3_voice_fix_phase"] = "subprocess"
+    beat["kling_o3_voice_fix_job_pid"] = 424242
+    sidecar = {
+        "schema_version": 1,
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [beat],
+                    },
+                },
+            },
+        },
+    }
+    monkeypatch.setattr(bg_mod, "_pid_is_running", lambda _pid: True)
+    changed = bg_mod.reconcile_stuck_o3_voice_beats(sidecar)
+    live = sidecar["arcs"]["arc_1"]["segments"]["event_2_pre"]["beats"][0]
+    assert changed == 0
+    assert live["kling_o3_voice_fix_attempt_id"] == "250b93742bd5488c9a7fdd0c4c3060d2"
+    assert live["kling_o3_voice_fix_ui_job_id"] == "ca50c145"
+    assert live["kling_o3_voice_fix_job_pid"] == 424242
+
+
 def test_reconcile_clears_stale_pid_after_approved_element_pipeline(monkeypatch, tmp_path) -> None:
     bg_mod = _import_background()
     delivery = tmp_path / "bg_arc1_event2_pre_beat_02_g5_element_o3_master_delivery.mp4"
