@@ -113,7 +113,7 @@ def test_bg_failure_banner_hidden_for_stale_pre_r2_hosting_when_clip_kept() -> N
     assert "return null" in banner_block
 
 
-def test_bg_failure_banner_visible_when_old_clip_kept() -> None:
+def test_bg_failure_banner_hidden_for_stale_pre_r2_hosting_when_clip_kept() -> None:
     src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
     assert "resolveVoiceFirstFailureBanner" in src
     idx = src.find("const o3FailureMessage")
@@ -130,6 +130,15 @@ def test_bg_stale_failure_does_not_toast_on_session_load() -> None:
     load_block = src.split("const initialBeats = applyPromptEditsToBeats", 1)[1][:500]
     assert "seedGenFailureSeenKeys(initialBeats" in load_block
     assert "notifyNewGenFailures(initialBeats" not in load_block
+
+
+def test_ui_o3_submit_audit_lifecycle_wired() -> None:
+    src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
+    assert "setO3SubmitAuditByBeat" in src
+    assert "delete next[beatId]" in src
+    assert "{busy && (o3SubmitAudit || o3IntentSnapshot)" in src
+    assert "o3SubmitPending" in src
+    assert "optimisticO3JobsRef" in src
 
 
 def test_finalize_respects_sidecar_failed_provider_fetch(monkeypatch, tmp_path) -> None:

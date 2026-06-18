@@ -40,6 +40,26 @@ def test_read_json_file_durable_avoids_shutil_copy2(monkeypatch, tmp_path: Path)
     assert bg._read_json_file_durable(str(path)) == {"ok": True}
 
 
+def test_copy_file_durable_retries_errno11(monkeypatch, tmp_path: Path) -> None:
+    src = tmp_path / "src.bin"
+    dst = tmp_path / "dst.bin"
+    src.write_bytes(b"pose-bytes")
+    calls = {"n": 0}
+    real_chunked = bg._copy_file_chunked
+
+    def flaky_chunked(s, d, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError(11, "Resource deadlock avoided")
+        return real_chunked(s, d, **kwargs)
+
+    monkeypatch.setattr(bg, "_copy_file_chunked", flaky_chunked)
+    monkeypatch.setattr(bg.time, "sleep", lambda _s: None)
+    bg.copy_file_durable(src, dst)
+    assert dst.read_bytes() == b"pose-bytes"
+    assert calls["n"] == 2
+
+
 def test_update_beat_locked_retries_transient_sidecar_io(monkeypatch, tmp_path: Path) -> None:
     sidecar_path = tmp_path / "beat_generator_state.json"
     sidecar_path.write_text(

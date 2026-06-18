@@ -50,7 +50,7 @@ import {
   stripProtectedPromptFromPatch,
 } from '../state/promptEditRegistry';
 import { useProtectedPromptField } from '../hooks/useProtectedPromptField';
-import { beatO3JobLooksRunning, collectActiveO3JobsFromBeats } from '../o3JobStatusContract';
+import { beatO3JobLooksRunning, mergeActiveO3JobsFromBeats, O3_OPTIMISTIC_JOB_TTL_MS } from '../o3JobStatusContract';
 import type {
   ArloO3PollResponse,
   ArloO3SubmitResponse,
@@ -698,6 +698,8 @@ export function BgTab() {
   const [activeO3Jobs, setActiveO3Jobs] = useState<Record<string, string>>({});
   const [o3IntentByBeat, setO3IntentByBeat] = useState<Record<string, O3GenerationIntentPoll>>({});
   const [o3SubmitAuditByBeat, setO3SubmitAuditByBeat] = useState<Record<string, O3SubmitAudit>>({});
+  const [o3SubmitPending, setO3SubmitPending] = useState<Record<string, boolean>>({});
+  const optimisticO3JobsRef = useRef<Record<string, { jobId: string; until: number }>>({});
   const [o3WarningByBeat, setO3WarningByBeat] = useState<Record<string, string>>({});
   const [activeStillRenderJobs, setActiveStillRenderJobs] = useState<Record<string, boolean>>({});
   const [activeNativeLipSyncJobs, setActiveNativeLipSyncJobs] = useState<Record<string, string>>({});
@@ -735,10 +737,10 @@ export function BgTab() {
   const beatNavJobContext = useMemo(() => ({
     activeJobId,
     activeO3Jobs,
-    o3SubmitPending: {} as Record<string, boolean>,
+    o3SubmitPending,
     activeStillRenderJobs,
     activeNativeLipSyncJobs,
-  }), [activeJobId, activeO3Jobs, activeStillRenderJobs, activeNativeLipSyncJobs]);
+  }), [activeJobId, activeO3Jobs, o3SubmitPending, activeStillRenderJobs, activeNativeLipSyncJobs]);
 
   const beatNavItemStatuses = useMemo(
     () => computeBeatNavItemStatuses(beats, beatNavJobContext),
@@ -799,6 +801,9 @@ export function BgTab() {
       setLoading(true);
       setLoadingSlowHint(false);
       setActiveO3Jobs({});
+      setO3SubmitAuditByBeat({});
+      setO3SubmitPending({});
+      optimisticO3JobsRef.current = {};
       const slowHintTimer = window.setTimeout(() => {
         if (!cancelled) setLoadingSlowHint(true);
       }, BG_SESSION_LOAD_SLOW_HINT_MS);
@@ -842,7 +847,7 @@ export function BgTab() {
         // Server sidecar is the source of truth. Do not merge old local active
         // jobs back in, or a tab can keep showing "Generating..." after the
         // backend has failed/cleared the job.
-        setActiveO3Jobs(collectActiveO3JobsFromBeats(initialBeats));
+        setActiveO3Jobs(mergeActiveO3JobsFromBeats(initialBeats, optimisticO3JobsRef.current));
       } finally {
         clearTimeout(slowHintTimer);
         if (!cancelled) {
@@ -1024,10 +1029,18 @@ export function BgTab() {
           const next = { ...prev };
           for (const beatId of [...completedBeatIds, ...failedBeatIds, ...staleBeatIds]) {
             delete next[beatId];
+            delete optimisticO3JobsRef.current[beatId];
           }
           return next;
         });
         setO3IntentByBeat((prev) => {
+          const next = { ...prev };
+          for (const beatId of [...completedBeatIds, ...failedBeatIds, ...staleBeatIds]) {
+            delete next[beatId];
+          }
+          return next;
+        });
+        setO3SubmitAuditByBeat((prev) => {
           const next = { ...prev };
           for (const beatId of [...completedBeatIds, ...failedBeatIds, ...staleBeatIds]) {
             delete next[beatId];
@@ -1136,7 +1149,7 @@ export function BgTab() {
         if (liveIds.has(id)) beatSaveBlockedRef.current.delete(id);
       });
       setActiveJobId((prev) => prev ?? collectActiveStillJobFromBeats(nextBeats));
-      setActiveO3Jobs(collectActiveO3JobsFromBeats(nextBeats));
+      setActiveO3Jobs(mergeActiveO3JobsFromBeats(nextBeats, optimisticO3JobsRef.current));
       setActiveNativeLipSyncJobs(collectActiveNativeLipSyncJobsFromBeats(nextBeats));
     }
   };
@@ -1862,6 +1875,10 @@ export function BgTab() {
     result: Awaited<ReturnType<typeof pathappPatch<ArloO3SubmitResponse>>>,
   ): Promise<boolean> => {
     if (result.ok && result.data?.job_id) {
+      optimisticO3JobsRef.current[beatId] = {
+        jobId: result.data.job_id,
+        until: Date.now() + O3_OPTIMISTIC_JOB_TTL_MS,
+      };
       setActiveO3Jobs((prev) => ({ ...prev, [beatId]: result.data!.job_id! }));
       if (result.data.intent) {
         setO3IntentByBeat((prev) => ({ ...prev, [beatId]: result.data!.intent! }));
@@ -1955,6 +1972,8 @@ export function BgTab() {
   const onGenerateBatch = async (beatId: string, dialogueText?: string) => {
     const beat = beats.find((b) => b.beat_id === beatId);
     if (!beat) return;
+    setO3SubmitPending((prev) => ({ ...prev, [beatId]: true }));
+    try {
     if (isStillInsertBeat(beat)) {
       await onRenderStillClip(beatId, dialogueText);
       return;
@@ -2016,6 +2035,13 @@ export function BgTab() {
       });
     } else {
       pushToast({ kind: 'error', message: `Submit failed: ${result.error}`, source: 'bg-submit-error' });
+    }
+    } finally {
+      setO3SubmitPending((prev) => {
+        const next = { ...prev };
+        delete next[beatId];
+        return next;
+      });
     }
   };
 
@@ -3201,7 +3227,7 @@ function BeatGenCard({
           aria-label={`Kling O3 prompt for beat ${beat.beat_id}`}
         />
       )}
-      {o3SubmitAudit || o3IntentSnapshot ? (
+      {busy && (o3SubmitAudit || o3IntentSnapshot) ? (
         <div
           class="mn-bg-o3-intent-audit"
           data-testid={`bg-o3-intent-audit-${index}`}

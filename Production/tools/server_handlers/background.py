@@ -651,7 +651,7 @@ def handle_clear_magic_still(h, body: dict) -> None:
     _video_role_body = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
     bg = _bg_module()
     _production_state = h.app.state.read_state()
-    with bg._sidecar_lock:
+    with bg.sidecar_file_lock(timeout_s=5):
         _sidecar_for_map = bg.read_sidecar()
     sb_beat_id = bg.storyboard_beat_id_for_bg_beat(
         beat_id,
@@ -829,7 +829,7 @@ def handle_magic_still(h, body: dict)-> None:
             sys.path.insert(0, tools_dir)
         from magic_compositor import MagicCompositor  # type: ignore
         # MAGIC_RENDER_CONTRACT_V2_STILL — see Production/docs/HOW_TO_MAKE_VISIBLE_MAGIC.md
-        with _bg_module()._sidecar_lock:
+        with _bg_module().sidecar_file_lock(timeout_s=5):
             _sidecar_style = _bg_module().read_sidecar()
         magic_style = _resolve_magic_style(h, beat_id, body, clean_path, _sidecar_style)
         mc = MagicCompositor(
@@ -892,7 +892,7 @@ def handle_magic_still(h, body: dict)-> None:
     scope = None  # captured below for Bug-A4 read-back verify
     _video_role_body = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
     _production_state = h.app.state.read_state()
-    with _bg_module()._sidecar_lock:
+    with _bg_module().sidecar_file_lock(timeout_s=5):
         _sidecar_for_map = _bg_module().read_sidecar()
     sb_beat_id = _bg_module().storyboard_beat_id_for_bg_beat(
         beat_id,
@@ -1202,7 +1202,7 @@ def handle_magic_video(h, body: dict)-> None:
             sys.path.insert(0, tools_dir)
         from magic_compositor import MagicCompositor, composite_screen_rgb  # type: ignore
         # MAGIC_RENDER_CONTRACT_V2_VIDEO — see Production/docs/HOW_TO_MAKE_VISIBLE_MAGIC.md
-        with _bg_module()._sidecar_lock:
+        with _bg_module().sidecar_file_lock(timeout_s=5):
             _sidecar_style = _bg_module().read_sidecar()
         magic_style = _resolve_magic_style(h, beat_id, body, clean_path, _sidecar_style)
         mc = MagicCompositor(
@@ -1484,7 +1484,7 @@ def handle_magic_video(h, body: dict)-> None:
     scope = None  # captured below for Bug-A4 read-back verify
     _video_role_body = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
     _production_state = h.app.state.read_state()
-    with _bg_module()._sidecar_lock:
+    with _bg_module().sidecar_file_lock(timeout_s=5):
         _sidecar_for_map = _bg_module().read_sidecar()
     sb_beat_id = _bg_module().storyboard_beat_id_for_bg_beat(
         beat_id,
@@ -3458,10 +3458,10 @@ def handle_bg_accept_beats(h, body: dict)-> None:
                             if src.stem.endswith("_delivery"):
                                 dst = clips_dir / f"{bid}_{src.name}"
                                 if not dst.is_file() or src.stat().st_mtime > dst.stat().st_mtime:
-                                    shutil.copy2(src, dst)
+                                    bg.copy_file_durable(src, dst)
                             else:
                                 dst = clips_dir / f"{bid}_{src.stem}_delivery.mp4"
-                                shutil.copy2(src, dst)
+                                bg.copy_file_durable(src, dst)
                                 encode_delivery_video(src, dst, include_audio=True, sharpen=False)
                             b["final"] = {
                                 "source": "beat_generator_o3_video",
@@ -3822,12 +3822,30 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                 existing_job = _ARLO_O3_JOBS.get(existing_job_id)
                 existing_proc = existing_job.get("proc") if existing_job else None
                 if (existing_proc and existing_job.get("status") == "running" and existing_proc.poll() is None) or pid_running:
+                    dedup_submitted: dict = {}
+                    dedup_intent: dict | None = None
+                    try:
+                        from o3_generation_intent import (
+                            intent_event_dir_for_beat,
+                            load_generation_intent,
+                        )
+
+                        intent_event = intent_event_dir_for_beat(str(beat_id), event_dir)
+                        jobs_dir = intent_event / "arlo_o3_jobs"
+                        intent_file = jobs_dir / f"{existing_job_id}_intent.json"
+                        if intent_file.is_file():
+                            dedup_intent = load_generation_intent(intent_file)
+                            dedup_submitted = submitted_audit_from_intent(dedup_intent)
+                    except Exception:
+                        pass
                     return h._send_json(200, {
                         "ok": True,
                         "job_id": existing_job_id,
                         "beat_id": str(beat_id),
                         "log_path": beat.get("kling_o3_voice_fix_job_log_path"),
                         "deduped": True,
+                        "submitted": dedup_submitted,
+                        "intent": dedup_intent,
                         "message": "O3 voice generation is already running for this beat.",
                     })
                 beat.pop("kling_o3_voice_fix_ui_job_id", None)
@@ -5186,8 +5204,7 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
             if bg.kling_o3_trim_is_active(work_beat):
                 bg.materialize_kling_o3_trimmed_clip(work_beat, dest, source_path=Path(vp))
             else:
-                import shutil
-                shutil.copy2(vp, dest)
+                bg.copy_file_durable(vp, dest)
         except Exception as exc:
             print(f"[bg_o3_trim] preview materialize failed for {beat_id}: {exc}", flush=True)
             return None
@@ -5735,6 +5752,30 @@ def handle_bg_accept_option(h, body: dict)-> None:
     return h._send_json(200, {"ok": True})
 
 
+def _lib_drop_thumb_b64_from_path(h, abs_path: str) -> str | None:
+    """PIL thumbnail for library drop — must run outside sidecar file lock."""
+    try:
+        _abs_resolved = os.path.realpath(abs_path) if isinstance(abs_path, str) and abs_path else ""
+        _safe = False
+        if _abs_resolved:
+            for _r in h.app._library_root_dirs():
+                if _r and (_abs_resolved == _r or _abs_resolved.startswith(_r + os.sep)):
+                    _safe = True
+                    break
+        _safe_open_path = os.path.realpath(_abs_resolved) if _safe and _abs_resolved else ""
+        if _safe and _safe_open_path and os.path.exists(_safe_open_path):
+            from PIL import Image as _PILImage
+            import io as _io_thumb
+            with _PILImage.open(_safe_open_path) as im:
+                im.thumbnail((200, 150), _PILImage.LANCZOS)
+                buf = _io_thumb.BytesIO()
+                im.convert("RGB").save(buf, "JPEG", quality=72)
+            return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+    except (OSError, ImportError) as _thumb_err:
+        print(f"[LIBDROP] thumbnail skipped for {abs_path!r}: {_thumb_err}", flush=True)
+    return None
+
+
 def handle_bg_accept_lib_image(h, body: dict)-> None:
 
     """POST /api/bg/accept-lib-image {beat_id, key, filename, abs_path, slot_index}
@@ -5758,61 +5799,43 @@ def handle_bg_accept_lib_image(h, body: dict)-> None:
                    retry_safe=False,
                )
     bg = _bg_module()
-    with bg.sidecar_file_lock():
-        sidecar = bg.read_sidecar()
-        sidecar = bg._migrate_sidecar(sidecar)
-        _, beat = bg.find_beat(sidecar, beat_id)
-        if not beat:
-            return h._send_error_v59(
-                       404,
-                       error_code="GENERIC_ERROR",
-                       error_message=f"beat {beat_id} not found",
-                       retry_safe=False,
-                   )
-        beat["accepted_library_ref"] = {
+    try:
+        with bg.sidecar_file_lock(timeout_s=10):
+            sidecar = bg.read_sidecar()
+            bg.ensure_sidecar_schema_defaults(sidecar)
+            _, beat = bg.find_beat(sidecar, beat_id)
+            if not beat:
+                return h._send_error_v59(
+                           404,
+                           error_code="GENERIC_ERROR",
+                           error_message=f"beat {beat_id} not found",
+                           retry_safe=False,
+                       )
+            if bg.beat_o3_voice_job_running(beat):
+                return h._send_error_v59(
+                    409,
+                    error_code="INTENT_JOB_ACTIVE",
+                    error_message="O3 job is running — library drop is locked until it finishes.",
+                    retry_safe=True,
+                )
+    except TimeoutError:
+        return h._send_error_v59(
+            503,
+            error_code="SIDECAR_LOCK_CONTENTION",
+            error_message="Beat Gen sidecar is busy — retry library drop in a few seconds.",
+            retry_safe=True,
+        )
+
+    thumb_b64 = _lib_drop_thumb_b64_from_path(h, abs_path)
+
+    def _apply_lib_drop(b: dict, _sidecar: dict) -> None:
+        b["accepted_library_ref"] = {
             "key": key, "filename": filename,
-            "abs_path": abs_path, "slot_index": slot_index
+            "abs_path": abs_path, "slot_index": slot_index,
         }
-        beat["accepted_image_key"] = key
-        beat["status"] = "lib_chosen"
-
-        # Generate PIL thumbnail from abs_path and inject into gpt_options[slot_index]
-        # so BgOptionTile renders thumb_b64 after drop (Layer 5 of six-layer verify).
-        # Mirrors _read_image at production_server.py ~line 6192.
-        thumb_b64 = None
-        try:
-            # CodeQL py/path-injection gate (LD CODEQL_PATH_INJECTION_NATIVE_PATTERN_REFACTOR_V1
-            # — supersedes LD-702/706). Inline realpath + startswith check on the SAME dataflow
-            # node that feeds os.path.exists / PIL.open. Native CodeQL-recognized sanitizer.
-            _abs_resolved = os.path.realpath(abs_path) if isinstance(abs_path, str) and abs_path else ""
-            _safe = False
-            if _abs_resolved:
-                for _r in h.app._library_root_dirs():
-                    if _r and (_abs_resolved == _r or _abs_resolved.startswith(_r + os.sep)):
-                        _safe = True
-                        break
-            _safe_open_path = os.path.realpath(_abs_resolved) if _safe and _abs_resolved else ""
-            if _safe and _safe_open_path and os.path.exists(_safe_open_path):
-                from PIL import Image as _PILImage
-                import io as _io_thumb
-                with _PILImage.open(_safe_open_path) as im:
-                    im.thumbnail((200, 150), _PILImage.LANCZOS)
-                    buf = _io_thumb.BytesIO()
-                    im.convert("RGB").save(buf, "JPEG", quality=72)
-                thumb_b64 = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
-        except (OSError, ImportError) as _thumb_err:
-            print(f"[LIBDROP] thumbnail skipped for {abs_path!r}: {_thumb_err}", flush=True)
-            thumb_b64 = None
-
-        # ALWAYS write to gpt_options[slot_index] — even when thumb_b64 is None.
-        # Previously this was inside `if thumb_b64:`, which meant that when
-        # thumbnail generation failed (bad abs_path, PIL unavailable, path-safety
-        # check failed), gpt_options was never updated. The client's optimistic
-        # onPatchOptionTile state would then be overwritten by the follow-up
-        # refreshState() GET, causing the slot to revert to "(empty)" even though
-        # the toast said "Option N set". Fix: always write the entry; thumb_b64
-        # is an optional field on the option_entry dict.
-        opts = beat.get("gpt_options") or []
+        b["accepted_image_key"] = key
+        b["status"] = "lib_chosen"
+        opts = b.get("gpt_options") or []
         option_entry: dict = {
             "key": key,
             "source": "library_drop",
@@ -5824,16 +5847,32 @@ def handle_bg_accept_lib_image(h, body: dict)-> None:
         if slot_index < len(opts) and isinstance(opts[slot_index], dict):
             opts[slot_index].update(option_entry)
         else:
-            # Pad with None up to slot_index, then place the entry.
             while len(opts) < slot_index:
                 opts.append(None)
             if slot_index < len(opts):
                 opts[slot_index] = option_entry
             else:
                 opts.append(option_entry)
-        beat["gpt_options"] = opts
+        b["gpt_options"] = opts
 
-        bg.write_sidecar(sidecar)
+    try:
+        ok, _beat = bg.update_beat_locked(beat_id, _apply_lib_drop)
+    except OSError as exc:
+        if bg.sidecar_io_transient(exc):
+            return h._send_error_v59(
+                503,
+                error_code="SIDECAR_IO_TRANSIENT",
+                error_message=f"Dropbox sync blocked library save ({exc}); retry shortly.",
+                retry_safe=True,
+            )
+        raise
+    if not ok:
+        return h._send_error_v59(
+            404,
+            error_code="GENERIC_ERROR",
+            error_message=f"beat {beat_id} not found",
+            retry_safe=False,
+        )
     print(f"[LIBDROP] accepted library image {key!r} -> beat {beat_id} (thumb={'yes' if thumb_b64 else 'no'})", flush=True)
     return h._send_json(200, {"ok": True, "beat_id": beat_id,
                                  "accepted_image_key": key,

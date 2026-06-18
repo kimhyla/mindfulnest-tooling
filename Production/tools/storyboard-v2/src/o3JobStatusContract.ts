@@ -42,3 +42,21 @@ export function collectActiveO3JobsFromBeats(
   }
   return jobs;
 }
+
+export const O3_OPTIMISTIC_JOB_TTL_MS = 45_000;
+
+export type OptimisticO3JobEntry = { jobId: string; until: number };
+
+export function mergeActiveO3JobsFromBeats(
+  beats: Array<O3JobBeatFields & { beat_id?: string }>,
+  optimistic: Record<string, OptimisticO3JobEntry>,
+  nowMs = Date.now(),
+): Record<string, string> {
+  const merged = collectActiveO3JobsFromBeats(beats);
+  for (const [beatId, entry] of Object.entries(optimistic)) {
+    if (entry.until > nowMs && !merged[beatId]) {
+      merged[beatId] = entry.jobId;
+    }
+  }
+  return merged;
+}

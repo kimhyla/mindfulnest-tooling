@@ -39,6 +39,10 @@ python3 -m pytest \
   Production/tools/tests/test_lipsync_staging_durability.py \
   Production/tools/tests/test_lipsync_hosting_preflight.py \
   Production/tools/tests/test_lipsync_public_host.py \
+  Production/tools/tests/test_bg_accept_lib_image_durability.py \
+  Production/tools/tests/test_o3_delivery_latency_durability.py \
+  Production/tools/tests/test_o3_attempt_id_race_durability.py \
+  Production/tools/tests/test_sidecar_file_lock_writers.py \
   -q
 echo "[o3-intro-contract] visible magic contract..."
 bash Production/scripts/verify_visible_magic_contract.sh

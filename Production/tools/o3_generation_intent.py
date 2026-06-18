@@ -253,6 +253,31 @@ def _pid_is_running(pid_value) -> bool:
         return False
 
 
+def subprocess_running_for_o3_job(job_id: str, beat_id: str) -> bool:
+    """True when an O3 pipeline subprocess is still running for this job/beat."""
+    job_id = str(job_id or "").strip()
+    beat_id = str(beat_id or "").strip()
+    if not job_id or not beat_id:
+        return False
+    try:
+        import subprocess
+
+        out = subprocess.check_output(
+            ["pgrep", "-fl", "o3_voice_pipeline"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError, OSError):
+        return False
+    needle_job = f"/{job_id}_"
+    for line in out.splitlines():
+        if beat_id not in line:
+            continue
+        if needle_job in line or f" {job_id}_" in line:
+            return True
+    return False
+
+
 def log_indicates_active_o3_pipeline(log_text: str) -> bool:
     """True when subprocess log shows in-flight work (not terminal done/failed)."""
     if not log_text.strip():
@@ -321,6 +346,8 @@ def reconcile_stale_o3_intent_locks(sidecar: dict, event_dir: Path) -> int:
         if pid is not None and _pid_is_running(pid):
             continue
         if log_indicates_active_o3_pipeline(log_text):
+            continue
+        if subprocess_running_for_o3_job(job_id, beat_id):
             continue
         voice_fix = str((beat or {}).get("kling_o3_voice_fix_status") or "")
         if voice_fix_is_terminal_failure(voice_fix):

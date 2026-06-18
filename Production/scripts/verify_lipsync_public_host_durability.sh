@@ -48,6 +48,19 @@ grep -q 'isStaleLipsyncHostingFailure' "$BGTAB" \
   || fail "BgTab must hide stale pre-R2 hosting failure banners"
 grep -q 'reconcile_stale_lipsync_hosting_failures' "$BG" \
   || fail "background.py must reconcile stale pre-R2 lipsync failures on session load"
+grep -q 'update_beat_locked' "$BG" \
+  || fail "background.py must use update_beat_locked for beat-scoped patches"
+grep -q 'handle_bg_accept_lib_image' "$BG" \
+  || fail "background.py must implement accept-lib-image handler"
+accept_block="$(awk '/def handle_bg_accept_lib_image/,/^def handle_bg_groups/' "$BG")"
+echo "$accept_block" | grep -q 'update_beat_locked' \
+  || fail "accept-lib-image must patch via update_beat_locked"
+echo "$accept_block" | grep -q 'SIDECAR_LOCK_CONTENTION' \
+  || fail "accept-lib-image must return retry_safe lock contention"
+grep -q 'copy_file_durable' "${REPO_ROOT}/Production/tools/beat_generator.py" \
+  || fail "beat_generator.py must export copy_file_durable for Dropbox pose copies"
+grep -q 'subprocess_running_for_o3_job' "${REPO_ROOT}/Production/tools/o3_generation_intent.py" \
+  || fail "o3_generation_intent must skip stale terminal when subprocess still running"
 grep -q 'mn-bg-lipsync-host-setup' "$BGTAB" \
   || fail "BgTab must render full-width lipsync setup banner"
 

@@ -117,10 +117,19 @@ def test_ui_failure_copy_does_not_promise_low_quality_fallback() -> None:
 
 def test_ui_active_o3_jobs_reconciles_from_server_truth() -> None:
     src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
-    assert "setActiveO3Jobs(collectActiveO3JobsFromBeats(initialBeats));" in src
-    assert "setActiveO3Jobs(collectActiveO3JobsFromBeats(nextBeats));" in src
+    assert "mergeActiveO3JobsFromBeats(initialBeats" in src
+    assert "mergeActiveO3JobsFromBeats(nextBeats" in src
     assert "...collectActiveO3JobsFromBeats(initialBeats), ...prev" not in src
     assert "...collectActiveO3JobsFromBeats(nextBeats), ...prev" not in src
     assert "o3JobStatusContract" in src
     contract = (TOOLS / "storyboard-v2" / "src" / "o3JobStatusContract.ts").read_text(encoding="utf-8")
+    assert "mergeActiveO3JobsFromBeats" in contract
     assert "'o3_running'" in contract
+
+
+def test_ui_o3_submit_audit_hidden_when_job_not_active() -> None:
+    src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
+    assert "setO3SubmitAuditByBeat" in src
+    assert "delete next[beatId]" in src
+    assert "{busy && (o3SubmitAudit || o3IntentSnapshot)" in src
+    assert "o3SubmitPending" in src

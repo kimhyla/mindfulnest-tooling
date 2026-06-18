@@ -686,7 +686,9 @@ def add_element_pose(
         raise RuntimeError(f"{char_key!r} has no kling_voice_id — cannot re-register Element.")
 
     dest, rel_pose = _unique_pose_dest(char_key, source)
-    shutil.copy2(source, dest)
+    from beat_generator import copy_file_durable
+
+    copy_file_durable(source, dest)
 
     refer = ensure_refer_anchors(char_key, [str(r) for r in (cfg.get("refer_images") or [])], cfg)
     if rel_pose not in refer:

@@ -419,6 +419,37 @@ def _copy_file_chunked(src: str, dst: str, *, chunk_size: int = 1024 * 1024) -> 
             fout.write(chunk)
 
 
+def copy_file_durable(src: str | Path, dst: str | Path, *, chunk_size: int = 1024 * 1024) -> None:
+    """Copy bytes to Dropbox-backed paths with errno 11/35 retry (pose/ref uploads)."""
+    src_path = os.path.abspath(str(src))
+    dst_path = os.path.abspath(str(dst))
+    os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+    last_err: OSError | None = None
+    for attempt in range(_SIDECAR_IO_MAX_ATTEMPTS):
+        tmp_path: str | None = None
+        try:
+            fd, tmp_path = tempfile.mkstemp(
+                dir=os.path.dirname(dst_path) or None,
+                prefix=".mn_copy_",
+                suffix=Path(dst_path).suffix or ".tmp",
+            )
+            os.close(fd)
+            _copy_file_chunked(src_path, tmp_path, chunk_size=chunk_size)
+            os.replace(tmp_path, dst_path)
+            return
+        except OSError as exc:
+            last_err = exc
+            if exc.errno not in _SIDECAR_IO_TRANSIENT_ERRNOS or attempt >= _SIDECAR_IO_MAX_ATTEMPTS - 1:
+                raise
+            time.sleep(_sidecar_io_backoff_s(attempt))
+        finally:
+            if tmp_path:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp_path)
+    if last_err:
+        raise last_err
+
+
 def _read_json_file_durable(path: str) -> dict:
     """Read JSON from Dropbox-backed paths without failing on transient errno 11/35.
 
