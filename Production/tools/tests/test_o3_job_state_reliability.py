@@ -106,10 +106,11 @@ def test_voice_fix_terminal_failure_contract() -> None:
 
 def test_bg_failure_banner_visible_when_old_clip_kept() -> None:
     src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
+    assert "resolveVoiceFirstFailureBanner" in src
     idx = src.find("const o3FailureMessage")
     assert idx >= 0
     snippet = src[idx : idx + 220]
-    assert "startsWith('failed')" in snippet
+    assert "resolveVoiceFirstFailureBanner(beat" in snippet
     assert "kling_o3_status !== 'approved'" not in snippet
 
 
@@ -117,7 +118,7 @@ def test_bg_stale_failure_does_not_toast_on_session_load() -> None:
     src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
     assert "seedGenFailureSeenKeys" in src
     assert "no error toast on hard refresh" in src
-    load_block = src.split("const initialBeats = applyPromptEditsToBeats", 1)[1][:400]
+    load_block = src.split("const initialBeats = applyPromptEditsToBeats", 1)[1][:500]
     assert "seedGenFailureSeenKeys(initialBeats" in load_block
     assert "notifyNewGenFailures(initialBeats" not in load_block
 
