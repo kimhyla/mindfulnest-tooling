@@ -2006,6 +2006,16 @@ canvas.mn-lipsync-watercolor-overlay {
   font-size: 13px;
 }
 /* BG_BEAT_JUMP_NAV_V1 — Word-style jump column */
+.mn-bg-lipsync-host-setup {
+  margin: 12px 0;
+  padding: 10px 12px;
+  background: #422006;
+  border: 1px solid #f59e0b;
+  border-radius: 8px;
+  color: #fcd34d;
+  font-size: 13px;
+  line-height: 1.45;
+}
 .mn-bg-body-layout {
   display: grid;
   grid-template-columns: 96px minmax(0, 1fr);

@@ -476,12 +476,32 @@ const LIPSYNC_HOSTING_SETUP_MESSAGE =
   + 'Set R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ACCOUNT_ID, and R2_BUCKET_NAME '
   + 'in Doppler or Production/API_KEYS_MASTER.md, then restart Event servers.';
 
+function voiceFirstLipsyncHostBlocked(
+  lipsyncHostReady: boolean | null,
+  beats: BgBeat[],
+): boolean {
+  return lipsyncHostReady !== true && beats.some((b) => isO3VoiceBeat(b));
+}
+
+function notifyLipsyncHostBlocked(
+  message: string,
+  seenRef: { current: boolean },
+): void {
+  if (seenRef.current) return;
+  seenRef.current = true;
+  pushToast({
+    kind: 'warning',
+    message,
+    source: 'bg-lipsync-host',
+    ttlMs: 12000,
+  });
+}
 function resolveVoiceFirstFailureBanner(
   beat: BgBeat,
   lipsyncHostReady: boolean | null,
 ): string | null {
   if (!isO3VoiceBeat(beat)) return null;
-  if (lipsyncHostReady === false) return null;
+  if (lipsyncHostReady !== true) return null;
   if (!(beat.kling_o3_voice_fix_status ?? '').startsWith('failed')) return null;
   return formatO3JobFailure(beat.kling_o3_voice_fix_error);
 }
@@ -751,6 +771,7 @@ export function BgTab() {
   const beatSaveNotFoundToastRef = useRef(new Set<string>());
   const beatSaveBlockedRef = useRef(new Set<string>());
   const genFailureToastRef = useRef(new Set<string>());
+  const lipsyncHostBlockToastRef = useRef(false);
   useEffect(() => {
     let cancelled = false;
     let timer: number | null = null;
@@ -1858,7 +1879,7 @@ export function BgTab() {
         ?? LIPSYNC_HOSTING_SETUP_MESSAGE;
       setLipsyncPublicHostReady(false);
       setLipsyncPublicHostMessage(message);
-      pushToast({ kind: 'error', message, source: 'bg-lipsync-host' });
+      notifyLipsyncHostBlocked(message, lipsyncHostBlockToastRef);
       return false;
     }
     return guardBeatPatchResult(
@@ -1923,12 +1944,11 @@ export function BgTab() {
       return;
     }
     if (isO3VoiceBeat(beat)) {
-      if (lipsyncPublicHostReady === false) {
-        pushToast({
-          kind: 'error',
-          message: lipsyncPublicHostMessage?.trim() || LIPSYNC_HOSTING_SETUP_MESSAGE,
-          source: 'bg-lipsync-host',
-        });
+      if (voiceFirstLipsyncHostBlocked(lipsyncPublicHostReady, beats)) {
+        const message = lipsyncPublicHostMessage?.trim() || LIPSYNC_HOSTING_SETUP_MESSAGE;
+        setLipsyncPublicHostReady(false);
+        setLipsyncPublicHostMessage(message);
+        notifyLipsyncHostBlocked(message, lipsyncHostBlockToastRef);
         return;
       }
       if (beat.element_char_ref_ok === false) {
@@ -2452,16 +2472,17 @@ export function BgTab() {
           <p>No beats yet for this segment. Click <strong>Extract Beats from script</strong> or <strong>+ Insert beat</strong> to start.</p>
         </div>
       ) : (
-        <div class="mn-bg-body-layout" data-testid="bg-body-layout">
-          {lipsyncPublicHostReady === false && beats.some((b) => isO3VoiceBeat(b)) ? (
+        <>
+          {voiceFirstLipsyncHostBlocked(lipsyncPublicHostReady, beats) ? (
             <div
               class="mn-bg-lipsync-host-setup"
               data-testid="bg-lipsync-host-setup"
-              style="margin: 0 0 12px; padding: 10px 12px; background: #422006; border: 1px solid #f59e0b; border-radius: 8px; color: #fcd34d; font-size: 13px; line-height: 1.45;"
+              role="alert"
             >
               {lipsyncPublicHostMessage?.trim() || LIPSYNC_HOSTING_SETUP_MESSAGE}
             </div>
           ) : null}
+        <div class="mn-bg-body-layout" data-testid="bg-body-layout">
           <BgBeatNav
             beats={beats}
             itemStatuses={beatNavItemStatuses}
@@ -2547,6 +2568,7 @@ export function BgTab() {
           ))}
           </ol>
         </div>
+        </>
       )}
 
       <footer class="mn-pane-footer">
