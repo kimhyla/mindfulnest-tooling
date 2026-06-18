@@ -149,6 +149,8 @@ MARKERS=(
     "O3_PIPELINE_MISMATCH|bg-o3-pipeline-mismatch"
     "O3_PIPELINE_MISMATCH|kling_o3_selection_pipeline_mismatch"
     "O3_PIPELINE_MISMATCH|Pipeline mismatch:"
+    # O3 submit — still_insert beats must not spawn voice/Element subprocess (2026-06-18)
+    "O3_SUBMIT_STILL_GUARD|STILL_INSERT_BEAT"
 )
 
 missing_count=0

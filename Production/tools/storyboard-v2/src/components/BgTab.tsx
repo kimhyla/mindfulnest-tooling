@@ -558,7 +558,10 @@ function voiceFirstLipsyncHostBlocked(
   lipsyncHostReady: boolean | null,
   beats: BgBeat[],
 ): boolean {
-  return lipsyncHostReady !== true && beats.some((b) => isO3VoiceBeat(b));
+  if (lipsyncHostReady === true) return false;
+  return beats.some(
+    (b) => !isStillInsertBeat(b) && effectiveGenerationMode(b) === 'voice_first',
+  );
 }
 
 function notifyLipsyncHostBlocked(
@@ -2065,7 +2068,10 @@ export function BgTab() {
       return;
     }
     if (isO3VoiceBeat(beat)) {
-      if (voiceFirstLipsyncHostBlocked(lipsyncPublicHostReady, beats)) {
+      if (
+        effectiveGenerationMode(beat) === 'voice_first'
+        && lipsyncPublicHostReady !== true
+      ) {
         const message = lipsyncPublicHostMessage?.trim() || LIPSYNC_HOSTING_SETUP_MESSAGE;
         setLipsyncPublicHostReady(false);
         setLipsyncPublicHostMessage(message);

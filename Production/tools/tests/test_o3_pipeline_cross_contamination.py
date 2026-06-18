@@ -134,3 +134,77 @@ def test_sidecar_merge_preserves_pipeline_guard_fields():
         "kling_o3_active_clip_pipeline",
     ):
         assert field in bg.SIDECAR_MERGE_PRESERVE_FIELDS
+
+
+def test_scrub_still_insert_prompt_labels_removes_header():
+    beat = {
+        "kling_o3_prompt": (
+            "STILL INSERT — use pre-made GPT still from library.\n"
+            "@Image1 (Tessa). Scene from @Image2.\n\nCamera: static."
+        ),
+    }
+    assert bg._scrub_still_insert_prompt_labels(beat) is True
+    assert not beat["kling_o3_prompt"].startswith("STILL INSERT")
+    assert "@Image1 (Tessa)" in beat["kling_o3_prompt"]
+
+
+def test_apply_o3_mode_scrubs_still_insert_prompt():
+    beat = {
+        "beat_id": "bg_arc1_event2_pre_beat_04",
+        "speaker": "Tessa",
+        "dialogue_text": 'Tessa: "Hello"',
+        "pipeline": "still_insert",
+        "beat_render_mode": "still_insert",
+        "kling_o3_prompt": "STILL INSERT — library still only.\nTessa waves.",
+    }
+    bg.apply_beat_pipeline_o3_mode(beat, event_id="2", phase="pre")
+    assert beat["pipeline"] == bg.PIPELINE_MODE_O3
+    assert not (beat.get("kling_o3_prompt") or "").startswith("STILL INSERT")
+
+
+def test_set_still_mode_clears_o3_generate_mode():
+    sidecar = {
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [{
+                            "beat_id": "bg_arc1_event2_pre_beat_04",
+                            "speaker": "Tessa",
+                            "dialogue_text": "Hi",
+                            "pipeline": "kling_o3_omni",
+                            "o3_generate_mode": "voice_first",
+                        }],
+                    },
+                },
+            },
+        },
+    }
+    beat = sidecar["arcs"]["arc_1"]["segments"]["event_2_pre"]["beats"][0]
+    changed = bg.set_beat_generation_mode(
+        beat,
+        bg.PIPELINE_MODE_STILL,
+        event_id="2",
+        phase="pre",
+        sidecar=sidecar,
+    )
+    assert changed is True
+    assert "o3_generate_mode" not in beat
+    assert bg.resolve_beat_generation_mode(beat, sidecar) == bg.PIPELINE_MODE_STILL
+
+
+def test_submit_handler_blocks_still_insert_beats():
+    src = Path(__file__).resolve().parents[1] / "server_handlers" / "background.py"
+    block = src.read_text(encoding="utf-8").split(
+        "def handle_bg_submit_arlo_o3_voice", 1,
+    )[1].split("\ndef handle_bg_submit_kling", 1)[0]
+    assert "resolve_beat_generation_mode" in block
+    assert "STILL_INSERT_BEAT" in block
+    assert "PIPELINE_MODE_STILL" in block
+
+
+def test_lipsync_gate_scoped_to_voice_first_beats():
+    src = Path(__file__).resolve().parents[1] / "storyboard-v2" / "src" / "components" / "BgTab.tsx"
+    text = src.read_text(encoding="utf-8")
+    assert "effectiveGenerationMode(b) === 'voice_first'" in text
+    assert "effectiveGenerationMode(beat) === 'voice_first'" in text

@@ -3799,7 +3799,18 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                     error_message=f"beat {beat_id} not found",
                     retry_safe=False,
                 )
-            o3_generate_mode = bg.resolve_o3_generate_mode(beat, sidecar)
+            generation_mode = bg.resolve_beat_generation_mode(beat, sidecar)
+            if generation_mode == bg.PIPELINE_MODE_STILL:
+                return h._send_error_v59(
+                    400,
+                    error_code="STILL_INSERT_BEAT",
+                    error_message=(
+                        "O3 voice submit does not apply to still_insert beats — "
+                        "use render-still-clip."
+                    ),
+                    retry_safe=False,
+                )
+            o3_generate_mode = generation_mode
             beat["kling_o3_generate_mode"] = o3_generate_mode
             if o3_generate_mode == "voice_first":
                 script = _PSERVER_TOOLS_DIR / "arlo_o3_voice_pipeline.py"

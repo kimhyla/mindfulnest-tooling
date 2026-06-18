@@ -3725,6 +3725,7 @@ def apply_beat_pipeline_o3_mode(beat: dict, event_id: str, phase: str) -> None:
         healed_scene = kling_face_scene_notes(speaker, scene)
         if healed_scene != scene:
             beat["scene_notes"] = healed_scene
+    _scrub_still_insert_prompt_labels(beat)
 
 
 def segment_event_phase_for_beat(sidecar: dict, beat_id: str) -> tuple[str, str] | tuple[None, None]:
@@ -3835,6 +3836,8 @@ def set_beat_generation_mode(
     if mode == PIPELINE_MODE_STILL:
         if resolve_beat_pipeline_mode(beat) != PIPELINE_MODE_STILL:
             apply_beat_pipeline_still_mode(beat, event_id, phase)
+            changed = True
+        if beat.pop("o3_generate_mode", None) is not None:
             changed = True
     else:
         if resolve_beat_pipeline_mode(beat) != PIPELINE_MODE_O3:
