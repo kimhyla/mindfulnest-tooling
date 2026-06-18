@@ -3831,6 +3831,8 @@ def set_beat_generation_mode(
     current = resolve_beat_generation_mode(beat, sidecar)
     if current == mode:
         classify_beat_pipeline_fields(beat)
+        if mode == PIPELINE_MODE_STILL and beat.pop("o3_generate_mode", None) is not None:
+            return True
         return False
     changed = False
     if mode == PIPELINE_MODE_STILL:
