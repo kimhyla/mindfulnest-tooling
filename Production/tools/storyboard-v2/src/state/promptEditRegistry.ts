@@ -77,3 +77,38 @@ export function stripProtectedPromptFromPatch<T extends {
   delete next.o3_prompt_box_law;
   return next;
 }
+
+type RefImageField = 'reference_image' | 'bg_ref_image';
+type RefLockField = 'reference_image_locked' | 'bg_ref_image_locked';
+
+const REF_LOCK_PAIRS: ReadonlyArray<{ ref: RefImageField; lock: RefLockField }> = [
+  { ref: 'reference_image', lock: 'reference_image_locked' },
+  { ref: 'bg_ref_image', lock: 'bg_ref_image_locked' },
+];
+
+function refAbsPath(ref: { abs_path?: string } | null | undefined): string {
+  return (ref?.abs_path ?? '').trim();
+}
+
+/** Keep operator-locked ref box paths when O3 poll snapshot is stale. */
+export function preserveLockedRefsOnO3PollMerge<T extends {
+  beat_id: string;
+  reference_image?: { abs_path?: string } | null;
+  bg_ref_image?: { abs_path?: string } | null;
+  reference_image_locked?: boolean;
+  bg_ref_image_locked?: boolean;
+}>(current: T, patch: T): T {
+  let merged: T = { ...current, ...patch };
+  for (const { ref, lock } of REF_LOCK_PAIRS) {
+    if (!current[lock]) continue;
+    const localPath = refAbsPath(current[ref]);
+    const patchPath = refAbsPath(patch[ref]);
+    if (!localPath || !patchPath || localPath === patchPath) continue;
+    merged = {
+      ...merged,
+      [ref]: current[ref],
+      [lock]: true,
+    };
+  }
+  return merged;
+}

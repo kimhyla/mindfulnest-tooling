@@ -782,6 +782,9 @@ def run_pipeline(beat_id: str, *, model: str = "pro", sharpen: bool = True, atte
         "kling_o3_voice_fix_provider_contract": LIPSYNC_PROVIDER_CONTRACT,
         "kling_o3_voice_fix_output_duration_s": round(out_dur, 3),
     }
+    from o3_generation_intent import load_intent_visual_ref_fields_from_env
+
+    final_fields.update(load_intent_visual_ref_fields_from_env())
     beat.update(final_fields)
     _upsert_o3_option(beat, video_path=str(active), label="latest O3 voice video", active=True, now=now)
     import beat_generator as bg_mod  # noqa: PLC0415

@@ -44,7 +44,7 @@ grep -q '\-\-shell-export' "$START" \
 
 grep -q 'voiceFirstLipsyncHostBlocked' "$BGTAB" \
   || fail "BgTab must gate Generate when lipsync public host is not ready"
-grep -q "effectiveGenerationMode(b) === 'voice_first'" "$BGTAB" \
+grep -q "effectiveGenerationMode(b, eventId) === 'voice_first'" "$BGTAB" \
   || fail "BgTab lipsync gate must apply to voice-first beats only"
 grep -q 'isStaleLipsyncHostingFailure' "$BGTAB" \
   || fail "BgTab must hide stale pre-R2 hosting failure banners"

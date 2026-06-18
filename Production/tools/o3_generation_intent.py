@@ -628,11 +628,14 @@ def build_generation_intent(
         )
 
     ref_locked = bool(beat.get("reference_image_locked")) or bool(body.get("reference_image"))
+    bg_locked = bool(beat.get("bg_ref_image_locked")) or bool(body.get("bg_ref_image"))
     work_beat = dict(beat)
     work_beat["reference_image"] = char_ref
     work_beat["bg_ref_image"] = bg_ref
     if ref_locked:
         work_beat["reference_image_locked"] = True
+    if bg_locked:
+        work_beat["bg_ref_image_locked"] = True
 
     registration_action = "already_matched"
     aligned, gate_detail = reg.char_ref_matches_element_images(
@@ -781,6 +784,7 @@ def build_generation_intent(
             "bg_ref_abs_path": bg_path,
             "bg_ref_sha256": _sha256_file(bg_path),
             "reference_image_locked": ref_locked,
+            "bg_ref_image_locked": bg_locked,
             "element_char_ref_gate": {
                 "aligned": True,
                 "method": "live_refer_images",
@@ -848,21 +852,43 @@ def _refer_images_rel(speaker: str) -> list[str]:
     return out
 
 
+def sidecar_visual_ref_fields_from_intent(intent: dict) -> dict:
+    """Operator ref snapshot for sidecar commit/finalize (voice-first + element native)."""
+    visual = intent.get("visual") or {}
+    out: dict[str, Any] = {}
+    char_path = str(visual.get("char_ref_abs_path") or "").strip()
+    bg_path = str(visual.get("bg_ref_abs_path") or "").strip()
+    if char_path:
+        out["reference_image"] = {"abs_path": char_path}
+    if visual.get("reference_image_locked", True):
+        out["reference_image_locked"] = True
+    if bg_path:
+        out["bg_ref_image"] = {"abs_path": bg_path}
+    if visual.get("bg_ref_image_locked", True):
+        out["bg_ref_image_locked"] = True
+    return out
+
+
+def load_intent_visual_ref_fields_from_env() -> dict:
+    """Finalize helper — re-assert refs from MN_O3_INTENT_PATH when subprocess has intent."""
+    path = (os.environ.get("MN_O3_INTENT_PATH") or "").strip()
+    if not path:
+        return {}
+    try:
+        intent = load_generation_intent(Path(path))
+    except Exception:
+        return {}
+    return sidecar_visual_ref_fields_from_intent(intent)
+
+
 def sidecar_fields_from_intent(intent: dict) -> dict:
     """Beat fields to mirror at commit time (same bytes as intent, not rebuilt)."""
     prompt = str((intent.get("prompt") or {}).get("verbatim") or "")
-    visual = intent.get("visual") or {}
     generation = intent.get("generation") or {}
     return {
         "kling_o3_prompt": prompt,
         "o3_prompt_box_law": True,
-        "reference_image": {
-            "abs_path": visual.get("char_ref_abs_path"),
-        },
-        "bg_ref_image": {
-            "abs_path": visual.get("bg_ref_abs_path"),
-        },
-        "reference_image_locked": visual.get("reference_image_locked", True),
+        **sidecar_visual_ref_fields_from_intent(intent),
         "kling_o3_replace_slot_index": generation.get("replace_slot_index", 0),
         "kling_o3_duration": generation.get("duration"),
         "element_char_ref_ok": True,

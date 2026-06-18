@@ -1,6 +1,7 @@
 """O3 Generate must use operator ref box paths, not stale sidecar, on every event."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -8,8 +9,11 @@ import pytest
 
 from o3_generation_intent import (
     build_generation_intent,
+    load_intent_visual_ref_fields_from_env,
     resolve_o3_submit_ref,
     resolve_o3_submit_refs,
+    sidecar_fields_from_intent,
+    sidecar_visual_ref_fields_from_intent,
 )
 
 
@@ -180,3 +184,99 @@ def test_pipeline_logs_bg_ref_on_intent_submit():
     block = text.split("def run_pipeline_from_intent", 1)[1].split("\ndef ", 1)[0]
     assert '"bg_ref"' in block
     assert "visual.get(\"bg_ref_abs_path\")" in block or "bg_path" in block
+
+
+@patch("tools.kling_character_registry.is_speaker_voice_ready", return_value=True)
+@patch("tools.kling_character_registry.char_ref_matches_element_images", return_value=(True, ""))
+@patch("beat_generator.resolve_o3_element_list_entry")
+@patch("beat_generator.validate_proven_o3_element_submit", return_value=None)
+@patch("tools.kling_voice_bind.detect_voice_bind_drift", return_value=None)
+@patch("tools.kling_o3_prompt.validate_element_list_alignment", return_value=[])
+def test_intent_commit_locks_bg_ref_from_ref_box(
+    _align, _drift, _proven, mock_element, _ready, _char_ok, tmp_path: Path,
+):
+    mock_element.return_value = {
+        "element_id": "313441038164306",
+        "element_name": "Lorelai",
+        "voice_id": "895210468825628751",
+    }
+    beat_id = "bg_arc1_event2_pre_beat_02"
+    beat = _voice_ready_beat(tmp_path, beat_id)
+    ref_box_bg = tmp_path / "ref_box_bg.png"
+    ref_box_bg.write_bytes(b"operator-bg")
+    body = {
+        "kling_o3_prompt": beat["kling_o3_prompt"],
+        "reference_image": beat["reference_image"],
+        "bg_ref_image": {"abs_path": str(ref_box_bg)},
+    }
+    event_dir = tmp_path / "Event_2"
+    event_dir.mkdir()
+    intent = build_generation_intent(
+        beat=beat,
+        sidecar=_minimal_sidecar(beat),
+        body=body,
+        beat_id=beat_id,
+        event_dir=event_dir,
+        job_id="bglock01",
+        attempt_id="a-bg-lock",
+        log_path=event_dir / "j.log",
+        pipeline_script=tmp_path / "p.py",
+        wavespeed_key="k",
+    )
+    assert intent["visual"]["bg_ref_image_locked"] is True
+    sidecar_fields = sidecar_fields_from_intent(intent)
+    assert sidecar_fields["bg_ref_image"]["abs_path"] == str(ref_box_bg.resolve())
+    assert sidecar_fields["bg_ref_image_locked"] is True
+
+
+def test_finalize_reasserts_intent_visual_refs():
+    intent = {
+        "visual": {
+            "char_ref_abs_path": "/tmp/char.png",
+            "bg_ref_abs_path": "/tmp/bg.png",
+            "reference_image_locked": True,
+            "bg_ref_image_locked": True,
+        },
+    }
+    fields = sidecar_visual_ref_fields_from_intent(intent)
+    assert fields["reference_image"]["abs_path"] == "/tmp/char.png"
+    assert fields["bg_ref_image"]["abs_path"] == "/tmp/bg.png"
+    assert fields["reference_image_locked"] is True
+    assert fields["bg_ref_image_locked"] is True
+
+
+def test_load_intent_visual_ref_fields_from_env_reads_mn_o3_intent_path(
+    tmp_path: Path, monkeypatch,
+):
+    intent_path = tmp_path / "intent.json"
+    char = tmp_path / "char.png"
+    bg = tmp_path / "bg.png"
+    char.write_bytes(b"c")
+    bg.write_bytes(b"b")
+    intent_path.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "job_id": "envtest01",
+            "visual": {
+                "char_ref_abs_path": str(char),
+                "bg_ref_abs_path": str(bg),
+                "reference_image_locked": True,
+                "bg_ref_image_locked": True,
+            },
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MN_O3_INTENT_PATH", str(intent_path))
+    fields = load_intent_visual_ref_fields_from_env()
+    assert fields["bg_ref_image"]["abs_path"] == str(bg)
+    assert fields["bg_ref_image_locked"] is True
+
+
+def test_both_pipelines_reassert_intent_refs_on_finalize():
+    element_src = Path(__file__).resolve().parents[1] / "kling_o3_element_beat_pipeline.py"
+    voice_src = Path(__file__).resolve().parents[1] / "arlo_o3_voice_pipeline.py"
+    element_text = element_src.read_text(encoding="utf-8")
+    voice_text = voice_src.read_text(encoding="utf-8")
+    assert "sidecar_visual_ref_fields_from_intent(intent)" in element_text
+    assert "load_intent_visual_ref_fields_from_env()" in element_text
+    assert "load_intent_visual_ref_fields_from_env()" in voice_text

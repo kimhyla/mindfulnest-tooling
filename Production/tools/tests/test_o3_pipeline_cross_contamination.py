@@ -206,5 +206,21 @@ def test_submit_handler_blocks_still_insert_beats():
 def test_lipsync_gate_scoped_to_voice_first_beats():
     src = Path(__file__).resolve().parents[1] / "storyboard-v2" / "src" / "components" / "BgTab.tsx"
     text = src.read_text(encoding="utf-8")
-    assert "effectiveGenerationMode(b) === 'voice_first'" in text
-    assert "effectiveGenerationMode(beat) === 'voice_first'" in text
+    assert "effectiveGenerationMode(b, eventId) === 'voice_first'" in text
+    assert "effectiveGenerationMode(beat, activeScope.value.event_id) === 'voice_first'" in text
+
+
+def test_o3_generate_button_labels_distinct_by_mode():
+    src = Path(__file__).resolve().parents[1] / "storyboard-v2" / "src" / "components" / "BgTab.tsx"
+    text = src.read_text(encoding="utf-8")
+    assert "function o3GenerateButtonLabel" in text
+    assert "Generate voice-first O3 (ElevenLabs + lipsync)" in text
+    assert "Generate Element native O3" in text
+    assert "o3GenerateButtonLabel(generationMode)" in text
+
+
+def test_effective_generation_mode_event2_speak_fallback():
+    src = Path(__file__).resolve().parents[1] / "storyboard-v2" / "src" / "components" / "BgTab.tsx"
+    text = src.read_text(encoding="utf-8")
+    assert "ev === '2' && hasSpeak" in text
+    assert "effectiveGenerationMode(beat, eventId)" in text

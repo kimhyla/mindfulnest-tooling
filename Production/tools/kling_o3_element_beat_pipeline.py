@@ -188,7 +188,7 @@ def run_pipeline_from_intent(
     """Execute O3 pipeline using immutable generation intent only."""
     from tools.credentials_lib.credentials import load_credentials
     from tools import kling_o3_client as o3
-    from o3_generation_intent import write_intent_terminal
+    from o3_generation_intent import sidecar_visual_ref_fields_from_intent, write_intent_terminal
 
     beat_id = str(intent.get("beat_id") or "").strip()
     attempt_id = str((intent.get("runtime") or {}).get("attempt_id") or "")
@@ -397,6 +397,7 @@ def run_pipeline_from_intent(
             "applied_at": now,
         },
     }
+    final.update(sidecar_visual_ref_fields_from_intent(intent))
     final_remove = (
         "kling_o3_voice_fix_ui_job_id",
         "kling_o3_voice_fix_job_pid",
@@ -776,6 +777,9 @@ def run_pipeline(
             ),
         },
     }
+    from o3_generation_intent import load_intent_visual_ref_fields_from_env
+
+    final.update(load_intent_visual_ref_fields_from_env())
     with bg_sidecar._sidecar_lock:
         sc_refresh = bg_sidecar.read_sidecar()
         found_refresh = _find_beat(sc_refresh, beat_id)

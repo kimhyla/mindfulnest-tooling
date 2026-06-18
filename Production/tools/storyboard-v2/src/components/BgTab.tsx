@@ -48,6 +48,7 @@ import {
 import {
   applyPromptEditsToBeats,
   stripProtectedPromptFromPatch,
+  preserveLockedRefsOnO3PollMerge,
 } from '../state/promptEditRegistry';
 import { useProtectedPromptField } from '../hooks/useProtectedPromptField';
 import { beatO3JobLooksRunning, mergeActiveO3JobsFromBeats, O3_OPTIMISTIC_JOB_TTL_MS } from '../o3JobStatusContract';
@@ -105,11 +106,25 @@ function isStillInsertBeat(beat?: BgBeat | null): boolean {
 
 type BeatGenerationMode = 'still_insert' | 'voice_first' | 'element_native';
 
-function effectiveGenerationMode(beat?: BgBeat | null): BeatGenerationMode {
+function effectiveGenerationMode(beat?: BgBeat | null, eventId?: string): BeatGenerationMode {
   if (!beat || isStillInsertBeat(beat)) return 'still_insert';
   const gm = (beat.generation_mode ?? beat.o3_generate_mode ?? '').trim().toLowerCase();
   if (gm === 'voice_first' || gm === 'element_native') return gm;
+  // Pre-session-load fallback: mirror server resolve_o3_generate_mode Event_2 intro default.
+  const ev = String(eventId ?? '').replace(/^Event_/i, '').trim();
+  const hasSpeak = Boolean((beat.dialogue_text ?? beat.kling_o3_prompt ?? '').trim());
+  if (ev === '2' && hasSpeak) return 'voice_first';
   return 'element_native';
+}
+
+function o3GenerateButtonLabel(generationMode: BeatGenerationMode): string {
+  if (generationMode === 'voice_first') {
+    return 'Generate voice-first O3 (ElevenLabs + lipsync)';
+  }
+  if (generationMode === 'element_native') {
+    return 'Generate Element native O3';
+  }
+  return 'Generate padded O3 voice video';
 }
 
 const GENERATION_MODE_TOAST: Record<BeatGenerationMode, string> = {
@@ -420,7 +435,7 @@ function mergeBeatFromO3Poll(beats: BgBeat[], patch: BgBeat): BgBeat[] {
   const idx = beats.findIndex((b) => b.beat_id === safePatch.beat_id);
   if (idx < 0) return beats;
   const next = [...beats];
-  next[idx] = { ...beats[idx], ...safePatch };
+  next[idx] = preserveLockedRefsOnO3PollMerge(beats[idx], safePatch);
   return next;
 }
 
@@ -557,10 +572,11 @@ const LIPSYNC_HOSTING_SETUP_MESSAGE =
 function voiceFirstLipsyncHostBlocked(
   lipsyncHostReady: boolean | null,
   beats: BgBeat[],
+  eventId?: string,
 ): boolean {
   if (lipsyncHostReady === true) return false;
   return beats.some(
-    (b) => !isStillInsertBeat(b) && effectiveGenerationMode(b) === 'voice_first',
+    (b) => !isStillInsertBeat(b) && effectiveGenerationMode(b, eventId) === 'voice_first',
   );
 }
 
@@ -1703,7 +1719,7 @@ export function BgTab() {
     if (beatSaveBlockedRef.current.has(beatId)) return;
     const beat = beats.find((b) => b.beat_id === beatId);
     if (!beat || !isPipelineToggleable(beat)) return;
-    if (effectiveGenerationMode(beat) === mode) return;
+    if (effectiveGenerationMode(beat, activeScope.value.event_id) === mode) return;
     setBeats((bs) => bs.map((b): BgBeat => {
       if (b.beat_id !== beatId) return b;
       if (mode === 'still_insert') {
@@ -2069,7 +2085,7 @@ export function BgTab() {
     }
     if (isO3VoiceBeat(beat)) {
       if (
-        effectiveGenerationMode(beat) === 'voice_first'
+        effectiveGenerationMode(beat, activeScope.value.event_id) === 'voice_first'
         && lipsyncPublicHostReady !== true
       ) {
         const message = lipsyncPublicHostMessage?.trim() || LIPSYNC_HOSTING_SETUP_MESSAGE;
@@ -2619,7 +2635,7 @@ export function BgTab() {
         </div>
       ) : (
         <>
-          {voiceFirstLipsyncHostBlocked(lipsyncPublicHostReady, beats) ? (
+          {voiceFirstLipsyncHostBlocked(lipsyncPublicHostReady, beats, activeScope.value.event_id) ? (
             <div
               class="mn-bg-lipsync-host-setup"
               data-testid="bg-lipsync-host-setup"
@@ -3208,7 +3224,7 @@ function BeatGenCard({
   const [magicPreviewMode, setMagicPreviewMode] = useState<'still' | 'video' | null>(null);
   const [stillPreviewAutoplay, setStillPreviewAutoplay] = useState(false);
   const stillInsert = isStillInsertBeat(beat);
-  const generationMode = effectiveGenerationMode(beat);
+  const generationMode = effectiveGenerationMode(beat, eventId);
   const hasStillSource = !!magicStillSource
     || optionsToShow.some((o) => o?.local_path || o?.thumb_b64);
   const showStillClipHint = stillInsert && !beat.kling_o3_video_path && hasStillSource;
@@ -3509,7 +3525,7 @@ function BeatGenCard({
           ) : isStillInsertBeat(beat) ? (
             'Build still video (+ TTS)'
           ) : isO3VoiceBeat(beat) ? (
-            'Generate padded O3 voice video'
+            o3GenerateButtonLabel(generationMode)
           ) : (
             'Generate 3 options'
           )}
