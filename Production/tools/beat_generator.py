@@ -3784,6 +3784,26 @@ def probe_capabilities() -> dict:
         caps["ffprobe"] = subprocess.run(["ffprobe", "-version"], capture_output=True).returncode == 0
     except Exception:
         caps["ffprobe"] = False
+    try:
+        from lipsync_public_host import probe_lipsync_public_host_capabilities
+
+        creds = None
+        try:
+            from credentials import load_credentials  # type: ignore
+        except ImportError:
+            try:
+                from tools.credentials_lib.credentials import load_credentials  # type: ignore
+            except ImportError:
+                load_credentials = None  # type: ignore[assignment]
+        if load_credentials is not None:
+            try:
+                creds = load_credentials()
+            except Exception:
+                creds = None
+        caps.update(probe_lipsync_public_host_capabilities(creds=creds))
+    except Exception as exc:
+        caps["lipsync_public_host_ready"] = False
+        caps["lipsync_public_host_message"] = str(exc)
     return caps
 
 

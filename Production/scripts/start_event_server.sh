@@ -48,6 +48,11 @@ start_one() {
   fi
   local log="${event_dir}/dedicated_server_${port}.log"
   kill_port "$port"
+  TOOLS_DIR="$(dirname "$SERVER")"
+  LIPSYNC_EXPORTS="$("$PYTHON" "$TOOLS_DIR/lipsync_public_host.py" --shell-export 2>/dev/null || true)"
+  if [[ -n "$LIPSYNC_EXPORTS" ]]; then
+    eval "$LIPSYNC_EXPORTS"
+  fi
   cd "$DROPBOX"
   nohup env PRODUCTION_SERVER_SINGLE_MACHINE=1 MN_EVENT_PIN_IGNORE=1 \
     "$PYTHON" -u "$SERVER" \

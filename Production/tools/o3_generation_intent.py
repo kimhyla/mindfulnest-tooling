@@ -217,6 +217,69 @@ def _clear_beat_intent_lock_fields(beat: dict) -> None:
     beat.pop("o3_active_intent_job_id", None)
 
 
+_JOB_ID_FROM_LOG_RE = re.compile(r"/([0-9a-f]{8})_[^/]+\.log", re.I)
+_ACTIVE_PIPELINE_LOG_PHASES = frozenset({
+    "o3_submit", "o3_poll", "o3_element", "o3_element_native_voice",
+    "tts", "tts_submit", "tts_ready", "visual_running", "lipsync_submit",
+    "lipsync_poll", "lipsync_running", "subprocess", "job_starting",
+    "o3_running", "job_running", "queued", "finalize",
+})
+_TERMINAL_PIPELINE_LOG_PHASES = frozenset({"done", "failed", "error"})
+
+
+def job_id_from_beat(beat: dict | None) -> str:
+    """UI poll id or ``{job_id}_`` prefix from ``kling_o3_voice_fix_job_log_path``."""
+    if not beat:
+        return ""
+    ui = str(beat.get("kling_o3_voice_fix_ui_job_id") or "").strip()
+    if ui:
+        return ui
+    log_path = str(beat.get("kling_o3_voice_fix_job_log_path") or "")
+    match = _JOB_ID_FROM_LOG_RE.search(log_path)
+    return match.group(1) if match else ""
+
+
+def _pid_is_running(pid_value) -> bool:
+    try:
+        pid = int(pid_value or 0)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def log_indicates_active_o3_pipeline(log_text: str) -> bool:
+    """True when subprocess log shows in-flight work (not terminal done/failed)."""
+    if not log_text.strip():
+        return False
+    if '"phase": "done"' in log_text:
+        return False
+    for line in reversed(log_text.splitlines()):
+        stripped = line.strip()
+        if not stripped.startswith("{"):
+            continue
+        try:
+            row = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        phase = str(row.get("phase") or "").lower()
+        if phase in _TERMINAL_PIPELINE_LOG_PHASES:
+            return False
+        if phase in _ACTIVE_PIPELINE_LOG_PHASES or phase:
+            return True
+    for phase in _ACTIVE_PIPELINE_LOG_PHASES:
+        if f'"phase": "{phase}"' in log_text:
+            return True
+    return False
+
+
 def beat_has_active_intent(beat_id: str, event_dir: Path | None = None) -> bool:
     return active_intent_path_for_beat(
         beat_id,
@@ -246,10 +309,24 @@ def reconcile_stale_o3_intent_locks(sidecar: dict, event_dir: Path) -> int:
         if not beat_id:
             continue
         _, beat = bg.find_beat(sidecar, beat_id)
+        log_path = Path(str((intent.get("runtime") or {}).get("log_path") or ""))
+        if not log_path.is_file():
+            alt = jobs_dir / f"{job_id}_{beat_id}.log"
+            if alt.is_file():
+                log_path = alt
+        log_text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.is_file() else ""
         if beat and bg.beat_o3_voice_job_running(beat):
+            continue
+        pid = (beat or {}).get("kling_o3_voice_fix_job_pid")
+        if pid is not None and _pid_is_running(pid):
+            continue
+        if log_indicates_active_o3_pipeline(log_text):
             continue
         voice_fix = str((beat or {}).get("kling_o3_voice_fix_status") or "")
         if voice_fix_is_terminal_failure(voice_fix):
+            beat_job_id = job_id_from_beat(beat)
+            if beat_job_id and beat_job_id != job_id:
+                continue
             write_intent_terminal(job_id, event_dir, {
                 "intent_id": intent.get("intent_id"),
                 "status": "failed",
@@ -265,12 +342,6 @@ def reconcile_stale_o3_intent_locks(sidecar: dict, event_dir: Path) -> int:
                 _clear_beat_intent_lock_fields(beat)
             closed += 1
             continue
-        log_path = Path(str((intent.get("runtime") or {}).get("log_path") or ""))
-        if not log_path.is_file():
-            alt = jobs_dir / f"{job_id}_{beat_id}.log"
-            if alt.is_file():
-                log_path = alt
-        log_text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.is_file() else ""
         done_row = _pipeline_done_from_log(log_path) if log_path.is_file() else None
         if done_row:
             video = str(done_row.get("video") or "")

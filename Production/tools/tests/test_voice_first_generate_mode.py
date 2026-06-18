@@ -95,7 +95,8 @@ def test_submit_handler_stamps_lipsync_staging_env_for_voice_first():
     assert "MN_LIPSYNC_STAGING_TOKEN" in text
     assert "MN_LIPSYNC_STAGING_PUBLIC_BASE" in text
     assert "is_public_staging_base" in text
-    assert "R2_ACCESS_KEY_ID" in text
+    assert "inject_lipsync_r2_env" in text
+    assert "LIPSYNC_HOSTING_NOT_CONFIGURED" in text
 
 
 def test_lipsync_staging_skips_localhost_for_all_event_ports():

@@ -50,7 +50,7 @@ import {
   stripProtectedPromptFromPatch,
 } from '../state/promptEditRegistry';
 import { useProtectedPromptField } from '../hooks/useProtectedPromptField';
-import { collectActiveO3JobsFromBeats } from '../o3JobStatusContract';
+import { beatO3JobLooksRunning, collectActiveO3JobsFromBeats } from '../o3JobStatusContract';
 import type {
   ArloO3PollResponse,
   ArloO3SubmitResponse,
@@ -277,6 +277,10 @@ interface BgSessionState {
   scope_active_context?: { arc_number: number; event_id: string; phase: string } | null;
   beats?: BgBeat[];
   flux_options_complete?: boolean;
+  capabilities?: {
+    lipsync_public_host_ready?: boolean;
+    lipsync_public_host_message?: string | null;
+  };
 }
 
 interface GptBatchSubmitResponse {
@@ -459,12 +463,27 @@ function formatO3JobFailure(error?: string | null): string {
     return 'WaveSpeed could not download the lipsync input URL. Data-URI fallback is disabled because it returns sub-720p output; previous approved clip was kept active.';
   }
   if (runtime.includes('No lipsync input host returned byte-complete public files')) {
-    return 'No lipsync input host returned byte-complete public files. The job was stopped before WaveSpeed submission; previous approved clip was kept active.';
+    return 'Lipsync could not upload video/audio to a public URL WaveSpeed can fetch. Configure Cloudflare R2 on this server, then restart Event servers.';
   }
   if (runtime.includes('O3 job process is no longer running')) {
     return 'The O3 job process stopped without a completion result. The stale job marker was cleared; previous approved clip was kept active.';
   }
   return runtime.split('\n').filter(Boolean).pop()?.slice(0, 500) ?? runtime.slice(0, 500);
+}
+
+const LIPSYNC_HOSTING_SETUP_MESSAGE =
+  'Voice-first Generate needs Cloudflare R2 lipsync staging on this machine. '
+  + 'Set R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ACCOUNT_ID, and R2_BUCKET_NAME '
+  + 'in Doppler or Production/API_KEYS_MASTER.md, then restart Event servers.';
+
+function resolveVoiceFirstFailureBanner(
+  beat: BgBeat,
+  lipsyncHostReady: boolean | null,
+): string | null {
+  if (!isO3VoiceBeat(beat)) return null;
+  if (lipsyncHostReady === false) return null;
+  if (!(beat.kling_o3_voice_fix_status ?? '').startsWith('failed')) return null;
+  return formatO3JobFailure(beat.kling_o3_voice_fix_error);
 }
 
 type O3BeatSlotFields = {
@@ -642,6 +661,8 @@ export function BgTab() {
   const [o3WarningByBeat, setO3WarningByBeat] = useState<Record<string, string>>({});
   const [activeStillRenderJobs, setActiveStillRenderJobs] = useState<Record<string, boolean>>({});
   const [activeNativeLipSyncJobs, setActiveNativeLipSyncJobs] = useState<Record<string, string>>({});
+  const [lipsyncPublicHostReady, setLipsyncPublicHostReady] = useState<boolean | null>(null);
+  const [lipsyncPublicHostMessage, setLipsyncPublicHostMessage] = useState<string | null>(null);
   const [pollResults, setPollResults] = useState<Record<string, GptOption[]>>({});
   const [, setAcceptStatus] = useState<'idle' | 'sending' | 'ok' | 'error'>('idle');
   const [stitcherExportStatus, setStitcherExportStatus] = useState<'idle' | 'sending'>('idle');
@@ -771,6 +792,8 @@ export function BgTab() {
         }
         const initialBeats = applyPromptEditsToBeats(stateRes.data?.beats ?? []);
         setBeats(initialBeats);
+        setLipsyncPublicHostReady(stateRes.data?.capabilities?.lipsync_public_host_ready ?? null);
+        setLipsyncPublicHostMessage(stateRes.data?.capabilities?.lipsync_public_host_message ?? null);
         // Stale sidecar failures (e.g. prior localhost lipsync) stay on the beat card
         // banner only — no error toast on hard refresh / tab open.
         seedGenFailureSeenKeys(initialBeats, genFailureToastRef);
@@ -1064,6 +1087,8 @@ export function BgTab() {
     if (stateRes.ok && stateRes.data) {
       const nextBeats = applyPromptEditsToBeats(stateRes.data.beats ?? []);
       setBeats(nextBeats);
+      setLipsyncPublicHostReady(stateRes.data.capabilities?.lipsync_public_host_ready ?? null);
+      setLipsyncPublicHostMessage(stateRes.data.capabilities?.lipsync_public_host_message ?? null);
       notifyNewGenFailures(nextBeats, genFailureToastRef);
       const liveIds = new Set(nextBeats.map((b) => b.beat_id));
       beatSaveBlockedRef.current.forEach((id) => {
@@ -1441,7 +1466,7 @@ export function BgTab() {
 
   const onUpdateBeatText = async (beatId: string, nextText: string): Promise<boolean> => {
     if (beatSaveBlockedRef.current.has(beatId)) return false;
-    const result = await pathappPatch<{
+    const patchBeatText = () => pathappPatch<{
       ok: boolean;
       element_char_ref_ok?: boolean;
       element_char_ref_error?: string | null;
@@ -1449,6 +1474,11 @@ export function BgTab() {
     }>(activeScope.value, 'bg_update_beat', {
       beat_id: beatId, kling_o3_prompt: nextText,
     });
+    let result = await patchBeatText();
+    if (!result.ok && result.error_code === 'INTENT_JOB_ACTIVE') {
+      await refreshState();
+      result = await patchBeatText();
+    }
     if (!result.ok) {
       const err = (result.error || '').trim();
       if (isBeatNotFoundResult(result)) {
@@ -1459,10 +1489,9 @@ export function BgTab() {
         pushToast({
           kind: 'warning',
           message:
-            'Previous Generate left a prompt lock after the job failed — refresh the page once, then Generate again.',
+            'Prompt is locked while an O3 job is still winding down — wait a few seconds, then click Generate again.',
           source: 'bg-intent-stale-lock',
         });
-        await refreshState();
         return false;
       }
       const msg = /failed to fetch|networkerror|load failed/i.test(err)
@@ -1823,6 +1852,15 @@ export function BgTab() {
       });
       return false;
     }
+    if (result.error_code === 'LIPSYNC_HOSTING_NOT_CONFIGURED') {
+      const message = result.error_message
+        ?? result.error
+        ?? LIPSYNC_HOSTING_SETUP_MESSAGE;
+      setLipsyncPublicHostReady(false);
+      setLipsyncPublicHostMessage(message);
+      pushToast({ kind: 'error', message, source: 'bg-lipsync-host' });
+      return false;
+    }
     return guardBeatPatchResult(
       beatId,
       result,
@@ -1885,6 +1923,14 @@ export function BgTab() {
       return;
     }
     if (isO3VoiceBeat(beat)) {
+      if (lipsyncPublicHostReady === false) {
+        pushToast({
+          kind: 'error',
+          message: lipsyncPublicHostMessage?.trim() || LIPSYNC_HOSTING_SETUP_MESSAGE,
+          source: 'bg-lipsync-host',
+        });
+        return;
+      }
       if (beat.element_char_ref_ok === false) {
         pushToast({
           kind: 'error',
@@ -1903,7 +1949,13 @@ export function BgTab() {
         return;
       }
       const saved = await onUpdateBeatText(beatId, promptToSave);
-      if (!saved) return;
+      if (!saved) {
+        const latestBeat = beatsRef.current.find((b) => b.beat_id === beatId) ?? beat;
+        if (beatO3JobLooksRunning(latestBeat)) {
+          await submitO3Voice(beatId, beatForO3Submit(beatId, latestBeat), promptToSave);
+        }
+        return;
+      }
       await submitO3Voice(beatId, beatForO3Submit(beatId, beat), promptToSave);
       return;
     }
@@ -2401,6 +2453,15 @@ export function BgTab() {
         </div>
       ) : (
         <div class="mn-bg-body-layout" data-testid="bg-body-layout">
+          {lipsyncPublicHostReady === false && beats.some((b) => isO3VoiceBeat(b)) ? (
+            <div
+              class="mn-bg-lipsync-host-setup"
+              data-testid="bg-lipsync-host-setup"
+              style="margin: 0 0 12px; padding: 10px 12px; background: #422006; border: 1px solid #f59e0b; border-radius: 8px; color: #fcd34d; font-size: 13px; line-height: 1.45;"
+            >
+              {lipsyncPublicHostMessage?.trim() || LIPSYNC_HOSTING_SETUP_MESSAGE}
+            </div>
+          ) : null}
           <BgBeatNav
             beats={beats}
             itemStatuses={beatNavItemStatuses}
@@ -2428,6 +2489,7 @@ export function BgTab() {
               o3IntentSnapshot={o3IntentByBeat[b.beat_id]}
               o3SubmitAudit={o3SubmitAuditByBeat[b.beat_id]}
               o3WarningMessage={o3WarningByBeat[b.beat_id]}
+              lipsyncPublicHostReady={lipsyncPublicHostReady}
               nativeExperimentBusy={!!activeNativeLipSyncJobs[b.beat_id]}
               onDelete={() => onDeleteBeat(b.beat_id)}
               onUpdateText={(t) => onUpdateBeatText(b.beat_id, t)}
@@ -2865,6 +2927,7 @@ interface BeatGenCardProps {
   o3IntentSnapshot?: O3GenerationIntentPoll;
   o3SubmitAudit?: O3SubmitAudit;
   o3WarningMessage?: string;
+  lipsyncPublicHostReady?: boolean | null;
   onDelete: () => void;
   onUpdateText: (next: string) => void | Promise<boolean>;
   // LD CHARACTER_DROPDOWN_RESTORED_V1 — speaker dropdown change.
@@ -2905,7 +2968,7 @@ interface BeatGenCardProps {
 
 function BeatGenCard({
   index, beat, eventId, videoRole, pollResultForBeat, busy, nativeExperimentBusy,
-  o3IntentSnapshot, o3SubmitAudit, o3WarningMessage,
+  o3IntentSnapshot, o3SubmitAudit, o3WarningMessage, lipsyncPublicHostReady,
   onDelete, onUpdateText, onUpdateSpeaker, onSetPipeline, onGenerate, onAccept,
   onSelectO3Video, onApproveStill, onApplyO3Trim, onSetReplaceSlot, onSubmitNativeLipSyncExperiment,
   onEditChip, onInsertAfter, onRemoveRef, onAlignElementRef, onAddElementPose, onRefresh, onBeatMissing,
@@ -2956,9 +3019,7 @@ function BeatGenCard({
     return padded.slice(0, 3);
   })();
   const replaceSlotIndex = beat.kling_o3_replace_slot_index ?? 0;
-  const o3FailureMessage = (beat.kling_o3_voice_fix_status ?? '').startsWith('failed')
-    ? formatO3JobFailure(beat.kling_o3_voice_fix_error)
-    : null;
+  const o3FailureMessage = resolveVoiceFirstFailureBanner(beat, lipsyncPublicHostReady ?? null);
   const nativeProfile = beat.kling_native_lipsync_experiment_output_profile;
   const nativeDims = nativeProfile?.width && nativeProfile?.height
     ? `${nativeProfile.width}x${nativeProfile.height}`

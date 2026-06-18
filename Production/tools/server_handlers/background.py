@@ -1756,6 +1756,7 @@ def handle_bg_session_state(h)-> None:
         bg.ensure_sidecar_schema_defaults(sidecar)
     # Lightweight in-memory heals only — no sidecar lock held during this block.
     stuck_changed = reconcile_stuck_o3_voice_beats(sidecar)
+    ui_job_rehydrate_changed = rehydrate_o3_ui_job_ids(sidecar)
     intent_lock_changed = 0
     prod_root = _data_root(h)
     try:
@@ -1780,6 +1781,7 @@ def handle_bg_session_state(h)-> None:
     classify_changed = bg.classify_all_sidecar_pipeline_fields(sidecar)
     persist_heals = bool(
         stuck_changed
+        or ui_job_rehydrate_changed
         or intent_lock_changed
         or o3_reconcile_changed
         or trim_reconcile_changed
@@ -1842,6 +1844,7 @@ def handle_bg_session_state(h)-> None:
             sidecar = bg.read_sidecar()
             bg.ensure_sidecar_schema_defaults(sidecar)
             reconcile_stuck_o3_voice_beats(sidecar)
+            rehydrate_o3_ui_job_ids(sidecar)
             try:
                 from o3_generation_intent import reconcile_stale_o3_intent_locks_all_events
 
@@ -2745,7 +2748,12 @@ def handle_bg_update_beat(h, body: dict)-> None:
         if not event_dir.is_absolute():
             event_dir = _data_root(h) / event_dir
         operator_fields_requested = {f for f in _BG_BEAT_WRITABLE if f in body}
-        if operator_fields_requested:
+        prompt_save_unchanged = (
+            operator_fields_requested == {"kling_o3_prompt"}
+            and str(body.get("kling_o3_prompt") or "").strip()
+            == str(beat.get("kling_o3_prompt") or "").strip()
+        )
+        if operator_fields_requested and not prompt_save_unchanged:
             try:
                 from o3_generation_intent import (
                     OPERATOR_MUTABLE_FIELDS,
@@ -2758,6 +2766,14 @@ def handle_bg_update_beat(h, body: dict)-> None:
                 reconcile_stale_o3_intent_locks(sidecar, intent_event)
                 if beat_has_active_intent(str(beat_id), intent_event):
                     blocked = sorted(OPERATOR_MUTABLE_FIELDS & operator_fields_requested)
+                    if (
+                        "kling_o3_prompt" in blocked
+                        and "kling_o3_prompt" in body
+                    ):
+                        new_prompt = str(body.get("kling_o3_prompt") or "").strip()
+                        old_prompt = str(beat.get("kling_o3_prompt") or "").strip()
+                        if new_prompt == old_prompt:
+                            blocked = [f for f in blocked if f != "kling_o3_prompt"]
                     if blocked:
                         return h._send_error_v59(
                             409,
@@ -3752,6 +3768,7 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
     bg = _bg_module()
     intent_path: Path | None = None
     committed_intent: dict | None = None
+    submit_creds: dict | None = None
     try:
         from o3_generation_intent import (
             IntentCommitError,
@@ -3826,6 +3843,20 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
             except ImportError:
                 from tools.credentials_lib.credentials import load_credentials  # type: ignore
             creds = load_credentials()
+            submit_creds = creds
+            if o3_generate_mode == "voice_first":
+                from lipsync_public_host import (
+                    lipsync_public_host_block_message,
+                    lipsync_public_host_ready,
+                )
+
+                if not lipsync_public_host_ready(creds=creds):
+                    return h._send_error_v59(
+                        503,
+                        error_code="LIPSYNC_HOSTING_NOT_CONFIGURED",
+                        error_message=lipsync_public_host_block_message(),
+                        retry_safe=False,
+                    )
             ws_key = creds.get("wavespeed_key") or creds.get("wavespeed")
             committed_intent = build_generation_intent(
                 beat=beat,
@@ -3918,18 +3949,9 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                     "lipsync will use R2/ephemeral public hosts",
                     flush=True,
                 )
-        r2_cdn = os.environ.get("MN_R2_CDN_BASE_URL", "").strip()
-        if r2_cdn:
-            subprocess_env["MN_R2_CDN_BASE_URL"] = r2_cdn.rstrip("/")
-        for r2_key in (
-            "R2_ACCESS_KEY_ID",
-            "R2_SECRET_ACCESS_KEY",
-            "R2_ACCOUNT_ID",
-            "R2_BUCKET_NAME",
-        ):
-            r2_val = os.environ.get(r2_key, "").strip()
-            if r2_val:
-                subprocess_env[r2_key] = r2_val
+        from lipsync_public_host import inject_lipsync_r2_env
+
+        inject_lipsync_r2_env(subprocess_env, submit_creds)
     _pp = subprocess_env.get("PYTHONPATH", "")
     subprocess_env["PYTHONPATH"] = os.pathsep.join(
         p for p in (str(_PSERVER_TOOLS_DIR), str(prod / "tools"), str(prod), _pp) if p
@@ -4637,6 +4659,26 @@ def _beat_o3_job_looks_running(beat: dict) -> bool:
     from o3_job_status_contract import beat_o3_voice_job_running
 
     return beat_o3_voice_job_running(beat)
+
+
+def rehydrate_o3_ui_job_ids(sidecar: dict) -> int:
+    """Restore poll id from log filename when subprocess is running but ui_job_id was cleared."""
+    import re
+
+    changed = 0
+    log_re = re.compile(r"/([0-9a-f]{8})_[^/]+\.log", re.I)
+    for beat in _iter_bg_beats(sidecar):
+        if not _beat_o3_job_looks_running(beat):
+            continue
+        if beat.get("kling_o3_voice_fix_ui_job_id"):
+            continue
+        log_path = str(beat.get("kling_o3_voice_fix_job_log_path") or "")
+        match = log_re.search(log_path)
+        if not match:
+            continue
+        beat["kling_o3_voice_fix_ui_job_id"] = match.group(1)
+        changed += 1
+    return changed
 
 
 def _sidecar_io_error_text(error: str | None) -> bool:

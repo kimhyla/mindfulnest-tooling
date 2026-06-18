@@ -53,10 +53,7 @@ def test_reconcile_closes_orphan_intent_without_terminal(tmp_path):
         "runtime": {"log_path": str(jobs / f"{job_id}_{beat_id}.log")},
     }
     (jobs / f"{job_id}_intent.json").write_text(json.dumps(intent), encoding="utf-8")
-    (jobs / f"{job_id}_{beat_id}.log").write_text(
-        '{"phase": "o3_submit", "beat_id": "%s"}\n' % beat_id,
-        encoding="utf-8",
-    )
+    (jobs / f"{job_id}_{beat_id}.log").write_text("", encoding="utf-8")
     sidecar = _sidecar_with_beat(beat_id)
     with patch("beat_generator._PROD_DIR", str(prod)):
         assert intent_mod.beat_has_active_intent(beat_id, event_dir) is True
@@ -196,6 +193,92 @@ def test_reconcile_skips_when_subprocess_still_running(tmp_path):
     sidecar = _sidecar_with_beat(beat_id, running=True)
     with patch("beat_generator._PROD_DIR", str(prod)):
         closed = intent_mod.reconcile_stale_o3_intent_locks_all_events(sidecar, prod)
+    assert closed == 0
+    assert intent_mod.beat_has_active_intent(beat_id, event_dir) is True
+
+
+def test_reconcile_skips_active_pipeline_log_even_when_beat_approved(tmp_path):
+    prod = tmp_path / "Production"
+    event_dir = prod / "Event_2"
+    jobs = event_dir / "arlo_o3_jobs"
+    jobs.mkdir(parents=True)
+    beat_id = "bg_arc1_event2_pre_beat_01"
+    job_id = "8e0e5c6f"
+    log_path = jobs / f"{job_id}_{beat_id}.log"
+    log_path.write_text(
+        json.dumps({"phase": "o3_poll", "beat_id": beat_id}) + "\n",
+        encoding="utf-8",
+    )
+    intent = {
+        "schema_version": 1,
+        "job_id": job_id,
+        "intent_id": "intent-active",
+        "beat_id": beat_id,
+        "committed_at": "2026-06-17T23:36:25Z",
+        "runtime": {"log_path": str(log_path)},
+    }
+    (jobs / f"{job_id}_intent.json").write_text(json.dumps(intent), encoding="utf-8")
+    sidecar = {
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [{
+                            "beat_id": beat_id,
+                            "kling_o3_voice_fix_status": "failed_provider_fetch",
+                            "kling_o3_status": "approved",
+                            "kling_o3_voice_fix_job_log_path": str(log_path),
+                        }],
+                    },
+                },
+            },
+        },
+    }
+    with patch("beat_generator._PROD_DIR", str(prod)):
+        closed = intent_mod.reconcile_stale_o3_intent_locks(sidecar, event_dir)
+    assert closed == 0
+    assert intent_mod.beat_has_active_intent(beat_id, event_dir) is True
+    assert not (jobs / f"{job_id}_terminal.json").is_file()
+
+
+def test_reconcile_does_not_close_new_intent_using_old_voice_fix_failure(tmp_path):
+    prod = tmp_path / "Production"
+    event_dir = prod / "Event_2"
+    jobs = event_dir / "arlo_o3_jobs"
+    jobs.mkdir(parents=True)
+    beat_id = "bg_arc1_event2_pre_beat_01"
+    old_job = "1e0c92f8"
+    new_job = "8e0e5c6f"
+    old_log = jobs / f"{old_job}_{beat_id}.log"
+    old_log.write_text('{"phase": "failed"}\n', encoding="utf-8")
+    new_log = jobs / f"{new_job}_{beat_id}.log"
+    new_log.write_text('{"phase": "o3_submit", "beat_id": "%s"}\n' % beat_id, encoding="utf-8")
+    intent = {
+        "schema_version": 1,
+        "job_id": new_job,
+        "intent_id": "intent-new",
+        "beat_id": beat_id,
+        "committed_at": "2026-06-17T23:36:25Z",
+        "runtime": {"log_path": str(new_log)},
+    }
+    (jobs / f"{new_job}_intent.json").write_text(json.dumps(intent), encoding="utf-8")
+    sidecar = {
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [{
+                            "beat_id": beat_id,
+                            "kling_o3_voice_fix_status": "failed_provider_fetch",
+                            "kling_o3_voice_fix_job_log_path": str(old_log),
+                        }],
+                    },
+                },
+            },
+        },
+    }
+    with patch("beat_generator._PROD_DIR", str(prod)):
+        closed = intent_mod.reconcile_stale_o3_intent_locks(sidecar, event_dir)
     assert closed == 0
     assert intent_mod.beat_has_active_intent(beat_id, event_dir) is True
 

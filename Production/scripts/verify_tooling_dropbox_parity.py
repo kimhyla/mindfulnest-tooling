@@ -20,6 +20,8 @@ CODE_PARITY_PATHS = (
     "Production/tools/arlo_o3_voice_pipeline.py",
     "Production/tools/lipsync_sender.py",
     "Production/tools/lipsync_staging.py",
+    "Production/tools/lipsync_public_host.py",
+    "Production/tools/credentials_lib/credentials.py",
     "Production/tools/server_handlers/background.py",
     "Production/tools/server_handlers/kling_o3.py",
     "Production/tools/kling_o3_job_store.py",
