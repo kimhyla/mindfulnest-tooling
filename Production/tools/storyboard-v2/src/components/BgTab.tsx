@@ -118,6 +118,48 @@ const GENERATION_MODE_TOAST: Record<BeatGenerationMode, string> = {
   element_native: 'Pipeline: Element native O3 — Generate runs O3 Pro with Element voice baked in.',
 };
 
+function inferO3OptionPipelineMode(opt?: GptOption | null): BeatGenerationMode | '' {
+  if (!opt) return '';
+  const source = (opt.source ?? '').trim().toLowerCase();
+  const path = (opt.video_path ?? '').toLowerCase();
+  if (source.includes('still_insert') || path.includes('still_insert')) return 'still_insert';
+  if (path.includes('_voice_lipsync')) return 'voice_first';
+  if (path.includes('_element_o3') || (path.includes('_element_') && !path.includes('_voice_lipsync'))) {
+    return 'element_native';
+  }
+  if (source === 'kling_o3_element_native_voice') return 'element_native';
+  if (source === 'kling_o3_voice_video') return 'voice_first';
+  return '';
+}
+
+function displayO3OptionLabel(opt: GptOption): string {
+  const stored = opt.label?.trim();
+  if (stored === 'latest O3 voice video') return 'ElevenLabs voice-first (latest)';
+  const mode = inferO3OptionPipelineMode(opt);
+  if (mode === 'voice_first') return 'ElevenLabs voice-first';
+  if (mode === 'element_native') {
+    const gen = typeof opt.generation === 'number'
+      ? opt.generation
+      : o3GenerationFromPath(opt.video_path);
+    return gen ? `g${gen} Kling Element voice` : 'Kling Element voice';
+  }
+  if (mode === 'still_insert') return stored || 'Still + TTS clip';
+  return stored || 'O3 clip';
+}
+
+function pipelineSelectionMismatchMessage(beat?: BgBeat | null): string | null {
+  if (!beat?.kling_o3_selection_pipeline_mismatch) return null;
+  const mode = effectiveGenerationMode(beat);
+  const clip = beat.kling_o3_active_clip_pipeline ?? inferO3OptionPipelineMode(
+    (beat.kling_o3_options ?? []).find((o) => o?.video_path === beat.kling_o3_video_path),
+  );
+  return (
+    `Pipeline mismatch: beat is set to ${mode} but the selected clip is ${clip || 'another pipeline'}. `
+    + 'Preview and stitch export use the selected clip — Element clips use Kling voice, not ElevenLabs. '
+    + 'Select a matching clip or switch the pipeline toggle.'
+  );
+}
+
 function isO3VoiceBeat(beat?: BgBeat | null): boolean {
   if (!beat) return false;
   if (isStillInsertBeat(beat)) return false;
@@ -216,6 +258,8 @@ interface BgBeat {
   kling_o3_video_path?: string;
   kling_o3_video_path_exists?: boolean;
   kling_o3_selected_at?: string;
+  kling_o3_selection_pipeline_mismatch?: boolean;
+  kling_o3_active_clip_pipeline?: string;
   kling_o3_options?: GptOption[];
   kling_o3_clips_dir?: string;
   kling_o3_disk_delivery_count?: number;
@@ -2210,17 +2254,29 @@ export function BgTab() {
   };
 
   const onSelectO3Video = async (beatId: string, optionKey: string, opts?: { stillApprove?: boolean }) => {
-    const result = await pathappPatch(activeScope.value, 'bg_select_o3_video', {
+    const result = await pathappPatch<{
+      pipeline_mismatch?: boolean;
+      pipeline_mismatch_message?: string;
+    }>(activeScope.value, 'bg_select_o3_video', {
       beat_id: beatId, option_key: optionKey,
     });
     if (result.ok) {
-      pushToast({
-        kind: 'success',
-        message: opts?.stillApprove
-          ? 'Still clip approved for stitch export'
-          : 'Selected preserved O3 video',
-        source: 'bg-select-o3',
-      });
+      if (result.data?.pipeline_mismatch) {
+        pushToast({
+          kind: 'warning',
+          message: result.data.pipeline_mismatch_message
+            ?? 'Selected clip uses a different pipeline than the beat toggle — voice may not match.',
+          source: 'bg-select-o3-pipeline-mismatch',
+        });
+      } else {
+        pushToast({
+          kind: 'success',
+          message: opts?.stillApprove
+            ? 'Still clip approved for stitch export'
+            : 'Selected preserved O3 video',
+          source: 'bg-select-o3',
+        });
+      }
       await refreshState();
     } else {
       await guardBeatPatchResult(
@@ -3308,6 +3364,15 @@ function BeatGenCard({
           {o3WarningMessage}
         </div>
       ) : null}
+      {pipelineSelectionMismatchMessage(beat) ? (
+        <div
+          class="mn-bg-o3-pipeline-mismatch-banner"
+          data-testid={`bg-o3-pipeline-mismatch-${index}`}
+          style="margin: 4px 0 8px; padding: 8px; background: #450a0a; border: 1px solid #f87171; border-radius: 6px; color: #fecaca; font-size: 12px;"
+        >
+          {pipelineSelectionMismatchMessage(beat)}
+        </div>
+      ) : null}
       {o3FailureMessage ? (
         <div
           class="mn-bg-o3-failure"
@@ -3986,7 +4051,7 @@ function BgOptionTile({
   const isStillDraft = !!stillInsert && !!option.video_path && !isStitchApproved;
   const hasClipVideo = !!option.video_path;
   const showTrimControls = selected && hasClipVideo;
-  const optionLabel = option.label?.trim()
+  const optionLabel = displayO3OptionLabel(option)
     || (isStitchApproved
     ? 'approved O3 video'
     : isStillDraft

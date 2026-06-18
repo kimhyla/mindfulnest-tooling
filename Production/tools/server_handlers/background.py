@@ -5382,6 +5382,9 @@ def handle_bg_select_o3_video(h, body: dict) -> None:
                     o["key"] = Path(vp).stem if vp else f"{beat_id}_o3_{options.index(o)}"
                 o["active"] = (o.get("key") == option_key or o.get("video_path") == video_path)
             beat["kling_o3_options"] = options
+            bg.sync_o3_selection_pipeline_fields(beat, sidecar, option=opt)
+            pipeline_mismatch = bool(beat.get("kling_o3_selection_pipeline_mismatch"))
+            active_clip_pipeline = beat.get("kling_o3_active_clip_pipeline")
             bg.write_sidecar(sidecar)
     except OSError as exc:
         if bg.sidecar_io_transient(exc):
@@ -5393,7 +5396,21 @@ def handle_bg_select_o3_video(h, body: dict) -> None:
                 extra={"errno": getattr(exc, "errno", None)},
             )
         raise
-    return h._send_json(200, {"ok": True, "beat_id": beat_id, "option_key": option_key, "video_path": video_path})
+    payload = {
+        "ok": True,
+        "beat_id": beat_id,
+        "option_key": option_key,
+        "video_path": video_path,
+    }
+    if pipeline_mismatch:
+        payload["pipeline_mismatch"] = True
+        payload["generation_mode"] = bg.resolve_beat_generation_mode(beat, sidecar)
+        payload["active_clip_pipeline"] = active_clip_pipeline
+        payload["pipeline_mismatch_message"] = (
+            f"Selected clip is {active_clip_pipeline or 'unknown'} but beat is set to "
+            f"{payload['generation_mode']} — voice will not match Generate until you switch clip or mode."
+        )
+    return h._send_json(200, payload)
 
 
 def _load_elevenlabs_key():

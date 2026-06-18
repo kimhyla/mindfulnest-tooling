@@ -761,6 +761,7 @@ def run_pipeline(beat_id: str, *, model: str = "pro", sharpen: bool = True, atte
         "kling_o3_video_path": str(active),
         "kling_o3_status": "approved",
         "status": "approved",
+        "kling_o3_mode": "o3_voice_first_lipsync",
         "kling_o3_completed_at": now,
         "kling_o3_voice_fix_status": "approved",
         "kling_o3_voice_fix_phase": "finalize",
@@ -783,8 +784,15 @@ def run_pipeline(beat_id: str, *, model: str = "pro", sharpen: bool = True, atte
     }
     beat.update(final_fields)
     _upsert_o3_option(beat, video_path=str(active), label="latest O3 voice video", active=True, now=now)
+    import beat_generator as bg_mod  # noqa: PLC0415
+
+    bg_mod.sync_o3_selection_pipeline_fields(beat, sc)
     final_fields["kling_o3_options"] = beat.get("kling_o3_options")
     final_fields["kling_o3_selected_option_key"] = beat.get("kling_o3_selected_option_key")
+    if beat.get("kling_o3_active_clip_pipeline"):
+        final_fields["kling_o3_active_clip_pipeline"] = beat["kling_o3_active_clip_pipeline"]
+    beat.pop("kling_o3_selection_pipeline_mismatch", None)
+    final_fields.pop("kling_o3_selection_pipeline_mismatch", None)
     final_fields["arlo_visual_quality"] = {
         "speaker": speaker,
         "model": model,

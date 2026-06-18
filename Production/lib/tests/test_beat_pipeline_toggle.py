@@ -226,3 +226,47 @@ def test_session_state_enriches_generation_mode():
 
 def test_o3_generate_mode_in_sidecar_merge_preserve():
     assert "o3_generate_mode" in bg.SIDECAR_MERGE_PRESERVE_FIELDS
+
+
+def test_set_generation_mode_element_auto_selects_element_clip():
+    beat = {
+        "beat_id": "bg_arc1_event2_pre_beat_04",
+        "speaker": "Tessa",
+        "dialogue_text": "Hi",
+        "pipeline": "kling_o3_omni",
+        "o3_generate_mode": "voice_first",
+        "kling_o3_video_path": "/Event_2/kling_o3_clips/beat_tessa_voice_lipsync_delivery.mp4",
+        "kling_o3_options": [
+            {
+                "key": "v",
+                "video_path": "/Event_2/kling_o3_clips/beat_tessa_voice_lipsync_delivery.mp4",
+                "source": "kling_o3_voice_video",
+                "active": True,
+            },
+            {
+                "key": "e",
+                "video_path": "/Event_2/kling_o3_clips/beat_g4_element_o3_master_delivery.mp4",
+                "source": "kling_o3_element_native_voice",
+                "generation": 4,
+            },
+        ],
+    }
+    sidecar = {
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {"beats": [beat]},
+                },
+            },
+        },
+    }
+    changed = bg.set_beat_generation_mode(
+        beat,
+        bg.O3_GENERATE_MODE_ELEMENT_NATIVE,
+        event_id="2",
+        phase="pre",
+        sidecar=sidecar,
+    )
+    assert changed is True
+    assert "_element_o3" in beat["kling_o3_video_path"]
+    assert beat.get("kling_o3_mode") == bg.KLING_O3_MODE_ELEMENT_NATIVE

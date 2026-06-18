@@ -145,6 +145,10 @@ MARKERS=(
     "O3_INTENT_SNAPSHOT|Generation in progress — prompt locked to submitted intent."
     # O3 poll — sidecar lock contention must not fail the poll loop (2026-06-18)
     "O3_POLL_SIDECAR_LOCK|sidecar lock timeout"
+    # O3 pipeline — gallery selection must not silently cross voice-first / Element (2026-06-18)
+    "O3_PIPELINE_MISMATCH|bg-o3-pipeline-mismatch"
+    "O3_PIPELINE_MISMATCH|kling_o3_selection_pipeline_mismatch"
+    "O3_PIPELINE_MISMATCH|Pipeline mismatch:"
 )
 
 missing_count=0

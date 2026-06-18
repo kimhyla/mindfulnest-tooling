@@ -797,6 +797,8 @@ SIDECAR_MERGE_PRESERVE_FIELDS: tuple[str, ...] = (
     "o3_prompt_box_law", "o3_prompt_box_law_at",
     "pipeline",
     "o3_generate_mode",
+    "kling_o3_selection_pipeline_mismatch",
+    "kling_o3_active_clip_pipeline",
     "intro_beat_role", "canonical_intro_tail",
     "magic_manual_path", "magic_video_path", "magic_path_authored_against",
     "storyboard_clip_import",
@@ -3441,6 +3443,160 @@ VALID_GENERATION_MODES = frozenset({
     O3_GENERATE_MODE_ELEMENT_NATIVE,
 })
 
+O3_OPTION_SOURCE_VOICE_FIRST = "kling_o3_voice_video"
+O3_OPTION_SOURCE_ELEMENT = "kling_o3_element_native_voice"
+O3_OPTION_SOURCE_STILL = frozenset({"still_insert_static_hold", "still_insert_ken_burns"})
+KLING_O3_MODE_VOICE_FIRST = "o3_voice_first_lipsync"
+KLING_O3_MODE_ELEMENT_NATIVE = "o3_element_native_voice"
+
+
+def infer_o3_option_pipeline_mode(option: dict | None) -> str:
+    """Classify a gallery option's pipeline (path beats stale source labels)."""
+    if not isinstance(option, dict):
+        return ""
+    source = str(option.get("source") or "").strip().lower()
+    path = str(option.get("video_path") or "").lower()
+    if source in O3_OPTION_SOURCE_STILL or "still_insert" in path:
+        return PIPELINE_MODE_STILL
+    if "_voice_lipsync" in path:
+        return O3_GENERATE_MODE_VOICE_FIRST
+    if "_element_o3" in path or (
+        "_element_" in path and "_voice_lipsync" not in path
+    ):
+        return O3_GENERATE_MODE_ELEMENT_NATIVE
+    if source == O3_OPTION_SOURCE_ELEMENT:
+        return O3_GENERATE_MODE_ELEMENT_NATIVE
+    if source == O3_OPTION_SOURCE_VOICE_FIRST:
+        return O3_GENERATE_MODE_VOICE_FIRST
+    if source == "approved_kling_o3_video" and path:
+        return infer_o3_option_pipeline_mode({"video_path": path})
+    return ""
+
+
+def o3_option_matches_generation_mode(option: dict, generation_mode: str) -> bool:
+    opt_mode = infer_o3_option_pipeline_mode(option)
+    if not opt_mode or not generation_mode:
+        return True
+    if generation_mode == PIPELINE_MODE_STILL:
+        return opt_mode == PIPELINE_MODE_STILL
+    return opt_mode == generation_mode
+
+
+def find_active_o3_option(beat: dict) -> dict | None:
+    key = beat.get("kling_o3_selected_option_key")
+    path = beat.get("kling_o3_video_path")
+    for o in beat.get("kling_o3_options") or []:
+        if not isinstance(o, dict):
+            continue
+        if key and o.get("key") == key:
+            return o
+    if path:
+        for o in beat.get("kling_o3_options") or []:
+            if isinstance(o, dict) and o.get("video_path") == path:
+                return o
+    return None
+
+
+def compute_o3_selection_pipeline_mismatch(
+    beat: dict,
+    sidecar: dict,
+    *,
+    option: dict | None = None,
+) -> bool:
+    """True when the active gallery clip's pipeline differs from the beat's generation mode."""
+    if beat_is_still_insert(beat):
+        return False
+    gen_mode = resolve_beat_generation_mode(beat, sidecar)
+    if gen_mode == PIPELINE_MODE_STILL:
+        return False
+    active = option if option is not None else find_active_o3_option(beat)
+    if not active:
+        return False
+    return not o3_option_matches_generation_mode(active, gen_mode)
+
+
+def sync_o3_selection_pipeline_fields(
+    beat: dict,
+    sidecar: dict,
+    *,
+    option: dict | None = None,
+) -> bool:
+    """Stamp mismatch flag + kling_o3_mode from the active gallery selection."""
+    active = option if option is not None else find_active_o3_option(beat)
+    opt_mode = infer_o3_option_pipeline_mode(active or {})
+    mismatch = compute_o3_selection_pipeline_mismatch(beat, sidecar, option=active)
+    changed = False
+    if mismatch:
+        if not beat.get("kling_o3_selection_pipeline_mismatch"):
+            beat["kling_o3_selection_pipeline_mismatch"] = True
+            changed = True
+    elif beat.pop("kling_o3_selection_pipeline_mismatch", None) is not None:
+        changed = True
+    if opt_mode:
+        if beat.get("kling_o3_active_clip_pipeline") != opt_mode:
+            beat["kling_o3_active_clip_pipeline"] = opt_mode
+            changed = True
+        mode_map = {
+            O3_GENERATE_MODE_VOICE_FIRST: KLING_O3_MODE_VOICE_FIRST,
+            O3_GENERATE_MODE_ELEMENT_NATIVE: KLING_O3_MODE_ELEMENT_NATIVE,
+        }
+        expected = mode_map.get(opt_mode)
+        if expected and beat.get("kling_o3_mode") != expected:
+            beat["kling_o3_mode"] = expected
+            changed = True
+    elif beat.pop("kling_o3_active_clip_pipeline", None) is not None:
+        changed = True
+    return changed
+
+
+def best_o3_option_for_generation_mode(beat: dict, generation_mode: str) -> dict | None:
+    if generation_mode == PIPELINE_MODE_STILL:
+        return None
+    candidates: list[dict] = []
+    for o in beat.get("kling_o3_options") or []:
+        if not isinstance(o, dict):
+            continue
+        if not (o.get("video_path") or "").strip():
+            continue
+        if o3_option_matches_generation_mode(o, generation_mode):
+            candidates.append(o)
+    if not candidates:
+        return None
+
+    def _rank(o: dict) -> tuple:
+        path = str(o.get("video_path") or "")
+        created = str(o.get("created_at") or "")
+        gen = o.get("generation")
+        pri = 1_000_000 if "_voice_lipsync" in path else (int(gen) if isinstance(gen, int) else 0)
+        return (pri, created)
+
+    return max(candidates, key=_rank)
+
+
+def auto_select_o3_option_for_generation_mode(beat: dict, sidecar: dict, generation_mode: str) -> bool:
+    """After a pipeline toggle, re-pin the active clip to the best matching gallery option."""
+    if generation_mode == PIPELINE_MODE_STILL:
+        return False
+    current = find_active_o3_option(beat)
+    if current and o3_option_matches_generation_mode(current, generation_mode):
+        return sync_o3_selection_pipeline_fields(beat, sidecar, option=current)
+    best = best_o3_option_for_generation_mode(beat, generation_mode)
+    if not best or not best.get("video_path"):
+        sync_o3_selection_pipeline_fields(beat, sidecar, option=current)
+        return False
+    beat_id = str(beat.get("beat_id") or "beat")
+    video_path = str(best["video_path"])
+    key = str(best.get("key") or _kling_o3_option_key(beat_id, video_path))
+    now = datetime.now(timezone.utc).isoformat()
+    beat["kling_o3_video_path"] = video_path
+    beat["kling_o3_selected_option_key"] = key
+    beat["kling_o3_selected_at"] = now
+    for o in beat.get("kling_o3_options") or []:
+        if isinstance(o, dict):
+            o["active"] = o.get("video_path") == video_path or o.get("key") == key
+    sync_o3_selection_pipeline_fields(beat, sidecar, option=best)
+    return True
+
 
 class PipelineToggleError(Exception):
     def __init__(self, code: str, message: str) -> None:
@@ -3633,6 +3789,7 @@ def resolve_beat_generation_mode(beat: dict, sidecar: dict) -> str:
 def enrich_beat_generation_mode(beat: dict, sidecar: dict) -> None:
     """Stamp resolved generation_mode on beat dict for Beat Gen session-state."""
     beat["generation_mode"] = resolve_beat_generation_mode(beat, sidecar)
+    sync_o3_selection_pipeline_fields(beat, sidecar)
 
 
 def enrich_beats_generation_mode(beats: list[dict], sidecar: dict) -> None:
@@ -3687,6 +3844,8 @@ def set_beat_generation_mode(
             beat["o3_generate_mode"] = mode
             changed = True
     classify_beat_pipeline_fields(beat)
+    if auto_select_o3_option_for_generation_mode(beat, sidecar, mode):
+        changed = True
     return changed
 
 
