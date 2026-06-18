@@ -1008,6 +1008,9 @@ export function BgTab() {
             });
             return;
           }
+          if (res.data.status === 'running' && res.data.beat) {
+            beatPatches.push(res.data.beat as BgBeat);
+          }
           anyStillRunning = true;
           return;
         }
@@ -1023,6 +1026,10 @@ export function BgTab() {
         pushToast({ kind: 'error', message: `O3 poll error: ${res.error}`, source: 'bg-o3-poll-error' });
       }));
       if (cancelled) return;
+
+      if (beatPatches.length > 0) {
+        setBeats((bs) => beatPatches.reduce((acc, patch) => mergeBeatFromO3Poll(acc, patch), bs));
+      }
 
       if (completedBeatIds.length > 0 || failedBeatIds.length > 0 || staleBeatIds.length > 0) {
         setActiveO3Jobs((prev) => {
@@ -1047,9 +1054,7 @@ export function BgTab() {
           }
           return next;
         });
-        if (beatPatches.length > 0) {
-          setBeats((bs) => beatPatches.reduce((acc, patch) => mergeBeatFromO3Poll(acc, patch), bs));
-        } else {
+        if (beatPatches.length === 0) {
           void refreshState();
         }
       }

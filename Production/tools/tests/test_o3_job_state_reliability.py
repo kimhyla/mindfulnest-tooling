@@ -201,15 +201,62 @@ def test_finalize_respects_sidecar_failed_provider_fetch(monkeypatch, tmp_path) 
     assert "non-public" in job["error"].lower() or "localhost" in job["error"].lower()
 
 
-def test_o3_poll_returns_enriched_beat_snapshot_on_terminal() -> None:
+def test_o3_poll_returns_enriched_beat_snapshot_while_running_and_terminal() -> None:
     src = (TOOLS / "server_handlers" / "background.py").read_text(encoding="utf-8")
     assert "_enriched_beat_snapshot_for_o3_poll" in src
     assert "_o3_poll_payload_with_beat_snapshot" in src
     assert 'out["beat"] = snap' in src
+    snap_block = src.split("def _o3_poll_payload_with_beat_snapshot", 1)[1].split("\ndef ", 1)[0]
+    assert '"running"' in snap_block
+    assert '"done"' in snap_block
+    assert '"failed"' in snap_block
 
 
-def test_o3_poll_ui_patches_single_beat_without_full_refresh() -> None:
+def test_o3_poll_payload_attaches_beat_snapshot_for_running_status(monkeypatch, tmp_path) -> None:
+    import importlib
+
+    bg_mod = importlib.import_module("server_handlers.background")
+    beat_id = "bg_arc1_event2_pre_beat_03"
+    event_dir = tmp_path / "Event_2"
+    event_dir.mkdir()
+    sidecar = {
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [{
+                            "beat_id": beat_id,
+                            "speaker": "Lorelai",
+                            "kling_o3_voice_fix_status": "visual_running",
+                            "kling_o3_status": "visual_running",
+                        }],
+                    },
+                },
+            },
+        },
+    }
+
+    def _fake_enriched(bid, _event_dir, *, migrate=False):
+        assert bid == beat_id
+        assert migrate is False
+        return {"beat_id": bid, "kling_o3_voice_fix_status": "visual_running"}
+
+    monkeypatch.setattr(bg_mod, "_enriched_beat_snapshot_for_o3_poll", _fake_enriched)
+    payload = {"status": "running", "beat_id": beat_id, "job_id": "abc12345"}
+    out = bg_mod._o3_poll_payload_with_beat_snapshot(payload, event_dir)
+    assert out["beat"]["beat_id"] == beat_id
+    assert out["status"] == "running"
+
+
+def test_o3_poll_ui_patches_beat_while_running_and_on_terminal() -> None:
     src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
     assert "mergeBeatFromO3Poll" in src
     assert "O3_POLL_INTERVAL_MS" in src
     assert "res.data.beat" in src
+    poll_block = src.split("useEffect(() => {", 1)[1]
+    poll_block = poll_block.split("// After server restart", 1)[0]
+    assert "res.data.status === 'running' && res.data.beat" in poll_block
+    assert "if (beatPatches.length > 0)" in poll_block
+    assert poll_block.index("if (beatPatches.length > 0)") < poll_block.index(
+        "if (completedBeatIds.length > 0 || failedBeatIds.length > 0 || staleBeatIds.length > 0)"
+    )

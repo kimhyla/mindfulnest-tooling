@@ -4077,9 +4077,9 @@ def _enriched_beat_snapshot_for_o3_poll(
 
 
 def _o3_poll_payload_with_beat_snapshot(payload: dict, event_dir: Path) -> dict:
-    """Attach enriched sidecar beat on terminal O3 poll (done/failed) for fast UI patch."""
+    """Attach enriched sidecar beat on O3 poll so UI shows running state + terminal clip."""
     payload = _enrich_o3_poll_with_intent(payload, event_dir)
-    if payload.get("status") not in ("done", "failed", "done_with_warning"):
+    if payload.get("status") not in ("running", "done", "failed", "done_with_warning"):
         return payload
     beat_id = str(payload.get("beat_id") or "").strip()
     if not beat_id:
