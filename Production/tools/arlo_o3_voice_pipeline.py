@@ -778,6 +778,7 @@ def run_pipeline(beat_id: str, *, model: str = "pro", sharpen: bool = True, atte
     beat.update(final_fields)
     _upsert_o3_option(beat, video_path=str(active), label="latest O3 voice video", active=True, now=now)
     final_fields["kling_o3_options"] = beat.get("kling_o3_options")
+    final_fields["kling_o3_selected_option_key"] = beat.get("kling_o3_selected_option_key")
     final_fields["arlo_visual_quality"] = {
         "speaker": speaker,
         "model": model,

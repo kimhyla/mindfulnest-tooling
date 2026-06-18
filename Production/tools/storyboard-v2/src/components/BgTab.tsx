@@ -417,6 +417,7 @@ function resolveO3OptionKey(opt: GptOption, beatId: string, slotIndex: number): 
 
 function o3GenerationFromPath(path?: string | null): number {
   const name = (path ?? '').split('/').pop() ?? '';
+  if (name.includes('_voice_lipsync_delivery')) return 1_000_000;
   const m = name.match(/_g(\d+)(?:_(?:element|kling)|\.mp4)/i) ?? name.match(/_g(\d+)\.mp4$/i);
   return m ? Number(m[1]) : 0;
 }
@@ -434,16 +435,15 @@ function buildFixedO3OptionSlots(beat: BgBeat): (GptOption | null)[] {
   for (let si = 0; si < 3; si += 1) {
     slots[si] = sorted[si] ?? null;
   }
-  const activeListed = activeO3Path && o3History.some((o) => o.video_path === activeO3Path);
+  const activeListed = activeO3Path && slots.some((s) => s?.video_path === activeO3Path);
   if (beat.kling_o3_status === 'approved' && activeO3Path && !activeListed) {
-    const firstEmpty = slots.findIndex((s) => !s);
-    const idx = firstEmpty >= 0 ? firstEmpty : 0;
-    slots[idx] = {
+    const activeOpt = o3History.find((o) => o.video_path === activeO3Path);
+    slots[0] = activeOpt ?? {
       key: `${beat.beat_id}_approved_o3_video`,
       label: 'approved O3 video',
       video_path: activeO3Path,
       source: 'approved_kling_o3_video',
-      slot_index: idx,
+      slot_index: 0,
     };
   }
   return slots;
