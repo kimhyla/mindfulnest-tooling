@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 import beat_generator as bg
 
 BEAT4_ELEMENT_PATH = (
@@ -51,6 +53,61 @@ def _event2_sidecar_beat4(*, o3_generate_mode: str = "voice_first") -> tuple[dic
         },
     }
     return sidecar, beat
+
+
+def test_infer_pov_motion_source_beats_still_insert_path():
+    """O3 i2v animation imported onto still_insert beat must not classify as still."""
+    opt = {
+        "source": bg.O3_OPTION_SOURCE_POV_MOTION,
+        "video_path": "/Event_3/kling_o3_clips/bg_arc1_event3_pre_beat_10_still_insert_1782580523_kling_idle_tts.mp4",
+    }
+    assert bg.infer_o3_option_pipeline_mode(opt) == bg.O3_GENERATE_MODE_ELEMENT_NATIVE
+
+
+def test_import_pov_motion_on_still_beat_uses_animation_filename(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import beat_generator as bg_mod
+    from beatgen_scope import build_event_production_scope
+    from lib.beatgen_store import BeatgenStore
+
+    event_dir = tmp_path / "Event_3"
+    (event_dir / "kling_o3_clips").mkdir(parents=True)
+    db = tmp_path / "beatgen_event3.db"
+    beat_id = "bg_arc1_event3_pre_beat_10"
+    sidecar = {
+        "arcs": {"arc_1": {"segments": {"event_3_pre": {"beats": [{
+            "beat_id": beat_id, "pipeline": "still_insert", "beat_render_mode": "still_insert",
+            "kling_o3_options": [],
+        }]}}}}
+    }
+    monkeypatch.setenv("MN_BEATGEN_DB_PATH", str(db))
+    monkeypatch.setenv("MN_SIDECAR_SQLITE_AUTHORITY", "1")
+    monkeypatch.setenv("MN_BEATGEN_SERVER_WRITER", "1")
+    monkeypatch.setattr(bg_mod, "bootstrap_sqlite_from_legacy_global_db", lambda *_a, **_k: 0)
+    BeatgenStore.reset_singleton_for_tests()
+    bg_mod.reset_bg_paths_activation_for_tests()
+    bg_mod.init_bg_paths(str(event_dir), clear_milestone_scope=True)
+    bg_mod._beatgen_store().import_from_dict(sidecar, replace=True)
+    delivery = tmp_path / "anim.mp4"
+    delivery.write_bytes(b"fake-anim")
+    ok, beat = bg_mod.import_delivery_clip_to_beat(
+        beat_id=beat_id,
+        delivery_mp4=delivery,
+        slot_index=0,
+        label="Hand + Sweet Rose seeds (O3 i2v + Ember TTS)",
+        source=bg_mod.O3_OPTION_SOURCE_POV_MOTION,
+        make_active=True,
+        event_dir=event_dir,
+        scope=build_event_production_scope(event_dir),
+    )
+    assert ok and beat
+    vp = str(beat.get("kling_o3_video_path") or "")
+    assert "_still_insert_" not in vp
+    assert "_g1_delivery" in vp or "_g" in vp
+    opt = next(o for o in (beat.get("kling_o3_options") or []) if o.get("active"))
+    assert opt.get("source") == bg_mod.O3_OPTION_SOURCE_POV_MOTION
 
 
 def test_infer_o3_option_pipeline_mode_path_beats_stale_source():

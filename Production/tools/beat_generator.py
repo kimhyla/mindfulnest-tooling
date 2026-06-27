@@ -4391,18 +4391,29 @@ O3_OPTION_SOURCE_STILL = frozenset({
     "still_insert_ken_burns",
     "still_insert_kling_idle",
 })
+O3_OPTION_SOURCE_POV_MOTION = "o3_pov_motion_i2v"
+O3_OPTION_SOURCE_ANIMATION = frozenset({
+    O3_OPTION_SOURCE_POV_MOTION,
+    O3_OPTION_SOURCE_VOICE_FIRST,
+    O3_OPTION_SOURCE_ELEMENT,
+    O3_OPTION_SOURCE_AVATAR,
+})
 KLING_O3_MODE_VOICE_FIRST = "o3_voice_first_lipsync"
 KLING_O3_MODE_ELEMENT_NATIVE = "o3_element_native_voice"
 KLING_O3_MODE_AVATAR = "o3_avatar_pro_v1"
 
 
 def infer_o3_option_pipeline_mode(option: dict | None) -> str:
-    """Classify a gallery option's pipeline (path beats stale source labels)."""
+    """Classify a gallery option's pipeline (source beats path for animation imports)."""
     if not isinstance(option, dict):
         return ""
     source = str(option.get("source") or "").strip().lower()
     path = str(option.get("video_path") or "").lower()
-    if source in O3_OPTION_SOURCE_STILL or "still_insert" in path:
+    if source == O3_OPTION_SOURCE_POV_MOTION or "_o3_i2v" in path or "_pov_" in path:
+        return O3_GENERATE_MODE_ELEMENT_NATIVE
+    if source in O3_OPTION_SOURCE_STILL or (
+        "still_insert" in path and source not in O3_OPTION_SOURCE_ANIMATION
+    ):
         return PIPELINE_MODE_STILL
     if "_avatar_pro" in path or source == O3_OPTION_SOURCE_AVATAR:
         return O3_GENERATE_MODE_AVATAR
@@ -11896,14 +11907,19 @@ def import_delivery_clip_to_beat(
         gens = [g for g in gens if g is not None]
         gen = (max(gens) + 1) if gens else 1
 
-    resolved_source = source
+    resolved_source = (source or "").strip() or None
     if not resolved_source:
         if beat_is_still_insert(beat_probe):
             resolved_source = "still_insert_kling_idle"
         else:
-            resolved_source = "o3_pov_motion_i2v"
+            resolved_source = O3_OPTION_SOURCE_POV_MOTION
 
-    if beat_is_still_insert(beat_probe):
+    use_still_naming = (
+        beat_is_still_insert(beat_probe)
+        and resolved_source in O3_OPTION_SOURCE_STILL
+    )
+
+    if use_still_naming:
         ts = int(datetime.now(timezone.utc).timestamp())
         dest_name = f"{beat_id}_still_insert_{ts}_s{slot_index}_kling_idle_tts.mp4"
     else:
