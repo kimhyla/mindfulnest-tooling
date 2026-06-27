@@ -25,32 +25,137 @@ def model_supports_request_stitching(model_id: str | None) -> bool:
     return (model_id or "").strip().lower() not in _STITCHING_UNSUPPORTED_MODELS
 
 
-def build_single_call_tts_script(script: str, clean_text_fn) -> str:
-    """One ElevenLabs paste — ellipses for pause/silence markers (canonical v3 workflow)."""
+def inline_v3_pause_tag(duration_s: float) -> str:
+    """Map authored short pause seconds → ElevenLabs v3 audio tags (not SSML break)."""
+    dur = max(0.0, float(duration_s))
+    if dur >= 1.5:
+        return "[long pause]"
+    if dur >= 0.75:
+        return "[pause]"
+    return "[short pause]"
+
+
+def timed_silence_to_v3_pauses(duration_s: float) -> str:
+    """Map ``[silence:Ns]`` to v3 pause tags for single-call generation."""
+    dur = max(0.0, float(duration_s))
+    if dur >= 3.0:
+        return " ".join(["[long pause]"] * max(1, round(dur / 2.5)))
+    if dur >= 1.5:
+        return "[long pause]"
+    if dur >= 0.75:
+        return "[pause]"
+    return "[short pause]"
+
+
+# Prepended once on Phase B Cedric regen — v3 delivery tags, not spoken as dialogue.
+CEDRIC_PHASE_B_V3_ACCENT_PREAMBLE = "[British accent throughout] [warm] "
+
+
+def build_single_call_v3_script(
+    script: str,
+    clean_text_fn,
+    *,
+    accent_preamble: str = "",
+) -> str:
+    """One ElevenLabs paste for eleven_v3 — accent + v3 pause tags (Kim M4 workflow)."""
     import re as _re
 
-    _silence_pat = _re.compile(
+    _marker_pat = _re.compile(
         r"\[(?:silence:\s*(\d+(?:\.\d+)?)\s*s?|pause|break|silence)\]",
         _re.IGNORECASE,
     )
     parts: list[str] = []
     last = 0
-    for match in _silence_pat.finditer(script):
+    for match in _marker_pat.finditer(script):
         chunk = script[last:match.start()].strip()
         if chunk:
             parts.append(clean_text_fn(chunk))
         dur_raw = match.group(1)
-        dur = float(dur_raw) if dur_raw else 1.0
-        # Map authored silence seconds → longer ellipsis runs (Kim M4 paste workflow).
-        ellipsis_runs = max(1, min(6, round(dur / 2.0)))
-        parts.append(" ... ".join(["..."] * ellipsis_runs))
+        if dur_raw:
+            parts.append(timed_silence_to_v3_pauses(float(dur_raw)))
+        else:
+            parts.append(inline_v3_pause_tag(0.5))
         last = match.end()
     tail = script[last:].strip()
     if tail:
         parts.append(clean_text_fn(tail))
     if not parts:
-        return clean_text_fn(script)
-    return " ".join(p for p in parts if p).strip()
+        body = clean_text_fn(script)
+    else:
+        body = " ".join(p for p in parts if p).strip()
+    if accent_preamble:
+        return f"{accent_preamble.strip()} {body}".strip()
+    return body
+
+
+def coalesce_segments_for_v3_regen(
+    segments: list[tuple[str, str | float]],
+    clean_text_fn,
+    *,
+    ffmpeg_silence_min_s: float = 2.0,
+) -> list[tuple[str, str | float]]:
+    """Coalesce script segments for eleven_v3 PHASE_VOICE_STEM_CONCAT_V1 regen.
+
+    - ``[silence:2s+]`` → real ffmpeg silence (exact hold — Event 1/2 behavior).
+    - ``[silence:1s]`` / ``[pause]`` → inline v3 pause tags inside the speech chunk
+      (no extra ElevenLabs call — keeps call count ~10, not 22).
+    """
+    chunks: list[tuple[str, str | float]] = []
+    speech_buf: list[str] = []
+
+    def _flush_speech() -> None:
+        if not speech_buf:
+            return
+        text = " ".join(speech_buf).strip()
+        speech_buf.clear()
+        if text:
+            chunks.append(("speech", text))
+
+    for kind, value in segments:
+        if kind == "text":
+            cleaned = clean_text_fn(value)
+            if cleaned:
+                speech_buf.append(cleaned)
+            continue
+        if kind == "timed_silence":
+            dur = float(value)
+            if dur >= ffmpeg_silence_min_s:
+                _flush_speech()
+                chunks.append(("silence", dur))
+            else:
+                speech_buf.append(inline_v3_pause_tag(dur))
+            continue
+        if kind == "pause":
+            speech_buf.append(inline_v3_pause_tag(float(value)))
+            continue
+        # Backward compat if legacy parser emitted generic silence.
+        dur = float(value)
+        if dur >= ffmpeg_silence_min_s:
+            _flush_speech()
+            chunks.append(("silence", dur))
+        else:
+            speech_buf.append(inline_v3_pause_tag(dur))
+
+    _flush_speech()
+    return chunks
+
+
+def prepend_accent_to_first_speech_chunk(
+    coalesced: list[tuple[str, str | float]],
+    accent_preamble: str,
+) -> list[tuple[str, str | float]]:
+    """Prepend v3 delivery tags to the first speech chunk only."""
+    if not accent_preamble:
+        return coalesced
+    out: list[tuple[str, str | float]] = []
+    applied = False
+    for kind, value in coalesced:
+        if not applied and kind == "speech":
+            out.append((kind, f"{accent_preamble.strip()} {value}".strip()))
+            applied = True
+        else:
+            out.append((kind, value))
+    return out
 
 
 def continuity_context_tail(text: str | None, *, max_chars: int = _CONTINUITY_TEXT_CHARS) -> str | None:

@@ -16,11 +16,11 @@ def test_manifest_whiteout_hold_zero_is_not_falsy_default():
     )
     parts = ph._parse_silence_segments(script)
     assert parts[0] == ("text", "Hello world.")
-    assert parts[1] == ("silence", ph.PHASE_VOICE_STEM_PAUSE_DEFAULT_S)
-    assert parts[2] == ("silence", ph.PHASE_VOICE_STEM_PAUSE_DEFAULT_S)
+    assert parts[1] == ("pause", ph.PHASE_VOICE_STEM_PAUSE_DEFAULT_S)
+    assert parts[2] == ("pause", ph.PHASE_VOICE_STEM_PAUSE_DEFAULT_S)
     assert parts[3][0] == "text"
     assert "Next sentence." in parts[3][1]
-    assert parts[4] == ("silence", 1.5)
+    assert parts[4] == ("timed_silence", 1.5)
     assert parts[5][0] == "text"
 
 

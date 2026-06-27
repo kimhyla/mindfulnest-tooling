@@ -1019,9 +1019,10 @@ def _build_phase_b_suggest_user_prompt(
         "- NO creature narrative or scene-setting (no 'Luna is excited', "
         "no 'watch what X learns'). Child cannot see the screen.\n"
         "- NO 'Cedric:' speaker prefixes.\n"
-        "- Use [silence:Ns] for pauses 2s+ (server ffmpeg injection). "
-        "Use ellipsis (…) for sub-2s pauses. [long pause] and [warm] "
-        "are valid.\n"
+        "- Use [silence:Ns] for timed holds. Server injects exact ffmpeg silence "
+        "for [silence:2s+] (Event 1/2 behavior). Use [silence:3s] / [silence:6s] "
+        "for meditation holds; [silence:1s] for short breath beats. Do NOT use "
+        "[pause]. Ellipsis (…) for trailing delivery only. [warm] is valid.\n"
         "- Do NOT use {{PAUSE:Xs}}, {{BELL_CUE}}, {{INHALE_CUE}}, etc. "
         "in this draft (post-approval audio markers per Production "
         "Process Step 9b).\n"
@@ -1442,6 +1443,8 @@ def handle_phase_suggest_script(h, body: dict)-> None:
 
 
 PHASE_VOICE_STEM_PAUSE_DEFAULT_S = 0.5
+# Suggest-script contract: [silence:2s+] → server ffmpeg injection (exact hold).
+PHASE_VOICE_STEM_FFMPEG_SILENCE_MIN_S = 2.0
 PHASE_VOICE_STEM_CONCAT_V1 = "PHASE_VOICE_STEM_CONCAT_V1"
 
 
@@ -1449,7 +1452,10 @@ def _parse_silence_segments(script: str):
     """Split script on pause/silence markers for multi-segment TTS + real silence.
 
     Supports ``[silence:1.2s]``, ``[pause]``, ``[break]``, ``[silence]`` (same as beat TTS cues).
-    Returns list of ('text', str) | ('silence', float) tuples.
+    Returns list of ('text', str) | ('timed_silence', float) | ('pause', float) tuples.
+
+    ``timed_silence`` = explicit ``[silence:Ns]`` (exact ffmpeg hold).
+    ``pause`` = ``[pause]`` / ``[break]`` / bare ``[silence]`` (short, ElevenLabs-native).
     """
     import re as _re
 
@@ -1464,8 +1470,10 @@ def _parse_silence_segments(script: str):
         if chunk:
             parts.append(("text", chunk))
         dur_raw = m.group(1)
-        dur = float(dur_raw) if dur_raw else PHASE_VOICE_STEM_PAUSE_DEFAULT_S
-        parts.append(("silence", dur))
+        if dur_raw:
+            parts.append(("timed_silence", float(dur_raw)))
+        else:
+            parts.append(("pause", PHASE_VOICE_STEM_PAUSE_DEFAULT_S))
         last = m.end()
     tail = script[last:].strip()
     if tail:
@@ -1863,27 +1871,127 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
         )
 
     segments = _parse_silence_segments(script)
-    has_markers = any(kind == "silence" for kind, _ in segments)
+    has_markers = any(kind in ("timed_silence", "pause") for kind, _ in segments)
     stitching_supported = model_supports_request_stitching(model_id)
-    use_multi = has_markers and stitching_supported
+    use_v3_ffmpeg_concat = (not stitching_supported) and has_markers
+    use_single_v3_plain = (not stitching_supported) and not has_markers
+    use_multi_stitched = has_markers and stitching_supported
     tts_stitching_meta: dict | None = None
 
     t0 = time.time()
-    if not use_multi:
-        from lib.elevenlabs_tts import build_single_call_tts_script  # noqa: PLC0415
+    if use_v3_ffmpeg_concat:
+        # eleven_v3 + markers: PHASE_VOICE_STEM_CONCAT_V1 (Event 1/2 exact ffmpeg holds).
+        import tempfile as _tempfile
+        from lib.elevenlabs_tts import (  # noqa: PLC0415
+            CEDRIC_PHASE_B_V3_ACCENT_PREAMBLE,
+            coalesce_segments_for_v3_regen,
+            prepend_accent_to_first_speech_chunk,
+        )
         from production_server import _clean_text_for_tts  # noqa: PLC0415
 
-        tts_script = (
-            build_single_call_tts_script(script, _clean_text_for_tts)
-            if has_markers
-            else _clean_text_for_tts(script)
+        accent_preamble = (
+            CEDRIC_PHASE_B_V3_ACCENT_PREAMBLE
+            if phase == "b" and speaker == "Cedric"
+            else ""
         )
-        if has_markers and not stitching_supported:
+        coalesced = prepend_accent_to_first_speech_chunk(
+            coalesce_segments_for_v3_regen(
+                segments,
+                _clean_text_for_tts,
+                ffmpeg_silence_min_s=PHASE_VOICE_STEM_FFMPEG_SILENCE_MIN_S,
+            ),
+            accent_preamble,
+        )
+        speech_count = sum(1 for k, _ in coalesced if k == "speech")
+        silence_count = sum(1 for k, _ in coalesced if k == "silence")
+        silence_total_s = sum(
+            float(v) for k, v in coalesced if k == "silence"
+        )
+        tmp_dir = Path(_tempfile.mkdtemp(prefix="mn_regen_audio_v3_concat_"))
+        concat_parts: list[Path] = []
+        try:
+            seg_idx = 0
+            for kind, value in coalesced:
+                if kind == "speech":
+                    seg_path = tmp_dir / f"seg_{seg_idx:03d}_speech.mp3"
+                    try:
+                        sc, seg_bytes, _req_id = call_elevenlabs_tts(
+                            api_key=elevenlabs_key,
+                            voice_id=voice_id,
+                            text=str(value),
+                            model_id=model_id,
+                            voice_settings=voice_settings,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        return h._send_error_v59(
+                                   502,
+                                   error_code="GENERIC_ERROR",
+                                   error_message=f"ElevenLabs segment {seg_idx} network failure: "
+                                     f"{type(exc).__name__}: {exc}",
+                                   retry_safe=True,
+                                   extra={"segment_index": seg_idx, "speaker": speaker},
+                               )
+                    if sc >= 400:
+                        detail = seg_bytes[:400].decode("utf-8", errors="replace")
+                        return h._send_error_v59(
+                                   502,
+                                   error_code="GENERIC_ERROR",
+                                   error_message=f"ElevenLabs segment {seg_idx} HTTP {sc}: {detail}",
+                                   retry_safe=True,
+                                   extra={"segment_index": seg_idx, "speaker": speaker},
+                               )
+                    seg_path.write_bytes(seg_bytes)
+                    concat_parts.append(seg_path)
+                    seg_idx += 1
+                else:
+                    sil_path = tmp_dir / f"seg_{seg_idx:03d}_silence_{value}s.mp3"
+                    try:
+                        _build_silence_mp3(float(value), sil_path)
+                    except subprocess.CalledProcessError as exc:
+                        return h._send_error_v59(
+                                   500,
+                                   error_code="GENERIC_ERROR",
+                                   error_message=f"ffmpeg silence generation failed for {value}s: {exc}",
+                                   retry_safe=True,
+                               )
+                    concat_parts.append(sil_path)
+                    seg_idx += 1
+
+            concat_out = tmp_dir / "concat_out.mp3"
+            _concat_audio_parts_seamless(concat_parts, concat_out)
+            audio_bytes = concat_out.read_bytes()
             tts_stitching_meta = {
                 "stitching_enabled": False,
-                "mode": "single_call_v3",
-                "reason": "eleven_v3_request_stitching_unsupported",
+                "mode": "multi_v3_ffmpeg_concat_v1",
+                "reason": "eleven_v3_exact_silence_injection",
+                "speech_segments": speech_count,
+                "silence_segments": silence_count,
+                "ffmpeg_silence_total_s": round(silence_total_s, 3),
+                "ffmpeg_silence_min_s": PHASE_VOICE_STEM_FFMPEG_SILENCE_MIN_S,
+                "accent_preamble_first_chunk": bool(accent_preamble),
             }
+        finally:
+            import shutil as _shutil
+            _shutil.rmtree(tmp_dir, ignore_errors=True)
+    elif use_single_v3_plain:
+        from lib.elevenlabs_tts import CEDRIC_PHASE_B_V3_ACCENT_PREAMBLE  # noqa: PLC0415
+        from production_server import _clean_text_for_tts  # noqa: PLC0415
+
+        accent_preamble = (
+            CEDRIC_PHASE_B_V3_ACCENT_PREAMBLE
+            if phase == "b" and speaker == "Cedric"
+            else ""
+        )
+        tts_script = _clean_text_for_tts(script)
+        if accent_preamble:
+            tts_script = f"{accent_preamble.strip()} {tts_script}".strip()
+        tts_stitching_meta = {
+            "stitching_enabled": False,
+            "mode": "single_call_v3",
+            "reason": "eleven_v3_no_markers",
+            "speech_segments": 1,
+            "accent_preamble": bool(accent_preamble),
+        }
         try:
             status_code, audio_bytes = _tts_call_single(tts_script)
         except Exception as exc:  # noqa: BLE001
@@ -1906,7 +2014,7 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
                        extra={"speaker": speaker,
                               "hint": "Often: API key expired or voice_id renamed. Check API_KEYS_MASTER.md."},
                    )
-    else:
+    elif use_multi_stitched:
         # Multi-segment path: stitched ElevenLabs per speech chunk + real silence.
         import tempfile as _tempfile
         from lib.elevenlabs_tts import continuity_context_head  # noqa: PLC0415
@@ -1967,7 +2075,7 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
                     concat_parts.append(seg_path)
                     speech_ptr += 1
                     seg_idx += 1
-                else:  # silence
+                else:  # timed_silence or pause (stitched models: real silence for all)
                     sil_path = tmp_dir / f"seg_{seg_idx:03d}_silence_{value}s.mp3"
                     try:
                         _build_silence_mp3(value, sil_path)
@@ -1994,6 +2102,33 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
             # Clean up temp dir regardless of success/failure.
             import shutil as _shutil
             _shutil.rmtree(tmp_dir, ignore_errors=True)
+    else:
+        # Non-v3, no markers — single ElevenLabs call.
+        from production_server import _clean_text_for_tts  # noqa: PLC0415
+
+        tts_script = _clean_text_for_tts(script)
+        try:
+            status_code, audio_bytes = _tts_call_single(tts_script)
+        except Exception as exc:  # noqa: BLE001
+            return h._send_error_v59(
+                       502,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"ElevenLabs network failure (after retries): "
+                         f"{type(exc).__name__}: {exc}",
+                       retry_safe=True,
+                       extra={"speaker": speaker, "voice_id": voice_id,
+                              "hint": "Check network / ElevenLabs status. Retry after a minute."},
+                   )
+        if status_code >= 400:
+            detail = audio_bytes[:400].decode("utf-8", errors="replace")
+            return h._send_error_v59(
+                       502,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"ElevenLabs HTTP {status_code}: {detail}",
+                       retry_safe=True,
+                       extra={"speaker": speaker,
+                              "hint": "Often: API key expired or voice_id renamed. Check API_KEYS_MASTER.md."},
+                   )
 
     elapsed_call = time.time() - t0
 

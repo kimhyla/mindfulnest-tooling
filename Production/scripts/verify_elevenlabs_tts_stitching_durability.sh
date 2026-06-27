@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# verify_elevenlabs_tts_stitching_durability.sh — Phase B multi-segment TTS uses
-# ElevenLabs request stitching (previous_request_ids + next_text) so accent/prosody
-# stay continuous across [pause]/[silence:Ns] splits.
+# verify_elevenlabs_tts_stitching_durability.sh — Phase B eleven_v3 ffmpeg concat path.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -9,6 +7,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 PHASES="${REPO_ROOT}/Production/tools/server_handlers/phases.py"
 LIB="${REPO_ROOT}/Production/lib/elevenlabs_tts.py"
 TEST="${REPO_ROOT}/Production/tools/tests/test_elevenlabs_tts_stitching.py"
+CONCAT_TEST="${REPO_ROOT}/Production/tools/tests/test_phase_voice_stem_concat.py"
 
 fail() {
   echo "[elevenlabs-tts-stitching] FAIL: $1" >&2
@@ -19,23 +18,19 @@ fail() {
 [[ -f "$LIB" ]] || fail "missing elevenlabs_tts.py"
 [[ -f "$TEST" ]] || fail "missing test_elevenlabs_tts_stitching.py"
 
-grep -q 'call_elevenlabs_tts' "$PHASES" \
-  || fail "phases.py must import call_elevenlabs_tts for multi-segment regen"
-grep -q 'previous_request_ids' "$PHASES" \
-  || fail "phases.py multi-segment loop must pass previous_request_ids"
-grep -q 'model_supports_request_stitching' "$PHASES" \
-  || fail "phases.py must gate multi-segment TTS on model stitching support"
-grep -q 'build_single_call_tts_script' "$PHASES" \
-  || fail "phases.py must use single-call v3 path when stitching unsupported"
-grep -q 'single_call_v3' "$PHASES" \
-  || fail "phases.py must report single_call_v3 telemetry for eleven_v3"
-grep -q 'tts_stitching' "$PHASES" \
-  || fail "phases.py regen response must include tts_stitching telemetry"
-grep -q 'build_tts_payload' "$LIB" \
-  || fail "elevenlabs_tts.py must expose build_tts_payload"
-grep -q 'extract_request_id' "$LIB" \
-  || fail "elevenlabs_tts.py must capture request-id header"
+grep -q 'PHASE_VOICE_STEM_CONCAT_V1' "$PHASES" \
+  || fail "PHASE_VOICE_STEM_CONCAT_V1 marker missing"
+grep -q 'multi_v3_ffmpeg_concat_v1' "$PHASES" \
+  || fail "phases.py must use multi_v3_ffmpeg_concat_v1 for eleven_v3 + markers"
+grep -q 'coalesce_segments_for_v3_regen' "$PHASES" \
+  || fail "phases.py must coalesce speech before ffmpeg concat"
+grep -q '_build_silence_mp3' "$PHASES" \
+  || fail "phases.py must inject exact ffmpeg silence"
+grep -q 'ffmpeg_silence_min_s' "$LIB" \
+  || fail "elevenlabs_tts.py must gate ffmpeg on silence duration"
+grep -q 'prepend_accent_to_first_speech_chunk' "$LIB" \
+  || fail "elevenlabs_tts.py must prepend accent to first chunk only"
 
-python3 -m pytest "$TEST" -q
+python3 -m pytest "$TEST" "$CONCAT_TEST" -q
 
 echo "[elevenlabs-tts-stitching] OK — source guards + pytest passed"
