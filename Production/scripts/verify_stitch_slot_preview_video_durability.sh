@@ -35,6 +35,11 @@ if [[ -f "$DIST" ]]; then
   grep -q 'STITCH_SLOT_PREVIEW_VIDEO_PLAYABLE_V1' "$DIST" || fail "dist missing marker"
 fi
 
-python3 -m pytest "$ROOT/Production/tools/tests/test_stitch_slot_preview_video_playable.py" "$ROOT/Production/tools/tests/test_stitch_module_bake_av_parity.py" -q
+(
+  cd "$ROOT/Production/tools"
+  PYTHONPATH="${ROOT}/Production:${ROOT}" python3 -m pytest \
+    tests/test_stitch_slot_preview_video_playable.py \
+    tests/test_stitch_module_bake_av_parity.py -q
+) || fail "stitch slot preview pytest failed"
 
 echo "[stitch-slot-preview-video-durability] OK — decode validation + client fallback wired"
