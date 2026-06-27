@@ -13491,6 +13491,17 @@ def run_server(
     os.environ["MN_BEATGEN_SERVER_WRITER"] = "1"
     _bg_module().init_bg_paths(event_dir, clear_milestone_scope=True)
 
+    try:
+        from beatgen_sidecar_health import warn_dropbox_conflict_copies
+
+        for conflict_path in warn_dropbox_conflict_copies(event_dir):
+            print(
+                f"[startup] WARN: Dropbox conflict copy under event dir: {conflict_path}",
+                flush=True,
+            )
+    except Exception as _conflict_exc:
+        print(f"[startup] WARN: conflict copy scan failed: {_conflict_exc}", flush=True)
+
     # BEATGEN_PER_EVENT_SQLITE_V1 — rehydrate empty segments from disk artifacts +
     # purge milestone pollution before first session-state GET (refresh-safe).
     try:

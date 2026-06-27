@@ -1,6 +1,6 @@
 # TECH_SPEC — Beat Gen Truth Stack Follow-on V1 (Scope Siblings + Layer H)
 
-**Status:** Required follow-on program — not optional for “forever”  
+**Status:** Superseded by **`TECH_SPEC_BEATGEN_TRUTH_STACK_SIBLINGS_v2.md`** — use that doc for implementation + Full QA  
 **Parent:** `TECH_SPEC_BEATGEN_TRUTH_STACK_V1.md`  
 **When:** After P0–P5 ship; parallel tracks where independent
 

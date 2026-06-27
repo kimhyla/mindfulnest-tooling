@@ -369,7 +369,9 @@ Not the primary horror-show cause, but “works first time” under load require
 | **P7** | O3 submit scope parity + job dir grep sweep | Generate artifacts | **DONE** — `MN_BEATGEN_SCOPE_JSON` + resolver sweep |
 | **P8** | UI scope badge + Playwright extension | Kim visibility | **DONE** — `bg-authority-badge` + e2e |
 | **P9** | Snapshot/restore per-event + legacy DB retirement | Restore incidents | **DONE** — beatgen db in `/api/state/snapshot` |
-| **P10** | Full QA on Event_3 Beat 9 + deploy smoke all ports + commit | Ship proof | **IN PROGRESS** |
+| **P10** | Full QA on Event_3 Beat 9 + deploy smoke all ports + commit | Ship proof | **PARTIAL** — `:5111–5113` green; `:5114+` + PR = **Siblings S9** |
+
+**Sibling program (H1–H9):** see **`TECH_SPEC_BEATGEN_TRUTH_STACK_SIBLINGS_v2.md`** (S1–S9).
 
 **No phase is “optional.”** P1–P5 minimum shippable slice for Event_3-class bugs; P6–P10 close remaining siblings.
 
@@ -467,7 +469,7 @@ Not the primary horror-show cause, but “works first time” under load require
 
 ## 13. Follow-on specs (scope siblings — mandatory program)
 
-See **`TECH_SPEC_BEATGEN_TRUTH_STACK_FOLLOWON_v1.md`** for H1–H9: disk drift, Dropbox conflicts, O3 async scope, milestone promotion, snapshot/restore, observability extension, kid-app catalog.
+See **`TECH_SPEC_BEATGEN_TRUTH_STACK_SIBLINGS_v2.md`** for H1–H9 executable program (S1–S9). This outline doc is retained for history only.
 
 ---
 
