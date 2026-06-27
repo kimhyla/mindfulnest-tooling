@@ -76,6 +76,8 @@ _MILESTONE_SKELETON_REF: dict | None = None
 # Sticky milestone bind — bare init_bg_paths(event_dir) must not tear JSON authority mid-session.
 _MILESTONE_SCOPE_BIND: tuple[str, str] | None = None  # (milestone_dir, library_event_dir)
 _BG_EVENT_DIR: str | None = None
+# BG_SCOPE_ACTIVATION_COLD_BOOT_ONLY_V1 — cold boot runs once per scope key, not per HTTP GET.
+_BG_ACTIVE_SCOPE_KEY: str | None = None
 # ThreadingHTTPServer + module-level init_bg_paths — serialize path rebinding + sidecar I/O.
 _BG_SCOPE_LOCK = threading.RLock()
 
@@ -191,12 +193,33 @@ def resolve_o3_lifecycle_event_dir_candidates(
     )
 
 
+def _compute_bg_scope_key(
+    event_dir,
+    *,
+    milestone_dir=None,
+    library_event_dir=None,
+) -> str:
+    """Stable id for bound Beat Gen paths — warm init skips cold boot when unchanged."""
+    if milestone_dir is not None:
+        md = str(Path(milestone_dir).expanduser().resolve())
+        lib = str(Path(library_event_dir or event_dir).expanduser().resolve())
+        return f"milestone:{md}|lib:{lib}"
+    return f"event:{Path(event_dir).expanduser().resolve()}"
+
+
+def reset_bg_paths_activation_for_tests() -> None:
+    """Clear warm-init scope key between unit tests."""
+    global _BG_ACTIVE_SCOPE_KEY
+    _BG_ACTIVE_SCOPE_KEY = None
+
+
 def init_bg_paths(
     event_dir,
     *,
     milestone_dir=None,
     library_event_dir=None,
     clear_milestone_scope: bool = False,
+    cold_boot: bool = False,
 ) -> None:
     """Rebind every module-level path constant from the runtime event_dir.
 
@@ -211,6 +234,10 @@ def init_bg_paths(
     ``clear_milestone_scope=True`` on explicit event/load — drops sticky bind.
     Bare ``init_bg_paths(event_dir)`` while milestone bind is active is redirected
     to preserve JSON-only sidecar authority (orphan recovery class).
+
+    Cold boot (SQLite bootstrap + JSON mirror union) runs once per scope key.
+    Repeated HTTP GET scope activation is a warm no-op — see
+    TECH_SPEC_BG_SCOPE_ACTIVATION_COLD_BOOT_ONLY_V1.md.
 
     See Production/lib/paths.py for the canonical resolver and audit
     finding C1-5..C1-9 for the bugs this closes.
@@ -231,6 +258,7 @@ def init_bg_paths(
                 _lib,
                 milestone_dir=_mdir,
                 library_event_dir=_lib,
+                cold_boot=cold_boot,
             )
             return
         _init_bg_paths_unlocked(
@@ -238,7 +266,33 @@ def init_bg_paths(
             milestone_dir=milestone_dir,
             library_event_dir=library_event_dir,
             clear_milestone_scope=clear_milestone_scope,
+            cold_boot=cold_boot,
         )
+
+
+def _run_bg_paths_cold_boot(event_dir) -> None:
+    """SQLite bootstrap + JSON mirror union — startup / scope change only (I8)."""
+    if not _MILESTONE_SIDECAR_JSON_ONLY:
+        bootstrap_sqlite_sidecar_from_json()
+        bootstrap_sqlite_from_legacy_global_db(event_dir)
+        if not os.environ.get("MN_BEATGEN_DB_PATH", "").strip():
+            print(
+                "[beatgen_store] WARN: MN_BEATGEN_DB_PATH unset — legacy global beatgen.db "
+                "(cross-event collision risk). Re-run install_production_server_launchagent.sh Event_N.",
+                flush=True,
+            )
+        reconcile_sqlite_segment_beats_from_json_mirror(event_dir)
+    _cleanup_stale_dropbox_sidecar_lock_file()
+    if _sidecar_use_sqlite():
+        store = _beatgen_store()
+        print(
+            f"[beatgen_store] authority=sqlite db={store.db_path} "
+            f"beats={store.beat_count()} integrity={store.integrity_check()} "
+            f"mirror={BG_SIDECAR_PATH}",
+            flush=True,
+        )
+    else:
+        print(f"[beatgen_store] authority=json path={BG_SIDECAR_PATH}", flush=True)
 
 
 def _init_bg_paths_unlocked(
@@ -247,12 +301,13 @@ def _init_bg_paths_unlocked(
     milestone_dir=None,
     library_event_dir=None,
     clear_milestone_scope: bool = False,
+    cold_boot: bool = False,
 ) -> None:
     global _TOOLS_DIR, _PROD_DIR, _PROJECT_DIR, _SKELETON_BASE
     global BG_SIDECAR_PATH, BG_STILLS_DIR
     global _PROD_CHARS, _CREATURE_REFS, _CREATURE_REFS_BY_EMOTION
     global _CANON_BASE, _LOCAL_STILLS_DIR, _MILESTONE_SIDECAR_JSON_ONLY, _MILESTONE_SKELETON_REF
-    global _MILESTONE_SCOPE_BIND, _BG_EVENT_DIR
+    global _MILESTONE_SCOPE_BIND, _BG_EVENT_DIR, _BG_ACTIVE_SCOPE_KEY
 
     # Import here (not at module top) so beat_generator.py can be imported
     # standalone for tests without requiring lib/paths to be on sys.path.
@@ -291,29 +346,20 @@ def _init_bg_paths_unlocked(
     if _is_milestone_sidecar_path(os.path.abspath(BG_SIDECAR_PATH)):
         _MILESTONE_SIDECAR_JSON_ONLY = True
 
-    # Milestone Beat Gen is JSON-authoritative — never touch global beatgen.db on init.
-    if not _MILESTONE_SIDECAR_JSON_ONLY:
-        bootstrap_sqlite_sidecar_from_json()
-        bootstrap_sqlite_from_legacy_global_db(event_dir)
-        if not os.environ.get("MN_BEATGEN_DB_PATH", "").strip():
-            print(
-                "[beatgen_store] WARN: MN_BEATGEN_DB_PATH unset — legacy global beatgen.db "
-                "(cross-event collision risk). Re-run install_production_server_launchagent.sh Event_N.",
-                flush=True,
-            )
-        reconcile_sqlite_segment_beats_from_json_mirror(event_dir)
-    # Legacy Dropbox flock must not block milestone JSON sidecar after SQLite cutover.
-    _cleanup_stale_dropbox_sidecar_lock_file()
-    if _sidecar_use_sqlite():
-        store = _beatgen_store()
-        print(
-            f"[beatgen_store] authority=sqlite db={store.db_path} "
-            f"beats={store.beat_count()} integrity={store.integrity_check()} "
-            f"mirror={BG_SIDECAR_PATH}",
-            flush=True,
-        )
-    else:
-        print(f"[beatgen_store] authority=json path={BG_SIDECAR_PATH}", flush=True)
+    scope_key = _compute_bg_scope_key(
+        event_dir,
+        milestone_dir=milestone_dir,
+        library_event_dir=library_event_dir,
+    )
+    if (
+        not cold_boot
+        and _BG_ACTIVE_SCOPE_KEY is not None
+        and scope_key == _BG_ACTIVE_SCOPE_KEY
+    ):
+        return
+
+    _BG_ACTIVE_SCOPE_KEY = scope_key
+    _run_bg_paths_cold_boot(event_dir)
 
     try:
         from tools import kling_character_registry as _reg
@@ -9187,6 +9233,106 @@ def _pick_element_ref_path(beat: dict, element_paths: list[Path]) -> Path:
             if any(kw in stem for kw in keywords):
                 return path
     return element_paths[0]
+
+
+def infer_char_ref_registry_speaker(char_path: str) -> str | None:
+    """Return registry character name when @Image1 bytes belong to their Element set."""
+    if not char_path or not os.path.isfile(char_path):
+        return None
+    try:
+        from tools import kling_character_registry as reg
+
+        data = reg.load_character_subjects()
+        for name in (data.get("characters") or {}):
+            if not reg.is_speaker_voice_ready(name):
+                continue
+            if reg.char_ref_matches_element_images(
+                char_path, name, allow_pose_dir_fallback=True,
+            )[0]:
+                return name
+    except Exception:
+        return None
+    return None
+
+
+def realign_beat_char_ref_for_speaker_change(
+    beat: dict,
+    *,
+    old_speaker: str = "",
+) -> bool:
+    """After speaker changes, drop @Image1 that belonged to the previous character."""
+    speaker = str(beat.get("speaker") or "").strip()
+    if not speaker:
+        return False
+    prev = str(old_speaker or "").strip()
+    if prev and prev == speaker:
+        return False
+    try:
+        from tools import kling_character_registry as reg
+
+        if not reg.is_speaker_voice_ready(speaker):
+            return False
+    except Exception:
+        return False
+    char_path = resolve_beat_char_ref_path(beat)
+    if not char_path:
+        return align_beat_reference_to_element(beat)
+    try:
+        from tools import kling_character_registry as reg
+
+        if reg.char_ref_matches_element_images(
+            char_path, speaker, allow_pose_dir_fallback=True,
+        )[0]:
+            return False
+        if prev and reg.char_ref_matches_element_images(
+            char_path, prev, allow_pose_dir_fallback=True,
+        )[0]:
+            beat.pop("reference_image_locked", None)
+            beat.pop("reference_image", None)
+            return align_beat_reference_to_element(beat)
+    except Exception:
+        pass
+    owner = infer_char_ref_registry_speaker(char_path)
+    if owner:
+        try:
+            from tools import kling_character_registry as reg
+
+            owner_key = reg.resolve_registry_key(owner) or owner
+            speaker_key = reg.resolve_registry_key(speaker) or speaker
+        except Exception:
+            owner_key, speaker_key = owner, speaker
+        if owner_key != speaker_key:
+            beat.pop("reference_image_locked", None)
+            beat.pop("reference_image", None)
+            return align_beat_reference_to_element(beat)
+    if not beat.get("reference_image_locked"):
+        return align_beat_reference_to_element(beat)
+    return False
+
+
+def heal_speaker_char_ref_mismatch(beat: dict) -> bool:
+    """Persist heal when sidecar speaker and @Image1 bytes name different characters."""
+    speaker = str(beat.get("speaker") or "").strip()
+    char_path = resolve_beat_char_ref_path(beat)
+    if not speaker or not char_path:
+        return False
+    if element_char_ref_gate(beat)[0]:
+        return False
+    owner = infer_char_ref_registry_speaker(char_path)
+    if not owner:
+        return False
+    try:
+        from tools import kling_character_registry as reg
+
+        owner_key = reg.resolve_registry_key(owner) or owner
+        speaker_key = reg.resolve_registry_key(speaker) or speaker
+    except Exception:
+        owner_key, speaker_key = owner, speaker
+    if owner_key == speaker_key:
+        return False
+    beat.pop("reference_image_locked", None)
+    beat.pop("reference_image", None)
+    return align_beat_reference_to_element(beat)
 
 
 def align_beat_reference_to_element(beat: dict) -> bool:

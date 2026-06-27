@@ -34,5 +34,5 @@ def test_write_sidecar_routes_sqlite_to_store():
 def test_cleanup_stale_lock_on_sqlite_init():
     text = _BG.read_text(encoding="utf-8")
     assert "_cleanup_stale_dropbox_sidecar_lock_file" in text
-    init = _fn_body("_init_bg_paths_unlocked")
-    assert "_cleanup_stale_dropbox_sidecar_lock_file()" in init
+    cold = _fn_body("_run_bg_paths_cold_boot")
+    assert "_cleanup_stale_dropbox_sidecar_lock_file()" in cold

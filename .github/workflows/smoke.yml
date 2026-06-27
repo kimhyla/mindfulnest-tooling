@@ -125,6 +125,7 @@ jobs:
             tests/test_beatgen_per_event_sqlite.py \
             tests/test_event_load_sidecar_reconcile.py \
             tests/test_sidecar_sqlite_cutover_gate.py \
+            tests/test_bg_scope_activation_cold_boot_only.py \
             -q
       - name: Launchagent + startup reconcile markers
         run: |
