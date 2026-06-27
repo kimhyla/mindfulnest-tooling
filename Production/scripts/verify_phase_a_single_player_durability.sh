@@ -54,9 +54,11 @@ fi
 
 export PYTHONPATH="${ROOT}/Production:${ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 
-python3 -m pytest \
-  "$ROOT/Production/tools/tests/test_phase_a_single_player.py" \
-  "$ROOT/Production/tools/tests/test_phase_a_stitcher_ambient_only.py" -q \
-  || fail "Phase A pytest guards failed"
+(
+  cd "$ROOT/Production/tools"
+  PYTHONPATH="${ROOT}/Production:${ROOT}" python3 -m pytest \
+    tests/test_phase_a_single_player.py \
+    tests/test_phase_a_stitcher_ambient_only.py -q
+) || fail "Phase A pytest guards failed"
 
 echo "[phase-a-single-player-durability] OK — LD-829 source + dist + pytest guards passed"
