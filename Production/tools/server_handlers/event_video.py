@@ -97,11 +97,35 @@ def handle_event_create(h, body: dict) -> None:
     except Exception as _e:
         print(f"[event_create] storyboard copy skipped: {_e}", flush=True)
     # Init state files (production_state.json + production_spend.json).
+    # Numbered Event_N folders store skeleton-backed M-form (Event_3 → M4E1).
     try:
-        _ = StateManager(new_event_dir, new_event_id)
+        from lib.module_event_id import canonical_module_event_id
+
+        state_event_id = (
+            canonical_module_event_id(new_event_id, production_folder_id=new_event_id)
+            or new_event_id
+        )
+        _ = StateManager(new_event_dir, state_event_id)
     except Exception as _e:
         print(f"[event_create] WARN StateManager init: {_e}", flush=True)
     print(f"[event_create] created {new_event_id} at {new_event_dir}", flush=True)
+    # EVENT_STITCH_JOB_BOOTSTRAP_V1 — register canonical stitch job before first Send to Stitcher.
+    if dedicated_port_for_event_id(new_event_id) is not None:
+        try:
+            from server_handlers.stitch_editor import ensure_event_stitch_job_registered
+
+            boot = ensure_event_stitch_job_registered(
+                h,
+                new_event_id,
+                hydrate_from_disk=False,
+            )
+            if boot.get("changed"):
+                print(f"[event_create] stitch bootstrap {boot}", flush=True)
+        except Exception as _stitch_boot_exc:
+            print(
+                f"[event_create] WARN stitch job bootstrap: {_stitch_boot_exc}",
+                flush=True,
+            )
     # EVENT_DEDICATED_SERVER_PROVISION_V1 — kickstart launchd (client awaits provision API).
     if dedicated_port_for_event_id(new_event_id) is not None:
         threading.Thread(

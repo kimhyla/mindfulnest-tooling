@@ -1085,22 +1085,43 @@ def handle_phase_suggest_script(h, body: dict)-> None:
         state = {}
 
     scope = h._scope_body(body)
-    # Prefer state.event_id (canonical 'M<n>E<m>' form, e.g. 'M1E1') over
-    # scope.event_id (directory form, e.g. 'Event_1') so the prod_modules
-    # resolver finds the row. state stores the M-form because it's the
-    # event identity from the production pipeline; scope normalizes to
-    # directory-id for scope-guard routing.
-    event_id_str = (
-        state.get('event_id')
-        or (body or {}).get('event_id')
-        or scope.get('event_id')
-        or (body or {}).get('scope_event_id')
-        or ''
+    # Resolve module via Arc Skeleton play-order (Event_3 → M4 Ember, not M3).
+    # Production folder name is authoritative over stale/wrong M-form in state.
+    _production_folder = (
+        getattr(h.app.event_dir, 'name', None)
+        if getattr(h.app, 'event_dir', None)
+        else None
     )
-    module_meta = _resolve_module_for_event(event_id_str) or {
-        'arc_number': 1, 'm_number': 1, 'event_number': 1,
-        'creature_name': 'Unknown', 'technique_name': '',
-    }
+    _event_id_candidates = [
+        state.get('event_id'),
+        (body or {}).get('event_id'),
+        scope.get('event_id'),
+        (body or {}).get('scope_event_id'),
+        getattr(h.app, 'event_id', None),
+        _production_folder,
+    ]
+    event_id_str = next((str(c).strip() for c in _event_id_candidates if c), '')
+    module_meta = _resolve_module_for_event(
+        event_id_str,
+        production_folder_id=_production_folder,
+    )
+    if not module_meta:
+        return h._send_error_v59(
+            422,
+            error_code="MODULE_EVENT_ID_UNRESOLVED",
+            error_message=(
+                f"Cannot resolve module for event_id={event_id_str!r} "
+                f"(folder={_production_folder!r}). "
+                "Expected numbered Event_N folder or M-form id resolvable via Arc Skeleton."
+            ),
+            retry_safe=False,
+            extra={
+                "ok": False,
+                "phase": phase,
+                "event_id": event_id_str,
+                "production_folder_id": _production_folder,
+            },
+        )
 
     # Load the authored therapeutic sources for this module.
     bg = _bg_module()
@@ -1133,6 +1154,9 @@ def handle_phase_suggest_script(h, body: dict)-> None:
     # can detect the silent-failure regression class (handler runs but
     # therapeutic sources fail to load).
     sources_loaded = {
+        'event_id_resolved': event_id_str,
+        'production_folder_id': _production_folder,
+        'skeleton_play_order': module_meta.get('play_order'),
         'therapeutic_note_chars': len(therapeutic_note),
         'technique_inventory_chars': len(technique_inventory),
         'arc_number': module_meta['arc_number'],

@@ -247,25 +247,71 @@ def _resolve_module_id_for_state(state_manager) -> int:
     return int(cached.get('id', meta['m_number']))
 
 
-def _resolve_module_for_event(event_id_str: str):
-    """Resolve event_id like 'M1E1' to module metadata dict.
+def _resolve_module_for_event(
+    event_id_str: str,
+    *,
+    production_folder_id: str | None = None,
+):
+    """Resolve production scope to module metadata for Suggest Script + Directus.
 
-    Returns dict with keys: arc_number, m_number, event_number, creature_name,
-    technique_name. Returns None if event_id_str cannot be parsed.
+    Returns dict with keys: arc_number, m_number, event_number, play_order,
+    creature_name, technique_name. Returns None if unresolvable.
 
-    Queries Directus prod_modules (cached 15min); falls back to convention
-    M(N) -> Arc((N-1)//6 + 1) on Directus failure. The convention assumes the
-    V1 layout (6 modules per arc); production should rely on the Directus
-    lookup which carries the authoritative play-order vs M-number mapping.
+    **Play-order rule (Arc Skeleton):** ``Event_N`` production folders map to
+    skeleton play-order event N, NOT creature M-number N. Event_3 → M4 Ember,
+    not M3 Benson. M-form ids in state use skeleton-backed m_number when the
+    production folder is available (folder wins on conflict).
     """
     global _MODULE_RESOLVE_CACHE, _MODULE_RESOLVE_CACHE_TS
-    if not event_id_str:
+
+    folder_id = (production_folder_id or "").strip() or None
+    if not folder_id and event_id_str:
+        try:
+            sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+            from module_event_id import is_numbered_event_folder_id  # type: ignore
+
+            if is_numbered_event_folder_id(str(event_id_str)):
+                folder_id = str(event_id_str).strip()
+        except Exception:
+            pass
+
+    m_number = None
+    event_number = 1
+    arc_number = 1
+    play_order = None
+
+    if folder_id:
+        try:
+            sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+            from module_event_id import resolve_m_number_from_production_folder  # type: ignore
+
+            resolved = resolve_m_number_from_production_folder(
+                folder_id, bg_module=_bg_module(),
+            )
+            if resolved:
+                arc_number, play_order, m_number = resolved
+        except Exception as exc:
+            print(
+                f"[_resolve_module_for_event] skeleton play-order lookup failed "
+                f"for {folder_id!r}: {exc}",
+                flush=True,
+            )
+
+    if m_number is None and event_id_str:
+        try:
+            sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+            from module_event_id import parse_m_form_event_identity  # type: ignore
+
+            parsed = parse_m_form_event_identity(str(event_id_str))
+        except Exception:
+            parsed = None
+            m = _EVENT_ID_PATTERN.match(str(event_id_str))
+            parsed = (int(m.group(1)), int(m.group(2))) if m else None
+        if parsed:
+            m_number, event_number = parsed
+
+    if m_number is None:
         return None
-    m = _EVENT_ID_PATTERN.match(str(event_id_str))
-    if not m:
-        return None
-    m_number = int(m.group(1))
-    event_number = int(m.group(2))
 
     # Refresh cache if stale
     if time.time() - _MODULE_RESOLVE_CACHE_TS > _MODULE_RESOLVE_CACHE_TTL_S:
@@ -285,20 +331,16 @@ def _resolve_module_for_event(event_id_str: str):
             }
             _MODULE_RESOLVE_CACHE_TS = time.time()
         except Exception as e:
-            # Fail-quiet: log + fall through to convention. Caller still gets useful data.
             print(f'[_resolve_module_for_event] Directus query failed '
                   f'({type(e).__name__}: {e}); using convention fallback')
 
     if m_number in _MODULE_RESOLVE_CACHE:
         meta = _MODULE_RESOLVE_CACHE[m_number]
+        arc_number = int(meta.get('arc_number') or arc_number)
     else:
-        # Convention fallback (V1 layout): M(N) -> Arc((N-1)//6 + 1).
-        # Tessa-Bramble M1-M6=Arc1, M7-M12=Arc2, etc. Returns m_number
-        # as the id since prod_modules.id == m_number for most rows (M3/M4
-        # are the known exceptions; without Directus we can't disambiguate).
         meta = {
             'id': m_number,
-            'arc_number': ((m_number - 1) // 6) + 1,
+            'arc_number': arc_number or (((m_number - 1) // 6) + 1),
             'creature_name': 'Unknown',
             'technique_name': '',
         }
@@ -307,6 +349,7 @@ def _resolve_module_for_event(event_id_str: str):
         'arc_number': meta['arc_number'],
         'm_number': m_number,
         'event_number': event_number,
+        'play_order': play_order,
         'creature_name': meta['creature_name'],
         'technique_name': meta['technique_name'],
     }
@@ -13565,6 +13608,22 @@ def run_server(
 
     state = StateManager(event_dir, event_id)
 
+    # PB_2 / Suggest Script — heal Event_N → M<n>E1 in production_state.json
+    # (Event_3+ created via +New Event before this fix stored bare folder id).
+    try:
+        from lib.module_event_id import heal_production_state_event_id
+
+        if heal_production_state_event_id(state):
+            print(
+                f"[startup] canonical module event_id healed for {event_dir.name}",
+                flush=True,
+            )
+    except Exception as _event_id_heal_exc:
+        print(
+            f"[startup] WARN: module event_id heal skipped: {_event_id_heal_exc}",
+            flush=True,
+        )
+
     # BS4 (Tier 3 blind-spot fix, April 16 2026): sweep orphan *.tmp files left
     # behind by WaveSpeedClient.download crashes. Atomic tmp+rename leaves .tmp
     # files only on exception — clean them up on next startup.
@@ -13737,6 +13796,31 @@ def run_server(
         restore_milestone_scope_on_startup(app)
     except Exception as _ms_exc:
         print(f"[startup] milestone scope restore failed (non-fatal): {_ms_exc}", flush=True)
+
+    try:
+        from server_handlers.stitch_editor import (
+            EVENT_STITCH_JOB_BOOTSTRAP_V1,
+            ensure_event_stitch_job_registered,
+            is_numbered_event_id,
+            stitch_bootstrap_shim_for_app,
+        )
+
+        if is_numbered_event_id(event_id):
+            boot = ensure_event_stitch_job_registered(
+                stitch_bootstrap_shim_for_app(app),
+                event_id,
+                hydrate_from_disk=True,
+            )
+            if boot.get("changed"):
+                print(
+                    f"[startup] {EVENT_STITCH_JOB_BOOTSTRAP_V1} {boot}",
+                    flush=True,
+                )
+    except Exception as _stitch_boot_exc:
+        print(
+            f"[startup] WARN: event stitch job bootstrap failed: {_stitch_boot_exc}",
+            flush=True,
+        )
 
     try:
         with port_startup_guard(

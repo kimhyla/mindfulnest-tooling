@@ -2642,6 +2642,73 @@ _CANON_BASE = os.path.join(_PROJECT_DIR, "Canon")
 # Matches "(M<n>)" anywhere in an EVENT header title (e.g., "TESSA'S FALL (M1)")
 # (pattern defined above with skeleton regex block)
 
+# Module Structure Table: | play_order | M# | Creature | ...
+_MODULE_STRUCTURE_TABLE_ROW = re.compile(
+    r"^\|\s*(\d+)\s*\|\s*M(\d+)\s*\|",
+    re.MULTILINE,
+)
+
+
+def _parse_module_structure_play_order_map(arc_number):
+    """Return {play_order: m_number} from the skeleton Module Structure Table."""
+    path = _skeleton_path(arc_number)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except Exception:
+        return {}
+    result = {}
+    in_table = False
+    for line in text.splitlines():
+        if "Module Structure Table" in line:
+            in_table = True
+            continue
+        if in_table and line.startswith("### ") and "Module Structure Table" not in line:
+            break
+        if not in_table:
+            continue
+        row = _MODULE_STRUCTURE_TABLE_ROW.match(line.strip())
+        if row:
+            result[int(row.group(1))] = int(row.group(2))
+    return result
+
+
+def find_m_number_for_play_order_event(arc_number, play_order):
+    """Map skeleton play-order event # → creature M-number.
+
+    Production ``Event_N`` folders follow skeleton **play order** (not M-number):
+    Event_3 = play #3 = Ember M4, not Benson M3. Per ARC_01 skeleton Module
+    Structure Table + ``## EVENT N: … (M#)`` headers.
+
+    Returns m_number int or None when not found.
+    """
+    play_order = int(play_order)
+    table = _parse_module_structure_play_order_map(arc_number)
+    if play_order in table:
+        return table[play_order]
+
+    path = _skeleton_path(arc_number)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except Exception:
+        return None
+    for m in _EVENT_HEADER.finditer(text):
+        event_id = str(m.group(1) or "")
+        if not event_id.isdigit():
+            continue
+        if int(event_id) != play_order:
+            continue
+        title = m.group(2) or ""
+        m_marker = _M_NUMBER_IN_TITLE.search(title)
+        if m_marker:
+            return int(m_marker.group(1))
+    return None
+
 
 def find_event_for_module(arc_number, m_number):
     """Find arc-event-id whose ## EVENT header title contains (M<m_number>).
