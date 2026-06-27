@@ -44,6 +44,8 @@ run "$SCRIPTS/verify_bg_scope_activation_cold_boot_durability.sh"
 run "$SCRIPTS/verify_bg_session_read_path_durability.sh"
 run "$SCRIPTS/verify_o3_trim_overlay_durability.sh"
 
+export PYTHONPATH="${ROOT}/Production:${ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
+
 python3 -m pytest \
   "$ROOT/Production/tools/tests/test_stitch_audio_file_serve.py" \
   "$ROOT/Production/tools/tests/test_cr_upload_audio.py" \
