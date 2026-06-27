@@ -1,7 +1,8 @@
 """Session GET terminal disk reconcile — gallery + busy without poll memory.
 
-After any Generate, one hard refresh must show the latest terminal outcome (success or
-failure) by merging ``arlo_o3_jobs/*_terminal.json`` + on-disk deliveries into sidecar.
+Default session GET composes terminal + disk truth in-memory (read-only).
+Persisted reconcile runs only via explicit operator entry points (finalize,
+``force_reconcile_o3=1``, startup/admin repair).
 """
 from __future__ import annotations
 
@@ -59,7 +60,8 @@ def reconcile_beat_terminal_disk(
     sidecar: dict,
     event_dir: Path,
     *,
-    orphan_recovery,
+    orphan_recovery=None,
+    orphan_preview: bool = False,
 ) -> bool:
     """Merge terminal + disk deliveries into ``beat`` (in-memory). Returns True if mutated."""
     import beat_generator as bg
@@ -86,14 +88,25 @@ def reconcile_beat_terminal_disk(
             if bg.reconcile_beat_gallery_from_disk(beat, event_dir):
                 changed = True
             log_path = _resolve_intent_log_path(job_id, beat_id, event_dir)
-            recovered = orphan_recovery(
-                beat_id,
-                event_dir,
-                str(log_path) if log_path else None,
-                make_active=True,
-            )
-            if recovered:
-                changed = True
+            if orphan_preview:
+                touched, _ = bg.preview_orphan_o3_delivery_on_beat(
+                    beat,
+                    event_dir,
+                    beat_id=beat_id,
+                    log_path=str(log_path) if log_path else None,
+                    make_active=True,
+                )
+                if touched:
+                    changed = True
+            elif orphan_recovery:
+                recovered = orphan_recovery(
+                    beat_id,
+                    event_dir,
+                    str(log_path) if log_path else None,
+                    make_active=True,
+                )
+                if recovered:
+                    changed = True
             if bg.auto_select_o3_option_for_generation_mode(
                 beat,
                 sidecar,
@@ -216,6 +229,68 @@ def plan_session_terminal_reconcile(
         if outcome and (delta or terminal_status in ("done", "done_with_warning", "failed")):
             outcomes.append(outcome)
     return pending, outcomes
+
+
+def compose_session_terminal_view(
+    beats: list[dict],
+    sidecar: dict,
+    *,
+    server_event_dir: Path | None = None,
+    library_event_dir: Path | None = None,
+    scope_type: str = "event",
+) -> list[dict[str, Any]]:
+    """Read-only session GET — merge terminal/disk into response beats; no sidecar persist."""
+    from o3_generation_intent import (
+        load_intent_terminal,
+        resolve_o3_job_event_dir_candidates,
+        terminal_path_for_job,
+    )
+    from o3_job_status_contract import resolve_o3_job_id_for_lifecycle
+
+    outcomes: list[dict[str, Any]] = []
+    for beat in beats:
+        beat_id = str(beat.get("beat_id") or "").strip()
+        if not beat_id:
+            continue
+        beat_event_dirs = resolve_o3_job_event_dir_candidates(
+            beat_id,
+            server_event_dir=server_event_dir,
+            library_event_dir=library_event_dir,
+            scope_type=scope_type,
+        )
+        beat_event = beat_event_dirs[0]
+        before = copy.deepcopy(beat)
+        reconciled = False
+        for ev in beat_event_dirs:
+            if reconcile_beat_terminal_disk(
+                beat,
+                sidecar,
+                ev,
+                orphan_preview=True,
+            ):
+                reconciled = True
+                beat_event = ev
+                break
+        if not reconciled:
+            continue
+        job_id = resolve_o3_job_id_for_lifecycle(before) or resolve_o3_job_id_for_lifecycle(beat)
+        terminal_status = ""
+        if job_id:
+            terminal = load_intent_terminal(terminal_path_for_job(job_id, beat_event))
+            terminal_status = str((terminal or {}).get("status") or "").strip()
+        outcome = terminal_outcome_row(
+            beat_id,
+            before,
+            beat,
+            job_id=job_id,
+            terminal_status=terminal_status,
+        )
+        if outcome and (
+            before != beat
+            or terminal_status in ("done", "done_with_warning", "failed")
+        ):
+            outcomes.append(outcome)
+    return outcomes
 
 
 def playback_event_dir_for_source(source_path: Path, server_event_dir: Path, library_event_dir: Path | None) -> Path:

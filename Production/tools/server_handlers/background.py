@@ -1959,6 +1959,25 @@ def _run_o3_gallery_repair_for_event(h, scope_event_id: str, *, force: bool = Fa
         return 0
 
 
+def _compose_o3_session_terminal_view(
+    h,
+    beats: list,
+    sidecar: dict,
+) -> list[dict]:
+    """Read-only terminal/disk merge for session GET response — no sidecar persist."""
+    if not beats:
+        return []
+    from o3_session_terminal_reconcile import compose_session_terminal_view
+
+    return compose_session_terminal_view(
+        beats,
+        sidecar,
+        server_event_dir=Path(h.app.event_dir),
+        library_event_dir=getattr(h.app, "milestone_library_event_dir", None),
+        scope_type=str(getattr(h.app, "scope_type", "event") or "event"),
+    )
+
+
 def _apply_o3_session_terminal_reconcile(
     h,
     beats: list,
@@ -2358,16 +2377,13 @@ def handle_bg_session_state(h)-> None:
     o3_terminal_outcomes: list[dict] = []
     if beats:
         try:
-            o3_terminal_outcomes = _apply_o3_session_terminal_reconcile(
+            o3_terminal_outcomes = _compose_o3_session_terminal_view(
                 h,
                 beats,
                 sidecar,
-                scope_arc=scope_arc,
-                scope_event_id=scope_event_id,
-                scope_phase=scope_phase,
             )
         except Exception as exc:
-            print(f"[BG] session terminal reconcile failed: {exc}", flush=True)
+            print(f"[BG] session terminal compose failed: {exc}", flush=True)
 
     all_done = beats and all(b.get("flux_options") for b in beats)
     video_role = scope_video_role or ""

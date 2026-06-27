@@ -110,10 +110,11 @@ def test_reconcile_event_sidecar_after_milestone_exit(tmp_path: Path, monkeypatc
         },
     }
 
-    def fake_mutate(fn):
+    def fake_mutate(fn, **kwargs):
         fn(store)
 
     monkeypatch.setattr(bg, "mutate_sidecar_locked", fake_mutate)
+    monkeypatch.setattr(bg, "read_sidecar_for_poll_snapshot", lambda **kwargs: json.loads(json.dumps(store)))
     monkeypatch.setattr(bg, "BG_SIDECAR_PATH", str(tmp_path / "no_mirror.json"))
     rep = bg.reconcile_event_sidecar_after_milestone_exit(event_dir, "Event_2")
     assert "event_3b_full" in str(rep["removed_segments"])
@@ -161,10 +162,11 @@ def test_reconcile_event_load_merges_missing_beats_from_json_mirror(
         },
     }
 
-    def fake_mutate(fn):
+    def fake_mutate(fn, **kwargs):
         fn(store)
 
     monkeypatch.setattr(bg, "mutate_sidecar_locked", fake_mutate)
+    monkeypatch.setattr(bg, "read_sidecar_for_poll_snapshot", lambda **kwargs: json.loads(json.dumps(store)))
     monkeypatch.setattr(bg, "BG_SIDECAR_PATH", str(mirror))
     rep = bg.reconcile_event_sidecar_after_milestone_exit(event_dir, "Event_3")
     assert rep.get("merged_json_mirror") == {"event_3_pre": 1}

@@ -11027,63 +11027,81 @@ def purge_sidecar_segments_not_for_event(sidecar: dict, storyboard_event_id: str
     return removed
 
 
+def _run_event_sidecar_reconcile_on_sidecar(
+    sidecar: dict,
+    event_dir: Path,
+    storyboard_event_id: str,
+    report: dict,
+) -> None:
+    """Disk-heavy event sidecar reconcile — caller must not hold sidecar lock."""
+    bg_evt = normalize_bg_event_id(storyboard_event_id)
+    report["removed_segments"] = purge_sidecar_segments_not_for_event(
+        sidecar, storyboard_event_id,
+    )
+    preserved_root = kling_o3_clips_dir(event_dir) / "_preserved" / "segments"
+    if preserved_root.is_dir():
+        for entry in preserved_root.iterdir():
+            if not entry.is_dir():
+                continue
+            manifest_path = entry / "manifest.json"
+            if not manifest_path.is_file():
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if str(manifest.get("event_id", "")) != bg_evt:
+                continue
+            arc = int(manifest.get("arc_number") or 1)
+            phase = str(manifest.get("phase") or "full")
+            n = restore_preserved_segment_beats_if_empty(
+                sidecar, event_dir, arc, bg_evt, phase,
+            )
+            if n:
+                report["restored_segments"][entry.name] = n
+            merged = merge_missing_still_insert_beats_from_preserve(
+                sidecar, event_dir, arc, bg_evt, phase,
+            )
+            if merged:
+                report.setdefault("merged_still_insert", {})[entry.name] = merged
+    mirror_merge = merge_missing_segment_beats_from_json_mirror(
+        sidecar, os.path.abspath(BG_SIDECAR_PATH), bg_evt,
+    )
+    if mirror_merge:
+        report["merged_json_mirror"] = mirror_merge
+    for phase in ("pre", "post", "full", "main"):
+        n = rehydrate_segment_beats_from_o3_artifacts(
+            sidecar, event_dir, 1, bg_evt, phase,
+        )
+        if n:
+            report["restored_segments"][f"o3_artifacts_event_{bg_evt}_{phase}"] = n
+    sidecar["active_context"] = {
+        "arc_number": 1,
+        "event_id": bg_evt,
+        "phase": "pre",
+    }
+
+
 def reconcile_event_sidecar_after_milestone_exit(
     event_dir: str | Path,
     storyboard_event_id: str,
 ) -> dict:
     """EVENT_LOAD_SIDECAR_RECONCILE_V1 — purge milestone segments + restore from _preserved."""
+    import copy as _copy
+
     event_dir = Path(event_dir)
-    bg_evt = normalize_bg_event_id(storyboard_event_id)
     report: dict = {"restored_segments": {}, "removed_segments": []}
+    snapshot = read_sidecar_for_poll_snapshot(lock_timeout_s=5.0)
+    draft = _copy.deepcopy(snapshot)
+    _run_event_sidecar_reconcile_on_sidecar(
+        draft, event_dir, storyboard_event_id, report,
+    )
 
-    def _mutate(sidecar: dict) -> None:
-        report["removed_segments"] = purge_sidecar_segments_not_for_event(
-            sidecar, storyboard_event_id,
-        )
-        preserved_root = kling_o3_clips_dir(event_dir) / "_preserved" / "segments"
-        if preserved_root.is_dir():
-            for entry in preserved_root.iterdir():
-                if not entry.is_dir():
-                    continue
-                manifest_path = entry / "manifest.json"
-                if not manifest_path.is_file():
-                    continue
-                try:
-                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
-                    continue
-                if str(manifest.get("event_id", "")) != bg_evt:
-                    continue
-                arc = int(manifest.get("arc_number") or 1)
-                phase = str(manifest.get("phase") or "full")
-                n = restore_preserved_segment_beats_if_empty(
-                    sidecar, event_dir, arc, bg_evt, phase,
-                )
-                if n:
-                    report["restored_segments"][entry.name] = n
-                merged = merge_missing_still_insert_beats_from_preserve(
-                    sidecar, event_dir, arc, bg_evt, phase,
-                )
-                if merged:
-                    report.setdefault("merged_still_insert", {})[entry.name] = merged
-        mirror_merge = merge_missing_segment_beats_from_json_mirror(
-            sidecar, os.path.abspath(BG_SIDECAR_PATH), bg_evt,
-        )
-        if mirror_merge:
-            report["merged_json_mirror"] = mirror_merge
-        for phase in ("pre", "post", "full", "main"):
-            n = rehydrate_segment_beats_from_o3_artifacts(
-                sidecar, event_dir, 1, bg_evt, phase,
-            )
-            if n:
-                report["restored_segments"][f"o3_artifacts_event_{bg_evt}_{phase}"] = n
-        sidecar["active_context"] = {
-            "arc_number": 1,
-            "event_id": bg_evt,
-            "phase": "pre",
-        }
+    def _commit(sidecar: dict) -> None:
+        sidecar.clear()
+        sidecar.update(_copy.deepcopy(draft))
 
-    mutate_sidecar_locked(_mutate)
+    mutate_sidecar_locked(_commit, timeout_s=30.0)
     return report
 
 
@@ -11931,6 +11949,146 @@ def _delivery_path_from_o3_job_log(log_path: str | Path | None) -> str | None:
     return None
 
 
+def preview_orphan_o3_delivery_on_beat(
+    beat: dict,
+    event_dir: str | Path,
+    *,
+    beat_id: str | None = None,
+    log_path: str | Path | None = None,
+    delivery_path: str | Path | None = None,
+    make_active: bool = False,
+) -> tuple[bool, str | None]:
+    """In-memory orphan merge for session GET — no sidecar lock."""
+    event_dir = Path(event_dir)
+    beat_id = str(beat_id or beat.get("beat_id") or "").strip()
+    if not beat_id or str(beat.get("beat_id") or "") != beat_id:
+        return False, None
+    resolved = str(delivery_path or "").strip() or _delivery_path_from_o3_job_log(log_path) or ""
+    if not resolved or not Path(resolved).is_file():
+        disk_paths = list_o3_element_delivery_paths_on_disk(beat_id, event_dir)
+        if disk_paths:
+            resolved = str(disk_paths[-1].resolve())
+    delivery_path = resolved or None
+    if not delivery_path or not Path(delivery_path).is_file():
+        gen = beat.get("kling_o3_generation")
+        if gen is not None:
+            guess = kling_o3_clips_dir(event_dir) / (
+                f"{beat_id}_g{gen}_element_o3_master_delivery.mp4"
+            )
+            if guess.is_file():
+                delivery_path = str(guess)
+    if not delivery_path or not Path(delivery_path).is_file():
+        return False, None
+    now = datetime.now(timezone.utc).isoformat()
+    gallery_touched = False
+    recovered_gen = None
+    m = re.search(r"_g(\d+)_element_o3_master_delivery\.mp4$", str(delivery_path))
+    if m:
+        recovered_gen = int(m.group(1))
+    current_gen = int(beat.get("kling_o3_generation") or 0)
+    should_activate = make_active or (
+        recovered_gen is not None and recovered_gen >= current_gen
+    )
+    speaker = str(beat.get("speaker") or "").strip()
+    binding: dict[str, str] = {}
+    if log_path:
+        binding = _o3_voice_binding_from_job_log(log_path, delivery_path)
+    if not binding and speaker:
+        try:
+            from tools import kling_character_registry as reg
+
+            proven = reg.get_proven_element_list_entry(speaker)
+            entry = proven or reg.get_element_list_entry(speaker) or {}
+            binding = {
+                "element_id": str(entry.get("element_id") or ""),
+                "kling_voice_id": str(
+                    entry.get("voice_id") or reg.get_bound_voice_id(speaker) or "",
+                ),
+            }
+            binding = {k: v for k, v in binding.items() if v}
+        except Exception:
+            pass
+    existing = {
+        str(o.get("video_path") or "")
+        for o in (beat.get("kling_o3_options") or [])
+        if isinstance(o, dict)
+    }
+    if delivery_path not in existing:
+        slot = 0
+        slots = normalize_kling_o3_option_slots(beat)
+        for idx, opt in enumerate(slots):
+            if opt is None:
+                slot = idx
+                break
+        assign_kling_o3_option_to_slot(
+            beat,
+            slot,
+            video_path=delivery_path,
+            label="recovered O3 delivery",
+            source="kling_o3_element_native_voice",
+            now=now,
+            make_active=should_activate,
+            o3_voice_binding=binding or None,
+        )
+        gallery_touched = True
+    else:
+        gallery_touched = True
+        if should_activate:
+            ri = max(0, min(2, int(beat.get("kling_o3_replace_slot_index") or 0)))
+            assign_kling_o3_option_to_slot(
+                beat,
+                ri,
+                video_path=str(delivery_path),
+                label=_canonical_o3_option_label(str(delivery_path), recovered_gen),
+                source="kling_o3_element_native_voice",
+                now=now,
+                make_active=True,
+                o3_voice_binding=binding or None,
+            )
+    if delivery_path in existing and should_activate:
+        for opt in beat.get("kling_o3_options") or []:
+            if isinstance(opt, dict) and str(opt.get("video_path") or "") == delivery_path:
+                opt["active"] = True
+                beat["kling_o3_video_path"] = delivery_path
+                beat["kling_o3_selected_option_key"] = opt.get("key")
+                beat["kling_o3_selected_at"] = now
+                if recovered_gen is not None:
+                    beat["kling_o3_generation"] = recovered_gen
+            elif isinstance(opt, dict):
+                opt["active"] = False
+    if not should_activate and beat.get("kling_o3_video_path"):
+        active_path = str(beat.get("kling_o3_video_path") or "")
+        for opt in beat.get("kling_o3_options") or []:
+            if isinstance(opt, dict):
+                opt["active"] = str(opt.get("video_path") or "") == active_path
+    beat["kling_o3_status"] = "approved"
+    beat["status"] = "approved"
+    beat["kling_o3_voice_fix_status"] = "approved"
+    beat.pop("kling_o3_voice_fix_error", None)
+    beat.pop("kling_o3_voice_fix_error_code", None)
+    beat.pop("kling_o3_voice_fix_ui_job_id", None)
+    beat.pop("kling_o3_voice_fix_job_pid", None)
+    job_attempt = (os.environ.get("MN_O3_ATTEMPT_ID") or "").strip()
+    if job_attempt:
+        beat["kling_o3_voice_fix_attempt_id"] = job_attempt
+    if binding:
+        beat["o3_element_quality"] = {
+            "speaker": speaker,
+            **binding,
+            "delivery_profile": "LD-284/LD-296 1280x720 H.264 <=1.9Mbps +faststart",
+            "method": "O3 Pro reference-to-video + Element create-voice (no lipsync detour)",
+            "applied_at": now,
+            "recovered_from": "orphan_delivery_after_sidecar_io_error",
+        }
+    try:
+        from o3_generation_intent import load_intent_visual_ref_fields_from_job_log
+
+        beat.update(load_intent_visual_ref_fields_from_job_log(log_path, event_dir))
+    except Exception:
+        pass
+    return gallery_touched, str(delivery_path)
+
+
 def recover_orphan_o3_delivery(
     beat_id: str,
     event_dir: str | Path,
@@ -11950,122 +12108,17 @@ def recover_orphan_o3_delivery(
     milestone JSON-only scope and write gallery rows to the wrong store.
     """
     event_dir = Path(event_dir)
-    resolved = str(delivery_path or "").strip() or _delivery_path_from_o3_job_log(log_path) or ""
-    if not resolved or not Path(resolved).is_file():
-        disk_paths = list_o3_element_delivery_paths_on_disk(beat_id, event_dir)
-        if disk_paths:
-            resolved = str(disk_paths[-1].resolve())
-    delivery_path = resolved or None
-    now = datetime.now(timezone.utc).isoformat()
-    gallery_touched = False
+    delivery_path = str(delivery_path or "").strip() or None
 
     def apply(beat: dict, _sidecar: dict) -> None:
-        nonlocal delivery_path, gallery_touched
-        if str(beat.get("beat_id") or "") != beat_id:
-            return
-        if not delivery_path or not Path(delivery_path).is_file():
-            gen = beat.get("kling_o3_generation")
-            if gen is not None:
-                guess = kling_o3_clips_dir(event_dir) / (
-                    f"{beat_id}_g{gen}_element_o3_master_delivery.mp4"
-                )
-                if guess.is_file():
-                    delivery_path = str(guess)
-        if not delivery_path or not Path(delivery_path).is_file():
-            return
-        recovered_gen = None
-        m = re.search(r"_g(\d+)_element_o3_master_delivery\.mp4$", str(delivery_path))
-        if m:
-            recovered_gen = int(m.group(1))
-        current_gen = int(beat.get("kling_o3_generation") or 0)
-        should_activate = make_active or (
-            recovered_gen is not None and recovered_gen >= current_gen
+        preview_orphan_o3_delivery_on_beat(
+            beat,
+            event_dir,
+            beat_id=beat_id,
+            log_path=log_path,
+            delivery_path=delivery_path,
+            make_active=make_active,
         )
-        speaker = str(beat.get("speaker") or "").strip()
-        binding: dict[str, str] = {}
-        if log_path:
-            binding = _o3_voice_binding_from_job_log(log_path, delivery_path)
-        if not binding and speaker:
-            try:
-                from tools import kling_character_registry as reg
-
-                proven = reg.get_proven_element_list_entry(speaker)
-                entry = proven or reg.get_element_list_entry(speaker) or {}
-                binding = {
-                    "element_id": str(entry.get("element_id") or ""),
-                    "kling_voice_id": str(
-                        entry.get("voice_id") or reg.get_bound_voice_id(speaker) or "",
-                    ),
-                }
-                binding = {k: v for k, v in binding.items() if v}
-            except Exception:
-                pass
-        existing = {
-            str(o.get("video_path") or "")
-            for o in (beat.get("kling_o3_options") or [])
-            if isinstance(o, dict)
-        }
-        if delivery_path not in existing:
-            slot = 0
-            slots = normalize_kling_o3_option_slots(beat)
-            for idx, opt in enumerate(slots):
-                if opt is None:
-                    slot = idx
-                    break
-            assign_kling_o3_option_to_slot(
-                beat,
-                slot,
-                video_path=delivery_path,
-                label="recovered O3 delivery",
-                source="kling_o3_element_native_voice",
-                now=now,
-                make_active=should_activate,
-                o3_voice_binding=binding or None,
-            )
-            gallery_touched = True
-        else:
-            gallery_touched = True
-        if delivery_path in existing and should_activate:
-            for opt in beat.get("kling_o3_options") or []:
-                if isinstance(opt, dict) and str(opt.get("video_path") or "") == delivery_path:
-                    opt["active"] = True
-                    beat["kling_o3_video_path"] = delivery_path
-                    beat["kling_o3_selected_option_key"] = opt.get("key")
-                    beat["kling_o3_selected_at"] = now
-                    if recovered_gen is not None:
-                        beat["kling_o3_generation"] = recovered_gen
-                elif isinstance(opt, dict):
-                    opt["active"] = False
-        if not should_activate and beat.get("kling_o3_video_path"):
-            active_path = str(beat.get("kling_o3_video_path") or "")
-            for opt in beat.get("kling_o3_options") or []:
-                if isinstance(opt, dict):
-                    opt["active"] = str(opt.get("video_path") or "") == active_path
-        beat["kling_o3_status"] = "approved"
-        beat["status"] = "approved"
-        beat["kling_o3_voice_fix_status"] = "approved"
-        beat.pop("kling_o3_voice_fix_error", None)
-        beat.pop("kling_o3_voice_fix_error_code", None)
-        beat.pop("kling_o3_voice_fix_ui_job_id", None)
-        beat.pop("kling_o3_voice_fix_job_pid", None)
-        job_attempt = (os.environ.get("MN_O3_ATTEMPT_ID") or "").strip()
-        if job_attempt:
-            beat["kling_o3_voice_fix_attempt_id"] = job_attempt
-        if binding:
-            beat["o3_element_quality"] = {
-                "speaker": speaker,
-                **binding,
-                "delivery_profile": "LD-284/LD-296 1280x720 H.264 <=1.9Mbps +faststart",
-                "method": "O3 Pro reference-to-video + Element create-voice (no lipsync detour)",
-                "applied_at": now,
-                "recovered_from": "orphan_delivery_after_sidecar_io_error",
-            }
-        try:
-            from o3_generation_intent import load_intent_visual_ref_fields_from_job_log
-
-            beat.update(load_intent_visual_ref_fields_from_job_log(log_path, event_dir))
-        except Exception:
-            pass
 
     ok, beat = update_beat_locked(beat_id, apply)
     if ok and beat:
@@ -12075,6 +12128,7 @@ def recover_orphan_o3_delivery(
             reconcile_o3_disk_deliveries_for_beat(b, event_dir)
 
         update_beat_locked(beat_id, reconcile_apply)
+    resolved_delivery = str(beat.get("kling_o3_video_path") or delivery_path or "").strip() or None
     option_paths = {
         str(o.get("video_path") or "")
         for o in (beat.get("kling_o3_options") or [])
@@ -12083,20 +12137,19 @@ def recover_orphan_o3_delivery(
     recovered = bool(
         ok
         and beat
-        and delivery_path
-        and Path(delivery_path).is_file()
-        and gallery_touched
-        and str(delivery_path) in option_paths
+        and resolved_delivery
+        and Path(resolved_delivery).is_file()
+        and resolved_delivery in option_paths
     )
     if recovered:
         print(
-            f"[o3_orphan_recovery] beat_id={beat_id} video={delivery_path}",
+            f"[o3_orphan_recovery] beat_id={beat_id} video={resolved_delivery}",
             flush=True,
         )
     return {
         "ok": bool(ok and beat),
         "beat_id": beat_id,
-        "delivery_path": delivery_path,
+        "delivery_path": resolved_delivery,
         "recovered": recovered,
     }
 
