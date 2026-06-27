@@ -2255,7 +2255,17 @@ _EVENT_HEADER_UNDERLINE = re.compile(
     r"^EVENT\s+([\d]+[a-z]?):\s*(.+?)\s*\n[-=]{3,}",
     re.IGNORECASE | re.MULTILINE,
 )
+# Arc 2+ post-section events: ``EVENT 5\n-------`` with title on following lines.
+_EVENT_HEADER_PLAIN = re.compile(
+    r"^EVENT\s+([\d]+[a-z]?)\s*\n[-=]{3,}",
+    re.IGNORECASE | re.MULTILINE,
+)
 _EVENT_HEADER = _EVENT_HEADER_H2
+_SKELETON_METADATA_LINE = re.compile(
+    r"\*\*Creature:\s*(.+?)\s*\|\s*Domain:\s*(.+?)\s*\|\s*Technique:\s*(.+?)"
+    r"\s*\|\s*Spell Name:\s*(.+?)\s*(?:\||\*\*)",
+    re.IGNORECASE | re.DOTALL,
+)
 _SECTION_SETUP = re.compile(
     r"^###\s+(?:Narrative Setup|Intro Video(?:\s*---\s*Narrative Setup)?|Video Intro)",
     re.IGNORECASE | re.MULTILINE,
@@ -2322,6 +2332,46 @@ def _parse_event_header_rest(rest: str) -> tuple[str, str]:
     return event_type, clean_name
 
 
+def _title_from_plain_event_block(event_text: str) -> str:
+    """First bold title line after plain ``EVENT N\\n---`` header."""
+    for line in event_text.splitlines()[1:8]:
+        line = line.strip()
+        if line.startswith("**") and line.endswith("**"):
+            return line.strip("*").strip()
+    return ""
+
+
+def _normalize_skeleton_metadata_text(event_text: str) -> str:
+    return (event_text or "").replace("\\|", "|")
+
+
+def parse_skeleton_module_metadata_from_text(event_text: str) -> dict:
+    """Parse ``**Creature: … | Domain: … | Technique: … | Spell Name: …**`` line."""
+    normalized = _normalize_skeleton_metadata_text(event_text)
+    m = _SKELETON_METADATA_LINE.search(normalized)
+    if not m:
+        return {}
+    return {
+        "creature": m.group(1).strip(),
+        "domain": m.group(2).strip(),
+        "technique": m.group(3).strip(),
+        "spell_name": m.group(4).strip(),
+    }
+
+
+def m_number_from_event_block(block: dict) -> int | None:
+    """Resolve creature M-number from an event block (title, metadata, or body)."""
+    meta = parse_skeleton_module_metadata_from_text(block.get("event_text") or "")
+    for src in (
+        block.get("clean_name") or "",
+        block.get("event_text") or "",
+    ):
+        m_marker = _M_NUMBER_IN_TITLE.search(src)
+        if m_marker:
+            return int(m_marker.group(1))
+    return None
+
+
 def _collect_event_blocks(text: str) -> list[dict]:
     """Collect event blocks from skeleton text (Arc 1 ## headers + Arc 2 underline)."""
     markers: list[tuple[int, str, str]] = []
@@ -2329,6 +2379,12 @@ def _collect_event_blocks(text: str) -> list[dict]:
         markers.append((m.start(), str(m.group(1)), m.group(2).strip()))
     for m in _EVENT_HEADER_UNDERLINE.finditer(text):
         markers.append((m.start(), str(m.group(1)), m.group(2).strip()))
+    underline_starts = {m.start() for m in _EVENT_HEADER_UNDERLINE.finditer(text)}
+    h2_starts = {m.start() for m in _EVENT_HEADER_H2.finditer(text)}
+    for m in _EVENT_HEADER_PLAIN.finditer(text):
+        if m.start() in underline_starts or m.start() in h2_starts:
+            continue
+        markers.append((m.start(), str(m.group(1)), ""))
     markers.sort(key=lambda t: t[0])
     # Dedupe same event_id at same position (prefer first)
     seen_pos: set[int] = set()
@@ -2342,10 +2398,14 @@ def _collect_event_blocks(text: str) -> list[dict]:
     blocks: list[dict] = []
     for i, (pos, event_id, rest) in enumerate(unique):
         end = unique[i + 1][0] if i + 1 < len(unique) else len(text)
-        event_type, clean_name = _parse_event_header_rest(rest)
+        event_text = text[pos:end]
+        if rest:
+            event_type, clean_name = _parse_event_header_rest(rest)
+        else:
+            plain_title = _title_from_plain_event_block(event_text)
+            event_type, clean_name = _parse_event_header_rest(plain_title or rest)
         if _SKIP_TYPES.search(f"({event_type})"):
             continue
-        event_text = text[pos:end]
         blocks.append({
             "pos": pos,
             "event_id": event_id,
@@ -2675,6 +2735,28 @@ def _parse_module_structure_play_order_map(arc_number):
     return result
 
 
+def _parse_prose_module_structure_play_order_map(arc_number):
+    """Return {play_order: m_number} from prose ``Module structure:`` lists (Arc 2+)."""
+    path = _skeleton_path(arc_number)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except Exception:
+        return {}
+    m = re.search(
+        r"Module structure:\s*\n(.*?)(?:\n\n[A-Z][A-Z ]|\nKEY MILESTONES|\nARC PREMISE|\Z)",
+        text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not m:
+        return {}
+    section = m.group(1)
+    m_numbers = [int(x) for x in re.findall(r"\(M(\d+)", section, re.IGNORECASE)]
+    return {i + 1: mn for i, mn in enumerate(m_numbers)}
+
+
 def find_m_number_for_play_order_event(arc_number, play_order):
     """Map skeleton play-order event # → creature M-number.
 
@@ -2689,6 +2771,10 @@ def find_m_number_for_play_order_event(arc_number, play_order):
     if play_order in table:
         return table[play_order]
 
+    prose = _parse_prose_module_structure_play_order_map(arc_number)
+    if play_order in prose:
+        return prose[play_order]
+
     path = _skeleton_path(arc_number)
     if not os.path.exists(path):
         return None
@@ -2697,26 +2783,25 @@ def find_m_number_for_play_order_event(arc_number, play_order):
             text = f.read()
     except Exception:
         return None
-    for m in _EVENT_HEADER.finditer(text):
-        event_id = str(m.group(1) or "")
-        if not event_id.isdigit():
+
+    blocks = _collect_event_blocks(text)
+    module_blocks = [b for b in blocks if b["has_module"]]
+    if play_order <= len(module_blocks):
+        mn = m_number_from_event_block(module_blocks[play_order - 1])
+        if mn is not None:
+            return mn
+
+    for block in blocks:
+        if str(block["event_id"]) != str(play_order):
             continue
-        if int(event_id) != play_order:
-            continue
-        title = m.group(2) or ""
-        m_marker = _M_NUMBER_IN_TITLE.search(title)
-        if m_marker:
-            return int(m_marker.group(1))
+        mn = m_number_from_event_block(block)
+        if mn is not None:
+            return mn
     return None
 
 
 def find_event_for_module(arc_number, m_number):
-    """Find arc-event-id whose ## EVENT header title contains (M<m_number>).
-
-    Returns the arc-event-id string (e.g., '1', '3b', '5') or None if not found.
-    Per Arc 1 skeleton convention: play order differs from M-number; the M-marker
-    in the event title is the canonical mapping (e.g., 'EVENT 5: ... (M3)' = M3).
-    """
+    """Find arc-event-id whose event block matches (M<m_number>)."""
     path = _skeleton_path(arc_number)
     if not os.path.exists(path):
         return None
@@ -2725,23 +2810,36 @@ def find_event_for_module(arc_number, m_number):
             text = f.read()
     except Exception:
         return None
-    for m in _EVENT_HEADER.finditer(text):
-        title = m.group(2) or ""
-        m_marker = _M_NUMBER_IN_TITLE.search(title)
-        if m_marker and int(m_marker.group(1)) == int(m_number):
-            return str(m.group(1))
+    target = int(m_number)
+    for block in _collect_event_blocks(text):
+        if m_number_from_event_block(block) == target:
+            return str(block["event_id"])
     return None
 
 
+def extract_skeleton_module_metadata(arc_number, m_number):
+    """Extract spell name, technique, domain, creature from the module event block."""
+    path = _skeleton_path(arc_number)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except Exception:
+        return {}
+    target = int(m_number)
+    for block in _collect_event_blocks(text):
+        if m_number_from_event_block(block) != target:
+            continue
+        meta = parse_skeleton_module_metadata_from_text(block["event_text"])
+        meta["skeleton_event_id"] = block["event_id"]
+        meta["event_name"] = block["clean_name"]
+        return meta
+    return {}
+
+
 def extract_therapeutic_note(arc_number, m_number):
-    """Extract the '### Therapeutic Note —' section for the event matching (M<m_number>).
-
-    Returns the section text (from the Therapeutic Note H3 to the next H3 within
-    the event block) as a stripped string. Empty string if not found.
-
-    Used by Phase A and Phase B Suggest Script handlers to ground Claude prompts
-    in the authored therapeutic content for the module.
-    """
+    """Extract Therapeutic Note for (M<m_number>) — Arc 1 H2 + Arc 2 underline/plain."""
     path = _skeleton_path(arc_number)
     if not os.path.exists(path):
         return ""
@@ -2751,28 +2849,19 @@ def extract_therapeutic_note(arc_number, m_number):
     except Exception:
         return ""
 
-    # Locate the event whose title carries the (M<m_number>) marker
-    event_start = None
-    for m in _EVENT_HEADER.finditer(text):
-        title = m.group(2) or ""
-        m_marker = _M_NUMBER_IN_TITLE.search(title)
-        if m_marker and int(m_marker.group(1)) == int(m_number):
-            event_start = m.start()
+    target = int(m_number)
+    event_block = None
+    for block in _collect_event_blocks(text):
+        if m_number_from_event_block(block) == target:
+            event_block = block["event_text"]
             break
-    if event_start is None:
+    if not event_block:
         return ""
 
-    # Find event end (next ## EVENT header or EOF)
-    next_event = _EVENT_HEADER.search(text, event_start + 1)
-    event_end = next_event.start() if next_event else len(text)
-    event_block = text[event_start:event_end]
-
-    # Find the Therapeutic Note H3 within this event block
     therap_match = _SECTION_THERAP.search(event_block)
     if not therap_match:
         return ""
 
-    # End of section = next H3 within the event block (or end of block)
     next_h3 = _NEXT_H3.search(event_block, therap_match.end())
     section_end = next_h3.start() if next_h3 else len(event_block)
     return event_block[therap_match.start():section_end].strip()
@@ -2802,6 +2891,52 @@ def load_technique_inventory():
             return f.read()
     except Exception:
         return ""
+
+
+def slice_technique_inventory_for_module(m_number, inventory_text=None):
+    """Return M-number-specific inventory rows (not the full ~80k catalog)."""
+    if inventory_text is None:
+        inventory_text = load_technique_inventory()
+    if not inventory_text:
+        return ""
+    m = int(m_number)
+    rows: list[str] = []
+    seen: set[str] = set()
+    for line in inventory_text.splitlines():
+        if re.match(rf"^\|\s*M{m}\s*\|", line) and line not in seen:
+            rows.append(line)
+            seen.add(line)
+    if not rows:
+        return inventory_text[:6000]
+    return (
+        f"Technique Inventory slice for M{m} ONLY "
+        "(Arc Skeleton Spell Name wins if this conflicts):\n"
+        + "\n".join(rows)
+    )
+
+
+def load_phase_b_research_dossier(m_number):
+    """Load ``Production/M{n}_PHASE_B_RESEARCH_DOSSIER*.md`` (highest version)."""
+    try:
+        sys.path.insert(0, os.path.join(_TOOLS_DIR, "..", "lib"))
+        from phase_b_suggest_sources import load_phase_b_research_dossier as _load  # noqa: PLC0415
+
+        prod_dir = os.path.join(_PROJECT_DIR, "Production")
+        return _load(prod_dir, int(m_number))
+    except Exception:
+        return {"filename": "", "path": "", "chars": 0, "text": ""}
+
+
+def load_phase_b_approved_script(m_number):
+    """Load ``Production/M{n}_PHASE_B_MEDITATION_SCRIPT*.md`` when on disk."""
+    try:
+        sys.path.insert(0, os.path.join(_TOOLS_DIR, "..", "lib"))
+        from phase_b_suggest_sources import load_phase_b_approved_script as _load  # noqa: PLC0415
+
+        prod_dir = os.path.join(_PROJECT_DIR, "Production")
+        return _load(prod_dir, int(m_number))
+    except Exception:
+        return {"filename": "", "path": "", "chars": 0, "text": ""}
 
 
 # Glob patterns for Phase B Suggest Script authoring docs under Production/.

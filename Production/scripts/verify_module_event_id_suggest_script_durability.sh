@@ -26,12 +26,20 @@ grep -q 'heal_production_state_event_id' "$PSERVER" \
   || fail "run_server must heal event_id on startup"
 grep -q 'production_folder_id' "$PHASES" \
   || fail "handle_phase_suggest_script must pass production_folder_id to resolver"
-grep -q 'resolve_m_number_from_production_folder' "$MEI" \
-  || fail "module_event_id must resolve Event_N via Arc Skeleton play-order"
+grep -q 'extract_skeleton_module_metadata' "$BG" \
+  || fail "beat_generator must expose extract_skeleton_module_metadata"
+grep -q 'load_phase_b_research_dossier' "$BG" \
+  || fail "beat_generator must load Phase B research dossiers"
+grep -q 'slice_technique_inventory_for_module' "$BG" \
+  || fail "beat_generator must slice technique inventory by M-number"
+grep -q 'build_therapeutic_brief_from_sources' "$PHASES" \
+  || fail "phases must build deterministic brief from dossier"
 
 export PYTHONPATH="${REPO_ROOT}/Production/tools:${REPO_ROOT}/Production:${PYTHONPATH:-}"
 
 python3 -m unittest Production.tools.tests.test_module_event_id_suggest_script -v \
   || fail "unit tests failed"
+python3 -m unittest Production.tools.tests.test_phase_b_suggest_sources -v \
+  || fail "phase b suggest source tests failed"
 
 echo "[module-event-id-suggest] OK — Arc Skeleton play-order → m_number + suggest script guards"

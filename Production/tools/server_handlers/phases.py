@@ -976,26 +976,34 @@ def _format_phase_b_authoring_docs_section(docs: list) -> str:
 def _build_phase_b_suggest_user_prompt(
     *,
     module_identity: str,
+    skeleton_metadata_section: str,
     therapeutic_section: str,
+    dossier_section: str,
     technique_section: str,
     phase_a_script: str,
     authoring_docs_section: str,
+    approved_few_shot: str | None = None,
+    approved_few_shot_label: str = "Kim-approved M1 — match sparseness",
 ) -> str:
     """Assemble the Phase B Suggest Script user prompt from live doc loads."""
+    few_shot = (approved_few_shot or _M1_PHASE_B_FEW_SHOT).strip()
     return (
         "You are drafting a Phase B meditation script for MindfulNest "
         "(ages 7-11), narrated by Cedric the wizard. The child has "
         "eyes CLOSED after Phase A — this is guided practice, not "
         "storytelling.\n\n"
         f"{module_identity}\n"
+        f"{skeleton_metadata_section}\n"
         f"{therapeutic_section}\n"
+        f"{dossier_section}\n"
         f"{technique_section}\n"
         "Phase A script (locked vocabulary source — CONNECTION must "
         "reuse exact Phase A words; never re-teach what Phase A showed):\n"
         f"---\n{phase_a_script}\n---\n\n"
         "AUTHORING DOCUMENTS (canonical — follow these exactly; "
         "clarity checklist picks the template, production process "
-        "governs clinical fidelity):\n\n"
+        "governs clinical fidelity; research dossier Recommended "
+        "Approach defines ordered exercise steps):\n\n"
         f"{authoring_docs_section}\n"
         "## PRODUCER OUTPUT FORMAT (Storyboard Phase B tab)\n\n"
         "These rules OVERRIDE illustrative {{PAUSE:Xs}} / {{BELL_CUE}} "
@@ -1003,6 +1011,8 @@ def _build_phase_b_suggest_user_prompt(
         "directly into the Phase B producer textarea + TTS pipeline.\n\n"
         "- Output PLAIN SPOKEN TEXT ONLY — no markdown headers, no "
         "section labels, no word-count footers, no template commentary.\n"
+        "- Teach the EXACT spell named in Arc Skeleton metadata — not a "
+        "generic meditation or a different module's technique.\n"
         "- NO creature narrative or scene-setting (no 'Luna is excited', "
         "no 'watch what X learns'). Child cannot see the screen.\n"
         "- NO 'Cedric:' speaker prefixes.\n"
@@ -1016,13 +1026,14 @@ def _build_phase_b_suggest_user_prompt(
         "no personalization variables in rendered audio.\n"
         "- Strictly enforce the word budget for the chosen template.\n"
         "- Spend words on instruction clarity, not atmosphere or imagery.\n\n"
-        "## FEW-SHOT (Kim-approved M1 — match this sparseness)\n\n"
-        f"{_M1_PHASE_B_FEW_SHOT}\n\n"
+        f"## FEW-SHOT ({approved_few_shot_label})\n\n"
+        f"{few_shot}\n\n"
         "## TASK\n\n"
         "1. Answer Q1–Q4 + Q2b from the Clarity Checklist internally.\n"
         "2. Select the correct template (standard / sequential-step / "
         "cycle-based / preview-enhanced).\n"
-        "3. Write ONLY the spoken Phase B script — nothing else."
+        "3. Follow Research Dossier Recommended Approach steps in order.\n"
+        "4. Write ONLY the spoken Phase B script — nothing else."
     )
 
 
@@ -1125,10 +1136,32 @@ def handle_phase_suggest_script(h, body: dict)-> None:
 
     # Load the authored therapeutic sources for this module.
     bg = _bg_module()
-    therapeutic_note = bg.extract_therapeutic_note(
-        module_meta['arc_number'], module_meta['m_number'],
+    arc_num = module_meta['arc_number']
+    m_num = module_meta['m_number']
+    skeleton_meta = bg.extract_skeleton_module_metadata(arc_num, m_num)
+    try:
+        sys.path.insert(0, str(_PSERVER_TOOLS_DIR.parent / "lib"))
+        from phase_b_suggest_sources import (  # noqa: PLC0415
+            build_therapeutic_brief_from_sources,
+            enrich_module_meta,
+            format_dossier_prompt_section,
+            format_skeleton_metadata_section,
+        )
+    except Exception as _pbs_exc:
+        print(f"[suggest_script] phase_b_suggest_sources import failed: {_pbs_exc}")
+        build_therapeutic_brief_from_sources = None  # type: ignore
+        enrich_module_meta = lambda m, s: m  # type: ignore
+        format_dossier_prompt_section = lambda d: ""  # type: ignore
+        format_skeleton_metadata_section = lambda s: ""  # type: ignore
+
+    module_meta = enrich_module_meta(module_meta, skeleton_meta)
+    therapeutic_note = bg.extract_therapeutic_note(arc_num, m_num)
+    technique_inventory_full = bg.load_technique_inventory()
+    technique_inventory = bg.slice_technique_inventory_for_module(
+        m_num, technique_inventory_full,
     )
-    technique_inventory = bg.load_technique_inventory()
+    research_dossier = bg.load_phase_b_research_dossier(m_num)
+    approved_script = bg.load_phase_b_approved_script(m_num) if phase == "b" else {}
     phase_b_authoring_docs = (
         bg.load_phase_b_suggest_script_docs() if phase == "b" else []
     )
@@ -1157,13 +1190,26 @@ def handle_phase_suggest_script(h, body: dict)-> None:
         'event_id_resolved': event_id_str,
         'production_folder_id': _production_folder,
         'skeleton_play_order': module_meta.get('play_order'),
+        'skeleton_event_id': skeleton_meta.get('skeleton_event_id'),
+        'spell_name': module_meta.get('spell_name') or skeleton_meta.get('spell_name'),
         'therapeutic_note_chars': len(therapeutic_note),
         'technique_inventory_chars': len(technique_inventory),
+        'technique_inventory_full_chars': len(technique_inventory_full),
         'arc_number': module_meta['arc_number'],
         'm_number': module_meta['m_number'],
         'creature_name': module_meta['creature_name'],
         'technique_name': module_meta['technique_name'],
+        'domain': module_meta.get('domain') or skeleton_meta.get('domain'),
     }
+    if phase == "b":
+        sources_loaded['research_dossier'] = {
+            'filename': research_dossier.get('filename'),
+            'chars': research_dossier.get('chars'),
+        }
+        sources_loaded['approved_script'] = {
+            'filename': approved_script.get('filename'),
+            'chars': approved_script.get('chars'),
+        }
     if phase == "b":
         sources_loaded['phase_a_script_chars'] = len(phase_a_script)
         sources_loaded['phase_b_docs'] = [
@@ -1191,6 +1237,11 @@ def handle_phase_suggest_script(h, body: dict)-> None:
             f'[suggest_script] WARNING: no Therapeutic Note found for '
             f'arc={module_meta["arc_number"]} m_number={module_meta["m_number"]} '
             f'event_id={event_id_str!r}. Claude prompt will lack authored context.'
+        )
+    if phase == "b" and not (research_dossier.get("text") or "").strip():
+        print(
+            f'[suggest_script] WARNING: no Phase B research dossier for '
+            f'M{module_meta["m_number"]}. Brief will fall back to Therapeutic Note only.'
         )
     if not technique_inventory:
         print(
@@ -1221,12 +1272,22 @@ def handle_phase_suggest_script(h, body: dict)-> None:
                 )
 
     # Module identity block — shared header for both phases.
+    spell_label = module_meta.get('spell_name') or skeleton_meta.get('spell_name') or ''
     module_identity = (
-        f"Module identity (resolved from event_id={event_id_str!r}):\n"
+        f"Module identity (resolved from event_id={event_id_str!r}, "
+        f"folder={_production_folder!r}):\n"
         f"  - Arc: {module_meta['arc_number']}\n"
+        f"  - Skeleton play order: {module_meta.get('play_order')}\n"
         f"  - M-number: M{module_meta['m_number']}\n"
         f"  - Creature: {module_meta['creature_name']}\n"
+        f"  - Domain: {module_meta.get('domain') or skeleton_meta.get('domain') or '(see skeleton)'}\n"
         f"  - Technique: {module_meta['technique_name'] or '(see Therapeutic Note below)'}\n"
+        f"  - Spell Name: {spell_label or '(see Arc Skeleton metadata)'}\n"
+    )
+
+    skeleton_metadata_section = format_skeleton_metadata_section(skeleton_meta)
+    dossier_section = (
+        format_dossier_prompt_section(research_dossier) if phase == "b" else ""
     )
 
     therapeutic_section = (
@@ -1274,10 +1335,18 @@ def handle_phase_suggest_script(h, body: dict)-> None:
         )
         user_prompt = _build_phase_b_suggest_user_prompt(
             module_identity=module_identity,
+            skeleton_metadata_section=skeleton_metadata_section,
             therapeutic_section=therapeutic_section,
+            dossier_section=dossier_section,
             technique_section=technique_section,
             phase_a_script=phase_a_script,
             authoring_docs_section=authoring_docs_section,
+            approved_few_shot=(approved_script.get("text") or None),
+            approved_few_shot_label=(
+                f"Kim-approved M{module_meta['m_number']} — match sparseness"
+                if (approved_script.get("text") or "").strip()
+                else "Kim-approved M1 — match sparseness"
+            ),
         )
         system_prompt = (
             "You are a CRI script writer drafting Phase B meditation "
@@ -1300,10 +1369,19 @@ def handle_phase_suggest_script(h, body: dict)-> None:
     }
     with _cf.ThreadPoolExecutor(max_workers=2) as pool:
         script_future = pool.submit(_call_anthropic_urllib, api_key, script_req, 60)
-        brief_future = pool.submit(
-            _build_therapeutic_brief,
-            api_key, module_meta, therapeutic_note, technique_inventory,
-        )
+        therapeutic_brief = None
+        if build_therapeutic_brief_from_sources:
+            therapeutic_brief = build_therapeutic_brief_from_sources(
+                skeleton_meta,
+                therapeutic_note,
+                research_dossier.get("text") or "",
+            )
+        brief_future = None
+        if therapeutic_brief is None:
+            brief_future = pool.submit(
+                _build_therapeutic_brief,
+                api_key, module_meta, therapeutic_note, technique_inventory,
+            )
         # Script result — errors are fatal, returned as HTTP error response
         try:
             resp_data, elapsed_ms = script_future.result()
@@ -1323,11 +1401,12 @@ def handle_phase_suggest_script(h, body: dict)-> None:
                 extra={"ok": False},
             )
         # Brief result — non-fatal
-        try:
-            therapeutic_brief = brief_future.result()
-        except Exception as exc:
-            print(f"[suggest_script] brief future error (non-fatal): {exc}")
-            therapeutic_brief = None
+        if brief_future is not None:
+            try:
+                therapeutic_brief = brief_future.result()
+            except Exception as exc:
+                print(f"[suggest_script] brief future error (non-fatal): {exc}")
+                therapeutic_brief = None
 
     # Extract text from script response.
     content = resp_data.get("content") or []
