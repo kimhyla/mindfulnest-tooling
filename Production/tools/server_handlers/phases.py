@@ -977,6 +977,7 @@ def _build_phase_b_suggest_user_prompt(
     *,
     module_identity: str,
     skeleton_metadata_section: str,
+    therapeutic_brief_section: str,
     therapeutic_section: str,
     dossier_section: str,
     technique_section: str,
@@ -994,6 +995,7 @@ def _build_phase_b_suggest_user_prompt(
         "storytelling.\n\n"
         f"{module_identity}\n"
         f"{skeleton_metadata_section}\n"
+        f"{therapeutic_brief_section}\n"
         f"{therapeutic_section}\n"
         f"{dossier_section}\n"
         f"{technique_section}\n"
@@ -1002,8 +1004,7 @@ def _build_phase_b_suggest_user_prompt(
         f"---\n{phase_a_script}\n---\n\n"
         "AUTHORING DOCUMENTS (canonical — follow these exactly; "
         "clarity checklist picks the template, production process "
-        "governs clinical fidelity; research dossier Recommended "
-        "Approach defines ordered exercise steps):\n\n"
+        "governs clinical fidelity):\n\n"
         f"{authoring_docs_section}\n"
         "## PRODUCER OUTPUT FORMAT (Storyboard Phase B tab)\n\n"
         "These rules OVERRIDE illustrative {{PAUSE:Xs}} / {{BELL_CUE}} "
@@ -1013,6 +1014,8 @@ def _build_phase_b_suggest_user_prompt(
         "section labels, no word-count footers, no template commentary.\n"
         "- Teach the EXACT spell named in Arc Skeleton metadata — not a "
         "generic meditation or a different module's technique.\n"
+        "- Implement EVERY must_hit from THERAPEUTIC BRIEF in order — "
+        "the brief is the script blueprint, not optional context.\n"
         "- NO creature narrative or scene-setting (no 'Luna is excited', "
         "no 'watch what X learns'). Child cannot see the screen.\n"
         "- NO 'Cedric:' speaker prefixes.\n"
@@ -1032,7 +1035,8 @@ def _build_phase_b_suggest_user_prompt(
         "1. Answer Q1–Q4 + Q2b from the Clarity Checklist internally.\n"
         "2. Select the correct template (standard / sequential-step / "
         "cycle-based / preview-enhanced).\n"
-        "3. Follow Research Dossier Recommended Approach steps in order.\n"
+        "3. Write the spoken Phase B script by executing THERAPEUTIC BRIEF "
+        "must_hits in order — one script section per step.\n"
         "4. Write ONLY the spoken Phase B script — nothing else."
     )
 
@@ -1146,6 +1150,7 @@ def handle_phase_suggest_script(h, body: dict)-> None:
             enrich_module_meta,
             format_dossier_prompt_section,
             format_skeleton_metadata_section,
+            format_therapeutic_brief_for_script_prompt,
         )
     except Exception as _pbs_exc:
         print(f"[suggest_script] phase_b_suggest_sources import failed: {_pbs_exc}")
@@ -1153,6 +1158,7 @@ def handle_phase_suggest_script(h, body: dict)-> None:
         enrich_module_meta = lambda m, s: m  # type: ignore
         format_dossier_prompt_section = lambda d: ""  # type: ignore
         format_skeleton_metadata_section = lambda s: ""  # type: ignore
+        format_therapeutic_brief_for_script_prompt = lambda b: ""  # type: ignore
 
     module_meta = enrich_module_meta(module_meta, skeleton_meta)
     therapeutic_note = bg.extract_therapeutic_note(arc_num, m_num)
@@ -1162,6 +1168,8 @@ def handle_phase_suggest_script(h, body: dict)-> None:
     )
     research_dossier = bg.load_phase_b_research_dossier(m_num)
     approved_script = bg.load_phase_b_approved_script(m_num) if phase == "b" else {}
+    therapeutic_brief = None
+    therapeutic_brief_section = ""
     phase_b_authoring_docs = (
         bg.load_phase_b_suggest_script_docs() if phase == "b" else []
     )
@@ -1290,6 +1298,18 @@ def handle_phase_suggest_script(h, body: dict)-> None:
         format_dossier_prompt_section(research_dossier) if phase == "b" else ""
     )
 
+    # Brief BEFORE script prompt — brief is the script blueprint, not a parallel artifact.
+    if phase == "b" and build_therapeutic_brief_from_sources:
+        therapeutic_brief = build_therapeutic_brief_from_sources(
+            skeleton_meta,
+            therapeutic_note,
+            research_dossier.get("text") or "",
+        )
+    if phase == "b":
+        therapeutic_brief_section = format_therapeutic_brief_for_script_prompt(
+            therapeutic_brief,
+        )
+
     therapeutic_section = (
         "Authored Therapeutic Note for THIS module (from Arc Skeleton — "
         "this is the canonical source of truth for the technique, "
@@ -1336,6 +1356,7 @@ def handle_phase_suggest_script(h, body: dict)-> None:
         user_prompt = _build_phase_b_suggest_user_prompt(
             module_identity=module_identity,
             skeleton_metadata_section=skeleton_metadata_section,
+            therapeutic_brief_section=therapeutic_brief_section,
             therapeutic_section=therapeutic_section,
             dossier_section=dossier_section,
             technique_section=technique_section,
@@ -1351,62 +1372,46 @@ def handle_phase_suggest_script(h, body: dict)-> None:
         system_prompt = (
             "You are a CRI script writer drafting Phase B meditation "
             "scripts for MindfulNest (ages 7-11), narrated by Cedric "
-            "the wizard. Follow the loaded authoring documents exactly. "
-            "Ground every script in the Therapeutic Note, Technique "
-            "Inventory, and Phase A script in the user message. Output "
-            "only the spoken script text — no markdown wrappers or "
-            "commentary."
+            "the wizard. The THERAPEUTIC BRIEF in the user message is "
+            "the mandatory step-by-step blueprint — implement every "
+            "must_hit in order. Follow the loaded authoring documents. "
+            "Ground every script in the brief, Therapeutic Note, and "
+            "Phase A script. Output only the spoken script text — no "
+            "markdown wrappers or commentary."
         )
 
-    # Call Anthropic in PARALLEL: (1) script generation, (2) therapeutic brief.
-    # Both use Haiku. Brief failure is non-fatal — returns null in the response.
-    # Using _cf (concurrent.futures) already imported at module top.
+    # Script generation uses brief-in-prompt; LLM brief only when extraction failed.
     script_req = {
         "model": "claude-haiku-4-5",
         "max_tokens": 2048,
         "system": system_prompt,
         "messages": [{"role": "user", "content": user_prompt}],
     }
-    with _cf.ThreadPoolExecutor(max_workers=2) as pool:
-        script_future = pool.submit(_call_anthropic_urllib, api_key, script_req, 60)
-        therapeutic_brief = None
-        if build_therapeutic_brief_from_sources:
-            therapeutic_brief = build_therapeutic_brief_from_sources(
-                skeleton_meta,
-                therapeutic_note,
-                research_dossier.get("text") or "",
-            )
-        brief_future = None
-        if therapeutic_brief is None:
-            brief_future = pool.submit(
-                _build_therapeutic_brief,
+    try:
+        resp_data, elapsed_ms = _call_anthropic_urllib(api_key, script_req, 60)
+    except urllib.error.HTTPError as exc:
+        err_body = exc.read().decode("utf-8", errors="replace")
+        return h._send_error_v59(
+            502, error_code="GENERIC_ERROR",
+            error_message=f"Anthropic API HTTP {exc.code}",
+            retry_safe=True,
+            extra={"ok": False, "detail": err_body[:500]},
+        )
+    except urllib.error.URLError as exc:
+        return h._send_error_v59(
+            502, error_code="GENERIC_ERROR",
+            error_message=f"Anthropic API URL error: {exc}",
+            retry_safe=True,
+            extra={"ok": False},
+        )
+    if phase == "b" and therapeutic_brief is None:
+        try:
+            therapeutic_brief = _build_therapeutic_brief(
                 api_key, module_meta, therapeutic_note, technique_inventory,
             )
-        # Script result — errors are fatal, returned as HTTP error response
-        try:
-            resp_data, elapsed_ms = script_future.result()
-        except urllib.error.HTTPError as exc:
-            err_body = exc.read().decode("utf-8", errors="replace")
-            return h._send_error_v59(
-                502, error_code="GENERIC_ERROR",
-                error_message=f"Anthropic API HTTP {exc.code}",
-                retry_safe=True,
-                extra={"ok": False, "detail": err_body[:500]},
-            )
-        except urllib.error.URLError as exc:
-            return h._send_error_v59(
-                502, error_code="GENERIC_ERROR",
-                error_message=f"Anthropic API URL error: {exc}",
-                retry_safe=True,
-                extra={"ok": False},
-            )
-        # Brief result — non-fatal
-        if brief_future is not None:
-            try:
-                therapeutic_brief = brief_future.result()
-            except Exception as exc:
-                print(f"[suggest_script] brief future error (non-fatal): {exc}")
-                therapeutic_brief = None
+        except Exception as exc:
+            print(f"[suggest_script] LLM brief fallback failed (non-fatal): {exc}")
+            therapeutic_brief = None
 
     # Extract text from script response.
     content = resp_data.get("content") or []
@@ -1415,6 +1420,14 @@ def handle_phase_suggest_script(h, body: dict)-> None:
         if isinstance(block, dict) and block.get("type") == "text":
             script_text += block.get("text", "")
     usage = resp_data.get("usage") or {}
+    if phase == "b":
+        sources_loaded['therapeutic_brief_in_script_prompt'] = bool(
+            therapeutic_brief_section.strip()
+            and 'MANDATORY SCRIPT BLUEPRINT' in therapeutic_brief_section
+        )
+        sources_loaded['therapeutic_brief_must_hits'] = len(
+            (therapeutic_brief or {}).get('must_hits') or []
+        )
     return h._send_json(200, {
         "ok": True,
         "phase": phase,

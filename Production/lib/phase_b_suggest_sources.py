@@ -15,10 +15,6 @@ _MD_H2_SECTION = re.compile(
     r"^##\s+(.+?)\s*$",
     re.MULTILINE,
 )
-_NUMBERED_ITEM = re.compile(
-    r"^\d+\.\s+\*\*(.+?)\*\*(?:\s*[—–-]\s*(.+))?$|^\d+\.\s+(.+)$",
-    re.MULTILINE,
-)
 _SKELETON_WATCH_OUTS = re.compile(
     r"\*\*\(4\)\s+What the AI narrator should NOT do:\*\*\s*\n(.*?)(?:\n\*\*\(|^###|\Z)",
     re.IGNORECASE | re.MULTILINE | re.DOTALL,
@@ -104,20 +100,21 @@ def extract_md_section(text: str, heading_prefix: str) -> str:
     return ""
 
 
+def _strip_md_inline(text: str) -> str:
+    """Flatten ``**bold**`` and collapse whitespace for prompt-safe bullets."""
+    out = re.sub(r"\*\*(.+?)\*\*", r"\1", text or "")
+    return re.sub(r"\s+", " ", out).strip()
+
+
 def extract_numbered_list_items(section_text: str) -> list[str]:
-    """Pull numbered list items from a markdown section."""
+    """Pull numbered list items from a markdown section (full line per item)."""
     items: list[str] = []
-    for m in _NUMBERED_ITEM.finditer(section_text or ""):
-        bold_rest = (m.group(1) or "").strip()
-        dash_rest = (m.group(2) or "").strip()
-        plain = (m.group(3) or "").strip()
-        if bold_rest:
-            item = bold_rest
-            if dash_rest:
-                item = f"{bold_rest} — {dash_rest}"
-        else:
-            item = plain
-        item = re.sub(r"\s+", " ", item).strip()
+    for line in (section_text or "").splitlines():
+        line = line.strip()
+        m = re.match(r"^\d+\.\s+(.+)$", line)
+        if not m:
+            continue
+        item = _strip_md_inline(m.group(1))
         if item:
             items.append(item)
     return items
@@ -202,6 +199,43 @@ def format_dossier_prompt_section(dossier: dict[str, Any]) -> str:
         f"Source file: Production/{fname}\n"
         f"---\n{text}\n---\n"
     )
+
+
+def format_therapeutic_brief_for_script_prompt(brief: dict[str, Any] | None) -> str:
+    """Render structured brief as the mandatory Phase B script blueprint."""
+    if not brief:
+        return (
+            "THERAPEUTIC BRIEF: (NOT AVAILABLE — derive steps from Research "
+            "Dossier Recommended Approach only)\n"
+        )
+    goal = _strip_md_inline(str(brief.get("goal") or ""))
+    must_hits = [_strip_md_inline(str(x)) for x in (brief.get("must_hits") or []) if str(x).strip()]
+    evoke = [_strip_md_inline(str(x)) for x in (brief.get("what_to_evoke") or []) if str(x).strip()]
+    watch = [_strip_md_inline(str(x)) for x in (brief.get("watch_outs") or []) if str(x).strip()]
+    spell = _strip_md_inline(str(brief.get("spell_name") or ""))
+
+    lines = [
+        "THERAPEUTIC BRIEF (MANDATORY SCRIPT BLUEPRINT — the spoken script MUST "
+        "implement every must_hit below, in order; do not substitute another "
+        "technique or generic meditation):",
+    ]
+    if spell:
+        lines.append(f"  Spell: {spell}")
+    if goal:
+        lines.append(f"  Goal: {goal}")
+    if must_hits:
+        lines.append("  Ordered steps (must_hits — each must appear in the script):")
+        for i, step in enumerate(must_hits, 1):
+            lines.append(f"    {i}. {step}")
+    if evoke:
+        lines.append("  What to evoke (weave into narration):")
+        for item in evoke[:6]:
+            lines.append(f"    - {item}")
+    if watch:
+        lines.append("  Watch-outs (do NOT do these):")
+        for item in watch[:6]:
+            lines.append(f"    - {item}")
+    return "\n".join(lines) + "\n"
 
 
 def format_skeleton_metadata_section(skeleton_meta: dict[str, Any]) -> str:

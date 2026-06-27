@@ -32,8 +32,8 @@ grep -q 'load_phase_b_research_dossier' "$BG" \
   || fail "beat_generator must load Phase B research dossiers"
 grep -q 'slice_technique_inventory_for_module' "$BG" \
   || fail "beat_generator must slice technique inventory by M-number"
-grep -q 'build_therapeutic_brief_from_sources' "$PHASES" \
-  || fail "phases must build deterministic brief from dossier"
+grep -q 'format_therapeutic_brief_for_script_prompt' "$PHASES" \
+  || fail "phases must inject therapeutic brief into script prompt"
 
 export PYTHONPATH="${REPO_ROOT}/Production/tools:${REPO_ROOT}/Production:${PYTHONPATH:-}"
 
