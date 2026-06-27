@@ -15,7 +15,8 @@ grep -q 'reconcile_event_sidecar_after_milestone_exit' "${TOOLS}/production_serv
   || { echo "FATAL: production_server startup reconcile missing" >&2; exit 1; }
 
 cd "${TOOLS}"
-python3 -m pytest \
+REPO_ROOT="$(cd "${TOOLS}/../.." && pwd)"
+PYTHONPATH="${REPO_ROOT}/Production:${REPO_ROOT}" python3 -m pytest \
   tests/test_event_load_sidecar_reconcile.py \
   tests/test_beatgen_per_event_sqlite.py \
   -q
