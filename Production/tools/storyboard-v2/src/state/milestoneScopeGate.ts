@@ -3,7 +3,7 @@
 // transient (503) or app.scope_type drifted after restart — prompt autosave failed
 // before Generate with MILESTONE_SCOPE_REQUIRED.
 
-import { MUTATION_ENDPOINTS } from '../api/endpoints';
+import { loadMilestone } from '../api/milestoneLoad';
 import type { Scope } from './scope';
 import {
   activeMilestoneId,
@@ -58,39 +58,7 @@ async function postMilestoneLoad(
   scope: Scope,
   mid: string,
 ): Promise<{ ok: boolean; eventGeneration?: number; error?: string }> {
-  try {
-    const res = await fetch(MUTATION_ENDPOINTS.milestone_load, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        milestone_id: mid,
-        scope_event_id: scope.event_id,
-        scope_video_role: 'standalone',
-        scope_target_video: 'standalone',
-      }),
-    });
-    let data: { ok?: boolean; event_generation?: number; error_message?: string; error?: string } | undefined;
-    try {
-      data = (await res.json()) as typeof data;
-    } catch {
-      // empty body
-    }
-    if (!res.ok) {
-      const msg = data?.error_message ?? data?.error ?? `HTTP ${res.status}`;
-      return { ok: false, error: msg };
-    }
-    if (!data?.ok) {
-      return { ok: false, error: data?.error_message ?? data?.error ?? 'milestone_load not ok' };
-    }
-    return {
-      ok: true,
-      ...(typeof data.event_generation === 'number'
-        ? { eventGeneration: data.event_generation }
-        : {}),
-    };
-  } catch (e) {
-    return { ok: false, error: String(e) };
-  }
+  return loadMilestone(scope, mid);
 }
 
 function applyMilestoneClientSignals(mid: string, eventGeneration?: number, scope?: Scope): void {

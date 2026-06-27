@@ -3982,19 +3982,25 @@ def _normalize_clip(src: Path, dst: Path):
 
 
 def _ffprobe_ok(path: Path) -> bool:
-    r = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "v:0",
-         "-show_entries", "stream=codec_name,width,height",
-         "-of", "json", str(path)],
-        capture_output=True, text=True)
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=codec_name,width,height",
+             "-of", "json", str(path)],
+            capture_output=True, text=True)
+    except FileNotFoundError:
+        return False
     return r.returncode == 0 and '"codec_name"' in r.stdout
 
 
 def _ffprobe_duration(path: Path) -> float:
-    r = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "json", str(path)],
-        capture_output=True, text=True)
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "json", str(path)],
+            capture_output=True, text=True)
+    except FileNotFoundError:
+        return 0.0
     if r.returncode != 0:
         return 0.0
     try:
