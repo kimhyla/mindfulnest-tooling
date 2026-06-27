@@ -549,10 +549,18 @@ fi
 # (g.5) Pin runtime event to deployed event dir (not stale launch argv)
 # ----------------------------------------------------------------
 echo "[deploy] (g.5) post-restart event/load pin for $event_id ..."
-LOAD_HTTP=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 15 \
-    -X POST "http://localhost:${SERVER_PORT}/api/event/load" \
-    -H "Content-Type: application/json" \
-    -d "{\"event_id\":\"${event_id}\"}" || echo "000")
+LOAD_HTTP="000"
+for attempt in 1 2 3 4 5 6; do
+    LOAD_HTTP=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 30 \
+        -X POST "http://localhost:${SERVER_PORT}/api/event/load" \
+        -H "Content-Type: application/json" \
+        -d "{\"event_id\":\"${event_id}\"}" || echo "000")
+    if [[ "$LOAD_HTTP" == "200" ]]; then
+        break
+    fi
+    echo "[deploy] (g.5) event/load not ready (attempt ${attempt}/6, HTTP ${LOAD_HTTP}) — waiting for launchd handoff ..."
+    sleep 3
+done
 if [[ "$LOAD_HTTP" != "200" ]]; then
     echo "FATAL: /api/event/load for $event_id returned HTTP $LOAD_HTTP" >&2
     tail -20 "$LOG_DIR/server.log" >&2 || true
