@@ -52,6 +52,8 @@ if [[ -f "$GUARD" ]]; then
   bash "$GUARD" || fail "check_storyboard_critical_features.sh failed"
 fi
 
+export PYTHONPATH="${ROOT}/Production:${ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
+
 python3 -m pytest \
   "$ROOT/Production/tools/tests/test_phase_a_single_player.py" \
   "$ROOT/Production/tools/tests/test_phase_a_stitcher_ambient_only.py" -q \

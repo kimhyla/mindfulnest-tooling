@@ -161,4 +161,19 @@ test.describe('BG_TAB_SCOPE_SYNC_V1 — segment context re-fetches on scope-vect
     // Reference navStart to keep the linter happy about unused capture.
     expect(firstHit.ts).toBeGreaterThan(navStart);
   });
+
+  test('Truth Stack P8 — Beat Gen authority badge visible on Event scope', async ({ page }) => {
+    await page.goto('/?event=Event_e2e_fixture');
+    await expect(page.locator('body')).toHaveAttribute(
+      'data-resolved-scope',
+      /Event_e2e_fixture:global:v\d+/,
+      { timeout: 10_000 },
+    );
+    await page.getByTestId('tab-bg').click();
+    await expect(page.getByTestId('pane-bg')).toBeVisible();
+    const badge = page.getByTestId('bg-authority-badge');
+    await expect(badge).toBeVisible();
+    await expect(badge).toContainText('Event_e2e_fixture');
+    await expect(badge).toContainText('SQLite beatgen_');
+  });
 });

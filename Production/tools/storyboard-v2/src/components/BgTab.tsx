@@ -17,6 +17,7 @@ import {
   activeProjectType,
   activeMilestoneId,
   activeScopeQueryParams,
+  beatGenAuthorityBadgeLabel,
   effectiveScopeVideoRole,
 } from '../state/scope';
 import { setActiveVideoRole, videoRoleForBgPhase } from '../state/videoRole';
@@ -2872,12 +2873,24 @@ export function BgTab() {
     [segments],
   );
 
+  const authorityBadgeLabel = useMemo(
+    () => beatGenAuthorityBadgeLabel(
+      activeScope.value.event_id,
+      effectiveScopeVideoRole(),
+      isMilestoneScope ? (activeMilestoneId.value ?? 'milestone') : null,
+    ),
+    [activeScope.value.event_id, activeTargetVideo.value, isMilestoneScope, activeMilestoneId.value, activeSegment],
+  );
+
   return (
     <section class="mn-tab-pane mn-bg-pane" data-testid="pane-bg">
       <header class="mn-pane-header">
         <h2>Beat Generator</h2>
         <span class="mn-scope-chip" data-testid="bg-scope-chip">
           scope: {scopeKey(activeScope.value)}
+        </span>
+        <span class="mn-scope-chip" data-testid="bg-authority-badge" title="Beat Gen write authority">
+          {authorityBadgeLabel}
         </span>
         {isVoiceFirstSegment ? (
           <span class="mn-scope-chip" data-testid="bg-voice-first-badge" title="Generate uses ElevenLabs TTS + silent O3 + lipsync (720 delivery)">

@@ -302,7 +302,7 @@ def main() -> None:
             n = event_id_from_beat_id(args.import_beat).split("_")[1]
             args.event_dir = f"Event_{n}"
         elif not args.event_dir:
-            args.event_dir = "Event_1"
+            ap.error("--event-dir required for non-production beat import (no Event_1 default)")
         use_http = args.http_import
         if use_http is None and production and not args.milestone_import:
             use_http = True

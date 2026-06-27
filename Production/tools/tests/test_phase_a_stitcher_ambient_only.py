@@ -7,7 +7,9 @@ import unittest
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parent.parent
+PRODUCTION = TOOLS.parent
 sys.path.insert(0, str(TOOLS))
+sys.path.insert(0, str(PRODUCTION))
 
 from server_handlers import phases  # noqa: E402
 from server_handlers import stitch_editor  # noqa: E402

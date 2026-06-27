@@ -1,0 +1,32 @@
+---
+description: Beat Gen Truth Stack — agent/operator HTTP-only write path for production beats
+globs:
+  - Production/tools/**
+  - Production/Event_*/**
+alwaysApply: false
+---
+
+# Beat Gen Truth Stack — agent workflow
+
+Production beats (`bg_arc1_eventN_*`, not `event3b`) must **never** be mutated via direct `import beat_generator` or SQLite.
+
+## Required workflow
+
+1. Parse `event(\d+)` from `beat_id` → `Event_N`.
+2. Open storyboard on dedicated port: `http://localhost:{5110+N}/?event=Event_N`.
+3. Mutate **only** via HTTP on that port:
+   - Import clip: `POST /api/bg/import-delivery-clip` with `scope_event_id`, `scope_video_role`.
+   - Other edits: existing `/api/bg/*` routes with scope body fields.
+4. Proof = response `beat.kling_o3_video_path` + browser slot 0 after hard refresh.
+
+## Forbidden
+
+- Writing `~/.mindfulnest/state/beatgen.db` (legacy global shard).
+- `update_beat_locked` / sidecar JSON edits from agent shells for shipping beats.
+- Using `:5111` when beat belongs to Event_3 (`:5113`).
+
+## CLI scripts
+
+Prefer `--http-import` (default for production beats) on `run_o3_pov_motion_i2v.py`.
+
+See `Production/docs/TECH_SPEC_BEATGEN_TRUTH_STACK_V1.md`.

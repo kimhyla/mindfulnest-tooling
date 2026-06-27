@@ -74,6 +74,9 @@ class O3SubprocessBootstrapTests(unittest.TestCase):
         ):
             inject_o3_subprocess_scope_env(env, app)
         self.assertEqual(env["MN_BEATGEN_DB_PATH"], "/tmp/beatgen_event3.db")
+        self.assertIn("MN_BEATGEN_SCOPE_JSON", env)
+        parsed = json.loads(env["MN_BEATGEN_SCOPE_JSON"])
+        self.assertIn(parsed["kind"], ("event_production", "milestone_arc"))
 
     def test_load_o3_beat_context_milestone_sidecar(self):
         with tempfile.TemporaryDirectory() as tmp:

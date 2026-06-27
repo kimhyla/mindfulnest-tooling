@@ -230,6 +230,43 @@ def scope_from_current_globals(bg_module) -> BeatGenScope:
     )
 
 
+def scope_to_env_json(scope: BeatGenScope) -> str:
+    """Serialize BeatGenScope for O3 subprocess env (MN_BEATGEN_SCOPE_JSON)."""
+    payload = {
+        "kind": scope.kind,
+        "event_id": scope.event_id,
+        "event_dir": str(scope.event_dir) if scope.event_dir else None,
+        "milestone_id": scope.milestone_id,
+        "db_path": str(scope.db_path) if scope.db_path else None,
+        "sidecar_authority": str(scope.sidecar_authority),
+    }
+    return json.dumps(payload)
+
+
+def scope_from_env_json(raw: str | None) -> BeatGenScope | None:
+    """Deserialize scope from MN_BEATGEN_SCOPE_JSON."""
+    text = (raw or "").strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    kind = data.get("kind")
+    if kind not in ("event_production", "milestone_arc"):
+        return None
+    return BeatGenScope(
+        kind=kind,
+        event_id=data.get("event_id"),
+        event_dir=Path(data["event_dir"]).expanduser().resolve() if data.get("event_dir") else None,
+        milestone_id=data.get("milestone_id"),
+        db_path=Path(data["db_path"]).expanduser().resolve() if data.get("db_path") else None,
+        sidecar_authority=Path(data["sidecar_authority"]).expanduser().resolve(),
+    )
+
+
 def build_event_production_scope(event_dir: Path | str, *, event_id: str | None = None) -> BeatGenScope:
     root = Path(event_dir).expanduser().resolve()
     eid = event_id or root.name

@@ -18,6 +18,8 @@ from beatgen_scope import (
     event_id_from_beat_id,
     http_import_delivery_clip,
     port_from_event_id,
+    scope_from_env_json,
+    scope_to_env_json,
     storyboard_url_for_beat,
 )
 
@@ -243,3 +245,14 @@ def test_storyboard_url_for_beat() -> None:
     assert storyboard_url_for_beat("bg_arc1_event3_pre_beat_10") == (
         "http://localhost:5113/?event=Event_3"
     )
+
+
+def test_scope_env_json_roundtrip(tmp_path: Path) -> None:
+    event_dir = tmp_path / "Event_3"
+    event_dir.mkdir()
+    scope = build_event_production_scope(event_dir)
+    restored = scope_from_env_json(scope_to_env_json(scope))
+    assert restored is not None
+    assert restored.kind == "event_production"
+    assert restored.event_id == "Event_3"
+    assert restored.db_path and restored.db_path.name == "beatgen_event3.db"

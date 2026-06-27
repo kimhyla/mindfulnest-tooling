@@ -5945,6 +5945,11 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     "standalone AND exist in current state.videos."},
             )
             return False
+        # P3 Truth Stack — every BG mutation rebinds paths from app pin before handler work.
+        if not allow_missing:
+            from server_handlers.milestone_scope import rebind_bg_paths_from_app
+
+            rebind_bg_paths_from_app(self.app)
         return True
 
     # ---- LD-461 SCOPE_BODY_HELPER_V1 (extended in S5.5a2 with scope_video_role) ----

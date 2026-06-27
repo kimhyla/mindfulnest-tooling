@@ -362,14 +362,14 @@ Not the primary horror-show cause, but “works first time” under load require
 | **P0** | Repro test: off-scope write succeeds today → must fail after P1 | Proof discipline |
 | **P1** | `BeatGenScope` + context manager + wire `update_beat_locked` | Global/stale scope |
 | **P2** | Fail-closed gates + kill fallbacks + 409 responses | Cross-partition writes |
-| **P3** | HTTP middleware scope + wrap all `/api/bg` mutators | Handler forgot rebind |
-| **P4** | `POST /api/bg/import-delivery-clip` + read-your-writes + agent skill | Agent horror show |
-| **P5** | Still slot display parity (L4) | Browser/UI truth |
-| **P6** | Resolvers module + CLI HTTP wrappers + grep CI for Event_1 defaults | Path guessing |
-| **P7** | O3 submit scope parity + job dir grep sweep | Generate artifacts |
-| **P8** | UI scope badge + Playwright extension | Kim visibility |
-| **P9** | Snapshot/restore per-event + legacy DB retirement | Restore incidents |
-| **P10** | Full QA on Event_3 Beat 9 + deploy smoke all ports + commit | Ship proof |
+| **P3** | HTTP middleware scope + wrap all `/api/bg` mutators | Handler forgot rebind | **DONE** — `_assert_event_scope` rebinds via `rebind_bg_paths_from_app` on mutations |
+| **P4** | `POST /api/bg/import-delivery-clip` + read-your-writes + agent skill | Agent horror show | **DONE** |
+| **P5** | Still slot display parity (L4) | Browser/UI truth | **DONE** (Event_3 Beat 9 verified) |
+| **P6** | Resolvers module + CLI HTTP wrappers + grep CI for Event_1 defaults | Path guessing | **DONE** — `verify_beatgen_truth_stack_durability.sh` |
+| **P7** | O3 submit scope parity + job dir grep sweep | Generate artifacts | **DONE** — `MN_BEATGEN_SCOPE_JSON` + resolver sweep |
+| **P8** | UI scope badge + Playwright extension | Kim visibility | **DONE** — `bg-authority-badge` + e2e |
+| **P9** | Snapshot/restore per-event + legacy DB retirement | Restore incidents | **DONE** — beatgen db in `/api/state/snapshot` |
+| **P10** | Full QA on Event_3 Beat 9 + deploy smoke all ports + commit | Ship proof | **IN PROGRESS** |
 
 **No phase is “optional.”** P1–P5 minimum shippable slice for Event_3-class bugs; P6–P10 close remaining siblings.
 

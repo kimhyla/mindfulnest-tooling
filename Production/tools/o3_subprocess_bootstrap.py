@@ -54,6 +54,26 @@ def _bootstrap_scope_from_intent_env() -> None:
 
 def init_bg_paths_for_o3_subprocess(*, beat_id: str, prod_root: Path) -> Path:
     """Bind beat_generator paths; return event_dir used for job artifacts."""
+    from beatgen_scope import scope_from_env_json  # noqa: PLC0415
+    from o3_generation_intent import resolve_o3_job_event_dir  # noqa: PLC0415
+
+    scoped = scope_from_env_json(os.environ.get("MN_BEATGEN_SCOPE_JSON"))
+    if scoped is not None:
+        if scoped.kind == "milestone_arc" and scoped.milestone_id and scoped.event_dir:
+            skel = _load_milestone_skeleton_ref()
+            if skel:
+                bg.set_milestone_skeleton_ref(skel)
+            bg.init_bg_paths(
+                scoped.event_dir,
+                milestone_dir=str(scoped.sidecar_authority.parent),
+                library_event_dir=str(scoped.event_dir),
+            )
+            return Path(scoped.event_dir)
+        if scoped.kind == "event_production" and scoped.event_dir and scoped.db_path:
+            os.environ["MN_BEATGEN_DB_PATH"] = str(scoped.db_path)
+            bg.init_bg_paths(scoped.event_dir, clear_milestone_scope=True)
+            return Path(scoped.event_dir)
+
     _bootstrap_scope_from_intent_env()
     milestone_raw = (os.environ.get("MN_MILESTONE_DIR") or "").strip()
     if milestone_raw:
@@ -62,7 +82,12 @@ def init_bg_paths_for_o3_subprocess(*, beat_id: str, prod_root: Path) -> Path:
         library_event_dir = (
             Path(library_raw).expanduser().resolve()
             if library_raw
-            else milestone_dir.parent.parent / "Event_1"
+            else resolve_o3_job_event_dir(
+                beat_id,
+                server_event_dir=prod_root / "Event_1",
+                library_event_dir=prod_root / "Event_1",
+                scope_type="milestone",
+            )
         )
         skel = _load_milestone_skeleton_ref()
         if skel:
@@ -98,7 +123,10 @@ def init_bg_paths_for_o3_subprocess(*, beat_id: str, prod_root: Path) -> Path:
         event_dir = _event_dir_for_segment(prod_root, segment_key)
     else:
         pin = (os.environ.get("MN_O3_EVENT_DIR") or "").strip()
-        event_dir = Path(pin).expanduser().resolve() if pin else prod_root / "Event_1"
+        if pin:
+            event_dir = Path(pin).expanduser().resolve()
+        else:
+            event_dir = resolve_o3_job_event_dir(beat_id, server_event_dir=None, library_event_dir=None)
     bg.init_bg_paths(event_dir)
     return event_dir
 
@@ -118,6 +146,8 @@ def load_o3_beat_context(beat_id: str) -> tuple[dict, str, Path, Path]:
 
 def inject_o3_subprocess_scope_env(env: dict, app: Any) -> None:
     """Mirror HTTP handler scope in O3 subprocess env (milestone SQLite/sidecar authority)."""
+    from beatgen_scope import scope_from_current_globals, scope_to_env_json  # noqa: PLC0415
+
     milestone_id = getattr(app, "active_milestone_id", None)
     if getattr(app, "scope_type", "event") == "milestone" and milestone_id:
         mdir = getattr(app, "milestone_dir", None)
@@ -139,6 +169,7 @@ def inject_o3_subprocess_scope_env(env: dict, app: Any) -> None:
                 env["MN_MILESTONE_SKELETON_REF"] = json.dumps(skel)
         except Exception:
             pass
+        env["MN_BEATGEN_SCOPE_JSON"] = scope_to_env_json(scope_from_current_globals(bg))
         return
 
     for key in (
@@ -151,8 +182,8 @@ def inject_o3_subprocess_scope_env(env: dict, app: Any) -> None:
     if ev:
         env["MN_O3_EVENT_DIR"] = str(Path(ev).expanduser().resolve())
 
-    # O3 subprocess must write the same per-event SQLite authority as the HTTP handler.
     for key in ("MN_BEATGEN_DB_PATH", "MN_SIDECAR_SQLITE_AUTHORITY"):
         val = (os.environ.get(key) or "").strip()
         if val:
             env[key] = val
+    env["MN_BEATGEN_SCOPE_JSON"] = scope_to_env_json(scope_from_current_globals(bg))

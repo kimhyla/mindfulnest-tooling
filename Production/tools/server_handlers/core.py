@@ -129,19 +129,44 @@ def handle_state_snapshot(h, body: dict) -> None:
 
     size_bytes = backup_path.stat().st_size if backup_path.exists() else 0
 
+    beatgen_backup: dict | None = None
+    event_id = str(getattr(h.app, "event_id", None) or h.app.event_dir.name)
+    if event_id.startswith("Event_"):
+        from beatgen_scope import beatgen_db_path_for_event  # noqa: PLC0415
+
+        db_src = beatgen_db_path_for_event(event_id)
+        if db_src.is_file():
+            db_backup = backups_dir / f"{ts}_beatgen_{db_src.name}"
+            try:
+                shutil.copy2(db_src, db_backup)
+                db_sha = hashlib.sha256(db_backup.read_bytes()).hexdigest()
+                beatgen_backup = {
+                    "source_db": str(db_src),
+                    "backup_path": str(db_backup),
+                    "backup_filename": db_backup.name,
+                    "size_bytes": db_backup.stat().st_size,
+                    "sha256": db_sha,
+                }
+            except OSError as exc:
+                beatgen_backup = {"error": str(exc), "source_db": str(db_src)}
+
     print(
         f"[state/snapshot] {method} -> {backup_path.relative_to(h.app.event_dir)} "
-        f"({size_bytes} bytes, sha256={sha[:16]}...)",
+        f"({size_bytes} bytes, sha256={sha[:16]}...)"
+        + (f" beatgen_db={beatgen_backup.get('backup_filename')}" if beatgen_backup and beatgen_backup.get('backup_filename') else ""),
         flush=True,
     )
-    return h._send_json(200, {
+    payload = {
         "ok": True,
         "method": method,
         "backup_path": str(backup_path),
         "backup_filename": backup_path.name,
         "size_bytes": size_bytes,
         "sha256": sha,
-    })
+    }
+    if beatgen_backup:
+        payload["beatgen_db_backup"] = beatgen_backup
+    return h._send_json(200, payload)
 
 
 def handle_admin_drain_start(h, body: dict | None = None) -> None:

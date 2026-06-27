@@ -26,6 +26,20 @@ export function scopeKey(s: Scope): string {
   return `${s.event_id}:${s.beat_id ?? 'global'}:v${s.version}`;
 }
 
+/** Human-readable Beat Gen authority badge (Truth Stack P8). */
+export function beatGenAuthorityBadgeLabel(
+  eventId: string,
+  videoRole: string,
+  milestoneId: string | null,
+): string {
+  const role = videoRole || 'intro';
+  if (milestoneId) {
+    return `${milestoneId} · ${role} · JSON sidecar`;
+  }
+  const slug = eventId.replace(/^Event_/i, '').split('_').join('').toLowerCase();
+  return `${eventId} · ${role} · SQLite beatgen_${slug}.db`;
+}
+
 /** Human-readable scope chip — includes milestone + standalone when in milestone project mode. */
 export function producerScopeChipLabel(): string {
   const base = scopeKey(activeScope.value);
