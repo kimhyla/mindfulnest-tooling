@@ -525,6 +525,8 @@ echo "[deploy] (g) curl smoke ok — server serving fresh build (sha=$BUILD_SHA,
 
 # (g.4) STITCH_SFX_PLAYBACK_TRUTH live milestone E2E — post-deploy only (needs fresh bundle + mux)
 if [[ -x "$SRC_TOOLING/Production/scripts/verify_stitch_sfx_playback_truth_live_e2e.sh" ]]; then
+    echo "[deploy] (g.4-pre) ensure Playwright browsers for live E2E ..."
+    bash "$SRC_TOOLING/Production/scripts/ensure_storyboard_playwright_browsers.sh"
     echo "[deploy] (g.4) stitch SFX playback truth live E2E on :${SERVER_PORT} ..."
     MN_SERVER_PORT="$SERVER_PORT" MN_STORYBOARD_BASE="http://127.0.0.1:${SERVER_PORT}" \
         bash "$SRC_TOOLING/Production/scripts/verify_stitch_sfx_playback_truth_live_e2e.sh" \

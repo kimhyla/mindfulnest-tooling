@@ -15,6 +15,8 @@ if ! curl -sf "${BASE}/api/event/current" >/dev/null 2>&1; then
   exit 0
 fi
 
+bash "${SCRIPT_DIR}/ensure_storyboard_playwright_browsers.sh"
+
 # STITCH_LIVE_E2E_SERVER_STABLE_V1 — HTTP 200 on load_job is NOT readiness (ephemeral
 # milestone jobs return 200 + empty standalone when jobs{}). Require N consecutive
 # /api/event/current OK + matching build-sha before Playwright (post-restart race).
