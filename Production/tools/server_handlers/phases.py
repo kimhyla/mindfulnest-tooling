@@ -1820,11 +1820,11 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
                )
 
     voice_id, model_id, voice_settings, speaker = h._phase_resolve_voice_settings(phase)
-    # Universal hardening: robust_https_request with 3 retries + 90s timeout.
+    from lib.elevenlabs_tts import call_elevenlabs_tts  # noqa: PLC0415
     from kling_startend_pipeline import robust_https_request  # noqa: PLC0415
 
-    def _tts_call(text_segment: str):
-        """Single ElevenLabs TTS call; returns (status_code, bytes)."""
+    def _tts_call_single(text_segment: str):
+        """Single-call path — no stitching (one paste = one generation)."""
         body_bytes = json.dumps({
             "text": text_segment,
             "model_id": model_id,
@@ -1842,8 +1842,26 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
             max_retries=3,
         )
 
+    def _tts_call_stitched(
+        text_segment: str,
+        *,
+        previous_request_ids: list[str] | None = None,
+        next_text: str | None = None,
+    ):
+        """Multi-segment path — ElevenLabs request stitching for prosody continuity."""
+        return call_elevenlabs_tts(
+            api_key=elevenlabs_key,
+            voice_id=voice_id,
+            text=text_segment,
+            model_id=model_id,
+            voice_settings=voice_settings,
+            previous_request_ids=previous_request_ids,
+            next_text=next_text,
+        )
+
     segments = _parse_silence_segments(script)
     use_multi = any(kind == "silence" for kind, _ in segments)
+    tts_stitching_meta: dict | None = None
 
     t0 = time.time()
     if not use_multi:
@@ -1851,7 +1869,7 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
 
         tts_script = _clean_text_for_tts(script)
         try:
-            status_code, audio_bytes = _tts_call(tts_script)
+            status_code, audio_bytes = _tts_call_single(tts_script)
         except Exception as exc:  # noqa: BLE001
             return h._send_error_v59(
                        502,
@@ -1873,8 +1891,18 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
                               "hint": "Often: API key expired or voice_id renamed. Check API_KEYS_MASTER.md."},
                    )
     else:
-        # Multi-segment path: call ElevenLabs per text segment, inject real silence.
+        # Multi-segment path: stitched ElevenLabs per speech chunk + real silence.
         import tempfile as _tempfile
+        from lib.elevenlabs_tts import continuity_context_head  # noqa: PLC0415
+        from production_server import _clean_text_for_tts  # noqa: PLC0415
+
+        cleaned_speech = [
+            _clean_text_for_tts(value)
+            for kind, value in segments
+            if kind == "text"
+        ]
+        speech_ptr = 0
+        speech_request_ids: list[str] = []
         tmp_dir = Path(_tempfile.mkdtemp(prefix="mn_regen_audio_"))
         concat_parts = []  # list of pathlib.Path in order
         try:
@@ -1882,11 +1910,23 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
             for kind, value in segments:
                 if kind == 'text':
                     seg_path = tmp_dir / f"seg_{seg_idx:03d}_speech.mp3"
-                    from production_server import _clean_text_for_tts  # noqa: PLC0415
-
-                    tts_text = _clean_text_for_tts(value)
+                    tts_text = cleaned_speech[speech_ptr]
+                    next_text = continuity_context_head(
+                        cleaned_speech[speech_ptr + 1]
+                        if speech_ptr + 1 < len(cleaned_speech)
+                        else None,
+                    )
+                    prev_ids = (
+                        speech_request_ids[-3:]
+                        if speech_request_ids
+                        else None
+                    )
                     try:
-                        sc, seg_bytes = _tts_call(tts_text)
+                        sc, seg_bytes, req_id = _tts_call_stitched(
+                            tts_text,
+                            previous_request_ids=prev_ids,
+                            next_text=next_text,
+                        )
                     except Exception as exc:  # noqa: BLE001
                         return h._send_error_v59(
                                    502,
@@ -1905,8 +1945,11 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
                                    retry_safe=True,
                                    extra={"segment_index": seg_idx, "speaker": speaker},
                                )
+                    if req_id:
+                        speech_request_ids.append(req_id)
                     seg_path.write_bytes(seg_bytes)
                     concat_parts.append(seg_path)
+                    speech_ptr += 1
                     seg_idx += 1
                 else:  # silence
                     sil_path = tmp_dir / f"seg_{seg_idx:03d}_silence_{value}s.mp3"
@@ -1925,6 +1968,11 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
             concat_out = tmp_dir / "concat_out.mp3"
             _concat_audio_parts_seamless(concat_parts, concat_out)
             audio_bytes = concat_out.read_bytes()
+            tts_stitching_meta = {
+                "speech_segments": len(cleaned_speech),
+                "request_ids_captured": len(speech_request_ids),
+                "stitching_enabled": True,
+            }
         finally:
             # Clean up temp dir regardless of success/failure.
             import shutil as _shutil
@@ -1998,7 +2046,7 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
     if pin_err is not None:
         return pin_err
 
-    return h._send_json(200, {
+    resp_body = {
         "status": "ok",
         "phase": phase,
         "file": out_name,
@@ -2009,7 +2057,10 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
         "speaker": speaker,
         "elapsed_s": round(elapsed_call, 2),
         "module_version": new_version,
-    })
+    }
+    if tts_stitching_meta:
+        resp_body["tts_stitching"] = tts_stitching_meta
+    return h._send_json(200, resp_body)
 
 
 def _resolve_ambient_preset_path(h, preset_id: str) -> Path | None:
