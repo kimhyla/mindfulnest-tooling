@@ -74,7 +74,7 @@ def test_postprocess_injects_emotion_staging_and_cast():
     assert "@Image1 (Tessa)" in prompt
     assert "Luna" not in prompt
     assert "Camera:" in prompt
-    assert "medium shot" in prompt.lower()
+    assert "torso up" in prompt.lower()
     assert "[curious, polite]" in prompt
     assert "Hello" in prompt
     assert "WHAT is THAT" not in prompt
@@ -96,7 +96,7 @@ def test_postprocess_kling_author_results_wires_all_indices():
         "Camera: static locked shot.\n\n"
         'Lorelai says: "Oh my goodness!"'
     )}
-    enriched_prompts, enriched_plan = postprocess_kling_author_results(plan, prompts)
+    enriched_prompts, enriched_plan, _warnings = postprocess_kling_author_results(plan, prompts)
     assert "[awe, breathless]" in enriched_prompts[1]
     assert "Camera:" in enriched_prompts[1]
     assert enriched_plan[0]["emotion"] == "awe, breathless"
@@ -207,6 +207,75 @@ def test_audit_flags_stale_luna_prompt():
     }]
     warnings = bg.audit_kling_author_enrichment(beats)
     assert any("Luna" in w for w in warnings)
+
+
+def test_claude_author_tolerates_incomplete_claude_batch():
+    """Operator-edited plan is source of truth — missing Claude rows must not block approve."""
+    from claude_extract_beats import claude_author_kling_prompts
+
+    plan = [
+        {
+            "beat_index": 1,
+            "beat_type": "dialogue",
+            "speaker": "Arlo",
+            "dialogue_text": "OK, Kiddo.",
+            "emotion": "warm, to camera",
+            "scene_notes": "faces camera, gentle nod",
+        },
+        {
+            "beat_index": 2,
+            "beat_type": "dialogue",
+            "speaker": "Tessa",
+            "dialogue_text": "Hello there!",
+            "emotion": "curious, polite",
+            "scene_notes": "soft smile, gentle wave",
+        },
+    ]
+    fake_resp = {
+        "content": [{
+            "type": "tool_use",
+            "name": "submit_kling_prompts",
+            "input": {
+                "beats": [{
+                    "beat_index": 1,
+                    "kling_o3_prompt": (
+                        "@Image1 (Arlo) Arlo — guide. Scene from @Image2.\n\n"
+                        "Camera: static locked shot.\n\n"
+                        'Arlo says: "OK, Kiddo."'
+                    ),
+                    "emotion": "warm, to camera",
+                    "scene_notes": "faces camera, gentle nod",
+                }],
+            },
+        }],
+    }
+    with patch("claude_extract_beats._call_anthropic", return_value=(fake_resp, 10)):
+        result = claude_author_kling_prompts(
+            "summary", plan,
+            meta={"arc_number": 1, "event_id": "2", "phase": "pre"},
+            api_key="k",
+        )
+    assert 1 in result["prompt_by_index"]
+    assert 2 in result["prompt_by_index"]
+    assert result["prompt_by_index"][2]
+    assert any("beat_index 2" in w for w in (result.get("author_warnings") or []))
+
+
+def test_postprocess_synthesizes_missing_prompt_from_plan():
+    plan = [{
+        "beat_index": 3,
+        "beat_type": "dialogue",
+        "speaker": "Tessa",
+        "dialogue_text": "Hello there!",
+        "emotion": "curious, polite",
+        "scene_notes": "soft smile, gentle wave",
+    }]
+    enriched_prompts, enriched_plan, warnings = postprocess_kling_author_results(plan, {})
+    assert enriched_prompts[3]
+    assert "@Image1" in enriched_prompts[3]
+    assert "Hello there!" in enriched_prompts[3]
+    assert any("beat_index 3" in w for w in warnings)
+    assert enriched_plan[0]["kling_o3_prompt"]
 
 
 def test_claude_author_calls_postprocess():
@@ -332,9 +401,9 @@ def test_heal_beat_migrate_rewrites_event2_tessa_prompt():
         ),
         "pipeline": "kling_o3_omni",
     }
-    assert heal_beat_kling_o3_prompt_event1_shape(beat) is True
-    assert "is a small green sea turtle" not in beat["kling_o3_prompt"]
-    assert "speaks in a warm gentle conversational pace" in beat["kling_o3_prompt"]
+    original = beat["kling_o3_prompt"]
+    assert heal_beat_kling_o3_prompt_event1_shape(beat) is False
+    assert beat["kling_o3_prompt"] == original
 
 
 def test_normalize_identity_footer_replaces_drifted_species_anatomy():
@@ -354,6 +423,61 @@ def test_normalize_identity_footer_replaces_drifted_species_anatomy():
     assert "shell" not in out.lower() or "shell" not in out.split("Match @Image1")[1].split("\n\n")[0]
     assert bg.KLING_O3_IDENTITY_LOCK in out
     assert bg.identity_footer_is_canonical(out)
+
+
+def test_audit_scoped_to_extract_plan_skips_orphan_beats():
+    """EXTRACT_APPROVE_AUDIT_SCOPE_V1 — 6-beat plan on 8-beat segment must not fail on orphan 07/08."""
+    good_prompt = (
+        "@Image1 (Arlo) Arlo — Discovery. Scene from @Image2.\n\n"
+        "Camera: static locked shot.\n\n"
+        "Arlo faces camera, rooted in place.\n\n"
+        'Arlo speaks in a warm gentle conversational pace: "[warm close] OK, Kiddo."'
+    )
+    beats = [
+        {
+            "beat_id": f"bg_arc1_event2_post_beat_{idx:02d}",
+            "speaker": "Arlo" if idx <= 6 else "Tessa",
+            "dialogue_text": "line",
+            "emotion": "warm close",
+            "scene_notes": "faces camera, rooted in place",
+            "kling_o3_prompt": good_prompt if idx <= 6 else '@Image1 (Tessa) stale orphan without emotion',
+            "pipeline": "kling_o3_omni",
+        }
+        for idx in range(1, 9)
+    ]
+    scope = bg._beat_ids_for_extract_plan(
+        [{"beat_index": i} for i in range(1, 7)],
+        arc_number=1,
+        event_id="2",
+        phase="post",
+    )
+    assert len(scope) == 6
+    unscoped = bg.audit_kling_author_enrichment(beats)
+    assert any("beat_08" in w for w in unscoped)
+    scoped = bg.audit_kling_author_enrichment(beats, scope_beat_ids=scope)
+    assert scoped == []
+
+
+def test_audit_skips_emotion_for_stage_direction():
+    beats = [{
+        "beat_id": "bg_arc1_event2_post_beat_01",
+        "beat_type": "stage_direction",
+        "speaker": "[Stage Direction]",
+        "dialogue_text": "Wide shot of the nest.",
+        "emotion": "quiet establishing",
+        "scene_notes": "slow pan across ruins",
+        "kling_o3_prompt": "STILL INSERT — use pre-made GPT still from library.",
+        "pipeline": "still_insert",
+    }]
+    assert bg.audit_kling_author_enrichment(beats) == []
+
+
+def test_emotion_reflected_splits_em_dash_compounds():
+    prompt = (
+        "@Image1 (Arlo) Arlo — Discovery. Scene from @Image2.\n\n"
+        'Arlo speaks: "[warm close] Victory!"'
+    )
+    assert bg._emotion_reflected_in_kling_prompt("warm close — victory", prompt) is True
 
 
 def test_audit_flags_identity_footer_drift():
@@ -395,6 +519,29 @@ def test_normalize_upgrades_lorelai_voice_delivery_to_laurel_slower():
     assert "not rushed or frantic" in out
 
 
+def test_postprocess_replaces_lorelai_staging_with_loral():
+    beat = {
+        "beat_index": 2,
+        "beat_type": "dialogue",
+        "speaker": "Lorelai",
+        "dialogue_text": "Its got to be around here somewhere!",
+        "emotion": "muttering, lost",
+        "scene_notes": "Lorelai stands near the silent MindfulNest Heartwood, scanning the ruins.",
+    }
+    author = (
+        "@Image1 (Loral). Scene from @Image2.\n\n"
+        "Camera: static locked shot.\n\n"
+        "Lorelai stands near the silent MindfulNest Heartwood, scanning the ruins.\n\n"
+        'Lorelai speaks in a clipped, exasperated conversational pace: '
+        '"[muttering, lost] Its got to be around here somewhere!"'
+    )
+    merged = postprocess_kling_author_row(beat, author)
+    prompt = merged["kling_o3_prompt"]
+    assert "Lorelai" not in prompt
+    assert "Loral stands near" in prompt
+    assert "Loral speaks in a" in prompt
+
+
 def test_update_beat_accepts_kling_o3_prompt():
     text = (TOOLS / "server_handlers" / "background.py").read_text(encoding="utf-8")
     assert '"kling_o3_prompt"' in text.split("_BG_BEAT_WRITABLE")[1][:200]
@@ -407,7 +554,13 @@ def test_submit_locks_append_lighting_when_image1_and_image2():
         "Camera: static locked shot.\n\n"
         'Lorelai speaks in a warm excited conversational pace: "Hello!"'
     )
-    out = bg.prepare_kling_o3_prompt_for_submit({"speaker": "Lorelai"}, raw)
+    out = normalize_kling_o3_prompt_event1_quality(
+        raw,
+        speaker="Lorelai",
+        dialogue="Hello!",
+        emotion="neutral",
+        scene_notes="soft smile",
+    )
     assert bg.KLING_O3_LIGHTING_LOCK in out
     assert bg.KLING_O3_IDENTITY_LOCK in out
 
@@ -447,7 +600,7 @@ def test_canonical_prompt_shape_v2_tessa(monkeypatch):
     assert "arc 1 event" not in prompt.lower()
     assert "rooted in place" not in prompt.lower()
     assert "Camera:" in prompt
-    assert "medium shot" in prompt.lower()
+    assert "torso up" in prompt.lower()
     assert '[curious, polite] "Oh, hello.[pause]' in prompt
     assert '"[curious, polite]' not in prompt
 

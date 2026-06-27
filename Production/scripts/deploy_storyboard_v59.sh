@@ -34,6 +34,10 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=event_server_port.sh
+source "${SCRIPT_DIR}/event_server_port.sh"
+
 # ----------------------------------------------------------------
 # Argument parsing — --event Event_N overrides the default Event_1 pin.
 # ----------------------------------------------------------------
@@ -86,19 +90,39 @@ fi
 # Per CLAUDE.md Rule 19 (no shortcuts): bypass requires MN_ALLOW_DIRTY_DEPLOY=1
 # AND a SHORTCUT LD per the escape-hatch protocol.
 # ----------------------------------------------------------------
+DEPLOY_DIRTY_IGNORE_PATTERNS=(
+    '.last_deploy'
+    '.proof_curl.err'
+    'doppler.env'
+    'Production/Event_e2e_fixture/'
+    'Production/beat_generator_state.json.lock'
+    'Production/server_event_pin.json'
+    'Production/.production_snapshots/'
+    'Production/scripts/launchd-backups/'
+)
 (
     cd "$SRC_TOOLING"
-    if [[ -n "$(git status --porcelain)" ]]; then
+    BLOCKING_DIRTY=""
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        path="${line:3}"
+        skip=0
+        for pat in "${DEPLOY_DIRTY_IGNORE_PATTERNS[@]}"; do
+            if [[ "$path" == "$pat" || "$path" == ${pat}* ]]; then skip=1; break; fi
+        done
+        if [[ "$skip" -eq 0 ]]; then BLOCKING_DIRTY+="${line}"$'\n'; fi
+    done < <(git status --porcelain)
+    if [[ -n "$BLOCKING_DIRTY" ]]; then
         echo "FATAL: tooling tree dirty — uncommitted edits will deploy under a stale build-sha" >&2
         echo "  (build-sha = git rev-parse --short HEAD, which does NOT see working-tree changes)" >&2
-        git status --short >&2
+        printf '%s' "$BLOCKING_DIRTY" >&2
         echo "  Resolve: commit/stash the listed paths, or set MN_ALLOW_DIRTY_DEPLOY=1" >&2
         echo "  Bypass requires SHORTCUT LD per CLAUDE.md Rule 19." >&2
         if [[ "${MN_ALLOW_DIRTY_DEPLOY:-}" == "1" ]]; then
             echo "[deploy] (pre-A) MN_ALLOW_DIRTY_DEPLOY=1 — gate bypassed (SHORTCUT LD required)" >&2
-            exit 0
+        else
+            exit 1
         fi
-        exit 1
     fi
 ) || exit 1
 echo "[deploy] (pre-A) git-clean gate ok — tooling tree clean"
@@ -183,6 +207,15 @@ if [[ "${MN_SKIP_REGRESSION_GUARD:-0}" != "1" ]]; then
     fi
     SESSION_DURABILITY_SCRIPT="$SRC_TOOLING/Production/scripts/verify_storyboard_session_durability.sh"
     if [[ -x "$SESSION_DURABILITY_SCRIPT" ]]; then
+        if [[ -n "$_ARG_EVENT_DIR" ]]; then
+            # shellcheck source=event_server_port.sh
+            source "$SRC_TOOLING/Production/scripts/event_server_port.sh"
+            _DURABILITY_EVENT_ID="$(basename "$_ARG_EVENT_DIR")"
+            export MN_EVENT_ID="$_DURABILITY_EVENT_ID"
+            export MN_SERVER_PORT="$(event_id_to_port "$_DURABILITY_EVENT_ID")"
+            export MN_STORYBOARD_BASE="http://localhost:${MN_SERVER_PORT}"
+            echo "[deploy] (a-pre.6b-pre) durability smoke → :${MN_SERVER_PORT} (${_DURABILITY_EVENT_ID})"
+        fi
         if ! bash "$SESSION_DURABILITY_SCRIPT"; then
             echo "[deploy] FATAL: storyboard session durability guard failed." >&2
             exit 1
@@ -239,7 +272,8 @@ done
 # new manifests to this list when they're introduced; same dependency-order
 # rule as the rsync subdirs above.
 # ----------------------------------------------------------------
-for manifest in smoke_test_manifest.yaml character_subjects.json; do
+# character_subjects.json is runtime Category-2 data on Dropbox — never copy tooling → Dropbox.
+for manifest in smoke_test_manifest.yaml; do
     src="$SRC_TOOLING/Production/$manifest"
     dest="$DEST_DROPBOX/Production/$manifest"
     if [[ -f "$src" ]]; then
@@ -248,6 +282,13 @@ for manifest in smoke_test_manifest.yaml character_subjects.json; do
     else
         echo "  WARN: $src missing in source; skip"
     fi
+done
+
+# Phase A/B Suggest Script authoring docs live at Production/ root (not under tools/).
+for authoring in "$SRC_TOOLING"/Production/PHASE_A_SUGGEST_SKELETON_v1_*.md; do
+    [[ -f "$authoring" ]] || continue
+    cp "$authoring" "$DEST_DROPBOX/Production/$(basename "$authoring")"
+    echo "  mirrored: Production/$(basename "$authoring")"
 done
 
 # ----------------------------------------------------------------
@@ -352,12 +393,28 @@ for f in "${verify_files[@]}"; do
         echo "  WARN: skip verify (missing): $f"
         continue
     fi
-    src_sha=$(shasum -a 256 "$src" | awk '{print $1}')
-    dst_sha=$(shasum -a 256 "$dst" | awk '{print $1}')
+    # Use committed HEAD bytes — not mutable working tree (long deploys may pick up
+    # local edits after rsync; Dropbox may also lag briefly after mirror).
+    if git -C "$SRC_TOOLING" cat-file -e "HEAD:${f}" 2>/dev/null; then
+        src_sha=$(git -C "$SRC_TOOLING" show "HEAD:${f}" | shasum -a 256 | awk '{print $1}')
+    else
+        src_sha=$(shasum -a 256 "$src" | awk '{print $1}')
+    fi
+    dst_sha=""
+    for attempt in 1 2 3 4 5; do
+        dst_sha=$(shasum -a 256 "$dst" | awk '{print $1}')
+        if [[ "$src_sha" == "$dst_sha" ]]; then
+            break
+        fi
+        if [[ "$attempt" -lt 5 ]]; then
+            echo "  [deploy] sha256 retry $attempt/5 for $f (Dropbox sync lag?)" >&2
+            sleep 2
+        fi
+    done
     if [[ "$src_sha" != "$dst_sha" ]]; then
         echo "FATAL sha256 mismatch on $f" >&2
-        echo "  src: $src_sha" >&2
-        echo "  dst: $dst_sha" >&2
+        echo "  head: $src_sha" >&2
+        echo "  dst:  $dst_sha" >&2
         echo "  rollback: cp -R $SNAPSHOT_DIR/Production/* $DEST_DROPBOX/Production/" >&2
         exit 1
     fi
@@ -378,18 +435,9 @@ echo "[deploy] (d.6) O3/intro contract gate..."
 bash "$SRC_TOOLING/Production/scripts/verify_o3_intro_contract.sh"
 
 # ----------------------------------------------------------------
-# (e) Auto-restart production_server.py if mtime changed
-# ----------------------------------------------------------------
-echo "[deploy] (e) checking running production_server.py..."
-RUNNING_PIDS=$(pgrep -f "production_server.py" || true)
-if [[ -n "$RUNNING_PIDS" ]]; then
-    echo "  found running pids: $RUNNING_PIDS  → killing for restart"
-    pkill -f "production_server.py" || true
-    sleep 1
-fi
-
-# ----------------------------------------------------------------
-# (f) Auto-launch with --event-dir (per Kim's Δ-C5.5-Y authorization)
+# (e-f) Resolve target event + dedicated port, then restart that server only.
+# EVENT_DEDICATED_PORT_V1 — never pkill all production_server.py (kills Event_1
+# while deploying Event_2).
 # ----------------------------------------------------------------
 if [[ -n "${MN_DEPLOY_SKIP_LAUNCH:-}" ]]; then
     echo "[deploy] (f) MN_DEPLOY_SKIP_LAUNCH set; skipping launch"
@@ -409,19 +457,20 @@ if [[ -z "$EVENT_DIR" ]]; then
     fi
 fi
 EVENT_DIR="${EVENT_DIR:-Production/Event_1}"
-# MN_EVENT_DIR is sometimes set to an absolute Dropbox path; production_server
-# expects a path relative to the Dropbox runtime root.
 if [[ "$EVENT_DIR" == "$DEST_DROPBOX/"* ]]; then
     EVENT_DIR="${EVENT_DIR#"$DEST_DROPBOX/"}"
 elif [[ "$EVENT_DIR" == /* && "$EVENT_DIR" =~ /Production/(Event_[^/]+)$ ]]; then
     EVENT_DIR="Production/${BASH_REMATCH[1]}"
 fi
-echo "[deploy] (f) launching production_server.py against $EVENT_DIR ..."
-cd "$DEST_DROPBOX"
-
-# Determine storyboard html — fall back to scanning the event dir if the
-# canonical name doesn't exist.
+event_id="$(basename "$EVENT_DIR")"
+SERVER_PORT="${MN_SERVER_PORT:-$(event_id_to_port "$event_id")}"
+export MN_SERVER_PORT="$SERVER_PORT"
 event_dir_abs="$DEST_DROPBOX/$EVENT_DIR"
+echo "[deploy] (e) target event=$event_id  dedicated port=$SERVER_PORT"
+
+echo "[deploy] (e) ensuring exclusive listener on :${SERVER_PORT} ..."
+bash "${SCRIPT_DIR}/ensure_server_port.sh" "$SERVER_PORT" "$event_id" "$event_dir_abs"
+
 storyboard_html=""
 if [[ -f "$event_dir_abs/storyboard_v59_prod.html" ]]; then
     storyboard_html="storyboard_v59_prod.html"
@@ -436,35 +485,17 @@ if [[ -z "$storyboard_html" ]]; then
     exit 1
 fi
 
-# Event id derives from event_dir name (e.g. Event_1 → Event_1).
-event_id="$(basename "$EVENT_DIR")"
-
-nohup env PRODUCTION_SERVER_SINGLE_MACHINE=1 python3 "$DEST_DROPBOX/Production/tools/production_server.py" \
-    --event-dir "$EVENT_DIR" \
-    --storyboard "$storyboard_html" \
-    --event-id "$event_id" \
-    > "$LOG_DIR/server.log" 2>&1 &
-SERVER_PID=$!
-
-# Wait for the server to bind the port (or fail to launch).
-sleep 2
-if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-    echo "FATAL: server failed to launch — see $LOG_DIR/server.log" >&2
-    tail -30 "$LOG_DIR/server.log" >&2 || true
-    exit 1
-fi
-echo "[deploy] server launched: pid=$SERVER_PID  event_dir=$EVENT_DIR  storyboard=$storyboard_html"
+echo "[deploy] (f) syncing launchd agent (SERVER_LAUNCHD_SINGLE_OWNER_V1) for $event_id on :${SERVER_PORT} ..."
+# LD-505_TOOLING_CODE_ROOT_V1 — launchd runs tooling code; Dropbox holds Event_N data only.
+# Do NOT nohup-spawn here — dual owner with KeepAlive caused restart storms (port-guard + execv races).
+chmod +x "$SRC_TOOLING/Production/scripts/install_production_server_launchagent.sh"
+bash "$SRC_TOOLING/Production/scripts/install_production_server_launchagent.sh" "$event_id"
+echo "[deploy] (f) launchd server ready on :${SERVER_PORT}"
 
 # ----------------------------------------------------------------
 # (g) Post-deploy curl smoke — verify served HTML carries fresh build-sha
-# Per V59_CICD_GAP_FIX_SPEC_v1.md Phase A / LD DEPLOY_VERIFICATION_GATE_V1.
-# CRITICAL: URL is /, NOT /storyboard_v59_prod.html. production_server.py
-# serves the SPA at root; the filename CLI arg is the disk path it READS,
-# never part of the URL. A probe against the filename path returns 404
-# {"error":"not found"} by design (per feedback_storyboard_url_serves_at_root.md
-# after 2026-05-07 sidefix bug).
+# SERVER_PORT already set from event_id (EVENT_DEDICATED_PORT_V1).
 # ----------------------------------------------------------------
-SERVER_PORT="${MN_SERVER_PORT:-5111}"
 BUILD_SHA="$(cd "$SRC_TOOLING" && git rev-parse --short HEAD 2>/dev/null || git log -1 --pretty=%h 2>/dev/null || true)"
 if [[ -z "$BUILD_SHA" ]]; then
     echo "FATAL: could not determine BUILD_SHA from git rev-parse or git log" >&2
@@ -492,14 +523,44 @@ if [[ "$MARKER_COUNT" -lt 1 ]]; then
 fi
 echo "[deploy] (g) curl smoke ok — server serving fresh build (sha=$BUILD_SHA, marker_matches=$MARKER_COUNT)"
 
+echo "[deploy] (g.3) library panel_tabs live contract on :${SERVER_PORT} (${event_id}) ..."
+MN_LIBRARY_PANEL_LIVE_EVENT="$event_id" MN_SERVER_PORT="$SERVER_PORT" \
+    bash "$SRC_TOOLING/Production/scripts/verify_library_panel_contract_durability.sh" \
+    || exit 1
+echo "[deploy] (g.3) library panel_tabs live contract ok"
+
+# (g.4) STITCH_SFX_PLAYBACK_TRUTH live milestone E2E — post-deploy only (needs fresh bundle + mux)
+# Event_2 milestone fixture only — dedicated Event_N ports pin scope; skip on other targets.
+if [[ -x "$SRC_TOOLING/Production/scripts/verify_stitch_sfx_playback_truth_live_e2e.sh" ]]; then
+    if [[ "$event_id" != "Event_2" ]]; then
+        echo "[deploy] (g.4) SKIP stitch SFX live E2E — milestone fixture is Event_2-only (target=$event_id)"
+    else
+        echo "[deploy] (g.4-pre) ensure Playwright browsers for live E2E ..."
+        bash "$SRC_TOOLING/Production/scripts/ensure_storyboard_playwright_browsers.sh"
+        echo "[deploy] (g.4) stitch SFX playback truth live E2E on :${SERVER_PORT} ..."
+        MN_SERVER_PORT="$SERVER_PORT" MN_STORYBOARD_BASE="http://127.0.0.1:${SERVER_PORT}" \
+            bash "$SRC_TOOLING/Production/scripts/verify_stitch_sfx_playback_truth_live_e2e.sh" \
+            || exit 1
+        echo "[deploy] (g.4) stitch SFX playback truth live E2E ok"
+    fi
+fi
+
 # ----------------------------------------------------------------
 # (g.5) Pin runtime event to deployed event dir (not stale launch argv)
 # ----------------------------------------------------------------
 echo "[deploy] (g.5) post-restart event/load pin for $event_id ..."
-LOAD_HTTP=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 15 \
-    -X POST "http://localhost:${SERVER_PORT}/api/event/load" \
-    -H "Content-Type: application/json" \
-    -d "{\"event_id\":\"${event_id}\"}" || echo "000")
+LOAD_HTTP="000"
+for attempt in 1 2 3 4 5 6; do
+    LOAD_HTTP=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 30 \
+        -X POST "http://localhost:${SERVER_PORT}/api/event/load" \
+        -H "Content-Type: application/json" \
+        -d "{\"event_id\":\"${event_id}\"}" || echo "000")
+    if [[ "$LOAD_HTTP" == "200" ]]; then
+        break
+    fi
+    echo "[deploy] (g.5) event/load not ready (attempt ${attempt}/6, HTTP ${LOAD_HTTP}) — waiting for launchd handoff ..."
+    sleep 3
+done
 if [[ "$LOAD_HTTP" != "200" ]]; then
     echo "FATAL: /api/event/load for $event_id returned HTTP $LOAD_HTTP" >&2
     tail -20 "$LOG_DIR/server.log" >&2 || true
@@ -507,22 +568,28 @@ if [[ "$LOAD_HTTP" != "200" ]]; then
 fi
 echo "[deploy] (g.5) event/load ok — runtime pinned to $event_id"
 
-# ----------------------------------------------------------------
-# (g.6) Sync launchd KeepAlive agent to deployed event (EVENT_LAUNCHAGENT_SYNC_V1)
-# ----------------------------------------------------------------
-echo "[deploy] (g.6) syncing production-server launch agent for $event_id ..."
-chmod +x "$SRC_TOOLING/Production/scripts/install_production_server_launchagent.sh"
-bash "$SRC_TOOLING/Production/scripts/install_production_server_launchagent.sh" "$event_id"
-echo "[deploy] (g.6) launch agent ok"
+# Re-pin after launchd handoff (install script already waited for HTTP).
+curl -sS -o /dev/null --max-time 15 \
+    -X POST "http://localhost:${SERVER_PORT}/api/event/load" \
+    -H "Content-Type: application/json" \
+    -d "{\"event_id\":\"${event_id}\"}" || true
 
 # ----------------------------------------------------------------
 # (h) Post-restart O3 sidecar API smoke — server must expose lock API live
 # ----------------------------------------------------------------
 echo "[deploy] (h) O3 capability smoke via /api/bg/session-state ..."
-O3_OK=$(curl -sS --max-time 15 \
-    "http://localhost:${SERVER_PORT}/api/bg/session-state?scope_event_id=${event_id}&scope_video_role=intro" \
-    | python3 -c "import sys,json; c=json.load(sys.stdin).get('capabilities') or {}; print('ok' if c.get('update_beat_locked') and c.get('sidecar_file_lock') else 'fail')" \
-    2>/dev/null || echo "fail")
+O3_OK="fail"
+for attempt in 1 2 3 4 5 6; do
+    O3_OK=$(curl -sS --max-time 15 \
+        "http://localhost:${SERVER_PORT}/api/bg/session-state?scope_event_id=${event_id}&scope_video_role=intro" \
+        | python3 -c "import sys,json; c=json.load(sys.stdin).get('capabilities') or {}; print('ok' if c.get('update_beat_locked') and c.get('sidecar_file_lock') else 'fail')" \
+        2>/dev/null || echo "fail")
+    if [[ "$O3_OK" == "ok" ]]; then
+        break
+    fi
+    echo "[deploy] (h) O3 smoke not ready (attempt ${attempt}/6, got: ${O3_OK}) — waiting for launchd handoff ..."
+    sleep 2
+done
 if [[ "$O3_OK" != "ok" ]]; then
     echo "FATAL: live server capabilities missing update_beat_locked/sidecar_file_lock (got: $O3_OK)" >&2
     tail -20 "$LOG_DIR/server.log" >&2 || true
@@ -533,14 +600,24 @@ echo "[deploy] (h) O3 capability smoke ok"
 # ----------------------------------------------------------------
 # (h.5) Post-restart Kling canonical prompt shape — migrate heal on session-state
 # ----------------------------------------------------------------
-echo "[deploy] (h.5) Kling canonical prompt shape live smoke (Event_2) ..."
+echo "[deploy] (h.5) Kling canonical prompt shape live smoke ($event_id on :${SERVER_PORT}) ..."
 chmod +x "$SRC_TOOLING/Production/scripts/smoke_kling_canonical_prompt_shape_live.sh"
-if ! bash "$SRC_TOOLING/Production/scripts/smoke_kling_canonical_prompt_shape_live.sh"; then
+if ! MN_SERVER_PORT="$SERVER_PORT" MN_BG_LIVE_SMOKE_EVENT="$event_id" \
+    bash "$SRC_TOOLING/Production/scripts/smoke_kling_canonical_prompt_shape_live.sh"; then
     echo "FATAL: Kling canonical prompt shape live smoke failed after restart" >&2
     tail -30 "$LOG_DIR/server.log" >&2 || true
     exit 1
 fi
 echo "[deploy] (h.5) Kling canonical prompt shape ok"
+
+# ----------------------------------------------------------------
+# (h.6) Beat Gen deploy smoke — per-event SQLite + restart on dedicated ports
+# ----------------------------------------------------------------
+echo "[deploy] (h.6) Beat Gen deploy smoke on :5112 and :5113 ..."
+chmod +x "$SRC_TOOLING/Production/scripts/verify_beatgen_deploy_smoke.sh"
+bash "$SRC_TOOLING/Production/scripts/verify_beatgen_deploy_smoke.sh" 5112 || exit 1
+bash "$SRC_TOOLING/Production/scripts/verify_beatgen_deploy_smoke.sh" 5113 || exit 1
+echo "[deploy] (h.6) Beat Gen deploy smoke ok"
 
 # ----------------------------------------------------------------
 # (i) Write .last_deploy timestamp sentinel

@@ -1,0 +1,53 @@
+---
+description: Default to category fixes that clear whole bug classes; patches only with a compelling specific reason
+alwaysApply: true
+---
+
+# Category-unlocker (default: clear the bug class completely)
+
+When fixing any bug, **default to the category fix** — the change that clears the whole class of bugs, not just this instance. A **patch** (targeted symptom fix: one file, one edge case, one null check, one-off script, manual workaround) is **not the default** and should only be proposed when there is a **compelling specific reason** why the category fix cannot be done now.
+
+## Required self-question (run before proposing any fix)
+
+Ask yourself and answer explicitly:
+
+> **What would be the underlying fix if we were not going to use a patch to solve this problem?**
+
+That answer is the **preferred fix**. Propose and implement it unless you can state a compelling specific reason not to.
+
+## Mandatory output (every bug-fix response)
+
+Before code changes or a fix proposal, include this block so Kim can audit compliance:
+
+```markdown
+## Category-unlocker
+- **Bug category:** …
+- **Category fix:** …
+- **Fix type:** CATEGORY | PATCH
+- **Compelling reason (if PATCH):** … (required when PATCH; write "n/a" when CATEGORY)
+- **Plan:** …
+```
+
+**Kim audit:** If this block is missing, or `Fix type: PATCH` has no compelling reason, the agreement was not followed. Kim may reply **"category check"** to force a redo.
+
+## When a patch is acceptable
+
+Propose a patch **only** when you can name a **compelling specific reason**, such as:
+
+- Active production outage and category fix needs hours/days while users are blocked **right now**
+- Category fix requires external dependency, spec decision, or Kim's product call you cannot make alone
+- Category fix is a large refactor with no safe incremental path and the symptom is genuinely isolated with zero cousins in the codebase
+
+If you offer a patch, **state the compelling reason in plain language**. Do not default to "small patch now, category fix later" — that is not Kim's policy.
+
+## When the block can be brief
+
+If the change **is already** the category fix: `Fix type: CATEGORY` and one line — "This is the category fix, not a patch."
+
+## Conflicts with other instructions
+
+If another rule or skill says "minimal diff" or "smallest fix", **category-unlocker wins** for bug fixes: smallest **category** fix, not smallest patch. Read `~/.cursor/skills/category-unlocker/SKILL.md` when Kim says **"category check"**.
+
+## Tone
+
+Plain language. Kim is not a professional engineer — explain the category in terms of what stops *this kind* of bug from coming back, not jargon.

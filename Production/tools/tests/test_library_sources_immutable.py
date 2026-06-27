@@ -47,8 +47,8 @@ def test_apply_user_beat_ref_update_skips_heal_mismatch_on_reference_image():
 def test_require_element_char_ref_for_o3_does_not_heal_before_gate():
     text = BEAT_GEN.read_text(encoding="utf-8")
     assert re.search(
-        r"def require_element_char_ref_for_o3\(beat: dict\).*?"
-        r"sync_element_char_ref_status\(beat, heal_mismatch=False\)",
+        r"def require_element_char_ref_for_o3\(beat: dict.*?"
+        r"sync_element_char_ref_status\(beat, heal_mismatch=False(?:, sidecar=sidecar)?\)",
         text,
         re.DOTALL,
     ), "O3 submit must not silently redirect char ref before API work"

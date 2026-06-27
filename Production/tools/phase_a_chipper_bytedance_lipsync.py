@@ -428,18 +428,36 @@ def trim_padded_lipsync_segment(
     raw_path: Path,
     dest_path: Path,
     speech_duration_s: float,
+    *,
+    face_return_tail_s: float | None = None,
 ) -> Path:
-    """Strip LipSync pad margins while keeping ByteDance A/V in sync."""
+    """Strip LipSync lead pad; keep speech + face-return tail (LIPSYNC_PAD_END).
+
+    ByteDance is submitted with pad_audio_for_lipsync() (+0.5s lead, +2.5s tail).
+    The tail silence drives neutral face-return animation — trimming to speech-only
+    freezes the character mid-gesture and forces ensure_stem_duration_floor() to
+    clone-pad seconds of dead air at EOF.
+    """
     import lipsync_sender as ls  # noqa: WPS433
 
     pad_start = ls.LIPSYNC_PAD_START
+    tail_s = (
+        float(face_return_tail_s)
+        if face_return_tail_s is not None
+        else float(ls.LIPSYNC_PAD_END)
+    )
+    raw_dur = ffprobe_duration(raw_path)
+    keep_s = min(
+        speech_duration_s + tail_s,
+        max(0.0, raw_dur - pad_start),
+    )
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
             "-ss", f"{pad_start:.3f}",
             "-i", str(raw_path),
-            "-t", f"{speech_duration_s:.3f}",
+            "-t", f"{keep_s:.3f}",
             "-map", "0:v:0", "-map", "0:a:0?",
             "-c:v", "libx264", "-preset", "fast", "-crf", "18",
             "-pix_fmt", "yuv420p",
@@ -453,7 +471,8 @@ def trim_padded_lipsync_segment(
     )
     log(
         f"trim pad A/V: {raw_path.name} -> {dest_path.name} "
-        f"(speech={speech_duration_s:.2f}s, v={ffprobe_duration(dest_path):.2f}s)"
+        f"(speech={speech_duration_s:.2f}s +tail={tail_s:.2f}s "
+        f"keep={keep_s:.2f}s, v={ffprobe_duration(dest_path):.2f}s)"
     )
     return dest_path
 
@@ -473,7 +492,13 @@ def run_bytedance_lipsync(video: Path, audio: Path, out_path: Path) -> None:
         log(f"ByteDance submit: video={video.name} audio={audio.name}")
         job_id = client.submit(video, padded)
         result = client.poll_until_done(job_id)
-        url = result["outputs"][0]
+        outputs = result.get("outputs") or []
+        if not outputs:
+            raise RuntimeError(
+                f"ByteDance lipsync returned no outputs (job_id={job_id!r}, "
+                f"status={result.get('status')!r})"
+            )
+        url = outputs[0]
         client.download(url, out_path)
         log(
             f"ByteDance raw: {out_path.name} "

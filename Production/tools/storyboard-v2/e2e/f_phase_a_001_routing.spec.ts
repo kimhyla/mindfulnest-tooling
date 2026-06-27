@@ -13,11 +13,7 @@ async function gotoApp(page: Page): Promise<void> {
 }
 
 test.describe('F-PHASE-A-001 — Phase A endpoint routing (id=122)', () => {
-  test('F122.1 — Mix Audio (Phase A) POSTs to /api/phase_a/mix_audio', async ({ page }) => {
-    const urls: string[] = [];
-    page.on('request', (req) => {
-      if (req.method() === 'POST' && req.url().includes('/api/phase')) urls.push(req.url());
-    });
+  test('F122.1 — Phase A has no Mix Audio button (ambient in Stitcher)', async ({ page }) => {
     await page.route('**/api/v2/event/*/state', async (r) => {
       await r.fulfill({
         status: 200,
@@ -25,7 +21,6 @@ test.describe('F-PHASE-A-001 — Phase A endpoint routing (id=122)', () => {
         body: JSON.stringify({
           _module_version: 1,
           phase_a_voice_stem_file: 'phase_a_voice_stem_fixture.mp3',
-          phase_a_ambient_preset_id: 'meditation_fireplace_v1',
           videos: { intro: { video_role: 'intro', beats: {} } },
         }),
       });
@@ -52,29 +47,18 @@ test.describe('F-PHASE-A-001 — Phase A endpoint routing (id=122)', () => {
       await r.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({
-          ok: true,
-          items: [{ preset_id: 'meditation_fireplace_v1', file_size_bytes: 100 }],
-        }),
+        body: JSON.stringify({ ok: true, items: [] }),
       });
     });
     await page.route('**/api/state/snapshot', async (r) => {
       await r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
     });
-    await page.route('**/api/phase_a/mix_audio', async (r) => {
-      await r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
-    });
-    await page.route('**/api/phase_b/mix_audio', async (r) => {
-      await r.fulfill({ status: 404, contentType: 'application/json', body: '{"error":"wrong phase path"}' });
-    });
 
     await gotoApp(page);
     await page.locator('[data-testid="tab-phase-a"]').click();
     await page.locator('[data-testid="phase-producer-a"]').click();
-    await page.locator('[data-testid="phase-a-mix-btn"]').click();
-
-    await expect.poll(() => urls.some((u) => u.includes('/api/phase_a/mix_audio'))).toBe(true);
-    expect(urls.some((u) => u.includes('/api/phase_b/mix_audio'))).toBe(false);
+    await expect(page.locator('[data-testid="phase-a-mix-btn"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="phase-a-ambient-preset-select"]')).toHaveCount(0);
   });
 
   test('F122.2 — Pick clip (sitting) opens base-clip modal with arlo clips', async ({ page }) => {

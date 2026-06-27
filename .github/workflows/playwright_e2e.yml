@@ -212,7 +212,7 @@ jobs:
           # blockers #50, #52, #53 (Wave 3). New raw-fetch additions trip the gate.
           matches=$(grep -rnE "fetch\(.*MUTATION_ENDPOINTS\." \
             src/components/ src/state/ src/utils/ 2>/dev/null \
-            | grep -vE "(ProjectSelector\.tsx|EventSelector\.tsx|ProductionMapTab\.tsx).*MUTATION_ENDPOINTS\.event_load" \
+            | grep -vE "(ProjectSelector\.tsx|ProductionMapTab\.tsx).*MUTATION_ENDPOINTS\.event_load" \
             || true)
           if [ -n "$matches" ]; then
             echo "::error::MUTATION_CHANNEL_INVARIANT_V1 violation — raw fetch to MUTATION_ENDPOINTS outside src/api/:"

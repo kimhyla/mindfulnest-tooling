@@ -83,6 +83,11 @@ def _make_event_fixture(tmp: Path) -> tuple[Path, Path, str]:
     (proj / "Production" / "assets" / "watercolor_library").mkdir(parents=True)
     (proj / "Production" / "assets" / "ambient_library").mkdir(parents=True)
     (proj / "Production" / "assets" / "lipsync_bases").mkdir(parents=True)
+    still_dir = proj / "Production" / "NEW STYLE CHARACTERS" / "CEDRIC"
+    still_dir.mkdir(parents=True, exist_ok=True)
+    (still_dir / "ChatGPT Image Jun 21, 2026, 10_45_20 PM.png").write_bytes(
+        b"\x89PNG\r\n\x1a\nfake_still_for_tests",
+    )
     event_dir = proj / "Production" / "Event_V3TEST"
     event_dir.mkdir(parents=True, exist_ok=True)
     storyboard = event_dir / "storyboard_test.html"
@@ -107,6 +112,8 @@ def _make_event_fixture(tmp: Path) -> tuple[Path, Path, str]:
     }, indent=2))
     # Seed minimal libraries for the panel tests.
     _make_wc_library(proj / "Production" / "assets" / "watercolor_library")
+    # Overlay preview resolves cues from event-scoped library (event_watercolors_dir).
+    _make_wc_library(event_dir / "library" / "watercolors")
     (proj / "Production" / "assets" / "ambient_library" / "meditation_fireplace_v1.mp3"
      ).write_bytes(b"\x00amb\x00")
     _make_base_clip(proj / "Production" / "assets" / "lipsync_bases")
@@ -477,8 +484,8 @@ class TestPhaseEndpoints(unittest.TestCase):
         self.assertEqual(state.get("phase_b_ambient_preset_id"),
                          "meditation_fireplace_v1")
 
-    # 11. lipsync accepts base_clip_id (ByteDance mocked)
-    def test_lipsync_accepts_base_clip_id(self):
+    # 11. lipsync submits Avatar Pro (mocked) — no base clip required
+    def test_lipsync_submits_avatar_pro(self):
         # Seed voice stem.
         vs = self.event_dir / "phase_b_voice_stem_test.mp3"
         vs.write_bytes(b"\x00fakevoice\x00")
@@ -489,9 +496,6 @@ class TestPhaseEndpoints(unittest.TestCase):
             return 1
         self.app.state.mutate_state(_apply)
 
-        # P5 (2026-05-19): per Kim — animation must be longer than audio
-        # for lipsync correctness. Return 25s for base-clip probes, 20s
-        # for voice-stem probes. Probe target is the last arg of ffprobe.
         def dispatch(cmd, *a, **kw):
             class _R:
                 returncode = 0
@@ -499,15 +503,7 @@ class TestPhaseEndpoints(unittest.TestCase):
                 stdout = b""
             cmd_str = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
             if "show_entries" in cmd_str:
-                # P5 (2026-05-19): audio MUST be ≤10s (LD LIPSYNC_MAX_DURATION_10S
-                # CLAUDE.md §8.5 — ByteDance training window cap) AND base_clip
-                # MUST be longer than audio (Kim 2026-05-19 padding rule). Use
-                # 4s audio, 8s base clip.
-                last_arg = cmd[-1] if isinstance(cmd, list) else ""
-                if isinstance(last_arg, str) and ("lipsync_base" in last_arg or "_base_v1" in last_arg or last_arg.endswith(".mp4")):
-                    _R.stdout = b"8.000\n"
-                else:
-                    _R.stdout = b"4.000\n"
+                _R.stdout = b"4.000\n"
             else:
                 out = Path(cmd[-1])
                 out.parent.mkdir(parents=True, exist_ok=True)
@@ -516,56 +512,69 @@ class TestPhaseEndpoints(unittest.TestCase):
 
         def _fake_lipsync_client(*_a, **_kw):
             class _LSC:
-                def submit(self, _video, _audio):
-                    return "fake_task_id"
-
-                def poll_until_done(self, _task_id):
-                    return {"status": "completed", "outputs": ["http://fake/kling.mp4"]}
+                def submit_avatar_pro(self, _still, _audio, _prompt):
+                    return "fake_avatar_task_id"
 
                 def download(self, _url, dest):
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     dest.write_bytes(b"\x00bd_out\x00")
             return _LSC()
 
-        # Kling async flow: HTTP 202 on submit; bg thread poll+download writes state.
-        _ffp_durations = [4.0, 8.0, 8.0, 8.0]  # voice, base, base, base
+        def _fake_poll(_task_id):
+            return {"status": "completed", "outputs": ["http://fake/avatar.mp4"]}
+
+        self.app.client.poll = _fake_poll  # type: ignore[attr-defined]
+
         with mock.patch.object(PS.subprocess, "run", side_effect=dispatch), \
-             mock.patch("production_server._ffprobe_duration", side_effect=lambda *a, **kw: _ffp_durations.pop(0) if _ffp_durations else 8.0), \
-             mock.patch("production_server._silcomp_audio",
-                        return_value=(vs, {"applied": False,
-                                           "source_duration_s": 4.0,
-                                           "compressed_duration_s": 4.0,
-                                           "silences_compressed": 0})), \
-             mock.patch("production_server._trim_video_to_audio",
-                        return_value=(Path("/tmp/fake_trim.mp4"), 7.0, 0.0, 8.0)), \
-             mock.patch("server_handlers.phases._apply_whiteout_fade"), \
+             mock.patch(
+                 "phase_module_lipsync_delivery.finalize_phase_module_lipsync_delivery",
+                 side_effect=lambda path, **kw: {
+                     "delivery_profile": "voice_first_upscale",
+                     "delivery_recipe": "PHASE_MODULE_LIPSYNC_DELIVERY_V1",
+                     "raw_width": 720,
+                     "raw_height": 544,
+                     "width": 1280,
+                     "height": 720,
+                     "bitrate_bps": 1_800_000,
+                     "path": str(path),
+                 },
+             ), \
              mock.patch("server_handlers.phases.LipSyncClient",
                         create=True, new=_fake_lipsync_client):
             status, resp, _ = _http_post(
                 self.port, "/api/phase_b/lipsync",
-                {"phase": "b", "base_clip_id": "cedric_base_v1"},
+                {"phase": "b"},
                 timeout=30,
             )
-        self.assertEqual(status, 202, resp)
-        self.assertEqual(resp.get("status"), "submitted")
-        self.assertEqual(resp.get("task_id"), "fake_task_id")
-        self.assertEqual(resp.get("base_clip_id"), "cedric_base_v1")
-        # UI resume-after-tab-switch reads polling (not only Phase A "running").
-        state_after_submit = self.app.state.read_state()
-        self.assertEqual(state_after_submit.get("phase_b_lipsync_status"), "polling")
-        self.assertEqual(state_after_submit.get("phase_b_lipsync_task_id"), "fake_task_id")
-        self.assertEqual(state_after_submit.get("phase_b_cedric_base_clip_id"), "cedric_base_v1")
-        # Background thread writes terminal state after poll+download.
-        lipsync_file = None
-        for _ in range(40):
-            state = self.app.state.read_state()
-            lipsync_file = state.get("phase_b_lipsync_file")
-            if lipsync_file:
-                break
-            time.sleep(0.05)
+            self.assertEqual(status, 202, resp)
+            self.assertEqual(resp.get("status"), "submitted")
+            self.assertEqual(resp.get("task_id"), "fake_avatar_task_id")
+            self.assertEqual(resp.get("lipsync_method"), "kling_avatar_pro_v1")
+            self.assertEqual(resp.get("lipsync_route"), "single_full_stem_v1")
+            state_after_submit = self.app.state.read_state()
+            self.assertEqual(state_after_submit.get("phase_b_lipsync_status"), "polling")
+            self.assertEqual(state_after_submit.get("phase_b_lipsync_task_id"), "fake_avatar_task_id")
+            self.assertTrue(state_after_submit.get("phase_b_lipsync_pending_out"))
+            self.assertEqual(
+                state_after_submit.get("phase_b_lipsync_method"),
+                "kling_avatar_pro_v1",
+            )
+            self.assertTrue(state_after_submit.get("phase_b_avatar_still_file"))
+            from server_handlers.phases import sweep_phase_module_lipsync_polls
+
+            lipsync_file = None
+            for _ in range(10):
+                sweep_phase_module_lipsync_polls(self.app.state, self.app.client)
+                state = self.app.state.read_state()
+                lipsync_file = state.get("phase_b_lipsync_file")
+                if lipsync_file:
+                    break
+                time.sleep(0.02)
         self.assertTrue(lipsync_file and lipsync_file.startswith("phase_b_lipsync_"),
-                        f"expected bg thread to write lipsync file; state={state}")
-        self.assertEqual(state.get("phase_b_cedric_base_clip_id"), "cedric_base_v1")
+                        f"expected poller sweep to write lipsync file; state={state}")
+        self.assertEqual(state.get("phase_b_lipsync_status"), "done")
+        self.assertNotIn("phase_b_lipsync_task_id", state)
+        self.assertEqual(state.get("phase_b_lipsync_method"), "kling_avatar_pro_v1")
 
     # 12. preview fails loud on missing lipsync
     def test_preview_fails_loud_when_lipsync_file_missing(self):

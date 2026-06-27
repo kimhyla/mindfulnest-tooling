@@ -65,6 +65,7 @@ from tools.production_server import (  # noqa: E402
 
 # Canonical stitch job: one per event; slots accumulate across Send Out + exports.
 STITCH_SLOT_ORDER = ["intro", "phase_a", "phase_b", "resolution"]
+STITCH_MILESTONE_SLOT_ORDER = ["standalone"]
 # Canonical under-speech ambient level (all stitch slots — waveform, preview, bake).
 STITCH_AMBIENT_BED_VOLUME = 0.15
 STITCH_SFX_CUE_DEFAULT_VOLUME = 0.45
@@ -72,10 +73,27 @@ STITCH_SFX_CUE_DEFAULT_FADEIN_MS = 300
 STITCH_SFX_CUE_DEFAULT_FADEOUT_MS = 1200
 # Bust pre-2026-06-13 mix cache: stereo ambient bed + mono speech made amix drop SFX lanes;
 # afade after adelay also silenced cues in the 3-way mix — fade must run before delay.
-STITCH_WAVEFORM_MIX_MONO_V1 = "mono_v2"
+STITCH_WAVEFORM_MIX_MONO_V1 = "mono_v3"
+
+
+def _stitch_media_public_url(h, api_path: str) -> str:
+    """Media URL on the active storyboard server origin (5111, 5112, …).
+
+    Hardcoding localhost:5111 breaks Event_2 on :5112 — WaveSurfer then fails with
+    "Failed to fetch" while the slot video (same-origin /files) still plays.
+    """
+    path = api_path if api_path.startswith("/") else f"/{api_path.lstrip('/')}"
+    try:
+        host = (h.headers.get("Host") or "").strip()
+    except Exception:
+        host = ""
+    if host:
+        return f"http://{host}{path}"
+    return path
 # Canonical ambient bed preset_id per stitch slot (filename stem under sound_library/ambient/).
 STITCH_DEFAULT_AMBIENT_BEDS: dict[str, str] = {
     "intro": "Intro video ambient bed",
+    "standalone": "Intro video ambient bed",
     "phase_a": "ambient bed pretty option2",
     "phase_b": "ambient bed pretty option",
     "resolution": "ambien bed pretty option4",
@@ -83,13 +101,218 @@ STITCH_DEFAULT_AMBIENT_BEDS: dict[str, str] = {
 # Canonical teleport whoosh — auto-placed on intro Send-to-Stitcher (removable in UI).
 STITCH_INTRO_DEFAULT_WHOOSH_FILENAME = "whoosh sound.mp3"
 STITCH_INTRO_DEFAULT_WHOOSH_PLAY_MS = 3104
+# Resolution head whoosh matches intro tail whoosh (not after_win ba-bum stinger).
+STITCH_RESOLUTION_HEAD_SFX_FILENAME = STITCH_INTRO_DEFAULT_WHOOSH_FILENAME
+STITCH_RESOLUTION_HEAD_SFX_PLAY_MS = STITCH_INTRO_DEFAULT_WHOOSH_PLAY_MS
+STITCH_LEGACY_RESOLUTION_HEAD_SFX_FILENAME = "after_win_return_to_map_music.mp3"
+STITCH_RESOLUTION_TAIL_SFX_FILENAME = "exit resolution video sfx.mp3"
+STITCH_RESOLUTION_HEAD_WHOOSH_V1 = "STITCH_RESOLUTION_HEAD_WHOOSH_V1"
+STITCH_SFX_PLACEMENT_HEAD = "head"
+STITCH_SFX_PLACEMENT_TAIL = "tail"
+# STITCH_SLOT_CANONICAL_DEFAULTS_V1 — ambient beds + canonical SFX materialized as slot.sfx_cues.
+STITCH_SLOT_CANONICAL_DEFAULTS_V1 = "STITCH_SLOT_CANONICAL_DEFAULTS_V1"
+STITCH_CANONICAL_DEFAULTS_PERSIST_V1 = "STITCH_CANONICAL_DEFAULTS_PERSIST_V1"
+# STITCH_BOUNDARY_SFX_PIPELINE_ONLY_V1 — phase_a/b boundary SFX span fades in bake pipeline only.
+STITCH_BOUNDARY_SFX_PIPELINE_ONLY_V1 = "STITCH_BOUNDARY_SFX_PIPELINE_ONLY_V1"
+# STITCH_PHASE_B_NO_OUTGOING_VISUAL_FADE_V1 — phase_b→resolution: no outgoing clip dim (black hold only).
+STITCH_PHASE_B_NO_OUTGOING_VISUAL_FADE_V1 = "STITCH_PHASE_B_NO_OUTGOING_VISUAL_FADE_V1"
+STITCH_PHASE_B_TO_RESOLUTION_PAIR_INDEX = 2
+STITCH_SLOT_DEFAULT_TAIL_SFX_MAX_MS = 8000
+# Boundary dissolve SFX filenames owned by _stitch_apply_canonical_boundary_sfx (not slot tail cues).
+STITCH_PIPELINE_BOUNDARY_SLOT_TAIL_SFX: dict[str, str] = {
+    "phase_a": "windy_magic.mp3",
+    "phase_b": "magic_sound.mp3",
+}
+# slot_key → [(library filename, default play ms; 0 = file duration, placement head|tail)]
+STITCH_SLOT_CANONICAL_DEFAULT_SFX: dict[str, list[tuple[str, int, str]]] = {
+    "intro": [
+        (STITCH_INTRO_DEFAULT_WHOOSH_FILENAME, STITCH_INTRO_DEFAULT_WHOOSH_PLAY_MS, STITCH_SFX_PLACEMENT_TAIL),
+    ],
+    "resolution": [
+        (STITCH_RESOLUTION_HEAD_SFX_FILENAME, STITCH_RESOLUTION_HEAD_SFX_PLAY_MS, STITCH_SFX_PLACEMENT_HEAD),
+        (STITCH_RESOLUTION_TAIL_SFX_FILENAME, 0, STITCH_SFX_PLACEMENT_TAIL),
+    ],
+}
+# Back-compat alias (single tail cue per slot).
+STITCH_SLOT_DEFAULT_TAIL_SFX: dict[str, tuple[str, int]] = {
+    slot_key: (specs[0][0], specs[0][1])
+    for slot_key, specs in STITCH_SLOT_CANONICAL_DEFAULT_SFX.items()
+    if len(specs) == 1 and specs[0][2] == STITCH_SFX_PLACEMENT_TAIL
+}
+STITCH_SLOT_TAIL_SFX_DISMISS_KEYS: dict[str, str] = {
+    "intro": "intro_whoosh_default_dismissed",
+    "phase_a": "phase_a_tail_sfx_default_dismissed",
+    "phase_b": "phase_b_tail_sfx_default_dismissed",
+}
+STITCH_SLOT_CANONICAL_SFX_FILE_DISMISS: dict[str, dict[str, str]] = {
+    "resolution": {
+        STITCH_RESOLUTION_HEAD_SFX_FILENAME: "resolution_head_sfx_default_dismissed",
+        STITCH_RESOLUTION_TAIL_SFX_FILENAME: "resolution_tail_sfx_default_dismissed",
+    },
+}
 # Re-probe when stored duration differs from on-disk file by more than this (ms).
 STITCH_VIDEO_DUR_DRIFT_TOLERANCE_MS = 500
+STITCH_SLOT_TIMELINE_ATOMIC_V1 = "STITCH_SLOT_TIMELINE_ATOMIC_V1"
 # STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1 — export/sync must not serve truncated audio extracts.
 STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1 = "STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1"
 # STITCH_SLOT_EXPORT_FULL_MEDIA_V1 — all four tab exports must upsert full playable slot video.
 STITCH_SLOT_EXPORT_FULL_MEDIA_V1 = "STITCH_SLOT_EXPORT_FULL_MEDIA_V1"
+# STITCH_SLOT_ASSEMBLED_DISK_HYDRATE_V1 — empty canonical slots recover from on-disk exports.
+STITCH_SLOT_ASSEMBLED_DISK_HYDRATE_V1 = "STITCH_SLOT_ASSEMBLED_DISK_HYDRATE_V1"
+# STITCH_SINGLE_OWNER_V1 — stitch_state.json job slot is sole authority after export;
+# load_job must not persist pipeline disk hydrate (assembled/*.mp4).
+STITCH_SINGLE_OWNER_V1 = "STITCH_SINGLE_OWNER_V1"
+STITCH_ASSEMBLED_SLOT_GLOBS: dict[str, tuple[str, ...]] = {
+    "intro": ("intro_*.mp4", "intro_kling_o3_*.mp4"),
+    "phase_a": ("phase_a_*.mp4", "phase_a_stitched_*.mp4"),
+    "phase_b": ("phase_b_*.mp4", "phase_b_lipsync_*.mp4"),
+    "resolution": ("resolution_*.mp4", "resolution_kling_o3_*.mp4"),
+    "standalone": ("standalone_*.mp4", "standalone_kling_o3_*.mp4"),
+}
 STITCH_AUDIO_DUR_MIN_RATIO = 0.85
+STITCH_AUDIO_MAX_DRIFT_MS = 2000
+STITCH_AUDIO_MAX_DRIFT_RATIO = 0.015
+# STITCH_MODULE_PIPELINE_V1 — module-only transforms (finale, boundary black, dissolve concat).
+STITCH_MODULE_PIPELINE_V1 = "STITCH_MODULE_PIPELINE_V1"
+# STITCH_SLOT_PREVIEW_V1 — per-slot composer preview (normalize + ambient mix + copy only).
+STITCH_SLOT_PREVIEW_V1 = "STITCH_SLOT_PREVIEW_V1"
+# STITCH_SLOT_PREVIEW_VIDEO_PLAYABLE_V1 — preview MP4 must decode before URL is returned.
+STITCH_SLOT_PREVIEW_VIDEO_PLAYABLE_V1 = "STITCH_SLOT_PREVIEW_VIDEO_PLAYABLE_V1"
+# STITCH_SLOT_VIDEO_LINEAGE_V1 — operator export replaces slot video; playback cache must follow.
+STITCH_SLOT_VIDEO_LINEAGE_V1 = "STITCH_SLOT_VIDEO_LINEAGE_V1"
+# STITCH_SLOT_MEDIA_ARTIFACTS_V1 — server-persisted mux/peaks hashes on stitch job slots.
+STITCH_SLOT_MEDIA_ARTIFACTS_V1 = "STITCH_SLOT_MEDIA_ARTIFACTS_V1"
+
+
+def _stitch_pipeline_slot_count(body: dict) -> int:
+    slots = body.get("slots")
+    if isinstance(slots, list):
+        return len([s for s in slots if isinstance(s, dict)])
+    if isinstance(slots, dict):
+        return len([s for s in slots.values() if isinstance(s, dict)])
+    return 0
+
+
+def tag_stitch_pipeline_scope(body: dict) -> None:
+    """In-place flags so _stitch_build_pipeline applies the correct transform tier."""
+    if body.get("module_pipeline") is True:
+        body["slot_preview"] = False
+        return
+    if body.get("slot_preview") is True:
+        body["module_pipeline"] = False
+        return
+    n = _stitch_pipeline_slot_count(body)
+    if n <= 1:
+        body["slot_preview"] = True
+        body["module_pipeline"] = False
+    else:
+        body["slot_preview"] = False
+        body["module_pipeline"] = True
+
+
+def stitch_pipeline_apply_module_boundaries(body: dict) -> bool:
+    """Dissolve black-pause boundaries — multi-slot module paths only."""
+    if body.get("slot_preview"):
+        return False
+    return bool(body.get("module_pipeline")) and _stitch_pipeline_slot_count(body) >= 2
+
+
+def stitch_pipeline_should_apply_resolution_finale(body: dict) -> bool:
+    """Resolution outtro + black tail — full module ending in resolution only."""
+    if body.get("slot_preview"):
+        return False
+    if not body.get("module_pipeline"):
+        return False
+    job_name = (body.get("name") or "").strip()
+    if is_milestone_stitch_job_name(job_name):
+        return False
+    return _stitch_pipeline_slot_count(body) >= 4
+
+
+def stitch_pipeline_should_apply_milestone_finale(body: dict) -> bool:
+    """Standalone milestone bake — outtro3 fade + black tail (not slot preview)."""
+    if body.get("slot_preview"):
+        return False
+    if not body.get("module_pipeline"):
+        return False
+    if _stitch_pipeline_slot_count(body) != 1:
+        return False
+    job_name = (body.get("name") or "").strip()
+    return is_milestone_stitch_job_name(job_name)
+
+
+def purge_stitch_cache_mp4(path) -> None:
+    """Delete a cached MP4 that failed playable/decode validation."""
+    try:
+        p = Path(path)
+        if p.is_file():
+            p.unlink()
+    except OSError:
+        pass
+
+
+def stitch_cached_mp4_playable(
+    path,
+    *,
+    expected_s: float | None = None,
+    min_ratio: float = STITCH_AUDIO_DUR_MIN_RATIO,
+) -> bool:
+    """STITCH_SLOT_PREVIEW_VIDEO_PLAYABLE_V1 — decode + QuickTime-safe timestamps + duration."""
+    from credentials_lib.ffmpeg_stitch import (  # noqa: PLC0415
+        STITCH_EXPORT_AV_MAX_DRIFT_S,
+        av_duration_drift_s,
+        ffprobe_stream_duration_s,
+        mp4_decodes_cleanly,
+        mp4_is_playable,
+        mp4_operator_playback_timestamps_safe,
+        preview_cache_is_valid,
+        remux_mp4_playback_safe,
+        stitch_preview_decode_timeout_s,
+    )
+
+    p = Path(path)
+    if not p.is_file():
+        return False
+    decode_timeout_s = stitch_preview_decode_timeout_s(float(expected_s or 0.0))
+    if not mp4_operator_playback_timestamps_safe(p):
+        try:
+            remux_mp4_playback_safe(p, timeout_s=max(120, decode_timeout_s))
+        except (subprocess.CalledProcessError, RuntimeError, OSError):
+            return False
+    if expected_s is not None and expected_s > 0:
+        if not preview_cache_is_valid(p, expected_s, min_ratio=min_ratio):
+            return False
+    else:
+        if not mp4_is_playable(p):
+            return False
+        try:
+            vdur_probe = float(ffprobe_stream_duration_s(p, "v"))
+        except (TypeError, ValueError):
+            vdur_probe = 0.0
+        if not mp4_decodes_cleanly(
+            p,
+            timeout_s=stitch_preview_decode_timeout_s(vdur_probe),
+        ):
+            return False
+    if av_duration_drift_s(p) > STITCH_EXPORT_AV_MAX_DRIFT_S:
+        return False
+    try:
+        vdur = float(ffprobe_stream_duration_s(p, "v"))
+    except (TypeError, ValueError):
+        vdur = 0.0
+    return vdur > 0.05
+
+
+def stitch_slot_av_drift_exceeds(video_dur_ms: int, audio_dur_ms: int) -> bool:
+    """True when slot video/audio durations are too far apart for linked playback."""
+    drift_ms = abs(int(video_dur_ms) - int(audio_dur_ms))
+    if drift_ms <= 0:
+        return False
+    if drift_ms > STITCH_AUDIO_MAX_DRIFT_MS:
+        return True
+    if video_dur_ms > 0 and drift_ms > int(video_dur_ms * STITCH_AUDIO_MAX_DRIFT_RATIO):
+        return True
+    return False
 
 
 def apply_stitch_slot_default_ambient_preset(slot_key: str, slot: dict) -> bool:
@@ -144,6 +367,18 @@ def _job_canonical_audio_needs_persist(live_slots, normalized_slots: dict) -> bo
         src_path = (src.get("video_path") or "").strip()
         if src_path and (dst.get("video_path") or "").strip() != src_path:
             return True
+        src_cues = [c for c in (src.get("sfx_cues") or []) if isinstance(c, dict)]
+        dst_cues = [c for c in (dst.get("sfx_cues") or []) if isinstance(c, dict)]
+        if len(src_cues) != len(dst_cues):
+            return True
+        src_auto = sorted(
+            f"{c.get('name', '')}:{c.get('offset_ms', '')}" for c in src_cues if c.get("auto_default")
+        )
+        dst_auto = sorted(
+            f"{c.get('name', '')}:{c.get('offset_ms', '')}" for c in dst_cues if c.get("auto_default")
+        )
+        if src_auto != dst_auto:
+            return True
     return False
 
 
@@ -181,7 +416,44 @@ def _persist_stitch_job_canonical_audio(state: dict, name: str, normalized_slots
         src_path = (src.get("video_path") or "").strip()
         if src_path:
             dst["video_path"] = src_path
+        src_cues = src.get("sfx_cues")
+        if isinstance(src_cues, list):
+            dst["sfx_cues"] = [dict(c) for c in src_cues if isinstance(c, dict)]
+        for dismiss_key in STITCH_SLOT_TAIL_SFX_DISMISS_KEYS.values():
+            if dismiss_key in src:
+                dst[dismiss_key] = src[dismiss_key]
+            elif dismiss_key in dst:
+                dst.pop(dismiss_key, None)
         normalize_slot_audio_mix_levels(dst)
+    live["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def _persist_stitch_job_healed_slots(
+    state: dict,
+    name: str,
+    healed_slots: dict,
+) -> None:
+    """Persist artifact field clears/heals from load_job validation (not just canonical audio)."""
+    from server_handlers.stitch_media_sig import STITCH_SLOT_ARTIFACT_FIELDS  # noqa: PLC0415
+
+    live = state.get("jobs", {}).get(name)
+    if not isinstance(live, dict) or not isinstance(live.get("slots"), dict):
+        return
+    if not isinstance(healed_slots, dict):
+        return
+    for slot_key, src in healed_slots.items():
+        if not isinstance(src, dict):
+            continue
+        dst = live["slots"].setdefault(slot_key, {})
+        if not isinstance(dst, dict):
+            continue
+        for field in STITCH_SLOT_ARTIFACT_FIELDS:
+            if field in src:
+                dst[field] = src[field]
+            else:
+                dst.pop(field, None)
+        for ephemeral in ("_mux_preview_url", "_ambient_mix_url", "_waveform_peaks_url"):
+            dst.pop(ephemeral, None)
     live["updated_at"] = datetime.now(timezone.utc).isoformat()
 
 
@@ -263,6 +535,30 @@ def hydrate_stitch_slot_video_dur_ms(h, slot: dict) -> bool:
     return sync_stitch_slot_video_dur_ms(h, slot)
 
 
+def ensure_stitch_slot_timeline_dur_ms(h, slot: dict) -> bool:
+    """STITCH_SLOT_TIMELINE_ATOMIC_V1 — slot with video_path must expose video_dur_ms."""
+    if not isinstance(slot, dict):
+        return False
+    if not (slot.get("video_path") or "").strip():
+        return False
+    try:
+        existing = int(slot.get("video_dur_ms") or 0)
+    except (TypeError, ValueError):
+        existing = 0
+    if existing > 0:
+        return False
+    if sync_stitch_slot_video_dur_ms(h, slot, force=True):
+        return True
+    try:
+        mux_ms = int(slot.get("mux_preview_duration_ms") or 0)
+    except (TypeError, ValueError):
+        mux_ms = 0
+    if mux_ms > 0:
+        slot["video_dur_ms"] = mux_ms
+        return True
+    return False
+
+
 def hydrate_job_slot_video_durs(h, slots) -> bool:
     """Reconcile video_dur_ms on all canonical slots. Returns True if any slot changed."""
     if not isinstance(slots, dict):
@@ -282,43 +578,156 @@ def _resolve_stitch_intro_whoosh_path(h) -> str:
     return str(fp) if fp.is_file() else ""
 
 
-def _slot_has_whoosh_cue(slot: dict) -> bool:
+def _resolve_stitch_slot_tail_sfx_path(h, slot_key: str, filename: str) -> str:
+    """Resolve slot SFX — whoosh at project root; other cues from sfx library."""
+    if filename == STITCH_INTRO_DEFAULT_WHOOSH_FILENAME:
+        return _resolve_stitch_intro_whoosh_path(h)
+    return resolve_canonical_boundary_sfx_path(h, filename)
+
+
+def _slot_has_canonical_sfx_cue(slot: dict, filename: str) -> bool:
+    """True when slot already has a cue matching the canonical filename."""
+    stem = Path(filename).stem.lower().replace("_", " ")
     for cue in slot.get("sfx_cues") or []:
         if not isinstance(cue, dict):
             continue
-        label = f"{cue.get('name', '')} {cue.get('source_path', '')}".lower()
-        if "whoosh" in label:
+        label = f"{cue.get('name', '')} {cue.get('source_path', '')}".lower().replace("_", " ")
+        if stem in label or Path(filename).name.lower() in label:
             return True
     return False
 
 
-def ensure_stitch_intro_default_whoosh_cue(h, slot: dict) -> bool:
-    """Ensure intro tail whoosh exists until the operator explicitly deletes it."""
-    if not isinstance(slot, dict) or not (slot.get("video_path") or "").strip():
+def _slot_has_tail_sfx_cue(slot: dict, filename: str) -> bool:
+    return _slot_has_canonical_sfx_cue(slot, filename)
+
+
+def _slot_has_whoosh_cue(slot: dict) -> bool:
+    return _slot_has_canonical_sfx_cue(slot, STITCH_INTRO_DEFAULT_WHOOSH_FILENAME)
+
+
+def _canonical_sfx_dismissed(slot: dict, slot_key: str, filename: str) -> bool:
+    per_file = STITCH_SLOT_CANONICAL_SFX_FILE_DISMISS.get(slot_key, {})
+    dismiss_key = per_file.get(filename) or STITCH_SLOT_TAIL_SFX_DISMISS_KEYS.get(slot_key)
+    if not dismiss_key:
         return False
-    if slot.get("intro_whoosh_default_dismissed"):
+    return bool(slot.get(dismiss_key))
+
+
+def _clear_canonical_sfx_dismiss_flags(slot: dict, slot_key: str) -> None:
+    dismiss_key = STITCH_SLOT_TAIL_SFX_DISMISS_KEYS.get(slot_key)
+    if dismiss_key:
+        slot.pop(dismiss_key, None)
+    for key in STITCH_SLOT_CANONICAL_SFX_FILE_DISMISS.get(slot_key, {}).values():
+        slot.pop(key, None)
+
+
+def _canonical_sfx_play_ms(
+    h,
+    sfx_path: str,
+    default_play_ms: int,
+    video_dur_ms: int,
+) -> int:
+    raw_dur = h._ffprobe_duration_ms(Path(sfx_path))
+    try:
+        file_dur_ms = int(raw_dur or 0)
+    except (TypeError, ValueError):
+        file_dur_ms = 0
+    play_ms = default_play_ms or (file_dur_ms if file_dur_ms > 0 else 3000)
+    if file_dur_ms > 0 and play_ms > file_dur_ms:
+        play_ms = int(file_dur_ms)
+    play_ms = min(play_ms, STITCH_SLOT_DEFAULT_TAIL_SFX_MAX_MS)
+    return max(500, min(play_ms, video_dur_ms))
+
+
+def _canonical_sfx_offset_ms(
+    video_dur_ms: int,
+    play_ms: int,
+    placement: str,
+) -> int:
+    if placement == STITCH_SFX_PLACEMENT_HEAD:
+        return 0
+    return max(0, video_dur_ms - play_ms)
+
+
+def _find_canonical_sfx_cue(slot: dict, filename: str) -> dict | None:
+    target = filename.lower()
+    for cue in slot.get("sfx_cues") or []:
+        if not isinstance(cue, dict) or not cue.get("auto_default"):
+            continue
+        name = (cue.get("name") or Path(str(cue.get("source_path") or "")).name or "").lower()
+        if target in name or name in target:
+            return cue
+    return None
+
+
+def _reanchor_canonical_sfx_cue(
+    h,
+    slot: dict,
+    slot_key: str,
+    filename: str,
+    default_play_ms: int,
+    placement: str,
+) -> bool:
+    """Keep auto_default canonical cues aligned to current slot duration."""
+    if _canonical_sfx_dismissed(slot, slot_key, filename):
         return False
-    if _slot_has_whoosh_cue(slot):
-        return False
-    whoosh_path = _resolve_stitch_intro_whoosh_path(h)
-    if not whoosh_path:
+    sfx_path = _resolve_stitch_slot_tail_sfx_path(h, slot_key, filename)
+    if not sfx_path:
         return False
     sync_stitch_slot_video_dur_ms(h, slot, force=True)
     video_dur_ms = int(slot.get("video_dur_ms") or 0)
     if video_dur_ms <= 0:
         return False
-    file_dur_ms = h._ffprobe_duration_ms(Path(whoosh_path))
-    play_ms = STITCH_INTRO_DEFAULT_WHOOSH_PLAY_MS
-    if file_dur_ms and file_dur_ms < play_ms:
-        play_ms = int(file_dur_ms)
-    play_ms = max(500, min(play_ms, video_dur_ms))
-    offset_ms = max(0, video_dur_ms - play_ms)
+    play_ms = _canonical_sfx_play_ms(h, sfx_path, default_play_ms, video_dur_ms)
+    offset_ms = _canonical_sfx_offset_ms(video_dur_ms, play_ms, placement)
+    existing = _find_canonical_sfx_cue(slot, filename)
+    if existing:
+        changed = False
+        if existing.get("source_path") != sfx_path:
+            existing["source_path"] = sfx_path
+            changed = True
+        if existing.get("name") != filename:
+            existing["name"] = filename
+            changed = True
+        if int(existing.get("offset_ms") or 0) != offset_ms:
+            existing["offset_ms"] = offset_ms
+            changed = True
+        if int(existing.get("duration_ms") or 0) != play_ms:
+            existing["duration_ms"] = play_ms
+            changed = True
+        return changed
+    return _append_canonical_sfx_cue(
+        h, slot, slot_key, filename, default_play_ms, placement,
+    )
+
+
+def _append_canonical_sfx_cue(
+    h,
+    slot: dict,
+    slot_key: str,
+    filename: str,
+    default_play_ms: int,
+    placement: str,
+) -> bool:
+    if _canonical_sfx_dismissed(slot, slot_key, filename):
+        return False
+    if _slot_has_canonical_sfx_cue(slot, filename):
+        return False
+    sfx_path = _resolve_stitch_slot_tail_sfx_path(h, slot_key, filename)
+    if not sfx_path:
+        return False
+    sync_stitch_slot_video_dur_ms(h, slot, force=True)
+    video_dur_ms = int(slot.get("video_dur_ms") or 0)
+    if video_dur_ms <= 0:
+        return False
+    play_ms = _canonical_sfx_play_ms(h, sfx_path, default_play_ms, video_dur_ms)
+    offset_ms = _canonical_sfx_offset_ms(video_dur_ms, play_ms, placement)
     import secrets as _secrets  # noqa: PLC0415
 
     cue = {
         "id": f"cue_{_secrets.token_hex(4)}",
-        "source_path": whoosh_path,
-        "name": STITCH_INTRO_DEFAULT_WHOOSH_FILENAME,
+        "source_path": sfx_path,
+        "name": filename,
         "offset_ms": offset_ms,
         "duration_ms": play_ms,
         "volume": STITCH_SFX_CUE_DEFAULT_VOLUME,
@@ -330,8 +739,101 @@ def ensure_stitch_intro_default_whoosh_cue(h, slot: dict) -> bool:
     return True
 
 
+def ensure_stitch_slot_canonical_default_sfx_cues(h, slot_key: str, slot: dict) -> bool:
+    """Materialize or re-anchor canonical default SFX on slot.sfx_cues (head and/or tail)."""
+    specs = STITCH_SLOT_CANONICAL_DEFAULT_SFX.get(slot_key)
+    if not specs or not isinstance(slot, dict) or not (slot.get("video_path") or "").strip():
+        return False
+    changed = False
+    for filename, default_play_ms, placement in specs:
+        if _reanchor_canonical_sfx_cue(
+            h, slot, slot_key, filename, default_play_ms, placement,
+        ):
+            changed = True
+    return changed
+
+
+def ensure_stitch_slot_default_tail_sfx_cue(h, slot_key: str, slot: dict) -> bool:
+    """Back-compat — delegates to ensure_stitch_slot_canonical_default_sfx_cues."""
+    return ensure_stitch_slot_canonical_default_sfx_cues(h, slot_key, slot)
+
+
+def ensure_stitch_intro_default_whoosh_cue(h, slot: dict) -> bool:
+    """Ensure intro tail whoosh exists until the operator explicitly deletes it."""
+    return ensure_stitch_slot_default_tail_sfx_cue(h, "intro", slot)
+
+
 # Back-compat alias (tests + external imports).
 apply_stitch_intro_default_whoosh_cue = ensure_stitch_intro_default_whoosh_cue
+
+
+def _is_stale_pipeline_boundary_tail_cue(slot_key: str, cue: dict) -> bool:
+    """True when auto_default tail cue duplicates pipeline-owned boundary SFX."""
+    if not isinstance(cue, dict) or not cue.get("auto_default"):
+        return False
+    boundary_name = STITCH_PIPELINE_BOUNDARY_SLOT_TAIL_SFX.get(slot_key, "")
+    if not boundary_name:
+        return False
+    name = (cue.get("name") or Path(str(cue.get("source_path") or "")).name or "").lower()
+    return boundary_name.lower() in name
+
+
+def _is_stale_resolution_head_cue(slot_key: str, cue: dict) -> bool:
+    """True when auto_default head cue is the retired after_win stinger."""
+    if slot_key != "resolution" or not isinstance(cue, dict) or not cue.get("auto_default"):
+        return False
+    legacy = STITCH_LEGACY_RESOLUTION_HEAD_SFX_FILENAME.lower()
+    name = (cue.get("name") or Path(str(cue.get("source_path") or "")).name or "").lower()
+    return legacy in name or "after_win" in name
+
+
+def strip_stale_resolution_head_sfx_cues(slots) -> bool:
+    """Remove retired after_win auto_default head cues from resolution slot."""
+    if isinstance(slots, dict):
+        slot = slots.get("resolution")
+        if not isinstance(slot, dict):
+            return False
+        cues = slot.get("sfx_cues") or []
+        kept = [c for c in cues if not _is_stale_resolution_head_cue("resolution", c)]
+        if len(kept) != len(cues):
+            slot["sfx_cues"] = kept
+            return True
+        return False
+    if isinstance(slots, list) and len(slots) > 3:
+        slot = slots[3]
+        if not isinstance(slot, dict):
+            return False
+        cues = slot.get("sfx_cues") or []
+        kept = [c for c in cues if not _is_stale_resolution_head_cue("resolution", c)]
+        if len(kept) != len(cues):
+            slot["sfx_cues"] = kept
+            return True
+    return False
+
+
+def strip_stale_pipeline_boundary_slot_cues(slots) -> bool:
+    """Remove phase_a/b auto_default tail cues that block pipeline boundary SFX span."""
+    if isinstance(slots, dict):
+        slot_items = ((k, slots.get(k)) for k in STITCH_SLOT_ORDER if k in slots)
+    elif isinstance(slots, list):
+        slot_items = (
+            (STITCH_SLOT_ORDER[i], slots[i])
+            for i in range(min(len(slots), len(STITCH_SLOT_ORDER)))
+        )
+    else:
+        return False
+    changed = False
+    for slot_key, slot in slot_items:
+        if not isinstance(slot, dict):
+            continue
+        cues = slot.get("sfx_cues") or []
+        if not cues:
+            continue
+        kept = [c for c in cues if not _is_stale_pipeline_boundary_tail_cue(slot_key, c)]
+        if len(kept) != len(cues):
+            slot["sfx_cues"] = kept
+            changed = True
+    return changed
 
 
 def stitch_slot_export_media_preflight(
@@ -453,29 +955,56 @@ def stitch_slot_duration_warnings(h, slot_key: str, slot: dict) -> list[str]:
     return warnings
 
 
-def ensure_job_slot_defaults(h, slots) -> bool:
-    """Sync durations, ambient presets, intro whoosh, and phase_a canonical path."""
+def _slot_canonical_sfx_materialized(slot_key: str, slot: dict) -> bool:
+    """True when every canonical default SFX cue is already on the slot."""
+    specs = STITCH_SLOT_CANONICAL_DEFAULT_SFX.get(slot_key)
+    if not specs:
+        return True
+    for filename, _play_ms, _placement in specs:
+        if _find_canonical_sfx_cue(slot, filename) is None:
+            return False
+    return True
+
+
+def ensure_job_slot_defaults(h, slots, *, fast: bool = False) -> bool:
+    """Sync durations, ambient presets, canonical tail SFX, and phase_a path."""
     if not isinstance(slots, dict):
         return False
-    changed = False
-    for slot_key in STITCH_SLOT_ORDER:
+    changed = strip_stale_pipeline_boundary_slot_cues(slots)
+    if strip_stale_resolution_head_sfx_cues(slots):
+        changed = True
+    slot_keys = list(STITCH_SLOT_ORDER)
+    for milestone_key in STITCH_MILESTONE_SLOT_ORDER:
+        if milestone_key in slots and milestone_key not in slot_keys:
+            slot_keys.append(milestone_key)
+    for slot_key in slot_keys:
         slot = slots.get(slot_key)
         if not isinstance(slot, dict):
             continue
-        if slot_key == "phase_a" and sync_stitch_phase_a_from_phase_tab(h, slot):
+        if not fast and slot_key == "phase_a" and sync_stitch_phase_a_from_phase_tab(h, slot):
             changed = True
-        if sync_stitch_slot_video_dur_ms(h, slot):
+        if not fast and sync_stitch_slot_video_dur_ms(h, slot):
             changed = True
         if apply_stitch_slot_default_ambient_preset(slot_key, slot):
             changed = True
-        if slot_key == "intro" and ensure_stitch_intro_default_whoosh_cue(h, slot):
-            changed = True
+        if slot_key in STITCH_SLOT_CANONICAL_DEFAULT_SFX:
+            if fast and _slot_canonical_sfx_materialized(slot_key, slot):
+                pass
+            elif ensure_stitch_slot_canonical_default_sfx_cues(h, slot_key, slot):
+                changed = True
         normalize_slot_audio_mix_levels(slot)
     return changed
 
 
-def collect_stitch_job_slot_warnings(h, slots) -> dict[str, list[str]]:
+def collect_stitch_job_slot_warnings(
+    h,
+    slots,
+    *,
+    probe_video: bool = True,
+) -> dict[str, list[str]]:
     if not isinstance(slots, dict):
+        return {}
+    if not probe_video:
         return {}
     out: dict[str, list[str]] = {}
     for slot_key in STITCH_SLOT_ORDER:
@@ -503,6 +1032,24 @@ def _production_state_phase_a_stitched_filename(h) -> str:
     except Exception:
         return ""
     return (state.get("phase_a_stitched_file") or "").strip()
+
+
+def _canonical_module_final_bake_path(h) -> str | None:
+    """Kid-facing canonical MP4 on disk for the pinned event (footer preview source)."""
+    if not hasattr(h.app, "state"):
+        return None
+    try:
+        state = h.app.state.read_state() or {}
+    except Exception:
+        return None
+    canonical_name = (state.get("canonical_module_final_file") or "").strip()
+    if not canonical_name or not hasattr(h.app, "event_dir"):
+        return None
+    target = (Path(h.app.event_dir) / canonical_name).resolve()
+    event_root = Path(h.app.event_dir).resolve()
+    if str(target).startswith(str(event_root)) and target.is_file():
+        return str(target)
+    return None
 
 
 def sync_stitch_phase_a_from_phase_tab(h, slot: dict) -> bool:
@@ -562,6 +1109,174 @@ def stitch_event_job_name(event_id: str) -> str:
     return f"{event_id}_stitch"
 
 
+def stitch_milestone_job_name(milestone_id: str) -> str:
+    return f"milestone_{milestone_id}_stitch"
+
+
+def milestone_id_from_stitch_job_name(job_name: str) -> str | None:
+    """Extract milestone_id from ``milestone_{id}_stitch`` job names."""
+    prefix = "milestone_"
+    suffix = "_stitch"
+    if not (job_name.startswith(prefix) and job_name.endswith(suffix)):
+        return None
+    mid = job_name[len(prefix): -len(suffix)].strip()
+    return mid or None
+
+
+def is_milestone_stitch_job_name(job_name: str) -> bool:
+    return milestone_id_from_stitch_job_name(job_name) is not None
+
+
+_EVENT_STITCH_JOB_RE = re.compile(r"^Event_\d+_stitch$")
+
+
+def legacy_milestone_id_from_stitch_job_name(job_name: str) -> str | None:
+    """Retired pre-bbfd338 names like ``milestone1_arc1_stitch`` (no ``milestone_`` prefix)."""
+    if not job_name.endswith("_stitch"):
+        return None
+    if is_milestone_stitch_job_name(job_name):
+        return None
+    if _EVENT_STITCH_JOB_RE.match(job_name):
+        return None
+    body = job_name[: -len("_stitch")].strip()
+    if not body or body.startswith("Event_"):
+        return None
+    if body.startswith("milestone") and not body.startswith("milestone_"):
+        return body
+    return None
+
+
+def purge_legacy_milestone_stitch_jobs_from_global(h) -> list[str]:
+    """Remove retired milestone job names from global ``stitch_editor_state.json``."""
+    removed: list[str] = []
+
+    def purge(state: dict) -> None:
+        jobs = state.get("jobs")
+        if not isinstance(jobs, dict):
+            return
+        for key in list(jobs.keys()):
+            if legacy_milestone_id_from_stitch_job_name(key):
+                jobs.pop(key, None)
+                removed.append(key)
+
+    h.app.stitch_state.mutate_state(purge)
+    return removed
+
+
+def _event_stitch_state_store(h):
+    """Event-global stitch store — never the transient milestone swap on ``h.app.stitch_state``."""
+    return getattr(h.app, "_event_stitch_state", None) or h.app.stitch_state
+
+
+def purge_event_jobs_from_milestone_stitch_store(stitch_store) -> list[str]:
+    """Drop ``Event_N_stitch`` keys wrongly persisted in milestone-local ``stitch_state.json``."""
+    removed: list[str] = []
+
+    def purge(state: dict) -> None:
+        jobs = state.get("jobs")
+        if not isinstance(jobs, dict):
+            return
+        for key in list(jobs.keys()):
+            if _EVENT_STITCH_JOB_RE.match(str(key)):
+                jobs.pop(key, None)
+                removed.append(str(key))
+
+    stitch_store.mutate_state(purge)
+    return removed
+
+
+def stitch_state_store_for_job(h, job_name: str):
+    """Global stitch state for event jobs; milestone-local ``stitch_state.json`` otherwise."""
+    mid = milestone_id_from_stitch_job_name(job_name)
+    if not mid:
+        return _event_stitch_state_store(h)
+    from lib.milestone_store import milestone_stitch_state_path  # noqa: PLC0415
+    from lib.paths import runtime_production_root  # noqa: PLC0415
+    from production_server import StitchEditorState  # noqa: PLC0415
+
+    prod = runtime_production_root(h.app.event_dir)
+    path = milestone_stitch_state_path(prod / "Milestones" / mid)
+    return StitchEditorState(path)
+
+
+def _coerce_stitch_save_slots_to_dict(
+    slots,
+    job_name: str,
+    slot_key_hint: str = "",
+) -> dict:
+    """Save payloads may use preview-style slot lists — milestone jobs need dict keys."""
+    if isinstance(slots, dict):
+        return slots
+    if not isinstance(slots, list):
+        return {}
+    items = [s for s in slots if isinstance(s, dict)]
+    if not items:
+        return {}
+    if is_milestone_stitch_job_name(job_name):
+        if slot_key_hint in STITCH_MILESTONE_SLOT_ORDER:
+            return {slot_key_hint: items[0]}
+        if len(items) == 1:
+            return {"standalone": items[0]}
+        return {
+            STITCH_MILESTONE_SLOT_ORDER[i]: items[i]
+            for i in range(min(len(items), len(STITCH_MILESTONE_SLOT_ORDER)))
+        }
+    order = STITCH_SLOT_ORDER
+    return {
+        order[i]: items[i]
+        for i in range(min(len(items), len(order)))
+    }
+
+
+def normalize_milestone_stitch_job(job: dict, *, job_name: str = "") -> bool:
+    """Milestone jobs are 1-slot ``standalone`` only — strip event-slot pollution."""
+    if not isinstance(job, dict):
+        return False
+    changed = False
+    slots = job.get("slots")
+    if isinstance(slots, list):
+        coerced = _coerce_stitch_save_slots_to_dict(slots, job_name)
+        job["slots"] = coerced
+        slots = coerced
+        changed = True
+    if not isinstance(slots, dict):
+        job["slots"] = {}
+        slots = job["slots"]
+        changed = True
+    allowed = set(STITCH_MILESTONE_SLOT_ORDER)
+    for key in list(slots.keys()):
+        if key not in allowed:
+            del slots[key]
+            changed = True
+    if "standalone" not in slots:
+        slots["standalone"] = {}
+        changed = True
+    bake = (job.get("bake_path") or "").strip()
+    if bake and "/Event_" in bake.replace("\\", "/"):
+        job.pop("bake_path", None)
+        changed = True
+    return changed
+
+
+def purge_milestone_job_from_global_stitch_state(h, job_name: str) -> None:
+    """Remove milestone stitch jobs wrongly persisted in global ``stitch_editor_state.json``."""
+    if not is_milestone_stitch_job_name(job_name):
+        return
+
+    def purge(state: dict) -> None:
+        jobs = state.get("jobs")
+        if isinstance(jobs, dict):
+            jobs.pop(job_name, None)
+
+    h.app.stitch_state.mutate_state(purge)
+
+
+def _valid_stitch_slot(slot_key: str, *, job_name: str | None = None) -> bool:
+    if job_name and job_name.startswith("milestone_"):
+        return slot_key in STITCH_MILESTONE_SLOT_ORDER
+    return slot_key in STITCH_SLOT_ORDER
+
+
 def _normalize_job_slots(slots) -> dict:
     if isinstance(slots, dict):
         return dict(slots)
@@ -608,18 +1323,26 @@ def _resolve_stitch_ambient_bed_path(h, preset_or_path: str) -> str:
 def _hydrate_slot_ambient_paths(h, slots: list) -> None:
     """In-place: ambient_bed preset_id → ambient_bed_path for preview/bake mix."""
     for slot in slots:
-        if not isinstance(slot, dict):
-            continue
-        preset = (slot.get("ambient_bed") or "").strip()
-        if preset:
+        if isinstance(slot, dict):
+            ensure_slot_ambient_bed_path_hydrated(h, slot)
+
+
+def ensure_slot_ambient_bed_path_hydrated(h, slot: dict) -> None:
+    """Resolve ambient_bed preset → ambient_bed_path before any ffmpeg mix (all call paths)."""
+    if not isinstance(slot, dict):
+        return
+    preset = (slot.get("ambient_bed") or "").strip()
+    path = (slot.get("ambient_bed_path") or "").strip()
+    if preset:
+        if not path or not os.path.isfile(path):
             resolved = _resolve_stitch_ambient_bed_path(h, preset)
             if resolved:
                 slot["ambient_bed_path"] = resolved
             else:
                 slot.pop("ambient_bed_path", None)
-        else:
-            slot.pop("ambient_bed_path", None)
-        normalize_slot_audio_mix_levels(slot)
+    else:
+        slot.pop("ambient_bed_path", None)
+    normalize_slot_audio_mix_levels(slot)
 
 
 def _mix_stitch_waveform_audio(
@@ -635,7 +1358,7 @@ def _mix_stitch_waveform_audio(
     import hashlib as _hl  # noqa: PLC0415
     from credentials_lib.ffmpeg_stitch import stitch_audio_cache_is_valid  # noqa: PLC0415
 
-    normalize_slot_audio_mix_levels(slot)
+    ensure_slot_ambient_bed_path_hydrated(h, slot)
     ambient_path = (slot.get("ambient_bed_path") or "").strip()
     ambient_volume = float(slot.get("ambient_volume", STITCH_AMBIENT_BED_VOLUME))
     sfx_cues = [c for c in (slot.get("sfx_cues") or []) if isinstance(c, dict)]
@@ -658,13 +1381,16 @@ def _mix_stitch_waveform_audio(
         ambient_path,
         f"{ambient_volume:.4f}",
     ]
-    sig_parts += [
-        f"{c.get('id', i)}:{c.get('offset_ms', 0)}:{c.get('duration_ms', '')}:"
-        f"{c.get('volume', STITCH_SFX_CUE_DEFAULT_VOLUME)}:"
-        f"{c.get('source_path', '')}"
-        for i, c in enumerate(sfx_cues)
-    ]
-    mix_hash = _hl.md5("|".join(sig_parts).encode(), usedforsecurity=False).hexdigest()[:12]
+    from server_handlers.stitch_media_sig import (  # noqa: PLC0415
+        stitch_sfx_cue_sig_parts,
+        waveform_mix_hash_from_parts,
+        waveform_mix_hash_parts,
+    )
+
+    sig_parts = waveform_mix_hash_parts(
+        base_sig, video_dur_ms, ambient_path, ambient_volume, sfx_cues,
+    )
+    mix_hash = waveform_mix_hash_from_parts(sig_parts)
     out_path = cache_dir / f"stitch_audio_{mix_hash}.mp3"
 
     valid_cue_labels: list[str] = []
@@ -696,11 +1422,14 @@ def _mix_stitch_waveform_audio(
         input_args += ["-i", ambient_path]
         aidx = next_input_idx
         next_input_idx += 1
+        bed_dur_ms = h._ffprobe_duration_ms(Path(ambient_path))
+        bed_dur_s = bed_dur_ms / 1000.0 if bed_dur_ms else 0.0
+        from server_handlers.stitch_ambient_loop import build_ambient_bed_filter_lane_for_file  # noqa: PLC0415
+
         filter_lanes.append(
-            f"[{aidx}:a]aloop=-1:size=2147483647,"
-            f"atrim=duration={slot_dur_s:.3f},"
-            f"aformat=channel_layouts=mono,"
-            f"volume={ambient_volume:.3f}[bed]"
+            build_ambient_bed_filter_lane_for_file(
+                aidx, ambient_path, bed_dur_s, slot_dur_s, ambient_volume, out_label="bed",
+            )
         )
 
     for idx, cue in enumerate(sfx_cues):
@@ -745,7 +1474,8 @@ def _mix_stitch_waveform_audio(
 
     n_mix = len(mix_inputs)
     filter_lanes.append(
-        f"{''.join(mix_inputs)}amix=inputs={n_mix}:duration=first:normalize=0[aout]"
+        f"{''.join(mix_inputs)}amix=inputs={n_mix}:duration=longest:normalize=0,"
+        f"apad=whole_dur={slot_dur_s:.3f},atrim=duration={slot_dur_s:.3f}[aout]"
     )
     filter_complex = ";".join(filter_lanes)
     mix_cmd = [
@@ -756,8 +1486,30 @@ def _mix_stitch_waveform_audio(
         "-ac", "1", "-ar", "44100", "-b:a", "128k",
         str(out_path.resolve()),
     ]
+    from credentials_lib.stitch_cache_build import (  # noqa: PLC0415
+        StitchCacheBuildBusy,
+        atomic_ffmpeg_output,
+        stitch_cache_build_lock,
+    )
+
     try:
-        subprocess.run(mix_cmd, check=True, capture_output=True, timeout=180)
+        with stitch_cache_build_lock(cache_dir):
+            if out_path.is_file() and stitch_audio_cache_is_valid(
+                out_path, expected_s, min_ratio=STITCH_AUDIO_DUR_MIN_RATIO,
+            ):
+                if valid_cue_labels:
+                    slot["_sfx_mixed"] = True
+                return out_path
+            atomic_ffmpeg_output(
+                mix_cmd,
+                out_path,
+                expected_duration_s=expected_s,
+                validator=lambda p, exp: stitch_audio_cache_is_valid(
+                    p, exp, min_ratio=STITCH_AUDIO_DUR_MIN_RATIO,
+                ),
+            )
+    except StitchCacheBuildBusy as exc:
+        raise RuntimeError(str(exc)) from exc
     except subprocess.CalledProcessError as exc:
         stderr = (exc.stderr or b"")[:400].decode("utf-8", errors="replace")
         raise RuntimeError(f"waveform audio mix failed: {stderr}") from exc
@@ -772,6 +1524,8 @@ def _mix_stitch_waveform_audio(
             f"waveform mix truncated: expected ~{expected_s:.1f}s "
             f"({STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1})",
         )
+    if valid_cue_labels:
+        slot["_sfx_mixed"] = True
     return out_path
 
 
@@ -828,6 +1582,151 @@ def stitch_migrate_legacy_to_canonical(state: dict, event_id: str) -> bool:
     return changed
 
 
+def _pick_newest_playable_mp4(candidates: list[Path]) -> Path | None:
+    valid = [
+        p for p in candidates
+        if p.is_file() and p.stat().st_size > 0
+    ]
+    if not valid:
+        return None
+    return max(valid, key=lambda p: p.stat().st_mtime)
+
+
+def _phase_production_state_video_rel(h, event_id: str, slot_key: str) -> str | None:
+    """Phase A/B stitch exports live in production_state, not always under assembled/."""
+    if slot_key not in ("phase_a", "phase_b"):
+        return None
+    try:
+        state = h.app.state.read_state()
+    except Exception:
+        return None
+    if slot_key == "phase_a":
+        name = (state.get("phase_a_stitched_file") or "").strip()
+    else:
+        pb = state.get("phase_b") or {}
+        name = (
+            (state.get("phase_b_lipsync_file") or pb.get("lipsync_file") or "")
+            .strip()
+        )
+    if not name or "/" in name or "\\" in name or ".." in name:
+        return None
+    rel = f"Production/{event_id}/{name}"
+    try:
+        h._stitch_resolve_path(rel)
+    except ValueError:
+        return None
+    return rel
+
+
+def _assembled_disk_video_rel(h, event_id: str, slot_key: str) -> str | None:
+    root = h._stitch_project_root()
+    event_dir = root / "Production" / event_id
+    patterns = STITCH_ASSEMBLED_SLOT_GLOBS.get(slot_key, ())
+    search_dirs = [event_dir / "assembled"]
+    if slot_key in ("phase_a", "phase_b"):
+        search_dirs.append(event_dir)
+    candidates: list[Path] = []
+    for directory in search_dirs:
+        if not directory.is_dir():
+            continue
+        for pattern in patterns:
+            candidates.extend(directory.glob(pattern))
+    picked = _pick_newest_playable_mp4(candidates)
+    if picked is None:
+        return None
+    try:
+        return str(picked.resolve().relative_to(root))
+    except ValueError:
+        return None
+
+
+def hydrate_stitch_canonical_slots_from_disk(h, state: dict, event_id: str) -> bool:
+    """Fill empty canonical stitch slots from newest on-disk exports (all events).
+
+    Runs after legacy migration so a partial canonical job (e.g. resolution-only)
+    still shows intro / phase_a / phase_b when their MP4s exist on disk.
+    """
+    stitch_migrate_legacy_to_canonical(state, event_id)
+    job_name = stitch_event_job_name(event_id)
+    jobs = state.setdefault("jobs", {})
+    job = jobs.setdefault(
+        job_name,
+        {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "slots": {},
+            "transitions": [],
+        },
+    )
+    if not isinstance(job.get("slots"), dict):
+        job["slots"] = {}
+
+    changed = False
+    for slot_key in STITCH_SLOT_ORDER:
+        slot = job["slots"].setdefault(slot_key, {})
+        if _slot_has_video(slot):
+            continue
+        rel = _phase_production_state_video_rel(h, event_id, slot_key)
+        if not rel:
+            rel = _assembled_disk_video_rel(h, event_id, slot_key)
+        if not rel:
+            continue
+        slot["video_path"] = rel
+        slot["source"] = STITCH_SLOT_ASSEMBLED_DISK_HYDRATE_V1
+        sync_stitch_slot_video_dur_ms(h, slot, force=True)
+        apply_stitch_slot_default_ambient_preset(slot_key, slot)
+        changed = True
+
+    if changed:
+        normalize_job_slots_audio(job["slots"])
+        job["updated_at"] = datetime.now(timezone.utc).isoformat()
+    return changed
+
+
+def hydrate_milestone_standalone_from_disk(h, state: dict, job_name: str) -> bool:
+    """Fill empty milestone ``standalone`` slot from newest assembled export on disk."""
+    if not is_milestone_stitch_job_name(job_name):
+        return False
+    mid = milestone_id_from_stitch_job_name(job_name)
+    if not mid:
+        return False
+    jobs = state.setdefault("jobs", {})
+    job = jobs.setdefault(
+        job_name,
+        {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "slots": {"standalone": {}},
+            "transitions": [],
+        },
+    )
+    if not isinstance(job.get("slots"), dict):
+        job["slots"] = {"standalone": {}}
+    slot = job["slots"].setdefault("standalone", {})
+    if _slot_has_video(slot):
+        return False
+    root = h._stitch_project_root()
+    assembled = root / "Production" / "Milestones" / mid / "assembled"
+    candidates: list[Path] = []
+    if assembled.is_dir():
+        for pattern in STITCH_ASSEMBLED_SLOT_GLOBS.get("standalone", ()):
+            candidates.extend(assembled.glob(pattern))
+    picked = _pick_newest_playable_mp4(candidates)
+    if picked is None:
+        return False
+    try:
+        rel = str(picked.resolve().relative_to(root))
+    except ValueError:
+        return False
+    slot["video_path"] = rel
+    slot["source"] = STITCH_SLOT_ASSEMBLED_DISK_HYDRATE_V1
+    sync_stitch_slot_video_dur_ms(h, slot, force=True)
+    apply_stitch_slot_default_ambient_preset("standalone", slot)
+    normalize_job_slots_audio(job["slots"])
+    job["updated_at"] = datetime.now(timezone.utc).isoformat()
+    return True
+
+
 def enrich_beat_boundaries(boundaries: list | None) -> list | None:
     """Ensure each boundary has duration_ms (UI roadmap + waveform math)."""
     if not boundaries:
@@ -846,6 +1745,35 @@ def enrich_beat_boundaries(boundaries: list | None) -> list | None:
     return out
 
 
+def _stitch_video_path_epoch(h, path: str) -> float:
+    """Monotonic sort key for stitch slot video_path (higher = newer export)."""
+    raw = (path or "").strip()
+    if not raw:
+        return 0.0
+    m = re.search(r"(\d{8})T(\d{6})Z", raw)
+    if m:
+        try:
+            dt = datetime.strptime(f"{m.group(1)}{m.group(2)}", "%Y%m%d%H%M%S").replace(
+                tzinfo=timezone.utc,
+            )
+            return dt.timestamp()
+        except ValueError:
+            pass
+    try:
+        return Path(h._stitch_resolve_path(raw)).stat().st_mtime
+    except (ValueError, OSError):
+        return 0.0
+
+
+def _stitch_should_skip_video_replace(h, old_path: str, new_path: str) -> bool:
+    """Keep stored slot video when an incoming export is same age or older."""
+    old_path = (old_path or "").strip()
+    new_path = (new_path or "").strip()
+    if not old_path or not new_path or old_path == new_path:
+        return False
+    return _stitch_video_path_epoch(h, new_path) <= _stitch_video_path_epoch(h, old_path)
+
+
 def stitch_upsert_event_slot(
     h,
     event_id: str,
@@ -853,6 +1781,8 @@ def stitch_upsert_event_slot(
     slot_patch: dict,
     *,
     beat_boundaries: list | None = None,
+    operator_export: bool = False,
+    job_name: str | None = None,
 ) -> tuple[str, int, list[str]]:
     """Upsert one slot into the canonical per-event stitch job.
 
@@ -860,7 +1790,8 @@ def stitch_upsert_event_slot(
     Phase A/B export, scene assemble) must pass video_path; full file is probed,
     playability-checked, and video_dur_ms is written before persist.
     """
-    if slot_key not in STITCH_SLOT_ORDER:
+    resolved_job = job_name or stitch_event_job_name(event_id)
+    if not _valid_stitch_slot(slot_key, job_name=resolved_job):
         raise ValueError(f"invalid stitch slot key: {slot_key!r}")
 
     new_video_path = (slot_patch.get("video_path") or "").strip()
@@ -869,6 +1800,22 @@ def stitch_upsert_event_slot(
             f"{slot_key}: video_path required for stitch export "
             f"({STITCH_SLOT_EXPORT_FULL_MEDIA_V1})",
         )
+
+    job_name = resolved_job
+    stitch_store = stitch_state_store_for_job(h, job_name)
+    peek_state = stitch_store.read_state()
+    peek_job = (peek_state.get("jobs") or {}).get(job_name) or {}
+    peek_slots = peek_job.get("slots") if isinstance(peek_job.get("slots"), dict) else {}
+    peek_slot = peek_slots.get(slot_key) if isinstance(peek_slots, dict) else {}
+    old_video_path = (peek_slot.get("video_path") or "").strip() if isinstance(peek_slot, dict) else ""
+    if (
+        not operator_export
+        and _stitch_should_skip_video_replace(h, old_video_path, new_video_path)
+    ):
+        kept_ms = int(peek_slot.get("video_dur_ms") or 0) if isinstance(peek_slot, dict) else 0
+        return job_name, kept_ms, [
+            f"{slot_key}: kept existing export (incoming video not newer than stored)",
+        ]
 
     probed_ms, export_warnings = stitch_slot_export_media_preflight(
         h,
@@ -880,11 +1827,18 @@ def stitch_upsert_event_slot(
     patched["video_dur_ms"] = probed_ms
 
     now_iso = datetime.now(timezone.utc).isoformat()
-    job_name = stitch_event_job_name(event_id)
 
     def upsert(state: dict) -> None:
-        stitch_migrate_legacy_to_canonical(state, event_id)
+        if not is_milestone_stitch_job_name(job_name):
+            stitch_migrate_legacy_to_canonical(state, event_id)
         jobs = state.setdefault("jobs", {})
+        if job_name not in jobs:
+            jobs[job_name] = {
+                "created_at": now_iso,
+                "updated_at": now_iso,
+                "slots": {},
+                "transitions": [],
+            }
         job = jobs[job_name]
         if not isinstance(job.get("slots"), dict):
             job["slots"] = {}
@@ -892,23 +1846,66 @@ def stitch_upsert_event_slot(
         old_video_path = (slot.get("video_path") or "").strip()
         slot.update(patched)
         new_path = (slot.get("video_path") or "").strip()
+        from server_handlers.stitch_media_artifacts import (  # noqa: PLC0415
+            clear_stitch_slot_artifacts_on_video_change,
+        )
+
+        clear_stitch_slot_artifacts_on_video_change(slot, old_video_path, new_path)
         video_path_changed = bool(new_path and new_path != old_video_path)
         sync_stitch_slot_video_dur_ms(h, slot, force=True)
         stored_ms = int(slot.get("video_dur_ms") or 0)
         if abs(stored_ms - probed_ms) > STITCH_VIDEO_DUR_DRIFT_TOLERANCE_MS:
             slot["video_dur_ms"] = probed_ms
         apply_stitch_slot_default_ambient_preset(slot_key, slot)
-        if video_path_changed and slot_key == "intro":
-            slot.pop("intro_whoosh_default_dismissed", None)
-        if slot_key == "intro":
-            ensure_stitch_intro_default_whoosh_cue(h, slot)
+        if video_path_changed:
+            _clear_canonical_sfx_dismiss_flags(slot, slot_key)
+        if slot_key in STITCH_SLOT_CANONICAL_DEFAULT_SFX:
+            ensure_stitch_slot_canonical_default_sfx_cues(h, slot_key, slot)
         normalize_slot_audio_mix_levels(slot)
         if beat_boundaries is not None:
             slot["beat_boundaries"] = enrich_beat_boundaries(beat_boundaries)
         job["updated_at"] = now_iso
 
-    h.app.stitch_state.mutate_state(upsert)
-    return job_name, probed_ms, export_warnings
+    stitch_store.mutate_state(upsert)
+
+    def heal_slot_artifacts(state: dict) -> None:
+        job = (state.get("jobs") or {}).get(job_name)
+        if not isinstance(job, dict):
+            return
+        slots = job.get("slots")
+        if not isinstance(slots, dict):
+            return
+        slot = slots.get(slot_key)
+        if not isinstance(slot, dict):
+            return
+        from server_handlers.stitch_media_artifacts import (  # noqa: PLC0415
+            validate_stitch_slot_media_artifacts,
+        )
+
+        try:
+            validate_stitch_slot_media_artifacts(h, slot)
+        except AttributeError:
+            pass
+
+    stitch_store.mutate_state(heal_slot_artifacts)
+    playback_artifacts = ensure_stitch_slot_playback_artifacts_on_export(
+        h,
+        job_name,
+        slot_key,
+        stitch_store=stitch_store,
+    )
+    if playback_artifacts.get("ok"):
+        export_warnings = list(export_warnings or [])
+        kind = playback_artifacts.get("kind")
+        if kind == "mux_preview":
+            export_warnings.append(
+                f"{slot_key}: mux preview baked ({playback_artifacts.get('mux_preview_hash')})",
+            )
+        elif kind == "ambient_mix":
+            export_warnings.append(
+                f"{slot_key}: ambient mix baked ({playback_artifacts.get('ambient_mix_hash')})",
+            )
+    return job_name, probed_ms, export_warnings, playback_artifacts
 
 
 def handle_stitch_loudnorm(h, body: dict)-> None:
@@ -1164,65 +2161,672 @@ def handle_stitch_list_jobs(h)-> None:
     return h._send_json(200, {"jobs": jobs})
 
 
+def _job_canonical_slots_have_video(state: dict, event_id: str) -> bool:
+    """True when persisted canonical job already has video on every slot."""
+    job_name = stitch_event_job_name(event_id)
+    job = (state.get("jobs") or {}).get(job_name)
+    if not isinstance(job, dict):
+        return False
+    slots = job.get("slots")
+    if not isinstance(slots, dict):
+        return False
+    for slot_key in STITCH_SLOT_ORDER:
+        slot = slots.get(slot_key)
+        if not isinstance(slot, dict) or not (slot.get("video_path") or "").strip():
+            return False
+    return True
+
+
 def handle_stitch_load_job(h, name: str)-> None:
 
     """GET /api/stitch_editor/job/<name> — load full job dict."""
-    if name.endswith("_stitch"):
-        event_id = name[: -len("_stitch")]
-        if event_id:
+    legacy_mid = legacy_milestone_id_from_stitch_job_name(name)
+    if legacy_mid:
+        purge_legacy_milestone_stitch_jobs_from_global(h)
+        canonical = stitch_milestone_job_name(legacy_mid)
+        return h._send_error_v59(
+            409,
+            error_code="LEGACY_STITCH_JOB_NAME",
+            error_message=(
+                f"Stitch job {name!r} uses a retired milestone name; "
+                f"use {canonical!r} (milestone-local stitch_state.json)."
+            ),
+            retry_safe=False,
+            hint=f"/api/stitch_editor/job/{canonical}",
+        )
 
-            def migrate(state: dict) -> None:
-                stitch_migrate_legacy_to_canonical(state, event_id)
+    stitch_store = stitch_state_store_for_job(h, name)
+    milestone_job = is_milestone_stitch_job_name(name)
+    if milestone_job:
+        purge_milestone_job_from_global_stitch_state(h, name)
+        purge_legacy_milestone_stitch_jobs_from_global(h)
+        purge_event_jobs_from_milestone_stitch_store(stitch_store)
 
-            h.app.stitch_state.mutate_state(migrate)
+    # STITCH_SINGLE_OWNER_V1 — pipeline assembled/ MP4s enter stitch_state via
+    # stitch_upsert_event_slot (Send to Stitcher) or stitch_save_job — never load_job.
 
     import copy  # noqa: PLC0415
 
-    state = h.app.stitch_state.read_state()
+    from server_handlers.stitch_media_artifacts import (  # noqa: PLC0415
+        attach_stitch_slot_derived_media_urls,
+        stitch_slot_needs_playback_artifact_bake,
+        validate_stitch_slot_media_artifacts,
+    )
+    from server_handlers.stitch_media_sig import STITCH_LOAD_JOB_FAST_V1  # noqa: PLC0415
+
+    state = stitch_store.read_state()
     job = state.get("jobs", {}).get(name)
-    if job is None:
+    job_persisted = isinstance(job, dict)
+    if job is None and milestone_job:
+        job = {
+            "slots": {"standalone": {}},
+            "transitions": [],
+        }
+    elif job is None:
         return h._send_error_v59(
                    404,
                    error_code="GENERIC_ERROR",
                    error_message=f"Job not found: {name!r}",
                    retry_safe=False,
                )
+    milestone_normalized = False
+    if milestone_job and isinstance(job, dict):
+        milestone_normalized = normalize_milestone_stitch_job(job, job_name=name)
+        if milestone_normalized and job_persisted:
+
+            def persist_milestone_shape(state: dict) -> None:
+                j = state.setdefault("jobs", {}).setdefault(name, {})
+                j.update(job)
+
+            stitch_store.mutate_state(persist_milestone_shape)
+    defaults_changed = False
+    artifact_warnings: list[str] = []
+    artifacts_healed = False
+    playback_bake_report: dict[str, dict] = {}
+    live_slots = (job.get("slots") if isinstance(job, dict) else None)
+    if isinstance(live_slots, dict):
+        normalize_job_slots_audio(live_slots)
+        defaults_changed = ensure_job_slot_defaults(h, live_slots, fast=True)
+        timeline_atomic_changed = False
+        for slot in live_slots.values():
+            if isinstance(slot, dict) and ensure_stitch_slot_timeline_dur_ms(h, slot):
+                timeline_atomic_changed = True
+        if timeline_atomic_changed:
+            defaults_changed = True
+        for slot in live_slots.values():
+            if isinstance(slot, dict) and slot.get("beat_boundaries"):
+                slot["beat_boundaries"] = enrich_beat_boundaries(
+                    slot["beat_boundaries"],
+                )
+
+        # mix_sig / ambient_mix_sig are computed with hydrated ambient_bed_path (export
+        # and load_job bake). Validate before hydrate falsely clears mux/ambient artifacts.
+        for slot in live_slots.values():
+            if not isinstance(slot, dict):
+                continue
+            before_amb_path = (slot.get("ambient_bed_path") or "").strip()
+            ensure_slot_ambient_bed_path_hydrated(h, slot)
+            if (slot.get("ambient_bed_path") or "").strip() != before_amb_path:
+                defaults_changed = True
+
+        mux_cleared_on_load = False
+        for slot_key, slot in live_slots.items():
+            if not isinstance(slot, dict):
+                continue
+            before_mux = (slot.get("mux_preview_hash") or "").strip()
+            artifact_warnings.extend(
+                validate_stitch_slot_media_artifacts(h, slot, fast=True),
+            )
+            after_mux = (slot.get("mux_preview_hash") or "").strip()
+            if before_mux and before_mux != after_mux:
+                artifacts_healed = True
+                mux_cleared_on_load = True
+            attach_stitch_slot_derived_media_urls(h, slot)
+        if mux_cleared_on_load and job_persisted:
+
+            def persist_mux_clears(state: dict) -> None:
+                _persist_stitch_job_healed_slots(state, name, live_slots)
+
+            stitch_store.mutate_state(persist_mux_clears)
+
+        playback_bake_report = {}
+        if job_persisted:
+            for slot_key, slot in list(live_slots.items()):
+                if not isinstance(slot, dict):
+                    continue
+                if not stitch_slot_needs_playback_artifact_bake(h, slot):
+                    continue
+                rep = ensure_stitch_slot_playback_artifacts(
+                    h,
+                    name,
+                    slot_key,
+                    stitch_store=stitch_store,
+                    trigger="load_job",
+                )
+                if rep.get("ok"):
+                    playback_bake_report[slot_key] = rep
+                    artifacts_healed = True
+            if playback_bake_report:
+                fresh_state = stitch_store.read_state() or {}
+                fresh_job = (fresh_state.get("jobs") or {}).get(name)
+                if isinstance(fresh_job, dict):
+                    job = fresh_job
+                    live_slots = job.get("slots") or {}
+                    if isinstance(live_slots, dict):
+                        for slot in live_slots.values():
+                            if isinstance(slot, dict):
+                                attach_stitch_slot_derived_media_urls(h, slot)
+
     response_job = copy.deepcopy(job) if isinstance(job, dict) else job
+    if isinstance(response_job, dict) and isinstance(live_slots, dict):
+        response_slots = response_job.setdefault("slots", {})
+        for slot_key, slot_val in live_slots.items():
+            response_slots[slot_key] = copy.deepcopy(slot_val)
+    canonical_bake_path = None if milestone_job else _canonical_module_final_bake_path(h)
+    hydrated_bake_path: str | None = None
+    bake_path_hydrated = False
+    if isinstance(response_job, dict) and canonical_bake_path and not (
+        response_job.get("bake_path") or ""
+    ).strip():
+        response_job["bake_path"] = canonical_bake_path
+        hydrated_bake_path = canonical_bake_path
+        bake_path_hydrated = True
+    if milestone_job and isinstance(response_job, dict):
+        mid = milestone_id_from_stitch_job_name(name) or ""
+        if mid and not (response_job.get("bake_path") or "").strip():
+            canonical_milestone = _canonical_milestone_standalone_final_path(h, mid)
+            if canonical_milestone:
+                response_job["bake_path"] = canonical_milestone
+                hydrated_bake_path = canonical_milestone
+                bake_path_hydrated = True
+    if job_persisted and isinstance(live_slots, dict) and (
+        defaults_changed
+        or artifacts_healed
+        or _job_canonical_audio_needs_persist(live_slots, live_slots)
+    ):
+
+        def persist_job_slots(state: dict) -> None:
+            _persist_stitch_job_canonical_audio(state, name, live_slots)
+            if artifacts_healed:
+                _persist_stitch_job_healed_slots(state, name, live_slots)
+
+        stitch_store.mutate_state(persist_job_slots)
+    if bake_path_hydrated and job_persisted and hydrated_bake_path:
+
+        def persist_bake_path(state: dict) -> None:
+            j = state.setdefault("jobs", {}).setdefault(name, {})
+            j["bake_path"] = hydrated_bake_path
+
+        stitch_store.mutate_state(persist_bake_path)
+    module_final_cache_key: str | None = None
+    payload = {
+        "job": response_job,
+        "name": name,
+        "job_persisted": job_persisted,
+        "load_job_code": STITCH_LOAD_JOB_FAST_V1,
+        "single_owner_code": STITCH_SINGLE_OWNER_V1,
+    }
+    if playback_bake_report:
+        payload["playback_artifacts_baked"] = playback_bake_report
+        payload["load_job_playback_bake_code"] = STITCH_LOAD_JOB_PLAYBACK_BAKE_V1
+    if milestone_job and not job_persisted:
+        payload["ephemeral_milestone_job"] = True
+    from server_handlers.stitch_scope import STITCH_SCOPE_PARTITION_V1  # noqa: PLC0415
+
+    payload["partition_code"] = STITCH_SCOPE_PARTITION_V1
     if isinstance(response_job, dict):
         slots = response_job.get("slots")
         if isinstance(slots, dict):
-            normalize_job_slots_audio(slots)
-            defaults_changed = ensure_job_slot_defaults(h, slots)
-            for slot in slots.values():
-                if isinstance(slot, dict) and slot.get("beat_boundaries"):
-                    slot["beat_boundaries"] = enrich_beat_boundaries(
-                        slot["beat_boundaries"],
-                    )
-            live_slots = (job.get("slots") if isinstance(job, dict) else None)
-            if defaults_changed or _job_canonical_audio_needs_persist(live_slots, slots):
-
-                def persist_defaults(state: dict) -> None:
-                    _persist_stitch_job_canonical_audio(state, name, slots)
-
-                h.app.stitch_state.mutate_state(persist_defaults)
-    payload = {"job": response_job, "name": name}
-    if isinstance(response_job, dict):
-        slots = response_job.get("slots")
-        if isinstance(slots, dict):
-            warnings = collect_stitch_job_slot_warnings(h, slots)
+            warnings = collect_stitch_job_slot_warnings(h, slots, probe_video=False)
+            if artifact_warnings:
+                warnings = warnings or {}
+                for msg in artifact_warnings:
+                    warnings.setdefault("_artifacts", []).append(msg)
             if warnings:
                 payload["slot_warnings"] = warnings
+            if defaults_changed:
+                payload["defaults_applied"] = True
+                payload["code"] = STITCH_CANONICAL_DEFAULTS_PERSIST_V1
+    from stitch_bake_job_store import STITCH_BAKE_JOB_TRUTH_V1, active_bake_job_summary  # noqa: PLC0415
+
+    lock_path = h._stitch_cache_dir() / "stitch_bake.lock"
+    bake_summary = active_bake_job_summary(h.app.event_dir, name, lock_path=lock_path)
+    if bake_summary:
+        payload["bake_job"] = bake_summary
+        payload["bake_job_code"] = STITCH_BAKE_JOB_TRUTH_V1
+    payload["module_final_url"] = f"/api/stitch_editor/module_final"
+    if milestone_job:
+        mid = milestone_id_from_stitch_job_name(name) or ""
+        if mid:
+            from lib.milestone_store import load_milestone_state  # noqa: PLC0415
+
+            mdir = _milestone_dir_for_stitch_job(h, name)
+            if mdir and mdir.is_dir():
+                mstate = load_milestone_state(mdir)
+                cache_key = (
+                    mstate.get("canonical_standalone_final_sha256")
+                    or mstate.get("canonical_standalone_final_mtime")
+                )
+                if cache_key:
+                    module_final_cache_key = str(cache_key)
+    else:
+        prod_state_path = Path(h.app.event_dir) / "production_state.json"
+        if prod_state_path.is_file():
+            try:
+                prod_state = json.loads(prod_state_path.read_text(encoding="utf-8"))
+                cache_key = (
+                    prod_state.get("canonical_module_final_sha256")
+                    or prod_state.get("canonical_module_final_mtime")
+                )
+                if cache_key:
+                    module_final_cache_key = str(cache_key)
+            except (OSError, json.JSONDecodeError):
+                pass
+    if module_final_cache_key:
+        payload["module_final_cache_key"] = module_final_cache_key
+        if isinstance(response_job, dict):
+            response_job["module_final_cache_key"] = module_final_cache_key
     return h._send_json(200, payload)
+
+
+def handle_stitch_serve_module_final(h) -> None:
+    """GET /api/stitch_editor/module_final — kid-facing canonical module MP4 (byte-range)."""
+    import json as _json  # noqa: PLC0415
+
+    milestone_id = (getattr(h.app, "active_milestone_id", None) or "").strip()
+    if getattr(h.app, "scope_type", "event") == "milestone" and milestone_id:
+        target_path = _canonical_milestone_standalone_final_path(h, milestone_id)
+        if target_path:
+            return h._serve_mp4_with_range(Path(target_path), cache_immutable=False)
+        stitch_job = stitch_milestone_job_name(milestone_id)
+        store = stitch_state_store_for_job(h, stitch_job)
+        job = (store.read_state().get("jobs") or {}).get(stitch_job) or {}
+        bake_path = (job.get("bake_path") or "").strip()
+        if bake_path:
+            try:
+                target = h._stitch_resolve_path(bake_path)
+                if target.is_file():
+                    return h._serve_mp4_with_range(target, cache_immutable=False)
+            except (ValueError, OSError):
+                pass
+        return h._send_error_v59(
+            404,
+            error_code="CANONICAL_MODULE_FINAL_MISSING",
+            error_message="No milestone standalone final pinned yet — bake first",
+            retry_safe=False,
+        )
+
+    state_path = Path(h.app.event_dir) / "production_state.json"
+    if not state_path.is_file():
+        return h._send_error_v59(
+            404,
+            error_code="CANONICAL_MODULE_FINAL_MISSING",
+            error_message="production_state.json not found",
+            retry_safe=False,
+        )
+    try:
+        state = _json.loads(state_path.read_text(encoding="utf-8"))
+    except _json.JSONDecodeError:
+        return h._send_error_v59(
+            500,
+            error_code="GENERIC_ERROR",
+            error_message="invalid production_state.json",
+            retry_safe=False,
+        )
+    canonical_name = (state.get("canonical_module_final_file") or "").strip()
+    if not canonical_name:
+        return h._send_error_v59(
+            404,
+            error_code="CANONICAL_MODULE_FINAL_MISSING",
+            error_message="No canonical module final pinned for this event",
+            retry_safe=False,
+        )
+    target = (Path(h.app.event_dir) / canonical_name).resolve()
+    event_root = Path(h.app.event_dir).resolve()
+    if not str(target).startswith(str(event_root)) or not target.is_file():
+        return h._send_error_v59(
+            404,
+            error_code="CANONICAL_MODULE_FINAL_MISSING",
+            error_message=f"Canonical file not found: {canonical_name}",
+            retry_safe=False,
+        )
+    h._serve_mp4_with_range(target, cache_immutable=False)
+
+
+STITCH_AMBIENT_BAKE_ON_SAVE_V1 = "STITCH_AMBIENT_BAKE_ON_SAVE_V1"
+STITCH_EXPORT_MUX_BAKE_V1 = "STITCH_EXPORT_MUX_BAKE_V1"
+STITCH_LOAD_JOB_PLAYBACK_BAKE_V1 = "STITCH_LOAD_JOB_PLAYBACK_BAKE_V1"
+
+
+def _stitch_slot_needs_ambient_mix(slot: dict) -> bool:
+    ambient = (slot.get("ambient_bed") or "").strip()
+    return bool((slot.get("video_path") or "").strip() and ambient)
+
+
+def build_stitch_slot_ambient_mix_file(h, slot: dict) -> tuple[str, int]:
+    """Build se_slot_* with speech + ambient (no SFX). Returns (hash_stem, duration_ms)."""
+    from server_handlers.stitch_media_artifacts import _stitch_slot_has_ambient  # noqa: PLC0415
+
+    normalize_slot_audio_mix_levels(slot)
+    ensure_slot_ambient_bed_path_hydrated(h, slot)
+    if not _stitch_slot_has_ambient(slot):
+        raise ValueError("ambient bed not configured")
+    video_path = (slot.get("video_path") or "").strip()
+    abs_vp = h._stitch_resolve_path(video_path)
+    cache_dir = h._stitch_cache_dir()
+    norm = h._stitch_normalize_slot(
+        abs_vp, cache_dir, preview_only=True,
+    )
+    norm = h._stitch_ensure_audio(norm, cache_dir)
+    mix_slot = dict(slot)
+    mix_slot["sfx_cues"] = []
+    mixed = h._stitch_mix_slot_audio(norm, mix_slot, cache_dir, force_rebuild=True)
+    stem = mixed.stem
+    if stem.startswith("se_slot_"):
+        stem = stem[len("se_slot_"):]
+    dur_ms = h._ffprobe_duration_ms(mixed)
+    if dur_ms <= 0:
+        raise RuntimeError(f"ambient mix unreadable for {video_path}")
+    if not stitch_cached_mp4_playable(mixed, expected_s=dur_ms / 1000.0):
+        purge_stitch_cache_mp4(mixed)
+        raise RuntimeError(
+            f"ambient mix failed playback gate ({STITCH_AMBIENT_BAKE_ON_SAVE_V1})",
+        )
+    return stem, dur_ms
+
+
+def build_stitch_slot_mux_preview_file(h, slot: dict) -> tuple[str, int]:
+    """Build stitch_preview_* MP4 with speech + ambient + SFX for one slot."""
+    normalize_slot_audio_mix_levels(slot)
+    _hydrate_slot_ambient_paths(h, [slot])
+    body = {
+        "slots": [dict(slot)],
+        "slot_preview": True,
+        "transitions": [],
+    }
+    out_path, slot_durations, _ = h._stitch_build_pipeline(body)
+    hash_id = out_path.stem.replace("stitch_preview_", "")
+    dur_ms = int(slot_durations[0] if slot_durations else h._ffprobe_duration_ms(out_path))
+    if dur_ms <= 0:
+        raise RuntimeError("mux preview unreadable")
+    if not stitch_cached_mp4_playable(out_path, expected_s=dur_ms / 1000.0):
+        purge_stitch_cache_mp4(out_path)
+        raise RuntimeError(
+            f"mux preview failed playback gate ({STITCH_EXPORT_MUX_BAKE_V1})",
+        )
+    return hash_id, dur_ms
+
+
+def ensure_stitch_slot_playback_artifacts(
+    h,
+    job_name: str,
+    slot_key: str,
+    *,
+    stitch_store=None,
+    trigger: str = "export",
+) -> dict:
+    """Bake mux (SFX slots) or ambient mix — export upsert and load_job auto-heal."""
+    from server_handlers.stitch_media_artifacts import (  # noqa: PLC0415
+        _stitch_slot_has_ambient,
+        _stitch_slot_has_sfx,
+        attach_stitch_slot_derived_media_urls,
+        persist_stitch_slot_ambient_mix_artifacts,
+        persist_stitch_slot_media_artifacts,
+    )
+    from server_handlers.stitch_media_sig import (  # noqa: PLC0415
+        compute_stitch_ambient_mix_sig_from_slot,
+        compute_stitch_mix_sig_from_slot,
+        _video_mtime_ms,
+    )
+
+    stitch_store = stitch_store or stitch_state_store_for_job(h, job_name)
+    bake_code = (
+        STITCH_LOAD_JOB_PLAYBACK_BAKE_V1
+        if trigger == "load_job"
+        else STITCH_EXPORT_MUX_BAKE_V1
+    )
+    if not callable(getattr(h, "_stitch_cache_dir", None)):
+        return {
+            "slot": slot_key,
+            "code": bake_code,
+            "trigger": trigger,
+            "skipped": "handler_incomplete",
+        }
+    orig_stitch_state = None
+    if stitch_store is not h.app.stitch_state:
+        orig_stitch_state = h.app.stitch_state
+        h.app.stitch_state = stitch_store
+    report: dict = {"slot": slot_key, "code": bake_code, "trigger": trigger}
+    try:
+        state = stitch_store.read_state() or {}
+        job = (state.get("jobs") or {}).get(job_name)
+        if not isinstance(job, dict):
+            report["skipped"] = "job_missing"
+            return report
+        slot = (job.get("slots") or {}).get(slot_key)
+        if not isinstance(slot, dict) or not (slot.get("video_path") or "").strip():
+            report["skipped"] = "no_video"
+            return report
+        normalize_slot_audio_mix_levels(slot)
+        _hydrate_slot_ambient_paths(h, [slot])
+        if _stitch_slot_has_sfx(slot):
+            mix_sig = compute_stitch_mix_sig_from_slot(h, slot)
+            hash_id, dur_ms = build_stitch_slot_mux_preview_file(h, slot)
+            video_path = (slot.get("video_path") or "").strip()
+            mux_video_mtime_ms: int | None = None
+            if video_path:
+                try:
+                    mux_video_mtime_ms = _video_mtime_ms(
+                        str(h._stitch_resolve_path(video_path)),
+                    )
+                except (ValueError, TypeError, OSError):
+                    mux_video_mtime_ms = None
+            persist_stitch_slot_media_artifacts(
+                h,
+                job_name,
+                slot_key,
+                mix_sig=mix_sig,
+                mux_preview_hash=hash_id,
+                mux_preview_duration_ms=dur_ms,
+                mux_video_path=video_path or None,
+                mux_video_mtime_ms=mux_video_mtime_ms,
+            )
+            report.update({
+                "ok": True,
+                "kind": "mux_preview",
+                "mux_preview_hash": hash_id,
+                "mux_preview_duration_ms": dur_ms,
+            })
+            return report
+        if _stitch_slot_has_ambient(slot):
+            ambient_sig = compute_stitch_ambient_mix_sig_from_slot(h, slot)
+            hash_stem, dur_ms = build_stitch_slot_ambient_mix_file(h, slot)
+            persist_stitch_slot_ambient_mix_artifacts(
+                h,
+                job_name,
+                slot_key,
+                ambient_mix_sig=ambient_sig,
+                ambient_mix_hash=hash_stem,
+                ambient_mix_duration_ms=dur_ms,
+            )
+            attach_stitch_slot_derived_media_urls(h, slot)
+            report.update({
+                "ok": True,
+                "kind": "ambient_mix",
+                "ambient_mix_hash": hash_stem,
+                "ambient_mix_duration_ms": dur_ms,
+            })
+            return report
+        report["skipped"] = "speech_only"
+        return report
+    except (OSError, ValueError, RuntimeError) as exc:
+        report["ok"] = False
+        report["error"] = str(exc)
+        return report
+    finally:
+        if orig_stitch_state is not None:
+            h.app.stitch_state = orig_stitch_state
+
+
+def ensure_stitch_slot_playback_artifacts_on_export(
+    h,
+    job_name: str,
+    slot_key: str,
+    *,
+    stitch_store=None,
+) -> dict:
+    """Bake mux (SFX slots) or ambient mix after export upsert — Stitcher preview-ready."""
+    return ensure_stitch_slot_playback_artifacts(
+        h,
+        job_name,
+        slot_key,
+        stitch_store=stitch_store,
+        trigger="export",
+    )
+
+
+def rebuild_stitch_ambient_mixes_for_job(
+    h,
+    job_name: str,
+    *,
+    slot_keys: list[str] | None = None,
+) -> dict:
+    """Bake ambient mixes for slots; persist artifacts. Returns built_slots map."""
+    from server_handlers.stitch_media_artifacts import (  # noqa: PLC0415
+        attach_stitch_slot_derived_media_urls,
+        clear_stitch_slot_ambient_mix_artifacts,
+        persist_stitch_slot_ambient_mix_artifacts,
+    )
+    from server_handlers.stitch_media_sig import compute_stitch_ambient_mix_sig_from_slot  # noqa: PLC0415
+
+    stitch_store = stitch_state_store_for_job(h, job_name)
+    orig_stitch_state = None
+    if stitch_store is not h.app.stitch_state:
+        orig_stitch_state = h.app.stitch_state
+        h.app.stitch_state = stitch_store
+    try:
+        state = stitch_store.read_state() or {}
+        job = (state.get("jobs") or {}).get(job_name)
+        if not isinstance(job, dict):
+            return {}
+        slots = job.get("slots") or {}
+        if not isinstance(slots, dict):
+            return {}
+        if slot_keys is not None:
+            keys = list(slot_keys)
+        elif is_milestone_stitch_job_name(job_name):
+            keys = list(STITCH_MILESTONE_SLOT_ORDER)
+        else:
+            keys = list(STITCH_SLOT_ORDER)
+        built: dict = {}
+
+        for slot_key in keys:
+            slot = slots.get(slot_key)
+            if not isinstance(slot, dict):
+                continue
+            if not (slot.get("video_path") or "").strip():
+                continue
+            ambient_bed = (slot.get("ambient_bed") or "").strip()
+            if not ambient_bed:
+                def clear_ambient(state: dict) -> None:
+                    j = (state.get("jobs") or {}).get(job_name)
+                    if not isinstance(j, dict):
+                        return
+                    s = (j.get("slots") or {}).get(slot_key)
+                    if isinstance(s, dict):
+                        clear_stitch_slot_ambient_mix_artifacts(s)
+
+                stitch_store.mutate_state(clear_ambient)
+                built[slot_key] = {"ok": True, "cleared": True, "code": STITCH_AMBIENT_BAKE_ON_SAVE_V1}
+                continue
+            try:
+                ambient_sig = compute_stitch_ambient_mix_sig_from_slot(h, slot)
+                stored_sig = (slot.get("ambient_mix_sig") or "").strip()
+                stored_hash = (slot.get("ambient_mix_hash") or "").strip()
+                # STITCH_AMBIENT_BAKE_SKIP_UNCHANGED_V1 — SFX-only saves must not
+                # re-ffmpeg ambient; ambient sig excludes sfx_cues.
+                if (
+                    stored_sig
+                    and stored_sig == ambient_sig
+                    and stored_hash
+                ):
+                    cache_path = h._stitch_cache_dir() / f"se_slot_{stored_hash}.mp4"
+                    dur_ms = int(slot.get("ambient_mix_duration_ms") or 0)
+                    if dur_ms <= 0 and cache_path.is_file():
+                        dur_ms = h._ffprobe_duration_ms(cache_path)
+                    if (
+                        cache_path.is_file()
+                        and stitch_cached_mp4_playable(
+                            cache_path,
+                            expected_s=dur_ms / 1000.0 if dur_ms > 0 else None,
+                        )
+                    ):
+                        attach_stitch_slot_derived_media_urls(h, slot)
+                        built[slot_key] = {
+                            "ok": True,
+                            "skipped": True,
+                            "ambient_mix_hash": stored_hash,
+                            "ambient_mix_duration_ms": dur_ms,
+                            "ambient_mix_sig": ambient_sig,
+                            "_ambient_mix_url": slot.get("_ambient_mix_url"),
+                            "code": STITCH_AMBIENT_BAKE_ON_SAVE_V1,
+                        }
+                        continue
+                hash_stem, dur_ms = build_stitch_slot_ambient_mix_file(h, slot)
+                persist_stitch_slot_ambient_mix_artifacts(
+                    h,
+                    job_name,
+                    slot_key,
+                    ambient_mix_sig=ambient_sig,
+                    ambient_mix_hash=hash_stem,
+                    ambient_mix_duration_ms=dur_ms,
+                )
+                state = stitch_store.read_state() or {}
+                refreshed = (
+                    (state.get("jobs") or {}).get(job_name, {}).get("slots", {}).get(slot_key)
+                )
+                if isinstance(refreshed, dict):
+                    attach_stitch_slot_derived_media_urls(h, refreshed)
+                    built[slot_key] = {
+                        "ok": True,
+                        "ambient_mix_hash": hash_stem,
+                        "ambient_mix_duration_ms": dur_ms,
+                        "ambient_mix_sig": ambient_sig,
+                        "_ambient_mix_url": refreshed.get("_ambient_mix_url"),
+                        "code": STITCH_AMBIENT_BAKE_ON_SAVE_V1,
+                    }
+                else:
+                    built[slot_key] = {
+                        "ok": True,
+                        "ambient_mix_hash": hash_stem,
+                        "code": STITCH_AMBIENT_BAKE_ON_SAVE_V1,
+                    }
+            except Exception as exc:
+                built[slot_key] = {
+                    "ok": False,
+                    "error": str(exc),
+                    "code": STITCH_AMBIENT_BAKE_ON_SAVE_V1,
+                }
+
+        return built
+    finally:
+        if orig_stitch_state is not None:
+            h.app.stitch_state = orig_stitch_state
 
 
 def handle_stitch_save_job(h, body: dict)-> None:
 
     """POST /api/stitch_editor/job — save or upsert a named job."""
-    # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
-        return
+    from server_handlers.stitch_scope import (  # noqa: PLC0415
+        STITCH_SCOPE_PARTITION_V1,
+        assert_stitch_partition_scope,
+    )
 
     name = (body.get("name") or "").strip()
+    binding = assert_stitch_partition_scope(h, body, job_name=name)
+    if binding is None:
+        return
+    name = binding.job_name
     if not name:
         return h._send_error_v59(
                    400,
@@ -1248,14 +2852,20 @@ def handle_stitch_save_job(h, body: dict)-> None:
     elif slots_raw is None:
         slots_raw = []
 
+    merge_slots = bool(body.get("merge_slots")) or partial_ambient_merge
+
     # Slots may be dict keyed by slot id (v59 client + scene_assemble auto-populate)
     # or legacy list. Validate video_path on slot dict values only.
     if isinstance(slots_raw, dict):
         slots = slots_raw
         slot_items = [v for v in slots_raw.values() if isinstance(v, dict)]
     elif isinstance(slots_raw, list):
-        slots = slots_raw
-        slot_items = [s for s in slots_raw if isinstance(s, dict)]
+        if merge_slots or is_milestone_stitch_job_name(name):
+            slots = _coerce_stitch_save_slots_to_dict(slots_raw, name, slot_key_partial)
+            slot_items = [v for v in slots.values() if isinstance(v, dict)]
+        else:
+            slots = slots_raw
+            slot_items = [s for s in slots_raw if isinstance(s, dict)]
     else:
         slots = {}
         slot_items = []
@@ -1274,9 +2884,21 @@ def handle_stitch_save_job(h, body: dict)-> None:
                        )
 
     now_iso = datetime.now(timezone.utc).isoformat()
-    merge_slots = bool(body.get("merge_slots")) or partial_ambient_merge
     scope = h._scope_body(body) or {}
     event_id = (scope.get("event_id") or scope.get("scope_event_id") or "").strip()
+    stitch_store = binding.stitch_store
+    orig_stitch_state = None
+    if stitch_store is not h.app.stitch_state:
+        orig_stitch_state = h.app.stitch_state
+        h.app.stitch_state = stitch_store
+
+    pre_state = stitch_store.read_state() or {}
+    pre_job = (pre_state.get("jobs") or {}).get(name) or {}
+    pre_slots = _normalize_job_slots(pre_job.get("slots") if isinstance(pre_job, dict) else {})
+    touched_keys = (
+        list(slots.keys()) if isinstance(slots, dict) else []
+    )
+    edit_kind_hint = (body.get("edit_kind") or "").strip() or None
 
     def upsert(state: dict) -> None:
         jobs = state.setdefault("jobs", {})
@@ -1297,6 +2919,11 @@ def handle_stitch_save_job(h, body: dict)-> None:
                     ):
                         merged.pop("ambient_bed_path", None)
                     normalize_slot_audio_mix_levels(merged)
+                    from server_handlers.stitch_media_artifacts import (  # noqa: PLC0415
+                        invalidate_stitch_slot_artifacts_if_mix_drift,
+                    )
+
+                    invalidate_stitch_slot_artifacts_if_mix_drift(h, merged)
                     base_slots[slot_key] = merged
             slots_out = base_slots
         elif merge_slots and isinstance(slots, dict):
@@ -1312,6 +2939,11 @@ def handle_stitch_save_job(h, body: dict)-> None:
                     ):
                         merged.pop("ambient_bed_path", None)
                     normalize_slot_audio_mix_levels(merged)
+                    from server_handlers.stitch_media_artifacts import (  # noqa: PLC0415
+                        invalidate_stitch_slot_artifacts_if_mix_drift,
+                    )
+
+                    invalidate_stitch_slot_artifacts_if_mix_drift(h, merged)
                     base_slots[slot_key] = merged
             slots_out = base_slots
         elif not slot_items and existing.get("slots"):
@@ -1330,9 +2962,54 @@ def handle_stitch_save_job(h, body: dict)-> None:
                 transitions or existing.get("transitions"),
             ),
         }
+        if is_milestone_stitch_job_name(name):
+            normalize_milestone_stitch_job(jobs[name], job_name=name)
 
-    h.app.stitch_state.mutate_state(upsert)
-    return h._send_json(200, {"ok": True, "name": name})
+    try:
+        from server_handlers.stitch_slot_edit_dispatch import (  # noqa: PLC0415
+            STITCH_SLOT_EDIT_DISPATCH_V1,
+            plan_stitch_save_dispatch,
+        )
+
+        dispatch: dict = {}
+        stitch_store.mutate_state(upsert)
+        post_state = stitch_store.read_state() or {}
+        post_job = (post_state.get("jobs") or {}).get(name) or {}
+        post_slots = _normalize_job_slots(
+            post_job.get("slots") if isinstance(post_job, dict) else {},
+        )
+        dispatch = plan_stitch_save_dispatch(
+            h,
+            prev_slots=pre_slots,
+            next_slots=post_slots,
+            touched_keys=touched_keys,
+            edit_kind_hint=edit_kind_hint,
+        )
+        ambient_keys = dispatch.get("ambient_rebuild_keys") or []
+        built_slots = rebuild_stitch_ambient_mixes_for_job(
+            h, name, slot_keys=ambient_keys,
+        )
+    finally:
+        if orig_stitch_state is not None:
+            h.app.stitch_state = orig_stitch_state
+    saved_standalone = (
+        (post_slots.get("standalone") or {})
+        if isinstance(post_slots, dict)
+        else {}
+    )
+    return h._send_json(200, {
+        "ok": True,
+        "name": name,
+        "job_persisted": True,
+        "saved_slots": post_slots,
+        "saved_video_path": (saved_standalone.get("video_path") or "").strip(),
+        "built_slots": built_slots,
+        "edit_dispatch": dispatch,
+        "code": STITCH_AMBIENT_BAKE_ON_SAVE_V1,
+        "dispatch_code": STITCH_SLOT_EDIT_DISPATCH_V1,
+        "single_owner_code": STITCH_SINGLE_OWNER_V1,
+        "partition_code": STITCH_SCOPE_PARTITION_V1,
+    })
 
 
 def handle_stitch_delete_job(h, name: str)-> None:
@@ -1353,7 +3030,7 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
     """POST /api/stitch_editor/audio_extract — extract audio track for WaveSurfer.
 
     Input: {video_path, optional ambient_bed preset_id, optional ambient_volume}
-    Output: {audio_url: "http://localhost:5111/api/stitch_editor/audio_file/<hash>", duration_ms: N}
+    Output: {audio_url: "http://<Host>/api/stitch_editor/audio_file/<hash>", duration_ms: N}
     When ambient_bed is set, mixes the bed under slot video audio for composer waveform parity.
     """
     import hashlib as _hl  # noqa: PLC0415
@@ -1413,44 +3090,91 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
             retry_safe=False,
             extra={"code": STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1},
         )
+    from credentials_lib.ffmpeg_stitch import (  # noqa: PLC0415
+        ffprobe_stream_duration_s,
+        stitch_audio_cache_is_valid,
+    )
+
+    video_stream_ms = int(round(ffprobe_stream_duration_s(Path(abs_path), "v") * 1000))
+    audio_stream_ms = int(round(ffprobe_stream_duration_s(Path(abs_path), "a") * 1000))
+    if video_stream_ms > 0 and audio_stream_ms > 0 and stitch_slot_av_drift_exceeds(
+        video_stream_ms, audio_stream_ms,
+    ):
+        drift_ms = abs(video_stream_ms - audio_stream_ms)
+        return h._send_error_v59(
+            409,
+            error_code="STITCH_SLOT_AV_DRIFT",
+            error_message=(
+                f"slot video/audio misaligned ({drift_ms}ms) — "
+                "rebuild canonical intro tail or re-export from Beat Gen"
+            ),
+            retry_safe=True,
+            extra={
+                "code": STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1,
+                "video_dur_ms": video_stream_ms,
+                "audio_dur_ms": audio_stream_ms,
+                "drift_ms": drift_ms,
+            },
+        )
     expected_s = video_dur_ms / 1000.0
 
-    from credentials_lib.ffmpeg_stitch import stitch_audio_cache_is_valid  # noqa: PLC0415
+    from credentials_lib.stitch_cache_build import (  # noqa: PLC0415
+        StitchCacheBuildBusy,
+        atomic_ffmpeg_output,
+        stitch_cache_build_lock,
+    )
 
-    if audio_path.is_file() and not stitch_audio_cache_is_valid(
-        audio_path, expected_s, min_ratio=STITCH_AUDIO_DUR_MIN_RATIO,
-    ):
-        try:
-            audio_path.unlink()
-        except OSError:
-            pass
+    try:
+        with stitch_cache_build_lock(cache_dir):
+            if audio_path.is_file() and not stitch_audio_cache_is_valid(
+                audio_path, expected_s, min_ratio=STITCH_AUDIO_DUR_MIN_RATIO,
+            ):
+                try:
+                    audio_path.unlink()
+                except OSError:
+                    pass
 
-    if not audio_path.is_file():
-        safe_ffmpeg_src = os.path.realpath(abs_path)
-        ffmpeg_dst = str(audio_path.resolve())
-        cmd = [
-            "ffmpeg", "-y", "-i", safe_ffmpeg_src,
-            "-vn", "-ac", "1", "-ar", "44100", "-b:a", "128k",
-            ffmpeg_dst,
-        ]
-        try:
-            subprocess.run(cmd, check=True, capture_output=True, timeout=180)
-        except subprocess.CalledProcessError as exc:
-            stderr = (exc.stderr or b"")[:400].decode("utf-8", errors="replace")
-            return h._send_error_v59(
-                       500,
-                       error_code="AUDIO_EXTRACTION_FAILED",
-                       error_message="audio extraction failed",
-                       retry_safe=True,
-                       extra={"stderr": stderr},
-                   )
-        except subprocess.TimeoutExpired:
-            return h._send_error_v59(
-                       504,
-                       error_code="AUDIO_EXTRACTION_TIMED_OUT",
-                       error_message="audio extraction timed out",
-                       retry_safe=True,
-                   )
+            if not audio_path.is_file():
+                safe_ffmpeg_src = os.path.realpath(abs_path)
+                cmd = [
+                    "ffmpeg", "-y", "-i", safe_ffmpeg_src,
+                    "-vn", "-ac", "1", "-ar", "44100", "-b:a", "128k",
+                    str(audio_path.resolve()),
+                ]
+                try:
+                    atomic_ffmpeg_output(
+                        cmd,
+                        audio_path,
+                        expected_duration_s=expected_s,
+                        validator=lambda p, exp: stitch_audio_cache_is_valid(
+                            p, exp, min_ratio=STITCH_AUDIO_DUR_MIN_RATIO,
+                        ),
+                    )
+                except subprocess.CalledProcessError as exc:
+                    stderr = (exc.stderr or b"")[:400].decode("utf-8", errors="replace")
+                    return h._send_error_v59(
+                               500,
+                               error_code="AUDIO_EXTRACTION_FAILED",
+                               error_message="audio extraction failed",
+                               retry_safe=True,
+                               extra={"stderr": stderr},
+                           )
+                except RuntimeError as exc:
+                    return h._send_error_v59(
+                        500,
+                        error_code="STITCH_SLOT_AUDIO_EXTRACT_TRUNCATED",
+                        error_message=str(exc),
+                        retry_safe=True,
+                        extra={"code": STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1},
+                    )
+    except StitchCacheBuildBusy as exc:
+        return h._send_error_v59(
+            409,
+            error_code="STITCH_CACHE_BUILD_IN_PROGRESS",
+            error_message=str(exc),
+            retry_safe=True,
+            extra={"code": STITCH_SLOT_MEDIA_ARTIFACTS_V1},
+        )
 
     duration_ms = h._ffprobe_duration_ms(audio_path)
     if not stitch_audio_cache_is_valid(
@@ -1472,13 +3196,11 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
         )
 
     serve_fname = audio_fname
-    mix_slot: dict = {}
-    ambient_bed = (body.get("ambient_bed") or "").strip()
-    if ambient_bed:
-        mix_slot["ambient_bed"] = ambient_bed
+    # STITCH_AMBIENT_BAKE_ON_SAVE_V1 — waveform peaks are speech-only; ambient is composer bake.
     sfx_raw = body.get("sfx_cues")
     sfx_mixed = False
-    if isinstance(sfx_raw, list):
+    mix_slot: dict = {}
+    if isinstance(sfx_raw, list) and [c for c in sfx_raw if isinstance(c, dict)]:
         mix_slot["sfx_cues"] = [c for c in sfx_raw if isinstance(c, dict)]
     if mix_slot:
         _hydrate_slot_ambient_paths(h, [mix_slot])
@@ -1520,13 +3242,93 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
                     },
                 )
 
+    peaks_url = None
+    peaks_duration_s = None
+    peaks_hash = None
+    try:
+        from waveform_peaks import generate_peaks_from_audio, write_peaks_json
+
+        serve_audio_path = cache_dir / serve_fname
+        peaks_stem = serve_fname.replace("stitch_audio_", "").replace(".mp3", "")
+        peaks_fname = f"stitch_peaks_{peaks_stem}.json"
+        peaks_path = cache_dir / peaks_fname
+        if serve_audio_path.is_file():
+            if not peaks_path.is_file():
+                peaks_payload = generate_peaks_from_audio(serve_audio_path)
+                with stitch_cache_build_lock(cache_dir):
+                    tmp_peaks = peaks_path.parent / (
+                        f"{peaks_path.stem}.tmp.{os.getpid()}.json"
+                    )
+                    write_peaks_json(peaks_payload, tmp_peaks)
+                    os.replace(tmp_peaks, peaks_path)
+                peaks_duration_s = peaks_payload.get("duration_s")
+            else:
+                try:
+                    import json as _json
+
+                    peaks_duration_s = float(
+                        _json.loads(peaks_path.read_text(encoding="utf-8")).get("duration_s") or 0,
+                    )
+                except (OSError, TypeError, ValueError):
+                    peaks_payload = generate_peaks_from_audio(serve_audio_path)
+                    with stitch_cache_build_lock(cache_dir):
+                        tmp_peaks = peaks_path.parent / (
+                            f"{peaks_path.stem}.tmp.{os.getpid()}.json"
+                        )
+                        write_peaks_json(peaks_payload, tmp_peaks)
+                        os.replace(tmp_peaks, peaks_path)
+                    peaks_duration_s = peaks_payload.get("duration_s")
+            peaks_hash = peaks_stem
+            peaks_url = _stitch_media_public_url(
+                h, f"/api/stitch_editor/peaks_file/{peaks_fname}",
+            )
+    except StitchCacheBuildBusy as exc:
+        return h._send_error_v59(
+            409,
+            error_code="STITCH_CACHE_BUILD_IN_PROGRESS",
+            error_message=str(exc),
+            retry_safe=True,
+            extra={"code": STITCH_SLOT_MEDIA_ARTIFACTS_V1},
+        )
+    except Exception as exc:
+        print(f"[stitch_audio_extract] peaks generation failed (non-fatal): {exc}", flush=True)
+
+    mix_sig = None
+    from server_handlers.stitch_media_artifacts import (  # noqa: PLC0415
+        find_stitch_job_slot_for_video,
+        persist_stitch_slot_media_artifacts,
+    )
+    from server_handlers.stitch_media_sig import compute_stitch_mix_sig_from_slot  # noqa: PLC0415
+
+    job_slot = find_stitch_job_slot_for_video(h, video_path_str)
+    if job_slot:
+        job_name, slot_key = job_slot
+        state = h.app.stitch_state.read_state() or {}
+        job = (state.get("jobs") or {}).get(job_name) or {}
+        slot = (job.get("slots") or {}).get(slot_key)
+        if isinstance(slot, dict):
+            mix_sig = compute_stitch_mix_sig_from_slot(h, slot)
+            if peaks_hash:
+                persist_stitch_slot_media_artifacts(
+                    h,
+                    job_name,
+                    slot_key,
+                    mix_sig=mix_sig,
+                    waveform_peaks_hash=peaks_hash,
+                    waveform_peaks_duration_s=peaks_duration_s,
+                )
+
     return h._send_json(200, {
-        "audio_url": f"http://localhost:5111/api/stitch_editor/audio_file/{serve_fname}",
+        "audio_url": _stitch_media_public_url(h, f"/api/stitch_editor/audio_file/{serve_fname}"),
+        "peaks_url": peaks_url,
+        "peaks_duration_s": peaks_duration_s,
+        "peaks_hash": peaks_hash,
+        "mix_sig": mix_sig,
         "duration_ms": duration_ms,
         "video_dur_ms": video_dur_ms,
         "ambient_mixed": bool(mix_slot.get("ambient_bed_path")),
         "sfx_mixed": sfx_mixed,
-        "code": STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1,
+        "code": STITCH_SLOT_MEDIA_ARTIFACTS_V1,
     })
 
 
@@ -1547,12 +3349,62 @@ STITCH_CANONICAL_BOUNDARY_SFX: dict[int, str] = {
     2: "magic_sound.mp3",   # phase_b → resolution
 }
 
+
+def module_boundary_visual_out_ms_by_pair(pair_count: int, default_out_ms: int) -> list[int]:
+    """Per-boundary outgoing visual fade. Phase B→resolution uses 0 — no tail dimming."""
+    return [
+        0 if i == STITCH_PHASE_B_TO_RESOLUTION_PAIR_INDEX else int(default_out_ms)
+        for i in range(max(0, pair_count))
+    ]
+
+
+def boundary_sfx_overlay_plan(
+    clip_dur_ms: int,
+    pair_ms: int,
+    *,
+    visual_out_ms: int = 600,
+    visual_in_ms: int = 600,
+    pre_ms: int = STITCH_TRANSITION_SFX_PRE_ROLL_MS,
+    post_ms: int = STITCH_TRANSITION_SFX_POST_ROLL_MS,
+) -> dict[str, int]:
+    """Compute pipeline boundary SFX overlay windows (ms) for contract tests + UI markers."""
+    from credentials_lib.ffmpeg_stitch import allocate_pair_fade_budget  # noqa: PLC0415
+
+    out_ms, in_ms, black_ms = allocate_pair_fade_budget(
+        pair_ms,
+        visual_out_ms=visual_out_ms,
+        visual_in_ms=visual_in_ms,
+    )
+    seg1_dur = pre_ms + out_ms
+    seg1_offset = max(0, int(clip_dur_ms) - seg1_dur)
+    total_span = pre_ms + out_ms + black_ms + in_ms + post_ms
+    return {
+        "pre_ms": pre_ms,
+        "out_ms": out_ms,
+        "black_ms": black_ms,
+        "in_ms": in_ms,
+        "post_ms": post_ms,
+        "seg1_offset_ms": seg1_offset,
+        "seg1_duration_ms": seg1_dur,
+        "seg2_duration_ms": in_ms + post_ms,
+        "total_span_ms": total_span,
+    }
+
 # STITCH_RESOLUTION_FINALE_V1 — tail fade-to-black + outtro3 on black; MP4 ends when outtro ends.
 STITCH_RESOLUTION_FINALE_V1 = "STITCH_RESOLUTION_FINALE_V1"
 STITCH_RESOLUTION_FINALE_OUTTRO_FILENAME = "outtro3.mp3"
 STITCH_RESOLUTION_FINALE_FADE_OUT_MS = 500
 STITCH_RESOLUTION_FINALE_OUTTRO_START_BEFORE_END_MS = 750
 STITCH_RESOLUTION_FINALE_OUTTRO_PLAY_MS = 3250
+
+# STITCH_MILESTONE_FINALE_V1 — standalone milestone bake uses outtro3 (same as resolution finale).
+STITCH_MILESTONE_FINALE_V1 = "STITCH_MILESTONE_FINALE_V1"
+STITCH_MILESTONE_FINALE_OUTTRO_FILENAME = STITCH_RESOLUTION_FINALE_OUTTRO_FILENAME
+STITCH_MILESTONE_FINALE_FADE_OUT_MS = STITCH_RESOLUTION_FINALE_FADE_OUT_MS
+STITCH_MILESTONE_FINALE_OUTTRO_START_BEFORE_END_MS = (
+    STITCH_RESOLUTION_FINALE_OUTTRO_START_BEFORE_END_MS
+)
+STITCH_MILESTONE_FINALE_OUTTRO_PLAY_MS = STITCH_RESOLUTION_FINALE_OUTTRO_PLAY_MS
 
 
 def resolution_finale_black_hold_ms() -> int:
@@ -1561,6 +3413,15 @@ def resolution_finale_black_hold_ms() -> int:
         0,
         STITCH_RESOLUTION_FINALE_OUTTRO_PLAY_MS
         - STITCH_RESOLUTION_FINALE_OUTTRO_START_BEFORE_END_MS,
+    )
+
+
+def milestone_finale_black_hold_ms() -> int:
+    """Black tail after milestone content ends; outtro3 finishes when hold ends."""
+    return max(
+        0,
+        STITCH_MILESTONE_FINALE_OUTTRO_PLAY_MS
+        - STITCH_MILESTONE_FINALE_OUTTRO_START_BEFORE_END_MS,
     )
 
 
@@ -1616,17 +3477,29 @@ def hydrate_stitch_pipeline_body(h, body: dict) -> dict:
     job = None
     if job_name:
         try:
-            _st = h.app.stitch_state.read_state()
+            _st = stitch_state_store_for_job(h, job_name).read_state()
             job = (_st.get("jobs") or {}).get(job_name)
         except Exception as exc:
             print(f"[stitch] WARN: job hydration read failed: {exc}")
+
+    if job:
+        _job_slots = job.get("slots")
+        if isinstance(_job_slots, dict):
+            strip_stale_pipeline_boundary_slot_cues(_job_slots)
+            strip_stale_resolution_head_sfx_cues(_job_slots)
+
+    slot_order = (
+        STITCH_MILESTONE_SLOT_ORDER
+        if is_milestone_stitch_job_name(job_name)
+        else STITCH_SLOT_ORDER
+    )
 
     if not _body.get("slots") and job:
         _slots_dict = job.get("slots") or {}
         if isinstance(_slots_dict, dict):
             _slots_list = [
                 _slots_dict[k]
-                for k in _STITCH_SLOT_ORDER
+                for k in slot_order
                 if k in _slots_dict and (_slots_dict[k] or {}).get("video_path")
             ]
         else:
@@ -1643,6 +3516,8 @@ def hydrate_stitch_pipeline_body(h, body: dict) -> dict:
 
     if _body.get("slots"):
         _hydrate_slot_ambient_paths(h, _body["slots"])
+        strip_stale_pipeline_boundary_slot_cues(_body["slots"])
+        strip_stale_resolution_head_sfx_cues(_body["slots"])
         for slot in _body["slots"]:
             if isinstance(slot, dict):
                 normalize_slot_audio_mix_levels(slot)
@@ -1654,7 +3529,93 @@ def hydrate_stitch_pipeline_body(h, body: dict) -> dict:
         _body.get("transitions") or (job or {}).get("transitions"),
     )
 
+    _coerce_stitch_pipeline_slots_to_list(_body)
+
     return _body
+
+
+def _coerce_stitch_pipeline_slots_to_list(body: dict) -> None:
+    """Preview/bake enumerate slots as a list; save-job merge payloads use dict keys."""
+    slots = body.get("slots")
+    if not isinstance(slots, dict):
+        return
+    job_name = (body.get("name") or "").strip()
+    order = (
+        STITCH_MILESTONE_SLOT_ORDER
+        if job_name.startswith("milestone_")
+        else STITCH_SLOT_ORDER
+    )
+    slot_key = (body.get("slot") or "").strip()
+    if body.get("slot_preview") and slot_key and slot_key in slots:
+        slot = slots[slot_key]
+        body["slots"] = [slot] if isinstance(slot, dict) else []
+        return
+    body["slots"] = [
+        slots[k] for k in order if isinstance(slots.get(k), dict)
+    ]
+
+
+def _hydrated_preview_slot_dict(hydrated: dict, slot_key: str) -> dict | None:
+    """Slot dict used for preview ffmpeg mix (list or dict payload)."""
+    slots = hydrated.get("slots")
+    if isinstance(slots, list):
+        for item in slots:
+            if isinstance(item, dict):
+                return item
+        return None
+    if isinstance(slots, dict):
+        raw = slots.get(slot_key)
+        return raw if isinstance(raw, dict) else None
+    return None
+
+
+def _persist_stitch_preview_slot_geometry(
+    h,
+    job_name: str,
+    slot_key: str,
+    hydrated_slot: dict,
+) -> dict | None:
+    """Write preview request geometry onto disk slot before mux artifact persist."""
+    if not job_name or not slot_key or not isinstance(hydrated_slot, dict):
+        return None
+    stitch_store = stitch_state_store_for_job(h, job_name)
+    merged: dict | None = None
+
+    def update(state: dict) -> None:
+        nonlocal merged
+        job = (state.get("jobs") or {}).get(job_name)
+        if not isinstance(job, dict):
+            return
+        slots = job.get("slots")
+        if not isinstance(slots, dict):
+            return
+        prev = slots.get(slot_key)
+        if not isinstance(prev, dict):
+            prev = {}
+        merged = {**prev}
+        for field in (
+            "sfx_cues",
+            "ambient_bed",
+            "ambient_volume",
+            "ambient_bed_path",
+            "trim_in_ms",
+            "trim_out_ms",
+            "video_path",
+            "video_dur_ms",
+        ):
+            if field not in hydrated_slot:
+                continue
+            if field == "sfx_cues":
+                prev_cues = prev.get("sfx_cues") if isinstance(prev.get("sfx_cues"), list) else []
+                new_cues = hydrated_slot[field] if isinstance(hydrated_slot.get(field), list) else []
+                if not new_cues and prev_cues:
+                    continue
+            merged[field] = hydrated_slot[field]
+        slots[slot_key] = merged
+        job["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    stitch_store.mutate_state(update)
+    return merged
 
 
 def handle_stitch_preview(h, body: dict)-> None:
@@ -1666,110 +3627,24 @@ def handle_stitch_preview(h, body: dict)-> None:
     consistency with _handle_stitch_bake / _handle_stitch_save_job per
     MUTATION_CHANNEL_INVARIANT_V1 + LD-456 SCOPE_VALIDATION_V1.
     """
-    # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+    # LD-456 SCOPE_VALIDATION_V1 — stitch partition scope (no BG activation).
+    job_name = (body.get("name") or "").strip()
+    from server_handlers.stitch_scope import assert_stitch_partition_scope  # noqa: PLC0415
+
+    binding = assert_stitch_partition_scope(h, body, job_name=job_name)
+    if binding is None:
         return
+    job_name = binding.job_name
+    stitch_store = binding.stitch_store
+    orig_stitch_state = None
+    if stitch_store is not h.app.stitch_state:
+        orig_stitch_state = h.app.stitch_state
+        h.app.stitch_state = stitch_store
     try:
-        hydrated = hydrate_stitch_pipeline_body(h, body)
-        out_path, slot_durations, slot_start_offsets_ms = h._stitch_build_pipeline(hydrated)
-    except (ValueError, PermissionError) as exc:
-        return h._send_error_v59(
-                   400,
-                   error_code="GENERIC_ERROR",
-                   error_message=str(exc),
-                   retry_safe=False,
-               )
-    except FileNotFoundError as exc:
-        return h._send_error_v59(
-                   404,
-                   error_code="GENERIC_ERROR",
-                   error_message=str(exc),
-                   retry_safe=False,
-               )
-    except RuntimeError as exc:
-        return h._send_error_v59(
-                   500,
-                   error_code="GENERIC_ERROR",
-                   error_message=str(exc),
-                   retry_safe=True,
-               )
-
-    # Strip the stitch_preview_ prefix for the URL hash segment
-    hash_id = out_path.stem.replace("stitch_preview_", "")
-    duration_ms = h._ffprobe_duration_ms(out_path)
-    return h._send_json(200, {
-        "preview_url": f"http://localhost:5111/api/stitch_editor/preview_file/{hash_id}",
-        "duration_ms": duration_ms,
-        "slot_durations": slot_durations,
-        "slot_start_offsets_ms": slot_start_offsets_ms,
-    })
-
-
-def handle_stitch_bake(h, body: dict)-> None:
-
-    """POST /api/stitch_editor/bake — final MP4, SIZE_BUDGET gates, Directus registration.
-
-    LD-140: bake IS registered (unlike preview). LD-280: single atomic MP4.
-    LD-283: ≤80MB. SIZE_BUDGET_VIDEO_V1: ≤1,900,000 bps.
-    """
-    # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
-        return
-
-    # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
-    _pin = {
-        "pinned_generation": h.app.event_generation,
-        "pinned_event_dir": h.app.event_dir,
-        "pinned_video_role": (body or {}).get("scope_video_role", "intro"),
-        "_handler": '_handle_stitch_bake',
-    }
-    # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — pre-work pin check (S2).
-    # If the event was swapped via /api/event/load between scope-guard
-    # and work start, abort BEFORE any expensive work begins.
-    if not h._check_event_pin(_pin, '_handle_stitch_bake_pre_work'):
-        return h._send_error_v59(
-                   423,
-                   error_code="EVENT_CHANGED_PRE_WORK",
-                   error_message="event_changed_pre_work",
-                   retry_safe=False,
-                   extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "handler": '_handle_stitch_bake', "hint": "Event changed between scope-guard and work start. "
-                "No work was done; no orphan output. Client should "
-                "re-hydrate scope and retry."},
-               )
-
-    import fcntl  # noqa: PLC0415
-
-    bake_lock_path = h._stitch_cache_dir() / "stitch_bake.lock"
-    bake_lock_path.touch(exist_ok=True)
-
-    try:
-        # nosec: CodeQL false-positive — lock_path from server stitch cache dir, not user input
-        fd = os.open(str(bake_lock_path), os.O_RDWR)
         try:
-            fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except (BlockingIOError, OSError):
-            os.close(fd)
-            return h._send_error_v59(
-                       409,
-                       error_code="BAKE_ALREADY_IN_PROGRESS",
-                       error_message="Bake already in progress",
-                       retry_safe=False,
-                   )
-    except Exception as exc:
-        return h._send_error_v59(
-                   500,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"Lock setup failed: {exc}",
-                   retry_safe=True,
-               )
-
-    try:
-        _body = hydrate_stitch_pipeline_body(h, body)
-        if not _body.get("slots"):
-            raise ValueError("No slots provided — assign videos to all stitch slots first")
-
-        try:
-            out_path, _durations, _slot_starts = h._stitch_build_pipeline(_body)
+            hydrated = hydrate_stitch_pipeline_body(h, body)
+            tag_stitch_pipeline_scope(hydrated)
+            out_path, slot_durations, slot_start_offsets_ms = h._stitch_build_pipeline(hydrated)
         except (ValueError, PermissionError) as exc:
             return h._send_error_v59(
                        400,
@@ -1792,101 +3667,615 @@ def handle_stitch_bake(h, body: dict)-> None:
                        retry_safe=True,
                    )
 
-        # SIZE_BUDGET_VIDEO_V1: ffprobe bitrate assertion ≤ 1,900,000 bps
+        # Strip the stitch_preview_ prefix for the URL hash segment
+        hash_id = out_path.stem.replace("stitch_preview_", "")
+        duration_ms = h._ffprobe_duration_ms(out_path)
+        expected_s = duration_ms / 1000.0 if duration_ms > 0 else 0.0
+        video_playable = stitch_cached_mp4_playable(out_path, expected_s=expected_s or None)
+        if not video_playable:
+            purge_stitch_cache_mp4(out_path)
+            return h._send_error_v59(
+                500,
+                error_code="STITCH_PREVIEW_NOT_PLAYABLE",
+                error_message=(
+                    "stitch preview failed decode smoke test — "
+                    f"rebuild slot or retry ({STITCH_SLOT_PREVIEW_V1})"
+                ),
+                retry_safe=True,
+                extra={"code": STITCH_SLOT_PREVIEW_VIDEO_PLAYABLE_V1},
+            )
+
+        mix_sig = None
+        slot_key = (body.get("slot") or "").strip()
+        if job_name and slot_key and _valid_stitch_slot(slot_key, job_name=job_name):
+            from server_handlers.stitch_media_artifacts import persist_stitch_slot_media_artifacts  # noqa: PLC0415
+            from server_handlers.stitch_media_sig import compute_stitch_mix_sig_from_slot  # noqa: PLC0415
+
+            hydrated_slot = _hydrated_preview_slot_dict(hydrated, slot_key)
+            slot = _persist_stitch_preview_slot_geometry(
+                h, job_name, slot_key, hydrated_slot,
+            ) if hydrated_slot else None
+            if not isinstance(slot, dict):
+                state = h.app.stitch_state.read_state() or {}
+                job = (state.get("jobs") or {}).get(job_name) or {}
+                slot = (job.get("slots") or {}).get(slot_key)
+            sig_source = hydrated_slot if isinstance(hydrated_slot, dict) else slot
+            if isinstance(sig_source, dict):
+                mix_sig = compute_stitch_mix_sig_from_slot(h, sig_source)
+                video_path = (sig_source.get("video_path") or "").strip()
+                mux_video_mtime_ms: int | None = None
+                if video_path:
+                    try:
+                        from server_handlers.stitch_media_sig import _video_mtime_ms  # noqa: PLC0415
+
+                        mux_video_mtime_ms = _video_mtime_ms(
+                            str(h._stitch_resolve_path(video_path)),
+                        )
+                    except (ValueError, TypeError, OSError):
+                        mux_video_mtime_ms = None
+                persist_stitch_slot_media_artifacts(
+                    h,
+                    job_name,
+                    slot_key,
+                    mix_sig=mix_sig,
+                    mux_preview_hash=hash_id,
+                    mux_preview_duration_ms=duration_ms,
+                    mux_video_path=video_path or None,
+                    mux_video_mtime_ms=mux_video_mtime_ms,
+                )
+
+        return h._send_json(200, {
+            "preview_url": _stitch_media_public_url(h, f"/api/stitch_editor/preview_file/{hash_id}"),
+            "mux_preview_hash": hash_id,
+            "mix_sig": mix_sig,
+            "duration_ms": duration_ms,
+            "slot_durations": slot_durations,
+            "slot_start_offsets_ms": slot_start_offsets_ms,
+            "video_playable": True,
+            "code": STITCH_SLOT_MEDIA_ARTIFACTS_V1,
+        })
+    finally:
+        if orig_stitch_state is not None:
+            h.app.stitch_state = orig_stitch_state
+
+
+def _persist_stitch_bake_job_pointer(h, stitch_job_name: str, job_id: str | None) -> None:
+    """Persist active bake job id on stitch state for reload reattach."""
+    store = stitch_state_store_for_job(h, stitch_job_name)
+
+    def mutate(state: dict) -> None:
+        job = state.setdefault("jobs", {}).setdefault(stitch_job_name, {})
+        if job_id:
+            job["active_bake_job_id"] = job_id
+        else:
+            job.pop("active_bake_job_id", None)
+
+    store.mutate_state(mutate)
+
+
+def _milestone_dir_for_stitch_job(h, job_name: str) -> Path | None:
+    mid = milestone_id_from_stitch_job_name(job_name)
+    if not mid:
+        return None
+    from lib.paths import runtime_production_root  # noqa: PLC0415
+
+    return (runtime_production_root(h.app.event_dir) / "Milestones" / mid).resolve()
+
+
+def _canonical_milestone_standalone_final_path(h, milestone_id: str) -> str | None:
+    """Kid-facing milestone final on disk for footer preview."""
+    from lib.milestone_store import load_milestone_state  # noqa: PLC0415
+
+    milestone_dir = _milestone_dir_for_stitch_job(
+        h, stitch_milestone_job_name(milestone_id),
+    )
+    if milestone_dir is None or not milestone_dir.is_dir():
+        return None
+    state = load_milestone_state(milestone_dir)
+    canonical_name = (state.get("canonical_standalone_final_file") or "").strip()
+    if not canonical_name:
+        rel = ((state.get("videos") or {}).get("standalone") or {}).get("completed_mp4_path")
+        if rel:
+            target = (milestone_dir / str(rel)).resolve()
+            if target.is_file() and str(target).startswith(str(milestone_dir.resolve())):
+                return str(target)
+        return None
+    target = (milestone_dir / "assembled" / canonical_name).resolve()
+    if not target.is_file():
+        target = (milestone_dir / canonical_name).resolve()
+    if target.is_file() and str(target).startswith(str(milestone_dir.resolve())):
+        return str(target)
+    return None
+
+
+def _run_stitch_bake_core(
+    h,
+    body: dict,
+    pin: dict,
+    *,
+    progress_cb=None,
+) -> dict:
+    """Execute stitch bake pipeline; returns ok payload or error dict (no HTTP)."""
+
+    def _progress(message: str, *, phase: str | None = None) -> None:
+        if progress_cb:
+            progress_cb(message, phase=phase)
+
+    from server_handlers.phases import ensure_phase_b_stitch_slot_for_bake  # noqa: PLC0415
+
+    job_name = (body.get("name") or "untitled").strip()
+    milestone_bake = is_milestone_stitch_job_name(job_name)
+    if not milestone_bake:
+        _progress("Refreshing Phase B delivery slot…", phase="encode")
+        preflight = ensure_phase_b_stitch_slot_for_bake(h)
+        if not preflight.get("ok", True):
+            return {
+                "ok": False,
+                "error_code": "PHASE_B_BAKE_PREFLIGHT_FAILED",
+                "error_message": preflight.get("error") or "Phase B bake preflight failed",
+                "retry_safe": True,
+            }
+
+    stitch_store = stitch_state_store_for_job(h, job_name) if job_name else h.app.stitch_state
+    orig_stitch_state = None
+    if stitch_store is not h.app.stitch_state:
+        orig_stitch_state = h.app.stitch_state
+        h.app.stitch_state = stitch_store
+    try:
+        _body = hydrate_stitch_pipeline_body(h, body)
+        _body["module_pipeline"] = True
+        tag_stitch_pipeline_scope(_body)
+        if not _body.get("slots"):
+            return {
+                "ok": False,
+                "error_code": "STITCH_NO_SLOTS",
+                "error_message": "No slots provided — assign videos to all stitch slots first",
+                "retry_safe": False,
+            }
+
         try:
-            # nosec: CodeQL false-positive — out_path from server _stitch_build_pipeline
+            out_path, _durations, _slot_starts = h._stitch_build_pipeline(_body)
+        except (ValueError, PermissionError) as exc:
+            return {
+                "ok": False,
+                "error_code": "GENERIC_ERROR",
+                "error_message": str(exc),
+                "retry_safe": False,
+            }
+        except FileNotFoundError as exc:
+            return {
+                "ok": False,
+                "error_code": "GENERIC_ERROR",
+                "error_message": str(exc),
+                "retry_safe": False,
+            }
+        except RuntimeError as exc:
+            return {
+                "ok": False,
+                "error_code": "GENERIC_ERROR",
+                "error_message": str(exc),
+                "retry_safe": True,
+            }
+
+        from credentials_lib.ffmpeg_stitch import (  # noqa: PLC0415
+            STITCH_EXPORT_AV_MAX_DRIFT_S,
+            assert_stitch_export_clips_av_aligned,
+            av_duration_drift_s,
+        )
+
+        # STITCH_MODULE_BAKE_AV_PARITY_V1 — block lean encode when pipeline master drifts.
+        try:
+            assert_stitch_export_clips_av_aligned([out_path])
+        except ValueError as exc:
+            return {
+                "ok": False,
+                "error_code": "STITCH_BAKE_AV_MISALIGNED",
+                "error_message": str(exc),
+                "retry_safe": True,
+            }
+
+        now_ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        exports_dir = h._stitch_exports_dir()
+        bake_name = f"stitch_{job_name}_{now_ts}_final.mp4"
+        bake_path = exports_dir / bake_name
+
+        from video_delivery import (  # noqa: PLC0415
+            MODULE_FINAL_LEAN_DELIVERY_CURRENT,
+            MODULE_FINAL_LEAN_MAX_BITRATE_BPS,
+            encode_module_final_lean,
+        )
+
+        _progress("Final delivery encode (VIDEO_QUALITY_V1)…", phase="encode")
+        try:
+            encode_module_final_lean(out_path, bake_path)
+        except Exception as exc:
+            bake_path.unlink(missing_ok=True)
+            return {
+                "ok": False,
+                "error_code": "MODULE_FINAL_LEAN_DELIVERY_FAILED",
+                "error_message": str(exc),
+                "retry_safe": True,
+            }
+
+        try:
             vp = subprocess.run(
                 ["ffprobe", "-v", "error", "-show_entries", "format=bit_rate",
-                 "-of", "json", str(out_path.resolve())],
+                 "-of", "json", str(bake_path.resolve())],
                 capture_output=True, timeout=10, check=True,
             )
             bitrate = int(json.loads(vp.stdout).get("format", {}).get("bit_rate", 0))
         except Exception:
             bitrate = 0
 
-        if bitrate > 1_900_000:
-            out_path.unlink(missing_ok=True)
-            return h._send_error_v59(
-                       422,
-                       error_code="GENERIC_ERROR",
-                       error_message=f"Video bitrate {bitrate:,} bps exceeds 1,900,000 bps (SIZE_BUDGET_VIDEO_V1)",
-                       retry_safe=False,
-                       extra={"actual_bps": bitrate},
-                   )
+        if bitrate <= 0 or bitrate > MODULE_FINAL_LEAN_MAX_BITRATE_BPS:
+            bake_path.unlink(missing_ok=True)
+            return {
+                "ok": False,
+                "error_code": "MODULE_FINAL_LEAN_BITRATE_V1",
+                "error_message": (
+                    f"Final delivery bitrate {bitrate:,} bps exceeds "
+                    f"{MODULE_FINAL_LEAN_MAX_BITRATE_BPS:,} bps cap"
+                ),
+                "retry_safe": False,
+                "actual_bps": bitrate,
+            }
 
-        # SIZE_BUDGET_PER_MODULE_V1: ≤ 80 MB
-        file_size = out_path.stat().st_size
+        file_size = bake_path.stat().st_size
         size_mb = file_size / (1024 * 1024)
         if size_mb > 80.0:
-            out_path.unlink(missing_ok=True)
-            return h._send_error_v59(
-                       422,
-                       error_code="GENERIC_ERROR",
-                       error_message=f"Output {size_mb:.1f} MB exceeds 80 MB ceiling (SIZE_BUDGET_PER_MODULE_V1)",
-                       retry_safe=False,
-                       extra={"actual_bytes": file_size},
-                   )
+            bake_path.unlink(missing_ok=True)
+            return {
+                "ok": False,
+                "error_code": "SIZE_BUDGET_PER_MODULE_V1",
+                "error_message": (
+                    f"Final delivery {size_mb:.1f} MB exceeds 80 MB ceiling"
+                ),
+                "retry_safe": False,
+                "actual_bytes": file_size,
+            }
 
-        # Copy to stable bake path
-        job_name = body.get("name") or "untitled"
-        now_ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        bake_name = f"stitch_{job_name}_{now_ts}.mp4"
-        exports_dir = h._stitch_exports_dir()
-        bake_path = exports_dir / bake_name
-        shutil.copy2(str(out_path), str(bake_path))
+        bake_av_drift_s = av_duration_drift_s(bake_path)
+        if bake_av_drift_s > STITCH_EXPORT_AV_MAX_DRIFT_S:
+            bake_path.unlink(missing_ok=True)
+            return {
+                "ok": False,
+                "error_code": "STITCH_BAKE_AV_MISALIGNED",
+                "error_message": (
+                    f"Final delivery A/V misaligned: drift {bake_av_drift_s:.3f}s "
+                    f"(max {STITCH_EXPORT_AV_MAX_DRIFT_S}s) "
+                    "(STITCH_MODULE_BAKE_AV_PARITY_V1)"
+                ),
+                "retry_safe": True,
+            }
 
-        # LD-421: register via registered_write.py two-write rule
-        asset_id = -1
+        from stitch_bake_finalize import (  # noqa: PLC0415
+            default_stitch_state_path,
+            finalize_milestone_stitch_bake,
+            finalize_stitch_bake,
+            resolve_m_and_event_numbers,
+        )
+
+        _progress("Pinning canonical + Directus…", phase="finalize")
+
+        if not h._check_event_pin(pin, "stitch_bake_finalize"):
+            return {
+                "ok": False,
+                "error_code": "EVENT_CHANGED_MID_JOB",
+                "error_message": "event_changed_mid_job",
+                "retry_safe": False,
+                "orphaned_bake_path": str(bake_path),
+            }
+
+        slots = _body.get("slots") or []
+        iter_notes = (
+            f"Stitch editor bake ({MODULE_FINAL_LEAN_DELIVERY_CURRENT} VIDEO_QUALITY_V1). "
+            f"Job: {job_name}. {len(slots)} slot(s), "
+            f"{sum(len(s.get('sfx_cues') or []) for s in slots)} SFX cues."
+        )
         try:
-            # registered_write lives in Production/tools/ (CODE tree)
-            sys.path.insert(0, str(_PSERVER_TOOLS_DIR))
-            from registered_write import register_asset  # noqa: PLC0415
-            slots = _body.get("slots") or []
-            iter_notes = (
-                f"Stitch editor bake. Job: {job_name}. "
-                f"{len(slots)} slot(s), {sum(len(s.get('sfx_cues') or []) for s in slots)} SFX cues."
-            )
-            # module_id resolved via state.event_id -> prod_modules per
-            # LD MODULE_ID_DYNAMIC_RESOLUTION_V1; closes the Rule 19
-            # "module_id=1 sentinel" stub class.
-            # LD-460 — terminal pin check before final asset register.
-            if not h._check_event_pin(_pin, "stitch_bake_register_asset"):
-                return h._send_error_v59(
-                           423,
-                           error_code="EVENT_CHANGED_MID_JOB",
-                           error_message="event_changed_mid_job",
-                           retry_safe=False,
-                           extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "orphaned_bake_path": str(bake_path)},
-                       )
-            asset_id, _ = register_asset(
-                file_path=str(bake_path),
-                asset_type="final_atomic_mp4",
-                module_id=_resolve_module_id_for_state(h.app.state),
-                event_id=None,
-                produced_by_skill="stitch-editor",
-                iteration_notes=iter_notes,
-                colloquial_name=job_name,
-                library=True,
-                notes=f"Stitch editor bake {now_ts}. Job: {job_name}. Slots: {[s.get('video_path','?') for s in slots]}",
-                role="delivery",
-            )
+            if milestone_bake:
+                milestone_dir = _milestone_dir_for_stitch_job(h, job_name)
+                if milestone_dir is None or not milestone_dir.is_dir():
+                    raise FileNotFoundError(f"milestone dir not found for job {job_name!r}")
+                finalize_result = finalize_milestone_stitch_bake(
+                    milestone_dir,
+                    bake_path,
+                    job_name=job_name,
+                    iteration_notes=iter_notes,
+                    notes=(
+                        f"Stitch editor milestone bake {now_ts} "
+                        f"({MODULE_FINAL_LEAN_DELIVERY_CURRENT}). Job: {job_name}."
+                    ),
+                    delivery_profile="module_final_lean",
+                )
+            else:
+                m_number, event_num = resolve_m_and_event_numbers(Path(h.app.event_dir))
+                finalize_result = finalize_stitch_bake(
+                    Path(h.app.event_dir),
+                    bake_path,
+                    module_id=_resolve_module_id_for_state(h.app.state),
+                    m_number=m_number,
+                    event_num=event_num,
+                    stitch_state_path=default_stitch_state_path(Path(h.app.event_dir)),
+                    job_name=job_name,
+                    iteration_notes=iter_notes,
+                    notes=(
+                        f"Stitch editor bake {now_ts} ({MODULE_FINAL_LEAN_DELIVERY_CURRENT}). "
+                        f"Job: {job_name}. "
+                        f"Slots: {[s.get('video_path', '?') for s in slots]}"
+                    ),
+                    delivery_profile="module_final_lean",
+                )
         except Exception as reg_exc:
-            print(f"[stitch-bake] WARN: Directus registration failed: {reg_exc}")
+            print(f"[stitch-bake] canonical finalize failed: {reg_exc}", flush=True)
+            return {
+                "ok": False,
+                "error_code": "STITCH_BAKE_CANONICAL_FAILED",
+                "error_message": str(reg_exc),
+                "retry_safe": True,
+                "export_bake_path": str(bake_path),
+            }
 
-        return h._send_json(200, {
+        asset_id = int(finalize_result.get("asset_id") or -1)
+        canonical_path = finalize_result.get("canonical_path") or str(bake_path)
+
+        def mutate(state: dict) -> None:
+            j = state.setdefault("jobs", {}).setdefault(job_name, {})
+            j["bake_path"] = canonical_path
+            j["last_bake_job_id"] = pin.get("_bake_job_id")
+            j.pop("active_bake_job_id", None)
+
+        stitch_store.mutate_state(mutate)
+
+        return {
             "ok": True,
             "asset_id": asset_id,
             "bake_name": bake_name,
             "bake_path": str(bake_path),
+            "export_bake_path": str(bake_path),
+            "canonical_path": canonical_path,
+            "canonical_name": finalize_result.get("canonical_name"),
+            "canonical_module_final_sha256": finalize_result.get("sha256"),
+            "directus_approved": finalize_result.get("directus_approved"),
             "file_size_bytes": file_size,
             "bitrate_bps": bitrate,
-        })
-
+            "delivery_profile": MODULE_FINAL_LEAN_DELIVERY_CURRENT,
+            "code": (
+                "STITCH_MILESTONE_BAKE_CANONICAL_V1"
+                if milestone_bake
+                else "STITCH_BAKE_CANONICAL_DIRECTUS_V1"
+            ),
+        }
     finally:
-        try:
-            fcntl.lockf(fd, fcntl.LOCK_UN)
-            os.close(fd)
-        except Exception:
-            pass
+        if orig_stitch_state is not None:
+            h.app.stitch_state = orig_stitch_state
+
+
+def _execute_stitch_bake_job(
+    h,
+    *,
+    job_id: str,
+    stitch_job_name: str,
+    body: dict,
+    pin: dict,
+    lock_path: Path,
+) -> None:
+    """Background worker: full bake pipeline with durable job-truth updates."""
+    from stitch_bake_job_store import (  # noqa: PLC0415
+        finalize_job,
+        update_job_progress,
+    )
+
+    pin = dict(pin)
+    pin["_bake_job_id"] = job_id
+    fd = None
+    try:
+        import fcntl  # noqa: PLC0415
+
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+
+        update_job_progress(
+            h.app.event_dir,
+            job_id,
+            status="running",
+            phase="encode",
+            message="Encoding final module MP4…",
+        )
+
+        def _job_progress(message: str, *, phase: str | None = None) -> None:
+            update_job_progress(
+                h.app.event_dir,
+                job_id,
+                status="running",
+                phase=phase or "encode",
+                message=message,
+            )
+
+        result = _run_stitch_bake_core(h, body, pin, progress_cb=_job_progress)
+        if result.get("ok"):
+            finalize_job(
+                h.app.event_dir,
+                job_id,
+                "done",
+                result=result,
+            )
+            _persist_stitch_bake_job_pointer(h, stitch_job_name, None)
+            return
+
+        finalize_job(
+            h.app.event_dir,
+            job_id,
+            "failed",
+            error=result.get("error_message") or "Bake failed",
+            result={"error_code": result.get("error_code"), **result},
+        )
+        _persist_stitch_bake_job_pointer(h, stitch_job_name, None)
+    except Exception as exc:
+        traceback.print_exc()
+        finalize_job(
+            h.app.event_dir,
+            job_id,
+            "failed",
+            error=str(exc),
+            result={"error_code": "STITCH_BAKE_EXCEPTION"},
+        )
+        _persist_stitch_bake_job_pointer(h, stitch_job_name, None)
+    finally:
+        if fd is not None:
+            try:
+                import fcntl  # noqa: PLC0415
+
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                os.close(fd)
+            except Exception:
+                pass
+
+
+def handle_stitch_bake(h, body: dict)-> None:
+
+    """POST /api/stitch_editor/bake — submit async final MP4 bake (STITCH_BAKE_JOB_TRUTH_V1).
+
+    LD-140: bake IS registered (unlike preview). LD-280: single atomic MP4.
+    MODULE_FINAL_LEAN two-pass: master archive ungated; lean delivery ≤960k bps + ≤80MB.
+    """
+    from stitch_bake_job_store import (  # noqa: PLC0415
+        STITCH_BAKE_JOB_TRUTH_V1,
+        bake_lock_is_free,
+        create_job,
+        find_active_job_for_stitch_job,
+        job_poll_payload,
+        new_job_id,
+        reconcile_stale_running_jobs,
+    )
+
+    # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+
+    stitch_job_name = (body.get("name") or "untitled").strip()
+    if not stitch_job_name:
+        return h._send_error_v59(
+            400,
+            error_code="STITCH_JOB_NAME_REQUIRED",
+            error_message="name required",
+            retry_safe=False,
+            extra={"code": STITCH_BAKE_JOB_TRUTH_V1},
+        )
+
+    # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; worker asserts at finalize.
+    _pin = {
+        "pinned_generation": h.app.event_generation,
+        "pinned_event_dir": h.app.event_dir,
+        "pinned_video_role": (body or {}).get("scope_video_role", "intro"),
+        "_handler": '_handle_stitch_bake',
+    }
+    if not h._check_event_pin(_pin, '_handle_stitch_bake_pre_work'):
+        return h._send_error_v59(
+            423,
+            error_code="EVENT_CHANGED_PRE_WORK",
+            error_message="event_changed_pre_work",
+            retry_safe=False,
+            extra={
+                "code": "ASYNC_JOB_GENERATION_PIN_V1",
+                "handler": '_handle_stitch_bake',
+                "hint": (
+                    "Event changed between scope-guard and work start. "
+                    "No work was done; client should re-hydrate scope and retry."
+                ),
+            },
+        )
+
+    bake_lock_path = h._stitch_cache_dir() / "stitch_bake.lock"
+    bake_lock_path.touch(exist_ok=True)
+    reconcile_stale_running_jobs(h.app.event_dir, bake_lock_path)
+
+    existing = find_active_job_for_stitch_job(h.app.event_dir, stitch_job_name)
+    if existing:
+        payload = job_poll_payload(existing)
+        payload.update({"ok": True, "reattach": True})
+        return h._send_json(200, payload)
+
+    if not bake_lock_is_free(bake_lock_path):
+        return h._send_error_v59(
+            409,
+            error_code="BAKE_ALREADY_IN_PROGRESS",
+            error_message="Bake already in progress",
+            retry_safe=False,
+            extra={"code": STITCH_BAKE_JOB_TRUTH_V1},
+        )
+
+    scope_body = h._scope_body(body)
+    scope_event_id = (
+        scope_body.get("scope_event_id")
+        or scope_body.get("event_id")
+        or h.app.event_dir.name
+    )
+    job_id = new_job_id()
+    create_job(
+        h.app.event_dir,
+        job_id=job_id,
+        stitch_job_name=stitch_job_name,
+        scope_event_id=str(scope_event_id),
+    )
+    _persist_stitch_bake_job_pointer(h, stitch_job_name, job_id)
+
+    worker = threading.Thread(
+        target=_execute_stitch_bake_job,
+        args=(h,),
+        kwargs={
+            "job_id": job_id,
+            "stitch_job_name": stitch_job_name,
+            "body": dict(body),
+            "pin": _pin,
+            "lock_path": bake_lock_path,
+        },
+        daemon=True,
+        name=f"stitch-bake-{job_id}",
+    )
+    worker.start()
+
+    job_record = find_active_job_for_stitch_job(h.app.event_dir, stitch_job_name) or {"job_id": job_id}
+    payload = job_poll_payload(job_record)
+    payload.update({"ok": True, "submitted": True})
+    return h._send_json(202, payload)
+
+
+def handle_stitch_bake_status(h)-> None:
+    """GET /api/stitch_editor/bake/status?job_id=xxx — poll bake job truth."""
+    from stitch_bake_job_store import (  # noqa: PLC0415
+        STITCH_BAKE_JOB_TRUTH_V1,
+        job_poll_payload,
+        load_job,
+        reconcile_stale_running_jobs,
+    )
+
+    qs = urllib.parse.parse_qs(urllib.parse.urlparse(h.path).query)
+    job_id = (qs.get("job_id") or [""])[0].strip()
+    if not job_id:
+        return h._send_error_v59(
+            400,
+            error_code="JOB_ID_REQUIRED",
+            error_message="job_id required",
+            retry_safe=False,
+            extra={"code": STITCH_BAKE_JOB_TRUTH_V1},
+        )
+
+    lock_path = h._stitch_cache_dir() / "stitch_bake.lock"
+    reconcile_stale_running_jobs(h.app.event_dir, lock_path)
+
+    job = load_job(h.app.event_dir, job_id)
+    if not job:
+        return h._send_error_v59(
+            404,
+            error_code="BAKE_JOB_NOT_FOUND",
+            error_message=f"Bake job {job_id!r} not found",
+            retry_safe=False,
+            extra={"code": STITCH_BAKE_JOB_TRUTH_V1},
+        )
+
+    payload = job_poll_payload(job)
+    payload["ok"] = True
+    return h._send_json(200, payload)
 
 

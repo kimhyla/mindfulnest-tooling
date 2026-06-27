@@ -1,7 +1,8 @@
-"""Regression — BG add-beat must use cross-process sidecar lock (not thread lock only).
+"""Regression — BG add-beat must use cross-process sidecar commit (not thread lock only).
 
 2026-06-14: add-beat used _sidecar_lock while O3 subprocesses used sidecar_file_lock().
 Concurrent whole-file writes dropped newly inserted beats (e.g. beat_27 vanished).
+P4: handlers use mutate_sidecar_locked / update_beat_locked instead of sidecar_file_lock.
 """
 from __future__ import annotations
 
@@ -18,9 +19,10 @@ def _handler_block(name: str) -> str:
     return text[start:end]
 
 
-def test_handle_bg_insert_beat_uses_sidecar_file_lock():
+def test_handle_bg_insert_beat_uses_mutate_sidecar_locked():
     block = _handler_block("handle_bg_insert_beat")
-    assert "with bg.sidecar_file_lock():" in block
+    assert "mutate_sidecar_locked(_insert" in block
+    assert "sidecar_file_lock" not in block
     assert "materialize_sidecar_beat_from_plan_row" in block
     assert "create_blank_bg_beat" not in block
 
@@ -31,23 +33,26 @@ def test_handle_bg_add_beat_deprecated_410():
     assert "410" in block
 
 
-def test_handle_bg_session_state_migrate_write_uses_sidecar_file_lock():
+def test_handle_bg_session_state_read_only_snapshot():
     block = _handler_block("handle_bg_session_state")
-    assert re.search(
-        r"with bg\.sidecar_file_lock\(\):\s*\n\s*sidecar = bg\.read_sidecar\(\)\s*\n\s*sidecar = bg\._migrate_sidecar",
-        block,
-    ), "session-state migrate+write must hold cross-process lock"
+    assert "read_sidecar_for_poll_snapshot" in block
+    assert "persist_heals" not in block
+    assert "_enrich_beats_job_busy" in block
+    assert "force_reconcile_o3" in block
+    assert "maybe_auto_register_beat_char_ref" not in block
 
 
-def test_handle_bg_delete_beat_uses_sidecar_file_lock():
+def test_handle_bg_delete_beat_uses_mutate_sidecar_locked():
     block = _handler_block("handle_bg_delete_beat")
-    assert "with bg.sidecar_file_lock():" in block
+    assert "mutate_sidecar_locked(_delete" in block
+    assert "sidecar_file_lock" not in block
     assert "with bg._sidecar_lock:" not in block
 
 
-def test_handle_bg_reorder_beats_uses_sidecar_file_lock():
+def test_handle_bg_reorder_beats_uses_mutate_sidecar_locked():
     block = _handler_block("handle_bg_reorder_beats")
-    assert "with bg.sidecar_file_lock():" in block
+    assert "mutate_sidecar_locked(_reorder" in block
+    assert "sidecar_file_lock" not in block
     assert "with bg._sidecar_lock:" not in block
 
 
@@ -56,11 +61,17 @@ def test_handle_bg_update_beat_syncs_without_heal_redirect():
         Path(__file__).resolve().parent.parent / "server_handlers" / "background.py"
     ).read_text(encoding="utf-8")
     block = text[text.index("def handle_bg_update_beat"):text.index("\ndef handle_bg_reorder_beats")]
-    assert "sync_element_char_ref_status(beat, heal_mismatch=False)" in block
+    assert "_BG_ELEMENT_CHAR_REF_SYNC_FIELDS" in block
+    assert "identity_fields_written" in block
+    assert "sync_element_char_ref_status(b, heal_mismatch=False)" in block
     assert re.search(
-        r"if written:\s*\n\s*bg\.sync_element_char_ref_status\(beat, heal_mismatch=False\)",
+        r"if identity_fields_written:\s*\n\s*bg\.sync_element_char_ref_status\(b, heal_mismatch=False(?:, sidecar=sidecar)?\)",
         block,
-    ), "bg_update_beat must not re-heal locked library drops after apply_user_beat_ref_update"
+    ), "bg_update_beat must sync Element gate only for speaker/reference_image writes"
+    assert "kling_o3_prompt" not in text[
+        text.index("_BG_ELEMENT_CHAR_REF_SYNC_FIELDS"):
+        text.index("_BG_ELEMENT_CHAR_REF_SYNC_FIELDS") + 200
+    ]
 
 
 def test_bgtab_wires_beat_missing_guard_helpers():
@@ -75,7 +86,7 @@ def test_bgtab_wires_beat_missing_guard_helpers():
         "bg-native-lipsync-submit-error",
         "bg-accept-opt-error",
         "bg-select-o3-error",
-        "bg-o3-trim-error",
+        "bg-o3-cut-error",
         "bg-still-clip-error",
     ):
         assert needle in text, f"missing beat-missing guard wiring near {needle}"

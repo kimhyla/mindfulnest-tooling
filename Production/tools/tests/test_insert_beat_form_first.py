@@ -75,9 +75,10 @@ def _parity_fields(beat: dict) -> dict:
     return out
 
 
-def test_handle_bg_insert_beat_uses_sidecar_file_lock():
+def test_handle_bg_insert_beat_uses_mutate_sidecar_locked():
     block = _handler_block("handle_bg_insert_beat")
-    assert "with bg.sidecar_file_lock():" in block
+    assert "mutate_sidecar_locked(_insert" in block
+    assert "sidecar_file_lock" not in block
     assert "materialize_sidecar_beat_from_plan_row" in block
     assert "create_blank_bg_beat" not in block
 

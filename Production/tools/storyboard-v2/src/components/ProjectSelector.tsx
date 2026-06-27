@@ -2,8 +2,8 @@
 // Per LD PROJECT_SELECTOR_V1 (S5.5e). Extends LD-467 MULTI_EVENT_SELECTOR_V1
 // with milestone listing + "+ New Milestone" via the shared Modal primitive.
 //
-// Replaces EventSelector. Reads /api/project/list (v3-added), posts
-// /api/event/load OR /api/milestones/load on change. Server's
+// Replaces EventSelector (removed from tab bar). Reads /api/project/list (v3-added),
+// navigates to dedicated port OR posts /api/event/load on change. Server's
 // event_load_lock + monotonic event_generation guarantee atomic swap.
 //
 // URL parsing: milestone wins if both ?event= and ?milestone= are present
@@ -12,9 +12,11 @@
 
 import { useEffect, useState } from 'preact/hooks';
 import {
-  activeScope, makeScope, activeProjectType, activeMilestoneId,
+  activeScope, makeScope, activeProjectType, activeMilestoneId, activeTargetVideo,
+  activeVideoRole, persistActiveMilestoneId, syncMilestoneUrlParams,
 } from '../state/scope';
 import { apiGet, pathappPatch, loadEvent, noteClientPinnedEvent } from '../api/client';
+import { provisionAndNavigateToDedicatedPortEvent } from '../state/scopeEventNavigate';
 import { Modal } from './ui/Modal';
 import { Select } from './ui/Select';
 import { pushToast } from './ui/Toast';
@@ -383,7 +385,10 @@ export function ProjectSelector() {
 
     if (next.startsWith('event:')) {
       const newEventId = next.slice('event:'.length);
-      // Wave 3 (blocker #50 F-S2-003a): loadEvent client helper.
+      // PROJECT_SELECTOR_DEDICATED_PORT_NAV_V1 + EVENT_DEDICATED_SERVER_PROVISION_V1
+      if (await provisionAndNavigateToDedicatedPortEvent(newEventId)) {
+        return;
+      }
       const result = await loadEvent(newEventId);
       if (!result.ok) {
         pushToast({
@@ -406,10 +411,17 @@ export function ProjectSelector() {
       noteClientPinnedEvent(data.event_id);
       activeProjectType.value = 'event';
       activeMilestoneId.value = null;
+      persistActiveMilestoneId(null);
+      activeTargetVideo.value = 'intro';
+      activeVideoRole.value = 'intro';
+      if (typeof document !== 'undefined') {
+        document.body.setAttribute('data-active-project-type', 'event');
+      }
       try {
         const url = new URL(window.location.href);
         url.searchParams.delete('milestone');
         url.searchParams.set('event', data.event_id);
+        url.searchParams.set('video', 'intro');
         window.history.replaceState({}, '', url.toString());
       } catch {
         // headless context — fine.
@@ -423,10 +435,14 @@ export function ProjectSelector() {
       if (result.ok && result.data?.ok) {
         activeProjectType.value = 'milestone';
         activeMilestoneId.value = milestoneId;
+        activeTargetVideo.value = 'standalone';
+        persistActiveMilestoneId(milestoneId);
+        syncMilestoneUrlParams(milestoneId);
         try {
           const url = new URL(window.location.href);
           url.searchParams.delete('event');
           url.searchParams.set('milestone', milestoneId);
+          url.searchParams.set('video', 'standalone');
           window.history.replaceState({}, '', url.toString());
         } catch {
           // headless context — fine.
@@ -493,6 +509,8 @@ export function ProjectSelector() {
           if (loadResult.ok && loadResult.data?.ok) {
             activeProjectType.value = 'milestone';
             activeMilestoneId.value = id;
+            activeTargetVideo.value = 'standalone';
+            persistActiveMilestoneId(id);
           } else {
             pushToast({
               kind: 'error',
@@ -510,7 +528,9 @@ export function ProjectSelector() {
           // it (mirrors R1.2 milestone pattern).
           setShowNewEvent(false);
           setRefreshTick((n) => n + 1);
-          // Wave 3 (blocker #51 F-S2-003b): loadEvent client helper.
+          if (await provisionAndNavigateToDedicatedPortEvent(id)) {
+            return;
+          }
           const loadRes = await loadEvent(id);
           if (loadRes.ok && loadRes.data) {
             const data = loadRes.data;
@@ -518,6 +538,7 @@ export function ProjectSelector() {
             noteClientPinnedEvent(data.event_id);
             activeProjectType.value = 'event';
             activeMilestoneId.value = null;
+            persistActiveMilestoneId(null);
           } else {
             pushToast({
               kind: 'error',

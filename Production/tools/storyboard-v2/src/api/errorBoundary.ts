@@ -1,6 +1,5 @@
 // V59 Phase 7 — global error boundary for canonical error shape.
-// Subscribers receive {error_code, error_message, retry_safe, hint, ...extra}.
-// Used by pathappPatch and any direct apiGet/fetch wrappers.
+// SCOPE_ERROR_DEDUPE_V1 — one banner surface; suppress duplicate scope events.
 
 export interface V59Error {
   error_code: string;
@@ -13,9 +12,38 @@ export interface V59Error {
 const MN_SCOPE_MISMATCH = 'mn:scope-mismatch';
 const MN_V59_ERROR = 'mn:v59-error';
 
+/** Suppress identical scope-mismatch dispatches within this window (toast/banner storm). */
+export const SCOPE_MISMATCH_DEDUPE_MS = 5000;
+
+let lastScopeMismatchAt = 0;
+let lastScopeMismatchKey = '';
+
+function scopeMismatchDedupeKey(err: V59Error): string {
+  return `${err.error_code}:${err.error_message}:${err.hint ?? ''}`;
+}
+
+export function resetScopeMismatchDedupe(): void {
+  lastScopeMismatchAt = 0;
+  lastScopeMismatchKey = '';
+}
+
+/** True when an identical scope mismatch was surfaced recently (for toast suppression). */
+export function isScopeMismatchRecentlySurfaced(err: Pick<V59Error, 'error_code' | 'error_message' | 'hint'>): boolean {
+  if (err.error_code !== 'SCOPE_MISMATCH') return false;
+  const key = scopeMismatchDedupeKey(err as V59Error);
+  return lastScopeMismatchKey === key
+    && Date.now() - lastScopeMismatchAt < SCOPE_MISMATCH_DEDUPE_MS;
+}
+
 export function dispatchV59Error(err: V59Error) {
-  // Scope-mismatch gets its own channel for ScopeBanner.
   if (err.error_code === 'SCOPE_MISMATCH') {
+    const key = scopeMismatchDedupeKey(err);
+    const now = Date.now();
+    if (now - lastScopeMismatchAt < SCOPE_MISMATCH_DEDUPE_MS && key === lastScopeMismatchKey) {
+      return;
+    }
+    lastScopeMismatchAt = now;
+    lastScopeMismatchKey = key;
     window.dispatchEvent(new CustomEvent(MN_SCOPE_MISMATCH, { detail: err }));
     return;
   }

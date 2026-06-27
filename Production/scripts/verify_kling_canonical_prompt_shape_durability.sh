@@ -38,10 +38,22 @@ grep -q 'KLING O3 CANONICAL PROMPT SHAPE V2' "$POLICY" \
 grep -q 'Emotion OUTSIDE quotes' "$AUTHOR_SKILL" \
   || fail "author SKILL missing emotion-outside-quotes rule"
 
+SMOKE_LIVE="${SCRIPT_DIR}/smoke_kling_canonical_prompt_shape_live.sh"
+[[ -f "$SMOKE_LIVE" ]] || fail "missing smoke_kling_canonical_prompt_shape_live.sh"
+grep -q 'KLING_V2_LIVE_SMOKE_SKIP_STILL_INSERT_V1' "$SMOKE_LIVE" \
+  || fail "live smoke must skip still-insert beats (KLING_V2_LIVE_SMOKE_SKIP_STILL_INSERT_V1)"
+grep -q 'KLING_V2_LIVE_SMOKE_MILESTONE_FALLBACK_V1' "$SMOKE_LIVE" \
+  || fail "live smoke must fall back to milestone standalone when event partitions are empty"
+grep -q '/api/milestones/load' "$SMOKE_LIVE" \
+  || fail "live smoke must milestones/load before milestone session-state"
+grep -q 'is_still_insert_prompt_text' "$SMOKE_LIVE" \
+  || fail "live smoke must use beat_generator.is_still_insert_prompt_text"
+
 cd "$TOOLS"
 python3 -m pytest \
   tests/test_kling_author_enrichment.py::test_canonical_prompt_shape_v2_tessa \
   tests/test_kling_author_enrichment.py::test_canonical_prompt_shape_v2_all_element_speakers \
+  tests/test_kling_author_enrichment.py::test_postprocess_replaces_lorelai_staging_with_loral \
   tests/test_element_voice_alignment.py \
   tests/test_kling_o3_duration_extraction.py \
   tests/test_kling_voice_bind.py \

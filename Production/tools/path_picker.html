@@ -265,6 +265,10 @@
   // Legacy flows still supported for backward compat:
   //   ?scene_key=…              → original visible-magic skill (no mode param)
   //   ?source=…&return_endpoint=… → S4 watercolor animate (treated as watercolor_animate mode)
+  // Dedicated event tabs (5112, 5114, …) must load/submit on the same origin — not hardcoded :5111.
+  const API_ORIGIN       = (typeof window !== 'undefined' && window.location && window.location.origin)
+                        ? window.location.origin
+                        : 'http://localhost:5111';
   const params           = new URLSearchParams(location.search);
   const explicitMode     = (params.get('mode') || '').trim();
   const sceneKey         = params.get('scene_key') || '';
@@ -397,7 +401,7 @@
   window.addEventListener('DOMContentLoaded', () => {
     if (mode === 'watercolor_animate') {
       // S5 — fetch watercolor source from /api/phase/watercolor_file
-      const url = `http://localhost:5111/api/phase/watercolor_file?key=${encodeURIComponent(watercolorKey)}`;
+      const url = `${API_ORIGIN}/api/phase/watercolor_file?key=${encodeURIComponent(watercolorKey)}`;
       loadImageFromURL(url);
     } else if (mode === 'magic_still' || mode === 'magic_video') {
       if (mode === 'magic_video' && sourceVideoPath) {
@@ -412,7 +416,7 @@
         loadVideoFrameAsBackground(sourceVideoPath);
       } else if (sourceImagePath) {
         // magic_still mode, or magic_video fallback when no video path
-        loadImageFromURL(`http://localhost:5111/files?path=${encodeURIComponent(sourceImagePath)}`);
+        loadImageFromURL(`${API_ORIGIN}/files?path=${encodeURIComponent(sourceImagePath)}`);
       } else {
         setDropText([
           { text: 'No source_image_path provided.' },
@@ -472,7 +476,7 @@
       { tag: 'br' },
       { tag: 'small', style: 'color:#888', text: 'Draw your path on the actual video frame below.' },
     ]);
-    const url = `http://localhost:5111/api/storyboard/video_frame?path=${encodeURIComponent(videoPath)}&t=0`;
+    const url = `${API_ORIGIN}/api/storyboard/video_frame?path=${encodeURIComponent(videoPath)}&t=0`;
     const image = new Image();
     image.onload = () => {
         applyImage(image);
@@ -781,7 +785,7 @@
       }
 
       try {
-        const resp = await fetch(`http://localhost:5111${returnEndpointPath}`, {
+        const resp = await fetch(`${API_ORIGIN}${returnEndpointPath}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
@@ -860,7 +864,7 @@
       // was opened from a different origin (file://, browser cache origin,
       // proxy port). Matches the existing pattern at lines 382/389/721 in
       // this file.
-      const resp = await fetch('http://localhost:5111/api/magic/submit_path', {
+      const resp = await fetch(`${API_ORIGIN}/api/magic/submit_path`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),

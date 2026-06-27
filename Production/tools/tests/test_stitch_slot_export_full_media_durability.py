@@ -39,6 +39,9 @@ class _MockStitchState:
     def __init__(self):
         self.state = {"jobs": {}}
 
+    def read_state(self):
+        return self.state
+
     def mutate_state(self, fn):
         fn(self.state)
 
@@ -53,9 +56,12 @@ class StitchSlotExportFullMediaTests(unittest.TestCase):
             _make_tone_mp4(video, 38.5)
             rel = f"Production/Event_FULL/{video.name}"
 
+            store = _MockStitchState()
             h = mock.Mock()
             h.app = mock.Mock()
-            h.app.stitch_state = _MockStitchState()
+            h.app.stitch_state = store
+            # stitch_state_store_for_job prefers _event_stitch_state over stitch_state.
+            h.app._event_stitch_state = store
             h._stitch_resolve_path = lambda raw: str(root / raw)
             h._ffprobe_duration_ms = lambda p: int(
                 float(
@@ -79,20 +85,20 @@ class StitchSlotExportFullMediaTests(unittest.TestCase):
                 "server_handlers.stitch_editor.apply_stitch_slot_default_ambient_preset",
                 return_value=False,
             ), mock.patch(
-                "server_handlers.stitch_editor.ensure_stitch_intro_default_whoosh_cue",
+                "server_handlers.stitch_editor.ensure_stitch_slot_canonical_default_sfx_cues",
                 return_value=False,
             ), mock.patch(
                 "server_handlers.stitch_editor.sync_stitch_slot_video_dur_ms",
                 return_value=False,
             ):
-                job_name, probed_ms, _warnings = stitch_upsert_event_slot(
+                job_name, probed_ms, _warnings, _playback = stitch_upsert_event_slot(
                     h,
                     "Event_FULL",
                     "intro",
                     {"video_path": rel, "source": "kling_o3_export_pre"},
                 )
 
-            slot = h.app.stitch_state.state["jobs"][job_name]["slots"]["intro"]
+            slot = store.state["jobs"][job_name]["slots"]["intro"]
             self.assertEqual(slot["video_path"], rel)
             self.assertGreater(probed_ms, 35_000)
             self.assertEqual(slot["video_dur_ms"], probed_ms)

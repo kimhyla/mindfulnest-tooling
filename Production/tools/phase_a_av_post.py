@@ -357,6 +357,7 @@ def trim_av_trailing_silence(
     dst: Path,
     *,
     hold_after_speech_s: float = TRAILING_SPEECH_HOLD_S,
+    max_trim_s: float | None = None,
 ) -> tuple[Path, float]:
     """Cut trailing silence + post-pad lip motion; keep a short hold after last speech."""
     src = src.expanduser().resolve()
@@ -369,6 +370,9 @@ def trim_av_trailing_silence(
     else:
         target = min(total, silence_start + hold_after_speech_s)
     trimmed_s = max(0.0, total - target)
+    if max_trim_s is not None:
+        trimmed_s = min(trimmed_s, max(0.0, max_trim_s))
+        target = total - trimmed_s
     if trimmed_s < 0.08:
         if dst != src:
             subprocess.run(
@@ -406,6 +410,89 @@ def trim_av_trailing_silence(
         f"-> {dst.name} ({_ffprobe_duration(dst):.2f}s)"
     )
     return dst, trimmed_s
+
+
+def ensure_stem_duration_floor(
+    src: Path,
+    dst: Path,
+    stem_duration_s: float,
+) -> tuple[Path, float]:
+    """Pad tail when post-trim output is shorter than the source voice stem.
+
+    ByteDance lead/trailing trims must never cut audible dialogue at the end.
+    """
+    src = src.expanduser().resolve()
+    dst = dst.expanduser().resolve()
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    cur = _ffprobe_duration(src)
+    if cur >= stem_duration_s - 0.05:
+        if dst != src:
+            subprocess.run(
+                [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-i", str(src), "-c", "copy", str(dst),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=120,
+            )
+        return (dst if dst.is_file() else src), 0.0
+
+    pad_s = stem_duration_s - cur
+    tmp = dst.with_suffix(".tmp.mp4")
+    # Long clone tails read as frozen mid-gesture EOF — loop a short tail slice instead.
+    if pad_s > 0.35:
+        tail_src_s = min(0.75, max(0.25, cur * 0.15))
+        tail_slice = dst.parent / f"{dst.stem}_tail_loop_src.mp4"
+        looped_tail = dst.parent / f"{dst.stem}_tail_loop.mp4"
+        subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-sseof", f"-{tail_src_s:.3f}",
+                "-i", str(src),
+                "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                "-pix_fmt", "yuv420p", "-an",
+                "-movflags", "+faststart",
+                str(tail_slice),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=120,
+        )
+        crossfade_loop_video(tail_slice, looped_tail, pad_s, fps=DEFAULT_FPS)
+        filter_complex = (
+            f"[0:v][1:v]concat=n=2:v=1:a=0[vout];"
+            f"[0:a]apad=pad_dur={pad_s:.3f}[aout]"
+        )
+        inputs = ["-i", str(src), "-i", str(looped_tail)]
+    else:
+        filter_complex = (
+            f"[0:v]tpad=stop_mode=clone:stop_duration={pad_s:.3f}[vout];"
+            f"[0:a]apad=pad_dur={pad_s:.3f}[aout]"
+        )
+        inputs = ["-i", str(src)]
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        *inputs,
+        "-filter_complex", filter_complex,
+        "-map", "[vout]", "-map", "[aout]",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "1",
+        "-movflags", "+faststart",
+        str(tmp),
+    ]
+    subprocess.run(cmd, check=True, capture_output=True, timeout=300)
+    tmp.replace(dst)
+    if pad_s > 0.35:
+        tail_slice.unlink(missing_ok=True)
+        looped_tail.unlink(missing_ok=True)
+    mode = "tail_loop" if pad_s > 0.35 else "clone"
+    log(
+        f"stem floor pad +{pad_s:.3f}s ({mode}, was {cur:.2f}s, stem={stem_duration_s:.2f}s) "
+        f"-> {dst.name}"
+    )
+    return dst, pad_s
 
 
 def apply_smooth_zoom(

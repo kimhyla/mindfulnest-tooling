@@ -26,6 +26,10 @@ export function ScopeBanner() {
     const onMismatch = (e: Event) => {
       const detail = (e as CustomEvent).detail ?? {};
       const detailMap = detail as Record<string, unknown>;
+      // SCOPE_ERROR_DEDUPE_V1 — one persistent banner; ignore repeat events.
+      if (banner.value.kind === 'mismatch') {
+        return;
+      }
       // Wave 5 R3: prefer V59 canonical error shape (Phase 7) when present;
       // fall back to legacy detail.data shape used by LD-456 pre-V59 emitters.
       const v59Message = detailMap['error_message'];

@@ -239,9 +239,22 @@ test.describe('BG_GOLDEN_PATH_V1 — Beat Gen operator chain', () => {
 
     await page.route('**/api/bg/export-to-stitcher', async (r) => {
       await r.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true, submitted: true, job_id: 'export-test-1', status: 'queued' }),
+      });
+    });
+
+    await page.route('**/api/bg/poll-export-to-stitcher*', async (r) => {
+      await r.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ ok: true, slot_key: 'intro', video_path: '/fake/stitch/intro.mp4' }),
+        body: JSON.stringify({
+          ok: true,
+          job_id: 'export-test-1',
+          status: 'done',
+          result: { ok: true, slot_key: 'intro', video_path: '/fake/stitch/intro.mp4' },
+        }),
       });
     });
 

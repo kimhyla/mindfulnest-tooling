@@ -1,7 +1,15 @@
-// API endpoint catalog. Rule 32 — absolute http://localhost:5111 URLs only;
-// never relative paths. Every fetch in this app routes through one of these.
+// API endpoint catalog. Rule 32 — absolute URLs on the serving origin.
+// Single-server mode: every Event_N uses http://localhost:5111/?event=Event_N
+// (see scopeAuthority SINGLE_STORYBOARD_PORT + DUAL_EVENT_DEDICATED_PORTS).
 
-export const SERVER_BASE = 'http://localhost:5111';
+function resolveServerBase(): string {
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    return window.location.origin;
+  }
+  return 'http://localhost:5111';
+}
+
+export const SERVER_BASE = resolveServerBase();
 
 // READ endpoints (Session 1 uses these for the placeholder render).
 // Note: v2_event_state is intentionally a template; the server expects
@@ -9,6 +17,7 @@ export const SERVER_BASE = 'http://localhost:5111';
 // {event_id} from the query dict into the URL before issuing the request.
 export const READ_ENDPOINTS = {
   cr_library: `${SERVER_BASE}/api/cr/library`,
+  cr_thumb: `${SERVER_BASE}/api/cr/thumb`,
   cr_full: `${SERVER_BASE}/api/cr/full`,
   v2_event_state: `${SERVER_BASE}/api/v2/event/{event_id}/state`,
   v2_sidecar: `${SERVER_BASE}/api/v2/storyboard/L.json`,
@@ -41,6 +50,7 @@ export const READ_ENDPOINTS = {
   bg_poll_gpt_status: `${SERVER_BASE}/api/bg/poll-gpt-status`,
   bg_poll_arlo_o3_voice_status: `${SERVER_BASE}/api/bg/poll-arlo-o3-voice-status`,
   bg_poll_kling_native_lipsync_experiment_status: `${SERVER_BASE}/api/bg/poll-kling-native-lipsync-experiment-status`,
+  bg_poll_export_to_stitcher: `${SERVER_BASE}/api/bg/poll-export-to-stitcher`,
   // S5.5e — Storyboard beat-level reads.
   // beat_audio is a templated path: GET /api/beat/audio/<beat_id>?event_id=...
   // apiGet() substitutes {beat_id} from the query dict before issuing.
@@ -50,6 +60,8 @@ export const READ_ENDPOINTS = {
   stitch_editor_jobs: `${SERVER_BASE}/api/stitch_editor/jobs`,
   stitch_editor_job: `${SERVER_BASE}/api/stitch_editor/job/{job_name}`,
   stitch_editor_beat_boundaries: `${SERVER_BASE}/api/stitch_editor/beat_boundaries`,
+  stitch_bake_status: `${SERVER_BASE}/api/stitch_editor/bake/status`,
+  stitch_module_final: `${SERVER_BASE}/api/stitch_editor/module_final`,
 } as const;
 
 // MUTATION endpoints — Session 1 ships ZERO callers of these; they exist
@@ -64,6 +76,7 @@ export const MUTATION_ENDPOINTS = {
   bg_extract_beats: `${SERVER_BASE}/api/bg/extract-beats`,
   bg_extract_beats_plan: `${SERVER_BASE}/api/bg/extract-beats/plan`,
   bg_extract_beats_approve: `${SERVER_BASE}/api/bg/extract-beats/approve`,
+  bg_extract_beats_draft_save: `${SERVER_BASE}/api/bg/extract-beats/draft/save`,
   bg_generate_kling_prompts: `${SERVER_BASE}/api/bg/generate-kling-prompts`,
   bg_inject_beats: `${SERVER_BASE}/api/bg/inject-beats`,
   bg_update_beat: `${SERVER_BASE}/api/bg/update-beat`,
@@ -92,6 +105,8 @@ export const MUTATION_ENDPOINTS = {
   event_load: `${SERVER_BASE}/api/event/load`,
   // S5.5c+e proper-fix +NewEvent — server-side event-dir creation
   event_create: `${SERVER_BASE}/api/event/create`,
+  // EVENT_DEDICATED_SERVER_PROVISION_V1 — launchd agent for Event_N before port navigation
+  event_provision_server: `${SERVER_BASE}/api/event/provision_server`,
   // S3 v3.1 — phase + animate + stitcher mutations.
   phase_suggest_script: `${SERVER_BASE}/api/phase/suggest_script`,
   watercolor_animate: `${SERVER_BASE}/api/watercolor/animate`,
@@ -115,9 +130,11 @@ export const MUTATION_ENDPOINTS = {
   phase_a_apply_stem_cut: `${SERVER_BASE}/api/phase_a/apply_stem_cut`,
   phase_a_regen_flyin_flyout: `${SERVER_BASE}/api/phase_a/regen_flyin_flyout`,
   phase_a_regen_base_clip: `${SERVER_BASE}/api/phase_a/regen_base_clip`,
+  phase_b_regen_base_clip: `${SERVER_BASE}/api/phase_b/regen_base_clip`,
   phase_a_restitch: `${SERVER_BASE}/api/phase_a/restitch`,
   stitch_save_job: `${SERVER_BASE}/api/stitch_editor/job`,
   stitch_audio_extract: `${SERVER_BASE}/api/stitch_editor/audio_extract`,
+  media_playback_resolve: `${SERVER_BASE}/api/media/playback_resolve`,
   // S5.5g — module-level SFX cue upsert (separate from per-slot sfx_cues
   // which travel inside stitch_save_job.slots[i].sfx_cues per audit doc §3).
   timeline_cue_upsert: `${SERVER_BASE}/api/timeline/cues`,
@@ -149,6 +166,7 @@ export const MUTATION_ENDPOINTS = {
   bg_submit_kling_native_lipsync_experiment: `${SERVER_BASE}/api/bg/submit-kling-native-lipsync-experiment`,
   bg_select_o3_video: `${SERVER_BASE}/api/bg/select-o3-video`,
   bg_render_still_clip: `${SERVER_BASE}/api/bg/render-still-clip`,
+  bg_set_pipeline: `${SERVER_BASE}/api/bg/set-pipeline`,
   bg_kling_o3_trim: `${SERVER_BASE}/api/bg/kling-o3-trim`,
   bg_accept_option: `${SERVER_BASE}/api/bg/accept-option`,
   bg_accept_lib_image: `${SERVER_BASE}/api/bg/accept-lib-image`,
@@ -196,9 +214,9 @@ export function isMutationEndpoint(e: Endpoint): e is MutationEndpoint {
 
 // LD-461 SCOPE_BODY_HELPER_V1 — handler convention.
 // BG endpoints have an `event_id` body field that means BG segment number,
-// NOT storyboard scope. The v59 client must send the storyboard scope as
-// `scope_event_id` for these endpoints. Non-BG endpoints accept either
-// `event_id` or `scope_event_id` (the server's _scope_body helper coalesces).
+// NOT storyboard scope. The v59 client sends the storyboard scope as
+// `scope_event_id` for ALL mutations (TECH_SPEC_PATHAPP_SCOPE_EVENT_ID_ONLY_V1).
+// Server `_scope_body` coalesces scope_event_id || event_id for guards.
 export const BG_MUTATION_ENDPOINTS: ReadonlySet<MutationEndpoint> = new Set<MutationEndpoint>([
   'bg_accept_beats',
   'bg_export_to_stitcher',
@@ -206,6 +224,7 @@ export const BG_MUTATION_ENDPOINTS: ReadonlySet<MutationEndpoint> = new Set<Muta
   'bg_extract_beats',
   'bg_extract_beats_plan',
   'bg_extract_beats_approve',
+  'bg_extract_beats_draft_save',
   'bg_generate_kling_prompts',
   'bg_inject_beats',
   'bg_update_beat',
@@ -221,10 +240,13 @@ export const BG_MUTATION_ENDPOINTS: ReadonlySet<MutationEndpoint> = new Set<Muta
   'bg_submit_gpt_batch',
   'bg_submit_kling_native_lipsync_experiment',
   'bg_render_still_clip',
+  'bg_set_pipeline',
   'bg_accept_option',
   'bg_accept_lib_image',
 ]);
 
-export function scopeKeyFor(endpoint: MutationEndpoint): 'event_id' | 'scope_event_id' {
-  return BG_MUTATION_ENDPOINTS.has(endpoint) ? 'scope_event_id' : 'event_id';
+/** @deprecated Injection uses scope_event_id only; kept for docs/e2e references. */
+export function scopeKeyFor(endpoint: MutationEndpoint): 'scope_event_id' {
+  void endpoint;
+  return 'scope_event_id';
 }

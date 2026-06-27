@@ -68,7 +68,19 @@ class StitchSlotAudioExtractDurabilityTests(unittest.TestCase):
         editor = (TOOLS / "server_handlers" / "stitch_editor.py").read_text(encoding="utf-8")
         self.assertIn("STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1", editor)
         self.assertIn("STITCH_SLOT_AUDIO_EXTRACT_TRUNCATED", editor)
+        self.assertIn("STITCH_SLOT_AV_DRIFT", editor)
+        self.assertIn("STITCH_AUDIO_MAX_DRIFT_MS", editor)
+        self.assertIn("stitch_slot_av_drift_exceeds", editor)
         self.assertIn("expected_video_dur_ms", editor)
+        self.assertIn("apad=whole_dur", editor)
+        self.assertIn("mono_v3", editor)
+
+    def test_stitcher_slot_waveform_tight_drift_guard(self):
+        ui = (
+            TOOLS / "storyboard-v2" / "src" / "components" / "StitcherSlotWaveform.tsx"
+        ).read_text(encoding="utf-8")
+        self.assertIn("> 2000", ui)
+        self.assertIn("videoDur * 0.015", ui)
 
 
 if __name__ == "__main__":

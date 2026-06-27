@@ -1,6 +1,14 @@
 // SCOPE_PIN_AUTHORITY_V1 — which client contexts may POST /api/event/load to
 // re-pin the server. Background polls must NOT fight other tabs; only URL-deep-
 // link or explicit user pin (ScopeBoundary / Project selector) may heal on 409.
+//
+// SCOPE_CLIENT_AUTHORITY_V1 — dedicated port 5110+N ↔ Event_N (event_server_port.sh).
+
+import {
+  buildDedicatedPortEventUrl,
+  dedicatedPortEventIdFromPort,
+  eventIdToDedicatedPortNumber,
+} from './scopeAuthorityResolve';
 
 /** Last event_id this tab intentionally pinned via ScopeBoundary or Project menu. */
 let explicitClientEventId: string | null = null;
@@ -35,4 +43,38 @@ export function clientScopeOverridesServerPin(serverEventId: string): boolean {
   if (urlEvent) return urlEvent !== serverEventId;
   if (explicitClientEventId) return explicitClientEventId !== serverEventId;
   return false;
+}
+
+/** EVENT_DEDICATED_PORT_V1 — Event_N → localhost:(5110+N). Always on (2026-06). */
+export function eventIdToDedicatedPort(eventId: string): number | null {
+  return eventIdToDedicatedPortNumber(eventId);
+}
+
+/** True when this tab's origin port is the dedicated port for eventId. */
+export function isDedicatedPortForEvent(eventId: string): boolean {
+  if (typeof window === 'undefined') return false;
+  const expected = eventIdToDedicatedPort(eventId);
+  if (expected == null) return false;
+  const port = parseInt(window.location.port || '80', 10);
+  return port === expected;
+}
+
+/** When ?event= is on the wrong port, return the bookmark URL the tab should use. */
+export function dedicatedPortBookmarkUrl(eventId: string): string | null {
+  if (typeof window === 'undefined') return null;
+  const expected = eventIdToDedicatedPort(eventId);
+  if (expected == null) return null;
+  const port = parseInt(window.location.port || '80', 10);
+  if (port === expected) return null;
+  return buildDedicatedPortEventUrl({ eventId });
+}
+
+/**
+ * DEDICATED_PORT_SCOPE_TRUTH_V1 — infer Event_N from window.location.port.
+ * Matches Production/scripts/event_server_port.sh port_to_event_id.
+ */
+export function readDedicatedPortEventId(): string | null {
+  if (typeof window === 'undefined') return null;
+  const port = parseInt(window.location.port || '0', 10);
+  return dedicatedPortEventIdFromPort(port);
 }

@@ -56,6 +56,7 @@ ARCHETYPE_SPEED_LADDER: dict[str, list[float]] = {
 }
 
 CHARACTER_ARCHETYPE: dict[str, str] = {
+    "Arlo": "guide",
     "Chipper": "guide",
     "Tessa": "vulnerable",
     "Benson": "warm_adult",

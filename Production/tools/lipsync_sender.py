@@ -71,6 +71,11 @@ def lipsync_poll_url(job_id: str) -> str:
     return f"{PREDICTIONS_POLL_BASE}/{job_id}/result"
 
 COST_PER_LIPSYNC = 0.35  # Kling lipsync per job (SWITCH_TO_KLING_LIPSYNC_20260524)
+
+AVATAR_PRO_ENDPOINT = (
+    "https://api.wavespeed.ai/api/v3/kwaivgi/kling-v2-ai-avatar-pro"
+)
+AVATAR_PRO_MODEL = "kwaivgi/kling-v2-ai-avatar-pro"
 MAX_RETRIES = 3
 RETRY_BACKOFF = [5, 10, 20]  # seconds
 POLL_INTERVAL = 10  # seconds between polls
@@ -252,20 +257,111 @@ def _preflight_download_url(file_path: Path, url: str, *, host: str) -> dict | N
         return None
 
 
+def _upload_to_r2_staging(file_path: Path, token: str) -> dict | None:
+    """Upload to R2 CDN when credentials exist; return preflight proof or None."""
+    try:
+        from lipsync_staging import (
+            content_type_for,
+            r2_public_url,
+            r2_staging_key,
+        )
+    except ImportError:
+        return None
+    try:
+        from Production.scripts import r2_upload  # type: ignore
+    except ImportError:
+        try:
+            import sys
+            scripts = Path(__file__).resolve().parents[1] / "scripts"
+            if str(scripts) not in sys.path:
+                sys.path.insert(0, str(scripts.parent))
+            from Production.scripts import r2_upload  # type: ignore
+        except ImportError:
+            return None
+    key = r2_staging_key(token, file_path.name)
+    try:
+        r2_upload.upload(
+            file_path,
+            key,
+            content_type_for(file_path),
+            "public, max-age=3600",
+            log=False,
+        )
+    except r2_upload.R2CredentialsMissingError:
+        return None
+    except r2_upload.R2RequestError as exc:
+        print(f"[lipsync] R2 staging upload failed for {file_path.name}: {exc}")
+        return None
+    url = r2_public_url(key)
+    return _preflight_download_url(file_path, url, host="r2_cdn")
+
+
+def _upload_via_production_staging(file_path: Path) -> dict | None:
+    """Stage under event_dir/_lipsync_staging when subprocess env is set."""
+    try:
+        from lipsync_staging import (
+            staging_event_dir_from_env,
+            staging_public_base_from_env,
+            staging_token_from_env,
+            upload_via_production_staging,
+        )
+    except ImportError:
+        return None
+    event_dir = staging_event_dir_from_env()
+    token = staging_token_from_env()
+    public_base = staging_public_base_from_env()
+    if not event_dir or not token or not public_base:
+        return None
+    try:
+        from lipsync_staging import is_public_staging_base
+    except ImportError:
+        is_public_staging_base = None  # type: ignore[assignment]
+    if is_public_staging_base and not is_public_staging_base(public_base):
+        print(
+            f"[lipsync] skipping production staging: public base is not WaveSpeed-reachable "
+            f"({public_base!r})"
+        )
+        return None
+    try:
+        return upload_via_production_staging(
+            file_path,
+            event_dir=event_dir,
+            token=token,
+            public_base=public_base,
+            preflight_fn=_preflight_download_url,
+        )
+    except Exception as exc:
+        print(f"[lipsync] production staging failed for {file_path.name}: {exc}")
+        return None
+
+
 def upload_to_hosting(file_path: Path) -> dict:
     """
     Upload a file to public hosting and prove the URL returns exact bytes.
 
-    Filebin is first because it redirects to a presigned raw object URL. Catbox
-    remains as fallback. Uguu is last because it is less reliable from Kim's
-    network and WaveSpeed previously failed to fetch the older temp-host URLs.
+    Order (voice-first durability):
+    1. production_server staging (``MN_LIPSYNC_STAGING_*`` env from Beat Gen subprocess)
+    2. R2 CDN when credentials exist (``ops/lipsync-staging/{token}/…``)
+    3. Ephemeral hosts — filebin, catbox, uguu (legacy fallback)
     """
+    failures: list[str] = []
+    token = os.environ.get("MN_LIPSYNC_STAGING_TOKEN", "").strip() or uuid.uuid4().hex
+
+    staging_proof = _upload_via_production_staging(file_path)
+    if staging_proof:
+        return staging_proof
+    failures.append("production_staging: unavailable or preflight failed")
+
+    r2_proof = _upload_to_r2_staging(file_path, token)
+    if r2_proof:
+        return r2_proof
+    failures.append("r2_cdn: unavailable or preflight failed")
+
     attempts = (
         ("filebin.net", _upload_to_filebin),
         ("catbox.moe", _upload_to_catbox),
         ("uguu.se", _upload_to_uguu),
     )
-    failures = []
     for host, uploader in attempts:
         url = uploader(file_path)
         if not url:
@@ -627,6 +723,50 @@ class LipSyncClient:
 
         print(f"[lipsync] Submitted successfully, job_id={job_id}")
         return job_id
+
+    def submit_avatar_pro(
+        self,
+        still_path: Path,
+        audio_path: Path,
+        prompt: str,
+        *,
+        timeout: int = 180,
+    ) -> str:
+        """Submit Kling V2 Avatar Pro — still PNG + audio + prompt via data URI."""
+        from kling_startend_pipeline import (  # noqa: WPS433
+            ensure_avatar_still_dimensions,
+            ensure_min_dimensions,
+        )
+
+        still_path = Path(still_path).resolve()
+        audio_path = Path(audio_path).resolve()
+        if not still_path.is_file():
+            raise FileNotFoundError(f"still not found: {still_path}")
+        if not audio_path.is_file():
+            raise FileNotFoundError(f"audio not found: {audio_path}")
+
+        raw = still_path.read_bytes()
+        png, min_info, _ = ensure_min_dimensions(raw)
+        png, still_info, still_dims = ensure_avatar_still_dimensions(png)
+        print(
+            f"[avatar_pro] Submitting still={still_path.name} "
+            f"({min_info}; {still_info} → {still_dims[0]}x{still_dims[1]}), "
+            f"audio={audio_path.name} ({audio_path.stat().st_size} bytes)",
+            flush=True,
+        )
+        image_uri = f"data:image/png;base64,{base64.b64encode(png).decode('ascii')}"
+        audio_uri = file_to_data_uri(audio_path, "audio/mpeg")
+        body = {"image": image_uri, "audio": audio_uri, "prompt": prompt}
+        payload = self._curl_json("POST", AVATAR_PRO_ENDPOINT, body, timeout=timeout)
+        job_id = (
+            (payload.get("data") or {}).get("id")
+            or payload.get("id")
+            or payload.get("task_id")
+        )
+        if not job_id:
+            raise RuntimeError(f"Avatar Pro submit returned no job id: {payload}")
+        print(f"[avatar_pro] Submitted successfully, job_id={job_id}", flush=True)
+        return str(job_id)
 
     def poll(self, job_id: str) -> dict:
         """

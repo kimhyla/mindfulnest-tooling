@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -69,26 +70,40 @@ def project_root() -> Path:
     return dropbox_root()
 
 
-def manifest_path() -> Path:
+def manifest_path(*, guide: str | None = None) -> Path:
     env = os.environ.get("TELEPORT_INTRO_MANIFEST")
     if env:
         return Path(env)
+    root = project_root()
     try:
-        from teleport_intro_canonical import active_manifest_path
+        from teleport_intro_canonical import (
+            ARLO_MANIFEST_REL,
+            CHIPPER_MANIFEST_REL,
+            active_manifest_path,
+            active_registry_rel,
+        )
 
-        active = active_manifest_path(project_root())
+        guide_use = (guide or os.environ.get("TELEPORT_INTRO_GUIDE") or "").strip() or None
+        if guide_use:
+            return active_manifest_path(root, guide=guide_use)
+        reg = active_registry_rel(root)
+        if "arlo_teleport_intro" in reg:
+            return root / ARLO_MANIFEST_REL
+        if "chipper_teleport_intro" in reg:
+            return root / CHIPPER_MANIFEST_REL
+        active = active_manifest_path(root)
         if active.is_file():
             return active
     except Exception:
         pass
-    dropbox = project_root() / MANIFEST_REL
+    dropbox = root / MANIFEST_REL
     if dropbox.is_file():
         return dropbox
     return PROD_DIR / "templates" / "chipper_teleport_intro" / "manifest.json"
 
 
-def load_manifest() -> dict[str, Any]:
-    path = manifest_path()
+def load_manifest(*, guide: str | None = None) -> dict[str, Any]:
+    path = manifest_path(guide=guide)
     if not path.is_file():
         fail(f"manifest not found: {path}")
     return json.loads(path.read_text(encoding="utf-8"))
@@ -102,6 +117,39 @@ def resolve_asset(manifest: dict, key: str) -> Path:
     if not p.is_file():
         fail(f"asset missing: {p}")
     return p
+
+
+def _path_rel_to_root(path: Path, root: Path) -> str:
+    p = path.resolve()
+    base = root.resolve()
+    try:
+        return str(p.relative_to(base))
+    except ValueError:
+        return str(path)
+
+
+def _manifest_whiteout_hold_s(manifest: dict) -> float:
+    raw = manifest.get("clip_b_whiteout_hold_s")
+    if raw is None:
+        return 2.5
+    return max(0.0, float(raw))
+
+
+def _manifest_burst_use_s(manifest: dict, burst_path: Path) -> float:
+    """Cap LD-737 burst segment length at compose time (WYSIWYG — not export trim)."""
+    block = manifest.get("intro_canonical_beats") or {}
+    raw = block.get("canonical_burst_max_s")
+    if raw is None:
+        tg = manifest.get("teleport_glass") or {}
+        raw = tg.get("duration_s")
+    burst_dur = ffprobe_duration(burst_path)
+    if raw is None:
+        return burst_dur
+    try:
+        cap = max(0.5, float(raw))
+    except (TypeError, ValueError):
+        return burst_dur
+    return min(burst_dur, cap)
 
 
 def resolve_output(manifest: dict, key: str) -> Path:
@@ -184,6 +232,7 @@ def ffmpeg_compose_intro_tail(
     hold_s: float,
     scratch: Path,
     burst_method: str = "overlay_on_frozen_frame",
+    burst_use_s: float | None = None,
 ) -> None:
     """Speak + burst tail + whiteout hold.
 
@@ -195,23 +244,32 @@ def ffmpeg_compose_intro_tail(
     """
     scratch.mkdir(parents=True, exist_ok=True)
     joined = scratch / "_joined.mp4"
+    burst_cap = burst_use_s if burst_use_s is not None else ffprobe_duration(burst_overlay)
     if burst_method == "kling_from_frozen_frame":
-        ffmpeg_concat_speak_and_burst(speak, burst_overlay, joined)
+        ffmpeg_concat_speak_and_burst(speak, burst_overlay, joined, burst_use_s=burst_cap)
     else:
         burst_seg = scratch / "_burst_on_freeze.mp4"
         ffmpeg_burst_overlay_on_frozen_speak(speak, burst_overlay, burst_seg, scratch=scratch)
-        ffmpeg_concat_speak_and_burst(speak, burst_seg, joined)
+        ffmpeg_concat_speak_and_burst(speak, burst_seg, joined, burst_use_s=burst_cap)
         burst_seg.unlink(missing_ok=True)
     hold_last_frame(joined, dest, hold_s)
     joined.unlink(missing_ok=True)
 
 
-def ffmpeg_concat_speak_and_burst(speak: Path, burst: Path, dest: Path) -> None:
+def ffmpeg_concat_speak_and_burst(
+    speak: Path,
+    burst: Path,
+    dest: Path,
+    *,
+    burst_use_s: float | None = None,
+) -> None:
     """Append burst segment after speak (same frame size)."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     sw, sh = ffprobe_video_size(speak)
     bw, bh = ffprobe_video_size(burst)
     burst_dur = ffprobe_duration(burst)
+    if burst_use_s is not None:
+        burst_dur = min(burst_dur, max(0.5, float(burst_use_s)))
     scale_burst = ""
     if (bw, bh) != (sw, sh):
         scale_burst = f"[1:v:0]scale={sw}:{sh},setsar=1[bv];"
@@ -222,6 +280,7 @@ def ffmpeg_concat_speak_and_burst(speak: Path, burst: Path, dest: Path) -> None:
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         "-i", str(speak.resolve()),
+        "-t", f"{burst_dur:.3f}",
         "-i", str(burst.resolve()),
         "-f", "lavfi", "-t", f"{burst_dur:.3f}",
         "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
@@ -270,15 +329,38 @@ def ffmpeg_concat_videos(parts: list[Path], dest: Path) -> None:
 
 
 def hold_last_frame(src: Path, dest: Path, hold_s: float) -> None:
+    """Extend video with cloned last frame; pad audio with silence to match."""
     dest.parent.mkdir(parents=True, exist_ok=True)
+    hold_s = max(0.0, float(hold_s))
+    if hold_s <= 0.0:
+        shutil.copy2(src, dest)
+        return
     tmp = dest.with_suffix(".hold_tmp.mp4")
+    libdir = str(TOOLS_DIR / "credentials_lib")
+    if libdir not in sys.path:
+        sys.path.insert(0, libdir)
+    from credentials_lib.ffmpeg_stitch import _has_audio_stream  # noqa: WPS433
+
+    if _has_audio_stream(src):
+        fc = (
+            f"[0:v]tpad=stop_mode=clone:stop_duration={hold_s:.3f}[v];"
+            f"[0:a]apad=pad_dur={hold_s:.3f},aresample=44100,aformat=channel_layouts=stereo[a]"
+        )
+    else:
+        total_s = ffprobe_duration(src) + hold_s
+        fc = (
+            f"[0:v]tpad=stop_mode=clone:stop_duration={hold_s:.3f}[v];"
+            f"anullsrc=channel_layout=stereo:sample_rate=44100,atrim=duration={total_s:.3f}[a]"
+        )
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         "-i", str(src),
-        "-vf", f"tpad=stop_mode=clone:stop_duration={hold_s:.2f}",
+        "-filter_complex", fc,
+        "-map", "[v]", "-map", "[a]",
         "-c:v", "libx264", "-preset", "fast", "-crf", "18",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-ar", "44100",
+        "-movflags", "+faststart",
         str(tmp),
     ]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
@@ -417,7 +499,7 @@ def cmd_build_clip_b(args: argparse.Namespace) -> int:
     glass_out = scratch / "clip_b_glass.mp4"
 
     duration = int(m.get("clip_b_kling_duration_s") or 6)
-    hold_s = float(m.get("clip_b_whiteout_hold_s") or 2.5)
+    hold_s = _manifest_whiteout_hold_s(m)
 
     prompt = build_chipper_voice_prompt(CLIP_B_STAGING, locked)
     log(f"Clip B speak ({duration}s): {locked!r}")
@@ -578,27 +660,18 @@ def _load_beat_for_canonical_trim(beat_id: str, speak_path: Path) -> dict | None
     return None
 
 
-def _resolve_speak_clip_for_canonical(speak_path: Path, beat_id: str, scratch: Path) -> Path:
-    """Use Beat Gen trim settings when beat_id is known (sidecar or preserved beat)."""
-    if not beat_id:
-        return speak_path
-    try:
-        import beat_generator as bg  # noqa: WPS433
+# Canonical mirror compose must use the full Element O3 speak master. Beat-row
+# trim_back trims the finished intro_tail for stitch export only — applying it at
+# compose time truncates dialogue before the LD-737 burst (e.g. trim_back=4 on
+# a 6s speak → "ready? jus-" then explosion).
+MIN_CANONICAL_INTRO_TAIL_DURATION_S = 10.0
 
-        beat = _load_beat_for_canonical_trim(beat_id, speak_path)
-        if not beat:
-            return speak_path
-        beat = dict(beat)
-        beat["kling_o3_video_path"] = str(speak_path)
-        dest = scratch / f"{beat_id}_speak_trim.mp4"
-        trimmed = bg.materialize_kling_o3_trimmed_clip(beat, dest, source_path=speak_path)
-        if trimmed != speak_path and trimmed.is_file():
-            log(f"  trim applied for {beat_id}: start={beat.get('kling_o3_trim_start', 0)} "
-                f"back={beat.get('kling_o3_trim_back')}")
-        return trimmed
-    except Exception as exc:
-        log(f"  trim skipped for {beat_id}: {exc}")
-        return speak_path
+
+def _resolve_speak_clip_for_canonical(speak_path: Path, beat_id: str, scratch: Path) -> Path:
+    """Return full speak_source for mirror compose — never apply Beat Gen export trims."""
+    if beat_id:
+        log(f"  canonical speak for {beat_id}: using full clip (export trims not applied at compose)")
+    return speak_path
 
 
 def cmd_build_canonical_variants(args: argparse.Namespace) -> int:
@@ -609,11 +682,13 @@ def cmd_build_canonical_variants(args: argparse.Namespace) -> int:
         upsert_variant,
     )
 
-    m = load_manifest()
+    m = load_manifest(guide=getattr(args, "guide", None))
     root = project_root()
-    kit_guide = str(m.get("guide") or "").strip() or None
-    hold_s = float(m.get("clip_b_whiteout_hold_s") or 2.5)
+    kit_guide = str(m.get("guide") or getattr(args, "guide", None) or "").strip() or None
+    hold_s = _manifest_whiteout_hold_s(m)
     burst_overlay = Path(args.burst_overlay) if args.burst_overlay else _shared_glass_path(m)
+    if not burst_overlay.is_absolute():
+        burst_overlay = (root / burst_overlay).resolve()
     if not args.dry_run and not args.force_glass and not burst_overlay.is_file():
         fail(f"burst overlay missing (build-shared-glass once, or pass --burst-overlay): {burst_overlay}")
 
@@ -674,6 +749,8 @@ def cmd_build_canonical_variants(args: argparse.Namespace) -> int:
             overlay_src = burst_overlay
             burst_method = "overlay_on_frozen_frame"
 
+        burst_use_s = _manifest_burst_use_s(m, overlay_src)
+        log(f"  burst cap: {burst_use_s:.2f}s (manifest canonical_burst_max_s / teleport_glass.duration_s)")
         ffmpeg_compose_intro_tail(
             speak_for_concat,
             overlay_src,
@@ -681,7 +758,15 @@ def cmd_build_canonical_variants(args: argparse.Namespace) -> int:
             hold_s=hold_s,
             scratch=slot_scratch,
             burst_method=burst_method,
+            burst_use_s=burst_use_s,
         )
+
+        tail_dur = ffprobe_duration(tail)
+        if tail_dur < MIN_CANONICAL_INTRO_TAIL_DURATION_S:
+            fail(
+                f"intro_tail too short ({tail_dur:.2f}s < {MIN_CANONICAL_INTRO_TAIL_DURATION_S}s) "
+                f"for slot {slot} — speak may have been truncated; use full speak_source"
+            )
 
         meta = {
             "built_at": datetime.now(timezone.utc).isoformat(),
@@ -690,7 +775,8 @@ def cmd_build_canonical_variants(args: argparse.Namespace) -> int:
             "speak_source": str(speak_path),
             "burst_overlay": str(overlay_src),
             "burst_method": burst_method,
-            "duration_s": ffprobe_duration(tail),
+            "burst_use_s": round(burst_use_s, 3),
+            "duration_s": tail_dur,
         }
         (out_dir / "intro_tail.json").write_text(json.dumps(meta, indent=2) + "\n")
         upsert_variant(
@@ -715,10 +801,10 @@ def cmd_build_canonical_variants(args: argparse.Namespace) -> int:
         else:
             reg["burst_method"] = "overlay_on_frozen_frame"
             reg["burst_overlay_rel"] = (
-                str(burst_overlay.relative_to(root)) if burst_overlay.is_file() else None
+                _path_rel_to_root(burst_overlay, root) if burst_overlay.is_file() else None
             )
         save_registry(root, reg, guide=kit_guide)
-        log(f"✓ canonical_registry → {registry_path(root, guide=kit_guide)}")
+        log("✓ canonical_registry updated")
     return 0
 
 
@@ -843,6 +929,11 @@ def main(argv: list[str] | None = None) -> int:
     p_cv = sub.add_parser(
         "build-canonical-variants",
         help="Build intro_tail.mp4 per slot (Beat Gen speak + burst overlay on frozen frame)",
+    )
+    p_cv.add_argument(
+        "--guide",
+        default=None,
+        help="Teleport intro guide character (Arlo | Chipper); default from registry",
     )
     p_cv.add_argument("--speak", nargs="*", help="Override: 3 speak MP4s in slot order")
     p_cv.add_argument("--label", nargs="*", default=None)

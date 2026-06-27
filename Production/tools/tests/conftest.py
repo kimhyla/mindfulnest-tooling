@@ -48,3 +48,25 @@ def _isolate_kling_character_registry_prod_root():
     saved = reg._PROD_ROOT  # noqa: SLF001 — test isolation only
     yield
     reg._PROD_ROOT = saved  # noqa: SLF001
+
+
+_SQLITE_OPT_IN_MODULES = frozenset({
+    "test_beatgen_store",
+    "test_sidecar_sqlite_cutover_gate",
+})
+
+
+@pytest.fixture(autouse=True)
+def _json_sidecar_default_unless_sqlite_test(monkeypatch, request):
+    """Live ~/.mindfulnest/state/beatgen.db must not hijack JSON-path contract tests."""
+    mod = getattr(request.node.module, "__name__", "") or ""
+    base = mod.rsplit(".", 1)[-1]
+    if base in _SQLITE_OPT_IN_MODULES:
+        return
+    monkeypatch.setenv("MN_SIDECAR_SQLITE_AUTHORITY", "0")
+    try:
+        from lib.beatgen_store import BeatgenStore
+
+        BeatgenStore.reset_singleton_for_tests()
+    except Exception:
+        pass

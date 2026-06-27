@@ -4,7 +4,7 @@
   "guide": "Arlo",
   "clip_b_locked_line": "Ready? .... Just focus on my Teleport Glass.... Here we go!",
   "clip_b_kling_duration_s": 6,
-  "clip_b_whiteout_hold_s": 2.5,
+  "clip_b_whiteout_hold_s": 0,
   "clip_a_default_duration_s": 8,
   "canonical_variant_count": 1,
   "assets": {
@@ -28,6 +28,8 @@
     "final_pair_fade_ms": 2800,
     "fade_out_video_tail_ms": 600,
     "fade_in_video_head_ms": 600,
+    "canonical_burst_max_s": 4.0,
+    "canonical_tail_export_trim_back_s": 0,
     "semi_canonical_transition": {
       "scene_notes": "Transition to Spell",
       "speaker": "Arlo",

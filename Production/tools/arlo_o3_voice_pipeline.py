@@ -23,9 +23,13 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 PROD = HERE.parent
-TOOLING_SIDE = Path("/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/beat_generator_state.json")
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
+
+from kling_o3_element_beat_pipeline import (  # noqa: E402
+    _event_dir_for_segment as _event_dir_for_segment_prod,
+    _runtime_prod_root,
+)
 
 from kling_startend_pipeline import (  # noqa: E402
     _resolve_wavespeed_host,
@@ -33,9 +37,10 @@ from kling_startend_pipeline import (  # noqa: E402
     load_api_keys,
     robust_https_request,
 )
-from lipsync_sender import LIPSYNC_PROVIDER_CONTRACT, LipSyncClient  # noqa: E402
+from lipsync_sender import LIPSYNC_PROVIDER_CONTRACT, LipSyncClient, LipsyncHostingError  # noqa: E402
 from video_delivery import encode_delivery_video, encode_lipsync_input  # noqa: E402
 import beat_generator as bg_sidecar  # noqa: E402
+import kling_character_registry as reg  # noqa: E402
 import production_server as ps  # noqa: E402
 
 O3_MODEL_URLS = {
@@ -79,13 +84,24 @@ def _safe_slug(value: str) -> str:
 
 
 def _visual_prompt(base_prompt: str, *, speaker: str) -> str:
-    prompt = re.sub(
-        rf"{re.escape(speaker)} speaks.*?\".*?\"",
-        f"{speaker} is present as a silent visual base for later lip sync. Mouth relaxed, "
-        "natural friendly expression, small idle head, ear, tail, and paw motion only.",
-        base_prompt or "",
-        flags=re.S,
+    """Strip spoken dialogue for silent O3; use Kling display label (e.g. Loral), not registry key."""
+    display = reg.kling_image1_speaker_label(speaker)
+    silent_base = (
+        f"{display} is present as a silent visual base for later lip sync. Mouth relaxed, "
+        "natural friendly expression, small idle head, ear, tail, and paw motion only."
     )
+    prompt = base_prompt or ""
+    strip_labels: list[str] = []
+    for label in (display, (speaker or "").strip()):
+        if label and label not in strip_labels:
+            strip_labels.append(label)
+    for label in strip_labels:
+        prompt = re.sub(
+            rf"{re.escape(label)} speaks.*?\".*?\"",
+            silent_base,
+            prompt,
+            flags=re.S,
+        )
     prompt = re.sub(
         r"Audio:.*",
         "No audio, no voice, no music, no soundtrack. Silent visual-only base clip for later ElevenLabs lip sync.",
@@ -94,7 +110,7 @@ def _visual_prompt(base_prompt: str, *, speaker: str) -> str:
     )
     prompt += (
         "\n\nSilent visual base only: do not generate speech or sound. "
-        f"Keep {speaker} centered and visible for later lip sync.\n"
+        f"Keep {display} centered and visible for later lip sync.\n"
         "Preserve crisp character-detail from @Image1: sharp eyes, defined fur tufts, "
         "clean clothing folds, crisp edges, detailed character silhouette. "
         "Avoid soft focus, blur, painterly smearing, low-detail fur, or washed-out features."
@@ -241,7 +257,13 @@ def _make_lipsync_padded_audio(audio: Path, *, audio_dur: float) -> tuple[Path, 
 
 def _delivery_video(src: Path, *, sharpen: bool) -> Path:
     dst = src.with_name(src.stem + "_delivery.mp4")
-    return encode_delivery_video(src, dst, include_audio=True, sharpen=sharpen)
+    return encode_delivery_video(
+        src,
+        dst,
+        include_audio=True,
+        sharpen=sharpen,
+        delivery_profile="voice_first_upscale",
+    )
 
 
 def _probe_video_size(path: Path) -> tuple[int, int]:
@@ -362,9 +384,11 @@ def _submit_and_poll_lipsync_with_fallback(
     degraded 832x464 output from valid 1080p input, so the fallback is disabled
     by default for Beat Gen quality-sensitive runs.
     """
-    attempts = ["url"]
-    if os.environ.get("MINDFULNEST_ALLOW_LOW_QUALITY_LIPSYNC_DATA_URI_FALLBACK") == "1":
-        attempts.append("data_uri")
+    # Pilot parity: URL first (R2 staging), then data_uri when hosting/fetch fails.
+    # data_uri often returns 832x464; sub-720 is waived after delivery encode (LD-296).
+    attempts = ["url", "data_uri"]
+    if os.environ.get("MINDFULNEST_DISABLE_LIPSYNC_DATA_URI_FALLBACK") == "1":
+        attempts = ["url"]
     last_result: dict | None = None
     last_task = ""
     for index, transport in enumerate(attempts):
@@ -375,6 +399,31 @@ def _submit_and_poll_lipsync_with_fallback(
         }), flush=True)
         try:
             lipsync_task = client.submit(lipsync_input, lipsync_audio, transport=transport)
+        except LipsyncHostingError as exc:
+            if transport == "url" and "data_uri" in attempts[index + 1:]:
+                print(json.dumps({
+                    "phase": "lipsync_retry",
+                    "beat_id": beat_id,
+                    "from": "url",
+                    "to": "data_uri",
+                    "reason": str(exc),
+                }), flush=True)
+                persist({
+                    "kling_o3_voice_fix_url_transport_error": str(exc),
+                    "kling_o3_voice_fix_status": "lipsync_retrying_data_uri",
+                    "kling_o3_voice_fix_phase": "lipsync_retry",
+                    "kling_o3_voice_fix_updated_at": datetime.now(timezone.utc).isoformat(),
+                })
+                continue
+            persist({
+                "kling_o3_voice_fix_status": "failed_provider_fetch",
+                "kling_o3_voice_fix_phase": "lipsync_submit",
+                "kling_o3_voice_fix_error_code": "PROVIDER_FETCH_OR_HOSTING",
+                "kling_o3_voice_fix_error": str(exc),
+                "kling_o3_voice_fix_lipsync_transport": transport,
+                "kling_o3_voice_fix_completed_at": datetime.now(timezone.utc).isoformat(),
+            }, remove=("kling_o3_voice_fix_ui_job_id",))
+            raise
         except Exception as exc:
             persist({
                 "kling_o3_voice_fix_status": "failed_provider_fetch",
@@ -426,8 +475,8 @@ def _submit_and_poll_lipsync_with_fallback(
                 "kling_o3_voice_fix_status": "failed_provider_fetch",
                 "kling_o3_voice_fix_error_code": "PROVIDER_FETCH_FAILED",
                 "kling_o3_voice_fix_error": (
-                "WaveSpeed could not download the temporary lipsync URL. "
-                "Data-URI fallback is disabled because it returns sub-720p 832x464 output."
+                    "WaveSpeed could not download the temporary lipsync URL and "
+                    "data-URI lipsync fallback did not complete."
                 ),
                 "kling_o3_voice_fix_completed_at": datetime.now(timezone.utc).isoformat(),
             }, remove=("kling_o3_voice_fix_ui_job_id",))
@@ -488,28 +537,34 @@ def _find_beat(sidecar: dict, beat_id: str) -> tuple[dict, str] | None:
     return None
 
 
-def _event_dir_for_segment(segment_key: str) -> Path:
-    match = re.match(r"event_(\d+)_", segment_key or "")
-    if match:
-        return PROD / f"Event_{match.group(1)}"
-    return PROD / "Event_1"
+def _event_dir_for_segment(prod_root: Path, segment_key: str) -> Path:
+    return _event_dir_for_segment_prod(prod_root, segment_key)
 
 
 def run_pipeline(beat_id: str, *, model: str = "pro", sharpen: bool = True, attempt_id: str | None = None) -> dict:
     attempt_id = attempt_id or os.environ.get("MN_O3_ATTEMPT_ID") or __import__("uuid").uuid4().hex
     print(json.dumps({"phase": "starting", "beat_id": beat_id, "model": model, "sharpen": sharpen, "attempt_id": attempt_id}), flush=True)
-    sidecar = PROD / "beat_generator_state.json"
-    sc = json.loads(sidecar.read_text(encoding="utf-8"))
-    found = _find_beat(sc, beat_id)
-    beat = found[0] if found else None
-    if not beat:
-        raise RuntimeError(f"beat not found: {beat_id}")
-    event_dir = _event_dir_for_segment(found[1] if found else "")
+    prod_root = _runtime_prod_root()
+    reg.set_prod_root(prod_root)
+    from o3_subprocess_bootstrap import load_o3_beat_context
+
+    beat, segment_key, sidecar_path, event_dir = load_o3_beat_context(beat_id)
+    intent_env = os.environ.get("MN_O3_INTENT_PATH", "").strip()
+    if intent_env:
+        try:
+            from o3_generation_intent import load_generation_intent, touch_o3_job_heartbeat
+
+            intent = load_generation_intent(Path(intent_env))
+            job_id = str(intent.get("job_id") or "").strip()
+            if job_id:
+                touch_o3_job_heartbeat(job_id, event_dir)
+        except Exception:
+            pass
     backup_dir = event_dir / "_arlo_migration_backups" / (
         datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + f"_pre_arlo_pipeline_{beat_id}"
     )
     backup_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(sidecar, backup_dir / "beat_generator_state.json")
+    shutil.copy2(sidecar_path, backup_dir / "beat_generator_state.json")
     speaker = (beat.get("speaker") or "").strip()
     if not speaker:
         raise RuntimeError(f"{beat_id} has no speaker")
@@ -521,18 +576,30 @@ def run_pipeline(beat_id: str, *, model: str = "pro", sharpen: bool = True, atte
     if _is_user_selectable_o3_video(str(prior_video or "")):
         _upsert_o3_option(beat, video_path=str(prior_video), label="previous approved O3 video", active=True, now=now)
 
-    def persist(fields: dict | None = None, *, remove: tuple[str, ...] = (), expected: bool = True) -> None:
+    def persist(
+        fields: dict | None = None,
+        *,
+        remove: tuple[str, ...] = (),
+        expected: bool = True,
+        coherence_mode: str | None = None,
+    ) -> None:
         """Persist only this beat's changed fields under the shared sidecar lock."""
         if fields:
             beat.update(fields)
         for key in remove:
             beat.pop(key, None)
 
-        def apply(current: dict, _sidecar: dict) -> None:
+        def apply(current: dict, sidecar: dict) -> None:
             if fields:
                 current.update(fields)
             for key in remove:
                 current.pop(key, None)
+            if coherence_mode:
+                bg_sidecar.stamp_o3_delivery_pipeline_coherence(
+                    current,
+                    sidecar,
+                    generation_mode=coherence_mode,
+                )
 
         ok, _current = bg_sidecar.update_beat_locked(
             beat_id,
@@ -554,13 +621,15 @@ def run_pipeline(beat_id: str, *, model: str = "pro", sharpen: bool = True, atte
     audio, profile, voice_model, audio_dur = _write_elevenlabs_audio(event_dir=event_dir, beat_id=beat_id, speaker=speaker, text=spoken, keys=keys)
     lipsync_audio, lipsync_padding = _make_lipsync_padded_audio(audio, audio_dur=audio_dur)
     duration = max(
-        int(beat.get("kling_o3_duration") or 8),
-        min(10, math.ceil(float(lipsync_padding["padded_audio_duration_s"]) + 0.25)),
+        5,
+        min(12, math.ceil(float(lipsync_padding["padded_audio_duration_s"]) + 0.25)),
     )
 
+    generate_mode = (beat.get("kling_o3_generate_mode") or "voice_first").strip()
     persist({
         "status": "arlo_o3_visual_running",
         "kling_o3_status": "visual_running",
+        "kling_o3_generate_mode": generate_mode,
         "kling_o3_voice_fix_attempt_id": attempt_id,
         "kling_o3_voice_fix_status": "tts_ready",
         "kling_o3_voice_fix_phase": "tts",
@@ -632,7 +701,7 @@ def run_pipeline(beat_id: str, *, model: str = "pro", sharpen: bool = True, atte
         "kling_o3_voice_fix_lipsync_input_path": str(lipsync_input),
         "kling_o3_voice_fix_lipsync_input_profile": {
             "resolution": "1920x1080",
-            "reason": "Kling LipSync has no resolution parameter; submit 1080p as best source and reject any sub-720p provider output.",
+            "reason": "Kling LipSync has no resolution parameter; submit 1080p source; sub-720 raw waived → LD-296 delivery encode.",
         },
         "kling_o3_voice_fix_provider_contract": LIPSYNC_PROVIDER_CONTRACT,
     })
@@ -672,28 +741,38 @@ def run_pipeline(beat_id: str, *, model: str = "pro", sharpen: bool = True, atte
     out = clips_dir / f"{beat_id}_{speaker_slug}_voice_lipsync.mp4"
     client.download((lipsync_result.get("outputs") or [None])[0], out)
     out, lipsync_audio_check = _ensure_lipsync_audio(out, lipsync_audio)
+    raw_width, raw_height = _probe_video_size(out)
     try:
         lipsync_quality = _assert_lipsync_quality(out)
     except Exception as exc:
-        _restore_prior_video_state(beat, prior_video=prior_video, prior_status=prior_status, prior_beat_status=prior_beat_status)
-        width, height = _probe_video_size(out)
-        persist({
-            "status": beat.get("status"),
-            "kling_o3_status": beat.get("kling_o3_status"),
-            "kling_o3_video_path": beat.get("kling_o3_video_path"),
-            "kling_o3_voice_fix_status": "failed_provider_sub720",
-            "kling_o3_voice_fix_error_code": "PROVIDER_SUB720",
-            "kling_o3_voice_fix_error": str(exc),
-            "kling_o3_voice_fix_output_profile": {
-                "path": str(out),
-                "width": width,
-                "height": height,
-                "min_dimension": min(width, height),
-            },
-            "kling_o3_voice_fix_completed_at": datetime.now(timezone.utc).isoformat(),
-        }, remove=("kling_o3_voice_fix_ui_job_id",))
-        raise
+        # WaveSpeed Kling lipsync often returns 832x464 even from 1080p input (URL or data_uri).
+        # Voice-first pilot parity: warn, LD-296 delivery encode is the kid-facing quality gate.
+        print(json.dumps({
+            "phase": "lipsync_quality_warn",
+            "beat_id": beat_id,
+            "warning": str(exc),
+            "transport": lipsync_transport,
+        }), flush=True)
+        lipsync_quality = {
+            "path": str(out),
+            "width": raw_width,
+            "height": raw_height,
+            "min_dimension": min(raw_width, raw_height),
+            "transport": lipsync_transport,
+            "sub720_waived": True,
+            "waive_reason": str(exc),
+            "rule": "Voice-first pilot parity: sub-720 raw waived; kid-facing gate is LD-296 delivery encode.",
+        }
     active = _delivery_video(out, sharpen=sharpen)
+    del_w, del_h = _probe_video_size(active)
+    lipsync_quality = {
+        **lipsync_quality,
+        "delivery_path": str(active),
+        "delivery_width": del_w,
+        "delivery_height": del_h,
+        "delivery_min_dimension": min(del_w, del_h),
+        "kid_facing_gate": "LD-296 delivery encode",
+    }
     print(json.dumps({"phase": "finalize", "beat_id": beat_id, "video": str(active)}), flush=True)
     out_dur = float(subprocess.check_output([
         "ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -704,6 +783,7 @@ def run_pipeline(beat_id: str, *, model: str = "pro", sharpen: bool = True, atte
         "kling_o3_video_path": str(active),
         "kling_o3_status": "approved",
         "status": "approved",
+        "kling_o3_mode": "o3_voice_first_lipsync",
         "kling_o3_completed_at": now,
         "kling_o3_voice_fix_status": "approved",
         "kling_o3_voice_fix_phase": "finalize",
@@ -719,18 +799,29 @@ def run_pipeline(beat_id: str, *, model: str = "pro", sharpen: bool = True, atte
         "kling_o3_voice_fix_lipsync_input_path": str(lipsync_input),
         "kling_o3_voice_fix_lipsync_input_profile": {
             "resolution": "1920x1080",
-            "reason": "Kling LipSync has no resolution parameter; submit 1080p as best source and reject any sub-720p provider output.",
+            "reason": "Kling LipSync has no resolution parameter; submit 1080p source; sub-720 raw waived → LD-296 delivery encode.",
         },
         "kling_o3_voice_fix_provider_contract": LIPSYNC_PROVIDER_CONTRACT,
         "kling_o3_voice_fix_output_duration_s": round(out_dur, 3),
     }
+    from o3_generation_intent import load_intent_visual_ref_fields_from_env
+
+    final_fields.update(load_intent_visual_ref_fields_from_env())
     beat.update(final_fields)
     _upsert_o3_option(beat, video_path=str(active), label="latest O3 voice video", active=True, now=now)
+    import beat_generator as bg_mod  # noqa: PLC0415
+
+    bg_mod.sync_o3_selection_pipeline_fields(beat, sc)
     final_fields["kling_o3_options"] = beat.get("kling_o3_options")
+    final_fields["kling_o3_selected_option_key"] = beat.get("kling_o3_selected_option_key")
+    if beat.get("kling_o3_active_clip_pipeline"):
+        final_fields["kling_o3_active_clip_pipeline"] = beat["kling_o3_active_clip_pipeline"]
+    beat.pop("kling_o3_selection_pipeline_mismatch", None)
+    final_fields.pop("kling_o3_selection_pipeline_mismatch", None)
     final_fields["arlo_visual_quality"] = {
         "speaker": speaker,
         "model": model,
-        "delivery_profile": "LD-296/LD-284 kid-facing 1280x720 H.264 High yuv420p 24fps <=1.9Mbps +faststart",
+        "delivery_profile": "LD-296/LD-284 kid-facing 1280x720 H.264 High yuv420p 24fps voice_first_upscale <=1.9Mbps +faststart",
         "sharpened_delivery": sharpen,
         "o3_master_video_path": str(base),
         "o3_silent_master_video_path": str(silent),
@@ -743,10 +834,12 @@ def run_pipeline(beat_id: str, *, model: str = "pro", sharpen: bool = True, atte
         "method": "O3 Pro visual master + LD-296 720p lipsync input + ElevenLabs Chipper voice + Kling lipsync + compact delivery encode",
         "applied_at": now,
     }
-    persist(final_fields, remove=("kling_o3_voice_fix_ui_job_id", "kling_o3_voice_fix_error", "kling_o3_voice_fix_error_code"))
+    persist(
+        final_fields,
+        remove=("kling_o3_voice_fix_ui_job_id", "kling_o3_voice_fix_error", "kling_o3_voice_fix_error_code"),
+        coherence_mode=bg_sidecar.O3_GENERATE_MODE_VOICE_FIRST,
+    )
     bg_sidecar.auto_pin_approved_kling_o3_delivery(beat, event_dir)
-    if TOOLING_SIDE.parent.exists():
-        shutil.copy2(sidecar, TOOLING_SIDE)
     return {
         "ok": True,
         "beat_id": beat_id,
@@ -770,7 +863,7 @@ def main() -> int:
     parser.add_argument("--no-sharpen", action="store_true")
     parser.add_argument("--attempt-id", default=None)
     args = parser.parse_args()
-    print(json.dumps(run_pipeline(args.beat_id, model=args.model, sharpen=not args.no_sharpen, attempt_id=args.attempt_id), indent=2))
+    print(json.dumps(run_pipeline(args.beat_id, model=args.model, sharpen=not args.no_sharpen, attempt_id=args.attempt_id)))
     return 0
 
 

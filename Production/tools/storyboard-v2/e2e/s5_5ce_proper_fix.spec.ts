@@ -447,10 +447,9 @@ test.describe('+ NewEvent — modal + server endpoint', () => {
     await page.locator('[data-testid="new-event-create"]').click();
     // After fix: POST to /api/event/create returns 200 or 409 (collision). Before fix (RED): 404.
     await expect.poll(() => createReqs.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
+    const posted = createReqs[0]!.req.postDataJSON() as Record<string, unknown>;
+    // pathappPatch must not clobber body.event_id with the pinned scope (Event_4-on-5114 bug).
+    expect(posted['event_id']).toBe(eventId);
     expect([200, 409]).toContain(createReqs[0]!.status);
-    if (createReqs[0]!.status === 200) {
-      const body = createReqs[0]!.req.postDataJSON() as Record<string, unknown>;
-      expect(body['event_id']).toBe(eventId);
-    }
   });
 });

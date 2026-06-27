@@ -13,12 +13,13 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 
-def test_phase_a_handler_uses_bytedance_base_clip_path() -> None:
+def test_phase_a_handler_uses_avatar_pro_not_bytedance() -> None:
     src = (TOOLS / "server_handlers" / "phases.py").read_text(encoding="utf-8")
-    assert "run_phase_a_base_clip_bytedance_lipsync" in src
-    assert 'lipsync_method = "base_clip_bytedance_tight_v1"' in src
-    assert "run_phase_a_base_clip_lipsync(" not in src
-    assert "auto-stitch skipped until visual gates pass" in src
+    block = src.split("def handle_phase_a_lipsync", 1)[1].split("\ndef handle_phase_b_lipsync", 1)[0]
+    assert "submit_avatar_pro" in block
+    assert "resolve_phase_a_arlo_avatar_still" in block
+    assert "run_phase_a_base_clip_bytedance_lipsync" not in block
+    assert 'lipsync_method = "base_clip_bytedance_tight_v1"' not in block
 
 
 def test_bytedance_chaining_is_not_default() -> None:

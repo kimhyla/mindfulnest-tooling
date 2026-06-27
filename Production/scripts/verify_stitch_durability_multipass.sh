@@ -3,9 +3,15 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-SERVER_PORT="${MN_SERVER_PORT:-5111}"
-EVENT_DIR="${MN_EVENT_DIR:-$HOME/Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files/Production/Event_1}"
+# shellcheck source=event_server_port.sh
+source "${SCRIPT_DIR}/event_server_port.sh"
+
+REPO_ROOT="${MN_TOOLING_ROOT:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
+DROPBOX="${MN_DROPBOX_ROOT:-${HOME}/Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files}"
+
+EVENT_ID="${MN_EVENT_ID:-Event_1}"
+PORT="${MN_SERVER_PORT:-$(event_id_to_port "$EVENT_ID")}"
+EVENT_DIR="${MN_EVENT_DIR:-${DROPBOX}/Production/${EVENT_ID}}"
 
 fail() { echo "[stitch-durability-multipass] FAIL pass=$1: $2" >&2; exit 1; }
 
@@ -25,7 +31,7 @@ PY
 )"
 [[ -n "$HTML_SHA" ]] || fail 2 "storyboard missing build-sha meta"
 [[ "$HTML_SHA" == "$HEAD_SHA" ]] || fail 2 "build-sha $HTML_SHA != HEAD $HEAD_SHA"
-curl -sf "http://localhost:${SERVER_PORT}/" | python3 -c "
+curl -sf "http://localhost:${PORT}/" | python3 -c "
 import re, sys
 html = sys.stdin.read()
 m = re.search(r'name=\"build-sha\" content=\"([^\"]+)\"', html)
@@ -41,9 +47,11 @@ import json, subprocess, urllib.request
 from pathlib import Path
 
 event = Path("${EVENT_DIR}")
-base = "http://localhost:${SERVER_PORT}"
+base = "http://localhost:${PORT}"
+job_name = "${EVENT_ID}_stitch"
+scope_event = "${EVENT_ID}"
 
-req = urllib.request.Request(f"{base}/api/stitch_editor/job/Event_1_stitch")
+req = urllib.request.Request(f"{base}/api/stitch_editor/job/{job_name}?event_id={scope_event}")
 with urllib.request.urlopen(req, timeout=15) as r:
     payload = json.loads(r.read().decode())
 job = payload.get("job") or payload
@@ -57,6 +65,12 @@ def resolve_video(vp: str) -> Path:
         return p
     if "Event_1/" in vp.replace("\\\\", "/"):
         rel = vp.replace("\\\\", "/").split("Event_1/", 1)[1]
+        cand = event / rel
+        if cand.is_file():
+            return cand
+    event_name = "${EVENT_ID}"
+    if f"{event_name}/" in vp.replace("\\\\", "/"):
+        rel = vp.replace("\\\\", "/").split(f"{event_name}/", 1)[1]
         cand = event / rel
         if cand.is_file():
             return cand
@@ -82,7 +96,8 @@ for key in ("intro", "phase_a", "phase_b", "resolution"):
     print(f"  {key}: {dur}ms OK ({p.name})")
 
 body = json.dumps({
-    "scope_event_id": "Event_1",
+    "scope_event_id": scope_event,
+    "scope_video_role": "intro",
     "video_path": slots["phase_a"]["video_path"],
     "ambient_bed": slots["phase_a"].get("ambient_bed") or "ambient bed pretty option2",
     "ambient_volume": 0.15,

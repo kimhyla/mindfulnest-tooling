@@ -16,6 +16,9 @@ class _MockStitchState:
     def __init__(self, initial=None):
         self.state = initial or {"jobs": {}}
 
+    def read_state(self):
+        return self.state
+
     def mutate_state(self, fn):
         fn(self.state)
 
@@ -79,6 +82,9 @@ class StitchCanonicalJobTests(unittest.TestCase):
             return_value=False,
         ), mock.patch(
             "server_handlers.stitch_editor.apply_stitch_slot_default_ambient_preset",
+            return_value=False,
+        ), mock.patch(
+            "server_handlers.stitch_editor.ensure_stitch_slot_canonical_default_sfx_cues",
             return_value=False,
         ):
             stitch_upsert_event_slot(

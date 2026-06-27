@@ -73,10 +73,12 @@ def resolve_startup_event(
     event_dir: Path | str,
     storyboard_name: str,
     event_id: str,
+    *,
+    port: int | None = None,
 ) -> tuple[Path, str, str, str]:
     """Return (event_dir, storyboard_name, event_id, pin_source).
 
-    pin_source is one of: cli, persisted, cli_fallback_invalid_pin
+    pin_source is one of: cli, cli_dedicated_port, persisted, cli_fallback_invalid_pin
     """
     cli_dir = normalize_event_dir(event_dir)
     cli_id = str(event_id).strip()
@@ -85,6 +87,15 @@ def resolve_startup_event(
 
     if os.environ.get("MN_EVENT_PIN_IGNORE", "").strip() in ("1", "true", "yes"):
         return cli_dir, cli_sb, cli_id, "cli"
+
+    # DEDICATED_PORT_SCOPE_TRUTH_V1 — launchd Event_N on 5110+N must not inherit
+    # a global server_event_pin.json from another tab's event/load on :5111.
+    if port is not None:
+        from lib.server_port_guard import port_to_event_id
+
+        port_event = port_to_event_id(port)
+        if port_event and port_event == cli_id:
+            return cli_dir, cli_sb, cli_id, "cli_dedicated_port"
 
     pin = read_persisted_event_pin(prod_root)
     if not pin:

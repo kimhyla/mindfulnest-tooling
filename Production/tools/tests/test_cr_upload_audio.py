@@ -20,12 +20,14 @@ class _FakeHandler:
         self.app = mock.Mock()
         self.app.event_dir = event_dir
         self.app.event_generation = 1
+        self.app.scope_type = "event"
+        self.app.active_milestone_id = None
         self._responses: list[tuple] = []
 
     def _scope_body(self, body):
         return body
 
-    def _assert_event_scope(self, scope, allow_missing=False):
+    def _assert_event_scope(self, scope, allow_missing=False, allow_missing_video_role=False):
         return True
 
     def _check_event_pin(self, pin, label):

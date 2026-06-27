@@ -9,6 +9,7 @@ import argparse
 import base64
 import collections as _pathapp_collections
 import concurrent.futures as _cf
+import copy
 import functools
 import hashlib
 import io
@@ -45,13 +46,54 @@ from tools.production_server import (  # noqa: E402
 )
 
 _ARLO_O3_JOBS: dict[str, dict] = {}
+_STILL_RENDER_BUSY: set[str] = set()
 _NATIVE_LIPSYNC_JOBS: dict[str, dict] = {}
+_O3_JOB_METADATA_LAST_STAMP: dict[str, float] = {}
+_O3_JOB_METADATA_STAMP_INTERVAL_S = 30.0
+_O3_LOG_TAIL_BYTES = 16384
 
 # V59 Phase 4 path-depth correction: extracted modules are one level
 # deeper than production_server.py. _PSERVER_TOOLS_DIR is for CODE-tree
 # lookups (sibling Python modules, sys.path inserts). NOT used for data
 # paths — those come from _data_root(h) per LD-505 Phase C (2026-05-19).
 _PSERVER_TOOLS_DIR = Path(__file__).resolve().parent.parent  # Production/tools/
+
+
+class _BgSidecarAbort(Exception):
+    """Abort sidecar mutator — map to HTTP response in handler except block."""
+
+    __slots__ = (
+        "status", "error_code", "error_message", "retry_safe", "extra", "json_payload",
+    )
+
+    def __init__(
+        self,
+        *,
+        status: int,
+        error_code: str = "",
+        error_message: str = "",
+        retry_safe: bool = False,
+        extra: dict | None = None,
+        json_payload: dict | None = None,
+    ):
+        self.status = status
+        self.error_code = error_code
+        self.error_message = error_message
+        self.retry_safe = retry_safe
+        self.extra = extra
+        self.json_payload = json_payload
+
+
+def _bg_abort_from_sidecar(h, exc: _BgSidecarAbort):
+    if exc.json_payload is not None:
+        return h._send_json(exc.status, exc.json_payload)
+    return h._send_error_v59(
+        exc.status,
+        error_code=exc.error_code,
+        error_message=exc.error_message,
+        retry_safe=exc.retry_safe,
+        extra=exc.extra,
+    )
 
 
 def _magic_canvas_dims(width: int, height: int) -> tuple[int, int]:
@@ -441,6 +483,7 @@ def handle_magic_submit_path(h, body: dict)-> None:
             # code-vs-data intent per LD-505 Phase C lint guard.
             sys.path.insert(0, str(_PSERVER_TOOLS_DIR))
             from magic_compositor import MagicCompositor
+            import magic_render_contract as mrc  # type: ignore
             # LD-505 Phase C anchor — derive kling_clips dir from the scene's
             # event_id (resolved above from scene_registry.yaml), not the
             # legacy hardcoded "Event_1". Same idiom as event_dir on line 387.
@@ -458,6 +501,7 @@ def handle_magic_submit_path(h, body: dict)-> None:
                 seed=99,
                 output_dir=str(out_dir),
                 label=f"{scene_key}_server",
+                **mrc.production_magic_compositor_kwargs(),
             )
             total_frames = int(mc.duration * mc.fps)
             preview_path = mc.render_preview(frame_idx=total_frames - 2)
@@ -573,6 +617,7 @@ def _resolve_magic_style(h, beat_id: str, body: dict, manual_path: list, sidecar
         video_role=video_role,
         manual_path=manual_path,
         scene_registry=registry,
+        event_id=h.app.event_id,
     )
 
 
@@ -582,6 +627,7 @@ def _persist_magic_scene_registry(
     beat_id: str,
     manual_path: list,
     style: str,
+    video_role: str = "resolution",
 ) -> None:
     """Best-effort YAML persist so scene_registry tracks last approved path + style."""
     try:
@@ -589,8 +635,15 @@ def _persist_magic_scene_registry(
         if not reg_path.exists():
             return
         import yaml as _yaml
+        from magic_render_contract import resolve_magic_scene_registry_keys
+
         registry = _yaml.safe_load(reg_path.read_text()) or {}
-        scene_key = f"m1_e1_res_{beat_id}"
+        keys = resolve_magic_scene_registry_keys(
+            beat_id,
+            event_id=h.app.event_id,
+            video_role=video_role,
+        )
+        scene_key = keys[0] if keys else f"m1_e1_res_{beat_id}"
         scene = registry.setdefault(scene_key, {})
         scene["manual_path"] = manual_path
         scene["style"] = style
@@ -610,9 +663,9 @@ def _persist_magic_fields_to_bg_sidecar(
     try:
         bg = _bg_module()
         arc, evt, phase = _resolve_bg_segment_for_scope(h.app.event_id, video_role)
-        with bg.sidecar_file_lock():
-            sidecar = bg.read_sidecar()
-            ok = bg.persist_magic_fields_on_bg_sidecar(
+
+        def _persist(sidecar: dict) -> None:
+            bg.persist_magic_fields_on_bg_sidecar(
                 sidecar,
                 arc_number=arc,
                 event_id=str(evt),
@@ -620,10 +673,79 @@ def _persist_magic_fields_to_bg_sidecar(
                 request_beat_id=request_beat_id,
                 fields=fields,
             )
-            if ok:
-                bg.write_sidecar(sidecar)
+
+        bg.mutate_sidecar_locked(_persist)
     except Exception as exc:  # noqa: BLE001
         print(f"[BG] magic sidecar persist failed beat={request_beat_id}: {exc}", flush=True)
+
+
+_MAGIC_STILL_CLEAR_FIELDS = (
+    "magic_still_path",
+    "magic_manual_path",
+    "magic_path_authored_against",
+)
+
+
+def handle_clear_magic_still(h, body: dict) -> None:
+    """POST /api/storyboard/clear_magic_still — drop magic-on-still from partition + sidecar."""
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+    beat_id = (body or {}).get("beat_id")
+    if not beat_id:
+        return h._send_error_v59(
+            400,
+            error_code="MISSING_BEAT_ID",
+            error_message="beat_id required",
+            retry_safe=False,
+        )
+    _video_role_body = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
+    bg = _bg_module()
+    _production_state = h.app.state.read_state()
+    _sidecar_for_map = bg.read_sidecar()
+    sb_beat_id = bg.storyboard_beat_id_for_bg_beat(
+        beat_id,
+        sidecar=_sidecar_for_map,
+        production_state=_production_state,
+        video_role=_video_role_body,
+    ) or beat_id
+    scope = None
+    try:
+        scope = scope_router.resolve(body, h.app.event_dir.name)
+
+        def _clear_magic_still(partition: dict) -> None:
+            beats = partition.setdefault("beats", {})
+            beat = beats.setdefault(sb_beat_id, {})
+            for key in _MAGIC_STILL_CLEAR_FIELDS:
+                beat.pop(key, None)
+
+        scope_router.mutate_partition(h.app.state, scope, _clear_magic_still)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[clear_magic_still] WARN state writeback failed: {exc}", flush=True)
+        return h._send_error_v59(
+            500,
+            error_code="STATE_WRITEBACK_FAILED",
+            error_message=f"Could not clear magic_still_path: {exc}",
+            retry_safe=True,
+        )
+    _video_role_written = getattr(scope, "video_role", None) if scope else None
+    if _video_role_written:
+        _persist_magic_fields_to_bg_sidecar(
+            h,
+            request_beat_id=beat_id,
+            video_role=_video_role_written,
+            fields={key: None for key in _MAGIC_STILL_CLEAR_FIELDS},
+        )
+        try:
+            bg.invalidate_magic_still_tts_scratch(str(beat_id), h.app.event_dir)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[clear_magic_still] WARN scratch invalidate failed: {exc}", flush=True)
+    return h._send_json(200, {
+        "ok": True,
+        "beat_id": beat_id,
+        "storyboard_beat_id": sb_beat_id,
+        "partition_written": _video_role_written,
+        "cleared_fields": list(_MAGIC_STILL_CLEAR_FIELDS),
+    })
 
 
 def handle_magic_still(h, body: dict)-> None:
@@ -740,18 +862,27 @@ def handle_magic_still(h, body: dict)-> None:
     out_dir = h.app.event_dir
     out_path = out_dir / f"magic_still_{beat_id}_{ts}.mp4"
 
-    # Canonical magic_still clip is 4.0s silent — TTS is mixed at stitch export
-    # (materialize_magic_still_with_tts_export). Beat 1 approved renders used 4.0s
-    # regardless of dialogue length; extending here adds frames of blocky trail tail.
-    magic_still_duration = 4.0
+    # Canonical magic_still clip is silent — TTS is mixed at stitch export
+    # (materialize_magic_still_with_tts_export). Default 4.0s for tessa_ori floor
+    # trails; nest orbital scenes pin 6.083s via scene_registry.yaml.
+    registry = _load_scene_registry(h)
+    _video_role_for_dur = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "resolution"
+    magic_still_duration = _bg_module().resolve_magic_still_render_duration(
+        beat_id,
+        scene_registry=registry,
+        fallback=4.0,
+        event_id=h.app.event_id,
+        video_role=_video_role_for_dur,
+    )
 
     try:
         tools_dir = str(_PSERVER_TOOLS_DIR)
         if tools_dir not in sys.path:
             sys.path.insert(0, tools_dir)
         from magic_compositor import MagicCompositor  # type: ignore
-        with _bg_module()._sidecar_lock:
-            _sidecar_style = _bg_module().read_sidecar()
+        import magic_render_contract as mrc  # type: ignore
+        # MAGIC_RENDER_CONTRACT_V2_STILL — see Production/docs/HOW_TO_MAKE_VISIBLE_MAGIC.md
+        _sidecar_style = _bg_module().read_sidecar()
         magic_style = _resolve_magic_style(h, beat_id, body, clean_path, _sidecar_style)
         mc = MagicCompositor(
             background_path=safe_sip,
@@ -763,10 +894,11 @@ def handle_magic_still(h, body: dict)-> None:
             label=f"magic_still_{beat_id}_{ts}",
             beat_id=beat_id,
             tags=["magic", "magic_still", magic_style],
-            path_authored_against=path_authored_against,
-            path_interp="polyline",
+            **mrc.production_magic_compositor_kwargs(
+                path_authored_against=path_authored_against,
+            ),
         )
-        rendered = mc.render_video(output_path=str(out_path))
+        rendered = mc.render_ld469_on_background(output_path=str(out_path))
     except Exception as exc:
         traceback.print_exc()
         return h._send_error_v59(
@@ -798,7 +930,8 @@ def handle_magic_still(h, body: dict)-> None:
             tags=["magic", "magic_still", "tessa_ori", beat_id],
             notes=(
                 f"Magic trail on still {sip.name} for beat {beat_id} via "
-                f"S5 Workflow A (LD-468). {len(clean_path)} path points."
+                f"LD-469 screen_rgb (same contract as magic_video). "
+                f"{len(clean_path)} path points; path_interp=polyline; gain=1.0."
             ),
             role="library",
         )
@@ -812,8 +945,7 @@ def handle_magic_still(h, body: dict)-> None:
     scope = None  # captured below for Bug-A4 read-back verify
     _video_role_body = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
     _production_state = h.app.state.read_state()
-    with _bg_module()._sidecar_lock:
-        _sidecar_for_map = _bg_module().read_sidecar()
+    _sidecar_for_map = _bg_module().read_sidecar()
     sb_beat_id = _bg_module().storyboard_beat_id_for_bg_beat(
         beat_id,
         sidecar=_sidecar_for_map,
@@ -904,7 +1036,12 @@ def handle_magic_still(h, body: dict)-> None:
             beat_id=beat_id,
             manual_path=clean_path,
             style=magic_style,
+            video_role=_video_role_written,
         )
+        try:
+            bg.invalidate_magic_still_tts_scratch(str(beat_id), h.app.event_dir)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[magic_still] WARN scratch invalidate failed: {exc}", flush=True)
 
     return h._send_json(200, {
         "ok": True,
@@ -1116,9 +1253,10 @@ def handle_magic_video(h, body: dict)-> None:
         tools_dir = str(_PSERVER_TOOLS_DIR)
         if tools_dir not in sys.path:
             sys.path.insert(0, tools_dir)
-        from magic_compositor import MagicCompositor  # type: ignore
-        with _bg_module()._sidecar_lock:
-            _sidecar_style = _bg_module().read_sidecar()
+        from magic_compositor import MagicCompositor, composite_screen_rgb  # type: ignore
+        import magic_render_contract as mrc  # type: ignore
+        # MAGIC_RENDER_CONTRACT_V2_VIDEO — see Production/docs/HOW_TO_MAKE_VISIBLE_MAGIC.md
+        _sidecar_style = _bg_module().read_sidecar()
         magic_style = _resolve_magic_style(h, beat_id, body, clean_path, _sidecar_style)
         mc = MagicCompositor(
             background_path=str(black_ref),
@@ -1130,9 +1268,11 @@ def handle_magic_video(h, body: dict)-> None:
             label=f"magic_only_{beat_id}_{ts}",
             beat_id=beat_id,
             tags=["magic", "magic_video", magic_style],
-            path_authored_against=path_authored_against,
-            path_interp="polyline",
+            **mrc.production_magic_compositor_kwargs(
+                path_authored_against=path_authored_against,
+            ),
         )
+        _composite_screen_rgb = composite_screen_rgb
         # DO NOT call mc.render_video() — we composite directly in Step 2.
     except Exception as exc:
         traceback.print_exc()
@@ -1151,29 +1291,28 @@ def handle_magic_video(h, body: dict)-> None:
     # Lock decode/encode to compositor canvas (may differ from raw ffprobe on odd dims).
     comp_w, comp_h = mc.W, mc.H
 
-    # Step 2: Python-numpy additive composite piped to ffmpeg for h264 encoding.
+    # Step 2: Python-numpy RGB screen composite piped to ffmpeg for h264 encoding.
     #
-    # Root cause of the old ffmpeg blend=screen approach: ffmpeg blend operates on
-    # raw YUV pixel values.  A black background in RGB is Y=16, Cb=128, Cr=128 in
-    # YUV (limited range).  screen(Cb_amber=99, Cb_black=128) = 177 instead of 99,
-    # shifting chroma dramatically and producing magenta output.  Converting to
-    # format=rgb24 in the filter graph does NOT fix this — the decode path still
-    # applies YUV→RGB colour matrix internally.  The fix: decode lipsync to raw
-    # RGB24 via a pipe, composite in Python numpy (correct RGB maths), encode back
-    # via a second ffmpeg pipe that handles audio copy.
+    # LD-469 semantics (beat 1 approved 2026-06-05): trail at gain=1.0 on black,
+    # then screen onto source.  ffmpeg blend=screen on YUV produces magenta; decode
+    # to RGB24, composite in numpy, encode back with audio copy.
     #
     # INVARIANTS:
     #   - decode_proc reads safe_ffmpeg_src → raw RGB24 bytes on stdout
-    #   - encode_proc reads raw RGB24 on stdin → h264 yuv420p + audio from lipsync
+    #   - encode_proc reads raw RGB24 on stdin → h264 yuv420p + audio from source
     #   - mc._make_trail(frame_idx) returns float32 (H,W,3) trail in [0,255]
-    #   - additive blend: clip(bg + trail, 0, 255).astype(uint8)
+    #   - screen blend: 255 - (255-bg)*(255-trail)/255
     frame_size = comp_w * comp_h * 3  # bytes per RGB24 frame
 
     mc_n_frames = mc.n_frames  # set by MagicCompositor.__init__ from duration*fps
 
+    # LD-469: magic-on-video renders trail at full brightness (black_bg semantics).
+    # Calibrating gain on the black ref attenuates the ambient pool → blocky 1px squares.
+    mc._gain = 1.0
+
     print(
         f"[magic_video] compositing {len(clean_path)} path pts on {comp_w}x{comp_h} "
-        f"(authored={path_authored_against})",
+        f"(authored={path_authored_against}, gain=1.0, blend=screen_rgb)",
         flush=True,
     )
 
@@ -1227,19 +1366,22 @@ def handle_magic_video(h, body: dict)-> None:
         )
 
         frame_idx = 0
+        path_lum_sampled = False
         while True:
             raw = decode_proc.stdout.read(frame_size)
             if len(raw) < frame_size:
                 break
             bg_arr = _np_mv.frombuffer(raw, dtype=_np_mv.uint8).reshape(comp_h, comp_w, 3).astype(_np_mv.float32)
 
+            if not path_lum_sampled:
+                mc.set_path_luminance_from_array(bg_arr)
+                path_lum_sampled = True
+
             # Map lipsync frame_idx → magic compositor frame (same fps+duration, so 1:1)
             mc_frame_idx = min(frame_idx, mc_n_frames - 1)
             trail = mc._make_trail(mc_frame_idx)
 
-            # Additive blend (tessa_ori style = "additive"; black background pixels
-            # have trail≈0, sparkle pixels add brightness — never darkens).
-            result = _np_mv.clip(bg_arr + trail, 0, 255).astype(_np_mv.uint8)
+            result = _composite_screen_rgb(bg_arr, trail)
             encode_proc.stdin.write(result.tobytes())
             frame_idx += 1
 
@@ -1381,7 +1523,7 @@ def handle_magic_video(h, body: dict)-> None:
             notes=(
                 f"Magic trail on video {svp.name} for beat {beat_id} via "
                 f"S5 Workflow B (LD-469). {len(clean_path)} path points; "
-                f"black_bg=True + blend=screen overlay; "
+                f"path_interp=polyline, gain=1.0, rgb_screen composite; "
                 f"source dims {comp_w}x{comp_h}, duration {vid_duration:.2f}s."
             ),
             role="library",
@@ -1395,8 +1537,7 @@ def handle_magic_video(h, body: dict)-> None:
     scope = None  # captured below for Bug-A4 read-back verify
     _video_role_body = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "intro"
     _production_state = h.app.state.read_state()
-    with _bg_module()._sidecar_lock:
-        _sidecar_for_map = _bg_module().read_sidecar()
+    _sidecar_for_map = _bg_module().read_sidecar()
     sb_beat_id = _bg_module().storyboard_beat_id_for_bg_beat(
         beat_id,
         sidecar=_sidecar_for_map,
@@ -1482,6 +1623,7 @@ def handle_magic_video(h, body: dict)-> None:
             beat_id=beat_id,
             manual_path=clean_path,
             style=magic_style,
+            video_role=_video_role_written,
         )
 
     return h._send_json(200, {
@@ -1608,11 +1750,456 @@ def handle_bg_crop_preview(h)-> None:
 def handle_bg_segments(h)-> None:
 
     """GET /api/bg/segments?arc_number=N -> { segments: [...] }"""
+    from server_handlers.milestone_scope import (
+        assert_production_scope,
+        milestone_bg_segment,
+        parse_scope_query,
+    )
+
+    qs_body = parse_scope_query(h)
+    ctx = assert_production_scope(
+        h, qs_body, allow_missing=True, allow_missing_video_role=True,
+    )
+    if ctx is None:
+        return
+    if ctx.is_milestone:
+        seg = milestone_bg_segment(ctx)
+        return h._send_json(200, {
+            "segments": [seg],
+            "arc_number": seg["arc_number"],
+            "scope_type": "milestone",
+            "milestone_id": ctx.milestone_id,
+        })
+
     qs = urllib.parse.parse_qs(urllib.parse.urlparse(h.path).query)
     arc_number = int((qs.get("arc_number") or [1])[0])
     bg = _bg_module()
     segments = bg.get_segments(arc_number)
     return h._send_json(200, {"segments": segments, "arc_number": arc_number})
+
+
+def _o3_gallery_repair_runtime_key(event_id: str) -> str:
+    ev = str(event_id or "").strip()
+    if ev.isdigit():
+        ev = f"Event_{ev}"
+    elif ev and not ev.startswith("Event_"):
+        ev = f"Event_{ev}"
+    return f"o3_gallery_repair_done_{ev}"
+
+
+def _o3_admin_reconcile_runtime_key(event_id: str) -> str:
+    ev = str(event_id or "").strip()
+    if ev.isdigit():
+        ev = f"Event_{ev}"
+    elif ev and not ev.startswith("Event_"):
+        ev = f"Event_{ev}"
+    return f"o3_admin_reconcile_done_{ev}"
+
+
+def _run_o3_admin_reconcile(h, scope_event_id: str | None = None, *, force: bool = False) -> dict:
+    """Explicit admin/startup reconcile — intent locks, log pointers, stuck beats."""
+    bg = _bg_module()
+    prod_root = _data_root(h)
+    raw_event = scope_event_id or f"Event_{getattr(h.app, 'event_id', '')}"
+    event_num = bg.normalize_bg_event_id(raw_event)
+    event_dir = prod_root / f"Event_{event_num}"
+    reconcile_key = _o3_admin_reconcile_runtime_key(str(event_num))
+    counts = {"intent_locks": 0, "log_pointers": 0, "stuck_beats": 0}
+    changed = 0
+
+    sidecar_probe = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=5)
+    runtime_probe = sidecar_probe.get("_runtime") or {}
+    if not force and runtime_probe.get(reconcile_key):
+        return {"ok": True, "skipped": True, "counts": counts, "changed": 0}
+
+    try:
+
+        def _commit(sidecar: dict) -> None:
+            nonlocal changed
+            bg.ensure_sidecar_schema_defaults(sidecar)
+            runtime = sidecar.setdefault("_runtime", {})
+            if not force and runtime.get(reconcile_key):
+                return
+            from o3_generation_intent import (
+                reconcile_stale_o3_intent_locks,
+                reconcile_stale_o3_intent_locks_all_events,
+            )
+
+            if force:
+                counts["intent_locks"] = reconcile_stale_o3_intent_locks_all_events(sidecar, prod_root)
+            elif event_dir.is_dir():
+                counts["intent_locks"] = reconcile_stale_o3_intent_locks(sidecar, event_dir)
+            counts["log_pointers"] = reconcile_stale_o3_job_log_pointers_all_events(sidecar)
+            counts["stuck_beats"] = reconcile_stuck_o3_voice_beats(sidecar)
+            changed = sum(counts.values())
+            runtime[reconcile_key] = datetime.now(timezone.utc).isoformat()
+
+        bg.mutate_sidecar_locked(_commit, timeout_s=15)
+        return {"ok": True, "skipped": False, "counts": counts, "changed": changed}
+    except TimeoutError:
+        print("[BG] o3 admin reconcile skipped — sidecar lock busy", flush=True)
+        return {"ok": False, "error": "sidecar lock busy", "counts": counts, "changed": 0}
+    except Exception as exc:
+        print(f"[BG] o3 admin reconcile failed: {exc}", flush=True)
+        return {"ok": False, "error": str(exc), "counts": counts, "changed": 0}
+
+
+def run_blocking_o3_startup(app) -> None:
+    """Blocking O3 reconcile before HTTP serves traffic (v2 lifecycle spec)."""
+    h_stub = type("_H", (), {"app": app})()
+    prod_root = _data_root(h_stub)
+    scope_event_id = f"Event_{getattr(app, 'event_id', '')}".strip()
+    from o3_generation_intent import run_blocking_o3_startup_reconcile
+
+    result = run_blocking_o3_startup_reconcile(prod_root, scope_event_id)
+    if result.get("closed"):
+        print(f"[startup:o3-blocking-reconcile] closed={result['closed']}", flush=True)
+    if result.get("errors"):
+        raise RuntimeError(f"O3 startup reconcile errors: {result['errors']}")
+    admin = _run_o3_admin_reconcile(h_stub, scope_event_id, force=True)
+    if not admin.get("ok"):
+        raise RuntimeError(f"O3 admin reconcile failed at startup: {admin}")
+    print(f"[startup:o3-blocking-reconcile] admin counts={admin.get('counts')}", flush=True)
+
+
+def schedule_o3_admin_reconcile_at_startup(app, *, force: bool = False) -> None:
+    """Deprecated async path — v2 uses run_blocking_o3_startup before serve_forever."""
+    del force
+
+
+def handle_bg_o3_admin_reconcile(h, body: dict) -> None:
+    """POST /api/bg/o3/admin-reconcile { force?: bool } — explicit O3 lifecycle heal."""
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=True, allow_missing_video_role=True):
+        return
+    force = bool(body.get("force"))
+    scope_event_id = body.get("scope_event_id") or body.get("event_id")
+    result = _run_o3_admin_reconcile(h, scope_event_id, force=force)
+    return h._send_json(200, result)
+
+
+def _gallery_repair_beat_delta(before: dict, after: dict) -> dict[str, object]:
+    """Fields changed by additive disk reconcile — applied under a short lock only."""
+    delta: dict[str, object] = {}
+    for key in set(before) | set(after):
+        if before.get(key) != after.get(key):
+            delta[key] = after.get(key)
+    return delta
+
+
+def _plan_o3_gallery_repair_for_event(
+    sidecar: dict,
+    event_dir: Path,
+) -> list[tuple[str, dict[str, object]]]:
+    """Disk-heavy gallery reconcile — must run outside sidecar lock (P4 SQLite authority)."""
+    from o3_job_status_contract import clear_o3_pointer_if_terminal
+
+    bg = _bg_module()
+    pending: list[tuple[str, dict[str, object]]] = []
+    for beat in _iter_bg_beats(sidecar):
+        beat_id = str(beat.get("beat_id") or "").strip()
+        if not beat_id:
+            continue
+        beat_event_dirs = bg.resolve_o3_lifecycle_event_dir_candidates(
+            beat_id, server_event_dir=event_dir,
+        )
+        beat_work = copy.deepcopy(beat)
+        beat_changed = False
+        for beat_event in beat_event_dirs:
+            if not beat_event.is_dir():
+                continue
+            if bg.reconcile_beat_gallery_from_disk(beat_work, beat_event):
+                beat_changed = True
+            elif clear_o3_pointer_if_terminal(beat_work, beat_event):
+                beat_changed = True
+        if beat_changed:
+            delta = _gallery_repair_beat_delta(beat, beat_work)
+            if delta:
+                pending.append((beat_id, delta))
+    return pending
+
+
+def _run_o3_gallery_repair_for_event(h, scope_event_id: str, *, force: bool = False) -> int:
+    """One-shot additive gallery repair per event — disk scan outside lock, short commit."""
+    bg = _bg_module()
+    prod_root = _data_root(h)
+    event_num = bg.normalize_bg_event_id(scope_event_id)
+    event_dir = prod_root / f"Event_{event_num}"
+    if not event_dir.is_dir():
+        return 0
+    repair_key = _o3_gallery_repair_runtime_key(str(event_num))
+    sidecar_probe = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=5)
+    runtime_probe = sidecar_probe.get("_runtime") or {}
+    if not force and runtime_probe.get(repair_key):
+        return 0
+    pending = _plan_o3_gallery_repair_for_event(sidecar_probe, event_dir)
+    changed = 0
+    try:
+
+        def _commit(sidecar: dict) -> None:
+            nonlocal changed
+            bg.ensure_sidecar_schema_defaults(sidecar)
+            runtime = sidecar.setdefault("_runtime", {})
+            if not force and runtime.get(repair_key):
+                return
+            for beat_id, delta in pending:
+                _, beat = bg.find_beat(sidecar, beat_id)
+                if not beat:
+                    continue
+                beat.update(delta)
+                changed += 1
+            runtime[repair_key] = datetime.now(timezone.utc).isoformat()
+
+        bg.mutate_sidecar_locked(_commit, timeout_s=10)
+        return changed
+    except TimeoutError:
+        print("[BG] o3 gallery repair skipped — sidecar lock busy", flush=True)
+        return 0
+    except Exception as exc:
+        print(f"[BG] o3 gallery repair failed: {exc}", flush=True)
+        return 0
+
+
+def _apply_o3_session_terminal_reconcile(
+    h,
+    beats: list,
+    sidecar: dict,
+    *,
+    scope_arc: int | None,
+    scope_event_id: str | None,
+    scope_phase: str | None,
+) -> list[dict]:
+    """Persist terminal/disk gallery merges for scope beats; reload beats when changed."""
+    if not beats:
+        return []
+    from o3_session_terminal_reconcile import plan_session_terminal_reconcile
+
+    pending, outcomes = plan_session_terminal_reconcile(
+        beats,
+        sidecar,
+        orphan_recovery=_try_orphan_o3_delivery_recovery,
+        server_event_dir=Path(h.app.event_dir),
+        library_event_dir=getattr(h.app, "milestone_library_event_dir", None),
+        scope_type=str(getattr(h.app, "scope_type", "event") or "event"),
+    )
+    if not pending:
+        return outcomes
+    bg = _bg_module()
+    try:
+
+        def _commit(sc: dict) -> None:
+            bg.ensure_sidecar_schema_defaults(sc)
+            for beat_id, delta in pending:
+                _, beat = bg.find_beat(sc, beat_id)
+                if beat:
+                    beat.update(delta)
+
+        bg.mutate_sidecar_locked(_commit, timeout_s=10)
+    except TimeoutError:
+        print("[BG] session terminal reconcile skipped — sidecar lock busy", flush=True)
+        return []
+    except Exception as exc:
+        print(f"[BG] session terminal reconcile failed: {exc}", flush=True)
+        return []
+    if scope_arc is not None and scope_event_id is not None and scope_phase is not None:
+        try:
+            fresh = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=5)
+            bg.ensure_sidecar_schema_defaults(fresh)
+            seg = bg.get_seg_entry(fresh, scope_arc, scope_event_id, scope_phase)
+            beats[:] = seg.get("beats", [])
+        except Exception as exc:
+            print(f"[BG] session terminal reconcile reload failed: {exc}", flush=True)
+    return outcomes
+
+
+def _normalize_o3_event_dirs(
+    event_dirs: Path | list[Path] | tuple[Path, ...],
+) -> list[Path]:
+    """Coerce single Event dir or candidate list — Path is not iterable (Py3.12+)."""
+    if isinstance(event_dirs, Path):
+        return [event_dirs]
+    return [Path(p) for p in event_dirs]
+
+
+def _resolve_beat_job_busy_for_session(
+    beat: dict,
+    event_dirs: Path | list[Path] | tuple[Path, ...],
+) -> bool:
+    """Single server busy truth — pipeline-specific (still_insert vs O3/GPT)."""
+    from o3_job_status_contract import beat_job_busy_in_event_dirs
+
+    event_dirs = _normalize_o3_event_dirs(event_dirs)
+    beat_id = str(beat.get("beat_id") or "").strip()
+    bg = _bg_module()
+    if bg.beat_is_still_insert(beat):
+        return bool(beat_id and beat_id in _STILL_RENDER_BUSY)
+    busy = beat_job_busy_in_event_dirs(beat, event_dirs, in_memory_jobs=_ARLO_O3_JOBS)
+    if beat_id in _STILL_RENDER_BUSY:
+        busy = True
+    return busy
+
+
+def _o3_job_scope_dirs(h) -> tuple[Path, Path | None, str]:
+    """(server_event_dir, library_event_dir|None, scope_type) for O3 job lifecycle I/O."""
+    server = Path(getattr(h.app, "event_dir", _data_root(h) / "Event_1"))
+    scope_type = str(getattr(h.app, "scope_type", "event") or "event")
+    lib_raw = getattr(h.app, "milestone_library_event_dir", None)
+    library = Path(lib_raw).expanduser().resolve() if lib_raw else None
+    return server, library, scope_type
+
+
+def _o3_job_event_dir_candidates(h, beat_id: str) -> list[Path]:
+    from o3_generation_intent import resolve_o3_job_event_dir_candidates
+
+    server, library, scope_type = _o3_job_scope_dirs(h)
+    return resolve_o3_job_event_dir_candidates(
+        beat_id,
+        server_event_dir=server,
+        library_event_dir=library,
+        scope_type=scope_type,
+    )
+
+
+def _o3_job_event_dir(h, beat_id: str) -> Path:
+    from o3_generation_intent import resolve_o3_job_event_dir
+
+    server, library, scope_type = _o3_job_scope_dirs(h)
+    return resolve_o3_job_event_dir(
+        beat_id,
+        server_event_dir=server,
+        library_event_dir=library,
+        scope_type=scope_type,
+    )
+
+
+def _enrich_beats_job_busy(
+    beats: list,
+    prod_root: Path,
+    h,
+    *,
+    session_read_only: bool = False,
+) -> None:
+    from o3_job_status_contract import (
+        clear_o3_pointer_if_terminal,
+        resolve_o3_job_id_for_lifecycle,
+    )
+    from o3_generation_intent import observe_and_close_stale_o3_attempt
+
+    bg = _bg_module()
+    for beat in beats:
+        beat_id = str(beat.get("beat_id") or "").strip()
+        if not beat_id:
+            beat["job_busy"] = False
+            beat["o3_current_job_id"] = None
+            continue
+        beat_event_dirs = _o3_job_event_dir_candidates(h, beat_id)
+        beat_event = beat_event_dirs[0]
+        if not bg.beat_is_still_insert(beat):
+            for ev in beat_event_dirs:
+                if clear_o3_pointer_if_terminal(beat, ev):
+                    break
+        job_id = resolve_o3_job_id_for_lifecycle(beat)
+        if job_id and not bg.beat_is_still_insert(beat):
+            for ev in beat_event_dirs:
+                if observe_and_close_stale_o3_attempt(
+                    job_id,
+                    beat_id,
+                    ev,
+                    in_memory_jobs=_ARLO_O3_JOBS,
+                    close_stale_running=not session_read_only,
+                ):
+                    if not session_read_only:
+                        try:
+                            snap = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=5.0)
+                            _, fresh = bg.find_beat(snap, beat_id)
+                            if fresh:
+                                beat.update({k: v for k, v in fresh.items() if not k.startswith("_")})
+                        except Exception:
+                            pass
+                    break
+        busy = _resolve_beat_job_busy_for_session(beat, beat_event_dirs)
+        beat["job_busy"] = busy
+        from o3_job_status_contract import resolve_o3_current_job_id
+
+        beat["o3_current_job_id"] = resolve_o3_current_job_id(beat) if busy else None
+
+
+def _beat_o3_operator_lock_active(beat: dict, event_dir: Path) -> bool:
+    from o3_job_status_contract import beat_job_busy
+
+    beat_id = str(beat.get("beat_id") or "").strip()
+    if beat_id and beat_id in _STILL_RENDER_BUSY:
+        return True
+    return beat_job_busy(beat, event_dir, in_memory_jobs=_ARLO_O3_JOBS)
+
+
+def _operator_job_busy_error(message: str) -> dict:
+    return {
+        "status": 409,
+        "error_code": "BEAT_JOB_BUSY",
+        "error_message": message,
+        "retry_safe": True,
+    }
+
+
+def schedule_operator_workbench_migrate_at_startup(app) -> None:
+    """Persist one-time operator workbench heals (library→bg_ref backfill, etc.)."""
+    import threading
+
+    def _run() -> None:
+        try:
+            bg = _bg_module()
+            from operator_workbench_contract import migrate_operator_workbench_sidecar
+
+            changed = False
+
+            def _apply(sc: dict) -> bool:
+                nonlocal changed
+                if migrate_operator_workbench_sidecar(sc):
+                    changed = True
+                return changed
+
+            try:
+                bg.mutate_sidecar_locked(_apply, timeout_s=30)
+            except TimeoutError:
+                print("[startup:operator-workbench-migrate] skipped — sidecar lock busy", flush=True)
+                return
+            if changed:
+                print("[startup:operator-workbench-migrate] persisted operator workbench heals", flush=True)
+        except Exception as exc:
+            print(f"[startup:operator-workbench-migrate] failed: {exc}", flush=True)
+
+    threading.Thread(
+        target=_run,
+        daemon=True,
+        name="operator-workbench-migrate",
+    ).start()
+
+
+def schedule_o3_gallery_repair_at_startup(app, *, force: bool = False) -> None:
+    """Background additive gallery repair once per event — off session GET hot path."""
+    import threading
+
+    scope_event_id = f"Event_{getattr(app, 'event_id', '')}".strip()
+    if not scope_event_id or scope_event_id == "Event_":
+        return
+    h_stub = type("_GalleryRepairHandler", (), {"app": app})()
+
+    def _run() -> None:
+        try:
+            changed = _run_o3_gallery_repair_for_event(h_stub, scope_event_id, force=force)
+            if changed:
+                print(
+                    f"[startup:o3-gallery-repair] {scope_event_id}: repaired {changed} beat(s)",
+                    flush=True,
+                )
+        except Exception as exc:
+            print(f"[startup:o3-gallery-repair] {scope_event_id} failed: {exc}", flush=True)
+
+    threading.Thread(
+        target=_run,
+        daemon=True,
+        name=f"o3-gallery-repair-{getattr(app, 'event_id', 'unknown')}",
+    ).start()
 
 
 def handle_bg_session_state(h)-> None:
@@ -1638,7 +2225,17 @@ def handle_bg_session_state(h)-> None:
     """
     # LD-456 SCOPE_VALIDATION_V1 (no-body handler — query-string fallback inside helper)
     # scope_video_role is parsed below from query; do not require it at assert gate.
-    if not h._assert_event_scope({}, allow_missing=True, allow_missing_video_role=True):
+    from server_handlers.milestone_scope import assert_production_scope, parse_scope_query
+
+    qs_body = parse_scope_query(h)
+    pctx = assert_production_scope(
+        h,
+        qs_body,
+        allow_missing=True,
+        allow_missing_video_role=True,
+        repair_sidecar=False,
+    )
+    if pctx is None:
         return
 
     # Parse scope from query string. _assert_event_scope already validated
@@ -1653,22 +2250,43 @@ def handle_bg_session_state(h)-> None:
     scope_phase = _q("scope_phase")  # may be None — derived from video role
     scope_video_role = _q("scope_video_role") or _q("scope_target_video") or _q("video")
 
+    if pctx.is_milestone:
+        skel = pctx.skeleton_ref or {}
+        scope_arc_raw = str(skel.get("arc_number") or 1)
+        scope_event_id = str(skel.get("event_id"))
+        scope_phase = str(skel.get("phase") or "full")
+        scope_video_role = scope_video_role or "standalone"
+
     bg = _bg_module()
-    # Normalize: storyboard sends "Event_1" (scope format); sidecar keys use "1" (numeric).
-    # Strip the "Event_" prefix so get_seg_entry looks up "event_1_post" not "event_Event_1_post".
     if scope_event_id is not None:
         scope_event_id = bg.normalize_bg_event_id(scope_event_id)
-    with bg.sidecar_file_lock():
-        sidecar = bg.read_sidecar()
-        sidecar = bg._migrate_sidecar(sidecar)
-        reconcile_stuck_o3_voice_beats(sidecar)
-        # Orphan recovery may persist via update_beat_locked — refresh before whole-file write.
-        sidecar = bg.read_sidecar()
-        sidecar = bg._migrate_sidecar(sidecar)
-        event_dir = Path(getattr(h.app, "event_dir", "") or "")
-        if event_dir.is_dir():
-            bg.reconcile_kling_o3_sidecar(sidecar, event_dir)
-        bg.write_sidecar(sidecar)
+    force_reconcile_o3 = str(_q("force_reconcile_o3") or "").strip().lower() in ("1", "true", "yes")
+    if force_reconcile_o3 and scope_event_id is not None:
+        import threading
+        threading.Thread(
+            target=_run_o3_gallery_repair_for_event,
+            args=(h, scope_event_id),
+            kwargs={"force": True},
+            daemon=True,
+        ).start()
+    # Session GET is read-only — gallery repair runs at startup or force_reconcile_o3=1 only.
+    sidecar = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=5)
+    bg.ensure_sidecar_schema_defaults(sidecar)
+    event_dir = Path(getattr(h.app, "event_dir", "") or "")
+    if force_reconcile_o3 and event_dir.is_dir():
+        runtime = sidecar.setdefault("_runtime", {})
+        o3_reconcile_changed = bg.reconcile_kling_o3_sidecar(sidecar, event_dir)
+        if o3_reconcile_changed:
+            try:
+                bg.mutate_sidecar_locked(
+                    lambda sc: bg.reconcile_kling_o3_sidecar(sc, event_dir),
+                    timeout_s=15,
+                )
+            except TimeoutError:
+                print("[BG] force_reconcile_o3 skipped — sidecar lock busy", flush=True)
+        runtime["last_o3_disk_reconcile_at"] = datetime.now(timezone.utc).isoformat()
+        sidecar = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=5)
+        bg.ensure_sidecar_schema_defaults(sidecar)
     ctx = sidecar.get("active_context")
 
     # LD-545 Option B — scope-derived segment.
@@ -1703,22 +2321,21 @@ def handle_bg_session_state(h)-> None:
 
     scope_active_context = None
     beats = []
-    ref_hydrated = False
+    approved_roots = None
     if scope_arc is not None and scope_event_id is not None:
         seg = bg.get_seg_entry(sidecar, scope_arc, scope_event_id, scope_phase)
         beats = seg.get("beats", [])
-        approved_roots = h.app._library_root_dirs()
-        for beat in beats:
-            if bg.hydrate_beat_ref_images(beat, approved_roots):
-                ref_hydrated = True
+        lib_ev = pctx.library_event_dir if pctx.is_milestone else h.app.event_dir
+        from lib.event_library import library_image_roots
+        approved_roots = library_image_roots(lib_ev, h.app.event_dir.parent)
         scope_active_context = {
             "arc_number": scope_arc,
             "event_id": scope_event_id,
             "phase": scope_phase,
         }
-    if ref_hydrated:
-        with bg.sidecar_file_lock():
-            bg.write_sidecar(sidecar)
+        if pctx.is_milestone:
+            scope_active_context["milestone_id"] = pctx.milestone_id
+            scope_active_context["scope_type"] = "milestone"
 
     # Migration warning if scope and sidecar's active_context disagree
     # (debug aid — surfaces the divergence Bug 2 + Bug 4 trip on).
@@ -1738,6 +2355,31 @@ def handle_bg_session_state(h)-> None:
             "active_context": ctx,
         })
 
+    o3_terminal_outcomes: list[dict] = []
+    if beats:
+        import threading
+
+        beats_for_reconcile = copy.deepcopy(beats)
+
+        def _terminal_reconcile_bg() -> None:
+            try:
+                _apply_o3_session_terminal_reconcile(
+                    h,
+                    beats_for_reconcile,
+                    sidecar,
+                    scope_arc=scope_arc,
+                    scope_event_id=scope_event_id,
+                    scope_phase=scope_phase,
+                )
+            except Exception as exc:
+                print(f"[BG] session terminal reconcile bg failed: {exc}", flush=True)
+
+        threading.Thread(
+            target=_terminal_reconcile_bg,
+            daemon=True,
+            name=f"session-terminal-reconcile-{scope_event_id or 'unknown'}",
+        ).start()
+
     all_done = beats and all(b.get("flux_options") for b in beats)
     video_role = scope_video_role or ""
     if not video_role and scope_phase:
@@ -1748,13 +2390,22 @@ def handle_bg_session_state(h)-> None:
     if beats and video_role:
         try:
             production_state = h.app.state.read_state()
-            beats = [
-                bg.merge_storyboard_magic_into_bg_beat(b, production_state, video_role, sidecar)
-                for b in beats
-            ]
-            beats = bg.enrich_beats_kling_o3_pinned(beats, h.app.event_dir)
+            from operator_workbench_contract import enrich_beats_for_session_response
+
+            beats = enrich_beats_for_session_response(
+                beats,
+                sidecar,
+                event_id=str(scope_event_id or ""),
+                phase=str(scope_phase or "full"),
+                approved_roots=approved_roots if scope_arc is not None else None,
+                production_state=production_state,
+                video_role=video_role,
+                event_dir=pctx.root_dir if pctx.is_milestone else h.app.event_dir,
+            )
         except Exception as exc:  # noqa: BLE001
-            print(f"[BG] magic merge enrich failed: {exc}", flush=True)
+            print(f"[BG] operator session enrich failed: {exc}", flush=True)
+    if beats:
+        _enrich_beats_job_busy(beats, _data_root(h), h, session_read_only=True)
     return h._send_json(200, {
         # `active_context` retained for backward compat (BG segment
         # dropdown reads it as secondary filter).
@@ -1767,6 +2418,7 @@ def handle_bg_session_state(h)-> None:
         "flux_options_complete": bool(all_done),
         "capabilities": _bg_capabilities(),
         "migration_warnings": warnings,
+        "o3_terminal_outcomes": o3_terminal_outcomes,
     })
 
 
@@ -1819,18 +2471,16 @@ def handle_bg_poll_flux(h)-> None:
                 )
                 key = f"bg_{beat_id}_opt{opt_idx}"
                 # Persist to sidecar
-                with bg.sidecar_file_lock():
-                    sc2 = bg.read_sidecar()
-                    _, beat_obj = bg.find_beat(sc2, beat_id)
-                    if beat_obj:
-                        while len(beat_obj.setdefault("flux_options", [])) <= opt_idx:
-                            beat_obj["flux_options"].append(None)
-                        beat_obj["flux_options"][opt_idx] = {
-                            "request_id": rid, "image_url": url,
-                            "local_path": local_path, "key": key,
-                        }
-                        beat_obj["status"] = "stills_pending"
-                        bg.write_sidecar(sc2)
+                def _persist_flux(b: dict, _sc: dict) -> None:
+                    while len(b.setdefault("flux_options", [])) <= opt_idx:
+                        b["flux_options"].append(None)
+                    b["flux_options"][opt_idx] = {
+                        "request_id": rid, "image_url": url,
+                        "local_path": local_path, "key": key,
+                    }
+                    b["status"] = "stills_pending"
+
+                bg.update_beat_locked(beat_id, _persist_flux)
                 results[rid] = {
                     "status": "ready", "key": key,
                     "filename": filename,
@@ -1920,8 +2570,10 @@ def switch_bg_context_for_video_role(
                 scope_event_id, from_video_role,
             )
             evt_o_str = str(evt_o)
-            with bg.sidecar_file_lock():
-                sidecar = bg.read_sidecar()
+            beat_count = 0
+
+            def _preserve_outgoing(sidecar: dict) -> None:
+                nonlocal beat_count, outgoing
                 seg_o = bg.get_seg_entry(sidecar, arc_o, evt_o_str, phase_o)
                 beat_count = len(seg_o.get("beats") or [])
                 preserved = bg.preserve_kling_o3_segment_beats(
@@ -1945,6 +2597,8 @@ def switch_bg_context_for_video_role(
                         ).resolve()
                     ),
                 }
+
+            bg.mutate_sidecar_locked(_preserve_outgoing)
             if beat_count > 0:
                 _log_bg_segment_preserve_activity(scope_event_id, from_video_role, outgoing)
         except ValueError as exc:
@@ -1954,8 +2608,11 @@ def switch_bg_context_for_video_role(
     evt_t_str = str(evt_t)
     beat_label = f"arc{arc_t}_event{evt_t}_{phase_t}"
 
-    with bg.sidecar_file_lock():
-        sidecar = bg.read_sidecar()
+    target_beats: list = []
+    scope_active_context: dict = {}
+
+    def _switch_incoming(sidecar: dict) -> None:
+        nonlocal target_beats, scope_active_context
         sidecar["active_context"] = {
             "arc_number": arc_t,
             "event_id": evt_t_str,
@@ -1963,20 +2620,16 @@ def switch_bg_context_for_video_role(
         }
         seg = bg.get_seg_entry(sidecar, arc_t, evt_t_str, phase_t)
         beats = list(seg.get("beats") or [])
-
         if phase_t == "pre":
             bg.append_intro_canonical_tail_beats(beats, beat_label, phase_t)
-            for beat in beats:
-                role = beat.get("intro_beat_role")
-                if role:
-                    bg._apply_intro_canonical_beat_defaults(
-                        beat, evt_t_str, phase_t, role,
-                    )
+            bg.finalize_intro_canonical_tail_beats(
+                beats, evt_t_str, phase_t, sidecar=sidecar,
+            )
             seg["beats"] = beats
-
-        bg.write_sidecar(sidecar)
         target_beats = seg.get("beats") or []
         scope_active_context = dict(sidecar["active_context"])
+
+    bg.mutate_sidecar_locked(_switch_incoming)
 
     print(
         f"[BG] video-role switch {from_video_role!r} -> {to_video_role!r} "
@@ -2006,23 +2659,32 @@ def handle_bg_set_active_context(h, body: dict)-> None:
     SCOPE_REQUIRED_DEFAULTS_V1, missing scope_event_id rejects with HTTP
     400 (legacy permissive default removed for mutation handlers).
     """
-    # LD-456 SCOPE_VALIDATION_V1 — guard against cross-storyboard-event mutation.
-    # The BG body's `event_id` is overloaded (segment number); v59 client
-    # passes the storyboard scope as `scope_event_id` to disambiguate.
-    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
-        return  # LD-461 SCOPE_BODY_HELPER_V1 — migrated from hand-rolled dict
-    arc_number = int(body.get("arc_number", 1))
-    event_id   = str(body.get("event_id", "1"))
-    phase      = str(body.get("phase", "full"))
+    from server_handlers.milestone_scope import assert_production_scope
+
+    pctx = assert_production_scope(h, body, allow_missing=False)
+    if pctx is None:
+        return
+    if pctx.is_milestone:
+        skel = pctx.skeleton_ref or {}
+        arc_number = int(skel.get("arc_number") or 1)
+        event_id = str(skel.get("event_id"))
+        phase = str(skel.get("phase") or "full")
+    else:
+        arc_number = int(body.get("arc_number", 1))
+        event_id = str(body.get("event_id", "1"))
+        phase = str(body.get("phase", "full"))
     bg = _bg_module()
-    with bg.sidecar_file_lock():
-        sidecar = bg.read_sidecar()
+    beats: list = []
+
+    def _set_ctx(sidecar: dict) -> None:
+        nonlocal beats
         sidecar["active_context"] = {
-            "arc_number": arc_number, "event_id": event_id, "phase": phase
+            "arc_number": arc_number, "event_id": event_id, "phase": phase,
         }
         seg = bg.get_seg_entry(sidecar, arc_number, event_id, phase)
         beats = seg.get("beats", [])
-        bg.write_sidecar(sidecar)
+
+    bg.mutate_sidecar_locked(_set_ctx)
     print(f"[BG] set-active-context arc={arc_number} event={event_id} phase={phase} "
           f"saved_beats={len(beats)}")
     return h._send_json(200, {"beats": beats, "had_saved": len(beats) > 0})
@@ -2035,11 +2697,20 @@ def handle_bg_extract_beats(h, body: dict)-> None:
 
 def handle_bg_extract_beats_plan(h, body: dict) -> None:
     """POST /api/bg/extract-beats/plan — Phase A: Claude beat plan (no sidecar beat write)."""
-    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+    from server_handlers.milestone_scope import assert_production_scope
+
+    pctx = assert_production_scope(h, body, allow_missing=False)
+    if pctx is None:
         return
-    arc_number = int(body.get("arc_number", 1))
-    event_id = str(body.get("event_id", "1"))
-    phase = str(body.get("phase", "full"))
+    if pctx.is_milestone:
+        skel = pctx.skeleton_ref or {}
+        arc_number = int(skel.get("arc_number") or 1)
+        event_id = str(skel.get("event_id"))
+        phase = str(skel.get("phase") or "full")
+    else:
+        arc_number = int(body.get("arc_number", 1))
+        event_id = str(body.get("event_id", "1"))
+        phase = str(body.get("phase", "full"))
     bg = _bg_module()
     section = bg.slice_skeleton_section(arc_number, event_id, phase)
     if not (section.get("text") or "").strip():
@@ -2097,31 +2768,35 @@ def handle_bg_extract_beats_plan(h, body: dict) -> None:
 
     beats_plan = normalize_beats_plan(plan_result.get("beats_plan") or [])
     story_summary = plan_result.get("story_summary") or ""
-    draft = {
-        "story_summary": story_summary,
-        "beats_plan": beats_plan,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "model_used": plan_result.get("model_used"),
-        "generation_time_ms": plan_result.get("generation_time_ms"),
-        "section_meta": section,
-    }
     seg_name = None
     for s in bg.get_segments(arc_number):
         if str(s["event_id"]) == event_id and s["phase"] == phase:
             seg_name = s["name"]
             break
     try:
-        with bg.sidecar_file_lock():
-            sidecar = bg.read_sidecar()
+        draft = None
+
+        def _plan(sidecar: dict) -> None:
+            nonlocal draft
+            draft = bg.persist_beat_plan_draft(
+                sidecar, arc_number, event_id, phase,
+                story_summary, beats_plan,
+                source="extract_plan",
+                extra={
+                    "model_used": plan_result.get("model_used"),
+                    "generation_time_ms": plan_result.get("generation_time_ms"),
+                    "section_meta": section,
+                },
+            )
             seg = bg.get_seg_entry(sidecar, arc_number, event_id, phase)
-            seg["beat_plan_draft"] = draft
             seg["slice_method"] = section.get("slice_method")
             if seg_name:
                 seg["name"] = seg_name
             sidecar["active_context"] = {
                 "arc_number": arc_number, "event_id": event_id, "phase": phase,
             }
-            bg.write_sidecar(sidecar)
+
+        bg.mutate_sidecar_locked(_plan)
     except OSError as exc:
         msg = f"Could not save beat plan draft: {exc}"
         print(f"[BG] extract-beats/plan sidecar write error: {exc}")
@@ -2162,11 +2837,20 @@ def handle_bg_extract_beats_plan(h, body: dict) -> None:
 
 def handle_bg_extract_beats_approve(h, body: dict) -> None:
     """POST /api/bg/extract-beats/approve — Phase B: Kling prompts + sidecar write."""
-    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+    from server_handlers.milestone_scope import assert_production_scope
+
+    pctx = assert_production_scope(h, body, allow_missing=False)
+    if pctx is None:
         return
-    arc_number = int(body.get("arc_number", 1))
-    event_id = str(body.get("event_id", "1"))
-    phase = str(body.get("phase", "full"))
+    if pctx.is_milestone:
+        skel = pctx.skeleton_ref or {}
+        arc_number = int(skel.get("arc_number") or 1)
+        event_id = str(skel.get("event_id"))
+        phase = str(skel.get("phase") or "full")
+    else:
+        arc_number = int(body.get("arc_number", 1))
+        event_id = str(body.get("event_id", "1"))
+        phase = str(body.get("phase", "full"))
     force = bool(body.get("force"))
     story_summary = str(body.get("story_summary") or "").strip()
     beats_plan_raw = body.get("beats_plan") or []
@@ -2195,6 +2879,22 @@ def handle_bg_extract_beats_approve(h, body: dict) -> None:
 
     beats_plan = normalize_beats_plan(beats_plan_raw)
     bg = _bg_module()
+    try:
+        bg.mutate_sidecar_locked(
+            lambda sc: bg.persist_beat_plan_draft(
+                sc, arc_number, event_id, phase,
+                story_summary, beats_plan,
+                source="modal_pre_approve",
+            ),
+        )
+    except OSError as exc:
+        return h._send_error_v59(
+            503,
+            error_code="SIDECAR_WRITE_FAILED",
+            error_message=f"Could not save beat plan draft before approve: {exc}",
+            retry_safe=True,
+        )
+
     section = bg.slice_skeleton_section(arc_number, event_id, phase)
     dialogue_count = len([
         r for r in beats_plan
@@ -2228,45 +2928,65 @@ def handle_bg_extract_beats_approve(h, body: dict) -> None:
 
     prompt_by_index = author_result.get("prompt_by_index") or {}
     beats_plan_final = author_result.get("beats_plan_enriched") or beats_plan
-    with bg.sidecar_file_lock():
-        sidecar = bg.read_sidecar()
+    audit_scope_ids = bg._beat_ids_for_extract_plan(
+        beats_plan_final,
+        arc_number=arc_number,
+        event_id=event_id,
+        phase=phase,
+    )
+    beats: list = []
+    author_audit: list = []
+
+    def _approve(sidecar: dict) -> None:
+        nonlocal beats, author_audit
         beats = bg.apply_approved_extract_plan(
             sidecar, arc_number, event_id, phase,
             story_summary, beats_plan_final, prompt_by_index,
             force=force,
         )
-        author_audit = bg.audit_kling_author_enrichment(beats)
+        bg.resync_kling_author_prompts_pre_audit(beats)
+        author_audit = bg.audit_kling_author_enrichment(
+            beats, scope_beat_ids=audit_scope_ids,
+        )
         if author_audit:
-            print(
-                f"[BG] extract-beats/approve AUTHOR AUDIT FAILED arc={arc_number} "
-                f"event={event_id} phase={phase}: {author_audit}",
-                flush=True,
+            raise _BgSidecarAbort(
+                status=502,
+                json_payload={
+                    "ok": False,
+                    "code": "KLING_AUTHOR_AUDIT_FAILED",
+                    "message": (
+                        "Kling author enrichment did not stick — beats were NOT saved. "
+                        "Re-open the plan and Approve again; report if this repeats."
+                    ),
+                    "author_audit": author_audit,
+                    "author_dialogue_beats": len([
+                        r for r in beats_plan
+                        if str(r.get("beat_type") or "dialogue").lower() not in (
+                            "stage_still", "stage_direction",
+                        )
+                    ]),
+                    "retry_safe": True,
+                },
             )
-            return h._send_json(502, {
-                "ok": False,
-                "code": "KLING_AUTHOR_AUDIT_FAILED",
-                "message": (
-                    "Kling author enrichment did not stick — beats were NOT saved. "
-                    "Re-open the plan and Approve again; report if this repeats."
-                ),
-                "author_audit": author_audit,
-                "author_dialogue_beats": len([
-                    r for r in beats_plan
-                    if str(r.get("beat_type") or "dialogue").lower() not in (
-                        "stage_still", "stage_direction",
-                    )
-                ]),
-                "retry_safe": True,
-            })
         sidecar["active_context"] = {
             "arc_number": arc_number, "event_id": event_id, "phase": phase,
         }
-        bg.write_sidecar(sidecar)
+
+    try:
+        bg.mutate_sidecar_locked(_approve)
+    except _BgSidecarAbort as exc:
+        print(
+            f"[BG] extract-beats/approve AUTHOR AUDIT FAILED arc={arc_number} "
+            f"event={event_id} phase={phase}: {author_audit}",
+            flush=True,
+        )
+        return _bg_abort_from_sidecar(h, exc)
 
     print(
         f"[BG] extract-beats/approve arc={arc_number} event={event_id} phase={phase} "
         f"beats={len(beats)} force={force}"
     )
+    author_warnings = list(author_result.get("author_warnings") or [])
     return h._send_json(200, {
         "ok": True,
         "beats": beats,
@@ -2274,45 +2994,59 @@ def handle_bg_extract_beats_approve(h, body: dict) -> None:
         "model_used": author_result.get("model_used"),
         "generation_time_ms": author_result.get("generation_time_ms"),
         "author_dialogue_beats": len(author_result.get("prompt_by_index") or {}),
+        "author_warnings": author_warnings,
         "kling_author_applied": True,
     })
 
 
 def handle_bg_extract_beats_draft_get(h, qs: dict) -> None:
     """GET /api/bg/extract-beats/draft — reload beat plan draft for segment."""
-    scope_event = (qs.get("scope_event_id") or qs.get("event_id") or [""])[0]
-    scope_body = {
-        "scope_event_id": scope_event,
-        "event_id": scope_event,
-        "scope_video_role": (qs.get("scope_video_role") or [""])[0],
-    }
-    if not h._assert_event_scope(scope_body, allow_missing=True):
+    from server_handlers.milestone_scope import assert_production_scope, parse_scope_query
+
+    qs_body = parse_scope_query(h)
+    pctx = assert_production_scope(
+        h, qs_body, allow_missing=True, allow_missing_video_role=True,
+    )
+    if pctx is None:
         return
-    try:
-        arc_number = int((qs.get("arc_number") or ["1"])[0])
-    except ValueError:
-        arc_number = 1
-    event_id = str((qs.get("event_id") or ["1"])[0])
-    phase = str((qs.get("phase") or ["full"])[0])
+    if pctx.is_milestone:
+        skel = pctx.skeleton_ref or {}
+        arc_number = int(skel.get("arc_number") or 1)
+        event_id = str(skel.get("event_id"))
+        phase = str(skel.get("phase") or "full")
+    else:
+        scope_event = (qs.get("scope_event_id") or qs.get("event_id") or [""])[0]
+        scope_body = {
+            "scope_event_id": scope_event,
+            "event_id": scope_event,
+            "scope_video_role": (qs.get("scope_video_role") or [""])[0],
+        }
+        if not h._assert_event_scope(scope_body, allow_missing=True):
+            return
+        try:
+            arc_number = int((qs.get("arc_number") or ["1"])[0])
+        except ValueError:
+            arc_number = 1
+        event_id = str((qs.get("event_id") or ["1"])[0])
+        phase = str((qs.get("phase") or ["full"])[0])
     bg = _bg_module()
     draft: dict = {}
     try:
-        with bg.sidecar_file_lock():
-            sidecar = bg.read_sidecar()
-            seg = bg.get_seg_entry(sidecar, arc_number, event_id, phase)
-            draft = seg.get("beat_plan_draft") or {}
-            story_summary = (
-                (draft.get("story_summary") if isinstance(draft, dict) else None)
-                or seg.get("beat_plan_story_summary")
-                or ""
-            )
-            beats_plan = (draft.get("beats_plan") if isinstance(draft, dict) else None) or []
-            reconstructed = False
-            if not beats_plan:
-                beats = seg.get("beats") or []
-                if beats:
-                    beats_plan = bg.segment_beats_to_plan_rows(beats)
-                    reconstructed = bool(beats_plan)
+        sidecar = bg.read_sidecar()
+        seg = bg.get_seg_entry(sidecar, arc_number, event_id, phase)
+        draft = seg.get("beat_plan_draft") or {}
+        story_summary = (
+            (draft.get("story_summary") if isinstance(draft, dict) else None)
+            or seg.get("beat_plan_story_summary")
+            or ""
+        )
+        beats_plan = (draft.get("beats_plan") if isinstance(draft, dict) else None) or []
+        reconstructed = False
+        if not beats_plan:
+            beats = seg.get("beats") or []
+            if beats:
+                beats_plan = bg.segment_beats_to_plan_rows(beats)
+                reconstructed = bool(beats_plan)
     except OSError as exc:
         return h._send_error_v59(
             503,
@@ -2341,6 +3075,74 @@ def handle_bg_extract_beats_draft_get(h, qs: dict) -> None:
     if draft:
         payload["beat_plan_draft"] = draft
     return h._send_json(200, payload)
+
+
+def handle_bg_extract_beats_draft_save(h, body: dict) -> None:
+    """POST /api/bg/extract-beats/draft/save — persist modal beat plan edits to sidecar."""
+    from server_handlers.milestone_scope import assert_production_scope
+
+    pctx = assert_production_scope(h, body, allow_missing=False)
+    if pctx is None:
+        return
+    if pctx.is_milestone:
+        skel = pctx.skeleton_ref or {}
+        arc_number = int(skel.get("arc_number") or 1)
+        event_id = str(skel.get("event_id"))
+        phase = str(skel.get("phase") or "full")
+    else:
+        arc_number = int(body.get("arc_number", 1))
+        event_id = str(body.get("event_id", "1"))
+        phase = str(body.get("phase", "full"))
+    story_summary = str(body.get("story_summary") or "").strip()
+    beats_plan_raw = body.get("beats_plan") or []
+    if not beats_plan_raw:
+        return h._send_error_v59(
+            400,
+            error_code="MISSING_BEATS_PLAN",
+            error_message="beats_plan array required",
+            retry_safe=False,
+        )
+
+    from claude_extract_beats import normalize_beats_plan
+
+    beats_plan = normalize_beats_plan(beats_plan_raw)
+    bg = _bg_module()
+    try:
+        draft = None
+
+        def _save_draft(sidecar: dict) -> None:
+            nonlocal draft
+            draft = bg.persist_beat_plan_draft(
+                sidecar, arc_number, event_id, phase,
+                story_summary, beats_plan,
+                source=str(body.get("source") or "modal_autosave"),
+            )
+            sidecar["active_context"] = {
+                "arc_number": arc_number, "event_id": event_id, "phase": phase,
+            }
+
+        bg.mutate_sidecar_locked(_save_draft)
+    except OSError as exc:
+        return h._send_error_v59(
+            503,
+            error_code="SIDECAR_WRITE_FAILED",
+            error_message=f"Could not save beat plan draft: {exc}",
+            retry_safe=True,
+        )
+
+    print(
+        f"[BG] extract-beats/draft/save arc={arc_number} event={event_id} phase={phase} "
+        f"beats={len(draft.get('beats_plan') or [])}",
+        flush=True,
+    )
+    return h._send_json(200, {
+        "ok": True,
+        "story_summary": draft.get("story_summary") or "",
+        "beats_plan": draft.get("beats_plan") or [],
+        "beat_plan_draft": draft,
+        "saved_at": draft.get("updated_at"),
+        "count": len(draft.get("beats_plan") or []),
+    })
 
 
 def handle_bg_inject_beats(h, body: dict)-> None:
@@ -2391,8 +3193,7 @@ def handle_bg_inject_beats(h, body: dict)-> None:
             "bg_ref_image": None,
         })
     # Write to sidecar with merge logic
-    with bg.sidecar_file_lock():
-        sidecar = bg.read_sidecar()
+    def _inject(sidecar: dict) -> None:
         seg = bg.get_seg_entry(sidecar, arc_number, event_id, phase)
         existing = {b["beat_id"]: b for b in (seg.get("beats") or [])}
         _PRESERVE = (
@@ -2448,9 +3249,14 @@ def handle_bg_inject_beats(h, body: dict)-> None:
         sidecar["active_context"] = {
             "arc_number": arc_number, "event_id": event_id, "phase": phase
         }
-        bg.write_sidecar(sidecar)
+
+    bg.mutate_sidecar_locked(_inject)
     print(f"[BG] injected {len(mapped_beats)} beats arc={arc_number} event={event_id} phase={phase}")
     return h._send_json(200, {"ok": True, "count": len(mapped_beats), "beat_ids": beat_ids})
+
+
+# Prompt / dialogue / slot edits must not re-run Element @Image1 gate — only identity fields.
+_BG_ELEMENT_CHAR_REF_SYNC_FIELDS = frozenset({"speaker", "reference_image"})
 
 
 def handle_bg_update_beat(h, body: dict)-> None:
@@ -2470,7 +3276,7 @@ def handle_bg_update_beat(h, body: dict)-> None:
     bg = _bg_module()
     _BG_BEAT_WRITABLE = frozenset({
         "speaker", "dialogue_text", "scene_notes", "emotion",
-        "kling_o3_prompt",
+        "kling_o3_prompt", "kling_o3_prompt_still",
         "accepted_image_key", "reference_image", "bg_ref_image",
         "kling_o3_replace_slot_index",
     })
@@ -2502,19 +3308,121 @@ def handle_bg_update_beat(h, body: dict)-> None:
     # ensures BgRefSlot displays the IMAGE (not the lib_key string).
     # Mirrors _handle_bg_accept_lib_image's thumbnail pattern.
     thumb_b64 = None
-    with bg.sidecar_file_lock():
-        sidecar = bg._load_sidecar_migrated()
-        _, beat = bg.find_beat(sidecar, beat_id)
-        if not beat:
-            return h._send_error_v59(
-                       404,
-                       error_code="BEAT_NOT_FOUND",
-                       error_message=f"beat {beat_id} not found",
-                       retry_safe=False,
-                   )
+    written: list[str] = []
+    element_ref_warning = None
+    element_ref_registered = None
+    identity_fields_written: set[str] = set()
+    pre_reg_result: dict | None = None
+    pre_reg_gate_ok: bool | None = None
+    pre_reg_gate_err: str | None = None
+    if "reference_image" in body:
+        try:
+            snap = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=2.0)
+            bg.ensure_sidecar_schema_defaults(snap)
+            _, beat_pre = bg.find_beat(snap, str(beat_id))
+            if beat_pre:
+                pre_work = copy.deepcopy(beat_pre)
+                ref_val = body.get("reference_image")
+                if isinstance(ref_val, dict):
+                    bg.apply_user_beat_ref_update(pre_work, "reference_image", ref_val)
+                speaker_pre = str(pre_work.get("speaker") or "").strip()
+                try:
+                    from credentials import load_credentials  # type: ignore
+                except ImportError:
+                    from tools.credentials_lib.credentials import load_credentials  # type: ignore
+                creds_pre = load_credentials()
+                ws_key_pre = creds_pre.get("wavespeed_key") or creds_pre.get("wavespeed")
+                if bg.element_char_ref_required_for_beat(pre_work, snap):
+                    needs_register_pre = pre_work.get("element_char_ref_ok") is False
+                    if not needs_register_pre and ws_key_pre and speaker_pre:
+                        from tools import kling_character_registry as reg
+
+                        char_path_pre = bg.resolve_beat_char_ref_path(pre_work) or ""
+                        if char_path_pre:
+                            strict_ok, _ = reg.char_ref_matches_element_images(
+                                char_path_pre, speaker_pre, allow_pose_dir_fallback=False,
+                            )
+                            needs_register_pre = not strict_ok
+                    if needs_register_pre and ws_key_pre and speaker_pre:
+                        pre_reg_result = bg.try_register_dropped_char_ref_on_element(
+                            pre_work, ws_key_pre,
+                        )
+                        if pre_reg_result.get("ok"):
+                            bg.sync_element_char_ref_status(pre_work, heal_mismatch=False, sidecar=snap)
+                            gate = pre_work.get("element_char_ref_ok")
+                            if isinstance(gate, bool):
+                                pre_reg_gate_ok = gate
+                                pre_reg_gate_err = pre_work.get("element_char_ref_error")
+                            if pre_work.get("element_char_ref_ok"):
+                                try:
+                                    from tools import kling_character_registry as reg
+
+                                    display = reg.kling_element_display_name(speaker_pre) or speaker_pre
+                                except Exception:
+                                    display = speaker_pre
+                                action = pre_reg_result.get("action") or "registered"
+                                pose = pre_reg_result.get("pose_rel") or ""
+                                element_ref_registered = (
+                                    f"Registered on {display} Element ({action})"
+                                    + (f" — {pose}" if pose else "")
+                                    + ". Generate unlocked."
+                                )
+                else:
+                    bg.sync_element_char_ref_status(pre_work, heal_mismatch=False, sidecar=snap)
+        except Exception as exc:
+            print(f"[bg_update_beat] pre-lock element registration: {exc}", flush=True)
+    event_dir = Path(getattr(h.app, "event_dir", _data_root(h)))
+    if not event_dir.is_absolute():
+        event_dir = _data_root(h) / event_dir
+    written: list = []
+    identity_fields_written: set = set()
+    beat: dict | None = None
+    pre_reg_result: dict | None = None
+
+    def _patch_beat(b: dict, sidecar: dict) -> None:
+        nonlocal written, identity_fields_written, thumb_b64, element_ref_warning
+        nonlocal element_ref_registered, pre_reg_result, pre_reg_gate_ok, pre_reg_gate_err
+        operator_fields_requested = {f for f in _BG_BEAT_WRITABLE if f in body}
+        prompt_save_unchanged = (
+            operator_fields_requested == {"kling_o3_prompt"}
+            and str(body.get("kling_o3_prompt") or "").strip()
+            == str(b.get("kling_o3_prompt") or "").strip()
+        )
+        if operator_fields_requested and not prompt_save_unchanged:
+            try:
+                from o3_generation_intent import OPERATOR_MUTABLE_FIELDS
+
+                if _beat_o3_operator_lock_active(b, event_dir):
+                    blocked = sorted(OPERATOR_MUTABLE_FIELDS & operator_fields_requested)
+                    if (
+                        "kling_o3_prompt" in blocked
+                        and "kling_o3_prompt" in body
+                    ):
+                        new_prompt = str(body.get("kling_o3_prompt") or "").strip()
+                        old_prompt = str(b.get("kling_o3_prompt") or "").strip()
+                        if new_prompt == old_prompt:
+                            blocked = [f for f in blocked if f != "kling_o3_prompt"]
+                    if blocked:
+                        raise _BgSidecarAbort(
+                            status=409,
+                            error_code="INTENT_JOB_ACTIVE",
+                            error_message=(
+                                "O3 generation intent is active — "
+                                f"cannot modify {', '.join(blocked)} until the job finishes."
+                            ),
+                            retry_safe=True,
+                        )
+            except _BgSidecarAbort:
+                raise
+            except Exception:
+                if _beat_o3_operator_lock_active(b, event_dir):
+                    raise _BgSidecarAbort(
+                        status=409,
+                        error_code="INTENT_JOB_ACTIVE",
+                        error_message="O3 job is running — beat fields are locked until it finishes.",
+                        retry_safe=True,
+                    )
         written = []
-        element_ref_warning = None
-        element_ref_registered = None
         for field in _BG_BEAT_WRITABLE:
             if field in body:
                 value = body[field]
@@ -2522,15 +3430,12 @@ def handle_bg_update_beat(h, body: dict)-> None:
                     try:
                         value = max(0, min(2, int(value)))
                     except (TypeError, ValueError):
-                        return h._send_error_v59(
-                            400,
+                        raise _BgSidecarAbort(
+                            status=400,
                             error_code="INVALID_REPLACE_SLOT",
                             error_message="kling_o3_replace_slot_index must be 0, 1, or 2",
                             retry_safe=False,
                         )
-                # For reference_image / bg_ref_image: if abs_path is set
-                # and the file exists, render a PIL thumbnail and inject
-                # thumb_b64 so BgRefSlot can <img src=...> after refresh.
                 if field in bg.BEAT_REF_LOCK_FIELDS and isinstance(value, dict):
                     abs_path = value.get("abs_path") or ""
                     if not value.get("thumb_b64"):
@@ -2542,65 +3447,129 @@ def handle_bg_update_beat(h, body: dict)-> None:
                             value["thumb_b64"] = _t
                             thumb_b64 = _t
                 if field in bg.BEAT_REF_LOCK_FIELDS:
-                    bg.apply_user_beat_ref_update(beat, field, value)
-                else:
-                    beat[field] = value
+                    bg.apply_user_beat_ref_update(b, field, value)
+                    if (
+                        field == "bg_ref_image"
+                        and isinstance(value, dict)
+                        and bg.beat_is_still_insert(b)
+                        and value.get("abs_path")
+                    ):
+                        from operator_workbench_contract import write_still_scene_source
+                        from pathlib import Path as _Path
+
+                        ap = str(value.get("abs_path") or "")
+                        write_still_scene_source(
+                            b,
+                            key=str(value.get("key") or _Path(ap).stem),
+                            filename=str(value.get("filename") or _Path(ap).name),
+                            abs_path=ap,
+                            slot_index=0,
+                            thumb_b64=value.get("thumb_b64"),
+                            source="ref_slot_drop",
+                        )
+                    else:
+                        if field == "speaker" and isinstance(value, str):
+                            old_speaker = str(b.get("speaker") or "").strip()
+                            b[field] = _canonicalize_speaker(value)
+                            if old_speaker != str(b.get("speaker") or "").strip():
+                                bg.realign_beat_char_ref_for_speaker_change(
+                                    b, old_speaker=old_speaker,
+                                )
+                        else:
+                            b[field] = value
                 written.append(field)
-                if field == "speaker" and not beat.get("reference_image_locked"):
-                    bg.align_beat_reference_to_element(beat)
+                if field == "speaker":
+                    sp = str(b.get("speaker") or "").strip()
+                    if sp and bg._speaker_has_element_bound_voice(sp):
+                        from beat_extract_policy import kling_face_scene_notes
+
+                        notes = str(b.get("scene_notes") or "")
+                        healed_notes = kling_face_scene_notes(sp, notes)
+                        if healed_notes != notes:
+                            b["scene_notes"] = healed_notes
                 if field == "kling_o3_prompt" and isinstance(value, str):
                     text = value.strip()
                     if text:
-                        bg.stamp_o3_prompt_box_law(beat, text)
-                    else:
-                        bg.clear_o3_prompt_box_law(beat)
-                    bg.sync_beat_dialogue_from_kling_prompt(beat)
-                    bg.sync_beat_scene_notes_from_kling_prompt(beat)
-        if written:
-            bg.sync_element_char_ref_status(beat, heal_mismatch=False)
-        if "reference_image" in written and beat.get("element_char_ref_ok") is False:
-            speaker = str(beat.get("speaker") or "").strip()
-            try:
-                from credentials import load_credentials  # type: ignore
-            except ImportError:
-                from tools.credentials_lib.credentials import load_credentials  # type: ignore
-            creds = load_credentials()
-            ws_key = creds.get("wavespeed_key") or creds.get("wavespeed")
-            if ws_key and speaker:
-                reg_result = bg.try_register_dropped_char_ref_on_element(beat, ws_key)
-                if reg_result.get("ok"):
-                    bg.sync_element_char_ref_status(beat, heal_mismatch=False)
-                    if beat.get("element_char_ref_ok"):
-                        try:
-                            from tools import kling_character_registry as reg
+                        from beat_extract_policy import strip_auto_injected_continuity_blocks
 
-                            display = reg.kling_element_display_name(speaker) or speaker
-                        except Exception:
-                            display = speaker
-                        action = reg_result.get("action") or "registered"
-                        pose = reg_result.get("pose_rel") or ""
-                        element_ref_registered = (
-                            f"Registered on {display} Element ({action})"
-                            + (f" — {pose}" if pose else "")
-                            + ". Generate unlocked."
-                        )
-        if beat.get("element_char_ref_ok") is False:
-            detail = (beat.get("element_char_ref_error") or "").strip()
+                        cleaned = strip_auto_injected_continuity_blocks(text)
+                        if cleaned != text:
+                            text = cleaned
+                            value = cleaned
+                        bg.stamp_o3_prompt_box_law(b, text)
+                        b.pop("kling_o3_prior_beat_context", None)
+                        b.pop("beat_continuity_v1", None)
+                    else:
+                        bg.clear_o3_prompt_box_law(b)
+                        b.pop("kling_o3_prior_beat_context", None)
+                        b.pop("beat_continuity_v1", None)
+                    bg.sync_beat_dialogue_from_kling_prompt(b)
+                    bg.sync_beat_scene_notes_from_kling_prompt(b)
+                if field == "kling_o3_prompt_still" and isinstance(value, str):
+                    bg.set_beat_still_prompt(b, value)
+        identity_fields_written = set(written) & _BG_ELEMENT_CHAR_REF_SYNC_FIELDS
+        if isinstance(pre_reg_gate_ok, bool):
+            b["element_char_ref_ok"] = pre_reg_gate_ok
+            if pre_reg_gate_ok:
+                b.pop("element_char_ref_error", None)
+            elif pre_reg_gate_err:
+                b["element_char_ref_error"] = pre_reg_gate_err
+        elif identity_fields_written:
+            bg.sync_element_char_ref_status(b, heal_mismatch=False, sidecar=sidecar)
+        if (
+            "reference_image" in written
+            and pre_reg_result is not None
+            and not pre_reg_result.get("ok")
+            and b.get("element_char_ref_ok") is False
+            and bg.element_char_ref_required_for_beat(b, sidecar)
+        ):
+            detail = (b.get("element_char_ref_error") or "").strip()
             element_ref_warning = (
                 "Char ref saved on this beat, but Element registration failed. "
                 "Try Add to Element from library preview (Loral), or drop the pose again."
                 + (f" ({detail})" if detail else "")
             )
-        bg.write_sidecar(sidecar)
-    return h._send_json(200, {
+
+    try:
+        ok, beat = bg.update_beat_locked(beat_id, _patch_beat)
+    except _BgSidecarAbort as exc:
+        return _bg_abort_from_sidecar(h, exc)
+    except TimeoutError as exc:
+        return h._send_error_v59(
+            503,
+            error_code="SIDECAR_LOCK_TIMEOUT",
+            error_message=str(exc) or "sidecar lock busy — retry shortly",
+            retry_safe=True,
+        )
+    except OSError as exc:
+        if bg.sidecar_io_transient(exc):
+            return h._send_error_v59(
+                503,
+                error_code="SIDECAR_IO_TRANSIENT",
+                error_message=str(exc) or "Dropbox sync blocked save — retry shortly",
+                retry_safe=True,
+                extra={"errno": getattr(exc, "errno", None)},
+            )
+        raise
+    if not ok:
+        return h._send_error_v59(
+            404,
+            error_code="BEAT_NOT_FOUND",
+            error_message=f"beat {beat_id} not found",
+            retry_safe=False,
+        )
+    payload = {
         "ok": True,
         "written": written,
         "thumb_b64": thumb_b64,
         "element_ref_warning": element_ref_warning,
         "element_ref_registered": element_ref_registered,
-        "element_char_ref_ok": beat.get("element_char_ref_ok"),
-        "element_char_ref_error": beat.get("element_char_ref_error"),
-    })
+    }
+    # Prompt-only saves must not push gate fields — UI keeps prior registration state.
+    if identity_fields_written:
+        payload["element_char_ref_ok"] = beat.get("element_char_ref_ok")
+        payload["element_char_ref_error"] = beat.get("element_char_ref_error")
+    return h._send_json(200, payload)
 
 
 def handle_bg_align_element_ref(h, body: dict) -> None:
@@ -2617,73 +3586,70 @@ def handle_bg_align_element_ref(h, body: dict) -> None:
         )
     bg = _bg_module()
     thumb_b64 = None
-    with bg.sidecar_file_lock():
-        sidecar = bg._load_sidecar_migrated()
-        _, beat = bg.find_beat(sidecar, beat_id)
-        if not beat:
-            return h._send_error_v59(
-                404,
-                error_code="BEAT_NOT_FOUND",
-                error_message=f"beat {beat_id} not found",
-                retry_safe=False,
-            )
-        speaker = str(beat.get("speaker") or "").strip()
-        try:
-            from credentials import load_credentials  # type: ignore
-        except ImportError:
-            from tools.credentials_lib.credentials import load_credentials  # type: ignore
-        creds = load_credentials()
-        ws_key = creds.get("wavespeed_key") or creds.get("wavespeed")
-        reconciled = False
-        if speaker and ws_key:
-            char_path = bg.resolve_beat_char_ref_path(beat) or ""
-            if char_path:
-                try:
-                    from tools import kling_character_registry as reg
+    sidecar_probe = bg._load_sidecar_migrated()
+    _, beat_probe = bg.find_beat(sidecar_probe, beat_id)
+    if not beat_probe:
+        return h._send_error_v59(
+            404,
+            error_code="BEAT_NOT_FOUND",
+            error_message=f"beat {beat_id} not found",
+            retry_safe=False,
+        )
+    if beat_probe.get("reference_image_locked") and body.get("force") is not True:
+        return h._send_error_v59(
+            409,
+            error_code="REFERENCE_IMAGE_LOCKED",
+            error_message=(
+                "Char ref is locked to your library upload. Clear the ref first, "
+                "then use Use Element pose — or reconcile will run automatically on O3 submit."
+            ),
+            retry_safe=False,
+        )
+    speaker = str(beat_probe.get("speaker") or "").strip()
+    try:
+        from credentials import load_credentials  # type: ignore
+    except ImportError:
+        from tools.credentials_lib.credentials import load_credentials  # type: ignore
+    creds = load_credentials()
+    ws_key = creds.get("wavespeed_key") or creds.get("wavespeed")
+    reconciled = False
+    if speaker and ws_key:
+        char_path = bg.resolve_beat_char_ref_path(beat_probe) or ""
+        if char_path:
+            try:
+                from tools import kling_character_registry as reg
 
-                    if reg.is_speaker_voice_ready(speaker):
-                        result = reg.reconcile_char_ref_with_element(
-                            speaker, char_path, ws_key,
-                        )
-                        reconciled = bool(result.get("reconciled"))
-                        bg.sync_element_char_ref_status(beat, heal_mismatch=False)
-                except Exception:
-                    pass
-        if reconciled and beat.get("element_char_ref_ok"):
-            bg.write_sidecar(sidecar)
-            ref = beat.get("reference_image")
-            if isinstance(ref, dict) and ref.get("abs_path") and not ref.get("thumb_b64"):
-                from lib.event_library import ref_image_thumb_b64
+                if reg.is_speaker_voice_ready(speaker):
+                    result = reg.reconcile_char_ref_with_element(
+                        speaker, char_path, ws_key,
+                    )
+                    reconciled = bool(result.get("reconciled"))
+            except Exception:
+                pass
 
-                _t = ref_image_thumb_b64(ref["abs_path"], h.app._library_root_dirs())
-                if _t:
-                    beat["reference_image"] = dict(ref)
-                    beat["reference_image"]["thumb_b64"] = _t
-                    thumb_b64 = _t
-            return h._send_json(200, {
-                "ok": True,
-                "aligned": False,
-                "reconciled": True,
-                "reference_image": beat.get("reference_image"),
-                "thumb_b64": thumb_b64,
-                "element_char_ref_ok": beat.get("element_char_ref_ok"),
-                "element_char_ref_error": beat.get("element_char_ref_error"),
-            })
-        if beat.get("reference_image_locked") and body.get("force") is not True:
-            return h._send_error_v59(
-                409,
-                error_code="REFERENCE_IMAGE_LOCKED",
-                error_message=(
-                    "Char ref is locked to your library upload. Clear the ref first, "
-                    "then use Use Element pose — or reconcile will run automatically on O3 submit."
-                ),
-                retry_safe=False,
-            )
-        if beat.get("reference_image_locked"):
-            beat["reference_image_locked"] = False
-        aligned = bg.align_beat_reference_to_element(beat)
-        bg.sync_element_char_ref_status(beat, heal_mismatch=False)
-        ref = beat.get("reference_image")
+    aligned = False
+    beat: dict | None = None
+
+    def _align_patch(b: dict, _sidecar: dict) -> None:
+        nonlocal aligned, thumb_b64, reconciled
+        if reconciled:
+            bg.sync_element_char_ref_status(b, heal_mismatch=False)
+            if b.get("element_char_ref_ok"):
+                ref = b.get("reference_image")
+                if isinstance(ref, dict) and ref.get("abs_path") and not ref.get("thumb_b64"):
+                    from lib.event_library import ref_image_thumb_b64
+
+                    _t = ref_image_thumb_b64(ref["abs_path"], h.app._library_root_dirs())
+                    if _t:
+                        b["reference_image"] = dict(ref)
+                        b["reference_image"]["thumb_b64"] = _t
+                        thumb_b64 = _t
+                return
+        if b.get("reference_image_locked"):
+            b["reference_image_locked"] = False
+        aligned = bg.align_beat_reference_to_element(b)
+        bg.sync_element_char_ref_status(b, heal_mismatch=False)
+        ref = b.get("reference_image")
         if isinstance(ref, dict):
             abs_path = ref.get("abs_path") or ""
             if abs_path and not ref.get("thumb_b64"):
@@ -2691,10 +3657,28 @@ def handle_bg_align_element_ref(h, body: dict) -> None:
 
                 _t = ref_image_thumb_b64(abs_path, h.app._library_root_dirs())
                 if _t:
-                    beat["reference_image"] = dict(ref)
-                    beat["reference_image"]["thumb_b64"] = _t
+                    b["reference_image"] = dict(ref)
+                    b["reference_image"]["thumb_b64"] = _t
                     thumb_b64 = _t
-        bg.write_sidecar(sidecar)
+
+    ok, beat = bg.update_beat_locked(beat_id, _align_patch)
+    if not ok:
+        return h._send_error_v59(
+            404,
+            error_code="BEAT_NOT_FOUND",
+            error_message=f"beat {beat_id} not found",
+            retry_safe=False,
+        )
+    if reconciled and beat and beat.get("element_char_ref_ok"):
+        return h._send_json(200, {
+            "ok": True,
+            "aligned": False,
+            "reconciled": True,
+            "reference_image": beat.get("reference_image"),
+            "thumb_b64": thumb_b64,
+            "element_char_ref_ok": beat.get("element_char_ref_ok"),
+            "element_char_ref_error": beat.get("element_char_ref_error"),
+        })
     return h._send_json(200, {
         "ok": True,
         "aligned": aligned,
@@ -2714,36 +3698,35 @@ def handle_bg_add_element_pose(h, body: dict) -> None:
     abs_path = (body.get("abs_path") or "").strip()
     bg = _bg_module()
 
-    with bg.sidecar_file_lock():
-        sidecar = bg._load_sidecar_migrated()
-        beat = None
-        if beat_id:
-            _, beat = bg.find_beat(sidecar, beat_id)
-            if not beat:
-                return h._send_error_v59(
-                    404,
-                    error_code="BEAT_NOT_FOUND",
-                    error_message=f"beat {beat_id} not found",
-                    retry_safe=False,
-                )
-            speaker = (beat.get("speaker") or "").strip()
-            ref = beat.get("reference_image")
-            if isinstance(ref, dict):
-                abs_path = (ref.get("abs_path") or "").strip()
-        if not speaker:
+    sidecar_probe = bg._load_sidecar_migrated()
+    beat = None
+    if beat_id:
+        _, beat = bg.find_beat(sidecar_probe, beat_id)
+        if not beat:
             return h._send_error_v59(
-                400,
-                error_code="MISSING_SPEAKER",
-                error_message="speaker or beat_id with speaker required",
+                404,
+                error_code="BEAT_NOT_FOUND",
+                error_message=f"beat {beat_id} not found",
                 retry_safe=False,
             )
-        if not abs_path or not os.path.isfile(abs_path):
-            return h._send_error_v59(
-                400,
-                error_code="MISSING_POSE_SOURCE",
-                error_message="abs_path to pose PNG required (or beat with reference_image)",
-                retry_safe=False,
-            )
+        speaker = (beat.get("speaker") or "").strip()
+        ref = beat.get("reference_image")
+        if isinstance(ref, dict):
+            abs_path = (ref.get("abs_path") or "").strip()
+    if not speaker:
+        return h._send_error_v59(
+            400,
+            error_code="MISSING_SPEAKER",
+            error_message="speaker or beat_id with speaker required",
+            retry_safe=False,
+        )
+    if not abs_path or not os.path.isfile(abs_path):
+        return h._send_error_v59(
+            400,
+            error_code="MISSING_POSE_SOURCE",
+            error_message="abs_path to pose PNG required (or beat with reference_image)",
+            retry_safe=False,
+        )
 
     try:
         from credentials import load_credentials  # type: ignore
@@ -2762,7 +3745,9 @@ def handle_bg_add_element_pose(h, body: dict) -> None:
     try:
         from tools import kling_character_registry as reg
 
-        bg.init_bg_paths(h.app.event_dir)
+        from server_handlers.milestone_scope import rebind_bg_paths_from_app
+
+        rebind_bg_paths_from_app(h.app)
         result = reg.add_element_pose(speaker, abs_path, wavespeed_key)
     except Exception as exc:
         return h._send_error_v59(
@@ -2774,24 +3759,24 @@ def handle_bg_add_element_pose(h, body: dict) -> None:
 
     thumb_b64 = None
     element_char_ref_ok = None
-    with bg.sidecar_file_lock():
-        sidecar = bg._load_sidecar_migrated()
-        if beat_id:
-            _, beat = bg.find_beat(sidecar, beat_id)
-            if beat:
-                ref = beat.get("reference_image")
-                if isinstance(ref, dict) and (ref.get("abs_path") or "") == abs_path:
-                    bg.ensure_beat_element_char_ref_for_o3(beat, wavespeed_key)
-                    element_char_ref_ok = beat.get("element_char_ref_ok")
-                    if not ref.get("thumb_b64"):
-                        from lib.event_library import ref_image_thumb_b64
+    if beat_id:
 
-                        _t = ref_image_thumb_b64(abs_path, h.app._library_root_dirs())
-                        if _t:
-                            beat["reference_image"] = dict(ref)
-                            beat["reference_image"]["thumb_b64"] = _t
-                            thumb_b64 = _t
-                    bg.write_sidecar(sidecar)
+        def _pose_patch(b: dict, _sc: dict) -> None:
+            nonlocal thumb_b64, element_char_ref_ok
+            ref = b.get("reference_image")
+            if isinstance(ref, dict) and (ref.get("abs_path") or "") == abs_path:
+                bg.ensure_beat_element_char_ref_for_o3(b, wavespeed_key)
+                element_char_ref_ok = b.get("element_char_ref_ok")
+                if not ref.get("thumb_b64"):
+                    from lib.event_library import ref_image_thumb_b64
+
+                    _t = ref_image_thumb_b64(abs_path, h.app._library_root_dirs())
+                    if _t:
+                        b["reference_image"] = dict(ref)
+                        b["reference_image"]["thumb_b64"] = _t
+                        thumb_b64 = _t
+
+        bg.update_beat_locked(beat_id, _pose_patch)
 
     payload = dict(result)
     if element_char_ref_ok is not None:
@@ -2827,56 +3812,71 @@ def handle_bg_reorder_beats(h, body: dict)-> None:
                    retry_safe=False,
                )
     bg = _bg_module()
-    with bg.sidecar_file_lock():
-        sidecar = bg.read_sidecar()
-        sidecar = bg._migrate_sidecar(sidecar)
-        ctx = sidecar.get("active_context")
+    sidecar_probe = bg.read_sidecar()
+    sidecar_probe = bg._migrate_sidecar(sidecar_probe)
+    ctx = sidecar_probe.get("active_context")
+    scope_event_id = body.get("scope_event_id")
+    if scope_event_id is None:
+        scope_event_id = body.get("event_id")
+    if scope_event_id is not None:
+        scope_event_id = bg.normalize_bg_event_id(scope_event_id)
+    scope_arc_raw = body.get("scope_arc_number")
+    if scope_arc_raw is None:
+        scope_arc_raw = body.get("arc_number")
+    scope_arc = None
+    if scope_arc_raw is not None:
+        try:
+            scope_arc = int(scope_arc_raw)
+        except (TypeError, ValueError):
+            scope_arc = None
+    scope_phase = body.get("scope_phase")
+    if scope_arc is None and ctx:
+        scope_arc = ctx.get("arc_number")
+    if scope_event_id is None and ctx:
+        scope_event_id = ctx.get("event_id")
+    if scope_phase is None:
+        scope_phase = (ctx.get("phase") if ctx else None) or "full"
+    if scope_arc is None or scope_event_id is None:
+        return h._send_error_v59(
+            400,
+            error_code="NO_SCOPE_OR_ACTIVE_CONTEXT",
+            error_message="no scope or active context",
+            retry_safe=False,
+        )
+    scope_active_context = {
+        "arc_number": scope_arc,
+        "event_id": scope_event_id,
+        "phase": scope_phase,
+    }
 
-        # LD-545 Option B — derive segment from request scope; fall
-        # back to active_context only when scope is absent.
-        scope_event_id = body.get("scope_event_id")
-        if scope_event_id is None:
-            scope_event_id = body.get("event_id")
-        # Normalize: storyboard sends "Event_1" (scope format); sidecar keys use "1" (numeric).
-        if scope_event_id is not None:
-            scope_event_id = bg.normalize_bg_event_id(scope_event_id)
-        scope_arc_raw = body.get("scope_arc_number")
-        if scope_arc_raw is None:
-            scope_arc_raw = body.get("arc_number")
-        scope_arc = None
-        if scope_arc_raw is not None:
-            try:
-                scope_arc = int(scope_arc_raw)
-            except (TypeError, ValueError):
-                scope_arc = None
-        scope_phase = body.get("scope_phase")
-        if scope_arc is None and ctx:
-            scope_arc = ctx.get("arc_number")
-        if scope_event_id is None and ctx:
-            scope_event_id = ctx.get("event_id")
-        if scope_phase is None:
-            scope_phase = (ctx.get("phase") if ctx else None) or "full"
+    seg_probe = bg.get_seg_entry(sidecar_probe, scope_arc, scope_event_id, scope_phase)
+    existing_beats = seg_probe.get("beats", [])
+    existing_ids = {b.get("beat_id") for b in existing_beats if b.get("beat_id")}
+    incoming_ids = [bid for bid in beat_ids if bid]
+    if len(incoming_ids) != len(existing_ids):
+        return h._send_error_v59(
+            400,
+            error_code="REORDER_BEAT_COUNT_MISMATCH",
+            error_message=(
+                f"beat_ids must include every beat in the segment "
+                f"({len(existing_ids)} expected, got {len(incoming_ids)})"
+            ),
+            retry_safe=False,
+        )
+    if set(incoming_ids) != existing_ids:
+        return h._send_error_v59(
+            400,
+            error_code="REORDER_BEAT_SET_MISMATCH",
+            error_message="beat_ids must be a reorder of the existing segment beats only",
+            retry_safe=False,
+        )
 
-        if scope_arc is None or scope_event_id is None:
-            return h._send_error_v59(
-                       400,
-                       error_code="NO_SCOPE_OR_ACTIVE_CONTEXT",
-                       error_message="no scope or active context",
-                       retry_safe=False,
-                   )
-
-        scope_active_context = {
-            "arc_number": scope_arc,
-            "event_id": scope_event_id,
-            "phase": scope_phase,
-        }
-
-        # Surface divergence between scope and sidecar.active_context
-        # so the client can detect Bug 2 / Bug 4 style drift.
-        if ctx and (
-            ctx.get("arc_number") != scope_active_context["arc_number"]
-            or ctx.get("event_id") != scope_active_context["event_id"]
-            or (ctx.get("phase") or "full") != scope_active_context["phase"]
+    def _reorder(sidecar: dict) -> None:
+        ctx_l = sidecar.get("active_context")
+        if ctx_l and (
+            ctx_l.get("arc_number") != scope_active_context["arc_number"]
+            or ctx_l.get("event_id") != scope_active_context["event_id"]
+            or (ctx_l.get("phase") or "full") != scope_active_context["phase"]
         ):
             warnings = list(sidecar.get("migration_warnings", []))
             warnings.append({
@@ -2886,18 +3886,15 @@ def handle_bg_reorder_beats(h, body: dict)-> None:
                     "scope is canonical per LD-545 Option B"
                 ),
                 "scope": scope_active_context,
-                "active_context": ctx,
+                "active_context": ctx_l,
             })
             sidecar["migration_warnings"] = warnings
-
-        # get_seg_entry signature: (sidecar, arc_number, event_id, phase="full")
-        # — see beat_generator.get_seg_entry. The legacy two-arg form using
-        # `segment_index` was incorrect and is replaced here.
         seg = bg.get_seg_entry(sidecar, scope_arc, scope_event_id, scope_phase)
         beats = seg.get("beats", [])
         beat_map = {b["beat_id"]: b for b in beats}
         seg["beats"] = [beat_map[bid] for bid in beat_ids if bid in beat_map]
-        bg.write_sidecar(sidecar)
+
+    bg.mutate_sidecar_locked(_reorder, migrate=True)
     return h._send_json(200, {"ok": True})
 
 
@@ -2917,13 +3914,13 @@ def handle_bg_delete_beat(h, body: dict)-> None:
                    retry_safe=False,
                )
     bg = _bg_module()
-    with bg.sidecar_file_lock():
-        sidecar = bg.read_sidecar()
-        sidecar = bg._migrate_sidecar(sidecar)
+
+    def _delete(sidecar: dict) -> None:
         for arc in sidecar.get("arcs", {}).values():
             for seg in arc.get("segments", {}).values():
                 seg["beats"] = [b for b in seg.get("beats", []) if b.get("beat_id") != beat_id]
-        bg.write_sidecar(sidecar)
+
+    bg.mutate_sidecar_locked(_delete, migrate=True)
     return h._send_json(200, {"ok": True})
 
 
@@ -2959,13 +3956,14 @@ def handle_bg_accept_beats(h, body: dict)-> None:
         )
     beat_ids = [b["beat_id"] for b in body.get("beats", []) if "beat_id" in b]
     bg = _bg_module()
-    with bg.sidecar_file_lock():
-        sidecar = bg.read_sidecar()
+
+    def _accept(sidecar: dict) -> None:
         for bid in beat_ids:
             _, beat = bg.find_beat(sidecar, bid)
             if beat:
                 beat["status"] = "accepted"
-        bg.write_sidecar(sidecar)
+
+    bg.mutate_sidecar_locked(_accept)
     # Delete storyboard L.json sidecar — prevents pathappHydrate() from
     # restoring old pre-BG storyboard content on next page reload.
     try:
@@ -3111,11 +4109,16 @@ def handle_bg_accept_beats(h, body: dict)-> None:
                             bg_source = _bg_beat_map.get(fields.get("bg_beat_id") or "", {})
                             quality = bg_source.get("arlo_visual_quality") or {}
                             lipsync_quality = quality.get("lipsync_master_quality") or bg_source.get("kling_o3_voice_fix_lipsync_quality") or {}
-                            min_dim = int(lipsync_quality.get("min_dimension") or 0)
+                            min_dim = int(
+                                lipsync_quality.get("delivery_min_dimension")
+                                or lipsync_quality.get("min_dimension")
+                                or 0
+                            )
                             if min_dim and min_dim < 720:
                                 raise RuntimeError(
-                                    f"{fields.get('bg_beat_id')} lipsync master is sub-720p "
-                                    f"({lipsync_quality.get('width')}x{lipsync_quality.get('height')}); "
+                                    f"{fields.get('bg_beat_id')} kid-facing delivery is sub-720p "
+                                    f"({lipsync_quality.get('delivery_width') or lipsync_quality.get('width')}"
+                                    f"x{lipsync_quality.get('delivery_height') or lipsync_quality.get('height')}); "
                                     "regenerate before sending to Stitcher."
                                 )
                             legacy_lipsync_master = quality.get("lipsync_master_video_path")
@@ -3152,11 +4155,11 @@ def handle_bg_accept_beats(h, body: dict)-> None:
                             if src.stem.endswith("_delivery"):
                                 dst = clips_dir / f"{bid}_{src.name}"
                                 if not dst.is_file() or src.stat().st_mtime > dst.stat().st_mtime:
-                                    shutil.copy2(src, dst)
+                                    bg.copy_file_durable(src, dst)
                             else:
                                 dst = clips_dir / f"{bid}_{src.stem}_delivery.mp4"
-                                shutil.copy2(src, dst)
-                                encode_delivery_video(src, dst, include_audio=True, sharpen=False)
+                                bg.copy_file_durable(src, dst)
+                                encode_delivery_video(src, dst, include_audio=True, sharpen=True)
                             b["final"] = {
                                 "source": "beat_generator_o3_video",
                                 "file": dst.name,
@@ -3249,8 +4252,7 @@ def handle_bg_submit_flux(h, body: dict)-> None:
                )
 
     bg = _bg_module()
-    with bg.sidecar_file_lock():
-        sidecar = bg._load_sidecar_migrated()
+    sidecar = bg._load_sidecar_migrated()
 
     task_map = {}
     beats_to_submit = []
@@ -3273,13 +4275,11 @@ def handle_bg_submit_flux(h, body: dict)-> None:
                       flush=True)
                 continue
             # Store request IDs in sidecar for poll lookups
-            with bg.sidecar_file_lock():
-                sc2 = bg.read_sidecar()
-                _, b2 = bg.find_beat(sc2, beat["beat_id"])
-                if b2:
-                    b2["_task_rids"] = rids
-                    b2["status"] = "stills_pending"
-                bg.write_sidecar(sc2)
+            def _stamp_rids(b: dict, _sc: dict) -> None:
+                b["_task_rids"] = rids
+                b["status"] = "stills_pending"
+
+            bg.update_beat_locked(beat["beat_id"], _stamp_rids)
             print(f"[BG] submitted 3 FLUX calls for {beat['beat_id']}: {rids}")
         except Exception as e:
             print(f"[BG] FLUX submit error for {beat['beat_id']}: {e}")
@@ -3329,8 +4329,7 @@ def handle_bg_submit_gpt_batch(h, body: dict)-> None:
 
     job_id = str(_uuid.uuid4())[:8]
     bg = _bg_module()
-    with bg.sidecar_file_lock():
-        sidecar = bg._load_sidecar_migrated()
+    sidecar = bg._load_sidecar_migrated()
 
     beats_to_run = []
     for bid in beat_ids:
@@ -3340,15 +4339,15 @@ def handle_bg_submit_gpt_batch(h, body: dict)-> None:
 
     _GPT_JOBS[job_id] = {"status": "running", "results": {}, "total": len(beats_to_run) * 3}
     started_at = datetime.now(timezone.utc).isoformat()
-    with bg.sidecar_file_lock():
-        sc = bg.read_sidecar()
+    def _stamp_gpt_batch(sidecar: dict) -> None:
         for beat in beats_to_run:
-            _, beat_obj = bg.find_beat(sc, beat["beat_id"])
+            _, beat_obj = bg.find_beat(sidecar, beat["beat_id"])
             if beat_obj:
                 beat_obj["bg_gpt_batch_job_id"] = job_id
                 beat_obj["bg_gpt_batch_job_started_at"] = started_at
                 beat_obj["status"] = "stills_pending"
-        bg.write_sidecar(sc)
+
+    bg.mutate_sidecar_locked(_stamp_gpt_batch, migrate=True)
 
     def _run_job():
         executor = _gpt_executor()
@@ -3362,35 +4361,32 @@ def handle_bg_submit_gpt_batch(h, body: dict)-> None:
             bid = futures[future]
             try:
                 results = future.result()
-                with bg.sidecar_file_lock():
-                    sc = bg.read_sidecar()
-                    _, beat_obj = bg.find_beat(sc, bid)
-                    if beat_obj:
-                        beat_obj["gpt_options"] = results
-                        beat_obj["status"] = "stills_ready"
-                        beat_obj.pop("bg_gpt_batch_job_id", None)
-                        beat_obj["bg_gpt_batch_job_completed_at"] = datetime.now(timezone.utc).isoformat()
-                    # LD-460 — pin check before sidecar write (thread closure).
-                    if not h._check_event_pin(_pin, "bg_submit_gpt_batch_write_sidecar"):
-                        print(f"[bg_submit_gpt_batch] event drift mid-thread; skipping sidecar write", flush=True)
-                        return
-                    bg.write_sidecar(sc)
+                if not h._check_event_pin(_pin, "bg_submit_gpt_batch_write_sidecar"):
+                    print(f"[bg_submit_gpt_batch] event drift mid-thread; skipping sidecar write", flush=True)
+                    return
+
+                def _write_gpt(b: dict, _sc: dict) -> None:
+                    b["gpt_options"] = results
+                    b["status"] = "stills_ready"
+                    b.pop("bg_gpt_batch_job_id", None)
+                    b["bg_gpt_batch_job_completed_at"] = datetime.now(timezone.utc).isoformat()
+
+                bg.update_beat_locked(bid, _write_gpt)
                 _GPT_JOBS[job_id]["results"][bid] = results
             except Exception as e:
                 print(f"[GPT] job {job_id} beat {bid} error: {e}")
                 _GPT_JOBS[job_id]["results"][bid] = [{"error": str(e)}]
-                with bg.sidecar_file_lock():
-                    sc = bg.read_sidecar()
-                    _, beat_obj = bg.find_beat(sc, bid)
-                    if beat_obj:
-                        beat_obj["status"] = "stills_failed"
-                        beat_obj["gpt_error"] = str(e)[-1000:]
-                        beat_obj.pop("bg_gpt_batch_job_id", None)
-                        beat_obj["bg_gpt_batch_job_completed_at"] = datetime.now(timezone.utc).isoformat()
-                    if not h._check_event_pin(_pin, "bg_submit_gpt_batch_error_sidecar"):
-                        print(f"[bg_submit_gpt_batch] event drift mid-thread; skipping error sidecar write", flush=True)
-                        return
-                    bg.write_sidecar(sc)
+                if not h._check_event_pin(_pin, "bg_submit_gpt_batch_error_sidecar"):
+                    print(f"[bg_submit_gpt_batch] event drift mid-thread; skipping error sidecar write", flush=True)
+                    return
+
+                def _write_gpt_err(b: dict, _sc: dict) -> None:
+                    b["status"] = "stills_failed"
+                    b["gpt_error"] = str(e)[-1000:]
+                    b.pop("bg_gpt_batch_job_id", None)
+                    b["bg_gpt_batch_job_completed_at"] = datetime.now(timezone.utc).isoformat()
+
+                bg.update_beat_locked(bid, _write_gpt_err)
 
         _GPT_JOBS[job_id]["status"] = "done"
         try:
@@ -3434,11 +4430,76 @@ def handle_bg_poll_gpt_status(h)-> None:
     })
 
 
+_O3_SUBMIT_REATTACH_TERMINAL_FAILURES = frozenset({
+    "approved", "failed", "failed_o3", "failed_provider_fetch", "failed_provider_sub720",
+})
+
+
+def _o3_submit_reattach_response_if_running(h, beat_id: str, beat: dict, event_dir: Path) -> bool:
+    """If an O3 job is already live for this beat, respond 200 deduped (reattach UI)."""
+    from o3_generation_intent import (
+        intent_event_dir_for_beat,
+        load_generation_intent,
+        submitted_audit_from_intent,
+    )
+    from o3_job_status_contract import beat_job_busy
+
+    bid = str(beat_id or "").strip()
+    if not bid or not beat:
+        return False
+    busy = beat_job_busy(beat, event_dir)
+    existing_job_id = str(
+        beat.get("o3_current_job_id")
+        or beat.get("kling_o3_voice_fix_ui_job_id")
+        or "",
+    ).strip()
+    if not existing_job_id:
+        return False
+    existing_status = str(beat.get("kling_o3_voice_fix_status") or "")
+    if existing_status in _O3_SUBMIT_REATTACH_TERMINAL_FAILURES:
+        return False
+    existing_job = _ARLO_O3_JOBS.get(existing_job_id)
+    existing_proc = existing_job.get("proc") if existing_job else None
+    pid_running = beat.get("kling_o3_voice_fix_job_pid") is not None and _pid_is_running(
+        int(beat.get("kling_o3_voice_fix_job_pid") or 0),
+    )
+    proc_running = (
+        existing_proc
+        and existing_job.get("status") == "running"
+        and existing_proc.poll() is None
+    )
+    if not busy and not proc_running and not pid_running:
+        return False
+    dedup_submitted: dict = {}
+    dedup_intent: dict | None = None
+    try:
+        intent_event_d = intent_event_dir_for_beat(bid, event_dir)
+        intent_file = intent_event_d / "arlo_o3_jobs" / f"{existing_job_id}_intent.json"
+        if intent_file.is_file():
+            dedup_intent = load_generation_intent(intent_file)
+            dedup_submitted = submitted_audit_from_intent(dedup_intent)
+    except Exception:
+        pass
+    h._send_json(200, {
+        "ok": True,
+        "job_id": existing_job_id,
+        "beat_id": bid,
+        "log_path": beat.get("kling_o3_voice_fix_job_log_path"),
+        "deduped": True,
+        "submitted": dedup_submitted,
+        "intent": dedup_intent,
+        "message": "O3 voice generation is already running for this beat.",
+    })
+    return True
+
+
 def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
     """POST /api/bg/submit-arlo-o3-voice {beat_id}.
 
-    Canonical Element path: O3 Pro + Element create-voice + native audio in one
-    call, then automatic 1280x720 delivery encode. No lipsync detour.
+    Routes by ``resolve_o3_generate_mode``:
+    - ``avatar_pro``: ElevenLabs TTS + Avatar Pro → 720 delivery (default speak beats)
+    - ``voice_first``: ElevenLabs TTS + silent O3 + lipsync → 720 delivery (env rollback)
+    - ``element_native``: O3 Pro Element + native audio (env rollback)
     """
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
         return
@@ -3453,288 +4514,247 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
     job_id = str(_stdlib_uuid.uuid4())[:8]
     attempt_id = _stdlib_uuid.uuid4().hex
     prod = _data_root(h)
-    # Canonical code lives in the tooling repo (_PSERVER_TOOLS_DIR). Dropbox
-    # Production/tools/ is a runtime mirror that drifts until deploy — O3 subprocess
-    # must not import stale beat_generator duration logic from Dropbox alone.
-    script = _PSERVER_TOOLS_DIR / "kling_o3_element_beat_pipeline.py"
-    if not script.is_file():
-        script = prod / "tools" / "kling_o3_element_beat_pipeline.py"
-    if not script.is_file():
-        return h._send_error_v59(
-            500,
-            error_code="O3_ELEMENT_PIPELINE_MISSING",
-            error_message=f"O3 Element pipeline script missing: {script}",
-            retry_safe=False,
-        )
-    # Ref snapshot durability: the UI may optimistically show a just-dropped
-    # char/BG ref before the async bg_update_beat request has completed. Accept
-    # the visible refs on submit and persist them before launching the subprocess
-    # so Kling uses the boxes Kim sees, not stale sidecar refs.
-    event_dir = Path(getattr(h.app, "event_dir", prod / "Event_1"))
+    script: Path | None = None
+    o3_generate_mode = "element_native"
+    # Ref snapshot durability: POST body carries the operator ref box at Generate
+    # click. build_generation_intent resolves char/bg via resolve_o3_submit_refs
+    # (ref box wins over sidecar when both differ).
+    event_dir = _o3_job_event_dir(h, str(beat_id))
     log_path = event_dir / "arlo_o3_jobs" / f"{job_id}_{beat_id}.log"
     started_at = datetime.now(timezone.utc).isoformat()
     bg = _bg_module()
+    intent_path: Path | None = None
+    committed_intent: dict | None = None
+    submit_creds: dict | None = None
     try:
-        with bg.sidecar_file_lock():
-            sidecar = bg.read_sidecar()
-            sidecar = bg._migrate_sidecar(sidecar)
-            _, beat = bg.find_beat(sidecar, str(beat_id))
-            if not beat:
-                return h._send_error_v59(
-                    404,
-                    error_code="BEAT_NOT_FOUND",
-                    error_message=f"beat {beat_id} not found",
-                    retry_safe=False,
-                )
-            for ref_field in ("reference_image", "bg_ref_image"):
-                if ref_field in body:
-                    ref_value = body.get(ref_field)
-                    if ref_value:
-                        if not isinstance(ref_value, dict):
-                            return h._send_error_v59(
-                                400,
-                                error_code="INVALID_REF_SNAPSHOT",
-                                error_message=f"{ref_field} must be an object with abs_path",
-                                retry_safe=False,
-                            )
-                        abs_path = str(ref_value.get("abs_path") or "")
-                        if not abs_path or not Path(abs_path).is_file():
-                            return h._send_error_v59(
-                                400,
-                                error_code="MISSING_REF_FILE",
-                                error_message=f"{ref_field} file missing: {abs_path}",
-                                retry_safe=False,
-                            )
-                        beat[ref_field] = ref_value
-                    else:
-                        beat[ref_field] = None
-            if "kling_o3_prompt" in body:
-                user_prompt = str(body.get("kling_o3_prompt") or "").strip()
-                if user_prompt:
-                    bg.stamp_o3_prompt_box_law(beat, user_prompt)
-                else:
-                    bg.clear_o3_prompt_box_law(beat)
-                    beat["kling_o3_prompt"] = ""
-                bg.sync_beat_dialogue_from_kling_prompt(beat)
-                bg.sync_beat_scene_notes_from_kling_prompt(beat)
-            for required_field, label in (("reference_image", "Char ref"), ("bg_ref_image", "BG ref")):
-                ref_value = beat.get(required_field)
-                ref_path = Path(ref_value.get("abs_path") or "") if isinstance(ref_value, dict) else Path(str(ref_value or ""))
-                if not ref_path.is_file():
-                    return h._send_error_v59(
-                        400,
-                        error_code="MISSING_O3_REF",
-                        error_message=f"{label} must be set before generating O3 video",
-                        retry_safe=False,
-                    )
-            speaker = str(beat.get("speaker") or "").strip()
-            try:
-                from tools import kling_character_registry as reg
+        from o3_generation_intent import (
+            IntentCommitError,
+            build_generation_intent,
+            intent_event_dir_for_beat,
+            sidecar_fields_from_intent,
+            submitted_audit_from_intent,
+            write_generation_intent,
+        )
 
-                if speaker and reg.is_speaker_voice_ready(speaker):
-                    phase = bg.segment_phase_for_beat(sidecar, str(beat_id)) or "pre"
-                    ev_m = re.match(r"bg_arc\d+_event(\d+)_", str(beat_id))
-                    event_id = ev_m.group(1) if ev_m else ""
-                    if event_id:
-                        bg.finalize_proven_element_beat(
-                            beat, sidecar, speaker, event_id=event_id, phase=phase,
-                        )
-                        bg.ensure_operator_insert_char_ref_parity(
-                            beat, sidecar, speaker, event_id=event_id, phase=phase,
-                        )
-                    try:
-                        from credentials import load_credentials  # type: ignore
-                    except ImportError:
-                        from tools.credentials_lib.credentials import load_credentials  # type: ignore
-                    creds = load_credentials()
-                    ws_key = creds.get("wavespeed_key") or creds.get("wavespeed")
-                    if bg.proven_char_ref_aligned_with_proven_source(beat, sidecar, speaker):
-                        char_ok = True
-                        beat["element_char_ref_ok"] = True
-                        beat.pop("element_char_ref_error", None)
-                    elif not beat.get("reference_image_locked"):
-                        bg.ensure_beat_element_aligned_reference(beat)
-                        if ws_key:
-                            char_ok = bg.ensure_beat_element_char_ref_for_o3(beat, ws_key)
-                        else:
-                            char_ok = bg.sync_element_char_ref_status(beat, heal_mismatch=True)
-                    else:
-                        if ws_key:
-                            char_ok = bg.ensure_beat_element_char_ref_for_o3(beat, ws_key)
-                        else:
-                            char_ok = bg.sync_element_char_ref_status(beat, heal_mismatch=True)
-                    if not char_ok:
-                        return h._send_error_v59(
-                            400,
-                            error_code="ELEMENT_VISUAL_MISMATCH",
-                            error_message=str(beat.get("element_char_ref_error") or ""),
-                            retry_safe=False,
-                        )
-                    if not beat.get("reference_image_locked"):
-                        beat["reference_image_locked"] = True
-            except Exception as exc:
-                return h._send_error_v59(
-                    500,
-                    error_code="ELEMENT_ALIGN_CHECK_FAILED",
-                    error_message=str(exc),
-                    retry_safe=True,
-                )
-            from tools import kling_o3_prompt as o3p
-
-            # Prompt-box law: when the client sends kling_o3_prompt on Generate,
-            # that text is authoritative — do not run semi-canonical / normalize
-            # heals that rewrite quoted dialogue back to sidecar or compact canon.
-            explicit_user_prompt = (
-                "kling_o3_prompt" in body
-                and str(body.get("kling_o3_prompt") or "").strip()
+        sidecar_snap = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=5.0)
+        bg.ensure_sidecar_schema_defaults(sidecar_snap)
+        _, beat_snap = bg.find_beat(sidecar_snap, str(beat_id))
+        if not beat_snap:
+            return h._send_error_v59(
+                404,
+                error_code="BEAT_NOT_FOUND",
+                error_message=f"beat {beat_id} not found",
+                retry_safe=False,
             )
-            stored_for_voice = str(beat.get("kling_o3_prompt") or "")
-            # Prompt-box law: when the client sends kling_o3_prompt on Generate,
-            # that text is authoritative — do not run delivery-lock upgrades that
-            # rewrite the voice line back to canonical pacing wording.
-            if not explicit_user_prompt:
-                upgraded, _spoken_upgraded, voice_upgraded = o3p.upgrade_element_bound_voice_prompt(
-                    speaker,
-                    stored_for_voice,
-                    extract_spoken=bg.extract_spoken_dialogue_from_kling_prompt,
-                )
-                if voice_upgraded:
-                    beat["kling_o3_prompt"] = upgraded
-                    bg.sync_beat_dialogue_from_kling_prompt(beat)
-            if not explicit_user_prompt:
-                bg.heal_spoken_staging_in_voice_prompt(beat)
-                bg.heal_o3_element_submit_prompt(beat)
-
-            prepared_for_validate = bg.prepare_kling_o3_prompt_for_submit(
-                beat,
-                str(beat.get("kling_o3_prompt") or ""),
-            )
-            if not explicit_user_prompt:
-                if prepared_for_validate and prepared_for_validate != beat.get("kling_o3_prompt"):
-                    beat["kling_o3_prompt"] = prepared_for_validate
-                    bg.sync_beat_dialogue_from_kling_prompt(beat)
-            element_entry = bg.resolve_o3_element_list_entry(beat, speaker)
-            proven_err = bg.validate_proven_o3_element_submit(
-                beat,
-                speaker,
-                str((element_entry or {}).get("element_id") or ""),
-            )
-            if proven_err:
-                return h._send_error_v59(
-                    409,
-                    error_code="PROVEN_O3_BIND_MISMATCH",
-                    error_message=proven_err,
-                    retry_safe=False,
-                )
-            from tools.kling_voice_bind import (
-                detect_voice_bind_drift,
-                reconcile_o3_element_quality_for_submit,
-            )
-
-            registry_entry = reg.get_element_list_entry(speaker) or {}
-            if reconcile_o3_element_quality_for_submit(
-                beat,
-                speaker,
-                registry_element_id=str(registry_entry.get("element_id") or ""),
-                registry_voice_id=str(
-                    registry_entry.get("voice_id") or reg.get_bound_voice_id(speaker) or ""
+        work_beat = copy.deepcopy(beat_snap)
+        generation_mode = bg.resolve_beat_generation_mode(work_beat, sidecar_snap)
+        if generation_mode == bg.PIPELINE_MODE_STILL:
+            return h._send_error_v59(
+                400,
+                error_code="STILL_INSERT_BEAT",
+                error_message=(
+                    "O3 voice submit does not apply to still_insert beats — "
+                    "use render-still-clip."
                 ),
-            ):
-                bg.write_sidecar(sidecar)
-            drift_msg = detect_voice_bind_drift(
-                beat,
-                speaker,
-                reg.get_bound_voice_id(speaker),
+                retry_safe=False,
             )
-            if drift_msg and not body.get("accept_voice_drift"):
-                return h._send_error_v59(
-                    409,
-                    error_code="VOICE_BIND_DRIFT",
-                    error_message=drift_msg,
-                    retry_safe=True,
-                )
-            voice_prompt_errors = o3p.validate_element_list_alignment(
-                speaker,
-                element_entry,
-                prepared_for_validate,
-                beat=beat,
+        event_id_heal, phase_heal = bg.segment_event_phase_for_beat(sidecar_snap, str(beat_id))
+        if event_id_heal and phase_heal:
+            bg.heal_beat_dual_prompts(
+                work_beat,
+                sidecar_snap,
+                event_id=str(event_id_heal),
+                phase=str(phase_heal),
             )
-            if voice_prompt_errors:
+        body_mode = str(
+            body.get("generation_mode") or body.get("o3_generate_mode") or "",
+        ).strip().lower()
+        if body_mode in (
+            bg.O3_GENERATE_MODE_VOICE_FIRST,
+            bg.O3_GENERATE_MODE_ELEMENT_NATIVE,
+            bg.O3_GENERATE_MODE_AVATAR,
+        ):
+            work_beat["o3_generate_mode"] = body_mode
+        generation_mode = bg.resolve_beat_generation_mode(work_beat, sidecar_snap)
+        ok_prompt, prompt_code, prompt_msg = bg.validate_o3_submit_prompt_for_mode(
+            str(body.get("kling_o3_prompt") or ""),
+            generation_mode,
+        )
+        if not ok_prompt:
+            return h._send_error_v59(
+                400,
+                error_code=prompt_code,
+                error_message=prompt_msg,
+                retry_safe=False,
+            )
+        if _o3_submit_reattach_response_if_running(h, str(beat_id), beat_snap, event_dir):
+            return
+        o3_generate_mode = generation_mode
+        if o3_generate_mode == bg.O3_GENERATE_MODE_AVATAR and bg.beatgen_avatar_pro_disabled():
+            return h._send_error_v59(
+                400,
+                error_code="BEATGEN_AVATAR_DISABLED",
+                error_message=(
+                    "Beat Gen Avatar Pro is disabled — server is pinned to Kling Element native O3."
+                ),
+                retry_safe=False,
+            )
+        work_beat["o3_generate_mode"] = o3_generate_mode
+        work_beat["kling_o3_generate_mode"] = o3_generate_mode
+        if o3_generate_mode == bg.O3_GENERATE_MODE_VOICE_FIRST:
+            script = _PSERVER_TOOLS_DIR / "arlo_o3_voice_pipeline.py"
+            if not script.is_file():
+                script = prod / "tools" / "arlo_o3_voice_pipeline.py"
+        elif o3_generate_mode == bg.O3_GENERATE_MODE_AVATAR:
+            script = _PSERVER_TOOLS_DIR / "arlo_avatar_beat_pipeline.py"
+            if not script.is_file():
+                script = prod / "tools" / "arlo_avatar_beat_pipeline.py"
+        else:
+            script = _PSERVER_TOOLS_DIR / "kling_o3_element_beat_pipeline.py"
+            if not script.is_file():
+                script = prod / "tools" / "kling_o3_element_beat_pipeline.py"
+        if not script or not script.is_file():
+            return h._send_error_v59(
+                500,
+                error_code="O3_PIPELINE_MISSING",
+                error_message=f"O3 pipeline script missing for mode={o3_generate_mode}: {script}",
+                retry_safe=False,
+            )
+        try:
+            from credentials import load_credentials  # type: ignore
+        except ImportError:
+            from tools.credentials_lib.credentials import load_credentials  # type: ignore
+        creds = load_credentials()
+        submit_creds = creds
+        if o3_generate_mode == "voice_first":
+            from lipsync_public_host import (
+                lipsync_public_host_block_message,
+                lipsync_public_host_ready,
+            )
+
+            if not lipsync_public_host_ready(creds=creds):
                 return h._send_error_v59(
-                    400,
-                    error_code="ELEMENT_VOICE_PROMPT",
-                    error_message=(
-                        "Bound Element voice requires locked delivery line in prompt — "
-                        + "; ".join(voice_prompt_errors)
-                    ),
+                    503,
+                    error_code="LIPSYNC_HOSTING_NOT_CONFIGURED",
+                    error_message=lipsync_public_host_block_message(),
                     retry_safe=False,
                 )
-            stored_prompt = str(beat.get("kling_o3_prompt") or "").strip()
-            if stored_prompt and re.search(r"\b(?:speaks|says)\b", stored_prompt, re.I):
-                extracted = bg.extract_spoken_dialogue_from_kling_prompt(stored_prompt)
-                if not extracted:
-                    return h._send_error_v59(
-                        400,
-                        error_code="NO_QUOTED_DIALOGUE",
-                        error_message=(
-                            "No spoken dialogue found in the prompt voice line. "
-                            "Put the full line in double quotes after speaks…: "
-                            'or use unquoted text immediately after the colon.'
-                        ),
-                        retry_safe=False,
-                    )
-            bg.sync_beat_dialogue_from_kling_prompt(beat)
-            stored_prompt = str(beat.get("kling_o3_prompt") or "").strip()
-            if stored_prompt and not beat.get("kling_o3_duration_locked"):
-                prepared = bg.prepare_kling_o3_prompt_for_submit(beat, stored_prompt)
-                beat["kling_o3_duration"] = bg.resolve_kling_o3_submit_duration(
-                    beat, prepared,
-                )
-            replace_slot = body.get("replace_slot_index", beat.get("kling_o3_replace_slot_index", 0))
+        ws_key = creds.get("wavespeed_key") or creds.get("wavespeed")
+        # WaveSpeed / Element registration — never under sidecar_file_lock.
+        committed_intent = build_generation_intent(
+            beat=work_beat,
+            sidecar=sidecar_snap,
+            body=body,
+            beat_id=str(beat_id),
+            event_dir=event_dir,
+            job_id=job_id,
+            attempt_id=attempt_id,
+            log_path=log_path,
+            pipeline_script=script,
+            wavespeed_key=ws_key,
+        )
+        if getattr(h.app, "scope_type", "event") == "milestone" and getattr(h.app, "milestone_dir", None):
+            mdir = Path(h.app.milestone_dir).expanduser().resolve()
+            lib = getattr(h.app, "milestone_library_event_dir", None) or h.app.event_dir
+            scope_payload: dict = {
+                "scope_type": "milestone",
+                "milestone_id": str(getattr(h.app, "active_milestone_id", "") or ""),
+                "milestone_dir": str(mdir),
+                "library_event_dir": str(Path(lib).expanduser().resolve()),
+            }
             try:
-                replace_slot = max(0, min(2, int(replace_slot)))
-            except (TypeError, ValueError):
-                replace_slot = 0
-            beat["kling_o3_replace_slot_index"] = replace_slot
-            existing_job_id = str(beat.get("kling_o3_voice_fix_ui_job_id") or "")
-            existing_status = str(beat.get("kling_o3_voice_fix_status") or "")
-            existing_pid = beat.get("kling_o3_voice_fix_job_pid")
-            pid_running = (
-                existing_pid is not None
-                and _pid_is_running(int(existing_pid))
+                from lib.milestone_store import load_milestone_state, resolve_milestone_skeleton_ref
+
+                skel = resolve_milestone_skeleton_ref(
+                    load_milestone_state(mdir),
+                    str(getattr(h.app, "active_milestone_id", "") or ""),
+                )
+                if skel:
+                    scope_payload["skeleton_ref"] = skel
+            except Exception:
+                pass
+            committed_intent["runtime_scope"] = scope_payload
+        intent_event = intent_event_dir_for_beat(str(beat_id), event_dir)
+        intent_path = intent_event / "arlo_o3_jobs" / f"{job_id}_intent.json"
+
+        def _commit_o3(b: dict, sidecar: dict) -> None:
+            bg.ensure_sidecar_schema_defaults(sidecar)
+            existing_job_id = str(b.get("kling_o3_voice_fix_ui_job_id") or "")
+            existing_status = str(b.get("kling_o3_voice_fix_status") or "")
+            if existing_job_id and existing_status not in {
+                "approved", "failed", "failed_o3", "failed_provider_fetch", "failed_provider_sub720",
+            }:
+                b.pop("kling_o3_voice_fix_ui_job_id", None)
+            b.update(sidecar_fields_from_intent(committed_intent))
+            bg.stamp_o3_prompt_box_law(
+                b,
+                str((committed_intent.get("prompt") or {}).get("verbatim") or ""),
             )
-            if existing_job_id and existing_status not in {"approved", "failed", "failed_o3", "failed_provider_fetch", "failed_provider_sub720"}:
-                existing_job = _ARLO_O3_JOBS.get(existing_job_id)
-                existing_proc = existing_job.get("proc") if existing_job else None
-                if (existing_proc and existing_job.get("status") == "running" and existing_proc.poll() is None) or pid_running:
-                    return h._send_json(200, {
-                        "ok": True,
-                        "job_id": existing_job_id,
-                        "beat_id": str(beat_id),
-                        "log_path": beat.get("kling_o3_voice_fix_job_log_path"),
-                        "deduped": True,
-                        "message": "O3 voice generation is already running for this beat.",
-                    })
-                beat.pop("kling_o3_voice_fix_ui_job_id", None)
-            beat["status"] = "o3_voice_job_starting"
-            beat["kling_o3_voice_fix_status"] = "job_starting"
-            beat["kling_o3_voice_fix_phase"] = "queued"
-            beat["kling_o3_voice_fix_attempt_id"] = attempt_id
-            beat["kling_o3_voice_fix_ui_job_id"] = job_id
-            beat["kling_o3_voice_fix_job_log_path"] = str(log_path)
-            beat["kling_o3_voice_fix_job_started_at"] = started_at
-            beat["kling_o3_voice_fix_updated_at"] = started_at
-            beat.pop("kling_o3_voice_fix_error", None)
-            beat.pop("kling_o3_voice_fix_error_code", None)
-            beat.pop("kling_o3_voice_fix_job_completed_at", None)
-            bg.write_sidecar(sidecar)
+            bg.sync_beat_dialogue_from_kling_prompt(b)
+            b["status"] = "o3_voice_job_starting"
+            b["kling_o3_voice_fix_status"] = "job_starting"
+            b["kling_o3_voice_fix_phase"] = "queued"
+            b["kling_o3_voice_fix_attempt_id"] = attempt_id
+            b["kling_o3_voice_fix_ui_job_id"] = job_id
+            b["kling_o3_voice_fix_job_log_path"] = str(log_path)
+            b["kling_o3_voice_fix_job_started_at"] = started_at
+            b["kling_o3_voice_fix_updated_at"] = started_at
+            b.pop("kling_o3_voice_fix_error", None)
+            b.pop("kling_o3_voice_fix_error_code", None)
+            b.pop("kling_o3_voice_fix_job_completed_at", None)
+
+        ok, _ = bg.update_beat_locked(str(beat_id), _commit_o3)
+        if not ok:
+            return h._send_error_v59(
+                404,
+                error_code="BEAT_NOT_FOUND",
+                error_message=f"beat {beat_id} not found",
+                retry_safe=False,
+            )
+        intent_path = write_generation_intent(committed_intent, event_dir)
+        from o3_generation_intent import (
+            intent_event_dir_for_beat as _intent_ev_dir,
+            write_running_terminal_at_submit,
+        )
+
+        write_running_terminal_at_submit(
+            job_id,
+            _intent_ev_dir(str(beat_id), event_dir),
+            intent_id=str((committed_intent or {}).get("intent_id") or ""),
+            beat_id=str(beat_id),
+        )
+    except TimeoutError as exc:
+        return h._send_error_v59(
+            503,
+            error_code="SIDECAR_LOCK_TIMEOUT",
+            error_message=str(exc) or "sidecar lock busy — retry shortly",
+            retry_safe=True,
+        )
+    except IntentCommitError as exc:
+        if exc.error_code == "BEAT_JOB_BUSY":
+            try:
+                sidecar_retry = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=2.0)
+                _, beat_retry = bg.find_beat(sidecar_retry, str(beat_id))
+                if beat_retry and _o3_submit_reattach_response_if_running(
+                    h, str(beat_id), beat_retry, event_dir,
+                ):
+                    return
+            except Exception:
+                pass
+        return h._send_error_v59(
+            exc.http_status,
+            error_code=exc.error_code,
+            error_message=exc.error_message,
+            retry_safe=exc.retry_safe,
+            extra={"detail": exc.detail} if exc.detail else None,
+        )
     except Exception as exc:
         if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
             raise
         return h._send_error_v59(
             500,
-            error_code="O3_REF_PERSIST_FAILED",
-            error_message=f"Could not persist current refs before O3 submit: {exc}",
+            error_code="O3_INTENT_COMMIT_FAILED",
+            error_message=f"Could not commit generation intent: {exc}",
             retry_safe=True,
         )
     cmd = [
@@ -3750,15 +4770,46 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
     subprocess_env["MN_PROD_ROOT"] = str(prod)
     subprocess_env["MN_O3_ATTEMPT_ID"] = attempt_id
     subprocess_env["MN_O3_JOB_LOG"] = str(log_path)
+    if intent_path:
+        subprocess_env["MN_O3_INTENT_PATH"] = str(intent_path)
     if body.get("accept_voice_drift"):
         subprocess_env["MN_ACCEPT_VOICE_DRIFT"] = "1"
-    if body.get("kling_o3_prompt") and str(body.get("kling_o3_prompt") or "").strip():
-        subprocess_env["MN_O3_PROMPT_BOX_LAW"] = "1"
     subprocess_env["MN_TOOLING_TOOLS"] = str(_PSERVER_TOOLS_DIR)
+    if o3_generate_mode == "voice_first":
+        subprocess_env["MN_LIPSYNC_STAGING_EVENT_DIR"] = str(event_dir)
+        subprocess_env["MN_LIPSYNC_STAGING_TOKEN"] = attempt_id
+        public_base = os.environ.get("MN_LIPSYNC_PUBLIC_BASE_URL", "").strip()
+        if not public_base:
+            event_name = event_dir.name
+            if event_name.startswith("Event_"):
+                try:
+                    port = 5110 + int(event_name.replace("Event_", ""))
+                    public_base = f"http://localhost:{port}"
+                except ValueError:
+                    public_base = ""
+        if public_base:
+            try:
+                from lipsync_staging import is_public_staging_base
+            except ImportError:
+                is_public_staging_base = lambda _base: True  # noqa: E731
+            if is_public_staging_base(public_base):
+                subprocess_env["MN_LIPSYNC_STAGING_PUBLIC_BASE"] = public_base.rstrip("/")
+            else:
+                print(
+                    f"[bg_o3] voice_first: skip localhost staging base {public_base!r}; "
+                    "lipsync will use R2/ephemeral public hosts",
+                    flush=True,
+                )
+        from lipsync_public_host import inject_lipsync_r2_env
+
+        inject_lipsync_r2_env(subprocess_env, submit_creds)
     _pp = subprocess_env.get("PYTHONPATH", "")
     subprocess_env["PYTHONPATH"] = os.pathsep.join(
         p for p in (str(_PSERVER_TOOLS_DIR), str(prod / "tools"), str(prod), _pp) if p
     )
+    from o3_subprocess_bootstrap import inject_o3_subprocess_scope_env
+
+    inject_o3_subprocess_scope_env(subprocess_env, h.app)
     proc = subprocess.Popen(
         cmd,
         cwd=str(prod),
@@ -3776,37 +4827,73 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
         "log_path": str(log_path),
         "started_at": started_at,
         "attempt_id": attempt_id,
+        "intent_id": (committed_intent or {}).get("intent_id"),
+        "intent_path": str(intent_path) if intent_path else None,
         "result": None,
         "error": None,
     }
     try:
-        bg = _bg_module()
-        with bg.sidecar_file_lock():
-            sidecar = bg.read_sidecar()
-            sidecar = bg._migrate_sidecar(sidecar)
-            _, beat = bg.find_beat(sidecar, str(beat_id))
-            if beat:
-                beat["status"] = "o3_voice_job_running"
-                beat["kling_o3_voice_fix_status"] = "job_running"
-                beat["kling_o3_voice_fix_phase"] = "subprocess"
-                beat["kling_o3_voice_fix_attempt_id"] = attempt_id
-                beat["kling_o3_voice_fix_ui_job_id"] = job_id
-                beat["kling_o3_voice_fix_job_log_path"] = str(log_path)
-                beat["kling_o3_voice_fix_job_started_at"] = started_at
-                beat["kling_o3_voice_fix_job_pid"] = proc.pid
-                beat["kling_o3_voice_fix_updated_at"] = datetime.now(timezone.utc).isoformat()
-                beat.pop("kling_o3_voice_fix_error", None)
-                beat.pop("kling_o3_voice_fix_error_code", None)
-                beat.pop("kling_o3_voice_fix_job_completed_at", None)
-                bg.write_sidecar(sidecar)
+        from o3_generation_intent import (
+            intent_event_dir_for_beat as _spawn_ev_dir,
+            touch_o3_job_heartbeat,
+            write_o3_job_pid,
+        )
+
+        spawn_ev = _spawn_ev_dir(str(beat_id), event_dir)
+        write_o3_job_pid(job_id, spawn_ev, proc.pid)
+        touch_o3_job_heartbeat(job_id, spawn_ev)
+    except Exception as exc:
+        print(f"[bg_o3_job] warning: could not write pid/heartbeat for {job_id}: {exc}", flush=True)
+    try:
+        def _stamp_running_job(b: dict, _sidecar: dict) -> None:
+            if str(b.get("beat_id") or "") != str(beat_id):
+                return
+            if b.get("kling_o3_voice_fix_attempt_id") not in (None, attempt_id):
+                return
+            b["status"] = "o3_voice_job_running"
+            b["kling_o3_voice_fix_status"] = "job_running"
+            b["kling_o3_voice_fix_phase"] = "subprocess"
+            b["kling_o3_voice_fix_attempt_id"] = attempt_id
+            b["kling_o3_voice_fix_ui_job_id"] = job_id
+            b["kling_o3_voice_fix_job_log_path"] = str(log_path)
+            b["kling_o3_voice_fix_job_started_at"] = started_at
+            b["kling_o3_voice_fix_job_pid"] = proc.pid
+            b["kling_o3_voice_fix_updated_at"] = datetime.now(timezone.utc).isoformat()
+            b.pop("kling_o3_voice_fix_error", None)
+            b.pop("kling_o3_voice_fix_error_code", None)
+            b.pop("kling_o3_voice_fix_job_completed_at", None)
+
+        ok, _ = bg.update_beat_locked(
+            str(beat_id),
+            _stamp_running_job,
+            expected_attempt_id=attempt_id,
+        )
+        if not ok:
+            print(f"[bg_o3_job] warning: could not persist running job metadata for {beat_id}", flush=True)
     except Exception as exc:
         print(f"[bg_o3_job] warning: could not persist job metadata for {beat_id}: {exc}", flush=True)
-    return h._send_json(200, {"ok": True, "job_id": job_id, "beat_id": beat_id, "log_path": str(log_path), "attempt_id": attempt_id})
+    submitted = submitted_audit_from_intent(committed_intent) if committed_intent else {}
+    return h._send_json(200, {
+        "ok": True,
+        "job_id": job_id,
+        "beat_id": beat_id,
+        "log_path": str(log_path),
+        "attempt_id": attempt_id,
+        "intent_id": (committed_intent or {}).get("intent_id"),
+        "o3_generate_mode": o3_generate_mode,
+        "pipeline_script": str(script),
+        "generation_slot": submitted.get("generation_slot"),
+        "submitted": submitted,
+        "intent": committed_intent,
+    })
 
 
 def _event_dir_for_beat_id(beat_id: str) -> Path:
     """Derive Production/Event_N from bg_arc1_event2_pre_beat_27 style ids."""
     return _bg_module().event_dir_for_beat_id(beat_id)
+
+
+_event_dir_from_beat_id = _event_dir_for_beat_id
 
 
 def _enriched_beat_snapshot_for_o3_poll(
@@ -3817,24 +4904,105 @@ def _enriched_beat_snapshot_for_o3_poll(
 ) -> dict | None:
     """Single-beat API payload — avoids full session-state migrate on O3 poll done."""
     bg = _bg_module()
-    with bg.sidecar_file_lock():
-        sidecar = bg.read_sidecar()
-        if migrate:
-            sidecar = bg._migrate_sidecar(sidecar)
-        _, beat = bg.find_beat(sidecar, str(beat_id))
-        if not beat:
-            return None
-        return bg.enrich_beat_kling_o3_pinned(dict(beat), event_dir)
+    try:
+        sidecar = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=5.0)
+    except Exception as exc:
+        print(f"[bg_o3_poll] sidecar read failed for {beat_id}: {exc}", flush=True)
+        return None
+    if migrate:
+        sidecar = bg._migrate_sidecar(sidecar, heal_trim=False, heavy_heal=False)
+    else:
+        bg.ensure_sidecar_schema_defaults(sidecar)
+    _, beat = bg.find_beat(sidecar, str(beat_id))
+    if not beat:
+        return None
+    snap = bg.enrich_beat_kling_o3_pinned(dict(beat), event_dir)
+    from o3_job_status_contract import clear_o3_pointer_if_terminal
+
+    clear_o3_pointer_if_terminal(snap, event_dir)
+    try:
+        slots = bg.build_fixed_o3_ui_slots(snap, sidecar=sidecar)
+        snap["kling_o3_ui_slots"] = [
+            dict(s) if isinstance(s, dict) else None for s in slots
+        ]
+    except Exception:
+        pass
+    try:
+        from operator_workbench_contract import enrich_beat_operator_derived
+
+        event_id_h, phase_h = bg.segment_event_phase_for_beat(sidecar, str(beat_id)) or ("", "full")
+        snap["_derived"] = enrich_beat_operator_derived(
+            snap,
+            sidecar,
+            event_id=str(event_id_h or ""),
+            phase=str(phase_h or "full"),
+            approved_roots=None,
+        )
+        derived = snap["_derived"]
+        if derived.get("element_char_ref_ok") is not None:
+            snap["element_char_ref_ok"] = derived["element_char_ref_ok"]
+        if derived.get("element_char_ref_error"):
+            snap["element_char_ref_error"] = derived["element_char_ref_error"]
+    except Exception as exc:
+        print(f"[bg_o3_poll] operator derived enrich failed for {beat_id}: {exc}", flush=True)
+    from o3_job_status_contract import beat_job_busy
+
+    beat_event_dirs = bg.resolve_o3_lifecycle_event_dir_candidates(
+        str(beat_id), server_event_dir=event_dir,
+    )
+    try:
+        snap["job_busy"] = _resolve_beat_job_busy_for_session(snap, beat_event_dirs)
+    except Exception as exc:
+        print(f"[bg_o3_poll] job_busy resolve failed for {beat_id}: {exc}", flush=True)
+        snap["job_busy"] = False
+        snap["o3_current_job_id"] = None
+    else:
+        from o3_job_status_contract import resolve_o3_current_job_id
+
+        snap["o3_current_job_id"] = resolve_o3_current_job_id(snap) if snap["job_busy"] else None
+    return snap
+
+
+def _minimal_sidecar_beat_for_o3_poll(beat_id: str, event_dir: Path) -> dict | None:
+    """Lightweight beat row when full disk enrich fails — keeps poll/select from going beat-less."""
+    bg = _bg_module()
+    try:
+        sidecar = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=5.0)
+    except Exception as exc:
+        print(f"[bg_o3_poll] minimal sidecar read failed for {beat_id}: {exc}", flush=True)
+        return None
+    bg.ensure_sidecar_schema_defaults(sidecar)
+    _, beat = bg.find_beat(sidecar, str(beat_id))
+    if not beat:
+        return None
+    snap = {k: v for k, v in dict(beat).items() if not str(k).startswith("_")}
+    beat_event_dirs = bg.resolve_o3_lifecycle_event_dir_candidates(
+        str(beat_id), server_event_dir=event_dir,
+    )
+    try:
+        snap["job_busy"] = _resolve_beat_job_busy_for_session(snap, beat_event_dirs)
+    except Exception as exc:
+        print(f"[bg_o3_poll] minimal job_busy failed for {beat_id}: {exc}", flush=True)
+        snap["job_busy"] = False
+    from o3_job_status_contract import resolve_o3_current_job_id
+
+    snap["o3_current_job_id"] = resolve_o3_current_job_id(snap) if snap.get("job_busy") else None
+    return snap
 
 
 def _o3_poll_payload_with_beat_snapshot(payload: dict, event_dir: Path) -> dict:
-    """Attach enriched sidecar beat on terminal O3 poll (done/failed) for fast UI patch."""
-    if payload.get("status") not in ("done", "failed"):
+    """Attach enriched sidecar beat on O3 poll so UI shows running state + terminal clip."""
+    payload = _enrich_o3_poll_with_intent(payload, event_dir)
+    if payload.get("status") not in ("running", "done", "failed", "done_with_warning"):
         return payload
     beat_id = str(payload.get("beat_id") or "").strip()
     if not beat_id:
         return payload
-    snap = _enriched_beat_snapshot_for_o3_poll(beat_id, event_dir, migrate=False)
+    try:
+        snap = _enriched_beat_snapshot_for_o3_poll(beat_id, event_dir, migrate=False)
+    except Exception as exc:
+        print(f"[bg_o3_poll] beat snapshot failed for {beat_id}: {exc}", flush=True)
+        snap = _minimal_sidecar_beat_for_o3_poll(beat_id, event_dir)
     if not snap:
         return payload
     out = dict(payload)
@@ -3842,14 +5010,57 @@ def _o3_poll_payload_with_beat_snapshot(payload: dict, event_dir: Path) -> dict:
     return out
 
 
+def _enrich_o3_poll_with_intent(payload: dict, event_dir: Path) -> dict:
+    from o3_generation_intent import (
+        intent_path_for_job,
+        intent_poll_subset,
+        load_generation_intent,
+        load_intent_terminal,
+        terminal_path_for_job,
+    )
+
+    job_id = str(payload.get("job_id") or "").strip()
+    if not job_id:
+        return payload
+    out = dict(payload)
+    intent_path = intent_path_for_job(job_id, event_dir)
+    if intent_path.is_file():
+        try:
+            intent = load_generation_intent(intent_path)
+            out["intent"] = intent_poll_subset(intent)
+        except (OSError, json.JSONDecodeError, ValueError):
+            pass
+    terminal_path = terminal_path_for_job(job_id, event_dir)
+    terminal = load_intent_terminal(terminal_path)
+    if terminal:
+        out["terminal"] = terminal
+        status = str(terminal.get("status") or "").strip()
+        if status == "done_with_warning":
+            out["status"] = "done_with_warning"
+            out["warning"] = terminal.get("warning")
+        elif status in ("done", "failed"):
+            out["status"] = status
+        elif status == "cancelled":
+            out["status"] = "cancelled"
+    return out
+
+
 def _finalize_o3_job_after_subprocess_exit(job: dict, event_dir: Path) -> None:
     """Mark in-memory O3 job done/failed; recover delivery mp4 when sidecar persist failed."""
+    from o3_generation_intent import load_intent_terminal, terminal_path_for_job, write_intent_terminal
+
     proc = job.get("proc")
     if not proc or job.get("status") != "running":
         return
     rc = proc.poll()
     if rc is None:
         return
+    job_id = str(job.get("job_id") or "")
+    if not job_id:
+        for key, row in _ARLO_O3_JOBS.items():
+            if row is job:
+                job_id = key
+                break
     job["ended_at"] = datetime.now(timezone.utc).isoformat()
     job["exit_code"] = rc
     log_path = job.get("log_path")
@@ -3857,9 +5068,42 @@ def _finalize_o3_job_after_subprocess_exit(job: dict, event_dir: Path) -> None:
     log_text = ""
     if log_path and Path(str(log_path)).is_file():
         log_text = Path(str(log_path)).read_text(encoding="utf-8", errors="replace")
+    terminal_path = terminal_path_for_job(job_id, event_dir) if job_id else None
+    terminal = load_intent_terminal(terminal_path) if terminal_path else None
+    if terminal and str(terminal.get("status") or "") in {"done", "failed", "done_with_warning", "cancelled"}:
+        job["status"] = str(terminal.get("status"))
+        if terminal.get("status") == "failed":
+            job["error"] = (terminal.get("failure") or {}).get("message") or "O3 job failed"
+        else:
+            job["result"] = {
+                "ok": True,
+                "beat_id": beat_id,
+                "video": (terminal.get("delivered") or {}).get("video_path"),
+                "terminal": True,
+            }
+            if terminal.get("status") == "done_with_warning":
+                job["warning"] = terminal.get("warning")
+        return
     if rc == 0:
         job["status"] = "done"
         job["result"] = _parse_o3_pipeline_result_from_log(log_path)
+        return
+    from o3_job_status_contract import voice_fix_is_terminal_failure
+
+    voice_fix, voice_err = _sidecar_voice_fix_for_beat(beat_id)
+    if voice_fix_is_terminal_failure(voice_fix):
+        job["status"] = "failed"
+        job["error"] = _summarize_o3_job_error(voice_err or log_text[-4000:])
+        if job_id and event_dir:
+            try:
+                write_intent_terminal(job_id, event_dir, {
+                    "status": "failed",
+                    "phase_last": "subprocess_voice_fix_terminal",
+                    "sidecar_persist_ok": True,
+                    "failure": {"message": job["error"]},
+                })
+            except OSError:
+                pass
         return
     recovered = None
     if beat_id and (
@@ -3875,10 +5119,29 @@ def _finalize_o3_job_after_subprocess_exit(job: dict, event_dir: Path) -> None:
             "video": recovered.get("delivery_path"),
             "recovered_from_sidecar_io_error": True,
         }
+        if job_id:
+            try:
+                write_intent_terminal(job_id, event_dir, {
+                    "status": "done",
+                    "sidecar_persist_ok": True,
+                    "delivered": {"video_path": recovered.get("delivery_path")},
+                })
+            except OSError:
+                pass
         job.pop("error", None)
         return
     job["status"] = "failed"
     job["error"] = _summarize_o3_job_error(log_text[-4000:])
+    if job_id and event_dir:
+        try:
+            write_intent_terminal(job_id, event_dir, {
+                "status": "failed",
+                "phase_last": "subprocess_exit",
+                "sidecar_persist_ok": bool(voice_fix_is_terminal_failure(voice_fix)),
+                "failure": {"message": job["error"]},
+            })
+        except OSError:
+            pass
 
 
 def handle_bg_poll_arlo_o3_voice_status(h) -> None:
@@ -3886,12 +5149,22 @@ def handle_bg_poll_arlo_o3_voice_status(h) -> None:
     qs = urllib.parse.parse_qs(urllib.parse.urlparse(h.path).query)
     job_id = (qs.get("job_id") or [""])[0]
     if not job_id or job_id not in _ARLO_O3_JOBS:
-        recovered = _recover_o3_job_from_sidecar(job_id)
+        event_dir = Path(h.app.event_dir)
+        if not event_dir.is_absolute():
+            event_dir = _data_root(h) / event_dir
+        recovered = _recover_o3_job_from_intent_terminal(job_id, event_dir)
+        if not recovered:
+            recovered = _recover_o3_job_from_sidecar(job_id)
         if recovered:
             event_dir = Path(h.app.event_dir)
             if not event_dir.is_absolute():
                 event_dir = _data_root(h) / event_dir
-            return h._send_json(200, _o3_poll_payload_with_beat_snapshot(recovered, event_dir))
+            try:
+                body = _o3_poll_payload_with_beat_snapshot(recovered, event_dir)
+            except TimeoutError as exc:
+                print(f"[bg_o3_poll] recovered job snapshot lock timeout for {job_id}: {exc}", flush=True)
+                body = recovered
+            return h._send_json(200, body)
         return h._send_error_v59(
             404,
             error_code="ARLO_JOB_NOT_FOUND",
@@ -3905,18 +5178,53 @@ def handle_bg_poll_arlo_o3_voice_status(h) -> None:
     event_dir = Path(h.app.event_dir)
     if not event_dir.is_absolute():
         event_dir = _data_root(h) / event_dir
-    if job.get("proc") and job.get("status") == "running":
+    if job.get("status") == "running":
         _ensure_o3_job_metadata(job_id, job)
-        _finalize_o3_job_after_subprocess_exit(job, event_dir)
-        if job.get("status") in ("done", "failed"):
+        proc = job.get("proc")
+        pid = job.get("pid")
+        pid_gone = pid is not None and not _pid_is_running(int(pid))
+        if proc is not None and not pid_gone:
+            _finalize_o3_job_after_subprocess_exit(job, event_dir)
+        elif pid_gone or proc is None:
+            _promote_o3_job_from_log_if_terminal(job, event_dir)
+        if job.get("status") in ("done", "failed", "done_with_warning"):
             _clear_o3_job_metadata(
                 job_id,
                 status=job["status"],
                 result=job.get("result"),
                 error=job.get("error"),
             )
+        elif job.get("status") == "running":
+            beat_id = str(job.get("beat_id") or "")
+            log_path = job.get("log_path")
+            if beat_id and log_path:
+                from o3_generation_intent import load_intent_terminal, terminal_path_for_job
+
+                terminal = load_intent_terminal(terminal_path_for_job(str(job_id), event_dir))
+                terminal_done = str((terminal or {}).get("status") or "") in (
+                    "done",
+                    "done_with_warning",
+                    "failed",
+                )
+                log_tail = _tail_read_text(log_path)
+                if (
+                    terminal_done
+                    or '"phase": "done"' in log_tail
+                    or _parse_o3_pipeline_result_from_log(log_path, tail_bytes=_O3_LOG_TAIL_BYTES)
+                ):
+                    if _promote_o3_job_from_log_if_terminal(job, event_dir):
+                        _clear_o3_job_metadata(
+                            job_id,
+                            status=job["status"],
+                            result=job.get("result"),
+                            error=job.get("error"),
+                        )
     payload = {k: v for k, v in job.items() if k != "proc"}
-    payload = _o3_poll_payload_with_beat_snapshot(payload, event_dir)
+    payload = _enrich_o3_poll_with_intent(payload, event_dir)
+    try:
+        payload = _o3_poll_payload_with_beat_snapshot(payload, event_dir)
+    except TimeoutError as exc:
+        print(f"[bg_o3_poll] beat snapshot lock timeout for {job_id}: {exc}", flush=True)
     return h._send_json(200, payload)
 
 
@@ -3956,53 +5264,62 @@ def handle_bg_submit_kling_native_lipsync_experiment(h, body: dict) -> None:
 
     try:
         bg = _bg_module()
-        with bg.sidecar_file_lock():
-            sidecar = bg.read_sidecar()
-            sidecar = bg._migrate_sidecar(sidecar)
-            _, beat = bg.find_beat(sidecar, beat_id)
-            if not beat:
+        sidecar_probe = bg.read_sidecar()
+        sidecar_probe = bg._migrate_sidecar(sidecar_probe)
+        _, beat_probe = bg.find_beat(sidecar_probe, beat_id)
+        if not beat_probe:
+            return h._send_error_v59(
+                404,
+                error_code="BEAT_NOT_FOUND",
+                error_message=f"beat {beat_id} not found",
+                retry_safe=False,
+            )
+        o3_job_id = str(beat_probe.get("kling_o3_voice_fix_ui_job_id") or "")
+        o3_status = str(beat_probe.get("kling_o3_voice_fix_status") or "").lower()
+        if o3_job_id and o3_status not in {"approved", "failed", "failed_o3", "failed_provider_fetch", "failed_provider_sub720"}:
+            existing_o3 = _ARLO_O3_JOBS.get(o3_job_id)
+            existing_proc = existing_o3.get("proc") if existing_o3 else None
+            if existing_proc and existing_o3.get("status") == "running" and existing_proc.poll() is None:
                 return h._send_error_v59(
-                    404,
-                    error_code="BEAT_NOT_FOUND",
-                    error_message=f"beat {beat_id} not found",
-                    retry_safe=False,
+                    409,
+                    error_code="O3_JOB_RUNNING",
+                    error_message="Cannot test native lipsync while O3 voice generation is running for this beat.",
+                    retry_safe=True,
                 )
-            o3_job_id = str(beat.get("kling_o3_voice_fix_ui_job_id") or "")
-            o3_status = str(beat.get("kling_o3_voice_fix_status") or "").lower()
-            if o3_job_id and o3_status not in {"approved", "failed", "failed_o3", "failed_provider_fetch", "failed_provider_sub720"}:
-                existing_o3 = _ARLO_O3_JOBS.get(o3_job_id)
-                existing_proc = existing_o3.get("proc") if existing_o3 else None
-                if existing_proc and existing_o3.get("status") == "running" and existing_proc.poll() is None:
-                    return h._send_error_v59(
-                        409,
-                        error_code="O3_JOB_RUNNING",
-                        error_message="Cannot test native lipsync while O3 voice generation is running for this beat.",
-                        retry_safe=True,
-                    )
-            existing_job_id = str(beat.get("kling_native_lipsync_experiment_ui_job_id") or "")
-            existing_status = str(beat.get("kling_native_lipsync_experiment_status") or "").lower()
-            if existing_job_id and existing_status == "running":
-                existing = _NATIVE_LIPSYNC_JOBS.get(existing_job_id)
-                existing_proc = existing.get("proc") if existing else None
-                if existing_proc and existing_proc.poll() is None:
-                    return h._send_json(200, {
-                        "ok": True,
-                        "job_id": existing_job_id,
-                        "beat_id": beat_id,
-                        "route": route,
-                        "deduped": True,
-                        "log_path": beat.get("kling_native_lipsync_experiment_log_path"),
-                        "message": "Native Kling LipSync experiment is already running for this beat.",
-                    })
-            beat["kling_native_lipsync_experiment_status"] = "running"
-            beat["kling_native_lipsync_experiment_route"] = route
-            beat["kling_native_lipsync_experiment_attempt_id"] = attempt_id
-            beat["kling_native_lipsync_experiment_started_at"] = started_at
-            beat["kling_native_lipsync_experiment_ui_job_id"] = job_id
-            beat["kling_native_lipsync_experiment_log_path"] = str(log_path)
-            beat.pop("kling_native_lipsync_experiment_error", None)
-            beat.pop("kling_native_lipsync_experiment_error_code", None)
-            bg.write_sidecar(sidecar)
+        existing_job_id = str(beat_probe.get("kling_native_lipsync_experiment_ui_job_id") or "")
+        existing_status = str(beat_probe.get("kling_native_lipsync_experiment_status") or "").lower()
+        if existing_job_id and existing_status == "running":
+            existing = _NATIVE_LIPSYNC_JOBS.get(existing_job_id)
+            existing_proc = existing.get("proc") if existing else None
+            if existing_proc and existing_proc.poll() is None:
+                return h._send_json(200, {
+                    "ok": True,
+                    "job_id": existing_job_id,
+                    "beat_id": beat_id,
+                    "route": route,
+                    "deduped": True,
+                    "log_path": beat_probe.get("kling_native_lipsync_experiment_log_path"),
+                    "message": "Native Kling LipSync experiment is already running for this beat.",
+                })
+
+        def _stamp_native(b: dict, _sc: dict) -> None:
+            b["kling_native_lipsync_experiment_status"] = "running"
+            b["kling_native_lipsync_experiment_route"] = route
+            b["kling_native_lipsync_experiment_attempt_id"] = attempt_id
+            b["kling_native_lipsync_experiment_started_at"] = started_at
+            b["kling_native_lipsync_experiment_ui_job_id"] = job_id
+            b["kling_native_lipsync_experiment_log_path"] = str(log_path)
+            b.pop("kling_native_lipsync_experiment_error", None)
+            b.pop("kling_native_lipsync_experiment_error_code", None)
+
+        ok, _ = bg.update_beat_locked(beat_id, _stamp_native)
+        if not ok:
+            return h._send_error_v59(
+                404,
+                error_code="BEAT_NOT_FOUND",
+                error_message=f"beat {beat_id} not found",
+                retry_safe=False,
+            )
     except Exception as exc:
         if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
             raise
@@ -4097,14 +5414,46 @@ def handle_bg_poll_kling_native_lipsync_experiment_status(h) -> None:
     return h._send_json(200, payload)
 
 
-def _parse_o3_pipeline_result_from_log(log_path: str | Path | None) -> dict | None:
+def _tail_read_text(path: str | Path | None, *, max_bytes: int = _O3_LOG_TAIL_BYTES) -> str:
+    """Read only the tail of a growing O3 job log — poll must not slurp multi-MB files."""
+    if not path:
+        return ""
+    p = Path(path)
+    if not p.is_file():
+        return ""
+    try:
+        size = p.stat().st_size
+    except OSError:
+        return ""
+    if size <= max_bytes:
+        return p.read_text(encoding="utf-8", errors="replace")
+    try:
+        with open(p, "rb") as fh:
+            fh.seek(max(0, size - max_bytes))
+            chunk = fh.read()
+    except OSError:
+        return ""
+    text = chunk.decode("utf-8", errors="replace")
+    if size > max_bytes and "\n" in text:
+        text = text.split("\n", 1)[-1]
+    return text
+
+
+def _parse_o3_pipeline_result_from_log(
+    log_path: str | Path | None,
+    *,
+    tail_bytes: int | None = _O3_LOG_TAIL_BYTES,
+) -> dict | None:
     """Parse subprocess log — Arlo lipsync returns ``{"ok": true}``; element pipeline ``phase: done``."""
     if not log_path:
         return None
     path = Path(log_path)
     if not path.is_file():
         return None
-    log_text = path.read_text(encoding="utf-8", errors="replace")
+    if tail_bytes is None:
+        log_text = path.read_text(encoding="utf-8", errors="replace")
+    else:
+        log_text = _tail_read_text(path, max_bytes=int(tail_bytes))
     for line in reversed(log_text.splitlines()):
         stripped = line.strip()
         if not stripped.startswith("{"):
@@ -4158,13 +5507,18 @@ def _summarize_o3_job_error(error: str | None) -> str:
         return f"{first} Previous approved clip was kept active."
     if "Could not download the input" in text:
         return (
-            "WaveSpeed could not download the temporary lipsync URL. "
-            "Data-URI fallback is disabled because it returns sub-720p output; previous approved clip was kept active."
+            "WaveSpeed could not download the temporary lipsync URL and data-URI lipsync fallback "
+            "did not complete; previous approved clip was kept active."
         )
     if "No lipsync input host returned byte-complete public files" in text:
         return (
             "No lipsync input host returned byte-complete public files. "
             "The job was stopped before WaveSpeed submission; previous approved clip was kept active."
+        )
+    if "non-public host" in text.lower() or "unsafe url" in text.lower():
+        return (
+            "WaveSpeed rejected the lipsync staging URL (localhost is not public). "
+            "Previous approved clip was kept active; retry after R2 staging is configured."
         )
     if "queued timeout" in text.lower() or "queued_timeout" in text.lower():
         return (
@@ -4185,12 +5539,33 @@ def _summarize_o3_job_error(error: str | None) -> str:
     return (lines[-1] if lines else text)[:500]
 
 
+
 def _iter_bg_beats(sidecar: dict):
     for arc in (sidecar.get("arcs") or {}).values():
         for seg in (arc.get("segments") or {}).values():
             for beat in seg.get("beats") or []:
                 if isinstance(beat, dict):
                     yield beat
+
+
+def _sidecar_voice_fix_for_beat(beat_id: str) -> tuple[str, str]:
+    """Read voice-fix state from sidecar — event/beat agnostic."""
+    if not beat_id:
+        return "", ""
+    try:
+        bg = _bg_module()
+        sidecar = bg.read_sidecar()
+        sidecar = bg._migrate_sidecar(sidecar)
+        _, beat = bg.find_beat(sidecar, str(beat_id))
+        if not beat:
+            return "", ""
+        return (
+            str(beat.get("kling_o3_voice_fix_status") or ""),
+            str(beat.get("kling_o3_voice_fix_error") or ""),
+        )
+    except Exception as exc:
+        print(f"[bg_o3_job] sidecar voice_fix read failed for {beat_id}: {exc}", flush=True)
+    return "", ""
 
 
 def _pid_is_running(pid_value) -> bool:
@@ -4217,17 +5592,27 @@ _STUCK_O3_CLEAR_FIELDS = (
     "kling_o3_voice_fix_error_code",
     "kling_o3_voice_fix_phase",
     "kling_o3_voice_fix_job_completed_at",
+    "o3_active_intent_id",
+    "o3_active_intent_job_id",
 )
 
 
-_O3_VOICE_FIX_RUNNING_STATUSES = frozenset({
-    "o3_running",
-    "job_running",
-    "job_starting",
-    "visual_running",
-    "lipsync_running",
-    "tts_ready",
-})
+def _reconcile_must_preserve_active_o3_job(beat: dict) -> bool:
+    """True when a live redo owns this beat — reconcile must not clear attempt_id/ui_job_id."""
+    from o3_job_status_contract import voice_fix_is_terminal_failure
+
+    voice_fix = str(beat.get("kling_o3_voice_fix_status") or "")
+    if voice_fix == "approved":
+        pid = beat.get("kling_o3_voice_fix_job_pid")
+        return pid is not None and _pid_is_running(int(pid))
+    if voice_fix_is_terminal_failure(voice_fix):
+        return False
+    if _beat_o3_job_looks_running(beat):
+        return True
+    pid = beat.get("kling_o3_voice_fix_job_pid")
+    if pid is not None and _pid_is_running(int(pid)):
+        return True
+    return False
 
 
 def _beat_has_stale_o3_job_pointers(beat: dict) -> bool:
@@ -4247,16 +5632,126 @@ def _clear_stale_o3_job_pointers(beat: dict) -> None:
 
 
 def _beat_o3_job_looks_running(beat: dict) -> bool:
-    status = str(beat.get("status") or "")
-    voice_fix = str(beat.get("kling_o3_voice_fix_status") or "")
-    if any(status.startswith(prefix) for prefix in _STUCK_O3_JOB_STATUS_PREFIXES):
-        return True
-    if voice_fix in _O3_VOICE_FIX_RUNNING_STATUSES:
-        return True
-    if beat.get("kling_o3_voice_fix_ui_job_id") and not voice_fix.startswith("failed"):
-        if voice_fix != "approved":
-            return True
-    return False
+    """Stuck-reconcile heuristic only — not an operator gate (see ``_beat_o3_operator_lock_active``)."""
+    from o3_job_status_contract import beat_o3_voice_job_running
+
+    return beat_o3_voice_job_running(beat)
+
+
+_O3_TERMINAL_POINTER_FIELDS = (
+    "kling_o3_voice_fix_ui_job_id",
+    "kling_o3_voice_fix_job_pid",
+    "kling_o3_voice_fix_job_started_at",
+    "kling_o3_voice_fix_attempt_id",
+    "kling_o3_voice_fix_phase",
+    "o3_active_intent_id",
+    "o3_active_intent_job_id",
+)
+
+
+def reconcile_o3_terminal_attempt_fields_all_events(sidecar: dict) -> int:
+    """Stamp terminal failed/done onto beats; clear stale intent locks (all Event_*)."""
+    from o3_generation_intent import (
+        _clear_beat_intent_lock_fields,
+        intent_event_dir_for_beat,
+        job_id_from_beat,
+        load_intent_terminal,
+        terminal_path_for_job,
+    )
+    from o3_job_status_contract import INTENT_TERMINAL_STATUSES, beat_o3_operator_busy
+
+    changed = 0
+    for beat in _iter_bg_beats(sidecar):
+        beat_id = str(beat.get("beat_id") or "").strip()
+        try:
+            event_dir = intent_event_dir_for_beat(beat_id) if beat_id else None
+        except Exception:
+            event_dir = _event_dir_from_beat_id(beat_id) if beat_id else None
+        if beat_o3_operator_busy(beat, event_dir, in_memory_jobs=_ARLO_O3_JOBS):
+            continue
+        beat_id = str(beat.get("beat_id") or "").strip()
+        if not beat_id:
+            continue
+        from o3_job_status_contract import resolve_o3_current_job_id
+
+        job_id = str(
+            resolve_o3_current_job_id(beat)
+            or beat.get("kling_o3_voice_fix_ui_job_id")
+            or job_id_from_beat(beat)
+            or "",
+        ).strip()
+        if not job_id:
+            continue
+        try:
+            event_dir = intent_event_dir_for_beat(beat_id)
+        except Exception:
+            event_dir = _event_dir_from_beat_id(beat_id)
+        term_path = terminal_path_for_job(job_id, event_dir)
+        if not term_path.is_file():
+            continue
+        try:
+            terminal = load_intent_terminal(term_path)
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+        status = str(terminal.get("status") or "")
+        if status not in INTENT_TERMINAL_STATUSES:
+            continue
+        if status == "failed":
+            fail_msg = str((terminal.get("failure") or {}).get("message") or "")
+            if fail_msg:
+                beat["kling_o3_voice_fix_error"] = fail_msg
+                beat["kling_o3_last_attempt_failed_at"] = terminal.get("terminal_at")
+        elif status == "cancelled":
+            from o3_generation_intent import heal_o3_beat_after_aborted_attempt
+
+            heal_o3_beat_after_aborted_attempt(beat)
+        _clear_beat_intent_lock_fields(beat)
+        for key in _O3_TERMINAL_POINTER_FIELDS:
+            beat.pop(key, None)
+        beat.pop("kling_o3_voice_fix_job_log_path", None)
+        changed += 1
+    return changed
+
+
+def reconcile_stale_o3_job_log_pointers_all_events(sidecar: dict) -> int:
+    """Clear job log/poll pointers when the linked terminal is cancelled/failed but clip kept."""
+    from o3_generation_intent import (
+        heal_o3_beat_after_aborted_attempt,
+        intent_event_dir_for_beat,
+        job_id_from_beat,
+        load_intent_terminal,
+        terminal_path_for_job,
+    )
+    from o3_job_status_contract import beat_o3_operator_busy
+
+    changed = 0
+    for beat in _iter_bg_beats(sidecar):
+        beat_id = str(beat.get("beat_id") or "").strip()
+        try:
+            event_dir = intent_event_dir_for_beat(beat_id) if beat_id else None
+        except Exception:
+            event_dir = _event_dir_from_beat_id(beat_id) if beat_id else None
+        if beat_o3_operator_busy(beat, event_dir, in_memory_jobs=_ARLO_O3_JOBS):
+            continue
+        job_id = job_id_from_beat(beat)
+        if not beat_id or not job_id:
+            continue
+        try:
+            event_dir = intent_event_dir_for_beat(beat_id)
+        except Exception:
+            event_dir = _event_dir_from_beat_id(beat_id)
+        term_path = terminal_path_for_job(job_id, event_dir)
+        if not term_path.is_file():
+            continue
+        try:
+            terminal = load_intent_terminal(term_path)
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+        if str(terminal.get("status") or "") not in {"cancelled", "failed"}:
+            continue
+        if heal_o3_beat_after_aborted_attempt(beat):
+            changed += 1
+    return changed
 
 
 def _sidecar_io_error_text(error: str | None) -> bool:
@@ -4283,28 +5778,117 @@ def _try_orphan_o3_delivery_recovery(
             make_active=make_active,
         )
         if recovered.get("recovered"):
+            print(
+                f"[o3_orphan_recovery] beat_id={beat_id} "
+                f"video={recovered.get('delivery_path') or recovered.get('video_path')} "
+                f"recovered={recovered.get('recovered')}",
+                flush=True,
+            )
             return recovered
     except Exception as exc:
         print(f"[bg_o3_job] orphan recovery failed for {beat_id}: {exc}", flush=True)
     return None
 
 
+def _beat_candidate_for_stuck_o3_reconcile(beat: dict) -> bool:
+    """Session-state stuck heal scans only beats with job pointers or terminal drift."""
+    status = str(beat.get("status") or "")
+    voice_fix = str(beat.get("kling_o3_voice_fix_status") or "")
+    kling_status = str(beat.get("kling_o3_status") or "")
+    if voice_fix == "approved" or kling_status == "approved":
+        return bool(
+            _beat_has_stale_o3_job_pointers(beat)
+            or any(status.startswith(p) for p in _STUCK_O3_JOB_STATUS_PREFIXES)
+        )
+    if beat.get("kling_o3_voice_fix_ui_job_id"):
+        return True
+    if voice_fix.startswith("failed") or voice_fix in {"job_running", "job_starting"}:
+        return True
+    if status.startswith("o3_"):
+        return True
+    if beat.get("kling_o3_voice_fix_job_pid") is not None:
+        return True
+    return False
+
+
+def reconcile_stale_lipsync_hosting_failures(sidecar: dict) -> int:
+    """Clear pre-R2 hosting failures once lipsync public host is configured.
+
+    Beats that kept an approved O3 clip after a failed lipsync upload attempt should
+    not show stale \"configure R2\" errors after R2 is live on this machine.
+    """
+    try:
+        from lipsync_public_host import (
+            is_stale_lipsync_hosting_failure,
+            lipsync_public_host_ready,
+        )
+    except ImportError:
+        return 0
+    creds = None
+    try:
+        try:
+            from credentials import load_credentials  # type: ignore
+        except ImportError:
+            from tools.credentials_lib.credentials import load_credentials  # type: ignore
+        creds = load_credentials()
+    except Exception:
+        creds = None
+    if not lipsync_public_host_ready(creds=creds):
+        return 0
+    changed = 0
+    for beat in _iter_bg_beats(sidecar):
+        voice_fix = str(beat.get("kling_o3_voice_fix_status") or "")
+        if not voice_fix.startswith("failed"):
+            continue
+        if not is_stale_lipsync_hosting_failure(str(beat.get("kling_o3_voice_fix_error") or "")):
+            continue
+        if str(beat.get("kling_o3_status") or "") != "approved":
+            continue
+        video_path = str(beat.get("kling_o3_video_path") or "")
+        if not video_path or not Path(video_path).is_file():
+            continue
+        if _beat_o3_job_looks_running(beat):
+            continue
+        beat["kling_o3_voice_fix_status"] = "approved"
+        beat.pop("kling_o3_voice_fix_error", None)
+        beat.pop("kling_o3_voice_fix_error_code", None)
+        beat.pop("kling_o3_voice_fix_url_transport_error", None)
+        changed += 1
+    return changed
+
+
 def reconcile_stuck_o3_voice_beats(sidecar: dict) -> int:
     """Clear beats stuck in running UI state after a dead subprocess or stale error."""
     changed = 0
     for beat in _iter_bg_beats(sidecar):
+        if not _beat_candidate_for_stuck_o3_reconcile(beat):
+            continue
         status = str(beat.get("status") or "")
         voice_fix = str(beat.get("kling_o3_voice_fix_status") or "")
         kling_status = str(beat.get("kling_o3_status") or "")
 
         # Pipeline finished and sidecar is terminal — drop stale subprocess pointers.
+        # Invariant: never clear pointers while a redo is actively running (kling_o3_status
+        # may still be "approved" from the prior generation until the new clip lands).
         if voice_fix == "approved" or kling_status == "approved":
+            if _reconcile_must_preserve_active_o3_job(beat):
+                continue
             if _beat_has_stale_o3_job_pointers(beat) or status.startswith(_STUCK_O3_JOB_STATUS_PREFIXES):
                 _clear_stale_o3_job_pointers(beat)
-                if beat.get("kling_o3_video_path") and kling_status == "approved":
+                video_path = str(beat.get("kling_o3_video_path") or "")
+                if video_path and Path(video_path).is_file() and (
+                    voice_fix == "approved" or kling_status == "approved"
+                ):
+                    beat["kling_o3_status"] = "approved"
                     beat["status"] = "approved"
                     beat["kling_o3_voice_fix_status"] = "approved"
                 changed += 1
+            else:
+                from o3_generation_intent import heal_o3_beat_after_aborted_attempt
+                from o3_job_status_contract import voice_fix_is_terminal_failure
+
+                if voice_fix_is_terminal_failure(voice_fix) and heal_o3_beat_after_aborted_attempt(beat):
+                    changed += 1
             continue
 
         pid = beat.get("kling_o3_voice_fix_job_pid")
@@ -4314,9 +5898,7 @@ def reconcile_stuck_o3_voice_beats(sidecar: dict) -> int:
         # Subprocess exited but sidecar never got final persist (server restart / poll miss).
         if pid_dead and _beat_o3_job_looks_running(beat):
             log_path = beat.get("kling_o3_voice_fix_job_log_path")
-            log_text = ""
-            if log_path and Path(str(log_path)).is_file():
-                log_text = Path(str(log_path)).read_text(encoding="utf-8", errors="replace")
+            log_text = _tail_read_text(log_path) if log_path else ""
             is_element_job = (
                 "o3_element_native_voice" in log_text
                 or '"element_id"' in log_text
@@ -4337,6 +5919,12 @@ def reconcile_stuck_o3_voice_beats(sidecar: dict) -> int:
                 changed += 1
                 continue
             if is_element_job and _sidecar_io_error_text(log_text):
+                event_dir = _event_dir_from_beat_id(str(beat.get("beat_id") or ""))
+                if _try_orphan_o3_delivery_recovery(str(beat.get("beat_id") or ""), event_dir, log_path):
+                    _clear_stale_o3_job_pointers(beat)
+                    changed += 1
+                    continue
+            if is_element_job and '"phase": "done"' in log_text and pid_dead:
                 event_dir = _event_dir_from_beat_id(str(beat.get("beat_id") or ""))
                 if _try_orphan_o3_delivery_recovery(str(beat.get("beat_id") or ""), event_dir, log_path):
                     _clear_stale_o3_job_pointers(beat)
@@ -4382,61 +5970,288 @@ def _beat_matches_o3_ui_job_id(beat: dict, job_id: str) -> bool:
     return f"/{job_id}_" in log_path or log_path.endswith(f"/{job_id}.log")
 
 
+def _promote_o3_job_from_log_if_terminal(job: dict, event_dir: Path) -> bool:
+    """Mark in-memory O3 job done when log shows delivery but proc handle is stale."""
+    if job.get("status") != "running":
+        return False
+    log_path = job.get("log_path")
+    beat_id = str(job.get("beat_id") or "")
+    if not beat_id or not log_path:
+        return False
+    from o3_job_status_contract import voice_fix_is_terminal_failure
+
+    voice_fix, voice_err = _sidecar_voice_fix_for_beat(beat_id)
+    if voice_fix_is_terminal_failure(voice_fix):
+        job["status"] = "failed"
+        job["ended_at"] = datetime.now(timezone.utc).isoformat()
+        job["error"] = _summarize_o3_job_error(voice_err or "O3 voice job failed")
+        job.pop("result", None)
+        return True
+    log_result = _parse_o3_pipeline_result_from_log(log_path)
+    if not log_result:
+        return False
+    video = str(log_result.get("video") or "")
+    if not video or not Path(video).is_file():
+        return False
+    recovered = _try_orphan_o3_delivery_recovery(beat_id, event_dir, log_path)
+    job["status"] = "done"
+    job["ended_at"] = datetime.now(timezone.utc).isoformat()
+    job["result"] = {
+        "ok": True,
+        "beat_id": beat_id,
+        "video": recovered.get("delivery_path") if recovered else video,
+        "recovered_from_log": True,
+    }
+    job.pop("error", None)
+    return True
+
+
+def _resolve_intent_log_path(job_id: str, intent: dict, event_dir: Path) -> Path | None:
+    """Log file for an O3 intent — runtime field or ``arlo_o3_jobs/{job_id}_{beat_id}.log``."""
+    log_path = Path(str((intent.get("runtime") or {}).get("log_path") or ""))
+    if log_path.is_file():
+        return log_path
+    beat_id = str(intent.get("beat_id") or "").strip()
+    if beat_id:
+        alt = event_dir / "arlo_o3_jobs" / f"{job_id}_{beat_id}.log"
+        if alt.is_file():
+            return alt
+    return log_path if log_path.is_file() else None
+
+
+def _recover_o3_job_from_intent_terminal(job_id: str, event_dir: Path) -> dict | None:
+    """Rebuild poll payload from intent + terminal on disk after server restart."""
+    from o3_generation_intent import (
+        INTENT_TERMINAL_STATUSES,
+        intent_path_for_job,
+        intent_poll_subset,
+        load_generation_intent,
+        load_intent_terminal,
+        terminal_path_for_job,
+        _pipeline_done_from_log,
+    )
+
+    intent_path = intent_path_for_job(job_id, event_dir)
+    if not intent_path.is_file():
+        return None
+    try:
+        intent = load_generation_intent(intent_path)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+    beat_id = str(intent.get("beat_id") or "").strip()
+    log_path = _resolve_intent_log_path(job_id, intent, event_dir)
+    terminal = load_intent_terminal(terminal_path_for_job(job_id, event_dir))
+    if terminal:
+        status = str(terminal.get("status") or "").strip()
+        from o3_generation_intent import (
+            INTENT_RUNNING_STATUS,
+            close_o3_attempt,
+            o3_subprocess_is_live,
+            O3_JOB_LOST_FAILURE_MESSAGE,
+        )
+        if status == INTENT_RUNNING_STATUS:
+            if beat_id and not o3_subprocess_is_live(job_id, beat_id, event_dir):
+                close_o3_attempt(
+                    job_id,
+                    beat_id,
+                    event_dir,
+                    "failed",
+                    reason=O3_JOB_LOST_FAILURE_MESSAGE,
+                    phase_last="poll_intent_running_recovery",
+                    intent=intent,
+                    persist_beat=True,
+                )
+                return {
+                    "status": "failed",
+                    "job_id": job_id,
+                    "beat_id": beat_id,
+                    "log_path": str(log_path) if log_path else None,
+                    "error": O3_JOB_LOST_FAILURE_MESSAGE,
+                    "recovered": True,
+                    "intent_zombie_recovery": True,
+                    "intent": intent_poll_subset(intent),
+                }
+            return {
+                "status": "running",
+                "job_id": job_id,
+                "beat_id": beat_id,
+                "log_path": str(log_path) if log_path else None,
+                "recovered": True,
+                "intent_running_recovery": True,
+                "intent": intent_poll_subset(intent),
+            }
+        if status in INTENT_TERMINAL_STATUSES:
+            body: dict = {
+                "status": "done_with_warning" if status == "done_with_warning" else status,
+                "job_id": job_id,
+                "beat_id": beat_id,
+                "log_path": str(log_path) if log_path else None,
+                "recovered": True,
+                "intent_terminal_recovery": True,
+                "intent": intent_poll_subset(intent),
+            }
+            if status in ("done", "done_with_warning"):
+                delivered = terminal.get("delivered") or {}
+                video = str(delivered.get("video_path") or "")
+                if not video and log_path:
+                    done_row = _pipeline_done_from_log(log_path)
+                    video = str((done_row or {}).get("video") or "")
+                if beat_id and log_path and not video:
+                    recovered = _try_orphan_o3_delivery_recovery(beat_id, event_dir, log_path)
+                    if recovered:
+                        video = str(recovered.get("delivery_path") or "")
+                if video:
+                    body["result"] = {"ok": True, "beat_id": beat_id, "video": video}
+                if status == "done_with_warning":
+                    body["warning"] = terminal.get("warning")
+            elif status == "failed":
+                fail = terminal.get("failure") or {}
+                if log_path and log_path.is_file():
+                    done_row = _pipeline_done_from_log(log_path)
+                    video = str((done_row or {}).get("video") or "").strip()
+                    if done_row and video:
+                        body["status"] = "done"
+                        body["result"] = {"ok": True, "beat_id": beat_id, "video": video}
+                        body.pop("error", None)
+                        body["intent_false_failed_recovery"] = True
+                        return body
+                if beat_id:
+                    voice_fix, _ = _sidecar_voice_fix_for_beat(beat_id)
+                    if voice_fix == "approved":
+                        try:
+                            bg = _bg_module()
+                            sidecar = bg.read_sidecar()
+                            _, beat_row = bg.find_beat(sidecar, beat_id)
+                            video = str((beat_row or {}).get("kling_o3_video_path") or "").strip()
+                        except Exception:
+                            video = ""
+                        if video and Path(video).is_file():
+                            body["status"] = "done"
+                            body["result"] = {"ok": True, "beat_id": beat_id, "video": video}
+                            body.pop("error", None)
+                            body["intent_false_failed_recovery"] = True
+                            return body
+                body["error"] = str(fail.get("message") or "O3 job failed")
+            elif status == "cancelled":
+                body["error"] = str(
+                    (terminal.get("failure") or {}).get("message") or "O3 job cancelled"
+                )
+            return body
+    if log_path and log_path.is_file():
+        done_row = _pipeline_done_from_log(log_path)
+        if done_row:
+            video = str(done_row.get("video") or "")
+            if beat_id and not video:
+                recovered = _try_orphan_o3_delivery_recovery(beat_id, event_dir, log_path)
+                if recovered:
+                    video = str(recovered.get("delivery_path") or "")
+            return {
+                "status": "done",
+                "job_id": job_id,
+                "beat_id": beat_id,
+                "log_path": str(log_path),
+                "result": {"ok": True, "beat_id": beat_id, "video": video},
+                "recovered": True,
+                "intent_log_recovery": True,
+                "intent": intent_poll_subset(intent),
+            }
+        if beat_id:
+            from o3_generation_intent import (
+                close_o3_attempt,
+                o3_subprocess_is_live,
+                O3_JOB_LOST_FAILURE_MESSAGE,
+            )
+            if o3_subprocess_is_live(job_id, beat_id, event_dir):
+                return {
+                    "status": "running",
+                    "job_id": job_id,
+                    "beat_id": beat_id,
+                    "log_path": str(log_path) if log_path else None,
+                    "recovered": True,
+                    "intent_running_recovery": True,
+                    "intent": intent_poll_subset(intent),
+                }
+            close_o3_attempt(
+                job_id,
+                beat_id,
+                event_dir,
+                "failed",
+                reason=O3_JOB_LOST_FAILURE_MESSAGE,
+                phase_last="poll_intent_orphan_recovery",
+                intent=intent,
+                persist_beat=True,
+            )
+            return {
+                "status": "failed",
+                "job_id": job_id,
+                "beat_id": beat_id,
+                "log_path": str(log_path) if log_path else None,
+                "error": O3_JOB_LOST_FAILURE_MESSAGE,
+                "recovered": True,
+                "intent_zombie_recovery": True,
+                "intent": intent_poll_subset(intent),
+            }
+    return None
+
+
 def _recover_o3_job_from_sidecar(job_id: str) -> dict | None:
     if not job_id:
         return None
     try:
         bg = _bg_module()
-        with bg.sidecar_file_lock():
-            sidecar = bg.read_sidecar()
-            sidecar = bg._migrate_sidecar(sidecar)
-            for beat in _iter_bg_beats(sidecar):
-                if not _beat_matches_o3_ui_job_id(beat, job_id):
-                    continue
-                result = _parse_o3_pipeline_result_from_log(beat.get("kling_o3_voice_fix_job_log_path"))
-                if result or beat.get("kling_o3_voice_fix_status") == "approved":
-                    return {
-                        "status": "done",
-                        "beat_id": beat.get("beat_id"),
-                        "job_id": job_id,
-                        "log_path": beat.get("kling_o3_voice_fix_job_log_path"),
-                        "started_at": beat.get("kling_o3_voice_fix_job_started_at"),
-                        "result": result,
-                        "recovered": True,
-                    }
-                if beat.get("kling_o3_voice_fix_status") == "failed":
-                    err_text = str(beat.get("kling_o3_voice_fix_error") or "")
-                    log_path = beat.get("kling_o3_voice_fix_job_log_path")
-                    if _sidecar_io_error_text(err_text):
-                        event_dir = _event_dir_from_beat_id(str(beat.get("beat_id") or ""))
-                        if _try_orphan_o3_delivery_recovery(
-                            str(beat.get("beat_id") or ""),
-                            event_dir,
-                            log_path,
-                        ):
-                            result = _parse_o3_pipeline_result_from_log(log_path)
-                            return {
-                                "status": "done",
-                                "beat_id": beat.get("beat_id"),
-                                "job_id": job_id,
-                                "log_path": log_path,
-                                "result": result,
-                                "recovered": True,
-                                "orphan_sidecar_recovery": True,
-                            }
-                    beat.pop("kling_o3_voice_fix_ui_job_id", None)
-                    bg.write_sidecar(sidecar)
-                    return {
-                        "status": "failed",
-                        "beat_id": beat.get("beat_id"),
-                        "job_id": job_id,
-                        "log_path": beat.get("kling_o3_voice_fix_job_log_path"),
-                        "error": _summarize_o3_job_error(beat.get("kling_o3_voice_fix_error") or "O3 job failed"),
-                        "recovered": True,
-                    }
-                pid = beat.get("kling_o3_voice_fix_job_pid")
-                if pid and not _pid_is_running(pid):
-                    log_path = beat.get("kling_o3_voice_fix_job_log_path")
+        sidecar = bg.read_sidecar()
+        sidecar = bg._migrate_sidecar(sidecar)
+        for beat in _iter_bg_beats(sidecar):
+            if not _beat_matches_o3_ui_job_id(beat, job_id):
+                continue
+            log_path = beat.get("kling_o3_voice_fix_job_log_path")
+            voice_fix = str(beat.get("kling_o3_voice_fix_status") or "")
+            from o3_job_status_contract import voice_fix_is_terminal_failure
+
+            if voice_fix_is_terminal_failure(voice_fix):
+                beat.pop("kling_o3_voice_fix_ui_job_id", None)
+                bg.update_beat_locked(str(beat.get("beat_id")), lambda b, _s: b.pop("kling_o3_voice_fix_ui_job_id", None))
+                return {
+                    "status": "failed",
+                    "beat_id": beat.get("beat_id"),
+                    "job_id": job_id,
+                    "log_path": log_path,
+                    "error": _summarize_o3_job_error(
+                        beat.get("kling_o3_voice_fix_error") or "O3 voice job failed"
+                    ),
+                    "recovered": True,
+                }
+            from o3_job_status_contract import O3_VOICE_FIX_RUNNING_STATUSES
+
+            if voice_fix in O3_VOICE_FIX_RUNNING_STATUSES:
+                return {
+                    "status": "running",
+                    "beat_id": beat.get("beat_id"),
+                    "job_id": job_id,
+                    "log_path": beat.get("kling_o3_voice_fix_job_log_path"),
+                    "started_at": beat.get("kling_o3_voice_fix_job_started_at"),
+                    "recovered": True,
+                }
+            result = _parse_o3_pipeline_result_from_log(log_path)
+            if result or voice_fix == "approved":
+                beat_id = str(beat.get("beat_id") or "")
+                voice_fix = str(beat.get("kling_o3_voice_fix_status") or "")
+                if result and voice_fix != "approved" and beat_id:
+                    event_dir = _event_dir_from_beat_id(beat_id)
+                    _try_orphan_o3_delivery_recovery(beat_id, event_dir, log_path)
+                return {
+                    "status": "done",
+                    "beat_id": beat.get("beat_id"),
+                    "job_id": job_id,
+                    "log_path": log_path,
+                    "started_at": beat.get("kling_o3_voice_fix_job_started_at"),
+                    "result": result,
+                    "recovered": True,
+                }
+            if beat.get("kling_o3_voice_fix_status") == "failed":
+                err_text = str(beat.get("kling_o3_voice_fix_error") or "")
+                log_path = beat.get("kling_o3_voice_fix_job_log_path")
+                if _sidecar_io_error_text(err_text):
                     event_dir = _event_dir_from_beat_id(str(beat.get("beat_id") or ""))
                     if _try_orphan_o3_delivery_recovery(
                         str(beat.get("beat_id") or ""),
@@ -4444,7 +6259,6 @@ def _recover_o3_job_from_sidecar(job_id: str) -> dict | None:
                         log_path,
                     ):
                         result = _parse_o3_pipeline_result_from_log(log_path)
-                        bg.write_sidecar(sidecar)
                         return {
                             "status": "done",
                             "beat_id": beat.get("beat_id"),
@@ -4454,28 +6268,63 @@ def _recover_o3_job_from_sidecar(job_id: str) -> dict | None:
                             "recovered": True,
                             "orphan_sidecar_recovery": True,
                         }
-                    beat.pop("kling_o3_voice_fix_ui_job_id", None)
-                    beat["kling_o3_voice_fix_status"] = "failed"
-                    beat["kling_o3_voice_fix_error_code"] = "STALE_JOB_PROCESS_GONE"
-                    beat["kling_o3_voice_fix_error"] = "O3 job process is no longer running and no completion result was recorded."
-                    beat["kling_o3_voice_fix_job_completed_at"] = datetime.now(timezone.utc).isoformat()
-                    bg.write_sidecar(sidecar)
-                    return {
-                        "status": "failed",
-                        "beat_id": beat.get("beat_id"),
-                        "job_id": job_id,
-                        "log_path": beat.get("kling_o3_voice_fix_job_log_path"),
-                        "error": _summarize_o3_job_error(beat.get("kling_o3_voice_fix_error")),
-                        "recovered": True,
-                    }
+                _bid = str(beat.get("beat_id") or "")
+                bg.update_beat_locked(_bid, lambda b, _s: b.pop("kling_o3_voice_fix_ui_job_id", None))
                 return {
-                    "status": "running",
+                    "status": "failed",
                     "beat_id": beat.get("beat_id"),
                     "job_id": job_id,
                     "log_path": beat.get("kling_o3_voice_fix_job_log_path"),
-                    "started_at": beat.get("kling_o3_voice_fix_job_started_at"),
+                    "error": _summarize_o3_job_error(beat.get("kling_o3_voice_fix_error") or "O3 job failed"),
                     "recovered": True,
                 }
+            pid = beat.get("kling_o3_voice_fix_job_pid")
+            if pid and not _pid_is_running(pid):
+                log_path = beat.get("kling_o3_voice_fix_job_log_path")
+                event_dir = _event_dir_from_beat_id(str(beat.get("beat_id") or ""))
+                if _try_orphan_o3_delivery_recovery(
+                    str(beat.get("beat_id") or ""),
+                    event_dir,
+                    log_path,
+                ):
+                    result = _parse_o3_pipeline_result_from_log(log_path)
+                    return {
+                        "status": "done",
+                        "beat_id": beat.get("beat_id"),
+                        "job_id": job_id,
+                        "log_path": log_path,
+                        "result": result,
+                        "recovered": True,
+                        "orphan_sidecar_recovery": True,
+                    }
+                _bid = str(beat.get("beat_id") or "")
+                _fail_msg = "O3 job process is no longer running and no completion result was recorded."
+                _now = datetime.now(timezone.utc).isoformat()
+
+                def _stale_fail(b: dict, _s: dict) -> None:
+                    b.pop("kling_o3_voice_fix_ui_job_id", None)
+                    b["kling_o3_voice_fix_status"] = "failed"
+                    b["kling_o3_voice_fix_error_code"] = "STALE_JOB_PROCESS_GONE"
+                    b["kling_o3_voice_fix_error"] = _fail_msg
+                    b["kling_o3_voice_fix_job_completed_at"] = _now
+
+                bg.update_beat_locked(_bid, _stale_fail)
+                return {
+                    "status": "failed",
+                    "beat_id": beat.get("beat_id"),
+                    "job_id": job_id,
+                    "log_path": beat.get("kling_o3_voice_fix_job_log_path"),
+                    "error": _summarize_o3_job_error(beat.get("kling_o3_voice_fix_error")),
+                    "recovered": True,
+                }
+            return {
+                "status": "running",
+                "beat_id": beat.get("beat_id"),
+                "job_id": job_id,
+                "log_path": beat.get("kling_o3_voice_fix_job_log_path"),
+                "started_at": beat.get("kling_o3_voice_fix_job_started_at"),
+                "recovered": True,
+            }
     except Exception as exc:
         print(f"[bg_o3_job] recover failed for {job_id}: {exc}", flush=True)
     return None
@@ -4488,26 +6337,25 @@ def _ensure_o3_job_metadata(job_id: str, job: dict) -> None:
     active jobs from sidecar fields. If those fields are lost by a concurrent
     sidecar write, the backend may still know the job is running while a hard
     refresh shows the beat as idle. Re-stamp the lightweight job pointer on
-    every live poll so the sidecar remains the durable source of truth.
+    live polls (throttled) so the sidecar remains the durable source of truth.
     """
     try:
         beat_id = job.get("beat_id")
         if not beat_id:
             return
+        now = time.monotonic()
+        last = _O3_JOB_METADATA_LAST_STAMP.get(str(job_id), 0.0)
+        if now - last < _O3_JOB_METADATA_STAMP_INTERVAL_S:
+            return
         bg = _bg_module()
-        with bg.sidecar_file_lock():
-            sidecar = bg.read_sidecar()
-            _, beat = bg.find_beat(sidecar, str(beat_id))
-            if not beat:
-                return
-            current_attempt = beat.get("kling_o3_voice_fix_attempt_id")
+        def _stamp(b: dict, _sc: dict) -> None:
+            current_attempt = b.get("kling_o3_voice_fix_attempt_id")
             if current_attempt and job.get("attempt_id") and current_attempt != job.get("attempt_id"):
                 return
-            status = str(beat.get("kling_o3_voice_fix_status") or "").lower()
+            st = str(b.get("kling_o3_voice_fix_status") or "").lower()
             terminal_statuses = {"approved", "failed", "failed_o3", "failed_provider_fetch", "failed_provider_sub720"}
-            if status in terminal_statuses:
+            if st in terminal_statuses:
                 return
-            changed = False
             updates = {
                 "kling_o3_voice_fix_ui_job_id": job_id,
                 "kling_o3_voice_fix_job_log_path": job.get("log_path"),
@@ -4517,20 +6365,15 @@ def _ensure_o3_job_metadata(job_id: str, job: dict) -> None:
                 "kling_o3_voice_fix_updated_at": datetime.now(timezone.utc).isoformat(),
             }
             for key, value in updates.items():
-                if value and beat.get(key) != value:
-                    beat[key] = value
-                    changed = True
-            if beat.get("kling_o3_voice_fix_error"):
-                beat.pop("kling_o3_voice_fix_error", None)
-                changed = True
-            if beat.get("kling_o3_voice_fix_job_completed_at"):
-                beat.pop("kling_o3_voice_fix_job_completed_at", None)
-                changed = True
-            if status in {"", "job_starting"}:
-                beat["kling_o3_voice_fix_status"] = "job_running"
-                changed = True
-            if changed:
-                bg.write_sidecar(sidecar)
+                if value and b.get(key) != value:
+                    b[key] = value
+            b.pop("kling_o3_voice_fix_error", None)
+            b.pop("kling_o3_voice_fix_job_completed_at", None)
+            if st in {"", "job_starting"}:
+                b["kling_o3_voice_fix_status"] = "job_running"
+
+        bg.update_beat_locked(str(beat_id), _stamp)
+        _O3_JOB_METADATA_LAST_STAMP[str(job_id)] = now
     except Exception as exc:
         print(f"[bg_o3_job] ensure metadata failed for {job_id}: {exc}", flush=True)
 
@@ -4538,9 +6381,7 @@ def _ensure_o3_job_metadata(job_id: str, job: dict) -> None:
 def _clear_o3_job_metadata(job_id: str, *, status: str, result: dict | None = None, error: str | None = None) -> None:
     try:
         bg = _bg_module()
-        with bg.sidecar_file_lock():
-            sidecar = bg.read_sidecar()
-            changed = False
+        def _clear(sidecar: dict) -> None:
             for beat in _iter_bg_beats(sidecar):
                 if beat.get("kling_o3_voice_fix_ui_job_id") != job_id:
                     continue
@@ -4562,19 +6403,17 @@ def _clear_o3_job_metadata(job_id: str, *, status: str, result: dict | None = No
                     if error:
                         beat["kling_o3_voice_fix_error"] = _summarize_o3_job_error(str(error))
                     try:
-                        bg = _bg_module()
                         bg.restore_active_kling_o3_after_failed_redo(beat)
                     except Exception:
                         pass
-                changed = True
-            if changed:
-                bg.write_sidecar(sidecar)
+
+        bg.mutate_sidecar_locked(_clear)
     except Exception as exc:
         print(f"[bg_o3_job] clear metadata failed for {job_id}: {exc}", flush=True)
 
 
 def handle_bg_kling_o3_trim(h, body: dict) -> None:
-    """POST /api/bg/kling-o3-trim — set/clear front/back trim on a Beat Gen O3 clip."""
+    """POST /api/bg/kling-o3-trim — set/clear cut-out or legacy front/back trim on O3 clip."""
     import copy
     from urllib.parse import quote
 
@@ -4589,27 +6428,20 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
             retry_safe=False,
         )
     preview_only = bool(body.get("preview_only") or body.get("preview"))
+    slot_index = body.get("slot_index")
+    req_video_path = str(body.get("video_path") or "").strip() or None
+    raw_cut_start = body.get("cut_start_s")
+    raw_cut_end = body.get("cut_end_s")
     raw_trim_start = body.get("trim_start")
-    if raw_trim_start is None:
-        raw_trim_start = body.get("trim_in", 0)
     raw_trim_back = body.get("trim_back")
-    try:
-        trim_start = float(raw_trim_start or 0)
-        trim_back = None if raw_trim_back is None else float(raw_trim_back)
-    except (TypeError, ValueError):
-        return h._send_error_v59(
-            400,
-            error_code="INVALID_TRIM",
-            error_message="trim_start/trim_back must be numeric",
-            retry_safe=False,
-        )
-    if trim_start < 0 or (trim_back is not None and trim_back < 0):
-        return h._send_error_v59(
-            400,
-            error_code="INVALID_TRIM_RANGE",
-            error_message="trim_start and trim_back must be >= 0",
-            retry_safe=False,
-        )
+    use_option_trim = (
+        slot_index is not None
+        and raw_cut_start is None
+        and raw_cut_end is None
+    )
+    use_cut = slot_index is not None and not use_option_trim and (
+        raw_cut_start is not None or raw_cut_end is not None
+    )
 
     bg = _bg_module()
 
@@ -4618,24 +6450,186 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
         if not vp or not Path(vp).is_file():
             return None
         event_dir = Path(h.app.event_dir)
-        scratch = event_dir / "assembled" / "_kling_o3_trim_scratch"
-        dest = scratch / f"{beat_id}_ui_trim_preview.mp4"
+        if not event_dir.is_absolute():
+            event_dir = _data_root(h) / event_dir
+        dest = bg.kling_o3_ui_trim_preview_path(beat_id, event_dir, work_beat)
         try:
-            if bg.kling_o3_trim_is_active(work_beat):
+            if bg.beat_has_o3_sidecar_cut(work_beat):
+                bg.materialize_o3_cut_out_clip(work_beat, dest, source_path=Path(vp))
+            elif bg.kling_o3_trim_is_active(work_beat):
                 bg.materialize_kling_o3_trimmed_clip(work_beat, dest, source_path=Path(vp))
             else:
-                import shutil
-                shutil.copy2(vp, dest)
+                bg.copy_file_durable(vp, dest)
         except Exception as exc:
             print(f"[bg_o3_trim] preview materialize failed for {beat_id}: {exc}", flush=True)
             return None
         if not dest.is_file():
             return None
         rel = f"Production/{event_dir.name}/assembled/_kling_o3_trim_scratch/{dest.name}"
-        return f"/files?path={quote(rel)}"
+        mtime = int(dest.stat().st_mtime)
+        return f"/files?path={quote(rel)}&v={mtime}"
 
-    with bg.sidecar_file_lock():
-        sidecar = bg.read_sidecar()
+    result: dict = {}
+
+    def _reject_unchanged_trim_preview(
+        trim_start_val: float,
+        trim_back_val: float | None,
+        payload: dict,
+    ) -> None:
+        raw = payload.get("raw_duration_s")
+        eff = payload.get("effective_duration_s")
+        if not bg.o3_trim_shortening_requested(trim_start_val, trim_back_val):
+            return
+        if bg.o3_trim_effective_is_shorter(float(raw or 0), eff):
+            return
+        raise ValueError(
+            "Preview would be full clip — adjust handles and Apply Cut first",
+        )
+
+    def _apply_cut_to_work_beat(work_beat: dict) -> dict | None:
+        """Apply per-option cut to an in-memory beat copy. Returns error response or None."""
+        nonlocal result
+        bg.refresh_o3_ui_slot_layout(work_beat)
+        if body.get("clear"):
+            if slot_index is None:
+                return h._send_error_v59(
+                    400,
+                    error_code="MISSING_SLOT_INDEX",
+                    error_message="slot_index required to clear per-option cut",
+                    retry_safe=False,
+                )
+            bg.clear_o3_option_cut(
+                work_beat,
+                slot_index=int(slot_index),
+                video_path=req_video_path,
+            )
+            result = {
+                "cut_start_s": 0.0,
+                "cut_end_s": 0.0,
+                "effective_duration_s": None,
+                "slot_index": int(slot_index),
+            }
+            return None
+        if slot_index is None:
+            return h._send_error_v59(
+                400,
+                error_code="MISSING_SLOT_INDEX",
+                error_message="slot_index required for per-option cut",
+                retry_safe=False,
+            )
+        try:
+            cut_start = float(raw_cut_start or 0)
+            cut_end = float(raw_cut_end or 0)
+        except (TypeError, ValueError):
+            return h._send_error_v59(
+                400,
+                error_code="INVALID_CUT",
+                error_message="cut_start_s/cut_end_s must be numeric",
+                retry_safe=False,
+            )
+        try:
+            result = bg.set_o3_option_cut(
+                work_beat,
+                slot_index=int(slot_index),
+                cut_start_s=cut_start,
+                cut_end_s=cut_end,
+                video_path=req_video_path,
+            )
+        except ValueError as exc:
+            return h._send_error_v59(
+                400,
+                error_code="CUT_VALIDATION",
+                error_message=str(exc),
+                retry_safe=False,
+            )
+        opt_for_preview = bg.find_o3_option_by_slot_index(
+            work_beat,
+            int(slot_index),
+            video_path=req_video_path,
+        )
+        if isinstance(opt_for_preview, dict) and opt_for_preview.get("video_path"):
+            work_beat["kling_o3_video_path"] = opt_for_preview["video_path"]
+            bg.mirror_beat_cut_from_option(work_beat, opt_for_preview)
+        return None
+
+    def _apply_option_trim_to_work_beat(work_beat: dict) -> dict | None:
+        """Apply per-option front/back trim (start + end crop) on an in-memory beat copy."""
+        nonlocal result
+        bg.refresh_o3_ui_slot_layout(work_beat)
+        if body.get("clear"):
+            if slot_index is None:
+                return h._send_error_v59(
+                    400,
+                    error_code="MISSING_SLOT_INDEX",
+                    error_message="slot_index required to clear per-option trim",
+                    retry_safe=False,
+                )
+            bg.clear_o3_option_trim(
+                work_beat,
+                slot_index=int(slot_index),
+                video_path=req_video_path,
+            )
+            bg.clear_o3_option_cut(
+                work_beat,
+                slot_index=int(slot_index),
+                video_path=req_video_path,
+            )
+            result = {
+                "trim_start": 0.0,
+                "trim_back": None,
+                "effective_duration_s": None,
+                "slot_index": int(slot_index),
+            }
+            return None
+        if slot_index is None:
+            return h._send_error_v59(
+                400,
+                error_code="MISSING_SLOT_INDEX",
+                error_message="slot_index required for per-option trim",
+                retry_safe=False,
+            )
+        if raw_trim_start is None:
+            raw_trim_start_local = body.get("trim_in", 0)
+        else:
+            raw_trim_start_local = raw_trim_start
+        try:
+            trim_start = float(raw_trim_start_local or 0)
+            trim_back = None if raw_trim_back is None else float(raw_trim_back)
+        except (TypeError, ValueError):
+            return h._send_error_v59(
+                400,
+                error_code="INVALID_TRIM",
+                error_message="trim_start/trim_back must be numeric",
+                retry_safe=False,
+            )
+        try:
+            result = bg.set_o3_option_trim(
+                work_beat,
+                slot_index=int(slot_index),
+                trim_start=trim_start,
+                trim_back=trim_back,
+                video_path=req_video_path,
+            )
+        except ValueError as exc:
+            return h._send_error_v59(
+                400,
+                error_code="TRIM_VALIDATION",
+                error_message=str(exc),
+                retry_safe=False,
+            )
+        opt_for_preview = bg.find_o3_option_by_slot_index(
+            work_beat,
+            int(slot_index),
+            video_path=req_video_path,
+        )
+        if isinstance(opt_for_preview, dict) and opt_for_preview.get("video_path"):
+            work_beat["kling_o3_video_path"] = opt_for_preview["video_path"]
+            bg.mirror_beat_trim_from_option(work_beat, opt_for_preview)
+        return None
+
+    # Preview path: snapshot read + ffmpeg only — must not wait on sidecar write lock.
+    if preview_only:
+        sidecar = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=5)
         sidecar = bg._migrate_sidecar(sidecar)
         _, beat = bg.find_beat(sidecar, beat_id)
         if not beat:
@@ -4646,16 +6640,289 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                 retry_safe=False,
             )
         work_beat = copy.deepcopy(beat)
-        if body.get("clear"):
+        if use_cut:
+            err = _apply_cut_to_work_beat(work_beat)
+            if err is not None:
+                return err
+        elif use_option_trim:
+            err = _apply_option_trim_to_work_beat(work_beat)
+            if err is not None:
+                return err
+        elif body.get("clear"):
             bg.clear_kling_o3_beat_trim(work_beat)
-            if not preview_only:
-                bg.clear_kling_o3_beat_trim(beat)
+            bg.clear_o3_cut_fields(work_beat)
             result = {
                 "trim_start": 0.0,
                 "trim_back": None,
                 "effective_duration_s": None,
             }
         else:
+            raw_trim_start = body.get("trim_start")
+            if raw_trim_start is None:
+                raw_trim_start = body.get("trim_in", 0)
+            raw_trim_back = body.get("trim_back")
+            try:
+                trim_start = float(raw_trim_start or 0)
+                trim_back = None if raw_trim_back is None else float(raw_trim_back)
+            except (TypeError, ValueError):
+                return h._send_error_v59(
+                    400,
+                    error_code="INVALID_TRIM",
+                    error_message="trim_start/trim_back must be numeric",
+                    retry_safe=False,
+                )
+            try:
+                result = bg.set_kling_o3_beat_trim(
+                    work_beat,
+                    trim_start=trim_start,
+                    trim_back=trim_back,
+                )
+            except ValueError as exc:
+                return h._send_error_v59(
+                    400,
+                    error_code="TRIM_VALIDATION",
+                    error_message=str(exc),
+                    retry_safe=False,
+                )
+        preview_url = _trim_preview_url(work_beat)
+        if preview_url:
+            result["preview_video_url"] = preview_url
+        try:
+            if use_option_trim and not body.get("clear"):
+                _reject_unchanged_trim_preview(
+                    float(raw_trim_start or body.get("trim_in") or 0),
+                    None if raw_trim_back is None else float(raw_trim_back),
+                    result,
+                )
+            elif not use_cut and not body.get("clear"):
+                ts = float(body.get("trim_start") or body.get("trim_in") or 0)
+                tb = body.get("trim_back")
+                tb_val = None if tb is None else float(tb)
+                _reject_unchanged_trim_preview(ts, tb_val, result)
+        except ValueError as exc:
+            return h._send_error_v59(
+                400,
+                error_code="TRIM_PREVIEW_UNCHANGED",
+                error_message=str(exc),
+                retry_safe=False,
+            )
+        return h._send_json(200, {"ok": True, "beat_id": beat_id, **result})
+
+    from server_handlers.milestone_scope import production_bg_scope_lock, rebind_bg_paths_from_app
+
+    try:
+        with production_bg_scope_lock():
+            rebind_bg_paths_from_app(h.app)
+            sidecar = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=10)
+        sidecar = bg._migrate_sidecar(sidecar)
+        _, beat = bg.find_beat(sidecar, beat_id)
+        if not beat:
+            return h._send_error_v59(
+                404,
+                error_code="BEAT_NOT_FOUND",
+                error_message=f"beat {beat_id} not found",
+                retry_safe=False,
+            )
+        work_beat = copy.deepcopy(beat)
+        if use_cut:
+            bg.refresh_o3_ui_slot_layout(work_beat)
+            if not preview_only:
+                bg.refresh_o3_ui_slot_layout(beat)
+            if body.get("clear"):
+                if slot_index is None:
+                    return h._send_error_v59(
+                        400,
+                        error_code="MISSING_SLOT_INDEX",
+                        error_message="slot_index required to clear per-option cut",
+                        retry_safe=False,
+                    )
+                bg.clear_o3_option_cut(
+                    work_beat,
+                    slot_index=int(slot_index),
+                    video_path=req_video_path,
+                )
+                if not preview_only:
+                    bg.clear_o3_option_cut(
+                        beat,
+                        slot_index=int(slot_index),
+                        video_path=req_video_path,
+                    )
+                    bg.invalidate_kling_o3_trim_scratch(beat_id, Path(h.app.event_dir))
+                result = {
+                    "cut_start_s": 0.0,
+                    "cut_end_s": 0.0,
+                    "effective_duration_s": None,
+                    "slot_index": int(slot_index),
+                }
+            else:
+                if slot_index is None:
+                    return h._send_error_v59(
+                        400,
+                        error_code="MISSING_SLOT_INDEX",
+                        error_message="slot_index required for per-option cut",
+                        retry_safe=False,
+                    )
+                try:
+                    cut_start = float(raw_cut_start or 0)
+                    cut_end = float(raw_cut_end or 0)
+                except (TypeError, ValueError):
+                    return h._send_error_v59(
+                        400,
+                        error_code="INVALID_CUT",
+                        error_message="cut_start_s/cut_end_s must be numeric",
+                        retry_safe=False,
+                    )
+                try:
+                    result = bg.set_o3_option_cut(
+                        work_beat,
+                        slot_index=int(slot_index),
+                        cut_start_s=cut_start,
+                        cut_end_s=cut_end,
+                        video_path=req_video_path,
+                    )
+                except ValueError as exc:
+                    return h._send_error_v59(
+                        400,
+                        error_code="CUT_VALIDATION",
+                        error_message=str(exc),
+                        retry_safe=False,
+                    )
+                opt_for_preview = bg.find_o3_option_by_slot_index(
+                    work_beat,
+                    int(slot_index),
+                    video_path=req_video_path,
+                )
+                if isinstance(opt_for_preview, dict) and opt_for_preview.get("video_path"):
+                    work_beat["kling_o3_video_path"] = opt_for_preview["video_path"]
+                    bg.mirror_beat_cut_from_option(work_beat, opt_for_preview)
+                if not preview_only:
+                    opt = bg.find_o3_option_by_slot_index(
+                        beat,
+                        int(slot_index),
+                        video_path=req_video_path,
+                    )
+                    src_opt = bg.find_o3_option_by_slot_index(
+                        work_beat,
+                        int(slot_index),
+                        video_path=req_video_path,
+                    )
+                    if isinstance(opt, dict) and isinstance(src_opt, dict):
+                        opt["cut_start_s"] = src_opt.get("cut_start_s")
+                        opt["cut_end_s"] = src_opt.get("cut_end_s")
+                    bg.hydrate_beat_cut_from_active_option(beat)
+                    bg.prune_stale_kling_o3_trim_scratch(
+                        beat_id,
+                        Path(h.app.event_dir),
+                        beat,
+                    )
+        elif use_option_trim:
+            bg.refresh_o3_ui_slot_layout(work_beat)
+            bg.refresh_o3_ui_slot_layout(beat)
+            err = _apply_option_trim_to_work_beat(work_beat)
+            if err is not None:
+                return err
+            if not preview_only:
+                if body.get("clear"):
+                    bg.clear_o3_option_trim(
+                        beat,
+                        slot_index=int(slot_index),
+                        video_path=req_video_path,
+                    )
+                    bg.clear_o3_option_cut(
+                        beat,
+                        slot_index=int(slot_index),
+                        video_path=req_video_path,
+                    )
+                    bg.invalidate_kling_o3_trim_scratch(beat_id, Path(h.app.event_dir))
+                else:
+                    opt = bg.find_o3_option_by_slot_index(
+                        beat,
+                        int(slot_index),
+                        video_path=req_video_path,
+                    )
+                    src_opt = bg.find_o3_option_by_slot_index(
+                        work_beat,
+                        int(slot_index),
+                        video_path=req_video_path,
+                    )
+                    if isinstance(opt, dict) and isinstance(src_opt, dict):
+                        if src_opt.get("trim_start_s") is not None:
+                            opt["trim_start_s"] = src_opt.get("trim_start_s")
+                        else:
+                            opt.pop("trim_start_s", None)
+                        if src_opt.get("trim_back_s") is not None:
+                            opt["trim_back_s"] = src_opt.get("trim_back_s")
+                        else:
+                            opt.pop("trim_back_s", None)
+                        bg.clear_o3_cut_fields(opt)
+                    bg.hydrate_beat_trim_from_active_option(beat)
+                    bg.prune_stale_kling_o3_trim_scratch(
+                        beat_id,
+                        Path(h.app.event_dir),
+                        beat,
+                    )
+                    if not body.get("clear"):
+                        try:
+                            bake = bg.bake_o3_active_export_clip(
+                                beat,
+                                Path(h.app.event_dir),
+                                slot_index=int(slot_index),
+                                video_path=req_video_path,
+                            )
+                            result["export_baked"] = bool(bake.get("baked"))
+                            if bake.get("baked_path"):
+                                result["baked_path"] = bake["baked_path"]
+                            opt_bake = bg.find_o3_option_by_slot_index(
+                                beat,
+                                int(slot_index),
+                                video_path=req_video_path,
+                            )
+                            if isinstance(opt_bake, dict):
+                                if bake.get("baked_path"):
+                                    opt_bake["kling_o3_baked_path"] = bake["baked_path"]
+                                    opt_bake["kling_o3_baked_token"] = bake.get("baked_token")
+                                else:
+                                    bg.clear_o3_baked_fields(opt_bake)
+                        except Exception as exc:
+                            return h._send_error_v59(
+                                500,
+                                error_code="O3_TRIM_BAKE_FAILED",
+                                error_message=str(exc),
+                                retry_safe=True,
+                            )
+        elif body.get("clear"):
+            bg.clear_kling_o3_beat_trim(work_beat)
+            if not preview_only:
+                bg.clear_kling_o3_beat_trim(beat)
+                bg.clear_o3_cut_fields(beat)
+                bg.invalidate_kling_o3_trim_scratch(beat_id, Path(h.app.event_dir))
+            result = {
+                "trim_start": 0.0,
+                "trim_back": None,
+                "effective_duration_s": None,
+            }
+        else:
+            raw_trim_start = body.get("trim_start")
+            if raw_trim_start is None:
+                raw_trim_start = body.get("trim_in", 0)
+            raw_trim_back = body.get("trim_back")
+            try:
+                trim_start = float(raw_trim_start or 0)
+                trim_back = None if raw_trim_back is None else float(raw_trim_back)
+            except (TypeError, ValueError):
+                return h._send_error_v59(
+                    400,
+                    error_code="INVALID_TRIM",
+                    error_message="trim_start/trim_back must be numeric",
+                    retry_safe=False,
+                )
+            if trim_start < 0 or (trim_back is not None and trim_back < 0):
+                return h._send_error_v59(
+                    400,
+                    error_code="INVALID_TRIM_RANGE",
+                    error_message="trim_start and trim_back must be >= 0",
+                    retry_safe=False,
+                )
             try:
                 result = bg.set_kling_o3_beat_trim(
                     work_beat,
@@ -4673,9 +6940,15 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                 beat["kling_o3_trim_start"] = work_beat.get("kling_o3_trim_start")
                 beat["kling_o3_trim_back"] = work_beat.get("kling_o3_trim_back")
                 beat.pop("kling_o3_trim_end", None)
+                bg.prune_stale_kling_o3_trim_scratch(
+                    beat_id,
+                    Path(h.app.event_dir),
+                    beat,
+                )
         if not preview_only:
             if (
                 not body.get("clear")
+                and not use_cut
                 and bg.beat_is_still_insert(beat)
                 and bg.still_insert_sidecar_trim_pending(beat)
             ):
@@ -4693,11 +6966,197 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                         error_message=str(exc),
                         retry_safe=True,
                     )
-            bg.write_sidecar(sidecar)
+            beat_commit = copy.deepcopy(beat)
+
+            def _commit_trim(b: dict, _sc: dict) -> None:
+                b.clear()
+                b.update(beat_commit)
+
+            ok, _ = bg.update_beat_locked(beat_id, _commit_trim)
+            if not ok:
+                return h._send_error_v59(
+                    404,
+                    error_code="BEAT_NOT_FOUND",
+                    error_message=f"beat {beat_id} not found",
+                    retry_safe=False,
+                )
+    except TimeoutError as exc:
+        return h._send_error_v59(
+            503,
+            error_code="SIDECAR_LOCK_TIMEOUT",
+            error_message=str(exc) or "sidecar lock busy — retry shortly",
+            retry_safe=True,
+        )
+    except OSError as exc:
+        if bg.sidecar_io_transient(exc):
+            return h._send_error_v59(
+                503,
+                error_code="SIDECAR_IO_TRANSIENT",
+                error_message=str(exc) or "Dropbox sync blocked trim save — retry shortly",
+                retry_safe=True,
+                extra={"errno": getattr(exc, "errno", None)},
+            )
+        raise
     preview_url = _trim_preview_url(work_beat)
     if preview_url:
         result["preview_video_url"] = preview_url
     return h._send_json(200, {"ok": True, "beat_id": beat_id, **result})
+
+
+def _resolve_o3_select_option(
+    beat: dict,
+    beat_id: str,
+    option_key: str,
+) -> tuple[dict | None, list, str | None]:
+    """Resolve O3 gallery option + on-disk path for select-o3-video (no sidecar lock)."""
+    options = [o for o in (beat.get("kling_o3_options") or []) if isinstance(o, dict)]
+    opt = next((o for o in options if o.get("key") == option_key), None)
+    if opt is None:
+        for o in options:
+            vp = o.get("video_path") or ""
+            stem = Path(vp).stem if vp else ""
+            if stem and (stem == option_key or vp.endswith(f"/{option_key}.mp4")):
+                opt = o
+                break
+    if opt is None and option_key == f"{beat_id}_approved_o3_video" and beat.get("kling_o3_video_path"):
+        opt = {
+            "key": option_key,
+            "label": "approved O3 video",
+            "video_path": beat.get("kling_o3_video_path"),
+            "source": "approved_kling_o3_video",
+        }
+        options = [opt] + options
+    video_path = (opt or {}).get("video_path")
+    return opt, options, video_path
+
+
+def _repair_o3_select_before_resolve(h, beat_id: str, option_key: str) -> None:
+    """Reconcile milestone clip dirs and upsert a missing gallery row before select rejects."""
+    bg = _bg_module()
+    candidates = _o3_job_event_dir_candidates(h, beat_id)
+    now = datetime.now(timezone.utc).isoformat()
+
+    def _repair(b: dict, _sc: dict) -> None:
+        if str(b.get("beat_id") or "") != str(beat_id):
+            return
+        for ev in candidates:
+            bg.reconcile_o3_disk_deliveries_for_beat(b, ev)
+        options = [o for o in (b.get("kling_o3_options") or []) if isinstance(o, dict)]
+        if any(o.get("key") == option_key for o in options):
+            for o in options:
+                if o.get("key") != option_key:
+                    continue
+                vp = str(o.get("video_path") or "")
+                if vp and Path(vp).is_file():
+                    return
+                found = bg.find_o3_video_path_for_option_key(beat_id, option_key, candidates)
+                if found:
+                    o["video_path"] = str(found.resolve())
+                return
+        found = bg.find_o3_video_path_for_option_key(beat_id, option_key, candidates)
+        if not found:
+            return
+        vp = str(found.resolve())
+        path_l = vp.lower()
+        if "_pov_" in path_l:
+            label = "POV wand wiper (O3 i2v)"
+            source = "pov_wand_wiper"
+        elif "_still_insert_" in path_l:
+            label = "still insert clip"
+            source = "still_insert_ken_burns"
+        else:
+            label = bg._canonical_o3_option_label(vp)
+            source = "o3_select_disk_repair"
+        slot = 0
+        for idx, opt in enumerate(bg.normalize_kling_o3_option_slots(b)):
+            if opt is None:
+                slot = idx
+                break
+        bg.assign_kling_o3_option_to_slot(
+            b,
+            slot,
+            video_path=vp,
+            label=label,
+            source=source,
+            now=now,
+            make_active=False,
+        )
+
+    try:
+        ok, _beat = bg.update_beat_locked(beat_id, _repair)
+        if not ok:
+            print(f"[bg_select_o3] gallery repair skipped — beat {beat_id} not found", flush=True)
+    except OSError as exc:
+        print(f"[bg_select_o3] gallery repair I/O failed for {beat_id}: {exc}", flush=True)
+
+
+def _apply_still_draft_pointer(
+    beat: dict,
+    *,
+    beat_id: str,
+    option_key: str,
+    options: list,
+    video_path: str,
+    sidecar: dict,
+    opt: dict | None,
+    event_dir: Path,
+) -> None:
+    """Still+TTS draft — switch active clip for preview/trim without stitch approve."""
+    bg = _bg_module()
+    now = datetime.now(timezone.utc).isoformat()
+    beat["kling_o3_video_path"] = video_path
+    beat["kling_o3_status"] = "still_rendered"
+    beat["status"] = "draft"
+    beat["kling_o3_selected_option_key"] = option_key
+    beat["kling_o3_selected_at"] = now
+    beat.pop("kling_o3_still_stitch_approved", None)
+    beat.pop("kling_o3_still_stitch_approved_at", None)
+    bg.heal_invalid_o3_cut_all_options(beat)
+    bg.hydrate_beat_cut_from_active_option(beat)
+    for o in options:
+        if not o.get("key"):
+            vp = o.get("video_path") or ""
+            o["key"] = Path(vp).stem if vp else f"{beat_id}_o3_{options.index(o)}"
+        o["active"] = (o.get("key") == option_key or o.get("video_path") == video_path)
+    beat["kling_o3_options"] = options
+    bg.sync_o3_selection_pipeline_fields(beat, sidecar, option=opt)
+    bg.persist_o3_disk_enrich_on_beat(beat, event_dir)
+
+
+def _apply_o3_video_selection(
+    beat: dict,
+    *,
+    beat_id: str,
+    option_key: str,
+    opt: dict | None,
+    options: list,
+    video_path: str,
+    sidecar: dict,
+    event_dir: Path,
+) -> None:
+    """Mutate one beat for select-o3-video — caller uses update_beat_locked."""
+    bg = _bg_module()
+    now = datetime.now(timezone.utc).isoformat()
+    beat["kling_o3_video_path"] = video_path
+    beat["kling_o3_status"] = "approved"
+    beat["status"] = "approved"
+    beat["kling_o3_selected_option_key"] = option_key
+    beat["kling_o3_selected_at"] = now
+    bg.heal_invalid_o3_cut_all_options(beat)
+    if bg.beat_is_still_insert(beat):
+        beat["kling_o3_still_stitch_approved"] = True
+        beat["kling_o3_still_stitch_approved_at"] = now
+    bg.hydrate_beat_cut_from_active_option(beat)
+    bg.hydrate_beat_trim_from_active_option(beat)
+    bg.invalidate_kling_o3_trim_scratch(beat_id, event_dir)
+    for o in options:
+        if not o.get("key"):
+            vp = o.get("video_path") or ""
+            o["key"] = Path(vp).stem if vp else f"{beat_id}_o3_{options.index(o)}"
+        o["active"] = (o.get("key") == option_key or o.get("video_path") == video_path)
+    beat["kling_o3_options"] = options
+    bg.sync_o3_selection_pipeline_fields(beat, sidecar, option=opt)
+    bg.persist_o3_disk_enrich_on_beat(beat, event_dir)
 
 
 def handle_bg_select_o3_video(h, body: dict) -> None:
@@ -4719,57 +7178,104 @@ def handle_bg_select_o3_video(h, body: dict) -> None:
             retry_safe=False,
         )
     bg = _bg_module()
+    sidecar_probe = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=5)
+    sidecar_probe = bg._migrate_sidecar(sidecar_probe)
+    _, beat_probe = bg.find_beat(sidecar_probe, beat_id)
+    if not beat_probe:
+        return h._send_error_v59(
+            404,
+            error_code="BEAT_NOT_FOUND",
+            error_message=f"beat {beat_id} not found",
+            retry_safe=False,
+        )
+    opt_probe, _options_probe, video_path = _resolve_o3_select_option(
+        beat_probe, str(beat_id), str(option_key)
+    )
+    if not video_path or not Path(video_path).is_file():
+        _repair_o3_select_before_resolve(h, str(beat_id), str(option_key))
+        sidecar_probe = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=5)
+        sidecar_probe = bg._migrate_sidecar(sidecar_probe)
+        _, beat_probe = bg.find_beat(sidecar_probe, beat_id)
+        if beat_probe:
+            opt_probe, _options_probe, video_path = _resolve_o3_select_option(
+                beat_probe, str(beat_id), str(option_key)
+            )
+    if not video_path or not Path(video_path).is_file():
+        return h._send_error_v59(
+            404,
+            error_code="O3_VIDEO_OPTION_NOT_FOUND",
+            error_message=f"O3 video option {option_key!r} missing on disk",
+            retry_safe=False,
+        )
+    event_dir = _o3_job_event_dir(h, str(beat_id))
+    pipeline_mismatch = False
+    active_clip_pipeline = None
+    sidecar = sidecar_probe
+    beat = beat_probe
+    raw_still_approve = body.get("still_approve")
+    if raw_still_approve is None:
+        still_approve = not bg.beat_is_still_insert(beat_probe)
+    elif isinstance(raw_still_approve, str):
+        still_approve = raw_still_approve.strip().lower() in ("1", "true", "yes")
+    else:
+        still_approve = bool(raw_still_approve)
     try:
-        with bg.sidecar_file_lock():
-            sidecar = bg.read_sidecar()
-            sidecar = bg._migrate_sidecar(sidecar)
-            _, beat = bg.find_beat(sidecar, beat_id)
-            if not beat:
-                return h._send_error_v59(
-                    404,
-                    error_code="BEAT_NOT_FOUND",
-                    error_message=f"beat {beat_id} not found",
-                    retry_safe=False,
-                )
-            options = [o for o in (beat.get("kling_o3_options") or []) if isinstance(o, dict)]
-            opt = next((o for o in options if o.get("key") == option_key), None)
-            if opt is None:
-                for o in options:
-                    vp = o.get("video_path") or ""
-                    stem = Path(vp).stem if vp else ""
-                    if stem and (stem == option_key or vp.endswith(f"/{option_key}.mp4")):
-                        opt = o
-                        break
-            if opt is None and option_key == f"{beat_id}_approved_o3_video" and beat.get("kling_o3_video_path"):
-                opt = {
-                    "key": option_key,
-                    "label": "approved O3 video",
-                    "video_path": beat.get("kling_o3_video_path"),
-                    "source": "approved_kling_o3_video",
-                }
-                options.insert(0, opt)
-            video_path = (opt or {}).get("video_path")
-            if not video_path or not Path(video_path).is_file():
-                return h._send_error_v59(
-                    404,
+
+        def _select(b: dict, sidecar: dict) -> None:
+            nonlocal video_path, pipeline_mismatch, active_clip_pipeline
+            opt, options, vp = _resolve_o3_select_option(
+                b, str(beat_id), str(option_key),
+            )
+            if not vp or not Path(vp).is_file():
+                raise _BgSidecarAbort(
+                    status=404,
                     error_code="O3_VIDEO_OPTION_NOT_FOUND",
                     error_message=f"O3 video option {option_key!r} missing on disk",
                     retry_safe=False,
                 )
-            now = datetime.now(timezone.utc).isoformat()
-            beat["kling_o3_video_path"] = video_path
-            beat["kling_o3_status"] = "approved"
-            beat["status"] = "approved"
-            beat["kling_o3_selected_option_key"] = option_key
-            beat["kling_o3_selected_at"] = now
-            bg.clear_kling_o3_beat_trim(beat)
-            for o in options:
-                if not o.get("key"):
-                    vp = o.get("video_path") or ""
-                    o["key"] = Path(vp).stem if vp else f"{beat_id}_o3_{options.index(o)}"
-                o["active"] = (o.get("key") == option_key or o.get("video_path") == video_path)
-            beat["kling_o3_options"] = options
-            bg.write_sidecar(sidecar)
+            video_path = str(vp)
+            if bg.beat_is_still_insert(b) and not still_approve:
+                _apply_still_draft_pointer(
+                    b,
+                    beat_id=str(beat_id),
+                    option_key=str(option_key),
+                    opt=opt,
+                    options=options,
+                    video_path=video_path,
+                    sidecar=sidecar,
+                    event_dir=event_dir,
+                )
+            else:
+                _apply_o3_video_selection(
+                    b,
+                    beat_id=str(beat_id),
+                    option_key=str(option_key),
+                    opt=opt,
+                    options=options,
+                    video_path=video_path,
+                    sidecar=sidecar,
+                    event_dir=event_dir,
+                )
+            pipeline_mismatch = bool(b.get("kling_o3_selection_pipeline_mismatch"))
+            active_clip_pipeline = b.get("kling_o3_active_clip_pipeline")
+
+        ok, beat = bg.update_beat_locked(beat_id, _select)
+        if not ok:
+            return h._send_error_v59(
+                404,
+                error_code="BEAT_NOT_FOUND",
+                error_message=f"beat {beat_id} not found",
+                retry_safe=False,
+            )
+    except _BgSidecarAbort as exc:
+        return _bg_abort_from_sidecar(h, exc)
+    except TimeoutError as exc:
+        return h._send_error_v59(
+            503,
+            error_code="SIDECAR_LOCK_TIMEOUT",
+            error_message=str(exc) or "sidecar lock busy — retry shortly",
+            retry_safe=True,
+        )
     except OSError as exc:
         if bg.sidecar_io_transient(exc):
             return h._send_error_v59(
@@ -4780,7 +7286,34 @@ def handle_bg_select_o3_video(h, body: dict) -> None:
                 extra={"errno": getattr(exc, "errno", None)},
             )
         raise
-    return h._send_json(200, {"ok": True, "beat_id": beat_id, "option_key": option_key, "video_path": video_path})
+    payload = {
+        "ok": True,
+        "beat_id": beat_id,
+        "option_key": option_key,
+        "video_path": video_path,
+    }
+    if pipeline_mismatch:
+        payload["pipeline_mismatch"] = True
+        payload["generation_mode"] = bg.resolve_beat_generation_mode(beat, sidecar)
+        payload["active_clip_pipeline"] = active_clip_pipeline
+        payload["pipeline_mismatch_message"] = (
+            f"Selected clip is {active_clip_pipeline or 'unknown'} but beat is set to "
+            f"{payload['generation_mode']} — voice will not match Generate until you switch clip or mode."
+        )
+    try:
+        snap = _enriched_beat_snapshot_for_o3_poll(
+            str(beat_id),
+            _o3_job_event_dir(h, str(beat_id)),
+            migrate=False,
+        )
+    except Exception as exc:
+        print(f"[bg_select_o3] beat snapshot failed for {beat_id}: {exc}", flush=True)
+        snap = _minimal_sidecar_beat_for_o3_poll(
+            str(beat_id), _o3_job_event_dir(h, str(beat_id)),
+        )
+    if snap:
+        payload["beat"] = snap
+    return h._send_json(200, payload)
 
 
 def _load_elevenlabs_key():
@@ -4810,7 +7343,7 @@ def _ensure_still_insert_tts(h, beat: dict, sidecar: dict, production_state: dic
     if not tts_info:
         return {"ok": False, "error": "no spoken line in still-insert dialogue"}
 
-    current_text = tts_info["text"].strip()
+    current_text = (tts_info.get("fingerprint") or tts_info.get("tts_text") or tts_info["text"]).strip()
     cached_text = (beat.get("still_tts_source_text") or "").strip()
     existing = bg.resolve_bg_beat_tts_audio_path(
         h.app.event_dir,
@@ -4845,23 +7378,176 @@ def _ensure_still_insert_tts(h, beat: dict, sidecar: dict, production_state: dic
     if not el_key:
         return {"ok": False, "error": "elevenlabs key unavailable"}
 
-    print(
-        f"[still-clip] TTS regen for {beat_id} ({sb_id}) speaker={tts_info['speaker']!r} "
-        f"({len(current_text)}c)",
-    )
+    voice_profile = bg.resolve_still_insert_elevenlabs_profile(tts_info["speaker"])
+    if voice_profile:
+        print(
+            f"[still-clip] TTS regen for {beat_id} ({sb_id}) speaker={tts_info['speaker']!r} "
+            f"voice={voice_profile.get('voice_id')} speed={voice_profile.get('speed')} "
+            f"({len(current_text)}c delivery_tags={len(tts_info.get('delivery') or [])})",
+            flush=True,
+        )
+    else:
+        print(
+            f"[still-clip] TTS regen for {beat_id} ({sb_id}) speaker={tts_info['speaker']!r} "
+            f"({len(current_text)}c delivery_tags={len(tts_info.get('delivery') or [])})",
+            flush=True,
+        )
+    if (beat.get("speaker") or "").strip() in ("Character", "") and tts_info.get("speaker"):
+        beat["speaker"] = tts_info["speaker"]
     result = _tts_regenerate_for_beat(
         h.app,
         beat_id,
-        tts_info["text"],
+        tts_info["tts_text"],
         el_key,
         video_role=video_role,
         speaker_override=tts_info["speaker"],
         storyboard_beat_id=sb_id,
+        voice_profile_override=voice_profile,
     )
     if result.get("ok") and result.get("audio_file"):
         beat["audio_file"] = result["audio_file"]
         beat["still_tts_source_text"] = current_text
     return result
+
+
+def handle_bg_set_pipeline(h, body: dict) -> None:
+    """POST /api/bg/set-pipeline — per-beat generation mode toggle.
+
+    Accepts ``generation_mode`` (still_insert | avatar_pro | voice_first | element_native) or
+    legacy ``pipeline`` (still_insert | kling_o3_omni).
+    """
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+    beat_id = (body.get("beat_id") or "").strip()
+    generation_mode = str(
+        body.get("generation_mode") or body.get("o3_generate_mode") or "",
+    ).strip().lower()
+    pipeline = str(body.get("pipeline") or body.get("mode") or "").strip()
+    if not beat_id:
+        return h._send_error_v59(
+            400,
+            error_code="MISSING_BEAT_ID",
+            error_message="beat_id required",
+            retry_safe=False,
+        )
+    bg = _bg_module()
+    if not generation_mode and not pipeline:
+        return h._send_error_v59(
+            400,
+            error_code="MISSING_PIPELINE",
+            error_message=(
+                "generation_mode (still_insert | avatar_pro | voice_first | element_native) "
+                "or pipeline (still_insert | kling_o3_omni) required"
+            ),
+            retry_safe=False,
+        )
+    if generation_mode and generation_mode not in bg.VALID_GENERATION_MODES:
+        return h._send_error_v59(
+            400,
+            error_code="INVALID_GENERATION_MODE",
+            error_message=f"generation_mode must be one of {sorted(bg.VALID_GENERATION_MODES)}",
+            retry_safe=False,
+        )
+    if generation_mode == bg.O3_GENERATE_MODE_AVATAR and bg.beatgen_avatar_pro_disabled():
+        return h._send_error_v59(
+            400,
+            error_code="BEATGEN_AVATAR_DISABLED",
+            error_message=(
+                "Beat Gen Avatar Pro is disabled — use Element native O3 or Voice-first. "
+                "Phase B module lipsync still uses Avatar Pro on the Phase B tab."
+            ),
+            retry_safe=False,
+        )
+    if not generation_mode:
+        if pipeline == bg.PIPELINE_MODE_STILL:
+            generation_mode = bg.PIPELINE_MODE_STILL
+        elif pipeline == bg.PIPELINE_MODE_O3:
+            generation_mode = ""
+        else:
+            return h._send_error_v59(
+                400,
+                error_code="INVALID_PIPELINE",
+                error_message="pipeline must be still_insert or kling_o3_omni",
+                retry_safe=False,
+            )
+    event_dir = Path(getattr(h.app, "event_dir", _data_root(h)))
+    if not event_dir.is_absolute():
+        event_dir = _data_root(h) / event_dir
+    changed = False
+    beat: dict | None = None
+
+    def _set_pipeline(b: dict, sidecar: dict) -> None:
+        nonlocal changed
+        try:
+            if _beat_o3_operator_lock_active(b, event_dir):
+                raise _BgSidecarAbort(
+                    status=409,
+                    error_code="INTENT_JOB_ACTIVE",
+                    error_message="O3 generation intent is active — pipeline locked until the job finishes.",
+                    retry_safe=True,
+                )
+        except _BgSidecarAbort:
+            raise
+        except Exception:
+            if _beat_o3_operator_lock_active(b, event_dir):
+                raise _BgSidecarAbort(
+                    status=409,
+                    error_code="INTENT_JOB_ACTIVE",
+                    error_message="O3 job is running — pipeline locked until it finishes.",
+                    retry_safe=True,
+                )
+        event_id, phase = bg.segment_event_phase_for_beat(sidecar, beat_id)
+        if not event_id or not phase:
+            ctx = sidecar.get("active_context") or {}
+            event_id = bg.normalize_bg_event_id(ctx.get("event_id") or "")
+            phase = ctx.get("phase") or "pre"
+        try:
+            if generation_mode:
+                changed = bg.set_beat_generation_mode(
+                    b,
+                    generation_mode,
+                    event_id=str(event_id),
+                    phase=str(phase),
+                    sidecar=sidecar,
+                )
+            else:
+                changed = bg.set_beat_pipeline_mode(
+                    b, bg.PIPELINE_MODE_O3, event_id=str(event_id), phase=str(phase),
+                )
+        except bg.PipelineToggleError as exc:
+            raise _BgSidecarAbort(
+                status=400 if exc.code != "INTENT_JOB_ACTIVE" else 409,
+                error_code=exc.code,
+                error_message=exc.message,
+                retry_safe=exc.code == "INTENT_JOB_ACTIVE",
+            ) from exc
+        bg.enrich_beat_generation_mode(b, sidecar)
+
+    try:
+        ok, beat = bg.update_beat_locked(beat_id, _set_pipeline)
+    except _BgSidecarAbort as exc:
+        return _bg_abort_from_sidecar(h, exc)
+    if not ok:
+        return h._send_error_v59(
+            404,
+            error_code="BEAT_NOT_FOUND",
+            error_message=f"beat {beat_id} not found",
+            retry_safe=False,
+        )
+    return h._send_json(200, {
+        "ok": True,
+        "beat_id": beat_id,
+        "pipeline": beat.get("pipeline"),
+        "beat_render_mode": beat.get("beat_render_mode"),
+        "beat_type": beat.get("beat_type"),
+        "kling_o3_prompt": beat.get("kling_o3_prompt"),
+        "kling_o3_prompt_still": beat.get("kling_o3_prompt_still"),
+        "o3_generate_mode": beat.get("o3_generate_mode"),
+        "generation_mode": beat.get("generation_mode"),
+        "changed": changed,
+        "element_char_ref_ok": beat.get("element_char_ref_ok"),
+        "element_char_ref_error": beat.get("element_char_ref_error"),
+    })
 
 
 def handle_bg_render_still_clip(h, body: dict) -> None:
@@ -4900,129 +7586,160 @@ def handle_bg_render_still_clip(h, body: dict) -> None:
 
     import copy
 
-    with bg.sidecar_file_lock():
-        sidecar = bg.read_sidecar()
-        sidecar = bg._migrate_sidecar(sidecar)
-        _, beat = bg.find_beat(sidecar, beat_id)
-        if not beat:
-            return h._send_error_v59(
-                404,
-                error_code="BEAT_NOT_FOUND",
-                error_message=f"beat {beat_id} not found",
-                retry_safe=False,
-            )
-        if not bg.beat_is_still_insert(beat):
-            return h._send_error_v59(
-                400,
-                error_code="NOT_STILL_INSERT_BEAT",
-                error_message="render-still-clip only applies to still_insert beats",
-                retry_safe=False,
-            )
-        if bg.resolve_still_source_abs_path(beat) is None:
-            return h._send_error_v59(
-                400,
-                error_code="STILL_SOURCE_MISSING",
-                error_message="No still image — drop a library image in option 1 or set char/BG ref first",
-                retry_safe=False,
-            )
+    sidecar = bg.read_sidecar()
+    sidecar = bg._migrate_sidecar(sidecar)
+    _, beat = bg.find_beat(sidecar, beat_id)
+    if not beat:
+        return h._send_error_v59(
+            404,
+            error_code="BEAT_NOT_FOUND",
+            error_message=f"beat {beat_id} not found",
+            retry_safe=False,
+        )
+    if not bg.beat_is_still_insert(beat):
+        return h._send_error_v59(
+            400,
+            error_code="NOT_STILL_INSERT_BEAT",
+            error_message="render-still-clip only applies to still_insert beats",
+            retry_safe=False,
+        )
+    if bg.resolve_still_source_abs_path(beat) is None:
+        return h._send_error_v59(
+            400,
+            error_code="STILL_SOURCE_MISSING",
+            error_message="No still image — drop a library image in option 1 or set char/BG ref first",
+            retry_safe=False,
+        )
+    _STILL_RENDER_BUSY.add(beat_id)
+    try:
         work_beat = copy.deepcopy(beat)
         dialogue_override = (body.get("dialogue_text") or "").strip()
         if dialogue_override:
             work_beat["dialogue_text"] = dialogue_override
+        prompt_override = (body.get("kling_o3_prompt") or "").strip()
+        if prompt_override:
+            work_beat["kling_o3_prompt"] = prompt_override
+            bg.stamp_o3_prompt_box_law(work_beat, prompt_override)
         bg.sync_beat_dialogue_from_kling_prompt(work_beat)
         work_sidecar = sidecar
 
-    tts_result: dict = {"ok": False, "skipped": True}
-    try:
-        tts_result = _ensure_still_insert_tts(
-            h, work_beat, work_sidecar, production_state, video_role,
-        )
-    except Exception as exc:  # noqa: BLE001
-        print(f"[still-clip] TTS ensure failed: {exc}")
-        tts_result = {"ok": False, "error": str(exc)}
+        tts_result: dict = {"ok": False, "skipped": True}
+        try:
+            tts_result = _ensure_still_insert_tts(
+                h, work_beat, work_sidecar, production_state, video_role,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[still-clip] TTS ensure failed: {exc}")
+            tts_result = {"ok": False, "error": str(exc)}
 
-    if not tts_result.get("ok") and not tts_result.get("unchanged"):
-        work_beat.pop("audio_file", None)
-        work_beat.pop("still_tts_source_text", None)
+        if not tts_result.get("ok") and not tts_result.get("unchanged"):
+            work_beat.pop("audio_file", None)
+            work_beat.pop("still_tts_source_text", None)
+            return h._send_error_v59(
+                422,
+                error_code="STILL_TTS_FAILED",
+                error_message=(
+                    tts_result.get("error")
+                    or "Still+TTS requires dialogue audio before the clip can be built"
+                ),
+                retry_safe=True,
+            )
 
-    duration = bg.resolve_still_insert_render_duration(
-        work_beat,
-        h.app.event_dir,
-        sidecar=work_sidecar,
-        production_state=production_state,
-        video_role=video_role,
-        fallback=requested_duration,
-    )
-    print(
-        f"[still-clip] {beat_id} render duration={duration:.2f}s "
-        f"(requested={requested_duration:.2f}s, tts_ok={tts_result.get('ok')})",
-        flush=True,
-    )
-
-    try:
-        result = bg.render_still_insert_o3_clip(
+        duration = bg.resolve_still_insert_render_duration(
             work_beat,
-            h.app.event_dir,
-            method=method,
-            duration=duration,
-            slot_index=slot_index,
+            _o3_job_event_dir(h, beat_id),
             sidecar=work_sidecar,
             production_state=production_state,
             video_role=video_role,
+            fallback=requested_duration,
         )
-    except ValueError as exc:
-        return h._send_error_v59(
-            400,
-            error_code="STILL_SOURCE_MISSING",
-            error_message=str(exc),
-            retry_safe=False,
-        )
-    except Exception as exc:
-        return h._send_error_v59(
-            500,
-            error_code="STILL_CLIP_RENDER_FAILED",
-            error_message=str(exc),
-            retry_safe=True,
+        print(
+            f"[still-clip] {beat_id} render duration={duration:.2f}s "
+            f"(requested={requested_duration:.2f}s, tts_ok={tts_result.get('ok')})",
+            flush=True,
         )
 
-    _STILL_RENDER_FIELDS = (
-        "kling_o3_options", "kling_o3_video_path", "kling_o3_status", "status",
-        "kling_o3_selected_option_key", "kling_o3_selected_at",
-        "kling_o3_trim_start", "kling_o3_trim_back", "kling_o3_trim_end",
-        "local_render_params", "audio_file", "still_tts_source_text", "dialogue_text",
-    )
-
-    def _apply_render(target, _sidecar):
-        for field in _STILL_RENDER_FIELDS:
-            if field in work_beat:
-                target[field] = work_beat[field]
-
-    try:
-        ok, _ = bg.update_beat_locked(beat_id, _apply_render)
-        if not ok:
+        clip_event_dir = _o3_job_event_dir(h, beat_id)
+        try:
+            result = bg.render_still_insert_o3_clip(
+                work_beat,
+                clip_event_dir,
+                method=method,
+                duration=duration,
+                slot_index=slot_index,
+                sidecar=work_sidecar,
+                production_state=production_state,
+                video_role=video_role,
+            )
+        except ValueError as exc:
             return h._send_error_v59(
-                404,
-                error_code="BEAT_NOT_FOUND",
-                error_message=f"beat {beat_id} not found on write-back",
+                400,
+                error_code="STILL_SOURCE_MISSING",
+                error_message=str(exc),
                 retry_safe=False,
             )
-    except OSError as exc:
-        return h._send_error_v59(
-            503,
-            error_code="SIDECAR_WRITE_FAILED",
-            error_message=str(exc),
-            retry_safe=True,
+        except Exception as exc:
+            return h._send_error_v59(
+                500,
+                error_code="STILL_CLIP_RENDER_FAILED",
+                error_message=str(exc),
+                retry_safe=True,
+            )
+
+        _STILL_RENDER_FIELDS = (
+            "kling_o3_options", "kling_o3_video_path", "kling_o3_status", "status",
+            "kling_o3_selected_option_key", "kling_o3_selected_at",
+            "kling_o3_trim_start", "kling_o3_trim_back", "kling_o3_trim_end",
+            "local_render_params", "audio_file", "still_tts_source_text", "dialogue_text",
+            "kling_o3_prompt", "o3_prompt_box_law", "o3_prompt_box_law_at",
+            "accepted_library_ref", "accepted_image_key", "gpt_options", "bg_ref_image",
         )
-    return h._send_json(200, {
-        "ok": True,
-        "beat_id": beat_id,
-        **result,
-        "tts_ok": bool(tts_result.get("ok")),
-        "tts_error": None if tts_result.get("ok") else tts_result.get("error"),
-        "tts_skipped": bool(tts_result.get("skipped")),
-        "tts_regenerated": bool(tts_result.get("ok") and not tts_result.get("skipped")),
-        "tts_unchanged": bool(tts_result.get("unchanged")),
-    })
+
+        def _apply_render(target, _sidecar):
+            for field in _STILL_RENDER_FIELDS:
+                if field in work_beat:
+                    target[field] = work_beat[field]
+
+        try:
+            ok, updated_beat = bg.update_beat_locked(beat_id, _apply_render)
+            if not ok:
+                return h._send_error_v59(
+                    404,
+                    error_code="BEAT_NOT_FOUND",
+                    error_message=f"beat {beat_id} not found on write-back",
+                    retry_safe=False,
+                )
+        except OSError as exc:
+            return h._send_error_v59(
+                503,
+                error_code="SIDECAR_WRITE_FAILED",
+                error_message=str(exc),
+                retry_safe=True,
+            )
+        event_dir = clip_event_dir
+        if not event_dir.is_absolute():
+            event_dir = _data_root(h) / event_dir
+        response = {
+            "ok": True,
+            "beat_id": beat_id,
+            **result,
+            "tts_ok": bool(tts_result.get("ok")),
+            "tts_error": None if tts_result.get("ok") else tts_result.get("error"),
+            "tts_skipped": bool(tts_result.get("skipped")),
+            "tts_regenerated": bool(tts_result.get("ok") and not tts_result.get("skipped")),
+            "tts_unchanged": bool(tts_result.get("unchanged")),
+        }
+        try:
+            snap = _enriched_beat_snapshot_for_o3_poll(beat_id, event_dir, migrate=False)
+            if snap:
+                # Terminal still-clip response — render finished; never leave job_busy latched.
+                snap["job_busy"] = False
+                response["beat"] = snap
+        except Exception as exc:
+            print(f"[still-clip] beat snapshot failed for {beat_id}: {exc}", flush=True)
+        return h._send_json(200, response)
+    finally:
+        _STILL_RENDER_BUSY.discard(beat_id)
 
 
 def handle_bg_accept_option(h, body: dict)-> None:
@@ -5042,35 +7759,56 @@ def handle_bg_accept_option(h, body: dict)-> None:
                    retry_safe=False,
                )
     bg = _bg_module()
-    with bg.sidecar_file_lock():
-        sidecar = bg.read_sidecar()
-        sidecar = bg._migrate_sidecar(sidecar)
-        _, beat = bg.find_beat(sidecar, beat_id)
-        if not beat:
-            return h._send_error_v59(
-                       404,
-                       error_code="GENERIC_ERROR",
-                       error_message=f"beat {beat_id} not found",
-                       retry_safe=False,
-                   )
-        beat["accepted_image_key"] = option_key
-        beat["status"] = "still_chosen"
-        # Search both gpt_options and flux_options for the chosen key.
-        # Persist local_path so crop + animation downstream can resolve the file.
-        all_opts = (beat.get("gpt_options") or []) + (beat.get("flux_options") or [])
+
+    def _accept_opt(b: dict, _sc: dict) -> None:
+        b["accepted_image_key"] = option_key
+        b["status"] = "still_chosen"
+        all_opts = (b.get("gpt_options") or []) + (b.get("flux_options") or [])
         for opt in all_opts:
             if not opt:
                 continue
             if opt.get("key") == option_key:
                 lp = opt.get("local_path")
                 if lp and isinstance(lp, str):
-                    beat["accepted_local_path"] = lp
+                    b["accepted_local_path"] = lp
                 vp = opt.get("video_path") or opt.get("filename")
                 if vp and isinstance(vp, str) and vp.lower().endswith((".mp4", ".mov")):
-                    beat["accepted_video_path"] = vp
+                    b["accepted_video_path"] = vp
                 break
-        bg.write_sidecar(sidecar)
+
+    ok, _ = bg.update_beat_locked(beat_id, _accept_opt)
+    if not ok:
+        return h._send_error_v59(
+            404,
+            error_code="GENERIC_ERROR",
+            error_message=f"beat {beat_id} not found",
+            retry_safe=False,
+        )
     return h._send_json(200, {"ok": True})
+
+
+def _lib_drop_thumb_b64_from_path(h, abs_path: str) -> str | None:
+    """PIL thumbnail for library drop — must run outside sidecar file lock."""
+    try:
+        _abs_resolved = os.path.realpath(abs_path) if isinstance(abs_path, str) and abs_path else ""
+        _safe = False
+        if _abs_resolved:
+            for _r in h.app._library_root_dirs():
+                if _r and (_abs_resolved == _r or _abs_resolved.startswith(_r + os.sep)):
+                    _safe = True
+                    break
+        _safe_open_path = os.path.realpath(_abs_resolved) if _safe and _abs_resolved else ""
+        if _safe and _safe_open_path and os.path.exists(_safe_open_path):
+            from PIL import Image as _PILImage
+            import io as _io_thumb
+            with _PILImage.open(_safe_open_path) as im:
+                im.thumbnail((200, 150), _PILImage.LANCZOS)
+                buf = _io_thumb.BytesIO()
+                im.convert("RGB").save(buf, "JPEG", quality=72)
+            return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+    except (OSError, ImportError) as _thumb_err:
+        print(f"[LIBDROP] thumbnail skipped for {abs_path!r}: {_thumb_err}", flush=True)
+    return None
 
 
 def handle_bg_accept_lib_image(h, body: dict)-> None:
@@ -5096,61 +7834,50 @@ def handle_bg_accept_lib_image(h, body: dict)-> None:
                    retry_safe=False,
                )
     bg = _bg_module()
-    with bg.sidecar_file_lock():
-        sidecar = bg.read_sidecar()
-        sidecar = bg._migrate_sidecar(sidecar)
-        _, beat = bg.find_beat(sidecar, beat_id)
-        if not beat:
-            return h._send_error_v59(
-                       404,
-                       error_code="GENERIC_ERROR",
-                       error_message=f"beat {beat_id} not found",
-                       retry_safe=False,
-                   )
-        beat["accepted_library_ref"] = {
+    sidecar_probe = bg.read_sidecar()
+    bg.ensure_sidecar_schema_defaults(sidecar_probe)
+    _, beat_probe = bg.find_beat(sidecar_probe, beat_id)
+    if not beat_probe:
+        return h._send_error_v59(
+            404,
+            error_code="GENERIC_ERROR",
+            error_message=f"beat {beat_id} not found",
+            retry_safe=False,
+        )
+    event_dir = Path(getattr(h.app, "event_dir", _data_root(h)))
+    if not event_dir.is_absolute():
+        event_dir = _data_root(h) / event_dir
+    if _beat_o3_operator_lock_active(beat_probe, event_dir):
+        return h._send_error_v59(
+            409,
+            error_code="INTENT_JOB_ACTIVE",
+            error_message="O3 job is running — library drop is locked until it finishes.",
+            retry_safe=True,
+        )
+
+    thumb_b64 = _lib_drop_thumb_b64_from_path(h, abs_path)
+
+    def _apply_lib_drop(b: dict, _sidecar: dict) -> None:
+        from operator_workbench_contract import write_still_scene_source
+
+        if bg.beat_is_still_insert(b):
+            write_still_scene_source(
+                b,
+                key=key,
+                filename=filename,
+                abs_path=abs_path,
+                slot_index=slot_index,
+                thumb_b64=thumb_b64,
+                source="library_drop",
+            )
+            return
+        b["accepted_library_ref"] = {
             "key": key, "filename": filename,
-            "abs_path": abs_path, "slot_index": slot_index
+            "abs_path": abs_path, "slot_index": slot_index,
         }
-        beat["accepted_image_key"] = key
-        beat["status"] = "lib_chosen"
-
-        # Generate PIL thumbnail from abs_path and inject into gpt_options[slot_index]
-        # so BgOptionTile renders thumb_b64 after drop (Layer 5 of six-layer verify).
-        # Mirrors _read_image at production_server.py ~line 6192.
-        thumb_b64 = None
-        try:
-            # CodeQL py/path-injection gate (LD CODEQL_PATH_INJECTION_NATIVE_PATTERN_REFACTOR_V1
-            # — supersedes LD-702/706). Inline realpath + startswith check on the SAME dataflow
-            # node that feeds os.path.exists / PIL.open. Native CodeQL-recognized sanitizer.
-            _abs_resolved = os.path.realpath(abs_path) if isinstance(abs_path, str) and abs_path else ""
-            _safe = False
-            if _abs_resolved:
-                for _r in h.app._library_root_dirs():
-                    if _r and (_abs_resolved == _r or _abs_resolved.startswith(_r + os.sep)):
-                        _safe = True
-                        break
-            _safe_open_path = os.path.realpath(_abs_resolved) if _safe and _abs_resolved else ""
-            if _safe and _safe_open_path and os.path.exists(_safe_open_path):
-                from PIL import Image as _PILImage
-                import io as _io_thumb
-                with _PILImage.open(_safe_open_path) as im:
-                    im.thumbnail((200, 150), _PILImage.LANCZOS)
-                    buf = _io_thumb.BytesIO()
-                    im.convert("RGB").save(buf, "JPEG", quality=72)
-                thumb_b64 = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
-        except (OSError, ImportError) as _thumb_err:
-            print(f"[LIBDROP] thumbnail skipped for {abs_path!r}: {_thumb_err}", flush=True)
-            thumb_b64 = None
-
-        # ALWAYS write to gpt_options[slot_index] — even when thumb_b64 is None.
-        # Previously this was inside `if thumb_b64:`, which meant that when
-        # thumbnail generation failed (bad abs_path, PIL unavailable, path-safety
-        # check failed), gpt_options was never updated. The client's optimistic
-        # onPatchOptionTile state would then be overwritten by the follow-up
-        # refreshState() GET, causing the slot to revert to "(empty)" even though
-        # the toast said "Option N set". Fix: always write the entry; thumb_b64
-        # is an optional field on the option_entry dict.
-        opts = beat.get("gpt_options") or []
+        b["accepted_image_key"] = key
+        b["status"] = "lib_chosen"
+        opts = b.get("gpt_options") or []
         option_entry: dict = {
             "key": key,
             "source": "library_drop",
@@ -5162,16 +7889,32 @@ def handle_bg_accept_lib_image(h, body: dict)-> None:
         if slot_index < len(opts) and isinstance(opts[slot_index], dict):
             opts[slot_index].update(option_entry)
         else:
-            # Pad with None up to slot_index, then place the entry.
             while len(opts) < slot_index:
                 opts.append(None)
             if slot_index < len(opts):
                 opts[slot_index] = option_entry
             else:
                 opts.append(option_entry)
-        beat["gpt_options"] = opts
+        b["gpt_options"] = opts
 
-        bg.write_sidecar(sidecar)
+    try:
+        ok, _beat = bg.update_beat_locked(beat_id, _apply_lib_drop)
+    except OSError as exc:
+        if bg.sidecar_io_transient(exc):
+            return h._send_error_v59(
+                503,
+                error_code="SIDECAR_IO_TRANSIENT",
+                error_message=f"Dropbox sync blocked library save ({exc}); retry shortly.",
+                retry_safe=True,
+            )
+        raise
+    if not ok:
+        return h._send_error_v59(
+            404,
+            error_code="GENERIC_ERROR",
+            error_message=f"beat {beat_id} not found",
+            retry_safe=False,
+        )
     print(f"[LIBDROP] accepted library image {key!r} -> beat {beat_id} (thumb={'yes' if thumb_b64 else 'no'})", flush=True)
     return h._send_json(200, {"ok": True, "beat_id": beat_id,
                                  "accepted_image_key": key,
@@ -5184,12 +7927,11 @@ def handle_bg_groups(h)-> None:
     qs = urllib.parse.parse_qs(urllib.parse.urlparse(h.path).query)
     arc_n = int((qs.get("arc") or [1])[0])
     bg = _bg_module()
-    with bg.sidecar_file_lock():
-        sidecar = bg.read_sidecar()
-        sidecar = bg._migrate_sidecar(sidecar)
-        groups = bg.list_groups(sidecar, arc_n)
-        for g in groups:
-            g["status"] = bg._compute_group_status(sidecar, g)
+    sidecar = bg.read_sidecar()
+    sidecar = bg._migrate_sidecar(sidecar)
+    groups = bg.list_groups(sidecar, arc_n)
+    for g in groups:
+        g["status"] = bg._compute_group_status(sidecar, g)
     return h._send_json(200, {"ok": True, "groups": groups})
 
 
@@ -5219,9 +7961,8 @@ def _resolve_bg_insert_segment(h, body: dict):
 
     if event_id_int is None or phase is None:
         bg_module = _bg_module()
-        with bg_module.sidecar_file_lock():
-            _ctx_sidecar = bg_module.read_sidecar()
-            _ctx = _ctx_sidecar.get("active_context") or {}
+        _ctx_sidecar = bg_module.read_sidecar()
+        _ctx = _ctx_sidecar.get("active_context") or {}
         if _ctx:
             try:
                 arc_number = int(_ctx.get("arc_number", 1))
@@ -5330,27 +8071,28 @@ def handle_bg_insert_beat(h, body: dict) -> None:
 
     bg = _bg_module()
     event_id_str = str(event_id_int)
-    with bg.sidecar_file_lock():
-        sidecar = bg.read_sidecar()
-        sidecar = bg._migrate_sidecar(sidecar)
+    new_beat: dict = {}
+    new_beat_id = ""
+    element_ref_registered = None
+    element_ref_warning = None
+
+    def _insert(sidecar: dict) -> None:
+        nonlocal new_beat, new_beat_id, element_ref_registered, element_ref_warning
         seg = bg.get_seg_entry(
             sidecar, arc_number=arc_number, event_id=event_id_int, phase=phase,
         )
         beats = seg.get("beats", [])
-
         insert_after = len(beats) - 1
         for i, b in enumerate(beats):
             if b.get("beat_id") == after_beat_id:
                 insert_after = i
                 break
-
         new_beat_id = _allocate_bg_beat_id(
             beats,
             arc_number=arc_number,
             event_id_int=event_id_int,
             phase=phase,
         )
-
         try:
             new_beat = bg.materialize_sidecar_beat_from_plan_row(
                 normalized,
@@ -5361,15 +8103,12 @@ def handle_bg_insert_beat(h, body: dict) -> None:
                 sidecar=sidecar,
             )
         except ValueError as exc:
-            return h._send_error_v59(
-                400,
+            raise _BgSidecarAbort(
+                status=400,
                 error_code="INSERT_PLAN_INVALID",
                 error_message=str(exc),
                 retry_safe=False,
-            )
-
-        element_ref_registered = None
-        element_ref_warning = None
+            ) from exc
         if speaker:
             try:
                 from credentials import load_credentials  # type: ignore
@@ -5394,16 +8133,19 @@ def handle_bg_insert_beat(h, body: dict) -> None:
                             + (f" — {pose}" if pose else "")
                             + ". Generate unlocked."
                         )
-        if new_beat.get("element_char_ref_ok") is False:
+        if new_beat.get("element_char_ref_ok") is False and bg.element_char_ref_required_for_beat(new_beat, sidecar):
             detail = (new_beat.get("element_char_ref_error") or "").strip()
             element_ref_warning = (
                 "Char ref saved on this beat, but Element registration failed. "
                 "Try Add to Element from library preview (Loral), or drop the pose again."
                 + (f" ({detail})" if detail else "")
             )
-
         beats.insert(insert_after + 1, new_beat)
-        bg.write_sidecar(sidecar)
+
+    try:
+        bg.mutate_sidecar_locked(_insert, migrate=True)
+    except _BgSidecarAbort as exc:
+        return _bg_abort_from_sidecar(h, exc)
 
     print(
         f"[BG] insert-beat: materialized {new_beat_id} speaker={speaker!r} into "
@@ -5450,22 +8192,28 @@ def handle_bg_create_group(h, body: dict)-> None:
                    extra={"ok": False},
                )
     bg = _bg_module()
-    with bg.sidecar_file_lock():
-        sidecar = bg.read_sidecar()
-        sidecar = bg._migrate_sidecar(sidecar)
+    gid = ""
+    group_status = ""
+
+    def _create(sidecar: dict) -> None:
+        nonlocal gid, group_status
         try:
             gid = bg.create_group(sidecar, name, arc_n, beat_ids)
         except ValueError as e:
-            return h._send_error_v59(
-                       400,
-                       error_code="GENERIC_ERROR",
-                       error_message=str(e),
-                       retry_safe=False,
-                       extra={"ok": False},
-                   )
-        bg.write_sidecar(sidecar)
-    return h._send_json(200, {"ok": True, "group_id": gid,
-                                  "status": sidecar["groups"][gid]["status"]})
+            raise _BgSidecarAbort(
+                status=400,
+                error_code="GENERIC_ERROR",
+                error_message=str(e),
+                retry_safe=False,
+                extra={"ok": False},
+            ) from e
+        group_status = sidecar["groups"][gid]["status"]
+
+    try:
+        bg.mutate_sidecar_locked(_create, migrate=True)
+    except _BgSidecarAbort as exc:
+        return _bg_abort_from_sidecar(h, exc)
+    return h._send_json(200, {"ok": True, "group_id": gid, "status": group_status})
 
 
 def handle_bg_delete_group(h, body: dict)-> None:
@@ -5484,18 +8232,21 @@ def handle_bg_delete_group(h, body: dict)-> None:
                    extra={"ok": False},
                )
     bg = _bg_module()
-    with bg.sidecar_file_lock():
-        sidecar = bg.read_sidecar()
-        sidecar = bg._migrate_sidecar(sidecar)
+
+    def _delete_group(sidecar: dict) -> None:
         if not bg.delete_group(sidecar, gid):
-            return h._send_error_v59(
-                       404,
-                       error_code="GROUP_NOT_FOUND",
-                       error_message="group not found",
-                       retry_safe=False,
-                       extra={"ok": False},
-                   )
-        bg.write_sidecar(sidecar)
+            raise _BgSidecarAbort(
+                status=404,
+                error_code="GROUP_NOT_FOUND",
+                error_message="group not found",
+                retry_safe=False,
+                extra={"ok": False},
+            )
+
+    try:
+        bg.mutate_sidecar_locked(_delete_group, migrate=True)
+    except _BgSidecarAbort as exc:
+        return _bg_abort_from_sidecar(h, exc)
     return h._send_json(200, {"ok": True})
 
 
@@ -5516,19 +8267,24 @@ def handle_bg_update_group(h, body: dict)-> None:
                    extra={"ok": False},
                )
     bg = _bg_module()
-    with bg.sidecar_file_lock():
-        sidecar = bg.read_sidecar()
-        sidecar = bg._migrate_sidecar(sidecar)
+    new_status = ""
+
+    def _update_group(sidecar: dict) -> None:
+        nonlocal new_status
         if gid not in sidecar.get("groups", {}):
-            return h._send_error_v59(
-                       404,
-                       error_code="GROUP_NOT_FOUND",
-                       error_message="group not found",
-                       retry_safe=False,
-                       extra={"ok": False},
-                   )
+            raise _BgSidecarAbort(
+                status=404,
+                error_code="GROUP_NOT_FOUND",
+                error_message="group not found",
+                retry_safe=False,
+                extra={"ok": False},
+            )
         new_status = bg.update_group_order(sidecar, gid, ordered)
-        bg.write_sidecar(sidecar)
+
+    try:
+        bg.mutate_sidecar_locked(_update_group, migrate=True)
+    except _BgSidecarAbort as exc:
+        return _bg_abort_from_sidecar(h, exc)
     return h._send_json(200, {"ok": True, "status": new_status})
 
 
@@ -5569,27 +8325,26 @@ def handle_bg_assemble_group(h, body: dict)-> None:
                    extra={"ok": False},
                )
     bg = _bg_module()
-    with bg.sidecar_file_lock():
-        sidecar = bg.read_sidecar()
-        sidecar = bg._migrate_sidecar(sidecar)
-        g = sidecar.get("groups", {}).get(gid)
-        if not g:
-            return h._send_error_v59(
-                       404,
-                       error_code="GROUP_NOT_FOUND",
-                       error_message="group not found",
-                       retry_safe=False,
-                       extra={"ok": False},
-                   )
-        status = bg._compute_group_status(sidecar, g)
-        if status != "ready":
-            return h._send_error_v59(
-                       400,
-                       error_code="GENERIC_ERROR",
-                       error_message=f"group status is '{status}', must be 'ready'",
-                       retry_safe=False,
-                       extra={"ok": False},
-                   )
+    sidecar_probe = bg.read_sidecar()
+    sidecar_probe = bg._migrate_sidecar(sidecar_probe)
+    g = sidecar_probe.get("groups", {}).get(gid)
+    if not g:
+        return h._send_error_v59(
+            404,
+            error_code="GROUP_NOT_FOUND",
+            error_message="group not found",
+            retry_safe=False,
+            extra={"ok": False},
+        )
+    status = bg._compute_group_status(sidecar_probe, g)
+    if status != "ready":
+        return h._send_error_v59(
+            400,
+            error_code="GENERIC_ERROR",
+            error_message=f"group status is '{status}', must be 'ready'",
+            retry_safe=False,
+            extra={"ok": False},
+        )
     # Spawn background thread
     import threading as _th
     import pathlib as _pl
@@ -5597,15 +8352,21 @@ def handle_bg_assemble_group(h, body: dict)-> None:
 
     def _run():
         try:
-            with bg.sidecar_file_lock():
-                s2 = bg.read_sidecar()
-                s2 = bg._migrate_sidecar(s2)
-                clip_path, duration, size = bg.assemble_group(s2, gid, output_dir)
-                # LD-460 — pin check before sidecar write (thread closure).
-                if not h._check_event_pin(_pin, "bg_assemble_group_write_sidecar"):
-                    print(f"[bg_assemble_group] event drift mid-thread; skipping sidecar write", flush=True)
-                    return
-                bg.write_sidecar(s2)
+            if not h._check_event_pin(_pin, "bg_assemble_group_write_sidecar"):
+                print(f"[bg_assemble_group] event drift mid-thread; skipping sidecar write", flush=True)
+                return
+            _asm_result: dict = {}
+
+            def _assemble(sidecar: dict) -> None:
+                clip_path, duration, size = bg.assemble_group(sidecar, gid, output_dir)
+                _asm_result.update(
+                    clip_path=clip_path, duration=duration, size=size,
+                )
+
+            bg.mutate_sidecar_locked(_assemble, migrate=True)
+            clip_path = _asm_result["clip_path"]
+            duration = _asm_result["duration"]
+            size = _asm_result["size"]
             _ASSEMBLE_JOBS[gid] = {"status": "done",
                                     "assembled_clip_path": clip_path,
                                     "duration_seconds": duration,
@@ -5689,134 +8450,133 @@ def handle_bg_run_local_animation(h, body: dict)-> None:
                    extra={"ok": False},
                )
     bg = _bg_module()
-    with bg.sidecar_file_lock():
-        sidecar = bg.read_sidecar()
-        sidecar = bg._migrate_sidecar(sidecar)
-        ctx = sidecar.get("active_context") or {}
-        # LD-545 Option B — derive arc from scope; fall back to ctx for legacy.
-        # arc_n here is only a performance hint for `_index_beats`. The
-        # outer claim that "[INFERRED — verify against find_beat usage in
-        # beat_generator.py] beat_id is unique across arcs per the
-        # find_beat lookup convention" is not formally proven in code —
-        # the [INFERRED — verify] tag covers the entire claim including
-        # the sub-clause about uniqueness. find_beat at beat_generator.py
-        # iterates all arcs/segments and returns first match, so duplicate
-        # beat_ids across arcs would silently pick whichever arc/segment
-        # comes first — supporting the convention even if not enforced.
-        # We still prefer the scope-derived value to keep handlers
-        # consistent regardless of beat_id uniqueness.
-        scope_arc_raw = body.get("scope_arc_number")
-        if scope_arc_raw is None:
-            scope_arc_raw = body.get("arc_number")
-        scope_arc = None
-        if scope_arc_raw is not None:
-            try:
-                scope_arc = int(scope_arc_raw)
-            except (TypeError, ValueError):
-                scope_arc = None
-        if scope_arc is None:
-            scope_arc = ctx.get("arc_number", 1)
-        arc_n = scope_arc
-        beats_by_id = bg._index_beats(sidecar, arc_n)
-        beat = beats_by_id.get(beat_id)
-        if not beat:
-            return h._send_error_v59(
-                       404,
-                       error_code="GENERIC_ERROR",
-                       error_message=f"beat_id {beat_id} not found",
-                       retry_safe=False,
-                       extra={"ok": False},
-                   )
+    sidecar = bg.read_sidecar()
+    sidecar = bg._migrate_sidecar(sidecar)
+    ctx = sidecar.get("active_context") or {}
+    # LD-545 Option B — derive arc from scope; fall back to ctx for legacy.
+    # arc_n here is only a performance hint for `_index_beats`. The
+    # outer claim that "[INFERRED — verify against find_beat usage in
+    # beat_generator.py] beat_id is unique across arcs per the
+    # find_beat lookup convention" is not formally proven in code —
+    # the [INFERRED — verify] tag covers the entire claim including
+    # the sub-clause about uniqueness. find_beat at beat_generator.py
+    # iterates all arcs/segments and returns first match, so duplicate
+    # beat_ids across arcs would silently pick whichever arc/segment
+    # comes first — supporting the convention even if not enforced.
+    # We still prefer the scope-derived value to keep handlers
+    # consistent regardless of beat_id uniqueness.
+    scope_arc_raw = body.get("scope_arc_number")
+    if scope_arc_raw is None:
+        scope_arc_raw = body.get("arc_number")
+    scope_arc = None
+    if scope_arc_raw is not None:
         try:
-            if method == "magic_compositor":
-                bg_path = params.get("background_path", "")
-                path_pts = params.get("path_pts", [])
-                style = params.get("style", "tessa_ori")
-                duration = float(params.get("duration", 3.5))
-                if not bg_path or not path_pts:
-                    return h._send_error_v59(
-                               400,
-                               error_code="PARAMS_MISSING_BACKGROUND_PATH_OR",
-                               error_message="params missing background_path or path_pts",
-                               retry_safe=False,
-                               extra={"ok": False},
-                           )
-                if preview_only:
-                    import sys as _sys
-                    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-                    from magic_compositor import MagicCompositor, STYLES
-                    if style not in STYLES:
-                        return h._send_error_v59(
-                                   400,
-                                   error_code="STYLE_NOT_APPROVED",
-                                   error_message="style not approved",
-                                   retry_safe=False,
-                                   extra={"ok": False},
-                               )
-                    import pathlib as _pl
-                    out_dir = _pl.Path(bg.BG_STILLS_DIR) / "local_renders"
-                    out_dir.mkdir(parents=True, exist_ok=True)
-                    mc = MagicCompositor(
-                        background_path=bg_path, path_pts=path_pts,
-                        style=style, duration=duration,
-                        output_dir=str(out_dir),
-                        label=f"{beat_id}_preview_{int(time.time())}",
-                    )
-                    preview_path = mc.render_preview()
-                    bg.write_sidecar(sidecar)
-                    return h._send_json(200, {"ok": True, "preview_path": preview_path})
-                result = bg.run_magic_compositor(beat, bg_path, path_pts, style, duration)
-            elif method == "ken_burns":
-                still = params.get("still_path", "")
-                if not still:
-                    return h._send_error_v59(
-                               400,
-                               error_code="PARAMS_MISSING_STILL_PATH",
-                               error_message="params missing still_path",
-                               retry_safe=False,
-                               extra={"ok": False},
-                           )
-                result = bg.run_ken_burns(
-                    beat, still,
-                    float(params.get("pan_x_pct", 0)),
-                    float(params.get("pan_y_pct", 0)),
-                    float(params.get("zoom_start", 1.0)),
-                    float(params.get("zoom_end", 1.3)),
-                    float(params.get("duration", 4.0)),
-                )
-            elif method == "static_hold":
-                still = params.get("still_path", "")
-                if not still:
-                    return h._send_error_v59(
-                               400,
-                               error_code="PARAMS_MISSING_STILL_PATH",
-                               error_message="params missing still_path",
-                               retry_safe=False,
-                               extra={"ok": False},
-                           )
-                result = bg.run_static_hold(
-                    beat, still, float(params.get("duration", 4.0))
-                )
-            # LD-460 — pin check before sidecar write.
-            if not h._check_event_pin(_pin, "bg_run_local_animation_write_sidecar"):
-                print(f"[bg_run_local_animation] event drift; skipping sidecar write", flush=True)
+            scope_arc = int(scope_arc_raw)
+        except (TypeError, ValueError):
+            scope_arc = None
+    if scope_arc is None:
+        scope_arc = ctx.get("arc_number", 1)
+    arc_n = scope_arc
+    beats_by_id = bg._index_beats(sidecar, arc_n)
+    beat = beats_by_id.get(beat_id)
+    if not beat:
+        return h._send_error_v59(
+                   404,
+                   error_code="GENERIC_ERROR",
+                   error_message=f"beat_id {beat_id} not found",
+                   retry_safe=False,
+                   extra={"ok": False},
+               )
+    try:
+        if method == "magic_compositor":
+            bg_path = params.get("background_path", "")
+            path_pts = params.get("path_pts", [])
+            style = params.get("style", "tessa_ori")
+            duration = float(params.get("duration", 3.5))
+            if not bg_path or not path_pts:
                 return h._send_error_v59(
-                           423,
-                           error_code="EVENT_CHANGED_MID_JOB",
-                           error_message="event_changed_mid_job",
+                           400,
+                           error_code="PARAMS_MISSING_BACKGROUND_PATH_OR",
+                           error_message="params missing background_path or path_pts",
                            retry_safe=False,
-                           extra={"code": "ASYNC_JOB_GENERATION_PIN_V1"},
+                           extra={"ok": False},
                        )
-            bg.write_sidecar(sidecar)
-        except Exception as e:
-            traceback.print_exc()
+            if preview_only:
+                import sys as _sys
+                _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+                from magic_compositor import MagicCompositor, STYLES
+                if style not in STYLES:
+                    return h._send_error_v59(
+                               400,
+                               error_code="STYLE_NOT_APPROVED",
+                               error_message="style not approved",
+                               retry_safe=False,
+                               extra={"ok": False},
+                           )
+                import pathlib as _pl
+                out_dir = _pl.Path(bg.BG_STILLS_DIR) / "local_renders"
+                out_dir.mkdir(parents=True, exist_ok=True)
+                mc = MagicCompositor(
+                    background_path=bg_path, path_pts=path_pts,
+                    style=style, duration=duration,
+                    output_dir=str(out_dir),
+                    label=f"{beat_id}_preview_{int(time.time())}",
+                )
+                preview_path = mc.render_preview()
+                bg.write_sidecar(sidecar)
+                return h._send_json(200, {"ok": True, "preview_path": preview_path})
+            result = bg.run_magic_compositor(beat, bg_path, path_pts, style, duration)
+        elif method == "ken_burns":
+            still = params.get("still_path", "")
+            if not still:
+                return h._send_error_v59(
+                           400,
+                           error_code="PARAMS_MISSING_STILL_PATH",
+                           error_message="params missing still_path",
+                           retry_safe=False,
+                           extra={"ok": False},
+                       )
+            result = bg.run_ken_burns(
+                beat, still,
+                float(params.get("pan_x_pct", 0)),
+                float(params.get("pan_y_pct", 0)),
+                float(params.get("zoom_start", 1.0)),
+                float(params.get("zoom_end", 1.3)),
+                float(params.get("duration", 4.0)),
+            )
+        elif method == "static_hold":
+            still = params.get("still_path", "")
+            if not still:
+                return h._send_error_v59(
+                           400,
+                           error_code="PARAMS_MISSING_STILL_PATH",
+                           error_message="params missing still_path",
+                           retry_safe=False,
+                           extra={"ok": False},
+                       )
+            result = bg.run_static_hold(
+                beat, still, float(params.get("duration", 4.0))
+            )
+        # LD-460 — pin check before sidecar write.
+        if not h._check_event_pin(_pin, "bg_run_local_animation_write_sidecar"):
+            print(f"[bg_run_local_animation] event drift; skipping sidecar write", flush=True)
             return h._send_error_v59(
-                       500,
-                       error_code="GENERIC_ERROR",
-                       error_message=str(e),
-                       retry_safe=True,
-                       extra={"ok": False},
+                       423,
+                       error_code="EVENT_CHANGED_MID_JOB",
+                       error_message="event_changed_mid_job",
+                       retry_safe=False,
+                       extra={"code": "ASYNC_JOB_GENERATION_PIN_V1"},
                    )
+        bg.write_sidecar(sidecar)
+    except Exception as e:
+        traceback.print_exc()
+        return h._send_error_v59(
+                   500,
+                   error_code="GENERIC_ERROR",
+                   error_message=str(e),
+                   retry_safe=True,
+                   extra={"ok": False},
+               )
     return h._send_json(200, {"ok": True, **result})
 
 
@@ -5846,20 +8606,18 @@ def handle_bg_update_beat_anim_method(h, body: dict)-> None:
                    extra={"ok": False},
                )
     bg = _bg_module()
-    with bg.sidecar_file_lock():
-        sidecar = bg.read_sidecar()
-        sidecar = bg._migrate_sidecar(sidecar)
-        _, b = bg.find_beat(sidecar, beat_id)
-        if not b:
-            return h._send_error_v59(
-                       404,
-                       error_code="GENERIC_ERROR",
-                       error_message=f"beat_id {beat_id} not found",
-                       retry_safe=False,
-                       extra={"ok": False},
-                   )
-        b["animation_method"] = method
-        bg.write_sidecar(sidecar)
+    ok, _ = bg.update_beat_locked(
+        beat_id,
+        lambda b, _sc: b.__setitem__("animation_method", method),
+    )
+    if not ok:
+        return h._send_error_v59(
+            404,
+            error_code="GENERIC_ERROR",
+            error_message=f"beat_id {beat_id} not found",
+            retry_safe=False,
+            extra={"ok": False},
+        )
     return h._send_json(200, {"ok": True})
 
 
@@ -5910,25 +8668,27 @@ def handle_bg_accept_local_animation(h, body: dict)-> None:
                    retry_safe=False,
                    extra={"ok": False},
                )
-    with bg.sidecar_file_lock():
-        sidecar = bg.read_sidecar()
-        sidecar = bg._migrate_sidecar(sidecar)
+    def _accept_local(sidecar: dict) -> None:
         _, b = bg.find_beat(sidecar, beat_id)
         if not b:
-            return h._send_error_v59(
-                       404,
-                       error_code="GENERIC_ERROR",
-                       error_message=f"beat_id {beat_id} not found",
-                       retry_safe=False,
-                       extra={"ok": False},
-                   )
+            raise _BgSidecarAbort(
+                status=404,
+                error_code="GENERIC_ERROR",
+                error_message=f"beat_id {beat_id} not found",
+                retry_safe=False,
+                extra={"ok": False},
+            )
         b["status"] = "accepted"
         b["accepted_video_path"] = safe_video_path
         gid = b.get("group_id")
         if gid and gid in sidecar.get("groups", {}):
             g = sidecar["groups"][gid]
             g["status"] = bg._compute_group_status(sidecar, g)
-        bg.write_sidecar(sidecar)
+
+    try:
+        bg.mutate_sidecar_locked(_accept_local, migrate=True)
+    except _BgSidecarAbort as exc:
+        return _bg_abort_from_sidecar(h, exc)
     return h._send_json(200, {"ok": True})
 
 

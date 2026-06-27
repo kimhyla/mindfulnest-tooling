@@ -74,14 +74,15 @@ MARKERS=(
     # LD-826 — Stitcher multi-phase track + persisted selection
     "LD-826|stitcher-multiphase-track"
     "LD-826|selection persists per event"
-    # LD-827 — processed per-slot preview in composer (raw /files fallback while baking)
-    "LD-827|building processed preview"
+    # LD-827 — muxed per-slot preview in composer (STITCH_UNIFIED_PLAYBACK_V1)
+    "LD-827|Building muxed preview"
+    "LD-827|STITCH_UNIFIED_PLAYBACK_V1"
     # LD-828 — single slot composer (multi-phase track switches processed preview)
     "LD-828|STITCHER_SINGLE_COMPOSER_V1"
     "LD-828|click a phase to switch slot review"
     # LD-829 — Phase A tab single canonical player (stitched when fresh; no duplicate video)
     "LD-829|PHASE_A_SINGLE_PLAYER_V1"
-    "LD-829|Preview (canonical stitched — lipsync + ambient bed):"
+    "LD-829|Preview (normalized dry lipsync — ambient added in Stitcher):"
     # STITCH_SLOT_PREVIEW_VIDEO_PLAYABLE_V1 — decode-validated preview cache + black-video fallback
     "STITCH_SLOT_PREVIEW|STITCH_SLOT_PREVIEW_VIDEO_PLAYABLE_V1"
     # STITCH_CANONICAL_TRANSITIONS_V1 + boundary magic SFX on dissolve
@@ -93,12 +94,28 @@ MARKERS=(
     # Stitcher SFX timeline blocks (WaveformTimeline parity — Phase 2)
     "STITCHER_SFX_TIMELINE|STITCHER_SFX_TIMELINE_V1"
     "STITCHER_SFX_TIMELINE|mn-stitcher-sfx-cue-block"
-    # Stitcher slot composer — synced video + waveform (Phase A/B parity)
+    # PLAYBACK_CACHE_V1 — Beat Gen lazy video via warmed local bytes
+    "PLAYBACK_CACHE|PLAYBACK_CACHE_V1"
+    # Stitcher slot composer — unified muxed video + display-only waveform
     "STITCHER_SLOT_COMPOSER|STITCHER_SLOT_COMPOSER_V1"
+    # STITCH_MUX_STALE_WHILE_REVALIDATE_V1 — SFX resize keeps loaded mux during background remux
+    "STITCH_MUX_STALE_WHILE_REVALIDATE|STITCH_MUX_STALE_WHILE_REVALIDATE_V1"
+    "STITCH_MUX_STALE_WHILE_REVALIDATE|video stays loaded"
+    # STITCH_SINGLE_OWNER_V1 — load_job read-only; export owns video ingest
+    "STITCH_SINGLE_OWNER|STITCH_SINGLE_OWNER_V1"
+    "STITCH_SINGLE_OWNER|data-stitch-single-owner"
+    # STITCH_SLOT_SESSION_CACHE_V1 — multiphase slot preview persists within event session
+    "STITCH_SLOT_SESSION_CACHE|STITCH_SLOT_SESSION_CACHE_V1"
+    # STITCH_COMPOSER_VIDEO_POOL_V1 — four persistent videos for instant phase switch
+    "STITCH_COMPOSER_VIDEO_POOL|STITCH_COMPOSER_VIDEO_POOL_V1"
+    "STITCH_COMPOSER_VIDEO_POOL|stitcher-composer-video-pool"
     "STITCHER_SLOT_COMPOSER|stitcher-slot-composer"
     "STITCHER_SLOT_COMPOSER|stitcher-composer-video"
-    "STITCHER_SLOT_COMPOSER|Video + waveform stay in sync"
-    # STITCHER_AMBIENT — ambient preset mixed into composer waveform extract
+    "STITCHER_SLOT_COMPOSER|Slot preview video"
+    "STITCHER_SLOT_COMPOSER|waveform-display-only-label"
+    # STITCH_AMBIENT_BAKE_ON_SAVE_V1 — ambient baked on save; mux only when SFX
+    "STITCH_AMBIENT_BAKE|STITCH_AMBIENT_BAKE_ON_SAVE_V1"
+    "STITCH_AMBIENT_BAKE|Saving ambient bed"
     "STITCHER_AMBIENT|STITCHER_AMBIENT_WAVEFORM_V1"
     "STITCHER_AMBIENT|data-stitcher-ambient-waveform"
     "STITCHER_AMBIENT|STITCH_AMBIENT_BED_VOLUME_V1"
@@ -108,7 +125,7 @@ MARKERS=(
     # Stitcher SFX timeline — video_dur hydration + remix gating (2026-06-12)
     "STITCHER_SFX|STITCH_SLOT_VIDEO_DUR_V1"
     "STITCHER_SFX|data-mix-extracting"
-    "STITCHER_SFX|Remixing slot audio"
+    "STITCHER_SFX|Extracting slot speech"
     # Phase stem trim + reject lipsync (2026-06-10)
     "PHASE_STEM_TRIM|waveform-stem-cut-block"
     "PHASE_STEM_TRIM|Reject lipsync"
@@ -130,6 +147,10 @@ MARKERS=(
     "PHASE_WAVEFORM_PLAY|attributeFilter"
     "PHASE_WAVEFORM_PLAY|stop-all-audio-btn"
     "PHASE_WAVEFORM_PLAY|PHASE_WAVEFORM_PAUSE_V1"
+    # Watercolor cue resize handles — body none + handle auto (WAVEFORM_CUE_HANDLE_V1)
+    "WAVEFORM_CUE_HANDLE|WAVEFORM_CUE_HANDLE_V1"
+    "WAVEFORM_CUE_HANDLE|data-waveform-cue-handle-v1"
+    "WAVEFORM_CUE_HANDLE|cue-handle-left-"
     # Phase A/B producer overlay + animated chromakey canvas (2026-06-12)
     "PHASE_WATERCOLOR_OVERLAY|PHASE_WATERCOLOR_OVERLAY_V1"
     "PHASE_WATERCOLOR_OVERLAY|watercolor-anim-overlay"
@@ -139,6 +160,16 @@ MARKERS=(
     # Baseline buttons — every beat should have these (displayed text)
     "BASELINE|Regen Audio"
     "BASELINE|Regenerate B"
+    # O3 generation intent snapshot — prompt lock + submit audit strip (2026-06-15)
+    "O3_INTENT_SNAPSHOT|mn-bg-o3-intent-audit"
+    "O3_INTENT_SNAPSHOT|bg-o3-intent-audit"
+    "O3_INTENT_SNAPSHOT|Generation in progress — prompt locked to submitted intent."
+    # O3 poll — sidecar lock contention must not fail the poll loop (2026-06-18)
+    "O3_POLL_SIDECAR_LOCK|sidecar lock timeout"
+    # O3 pipeline — gallery selection must not silently cross voice-first / Element (2026-06-18)
+    "O3_PIPELINE_MISMATCH|bg-o3-pipeline-mismatch"
+    "O3_PIPELINE_MISMATCH|kling_o3_selection_pipeline_mismatch"
+    "O3_PIPELINE_MISMATCH|Pipeline mismatch:"
 )
 
 missing_count=0

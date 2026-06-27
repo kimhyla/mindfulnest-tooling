@@ -13,32 +13,131 @@
 import { useEffect, useMemo, useRef, useState, useCallback, useLayoutEffect } from 'preact/hooks';
 import {
   activeScope, scopeKey,
-  activeProjectType, activeMilestoneId, activeTargetVideo,
+  activeTargetVideo,
+  activeProjectType,
+  activeMilestoneId,
+  activeScopeQueryParams,
+  effectiveScopeVideoRole,
 } from '../state/scope';
 import { setActiveVideoRole, videoRoleForBgPhase } from '../state/videoRole';
 import { apiGet, pathappPatch, type ApiResult } from '../api/client';
 import { formatMutationError } from '../api/mutationErrors';
+import { isClientBundleStaleError } from '../state/buildShaDrift';
 import { SERVER_BASE } from '../api/endpoints';
 import { makeDropTarget } from '../utils/dragdrop';
 import { openCropper } from '../state/cropper';
 import { Modal } from './ui/Modal';
-import { BeatPlanModal, type BeatPlanRow } from './BeatPlanModal';
+import { BeatPlanModal, type BeatPlanDraftSaveStatus, type BeatPlanRow } from './BeatPlanModal';
 import { InsertBeatModal, type InsertBeatPlanRow } from './InsertBeatModal';
 import { Spinner } from './ui/Spinner';
 import { Select } from './ui/Select';
 import { pushToast } from './ui/Toast';
-import { stitcherRefreshTick } from '../app';
-import { serverRehydrateTick } from '../state/refreshSignals';
+import { BgO3CutOverlay, isValidO3CutWindow } from './bg/BgO3CutOverlay';
+import { resolveClipPlaybackTruth } from '../utils/playbackCache';
+import {
+  forgetCutPreviewsForBeat,
+  recallCutPreviewUrl,
+  rememberCutPreviewUrl,
+} from '../state/cutPreviewStore';
+import { resolveStitchSlotSourceVideoUrl } from '../utils/stitchSlotVideo';
+import { PLAYBACK_VIDEO_ANTI_BANDING_CLASS } from '../utils/playbackVideoPolicy';
+import {
+  BgO3TrimNumericControls,
+  showBgO3NumericTrimControls,
+} from './bg/BgO3TrimNumericControls.deprecated';
+import { writePersistedTrackSlot, isStitchUiSlotKey } from '../utils/stitchTrackFocus';
+import { stitchJobSessionKey } from '../state/producerSessionKeys';
+import { stitcherRefreshTick, serverRehydrateTick } from '../state/refreshSignals';
 import {
   BeatMagicButtons,
   resolveBgMagicStillPreviewUrl,
   resolveBgMagicVideoPreviewUrl,
   resolveBgMagicStillSourcePath,
+  resolveO3TileMagicOverrideUrl,
 } from './BeatMagicButtons';
 import {
   allBeatsStitchExportReady,
   stitchExportBlockTooltip,
 } from '../utils/bgStitchExport';
+import {
+  notifyStitchSlotExportApplied,
+  stitchExportKeptExistingWarning,
+} from '../utils/stitchSlotVideoLineage';
+import {
+  BG_EXPORT_POLL_INTERVAL_MS,
+  bgExportScopeKey,
+  bgExportStatusMessage,
+  bgExportTerminalSuccess,
+  isBgExportStatusTerminal,
+  readBgExportBusyLatch,
+  writeBgExportBusyLatch,
+  type BgExportPollResult,
+} from '../utils/bgExportToStitcherJobTruth';
+import {
+  beatElementCharRefError,
+  beatElementCharRefOk,
+  beatHasActiveNavJob,
+  beatOperatorMutationsLocked,
+  computeBeatNavItemStatuses,
+  isStillInsertNavBeat,
+  purgeO3ClientJobStateForBeatIds,
+  type BeatNavItemStatus,
+} from '../utils/bgBeatNavStatus';
+import { applyPromptEditsToBeats, clearPromptEdit, readPromptEditText } from '../state/promptEditRegistry';
+import { useProtectedPromptField } from '../hooks/useProtectedPromptField';
+import {
+  beatO3JobBusy,
+  beatO3JobLooksRunning,
+  beatO3ServerJobInFlight,
+  O3_SUBMIT_PENDING_TTL_MS,
+  pruneO3SubmitPending,
+} from '../o3JobStatusContract';
+import { effect } from '@preact/signals';
+import type {
+  BgBeat,
+  BeatGenerationMode,
+  GptOption,
+} from '../types/bgBeat';
+import {
+  bgActiveJobId,
+  bgActiveNativeLipSyncJobs,
+  bgActiveO3Jobs,
+  bgActiveSegment,
+  bgActiveStillRenderJobs,
+  bgArcNumber,
+  bgBeats,
+  bgGptBatchSubmitPending,
+  bgLipsyncPublicHostMessage,
+  bgLipsyncPublicHostReady,
+  bgO3IntentByBeat,
+  bgO3SubmitAuditByBeat,
+  bgO3SubmitPending,
+  bgO3WarningByBeat,
+  bgPollResults,
+  bgSegments,
+  bgSessionHasCache,
+  bgSessionLoading,
+  bgSessionSlowHint,
+  beatSaveBlockedRef,
+  beatSaveNotFoundToastRef,
+  ensureBgSession,
+  genFailureToastRef,
+  refreshBgSession,
+  submitPollLatchRef,
+  updateBgBeats,
+  applyO3SubmitPollLatch,
+  tryReattachO3JobFromSession,
+} from '../state/bgSessionStore';
+import {
+  formatO3JobFailure,
+  isNetworkPollBlip,
+  mergeBeatFromO3Poll,
+} from '../utils/bgPollHelpers';
+import type {
+  ArloO3SubmitResponse,
+  O3GenerationIntentPoll,
+  O3SubmitAudit,
+} from '../o3GenerationIntent';
 
 const BEAT_MISSING_TOAST_MS = 12000;
 
@@ -68,6 +167,8 @@ const KNOWN_SPEAKERS: readonly string[] = [
 /** Retired cast names map to canonical roster entries (2026-06-13). */
 const RETIRED_SPEAKER_CANON: Readonly<Record<string, string>> = {
   Luna: 'Lorelai',
+  Loral: 'Lorelai',
+  Laurel: 'Lorelai',
   Chipper: 'Arlo',
   'Guide Bird': 'Arlo',
   Pip: 'Arlo',
@@ -85,9 +186,168 @@ function isStillInsertBeat(beat?: BgBeat | null): boolean {
   return beat.pipeline === 'still_insert' || beat.beat_render_mode === 'still_insert';
 }
 
+type RefDisplay = { key?: string; abs_path?: string; thumb_b64?: string; filename?: string };
+
+/** Persisted sidecar ref wins over session `_derived` implicit fallback (workbench authority spec). */
+function displayPersistedRef(
+  stored: RefDisplay | null | undefined,
+  derived: RefDisplay | null | undefined,
+): RefDisplay | null {
+  if (stored && (stored.thumb_b64 || stored.abs_path || stored.key)) {
+    return stored;
+  }
+  return derived ?? stored ?? null;
+}
+
+function displayCharRef(beat: BgBeat): RefDisplay | null {
+  return displayPersistedRef(beat.reference_image, beat._derived?.char_ref_display);
+}
+
+function displayBgRef(beat: BgBeat, stillInsert: boolean): RefDisplay | null {
+  if (stillInsert) {
+    return displayPersistedRef(beat.bg_ref_image, beat._derived?.still_scene_display);
+  }
+  return displayPersistedRef(beat.bg_ref_image, beat._derived?.bg_ref_display);
+}
+
+function displayStillScenePath(beat: BgBeat): string | null {
+  const ref = beat._derived?.still_scene_display ?? beat.bg_ref_image;
+  if (ref?.abs_path) return ref.abs_path;
+  const lib = (beat as BgBeat & { accepted_library_ref?: { abs_path?: string } }).accepted_library_ref;
+  if (lib?.abs_path) return lib.abs_path;
+  for (const opt of beat.gpt_options ?? []) {
+    if (opt?.local_path) return opt.local_path;
+  }
+  return null;
+}
+
+function resolveBeatOptionsToShow(
+  beat: BgBeat,
+  eventId: string,
+  pollResultForBeat: GptOption[] | null | undefined,
+): (GptOption | null)[] {
+  const mode = beat._derived?.generation_mode
+    ? String(beat._derived.generation_mode) as BeatGenerationMode
+    : effectiveGenerationMode(beat, eventId);
+  const serverSlots = beat._derived?.option_slots;
+  if (Array.isArray(serverSlots) && serverSlots.some((s) => s?.video_path)) {
+    return serverSlots.slice(0, 3);
+  }
+  const o3Slots = buildFixedO3OptionSlots(beat, mode);
+  if (o3Slots.some((s) => s?.video_path)) {
+    return o3Slots;
+  }
+  const persistedOptions = beat.gpt_options ?? beat.flux_options ?? [];
+  const liveOptions = pollResultForBeat ?? null;
+  const src = liveOptions ?? persistedOptions;
+  const padded: (GptOption | null)[] = [...src];
+  while (padded.length < 3) padded.push(null);
+  return padded.slice(0, 3);
+}
+
+function isOperatorJobBusyError(code?: string | null): boolean {
+  return code === 'BEAT_JOB_BUSY' || code === 'INTENT_JOB_ACTIVE';
+}
+
+function effectiveGenerationMode(beat?: BgBeat | null, eventId?: string): BeatGenerationMode {
+  if (!beat) return 'element_native';
+  const derived = beat._derived?.generation_mode;
+  if (derived === 'still_insert' || derived === 'voice_first' || derived === 'element_native') {
+    return derived;
+  }
+  if (derived === 'avatar_pro') {
+    return 'element_native';
+  }
+  if (isStillInsertBeat(beat)) return 'still_insert';
+  const gm = (beat.generation_mode ?? beat.o3_generate_mode ?? '').trim().toLowerCase();
+  if (gm === 'avatar_pro') return 'element_native';
+  if (gm === 'voice_first' || gm === 'element_native') return gm;
+  const ev = (eventId ?? '').replace(/^Event_/i, '').trim();
+  const hasSpeak = Boolean((beat.dialogue_text ?? beat.kling_o3_prompt ?? '').trim());
+  if (ev === '2' && hasSpeak) return 'voice_first';
+  return 'element_native';
+}
+
+/** Element pose registration applies to element_native / voice_first — not Avatar Pro. */
+function elementCharRefApplies(beat?: BgBeat | null, eventId?: string): boolean {
+  if (!beat || !isO3VoiceBeat(beat)) return false;
+  return effectiveGenerationMode(beat, eventId) !== 'avatar_pro';
+}
+
+function o3GenerateButtonLabel(generationMode: BeatGenerationMode): string {
+  if (generationMode === 'avatar_pro') {
+    return 'Generate (Avatar Pro)';
+  }
+  if (generationMode === 'voice_first') {
+    return 'Generate voice-first O3 (ElevenLabs + lipsync)';
+  }
+  if (generationMode === 'element_native') {
+    return 'Generate Element native O3';
+  }
+  return 'Generate padded O3 voice video';
+}
+
+const GENERATION_MODE_TOAST: Record<BeatGenerationMode, string> = {
+  still_insert: 'Pipeline: Still + TTS — Generate builds smooth zoom still (1.0→1.06×) with dialogue audio.',
+  avatar_pro: 'Pipeline: Avatar Pro — ElevenLabs TTS → Kling Avatar Pro portrait → 720 delivery.',
+  voice_first: 'Pipeline: Voice-first — Generate runs ElevenLabs → silent O3 → lipsync → 720 delivery.',
+  element_native: 'Pipeline: Element native O3 — Generate runs O3 Pro with Element voice baked in.',
+};
+
+function inferO3OptionPipelineMode(opt?: GptOption | null): BeatGenerationMode | '' {
+  if (!opt) return '';
+  const source = (opt.source ?? '').trim().toLowerCase();
+  const path = (opt.video_path ?? '').toLowerCase();
+  if (source.includes('still_insert') || path.includes('still_insert')) return 'still_insert';
+  if (path.includes('_avatar_pro') || source === 'kling_o3_avatar_pro') return 'avatar_pro';
+  if (path.includes('_voice_lipsync')) return 'voice_first';
+  if (path.includes('_element_o3') || (path.includes('_element_') && !path.includes('_voice_lipsync'))) {
+    return 'element_native';
+  }
+  if (source === 'kling_o3_element_native_voice') return 'element_native';
+  if (source === 'kling_o3_voice_video') return 'voice_first';
+  return '';
+}
+
+function displayO3OptionLabel(opt: GptOption): string {
+  const stored = opt.label?.trim();
+  if (stored === 'latest O3 voice video') return 'ElevenLabs voice-first (latest)';
+  const mode = inferO3OptionPipelineMode(opt);
+  if (mode === 'avatar_pro') return 'Avatar Pro (latest)';
+  if (mode === 'voice_first') return 'ElevenLabs voice-first';
+  if (mode === 'element_native') {
+    const gen = typeof opt.generation === 'number'
+      ? opt.generation
+      : o3GenerationFromPath(opt.video_path);
+    return gen ? `g${gen} Kling Element voice` : 'Kling Element voice';
+  }
+  if (mode === 'still_insert') return stored || 'Still + TTS clip';
+  return stored || 'O3 clip';
+}
+
+function pipelineSelectionMismatchMessage(beat?: BgBeat | null): string | null {
+  if (!beat?.kling_o3_selection_pipeline_mismatch) return null;
+  const mode = effectiveGenerationMode(beat);
+  const clip = beat.kling_o3_active_clip_pipeline ?? inferO3OptionPipelineMode(
+    (beat.kling_o3_options ?? []).find((o) => o?.video_path === beat.kling_o3_video_path),
+  );
+  return (
+    `Pipeline mismatch: beat is set to ${mode} but the selected clip is ${clip || 'another pipeline'}. `
+    + 'Preview and stitch export use the selected clip — Element clips use Kling voice, not ElevenLabs. '
+    + 'Select a matching clip or switch the pipeline toggle.'
+  );
+}
+
 function isO3VoiceBeat(beat?: BgBeat | null): boolean {
   if (!beat) return false;
   if (isStillInsertBeat(beat)) return false;
+  const sp = (beat.speaker ?? '').trim().toLowerCase();
+  if (!sp || sp === '[stage direction]' || sp === 'stage direction') return false;
+  return true;
+}
+
+function isPipelineToggleable(beat?: BgBeat | null): boolean {
+  if (!beat) return false;
   const sp = (beat.speaker ?? '').trim().toLowerCase();
   if (!sp || sp === '[stage direction]' || sp === 'stage direction') return false;
   return true;
@@ -98,11 +358,35 @@ function elementCharRefInlineHint(_full?: string | null): string {
   return 'Needs registered Element pose — @Image1 must match Production/<Char>/poses/ (or re-register a new pose)';
 }
 
-/** Prompt-box is law — UI edits the same field Kling submit reads from sidecar. */
-function beatPromptText(beat?: BgBeat | null): string {
+const STILL_INSERT_PROMPT_MARKERS = [
+  'do not submit to kling o3 element',
+  'assign the still image in beat gen',
+  'use pre-made gpt still from library',
+  'use pre-made from library',
+  'no @image1 character clip for this beat',
+];
+
+function isStillInsertPromptText(text?: string | null): boolean {
+  const t = (text ?? '').trim();
+  if (!t) return false;
+  if (t.toUpperCase().startsWith('STILL INSERT')) return true;
+  const lower = t.toLowerCase();
+  return STILL_INSERT_PROMPT_MARKERS.some((marker) => lower.includes(marker));
+}
+
+/** Prompt-box is law — mode-specific: still vs O3 (voice_first + element_native share O3). */
+function beatPromptText(beat?: BgBeat | null, eventId?: string): string {
   if (!beat) return '';
-  const prompt = (beat.kling_o3_prompt ?? '').trim();
-  if (prompt) return beat.kling_o3_prompt ?? '';
+  const mode = effectiveGenerationMode(beat, eventId);
+  if (mode === 'still_insert') {
+    const still = (beat.kling_o3_prompt_still ?? '').trim();
+    if (still) return still;
+    const legacy = (beat.kling_o3_prompt ?? '').trim();
+    if (isStillInsertPromptText(legacy)) return legacy;
+    return legacy || beat.dialogue_text || '';
+  }
+  const o3 = (beat.kling_o3_prompt ?? '').trim();
+  if (o3 && !isStillInsertPromptText(o3)) return beat.kling_o3_prompt ?? '';
   return beat.dialogue_text ?? '';
 }
 
@@ -117,104 +401,42 @@ type BgModalState =
   | { kind: 'delete-beat'; beatId: string }
   | { kind: 'accept-all-warn'; unsetIds: string[]; readyCount: number }
   | { kind: 'accept-all-confirm'; readyCount: number }
+  | { kind: 'extract-overwrite-confirm'; beatCount: number }
   | { kind: 'edit-chip'; beatId: string; oldChipText: string; draftText: string }
-  | { kind: 'remove-ref'; beatId: string; refField: 'reference_image' | 'bg_ref_image'; label: string };
+  | { kind: 'remove-ref'; beatId: string; refField: 'reference_image' | 'bg_ref_image'; label: string }
+  | {
+      kind: 'voice-drift-confirm';
+      beatId: string;
+      promptToSave: string;
+      replaceSlotIndex: number;
+      referenceImage: BgBeat['reference_image'];
+      bgRefImage: BgBeat['bg_ref_image'];
+      message: string;
+    };
 
-// ----------------------------------------------------------------
-// Types — derived from server handler shapes (production_server.py:8627+)
-// ----------------------------------------------------------------
-
-interface GptOption {
-  key: string;
-  label?: string;
-  generation?: number;
-  local_path?: string;
-  video_path?: string;
-  video_path_exists?: boolean;
-  source?: string;
-  slot_index?: number;
-  thumb_b64?: string;
-  gallery_b64?: string;
-  cost_usd?: number;
-  error?: string;
+/** Option key for **Approve still for stitch** — works even when sidecar row lacks ``key``. */
+function resolveStillStitchApproveOptionKey(beat: BgBeat): string | null {
+  if (!isStillInsertBeat(beat)) return null;
+  const activePath = (beat.kling_o3_video_path ?? '').trim();
+  if (!activePath) return null;
+  const opts = beat.kling_o3_options ?? [];
+  const matched = opts.find((o) => o?.video_path === activePath);
+  if (matched) {
+    const idx = Math.max(0, opts.indexOf(matched));
+    return resolveO3OptionKey(matched, beat.beat_id, idx);
+  }
+  const slot = buildFixedO3OptionSlots(beat).find((s) => s?.video_path === activePath);
+  if (slot) {
+    return resolveO3OptionKey(slot, beat.beat_id, slot.slot_index ?? 0);
+  }
+  return resolveO3OptionKey({ video_path: activePath }, beat.beat_id, 0);
 }
 
-interface BgBeat {
-  beat_id: string;
-  beat_plan_source?: string;
-  speaker?: string;
-  pipeline?: string;
-  beat_render_mode?: string;
-  dialogue_text?: string;
-  scene_notes?: string;
-  emotion?: string;
-  status?: string;
-  accepted_image_key?: string | null;
-  reference_image?: { key?: string; abs_path?: string; thumb_b64?: string } | null;
-  bg_ref_image?: { key?: string; abs_path?: string; thumb_b64?: string } | null;
-  element_char_ref_ok?: boolean;
-  element_char_ref_error?: string;
-  flux_options?: GptOption[];
-  gpt_options?: GptOption[];
-  bg_gpt_batch_job_id?: string | null;
-  kling_o3_status?: string;
-  kling_o3_prompt?: string;
-  kling_o3_video_path?: string;
-  kling_o3_video_path_exists?: boolean;
-  kling_o3_selected_at?: string;
-  kling_o3_options?: GptOption[];
-  kling_o3_clips_dir?: string;
-  kling_o3_disk_delivery_count?: number;
-  kling_o3_orphan_delivery_count?: number;
-  kling_o3_replace_slot_index?: number;
-  kling_o3_trim_start?: number;
-  kling_o3_trim_back?: number | null;
-  kling_o3_trim_end?: number | null;
-  kling_o3_voice_fix_ui_job_id?: string | null;
-  kling_o3_voice_fix_status?: string | null;
-  kling_o3_voice_fix_error?: string | null;
-  kling_native_lipsync_experiment_ui_job_id?: string | null;
-  kling_native_lipsync_experiment_status?: string | null;
-  kling_native_lipsync_experiment_route?: string | null;
-  kling_native_lipsync_experiment_error?: string | null;
-  kling_native_lipsync_experiment_error_code?: string | null;
-  kling_native_lipsync_experiment_output_path?: string | null;
-  kling_native_lipsync_experiment_passed_gate?: boolean | null;
-  kling_native_lipsync_experiment_output_profile?: {
-    width?: number;
-    height?: number;
-    min_dimension?: number;
-    has_audio?: boolean;
-  } | null;
-  magic_still_path?: string | null;
-  magic_video_path?: string | null;
-  magic_still_path_exists?: boolean;
-  magic_video_path_exists?: boolean;
-  magic_canonical_kind?: 'still' | 'video' | null;
-  storyboard_beat_id?: string | null;
-  audio_file?: string | null;
-  audio_file_exists?: boolean;
-  start_frame_image?: { abs_path?: string } | null;
-  end_frame_image?: { abs_path?: string } | null;
-}
-
-interface BgSegment {
-  event_id: string;
-  phase: string;
-  name?: string;
-  arc_number?: number;
-}
-
-interface BgSegmentsResponse {
-  segments?: BgSegment[];
-  arc_number?: number;
-}
-
-interface BgSessionState {
-  active_context?: { arc_number: number; event_id: string; phase: string } | null;
-  scope_active_context?: { arc_number: number; event_id: string; phase: string } | null;
-  beats?: BgBeat[];
-  flux_options_complete?: boolean;
+function stillBeatNeedsStitchApprove(beat: BgBeat): boolean {
+  if (!isStillInsertBeat(beat)) return false;
+  if (beat.kling_o3_still_stitch_approved) return false;
+  if (beat.kling_o3_status === 'approved') return false;
+  return Boolean((beat.kling_o3_video_path ?? '').trim());
 }
 
 interface GptBatchSubmitResponse {
@@ -224,25 +446,10 @@ interface GptBatchSubmitResponse {
   total_options?: number;
 }
 
-interface GptPollResponse {
-  status: 'running' | 'done';
-  results: Record<string, GptOption[]>;
-  total: number;
-  done_count: number;
-}
-
-interface ArloO3SubmitResponse {
-  ok: boolean;
-  job_id?: string;
-  beat_id?: string;
-  attempt_id?: string;
-  deduped?: boolean;
-  message?: string;
-}
-
 interface StillClipRenderResponse {
   ok: boolean;
   beat_id?: string;
+  beat?: BgBeat;
   video_path?: string;
   option_key?: string;
   method?: string;
@@ -256,14 +463,6 @@ interface StillClipRenderResponse {
   still_path?: string;
 }
 
-interface ArloO3PollResponse {
-  status: 'running' | 'done' | 'failed';
-  beat_id?: string;
-  beat?: BgBeat;
-  result?: { video?: string; voice_id?: string; o3_model?: string; duration_s?: number } | null;
-  error?: string | null;
-}
-
 interface NativeLipSyncSubmitResponse {
   ok: boolean;
   job_id?: string;
@@ -274,119 +473,17 @@ interface NativeLipSyncSubmitResponse {
   message?: string;
 }
 
-interface NativeLipSyncPollResponse {
-  status: 'running' | 'done' | 'failed';
-  beat_id?: string;
-  route?: string;
-  result?: {
-    status?: string;
-    passed_gate?: boolean;
-    raw_profile?: {
-      width?: number;
-      height?: number;
-      min_dimension?: number;
-      has_audio?: boolean;
-    };
-    raw_output_path?: string;
-    error?: string | null;
-    error_code?: string | null;
-  } | null;
-  error?: string | null;
-}
-
 // ----------------------------------------------------------------
 // Constants
 // ----------------------------------------------------------------
 
 // Per LD-440 GPT_IMAGE_2_PRIMARY_MODEL_V1 — gpt-image-2 published unit cost.
 const PER_IMAGE_COST_USD = 0.04;
-const POLL_INTERVAL_MS = 10000; // 10s per Cursor v8 Q6 — GPT batch jobs
-const O3_POLL_INTERVAL_MS = 3000; // O3: faster terminal detection; poll payload carries beat snapshot
 
-function mergeBeatFromO3Poll(beats: BgBeat[], patch: BgBeat): BgBeat[] {
-  const idx = beats.findIndex((b) => b.beat_id === patch.beat_id);
-  if (idx < 0) return beats;
-  const next = [...beats];
-  next[idx] = { ...beats[idx], ...patch };
-  return next;
-}
-
-const O3_VOICE_FIX_RUNNING_STATUSES = new Set([
-  'o3_running',
-  'job_running',
-  'job_starting',
-  'visual_running',
-  'lipsync_running',
-  'tts_ready',
-  'o3_element_running',
-  'subprocess',
-]);
-
-function beatO3JobLooksRunning(beat: BgBeat): boolean {
-  const status = (beat.status ?? '').toLowerCase();
-  const voiceFix = (beat.kling_o3_voice_fix_status ?? '').toLowerCase();
-  const klingStatus = (beat.kling_o3_status ?? '').toLowerCase();
-  if (status.startsWith('o3_voice_job_') || status.startsWith('o3_element_')) {
-    return true;
+function isUserSelectableO3Video(path?: string | null, source?: string | null): boolean {
+  if (source === 'still_insert_static_hold' || source === 'still_insert_ken_burns' || source === 'still_insert_kling_idle') {
+    return Boolean(path);
   }
-  if (O3_VOICE_FIX_RUNNING_STATUSES.has(voiceFix)) {
-    return true;
-  }
-  const jobId = (beat.kling_o3_voice_fix_ui_job_id ?? '').trim();
-  if (!jobId || voiceFix.startsWith('failed')) {
-    return false;
-  }
-  if (voiceFix !== 'approved' && klingStatus !== 'approved') {
-    return true;
-  }
-  return O3_VOICE_FIX_RUNNING_STATUSES.has(voiceFix);
-}
-
-function collectActiveO3JobsFromBeats(beats: BgBeat[]): Record<string, string> {
-  const jobs: Record<string, string> = {};
-  for (const beat of beats) {
-    const jobId = (beat.kling_o3_voice_fix_ui_job_id ?? '').trim();
-    if (!jobId || !beatO3JobLooksRunning(beat)) continue;
-    jobs[beat.beat_id] = jobId;
-  }
-  return jobs;
-}
-
-function isNetworkPollBlip(res: { ok: boolean; status: number; error?: string }): boolean {
-  return !res.ok
-    && res.status === 0
-    && /failed to fetch|networkerror|load failed/i.test(res.error ?? '');
-}
-
-function isStaleO3JobPoll(res: { ok: boolean; status: number; error?: string; error_code?: string }): boolean {
-  if (res.ok) return false;
-  return res.error_code === 'ARLO_JOB_NOT_FOUND'
-    || (res.status === 404 && /job.*not in server memory|unknown.*job_id/i.test(res.error ?? ''));
-}
-
-function collectActiveNativeLipSyncJobsFromBeats(beats: BgBeat[]): Record<string, string> {
-  const jobs: Record<string, string> = {};
-  for (const beat of beats) {
-    const jobId = (beat.kling_native_lipsync_experiment_ui_job_id ?? '').trim();
-    const status = (beat.kling_native_lipsync_experiment_status ?? '').toLowerCase();
-    if (jobId && status === 'running') {
-      jobs[beat.beat_id] = jobId;
-    }
-  }
-  return jobs;
-}
-
-function collectActiveStillJobFromBeats(beats: BgBeat[]): string | null {
-  for (const beat of beats) {
-    const jobId = (beat.bg_gpt_batch_job_id ?? '').trim();
-    if (jobId && beat.status === 'stills_pending') {
-      return jobId;
-    }
-  }
-  return null;
-}
-
-function isUserSelectableO3Video(path?: string | null): boolean {
   const name = (path ?? '').toLowerCase().split('/').pop() ?? '';
   return Boolean(path)
     && !name.includes('_silent_o3_base')
@@ -403,58 +500,147 @@ function resolveO3OptionKey(opt: GptOption, beatId: string, slotIndex: number): 
 
 function o3GenerationFromPath(path?: string | null): number {
   const name = (path ?? '').split('/').pop() ?? '';
+  if (name.includes('_voice_lipsync_delivery')) return 1_000_000;
   const m = name.match(/_g(\d+)(?:_(?:element|kling)|\.mp4)/i) ?? name.match(/_g(\d+)\.mp4$/i);
   return m ? Number(m[1]) : 0;
 }
 
-/** Fixed 3-container layout — always the three newest paid O3 deliveries (highest gN). */
-function buildFixedO3OptionSlots(beat: BgBeat): (GptOption | null)[] {
+/** Fixed 3-container layout — pin-slot by ``slot_index`` (replace slot overwrites one tile). */
+function buildFixedO3OptionSlots(
+  beat: BgBeat,
+  generationMode?: BeatGenerationMode,
+): (GptOption | null)[] {
   const slots: (GptOption | null)[] = [null, null, null];
-  const o3History = (beat.kling_o3_options ?? []).filter((o) => isUserSelectableO3Video(o?.video_path));
-  const activeO3Path = isUserSelectableO3Video(beat.kling_o3_video_path) ? beat.kling_o3_video_path! : null;
-  const sorted = [...o3History].sort((a, b) => {
-    const ga = typeof a.generation === 'number' ? a.generation : o3GenerationFromPath(a.video_path);
-    const gb = typeof b.generation === 'number' ? b.generation : o3GenerationFromPath(b.video_path);
-    return gb - ga;
+  const mode = generationMode ?? effectiveGenerationMode(beat);
+  const o3History = (beat.kling_o3_options ?? []).filter((o) => {
+    if (!isUserSelectableO3Video(o?.video_path, o?.source)) return false;
+    const optMode = inferO3OptionPipelineMode(o);
+    if (mode === 'still_insert') return optMode === 'still_insert';
+    if (optMode === 'still_insert') return false;
+    if (mode === 'element_native' || mode === 'voice_first' || mode === 'avatar_pro') {
+      if (!optMode) return true;
+      return optMode === mode;
+    }
+    return true;
   });
-  for (let si = 0; si < 3; si += 1) {
-    slots[si] = sorted[si] ?? null;
+  const activeO3Path = isUserSelectableO3Video(beat.kling_o3_video_path) ? beat.kling_o3_video_path! : null;
+  const placed = new Set<string>();
+  for (const opt of o3History) {
+    const si = opt.slot_index;
+    if (typeof si === 'number' && si >= 0 && si <= 2 && slots[si] == null) {
+      slots[si] = opt;
+      if (opt.video_path) placed.add(opt.video_path);
+    }
   }
-  const activeListed = activeO3Path && o3History.some((o) => o.video_path === activeO3Path);
+  const activeListed = activeO3Path && slots.some((s) => s?.video_path === activeO3Path);
   if (beat.kling_o3_status === 'approved' && activeO3Path && !activeListed) {
-    const firstEmpty = slots.findIndex((s) => !s);
-    const idx = firstEmpty >= 0 ? firstEmpty : 0;
-    slots[idx] = {
-      key: `${beat.beat_id}_approved_o3_video`,
-      label: 'approved O3 video',
-      video_path: activeO3Path,
-      source: 'approved_kling_o3_video',
-      slot_index: idx,
-    };
+    const activeOpt = o3History.find((o) => o.video_path === activeO3Path);
+    const emptyIdx = slots.findIndex((s) => s == null);
+    if (emptyIdx >= 0) {
+      slots[emptyIdx] = activeOpt ?? {
+        key: `${beat.beat_id}_approved_o3_video`,
+        label: 'approved O3 video',
+        video_path: activeO3Path,
+        source: 'approved_kling_o3_video',
+        slot_index: emptyIdx,
+      };
+    }
   }
   return slots;
 }
 
-function formatO3JobFailure(error?: string | null): string {
-  const raw = (error ?? '').trim();
-  if (!raw) return 'O3 voice job failed; previous approved clip was kept active.';
-  const runtime = raw.includes('RuntimeError:') ? raw.split('RuntimeError:').pop()!.trim() : raw;
-  if (runtime.includes('Kling LipSync returned sub-720p output')) {
-    const first = runtime.split('\n')[0];
-    return first.includes('Previous approved clip was kept active')
-      ? first
-      : `${first} Previous approved clip was kept active.`;
+function isStaleLipsyncHostingFailure(error?: string | null): boolean {
+  const raw = (error ?? '').trim().toLowerCase();
+  if (!raw) return false;
+  return [
+    'no lipsync input host returned byte-complete public files',
+    'r2_cdn: unavailable or preflight failed',
+    'production_staging: unavailable or preflight failed',
+    'unsafe url: non-public host',
+    'lipsync_hosting_not_configured',
+  ].some((marker) => raw.includes(marker));
+}
+
+const LIPSYNC_HOSTING_SETUP_MESSAGE =
+  'Voice-first Generate needs Cloudflare R2 lipsync staging on this machine. '
+  + 'Set R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ACCOUNT_ID, and R2_BUCKET_NAME '
+  + 'in Doppler or Production/API_KEYS_MASTER.md, then restart Event servers.';
+
+function voiceFirstLipsyncHostBlocked(
+  lipsyncHostReady: boolean | null,
+  beats: BgBeat[],
+  eventId?: string,
+): boolean {
+  if (lipsyncHostReady === true) return false;
+  return beats.some(
+    (b) => !isStillInsertBeat(b) && effectiveGenerationMode(b, eventId) === 'voice_first',
+  );
+}
+
+function notifyLipsyncHostBlocked(
+  message: string,
+  seenRef: { current: boolean },
+): void {
+  if (seenRef.current) return;
+  seenRef.current = true;
+  pushToast({
+    kind: 'warning',
+    message,
+    source: 'bg-lipsync-host',
+    ttlMs: 12000,
+  });
+}
+function resolveO3FailureBanner(
+  beat: BgBeat,
+  lipsyncHostReady: boolean | null,
+  eventId?: string,
+): string | null {
+  if (!isO3VoiceBeat(beat)) return null;
+  if (beatO3JobLooksRunning(beat)) return null;
+  const err = (beat.kling_o3_voice_fix_error ?? '').trim();
+  if (!err) return null;
+  if (
+    effectiveGenerationMode(beat, eventId) === 'voice_first'
+    && lipsyncHostReady === true
+    && isStaleLipsyncHostingFailure(err)
+    && beat.kling_o3_status === 'approved'
+    && isUserSelectableO3Video(beat.kling_o3_video_path)
+  ) {
+    return null;
   }
-  if (runtime.includes('Could not download the input')) {
-    return 'WaveSpeed could not download the lipsync input URL. Data-URI fallback is disabled because it returns sub-720p output; previous approved clip was kept active.';
+  return formatO3JobFailure(err);
+}
+
+function beatGenFailureNotifyKey(beat: BgBeat): string | null {
+  const voiceFix = (beat.kling_o3_voice_fix_status ?? '').toLowerCase();
+  const err = (beat.kling_o3_voice_fix_error ?? '').trim();
+  if (!beatO3JobLooksRunning(beat) && err) {
+    return `o3-attempt-fail:${beat.beat_id}:${err.slice(0, 120)}`;
   }
-  if (runtime.includes('No lipsync input host returned byte-complete public files')) {
-    return 'No lipsync input host returned byte-complete public files. The job was stopped before WaveSpeed submission; previous approved clip was kept active.';
+  if (voiceFix.startsWith('failed')) {
+    return `o3-fail:${beat.beat_id}:${voiceFix}:${err.slice(0, 120)}`;
   }
-  if (runtime.includes('O3 job process is no longer running')) {
-    return 'The O3 job process stopped without a completion result. The stale job marker was cleared; previous approved clip was kept active.';
+  const status = (beat.status ?? '').toLowerCase();
+  if (status.includes('failed') || status.startsWith('o3_voice_job_failed')) {
+    return `status-fail:${beat.beat_id}:${status}`;
   }
-  return runtime.split('\n').filter(Boolean).pop()?.slice(0, 500) ?? runtime.slice(0, 500);
+  return null;
+}
+
+function notifyNewGenFailures(beats: BgBeat[], seenRef: { current: Set<string> }): void {
+  for (const beat of beats) {
+    const key = beatGenFailureNotifyKey(beat);
+    if (!key || seenRef.current.has(key)) continue;
+    seenRef.current.add(key);
+    const detail = beat.kling_o3_voice_fix_error
+      ? formatO3JobFailure(beat.kling_o3_voice_fix_error)
+      : (beat.status ?? 'generation failed');
+    pushToast({
+      kind: 'error',
+      message: `${beat.beat_id}: ${detail}`,
+      source: 'bg-gen-failure',
+    });
+  }
 }
 
 // Stage-direction chip extraction.
@@ -494,26 +680,56 @@ function scrollToBeat(beatId: string): void {
 
 interface BgBeatNavProps {
   beats: ReadonlyArray<{ beat_id: string }>;
+  itemStatuses: ReadonlyArray<BeatNavItemStatus>;
   activeIndex: number | null;
   onJump: (beatId: string, index: number) => void;
 }
 
-function BgBeatNav({ beats, activeIndex, onJump }: BgBeatNavProps) {
+function BgBeatNav({ beats, itemStatuses, activeIndex, onJump }: BgBeatNavProps) {
   return (
     <nav class="mn-bg-beat-nav" aria-label="Jump to beat" data-testid="bg-beat-nav">
-      {beats.map((b, i) => (
-        <button
-          type="button"
-          key={b.beat_id}
-          class={`mn-bg-beat-nav-item${activeIndex === i ? ' is-active' : ''}`}
-          data-testid={`bg-beat-nav-${i}`}
-          {...(activeIndex === i ? { 'aria-current': 'true' as const } : {})}
-          title={b.beat_id}
-          onClick={() => onJump(b.beat_id, i)}
-        >
-          Beat {i + 1}
-        </button>
-      ))}
+      {beats.map((b, i) => {
+        const status = itemStatuses[i] ?? { hasActiveJob: false, isApproved: false, activeJobHint: null };
+        const badgeParts: string[] = [];
+        if (status.hasActiveJob) badgeParts.push('active job');
+        if (status.isApproved) badgeParts.push('approved');
+        const title = badgeParts.length > 0
+          ? `${b.beat_id} (${badgeParts.join(', ')})`
+          : b.beat_id;
+        return (
+          <button
+            type="button"
+            key={b.beat_id}
+            class={`mn-bg-beat-nav-item${activeIndex === i ? ' is-active' : ''}`}
+            data-testid={`bg-beat-nav-${i}`}
+            {...(activeIndex === i ? { 'aria-current': 'true' as const } : {})}
+            title={title}
+            onClick={() => onJump(b.beat_id, i)}
+          >
+            <span class="mn-bg-beat-nav-label">Beat {i + 1}</span>
+            {(status.hasActiveJob || status.isApproved) ? (
+              <span class="mn-bg-beat-nav-badges" aria-hidden="true">
+                {status.hasActiveJob ? (
+                  <span
+                    class="mn-bg-beat-nav-dot"
+                    data-testid={`bg-beat-nav-dot-${i}`}
+                    title={status.activeJobHint ?? 'Job running'}
+                  />
+                ) : null}
+                {status.isApproved ? (
+                  <span
+                    class="mn-bg-beat-nav-check"
+                    data-testid={`bg-beat-nav-check-${i}`}
+                    title="Approved for stitch export"
+                  >
+                    ✓
+                  </span>
+                ) : null}
+              </span>
+            ) : null}
+          </button>
+        );
+      })}
     </nav>
   );
 }
@@ -523,31 +739,77 @@ function BgBeatNav({ beats, activeIndex, onJump }: BgBeatNavProps) {
 // ----------------------------------------------------------------
 
 export function BgTab() {
-  // Active context state.
-  const [arcNumber, setArcNumber] = useState<number>(1);
-  const [segments, setSegments] = useState<BgSegment[]>([]);
-  const [activeSegment, setActiveSegment] = useState<string>(''); // "<event_id>|<phase>"
-  const [beats, setBeats] = useState<BgBeat[]>([]);
-  // F-BG-001 fix: initial state is `true` because the data-load useEffect
-  // fires synchronously on first mount (prevDepsRef === null branch) and
-  // immediately sets loading=true. Without `true` here, the first paint
-  // would falsely show the loaded-empty placeholder "(no segments yet)"
-  // for one frame before the fetch starts.
-  const [loading, setLoading] = useState(true);
-  const [activeJobId, setActiveJobId] = useState<string | null>(null);
-  const [activeO3Jobs, setActiveO3Jobs] = useState<Record<string, string>>({});
-  const [activeStillRenderJobs, setActiveStillRenderJobs] = useState<Record<string, boolean>>({});
-  const [activeNativeLipSyncJobs, setActiveNativeLipSyncJobs] = useState<Record<string, string>>({});
-  const [pollResults, setPollResults] = useState<Record<string, GptOption[]>>({});
+  const beats = bgBeats.value;
+  /** Mirror beats for Generate submit — ref box must not lag one render behind. */
+  const beatsRef = useRef<BgBeat[]>([]);
+  beatsRef.current = beats;
+
+  const arcNumber = bgArcNumber.value;
+  const segments = bgSegments.value;
+  const activeSegment = bgActiveSegment.value;
+  const isMilestoneScope = activeProjectType.value === 'milestone' && Boolean(activeMilestoneId.value);
+  const milestoneSegmentLabel = useMemo(() => {
+    if (!isMilestoneScope || segments.length === 0) return activeMilestoneId.value ?? 'Milestone';
+    const s = segments[0];
+    return s.name ? `${s.name}` : `Event ${s.event_id} ${s.phase}`;
+  }, [isMilestoneScope, segments, activeMilestoneId.value]);
+  const loading = bgSessionLoading.value && !bgSessionHasCache();
+  const loadingSlowHint = bgSessionSlowHint.value;
+  const activeJobId = bgActiveJobId.value;
+  const activeO3Jobs = bgActiveO3Jobs.value;
+  const o3IntentByBeat = bgO3IntentByBeat.value as Record<string, O3GenerationIntentPoll>;
+  const o3SubmitAuditByBeat = bgO3SubmitAuditByBeat.value as Record<string, O3SubmitAudit>;
+  const o3SubmitPending = bgO3SubmitPending.value;
+  const o3WarningByBeat = bgO3WarningByBeat.value;
+  const activeStillRenderJobs = bgActiveStillRenderJobs.value;
+  const gptBatchSubmitPending = bgGptBatchSubmitPending.value;
+  const activeNativeLipSyncJobs = bgActiveNativeLipSyncJobs.value;
+  const lipsyncPublicHostReady = bgLipsyncPublicHostReady.value;
+  const lipsyncPublicHostMessage = bgLipsyncPublicHostMessage.value;
+  const pollResults = bgPollResults.value;
+
+  const o3SubmitPendingTimersRef = useRef<Record<string, number>>({});
+  const markO3SubmitPending = useCallback((beatId: string) => {
+    bgO3SubmitPending.value = { ...bgO3SubmitPending.value, [beatId]: true };
+    const existingTimer = o3SubmitPendingTimersRef.current[beatId];
+    if (existingTimer) window.clearTimeout(existingTimer);
+    o3SubmitPendingTimersRef.current[beatId] = window.setTimeout(() => {
+      bgO3SubmitPending.value = (prev => {
+        const next = { ...prev };
+        delete next[beatId];
+        return next;
+      })(bgO3SubmitPending.value);
+      delete o3SubmitPendingTimersRef.current[beatId];
+    }, O3_SUBMIT_PENDING_TTL_MS);
+  }, []);
+  const clearO3SubmitPending = useCallback((beatId: string) => {
+    const timer = o3SubmitPendingTimersRef.current[beatId];
+    if (timer) {
+      window.clearTimeout(timer);
+      delete o3SubmitPendingTimersRef.current[beatId];
+    }
+    bgO3SubmitPending.value = (prev => {
+      const next = { ...prev };
+      delete next[beatId];
+      return next;
+    })(bgO3SubmitPending.value);
+  }, []);
+  const lipsyncHostBlockToastRef = useRef(false);
   const [, setAcceptStatus] = useState<'idle' | 'sending' | 'ok' | 'error'>('idle');
-  const [stitcherExportStatus, setStitcherExportStatus] = useState<'idle' | 'sending'>('idle');
+  const [stitcherExportStatus, setStitcherExportStatus] = useState<'idle' | 'submitting' | 'exporting'>('idle');
+  const [activeExportJobId, setActiveExportJobId] = useState<string | null>(null);
+  const [exportProgressMessage, setExportProgressMessage] = useState('');
+  const exportTerminalToastRef = useRef<string | null>(null);
   const [extractStatus, setExtractStatus] = useState<'idle' | 'sending'>('idle');
   const [extractError, setExtractError] = useState<string | null>(null);
   const [approveStatus, setApproveStatus] = useState<'idle' | 'sending'>('idle');
   const [approveStartedAt, setApproveStartedAt] = useState<number | null>(null);
+  /** EXTRACT_APPROVE_OUTCOME_V1 — inline modal error when approve fails (not toast-only). */
+  const [approveBeatPlanError, setApproveBeatPlanError] = useState<string | null>(null);
   const [beatPlanOpen, setBeatPlanOpen] = useState(false);
   const [beatPlanSummary, setBeatPlanSummary] = useState('');
   const [beatPlanRows, setBeatPlanRows] = useState<BeatPlanRow[]>([]);
+  const [beatPlanDraftSaveStatus, setBeatPlanDraftSaveStatus] = useState<BeatPlanDraftSaveStatus>('idle');
   // Running cost across this session (only counts batches submitted from this UI).
   const [runningCostUsd, setRunningCostUsd] = useState<number>(0);
   const [lastBatchCostUsd, setLastBatchCostUsd] = useState<number>(0);
@@ -558,12 +820,46 @@ export function BgTab() {
   const [insertSubmitting, setInsertSubmitting] = useState(false);
   const [insertError, setInsertError] = useState('');
   const [activeNavIndex, setActiveNavIndex] = useState<number | null>(null);
+  const [reorderBusyBeatId, setReorderBusyBeatId] = useState<string | null>(null);
   const navJumpLockUntilRef = useRef<number>(0);
   const closeModal = () => setModalState({ kind: 'none' });
+
+  const purgeO3ClientLatchesForBeatIds = useCallback((beatIds: string[]) => {
+    const ids = beatIds.map((id) => id.trim()).filter(Boolean);
+    if (ids.length === 0) return;
+    for (const id of ids) {
+      delete submitPollLatchRef.current[id];
+    }
+    const purged = purgeO3ClientJobStateForBeatIds(ids, {
+      o3IntentByBeat: bgO3IntentByBeat.value as Record<string, O3GenerationIntentPoll>,
+      o3SubmitAuditByBeat: bgO3SubmitAuditByBeat.value as Record<string, O3SubmitAudit>,
+      activeO3Jobs: bgActiveO3Jobs.value,
+      o3SubmitPending: bgO3SubmitPending.value,
+      submitPollLatch: submitPollLatchRef.current,
+    });
+    bgO3IntentByBeat.value = purged.o3IntentByBeat;
+    bgO3SubmitAuditByBeat.value = purged.o3SubmitAuditByBeat;
+    bgActiveO3Jobs.value = purged.activeO3Jobs;
+    bgO3SubmitPending.value = purged.o3SubmitPending;
+  }, []);
 
   const beatIdsKey = useMemo(
     () => beats.map((b) => b.beat_id).join('|'),
     [beats],
+  );
+
+  const beatNavJobContext = useMemo(() => ({
+    activeJobId,
+    activeO3Jobs,
+    o3SubmitPending,
+    activeStillRenderJobs,
+    activeNativeLipSyncJobs,
+    gptBatchSubmitPending,
+  }), [activeJobId, activeO3Jobs, o3SubmitPending, activeStillRenderJobs, activeNativeLipSyncJobs, gptBatchSubmitPending]);
+
+  const beatNavItemStatuses = useMemo(
+    () => computeBeatNavItemStatuses(beats, beatNavJobContext),
+    [beats, beatNavJobContext],
   );
 
   // Reset highlight when segment/event/arc reload replaces the beat list.
@@ -604,296 +900,58 @@ export function BgTab() {
     return () => observer.disconnect();
   }, [beatIdsKey, beats.length]);
 
-  // Initial load + scope-change re-fetch (R1 fix per spec §5 Phase 3.1).
-  // Deps include all scope signals so changing event/milestone/partition
-  // re-fires the fetch. First mount runs sync; subsequent runs are debounced
-  // 200ms (counter Q6 — first-run-sync gate via prevDepsRef).
-  const prevDepsRef = useRef<string | null>(null);
-  const beatSaveNotFoundToastRef = useRef(new Set<string>());
-  const beatSaveBlockedRef = useRef(new Set<string>());
-  useEffect(() => {
-    let cancelled = false;
-    let timer: number | null = null;
-    const fetchData = async () => {
-      setLoading(true);
-      setActiveO3Jobs({});
-      try {
-        const segRes = await apiGet<BgSegmentsResponse>('bg_segments', { arc_number: String(arcNumber) });
-        if (cancelled) return;
-        const segs = segRes.data?.segments ?? [];
-        setSegments(segs);
-
-        // LD-545 Option B — scope_event_id + scope_video_role derive the segment
-        // (intro→pre, resolution→post). Without scope_video_role the server falls
-        // back to stale sidecar active_context and shows the wrong beats.
-        const stateRes = await apiGet<BgSessionState>('bg_session_state', {
-          scope_event_id: activeScope.value.event_id,
-          scope_video_role: activeTargetVideo.value,
-        });
-        if (cancelled) return;
-        const ctx = stateRes.data?.scope_active_context ?? stateRes.data?.active_context;
-        if (ctx) {
-          setArcNumber(Number(ctx.arc_number) || arcNumber);
-          setActiveSegment(`${ctx.event_id}|${ctx.phase}`);
-        } else if (segs.length > 0) {
-          setActiveSegment(`${segs[0].event_id}|${segs[0].phase}`);
-        }
-        const initialBeats = stateRes.data?.beats ?? [];
-        setBeats(initialBeats);
-        setActiveJobId((prev) => prev ?? collectActiveStillJobFromBeats(initialBeats));
-        // Server sidecar is the source of truth. Do not merge old local active
-        // jobs back in, or a tab can keep showing "Generating..." after the
-        // backend has failed/cleared the job.
-        setActiveO3Jobs(collectActiveO3JobsFromBeats(initialBeats));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-
-    const depKey = [
-      arcNumber,
-      serverRehydrateTick.value,
-      activeScope.value.event_id,
-      activeProjectType.value,
-      activeMilestoneId.value ?? '',
-      activeTargetVideo.value,
-    ].join('|');
-
-    if (prevDepsRef.current === null) {
-      // First mount: sync — must not delay or initial render shows empty.
-      prevDepsRef.current = depKey;
-      fetchData();
-    } else if (prevDepsRef.current !== depKey) {
-      // Subsequent re-fires (scope change): 200ms debounce.
-      prevDepsRef.current = depKey;
-      timer = window.setTimeout(fetchData, 200);
-    }
-
-    return () => {
-      cancelled = true;
-      if (timer !== null) clearTimeout(timer);
-    };
-  }, [
-    arcNumber,
-    serverRehydrateTick.value,
-    activeScope.value.event_id,
-    activeProjectType.value,
-    activeMilestoneId.value,
-    activeTargetVideo.value,
-  ]);
-
-  // Poll GPT job until done.
-  useEffect(() => {
-    if (!activeJobId) return;
-    let cancelled = false;
-    let timer: number | null = null;
-
-    const poll = async () => {
-      const res = await apiGet<GptPollResponse>('bg_poll_gpt_status', { job_id: activeJobId });
-      if (cancelled) return;
-      if (res.ok && res.data) {
-        setPollResults(res.data.results ?? {});
-        if (res.data.status === 'done') {
-          setActiveJobId(null);
-          // Compute batch cost from completed results.
-          let cost = 0;
-          for (const opts of Object.values(res.data.results ?? {})) {
-            for (const o of opts) {
-              if (typeof o.cost_usd === 'number') cost += o.cost_usd;
-            }
-          }
-          if (cost === 0) {
-            // Fall back to flat per-image price × done count.
-            cost = res.data.done_count * PER_IMAGE_COST_USD;
-          }
-          setLastBatchCostUsd(cost);
-          setRunningCostUsd((c) => c + cost);
-          pushToast({ kind: 'success', message: `Generated ${res.data.done_count} options ($${cost.toFixed(2)})`, source: 'bg-batch-done' });
-          // Refresh sidecar so beats[].gpt_options + status update.
-          void refreshState();
-          return;
-        }
-      } else {
-        pushToast({ kind: 'error', message: `Poll error: ${res.error}`, source: 'bg-poll-error' });
-        setActiveJobId(null);
-        return;
-      }
-      timer = window.setTimeout(poll, POLL_INTERVAL_MS);
-    };
-    poll();
-    return () => {
-      cancelled = true;
-      if (timer !== null) clearTimeout(timer);
-    };
-  }, [activeJobId]);
-
-  // Poll durable O3 + padded voice jobs until done. O3 jobs are tracked per
-  // beat so Kim can submit multiple independent beats concurrently.
-  useEffect(() => {
-    const entries = Object.entries(activeO3Jobs);
-    if (entries.length === 0) return;
-    let cancelled = false;
-    let timer: number | null = null;
-
-    const poll = async () => {
-      const jobs = Object.entries(activeO3Jobs);
-      let anyStillRunning = false;
-      const completedBeatIds: string[] = [];
-      const failedBeatIds: string[] = [];
-      const staleBeatIds: string[] = [];
-
-      const beatPatches: BgBeat[] = [];
-
-      await Promise.all(jobs.map(async ([beatId, jobId]) => {
-        const res = await apiGet<ArloO3PollResponse>('bg_poll_arlo_o3_voice_status', { job_id: jobId });
-        if (cancelled) return;
-        if (res.ok && res.data) {
-          if (res.data.status === 'done') {
-            completedBeatIds.push(beatId);
-            if (res.data.beat) beatPatches.push(res.data.beat);
-            pushToast({
-              kind: 'success',
-              message: `${beatId}: O3 voice video ready${res.data.result?.duration_s ? ` (${res.data.result.duration_s.toFixed(2)}s)` : ''}`,
-              source: 'bg-o3-done',
-            });
-            return;
-          }
-          if (res.data.status === 'failed') {
-            failedBeatIds.push(beatId);
-            if (res.data.beat) beatPatches.push(res.data.beat);
-            pushToast({
-              kind: 'error',
-              message: `${beatId}: O3 voice job failed: ${formatO3JobFailure(res.data.error)}`,
-              source: 'bg-o3-error',
-            });
-            return;
-          }
-          anyStillRunning = true;
-          return;
-        }
-        if (isNetworkPollBlip(res)) {
-          anyStillRunning = true;
-          return;
-        }
-        if (isStaleO3JobPoll(res)) {
-          staleBeatIds.push(beatId);
-          return;
-        }
-        failedBeatIds.push(beatId);
-        pushToast({ kind: 'error', message: `O3 poll error: ${res.error}`, source: 'bg-o3-poll-error' });
-      }));
-      if (cancelled) return;
-
-      if (completedBeatIds.length > 0 || failedBeatIds.length > 0 || staleBeatIds.length > 0) {
-        setActiveO3Jobs((prev) => {
-          const next = { ...prev };
-          for (const beatId of [...completedBeatIds, ...failedBeatIds, ...staleBeatIds]) {
-            delete next[beatId];
-          }
-          return next;
-        });
-        if (beatPatches.length > 0) {
-          setBeats((bs) => beatPatches.reduce((acc, patch) => mergeBeatFromO3Poll(acc, patch), bs));
-        } else {
-          void refreshState();
-        }
-      }
-      if (!anyStillRunning) {
-        return;
-      }
-      timer = window.setTimeout(poll, O3_POLL_INTERVAL_MS);
-    };
-    poll();
-    return () => {
-      cancelled = true;
-      if (timer !== null) clearTimeout(timer);
-    };
-  }, [activeO3Jobs]);
-
-  // After server restart, drop stale poll ids once sidecar reloads.
-  useEffect(() => {
-    if (serverRehydrateTick.value <= 0) return;
-    void refreshState();
-  }, [serverRehydrateTick.value]);
-
-  // Poll isolated native Kling-compatible lipsync experiments. These jobs
-  // never approve or replace the current O3 clip; they only report raw proof.
-  useEffect(() => {
-    const entries = Object.entries(activeNativeLipSyncJobs);
-    if (entries.length === 0) return;
-    let cancelled = false;
-    let timer: number | null = null;
-
-    const poll = async () => {
-      const jobs = Object.entries(activeNativeLipSyncJobs);
-      let anyStillRunning = false;
-      const completedBeatIds: string[] = [];
-
-      await Promise.all(jobs.map(async ([beatId, jobId]) => {
-        const res = await apiGet<NativeLipSyncPollResponse>(
-          'bg_poll_kling_native_lipsync_experiment_status',
-          { job_id: jobId },
-        );
-        if (cancelled) return;
-        if (res.ok && res.data) {
-          if (res.data.status === 'running') {
-            anyStillRunning = true;
-            return;
-          }
-          completedBeatIds.push(beatId);
-          const profile = res.data.result?.raw_profile;
-          const dims = profile?.width && profile?.height ? `${profile.width}x${profile.height}` : 'no raw dimensions';
-          const passed = res.data.result?.passed_gate === true;
-          pushToast({
-            kind: passed ? 'success' : 'error',
-            message: passed
-              ? `Native Kling LipSync proof passed raw gate (${dims}). No approval was changed.`
-              : `Native Kling LipSync proof failed or blocked (${dims}). No approval was changed.`,
-            source: passed ? 'bg-native-lipsync-done' : 'bg-native-lipsync-failed',
-          });
-          return;
-        }
-        completedBeatIds.push(beatId);
-        pushToast({ kind: 'error', message: `Native lipsync poll error: ${res.error}`, source: 'bg-native-lipsync-poll-error' });
-      }));
-      if (cancelled) return;
-
-      if (completedBeatIds.length > 0) {
-        setActiveNativeLipSyncJobs((prev) => {
-          const next = { ...prev };
-          for (const beatId of completedBeatIds) delete next[beatId];
-          return next;
-        });
-        void refreshState();
-      }
-      if (!anyStillRunning) return;
-      timer = window.setTimeout(poll, POLL_INTERVAL_MS);
-    };
-    poll();
-    return () => {
-      cancelled = true;
-      if (timer !== null) clearTimeout(timer);
-    };
-  }, [activeNativeLipSyncJobs]);
-
   const refreshState = async () => {
-    // LD-545 Option B — include scope_event_id on refresh fetches too.
-    const stateRes = await apiGet<BgSessionState>('bg_session_state', {
-      scope_event_id: activeScope.value.event_id,
-      scope_video_role: activeTargetVideo.value,
+    const ok = await refreshBgSession();
+    if (!ok) return;
+    const nextBeats = bgBeats.value;
+    notifyNewGenFailures(nextBeats, genFailureToastRef);
+    const liveIds = new Set(nextBeats.map((b) => b.beat_id));
+    beatSaveBlockedRef.current.forEach((id) => {
+      if (liveIds.has(id)) beatSaveBlockedRef.current.delete(id);
     });
-    if (stateRes.ok && stateRes.data) {
-      const nextBeats = stateRes.data.beats ?? [];
-      setBeats(nextBeats);
-      const liveIds = new Set(nextBeats.map((b) => b.beat_id));
-      beatSaveBlockedRef.current.forEach((id) => {
-        if (liveIds.has(id)) beatSaveBlockedRef.current.delete(id);
-      });
-      setActiveJobId((prev) => prev ?? collectActiveStillJobFromBeats(nextBeats));
-      setActiveO3Jobs(collectActiveO3JobsFromBeats(nextBeats));
-      setActiveNativeLipSyncJobs(collectActiveNativeLipSyncJobsFromBeats(nextBeats));
+    const prunedPending = pruneO3SubmitPending(nextBeats, bgO3SubmitPending.value);
+    bgO3SubmitPending.value = prunedPending;
+    const nextIntent = { ...(bgO3IntentByBeat.value as Record<string, O3GenerationIntentPoll>) };
+    const nextAudit = { ...(bgO3SubmitAuditByBeat.value as Record<string, O3SubmitAudit>) };
+    for (const beat of nextBeats) {
+      const beatId = (beat.beat_id ?? '').trim();
+      if (!beatId) continue;
+      const o3PollActive = !!bgActiveO3Jobs.value[beatId];
+      if (
+        isStillInsertNavBeat(beat)
+        || (!beatO3JobBusy(beat, !!prunedPending[beatId]) && !o3PollActive)
+      ) {
+        delete nextIntent[beatId];
+        delete nextAudit[beatId];
+      }
     }
+    bgO3IntentByBeat.value = nextIntent;
+    bgO3SubmitAuditByBeat.value = nextAudit;
   };
+
+  // Track GPT batch completion for session cost display (poll lives in BgPollCoordinator).
+  useEffect(() => {
+    let prevJobId: string | null = null;
+    const dispose = effect(() => {
+      const jobId = bgActiveJobId.value;
+      if (prevJobId && !jobId) {
+        let cost = 0;
+        for (const opts of Object.values(bgPollResults.value)) {
+          for (const o of opts) {
+            if (typeof o.cost_usd === 'number') cost += o.cost_usd;
+          }
+        }
+        if (cost === 0) {
+          const doneCount = Object.values(bgPollResults.value).reduce((n, opts) => n + opts.length, 0);
+          cost = doneCount * PER_IMAGE_COST_USD;
+        }
+        setLastBatchCostUsd(cost);
+        setRunningCostUsd((c) => c + cost);
+      }
+      prevJobId = jobId;
+    });
+    return dispose;
+  }, []);
 
   useEffect(() => {
     const onMsg = (e: MessageEvent) => {
@@ -906,9 +964,34 @@ export function BgTab() {
     return () => window.removeEventListener('message', onMsg);
   }, []);
 
+  // Overnight / laptop-sleep: background tabs throttle O3 poll timers. Re-sync from
+  // sidecar when the tab wakes so Generating clears after the job finished on disk.
+  useEffect(() => {
+    const syncAfterWake = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshState();
+      }
+    };
+    document.addEventListener('visibilitychange', syncAfterWake);
+    window.addEventListener('focus', syncAfterWake);
+    return () => {
+      document.removeEventListener('visibilitychange', syncAfterWake);
+      window.removeEventListener('focus', syncAfterWake);
+    };
+  }, []);
+
   const handleBeatMissingOnSave = useCallback(async (beatId: string) => {
     beatSaveBlockedRef.current.add(beatId);
-    setBeats((bs) => bs.filter((b) => b.beat_id !== beatId));
+    const hadBeatLocally = bgBeats.value.some((b) => b.beat_id === beatId);
+    await refreshState();
+    const stillOnServer = bgBeats.value.some((b) => b.beat_id === beatId);
+    if (stillOnServer) {
+      beatSaveBlockedRef.current.delete(beatId);
+      return;
+    }
+    if (hadBeatLocally) {
+      updateBgBeats((bs) => bs.filter((b) => b.beat_id !== beatId));
+    }
     if (!beatSaveNotFoundToastRef.current.has(beatId)) {
       beatSaveNotFoundToastRef.current.add(beatId);
       pushToast({
@@ -918,7 +1001,6 @@ export function BgTab() {
         ttlMs: BEAT_MISSING_TOAST_MS,
       });
     }
-    await refreshState();
   }, [activeScope.value.event_id, activeTargetVideo.value]);
 
   const guardBeatPatchResult = useCallback(async (
@@ -928,6 +1010,7 @@ export function BgTab() {
     source: string,
   ): Promise<boolean> => {
     if (result.ok) return true;
+    if (isClientBundleStaleError(result)) return false;
     if (isBeatNotFoundResult(result)) {
       await handleBeatMissingOnSave(beatId);
       return false;
@@ -954,26 +1037,29 @@ export function BgTab() {
         });
         return;
       }
-      setActiveSegment(combined);
-      // activeTargetVideo change re-fires fetchData via useEffect — beats reload cleanly.
+      bgActiveSegment.value = combined;
+      // activeTargetVideo change re-fires session via ProducerSessionCoordinator.
       return;
     }
-    setActiveSegment(combined);
+    bgActiveSegment.value = combined;
     const result = await pathappPatch(activeScope.value, 'bg_set_active_context', {
       arc_number: arcNumber, event_id, phase,
     });
     if (!result.ok) {
-      pushToast({ kind: 'error', message: `Set context failed: ${result.error}`, source: 'bg-set-context' });
+      const msg = formatMutationError(result, 'Set context failed');
+      if (msg) {
+        pushToast({ kind: 'error', message: msg, source: 'bg-set-context' });
+      }
     }
     await refreshState();
   };
 
   const openBeatPlanDraft = async (): Promise<boolean> => {
-    if (!activeSegment) {
+    if (!activeSegment && !isMilestoneScope) {
       pushToast({ kind: 'info', message: 'Select a segment first.', source: 'bg-review-plan' });
       return false;
     }
-    const [event_id, phase] = activeSegment.split('|');
+    const { event_id, phase } = segmentCtx();
     const draftRes = await apiGet<{
       story_summary?: string;
       beats_plan?: BeatPlanRow[];
@@ -983,8 +1069,7 @@ export function BgTab() {
       arc_number: String(arcNumber),
       event_id,
       phase,
-      scope_event_id: activeScope.value.event_id,
-      scope_video_role: activeTargetVideo.value,
+      ...activeScopeQueryParams(),
     });
     if (!draftRes.ok) {
       pushToast({
@@ -1007,6 +1092,7 @@ export function BgTab() {
     }
     setBeatPlanSummary(draftRes.data?.story_summary ?? '');
     setBeatPlanRows(rows);
+    setBeatPlanDraftSaveStatus('saved');
     setBeatPlanOpen(true);
     if (draftRes.data?.reconstructed_from_beats) {
       pushToast({
@@ -1019,8 +1105,23 @@ export function BgTab() {
   };
 
   const onExtractBeats = async () => {
-    if (!activeSegment) return;
-    const [event_id, phase] = activeSegment.split('|');
+    if (!activeSegment && !isMilestoneScope) return;
+    const { event_id, phase } = segmentCtx();
+    const draftRes = await apiGet<{ beats_plan?: BeatPlanRow[] }>('bg_extract_beats_draft', {
+      arc_number: String(arcNumber),
+      event_id,
+      phase,
+      ...activeScopeQueryParams(),
+    });
+    const existingCount = draftRes.data?.beats_plan?.length ?? 0;
+    if (draftRes.ok && existingCount > 0) {
+      setModalState({ kind: 'extract-overwrite-confirm', beatCount: existingCount });
+      return;
+    }
+    await runExtractBeatsPlan(event_id, phase);
+  };
+
+  const runExtractBeatsPlan = async (event_id: string, phase: string) => {
     setExtractStatus('sending');
     setExtractError(null);
     const result = await pathappPatch<{
@@ -1037,6 +1138,7 @@ export function BgTab() {
       setExtractError(null);
       setBeatPlanSummary(result.data.story_summary ?? '');
       setBeatPlanRows(planRows);
+      setBeatPlanDraftSaveStatus('saved');
       setBeatPlanOpen(true);
       pushToast({
         kind: 'success',
@@ -1047,6 +1149,7 @@ export function BgTab() {
       setExtractError(null);
       setBeatPlanSummary(result.data?.story_summary ?? '');
       setBeatPlanRows(planRows);
+      setBeatPlanDraftSaveStatus('saved');
       setBeatPlanOpen(true);
       pushToast({
         kind: 'info',
@@ -1067,15 +1170,71 @@ export function BgTab() {
     }
   };
 
+  const confirmExtractOverwrite = async () => {
+    if (!activeSegment || modalState.kind !== 'extract-overwrite-confirm') return;
+    const [event_id, phase] = activeSegment.split('|');
+    closeModal();
+    await runExtractBeatsPlan(event_id, phase);
+  };
+
+  const onBeatPlanAutosave = useCallback(async (storySummary: string, beatsPlan: BeatPlanRow[]) => {
+    if (!activeSegment) return;
+    const [event_id, phase] = activeSegment.split('|');
+    setBeatPlanDraftSaveStatus('saving');
+    const result = await pathappPatch<{
+      beats_plan?: BeatPlanRow[];
+      saved_at?: string;
+      count?: number;
+    }>(
+      activeScope.value,
+      'bg_extract_beats_draft_save',
+      {
+        arc_number: arcNumber,
+        event_id,
+        phase,
+        story_summary: storySummary,
+        beats_plan: beatsPlan,
+        source: 'modal_autosave',
+      },
+    );
+    if (result.ok) {
+      setBeatPlanDraftSaveStatus('saved');
+      return;
+    }
+    setBeatPlanDraftSaveStatus('error');
+  }, [activeSegment, arcNumber, activeScope.value, activeTargetVideo.value]);
+
   const closeBeatPlanModal = () => {
     setBeatPlanOpen(false);
     setApproveStatus('idle');
     setApproveStartedAt(null);
+    setApproveBeatPlanError(null);
+    setBeatPlanDraftSaveStatus('idle');
+  };
+
+  const formatBeatPlanApproveError = (
+    result: Pick<ApiResult<unknown>, 'ok' | 'error' | 'error_code' | 'error_message' | 'status' | 'hint' | 'data'>,
+  ): string => {
+    const data = result.data as {
+      author_audit?: string[];
+      message?: string;
+      code?: string;
+    } | undefined;
+    if (Array.isArray(data?.author_audit) && data.author_audit.length > 0) {
+      const detail = data.author_audit.slice(0, 3).join('; ');
+      const more = data.author_audit.length > 3
+        ? ` (+${data.author_audit.length - 3} more)`
+        : '';
+      return `Approve failed — Kling author pass did not stick: ${detail}${more}`;
+    }
+    if (data?.message) return data.message;
+    return formatMutationError(result, 'Approve beat plan');
   };
 
   const onApproveBeatPlan = async (storySummary: string, beatsPlan: BeatPlanRow[]) => {
-    if (!activeSegment) return;
-    const [event_id, phase] = activeSegment.split('|');
+    if (!activeSegment && !isMilestoneScope) return;
+    const { event_id, phase } = segmentCtx();
+    setApproveBeatPlanError(null);
     setApproveStatus('sending');
     setApproveStartedAt(Date.now());
     try {
@@ -1089,10 +1248,17 @@ export function BgTab() {
         activeScope.value, 'bg_extract_beats_approve', {
           arc_number: arcNumber, event_id, phase, story_summary: storySummary, beats_plan: beatsPlan,
         },
+        { fetchTimeoutMs: 600_000 },
       );
       if (result.ok && result.data) {
-        setBeats(result.data.beats ?? []);
+        const approvedBeats = applyPromptEditsToBeats(result.data.beats ?? []);
+        updateBgBeats(approvedBeats);
         setBeatPlanOpen(false);
+        setApproveBeatPlanError(null);
+        await refreshState();
+        if (approvedBeats.length > 0 && bgBeats.value.length === 0) {
+          updateBgBeats(approvedBeats);
+        }
         pushToast({
           kind: 'success',
           message: (
@@ -1101,25 +1267,22 @@ export function BgTab() {
           ),
           source: 'bg-extract-approve',
         });
+      } else if (isNetworkPollBlip(result)) {
+        const msg = formatBeatPlanApproveError(result);
+        setApproveBeatPlanError(msg);
+        pushToast({ kind: 'error', message: msg, source: 'bg-approve-error' });
       } else {
-        const audit = result.data?.author_audit;
-        const detail = audit?.length
-          ? `: ${audit.slice(0, 2).join('; ')}`
-          : (result.error_message || result.error || '');
-        pushToast({
-          kind: 'error',
-          message: detail
-            ? `Approve failed — Kling author pass did not stick (${detail})`
-            : 'Approve failed — Kling author returned an empty or invalid response. Beats were not saved.',
-          source: 'bg-approve-error',
-        });
+        const msg = formatBeatPlanApproveError(result);
+        setApproveBeatPlanError(msg);
+        pushToast({ kind: 'error', message: msg, source: 'bg-approve-error' });
       }
     } catch (err) {
-      pushToast({
-        kind: 'error',
-        message: `Approve failed — ${err instanceof Error ? err.message : 'network error while building Kling prompts'}`,
-        source: 'bg-approve-error',
-      });
+      const msg = formatMutationError(
+        { ok: false, status: 0, error: err instanceof Error ? err.message : String(err) },
+        'Approve beat plan',
+      );
+      setApproveBeatPlanError(msg);
+      pushToast({ kind: 'error', message: msg, source: 'bg-approve-error' });
     } finally {
       setApproveStatus('idle');
       setApproveStartedAt(null);
@@ -1155,7 +1318,7 @@ export function BgTab() {
     setInsertSubmitting(false);
     if (result.ok && result.data?.beat) {
       const newBeat = result.data.beat;
-      setBeats((bs) => {
+      updateBgBeats((bs) => {
         if (bs.some((b) => b.beat_id === newBeat.beat_id)) return bs;
         const idx = bs.findIndex((b) => b.beat_id === insertAfterBeatId);
         const next = [...bs];
@@ -1181,44 +1344,124 @@ export function BgTab() {
     if (modalState.kind !== 'delete-beat') return;
     const beatId = modalState.beatId;
     closeModal();
+    const unsavedPrompt = readPromptEditText(beatId)?.trim();
+    if (unsavedPrompt) {
+      const saved = await onUpdateBeatText(beatId, unsavedPrompt);
+      if (!saved) {
+        pushToast({
+          kind: 'warning',
+          message:
+            `Could not save the prompt on ${beatId} — delete cancelled. `
+            + 'Fix the save error or copy your prompt elsewhere first.',
+          source: 'bg-delete-unsaved-prompt',
+        });
+        return;
+      }
+    }
     const result = await pathappPatch(activeScope.value, 'bg_delete_beat', { beat_id: beatId });
     if (result.ok) {
-      pushToast({ kind: 'info', message: `Deleted ${beatId}`, source: 'bg-delete' });
-      setBeats((bs) => bs.filter((b) => b.beat_id !== beatId));
+      clearPromptEdit(beatId);
+      pushToast({
+        kind: 'info',
+        message:
+          `Deleted ${beatId}. Other beats keep their own prompts — check the prompt box before Generate.`,
+        source: 'bg-delete',
+      });
+      updateBgBeats((bs) => bs.filter((b) => b.beat_id !== beatId));
     } else {
-      pushToast({ kind: 'error', message: `Delete failed: ${result.error}`, source: 'bg-delete-error' });
+      const msg = formatMutationError(result, 'Delete failed');
+      if (msg) {
+        pushToast({ kind: 'error', message: msg, source: 'bg-delete-error' });
+      }
     }
   };
 
   const onUpdateBeatText = async (beatId: string, nextText: string): Promise<boolean> => {
-    if (beatSaveBlockedRef.current.has(beatId)) return false;
-    setBeats((bs) => bs.map((b) => (
-      b.beat_id === beatId ? { ...b, kling_o3_prompt: nextText } : b
-    )));
-    const result = await pathappPatch<{
+    if (beatSaveBlockedRef.current.has(beatId)) {
+      if (!beatSaveNotFoundToastRef.current.has(beatId)) {
+        beatSaveNotFoundToastRef.current.add(beatId);
+        pushToast({
+          kind: 'warning',
+          message: beatMissingToastMessage(beatId),
+          source: 'bg-beat-missing-save',
+          ttlMs: BEAT_MISSING_TOAST_MS,
+        });
+      }
+      return false;
+    }
+    const beat = beats.find((b) => b.beat_id === beatId);
+    const mode = beat ? effectiveGenerationMode(beat, activeScope.value.event_id) : 'element_native';
+    const patchBody = {
+      beat_id: beatId,
+      ...(mode === 'still_insert'
+        ? { ['kling_o3_prompt_still']: nextText, ['kling_o3_prompt']: nextText }
+        : { ['kling_o3_prompt']: nextText }),
+    };
+    const patchBeatText = () => pathappPatch<{
       ok: boolean;
       element_char_ref_ok?: boolean;
       element_char_ref_error?: string | null;
       element_ref_warning?: string | null;
-    }>(activeScope.value, 'bg_update_beat', {
-      beat_id: beatId, kling_o3_prompt: nextText,
-    });
+    }>(activeScope.value, 'bg_update_beat', patchBody);
+    let result = await patchBeatText();
+    if (!result.ok && isOperatorJobBusyError(result.error_code)) {
+      await refreshState();
+      result = await patchBeatText();
+    }
+    if (!result.ok && result.error_code === 'SIDECAR_LOCK_TIMEOUT') {
+      await new Promise((r) => setTimeout(r, 2500));
+      result = await patchBeatText();
+    }
     if (!result.ok) {
       const err = (result.error || '').trim();
+      if (isClientBundleStaleError(result)) {
+        return false;
+      }
       if (isBeatNotFoundResult(result)) {
         await handleBeatMissingOnSave(beatId);
         return false;
       }
+      if (isOperatorJobBusyError(result.error_code)) {
+        pushToast({
+          kind: 'warning',
+          message:
+            'Beat is locked while a job is running — wait for it to finish, then try again.',
+          source: 'bg-job-busy-lock',
+        });
+        return false;
+      }
+      if (result.error_code === 'SIDECAR_LOCK_TIMEOUT') {
+        pushToast({
+          kind: 'warning',
+          message: formatMutationError(result, 'Save failed'),
+          source: 'bg-sidecar-lock-timeout',
+        });
+        return false;
+      }
       const msg = /failed to fetch|networkerror|load failed/i.test(err)
         ? 'Save failed — server was restarting. Wait for “server is back”, then click Generate again (your text is still in the box).'
-        : `Save failed: ${result.error}`;
+        : formatMutationError(result, 'Save failed');
+      if (!msg) return false;
       pushToast({ kind: 'error', message: msg, source: 'bg-update-text' });
       return false;
     }
+    updateBgBeats((bs) => bs.map((b): BgBeat => {
+      if (b.beat_id !== beatId) return b;
+      const next: BgBeat = { ...b };
+      if (mode === 'still_insert') {
+        next.kling_o3_prompt_still = nextText;
+        next.kling_o3_prompt = nextText;
+      } else {
+        next.kling_o3_prompt = nextText;
+      }
+      if (nextText.trim()) next.o3_prompt_box_law = true;
+      else delete next.o3_prompt_box_law;
+      return next;
+    }));
     if (result.data && typeof result.data.element_char_ref_ok === 'boolean') {
       const gateOk = result.data.element_char_ref_ok;
       const gateErr = result.data.element_char_ref_error ?? null;
-      setBeats((bs) => bs.map((b): BgBeat => {
+      updateBgBeats((bs) => bs.map((b): BgBeat => {
         if (b.beat_id !== beatId) return b;
         const next: BgBeat = { ...b, element_char_ref_ok: gateOk };
         if (gateErr) next.element_char_ref_error = gateErr;
@@ -1239,21 +1482,41 @@ export function BgTab() {
     refField: 'reference_image' | 'bg_ref_image',
     patch: { key?: string; abs_path?: string; thumb_b64?: string } | null,
   ) => {
-    setBeats((bs) => bs.map((b): BgBeat => {
+    const lockField = refField === 'reference_image'
+      ? 'reference_image_locked'
+      : 'bg_ref_image_locked';
+    updateBgBeats((bs) => bs.map((b): BgBeat => {
       if (b.beat_id !== beatId) return b;
-      return { ...b, [refField]: patch };
+      if (patch === null) {
+        const next: BgBeat = { ...b, [refField]: null };
+        next[lockField] = false;
+        if (refField === 'reference_image' && b._derived?.char_ref_display) {
+          next._derived = { ...(b._derived ?? {}), char_ref_display: null };
+        }
+        return next;
+      }
+      const next: BgBeat = { ...b, [refField]: patch, [lockField]: true };
+      if (refField === 'reference_image') {
+        next._derived = { ...(b._derived ?? {}), char_ref_display: patch };
+      } else if (isStillInsertBeat(b)) {
+        next._derived = { ...(b._derived ?? {}), still_scene_display: patch };
+      } else {
+        next._derived = { ...(b._derived ?? {}), bg_ref_display: patch };
+      }
+      return next;
     }));
   };
 
   const onUpdateBeatSpeaker = async (beatId: string, nextSpeaker: string) => {
     if (beatSaveBlockedRef.current.has(beatId)) return;
-    setBeats((bs) => bs.map((b) => (
+    updateBgBeats((bs) => bs.map((b) => (
       b.beat_id === beatId ? { ...b, speaker: nextSpeaker } : b
     )));
     const result = await pathappPatch<{
       ok: boolean;
       element_char_ref_ok?: boolean;
       element_char_ref_error?: string | null;
+      thumb_b64?: string;
     }>(activeScope.value, 'bg_update_beat', {
       beat_id: beatId, speaker: nextSpeaker,
     });
@@ -1261,7 +1524,7 @@ export function BgTab() {
       const gateOk = result.data?.element_char_ref_ok;
       const gateErr = result.data?.element_char_ref_error ?? null;
       if (typeof gateOk === 'boolean') {
-        setBeats((bs) => bs.map((b): BgBeat => {
+        updateBgBeats((bs) => bs.map((b): BgBeat => {
           if (b.beat_id !== beatId) return b;
           const next: BgBeat = { ...b, element_char_ref_ok: gateOk };
           if (gateErr) next.element_char_ref_error = gateErr;
@@ -1276,6 +1539,122 @@ export function BgTab() {
       result,
       `Speaker save failed: ${result.error}`,
       'bg-update-speaker',
+    );
+  };
+
+  const onSetBeatGenerationMode = async (beatId: string, mode: BeatGenerationMode) => {
+    if (beatSaveBlockedRef.current.has(beatId)) return;
+    const beat = beats.find((b) => b.beat_id === beatId);
+    if (!beat || !isPipelineToggleable(beat)) return;
+    if (effectiveGenerationMode(beat, activeScope.value.event_id) === mode) return;
+    const oldMode = effectiveGenerationMode(beat, activeScope.value.event_id);
+    const currentText = beatPromptText(beat, activeScope.value.event_id);
+    updateBgBeats((bs) => bs.map((b): BgBeat => {
+      if (b.beat_id !== beatId) return b;
+      const next: BgBeat = { ...b };
+      if (oldMode === 'still_insert') {
+        next.kling_o3_prompt_still = currentText;
+      } else if (currentText && !isStillInsertPromptText(currentText)) {
+        next.kling_o3_prompt = currentText;
+      }
+      if (mode === 'still_insert') {
+        next.pipeline = 'still_insert';
+        next.beat_render_mode = 'still_insert';
+        next.generation_mode = 'still_insert';
+        const stillPrompt = (next.kling_o3_prompt_still ?? '').trim()
+          || (isStillInsertPromptText(next.kling_o3_prompt) ? next.kling_o3_prompt : '');
+        if (stillPrompt) {
+          next.kling_o3_prompt = stillPrompt;
+          next.kling_o3_prompt_still = stillPrompt;
+        }
+      } else {
+        next.pipeline = 'kling_o3_omni';
+        next.o3_generate_mode = mode;
+        next.generation_mode = mode;
+        delete next.beat_render_mode;
+        const o3Prompt = (next.kling_o3_prompt ?? '').trim();
+        if (!o3Prompt || isStillInsertPromptText(o3Prompt)) {
+          // keep server rebuild; clear stale still header from textarea
+          if (isStillInsertPromptText(o3Prompt)) {
+            next.kling_o3_prompt = '';
+          }
+        }
+      }
+      return next;
+    }));
+    if (mode === 'still_insert') {
+      purgeO3ClientLatchesForBeatIds([beatId]);
+    }
+    const result = await pathappPatch<{
+      ok: boolean;
+      pipeline?: string;
+      beat_render_mode?: string;
+      beat_type?: string;
+      kling_o3_prompt?: string;
+      kling_o3_prompt_still?: string;
+      o3_generate_mode?: string;
+      generation_mode?: BeatGenerationMode;
+      element_char_ref_ok?: boolean;
+      element_char_ref_error?: string | null;
+      changed?: boolean;
+    }>(activeScope.value, 'bg_set_pipeline', {
+      beat_id: beatId,
+      generation_mode: mode,
+    });
+    let pipelineResult = result;
+    if (!pipelineResult.ok && isOperatorJobBusyError(pipelineResult.error_code)) {
+      await refreshState();
+      pipelineResult = await pathappPatch(activeScope.value, 'bg_set_pipeline', {
+        beat_id: beatId,
+        generation_mode: mode,
+      });
+    }
+    if (pipelineResult.ok && pipelineResult.data) {
+      updateBgBeats((bs) => bs.map((b): BgBeat => {
+        if (b.beat_id !== beatId) return b;
+        const next: BgBeat = { ...b };
+        if (pipelineResult.data?.pipeline) next.pipeline = pipelineResult.data.pipeline;
+        if (pipelineResult.data?.beat_render_mode) {
+          next.beat_render_mode = pipelineResult.data.beat_render_mode;
+        } else {
+          delete next.beat_render_mode;
+        }
+        if (pipelineResult.data?.o3_generate_mode) {
+          next.o3_generate_mode = pipelineResult.data.o3_generate_mode;
+        }
+        if (pipelineResult.data?.generation_mode) {
+          next.generation_mode = pipelineResult.data.generation_mode;
+        }
+        if (pipelineResult.data?.kling_o3_prompt) {
+          next.kling_o3_prompt = pipelineResult.data.kling_o3_prompt;
+        }
+        if (pipelineResult.data?.kling_o3_prompt_still) {
+          next.kling_o3_prompt_still = pipelineResult.data.kling_o3_prompt_still;
+        }
+        if (typeof pipelineResult.data?.element_char_ref_ok === 'boolean') {
+          next.element_char_ref_ok = pipelineResult.data.element_char_ref_ok;
+          if (pipelineResult.data.element_char_ref_error) {
+            next.element_char_ref_error = pipelineResult.data.element_char_ref_error;
+          } else {
+            delete next.element_char_ref_error;
+          }
+        }
+        return next;
+      }));
+      pushToast({
+        kind: 'success',
+        message: GENERATION_MODE_TOAST[mode],
+        source: 'bg-set-pipeline',
+      });
+      await refreshState();
+    } else {
+      await refreshState();
+    }
+    await guardBeatPatchResult(
+      beatId,
+      pipelineResult,
+      `Pipeline switch failed: ${pipelineResult.error}`,
+      'bg-set-pipeline-error',
     );
   };
 
@@ -1311,7 +1690,7 @@ export function BgTab() {
     }
     const gateOk = data?.element_char_ref_ok;
     if (typeof gateOk === 'boolean') {
-      setBeats((bs) => bs.map((b): BgBeat => {
+      updateBgBeats((bs) => bs.map((b): BgBeat => {
         if (b.beat_id !== beatId) return b;
         const next: BgBeat = { ...b, element_char_ref_ok: gateOk };
         const gateErr = data?.element_char_ref_error ?? null;
@@ -1363,7 +1742,7 @@ export function BgTab() {
     const data = result.data;
     const gateOk = data?.element_char_ref_ok;
     if (typeof gateOk === 'boolean') {
-      setBeats((bs) => bs.map((b): BgBeat => {
+      updateBgBeats((bs) => bs.map((b): BgBeat => {
         if (b.beat_id !== beatId) return b;
         const next: BgBeat = { ...b, element_char_ref_ok: gateOk };
         const gateErr = data?.element_char_ref_error ?? null;
@@ -1383,13 +1762,19 @@ export function BgTab() {
 
   const onSetReplaceSlot = async (beatId: string, slotIndex: number) => {
     if (beatSaveBlockedRef.current.has(beatId)) return;
-    setBeats((prev) => prev.map((b) => (
+    const priorSlot = beats.find((b) => b.beat_id === beatId)?.kling_o3_replace_slot_index ?? 0;
+    updateBgBeats((prev) => prev.map((b) => (
       b.beat_id === beatId ? { ...b, kling_o3_replace_slot_index: slotIndex } : b
     )));
     const result = await pathappPatch(activeScope.value, 'bg_update_beat', {
       beat_id: beatId,
       kling_o3_replace_slot_index: slotIndex,
     });
+    if (!result.ok && priorSlot !== slotIndex) {
+      updateBgBeats((prev) => prev.map((b) => (
+        b.beat_id === beatId ? { ...b, kling_o3_replace_slot_index: priorSlot } : b
+      )));
+    }
     await guardBeatPatchResult(
       beatId,
       result,
@@ -1405,72 +1790,242 @@ export function BgTab() {
     }
     const beat = beats.find((b) => b.beat_id === beatId);
     const pendingPrompt = (dialogueText ?? '').trim();
-    const savedPrompt = beatPromptText(beat).trim();
-    if (pendingPrompt && pendingPrompt !== savedPrompt) {
+    if (pendingPrompt) {
       const saved = await onUpdateBeatText(beatId, dialogueText!);
       if (!saved) return;
     }
-    setActiveStillRenderJobs((prev) => ({ ...prev, [beatId]: true }));
-    const result = await pathappPatch<StillClipRenderResponse>(
-      activeScope.value,
-      'bg_render_still_clip',
-      {
-        beat_id: beatId,
-        method: 'ken_burns',
-        slot_index: beat?.kling_o3_replace_slot_index ?? 0,
-      },
-    );
-    setActiveStillRenderJobs((prev) => {
-      const next = { ...prev };
-      delete next[beatId];
-      return next;
-    });
-    if (result.ok && result.data) {
-      const ttsMixed = !!result.data?.tts_mixed;
-      const ttsErr = (result.data?.tts_error || '').trim();
-      const ttsRegen = !!result.data?.tts_regenerated;
-      const ttsOk = result.data?.tts_ok !== false && !ttsErr;
-      let message = 'Still clip rebuilt — trim below, then Approve still for stitch.';
-      if (ttsMixed && ttsRegen) {
-        message = 'Still clip rebuilt with fresh TTS — trim below, then Approve still for stitch.';
-      } else if (ttsMixed && result.data?.tts_unchanged) {
-        message = 'Still clip rebuilt (TTS unchanged — edit prompt line to regen audio) — trim below.';
-      } else if (ttsErr) {
-        message = `Still clip rebuilt without audio (${ttsErr}) — trim below.`;
+    bgActiveStillRenderJobs.value = { ...bgActiveStillRenderJobs.value, [beatId]: true };
+    try {
+      const result = await pathappPatch<StillClipRenderResponse>(
+        activeScope.value,
+        'bg_render_still_clip',
+        {
+          beat_id: beatId,
+          method: 'ken_burns',
+          slot_index: beat?.kling_o3_replace_slot_index ?? 0,
+          ...(pendingPrompt ? { kling_o3_prompt: pendingPrompt } : {}),
+        },
+      );
+      if (result.ok && result.data) {
+        const ttsMixed = !!result.data?.tts_mixed;
+        const ttsErr = (result.data?.tts_error || '').trim();
+        const ttsRegen = !!result.data?.tts_regenerated;
+        const ttsOk = result.data?.tts_ok !== false && !ttsErr;
+        let message = 'Still clip rebuilt — trim below, then Approve still for stitch.';
+        if (ttsMixed && ttsRegen) {
+          message = 'Still clip rebuilt with fresh TTS — trim below, then Approve still for stitch.';
+        } else if (ttsMixed && result.data?.tts_unchanged) {
+          message = 'Still clip rebuilt (TTS unchanged — edit prompt line to regen audio) — trim below.';
+        } else if (ttsErr) {
+          message = `Still clip rebuilt without audio (${ttsErr}) — trim below.`;
+        }
+        pushToast({
+          kind: ttsOk && ttsMixed ? 'success' : (result.data?.ok ? 'info' : 'error'),
+          message,
+          source: 'bg-still-clip',
+        });
+        if (result.data.beat?.beat_id) {
+          updateBgBeats((bs) => mergeBeatFromO3Poll(bs, result.data!.beat!));
+        }
+        bgO3IntentByBeat.value = (prev => {
+          const next = { ...prev };
+          delete next[beatId];
+          return next;
+        })(bgO3IntentByBeat.value as Record<string, O3GenerationIntentPoll>);
+        bgO3SubmitAuditByBeat.value = (prev => {
+          const next = { ...prev };
+          delete next[beatId];
+          return next;
+        })(bgO3SubmitAuditByBeat.value as Record<string, O3SubmitAudit>);
+        purgeO3ClientLatchesForBeatIds([beatId]);
+        await refreshState();
+      } else if (isBeatNotFoundResult(result)) {
+        await handleBeatMissingOnSave(beatId);
+      } else {
+        const msg = formatMutationError(result, 'Still clip failed');
+        if (msg) {
+          pushToast({ kind: 'error', message: msg, source: 'bg-still-clip-error' });
+        }
       }
-      pushToast({
-        kind: ttsOk && ttsMixed ? 'success' : (result.data?.ok ? 'info' : 'error'),
-        message,
-        source: 'bg-still-clip',
-      });
-      await refreshState();
-    } else if (isBeatNotFoundResult(result)) {
-      await handleBeatMissingOnSave(beatId);
-    } else {
-      pushToast({ kind: 'error', message: `Still clip failed: ${result.error}`, source: 'bg-still-clip-error' });
+    } finally {
+      bgActiveStillRenderJobs.value = (prev => {
+        const next = { ...prev };
+        delete next[beatId];
+        return next;
+      })(bgActiveStillRenderJobs.value);
     }
   };
 
-  const onGenerateBatch = async (beatId: string, dialogueText?: string) => {
+  const handleO3SubmitResult = async (
+    beatId: string,
+    beat: BgBeat,
+    result: Awaited<ReturnType<typeof pathappPatch<ArloO3SubmitResponse>>>,
+  ): Promise<boolean> => {
+    // BG_O3_SUBMIT_UI_REATTACH_V1 — poll latch + session reattach on ambiguous submit.
+    if (result.ok && result.data?.job_id) {
+      applyO3SubmitPollLatch(beatId, result.data.job_id);
+      void refreshState();
+      if (result.data.intent) {
+        bgO3IntentByBeat.value = {
+          ...(bgO3IntentByBeat.value as Record<string, O3GenerationIntentPoll>),
+          [beatId]: result.data!.intent!,
+        };
+      }
+      if (result.data.submitted) {
+        bgO3SubmitAuditByBeat.value = {
+          ...(bgO3SubmitAuditByBeat.value as Record<string, O3SubmitAudit>),
+          [beatId]: result.data!.submitted!,
+        };
+      }
+      const slot = result.data.generation_slot ?? result.data.submitted?.generation_slot;
+      const mode = result.data.o3_generate_mode;
+      const modeLabel = mode === 'avatar_pro'
+        ? 'Avatar Pro'
+        : mode === 'voice_first'
+          ? 'ElevenLabs voice-first'
+          : 'Element native O3';
+      pushToast({
+        kind: 'info',
+        message: result.data.deduped
+          ? 'This beat already has an O3 voice job running; reattached to the existing job.'
+          : `Submitted ${beat.speaker} ${modeLabel}${slot ? ` (${slot})` : ''} — prompt locked until job finishes`,
+        source: 'bg-o3-submit',
+        ttlMs: 12_000,
+      });
+      return true;
+    }
+    if (result.error_code === 'VOICE_BIND_DRIFT' && result.retry_safe !== false) {
+      setModalState({
+        kind: 'voice-drift-confirm',
+        beatId,
+        promptToSave: (beat.kling_o3_prompt ?? '').trim(),
+        replaceSlotIndex: beat.kling_o3_replace_slot_index ?? 0,
+        referenceImage: beat.reference_image ?? null,
+        bgRefImage: beat.bg_ref_image ?? null,
+        message: result.error ?? result.error_message ?? 'Registry voice differs from this beat\'s last approved bind.',
+      });
+      return false;
+    }
+    if (result.error_code === 'LIPSYNC_HOSTING_NOT_CONFIGURED') {
+      const message = result.error_message
+        ?? result.error
+        ?? LIPSYNC_HOSTING_SETUP_MESSAGE;
+      bgLipsyncPublicHostReady.value = false;
+      bgLipsyncPublicHostMessage.value = message;
+      notifyLipsyncHostBlocked(message, lipsyncHostBlockToastRef);
+      return false;
+    }
+    if (
+      isOperatorJobBusyError(result.error_code)
+      || (result.status === 0 && /failed to fetch|networkerror|load failed|timeout|aborted/i.test(result.error ?? ''))
+    ) {
+      const reattached = await tryReattachO3JobFromSession(beatId);
+      if (reattached) {
+        pushToast({
+          kind: 'info',
+          message: 'O3 job is already running on the server — reattached to the existing job.',
+          source: 'bg-o3-submit-reattach',
+          ttlMs: 12_000,
+        });
+        return true;
+      }
+    }
+    return guardBeatPatchResult(
+      beatId,
+      result,
+      `O3 submit failed: ${result.error}`,
+      'bg-o3-submit-error',
+    );
+  };
+
+  const beatForO3Submit = (beatId: string, beat: BgBeat): BgBeat => (
+    beatsRef.current.find((b) => b.beat_id === beatId) ?? beat
+  );
+
+  const submitO3Voice = async (
+    beatId: string,
+    beat: BgBeat,
+    promptToSave: string,
+    acceptVoiceDrift = false,
+  ): Promise<boolean> => {
+    const refBeat = beatForO3Submit(beatId, beat);
+    const generationMode = effectiveGenerationMode(refBeat, activeScope.value.event_id);
+    const result = await pathappPatch<ArloO3SubmitResponse>(
+      activeScope.value, 'bg_submit_arlo_o3_voice', {
+        beat_id: beatId,
+        kling_o3_prompt: promptToSave,
+        generation_mode: generationMode,
+        model: 'pro',
+        replace_slot_index: refBeat.kling_o3_replace_slot_index ?? 0,
+        reference_image: refBeat.reference_image ?? null,
+        bg_ref_image: refBeat.bg_ref_image ?? null,
+        ...(acceptVoiceDrift ? { accept_voice_drift: true } : {}),
+      },
+      { skipSnapshot: true },
+    );
+    return handleO3SubmitResult(beatId, refBeat, result);
+  };
+
+  const confirmVoiceDriftSubmit = async () => {
+    if (modalState.kind !== 'voice-drift-confirm') return;
+    const { beatId, promptToSave, replaceSlotIndex, referenceImage, bgRefImage } = modalState;
+    closeModal();
+    const beat = beatsRef.current.find((b) => b.beat_id === beatId)
+      ?? beats.find((b) => b.beat_id === beatId);
+    if (!beat) return;
+    const workBeat: BgBeat = {
+      ...beat,
+      kling_o3_prompt: promptToSave,
+      kling_o3_replace_slot_index: replaceSlotIndex,
+      reference_image: referenceImage ?? beat.reference_image ?? null,
+      bg_ref_image: bgRefImage ?? beat.bg_ref_image ?? null,
+    };
+    await submitO3Voice(beatId, workBeat, promptToSave, true);
+  };
+
+  const onGenerateBatch = async (
+    beatId: string,
+    dialogueText?: string,
+    opts?: { promptAlreadyPersisted?: boolean },
+  ) => {
     const beat = beats.find((b) => b.beat_id === beatId);
     if (!beat) return;
     if (isStillInsertBeat(beat)) {
       await onRenderStillClip(beatId, dialogueText);
       return;
     }
-    if (activeO3Jobs[beatId]) {
+    const serverFlightCtx = {
+      activeO3Jobs: bgActiveO3Jobs.value,
+      submitPollLatch: submitPollLatchRef.current,
+    };
+    if (beatO3ServerJobInFlight(beatId, beat, serverFlightCtx)) {
       pushToast({ kind: 'info', message: 'This beat is already generating.', source: 'bg-o3-beat-busy' });
       return;
     }
+    if (!opts?.promptAlreadyPersisted) {
+      markO3SubmitPending(beatId);
+    }
+    try {
     if (isO3VoiceBeat(beat)) {
-      if (beat.element_char_ref_ok === false) {
+      if (
+        effectiveGenerationMode(beat, activeScope.value.event_id) === 'voice_first'
+        && lipsyncPublicHostReady !== true
+      ) {
+        const message = lipsyncPublicHostMessage?.trim() || LIPSYNC_HOSTING_SETUP_MESSAGE;
+        bgLipsyncPublicHostReady.value = false;
+        bgLipsyncPublicHostMessage.value = message;
+        notifyLipsyncHostBlocked(message, lipsyncHostBlockToastRef);
+        return;
+      }
+      if (elementCharRefApplies(beat, activeScope.value.event_id) && beatElementCharRefOk(beat) === false) {
         pushToast({
           kind: 'error',
-          message: beat.element_char_ref_error ?? 'Char ref must match Element pose images before O3 generate.',
+          message: beatElementCharRefError(beat) ?? 'Char ref must match Element pose images before O3 generate.',
           source: 'bg-element-ref-block',
         });
         return;
       }
+      const mode = effectiveGenerationMode(beat, activeScope.value.event_id);
       const promptToSave = (dialogueText ?? '').trim();
       if (!promptToSave) {
         pushToast({
@@ -1480,37 +2035,58 @@ export function BgTab() {
         });
         return;
       }
-      const saved = await onUpdateBeatText(beatId, promptToSave);
-      if (!saved) return;
-      const result = await pathappPatch<ArloO3SubmitResponse>(
-        activeScope.value, 'bg_submit_arlo_o3_voice', {
-          beat_id: beatId,
-          kling_o3_prompt: promptToSave,
-          model: 'pro',
-          replace_slot_index: beat.kling_o3_replace_slot_index ?? 0,
-          reference_image: beat.reference_image ?? null,
-          bg_ref_image: beat.bg_ref_image ?? null,
-        },
-      );
-      if (result.ok && result.data?.job_id) {
-        setActiveO3Jobs((prev) => ({ ...prev, [beatId]: result.data!.job_id! }));
+      if (mode !== 'still_insert' && isStillInsertPromptText(promptToSave)) {
         pushToast({
-          kind: result.data.deduped ? 'info' : 'info',
-          message: result.data.deduped
-            ? 'This beat already has an O3 voice job running; reattached to the existing job.'
-            : `Submitted ${beat.speaker} O3 Pro + Element voice (720 delivery encode)`,
-          source: 'bg-o3-submit',
+          kind: 'error',
+          message:
+            'Still+TTS prompt cannot be submitted to Element native or voice-first O3 — '
+            + 'switch to Still Insert mode or paste the @Image1 O3 motion prompt.',
+          source: 'bg-o3-still-prompt-block',
         });
-      } else if (!(await guardBeatPatchResult(
-        beatId,
-        result,
-        `O3 submit failed: ${result.error}`,
-        'bg-o3-submit-error',
-      ))) {
         return;
       }
+      if (mode !== 'still_insert' && promptToSave.length < 80) {
+        pushToast({
+          kind: 'error',
+          message:
+            `Prompt is too short (${promptToSave.length} chars) — paste the full @Image1 / @Image2 O3 prompt before Generate.`,
+          source: 'bg-o3-prompt-too-short',
+        });
+        return;
+      }
+      if (mode !== 'still_insert' && !/@image2/i.test(promptToSave)) {
+        pushToast({
+          kind: 'error',
+          message:
+            'O3 prompt must include the background (Scene from @Image2) — what you see in the box is what submits.',
+          source: 'bg-o3-prompt-missing-bg-ref',
+        });
+        return;
+      }
+      const saved = opts?.promptAlreadyPersisted
+        ? true
+        : await onUpdateBeatText(beatId, promptToSave);
+      if (!saved) {
+        pushToast({
+          kind: 'error',
+          message:
+            'Could not save the prompt before Generate — your text is still in the box. '
+            + 'Wait for the server, then click Generate again.',
+          source: 'bg-o3-save-before-submit',
+        });
+        return;
+      }
+      const latestBeat = beatsRef.current.find((b) => b.beat_id === beatId) ?? beat;
+      if (beatO3ServerJobInFlight(beatId, latestBeat, serverFlightCtx)) {
+        pushToast({ kind: 'info', message: 'This beat is already generating.', source: 'bg-o3-beat-busy' });
+        return;
+      }
+      await submitO3Voice(beatId, beatForO3Submit(beatId, latestBeat), promptToSave);
       return;
     }
+    markO3SubmitPending(beatId);
+    bgGptBatchSubmitPending.value = { ...bgGptBatchSubmitPending.value, [beatId]: true };
+    try {
     if (activeJobId) {
       pushToast({ kind: 'info', message: 'A still-generation job is still running.', source: 'bg-stills-busy' });
       return;
@@ -1519,7 +2095,7 @@ export function BgTab() {
       activeScope.value, 'bg_submit_gpt_batch', { beat_ids: [beatId] },
     );
     if (result.ok && result.data?.job_id) {
-      setActiveJobId(result.data.job_id);
+      bgActiveJobId.value = result.data.job_id;
       // Forecast: 3 calls × per-image cost.
       pushToast({
         kind: 'info',
@@ -1527,7 +2103,29 @@ export function BgTab() {
         source: 'bg-submit',
       });
     } else {
-      pushToast({ kind: 'error', message: `Submit failed: ${result.error}`, source: 'bg-submit-error' });
+      const msg = formatMutationError(result, 'Submit failed');
+      if (msg) {
+        pushToast({ kind: 'error', message: msg, source: 'bg-submit-error' });
+      }
+    }
+    } finally {
+      bgGptBatchSubmitPending.value = (prev => {
+        const next = { ...prev };
+        delete next[beatId];
+        return next;
+      })(bgGptBatchSubmitPending.value);
+    }
+    } finally {
+      const timer = o3SubmitPendingTimersRef.current[beatId];
+      if (timer) {
+        window.clearTimeout(timer);
+        delete o3SubmitPendingTimersRef.current[beatId];
+      }
+      bgO3SubmitPending.value = (prev => {
+        const next = { ...prev };
+        delete next[beatId];
+        return next;
+      })(bgO3SubmitPending.value);
     }
   };
 
@@ -1545,7 +2143,10 @@ export function BgTab() {
       },
     );
     if (result.ok && result.data?.job_id) {
-      setActiveNativeLipSyncJobs((prev) => ({ ...prev, [beatId]: result.data!.job_id! }));
+      bgActiveNativeLipSyncJobs.value = {
+        ...bgActiveNativeLipSyncJobs.value,
+        [beatId]: result.data!.job_id!,
+      };
       pushToast({
         kind: 'info',
         message: result.data.deduped
@@ -1595,7 +2196,7 @@ export function BgTab() {
       });
       return;
     }
-    setBeats((bs) => bs.map((b) => (b.beat_id === beatId ? { ...b, kling_o3_prompt: nextText } : b)));
+    updateBgBeats((bs) => bs.map((b) => (b.beat_id === beatId ? { ...b, kling_o3_prompt: nextText } : b)));
     const result = await pathappPatch(activeScope.value, 'bg_update_beat', {
       beat_id: beatId,
       kling_o3_prompt: nextText,
@@ -1657,19 +2258,48 @@ export function BgTab() {
     }
   };
 
-  const onSelectO3Video = async (beatId: string, optionKey: string, opts?: { stillApprove?: boolean }) => {
-    const result = await pathappPatch(activeScope.value, 'bg_select_o3_video', {
-      beat_id: beatId, option_key: optionKey,
+  const onSelectO3Video = async (
+    beatId: string,
+    optionKey: string,
+    opts?: { stillApprove?: boolean; draftOnly?: boolean },
+  ) => {
+    const beat = beatsRef.current.find((b) => b.beat_id === beatId);
+    const stillInsert = beat ? isStillInsertBeat(beat) : false;
+    const result = await pathappPatch<{
+      beat?: BgBeat;
+      pipeline_mismatch?: boolean;
+      pipeline_mismatch_message?: string;
+    }>(activeScope.value, 'bg_select_o3_video', {
+      beat_id: beatId,
+      option_key: optionKey,
+      ...(stillInsert
+        ? { still_approve: opts?.stillApprove === true && opts?.draftOnly !== true }
+        : {}),
     });
     if (result.ok) {
-      pushToast({
-        kind: 'success',
-        message: opts?.stillApprove
-          ? 'Still clip approved for stitch export'
-          : 'Selected preserved O3 video',
-        source: 'bg-select-o3',
-      });
-      await refreshState();
+      if (result.data?.pipeline_mismatch) {
+        pushToast({
+          kind: 'warning',
+          message: result.data.pipeline_mismatch_message
+            ?? 'Selected clip uses a different pipeline than the beat toggle — voice may not match.',
+          source: 'bg-select-o3-pipeline-mismatch',
+        });
+      } else {
+        pushToast({
+          kind: 'success',
+          message: opts?.stillApprove
+            ? 'Still clip approved for stitch export'
+            : stillInsert
+              ? 'Selected still clip for preview and trim'
+              : 'Selected preserved O3 video',
+          source: 'bg-select-o3',
+        });
+      }
+      if (result.data?.beat?.beat_id) {
+        updateBgBeats((bs) => mergeBeatFromO3Poll(bs, result.data!.beat!));
+      } else {
+        await refreshState();
+      }
     } else {
       await guardBeatPatchResult(
         beatId,
@@ -1680,10 +2310,152 @@ export function BgTab() {
     }
   };
 
+  const onApplyO3Cut = async (
+    beatId: string,
+    slotIndex: number,
+    trimStartS: number,
+    trimBackS: number | null,
+    opts?: { clear?: boolean; previewOnly?: boolean; silent?: boolean; videoPath?: string },
+  ) => {
+    const result = await pathappPatch<{
+      trim_start?: number;
+      trim_back?: number | null;
+      trim_end?: number;
+      slot_index?: number;
+      raw_duration_s?: number;
+      effective_duration_s?: number | null;
+      preview_video_url?: string;
+      video_path?: string;
+    }>(activeScope.value, 'bg_kling_o3_trim', {
+      beat_id: beatId,
+      slot_index: slotIndex,
+      trim_start: trimStartS,
+      trim_back: trimBackS,
+      clear: opts?.clear ?? false,
+      preview_only: opts?.previewOnly ?? false,
+      ...(opts?.videoPath ? { video_path: opts.videoPath } : {}),
+    });
+    if (result.ok) {
+      const rawDurationGate = result.data?.raw_duration_s;
+      const effectiveGate = result.data?.effective_duration_s;
+      const shorteningRequested = !opts?.clear && (
+        trimStartS > 0.05 || (trimBackS != null && trimBackS > 0.05)
+      );
+      if (
+        shorteningRequested
+        && rawDurationGate != null
+        && effectiveGate != null
+        && effectiveGate >= rawDurationGate - 0.05
+      ) {
+        pushToast({
+          kind: 'error',
+          message: opts?.previewOnly
+            ? 'Preview failed — trim would not shorten the clip. Adjust handles and Apply Cut.'
+            : 'Trim not saved — window would keep the full clip. Check handles match the clip length.',
+          source: 'bg-o3-cut-truth',
+        });
+        return undefined;
+      }
+      if (!opts?.previewOnly) {
+        updateBgBeats((bs): BgBeat[] => bs.map((b) => {
+          if (b.beat_id !== beatId) return b;
+          const slots = buildFixedO3OptionSlots(b);
+          const slotOpt = slots[slotIndex];
+          const targetPath = opts?.videoPath ?? slotOpt?.video_path ?? '';
+          const nextOptions = (b.kling_o3_options ?? []).map((o) => {
+            if (!o || !targetPath || o.video_path !== targetPath) return o;
+            if (opts?.clear) {
+              const {
+                trim_start_s: _ts,
+                trim_back_s: _tb,
+                cut_start_s: _cs,
+                cut_end_s: _ce,
+                ...rest
+              } = o as GptOption & Record<string, unknown>;
+              return rest as GptOption;
+            }
+            const next: GptOption & Record<string, unknown> = {
+              ...o,
+              trim_start_s: result.data?.trim_start ?? trimStartS,
+            };
+            const back = result.data?.trim_back ?? trimBackS;
+            if (back != null && back > 0.009) {
+              next.trim_back_s = back;
+            } else {
+              delete next.trim_back_s;
+            }
+            delete next.cut_start_s;
+            delete next.cut_end_s;
+            return next as GptOption;
+          });
+          const activePath = b.kling_o3_video_path ?? '';
+          const mirrorsActive = targetPath === activePath;
+          if (mirrorsActive && opts?.clear) {
+            const {
+              kling_o3_cut_start_s: _bcs,
+              kling_o3_cut_end_s: _bce,
+              kling_o3_trim_start: _bts,
+              kling_o3_trim_back: _btb,
+              ...beatRest
+            } = b;
+            return { ...beatRest, kling_o3_options: nextOptions };
+          }
+          if (mirrorsActive && !opts?.clear) {
+            const back = result.data?.trim_back ?? trimBackS;
+            const nextBeat: BgBeat = {
+              ...b,
+              kling_o3_options: nextOptions,
+              kling_o3_trim_start: result.data?.trim_start ?? trimStartS,
+              kling_o3_trim_back: back != null && back > 0.009 ? back : null,
+            };
+            delete (nextBeat as BgBeat & Record<string, unknown>).kling_o3_cut_start_s;
+            delete (nextBeat as BgBeat & Record<string, unknown>).kling_o3_cut_end_s;
+            return nextBeat;
+          }
+          return { ...b, kling_o3_options: nextOptions };
+        }));
+      }
+      const dur = result.data?.effective_duration_s;
+      if (!opts?.silent) {
+        pushToast({
+          kind: 'success',
+          message: opts?.clear
+            ? 'Trim cleared — full clip restored for export'
+            : opts?.previewOnly
+              ? (dur != null ? `Preview ready (${dur.toFixed(2)}s)` : 'Preview ready')
+              : (dur != null
+                ? `Trim applied — ${dur.toFixed(2)}s kept (start + end crop saved)`
+                : 'Trim applied'),
+          source: 'bg-o3-cut',
+        });
+      }
+      const preview = result.data?.preview_video_url;
+      const previewUrl = preview
+        ? (preview.startsWith('http') ? preview : `${SERVER_BASE}${preview}`)
+        : undefined;
+      const rawDurationS = result.data?.raw_duration_s;
+      const effectiveDurationS = result.data?.effective_duration_s;
+      return {
+        ...(previewUrl !== undefined ? { previewUrl } : {}),
+        ...(rawDurationS !== undefined ? { rawDurationS } : {}),
+        ...(effectiveDurationS !== undefined ? { effectiveDurationS } : {}),
+      };
+    }
+    await guardBeatPatchResult(
+      beatId,
+      result,
+      formatMutationError(result, 'Cut failed'),
+      'bg-o3-cut-error',
+    );
+    return undefined;
+  };
+
   const onApplyO3Trim = async (beatId: string, trimStart: number, trimBack: number | null, clear = false) => {
     const result = await pathappPatch<{
       trim_start?: number;
       trim_back?: number | null;
+      trim_end?: number;
+      raw_duration_s?: number;
       effective_duration_s?: number | null;
       preview_video_url?: string;
       trim_baked?: boolean;
@@ -1695,7 +2467,7 @@ export function BgTab() {
       clear,
     });
     if (result.ok) {
-      setBeats((bs) => bs.map((b) => (
+      updateBgBeats((bs) => bs.map((b) => (
         b.beat_id === beatId
           ? {
             ...b,
@@ -1723,13 +2495,23 @@ export function BgTab() {
             ? (dur != null
               ? `Trim baked into clip (${dur.toFixed(1)}s) — audio/video updated in place`
               : 'Trim baked into clip — audio/video updated in place')
-            : (dur != null ? `Trim saved (${dur.toFixed(1)}s effective)` : 'Trim saved'),
+            : (dur != null
+              ? `Trim saved — ${dur.toFixed(2)}s effective (back ${result.data?.trim_back ?? 0}s)`
+              : 'Trim saved'),
         source: 'bg-o3-trim',
       });
       if (result.data?.trim_baked || result.data?.video_path) {
         await refreshState();
       }
-      return result.data?.preview_video_url;
+      const preview = result.data?.preview_video_url;
+      const previewUrl = preview
+        ? (preview.startsWith('http') ? preview : `${SERVER_BASE}${preview}`)
+        : undefined;
+      const rawDurationS = result.data?.raw_duration_s;
+      return {
+        ...(previewUrl !== undefined ? { previewUrl } : {}),
+        ...(rawDurationS !== undefined ? { rawDurationS } : {}),
+      };
     }
     await guardBeatPatchResult(
       beatId,
@@ -1744,9 +2526,23 @@ export function BgTab() {
   // (Lock in N selections...). Replaces direct mutation; gates on user
   // acknowledgement of unset beats per Kim 2026-05-06 lock.
   const segmentCtx = () => {
-    const [event_id, phase] = (activeSegment || '1|pre').split('|');
-    return { event_id, phase };
+    if (activeSegment) {
+      const [event_id, phase] = activeSegment.split('|');
+      return { event_id, phase };
+    }
+    if (isMilestoneScope && segments.length > 0) {
+      return {
+        event_id: String(segments[0].event_id),
+        phase: String(segments[0].phase),
+      };
+    }
+    return { event_id: '1', phase: 'pre' };
   };
+
+  const isVoiceFirstSegment = useMemo(() => {
+    const { event_id, phase } = segmentCtx();
+    return event_id === '2' && phase === 'pre';
+  }, [activeSegment]);
 
   const allBeatsExportReady = useMemo(
     () => allBeatsStitchExportReady(beats),
@@ -1754,6 +2550,7 @@ export function BgTab() {
   );
 
   const stitchSlotForSegment = useMemo(() => {
+    if (isMilestoneScope) return 'standalone';
     const phase = (activeSegment || '1|pre').split('|')[1] || 'pre';
     const byPhase: Record<string, string> = {
       pre: 'intro',
@@ -1764,42 +2561,226 @@ export function BgTab() {
       phase_b: 'phase_b',
     };
     return byPhase[phase] ?? activeTargetVideo.value ?? 'intro';
-  }, [activeSegment, activeTargetVideo.value]);
+  }, [activeSegment, activeTargetVideo.value, isMilestoneScope]);
+
+  const exportScopeKey = useMemo(() => {
+    const { event_id, phase } = segmentCtx();
+    return bgExportScopeKey(arcNumber, event_id, phase, stitchSlotForSegment);
+  }, [activeSegment, arcNumber, stitchSlotForSegment]);
 
   const stitchExportTooltip = useMemo(
     () => stitchExportBlockTooltip(beats, stitchSlotForSegment),
     [beats, stitchSlotForSegment],
   );
 
-  const onSendToStitcher = async () => {
-    if (!activeSegment || !allBeatsExportReady || stitcherExportStatus === 'sending') return;
+  const onReorderBeat = async (beatId: string, direction: 'up' | 'down') => {
+    if (!activeSegment || reorderBusyBeatId) return;
+    const idx = beats.findIndex((b) => b.beat_id === beatId);
+    if (idx < 0) return;
+    const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (swapIdx < 0 || swapIdx >= beats.length) return;
     const { event_id, phase } = segmentCtx();
-    setStitcherExportStatus('sending');
-    const result = await pathappPatch<{ slot_key?: string; video_path?: string; duration_s?: number }>(
-      activeScope.value,
-      'bg_export_to_stitcher',
-      {
+    const nextIds = beats.map((b) => b.beat_id);
+    [nextIds[idx], nextIds[swapIdx]] = [nextIds[swapIdx], nextIds[idx]];
+    setReorderBusyBeatId(beatId);
+    try {
+      const result = await pathappPatch(activeScope.value, 'bg_reorder_beats', {
+        beat_ids: nextIds,
         arc_number: arcNumber,
         event_id,
         phase,
-        slot_key: stitchSlotForSegment,
-      },
-    );
+        ...activeScopeQueryParams(),
+        scope_phase: phase,
+        scope_arc_number: arcNumber,
+      });
+      if (result.ok) {
+        updateBgBeats((bs) => {
+          const byId = new Map(bs.map((b) => [b.beat_id, b]));
+          return nextIds
+            .map((id) => byId.get(id))
+            .filter((b): b is BgBeat => !!b);
+        });
+        setActiveNavIndex((prev) => {
+          if (prev === null) return prev;
+          if (prev === idx) return swapIdx;
+          if (prev === swapIdx) return idx;
+          return prev;
+        });
+        pushToast({
+          kind: 'success',
+          message: `Beat #${idx + 1} moved ${direction}`,
+          source: 'bg-reorder',
+        });
+      } else {
+        pushToast({
+          kind: 'error',
+          message: formatMutationError(result, 'Reorder beats failed'),
+          source: 'bg-reorder-error',
+        });
+      }
+    } finally {
+      setReorderBusyBeatId(null);
+    }
+  };
+
+  const finishExportTerminal = useCallback((data: BgExportPollResult) => {
+    const scopeEventId = activeScope.value.event_id;
+    writeBgExportBusyLatch(scopeEventId, exportScopeKey, null);
+    setActiveExportJobId(null);
     setStitcherExportStatus('idle');
-    if (result.ok) {
-      const slot = result.data?.slot_key ?? stitchSlotForSegment;
+    setExportProgressMessage('');
+
+    const toastKey = `${data.job_id ?? 'unknown'}:${data.status ?? 'unknown'}`;
+    if (exportTerminalToastRef.current === toastKey) return;
+    exportTerminalToastRef.current = toastKey;
+
+    if (data.status === 'done') {
+      const { slotKey, warnings } = bgExportTerminalSuccess(data);
+      if (stitchExportKeptExistingWarning(warnings)) {
+        pushToast({
+          kind: 'error',
+          message: 'Send to Stitcher did not replace the slot — stored video is newer. Hard refresh Stitcher or re-export.',
+          source: 'bg-kling-export-kept-existing',
+        });
+        return;
+      }
+      const slot = slotKey ?? stitchSlotForSegment;
+      if (isStitchUiSlotKey(slot)) {
+        const stitchSessionKey = stitchJobSessionKey(
+          scopeEventId,
+          activeProjectType.value,
+          activeMilestoneId.value,
+        );
+        writePersistedTrackSlot(stitchSessionKey, slot);
+        notifyStitchSlotExportApplied(scopeEventId, slot);
+      }
       stitcherRefreshTick.value += 1;
+      serverRehydrateTick.value += 1;
       pushToast({
         kind: 'success',
         message: `Sent to Stitcher → ${slot} slot (canonical tail + intro fades when applicable)`,
         source: 'bg-kling-export',
       });
-    } else {
+      return;
+    }
+
+    const err = data.error
+      ?? data.result?.error_message
+      ?? data.message
+      ?? 'Export failed';
+    pushToast({
+      kind: 'error',
+      message: data.status === 'interrupted'
+        ? `Send to Stitcher interrupted: ${err}`
+        : `Send to Stitcher failed: ${err}`,
+      source: data.status === 'interrupted' ? 'bg-kling-export-interrupted' : 'bg-kling-export-error',
+    });
+  }, [exportScopeKey, stitchSlotForSegment]);
+
+  useEffect(() => {
+    const scopeEventId = activeScope.value.event_id;
+    const latched = readBgExportBusyLatch(scopeEventId, exportScopeKey);
+    if (latched && !activeExportJobId) {
+      setActiveExportJobId(latched);
+      setStitcherExportStatus('exporting');
+      setExportProgressMessage('Resuming export…');
+    }
+  }, [activeScope.value.event_id, exportScopeKey]);
+
+  useEffect(() => {
+    if (!activeExportJobId) return;
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const poll = async () => {
+      const res = await apiGet<BgExportPollResult>('bg_poll_export_to_stitcher', {
+        job_id: activeExportJobId,
+        ...activeScopeQueryParams(),
+      });
+      if (cancelled) return;
+      if (!res.ok || !res.data) {
+        pushToast({
+          kind: 'error',
+          message: `Send to Stitcher poll error: ${res.error ?? `HTTP ${res.status}`}`,
+          source: 'bg-kling-export-poll-error',
+        });
+        writeBgExportBusyLatch(activeScope.value.event_id, exportScopeKey, null);
+        setActiveExportJobId(null);
+        setStitcherExportStatus('idle');
+        setExportProgressMessage('');
+        return;
+      }
+      setExportProgressMessage(bgExportStatusMessage(res.data));
+      if (!isBgExportStatusTerminal(res.data.status)) {
+        timer = window.setTimeout(poll, BG_EXPORT_POLL_INTERVAL_MS);
+        return;
+      }
+      finishExportTerminal(res.data);
+    };
+
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [activeExportJobId, exportScopeKey, finishExportTerminal]);
+
+  const onSendToStitcher = async () => {
+    if (!activeSegment || !allBeatsExportReady || stitcherExportStatus !== 'idle') return;
+    const { event_id, phase } = segmentCtx();
+    setStitcherExportStatus('submitting');
+    setExportProgressMessage('Submitting export…');
+    try {
+      const result = await pathappPatch<BgExportPollResult>(
+        activeScope.value,
+        'bg_export_to_stitcher',
+        {
+          arc_number: arcNumber,
+          event_id,
+          phase,
+          slot_key: stitchSlotForSegment,
+        },
+      );
+      if (!result.ok) {
+        pushToast({
+          kind: 'error',
+          message: `Send to Stitcher failed: ${result.error ?? 'unknown error'}`,
+          source: 'bg-kling-export-error',
+        });
+        setStitcherExportStatus('idle');
+        setExportProgressMessage('');
+        return;
+      }
+      const jobId = result.data?.job_id;
+      if (!jobId) {
+        pushToast({
+          kind: 'error',
+          message: 'Send to Stitcher failed: server returned no job_id',
+          source: 'bg-kling-export-error',
+        });
+        setStitcherExportStatus('idle');
+        setExportProgressMessage('');
+        return;
+      }
+      writeBgExportBusyLatch(activeScope.value.event_id, exportScopeKey, jobId);
+      setActiveExportJobId(jobId);
+      setStitcherExportStatus('exporting');
+      setExportProgressMessage(bgExportStatusMessage(result.data));
+      if (result.data?.reattach) {
+        pushToast({
+          kind: 'info',
+          message: 'Reattached to in-progress Send to Stitcher',
+          source: 'bg-kling-export-reattach',
+        });
+      }
+    } catch (e) {
       pushToast({
         kind: 'error',
-        message: `Send to Stitcher failed: ${result.error ?? 'unknown error'}`,
+        message: `Send to Stitcher failed: ${e instanceof Error ? e.message : String(e)}`,
         source: 'bg-kling-export-error',
       });
+      setStitcherExportStatus('idle');
+      setExportProgressMessage('');
     }
   };
 
@@ -1860,11 +2841,14 @@ export function BgTab() {
       setTimeout(() => setAcceptStatus('idle'), 3000);
     } else {
       setAcceptStatus('error');
-      pushToast({
-        kind: 'error',
-        message: `Accept All failed: ${result.error}`,
-        source: 'bg-accept-all-error',
-      });
+      const msg = formatMutationError(result, 'Accept All failed');
+      if (msg) {
+        pushToast({
+          kind: 'error',
+          message: msg,
+          source: 'bg-accept-all-error',
+        });
+      }
     }
   };
 
@@ -1889,15 +2873,31 @@ export function BgTab() {
         <span class="mn-scope-chip" data-testid="bg-scope-chip">
           scope: {scopeKey(activeScope.value)}
         </span>
+        {isVoiceFirstSegment ? (
+          <span class="mn-scope-chip" data-testid="bg-voice-first-badge" title="Generate uses ElevenLabs TTS + silent O3 + lipsync (720 delivery)">
+            Voice: ElevenLabs
+          </span>
+        ) : null}
+        {isMilestoneScope ? (
+          <span class="mn-scope-chip" data-testid="bg-milestone-segment-chip">
+            Skeleton: {milestoneSegmentLabel}
+          </span>
+        ) : null}
       </header>
 
       <div class="mn-bg-toolbar" data-testid="bg-toolbar">
+        {!isMilestoneScope ? (
+          <>
         <Select
           id="bg-arc"
           label="Arc"
           options={[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => ({ value: String(n), label: `Arc ${n}` }))}
           value={String(arcNumber)}
-          onChange={(v) => setArcNumber(Number(v))}
+          onChange={(v) => {
+            const n = Number(v);
+            bgArcNumber.value = n;
+            void ensureBgSession(activeScope.value.event_id, effectiveScopeVideoRole(), { force: true, arcNumber: n });
+          }}
         />
         <Select
           id="bg-segment"
@@ -1920,12 +2920,14 @@ export function BgTab() {
                 : 'Select segment'
           }
         />
+          </>
+        ) : null}
         <button
           type="button"
           class="mn-btn mn-btn-primary"
           data-testid="bg-extract-btn"
           onClick={onExtractBeats}
-          disabled={!activeSegment || extractStatus === 'sending'}
+          disabled={(!activeSegment && !isMilestoneScope) || extractStatus === 'sending'}
         >
           {extractStatus === 'sending' ? (
             <><Spinner size="sm" inline /> Reading skeleton…</>
@@ -1936,7 +2938,7 @@ export function BgTab() {
           class="mn-btn"
           data-testid="bg-review-draft-btn"
           onClick={() => { void openBeatPlanDraft(); }}
-          disabled={!activeSegment}
+          disabled={!activeSegment && !isMilestoneScope}
         >
           Review saved plan
         </button>
@@ -1965,15 +2967,33 @@ export function BgTab() {
       </div>
 
       {loading ? (
-        <p class="mn-loading"><Spinner size="md" inline /> Loading beat state…</p>
+        <p class="mn-loading" data-testid="bg-loading">
+          <Spinner size="md" inline /> Loading beat state…
+          {loadingSlowHint ? (
+            <span class="mn-loading-slow-hint">
+              Still loading — server is busy reconciling sidecar while your WaveSpeed gens keep running.
+            </span>
+          ) : null}
+        </p>
       ) : beats.length === 0 ? (
         <div class="mn-empty" data-testid="bg-empty">
           <p>No beats yet for this segment. Click <strong>Extract Beats from script</strong> or <strong>+ Insert beat</strong> to start.</p>
         </div>
       ) : (
+        <>
+          {voiceFirstLipsyncHostBlocked(lipsyncPublicHostReady, beats, activeScope.value.event_id) ? (
+            <div
+              class="mn-bg-lipsync-host-setup"
+              data-testid="bg-lipsync-host-setup"
+              role="alert"
+            >
+              {lipsyncPublicHostMessage?.trim() || LIPSYNC_HOSTING_SETUP_MESSAGE}
+            </div>
+          ) : null}
         <div class="mn-bg-body-layout" data-testid="bg-body-layout">
           <BgBeatNav
             beats={beats}
+            itemStatuses={beatNavItemStatuses}
             activeIndex={
               activeNavIndex !== null && activeNavIndex < beats.length
                 ? activeNavIndex
@@ -1994,20 +3014,23 @@ export function BgTab() {
               eventId={activeScope.value.event_id}
               videoRole={activeTargetVideo.value}
               pollResultForBeat={pollResults[b.beat_id]}
-              busy={
-                activeJobId !== null
-                || !!activeO3Jobs[b.beat_id]
-                || !!activeStillRenderJobs[b.beat_id]
-                || !!activeNativeLipSyncJobs[b.beat_id]
-              }
+              busy={beatHasActiveNavJob(b, beatNavJobContext)}
+              o3IntentSnapshot={o3IntentByBeat[b.beat_id]}
+              o3SubmitAudit={o3SubmitAuditByBeat[b.beat_id]}
+              o3WarningMessage={o3WarningByBeat[b.beat_id]}
+              lipsyncPublicHostReady={lipsyncPublicHostReady}
               nativeExperimentBusy={!!activeNativeLipSyncJobs[b.beat_id]}
               onDelete={() => onDeleteBeat(b.beat_id)}
               onUpdateText={(t) => onUpdateBeatText(b.beat_id, t)}
               onUpdateSpeaker={(s) => onUpdateBeatSpeaker(b.beat_id, s)}
-              onGenerate={(dialogueText) => onGenerateBatch(b.beat_id, dialogueText)}
+              onSetGenerationMode={(mode) => onSetBeatGenerationMode(b.beat_id, mode)}
+              onBeginGenerateSubmit={() => markO3SubmitPending(b.beat_id)}
+              onAbortGenerateSubmit={() => clearO3SubmitPending(b.beat_id)}
+              onGenerate={(dialogueText, opts) => onGenerateBatch(b.beat_id, dialogueText, opts)}
               onAccept={(optionKey) => onAcceptOption(b.beat_id, optionKey)}
-              onSelectO3Video={(optionKey) => onSelectO3Video(b.beat_id, optionKey)}
+              onSelectO3Video={(optionKey) => onSelectO3Video(b.beat_id, optionKey, { draftOnly: true })}
               onApproveStill={(optionKey) => onSelectO3Video(b.beat_id, optionKey, { stillApprove: true })}
+              onApplyO3Cut={(slotIndex, trimStartS, trimBackS, opts) => onApplyO3Cut(b.beat_id, slotIndex, trimStartS, trimBackS, opts)}
               onApplyO3Trim={(trimStart, trimBack, clear) => onApplyO3Trim(b.beat_id, trimStart, trimBack, clear)}
               onSetReplaceSlot={(slotIndex) => onSetReplaceSlot(b.beat_id, slotIndex)}
               onSubmitNativeLipSyncExperiment={() => onSubmitNativeLipSyncExperiment(b.beat_id)}
@@ -2026,7 +3049,7 @@ export function BgTab() {
               // and the "Char ref shows key text instead of thumb" symptom
               // (RC2: bg_update_beat doesn't return a thumbnail).
               onPatchOptionTile={(slotIndex, patch) => {
-                setBeats((bs) => bs.map((bb): BgBeat => {
+                updateBgBeats((bs) => bs.map((bb): BgBeat => {
                   if (bb.beat_id !== b.beat_id) return bb;
                   const opts: (GptOption | null)[] = [...(bb.gpt_options ?? [])];
                   while (opts.length <= slotIndex) opts.push(null);
@@ -2038,24 +3061,42 @@ export function BgTab() {
                     accepted_image_key: patch.key ?? bb.accepted_image_key ?? null,
                     status: 'lib_chosen',
                   };
+                  if (isStillInsertBeat(bb) && (patch.local_path || (patch as { abs_path?: string }).abs_path)) {
+                    const ap = patch.local_path ?? (patch as { abs_path?: string }).abs_path ?? '';
+                    const stillRef: RefDisplay = { abs_path: ap };
+                    const refKey = patch.key || bb.accepted_image_key || undefined;
+                    if (refKey) stillRef.key = refKey;
+                    if (patch.thumb_b64) stillRef.thumb_b64 = patch.thumb_b64;
+                    next.bg_ref_image = stillRef;
+                    next._derived = {
+                      ...(bb._derived ?? {}),
+                      still_scene_display: stillRef,
+                    };
+                  }
                   return next;
                 }));
                 // RC1 fix — clear stale pollResultForBeat so the persisted
                 // gpt_options (just patched above) become the visible source.
-                setPollResults((prev) => {
+                bgPollResults.value = (prev => {
                   if (!(b.beat_id in prev)) return prev;
                   const next = { ...prev };
                   delete next[b.beat_id];
                   return next;
-                });
+                })(bgPollResults.value);
               }}
               onPatchRefImage={(refField, patch) => {
                 onPatchRefImageForBeat(b.beat_id, refField, patch);
               }}
+              canMoveUp={i > 0}
+              canMoveDown={i < beats.length - 1}
+              reorderBusy={reorderBusyBeatId === b.beat_id}
+              onMoveUp={() => { void onReorderBeat(b.beat_id, 'up'); }}
+              onMoveDown={() => { void onReorderBeat(b.beat_id, 'down'); }}
             />
           ))}
           </ol>
         </div>
+        </>
       )}
 
       <footer class="mn-pane-footer">
@@ -2065,10 +3106,10 @@ export function BgTab() {
           data-testid="bg-export-stitcher-btn"
           title={stitchExportTooltip}
           onClick={onSendToStitcher}
-          disabled={!activeSegment || !allBeatsExportReady || stitcherExportStatus === 'sending'}
+          disabled={(!activeSegment && !isMilestoneScope) || !allBeatsExportReady || stitcherExportStatus !== 'idle'}
         >
-          {stitcherExportStatus === 'sending' ? (
-            <><Spinner size="sm" inline /> Sending…</>
+          {stitcherExportStatus === 'submitting' || stitcherExportStatus === 'exporting' ? (
+            <><Spinner size="sm" inline /> {exportProgressMessage || 'Sending…'}</>
           ) : 'Send Beat Gen to Stitcher'}
         </button>
       </footer>
@@ -2080,8 +3121,11 @@ export function BgTab() {
         beatsPlan={beatPlanRows}
         approveStatus={approveStatus}
         approveStartedAt={approveStartedAt}
+        approveError={approveBeatPlanError}
+        draftSaveStatus={beatPlanDraftSaveStatus}
         onClose={closeBeatPlanModal}
         onApprove={onApproveBeatPlan}
+        onAutosave={onBeatPlanAutosave}
       />
 
       <InsertBeatModal
@@ -2092,6 +3136,40 @@ export function BgTab() {
         onClose={closeInsertBeatModal}
         onSubmit={(planRow) => { void executeInsertBeat(planRow); }}
       />
+
+      {/* Extract overwrite confirm — saved draft would be replaced by fresh Claude plan */}
+      <Modal
+        id="bg-extract-overwrite"
+        title="Overwrite saved beat plan?"
+        open={modalState.kind === 'extract-overwrite-confirm'}
+        onClose={closeModal}
+        footer={(
+          <>
+            <button type="button" class="mn-btn" data-testid="bg-extract-overwrite-cancel" onClick={closeModal}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="mn-btn mn-btn-primary"
+              data-testid="bg-extract-overwrite-confirm"
+              onClick={() => { void confirmExtractOverwrite(); }}
+            >
+              Overwrite &amp; re-extract
+            </button>
+          </>
+        )}
+      >
+        {modalState.kind === 'extract-overwrite-confirm' ? (
+          <p>
+            You already have a saved plan with{' '}
+            <strong>{modalState.beatCount}</strong>
+            {' '}
+            beat{modalState.beatCount === 1 ? '' : 's'} for this segment.
+            Running Extract again will replace it with a fresh auto-generated plan.
+            Use <strong>Review saved plan</strong> if you want to keep editing your current draft.
+          </p>
+        ) : null}
+      </Modal>
 
       {/* BG-9 — Delete-beat confirm Modal */}
       <Modal
@@ -2118,8 +3196,45 @@ export function BgTab() {
         <p>
           Delete beat{' '}
           <strong>{modalState.kind === 'delete-beat' ? modalState.beatId : ''}</strong>?
-          This removes the beat record from the BG sidecar.
+          This removes <strong>only this beat&apos;s</strong> prompt, refs, and options from the sidecar.
+          Other beats are unchanged — list order shifts, but each beat keeps its own saved prompt.
         </p>
+      </Modal>
+
+      {/* Voice bind drift — registry voice_id changed since this beat was last approved */}
+      <Modal
+        id="bg-voice-drift-confirm"
+        title="Voice bind changed since last approval"
+        open={modalState.kind === 'voice-drift-confirm'}
+        onClose={closeModal}
+        footer={(
+          <>
+            <button type="button" class="mn-btn" data-testid="bg-voice-drift-cancel" onClick={closeModal}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="mn-btn mn-btn-primary"
+              data-testid="bg-voice-drift-confirm"
+              onClick={() => { void confirmVoiceDriftSubmit(); }}
+            >
+              Generate with current registry voice
+            </button>
+          </>
+        )}
+      >
+        {modalState.kind === 'voice-drift-confirm' ? (
+          <>
+            <p>
+              This beat was approved with an older Element voice bind. The character registry now
+              points at a different <code>kling_voice_id</code>, so a redo may sound different
+              (for Lorelai, the Beat 18 female stack is the current proven voice).
+            </p>
+            <p class="mn-muted" style={{ marginTop: '0.75rem' }}>
+              {modalState.message}
+            </p>
+          </>
+        ) : null}
       </Modal>
 
       {/* BG-34 — Accept All warn Modal (lists unset beat_ids) */}
@@ -2336,6 +3451,7 @@ function BgMagicStillPreview({
         controls
         preload="metadata"
         src={videoUrl}
+        class={PLAYBACK_VIDEO_ANTI_BANDING_CLASS}
         onPlay={onVideoPlay}
         onPause={onVideoPause}
         onEnded={onVideoEnded}
@@ -2361,15 +3477,43 @@ interface BeatGenCardProps {
   pollResultForBeat?: GptOption[];
   busy: boolean;
   nativeExperimentBusy: boolean;
+  o3IntentSnapshot?: O3GenerationIntentPoll;
+  o3SubmitAudit?: O3SubmitAudit;
+  o3WarningMessage?: string;
+  lipsyncPublicHostReady?: boolean | null;
   onDelete: () => void;
   onUpdateText: (next: string) => void | Promise<boolean>;
   // LD CHARACTER_DROPDOWN_RESTORED_V1 — speaker dropdown change.
   onUpdateSpeaker: (next: string) => void;
-  onGenerate: (dialogueText?: string) => void;
+  onSetGenerationMode: (mode: BeatGenerationMode) => void;
+  onBeginGenerateSubmit?: () => void;
+  onAbortGenerateSubmit?: () => void;
+  onGenerate: (
+    dialogueText?: string,
+    opts?: { promptAlreadyPersisted?: boolean },
+  ) => void | Promise<void>;
   onAccept: (optionKey: string) => void;
   onSelectO3Video: (optionKey: string) => void;
   onApproveStill: (optionKey: string) => void;
-  onApplyO3Trim: (trimStart: number, trimBack: number | null, clear?: boolean) => Promise<string | undefined>;
+  onApplyO3Cut: (
+    slotIndex: number,
+    trimStartS: number,
+    trimBackS: number | null,
+    opts?: { clear?: boolean; previewOnly?: boolean; silent?: boolean; videoPath?: string },
+  ) => Promise<{
+    previewUrl?: string;
+    rawDurationS?: number;
+    effectiveDurationS?: number | null;
+  } | undefined>;
+  onApplyO3Trim: (
+    trimStart: number,
+    trimBack: number | null,
+    clear?: boolean,
+  ) => Promise<{
+    previewUrl?: string;
+    rawDurationS?: number;
+    effectiveDurationS?: number | null;
+  } | undefined>;
   onSetReplaceSlot: (slotIndex: number) => void;
   onSubmitNativeLipSyncExperiment: () => void;
   // BG-5 / BG-8 / BG-18 — visible-button handlers (NOT right-click per Kim 2026-05-06).
@@ -2392,92 +3536,60 @@ interface BeatGenCardProps {
     refField: 'reference_image' | 'bg_ref_image',
     patch: { key?: string; abs_path?: string; thumb_b64?: string } | null,
   ) => void;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  reorderBusy: boolean;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
 }
 
 function BeatGenCard({
   index, beat, eventId, videoRole, pollResultForBeat, busy, nativeExperimentBusy,
-  onDelete, onUpdateText, onUpdateSpeaker, onGenerate, onAccept,
-  onSelectO3Video, onApproveStill, onApplyO3Trim, onSetReplaceSlot, onSubmitNativeLipSyncExperiment,
+  o3IntentSnapshot, o3SubmitAudit, o3WarningMessage, lipsyncPublicHostReady,
+  onDelete, onUpdateText, onUpdateSpeaker, onSetGenerationMode,
+  onBeginGenerateSubmit, onAbortGenerateSubmit,
+  onGenerate, onAccept,
+  onSelectO3Video, onApproveStill, onApplyO3Cut, onApplyO3Trim, onSetReplaceSlot, onSubmitNativeLipSyncExperiment,
   onEditChip, onInsertAfter, onRemoveRef, onAlignElementRef, onAddElementPose, onRefresh, onBeatMissing,
   onPatchOptionTile, onPatchRefImage,
+  canMoveUp, canMoveDown, reorderBusy, onMoveUp, onMoveDown,
 }: BeatGenCardProps) {
-  const [localText, setLocalText] = useState<string>(beatPromptText(beat));
-  const [chips, setChips] = useState<string[]>(extractStageChips(beatPromptText(beat)));
-  const promptDirtyRef = useRef(false);
-  const saveTimerRef = useRef<number | null>(null);
+  const stillInsert = isStillInsertBeat(beat);
+  const intentLockedPrompt = busy && !stillInsert
+    ? (o3IntentSnapshot?.prompt?.verbatim ?? o3SubmitAudit?.prompt_excerpt ?? null)
+    : null;
+  const externalPrompt = intentLockedPrompt ?? beatPromptText(beat, eventId);
+  const savePrompt = useCallback(
+    async (text: string) => {
+      const ok = await onUpdateText(text);
+      return ok !== false;
+    },
+    [onUpdateText],
+  );
+  const promptField = useProtectedPromptField({
+    fieldId: beat.beat_id,
+    externalText: externalPrompt,
+    onSave: savePrompt,
+    lockedExternal: !!intentLockedPrompt,
+  });
+  const [chips, setChips] = useState<string[]>(extractStageChips(beatPromptText(beat, eventId)));
 
-  useEffect(() => {
-    // Never clobber in-progress edits or a debounced save waiting to flush.
-    if (promptDirtyRef.current || saveTimerRef.current !== null) return;
-    const next = beatPromptText(beat);
-    setLocalText(next);
-    setChips(extractStageChips(next));
-  }, [beat.kling_o3_prompt, beat.dialogue_text, beat.beat_id]);
-
-  const flushPromptSave = useCallback(async (text: string) => {
-    if (saveTimerRef.current !== null) {
-      window.clearTimeout(saveTimerRef.current);
-      saveTimerRef.current = null;
-    }
-    if (text === beatPromptText(beat)) {
-      promptDirtyRef.current = false;
-      return;
-    }
-    const ok = await onUpdateText(text);
-    if (ok !== false) promptDirtyRef.current = false;
-  }, [beat, onUpdateText]);
-
-  const schedulePromptSave = useCallback((text: string) => {
-    if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = window.setTimeout(() => {
-      saveTimerRef.current = null;
-      void flushPromptSave(text);
-    }, 350);
-  }, [flushPromptSave]);
-
-  const onTextInput = (e: Event) => {
-    const t = (e.target as HTMLTextAreaElement).value;
-    promptDirtyRef.current = true;
-    setLocalText(t);
-    setChips(extractStageChips(t));
-    schedulePromptSave(t);
+  const onPromptInput = (e: Event) => {
+    promptField.onInput(e);
+    setChips(extractStageChips(promptField.getText()));
   };
-
-  const onTextBlur = () => {
-    void flushPromptSave(localText);
-  };
-
-  useEffect(() => () => {
-    if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
-  }, []);
 
   const onRemoveChip = (chipText: string) => {
-    // Remove the FIRST occurrence of the chip's parenthesized form from the
-    // dialogue text. setNext.
     const re = new RegExp(`\\s*\\(${chipText.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\)`);
-    const next = localText.replace(re, '');
-    setLocalText(next);
+    const next = promptField.getText().replace(re, '');
+    promptField.setText(next);
     setChips(extractStageChips(next));
-    onUpdateText(next);
+    void onUpdateText(next);
   };
 
-  const optionsToShow: (GptOption | null)[] = (() => {
-    const o3Slots = buildFixedO3OptionSlots(beat);
-    if (o3Slots.some((s) => s?.video_path)) {
-      return o3Slots;
-    }
-    const persistedOptions = beat.gpt_options ?? beat.flux_options ?? [];
-    const liveOptions = pollResultForBeat ?? null;
-    const src = liveOptions ?? persistedOptions;
-    const padded: (GptOption | null)[] = [...src];
-    while (padded.length < 3) padded.push(null);
-    return padded.slice(0, 3);
-  })();
+  const optionsToShow = resolveBeatOptionsToShow(beat, eventId, pollResultForBeat);
   const replaceSlotIndex = beat.kling_o3_replace_slot_index ?? 0;
-  const o3FailureMessage = (beat.kling_o3_voice_fix_status ?? '').startsWith('failed')
-    && beat.kling_o3_status !== 'approved'
-    ? formatO3JobFailure(beat.kling_o3_voice_fix_error)
-    : null;
+  const o3FailureMessage = resolveO3FailureBanner(beat, lipsyncPublicHostReady ?? null, eventId);
   const nativeProfile = beat.kling_native_lipsync_experiment_output_profile;
   const nativeDims = nativeProfile?.width && nativeProfile?.height
     ? `${nativeProfile.width}x${nativeProfile.height}`
@@ -2487,31 +3599,61 @@ function BeatGenCard({
   // be mistaken for the canonical Generate path (Element O3 + 720 delivery).
   const showNativeExperimentCard = false;
 
-  const magicStillSource = resolveBgMagicStillSourcePath(beat, eventId);
+  const magicStillSource = displayStillScenePath(beat) ?? resolveBgMagicStillSourcePath(beat, eventId);
   const magicVideoSource = beat.kling_o3_video_path ?? null;
   const magicStillPreviewUrl = resolveBgMagicStillPreviewUrl(beat, eventId);
   const magicVideoPreviewUrl = resolveBgMagicVideoPreviewUrl(beat, eventId);
-  const useMagicVideoOnO3 =
-    beat.magic_canonical_kind === 'video'
-    && !!magicVideoPreviewUrl
-    && beat.magic_video_path_exists !== false;
   const [magicPreviewMode, setMagicPreviewMode] = useState<'still' | 'video' | null>(null);
   const [stillPreviewAutoplay, setStillPreviewAutoplay] = useState(false);
-  const stillInsert = isStillInsertBeat(beat);
+  const generationMode = effectiveGenerationMode(beat, eventId);
+  const charRefDisplay = displayCharRef(beat);
+  const bgRefDisplay = displayBgRef(beat, stillInsert);
+  const mutationsLocked = beatOperatorMutationsLocked(beat) || busy;
   const hasStillSource = !!magicStillSource
+    || !!beat._derived?.still_scene_display
     || optionsToShow.some((o) => o?.local_path || o?.thumb_b64);
   const showStillClipHint = stillInsert && !beat.kling_o3_video_path && hasStillSource;
-  const elementCharRefBlocked = isO3VoiceBeat(beat) && beat.element_char_ref_ok === false;
+  const stillNeedsStitchApprove = stillBeatNeedsStitchApprove(beat);
+  const stillApproveOptionKey = stillNeedsStitchApprove
+    ? resolveStillStitchApproveOptionKey(beat)
+    : null;
+  const elementCharRefOk = beatElementCharRefOk(beat);
+  const elementCharRefErr = beatElementCharRefError(beat);
+  const elementCharRefBlocked = elementCharRefApplies(beat, eventId) && elementCharRefOk === false;
   const charRefHasImage = !!(
-    beat.reference_image
-    && (beat.reference_image.thumb_b64 || beat.reference_image.abs_path || beat.reference_image.key)
+    charRefDisplay
+    && (charRefDisplay.thumb_b64 || charRefDisplay.abs_path || charRefDisplay.key)
   );
-  const showAddElementPose = isO3VoiceBeat(beat) && charRefHasImage;
+  const showAddElementPose = elementCharRefApplies(beat, eventId) && charRefHasImage;
 
   return (
     <li class="mn-bg-beat-card" data-testid={`bg-beat-card-${index}`} data-beat-id={beat.beat_id}>
       <div class="mn-bg-beat-meta">
         <span class="mn-bg-beat-index">#{index + 1}</span>
+        <span class="mn-bg-beat-reorder" data-testid={`bg-beat-reorder-${index}`}>
+          <button
+            type="button"
+            class="mn-btn mn-btn-small mn-bg-beat-reorder-btn"
+            data-testid={`bg-beat-move-up-${index}`}
+            disabled={!canMoveUp || busy || reorderBusy}
+            title="Move beat earlier in segment"
+            aria-label={`Move beat ${index + 1} up`}
+            onClick={onMoveUp}
+          >
+            ↑
+          </button>
+          <button
+            type="button"
+            class="mn-btn mn-btn-small mn-bg-beat-reorder-btn"
+            data-testid={`bg-beat-move-down-${index}`}
+            disabled={!canMoveDown || busy || reorderBusy}
+            title="Move beat later in segment"
+            aria-label={`Move beat ${index + 1} down`}
+            onClick={onMoveDown}
+          >
+            ↓
+          </button>
+        </span>
         <span class="mn-bg-beat-anchor">{beat.beat_id}</span>
         <select
           class="mn-beat-speaker"
@@ -2541,6 +3683,54 @@ function BeatGenCard({
             <option key={s} value={s}>{s}</option>
           ))}
         </select>
+        {isPipelineToggleable(beat) ? (
+          <span
+            class="mn-bg-pipeline-toggle"
+            data-testid={`bg-pipeline-toggle-${index}`}
+            role="group"
+            aria-label={`Generation mode for beat ${beat.beat_id}`}
+          >
+            <button
+              type="button"
+              class={`mn-btn mn-btn-small${generationMode === 'still_insert' ? ' mn-btn-primary' : ''}`}
+              data-testid={`bg-pipeline-still-${index}`}
+              aria-pressed={generationMode === 'still_insert' ? 'true' : 'false'}
+              disabled={busy}
+              title="Still image + TTS (smooth zoom 1.0→1.06×), no Kling O3"
+              onClick={() => {
+                if (generationMode !== 'still_insert') onSetGenerationMode('still_insert');
+              }}
+            >
+              Still + TTS
+            </button>
+            <button
+              type="button"
+              class={`mn-btn mn-btn-small${generationMode === 'voice_first' ? ' mn-btn-primary' : ''}`}
+              data-testid={`bg-pipeline-voice-first-${index}`}
+              aria-pressed={generationMode === 'voice_first' ? 'true' : 'false'}
+              disabled={busy}
+              title="ElevenLabs TTS → silent O3 → lipsync → 720 delivery"
+              onClick={() => {
+                if (generationMode !== 'voice_first') onSetGenerationMode('voice_first');
+              }}
+            >
+              Voice-first
+            </button>
+            <button
+              type="button"
+              class={`mn-btn mn-btn-small${generationMode === 'element_native' ? ' mn-btn-primary' : ''}`}
+              data-testid={`bg-pipeline-element-native-${index}`}
+              aria-pressed={generationMode === 'element_native' ? 'true' : 'false'}
+              disabled={busy}
+              title="O3 Pro Element with native voice baked in"
+              onClick={() => {
+                if (generationMode !== 'element_native') onSetGenerationMode('element_native');
+              }}
+            >
+              Element native
+            </button>
+          </span>
+        ) : null}
         {beat.status ? <span class="mn-dim">[{beat.status}]</span> : null}
         <button
           type="button"
@@ -2554,16 +3744,68 @@ function BeatGenCard({
         </button>
       </div>
 
-      <textarea
-        class="mn-bg-beat-text mn-bg-kling-prompt-editor"
-        data-testid={`bg-beat-text-${index}`}
-        value={localText}
-        onInput={onTextInput}
-        onBlur={onTextBlur}
-        rows={14}
-        spellcheck={true}
-        aria-label={`Kling O3 prompt for beat ${beat.beat_id}`}
-      />
+      {promptField.lockedValue !== null ? (
+        <textarea
+          class="mn-bg-beat-text mn-bg-kling-prompt-editor"
+          data-testid={`bg-beat-text-${index}`}
+          value={promptField.lockedValue}
+          readOnly
+          rows={14}
+          spellcheck={true}
+          placeholder="Generation in progress — prompt locked to submitted intent."
+          aria-label={`Kling O3 prompt for beat ${beat.beat_id}`}
+        />
+      ) : (
+        <textarea
+          ref={promptField.textareaRef}
+          class="mn-bg-beat-text mn-bg-kling-prompt-editor"
+          data-testid={`bg-beat-text-${index}`}
+          onFocus={promptField.onFocus}
+          onInput={onPromptInput}
+          onBlur={promptField.onBlur}
+          rows={14}
+          spellcheck={true}
+          aria-label={`Kling O3 prompt for beat ${beat.beat_id}`}
+        />
+      )}
+      {busy && !stillInsert && (o3SubmitAudit || o3IntentSnapshot) ? (
+        <div
+          class="mn-bg-o3-intent-audit"
+          data-testid={`bg-o3-intent-audit-${index}`}
+          style="margin: 4px 0 8px; font-size: 11px; color: #94a3b8; font-family: ui-monospace, monospace;"
+        >
+          {o3IntentSnapshot?.generation?.slot || o3SubmitAudit?.generation_slot ? (
+            <div>Slot: {o3IntentSnapshot?.generation?.slot ?? o3SubmitAudit?.generation_slot}</div>
+          ) : null}
+          {o3SubmitAudit?.prompt_excerpt ? (
+            <div>Submitted: {o3SubmitAudit.prompt_excerpt.slice(0, 120)}…</div>
+          ) : null}
+          {o3SubmitAudit?.char_ref ? (
+            <div>Char ref: {o3SubmitAudit.char_ref.split('/').pop()}</div>
+          ) : null}
+          {o3SubmitAudit?.element_id ? (
+            <div>Element: {o3IntentSnapshot?.voice?.element_name ?? beat.speaker} ({o3SubmitAudit.element_id})</div>
+          ) : null}
+        </div>
+      ) : null}
+      {o3WarningMessage ? (
+        <div
+          class="mn-bg-o3-warning-banner"
+          data-testid={`bg-o3-warning-${index}`}
+          style="margin: 4px 0 8px; padding: 8px; background: #422006; border: 1px solid #f59e0b; border-radius: 6px; color: #fcd34d; font-size: 12px;"
+        >
+          {o3WarningMessage}
+        </div>
+      ) : null}
+      {pipelineSelectionMismatchMessage(beat) ? (
+        <div
+          class="mn-bg-o3-pipeline-mismatch-banner"
+          data-testid={`bg-o3-pipeline-mismatch-${index}`}
+          style="margin: 4px 0 8px; padding: 8px; background: #450a0a; border: 1px solid #f87171; border-radius: 6px; color: #fecaca; font-size: 12px;"
+        >
+          {pipelineSelectionMismatchMessage(beat)}
+        </div>
+      ) : null}
       {o3FailureMessage ? (
         <div
           class="mn-bg-o3-failure"
@@ -2646,14 +3888,15 @@ function BeatGenCard({
       <div class="mn-bg-refs-row" data-testid={`bg-beat-refs-${index}`}>
         <BgRefSlot
           label="Char ref"
-          refImg={beat.reference_image ?? null}
+          refImg={charRefDisplay}
           testId={`bg-char-ref-${index}`}
           beatId={beat.beat_id}
           refField="reference_image"
+          mutationsLocked={mutationsLocked}
           {...(elementCharRefBlocked
             ? {
-              elementRefError: elementCharRefInlineHint(beat.element_char_ref_error),
-              elementRefErrorDetail: beat.element_char_ref_error,
+              elementRefError: elementCharRefInlineHint(elementCharRefErr),
+              ...(elementCharRefErr ? { elementRefErrorDetail: elementCharRefErr } : {}),
               showAlignElementRef: true,
               onAlignElementRef,
             }
@@ -2661,39 +3904,69 @@ function BeatGenCard({
           {...(showAddElementPose
             ? { showAddElementPose: true, onAddElementPose }
             : {})}
+          suppressElementGateUi={generationMode === 'avatar_pro'}
           onRemoveRef={onRemoveRef}
           onRefresh={onRefresh}
           onBeatMissing={onBeatMissing}
           onPatchRefImage={onPatchRefImage}
         />
+        {(stillInsert || generationMode !== 'avatar_pro') && (
         <BgRefSlot
-          label="BG ref"
-          refImg={beat.bg_ref_image ?? null}
+          label={stillInsert ? 'Still scene' : 'BG ref'}
+          refImg={bgRefDisplay}
           testId={`bg-bg-ref-${index}`}
           beatId={beat.beat_id}
           refField="bg_ref_image"
+          mutationsLocked={mutationsLocked}
           onRemoveRef={onRemoveRef}
           onRefresh={onRefresh}
           onBeatMissing={onBeatMissing}
           onPatchRefImage={onPatchRefImage}
         />
+        )}
         <button
           type="button"
           class="mn-btn mn-btn-primary"
           data-testid={`bg-generate-btn-${index}`}
           onClick={async () => {
-            await flushPromptSave(localText);
-            onGenerate(localText);
+            onBeginGenerateSubmit?.();
+            const saved = await promptField.flushSave();
+            if (!saved) {
+              onAbortGenerateSubmit?.();
+              if (beatSaveBlockedRef.current.has(beat.beat_id)) {
+                if (!beatSaveNotFoundToastRef.current.has(beat.beat_id)) {
+                  beatSaveNotFoundToastRef.current.add(beat.beat_id);
+                  pushToast({
+                    kind: 'warning',
+                    message: beatMissingToastMessage(beat.beat_id),
+                    source: 'bg-generate-beat-missing',
+                    ttlMs: BEAT_MISSING_TOAST_MS,
+                  });
+                }
+              } else {
+                pushToast({
+                  kind: 'warning',
+                  message: 'Could not save the prompt before Generate — wait for beat state to load, then try again.',
+                  source: 'bg-generate-save-blocked',
+                });
+              }
+              return;
+            }
+            await onGenerate(promptField.getText(), { promptAlreadyPersisted: true });
           }}
           disabled={busy || elementCharRefBlocked}
-          title={elementCharRefBlocked ? elementCharRefInlineHint(beat.element_char_ref_error) : undefined}
+          title={elementCharRefBlocked ? elementCharRefInlineHint(elementCharRefErr) : undefined}
         >
           {busy ? (
-            <><Spinner size="sm" inline /> Generating…</>
+            stillInsert ? (
+              <><Spinner size="sm" inline /> Building still clip (+ TTS)…</>
+            ) : (
+              <><Spinner size="sm" inline /> Generating{o3IntentSnapshot?.generation?.slot ? ` ${o3IntentSnapshot.generation.slot}` : ''}…</>
+            )
           ) : isStillInsertBeat(beat) ? (
             'Build still video (+ TTS)'
           ) : isO3VoiceBeat(beat) ? (
-            'Generate padded O3 voice video'
+            o3GenerateButtonLabel(generationMode)
           ) : (
             'Generate 3 options'
           )}
@@ -2702,9 +3975,29 @@ function BeatGenCard({
 
       {showStillClipHint ? (
         <p class="mn-dim mn-bg-still-clip-hint" data-testid={`bg-still-clip-hint-${index}`}>
-          Still ready — click <strong>Build still video (+ TTS)</strong> above to Ken Burns the
-          image and mux dialogue audio. Trim below, then use <strong>Approve still for stitch</strong>.
+          Still ready — click <strong>Build still video (+ TTS)</strong> above for smooth zoom
+          (1.0→1.06×) and dialogue audio. Trim below, then use <strong>Approve still for stitch</strong>.
         </p>
+      ) : null}
+
+      {stillNeedsStitchApprove && stillApproveOptionKey ? (
+        <div
+          class="mn-bg-still-approve-banner"
+          data-testid={`bg-still-approve-banner-${index}`}
+        >
+          <p class="mn-dim">
+            Still clip built — trim in the option tile if needed, then approve so
+            <strong> Send Beat Gen to Stitcher</strong> can include this beat.
+          </p>
+          <button
+            type="button"
+            class="mn-btn mn-btn-primary"
+            data-testid={`bg-still-approve-banner-btn-${index}`}
+            onClick={() => onApproveStill(stillApproveOptionKey)}
+          >
+            Approve still for stitch
+          </button>
+        </div>
       ) : null}
 
       <BeatMagicButtons
@@ -2723,7 +4016,18 @@ function BeatGenCard({
           setStillPreviewAutoplay(true);
           setMagicPreviewMode('still');
         } : undefined}
-        onPreviewMagicVideo={magicVideoPreviewUrl ? () => setMagicPreviewMode('video') : undefined}
+        onPreviewMagicVideo={magicVideoPreviewUrl ? () => {
+          setMagicPreviewMode('video');
+          requestAnimationFrame(() => {
+            document.querySelector(`[data-testid="bg-magic-preview-video-${index}"]`)
+              ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          });
+        } : undefined}
+        onMagicStillCleared={() => {
+          setMagicPreviewMode(null);
+          setStillPreviewAutoplay(false);
+          onRefresh();
+        }}
       />
       {magicPreviewMode === 'still' && magicStillPreviewUrl && beat.storyboard_beat_id ? (
         <BgMagicStillPreview
@@ -2736,13 +4040,23 @@ function BeatGenCard({
       ) : null}
       {magicPreviewMode === 'still' && magicStillPreviewUrl && !beat.storyboard_beat_id ? (
         <div class="mn-bg-magic-preview" data-testid={`bg-magic-preview-still-${index}`}>
-          <video controls preload="metadata" src={magicStillPreviewUrl} />
+          <video
+            controls
+            preload="metadata"
+            src={magicStillPreviewUrl}
+            class={PLAYBACK_VIDEO_ANTI_BANDING_CLASS}
+          />
           <p class="mn-dim">No storyboard beat id — TTS preview unavailable.</p>
         </div>
       ) : null}
       {magicPreviewMode === 'video' && magicVideoPreviewUrl ? (
         <div class="mn-bg-magic-preview" data-testid={`bg-magic-preview-video-${index}`}>
-          <video controls preload="metadata" src={magicVideoPreviewUrl} />
+          <video
+            controls
+            preload="metadata"
+            src={magicVideoPreviewUrl}
+            class={PLAYBACK_VIDEO_ANTI_BANDING_CLASS}
+          />
         </div>
       ) : null}
 
@@ -2770,9 +4084,6 @@ function BeatGenCard({
               if (!opt) return;
               const optionKey = resolveO3OptionKey(opt, beat.beat_id, i);
               if (opt.video_path) {
-                if (isStillInsertBeat(beat) && beat.kling_o3_status !== 'approved') {
-                  return;
-                }
                 onSelectO3Video(optionKey);
               } else if (opt.key) onAccept(opt.key);
             }}
@@ -2780,26 +4091,30 @@ function BeatGenCard({
             onPatchOptionTile={onPatchOptionTile}
             stillInsert={stillInsert}
             klingO3Status={beat.kling_o3_status ?? null}
-            videoCacheKey={beat.kling_o3_selected_at ?? beat.kling_o3_video_path ?? beat.beat_id}
+            videoCacheKey={`${opt?.key ?? i}|${opt?.video_path ?? ''}|${beat.kling_o3_selected_at ?? beat.beat_id}`}
             onApproveStill={(optionKey) => onApproveStill(optionKey)}
+            cutStartS={opt?.cut_start_s ?? 0}
+            cutEndS={opt?.cut_end_s ?? 0}
+            trimStartS={opt?.trim_start_s ?? 0}
+            trimBackS={opt?.trim_back_s ?? 0}
+            onApplyO3Cut={onApplyO3Cut}
             trimStart={beat.kling_o3_trim_start ?? 0}
             trimBack={beat.kling_o3_trim_back ?? null}
             onApplyO3Trim={onApplyO3Trim}
             replaceSelected={i === replaceSlotIndex}
             onSetReplaceSlot={() => onSetReplaceSlot(i)}
             showReplaceOnRegen={!!beat.speaker}
-            overrideVideoUrl={
-              useMagicVideoOnO3 && opt?.source === 'approved_kling_o3_video'
-                ? magicVideoPreviewUrl
-                : null
-            }
+            overrideVideoUrl={resolveO3TileMagicOverrideUrl(beat, opt, eventId)}
           />
         ))}
       </div>
       {(beat.kling_o3_disk_delivery_count ?? 0) > 0 && beat.kling_o3_clips_dir ? (
         <p class="mn-dim mn-bg-o3-disk-hint" data-testid={`bg-o3-disk-hint-${index}`}>
-          {(beat.kling_o3_disk_delivery_count ?? 0)} paid O3 clip
-          {(beat.kling_o3_disk_delivery_count ?? 0) === 1 ? '' : 's'} on disk
+          {(beat.kling_o3_element_delivery_count ?? beat.kling_o3_disk_delivery_count ?? 0)} element O3 clip
+          {(beat.kling_o3_element_delivery_count ?? beat.kling_o3_disk_delivery_count ?? 0) === 1 ? '' : 's'} on disk
+          {(beat.kling_o3_disk_delivery_count ?? 0) > (beat.kling_o3_element_delivery_count ?? beat.kling_o3_disk_delivery_count ?? 0)
+            ? ` (+${(beat.kling_o3_disk_delivery_count ?? 0) - (beat.kling_o3_element_delivery_count ?? beat.kling_o3_disk_delivery_count ?? 0)} POV/still aux)`
+            : ''}
           {(beat.kling_o3_orphan_delivery_count ?? 0) > 0
             ? ` (${beat.kling_o3_orphan_delivery_count} recovered into Beat Gen on refresh)`
             : ''}
@@ -2838,12 +4153,15 @@ interface BgRefSlotProps {
 interface BgRefSlotPropsExt extends BgRefSlotProps {
   beatId: string;
   refField: 'reference_image' | 'bg_ref_image';
+  mutationsLocked?: boolean;
   elementRefError?: string;
   elementRefErrorDetail?: string;
   showAlignElementRef?: boolean;
   onAlignElementRef?: () => void;
   showAddElementPose?: boolean;
   onAddElementPose?: () => void;
+  /** Avatar Pro beats skip Element registration toasts/warnings. */
+  suppressElementGateUi?: boolean;
   // BG-18 — visible × button to remove the ref (NOT right-click per Kim 2026-05-06).
   onRemoveRef: (refField: 'reference_image' | 'bg_ref_image', label: string) => void;
   // 2026-05-11 fix — parent refreshState() to repaint stale beats[] after drop success.
@@ -2859,18 +4177,20 @@ interface BgRefSlotPropsExt extends BgRefSlotProps {
 function BgRefSlot({
   label, refImg, testId, beatId, refField, elementRefError, elementRefErrorDetail,
   showAlignElementRef, onAlignElementRef, showAddElementPose, onAddElementPose,
-  onRemoveRef, onRefresh, onBeatMissing, onPatchRefImage,
+  suppressElementGateUi,
+  onRemoveRef, onRefresh, onBeatMissing, onPatchRefImage, mutationsLocked,
 }: BgRefSlotPropsExt) {
   const hasImage = !!refImg && (refImg.thumb_b64 || refImg.abs_path || refImg.key);
-  // R2 fix: drop target for library-image drag → POST bg_update_beat with the
-  // ref field (reference_image or bg_ref_image) per server _BG_BEAT_WRITABLE
-  // (production_server.py:8744).
-  //
-  // 2026-05-11 Rule 26 fix — optimistic update BEFORE the server round-trip
-  // so the slot shows the dropped image immediately. refreshState() runs
-  // afterward as a background consistency check.
   const dropHandlers = makeDropTarget(
     async (payload) => {
+      if (mutationsLocked) {
+        pushToast({
+          kind: 'warning',
+          message: 'Beat is locked while a job is running — wait for it to finish.',
+          source: 'bg-ref-drop-busy',
+        });
+        return;
+      }
       if (payload.kind !== 'lib-image') return;
       // OPTIMISTIC LOCAL UPDATE — sets key + abs_path immediately. The server
       // response with thumb_b64 (if available) layers on top after the await.
@@ -2895,13 +4215,20 @@ function BgRefSlot({
       );
       if (!result.ok) {
         onPatchRefImage(refField, null);
+        if (isClientBundleStaleError(result)) {
+          return;
+        }
         if (isBeatNotFoundResult(result)) {
           await onBeatMissing(beatId);
           return;
         }
+        const err = (result.error ?? `HTTP ${result.status}`).trim();
+        const networkDead = /failed to fetch|networkerror|load failed/i.test(err);
         pushToast({
           kind: 'error',
-          message: `${label} drop failed: ${result.error ?? `HTTP ${result.status}`}`,
+          message: networkDead
+            ? `${label} drop failed — no server on this port. Hard refresh http://localhost:5111/?event=${encodeURIComponent(activeScope.value.event_id)} and retry.`
+            : `${label} drop failed: ${err}`,
           source: 'bg-ref-drop-error',
         });
       } else if (refField === 'reference_image' && result.data?.element_ref_registered) {
@@ -2918,7 +4245,12 @@ function BgRefSlot({
           source: 'bg-ref-element-registered',
         });
         onRefresh();
-      } else if (refField === 'reference_image' && result.data?.element_ref_warning) {
+      } else if (
+        refField === 'reference_image'
+        && result.data?.element_ref_warning
+        && result.data?.element_char_ref_ok !== true
+        && !suppressElementGateUi
+      ) {
         if (result.data.thumb_b64) {
           onPatchRefImage(refField, {
             key: payload.lib_key,
@@ -2932,6 +4264,18 @@ function BgRefSlot({
           source: 'bg-ref-element-gate',
           ttlMs: 14000,
         });
+        onRefresh();
+      } else if (
+        refField === 'reference_image'
+        && result.data?.element_char_ref_ok === true
+      ) {
+        if (result.data.thumb_b64) {
+          onPatchRefImage(refField, {
+            key: payload.lib_key,
+            abs_path: payload.abs_path ?? '',
+            thumb_b64: result.data.thumb_b64,
+          });
+        }
         onRefresh();
       } else {
         // Layer thumb_b64 onto the optimistic update if server returned one.
@@ -2972,8 +4316,10 @@ function BgRefSlot({
             type="button"
             class="mn-bg-ref-remove-btn"
             data-testid={`${testId}-remove`}
+            disabled={mutationsLocked}
             onClick={(e) => {
               e.stopPropagation();
+              if (mutationsLocked) return;
               onRemoveRef(refField, label);
             }}
             aria-label={`Remove ${label}`}
@@ -3051,9 +4397,31 @@ interface BgOptionTilePropsExt extends BgOptionTileProps {
   beatId: string;
   onRefresh: () => void;
   onPatchOptionTile: (slotIndex: number, patch: Partial<GptOption> & { key?: string; thumb_b64?: string }) => void;
+  cutStartS: number;
+  cutEndS: number;
+  trimStartS?: number;
+  trimBackS?: number;
+  onApplyO3Cut: (
+    slotIndex: number,
+    trimStartS: number,
+    trimBackS: number | null,
+    opts?: { clear?: boolean; previewOnly?: boolean; silent?: boolean; videoPath?: string },
+  ) => Promise<{
+    previewUrl?: string;
+    rawDurationS?: number;
+    effectiveDurationS?: number | null;
+  } | undefined>;
   trimStart: number;
   trimBack: number | null;
-  onApplyO3Trim: (trimStart: number, trimBack: number | null, clear?: boolean) => Promise<string | undefined>;
+  onApplyO3Trim: (
+    trimStart: number,
+    trimBack: number | null,
+    clear?: boolean,
+  ) => Promise<{
+    previewUrl?: string;
+    rawDurationS?: number;
+    effectiveDurationS?: number | null;
+  } | undefined>;
   replaceSelected: boolean;
   onSetReplaceSlot: () => void;
   showReplaceOnRegen: boolean;
@@ -3066,21 +4434,37 @@ interface BgOptionTilePropsExt extends BgOptionTileProps {
 
 function BgOptionTile({
   beatIndex, optionIndex, option, selected, onClick, beatId, onRefresh, onPatchOptionTile,
-  trimStart, trimBack, onApplyO3Trim, replaceSelected, onSetReplaceSlot, showReplaceOnRegen,
+  cutStartS: _cutStartS, cutEndS: _cutEndS, trimStartS = 0, trimBackS = 0, onApplyO3Cut, trimStart, trimBack, onApplyO3Trim,
+  replaceSelected, onSetReplaceSlot, showReplaceOnRegen,
   overrideVideoUrl, stillInsert, klingO3Status, videoCacheKey, onApproveStill,
 }: BgOptionTilePropsExt) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const trimPlaybackListenerRef = useRef<((this: HTMLVideoElement, ev: Event) => void) | null>(null);
-  const [videoLoadError, setVideoLoadError] = useState(false);
-  const clipMissingOnDisk = option?.video_path_exists === false;
+  const rawDurationRef = useRef<number | null>(null);
+  const showNumericTrim = showBgO3NumericTrimControls();
   const [trimStartDraft, setTrimStartDraft] = useState<string>(String(trimStart || 0));
   const [trimBackDraft, setTrimBackDraft] = useState<string>(String(trimBack || 0));
+  const savedTrimStart = trimStart || 0;
+  const savedTrimBack = trimBack ?? 0;
+  const trimDraftDirty = trimStartDraft !== String(savedTrimStart)
+    || trimBackDraft !== String(savedTrimBack);
+  const [videoLoadError, setVideoLoadError] = useState(false);
+  const [loadedDuration, setLoadedDuration] = useState<number | null>(null);
+  const [sourceDurationS, setSourceDurationS] = useState<number | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [playbackUrl, setPlaybackUrl] = useState<string | null>(null);
+  const [cutBusy, setCutBusy] = useState(false);
+  const [pendingCut, setPendingCut] = useState<{ startS: number; endS: number } | null>(null);
+  const lastAutoPreviewRef = useRef<string | null>(null);
+  const clipMissingOnDisk = option?.video_path_exists === false;
+
   useEffect(() => {
     setTrimStartDraft(String(trimStart || 0));
   }, [trimStart]);
   useEffect(() => {
     setTrimBackDraft(String(trimBack || 0));
   }, [trimBack]);
+
   const clearTrimPlaybackListener = useCallback((video?: HTMLVideoElement | null) => {
     const el = video ?? videoRef.current;
     if (!el) return;
@@ -3091,6 +4475,7 @@ function BgOptionTile({
     el.ontimeupdate = null;
   }, []);
   useEffect(() => () => clearTrimPlaybackListener(), [clearTrimPlaybackListener]);
+
   // R2.1 fix: drop target for library-image drag → POST bg_accept_lib_image
   // with server-accurate body shape (spec §4.3): {beat_id, key, filename,
   // abs_path, slot_index}. slot_index = optionIndex (0/1/2).
@@ -3185,8 +4570,7 @@ function BgOptionTile({
   const isStitchApproved = klingO3Status === 'approved';
   const isStillDraft = !!stillInsert && !!option.video_path && !isStitchApproved;
   const hasClipVideo = !!option.video_path;
-  const showTrimControls = selected && hasClipVideo;
-  const optionLabel = option.label?.trim()
+  const optionLabel = displayO3OptionLabel(option)
     || (isStitchApproved
     ? 'approved O3 video'
     : isStillDraft
@@ -3198,8 +4582,69 @@ function BgOptionTile({
   const cacheBust = videoCacheKey ? `&v=${encodeURIComponent(String(videoCacheKey))}` : '';
   const canonicalVideoUrl = option.video_path
     ? (overrideVideoUrl
+      ?? resolveStitchSlotSourceVideoUrl(option.video_path)
       ?? `${SERVER_BASE}/files?path=${encodeURIComponent(option.video_path)}${cacheBust}`)
     : null;
+  const clipVideoPath = option.video_path ?? undefined;
+  const sourceVideoPath = clipVideoPath ?? '';
+  const cutTargetOpts = clipVideoPath ? { videoPath: clipVideoPath } : {};
+  const showCutControls = selected && hasClipVideo;
+  const showTrimControls = showNumericTrim && selected && hasClipVideo;
+  const MIN_O3_CUT_S = 0.25;
+  const isCutPreviewActive = !!previewUrl;
+  const rawDurationS = sourceDurationS ?? 0;
+  const durationS = rawDurationS;
+  const trimTruthReady = rawDurationS > 0;
+  const savedKeepStartS = trimStartS > 0.009 ? trimStartS : 0;
+  const savedKeepEndS = durationS > 0
+    ? Math.max(savedKeepStartS + MIN_O3_CUT_S, durationS - (trimBackS > 0.009 ? trimBackS : 0))
+    : durationS;
+  const effectiveKeepStartS = pendingCut?.startS ?? savedKeepStartS;
+  const effectiveKeepEndS = pendingCut?.endS ?? savedKeepEndS;
+  const cutDraftDirty = pendingCut !== null && (
+    Math.abs(pendingCut.startS - savedKeepStartS) > 0.009
+    || Math.abs(pendingCut.endS - savedKeepEndS) > 0.009
+  );
+  const hasActiveCut = effectiveKeepEndS > effectiveKeepStartS + MIN_O3_CUT_S - 0.01;
+  const hasSavedCut = savedKeepStartS > 0.009 || trimBackS > 0.05;
+  const cutPreviewTrimBackS = () => {
+    const dur = rawDurationS;
+    if (dur <= 0) return 0;
+    return Math.max(0, dur - effectiveKeepEndS);
+  };
+  // Magic-on-video override must win over cached Kling playback — same clip the beat exports.
+  const activeVideoUrl = previewUrl ?? overrideVideoUrl ?? playbackUrl ?? canonicalVideoUrl;
+  const overlayDurationS = isCutPreviewActive ? 0 : rawDurationS;
+
+  useEffect(() => {
+    if (!selected || !option.video_path || previewUrl) {
+      if (!selected) {
+        setPlaybackUrl(null);
+        setSourceDurationS(null);
+      }
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const truth = await resolveClipPlaybackTruth(option.video_path!);
+      if (cancelled) return;
+      if (truth?.rawDurationS != null && truth.rawDurationS > 0) {
+        setSourceDurationS(truth.rawDurationS);
+        rawDurationRef.current = truth.rawDurationS;
+      }
+      if (truth?.playbackUrl) {
+        setPlaybackUrl(truth.playbackUrl);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selected, option.video_path, previewUrl]);
+
+  useEffect(() => {
+    if (!canonicalVideoUrl) {
+      setPlaybackUrl(null);
+    }
+  }, [canonicalVideoUrl]);
+
   const waitForVideoMetadata = (video: HTMLVideoElement) => new Promise<void>((resolve, reject) => {
     if (Number.isFinite(video.duration) && video.duration > 0) {
       resolve();
@@ -3218,6 +4663,245 @@ function BgOptionTile({
     video.addEventListener('loadedmetadata', onReady, { once: true });
     video.addEventListener('error', onErr, { once: true });
   });
+
+  useEffect(() => {
+    // Only drop materialized preview when the underlying source clip changes —
+    // NOT when cache-bust query params change on session refresh.
+    setPreviewUrl(null);
+    lastAutoPreviewRef.current = null;
+    setPendingCut(null);
+    setLoadedDuration(null);
+    setSourceDurationS(null);
+  }, [sourceVideoPath]);
+
+  useEffect(() => {
+    setVideoLoadError(false);
+    setLoadedDuration(null);
+    if (!selected) {
+      setPlaybackUrl(null);
+      setSourceDurationS(null);
+    }
+  }, [sourceVideoPath, selected]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !activeVideoUrl) return;
+    if (video.src !== activeVideoUrl) {
+      video.src = activeVideoUrl;
+      video.load();
+    }
+  }, [activeVideoUrl]);
+
+  const swapVideoToPreview = async (url: string, opts?: { autoplay?: boolean }) => {
+    const autoplay = opts?.autoplay === true;
+    setPreviewUrl(url);
+    const video = videoRef.current;
+    if (!video) return;
+    video.src = url;
+    video.load();
+    try {
+      await waitForVideoMetadata(video);
+      video.currentTime = 0;
+      if (autoplay) {
+        await video.play();
+      } else {
+        video.pause();
+      }
+    } catch {
+      // load blocked — user can press play; preview src is still set
+      try {
+        video.pause();
+      } catch {
+        // defensive
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (!selected || !option.video_path || cutBusy) return;
+    if (!hasActiveCut && !hasSavedCut) return;
+    const start = effectiveKeepStartS;
+    const back = cutPreviewTrimBackS();
+    if (start <= 0.009 && back <= 0.05) return;
+    const sig = `${option.video_path}|${start.toFixed(2)}|${back.toFixed(2)}`;
+    const cached = recallCutPreviewUrl(beatId, optionIndex, option.video_path, start, back);
+    if (cached) {
+      if (previewUrl !== cached) {
+        void swapVideoToPreview(cached, { autoplay: false });
+      }
+      lastAutoPreviewRef.current = sig;
+      return;
+    }
+    if (!trimTruthReady || lastAutoPreviewRef.current === sig) return;
+    let cancelled = false;
+    void (async () => {
+      const applied = await onApplyO3Cut(
+        optionIndex,
+        start,
+        back > 0.009 ? back : null,
+        { previewOnly: true, silent: true, ...cutTargetOpts },
+      );
+      if (cancelled || !applied?.previewUrl || !option.video_path) return;
+      rememberCutPreviewUrl(beatId, optionIndex, option.video_path, start, back, applied.previewUrl);
+      lastAutoPreviewRef.current = sig;
+      await swapVideoToPreview(applied.previewUrl, { autoplay: false });
+    })();
+    return () => { cancelled = true; };
+  }, [
+    selected,
+    option.video_path,
+    hasActiveCut,
+    hasSavedCut,
+    effectiveKeepStartS,
+    effectiveKeepEndS,
+    trimTruthReady,
+    cutBusy,
+  ]);
+
+  const persistCut = async (keepStartS: number, keepEndS: number): Promise<boolean> => {
+    if (!selected) return false;
+    const validateDuration = rawDurationS;
+    if (validateDuration <= 0) {
+      pushToast({
+        kind: 'info',
+        message: 'Loading clip duration from server — try again in a moment',
+        source: 'bg-o3-cut-duration-loading',
+      });
+      return false;
+    }
+    if (!isValidO3CutWindow(validateDuration, keepStartS, keepEndS)) {
+      pushToast({
+        kind: 'info',
+        message: validateDuration <= MIN_O3_CUT_S * 2
+          ? `Clip is only ${validateDuration.toFixed(1)}s — too short to trim`
+          : 'Trim window too small — drag handles farther apart (need ≥0.25s kept)',
+        source: 'bg-o3-cut-rejected',
+      });
+      return false;
+    }
+    const trimBack = Math.max(0, validateDuration - keepEndS);
+    setCutBusy(true);
+    try {
+      const applied = await onApplyO3Cut(
+        optionIndex,
+        keepStartS,
+        trimBack > 0.009 ? trimBack : null,
+        cutTargetOpts,
+      );
+      if (!applied) return false;
+      if (applied.rawDurationS != null) {
+        setSourceDurationS(applied.rawDurationS);
+        rawDurationRef.current = applied.rawDurationS;
+      }
+      const raw = applied.rawDurationS ?? validateDuration;
+      const eff = applied.effectiveDurationS;
+      const shortening = keepStartS > 0.05 || trimBack > 0.05;
+      if (shortening && eff != null && eff >= raw - 0.05) {
+        return false;
+      }
+      return true;
+    } finally {
+      setCutBusy(false);
+    }
+  };
+
+  const applyCutPreview = async () => {
+    if (!selected || !hasActiveCut) return;
+    if (!trimTruthReady) {
+      pushToast({
+        kind: 'info',
+        message: 'Loading clip duration from server — try Preview Cut again shortly',
+        source: 'bg-o3-cut-preview-loading',
+      });
+      return;
+    }
+    setCutBusy(true);
+    try {
+      const validateDuration = rawDurationS;
+      const trimBack = Math.max(0, validateDuration - effectiveKeepEndS);
+      const applied = await onApplyO3Cut(
+        optionIndex,
+        effectiveKeepStartS,
+        trimBack > 0.009 ? trimBack : null,
+        { previewOnly: true, ...cutTargetOpts },
+      );
+      if (!applied?.previewUrl) {
+        return;
+      }
+      const raw = applied.rawDurationS ?? validateDuration;
+      const eff = applied.effectiveDurationS;
+      const shortening = effectiveKeepStartS > 0.05 || trimBack > 0.05;
+      if (shortening && eff != null && eff >= raw - 0.05) {
+        pushToast({
+          kind: 'error',
+          message: 'Preview failed — trim would not shorten the clip. Apply Cut first.',
+          source: 'bg-o3-cut-preview-unchanged',
+        });
+        return;
+      }
+      if (option.video_path) {
+        rememberCutPreviewUrl(
+          beatId,
+          optionIndex,
+          option.video_path,
+          effectiveKeepStartS,
+          cutPreviewTrimBackS(),
+          applied.previewUrl,
+        );
+      }
+      lastAutoPreviewRef.current = `${effectiveKeepStartS.toFixed(2)}|${cutPreviewTrimBackS().toFixed(2)}`;
+      await swapVideoToPreview(applied.previewUrl, { autoplay: true });
+    } finally {
+      setCutBusy(false);
+    }
+  };
+
+  const applyDraftCut = async () => {
+    if (!selected || !hasActiveCut) return;
+    const ok = await persistCut(effectiveKeepStartS, effectiveKeepEndS);
+    if (ok) {
+      setPendingCut(null);
+    }
+  };
+
+  const clearCut = async () => {
+    if (!selected) return;
+    setCutBusy(true);
+    try {
+      setPendingCut(null);
+      setPreviewUrl(null);
+      lastAutoPreviewRef.current = null;
+      forgetCutPreviewsForBeat(beatId);
+      await onApplyO3Cut(optionIndex, 0, null, { clear: true, ...cutTargetOpts });
+      const video = videoRef.current;
+      if (video && canonicalVideoUrl) {
+        video.src = canonicalVideoUrl;
+        video.load();
+      }
+    } finally {
+      setCutBusy(false);
+    }
+  };
+
+  const returnToCutEdit = async () => {
+    setPreviewUrl(null);
+    await resetVideoToCanonical();
+  };
+
+  const initCutFromDuration = () => {
+    const clipDur = rawDurationS || durationS;
+    if (clipDur <= MIN_O3_CUT_S * 2) {
+      pushToast({
+        kind: 'info',
+        message: `Clip is only ${clipDur.toFixed(1)}s — too short to trim`,
+        source: 'bg-o3-cut-too-short',
+      });
+      return;
+    }
+    const margin = Math.max(MIN_O3_CUT_S, clipDur * 0.12);
+    setPendingCut({ startS: margin, endS: clipDur - margin });
+  };
+
   const resetVideoToCanonical = async () => {
     const video = videoRef.current;
     if (!video || !canonicalVideoUrl) return;
@@ -3233,25 +4917,39 @@ function BgOptionTile({
       // leave for user refresh
     }
   };
-  useEffect(() => {
-    void resetVideoToCanonical();
-  }, [canonicalVideoUrl]);
-  useEffect(() => {
-    setVideoLoadError(false);
-  }, [canonicalVideoUrl]);
+
   const parseDraft = (value: string) => {
     const parsed = parseFloat(value);
     return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
   };
   const trimStartValue = () => parseDraft(trimStartDraft);
   const trimBackValue = () => parseDraft(trimBackDraft);
-  const trimEndValue = (video: HTMLVideoElement) => {
+  const effectiveTrimStart = () => (trimDraftDirty ? trimStartValue() : savedTrimStart);
+  const effectiveTrimBack = () => (trimDraftDirty ? trimBackValue() : savedTrimBack);
+  const trimEndValue = (
+    video: HTMLVideoElement,
+    start = effectiveTrimStart(),
+    back = effectiveTrimBack(),
+  ) => {
     const dur = Number.isFinite(video.duration) ? Number(video.duration) : 0;
     if (dur <= 0) return null;
-    const back = trimBackValue();
-    if (back <= 0) return null;
-    return Math.max(trimStartValue() + 0.01, dur - back);
+    if (back <= 0 && start <= 0.01) return null;
+    const end = back > 0 ? dur - back : dur;
+    if (end <= start + 0.05) return null;
+    return Math.max(start + 0.01, end);
   };
+  const trimWindowInvalid = (
+    video: HTMLVideoElement | null,
+    start = savedTrimStart,
+    back = savedTrimBack,
+  ) => {
+    const dur = loadedDuration ?? (video && Number.isFinite(video.duration) ? video.duration : 0);
+    if (dur <= 0) return false;
+    if (start <= 0.01 && back <= 0.05) return false;
+    const end = back > 0 ? dur - back : dur;
+    return end <= start + 0.05;
+  };
+  const savedTrimInvalid = trimWindowInvalid(videoRef.current);
   const attachTrimStopListener = (video: HTMLVideoElement, stopAt: number | null) => {
     clearTrimPlaybackListener(video);
     const onTimeUpdate = () => {
@@ -3263,6 +4961,36 @@ function BgOptionTile({
     };
     trimPlaybackListenerRef.current = onTimeUpdate;
     video.addEventListener('timeupdate', onTimeUpdate);
+  };
+  const ensureCanonicalVideoForPlayhead = async () => {
+    const video = videoRef.current;
+    if (!video || !canonicalVideoUrl) return null;
+    clearTrimPlaybackListener(video);
+    setPreviewUrl(null);
+    if (video.src !== canonicalVideoUrl) {
+      video.src = canonicalVideoUrl;
+      video.load();
+      try {
+        await waitForVideoMetadata(video);
+      } catch {
+        return null;
+      }
+    }
+    return video;
+  };
+  const setStartFromPlayhead = async () => {
+    const video = await ensureCanonicalVideoForPlayhead();
+    if (!video) return;
+    const start = Math.max(0, Number(video.currentTime) || 0);
+    setTrimStartDraft(start.toFixed(2));
+  };
+  const setEndFromPlayhead = async () => {
+    const video = await ensureCanonicalVideoForPlayhead();
+    if (!video || !Number.isFinite(video.duration)) return;
+    const rawDur = rawDurationRef.current ?? Number(video.duration) ?? 0;
+    const atTime = Math.max(0, Number(video.currentTime) || 0);
+    const back = Math.max(0, rawDur - atTime);
+    setTrimBackDraft(back.toFixed(2));
   };
   const playTrimPreview = async () => {
     if (!selected) {
@@ -3276,8 +5004,10 @@ function BgOptionTile({
     const video = videoRef.current;
     if (!video || !canonicalVideoUrl) return;
     try {
+      setPreviewUrl(null);
       if (video.src !== canonicalVideoUrl) {
         video.src = canonicalVideoUrl;
+        video.load();
       }
       await waitForVideoMetadata(video);
     } catch {
@@ -3288,8 +5018,8 @@ function BgOptionTile({
       });
       return;
     }
-    const start = trimStartValue();
-    const stopAt = trimEndValue(video);
+    const start = effectiveTrimStart();
+    const stopAt = trimEndValue(video, start, effectiveTrimBack());
     clearTrimPlaybackListener(video);
     video.currentTime = start;
     attachTrimStopListener(video, stopAt);
@@ -3305,8 +5035,8 @@ function BgOptionTile({
     pushToast({
       kind: 'info',
       message: stopAt != null
-        ? `Preview Trim: ${start.toFixed(1)}s → ${stopAt.toFixed(1)}s (draft — Apply Trim to save)`
-        : `Preview Trim: from ${start.toFixed(1)}s (draft — Apply Trim to save)`,
+        ? `Preview Trim: ${start.toFixed(1)}s → ${stopAt.toFixed(1)}s${trimDraftDirty ? ' (draft — Apply Trim to save)' : ''}`
+        : `Preview Trim: from ${start.toFixed(1)}s${trimDraftDirty ? ' (draft — Apply Trim to save)' : ''}`,
       source: 'bg-o3-trim-preview',
     });
   };
@@ -3319,61 +5049,105 @@ function BgOptionTile({
       });
       return;
     }
-    await onApplyO3Trim(
+    clearTrimPlaybackListener(videoRef.current);
+    const applied = await onApplyO3Trim(
       trimStartValue(),
       trimBackValue() > 0 ? trimBackValue() : null,
     );
-  };
-  const currentVideoTime = () => {
+    if (applied?.rawDurationS != null && applied.rawDurationS > 0) {
+      rawDurationRef.current = applied.rawDurationS;
+    }
     const video = videoRef.current;
-    return video ? Math.max(0, Number(video.currentTime) || 0) : 0;
+    if (video && canonicalVideoUrl) {
+      setPreviewUrl(null);
+      if (video.src !== canonicalVideoUrl) {
+        video.src = canonicalVideoUrl;
+      }
+      video.load();
+      try {
+        await waitForVideoMetadata(video);
+        const start = trimStartValue();
+        video.currentTime = start;
+        attachTrimStopListener(video, trimEndValue(video, start, trimBackValue()));
+      } catch {
+        // user can retry play
+      }
+    }
   };
-  const currentVideoBack = (atTime = currentVideoTime()) => {
+  const clearDraftTrim = async () => {
+    setTrimStartDraft('0');
+    setTrimBackDraft('0');
+    rawDurationRef.current = null;
     const video = videoRef.current;
-    if (!video || !Number.isFinite(video.duration)) return trimBackValue();
-    return Math.max(0, (Number(video.duration) || 0) - atTime);
+    if (video && canonicalVideoUrl) {
+      clearTrimPlaybackListener(video);
+      setPreviewUrl(null);
+      video.src = canonicalVideoUrl;
+      video.load();
+    }
+    await onApplyO3Trim(0, null, true);
   };
-  const setStartFromPlayhead = () => {
-    const start = currentVideoTime();
-    setTrimStartDraft(start.toFixed(2));
-  };
-  const setEndFromPlayhead = () => {
-    const back = currentVideoBack(currentVideoTime()) ?? 0;
-    setTrimBackDraft(back.toFixed(2));
-  };
+
   return (
     <div
       class={`mn-bg-option mn-drop-target${selected ? ' is-selected' : ''}${keyMissing ? ' is-disabled' : ''}${isStitchApproved && hasClipVideo ? ' is-approved-video' : ''}${isStillDraft ? ' is-still-draft' : ''}`}
       data-testid={`bg-option-${beatIndex}-${optionIndex}`}
       data-option-key={option.key ?? ''}
-      onClick={keyMissing || isStillDraft ? undefined : onClick}
+      onClick={keyMissing ? undefined : onClick}
       onDragOver={dropHandlers.onDragOver}
       onDragLeave={dropHandlers.onDragLeave}
       onDrop={dropHandlers.onDrop}
       title={tooltip}
     >
-      {canonicalVideoUrl && !clipMissingOnDisk ? (
+      {selected && activeVideoUrl && !clipMissingOnDisk ? (
         <>
-          <video
-            ref={videoRef}
-            controls
-            preload="metadata"
-            src={canonicalVideoUrl}
-            data-testid={`bg-option-video-${beatIndex}-${optionIndex}`}
-            onPause={() => clearTrimPlaybackListener()}
-            onError={() => setVideoLoadError(true)}
-            onLoadedData={() => setVideoLoadError(false)}
-            onPlay={() => {
-              const video = videoRef.current;
-              if (!video) return;
-              const start = trimStartValue();
-              const stopAt = trimEndValue(video);
-              if (start > 0.01 && video.currentTime < start) {
-                video.currentTime = start;
-              }
-              attachTrimStopListener(video, stopAt);
-            }}
-          />
+          <div
+            class="mn-bg-option-video-wrap"
+            data-playback-cache-v1="PLAYBACK_CACHE_V1"
+            style={{ position: 'relative' }}
+            onClick={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <video
+              ref={videoRef}
+              controls
+              preload="metadata"
+              src={activeVideoUrl}
+              class={PLAYBACK_VIDEO_ANTI_BANDING_CLASS}
+              data-testid={`bg-option-video-${beatIndex}-${optionIndex}`}
+              onPause={() => clearTrimPlaybackListener()}
+              onEnded={() => {
+                const v = videoRef.current;
+                if (v) {
+                  v.currentTime = 0;
+                }
+              }}
+              onError={() => setVideoLoadError(true)}
+              onLoadedData={() => {
+                setVideoLoadError(false);
+                const v = videoRef.current;
+                if (v && Number.isFinite(v.duration) && v.duration > 0) {
+                  setLoadedDuration(v.duration);
+                }
+              }}
+            />
+            {showCutControls && overlayDurationS > 0 ? (
+              <BgO3CutOverlay
+                beatIndex={beatIndex}
+                optionIndex={optionIndex}
+                durationS={overlayDurationS}
+                keepStartS={effectiveKeepStartS}
+                keepEndS={effectiveKeepEndS}
+                editable={!cutBusy}
+                onKeepDraftChange={(startS, endS) => {
+                  setPendingCut({ startS, endS });
+                }}
+                onKeepRejected={(message) => {
+                  pushToast({ kind: 'info', message, source: 'bg-o3-cut-rejected' });
+                }}
+              />
+            ) : null}
+          </div>
           {videoLoadError ? (
             <div class="mn-bg-option-empty" data-testid={`bg-option-video-error-${beatIndex}-${optionIndex}`}>
               Clip failed to load — server may have restarted.
@@ -3390,97 +5164,105 @@ function BgOptionTile({
               </button>
             </div>
           ) : null}
-          {showTrimControls ? (
-          <div class="mn-bg-o3-trim-controls" data-testid={`bg-o3-trim-controls-${beatIndex}-${optionIndex}`}>
-            <span class="mn-dim">
-              trim front
-            </span>
-            <input
-              type="number"
-              min="0"
-              step="0.1"
-              class="mn-bg-o3-trim-input"
-              data-testid={`bg-o3-trim-start-input-${beatIndex}-${optionIndex}`}
-              value={trimStartDraft}
-              onClick={(e) => e.stopPropagation()}
-              onInput={(e) => setTrimStartDraft((e.target as HTMLInputElement).value)}
-              aria-label="Seconds to trim from the beginning"
-            />
-            <span class="mn-dim">s / back</span>
-            <input
-              type="number"
-              min="0"
-              step="0.1"
-              class="mn-bg-o3-trim-input"
-              data-testid={`bg-o3-trim-back-input-${beatIndex}-${optionIndex}`}
-              value={trimBackDraft}
-              onClick={(e) => e.stopPropagation()}
-              onInput={(e) => setTrimBackDraft((e.target as HTMLInputElement).value)}
-              aria-label="Seconds to trim from the end"
-            />
-            <span class="mn-dim">s</span>
-            <button
-              type="button"
-              class="mn-btn mn-btn-small"
-              data-testid={`bg-o3-start-trim-${beatIndex}-${optionIndex}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                setStartFromPlayhead();
-              }}
-              title="Set front trim from playhead (draft only — Apply Trim to save)"
-            >
-              Start Trim
-            </button>
-            <button
-              type="button"
-              class="mn-btn mn-btn-small"
-              data-testid={`bg-o3-end-trim-${beatIndex}-${optionIndex}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                setEndFromPlayhead();
-              }}
-              title="Set back trim from playhead (draft only — Apply Trim to save)"
-            >
-              End Trim
-            </button>
-            <button
-              type="button"
-              class="mn-btn mn-btn-small"
-              data-testid={`bg-o3-apply-trim-${beatIndex}-${optionIndex}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                applyDraftTrim();
-              }}
-            >
-              Apply Trim
-            </button>
-            <button
-              type="button"
-              class="mn-btn mn-btn-small"
-              data-testid={`bg-o3-preview-trim-${beatIndex}-${optionIndex}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                void playTrimPreview();
-              }}
-            >
-              Preview Trim
-            </button>
-            <button
-              type="button"
-              class="mn-btn mn-btn-small"
-              data-testid={`bg-o3-clear-trim-${beatIndex}-${optionIndex}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                setTrimStartDraft('0');
-                setTrimBackDraft('0');
-                void onApplyO3Trim(0, null, true).then(() => resetVideoToCanonical());
-              }}
-            >
-              Clear Trim
-            </button>
-          </div>
+          {showCutControls ? (
+            <div class="mn-bg-o3-cut-controls" data-testid={`bg-o3-cut-controls-${beatIndex}-${optionIndex}`}>
+              <span class="mn-dim">
+                {isCutPreviewActive
+                  ? 'playing cut preview'
+                  : cutDraftDirty
+                    ? 'amber = head/tail remove — press Apply Cut'
+                    : hasSavedCut
+                      ? 'trim applied (start + end crop)'
+                      : 'amber = head/tail remove'}
+              </span>
+              {isCutPreviewActive ? (
+                <button
+                  type="button"
+                  class="mn-btn mn-btn-small"
+                  data-testid={`bg-o3-edit-cut-${beatIndex}-${optionIndex}`}
+                  disabled={cutBusy}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void returnToCutEdit();
+                  }}
+                >
+                  Edit cut
+                </button>
+              ) : null}
+              {!hasActiveCut && !isCutPreviewActive ? (
+                <button
+                  type="button"
+                  class="mn-btn mn-btn-small"
+                  data-testid={`bg-o3-init-cut-${beatIndex}-${optionIndex}`}
+                  disabled={cutBusy || rawDurationS <= MIN_O3_CUT_S * 2}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    initCutFromDuration();
+                  }}
+                >
+                  Start cut
+                </button>
+              ) : null}
+              {!isCutPreviewActive ? (
+                <button
+                  type="button"
+                  class="mn-btn mn-btn-small"
+                  data-testid={`bg-o3-preview-cut-${beatIndex}-${optionIndex}`}
+                  disabled={cutBusy || !hasActiveCut}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void applyCutPreview();
+                  }}
+                >
+                  Preview cut
+                </button>
+              ) : null}
+              {cutDraftDirty ? (
+                <button
+                  type="button"
+                  class="mn-btn mn-btn-small mn-btn-primary"
+                  data-testid={`bg-o3-apply-cut-${beatIndex}-${optionIndex}`}
+                  disabled={cutBusy || !hasActiveCut}
+                  title="Save cut region for stitch export (Phase A/B Apply Cut parity)"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void applyDraftCut();
+                  }}
+                >
+                  {cutBusy ? 'Cutting…' : 'Apply Cut'}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                class="mn-btn mn-btn-small"
+                data-testid={`bg-o3-clear-cut-${beatIndex}-${optionIndex}`}
+                disabled={cutBusy || (!hasActiveCut && !hasSavedCut)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void clearCut();
+                }}
+              >
+                Clear cut
+              </button>
+            </div>
           ) : null}
-          {isStillDraft && onApproveStill && option.key ? (
+          {showTrimControls ? (
+            <BgO3TrimNumericControls
+              beatIndex={beatIndex}
+              optionIndex={optionIndex}
+              trimStartDraft={trimStartDraft}
+              trimBackDraft={trimBackDraft}
+              savedTrimInvalid={savedTrimInvalid}
+              onTrimStartInput={setTrimStartDraft}
+              onTrimBackInput={setTrimBackDraft}
+              onStartFromPlayhead={() => { void setStartFromPlayhead(); }}
+              onEndFromPlayhead={() => { void setEndFromPlayhead(); }}
+              onApplyTrim={() => { void applyDraftTrim(); }}
+              onPreviewTrim={() => { void playTrimPreview(); }}
+              onClearTrim={() => { void clearDraftTrim(); }}
+            />
+          ) : null}
+          {isStillDraft && onApproveStill ? (
             <button
               type="button"
               class="mn-btn mn-btn-small mn-btn-primary"
@@ -3498,6 +5280,15 @@ function BgOptionTile({
         <div class="mn-bg-option-empty" data-testid={`bg-option-video-missing-${beatIndex}-${optionIndex}`}>
           Clip missing on disk — regenerate O3 or pick another slot.
         </div>
+      ) : !selected && hasClipVideo && canonicalVideoUrl ? (
+        <video
+          class="mn-bg-option-video-preview"
+          preload="metadata"
+          muted
+          playsInline
+          src={canonicalVideoUrl}
+          data-testid={`bg-option-video-preview-${beatIndex}-${optionIndex}`}
+        />
       ) : option.thumb_b64 ? (
         <img src={option.thumb_b64} alt={`option ${optionIndex + 1}`} />
       ) : (
@@ -3508,9 +5299,9 @@ function BgOptionTile({
           type="radio"
           name={`bg-opt-${beatIndex}`}
           checked={selected}
-          onChange={isStillDraft ? undefined : (keyMissing ? undefined : onClick)}
-          disabled={keyMissing || isStillDraft}
-          title={isStillDraft ? 'Draft still clip — use Approve still for stitch below' : tooltip}
+          onChange={keyMissing ? undefined : onClick}
+          disabled={keyMissing}
+          title={isStillDraft ? 'Select this draft still clip to preview and trim' : tooltip}
           aria-label={optionLabel}
           data-testid={`bg-option-radio-${beatIndex}-${optionIndex}`}
         />

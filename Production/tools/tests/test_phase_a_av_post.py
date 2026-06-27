@@ -119,7 +119,8 @@ def test_trim_av_trailing_silence(tmp_path: Path) -> None:
     after = _ffprobe_duration(dst)
     assert trimmed > 0.4
     assert after < before - 0.3
-    assert 1.0 <= after <= 1.25
+    # speech ~1.0s + TRAILING_SPEECH_HOLD_S (1.0s) => ~2.0s output
+    assert 1.9 <= after <= 2.1
 
 
 def test_preroll_seconds_helper() -> None:

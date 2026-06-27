@@ -74,7 +74,9 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install pytest + Pillow (magic_compositor tests)
-        run: python3 -m pip install --quiet pytest Pillow numpy scipy imageio imageio-ffmpeg
+        run: python3 -m pip install --quiet pytest Pillow numpy scipy imageio imageio-ffmpeg PyYAML
+      - name: Install ffmpeg (O3 intro contract + stitch cache gates)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
       - name: Stitcher lock-in static markers
         run: python3 Production/scripts/verify_stitcher_lockin_20260528.py
       - name: Session regression unit tests
@@ -90,8 +92,43 @@ jobs:
             tests/test_arlo_canonical_registry.py \
             tests/test_intro_export_api_contract.py \
             tests/test_phase_a_single_player.py \
+            tests/test_beatgen_omni_restore.py \
+            tests/test_heal_avatar_pro_poisoned_prompt.py \
+            tests/test_milestone_init_bg_paths_authority_guard.py \
+            tests/test_bg_job_truth_gallery.py \
+            tests/test_beatgen_store.py \
+            tests/test_bg_export_live_beat_order.py \
+            tests/test_milestone_scope.py \
+            tests/test_milestone_o3_job_busy.py \
             -q
       - name: O3 intro contract shell gate
         run: bash Production/scripts/verify_o3_intro_contract.sh
+      - name: Character voice onboarding contract (Layer 1 + Layer 2 roster parity)
+        run: bash Production/scripts/verify_character_voice_onboarding_contract.sh
       - name: Deploy-backup beat_generator contract
         run: python3 Production/scripts/verify_deploy_backup_contract.py --beat-generator Production/tools/beat_generator.py
+
+  beatgen-per-event-sqlite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pytest
+        run: python3 -m pip install --quiet pytest
+      - name: Beat Gen per-event SQLite contracts
+        working-directory: Production/tools
+        run: |
+          python3 -m pytest \
+            tests/test_beatgen_per_event_sqlite.py \
+            tests/test_event_load_sidecar_reconcile.py \
+            tests/test_sidecar_sqlite_cutover_gate.py \
+            tests/test_bg_scope_activation_cold_boot_only.py \
+            -q
+      - name: Launchagent + startup reconcile markers
+        run: |
+          bash Production/scripts/verify_production_server_launchagent_durability.sh
+          grep -q 'reconcile_event_sidecar_after_milestone_exit' Production/tools/production_server.py
+          grep -q 'MN_BEATGEN_DB_PATH' Production/scripts/install_production_server_launchagent.sh

@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { Modal } from './ui/Modal';
 import { Spinner } from './ui/Spinner';
 import { beatPlanRowsToText, countBeatPlanBlocks, parseBeatPlanText } from './beatPlanFormat';
+
+export type BeatPlanDraftSaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 
 export interface BeatPlanRow {
   beat_index: number;
@@ -20,8 +22,12 @@ export interface BeatPlanModalProps {
   beatsPlan: BeatPlanRow[];
   approveStatus: 'idle' | 'sending';
   approveStartedAt?: number | null;
+  /** EXTRACT_APPROVE_OUTCOME_V1 — persistent inline error when approve fails. */
+  approveError?: string | null;
+  draftSaveStatus?: BeatPlanDraftSaveStatus;
   onClose: () => void;
   onApprove: (storySummary: string, beatsPlan: BeatPlanRow[]) => void;
+  onAutosave?: (storySummary: string, beatsPlan: BeatPlanRow[]) => void | Promise<void>;
 }
 
 const BEAT_SCRIPT_HELP =
@@ -35,18 +41,46 @@ export function BeatPlanModal({
   beatsPlan: initialPlan,
   approveStatus,
   approveStartedAt = null,
+  approveError = null,
+  draftSaveStatus = 'idle',
   onClose,
   onApprove,
+  onAutosave,
 }: BeatPlanModalProps) {
   const [storySummary, setStorySummary] = useState(initialSummary);
   const [beatScript, setBeatScript] = useState('');
+  const skipAutosaveRef = useRef(true);
+  const wasOpenRef = useRef(false);
+  const scriptDirtyRef = useRef(false);
+  const summaryDirtyRef = useRef(false);
+  const scriptFocusedRef = useRef(false);
+  const summaryFocusedRef = useRef(false);
 
   useEffect(() => {
-    if (open) {
-      setStorySummary(initialSummary);
-      setBeatScript(beatPlanRowsToText(initialPlan));
-    }
+    const justOpened = open && !wasOpenRef.current;
+    wasOpenRef.current = open;
+    if (!justOpened) return;
+    if (scriptDirtyRef.current || summaryDirtyRef.current) return;
+    setStorySummary(initialSummary);
+    setBeatScript(beatPlanRowsToText(initialPlan));
+    scriptDirtyRef.current = false;
+    summaryDirtyRef.current = false;
+    skipAutosaveRef.current = true;
   }, [open, initialSummary, initialPlan]);
+
+  useEffect(() => {
+    if (!open || approveStatus === 'sending' || !onAutosave) return undefined;
+    const beatsPlan = parseBeatPlanText(beatScript);
+    if (beatsPlan.length === 0) return undefined;
+    if (skipAutosaveRef.current) {
+      skipAutosaveRef.current = false;
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      void onAutosave(storySummary, beatsPlan);
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [open, storySummary, beatScript, approveStatus, onAutosave]);
 
   const handleApprove = () => {
     const beatsPlan = parseBeatPlanText(beatScript);
@@ -94,11 +128,29 @@ export function BeatPlanModal({
     >
       <p class="mn-dim">
         Claude read the skeleton section for this video only. Edit the summary and beat script below,
-        then Approve to generate rich Kling O3 prompts.
+        then Approve to generate rich Kling O3 prompts. Edits auto-save to your draft every few seconds.
+        {draftSaveStatus === 'saving' ? (
+          <> <Spinner size="sm" inline /> Saving draft…</>
+        ) : null}
+        {draftSaveStatus === 'saved' && approveStatus !== 'sending' ? (
+          <> Draft saved.</>
+        ) : null}
+        {draftSaveStatus === 'error' ? (
+          <> <strong>Draft save failed</strong> — copy your script before closing.</>
+        ) : null}
         {approveStatus === 'sending' ? (
           <> Large plans (~20+ beats) may take <strong>3–6 minutes</strong> — the timer above shows progress.</>
         ) : null}
       </p>
+      {approveError ? (
+        <div
+          class="mn-scope-banner mn-scope-banner-error mn-beat-plan-approve-error"
+          data-testid="beat-plan-approve-error"
+          role="alert"
+        >
+          {approveError}
+        </div>
+      ) : null}
       <label class="mn-label" for="beat-plan-summary">Story summary</label>
       <textarea
         id="beat-plan-summary"
@@ -106,7 +158,12 @@ export function BeatPlanModal({
         data-testid="beat-plan-summary"
         rows={4}
         value={storySummary}
-        onInput={(e) => setStorySummary((e.target as HTMLTextAreaElement).value)}
+        onFocus={() => { summaryFocusedRef.current = true; }}
+        onBlur={() => { summaryFocusedRef.current = false; }}
+        onInput={(e) => {
+          summaryDirtyRef.current = true;
+          setStorySummary((e.target as HTMLTextAreaElement).value);
+        }}
       />
       <label class="mn-label" for="beat-plan-script">
         Beat script
@@ -121,7 +178,12 @@ export function BeatPlanModal({
         rows={14}
         spellcheck={false}
         value={beatScript}
-        onInput={(e) => setBeatScript((e.target as HTMLTextAreaElement).value)}
+        onFocus={() => { scriptFocusedRef.current = true; }}
+        onBlur={() => { scriptFocusedRef.current = false; }}
+        onInput={(e) => {
+          scriptDirtyRef.current = true;
+          setBeatScript((e.target as HTMLTextAreaElement).value);
+        }}
         placeholder={'Lorelai [disbelieving]: WHAT IS THAT...? [eyes wide, rooted in place]\n\nArlo [to camera, warmly]: "Wanna try it?" [faces camera, gentle nod]'}
       />
     </Modal>

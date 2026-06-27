@@ -1,7 +1,7 @@
 {
   "_schema_version": 2,
   "_created": "2026-04-24",
-  "_note": "Kling Elements + ElevenLabs create-voice registry. Setup: scripts/setup_all_kling_character_voices.py. Beat Gen requires active element_id per dialogue speaker (O3 Pro + bound voice).",
+  "_note": "Kling Elements + ElevenLabs create-voice registry. Setup: scripts/setup_all_kling_character_voices.py. Pose re-register: --refresh-poses-only (keeps kling_voice_id). Voice re-register: --refresh-voice --confirm-voice-overwrite (mints new clone). Beat Gen requires active element_id per dialogue speaker (O3 Pro + bound voice).",
   "_image_selection_rationale": "Primary: neutral or happy pose. Refer: different emotion(s). All images 1024x1024 PNG, Rule 6 compliant.",
   "characters": {
     "Tessa": {
@@ -104,23 +104,63 @@
       "elevenlabs_voice_name": "Gigi"
     },
     "Ember": {
-      "element_id": null,
-      "status": "pending",
+      "element_id": "314503771592524",
+      "status": "active",
       "element_name": "Ember",
-      "description": "Cartoon 3D Pixar-style fox, orange-red fur, fluffy tail, warm amber eyes, kind expression",
-      "frontal_image": "Ember/poses/ember_pose_neutral.png",
+      "description": "Pixar cartoon fox, orange fur, green sleeveless tunic, fluffy white-tipped tail, warm amber eyes",
+      "frontal_image": "Ember/poses/ember_newstyle_pose_1.png",
       "refer_images": [
-        "Ember/poses/ember_pose_happy.png",
-        "Ember/poses/ember_pose_worried.png"
+        "Ember/poses/ember_newstyle_pose_1.png",
+        "Ember/poses/ember_newstyle_pose_3.png",
+        "Ember/poses/0434a8bd-daf5-4eea-9ea8-dccb1842ee18.png"
       ],
       "audition_line": "Come here — you don't have to do this alone.",
       "audition_speed": 1.0,
-      "kling_voice_id": null,
-      "kling_voice_label": null,
-      "created_at": null,
-      "wavespeed_prediction_id": null,
+      "kling_voice_id": "899693413623930976",
+      "kling_voice_label": "ElevenLabs Katie (create-voice)",
+      "created_at": "2026-06-27T03:49:22.167180+00:00",
+      "wavespeed_prediction_id": "03bd720bdab04d918a1861c0b69f7ce1",
       "elevenlabs_voice_id": "T720RsqorTx4ZZWohrNN",
-      "elevenlabs_voice_name": "Katie"
+      "elevenlabs_voice_name": "Katie",
+      "elevenlabs_voice_sample_path": "kling_voice_samples/ember.mp3",
+      "element_sample_lines": [
+        "[warm, gentle] Come here — you don't have to do this alone.",
+        "[curious, friendly] Hello there.",
+        "[wonder-struck, breathless] I'm Ember — I'm from Foxhollow, down in the valley. [pause] What are you guys doing?"
+      ],
+      "element_sample_text": "[warm, gentle] Come here — you don't have to do this alone. ... [curious, friendly] Hello there. ... [wonder-struck, breathless] I'm Ember — I'm from Foxhollow, down in the valley. [pause] What are you guys doing?",
+      "voice_sample_lock": {
+        "schema_version": 1,
+        "session_id": "ember_katie_canonical_v2_20260627",
+        "audition_line": "Come here — you don't have to do this alone.",
+        "element_sample_lines": [
+          "[warm, gentle] Come here — you don't have to do this alone.",
+          "[curious, friendly] Hello there.",
+          "[wonder-struck, breathless] I'm Ember — I'm from Foxhollow, down in the valley. [pause] What are you guys doing?"
+        ],
+        "element_sample_text": "[warm, gentle] Come here — you don't have to do this alone. ... [curious, friendly] Hello there. ... [wonder-struck, breathless] I'm Ember — I'm from Foxhollow, down in the valley. [pause] What are you guys doing?",
+        "locked_speed": 1.0,
+        "locked_at": "2026-06-27T03:48:45.433799+00:00",
+        "sample_text_fingerprint": "1416f6f60128574c"
+      },
+      "voice_bind_history": [
+        {
+          "element_id": "314500114381300",
+          "kling_voice_id": "899678320223191113",
+          "archived_at": "2026-06-27T03:16:04.985351+00:00",
+          "reason": "voice_refresh",
+          "kling_voice_label": "ElevenLabs Katie (create-voice)",
+          "wavespeed_prediction_id": "fe0276fd356041dd91fc1fc58ab622ae"
+        },
+        {
+          "element_id": "314502806170501",
+          "kling_voice_id": "899685193169109060",
+          "archived_at": "2026-06-27T03:48:49.011089+00:00",
+          "reason": "voice_refresh",
+          "kling_voice_label": "ElevenLabs Katie (create-voice)",
+          "wavespeed_prediction_id": "d753c00c44e24a3c816405f6868043c8"
+        }
+      ]
     },
     "Bork": {
       "element_id": null,
@@ -142,23 +182,24 @@
       "elevenlabs_voice_name": "Bork2"
     },
     "Bramble": {
-      "element_id": null,
-      "status": "pending",
+      "element_id": "313556315685320",
+      "status": "active",
       "element_name": "Bramble",
-      "description": "Cartoon 3D Pixar-style bear, sturdy brown build, gentle face, craftsman character",
-      "frontal_image": "Bramble/poses/bramble_pose_neutral.png",
+      "description": "Pixar cartoon bear, mossy brown fur, plaid shirt, suspenders, brimmed hat, gentle giant",
+      "frontal_image": "Bramble/poses/bramble_newstyle_pose_1.png",
       "refer_images": [
-        "Bramble/poses/bramble_pose_happy.png",
-        "Bramble/poses/bramble_pose_sad.png"
+        "Bramble/poses/bramble_newstyle_pose_2.png",
+        "Bramble/poses/bramble_newstyle_pose_3.png"
       ],
       "audition_line": "Steady now — I've got you.",
       "audition_speed": 0.9,
-      "kling_voice_id": null,
-      "kling_voice_label": null,
-      "created_at": null,
-      "wavespeed_prediction_id": null,
+      "kling_voice_id": "895720047158239315",
+      "kling_voice_label": "ElevenLabs Northern Terry (create-voice)",
+      "created_at": "2026-06-16T04:40:38.690534+00:00",
+      "wavespeed_prediction_id": "01df8b604533426fb773401360a211d3",
       "elevenlabs_voice_id": "wo6udizrrtpIxWGp2qJk",
-      "elevenlabs_voice_name": "Northern Terry"
+      "elevenlabs_voice_name": "Northern Terry",
+      "elevenlabs_voice_sample_path": "kling_voice_samples/bramble.mp3"
     },
     "Luna": {
       "element_id": null,
@@ -218,23 +259,55 @@
       "elevenlabs_voice_name": "Carter"
     },
     "Oliver": {
-      "element_id": null,
-      "status": "pending",
+      "element_id": "314391814860521",
+      "status": "active",
       "element_name": "Oliver",
-      "description": "Cartoon 3D Pixar-style deer, warm gentle eyes, Arc 1 seeker who gives the child a magic wand",
-      "frontal_image": "Oliver/poses/oliver_pose_neutral.png",
+      "description": "Pixar cartoon deer seeker, teal hooded cloak, gnarled staff, mossy antlers, warm gentle eyes",
+      "frontal_image": "Oliver/poses/oliver_canonical_neutral.png",
       "refer_images": [
-        "Oliver/poses/oliver_pose_happy.png",
-        "Oliver/poses/oliver_pose_wonder.png"
+        "Oliver/poses/oliver_canonical_explaining.png",
+        "Oliver/poses/oliver_canonical_wonder.png",
+        "Oliver/poses/chatgpt_image_jun_25_2026_04_44_20_pm.png"
       ],
       "audition_line": "Something wonderful is waiting for us.",
       "audition_speed": 1.0,
-      "kling_voice_id": null,
-      "kling_voice_label": null,
-      "created_at": null,
-      "wavespeed_prediction_id": null,
+      "element_sample_lines": [
+        "Something wonderful is waiting for us.",
+        "The forest has been waiting for someone like you.",
+        "This wand chooses its keeper — and it chose you."
+      ],
+      "element_sample_text": "Something wonderful is waiting for us. ... The forest has been waiting for someone like you. ... This wand chooses its keeper — and it chose you.",
+      "kling_voice_id": "898496764544679951",
+      "kling_voice_label": "ElevenLabs Brayden (create-voice)",
+      "created_at": "2026-06-23T20:34:14.397079+00:00",
+      "wavespeed_prediction_id": "f00f479ecb84429d879daa018256d933",
       "elevenlabs_voice_id": "3XOBzXhnDY98yeWQ3GdM",
-      "elevenlabs_voice_name": "Brayden"
+      "elevenlabs_voice_name": "Brayden",
+      "elevenlabs_voice_sample_path": "kling_voice_samples/oliver.mp3",
+      "voice_sample_lock": {
+        "schema_version": 1,
+        "session_id": "speed_compare_20260623",
+        "audition_line": "Something wonderful is waiting for us.",
+        "element_sample_lines": [
+          "Something wonderful is waiting for us.",
+          "The forest has been waiting for someone like you.",
+          "This wand chooses its keeper — and it chose you."
+        ],
+        "element_sample_text": "Something wonderful is waiting for us. ... The forest has been waiting for someone like you. ... This wand chooses its keeper — and it chose you.",
+        "locked_speed": 1.0,
+        "locked_at": "2026-06-23T20:33:46.718147+00:00",
+        "sample_text_fingerprint": "f65a887aead9cc82"
+      },
+      "voice_bind_history": [
+        {
+          "element_id": "314217799683323",
+          "kling_voice_id": "898494499671515146",
+          "archived_at": "2026-06-23T20:33:48.419666+00:00",
+          "reason": "voice_refresh",
+          "kling_voice_label": "ElevenLabs Brayden (create-voice)",
+          "wavespeed_prediction_id": "8b5c4c64d3184869b69ab632b665a417"
+        }
+      ]
     },
     "Willow": {
       "element_id": null,
@@ -266,7 +339,7 @@
         "Arlo/poses/arlo_confident_vest.png"
       ],
       "elevenlabs_voice_id": "7o9pyvsN0ob5GO6LBQp6",
-      "elevenlabs_voice_name": "Arlo (Event 1 Beat 10 canon)",
+      "elevenlabs_voice_name": "Arlo (Chipper1 interim)",
       "elevenlabs_voice_sample_path": "kling_voice_samples/chipper.mp3",
       "audition_line": "Ready? Just focus on the Teleport Glass. Here we go!",
       "audition_speed": 1.15,
@@ -317,15 +390,15 @@
       "proven_o3_bind_applied_at": "2026-06-15T07:00:00.000000+00:00"
     },
     "Lorelai": {
-      "element_id": "313441038164306",
+      "element_id": "314502121024525",
       "status": "active",
       "element_name": "Loral",
       "description": "Cartoon 3D Pixar-style raccoon scholar, glasses, backpack, excitable academic personality",
       "frontal_image": "Lorelai/poses/lorelai_canonical_neutral.png",
       "refer_images": [
-        "Lorelai/poses/lorelai_canonical_neutral.png",
         "Lorelai/poses/lorelai_explaining.png",
-        "Lorelai/poses/lorelai_shocked.png"
+        "Lorelai/poses/lorelai_shocked.png",
+        "Lorelai/poses/baseline_char_raccoon_explorer.png"
       ],
       "refer_pins": [
         "Lorelai/poses/lorelai_explaining.png",

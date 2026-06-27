@@ -20,7 +20,7 @@
 //            not Rule 19 shortcut.
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { activeScope } from '../state/scope';
+import { activeScope, activeScopeQueryParams, activeProjectType, activeMilestoneId, activeTargetVideo } from '../state/scope';
 import { activeTab, serverRehydrateTick } from '../state/refreshSignals';
 import { apiGet, pathappPatch } from '../api/client';
 import { SERVER_BASE } from '../api/endpoints';
@@ -32,6 +32,11 @@ import {
   ELEMENT_SPEAKERS,
   libraryItemCanAddToElement,
 } from '../utils/libraryElementPose';
+import {
+  libraryItemMatchesPanelTab,
+  stitchAudioPanelTabs,
+  type LibraryPanelTab,
+} from '../utils/libraryPanelContract';
 
 // ----------------------------------------------------------------
 // Types
@@ -46,6 +51,8 @@ interface LibItem {
   thumb_url?: string;
   display_name?: string;
   mtime?: number;
+  /** LIBRARY_PANEL_CLASSIFICATION_V1 — server authority for tab visibility. */
+  panel_tabs?: string[];
   tier?: string; // server-set: 'source' | 'cropped' | 'character_master' (cr_library current shape)
   width?: number;
   height?: number;
@@ -82,6 +89,7 @@ interface StitchLibraryResponse {
 
 interface LibraryResponse {
   images?: LibItem[];
+  metadata_only?: boolean;
   items?: LibItem[];
   sources?: LibItem[];
   crops?: LibItem[];
@@ -113,6 +121,7 @@ export function stitchLibraryToLibItems(data: StitchLibraryResponse): LibItem[] 
         asset_type: category === 'ambient' ? 'audio' : category === 'sfx' ? 'sfx' : 'transition',
         tags,
         tier: category,
+        panel_tabs: stitchAudioPanelTabs(category),
         duration_ms: item.duration_ms,
         mtime: 0,
       });
@@ -145,7 +154,22 @@ export function libraryAudioPreviewUrl(item: LibItem): string | undefined {
 }
 
 function thumbSrc(it: LibItem): string | undefined {
-  return it.thumb_b64 ?? it.thumb_url ?? undefined;
+  return libraryThumbSrc(it);
+}
+
+/** Resolve tile preview URL — metadata-only list uses thumb_url; uploads may still carry thumb_b64. */
+export function libraryThumbSrc(it: LibItem): string | undefined {
+  if (it.thumb_url) {
+    return it.thumb_url.startsWith('http')
+      ? it.thumb_url
+      : `${SERVER_BASE}${it.thumb_url}`;
+  }
+  if (it.thumb_b64) {
+    return it.thumb_b64.startsWith('data:')
+      ? it.thumb_b64
+      : `data:image/webp;base64,${it.thumb_b64}`;
+  }
+  return undefined;
 }
 
 function displayName(it: LibItem): string {
@@ -174,11 +198,47 @@ function libraryTileLabel(it: LibItem): string {
 // rules — file when CC-17/18/19 land in main and the rules are confirmed
 // against runtime cr_library behavior.
 
-export type LibraryTier = 'images' | 'ambient' | 'sfx' | 'transitions' | 'watercolors';
+export type LibraryTier = LibraryPanelTab;
 
 const LIBRARY_TIERS: LibraryTier[] = ['images', 'ambient', 'sfx', 'transitions', 'watercolors'];
 const DEFAULT_LIBRARY_TIER: LibraryTier = 'images';
 const LIBRARY_TIER_LS_KEY = 'mn.library.tier';
+const LIBRARY_ITEMS_SESSION_KEY = 'mn.library.items.v3';
+
+function libraryItemsStorageKey(eventId: string): string {
+  return `${LIBRARY_ITEMS_SESSION_KEY}:${eventId}`;
+}
+
+function readPersistedLibraryItems(eventId: string): LibItem[] {
+  if (typeof sessionStorage === 'undefined') return [];
+  try {
+    const raw = sessionStorage.getItem(libraryItemsStorageKey(eventId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as { items?: LibItem[] };
+    const items = Array.isArray(parsed.items) ? parsed.items : [];
+    // Drop stale cache rows missing disk-scan tier (pre-fix Directus-only shape).
+    const valid = items.filter(
+      (it) =>
+        (Array.isArray(it.panel_tabs) && it.panel_tabs.length > 0)
+        || (typeof it.tier === 'string' && it.tier.length > 0),
+    );
+    return valid.length === items.length ? items : valid;
+  } catch {
+    return [];
+  }
+}
+
+function persistLibraryItems(eventId: string, items: LibItem[]): void {
+  if (typeof sessionStorage === 'undefined') return;
+  try {
+    sessionStorage.setItem(
+      libraryItemsStorageKey(eventId),
+      JSON.stringify({ items, savedAt: Date.now() }),
+    );
+  } catch {
+    /* quota — best effort */
+  }
+}
 
 // Map current cr_library `tier` value to a prod_assets-shaped asset_type so
 // the TIER_TO_FILTER_MAP can decide. cr_library returns 'source' / 'cropped'
@@ -186,6 +246,7 @@ const LIBRARY_TIER_LS_KEY = 'mn.library.tier';
 function inferAssetType(it: LibItem): string {
   if (it.asset_type) return it.asset_type;
   if (it.tier === 'canonical') return 'canonical_image';
+  if (it.tier === 'element_pose') return 'element_pose';
   if (it.tier === 'character_master') return 'still_master';
   if (it.tier === 'source' || it.tier === 'cropped') return 'still_delivery';
   return 'image';
@@ -199,14 +260,25 @@ function inferAssetType(it: LibItem): string {
 //  watercolors  → tags CONTAINS 'watercolor' OR asset_name CONTAINS 'watercolor'
 export const TIER_TO_FILTER_MAP: Record<LibraryTier, (it: LibItem) => boolean> = {
   images: (it) => {
+    const t = it.tier ?? '';
+    if (t === 'canonical') return false;
+    // Disk-scan tier is authoritative — do not let Directus prod_asset_type hide rows.
+    if (
+      t === 'source'
+      || t === 'cropped'
+      || t === 'character_master'
+      || t === 'element_pose'
+    ) {
+      return true;
+    }
     const at = inferAssetType(it);
+    if (at === 'canonical_image') return false;
     return (
       at === 'image' ||
       at === 'still_delivery' ||
       at === 'still_master' ||
       at === 'beat_scene' ||
-      at === 'canonical_image' ||
-      it.tier === 'canonical'
+      at === 'element_pose'
     );
   },
   ambient: (it) => {
@@ -217,6 +289,9 @@ export const TIER_TO_FILTER_MAP: Record<LibraryTier, (it: LibItem) => boolean> =
   sfx: (it) => inferAssetType(it) === 'sfx' || inferAssetType(it) === 'transition',
   transitions: (it) => (it.tags ?? []).includes('transition'),
   watercolors: (it) => {
+    if (it.tier === 'watercolor') return true;
+    const at = inferAssetType(it);
+    if (at === 'canonical_image' || it.tier === 'canonical') return false;
     const tags = it.tags ?? [];
     if (tags.includes('watercolor')) return true;
     const name = (it.asset_name ?? it.filename ?? it.key ?? '').toLowerCase();
@@ -299,9 +374,10 @@ interface PreviewState {
 // ----------------------------------------------------------------
 
 export function LibraryPanel() {
-  const [items, setItems] = useState<LibItem[]>([]);
+  const eventId = activeScope.value.event_id;
+  const [items, setItems] = useState<LibItem[]>(() => readPersistedLibraryItems(eventId));
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => readPersistedLibraryItems(eventId).length === 0);
   const [refreshTick, setRefreshTick] = useState(0);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -311,16 +387,14 @@ export function LibraryPanel() {
   // CC-17 — tier state, persisted to localStorage
   const [tier, setTier] = useState<LibraryTier>(loadPersistedTier);
 
-  // LD-682 STITCHER_LIBRARY_DEFAULT_SFX_TIER_V1 — when the Stitcher tab is
-  // active, default the tier to 'sfx' (SFX drops are the dominant Library
-  // interaction inside Stitcher). User can still flip manually; the
-  // transient override is NOT persisted to localStorage so leaving Stitcher
-  // restores their prior preference. Reactive on activeTab signal.
+  // LD-682 / PHASE_LIBRARY_DEFAULT_WATERCOLOR_TIER_V1 — Phase A/B tabs default
+  // Library to watercolors (same pattern as Stitcher → sfx).
   useEffect(() => {
     if (activeTab.value === 'stitcher') {
       setTier((prev) => (prev === 'sfx' ? prev : 'sfx'));
+    } else if (activeTab.value === 'phase_a' || activeTab.value === 'phase_b') {
+      setTier((prev) => (prev === 'watercolors' ? prev : 'watercolors'));
     } else {
-      // Restore localStorage-preferred tier when leaving Stitcher.
       setTier((prev) => {
         const preferred = loadPersistedTier();
         return prev === preferred ? prev : preferred;
@@ -460,10 +534,21 @@ export function LibraryPanel() {
 
   useEffect(() => {
     let cancelled = false;
+    const cached = readPersistedLibraryItems(eventId);
+    if (cached.length > 0) {
+      setItems(cached);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
     (async () => {
       const [crRes, stitchRes] = await Promise.all([
-        apiGet<LibraryResponse>('cr_library', { event_id: activeScope.value.event_id }),
-        apiGet<StitchLibraryResponse>('stitch_editor_library'),
+        apiGet<LibraryResponse>('cr_library', activeScopeQueryParams(), {
+          fetchTimeoutMs: 45_000,
+        }),
+        apiGet<StitchLibraryResponse>('stitch_editor_library', undefined, {
+          fetchTimeoutMs: 45_000,
+        }),
       ]);
       if (cancelled) return;
       setLoading(false);
@@ -471,17 +556,28 @@ export function LibraryPanel() {
       const audioItems =
         stitchRes.ok && stitchRes.data ? stitchLibraryToLibItems(stitchRes.data) : [];
       if (!crRes.ok && !stitchRes.ok) {
-        setError(crRes.error ?? stitchRes.error ?? 'unknown error');
-        setItems([]);
+        if (cached.length === 0) {
+          setError(crRes.error ?? stitchRes.error ?? 'unknown error');
+          setItems([]);
+        }
         return;
       }
-      setItems([...imageItems, ...audioItems]);
+      const merged = [...imageItems, ...audioItems];
+      setItems(merged);
+      persistLibraryItems(eventId, merged);
       setError(null);
     })();
     return () => {
       cancelled = true;
     };
-  }, [refreshTick, serverRehydrateTick.value, activeScope.value.event_id]);
+  }, [
+    refreshTick,
+    serverRehydrateTick.value,
+    eventId,
+    activeProjectType.value,
+    activeMilestoneId.value,
+    activeTargetVideo.value,
+  ]);
 
   const onDelete = async (item: LibItem) => {
     const k = item.key ?? item.abs_path;
@@ -539,7 +635,7 @@ export function LibraryPanel() {
     // LD-682: when inside Stitcher tab, tier flips are transient (don't
     // persist) so leaving Stitcher restores the user's preferred default.
     // Outside Stitcher, manual flips persist as the new default.
-    if (activeTab.value !== 'stitcher') {
+    if (activeTab.value !== 'stitcher' && activeTab.value !== 'phase_a' && activeTab.value !== 'phase_b') {
       persistTier(next);
     }
     // Unpin preview on tier change so the user sees fresh hits.
@@ -552,6 +648,7 @@ export function LibraryPanel() {
     setUploading(true);
     let added = 0;
     const audioTier = AUDIO_LIBRARY_TIERS.has(tier) ? tier : null;
+    const imageTier = tier === 'watercolors' ? 'watercolor' : 'source';
     for (const file of Array.from(files)) {
       try {
         const dataUrl = await new Promise<string>((resolve, reject) => {
@@ -565,8 +662,8 @@ export function LibraryPanel() {
           filename: file.name,
           ...(audioTier
             ? { file_b64, tier: audioTier }
-            : { image_b64: file_b64, tier: 'source' }),
-        });
+            : { image_b64: file_b64, tier: imageTier }),
+        }, { skipSnapshot: true });
         if (result.ok) {
           added++;
           pushToast({ kind: 'success', message: `Uploaded ${file.name}`, source: 'library-upload' });
@@ -586,10 +683,11 @@ export function LibraryPanel() {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  // CC-17 + CC-18 — combine tier filter + debounced search
+  // CC-17 + CC-18 — panel_tabs authority (LIBRARY_PANEL_CLASSIFICATION_V1) + search
   const filteredItems = useMemo(() => {
-    const tierFilter = TIER_TO_FILTER_MAP[tier];
-    return items.filter((it) => tierFilter(it) && matchesSearch(it, searchQuery));
+    return items.filter(
+      (it) => libraryItemMatchesPanelTab(it, tier) && matchesSearch(it, searchQuery),
+    );
   }, [items, tier, searchQuery]);
 
   const uploadAccept = AUDIO_LIBRARY_TIERS.has(tier)
@@ -665,12 +763,12 @@ export function LibraryPanel() {
             Library is empty for this event.
           </p>
         ) : filteredItems.length === 0 ? (
-          // Empty-state UI; non-image tiers will populate per LD-656
-          // PHASED_DELIVERY_PRIMITIVE_HOOKS_S5_5C_V1 Phase D.
           <p class="mn-empty" data-testid="library-empty-tier">
             {searchQuery
               ? `No items match "${searchQuery}" in tier ${tier}.`
-              : `No items in tier ${tier} yet.`}
+              : items.length > 0
+                ? `${items.length} item(s) on disk — try another tier filter (current: ${tier}).`
+                : `No items in tier ${tier} yet.`}
           </p>
         ) : (
           <ul class="mn-library-list" data-testid="library-list">
@@ -678,12 +776,19 @@ export function LibraryPanel() {
               const libKey = it.key ?? it.abs_path ?? `item-${i}`;
               // Wave 5 R2 (Q1 source-side completion): emit lib-sfx for SFX-tier
               // items so target-context-aware drop predicates (StitcherSlot SFX
-              // strip) can accept them. Images, watercolors, transitions stay as
-              // lib-image so existing image-slot drop targets continue working.
+              // strip) can accept them. Watercolors tier → lib-watercolor for
+              // Phase A/B waveform drops; other image tiers stay lib-image.
               // Built as discriminated-union variants (DragPayload requires
               // source_path on the lib-sfx variant).
               const isAudioDragTier =
                 tier === 'sfx' || tier === 'ambient' || tier === 'transitions';
+              const isPhaseTab =
+                activeTab.value === 'phase_a' || activeTab.value === 'phase_b';
+              const isWatercolorItem =
+                it.tier === 'watercolor' ||
+                (it.tags ?? []).includes('watercolor');
+              const isWatercolorDragTier =
+                tier === 'watercolors' || (isPhaseTab && isWatercolorItem);
               const dragPayload: DragPayload = isAudioDragTier
                 ? {
                     kind: 'lib-sfx',
@@ -691,13 +796,19 @@ export function LibraryPanel() {
                     tier: it.tier ?? 'unknown',
                     source_path: it.abs_path ?? libKey,
                   }
-                : {
-                    kind: 'lib-image',
-                    lib_key: libKey,
-                    tier: it.tier ?? 'unknown',
-                    ...(it.abs_path ? { abs_path: it.abs_path } : {}),
-                    ...(it.filename ? { filename: it.filename } : {}),
-                  };
+                : isWatercolorDragTier
+                  ? {
+                      kind: 'lib-watercolor',
+                      lib_key: libKey,
+                      animation_type: 'fade_in',
+                    }
+                  : {
+                      kind: 'lib-image',
+                      lib_key: libKey,
+                      tier: it.tier ?? 'unknown',
+                      ...(it.abs_path ? { abs_path: it.abs_path } : {}),
+                      ...(it.filename ? { filename: it.filename } : {}),
+                    };
               const dimsLabel =
                 it.duration_ms != null && it.duration_ms > 0
                   ? `${(it.duration_ms / 1000).toFixed(1)}s`
