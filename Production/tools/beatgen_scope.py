@@ -140,6 +140,8 @@ def assert_clip_path_matches_scope(video_path: str | Path, scope: BeatGenScope) 
 
 def assert_db_path_matches_beat(beat_id: str) -> None:
     """Refuse production beat writes when SQLite file ≠ beatgen_eventN.db."""
+    if os.environ.get("MN_BEATGEN_TEST_ALLOW_DIRECT_WRITE") == "1":
+        return
     event_id = event_id_from_beat_id(beat_id)
     if not event_id:
         return

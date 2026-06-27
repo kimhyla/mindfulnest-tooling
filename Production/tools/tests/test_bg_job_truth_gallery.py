@@ -98,7 +98,8 @@ def test_clear_o3_pointer_if_terminal(tmp_path: Path) -> None:
     assert resolve_o3_current_job_id(beat) == ""
 
 
-def test_pin_slot_assign_preserves_other_slots(tmp_path: Path) -> None:
+def test_pin_slot_assign_preserves_other_slots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(bg, "_BG_EVENT_DIR", str(tmp_path / "Event_1"))
     p0 = tmp_path / "g1_element_o3_master_delivery.mp4"
     p1 = tmp_path / "g2_element_o3_master_delivery.mp4"
     p2 = tmp_path / "g3_element_o3_master_delivery.mp4"
