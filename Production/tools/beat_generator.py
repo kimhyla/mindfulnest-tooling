@@ -11943,6 +11943,7 @@ def import_delivery_clip_to_beat(
             make_active=make_active,
         )
         normalize_kling_o3_option_slots(beat, sidecar)
+        sync_o3_selection_pipeline_fields(beat, sidecar)
         persist_o3_disk_enrich_on_beat(beat, resolved_event_dir)
         if beat_is_still_insert(beat) and make_active:
             beat["kling_o3_status"] = "approved"

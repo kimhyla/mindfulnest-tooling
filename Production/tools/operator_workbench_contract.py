@@ -346,5 +346,8 @@ def enrich_beats_for_session_response(
             approved_roots=approved_roots,
         )
         row["generation_mode"] = row["_derived"]["generation_mode"]
+        # Recompute mismatch/active-clip pipeline on read — stale sidecar flags
+        # must not survive pipeline toggle + delivery import (session GET is read-only).
+        bg.sync_o3_selection_pipeline_fields(row, sidecar)
         out.append(row)
     return out

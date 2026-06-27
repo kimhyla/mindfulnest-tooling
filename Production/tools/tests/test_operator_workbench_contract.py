@@ -202,3 +202,39 @@ def test_element_char_ref_gate_blocks_when_disk_false_and_no_match(
     ok, err = owc.resolve_beat_element_char_ref_gate(beat)
     assert ok is False
     assert err == "no match"
+
+
+def test_session_enrich_recomputes_stale_o3_pipeline_mismatch():
+    """Stale sidecar mismatch flags must not leak through session GET."""
+    beat = {
+        "beat_id": "bg_arc1_event3_pre_beat_10",
+        "pipeline": "kling_o3_omni",
+        "o3_generate_mode": "element_native",
+        "kling_o3_video_path": "/Event_3/kling_o3_clips/bg_arc1_event3_pre_beat_10_g1_delivery.mp4",
+        "kling_o3_selection_pipeline_mismatch": True,
+        "kling_o3_active_clip_pipeline": "still_insert",
+        "kling_o3_options": [
+            {
+                "key": "k1",
+                "video_path": "/Event_3/kling_o3_clips/bg_arc1_event3_pre_beat_10_g1_delivery.mp4",
+                "source": "o3_pov_motion_i2v",
+                "slot_index": 0,
+                "active": True,
+            },
+        ],
+    }
+    sidecar = {"arcs": {}}
+    rows = owc.enrich_beats_for_session_response(
+        [beat],
+        sidecar,
+        event_id="Event_3",
+        phase="pre",
+        approved_roots=None,
+        production_state=None,
+        video_role="intro",
+        event_dir="/tmp/Event_3",
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.get("kling_o3_selection_pipeline_mismatch") is None
+    assert row.get("kling_o3_active_clip_pipeline") == bg.O3_GENERATE_MODE_ELEMENT_NATIVE

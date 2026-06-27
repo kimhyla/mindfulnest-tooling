@@ -305,6 +305,9 @@ function inferO3OptionPipelineMode(opt?: GptOption | null): BeatGenerationMode |
   if (!opt) return '';
   const source = (opt.source ?? '').trim().toLowerCase();
   const path = (opt.video_path ?? '').toLowerCase();
+  if (source === 'o3_pov_motion_i2v' || path.includes('_o3_i2v') || path.includes('_pov_')) {
+    return 'element_native';
+  }
   if (source.includes('still_insert') || path.includes('still_insert')) return 'still_insert';
   if (path.includes('_avatar_pro') || source === 'kling_o3_avatar_pro') return 'avatar_pro';
   if (path.includes('_voice_lipsync')) return 'voice_first';
@@ -332,12 +335,28 @@ function displayO3OptionLabel(opt: GptOption): string {
   return stored || 'O3 clip';
 }
 
-function pipelineSelectionMismatchMessage(beat?: BgBeat | null): string | null {
-  if (!beat?.kling_o3_selection_pipeline_mismatch) return null;
+function activeO3OptionForBeat(beat?: BgBeat | null): GptOption | null {
+  if (!beat?.kling_o3_video_path) return null;
+  return (beat.kling_o3_options ?? []).find((o) => o?.video_path === beat.kling_o3_video_path) ?? null;
+}
+
+function computePipelineSelectionMismatch(beat?: BgBeat | null): boolean {
+  if (!beat) return false;
   const mode = effectiveGenerationMode(beat);
-  const clip = beat.kling_o3_active_clip_pipeline ?? inferO3OptionPipelineMode(
-    (beat.kling_o3_options ?? []).find((o) => o?.video_path === beat.kling_o3_video_path),
-  );
+  if (mode === 'still_insert') return false;
+  const clipMode = inferO3OptionPipelineMode(activeO3OptionForBeat(beat));
+  if (!clipMode) {
+    return !!beat.kling_o3_selection_pipeline_mismatch;
+  }
+  return clipMode !== mode;
+}
+
+function pipelineSelectionMismatchMessage(beat?: BgBeat | null): string | null {
+  if (!computePipelineSelectionMismatch(beat)) return null;
+  const mode = effectiveGenerationMode(beat);
+  const clip = inferO3OptionPipelineMode(activeO3OptionForBeat(beat))
+    || beat?.kling_o3_active_clip_pipeline
+    || '';
   return (
     `Pipeline mismatch: beat is set to ${mode} but the selected clip is ${clip || 'another pipeline'}. `
     + 'Preview and stitch export use the selected clip — Element clips use Kling voice, not ElevenLabs. '
@@ -4641,7 +4660,8 @@ function BgOptionTile({
   };
   // Magic-on-video override must win over cached Kling playback — same clip the beat exports.
   const activeVideoUrl = previewUrl ?? overrideVideoUrl ?? playbackUrl ?? canonicalVideoUrl;
-  const overlayDurationS = isCutPreviewActive ? 0 : playbackDurationS;
+  const trimTimelineDurationS = exportDurationS || playbackDurationS;
+  const overlayDurationS = isCutPreviewActive ? 0 : trimTimelineDurationS;
 
   useEffect(() => {
     if (!selected || !option.video_path || previewUrl) {
