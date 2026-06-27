@@ -7001,7 +7001,11 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                 b.clear()
                 b.update(beat_commit)
 
-            ok, _ = bg.update_beat_locked(beat_id, _commit_trim)
+            ok, _ = bg.update_beat_locked(
+                beat_id,
+                _commit_trim,
+                caller="handle_bg_kling_o3_trim",
+            )
             if not ok:
                 return h._send_error_v59(
                     404,
@@ -7379,7 +7383,11 @@ def handle_bg_select_o3_video(h, body: dict) -> None:
             pipeline_mismatch = bool(b.get("kling_o3_selection_pipeline_mismatch"))
             active_clip_pipeline = b.get("kling_o3_active_clip_pipeline")
 
-        ok, beat = bg.update_beat_locked(beat_id, _select)
+        ok, beat = bg.update_beat_locked(
+            beat_id,
+            _select,
+            caller="handle_bg_select_o3_video",
+        )
         if not ok:
             return h._send_error_v59(
                 404,
@@ -7821,7 +7829,11 @@ def handle_bg_render_still_clip(h, body: dict) -> None:
                     target[field] = work_beat[field]
 
         try:
-            ok, updated_beat = bg.update_beat_locked(beat_id, _apply_render)
+            ok, updated_beat = bg.update_beat_locked(
+                beat_id,
+                _apply_render,
+                caller="handle_bg_render_still_clip",
+            )
             if not ok:
                 return h._send_error_v59(
                     404,

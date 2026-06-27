@@ -326,34 +326,46 @@ class BeatgenStore:
         *,
         expected_attempt_id: str | None = None,
     ) -> tuple[bool, dict | None]:
-        sidecar = self.assemble_sidecar_dict()
-        seg, beat = _find_beat_in_dict(sidecar, beat_id)
-        if not beat:
-            return False, None
-        if expected_attempt_id is not None and beat.get("kling_o3_voice_fix_attempt_id") != expected_attempt_id:
-            return False, beat
-        mutator(beat, sidecar)
-        now = _utc_now_iso()
+        """Atomically read-modify-write one beat under store lock + BEGIN IMMEDIATE."""
         expected_event = _event_id_from_beat_id(beat_id)
         conn = self.connect()
         with self._lock:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 row = conn.execute(
-                    "SELECT event_id FROM beats WHERE beat_id=?",
+                    "SELECT beat_json, event_id FROM beats WHERE beat_id=?",
                     (beat_id,),
                 ).fetchone()
-                if row and str(row["event_id"]) != expected_event:
+                if not row:
+                    conn.execute("ROLLBACK")
+                    return False, None
+                if str(row["event_id"]) != expected_event:
                     raise ValueError(
                         f"beat_id {beat_id!r} event_id mismatch: row={row['event_id']!r} "
                         f"expected={expected_event!r}"
                     )
+                beat = json.loads(row["beat_json"])
+                if (
+                    expected_attempt_id is not None
+                    and beat.get("kling_o3_voice_fix_attempt_id") != expected_attempt_id
+                ):
+                    conn.execute("ROLLBACK")
+                    return False, beat
+                sidecar = self.assemble_sidecar_dict()
+                _seg, sidecar_beat = _find_beat_in_dict(sidecar, beat_id)
+                if sidecar_beat is None:
+                    conn.execute("ROLLBACK")
+                    return False, None
+                sidecar_beat.clear()
+                sidecar_beat.update(beat)
+                mutator(sidecar_beat, sidecar)
+                now = _utc_now_iso()
                 conn.execute(
                     """
                     UPDATE beats SET beat_json=?, revision=revision+1, updated_at=?
                     WHERE beat_id=?
                     """,
-                    (_json_dumps(beat), now, beat_id),
+                    (_json_dumps(sidecar_beat), now, beat_id),
                 )
                 for key in _META_KEYS:
                     if key in sidecar:
@@ -369,7 +381,7 @@ class BeatgenStore:
             except Exception:
                 conn.execute("ROLLBACK")
                 raise
-        return True, beat
+        return True, sidecar_beat
 
     def replace_full(self, data: dict) -> None:
         self.import_from_dict(data, replace=True)

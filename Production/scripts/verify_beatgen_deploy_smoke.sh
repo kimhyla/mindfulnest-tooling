@@ -92,6 +92,41 @@ if [[ -n "${INTRO_ERR}" ]]; then
   exit 1
 fi
 
+# S3: warn on orphan kling clips (disk without sidecar pointer) — ops visibility only
+EVENT_DIR="${DROPBOX_PROD}/${EVENT_ID}"
+if [[ -d "${EVENT_DIR}/kling_o3_clips" ]]; then
+  ORPHANS="$(PYTHONPATH="${SCRIPT_DIR}/../tools:${SCRIPT_DIR}/../:${HOME}/Projects/mindfulnest-tooling/Production/tools" \
+    python3 -c "
+import json, os, sqlite3, sys
+from pathlib import Path
+from beatgen_sidecar_health import find_orphan_kling_clips
+event_dir = Path(sys.argv[1])
+db = Path(os.path.expanduser(sys.argv[2]))
+known = set()
+if db.is_file():
+    con = sqlite3.connect(str(db))
+    for (blob,) in con.execute('SELECT beat_json FROM beats'):
+        try:
+            b = json.loads(blob)
+        except Exception:
+            continue
+        vp = b.get('kling_o3_video_path') or ''
+        if vp:
+            known.add(str(Path(vp).expanduser().resolve()))
+        for o in b.get('kling_o3_options') or []:
+            if isinstance(o, dict) and o.get('video_path'):
+                known.add(str(Path(o['video_path']).expanduser().resolve()))
+    con.close()
+orphans = find_orphan_kling_clips(event_dir, sidecar_paths=known)
+for p in orphans[:5]:
+    print(p)
+" "${EVENT_DIR}" "${DB}" 2>/dev/null || true)"
+  if [[ -n "${ORPHANS}" ]]; then
+    echo "WARN: orphan kling_o3_clips (not in sidecar/db):"
+    echo "${ORPHANS}"
+  fi
+fi
+
 # Omni default — no avatar_pro on intro beats when Avatar disabled (server env pin)
 curl -sf "${BASE}/api/bg/session-state?scope_event_id=${EVENT_ID}&scope_video_role=intro" \
   | python3 -c "

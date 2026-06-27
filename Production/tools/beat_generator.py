@@ -11905,7 +11905,7 @@ def import_delivery_clip_to_beat(
 
     if beat_is_still_insert(beat_probe):
         ts = int(datetime.now(timezone.utc).timestamp())
-        dest_name = f"{beat_id}_still_insert_{ts}_kling_idle_tts.mp4"
+        dest_name = f"{beat_id}_still_insert_{ts}_s{slot_index}_kling_idle_tts.mp4"
     else:
         dest_name = f"{beat_id}_g{gen}_delivery.mp4"
     dest_path = clips_dir / dest_name

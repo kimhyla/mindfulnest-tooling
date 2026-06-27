@@ -1303,6 +1303,7 @@ def _execute_bg_export_to_stitcher_job(
 
 def handle_bg_export_to_stitcher(h, body: dict) -> None:
     """POST /api/bg/export-to-stitcher — async job; poll GET /api/bg/poll-export-to-stitcher."""
+    from beatgen_scope import log_beatgen_mutation, scope_from_current_globals  # noqa: PLC0415
     from bg_export_stitcher_job_store import (  # noqa: PLC0415
         BG_EXPORT_TO_STITCHER_ASYNC_V1,
         create_job,
@@ -1342,6 +1343,16 @@ def handle_bg_export_to_stitcher(h, body: dict) -> None:
     ctx = _prepare_bg_export_request(h, body)
     if ctx is None:
         return
+
+    bg = _bg_module()
+    scope = scope_from_current_globals(bg)
+    log_beatgen_mutation(
+        operation="export_to_stitcher",
+        beat_id=str(ctx.get("scope_key") or scope.event_id or "segment"),
+        scope=scope,
+        caller="handle_bg_export_to_stitcher",
+        extra={"phase": ctx.get("phase"), "video_role": ctx.get("video_role")},
+    )
 
     data_dir = Path(ctx.get("data_dir") or h.app.event_dir)
     lock_path = export_lock_path(data_dir)

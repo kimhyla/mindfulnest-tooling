@@ -39,11 +39,28 @@ if [[ -d "$DROPBOX_PROD" ]]; then
   fi
 fi
 
+# S1: mutation logging wired on all listed BG write handlers
+for _pat in \
+  'caller="handle_bg_select_o3_video"' \
+  'caller="handle_bg_kling_o3_trim"' \
+  'caller="handle_bg_render_still_clip"' \
+  'operation="export_to_stitcher"'; do
+  grep -rq "$_pat" "$TOOLS/server_handlers/" \
+    || fail "S1: missing log/mutation caller pattern: $_pat"
+done
+
+# S8: stitch export must assert event scope before work
+grep -q '_assert_event_scope' "$TOOLS/server_handlers/kling_o3.py" \
+  || fail "S8: export-to-stitcher must call _assert_event_scope"
+grep -q '_kling_o3_export_clip_path\|materialize_kling_o3_trimmed_clip' "$TOOLS/beat_generator.py" \
+  || fail "S8: concat export must route through trim/export clip path helpers"
+
 export PYTHONPATH="${ROOT}/Production/tools:${ROOT}/Production:${ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 
 python3 -m pytest \
   "$TOOLS/tests/test_beatgen_sidecar_health.py" \
   "$TOOLS/tests/test_beatgen_truth_stack.py" \
+  "$TOOLS/tests/test_beatgen_concurrent_import.py" \
   -q \
   || fail "sibling pytest guards failed"
 
