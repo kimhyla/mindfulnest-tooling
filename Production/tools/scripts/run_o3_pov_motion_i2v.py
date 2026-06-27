@@ -165,7 +165,29 @@ def import_to_beat_slot(
     label: str,
     make_active: bool,
     generation: int | None,
+    use_http: bool | None = None,
 ) -> dict:
+    """Import delivery clip — HTTP single-writer path for production Event_N beats."""
+    from beatgen_scope import event_id_from_beat_id, http_import_delivery_clip  # noqa: PLC0415
+
+    production_beat = bool(event_id_from_beat_id(beat_id))
+    if use_http is None:
+        use_http = production_beat
+
+    if use_http and production_beat:
+        source = "still_insert_kling_idle" if "still" in label.lower() else "o3_pov_motion_i2v"
+        payload = http_import_delivery_clip(
+            beat_id=beat_id,
+            delivery_mp4=delivery_mp4,
+            slot_index=slot_index,
+            label=label,
+            source=source,
+            make_active=make_active,
+            generation=generation,
+        )
+        print(json.dumps(payload, indent=2))
+        return payload
+
     import beat_generator as bg
 
     prod = _dropbox_production()
@@ -214,7 +236,12 @@ def import_to_beat_slot(
         bg.normalize_kling_o3_option_slots(beat, _sidecar)
         bg.persist_o3_disk_enrich_on_beat(beat, event_dir)
 
-    ok, beat = bg.update_beat_locked(beat_id, mutator)
+    ok, beat = bg.update_beat_locked(
+        beat_id,
+        mutator,
+        caller="run_o3_pov_motion_i2v",
+        skip_single_writer_gate=False,
+    )
     if not ok:
         raise SystemExit(f"Failed to update sidecar for beat {beat_id!r}")
 
@@ -242,7 +269,9 @@ def main() -> None:
     ap.add_argument("--import-beat", help="beat_id to receive clip in a video container")
     ap.add_argument("--slot", type=int, default=2, choices=[0, 1, 2])
     ap.add_argument("--milestone", default="milestone1_arc1")
-    ap.add_argument("--event-dir", default="Event_1", help="Event folder name under Production/")
+    ap.add_argument("--event-dir", help="Event folder name under Production/ (milestone import only)")
+    ap.add_argument("--milestone-import", action="store_true", help="Use legacy direct sidecar write (milestone beats)")
+    ap.add_argument("--http-import", action="store_true", default=None, help="Force HTTP import via dedicated port")
     ap.add_argument("--label", default="POV wand wiper (O3 i2v)")
     ap.add_argument("--make-active", action="store_true", help="Select imported clip as active pointer")
     ap.add_argument("--generation", type=int, help="Force gN in destination filename")
@@ -266,6 +295,17 @@ def main() -> None:
         delivery_path = Path(manifest["delivery_mp4"])
 
     if args.import_beat and not args.generate_only:
+        from beatgen_scope import event_id_from_beat_id  # noqa: PLC0415
+
+        production = bool(event_id_from_beat_id(args.import_beat))
+        if production and not args.event_dir:
+            n = event_id_from_beat_id(args.import_beat).split("_")[1]
+            args.event_dir = f"Event_{n}"
+        elif not args.event_dir:
+            args.event_dir = "Event_1"
+        use_http = args.http_import
+        if use_http is None and production and not args.milestone_import:
+            use_http = True
         import_to_beat_slot(
             delivery_mp4=delivery_path,
             beat_id=args.import_beat,
@@ -275,6 +315,7 @@ def main() -> None:
             label=args.label,
             make_active=args.make_active,
             generation=args.generation,
+            use_http=use_http,
         )
     elif args.import_beat and args.generate_only:
         print("[pov-i2v] --generate-only: skipped Beat Gen import")

@@ -100,7 +100,10 @@ def test_assemble_from_worker_thread(tmp_path: Path):
 
 def test_bootstrap_from_json(tmp_path: Path, monkeypatch):
     import beat_generator as bg
+    from lib.beatgen_store import BeatgenStore
 
+    BeatgenStore.reset_singleton_for_tests()
+    bg.reset_bg_paths_activation_for_tests()
     json_path = tmp_path / "beat_generator_state.json"
     data = _sample_sidecar()
     json_path.write_text(json.dumps(data), encoding="utf-8")

@@ -1189,14 +1189,44 @@ def mutate_sidecar_locked(
         return sidecar
 
 
-def update_beat_locked(beat_id, mutator, expected_attempt_id=None):
+def update_beat_locked(
+    beat_id,
+    mutator,
+    expected_attempt_id=None,
+    *,
+    scope=None,
+    caller: str = "update_beat_locked",
+    skip_single_writer_gate: bool = False,
+):
     """Atomically patch one beat under the cross-process sidecar lock.
 
     ``mutator(beat, sidecar)`` may mutate the target beat in place. If
     ``expected_attempt_id`` is set and the current beat has a different
     ``kling_o3_voice_fix_attempt_id``, the update is skipped and ``(False, beat)``
     is returned so stale subprocesses cannot overwrite newer attempts.
+
+    Truth Stack: optional ``scope`` validates partition; production beats require
+    server writer unless ``skip_single_writer_gate`` (internal subprocess paths).
     """
+    from beatgen_scope import (  # noqa: PLC0415
+        assert_beat_id_matches_scope,
+        assert_db_path_matches_beat,
+        assert_direct_write_allowed,
+        log_beatgen_mutation,
+        scope_from_current_globals,
+    )
+
+    active_scope = scope if scope is not None else scope_from_current_globals(__import__(__name__))
+    assert_beat_id_matches_scope(str(beat_id), active_scope)
+    assert_db_path_matches_beat(str(beat_id))
+    if not skip_single_writer_gate:
+        assert_direct_write_allowed(beat_id=str(beat_id), caller=caller)
+    log_beatgen_mutation(
+        operation="update_beat_locked",
+        beat_id=str(beat_id),
+        scope=active_scope,
+        caller=caller,
+    )
     if _sidecar_use_sqlite():
         with _sidecar_lock:
             ok, beat = _beatgen_store().patch_beat(
@@ -6896,7 +6926,18 @@ def reconcile_kling_o3_trim_all_events(sidecar: dict, prod_root: str | Path | No
         beat_id = str(beat.get("beat_id") or "").strip()
         if not beat_id:
             continue
-        event_dir = event_dir_for_beat_id(beat_id)
+        from beatgen_scope import BeatGenScopeError  # noqa: PLC0415
+        from o3_generation_intent import resolve_o3_job_event_dir  # noqa: PLC0415
+
+        root = Path(prod_root or _PROD_DIR)
+        try:
+            event_dir = event_dir_for_beat_id(beat_id)
+        except BeatGenScopeError:
+            event_dir = resolve_o3_job_event_dir(
+                beat_id,
+                server_event_dir=root / "Event_1",
+                library_event_dir=root / "Event_1",
+            )
         if not event_dir.is_dir():
             continue
         if heal_invalid_o3_cut_all_options(beat):
@@ -10325,12 +10366,26 @@ def kling_o3_clips_dir(event_dir: str | Path) -> Path:
     return p
 
 
+def resolve_beat_disk_event_dir(beat_id: str, scoped_event_dir: str | Path) -> Path:
+    """Production beats → ``Event_N`` from id; milestone narrative ids use scoped folder."""
+    from beatgen_scope import event_id_from_beat_id  # noqa: PLC0415
+
+    if event_id_from_beat_id(beat_id):
+        return event_dir_for_beat_id(beat_id)
+    return Path(scoped_event_dir).expanduser().resolve()
+
+
 def event_dir_for_beat_id(beat_id: str) -> Path:
     """``Production/Event_N`` from ``bg_arc1_event2_pre_beat_27``-style beat ids."""
-    match = re.search(r"event(\d+)_", str(beat_id or ""), re.I)
-    if match:
-        return Path(_PROD_DIR) / f"Event_{int(match.group(1))}"
-    return Path(_PROD_DIR) / "Event_1"
+    from beatgen_scope import BeatGenScopeError, event_id_from_beat_id  # noqa: PLC0415
+
+    event_id = event_id_from_beat_id(beat_id)
+    if event_id:
+        return Path(_PROD_DIR) / event_id
+    raise BeatGenScopeError(
+        f"cannot resolve event dir for beat_id={beat_id!r} — no Event_N token",
+        beat_id=str(beat_id),
+    )
 
 
 def highest_o3_generation_on_disk(beat_id: str, event_dir: str | Path) -> int:
@@ -11775,6 +11830,99 @@ def normalize_kling_o3_option_slots(
     return slots
 
 
+def import_delivery_clip_to_beat(
+    *,
+    beat_id: str,
+    delivery_mp4: str | Path,
+    slot_index: int,
+    label: str,
+    source: str | None = None,
+    make_active: bool = True,
+    generation: int | None = None,
+    event_dir: str | Path | None = None,
+    scope=None,
+    caller: str = "import_delivery_clip_to_beat",
+) -> tuple[bool, dict | None]:
+    """Copy delivery mp4 into ``Event_N/kling_o3_clips`` and register in sidecar."""
+    from datetime import datetime, timezone
+
+    from beatgen_scope import (  # noqa: PLC0415
+        assert_clip_path_matches_scope,
+        build_event_production_scope,
+        scope_from_current_globals,
+    )
+
+    src = Path(delivery_mp4).expanduser().resolve()
+    if not src.is_file():
+        raise FileNotFoundError(f"delivery mp4 not found: {src}")
+
+    resolved_event_dir = Path(event_dir or event_dir_for_beat_id(beat_id)).expanduser().resolve()
+    active_scope = scope or scope_from_current_globals(__import__(__name__))
+    if active_scope.kind != "event_production":
+        active_scope = build_event_production_scope(resolved_event_dir)
+
+    clips_dir = kling_o3_clips_dir(resolved_event_dir)
+    sidecar_probe = read_sidecar()
+    _, beat_probe = find_beat(sidecar_probe, beat_id)
+    if not beat_probe:
+        return False, None
+
+    if generation is not None:
+        gen = int(generation)
+    else:
+        gens = [
+            _kling_o3_gen_from_video_path(str(o.get("video_path") or ""))
+            for o in (beat_probe.get("kling_o3_options") or [])
+            if isinstance(o, dict)
+        ]
+        gens = [g for g in gens if g is not None]
+        gen = (max(gens) + 1) if gens else 1
+
+    resolved_source = source
+    if not resolved_source:
+        if beat_is_still_insert(beat_probe):
+            resolved_source = "still_insert_kling_idle"
+        else:
+            resolved_source = "o3_pov_motion_i2v"
+
+    if beat_is_still_insert(beat_probe):
+        ts = int(datetime.now(timezone.utc).timestamp())
+        dest_name = f"{beat_id}_still_insert_{ts}_kling_idle_tts.mp4"
+    else:
+        dest_name = f"{beat_id}_g{gen}_delivery.mp4"
+    dest_path = clips_dir / dest_name
+    copy_file_durable(str(src), str(dest_path))
+    assert_clip_path_matches_scope(dest_path, active_scope)
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    def mutator(beat: dict, sidecar: dict) -> None:
+        if str(beat.get("beat_id") or "") != beat_id:
+            return
+        assign_kling_o3_option_to_slot(
+            beat,
+            slot_index,
+            video_path=str(dest_path.resolve()),
+            label=label,
+            source=resolved_source,
+            now=now,
+            make_active=make_active,
+        )
+        normalize_kling_o3_option_slots(beat, sidecar)
+        persist_o3_disk_enrich_on_beat(beat, resolved_event_dir)
+        if beat_is_still_insert(beat) and make_active:
+            beat["kling_o3_status"] = "approved"
+            beat["status"] = "approved"
+
+    return update_beat_locked(
+        beat_id,
+        mutator,
+        scope=active_scope,
+        caller=caller,
+        skip_single_writer_gate=True,
+    )
+
+
 def assign_kling_o3_option_to_slot(
     beat: dict,
     slot_index: int,
@@ -12835,9 +12983,12 @@ def enrich_beat_kling_o3_pinned(
 
 
 def enrich_beats_kling_o3_pinned(beats: list[dict], event_dir: str | Path) -> list[dict]:
-    del event_dir  # per-beat Event_N — server pin must not hide cross-event disk counts
+    scoped = Path(event_dir)
     return [
-        enrich_beat_kling_o3_pinned(b, event_dir_for_beat_id(str(b.get("beat_id") or "")))
+        enrich_beat_kling_o3_pinned(
+            b,
+            resolve_beat_disk_event_dir(str(b.get("beat_id") or ""), scoped),
+        )
         for b in beats
     ]
 
@@ -13062,7 +13213,9 @@ def reconcile_kling_o3_sidecar(sidecar: dict, event_dir: str | Path) -> int:
             for beat in seg.get("beats") or []:
                 if beat.get("pipeline") != "kling_o3_omni":
                     continue
-                beat_event_dir = event_dir_for_beat_id(str(beat.get("beat_id") or ""))
+                beat_event_dir = resolve_beat_disk_event_dir(
+                    str(beat.get("beat_id") or ""), event_dir,
+                )
                 if reconcile_o3_disk_deliveries_for_beat(beat, beat_event_dir):
                     updated += 1
                 if reconcile_kling_o3_beat(beat, beat_event_dir):

@@ -7188,6 +7188,97 @@ def _apply_o3_video_selection(
     bg.persist_o3_disk_enrich_on_beat(beat, event_dir)
 
 
+def handle_bg_import_delivery_clip(h, body: dict) -> None:
+    """POST /api/bg/import-delivery-clip — single-writer agent path for shipping beats.
+
+    Body: beat_id, delivery_mp4_path, slot_index?, label?, source?, make_active?,
+    generation?, scope_event_id?
+    """
+    from beatgen_scope import BeatGenScopeError, scope_from_current_globals  # noqa: PLC0415
+
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+    beat_id = (body.get("beat_id") or "").strip()
+    delivery_path = (body.get("delivery_mp4_path") or body.get("delivery_mp4") or "").strip()
+    if not beat_id or not delivery_path:
+        return h._send_error_v59(
+            400,
+            error_code="MISSING_IMPORT_FIELDS",
+            error_message="beat_id and delivery_mp4_path required",
+            retry_safe=False,
+        )
+    src = Path(delivery_path).expanduser()
+    if not src.is_file():
+        return h._send_error_v59(
+            404,
+            error_code="DELIVERY_MP4_NOT_FOUND",
+            error_message=f"delivery mp4 not found: {delivery_path}",
+            retry_safe=False,
+        )
+    try:
+        slot_index = int(body.get("slot_index") if body.get("slot_index") is not None else 0)
+    except (TypeError, ValueError):
+        slot_index = 0
+    slot_index = max(0, min(2, slot_index))
+    label = str(body.get("label") or "imported delivery clip").strip()
+    source = (body.get("source") or "").strip() or None
+    make_active = body.get("make_active", True)
+    if isinstance(make_active, str):
+        make_active = make_active.strip().lower() in ("1", "true", "yes")
+    generation_raw = body.get("generation")
+    generation = int(generation_raw) if generation_raw is not None else None
+
+    bg = _bg_module()
+    event_dir = _o3_job_event_dir(h, beat_id)
+    scope = scope_from_current_globals(bg)
+    try:
+        ok, beat = bg.import_delivery_clip_to_beat(
+            beat_id=beat_id,
+            delivery_mp4=src,
+            slot_index=slot_index,
+            label=label,
+            source=source,
+            make_active=bool(make_active),
+            generation=generation,
+            event_dir=event_dir,
+            scope=scope,
+            caller="handle_bg_import_delivery_clip",
+        )
+    except BeatGenScopeError as exc:
+        return h._send_error_v59(
+            409,
+            error_code=getattr(exc, "error_code", "BEATGEN_SCOPE_MISMATCH"),
+            error_message=str(exc),
+            retry_safe=False,
+            extra=getattr(exc, "extra", {}),
+        )
+    except FileNotFoundError as exc:
+        return h._send_error_v59(
+            404,
+            error_code="DELIVERY_MP4_NOT_FOUND",
+            error_message=str(exc),
+            retry_safe=False,
+        )
+    if not ok or not beat:
+        return h._send_error_v59(
+            404,
+            error_code="BEAT_NOT_FOUND",
+            error_message=f"beat {beat_id} not found",
+            retry_safe=False,
+        )
+    h._send_json(
+        200,
+        {
+            "ok": True,
+            "beat_id": beat_id,
+            "beat": beat,
+            "slot_index": slot_index,
+            "video_path": beat.get("kling_o3_video_path"),
+            "kling_o3_status": beat.get("kling_o3_status"),
+        },
+    )
+
+
 def handle_bg_select_o3_video(h, body: dict) -> None:
     """POST /api/bg/select-o3-video {beat_id, option_key}.
 

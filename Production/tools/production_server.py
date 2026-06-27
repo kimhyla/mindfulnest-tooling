@@ -6423,6 +6423,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_bg_submit_kling_native_lipsync_experiment(body)
             if path == "/api/bg/o3/admin-reconcile":
                 return self._handle_bg_o3_admin_reconcile(body)
+            if path == "/api/bg/import-delivery-clip":
+                return self._handle_bg_import_delivery_clip(body)
             if path == "/api/bg/select-o3-video":
                 return self._handle_bg_select_o3_video(body)
             if path == "/api/bg/render-still-clip":
@@ -8001,6 +8003,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_bg_select_o3_video(self, body: dict) -> None:
         from server_handlers.background import handle_bg_select_o3_video
         return handle_bg_select_o3_video(self, body)
+
+    def _handle_bg_import_delivery_clip(self, body: dict) -> None:
+        from server_handlers.background import handle_bg_import_delivery_clip
+        return handle_bg_import_delivery_clip(self, body)
 
     def _handle_bg_render_still_clip(self, body: dict) -> None:
         from server_handlers.background import handle_bg_render_still_clip
@@ -13477,6 +13483,7 @@ def run_server(
     # Closes audit findings C1-5 / C1-6 / C1-7 / C1-8 / C1-9.
     # See Production/lib/paths.py for the canonical helpers.
     _bg_module().assert_beatgen_db_path_matches_event(event_id)
+    os.environ["MN_BEATGEN_SERVER_WRITER"] = "1"
     _bg_module().init_bg_paths(event_dir, clear_milestone_scope=True)
 
     # BEATGEN_PER_EVENT_SQLITE_V1 — rehydrate empty segments from disk artifacts +

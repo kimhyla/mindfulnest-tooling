@@ -46,9 +46,11 @@ def prod_tree(tmp_path: Path):
 def test_event3b_beat_id_does_not_map_to_event1(prod_tree, monkeypatch):
     prod, event1, event2, _m, beat_id, _job = prod_tree
     import beat_generator as bg
+    from beatgen_scope import BeatGenScopeError
 
     monkeypatch.setattr(bg, "_PROD_DIR", str(prod))
-    assert bg.event_dir_for_beat_id(beat_id) == event1
+    with pytest.raises(BeatGenScopeError):
+        bg.event_dir_for_beat_id(beat_id)
 
 
 def test_resolve_o3_job_event_dir_milestone_uses_library(prod_tree):

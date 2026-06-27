@@ -55,6 +55,9 @@ def test_session_terminal_reconcile_imports_orphan_delivery(tmp_path: Path, monk
         [beat],
         sidecar,
         orphan_recovery=lambda *a, **k: None,
+        server_event_dir=lib,
+        library_event_dir=lib,
+        scope_type="milestone",
     )
     assert pending
     merged = dict(beat)
@@ -88,5 +91,5 @@ def test_session_get_wires_terminal_reconcile() -> None:
         encoding="utf-8",
     )
     block = src.split("def handle_bg_session_state", 1)[1].split("\ndef ", 1)[0]
-    assert "_apply_o3_session_terminal_reconcile" in block
+    assert "_compose_o3_session_terminal_view" in block or "_apply_o3_session_terminal_reconcile" in block
     assert "o3_terminal_outcomes" in block

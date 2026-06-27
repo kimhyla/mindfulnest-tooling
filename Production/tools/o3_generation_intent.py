@@ -222,17 +222,20 @@ def terminal_status_for_job(job_id: str, event_dir: Path) -> str | None:
 def intent_event_dir_for_beat(beat_id: str, event_dir: Path | None = None) -> Path:
     """Return ``Event_N`` for intent I/O — ``beat_id`` event number beats server scope."""
     import beat_generator as bg
+    from beatgen_scope import event_id_from_beat_id  # noqa: PLC0415
 
-    canonical = bg.event_dir_for_beat_id(beat_id)
-    if event_dir is None:
-        return canonical
-    scoped = Path(event_dir)
-    match = re.search(r"event(\d+)_", str(beat_id or ""), re.I)
-    if match and scoped.name == f"Event_{int(match.group(1))}":
+    scoped = Path(event_dir).expanduser().resolve() if event_dir is not None else None
+    production_event = event_id_from_beat_id(beat_id)
+    if scoped is not None and scoped.is_dir():
+        if production_event and scoped.name == production_event:
+            return scoped
+        if not production_event:
+            return scoped
+    if production_event:
+        return Path(bg._PROD_DIR) / production_event
+    if scoped is not None and scoped.is_dir():
         return scoped
-    if match:
-        return canonical
-    return scoped if scoped.is_dir() else canonical
+    return bg.event_dir_for_beat_id(beat_id)
 
 
 def resolve_o3_job_event_dir(

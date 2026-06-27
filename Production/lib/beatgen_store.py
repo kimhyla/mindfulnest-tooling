@@ -334,10 +334,20 @@ class BeatgenStore:
             return False, beat
         mutator(beat, sidecar)
         now = _utc_now_iso()
+        expected_event = _event_id_from_beat_id(beat_id)
         conn = self.connect()
         with self._lock:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                row = conn.execute(
+                    "SELECT event_id FROM beats WHERE beat_id=?",
+                    (beat_id,),
+                ).fetchone()
+                if row and str(row["event_id"]) != expected_event:
+                    raise ValueError(
+                        f"beat_id {beat_id!r} event_id mismatch: row={row['event_id']!r} "
+                        f"expected={expected_event!r}"
+                    )
                 conn.execute(
                     """
                     UPDATE beats SET beat_json=?, revision=revision+1, updated_at=?
