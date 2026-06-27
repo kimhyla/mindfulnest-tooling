@@ -1820,7 +1820,10 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
                )
 
     voice_id, model_id, voice_settings, speaker = h._phase_resolve_voice_settings(phase)
-    from lib.elevenlabs_tts import call_elevenlabs_tts  # noqa: PLC0415
+    from lib.elevenlabs_tts import (  # noqa: PLC0415
+        call_elevenlabs_tts,
+        model_supports_request_stitching,
+    )
     from kling_startend_pipeline import robust_https_request  # noqa: PLC0415
 
     def _tts_call_single(text_segment: str):
@@ -1860,14 +1863,27 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
         )
 
     segments = _parse_silence_segments(script)
-    use_multi = any(kind == "silence" for kind, _ in segments)
+    has_markers = any(kind == "silence" for kind, _ in segments)
+    stitching_supported = model_supports_request_stitching(model_id)
+    use_multi = has_markers and stitching_supported
     tts_stitching_meta: dict | None = None
 
     t0 = time.time()
     if not use_multi:
+        from lib.elevenlabs_tts import build_single_call_tts_script  # noqa: PLC0415
         from production_server import _clean_text_for_tts  # noqa: PLC0415
 
-        tts_script = _clean_text_for_tts(script)
+        tts_script = (
+            build_single_call_tts_script(script, _clean_text_for_tts)
+            if has_markers
+            else _clean_text_for_tts(script)
+        )
+        if has_markers and not stitching_supported:
+            tts_stitching_meta = {
+                "stitching_enabled": False,
+                "mode": "single_call_v3",
+                "reason": "eleven_v3_request_stitching_unsupported",
+            }
         try:
             status_code, audio_bytes = _tts_call_single(tts_script)
         except Exception as exc:  # noqa: BLE001
@@ -1972,6 +1988,7 @@ def handle_phase_b_regen_audio(h, body: dict)-> None:
                 "speech_segments": len(cleaned_speech),
                 "request_ids_captured": len(speech_request_ids),
                 "stitching_enabled": True,
+                "mode": "multi_stitched",
             }
         finally:
             # Clean up temp dir regardless of success/failure.

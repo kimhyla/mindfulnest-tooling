@@ -9,10 +9,12 @@ if str(_REPO_LIB) not in sys.path:
     sys.path.insert(0, str(_REPO_LIB))
 
 from elevenlabs_tts import (  # noqa: E402
+    build_single_call_tts_script,
     build_tts_payload,
     continuity_context_head,
     continuity_context_tail,
     extract_request_id,
+    model_supports_request_stitching,
     synthesize_stitched_speech_segments,
 )
 
@@ -20,7 +22,7 @@ from elevenlabs_tts import (  # noqa: E402
 def test_build_tts_payload_includes_stitching_fields():
     payload = build_tts_payload(
         text="Hello world.",
-        model_id="eleven_v3",
+        model_id="eleven_multilingual_v2",
         voice_settings={"stability": 0.7},
         previous_request_ids=["req-a", "req-b", "req-c", "req-d"],
         next_text="Next segment starts here.",
@@ -28,6 +30,39 @@ def test_build_tts_payload_includes_stitching_fields():
     assert payload["text"] == "Hello world."
     assert payload["previous_request_ids"] == ["req-b", "req-c", "req-d"]
     assert payload["next_text"] == "Next segment starts here."
+
+
+def test_build_tts_payload_omits_stitching_for_eleven_v3():
+    payload = build_tts_payload(
+        text="Second chunk.",
+        model_id="eleven_v3",
+        voice_settings={"stability": 0.7},
+        previous_request_ids=["req-1"],
+        next_text="Third chunk.",
+    )
+    assert "previous_request_ids" not in payload
+    assert "next_text" not in payload
+
+
+def test_model_supports_request_stitching():
+    assert model_supports_request_stitching("eleven_multilingual_v2") is True
+    assert model_supports_request_stitching("eleven_v3") is False
+
+
+def test_build_single_call_tts_script_joins_with_ellipsis_pauses():
+    def _clean(t: str) -> str:
+        return t.strip()
+
+    out = build_single_call_tts_script(
+        "Line one. [pause] Line two. [silence:4s] Line three.",
+        _clean,
+    )
+    assert "Line one." in out
+    assert "Line two." in out
+    assert "Line three." in out
+    assert "..." in out
+    assert "[pause]" not in out
+    assert "[silence:4s]" not in out
 
 
 def test_build_tts_payload_omits_stitching_when_absent():

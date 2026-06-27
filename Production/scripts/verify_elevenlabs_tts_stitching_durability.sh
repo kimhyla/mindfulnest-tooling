@@ -23,8 +23,12 @@ grep -q 'call_elevenlabs_tts' "$PHASES" \
   || fail "phases.py must import call_elevenlabs_tts for multi-segment regen"
 grep -q 'previous_request_ids' "$PHASES" \
   || fail "phases.py multi-segment loop must pass previous_request_ids"
-grep -q 'continuity_context_head' "$PHASES" \
-  || fail "phases.py multi-segment loop must pass next_text via continuity_context_head"
+grep -q 'model_supports_request_stitching' "$PHASES" \
+  || fail "phases.py must gate multi-segment TTS on model stitching support"
+grep -q 'build_single_call_tts_script' "$PHASES" \
+  || fail "phases.py must use single-call v3 path when stitching unsupported"
+grep -q 'single_call_v3' "$PHASES" \
+  || fail "phases.py must report single_call_v3 telemetry for eleven_v3"
 grep -q 'tts_stitching' "$PHASES" \
   || fail "phases.py regen response must include tts_stitching telemetry"
 grep -q 'build_tts_payload' "$LIB" \

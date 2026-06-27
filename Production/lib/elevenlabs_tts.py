@@ -16,6 +16,42 @@ from typing import Callable
 _MAX_PRIOR_REQUEST_IDS = 3
 _CONTINUITY_TEXT_CHARS = 400
 
+# Official docs: request stitching is unavailable for eleven_v3.
+_STITCHING_UNSUPPORTED_MODELS = frozenset({"eleven_v3", "eleven_v3_preview"})
+
+
+def model_supports_request_stitching(model_id: str | None) -> bool:
+    """True when ElevenLabs accepts previous_request_ids / next_text for this model."""
+    return (model_id or "").strip().lower() not in _STITCHING_UNSUPPORTED_MODELS
+
+
+def build_single_call_tts_script(script: str, clean_text_fn) -> str:
+    """One ElevenLabs paste — ellipses for pause/silence markers (canonical v3 workflow)."""
+    import re as _re
+
+    _silence_pat = _re.compile(
+        r"\[(?:silence:\s*(\d+(?:\.\d+)?)\s*s?|pause|break|silence)\]",
+        _re.IGNORECASE,
+    )
+    parts: list[str] = []
+    last = 0
+    for match in _silence_pat.finditer(script):
+        chunk = script[last:match.start()].strip()
+        if chunk:
+            parts.append(clean_text_fn(chunk))
+        dur_raw = match.group(1)
+        dur = float(dur_raw) if dur_raw else 1.0
+        # Map authored silence seconds → longer ellipsis runs (Kim M4 paste workflow).
+        ellipsis_runs = max(1, min(6, round(dur / 2.0)))
+        parts.append(" ... ".join(["..."] * ellipsis_runs))
+        last = match.end()
+    tail = script[last:].strip()
+    if tail:
+        parts.append(clean_text_fn(tail))
+    if not parts:
+        return clean_text_fn(script)
+    return " ".join(p for p in parts if p).strip()
+
 
 def continuity_context_tail(text: str | None, *, max_chars: int = _CONTINUITY_TEXT_CHARS) -> str | None:
     """Tail of prior speech for next_text / previous_text continuity hints."""
@@ -55,9 +91,9 @@ def build_tts_payload(
         "model_id": model_id,
         "voice_settings": voice_settings,
     }
-    if previous_request_ids:
+    if previous_request_ids and model_supports_request_stitching(model_id):
         payload["previous_request_ids"] = list(previous_request_ids)[-_MAX_PRIOR_REQUEST_IDS:]
-    if next_text:
+    if next_text and model_supports_request_stitching(model_id):
         payload["next_text"] = next_text
     return payload
 
