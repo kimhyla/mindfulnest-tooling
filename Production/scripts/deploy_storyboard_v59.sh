@@ -523,6 +523,12 @@ if [[ "$MARKER_COUNT" -lt 1 ]]; then
 fi
 echo "[deploy] (g) curl smoke ok — server serving fresh build (sha=$BUILD_SHA, marker_matches=$MARKER_COUNT)"
 
+echo "[deploy] (g.3) library panel_tabs live contract on :${SERVER_PORT} (${event_id}) ..."
+MN_LIBRARY_PANEL_LIVE_EVENT="$event_id" MN_SERVER_PORT="$SERVER_PORT" \
+    bash "$SRC_TOOLING/Production/scripts/verify_library_panel_contract_durability.sh" \
+    || exit 1
+echo "[deploy] (g.3) library panel_tabs live contract ok"
+
 # (g.4) STITCH_SFX_PLAYBACK_TRUTH live milestone E2E — post-deploy only (needs fresh bundle + mux)
 # Event_2 milestone fixture only — dedicated Event_N ports pin scope; skip on other targets.
 if [[ -x "$SRC_TOOLING/Production/scripts/verify_stitch_sfx_playback_truth_live_e2e.sh" ]]; then

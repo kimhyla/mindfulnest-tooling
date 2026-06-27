@@ -36,6 +36,14 @@ check_port() {
     echo "[library-panel-contract] SKIP live — :${port} (${event_id}) down"
     return 0
   fi
+  local head_sha served_sha
+  head_sha="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || true)"
+  served_sha="$(curl -sf --max-time 10 "http://localhost:${port}/" \
+    | sed -n 's/.*name="build-sha" content="\([^"]*\)".*/\1/p' | head -1)"
+  if [[ -n "$head_sha" && -n "$served_sha" && "$served_sha" != "$head_sha" ]]; then
+    echo "[library-panel-contract] SKIP live — :${port} (${event_id}) build-sha=${served_sha} != HEAD=${head_sha}"
+    return 0
+  fi
   local body
   body="$(curl -sf --max-time 60 "http://localhost:${port}/api/cr/library?event_id=${event_id}")"
   python3 -c "
@@ -64,6 +72,9 @@ print(f'ok total={len(items)} images_tab={images_count} filtered={len(fitems)}')
 }
 
 for ev in Event_1 Event_2 Event_3 Event_4; do
+  if [[ -n "${MN_LIBRARY_PANEL_LIVE_EVENT:-}" && "$ev" != "$MN_LIBRARY_PANEL_LIVE_EVENT" ]]; then
+    continue
+  fi
   check_port "$ev" || fail "live check failed for $ev"
 done
 
