@@ -1212,13 +1212,15 @@ def update_beat_locked(
         assert_beat_id_matches_scope,
         assert_db_path_matches_beat,
         assert_direct_write_allowed,
+        event_id_from_beat_id,
         log_beatgen_mutation,
         scope_from_current_globals,
     )
 
     active_scope = scope if scope is not None else scope_from_current_globals(__import__(__name__))
-    assert_beat_id_matches_scope(str(beat_id), active_scope)
-    assert_db_path_matches_beat(str(beat_id))
+    if event_id_from_beat_id(str(beat_id)):
+        assert_beat_id_matches_scope(str(beat_id), active_scope)
+        assert_db_path_matches_beat(str(beat_id))
     if not skip_single_writer_gate:
         assert_direct_write_allowed(beat_id=str(beat_id), caller=caller)
     log_beatgen_mutation(
@@ -10382,6 +10384,9 @@ def event_dir_for_beat_id(beat_id: str) -> Path:
     event_id = event_id_from_beat_id(beat_id)
     if event_id:
         return Path(_PROD_DIR) / event_id
+    bound = getattr(__import__(__name__), "_BG_EVENT_DIR", None)
+    if bound:
+        return Path(bound).expanduser().resolve()
     raise BeatGenScopeError(
         f"cannot resolve event dir for beat_id={beat_id!r} — no Event_N token",
         beat_id=str(beat_id),

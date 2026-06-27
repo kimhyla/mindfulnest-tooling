@@ -27,6 +27,7 @@ def _beatgen_truth_stack_test_gates(monkeypatch: pytest.MonkeyPatch) -> None:
     except Exception:
         pass
     monkeypatch.setenv("MN_BEATGEN_TEST_ALLOW_DIRECT_WRITE", "1")
+    monkeypatch.setenv("MN_SIDECAR_SQLITE_AUTHORITY", "0")
     yield
     try:
         from lib.beatgen_store import BeatgenStore
