@@ -4,6 +4,9 @@
 # SERVER_LAUNCHD_SINGLE_OWNER_V1 — sync launchd KeepAlive agent; do NOT nohup-spawn
 # (dual owner with deploy/KeepAlive caused restart storms on :5112).
 #
+# EVENT_SERVER_COLD_BOOT_WAIT_V1 — skip port preemption when this event already
+# answers on its dedicated port (preempt mid cold boot caused Event_3 death spirals).
+#
 # Port rule: Event_N → localhost:(5110+N)
 #   Event_1 → :5111    Event_2 → :5112    Event_4 → :5114
 #
@@ -49,7 +52,11 @@ start_one() {
     echo "FATAL: missing ${event_dir}" >&2
     exit 1
   fi
-  bash "${SCRIPT_DIR}/ensure_server_port.sh" "$port" "$event_id" "$event_dir"
+  if event_server_http_serves_event "$port" "$event_id"; then
+    echo "[start] ${event_id} already healthy on :${port} — skip port preemption"
+  else
+    bash "${SCRIPT_DIR}/ensure_server_port.sh" "$port" "$event_id" "$event_dir"
+  fi
   MN_TOOLING_ROOT="$TOOLING" MN_DROPBOX_ROOT="$DROPBOX" \
     bash "$INSTALL" "$event_id"
   echo "  OK  ${event_id} → $(event_storyboard_url "$event_id")"

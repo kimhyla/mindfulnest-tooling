@@ -34,3 +34,33 @@ event_storyboard_url() {
   port="$(event_id_to_port "$event_id")" || return 1
   echo "http://localhost:${port}/?event=${event_id}"
 }
+
+# EVENT_SERVER_COLD_BOOT_WAIT_V1 — dedicated Event_N cold start can exceed 15s
+# (Directus lock warmup, sidecar reconcile, ghost scrub). Shared by launchd install,
+# deploy, and event_server_provision.py (keep defaults aligned).
+: "${EVENT_SERVER_QUICK_HEALTH_ATTEMPTS:=3}"
+: "${EVENT_SERVER_COLD_BOOT_ATTEMPTS:=45}"
+: "${EVENT_SERVER_WAIT_SLEEP_SECONDS:=2}"
+
+event_server_wait_http() {
+  local port="${1:?port required}"
+  local attempts="${2:-${EVENT_SERVER_COLD_BOOT_ATTEMPTS}}"
+  local sleep_s="${3:-${EVENT_SERVER_WAIT_SLEEP_SECONDS}}"
+  local i
+  for (( i = 1; i <= attempts; i++ )); do
+    if curl -sf --max-time 5 "http://localhost:${port}/api/event/current" >/dev/null 2>&1; then
+      return 0
+    fi
+    if (( i < attempts )); then
+      sleep "$sleep_s"
+    fi
+  done
+  return 1
+}
+
+event_server_http_serves_event() {
+  local port="${1:?port required}"
+  local event_id="${2:?event_id required}"
+  curl -sf --max-time 5 "http://localhost:${port}/api/event/current" 2>/dev/null \
+    | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get('event_id')==sys.argv[1] else 1)" "$event_id" 2>/dev/null
+}

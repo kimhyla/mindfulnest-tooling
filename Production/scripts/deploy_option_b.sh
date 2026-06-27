@@ -54,7 +54,8 @@ PORT="$(event_id_to_port "$EVENT_ID")"
 
 export MN_TOOLING_ROOT="$SRC_TOOLING"
 export MN_DROPBOX_ROOT="$DEST_DROPBOX"
-export MN_EVENT_DIR="$EVENT_ARG"
+# Absolute Dropbox path — relative Production/Event_N breaks verify_event_canonical_module on Event_3+.
+export MN_EVENT_DIR="${DEST_DROPBOX}/Production/${EVENT_ID}"
 export MN_SERVER_PORT="$PORT"
 
 echo "=== STORYBOARD_OPTION_B_V1 deploy ==="

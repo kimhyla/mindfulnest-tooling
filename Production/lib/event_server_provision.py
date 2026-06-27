@@ -23,7 +23,8 @@ from lib.paths import EVENT_DIR, TOOLING_ROOT, dropbox_root
 from lib.server_port_guard import dedicated_port_for_event_id
 
 CODE = "EVENT_DEDICATED_SERVER_PROVISION_V1"
-DEFAULT_WAIT_SECONDS = 45
+# Keep aligned with EVENT_SERVER_COLD_BOOT_ATTEMPTS × sleep in event_server_port.sh (45×2s).
+DEFAULT_WAIT_SECONDS = 90
 
 
 @dataclass(frozen=True)

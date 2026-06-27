@@ -7,6 +7,9 @@
 # SERVER_LAUNCHD_SINGLE_OWNER_V1 — launchd is the ONLY supervisor for dedicated ports.
 # Deploy/start scripts must NOT also nohup-spawn production_server.py (dual owner = restart storm).
 #
+# EVENT_SERVER_COLD_BOOT_WAIT_V1 — soft kickstart + 90s wait before hard -k kickstart.
+# Hard -k during a slow cold boot caused restart storms (Event_3 :5113).
+#
 # LD-505_TOOLING_CODE_ROOT_V1 — ProgramArguments use mindfulnest-tooling
 # production_server.py; --event-dir points at Dropbox Production/Event_N (data only).
 #
@@ -66,25 +69,33 @@ DOMAIN="gui/${UID_NUM}"
 [[ -f "$SERVER" ]] || { echo "FATAL: missing tooling server at $SERVER" >&2; exit 1; }
 [[ -d "$EVENT_DIR_ABS" ]] || { echo "FATAL: missing Dropbox event dir $EVENT_DIR_ABS" >&2; exit 1; }
 
-wait_for_server_http() {
-  local attempts="${1:-15}"
-  local i
-  for (( i = 1; i <= attempts; i++ )); do
-    if curl -sf --max-time 5 "http://localhost:${EVENT_PORT}/api/event/current" >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep 2
-  done
-  return 1
-}
-
-kickstart_agent() {
-  if launchctl kickstart -k "${DOMAIN}/${LABEL}" 2>/dev/null; then
-    return 0
-  fi
-  launchctl bootstrap "${DOMAIN}" "$PLIST" 2>/dev/null \
+kickstart_agent_soft() {
+  launchctl kickstart "${DOMAIN}/${LABEL}" 2>/dev/null \
+    || launchctl bootstrap "${DOMAIN}" "$PLIST" 2>/dev/null \
     || launchctl load "$PLIST" 2>/dev/null \
     || true
+}
+
+kickstart_agent_hard() {
+  launchctl kickstart -k "${DOMAIN}/${LABEL}" 2>/dev/null \
+    || launchctl bootstrap "${DOMAIN}" "$PLIST" 2>/dev/null \
+    || launchctl load "$PLIST" 2>/dev/null \
+    || true
+}
+
+wait_for_server_cold_boot() {
+  event_server_wait_http "$EVENT_PORT" "$EVENT_SERVER_COLD_BOOT_ATTEMPTS" "$EVENT_SERVER_WAIT_SLEEP_SECONDS"
+}
+
+recover_launchd_server_after_down() {
+  echo "[launchagent] soft kickstart ${LABEL} (no -k — avoid killing mid cold boot)"
+  kickstart_agent_soft
+  if wait_for_server_cold_boot; then
+    return 0
+  fi
+  echo "[launchagent] still down after soft kickstart — hard kickstart ${LABEL}"
+  kickstart_agent_hard
+  wait_for_server_cold_boot
 }
 
 # Preserve secrets/env from an existing plist (never commit keys to git).
@@ -244,13 +255,12 @@ if [[ -f "$PLIST" ]] && cmp -s "$PLIST" "$PLIST_NEW"; then
   PLIST_CHANGED=0
   rm -f "$PLIST_NEW"
   echo "[launchagent] plist unchanged — skip bootout/bootstrap (${LABEL})"
-  if wait_for_server_http 3; then
+  if event_server_wait_http "$EVENT_PORT" "$EVENT_SERVER_QUICK_HEALTH_ATTEMPTS" "$EVENT_SERVER_WAIT_SLEEP_SECONDS"; then
     echo "[launchagent] server healthy on :${EVENT_PORT}"
   else
-    echo "[launchagent] server down — kickstart ${LABEL}"
-    kickstart_agent
-    wait_for_server_http 15 || {
-      echo "FATAL: server not reachable on :${EVENT_PORT} after kickstart" >&2
+    echo "[launchagent] server down on :${EVENT_PORT}"
+    recover_launchd_server_after_down || {
+      echo "FATAL: server not reachable on :${EVENT_PORT} after kickstart (waited ${EVENT_SERVER_COLD_BOOT_ATTEMPTS}x${EVENT_SERVER_WAIT_SLEEP_SECONDS}s)" >&2
       exit 1
     }
   fi
@@ -260,8 +270,8 @@ else
     || launchctl unload "$PLIST" 2>/dev/null \
     || true
   sleep 1
-  kickstart_agent
-  wait_for_server_http 15 || {
+  kickstart_agent_hard
+  wait_for_server_cold_boot || {
     echo "FATAL: server not reachable on :${EVENT_PORT} after launch agent reload" >&2
     exit 1
   }

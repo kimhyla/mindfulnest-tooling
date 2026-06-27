@@ -213,6 +213,7 @@ if [[ "${MN_SKIP_REGRESSION_GUARD:-0}" != "1" ]]; then
             _DURABILITY_EVENT_ID="$(basename "$_ARG_EVENT_DIR")"
             export MN_EVENT_ID="$_DURABILITY_EVENT_ID"
             export MN_SERVER_PORT="$(event_id_to_port "$_DURABILITY_EVENT_ID")"
+            export MN_EVENT_DIR="${DEST_DROPBOX}/Production/${_DURABILITY_EVENT_ID}"
             export MN_STORYBOARD_BASE="http://localhost:${MN_SERVER_PORT}"
             echo "[deploy] (a-pre.6b-pre) durability smoke → :${MN_SERVER_PORT} (${_DURABILITY_EVENT_ID})"
         fi

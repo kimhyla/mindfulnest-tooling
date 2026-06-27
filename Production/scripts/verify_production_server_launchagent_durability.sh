@@ -40,6 +40,21 @@ grep -q 'LEGACY_LABEL' "$INSTALL" \
   || fail "install script must disable legacy generic com.mindfulnest.production-server agent"
 grep -q 'MN_LAUNCHD_MANAGED' "$INSTALL" \
   || fail "install script must set MN_LAUNCHD_MANAGED=1 on launchd agent"
+grep -q 'EVENT_SERVER_COLD_BOOT_WAIT_V1' "$INSTALL" \
+  || fail "install script must document EVENT_SERVER_COLD_BOOT_WAIT_V1"
+grep -q 'kickstart_agent_soft' "$INSTALL" \
+  || fail "install script must soft-kickstart before hard -k on cold boot"
+grep -q 'EVENT_SERVER_COLD_BOOT_WAIT_V1' "${REPO_ROOT}/Production/scripts/event_server_port.sh" \
+  || fail "event_server_port.sh must define EVENT_SERVER_COLD_BOOT_WAIT_V1 wait helpers"
+
+START="${REPO_ROOT}/Production/scripts/start_event_server.sh"
+grep -q 'event_server_http_serves_event' "$START" \
+  || fail "start_event_server.sh must skip port preemption when event already healthy"
+
+OPTION_B="${REPO_ROOT}/Production/scripts/deploy_option_b.sh"
+grep -q 'MN_EVENT_DIR="${DEST_DROPBOX}/Production/${EVENT_ID}"' "$OPTION_B" \
+  || fail "deploy_option_b.sh must export absolute MN_EVENT_DIR"
+
 grep -q 'SERVER_LAUNCHD_SINGLE_OWNER_V1' "$INSTALL" \
   || fail "install script must document SERVER_LAUNCHD_SINGLE_OWNER_V1"
 grep -q 'plist unchanged' "$INSTALL" \

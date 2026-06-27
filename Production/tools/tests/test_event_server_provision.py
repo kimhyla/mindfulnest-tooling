@@ -14,12 +14,16 @@ if str(PROD) not in sys.path:
     sys.path.insert(0, str(PROD))
 
 from lib.event_server_provision import (  # noqa: E402
+    DEFAULT_WAIT_SECONDS,
     bookmark_url_for_event,
     provision_dedicated_event_server,
 )
 
 
 class TestEventServerProvision(unittest.TestCase):
+    def test_cold_boot_wait_matches_launchd_gate(self) -> None:
+        self.assertGreaterEqual(DEFAULT_WAIT_SECONDS, 90)
+
     def test_bookmark_url(self) -> None:
         self.assertEqual(
             bookmark_url_for_event("Event_3", 5113),
