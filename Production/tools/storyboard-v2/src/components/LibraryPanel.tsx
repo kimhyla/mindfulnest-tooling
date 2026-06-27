@@ -195,6 +195,38 @@ export type LibraryTier = 'images' | 'ambient' | 'sfx' | 'transitions' | 'waterc
 const LIBRARY_TIERS: LibraryTier[] = ['images', 'ambient', 'sfx', 'transitions', 'watercolors'];
 const DEFAULT_LIBRARY_TIER: LibraryTier = 'images';
 const LIBRARY_TIER_LS_KEY = 'mn.library.tier';
+const LIBRARY_ITEMS_SESSION_KEY = 'mn.library.items.v2';
+
+function libraryItemsStorageKey(eventId: string): string {
+  return `${LIBRARY_ITEMS_SESSION_KEY}:${eventId}`;
+}
+
+function readPersistedLibraryItems(eventId: string): LibItem[] {
+  if (typeof sessionStorage === 'undefined') return [];
+  try {
+    const raw = sessionStorage.getItem(libraryItemsStorageKey(eventId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as { items?: LibItem[] };
+    const items = Array.isArray(parsed.items) ? parsed.items : [];
+    // Drop stale cache rows missing disk-scan tier (pre-fix Directus-only shape).
+    const valid = items.filter((it) => typeof it.tier === 'string' && it.tier.length > 0);
+    return valid.length === items.length ? items : valid;
+  } catch {
+    return [];
+  }
+}
+
+function persistLibraryItems(eventId: string, items: LibItem[]): void {
+  if (typeof sessionStorage === 'undefined') return;
+  try {
+    sessionStorage.setItem(
+      libraryItemsStorageKey(eventId),
+      JSON.stringify({ items, savedAt: Date.now() }),
+    );
+  } catch {
+    /* quota — best effort */
+  }
+}
 
 // Map current cr_library `tier` value to a prod_assets-shaped asset_type so
 // the TIER_TO_FILTER_MAP can decide. cr_library returns 'source' / 'cropped'
@@ -202,6 +234,7 @@ const LIBRARY_TIER_LS_KEY = 'mn.library.tier';
 function inferAssetType(it: LibItem): string {
   if (it.asset_type) return it.asset_type;
   if (it.tier === 'canonical') return 'canonical_image';
+  if (it.tier === 'element_pose') return 'element_pose';
   if (it.tier === 'character_master') return 'still_master';
   if (it.tier === 'source' || it.tier === 'cropped') return 'still_delivery';
   return 'image';
@@ -215,13 +248,25 @@ function inferAssetType(it: LibItem): string {
 //  watercolors  → tags CONTAINS 'watercolor' OR asset_name CONTAINS 'watercolor'
 export const TIER_TO_FILTER_MAP: Record<LibraryTier, (it: LibItem) => boolean> = {
   images: (it) => {
+    const t = it.tier ?? '';
+    if (t === 'canonical') return false;
+    // Disk-scan tier is authoritative — do not let Directus prod_asset_type hide rows.
+    if (
+      t === 'source'
+      || t === 'cropped'
+      || t === 'character_master'
+      || t === 'element_pose'
+    ) {
+      return true;
+    }
     const at = inferAssetType(it);
-    if (at === 'canonical_image' || it.tier === 'canonical') return false;
+    if (at === 'canonical_image') return false;
     return (
       at === 'image' ||
       at === 'still_delivery' ||
       at === 'still_master' ||
-      at === 'beat_scene'
+      at === 'beat_scene' ||
+      at === 'element_pose'
     );
   },
   ambient: (it) => {
@@ -317,9 +362,10 @@ interface PreviewState {
 // ----------------------------------------------------------------
 
 export function LibraryPanel() {
-  const [items, setItems] = useState<LibItem[]>([]);
+  const eventId = activeScope.value.event_id;
+  const [items, setItems] = useState<LibItem[]>(() => readPersistedLibraryItems(eventId));
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => readPersistedLibraryItems(eventId).length === 0);
   const [refreshTick, setRefreshTick] = useState(0);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -476,10 +522,21 @@ export function LibraryPanel() {
 
   useEffect(() => {
     let cancelled = false;
+    const cached = readPersistedLibraryItems(eventId);
+    if (cached.length > 0) {
+      setItems(cached);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
     (async () => {
       const [crRes, stitchRes] = await Promise.all([
-        apiGet<LibraryResponse>('cr_library', activeScopeQueryParams()),
-        apiGet<StitchLibraryResponse>('stitch_editor_library'),
+        apiGet<LibraryResponse>('cr_library', activeScopeQueryParams(), {
+          fetchTimeoutMs: 45_000,
+        }),
+        apiGet<StitchLibraryResponse>('stitch_editor_library', undefined, {
+          fetchTimeoutMs: 45_000,
+        }),
       ]);
       if (cancelled) return;
       setLoading(false);
@@ -487,11 +544,15 @@ export function LibraryPanel() {
       const audioItems =
         stitchRes.ok && stitchRes.data ? stitchLibraryToLibItems(stitchRes.data) : [];
       if (!crRes.ok && !stitchRes.ok) {
-        setError(crRes.error ?? stitchRes.error ?? 'unknown error');
-        setItems([]);
+        if (cached.length === 0) {
+          setError(crRes.error ?? stitchRes.error ?? 'unknown error');
+          setItems([]);
+        }
         return;
       }
-      setItems([...imageItems, ...audioItems]);
+      const merged = [...imageItems, ...audioItems];
+      setItems(merged);
+      persistLibraryItems(eventId, merged);
       setError(null);
     })();
     return () => {
@@ -500,7 +561,7 @@ export function LibraryPanel() {
   }, [
     refreshTick,
     serverRehydrateTick.value,
-    activeScope.value.event_id,
+    eventId,
     activeProjectType.value,
     activeMilestoneId.value,
     activeTargetVideo.value,
@@ -689,12 +750,12 @@ export function LibraryPanel() {
             Library is empty for this event.
           </p>
         ) : filteredItems.length === 0 ? (
-          // Empty-state UI; non-image tiers will populate per LD-656
-          // PHASED_DELIVERY_PRIMITIVE_HOOKS_S5_5C_V1 Phase D.
           <p class="mn-empty" data-testid="library-empty-tier">
             {searchQuery
               ? `No items match "${searchQuery}" in tier ${tier}.`
-              : `No items in tier ${tier} yet.`}
+              : items.length > 0
+                ? `${items.length} item(s) on disk — try another tier filter (current: ${tier}).`
+                : `No items in tier ${tier} yet.`}
           </p>
         ) : (
           <ul class="mn-library-list" data-testid="library-list">

@@ -59,6 +59,49 @@ import scope_router
 from ffmpeg_utils import strip_audio as _strip_clip_audio
 from lipsync_sender import LipSyncClient, COST_PER_LIPSYNC
 
+# In-process library list cache — disk is authority; fingerprint invalidates on upload/delete.
+_LIBRARY_LIST_CACHE: dict[str, tuple[str, dict]] = {}
+
+
+def _library_list_cache_key(library_event_dir: Path, app_event_id: str) -> str:
+    return f"{library_event_dir.name}:{app_event_id}"
+
+
+def _library_list_fingerprint(library_event_dir: Path, prod_root: Path) -> str:
+    parts: list[str] = []
+    for label, path in (
+        ("reg", prod_root / "baseline_image_registry.json"),
+        ("chars", prod_root / "character_subjects.json"),
+        ("sources", Path(event_images_sources_dir(library_event_dir))),
+        ("crops", Path(event_images_crops_dir(library_event_dir))),
+    ):
+        try:
+            if path.is_file():
+                parts.append(f"{label}:{path.stat().st_mtime_ns}")
+            elif path.is_dir():
+                latest = 0
+                for entry in path.iterdir():
+                    if entry.is_file():
+                        latest = max(latest, entry.stat().st_mtime_ns)
+                parts.append(f"{label}:dir:{latest}")
+            else:
+                parts.append(f"{label}:missing")
+        except OSError:
+            parts.append(f"{label}:err")
+    return "|".join(parts)
+
+
+def invalidate_cr_library_cache(library_event_id: str | None = None) -> None:
+    """Drop cached GET /api/cr/library payloads after upload/delete."""
+    if library_event_id is None:
+        _LIBRARY_LIST_CACHE.clear()
+        return
+    prefix = f"{library_event_id}:"
+    for key in list(_LIBRARY_LIST_CACHE):
+        if key.startswith(prefix):
+            _LIBRARY_LIST_CACHE.pop(key, None)
+
+
 # Late-resolvable private helpers from the host module.
 from tools.production_server import (  # noqa: E402
     _bg_module,
@@ -126,6 +169,29 @@ def _resolve_parent_asset_id_from_source_key(source_key: str) -> int | None:
 
 
 def _enrich_library_items_prod_assets(images: list) -> None:
+    """LD-738 — annotate library items with is_master / has_crop from prod_assets."""
+    import concurrent.futures
+
+    for item in images:
+        item["is_master"] = False
+        item["has_crop"] = False
+    if not images:
+        return
+
+    def _run() -> None:
+        _enrich_library_items_prod_assets_inner(images)
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            fut = pool.submit(_run)
+            fut.result(timeout=3.0)
+    except concurrent.futures.TimeoutError:
+        print("[library] WARN: Directus enrich skipped — timed out after 3s", flush=True)
+    except Exception as e:
+        print(f"[library] WARN: Directus enrich skipped: {e}", flush=True)
+
+
+def _enrich_library_items_prod_assets_inner(images: list) -> None:
     """LD-738 — annotate library items with is_master / has_crop from prod_assets."""
     for item in images:
         item["is_master"] = False
@@ -204,11 +270,15 @@ def _enrich_library_items_prod_assets(images: list) -> None:
         row = path_to_row.get(real_fp)
         if not row:
             continue
+        # Never overwrite disk-scan tier/asset_type — Directus prod_assets types
+        # (e.g. watercolor_static) are not the library panel BS3 filter keys.
         if row.get("asset_type"):
-            item["asset_type"] = row["asset_type"]
+            item["prod_asset_type"] = row["asset_type"]
+            if not item.get("asset_type"):
+                item["asset_type"] = row["asset_type"]
         if row.get("asset_name"):
             item["asset_name"] = row["asset_name"]
-        is_master = row.get("asset_type") == "still_master"
+        is_master = row.get("asset_type") == "still_master" or item.get("asset_type") == "still_master"
         item["is_master"] = is_master
         if is_master:
             mid = row.get("id")
@@ -348,47 +418,58 @@ def handle_cr_library(h)-> None:
 
     with production_bg_scope_lock():
         ctx = _resolve_cr_library_scope(h, repair_sidecar=False)
-        if ctx is None:
+    if ctx is None:
+        return
+    bg = _bg_module()
+    library_event_dir = ctx.library_event_dir
+    prod_root = ctx.prod_root
+    cache_key = _library_list_cache_key(library_event_dir, str(h.app.event_id))
+    fp = _library_list_fingerprint(library_event_dir, prod_root)
+    cached = _LIBRARY_LIST_CACHE.get(cache_key)
+    if cached and cached[0] == fp:
+        return h._send_json(200, cached[1])
+    skel_arc = (ctx.skeleton_ref or {}).get("arc_number")
+    arc_number = int(skel_arc) if skel_arc is not None else arc_number_from_event_id(library_event_dir.name)
+    images = []
+    seen_keys: set[str] = set()
+
+    def _append(item: dict | None) -> None:
+        if not item:
             return
-        bg = _bg_module()
-        library_event_dir = ctx.library_event_dir
-        prod_root = ctx.prod_root
-        skel_arc = (ctx.skeleton_ref or {}).get("arc_number")
-        arc_number = int(skel_arc) if skel_arc is not None else arc_number_from_event_id(library_event_dir.name)
-        images = []
-        seen_keys: set[str] = set()
+        key = item.get("key")
+        if not key or key in seen_keys:
+            return
+        seen_keys.add(key)
+        images.append(item)
 
-        def _append(item: dict | None) -> None:
-            if not item:
-                return
-            key = item.get("key")
-            if not key or key in seen_keys:
-                return
-            seen_keys.add(key)
-            images.append(item)
+    # --- Tier 1: accepted FLUX stills from BG sidecar (event library) ---
+    try:
+        sidecar = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=2.0)
+        for arc in sidecar.get("arcs", {}).values():
+            for seg in arc.get("segments", {}).values():
+                for beat in seg.get("beats", []):
+                    key = beat.get("accepted_image_key")
+                    if not key:
+                        continue
+                    fp = os.path.join(bg.BG_STILLS_DIR, f"{key}.png")
+                    if os.path.exists(fp):
+                        item = _read_image_meta(fp, "source")
+                        if item:
+                            item["beat_id"] = beat.get("beat_id", "")
+                            item["speaker"] = beat.get("speaker", "")
+                            _append(item)
+    except Exception as e:
+        print(f"[library] sidecar scan warning: {e}")
 
-        # --- Tier 1: accepted FLUX stills from BG sidecar (event library) ---
-        try:
-            sidecar = bg.read_sidecar()
-            for arc in sidecar.get("arcs", {}).values():
-                for seg in arc.get("segments", {}).values():
-                    for beat in seg.get("beats", []):
-                        key = beat.get("accepted_image_key")
-                        if not key:
-                            continue
-                        fp = os.path.join(bg.BG_STILLS_DIR, f"{key}.png")
-                        if os.path.exists(fp):
-                            item = _read_image_meta(fp, "source")
-                            if item:
-                                item["beat_id"] = beat.get("beat_id", "")
-                                item["speaker"] = beat.get("speaker", "")
-                                _append(item)
-        except Exception as e:
-            print(f"[library] sidecar scan warning: {e}")
-
-        # --- Tier 1b: manually uploaded source images (event-scoped) ---
-        element_source_hashes: set[str] = set()
-        reg = None
+    # --- Tier 1b: manually uploaded source images (event-scoped) ---
+    element_source_hashes: set[str] = set()
+    reg = None
+    sources_dir = str(event_images_sources_dir(library_event_dir))
+    _src_names: list[str] = []
+    if os.path.isdir(sources_dir):
+        _src_names = [f for f in os.listdir(sources_dir)
+                      if f.lower().endswith((".webp", ".png", ".jpg", ".jpeg"))]
+    if _src_names:
         try:
             from tools import kling_character_registry as reg
 
@@ -400,132 +481,134 @@ def handle_cr_library(h)-> None:
         except Exception as e:
             print(f"[library] element hash scan warning: {e}", flush=True)
 
-        sources_dir = str(event_images_sources_dir(library_event_dir))
-        if os.path.isdir(sources_dir):
-            _src_names = [f for f in os.listdir(sources_dir)
-                          if f.lower().endswith((".webp", ".png", ".jpg", ".jpeg"))]
-            _src_names.sort(
-                key=lambda f: -os.path.getmtime(os.path.join(sources_dir, f)))
-            for fname in _src_names:
-                fp = os.path.join(sources_dir, fname)
-                item = _read_image_meta(fp, "source")
-                if item and element_source_hashes and reg is not None:
-                    src_hash = reg.file_sha256(fp)
-                    if src_hash and src_hash in element_source_hashes:
-                        item["element_pose_contaminated"] = True
-                        item["contamination_warning"] = (
-                            "Bytes match an Element pose file (legacy overwrite). "
-                            "Delete this tile and re-upload your original still."
-                        )
-                _append(item)
-
-        # --- Tier 0: shared baseline BG stills (global, event-local key wins) ---
-        baseline_dir = baseline_images_dir(prod_root)
-        for meta in list_baseline_meta(prod_root):
-            filename = meta.get("filename")
-            if not filename:
-                continue
-            fp = baseline_dir / filename
-            if not fp.is_file():
-                print(f"[library] baseline missing on disk: {fp}", flush=True)
-                continue
-            key = meta.get("key") or os.path.splitext(filename)[0]
-            if key in seen_keys:
-                continue
-            tags = list(meta.get("tags") or ["baseline", "shared"])
-            if "baseline" not in tags:
-                tags.append("baseline")
-            item = _read_image_meta(str(fp), "source", extra={
-                "key": key,
-                "display_name": meta.get("display_name") or key,
-                "tags": tags,
-                "shared_baseline": True,
-                "asset_type": "still_master",
-            })
+    if os.path.isdir(sources_dir):
+        _src_names.sort(
+            key=lambda f: -os.path.getmtime(os.path.join(sources_dir, f)))
+        for fname in _src_names:
+            fp = os.path.join(sources_dir, fname)
+            item = _read_image_meta(fp, "source")
+            if item and element_source_hashes and reg is not None:
+                src_hash = reg.file_sha256(fp)
+                if src_hash and src_hash in element_source_hashes:
+                    item["element_pose_contaminated"] = True
+                    item["contamination_warning"] = (
+                        "Bytes match an Element pose file (legacy overwrite). "
+                        "Delete this tile and re-upload your original still."
+                    )
             _append(item)
 
-        # --- Tier 2: cropped delivery images (event-scoped) ---
-        crops_dir = str(event_images_crops_dir(library_event_dir))
-        if os.path.isdir(crops_dir):
-            for fname in sorted(os.listdir(crops_dir)):
-                if fname.lower().endswith((".webp", ".png", ".jpg", ".jpeg")):
-                    _append(_read_image_meta(os.path.join(crops_dir, fname), "cropped"))
-
-        # --- Tier 3: character reference masters (global reference) ---
-        char_dir = str(prod_root / "Character_Assets")
-        if os.path.isdir(char_dir):
-            for fname in sorted(os.listdir(char_dir)):
-                if fname.endswith("_reference_master.png"):
-                    item = _read_image_meta(os.path.join(char_dir, fname), "character_master")
-                    if item:
-                        speaker = fname.replace("_reference_master.png", "").capitalize()
-                        item["speaker"] = speaker
-                        _append(item)
-
-        # --- Tier 3b: Element registration poses (Production/<Char>/poses/) ---
-        try:
-            from tools import kling_character_registry as reg
-
-            seen_pose: set[str] = set()
-            for char_name, cfg in (reg.load_character_subjects().get("characters") or {}).items():
-                if cfg.get("status") != "active" or not cfg.get("element_id"):
-                    continue
-                rels: list[str] = []
-                frontal = cfg.get("frontal_image")
-                if frontal:
-                    rels.append(str(frontal))
-                rels.extend(str(r) for r in (cfg.get("refer_images") or []))
-                for rel in rels:
-                    fp = prod_root / rel
-                    if not fp.is_file():
-                        continue
-                    real_fp = os.path.realpath(str(fp))
-                    if real_fp in seen_pose:
-                        continue
-                    seen_pose.add(real_fp)
-                    item = _read_image_meta(real_fp, "element_pose", extra={
-                        "speaker": char_name,
-                        "tags": ["element", "char_ref"],
-                        "asset_type": "element_pose",
-                        "display_name": fp.name,
-                    })
-                    _append(item)
-        except Exception as e:
-            print(f"[library] element pose scan warning: {e}", flush=True)
-
-        # --- Tier 4: Phase A/B watercolor overlays (library/watercolors/) ---
-        wc_items = list_watercolor_items(event_watercolors_dir(library_event_dir))
-        for wc in wc_items:
-            _append({
-                "key": wc["key"],
-                "filename": wc["filename"],
-                "tier": "watercolor",
-                "abs_path": wc["abs_path"],
-                "thumb_url": wc["thumb_url"],
-                "tags": wc.get("tags") or ["watercolor"],
-                "asset_type": wc.get("asset_type") or "watercolor_static",
-                "display_name": wc["key"],
-                "kind": wc.get("kind"),
-            })
-
-        _enrich_library_items_prod_assets(images)
-
-        print(
-            f"[library] scope={ctx.scope_type} library_event={library_event_dir.name} "
-            f"pinned_event={h.app.event_id} arc={arc_number} serving {len(images)} images "
-            f"({sum(1 for i in images if i['tier']=='source')} source, "
-            f"{sum(1 for i in images if i.get('shared_baseline'))} baseline, "
-            f"{sum(1 for i in images if i['tier']=='cropped')} cropped, "
-            f"{sum(1 for i in images if i['tier']=='watercolor')} watercolor)",
-            flush=True,
-        )
-        return h._send_json(200, {
-            "images": images,
-            "metadata_only": True,
-            "event_id": h.app.event_id,
-            "library_event_id": library_event_dir.name,
-            "scope_type": ctx.scope_type,
+    # --- Tier 0: shared baseline BG stills (global, event-local key wins) ---
+    baseline_dir = baseline_images_dir(prod_root)
+    for meta in list_baseline_meta(prod_root):
+        filename = meta.get("filename")
+        if not filename:
+            continue
+        fp = baseline_dir / filename
+        if not fp.is_file():
+            print(f"[library] baseline missing on disk: {fp}", flush=True)
+            continue
+        key = meta.get("key") or os.path.splitext(filename)[0]
+        if key in seen_keys:
+            continue
+        tags = list(meta.get("tags") or ["baseline", "shared"])
+        if "baseline" not in tags:
+            tags.append("baseline")
+        item = _read_image_meta(str(fp), "source", extra={
+            "key": key,
+            "display_name": meta.get("display_name") or key,
+            "tags": tags,
+            "shared_baseline": True,
+            "asset_type": "still_master",
         })
+        _append(item)
+
+    # --- Tier 2: cropped delivery images (event-scoped) ---
+    crops_dir = str(event_images_crops_dir(library_event_dir))
+    if os.path.isdir(crops_dir):
+        for fname in sorted(os.listdir(crops_dir)):
+            if fname.lower().endswith((".webp", ".png", ".jpg", ".jpeg")):
+                _append(_read_image_meta(os.path.join(crops_dir, fname), "cropped"))
+
+    # --- Tier 3: character reference masters (global reference) ---
+    char_dir = str(prod_root / "Character_Assets")
+    if os.path.isdir(char_dir):
+        for fname in sorted(os.listdir(char_dir)):
+            if fname.endswith("_reference_master.png"):
+                item = _read_image_meta(os.path.join(char_dir, fname), "character_master")
+                if item:
+                    speaker = fname.replace("_reference_master.png", "").capitalize()
+                    item["speaker"] = speaker
+                    _append(item)
+
+    # --- Tier 3b: Element registration poses (Production/<Char>/poses/) ---
+    try:
+        from tools import kling_character_registry as reg
+
+        seen_pose: set[str] = set()
+        for char_name, cfg in (reg.load_character_subjects().get("characters") or {}).items():
+            if cfg.get("status") != "active" or not cfg.get("element_id"):
+                continue
+            rels: list[str] = []
+            frontal = cfg.get("frontal_image")
+            if frontal:
+                rels.append(str(frontal))
+            rels.extend(str(r) for r in (cfg.get("refer_images") or []))
+            for rel in rels:
+                fp = prod_root / rel
+                if not fp.is_file():
+                    continue
+                real_fp = os.path.realpath(str(fp))
+                if real_fp in seen_pose:
+                    continue
+                seen_pose.add(real_fp)
+                item = _read_image_meta(real_fp, "element_pose", extra={
+                    "speaker": char_name,
+                    "tags": ["element", "char_ref"],
+                    "asset_type": "element_pose",
+                    "display_name": fp.name,
+                })
+                _append(item)
+    except Exception as e:
+        print(f"[library] element pose scan warning: {e}", flush=True)
+
+    # --- Tier 4: Phase A/B watercolor overlays (library/watercolors/) ---
+    wc_items = list_watercolor_items(event_watercolors_dir(library_event_dir))
+    for wc in wc_items:
+        _append({
+            "key": wc["key"],
+            "filename": wc["filename"],
+            "tier": "watercolor",
+            "abs_path": wc["abs_path"],
+            "thumb_url": wc["thumb_url"],
+            "tags": wc.get("tags") or ["watercolor"],
+            "asset_type": wc.get("asset_type") or "watercolor_static",
+            "display_name": wc["key"],
+            "kind": wc.get("kind"),
+        })
+
+    _enrich_library_items_prod_assets(images)
+
+    print(
+        f"[library] scope={ctx.scope_type} library_event={library_event_dir.name} "
+        f"pinned_event={h.app.event_id} arc={arc_number} serving {len(images)} images "
+        f"({sum(1 for i in images if i['tier']=='source')} source, "
+        f"{sum(1 for i in images if i.get('shared_baseline'))} baseline, "
+        f"{sum(1 for i in images if i['tier']=='cropped')} cropped, "
+        f"{sum(1 for i in images if i['tier']=='watercolor')} watercolor)",
+        flush=True,
+    )
+    return h._send_json(200, _store_cr_library_cache(cache_key, fp, {
+        "images": images,
+        "metadata_only": True,
+        "event_id": h.app.event_id,
+        "library_event_id": library_event_dir.name,
+        "scope_type": ctx.scope_type,
+    }))
+
+
+def _store_cr_library_cache(cache_key: str, fingerprint: str, payload: dict) -> dict:
+    _LIBRARY_LIST_CACHE[cache_key] = (fingerprint, payload)
+    return payload
 
 
 def handle_cr_full_image(h)-> None:
@@ -807,12 +890,14 @@ def handle_cr_library_delete(h, body: dict)-> None:
 
     if file_already_gone:
         print(f"[lib-delete] WARN: target already gone at unlink: {target}", flush=True)
+        invalidate_cr_library_cache(ctx.library_event_dir.name)
         return h._send_json(200, {
             "ok": True,
             "deleted": target,
             "warning": "file_already_gone_at_unlink",
         })
     print(f"[lib-delete] removed {target}", flush=True)
+    invalidate_cr_library_cache(ctx.library_event_dir.name)
     return h._send_json(200, {"ok": True, "deleted": target})
 
 
@@ -1112,6 +1197,7 @@ def _handle_cr_upload_body(h, body: dict)-> None:
         )
     except Exception as _reg_exc:
         print(f"[library] register_asset warning (non-fatal): {_reg_exc}")
+    invalidate_cr_library_cache(ctx.library_event_dir.name)
     return h._send_json(200, {
         "ok": True,
         "key": key, "filename": filename,

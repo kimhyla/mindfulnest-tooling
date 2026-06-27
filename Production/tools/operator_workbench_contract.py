@@ -82,11 +82,14 @@ def resolve_beat_char_ref_display(
     beat: dict,
     approved_roots: list[str] | None = None,
 ) -> dict | None:
+    stored = beat.get("reference_image") if isinstance(beat.get("reference_image"), dict) else None
+    stored_path = str(stored.get("abs_path") or "").strip() if stored else ""
+    if stored_path and Path(stored_path).is_file():
+        return _ref_dict_with_thumb(stored, stored_path, approved_roots)
     path = bg.resolve_beat_char_ref_path(beat)
     if not path:
         return None
-    stored = beat.get("reference_image") if isinstance(beat.get("reference_image"), dict) else None
-    if stored and str(stored.get("abs_path") or "").strip() == path:
+    if stored and stored_path == path:
         return _ref_dict_with_thumb(stored, path, approved_roots)
     return _ref_dict_with_thumb(None, path, approved_roots)
 
@@ -184,6 +187,8 @@ def migrate_operator_workbench_beat(beat: dict) -> bool:
     if not beat.get("generation_mode"):
         mode = bg.resolve_beat_generation_mode(beat, {})
         beat["generation_mode"] = mode
+        changed = True
+    if bg.heal_speaker_char_ref_mismatch(beat):
         changed = True
     return changed
 

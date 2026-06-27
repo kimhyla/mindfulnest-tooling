@@ -2357,14 +2357,28 @@ def handle_bg_session_state(h)-> None:
 
     o3_terminal_outcomes: list[dict] = []
     if beats:
-        o3_terminal_outcomes = _apply_o3_session_terminal_reconcile(
-            h,
-            beats,
-            sidecar,
-            scope_arc=scope_arc,
-            scope_event_id=scope_event_id,
-            scope_phase=scope_phase,
-        )
+        import threading
+
+        beats_for_reconcile = copy.deepcopy(beats)
+
+        def _terminal_reconcile_bg() -> None:
+            try:
+                _apply_o3_session_terminal_reconcile(
+                    h,
+                    beats_for_reconcile,
+                    sidecar,
+                    scope_arc=scope_arc,
+                    scope_event_id=scope_event_id,
+                    scope_phase=scope_phase,
+                )
+            except Exception as exc:
+                print(f"[BG] session terminal reconcile bg failed: {exc}", flush=True)
+
+        threading.Thread(
+            target=_terminal_reconcile_bg,
+            daemon=True,
+            name=f"session-terminal-reconcile-{scope_event_id or 'unknown'}",
+        ).start()
 
     all_done = beats and all(b.get("flux_options") for b in beats)
     video_role = scope_video_role or ""
@@ -3299,9 +3313,11 @@ def handle_bg_update_beat(h, body: dict)-> None:
     element_ref_registered = None
     identity_fields_written: set[str] = set()
     pre_reg_result: dict | None = None
+    pre_reg_gate_ok: bool | None = None
+    pre_reg_gate_err: str | None = None
     if "reference_image" in body:
         try:
-            snap = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=5.0)
+            snap = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=2.0)
             bg.ensure_sidecar_schema_defaults(snap)
             _, beat_pre = bg.find_beat(snap, str(beat_id))
             if beat_pre:
@@ -3333,6 +3349,10 @@ def handle_bg_update_beat(h, body: dict)-> None:
                         )
                         if pre_reg_result.get("ok"):
                             bg.sync_element_char_ref_status(pre_work, heal_mismatch=False, sidecar=snap)
+                            gate = pre_work.get("element_char_ref_ok")
+                            if isinstance(gate, bool):
+                                pre_reg_gate_ok = gate
+                                pre_reg_gate_err = pre_work.get("element_char_ref_error")
                             if pre_work.get("element_char_ref_ok"):
                                 try:
                                     from tools import kling_character_registry as reg
@@ -3357,9 +3377,11 @@ def handle_bg_update_beat(h, body: dict)-> None:
     written: list = []
     identity_fields_written: set = set()
     beat: dict | None = None
+    pre_reg_result: dict | None = None
 
     def _patch_beat(b: dict, sidecar: dict) -> None:
         nonlocal written, identity_fields_written, thumb_b64, element_ref_warning
+        nonlocal element_ref_registered, pre_reg_result, pre_reg_gate_ok, pre_reg_gate_err
         operator_fields_requested = {f for f in _BG_BEAT_WRITABLE if f in body}
         prompt_save_unchanged = (
             operator_fields_requested == {"kling_o3_prompt"}
@@ -3447,12 +3469,15 @@ def handle_bg_update_beat(h, body: dict)-> None:
                         )
                     else:
                         if field == "speaker" and isinstance(value, str):
+                            old_speaker = str(b.get("speaker") or "").strip()
                             b[field] = _canonicalize_speaker(value)
+                            if old_speaker != str(b.get("speaker") or "").strip():
+                                bg.realign_beat_char_ref_for_speaker_change(
+                                    b, old_speaker=old_speaker,
+                                )
                         else:
                             b[field] = value
                 written.append(field)
-                if field == "speaker" and not b.get("reference_image_locked"):
-                    bg.align_beat_reference_to_element(b)
                 if field == "speaker":
                     sp = str(b.get("speaker") or "").strip()
                     if sp and bg._speaker_has_element_bound_voice(sp):
@@ -3483,21 +3508,27 @@ def handle_bg_update_beat(h, body: dict)-> None:
                 if field == "kling_o3_prompt_still" and isinstance(value, str):
                     bg.set_beat_still_prompt(b, value)
         identity_fields_written = set(written) & _BG_ELEMENT_CHAR_REF_SYNC_FIELDS
-        if identity_fields_written:
+        if isinstance(pre_reg_gate_ok, bool):
+            b["element_char_ref_ok"] = pre_reg_gate_ok
+            if pre_reg_gate_ok:
+                b.pop("element_char_ref_error", None)
+            elif pre_reg_gate_err:
+                b["element_char_ref_error"] = pre_reg_gate_err
+        elif identity_fields_written:
             bg.sync_element_char_ref_status(b, heal_mismatch=False, sidecar=sidecar)
-        if "reference_image" in written and pre_reg_result is not None:
-            if pre_reg_result.get("ok"):
-                bg.sync_element_char_ref_status(b, heal_mismatch=False, sidecar=sidecar)
-            elif (
-                b.get("element_char_ref_ok") is False
-                and bg.element_char_ref_required_for_beat(b, sidecar)
-            ):
-                detail = (b.get("element_char_ref_error") or "").strip()
-                element_ref_warning = (
-                    "Char ref saved on this beat, but Element registration failed. "
-                    "Try Add to Element from library preview (Loral), or drop the pose again."
-                    + (f" ({detail})" if detail else "")
-                )
+        if (
+            "reference_image" in written
+            and pre_reg_result is not None
+            and not pre_reg_result.get("ok")
+            and b.get("element_char_ref_ok") is False
+            and bg.element_char_ref_required_for_beat(b, sidecar)
+        ):
+            detail = (b.get("element_char_ref_error") or "").strip()
+            element_ref_warning = (
+                "Char ref saved on this beat, but Element registration failed. "
+                "Try Add to Element from library preview (Loral), or drop the pose again."
+                + (f" ({detail})" if detail else "")
+            )
 
     try:
         ok, beat = bg.update_beat_locked(beat_id, _patch_beat)

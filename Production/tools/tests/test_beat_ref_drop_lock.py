@@ -9,6 +9,7 @@ TOOLS = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(TOOLS))
 
 import beat_generator as bg  # noqa: E402
+import operator_workbench_contract as owc  # noqa: E402
 
 
 def test_apply_user_beat_ref_update_locks_on_drop_and_unlocks_on_clear(tmp_path: Path):
@@ -594,6 +595,126 @@ def test_align_beat_reference_on_speaker_change_when_unlocked(tmp_path: Path, mo
     assert bg.align_beat_reference_to_element(beat) is True
     assert beat["reference_image"]["abs_path"] == str(canonical.resolve())
     assert bg.sync_element_char_ref_status(beat, heal_mismatch=False) is True
+
+
+def test_realign_char_ref_when_speaker_changes_from_old_character(tmp_path: Path, monkeypatch):
+    oliver_pose = tmp_path / "Oliver" / "poses" / "oliver_neutral.png"
+    ember_pose = tmp_path / "Ember" / "poses" / "ember_neutral.png"
+    oliver_pose.parent.mkdir(parents=True)
+    ember_pose.parent.mkdir(parents=True)
+    oliver_pose.write_bytes(b"oliver-bytes")
+    ember_pose.write_bytes(b"ember-bytes")
+
+    def _paths(speaker: str):
+        if speaker == "Oliver":
+            return [oliver_pose]
+        if speaker == "Ember":
+            return [ember_pose]
+        return []
+
+    def _hash(path):
+        p = Path(path)
+        if "oliver" in p.name:
+            return "hash_oliver"
+        if "ember" in p.name:
+            return "hash_ember"
+        return "hash_other"
+
+    monkeypatch.setattr("tools.kling_character_registry.element_image_paths", _paths)
+    monkeypatch.setattr("tools.kling_character_registry.get_character_entry", lambda _s: {"status": "active", "element_id": "1"})
+    monkeypatch.setattr("tools.kling_character_registry.is_speaker_voice_ready", lambda _s: True)
+    monkeypatch.setattr("tools.kling_character_registry.file_sha256", _hash)
+    monkeypatch.setattr("tools.kling_character_registry.find_pose_rel_by_hash", lambda *_a: None)
+    monkeypatch.setattr(
+        "tools.kling_character_registry.load_character_subjects",
+        lambda: {"characters": {"Oliver": {}, "Ember": {}}},
+    )
+    monkeypatch.setattr("tools.kling_character_registry.resolve_registry_key", lambda s: s)
+
+    beat = {
+        "speaker": "Ember",
+        "reference_image": {"abs_path": str(oliver_pose.resolve())},
+        "reference_image_locked": True,
+    }
+    assert bg.realign_beat_char_ref_for_speaker_change(beat, old_speaker="Oliver") is True
+    assert beat["reference_image"]["abs_path"] == str(ember_pose.resolve())
+    assert beat.get("reference_image_locked") is not True
+
+
+def test_heal_speaker_char_ref_mismatch_on_migrate(tmp_path: Path, monkeypatch):
+    oliver_pose = tmp_path / "Oliver" / "poses" / "oliver_neutral.png"
+    ember_pose = tmp_path / "Ember" / "poses" / "ember_neutral.png"
+    oliver_pose.parent.mkdir(parents=True)
+    ember_pose.parent.mkdir(parents=True)
+    oliver_pose.write_bytes(b"oliver-bytes")
+    ember_pose.write_bytes(b"ember-bytes")
+
+    def _paths(speaker: str):
+        if speaker == "Oliver":
+            return [oliver_pose]
+        if speaker == "Ember":
+            return [ember_pose]
+        return []
+
+    def _hash(path):
+        p = Path(path)
+        if "oliver" in p.name:
+            return "hash_oliver"
+        if "ember" in p.name:
+            return "hash_ember"
+        return "hash_other"
+
+    monkeypatch.setattr("tools.kling_character_registry.element_image_paths", _paths)
+    monkeypatch.setattr("tools.kling_character_registry.get_character_entry", lambda _s: {"status": "active", "element_id": "1"})
+    monkeypatch.setattr("tools.kling_character_registry.is_speaker_voice_ready", lambda _s: True)
+    monkeypatch.setattr("tools.kling_character_registry.file_sha256", _hash)
+    monkeypatch.setattr("tools.kling_character_registry.find_pose_rel_by_hash", lambda *_a: None)
+    monkeypatch.setattr(
+        "tools.kling_character_registry.load_character_subjects",
+        lambda: {"characters": {"Oliver": {}, "Ember": {}}},
+    )
+    monkeypatch.setattr("tools.kling_character_registry.resolve_registry_key", lambda s: s)
+    monkeypatch.setattr(bg, "element_char_ref_required_for_beat", lambda _b, _s=None: True)
+
+    beat = {
+        "speaker": "Ember",
+        "reference_image": {"abs_path": str(oliver_pose.resolve())},
+        "reference_image_locked": True,
+        "pipeline": "kling_o3_omni",
+    }
+    assert owc.migrate_operator_workbench_beat(beat) is True
+    assert beat["reference_image"]["abs_path"] == str(ember_pose.resolve())
+
+
+def test_char_ref_display_prefers_persisted_sidecar_path(tmp_path: Path):
+    stored = tmp_path / "library_still.png"
+    fallback = tmp_path / "implicit.png"
+    stored.write_bytes(b"stored")
+    fallback.write_bytes(b"fallback")
+    beat = {
+        "speaker": "Ember",
+        "reference_image": {"abs_path": str(stored), "key": "ember_custom"},
+    }
+    monkeypatch_paths = None
+
+    def fake_resolve(b):
+        return str(fallback)
+
+    import beat_generator as bg_mod
+    original = bg_mod.resolve_beat_char_ref_path
+    bg_mod.resolve_beat_char_ref_path = fake_resolve
+    try:
+        display = owc.resolve_beat_char_ref_display(beat, approved_roots=[str(tmp_path)])
+    finally:
+        bg_mod.resolve_beat_char_ref_path = original
+    assert display is not None
+    assert display["abs_path"] == str(stored)
+
+
+def test_bg_update_beat_uses_speaker_realign_not_unlocked_align_only():
+    text = (TOOLS / "server_handlers" / "background.py").read_text(encoding="utf-8")
+    assert "realign_beat_char_ref_for_speaker_change" in text
+    assert "if field == \"speaker\" and not b.get(\"reference_image_locked\"):" not in text
 
 
 def test_bg_align_element_ref_handler_registered():

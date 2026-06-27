@@ -188,15 +188,26 @@ function isStillInsertBeat(beat?: BgBeat | null): boolean {
 
 type RefDisplay = { key?: string; abs_path?: string; thumb_b64?: string; filename?: string };
 
+/** Persisted sidecar ref wins over session `_derived` implicit fallback (workbench authority spec). */
+function displayPersistedRef(
+  stored: RefDisplay | null | undefined,
+  derived: RefDisplay | null | undefined,
+): RefDisplay | null {
+  if (stored && (stored.thumb_b64 || stored.abs_path || stored.key)) {
+    return stored;
+  }
+  return derived ?? stored ?? null;
+}
+
 function displayCharRef(beat: BgBeat): RefDisplay | null {
-  return beat._derived?.char_ref_display ?? beat.reference_image ?? null;
+  return displayPersistedRef(beat.reference_image, beat._derived?.char_ref_display);
 }
 
 function displayBgRef(beat: BgBeat, stillInsert: boolean): RefDisplay | null {
   if (stillInsert) {
-    return beat._derived?.still_scene_display ?? beat.bg_ref_image ?? null;
+    return displayPersistedRef(beat.bg_ref_image, beat._derived?.still_scene_display);
   }
-  return beat._derived?.bg_ref_display ?? beat.bg_ref_image ?? null;
+  return displayPersistedRef(beat.bg_ref_image, beat._derived?.bg_ref_display);
 }
 
 function displayStillScenePath(beat: BgBeat): string | null {
@@ -1479,9 +1490,20 @@ export function BgTab() {
       if (patch === null) {
         const next: BgBeat = { ...b, [refField]: null };
         next[lockField] = false;
+        if (refField === 'reference_image' && b._derived?.char_ref_display) {
+          next._derived = { ...(b._derived ?? {}), char_ref_display: null };
+        }
         return next;
       }
-      return { ...b, [refField]: patch, [lockField]: true };
+      const next: BgBeat = { ...b, [refField]: patch, [lockField]: true };
+      if (refField === 'reference_image') {
+        next._derived = { ...(b._derived ?? {}), char_ref_display: patch };
+      } else if (isStillInsertBeat(b)) {
+        next._derived = { ...(b._derived ?? {}), still_scene_display: patch };
+      } else {
+        next._derived = { ...(b._derived ?? {}), bg_ref_display: patch };
+      }
+      return next;
     }));
   };
 
@@ -1494,6 +1516,7 @@ export function BgTab() {
       ok: boolean;
       element_char_ref_ok?: boolean;
       element_char_ref_error?: string | null;
+      thumb_b64?: string;
     }>(activeScope.value, 'bg_update_beat', {
       beat_id: beatId, speaker: nextSpeaker,
     });
