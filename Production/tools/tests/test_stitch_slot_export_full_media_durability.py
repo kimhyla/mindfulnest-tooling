@@ -11,6 +11,7 @@ from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(TOOLS))
+sys.path.insert(0, str(TOOLS / "credentials_lib"))
 
 from server_handlers.stitch_editor import (  # noqa: E402
     STITCH_SLOT_EXPORT_FULL_MEDIA_V1,
