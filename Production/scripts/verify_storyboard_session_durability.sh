@@ -41,6 +41,7 @@ run "$SCRIPTS/verify_kling_canonical_prompt_shape_durability.sh"
 run "$SCRIPTS/verify_beatgen_per_event_sqlite_durability.sh"
 run "$SCRIPTS/verify_bg_scope_activation_cold_boot_durability.sh"
 run "$SCRIPTS/verify_bg_session_read_path_durability.sh"
+run "$SCRIPTS/verify_o3_trim_overlay_durability.sh"
 
 python3 -m pytest \
   "$ROOT/Production/tools/tests/test_stitch_audio_file_serve.py" \

@@ -79,14 +79,21 @@ def handle_event_create(h, body: dict) -> None:
     new_event_dir.mkdir(parents=True, exist_ok=False)
     from lib.event_library import ensure_event_library_dirs
     ensure_event_library_dirs(new_event_dir)
-    # Storyboard template — copy current event's storyboard if possible,
-    # else create minimal placeholder (lets future event_load satisfy
-    # the storyboard_v*_prod.html lookup).
+    # Storyboard template — prefer canonical deploy bundle (covers Event_7+ before
+    # next deploy fanout), else copy the serving event's storyboard HTML.
     try:
-        src_sb = h.app.storyboard_path
-        if src_sb.is_file():
-            import shutil as _shutil
-            _shutil.copy(src_sb, new_event_dir / src_sb.name)
+        import shutil as _shutil
+
+        canonical_sb = (
+            new_event_dir.parent / "tools/storyboard-v2/dist/index.html"
+        )
+        target_name = "storyboard_v59_prod.html"
+        if canonical_sb.is_file():
+            _shutil.copy(canonical_sb, new_event_dir / target_name)
+        else:
+            src_sb = h.app.storyboard_path
+            if src_sb.is_file():
+                _shutil.copy(src_sb, new_event_dir / src_sb.name)
     except Exception as _e:
         print(f"[event_create] storyboard copy skipped: {_e}", flush=True)
     # Init state files (production_state.json + production_spend.json).

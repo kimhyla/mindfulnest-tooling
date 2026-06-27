@@ -7,6 +7,48 @@ import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 
 const MIN_KEEP_S = 0.25;
 
+/** Overlay timeline: match what the operator sees in the video element. */
+export function resolveO3PlaybackDurationS(
+  sourceDurationS: number | null | undefined,
+  loadedDurationS: number | null | undefined,
+): number {
+  const src = sourceDurationS != null && sourceDurationS > 0 ? sourceDurationS : 0;
+  const loaded = loadedDurationS != null && loadedDurationS > 0 ? loadedDurationS : 0;
+  return Math.max(src, loaded);
+}
+
+/** Export/persist timeline: server ffprobe on canonical option.video_path. */
+export function resolveO3ExportDurationS(
+  sourceDurationS: number | null | undefined,
+  playbackDurationS: number,
+): number {
+  if (sourceDurationS != null && sourceDurationS > 0) return sourceDurationS;
+  return playbackDurationS > 0 ? playbackDurationS : 0;
+}
+
+/** Clamp keep handles into [0, duration] with ≥ minKeepS kept (fixes stale keepEnd > duration). */
+export function normalizeO3KeepWindow(
+  durationS: number,
+  keepStartS: number,
+  keepEndS: number,
+  minKeepS = MIN_KEEP_S,
+): { startS: number; endS: number } {
+  if (durationS <= 0) {
+    return {
+      startS: Math.max(0, keepStartS),
+      endS: Math.max(keepStartS, keepEndS),
+    };
+  }
+  const endHint = keepEndS > keepStartS + 0.001 ? keepEndS : durationS;
+  const endCap = Math.min(endHint, durationS);
+  const startS = Math.max(0, Math.min(keepStartS, endCap - minKeepS));
+  const endS = Math.max(startS + minKeepS, Math.min(endCap, durationS));
+  return {
+    startS: Math.round(startS * 100) / 100,
+    endS: Math.round(endS * 100) / 100,
+  };
+}
+
 /** Keep window must leave ≥ MIN_KEEP_S and fit inside the clip. */
 export function isValidO3KeepWindow(
   durationS: number,
@@ -69,10 +111,8 @@ export function BgO3CutOverlay({
     setDraft(null);
   }, [keepStartS, keepEndS, durationS]);
 
-  const display = draft ?? {
-    startS: keepStartS,
-    endS: keepEndS > keepStartS + 0.001 ? keepEndS : durationS,
-  };
+  const normalizedKeep = normalizeO3KeepWindow(durationS, keepStartS, keepEndS);
+  const display = draft ?? normalizedKeep;
   const hasKeep = display.endS > display.startS + MIN_KEEP_S - 0.001 && durationS > 0;
   const pct = (s: number) => (durationS > 0 ? (s / durationS) * 100 : 0);
   const keepLeft = pct(display.startS);
@@ -82,10 +122,7 @@ export function BgO3CutOverlay({
 
   const commitDraft = useCallback((startS: number, endS: number) => {
     if (durationS <= 0) return;
-    const clampedStart = Math.max(0, Math.min(durationS - MIN_KEEP_S, startS));
-    const clampedEnd = Math.max(clampedStart + MIN_KEEP_S, Math.min(durationS, endS));
-    const roundedStart = Math.round(clampedStart * 100) / 100;
-    const roundedEnd = Math.round(clampedEnd * 100) / 100;
+    const { startS: roundedStart, endS: roundedEnd } = normalizeO3KeepWindow(durationS, startS, endS);
     if (!isValidO3KeepWindow(durationS, roundedStart, roundedEnd)) {
       setDraft(null);
       onKeepRejected?.(

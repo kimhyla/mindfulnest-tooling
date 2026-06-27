@@ -32,7 +32,13 @@ import { InsertBeatModal, type InsertBeatPlanRow } from './InsertBeatModal';
 import { Spinner } from './ui/Spinner';
 import { Select } from './ui/Select';
 import { pushToast } from './ui/Toast';
-import { BgO3CutOverlay, isValidO3CutWindow } from './bg/BgO3CutOverlay';
+import {
+  BgO3CutOverlay,
+  isValidO3CutWindow,
+  normalizeO3KeepWindow,
+  resolveO3ExportDurationS,
+  resolveO3PlaybackDurationS,
+} from './bg/BgO3CutOverlay';
 import { resolveClipPlaybackTruth } from '../utils/playbackCache';
 import {
   forgetCutPreviewsForBeat,
@@ -4592,29 +4598,37 @@ function BgOptionTile({
   const showTrimControls = showNumericTrim && selected && hasClipVideo;
   const MIN_O3_CUT_S = 0.25;
   const isCutPreviewActive = !!previewUrl;
-  const rawDurationS = sourceDurationS ?? 0;
-  const durationS = rawDurationS;
-  const trimTruthReady = rawDurationS > 0;
+  const playbackDurationS = resolveO3PlaybackDurationS(sourceDurationS, loadedDuration);
+  const exportDurationS = resolveO3ExportDurationS(sourceDurationS, playbackDurationS);
+  const trimTruthReady = exportDurationS > 0 || playbackDurationS > 0;
   const savedKeepStartS = trimStartS > 0.009 ? trimStartS : 0;
-  const savedKeepEndS = durationS > 0
-    ? Math.max(savedKeepStartS + MIN_O3_CUT_S, durationS - (trimBackS > 0.009 ? trimBackS : 0))
-    : durationS;
-  const effectiveKeepStartS = pendingCut?.startS ?? savedKeepStartS;
-  const effectiveKeepEndS = pendingCut?.endS ?? savedKeepEndS;
+  const savedKeepEndRaw = exportDurationS > 0
+    ? Math.max(savedKeepStartS + MIN_O3_CUT_S, exportDurationS - (trimBackS > 0.009 ? trimBackS : 0))
+    : playbackDurationS;
+  const savedKeep = normalizeO3KeepWindow(
+    exportDurationS || playbackDurationS,
+    savedKeepStartS,
+    savedKeepEndRaw,
+  );
+  const pendingKeep = pendingCut && playbackDurationS > 0
+    ? normalizeO3KeepWindow(playbackDurationS, pendingCut.startS, pendingCut.endS)
+    : null;
+  const effectiveKeepStartS = pendingKeep?.startS ?? savedKeep.startS;
+  const effectiveKeepEndS = pendingKeep?.endS ?? savedKeep.endS;
   const cutDraftDirty = pendingCut !== null && (
-    Math.abs(pendingCut.startS - savedKeepStartS) > 0.009
-    || Math.abs(pendingCut.endS - savedKeepEndS) > 0.009
+    Math.abs((pendingKeep?.startS ?? pendingCut.startS) - savedKeep.startS) > 0.009
+    || Math.abs((pendingKeep?.endS ?? pendingCut.endS) - savedKeep.endS) > 0.009
   );
   const hasActiveCut = effectiveKeepEndS > effectiveKeepStartS + MIN_O3_CUT_S - 0.01;
   const hasSavedCut = savedKeepStartS > 0.009 || trimBackS > 0.05;
   const cutPreviewTrimBackS = () => {
-    const dur = rawDurationS;
+    const dur = exportDurationS || playbackDurationS;
     if (dur <= 0) return 0;
     return Math.max(0, dur - effectiveKeepEndS);
   };
   // Magic-on-video override must win over cached Kling playback — same clip the beat exports.
   const activeVideoUrl = previewUrl ?? overrideVideoUrl ?? playbackUrl ?? canonicalVideoUrl;
-  const overlayDurationS = isCutPreviewActive ? 0 : rawDurationS;
+  const overlayDurationS = isCutPreviewActive ? 0 : playbackDurationS;
 
   useEffect(() => {
     if (!selected || !option.video_path || previewUrl) {
@@ -4760,16 +4774,17 @@ function BgOptionTile({
 
   const persistCut = async (keepStartS: number, keepEndS: number): Promise<boolean> => {
     if (!selected) return false;
-    const validateDuration = rawDurationS;
+    const validateDuration = exportDurationS || playbackDurationS;
     if (validateDuration <= 0) {
       pushToast({
         kind: 'info',
-        message: 'Loading clip duration from server — try again in a moment',
+        message: 'Loading clip duration — try again in a moment',
         source: 'bg-o3-cut-duration-loading',
       });
       return false;
     }
-    if (!isValidO3CutWindow(validateDuration, keepStartS, keepEndS)) {
+    const { startS, endS } = normalizeO3KeepWindow(validateDuration, keepStartS, keepEndS);
+    if (!isValidO3CutWindow(validateDuration, startS, endS)) {
       pushToast({
         kind: 'info',
         message: validateDuration <= MIN_O3_CUT_S * 2
@@ -4779,12 +4794,12 @@ function BgOptionTile({
       });
       return false;
     }
-    const trimBack = Math.max(0, validateDuration - keepEndS);
+    const trimBack = Math.max(0, validateDuration - endS);
     setCutBusy(true);
     try {
       const applied = await onApplyO3Cut(
         optionIndex,
-        keepStartS,
+        startS,
         trimBack > 0.009 ? trimBack : null,
         cutTargetOpts,
       );
@@ -4795,7 +4810,7 @@ function BgOptionTile({
       }
       const raw = applied.rawDurationS ?? validateDuration;
       const eff = applied.effectiveDurationS;
-      const shortening = keepStartS > 0.05 || trimBack > 0.05;
+      const shortening = startS > 0.05 || trimBack > 0.05;
       if (shortening && eff != null && eff >= raw - 0.05) {
         return false;
       }
@@ -4810,18 +4825,19 @@ function BgOptionTile({
     if (!trimTruthReady) {
       pushToast({
         kind: 'info',
-        message: 'Loading clip duration from server — try Preview Cut again shortly',
+        message: 'Loading clip duration — try Preview Cut again shortly',
         source: 'bg-o3-cut-preview-loading',
       });
       return;
     }
     setCutBusy(true);
     try {
-      const validateDuration = rawDurationS;
-      const trimBack = Math.max(0, validateDuration - effectiveKeepEndS);
+      const validateDuration = exportDurationS || playbackDurationS;
+      const { startS, endS } = normalizeO3KeepWindow(validateDuration, effectiveKeepStartS, effectiveKeepEndS);
+      const trimBack = Math.max(0, validateDuration - endS);
       const applied = await onApplyO3Cut(
         optionIndex,
-        effectiveKeepStartS,
+        startS,
         trimBack > 0.009 ? trimBack : null,
         { previewOnly: true, ...cutTargetOpts },
       );
@@ -4830,7 +4846,7 @@ function BgOptionTile({
       }
       const raw = applied.rawDurationS ?? validateDuration;
       const eff = applied.effectiveDurationS;
-      const shortening = effectiveKeepStartS > 0.05 || trimBack > 0.05;
+      const shortening = startS > 0.05 || trimBack > 0.05;
       if (shortening && eff != null && eff >= raw - 0.05) {
         pushToast({
           kind: 'error',
@@ -4889,7 +4905,7 @@ function BgOptionTile({
   };
 
   const initCutFromDuration = () => {
-    const clipDur = rawDurationS || durationS;
+    const clipDur = exportDurationS || playbackDurationS;
     if (clipDur <= MIN_O3_CUT_S * 2) {
       pushToast({
         kind: 'info',
@@ -5194,7 +5210,7 @@ function BgOptionTile({
                   type="button"
                   class="mn-btn mn-btn-small"
                   data-testid={`bg-o3-init-cut-${beatIndex}-${optionIndex}`}
-                  disabled={cutBusy || rawDurationS <= MIN_O3_CUT_S * 2}
+                  disabled={cutBusy || (exportDurationS || playbackDurationS) <= MIN_O3_CUT_S * 2}
                   onClick={(e) => {
                     e.stopPropagation();
                     initCutFromDuration();
