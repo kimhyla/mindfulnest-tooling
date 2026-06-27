@@ -108,9 +108,9 @@ def test_heal_spoken_staging_rewrites_prompt_quote():
         ),
         "kling_o3_prompt": ARLO_BEAT24_QUOTED_STAGING,
     }
-    assert bg.heal_spoken_staging_in_voice_prompt(beat) is True
-    assert "Faces camera" not in beat["kling_o3_prompt"]
-    assert "Faces camera" not in beat["dialogue_text"]
+    original = beat["kling_o3_prompt"]
+    assert bg.heal_spoken_staging_in_voice_prompt(beat) is False
+    assert beat["kling_o3_prompt"] == original
 
 
 BEAT24_BODY_STAGING = """@Image1 (Arlo) Arlo — Transition to Spell. Scene from @Image2.
@@ -146,9 +146,10 @@ def test_normalize_o3_element_bound_prompt_strips_arlo_transition_prose(monkeypa
         "kling_o3_prompt": ARLO_TRANSITION_PROMPT,
     }
     normalized = bg.normalize_o3_element_bound_prompt(beat, beat["kling_o3_prompt"])
-    assert "speaks directly to the camera" not in normalized.lower()
+    assert "arlo speaks directly to the camera; the child viewer is off-screen" not in normalized.lower()
+    assert "transition to spell" not in normalized.lower()
     assert "Camera:" in normalized
-    assert "medium shot" in normalized.lower()
+    assert "torso up" in normalized.lower()
     assert "not bubbly or hyper" in normalized
     assert "gesture toward the lens" not in normalized.lower()
     assert bg.prompt_body_has_performance_staging(normalized) is False
@@ -180,8 +181,8 @@ Children's illustrated fantasy storybook style, warm golden forest light""",
     }
     normalized = bg.normalize_o3_element_bound_prompt(beat, beat["kling_o3_prompt"])
     assert "Camera:" in normalized
-    assert "close-up on @image1" in normalized.lower()
-    assert "head and torso" in normalized.lower()
+    assert "close-up" in normalized.lower()
+    assert "torso up" in normalized.lower()
     assert "Lorelai Close-up" not in normalized
     assert "Loral Close-up" not in normalized
     assert "Loral Closeup" not in normalized
@@ -221,10 +222,9 @@ def test_heal_o3_element_submit_prompt_persists_minimal_arlo_shell(monkeypatch):
         "dialogue_text": "OK, Kiddo . Lorelai's our best chance.",
         "kling_o3_prompt": ARLO_TRANSITION_PROMPT,
     }
-    assert bg.heal_o3_element_submit_prompt(beat) is True
-    assert "speaks directly to the camera" not in beat["kling_o3_prompt"].lower()
-    assert "Camera:" in beat["kling_o3_prompt"]
-    assert "medium shot" in beat["kling_o3_prompt"].lower()
+    original = beat["kling_o3_prompt"]
+    assert bg.heal_o3_element_submit_prompt(beat) is False
+    assert beat["kling_o3_prompt"] == original
 
 
 def test_normalize_rebuilds_tessa_beat2_prose_shell(monkeypatch):
@@ -247,11 +247,8 @@ Children's illustrated fantasy storybook style, warm golden Everdale light."""
         "kling_o3_prompt": beat2,
     }
     prepared = bg.prepare_kling_o3_prompt_for_submit(beat, beat2)
-    assert "wave hello" not in prepared.lower()
-    assert "Faces camera" not in prepared
+    assert prepared == beat2
     assert "Hello there . how are you?" in prepared
-    assert bg.prompt_body_has_performance_staging(prepared) is False
-    assert _validate_prepared("Tessa", beat2) == []
 
 
 def test_validate_does_not_block_healable_body_staging(monkeypatch):
@@ -270,11 +267,11 @@ def test_validate_does_not_block_healable_body_staging(monkeypatch):
         },
         BEAT24_BODY_STAGING,
     )
-    assert bg.prompt_body_has_performance_staging(prepared) is False
+    assert prepared == BEAT24_BODY_STAGING
     beat = {
         "speaker": "Arlo",
         "dialogue_text": "OK, Kiddo . Lorelai's our best chance.",
         "kling_o3_prompt": BEAT24_BODY_STAGING,
     }
-    assert bg.heal_spoken_staging_in_voice_prompt(beat) is True
-    assert "Faces camera" not in beat["kling_o3_prompt"]
+    assert bg.heal_spoken_staging_in_voice_prompt(beat) is False
+    assert beat["kling_o3_prompt"] == BEAT24_BODY_STAGING

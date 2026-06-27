@@ -35,6 +35,7 @@ class KlingStartendImportTests(unittest.TestCase):
         import kling_startend_pipeline as mod  # noqa: F401
         self.assertTrue(hasattr(mod, "main"))
         self.assertTrue(hasattr(mod, "ensure_min_dimensions"))
+        self.assertTrue(hasattr(mod, "ensure_avatar_still_dimensions"))
         self.assertTrue(hasattr(mod, "flux_kontext_generate_end_frame"))
         self.assertTrue(hasattr(mod, "kling_startend_submit"))
 

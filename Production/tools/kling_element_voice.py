@@ -333,8 +333,8 @@ def ensure_voice_sample(
             ):
                 return dest
 
-        # Try arc_1_v3 source copy (non-Chipper legacy path only)
-        if not cfg.get("voice_sample_lock"):
+        # Legacy arc MP3 copy — roster characters must use ElevenLabs + voice_sample_lock.
+        if not cfg.get("voice_sample_lock") and char_name not in ELEVENLABS_VOICE_ROSTER:
             arc_rel = ARC1_SAMPLE_SOURCES.get(char_name)
             if arc_rel:
                 src = dropbox_root() / arc_rel

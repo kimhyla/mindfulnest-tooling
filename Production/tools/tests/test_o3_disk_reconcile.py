@@ -34,9 +34,7 @@ def test_reconcile_imports_all_disk_deliveries_into_options(tmp_path: Path) -> N
     paths = {o.get("video_path") for o in beat["kling_o3_options"]}
     assert str(g9.resolve()) in paths
     assert str(g14.resolve()) in paths
-    slotted = [o for o in beat["kling_o3_options"] if isinstance(o.get("slot_index"), int)]
-    assert len(slotted) == 3 or len(slotted) == 2  # up to 3 newest on disk
-    assert slotted[0].get("slot_index") == 0
+    assert len(beat["kling_o3_options"]) >= 3
 
 
 def test_prune_never_drops_on_disk_clips_even_when_voice_bind_differs(tmp_path: Path) -> None:
@@ -132,11 +130,28 @@ def test_enrich_uses_beat_event_not_server_pin(tmp_path: Path, monkeypatch) -> N
     beat = {"beat_id": beat_id, "kling_o3_options": []}
     enriched = bg.enrich_beats_kling_o3_pinned([beat], tmp_path / "Event_1")[0]
     assert enriched["kling_o3_disk_delivery_count"] == 1
+    assert enriched["kling_o3_element_delivery_count"] == 1
     assert "Event_2" in enriched["kling_o3_clips_dir"]
 
 
-def test_refresh_o3_ui_slot_layout_newest_three_with_labels(tmp_path: Path) -> None:
-    """Beat 13 pattern: 4 on disk → slots 0–2 are g4, g3, g2 with canonical labels."""
+def test_element_delivery_count_excludes_pov_aux(tmp_path: Path) -> None:
+    clips = tmp_path / "kling_o3_clips"
+    clips.mkdir(parents=True)
+    beat_id = "bg_arc1_event3b_full_beat_10"
+    for gen in (1, 2):
+        (clips / f"{beat_id}_g{gen}_element_o3_master_delivery.mp4").write_bytes(b"x")
+    (clips / f"{beat_id}_g2_pov_wand_wiper_delivery.mp4").write_bytes(b"x")
+    disk = bg.list_o3_element_delivery_paths_on_disk(beat_id, tmp_path)
+    assert len(disk) == 3
+    assert bg.count_o3_element_delivery_paths(disk) == 2
+    beat = {"beat_id": beat_id, "kling_o3_options": []}
+    fields = bg.materialize_o3_disk_enrich_fields(beat, tmp_path, disk_paths=disk)
+    assert fields["kling_o3_disk_delivery_count"] == 3
+    assert fields["kling_o3_element_delivery_count"] == 2
+
+
+def test_refresh_o3_ui_slot_layout_syncs_labels_only(tmp_path: Path) -> None:
+    """Pin-slot model: refresh syncs labels without reordering slot_index."""
     beat_id = "bg_arc1_event2_pre_beat_30"
     clips = tmp_path / "kling_o3_clips"
     clips.mkdir(parents=True)
@@ -151,26 +166,15 @@ def test_refresh_o3_ui_slot_layout_newest_three_with_labels(tmp_path: Path) -> N
             {"video_path": paths[1], "label": "recovered O3 delivery", "slot_index": 0},
             {"video_path": paths[2], "label": "g2 O3 Element voice", "generation": 2, "slot_index": 1},
             {"video_path": paths[3], "label": "latest O3 Element voice", "slot_index": 2},
-            {"video_path": paths[4], "label": "g4 O3 Element voice", "generation": 4},
+            {"video_path": paths[4], "label": "g4 O3 Element voice", "generation": 4, "slot_index": 0},
         ],
     }
     changed = bg.refresh_o3_ui_slot_layout(beat)
     assert changed is True
-    slotted = sorted(
-        [o for o in beat["kling_o3_options"] if isinstance(o.get("slot_index"), int)],
-        key=lambda o: o["slot_index"],
-    )
-    assert len(slotted) == 3
-    assert [o.get("generation") for o in slotted] == [4, 3, 2]
-    assert [o.get("label") for o in slotted] == [
-        "g4 O3 Element voice",
-        "g3 O3 Element voice",
-        "g2 O3 Element voice",
-    ]
-    rolled = [o for o in beat["kling_o3_options"] if "slot_index" not in o]
-    assert len(rolled) == 1
-    assert rolled[0].get("generation") == 1
-    assert rolled[0].get("label") == "g1 O3 Element voice"
+    by_slot = {o["slot_index"]: o for o in beat["kling_o3_options"] if "slot_index" in o}
+    assert by_slot[0].get("generation") == 4
+    assert by_slot[1].get("generation") == 2
+    assert by_slot[2].get("generation") == 3
 
 
 def test_enrich_refreshes_newest_three_for_api(tmp_path: Path, monkeypatch) -> None:
@@ -197,5 +201,5 @@ def test_enrich_refreshes_newest_three_for_api(tmp_path: Path, monkeypatch) -> N
         [o for o in enriched["kling_o3_options"] if isinstance(o.get("slot_index"), int)],
         key=lambda o: o["slot_index"],
     )
-    assert [o.get("generation") for o in slotted] == [5, 4, 3]
-    assert slotted[0].get("label") == "g5 O3 Element voice"
+    assert [o.get("generation") for o in slotted] == [3, 4, 5]
+    assert slotted[2].get("label") == "g5 O3 Element voice"

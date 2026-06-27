@@ -73,6 +73,7 @@ class TestIntroDefaultWhoosh(unittest.TestCase):
         from server_handlers.stitch_editor import ensure_stitch_intro_default_whoosh_cue
 
         h = MagicMock()
+        h._ffprobe_duration_ms.return_value = 3104
         slot = {
             "video_path": "Production/Event_1/intro.mp4",
             "video_dur_ms": 66000,

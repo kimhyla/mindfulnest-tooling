@@ -107,6 +107,15 @@ def _from_env():
             os.environ.get("RAILWAY_API_TOKEN")
             or os.environ.get("RAILWAY_TOKEN", "")
         ),
+        "r2_access_key_id": os.environ.get("R2_ACCESS_KEY_ID", ""),
+        "r2_secret_access_key": os.environ.get("R2_SECRET_ACCESS_KEY", ""),
+        "r2_account_id": os.environ.get("R2_ACCOUNT_ID", ""),
+        "r2_bucket_name": os.environ.get("R2_BUCKET_NAME", ""),
+        "r2_cdn_base_url": (
+            os.environ.get("MN_R2_CDN_BASE_URL")
+            or os.environ.get("R2_CDN_BASE_URL")
+            or "https://cdn.mindfulnest.app"
+        ),
     }
 
 
@@ -272,6 +281,18 @@ def _parse_keys_file(content):
         elif "railway" in service:
             if "api token" in cred_type or "token" in cred_type:
                 creds["railway_token"] = value
+
+        elif "cloudflare" in service and "r2" in service:
+            if "secret" in cred_type:
+                creds["r2_secret_access_key"] = value
+            elif "access key" in cred_type:
+                creds["r2_access_key_id"] = value
+            elif "account" in cred_type:
+                creds["r2_account_id"] = value
+            elif "bucket" in cred_type:
+                creds["r2_bucket_name"] = value
+            elif "cdn" in cred_type or "public base" in cred_type:
+                creds["r2_cdn_base_url"] = value
 
     # Ensure Directus URL has a default if not found in notes
     if "directus_url" not in creds:

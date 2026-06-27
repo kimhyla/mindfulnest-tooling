@@ -559,6 +559,8 @@ def step_4_faststart_remux(raw_out_path, final_out_path) -> None:
             str(raw_out_path),
             "-c",
             "copy",
+            "-avoid_negative_ts",
+            "make_zero",
             "-movflags",
             "+faststart",
             str(final_out_path),

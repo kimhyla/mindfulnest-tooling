@@ -27,6 +27,8 @@ export interface SfxCue {
   volume: number;
   fadein_ms: number;
   fadeout_ms: number;
+  /** Canonical auto-placed tail SFX (intro whoosh, phase boundary magic/wind). */
+  auto_default?: boolean;
 }
 
 export interface SfxCuePopoverProps {

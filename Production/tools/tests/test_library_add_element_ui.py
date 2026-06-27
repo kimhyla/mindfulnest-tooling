@@ -13,6 +13,7 @@ BG = TOOLS / "server_handlers" / "background.py"
 def test_library_element_pose_util_exported():
     text = UTIL.read_text(encoding="utf-8")
     assert "export const ELEMENT_SPEAKERS" in text
+    assert "'Oliver'" in text
     assert "export function libraryItemCanAddToElement" in text
     assert "still_delivery" in text
     assert "canonical_image" in text
@@ -42,7 +43,7 @@ def test_library_add_element_pose_binds_prod_root_via_init_bg_paths():
     text = BG.read_text(encoding="utf-8")
     block = text.split("def handle_bg_add_element_pose")[1].split("\ndef handle_bg_reorder_beats")[0]
     assert "_prod_root" not in block
-    assert "init_bg_paths(h.app.event_dir)" in block
+    assert "rebind_bg_paths_from_app(h.app)" in block
 
 
 def test_library_element_pose_classification_rules():

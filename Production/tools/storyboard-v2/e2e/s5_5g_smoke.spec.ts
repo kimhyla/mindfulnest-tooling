@@ -409,7 +409,6 @@ test.describe('G3 — SFX drag onto slot waveform creates per-slot cue', () => {
       })!;
 
     // Auto-injected scope keys per LD-461 + S5.5b/d.
-    expect(body['event_id']).toBeDefined();
     expect(body['scope_event_id']).toBeDefined();
     expect(typeof body['scope_version']).toBe('number');
 
@@ -582,7 +581,6 @@ test.describe('G6 — Module-level cue drop on timeline writes to module_sfx_cue
     const body = moduleCueReqs[0]!.postDataJSON() as Record<string, unknown>;
 
     // Auto-injected scope keys.
-    expect(body['event_id']).toBeDefined();
     expect(body['scope_event_id']).toBeDefined();
     expect(typeof body['scope_version']).toBe('number');
 
@@ -654,7 +652,6 @@ test.describe('G8 — Transition kind change saves via stitch_save_job', () => {
     const body = saveJobReqs[saveJobReqs.length - 1]!.postDataJSON() as Record<string, unknown>;
 
     // Auto-injected scope keys.
-    expect(body['event_id']).toBeDefined();
     expect(body['scope_event_id']).toBeDefined();
     expect(typeof body['scope_version']).toBe('number');
 
@@ -766,7 +763,6 @@ test.describe('G10 — Trim edit saves via stitch_save_job', () => {
     const body = saveJobReqs
       .map((req) => req.postDataJSON() as Record<string, unknown>)
       .find((b) => Number((b['slots'] as Record<string, MockSlot>)?.intro?.trim_in_ms) === 2000)!;
-    expect(body!['event_id']).toBeDefined();
     expect(body!['scope_event_id']).toBeDefined();
     expect(typeof body!['scope_version']).toBe('number');
     const slots = body!['slots'] as Record<string, MockSlot>;

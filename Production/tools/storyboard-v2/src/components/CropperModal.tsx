@@ -16,7 +16,7 @@ import { Modal } from './ui/Modal';
 import { Spinner } from './ui/Spinner';
 import { pushToast } from './ui/Toast';
 import { CropperCanvas, type CropperCanvasHandle } from './CropperCanvas';
-import { flattenLibraryResponse } from './LibraryPanel';
+import { flattenLibraryResponse, libraryThumbSrc } from './LibraryPanel';
 
 export interface CropperModalState {
   open: boolean;
@@ -237,7 +237,7 @@ export function CropperModal({ state, onClose, onSaved }: CropperModalProps) {
             <span class="mn-dim" style="font-size:11px;padding:4px 8px">Library empty</span>
           ) : (
             libItems.map((it, i) => {
-              const src = it.thumb_b64 ?? it.thumb_url;
+              const src = libraryThumbSrc(it);
               const label = it.display_name ?? it.filename ?? it.key ?? `item-${i}`;
               const loadSrc = it.abs_path
                 ? `${SERVER_BASE}/api/cr/full?abs_path=${encodeURIComponent(it.abs_path)}`

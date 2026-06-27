@@ -8,33 +8,83 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from kling_element_voice import ELEVENLABS_VOICE_ROSTER, MIN_SAMPLE_S, MAX_SAMPLE_S
 
+# eleven_v3 emotion tags use comma-separated descriptors: [warm, gentle]
+_ELEVEN_V3_EMOTION_TAG_RE = re.compile(r"\[[^\]]+,\s*[^\]]+\]")
+
 # Representative Beat Gen lines for create-voice (5–30s target). Not calm intros.
+# New characters: every line SHOULD include eleven_v3 emotion tags ([warm, gentle]).
 DEFAULT_ELEMENT_SAMPLE_LINES: dict[str, list[str]] = {
     "Chipper": [
-        "Ready? Just focus on the Teleport Glass. Here we go!",
-        "Alright Kiddo. Let's teleport to the Wizarding School and see.",
-        "Well, I know some super smart people who have lots of faith in this kid.",
+        "[warm, calm] Ready? Just focus on the Teleport Glass. Here we go!",
+        "[encouraging, steady] Alright Kiddo. Let's teleport to the Wizarding School and see.",
+        "[confident, warm] Well, I know some super smart people who have lots of faith in this kid.",
     ],
     "Arlo": [
-        "Well maybe we can help. I'm Arlo, assistant to the Great Wizard.",
-        "Alright Kiddo. I bet the Great Wizard can teach you a magic spell to help Tessa.",
-        "We just have to teleport to the Wizarding School for your first lesson.",
+        "[warm, helpful] Well maybe we can help. I'm Arlo, assistant to the Great Wizard.",
+        "[upbeat, reassuring] Alright Kiddo. I bet the Great Wizard can teach you a magic spell to help Tessa.",
+        "[steady, inviting] We just have to teleport to the Wizarding School for your first lesson.",
     ],
     "Tessa": [
-        "Oh ... hi. I'm Tessa.",
-        "....that's awesome",
-        "Well.... Do you think she can really help?",
+        "[shy, gentle] Oh ... hi. I'm Tessa.",
+        "[soft, amazed] ....that's awesome",
+        "[wary, hopeful] Well.... Do you think she can really help?",
     ],
     "Lorelai": [
-        "Fascinating! The patterns match exactly!",
-        "Wait — look at this! The nest stones are glowing!",
-        "I think I know what the Great Wizard meant!",
+        "[excited, scholarly] Fascinating! The patterns match exactly!",
+        "[delighted, breathless] Wait — look at this! The nest stones are glowing!",
+        "[confident, warm] I think I know what the Great Wizard meant!",
+    ],
+    "Luna": [
+        "[excited, scholarly] Fascinating! The patterns match exactly!",
+        "[curious, bright] Wait — look at this inscription!",
+        "[warm, eager] I think I know what the Great Wizard meant!",
+    ],
+    "Ember": [
+        "[warm, gentle] Come here — you don't have to do this alone.",
+        "[curious, friendly] Hello there.",
+        "[wonder-struck, breathless] I'm Ember — I'm from Foxhollow, down in the valley. [pause] What are you guys doing?",
+    ],
+    "Bramble": [
+        "[steady, reassuring] Steady now — I've got you.",
+        "[warm, calm] Easy does it — we'll figure this out together.",
+        "[gentle, grounded] You're safe here with us now.",
+    ],
+    "Benson": [
+        "[warm, gentle] It's going to be all right, little one.",
+        "[soft, nurturing] You're safe here with us now.",
+        "[calm, reassuring] Take a deep breath — we'll figure this out together.",
+    ],
+    "Bork": [
+        "[formal, authoritative] By order of the King, this matter is closed.",
+        "[stern, clear] The King's decree stands — there will be no further debate.",
+        "[measured, official] Proceed as instructed and keep the peace.",
+    ],
+    "Oliver": [
+        "[warm, gentle] Something wonderful is waiting for us.",
+        "[soft, welcoming] The forest has been waiting for someone like you.",
+        "[reverent, warm] This wand chooses its keeper — and it chose you.",
+    ],
+    "Grizzle": [
+        "[guarded, cool] Nothing to see here. Move along.",
+        "[measured, sly] This area is restricted by order of the King.",
+        "[firm, dismissive] Keep walking and don't ask questions.",
+    ],
+    "Willow": [
+        "[serene, warm] The forest remembers what you forget.",
+        "[soft, prophetic] Listen closely, child.",
+        "[mystical, gentle] The old magic still flows through these trees.",
+    ],
+    "The King": [
+        "[regal, warm] Everdale has need of you.",
+        "[commanding, kind] The forest calls to those who listen.",
+        "[measured, inviting] Will you answer when the kingdom asks?",
     ],
 }
 
@@ -234,6 +284,91 @@ def validate_lock_before_register(char_name: str, cfg: dict) -> list[str]:
                 "element_sample_lines — Kim's pick may not match create-voice MP3."
             )
 
+    return errors
+
+
+def sample_lines_have_emotion_tags(lines: list[str]) -> bool:
+    """True when at least one line has an eleven_v3 emotion tag (comma inside brackets)."""
+    return any(_ELEVEN_V3_EMOTION_TAG_RE.search(str(line)) for line in lines)
+
+
+def validate_o3_delivery_lock(char_name: str) -> list[str]:
+    """Layer 1: Beat Gen O3 delivery phrase must exist before WaveSpeed spend."""
+    from kling_o3_prompt import delivery_for_speaker
+
+    if delivery_for_speaker(char_name):
+        return []
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", char_name.strip()).strip("_").upper()
+    return [
+        f"{char_name}: no O3 delivery lock — add KLING_O3_{slug}_VOICE_DELIVERY and "
+        f"'_DELIVERY_BY_SPEAKER[\"{char_name}\"]' in Production/tools/kling_o3_prompt.py "
+        "(see BEAT_GEN_CHARACTER_ONBOARDING_v1.md step 4a)."
+    ]
+
+
+def has_voice_onboarding_waiver(cfg: dict) -> bool:
+    """Explicit opt-out for emotion-tag gate (narrator-only / non-Element edge cases)."""
+    waiver = cfg.get("voice_onboarding_waiver")
+    if waiver is True:
+        return True
+    return bool(str(waiver or "").strip())
+
+
+def validate_emotion_tags_in_sample_lines(char_name: str, cfg: dict) -> list[str]:
+    """Layer 2: create-voice sample lines need eleven_v3 emotional direction tags."""
+    if has_voice_onboarding_waiver(cfg):
+        return []
+    lines = resolve_element_sample_lines(char_name, cfg)
+    if sample_lines_have_emotion_tags(lines):
+        return []
+    return [
+        f"{char_name}: element_sample_lines need eleven_v3 emotion tags like [warm, gentle] "
+        "on at least one line (see VOICE_ROSTER_LOCKED_v2.md and onboarding step 4b), "
+        "or set voice_onboarding_waiver on the character entry."
+    ]
+
+
+def is_first_voice_registration(cfg: dict) -> bool:
+    """True when character has never completed Element + create-voice registration."""
+    return not cfg.get("element_id") or (cfg.get("status") or "").strip().lower() != "active"
+
+
+def validate_voice_onboarding_before_spend(
+    char_name: str,
+    cfg: dict,
+    *,
+    require_emotion_tags: bool = True,
+) -> list[str]:
+    """All gates that must pass before setup_all_kling_character_voices spends credits."""
+    errors = list(validate_lock_before_register(char_name, cfg))
+    errors.extend(validate_o3_delivery_lock(char_name))
+    if require_emotion_tags:
+        errors.extend(validate_emotion_tags_in_sample_lines(char_name, cfg))
+    return errors
+
+
+def validate_roster_voice_onboarding_contract() -> list[str]:
+    """CI/deploy: every ElevenLabs roster character has Layer 1 + tagged Layer 2 defaults."""
+    from kling_o3_prompt import delivery_for_speaker
+
+    errors: list[str] = []
+    for char_name in sorted(ELEVENLABS_VOICE_ROSTER):
+        if not delivery_for_speaker(char_name):
+            errors.append(
+                f"{char_name}: missing O3 delivery lock in kling_o3_prompt.py "
+                "(BEAT_GEN_CHARACTER_ONBOARDING_v1.md step 4a)"
+            )
+        defaults = DEFAULT_ELEMENT_SAMPLE_LINES.get(char_name) or []
+        if not defaults:
+            errors.append(
+                f"{char_name}: missing DEFAULT_ELEMENT_SAMPLE_LINES in kling_voice_sample_lock.py "
+                "(step 4b)"
+            )
+        elif not sample_lines_have_emotion_tags(defaults):
+            errors.append(
+                f"{char_name}: DEFAULT_ELEMENT_SAMPLE_LINES lack eleven_v3 emotion tags "
+                "(step 4b)"
+            )
     return errors
 
 

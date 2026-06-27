@@ -150,7 +150,7 @@ test.describe('AF.1 — StitcherTab mutation channel (F-S2-001)', () => {
     // Auto-injected scope keys per LD-461 (non-BG → event_id) + S5.5b/d
     // (scope_target_video / scope_video_role + scope_version + scope_event_id).
     const body = previewReqs[0]!.postDataJSON() as Record<string, unknown>;
-    expect(body['event_id']).toBeDefined();
+    expect(body['scope_event_id']).toBeDefined();
     expect(body['scope_event_id']).toBeDefined();
     expect(body['scope_target_video']).toBe('intro');
     expect(body['scope_video_role']).toBe('intro');
@@ -170,11 +170,28 @@ test.describe('AF.1 — StitcherTab mutation channel (F-S2-001)', () => {
     await page.route('**/api/state/snapshot', async (r) => {
       await r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
     });
-    await page.route('**/api/stitch_editor/bake', async (r) => {
+    await page.route('**/api/stitch_editor/bake/status**', async (r) => {
       await r.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ ok: true, bake_path: '/abs/baked.mp4' }),
+        body: JSON.stringify({
+          ok: true,
+          job_id: 'test-bake-job',
+          status: 'done',
+          result: { ok: true, bake_path: '/abs/baked.mp4', canonical_path: '/abs/baked.mp4' },
+        }),
+      });
+    });
+    await page.route('**/api/stitch_editor/bake', async (r) => {
+      await r.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          job_id: 'test-bake-job',
+          status: 'queued',
+          submitted: true,
+        }),
       });
     });
 
@@ -192,7 +209,7 @@ test.describe('AF.1 — StitcherTab mutation channel (F-S2-001)', () => {
     expect(tSnap).toBeLessThanOrEqual(tBake);
 
     const body = bakeReqs[0]!.postDataJSON() as Record<string, unknown>;
-    expect(body['event_id']).toBeDefined();
+    expect(body['scope_event_id']).toBeDefined();
     expect(body['scope_event_id']).toBeDefined();
     expect(body['scope_target_video']).toBe('intro');
     expect(body['scope_video_role']).toBe('intro');
@@ -273,7 +290,7 @@ test.describe('AF.1 — StitcherTab mutation channel (F-S2-001)', () => {
     expect(tSnap).toBeLessThanOrEqual(tSave);
 
     const body = saveJobReqs[ambientSaveIdx]!.postDataJSON() as Record<string, unknown>;
-    expect(body['event_id']).toBeDefined();
+    expect(body['scope_event_id']).toBeDefined();
     expect(body['scope_event_id']).toBeDefined();
     expect(body['scope_target_video']).toBe('intro');
     expect(body['scope_video_role']).toBe('intro');
@@ -336,6 +353,18 @@ test.describe('AF.1 — StitcherTab mutation channel (F-S2-001)', () => {
       await r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
     });
     let bakeCount = 0;
+    await page.route('**/api/stitch_editor/bake/status**', async (r) => {
+      await r.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          job_id: 'retry-bake-job',
+          status: 'done',
+          result: { ok: true, bake_path: '/abs/baked.mp4', canonical_path: '/abs/baked.mp4' },
+        }),
+      });
+    });
     await page.route('**/api/stitch_editor/bake', async (r) => {
       bakeCount += 1;
       if (bakeCount === 1) {
@@ -346,9 +375,14 @@ test.describe('AF.1 — StitcherTab mutation channel (F-S2-001)', () => {
         });
       } else {
         await r.fulfill({
-          status: 200,
+          status: 202,
           contentType: 'application/json',
-          body: JSON.stringify({ ok: true, bake_path: '/abs/baked.mp4' }),
+          body: JSON.stringify({
+            ok: true,
+            job_id: 'retry-bake-job',
+            status: 'queued',
+            submitted: true,
+          }),
         });
       }
     });
@@ -429,7 +463,7 @@ test.describe('AF.2 — VideoSelector mutation channel (F-S2-002)', () => {
 
     const body = setActiveReqs[0]!.postDataJSON() as Record<string, unknown>;
     // video_set_active is non-BG → scopeKey='event_id' per LD-461.
-    expect(body['event_id']).toBeDefined();
+    expect(body['scope_event_id']).toBeDefined();
     expect(body['scope_event_id']).toBeDefined();
     expect(body['scope_target_video']).toBeDefined();
     expect(body['scope_video_role']).toBeDefined();
@@ -470,7 +504,7 @@ test.describe('AF.2 — VideoSelector mutation channel (F-S2-002)', () => {
     expect(tSnap).toBeLessThanOrEqual(tCreate);
 
     const body = createReqs[0]!.postDataJSON() as Record<string, unknown>;
-    expect(body['event_id']).toBeDefined();
+    expect(body['scope_event_id']).toBeDefined();
     expect(body['scope_event_id']).toBeDefined();
     expect(body['scope_target_video']).toBeDefined();
     expect(body['scope_video_role']).toBeDefined();

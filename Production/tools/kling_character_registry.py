@@ -41,6 +41,7 @@ _SPEAKER_REGISTRY_ALIAS: dict[str, str] = {
     "luna": "Lorelai",
     "lorelai": "Lorelai",
     "laurel": "Lorelai",
+    "loral": "Lorelai",
 }
 
 # Kling Element display name "Loral" avoids Laurel/Lorelai naming conflicts and TTS drift.
@@ -142,6 +143,26 @@ def resolve_registry_key(speaker: str) -> str | None:
         if cfg is entry:
             return key
     return None
+
+
+def normalize_beat_speaker_for_sidecar(speaker: str) -> str:
+    """Canonical sidecar ``speaker`` — registry key, never Kling display name.
+
+    Beat sidecar stores ``Lorelai``; Kling prompts/Elements use ``Loral``.
+    Display names must not reach TTS (_resolve_voice_profile) or sidecar rows.
+    """
+    raw = (speaker or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("[") and raw.endswith("]"):
+        return raw
+    reg_key = resolve_registry_key(raw)
+    if reg_key:
+        return reg_key
+    alias = _SPEAKER_REGISTRY_ALIAS.get(raw.lower())
+    if alias:
+        return alias
+    return raw
 
 
 def is_speaker_voice_ready(speaker: str) -> bool:
@@ -311,6 +332,13 @@ def element_image_paths(speaker: str) -> list[Path]:
         if candidate.is_file():
             out.append(candidate.resolve())
     return out
+
+
+def char_ref_aligned_for_intent_commit(char_path: str, speaker: str) -> tuple[bool, str]:
+    """Strict alignment for generation-intent commit (no poses-dir false positive)."""
+    return char_ref_matches_element_images(
+        char_path, speaker, allow_pose_dir_fallback=False,
+    )
 
 
 def char_ref_matches_element_images(
@@ -678,7 +706,9 @@ def add_element_pose(
         raise RuntimeError(f"{char_key!r} has no kling_voice_id — cannot re-register Element.")
 
     dest, rel_pose = _unique_pose_dest(char_key, source)
-    shutil.copy2(source, dest)
+    from beat_generator import copy_file_durable
+
+    copy_file_durable(source, dest)
 
     refer = ensure_refer_anchors(char_key, [str(r) for r in (cfg.get("refer_images") or [])], cfg)
     if rel_pose not in refer:

@@ -6,9 +6,14 @@
 //   cols = phase_a, phase_b, intro_or_resolution, final_concat
 //   cells = ✅/⏳/❌ + count + latest filename
 
-import { useEffect, useState } from 'preact/hooks';
-import { apiGet, loadEvent, noteClientPinnedEvent } from '../api/client';
+import { loadEvent, noteClientPinnedEvent } from '../api/client';
 import { activeScope, scopeKey, makeScope } from '../state/scope';
+import {
+  mapData,
+  mapError,
+  mapLoading,
+  mapSessionHasCache,
+} from '../state/mapSessionStore';
 
 // Custom event the App listens for. ProductionMapTab dispatches this on
 // cell click; App switches activeTab to 'storyboard'.
@@ -39,9 +44,19 @@ interface MapRow {
   videos_by_role?: Record<string, RoleStatus>;
 }
 
+interface MapMilestoneRow {
+  milestone_id: string;
+  milestone_label?: string | null;
+  skeleton_ref?: { arc_number?: number; event_id?: string; phase?: string };
+  path?: string;
+  scope_type?: string;
+  videos_by_role?: Record<string, RoleStatus & { bg_beat_count?: number }>;
+}
+
 interface MapResponse {
   ok: boolean;
   modules?: MapRow[];
+  milestones?: MapMilestoneRow[];
   generated_at?: string;
 }
 
@@ -89,25 +104,9 @@ function statusGlyphForRole(r: RoleStatus | undefined): string {
 }
 
 export function ProductionMapTab() {
-  const [data, setData] = useState<MapResponse | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const res = await apiGet<MapResponse>('production_map');
-      if (cancelled) return;
-      setLoading(false);
-      if (res.ok && res.data) {
-        setData(res.data);
-        setErr(null);
-      } else {
-        setErr(res.error ?? 'unknown error');
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [activeScope.value.event_id]);
+  const data = mapData.value as MapResponse | null;
+  const err = mapError.value;
+  const loading = mapLoading.value && !mapSessionHasCache();
 
   return (
     <section class="mn-tab-pane mn-production-map-pane" data-testid="pane-map">
@@ -124,7 +123,7 @@ export function ProductionMapTab() {
           <p class="mn-warn">Could not reach /api/production/map.</p>
           <p class="mn-dim">{err}</p>
         </div>
-      ) : !data?.modules?.length ? (
+      ) : !data?.modules?.length && !data?.milestones?.length ? (
         <p class="mn-empty" data-testid="map-empty">No modules.</p>
       ) : (
         <div class="mn-map-table-wrap">
@@ -152,7 +151,7 @@ export function ProductionMapTab() {
               </tr>
             </thead>
             <tbody>
-              {data.modules.map((m) => (
+              {data.modules?.map((m) => (
                 <tr key={m.m_number} data-testid={`map-row-m${m.m_number}`}>
                   <td>M{m.m_number}</td>
                   <td>{m.creature_name}</td>
@@ -215,6 +214,41 @@ export function ProductionMapTab() {
               ))}
             </tbody>
           </table>
+          {data.milestones && data.milestones.length > 0 ? (
+            <>
+              <h3 class="mn-map-milestones-heading" data-testid="map-milestones-heading">Milestones</h3>
+              <table class="mn-map-table mn-map-milestones-table" data-testid="map-milestones-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Label</th>
+                    <th>Skeleton</th>
+                    <th>Standalone</th>
+                    <th>BG beats</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.milestones.map((ms) => {
+                    const skel = ms.skeleton_ref ?? {};
+                    const role = ms.videos_by_role?.['standalone'];
+                    return (
+                      <tr key={ms.milestone_id} data-testid={`map-milestone-row-${ms.milestone_id}`}>
+                        <td>{ms.milestone_id}</td>
+                        <td>{ms.milestone_label ?? '—'}</td>
+                        <td>
+                          arc {skel.arc_number ?? '?'} · event {skel.event_id ?? '?'} · {skel.phase ?? '?'}
+                        </td>
+                        <td data-testid={`map-milestone-${ms.milestone_id}-standalone`}>
+                          <span class="mn-map-glyph">{statusGlyphForRole(role)}</span>
+                        </td>
+                        <td>{role?.bg_beat_count ?? 0}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </>
+          ) : null}
         </div>
       )}
       <footer class="mn-pane-footer">

@@ -33,9 +33,13 @@ def test_boundary_sfx_map() -> None:
 def test_pipeline_applies_boundary_sfx_overlay() -> None:
     src = (TOOLS / "production_server.py").read_text(encoding="utf-8")
     assert "_stitch_apply_canonical_boundary_sfx" in src
+    assert "stitch_boundary_sfx_baked_in_slot_cues" not in src
     assert "STITCH_CANONICAL_TRANSITION_SFX_V1" in (TOOLS / "server_handlers" / "stitch_editor.py").read_text(
         encoding="utf-8",
     )
+    assert "STITCH_BOUNDARY_SFX_PIPELINE_ONLY_V1" in (
+        TOOLS / "server_handlers" / "stitch_editor.py"
+    ).read_text(encoding="utf-8")
 
 
 def test_resolution_finale_constants() -> None:
@@ -46,9 +50,22 @@ def test_resolution_finale_constants() -> None:
     assert se.resolution_finale_black_hold_ms() == 2500
 
 
+def test_milestone_finale_constants() -> None:
+    assert se.STITCH_MILESTONE_FINALE_OUTTRO_FILENAME == "outtro3.mp3"
+    assert se.STITCH_MILESTONE_FINALE_OUTTRO_FILENAME == se.STITCH_RESOLUTION_FINALE_OUTTRO_FILENAME
+    assert se.STITCH_MILESTONE_FINALE_OUTTRO_PLAY_MS == se.STITCH_RESOLUTION_FINALE_OUTTRO_PLAY_MS
+    assert se.milestone_finale_black_hold_ms() == se.resolution_finale_black_hold_ms()
+
+
 def test_pipeline_applies_resolution_finale() -> None:
     src = (TOOLS / "production_server.py").read_text(encoding="utf-8")
     assert "_stitch_apply_resolution_finale" in src
+    assert "_stitch_apply_milestone_finale" in src
+    assert "stitch_pipeline_should_apply_resolution_finale" in src
+    assert "stitch_pipeline_should_apply_milestone_finale" in src
     assert "STITCH_RESOLUTION_FINALE_V1" in (
+        TOOLS / "server_handlers" / "stitch_editor.py"
+    ).read_text(encoding="utf-8")
+    assert "STITCH_MILESTONE_FINALE_V1" in (
         TOOLS / "server_handlers" / "stitch_editor.py"
     ).read_text(encoding="utf-8")

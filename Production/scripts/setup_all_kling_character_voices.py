@@ -38,7 +38,10 @@ from kling_element_voice import (  # noqa: E402
     setup_character_voice,
 )
 from kling_voice_bind import rollback_voice_bind  # noqa: E402
-from kling_voice_sample_lock import validate_lock_before_register  # noqa: E402
+from kling_voice_sample_lock import (  # noqa: E402
+    is_first_voice_registration,
+    validate_voice_onboarding_before_spend,
+)
 from tools import kling_character_registry as reg  # noqa: E402
 
 
@@ -161,11 +164,20 @@ def main() -> None:
 
         print(f"\n{'='*50}\n{char_name}")
 
-        needs_lock = not args.skip_lock_check and refresh_voice and not args.samples_only
-        if needs_lock:
-            lock_errors = validate_lock_before_register(char_name, cfg)
-            if lock_errors:
-                for err in lock_errors:
+        spends_voice_credits = (
+            not args.refresh_poses_only
+            and (refresh_voice or args.samples_only or is_first_voice_registration(cfg))
+        )
+        needs_onboarding_gate = not args.skip_lock_check and spends_voice_credits
+        if needs_onboarding_gate:
+            require_tags = is_first_voice_registration(cfg)
+            gate_errors = validate_voice_onboarding_before_spend(
+                char_name,
+                cfg,
+                require_emotion_tags=require_tags,
+            )
+            if gate_errors:
+                for err in gate_errors:
                     print(f"  BLOCKED: {err}")
                 failed += 1
                 continue

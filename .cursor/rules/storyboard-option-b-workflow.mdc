@@ -1,0 +1,40 @@
+---
+description: Storyboard Option B — canonical deploy path (Dropbox runtime + dedicated event ports)
+alwaysApply: true
+---
+
+# Storyboard Option B (authoring toolchain)
+
+## Dual root
+
+- **Code:** `mindfulnest-tooling` git repo — edit, commit, pytest; **server process runs Python from here**.
+- **Data:** Dropbox `Production/Event_N/` — clips, sidecar mirror, state, storyboard HTML; `--event-dir` only.
+
+Deploy still mirrors code → Dropbox for parity/backup; launchd and deploy **execute** from tooling.
+
+## Canonical deploy (agents — Kim does not run terminal)
+
+```bash
+bash Production/scripts/deploy_option_b.sh --event Event_2
+```
+
+This runs full mirror, storyboard bundle fanout, parity check, **dedicated port restart** (`5110+N`), and `verify_deploy_option_b_live.sh` proof.
+
+**Forbidden:** manual `cp` to Dropbox, rsync one file, restart without mirror, `MN_ALLOW_DIRTY_DEPLOY=1` without SHORTCUT LD.
+
+## Event ports
+
+| Event | URL |
+|-------|-----|
+| Event_1 | http://localhost:5111/?event=Event_1 |
+| Event_2 | http://localhost:5112/?event=Event_2 |
+
+Deploy/smoke **must** use the port for the target event — never assume 5111.
+
+## Proof required before "live"
+
+Report: git HEAD sha, served build-sha match, parity exit 0, event URL. See `Production/docs/STORYBOARD_OPTION_B_SPEC_v1.md`.
+
+## Kid app
+
+MindfulNest kid app is **not** Option B scope — never conflate Dropbox runtime with kid-facing delivery.

@@ -60,16 +60,20 @@ def humanize_kling_body_parts(text: str, *, speaker: str = "") -> str:
     out = str(text)
     for pattern, repl in _KLING_GESTURE_BODY_PART_REPLACEMENTS:
         out = pattern.sub(repl, out)
-    return out
+    try:
+        import kling_o3_prompt as o3p
+    except ImportError:
+        from tools import kling_o3_prompt as o3p  # type: ignore
+    return o3p.normalize_canonical_prompt_vocabulary(out)
 
 
 def humanize_kling_body_parts_on_beat(beat: dict) -> bool:
-    """Apply gesture humanization to sidecar beat text fields. Returns True if any field changed."""
+    """Apply gesture humanization to dialogue/scene_notes only — never kling_o3_prompt."""
     if not isinstance(beat, dict):
         return False
     speaker = str(beat.get("speaker") or "")
     changed = False
-    for field in ("dialogue_text", "scene_notes", "kling_o3_prompt"):
+    for field in ("dialogue_text", "scene_notes"):
         raw = beat.get(field)
         if raw in (None, ""):
             continue
@@ -119,6 +123,7 @@ _SPEAKER_CANON = {
     "luna": "Lorelai",
     "lorelai": "Lorelai",
     "laurel": "Lorelai",
+    "loral": "Lorelai",
     "chipper": "Arlo",
     "guide bird": "Arlo",
     "pip": "Arlo",
@@ -265,6 +270,57 @@ def _simplify_staging(scene_notes: str, *, beat_type: str) -> tuple[str, list[st
     return apply_cast_text(notes), warnings
 
 
+_PLAN_IMAGE_HEADER_RE = re.compile(
+    r"^@image1\s*\([^)]+\)\s*[.;,]?\s*(?:scene from @image2\s*[.;,]?\s*)?",
+    re.I,
+)
+_PLAN_VOICE_LINE_RE = re.compile(
+    r"\bvoice line:\s*.+?(?:\"[^\"]*\"|'[^']*')\s*\.?\s*",
+    re.I | re.S,
+)
+_PLAN_STORYBOOK_TAIL_RE = re.compile(
+    r"\s*children'?s illustrated fantasy storybook style\.?\s*$",
+    re.I,
+)
+
+
+def strip_plan_scene_notes_for_editor(
+    scene_notes: str,
+    *,
+    dialogue_text: str = "",
+    beat_type: str = "dialogue",
+) -> str:
+    """Beat-plan modal: staging only — no @Image1 header, Voice line, or dialogue echo."""
+    if beat_type in ("stage_still", "stage_direction"):
+        return apply_cast_text((scene_notes or "").strip())
+    notes = apply_cast_text((scene_notes or "").strip())
+    if not notes:
+        return notes
+    notes = _PLAN_IMAGE_HEADER_RE.sub("", notes, count=1).strip()
+    notes = _PLAN_VOICE_LINE_RE.sub("", notes).strip()
+    notes = _PLAN_STORYBOOK_TAIL_RE.sub("", notes).strip()
+    if ";" in notes:
+        kept: list[str] = []
+        for part in notes.split(";"):
+            piece = part.strip()
+            if not piece:
+                continue
+            lower = piece.lower()
+            if lower.startswith("voice line:"):
+                continue
+            if lower.startswith("@image1"):
+                continue
+            if lower.startswith("scene from @image2"):
+                continue
+            kept.append(piece)
+        if kept:
+            notes = ". ".join(kept)
+    notes = re.sub(r"\s+", " ", notes).strip().rstrip(";,.")
+    if notes and not notes.endswith("."):
+        notes += "."
+    return notes[:500]
+
+
 def classify_beat_type(row: dict) -> str:
     bt = str(row.get("beat_type") or "dialogue").strip().lower()
     speaker = str(row.get("speaker") or "").strip().lower()
@@ -304,6 +360,10 @@ def normalize_plan_row(row: dict, *, beat_index: int) -> tuple[dict, list[str]]:
     emotion = _strip_bracket_emotion(apply_cast_text(str(row.get("emotion") or "neutral").strip()) or "neutral")
     scene_notes, w = _simplify_staging(str(row.get("scene_notes") or ""), beat_type=beat_type)
     warnings.extend(w)
+    if beat_type == "dialogue":
+        scene_notes = strip_plan_scene_notes_for_editor(
+            scene_notes, dialogue_text=dialogue, beat_type=beat_type,
+        )
 
     if beat_type == "dialogue":
         speaker, dialogue = repair_corrupted_plan_dialogue(dialogue, speaker)
@@ -322,6 +382,7 @@ def normalize_plan_row(row: dict, *, beat_index: int) -> tuple[dict, list[str]]:
 
     dialogue = humanize_kling_body_parts(dialogue, speaker=speaker)
     scene_notes = humanize_kling_body_parts(scene_notes, speaker=speaker)
+    scene_notes = kling_face_scene_notes(speaker, scene_notes)
 
     out = {
         "beat_index": beat_index,
@@ -413,6 +474,25 @@ def _kling_staging_speaker_label(speaker: str) -> str:
             return (speaker or "").strip()
 
 
+def kling_face_scene_notes(speaker: str, scene_notes: str) -> str:
+    """Keep plan staging aligned with Kling display name (Lorelai/Laurel → Loral)."""
+    notes = apply_cast_text((scene_notes or "").strip())
+    if not notes:
+        return notes
+    label = _kling_staging_speaker_label(speaker)
+    sp = (speaker or "").strip()
+    out = notes
+    if not label:
+        return out
+    if sp and sp != label:
+        out = re.sub(rf"^{re.escape(sp)}\b", label, out, count=1, flags=re.I)
+        out = re.sub(rf"\b{re.escape(sp)}\b", label, out, flags=re.I)
+    for token in ("Lorelai", "Laurel"):
+        if token != label:
+            out = re.sub(rf"\b{re.escape(token)}\b", label, out, flags=re.I)
+    return out
+
+
 def screen_direction_paragraph(speaker: str, scene_notes: str) -> str:
     """One sentence of on-screen staging — separate paragraph before the voice line."""
     scene = _clean_scene_notes(scene_notes)
@@ -439,10 +519,60 @@ _O3_DEFAULT_MEDIUM_CAMERA = (
     "stable eye-level medium shot."
 )
 
-_O3_CLOSEUP_CAMERA = (
-    "Camera: static locked shot, stable eye-level close-up on @Image1 — "
-    "head and torso fill the frame."
+_O3_MEDIUM_WIDE_SCENE_RE = re.compile(
+    r"\b(medium[- ]?wide|medium shot|wide[- ]?shot|full[- ]?body|establishing shot|full scene)\b",
+    re.I,
 )
+
+_O3_CLOSEUP_CAMERA = (
+    "Camera: static locked shot, no zoom, no dolly, no pan, no camera movement, "
+    "stable eye-level close-up — close up view of character, seen from the torso up. "
+    "Character looks at and speaks directly to the camera, making eye contact with the viewer."
+)
+
+_O3_ELEMENT_COMPOSITE_MARKER_RE = re.compile(r"^composite\s*:", re.I | re.M)
+_O3_ELEMENT_COMPOSITE_GOLD_NEG_RE = re.compile(
+    r"never plain gold|studio backdrop|empty backdrop",
+    re.I,
+)
+
+
+_O3_ELEMENT_COMPOSITE_REDUNDANT_TAIL_RE = re.compile(
+    r"\.\s*Background scenery and lighting from @Image2 remain visible "
+    r"behind [^.]+ throughout\.\s*"
+    r"Never plain gold, studio, or empty backdrop at any point;\s*"
+    r"never a background-only shot without [^.]+ on screen\.?",
+    re.I,
+)
+
+
+def strip_o3_element_composite_redundant_tail(prompt: str) -> str:
+    """Remove legacy redundant @Image2 backdrop sentence from composite paragraphs."""
+    text = (prompt or "").strip()
+    if not text or not _O3_ELEMENT_COMPOSITE_REDUNDANT_TAIL_RE.search(text):
+        return text
+    return _O3_ELEMENT_COMPOSITE_REDUNDANT_TAIL_RE.sub(".", text, count=1).strip()
+
+
+def prompt_has_o3_element_composite(prompt: str) -> bool:
+    """True when prompt already carries the Element composite-first lock."""
+    text = prompt or ""
+    if _O3_ELEMENT_COMPOSITE_MARKER_RE.search(text):
+        return True
+    return bool(_O3_ELEMENT_COMPOSITE_GOLD_NEG_RE.search(text))
+
+
+def o3_element_composite_paragraph(speaker: str) -> str:
+    """Element-bound O3 composite lock — @Image2 environment from frame 1 (Extract / normalize)."""
+    label = _kling_staging_speaker_label(speaker) or (speaker or "Character").strip()
+    return (
+        f"Composite: {label} stands in the full environment from @Image2 from the first frame "
+        f"through the entire clip."
+    )
+
+
+def _scene_notes_imply_medium_or_wide(scene: str) -> bool:
+    return bool(_O3_MEDIUM_WIDE_SCENE_RE.search(scene))
 
 
 def _scene_notes_imply_closeup(scene: str) -> bool:
@@ -450,13 +580,15 @@ def _scene_notes_imply_closeup(scene: str) -> bool:
 
 
 def o3_element_framing_paragraph(speaker: str, scene_notes: str) -> str:
-    """Element-bound O3 camera framing — close-ups use Camera line only (no speaker prefix)."""
+    """Element-bound O3 camera framing — default torso-up close-up (Extract Beats / O3 submit)."""
     scene = _clean_scene_notes(scene_notes)
+    if _scene_notes_imply_medium_or_wide(scene):
+        return _O3_DEFAULT_MEDIUM_CAMERA
     if _scene_notes_imply_closeup(scene):
         return _O3_CLOSEUP_CAMERA
     if scene and re.match(r"^camera\s*:", scene, re.I):
         return scene.rstrip(".") + "."
-    return _O3_DEFAULT_MEDIUM_CAMERA
+    return _O3_CLOSEUP_CAMERA
 
 
 def _staging_paragraph(speaker: str, scene_notes: str, emotion: str) -> str:
@@ -474,11 +606,65 @@ def _inject_emotion_into_spoken(spoken: str, emotion: str) -> str:
     return o3p.strip_leading_emotion_tags_from_spoken((spoken or "").strip())
 
 
+_IMAGE1_SCENE_PREFIX_RE = re.compile(
+    r"^@image1\s*\([^)]+\)\s*[.;,]?\s*(?:scene from @image2\s*[.;,]?\s*)?",
+    re.I,
+)
+_VOICE_LINE_PREFIX_RE = re.compile(r"^voice line:\s*", re.I)
+
+
+def _normalize_staging_probe(text: str) -> str:
+    probe = re.sub(r"\s+", " ", (text or "").strip().lower())
+    probe = probe.replace(";", ".")
+    return probe[:24]
+
+
+def substantive_staging_probe(scene_notes: str) -> str:
+    """Distinctive staging fragment — skips @Image1 / Scene from @Image2 boilerplate."""
+    scene = (scene_notes or "").strip()
+    if not scene:
+        return ""
+    body = _IMAGE1_SCENE_PREFIX_RE.sub("", scene, count=1).strip()
+    body = _VOICE_LINE_PREFIX_RE.sub("", body, count=1).strip()
+    if len(body) >= 12:
+        return _normalize_staging_probe(body)
+    return _normalize_staging_probe(scene)
+
+
+def scene_notes_reflected_in_kling_prompt(
+    prompt: str,
+    scene_notes: str,
+    *,
+    speaker: str = "",
+) -> bool:
+    """True when plan staging is represented in the final Kling prompt (audit + postprocess)."""
+    scene = (scene_notes or "").strip()
+    if len(scene) <= 12:
+        return True
+    lower_prompt = (prompt or "").lower()
+    if _prompt_contains_staging(prompt, scene):
+        return True
+    for probe in (substantive_staging_probe(scene), _normalize_staging_probe(scene)):
+        if probe and probe in lower_prompt:
+            return True
+    para = screen_direction_paragraph(speaker, scene)
+    if para:
+        para_probe = _normalize_staging_probe(para)
+        if para_probe and para_probe in lower_prompt:
+            return True
+        label = _kling_staging_speaker_label(speaker)
+        core = re.sub(rf"^{re.escape(label)}\s+", "", para, count=1, flags=re.I).strip()
+        core_probe = _normalize_staging_probe(core)
+        if core_probe and core_probe in lower_prompt:
+            return True
+    return False
+
+
 def _prompt_contains_staging(prompt: str, scene_notes: str) -> bool:
-    scene = (scene_notes or "").strip().lower()
+    scene = (scene_notes or "").strip()
     if not scene:
         return True
-    probe = scene[:24].lower()
+    probe = _normalize_staging_probe(scene)
     return probe in (prompt or "").lower()
 
 
@@ -524,31 +710,28 @@ def postprocess_kling_author_row(plan_row: dict, prompt: str) -> dict[str, str]:
             "scene_notes": scene_notes[:500],
         }
 
-    out = _IMAGE1_SPEAKER_RE.sub(f"@Image1 ({speaker})", out, count=1)
+    out = _IMAGE1_SPEAKER_RE.sub(f"@Image1 ({_kling_staging_speaker_label(speaker)})", out, count=1)
+    display = _kling_staging_speaker_label(speaker)
     out = re.sub(
-        rf"(@Image1 \({re.escape(speaker)}\))\s+\w+\s+—",
-        rf"\1 {speaker} —",
+        rf"(@Image1 \({re.escape(display)}\))\s+(?:{re.escape(speaker)}|{re.escape(display)})\s+—",
+        rf"\1 {display} —",
         out,
         count=1,
+        flags=re.I,
     )
-    staging = _staging_paragraph(speaker, scene_notes, emotion)
-    if staging and not _prompt_contains_staging(out, scene_notes):
-        vm = _VOICE_LINE_RE.search(out)
-        if vm:
-            out = out[: vm.start()].rstrip() + f"\n\n{staging}\n\n" + out[vm.start() :].lstrip()
-        else:
-            out = out.rstrip() + f"\n\n{staging}\n"
 
     vm = _VOICE_LINE_RE.search(out)
     _inferred_speaker, spoken_only = extract_spoken_from_dialogue(dialogue)
     if speaker == "Character" and _inferred_speaker:
         speaker = _inferred_speaker
-        out = _IMAGE1_SPEAKER_RE.sub(f"@Image1 ({speaker})", out, count=1)
+        display = _kling_staging_speaker_label(speaker)
+        out = _IMAGE1_SPEAKER_RE.sub(f"@Image1 ({display})", out, count=1)
         out = re.sub(
-            rf"(@Image1 \({re.escape(speaker)}\))\s+\w+\s+—",
-            rf"\1 {speaker} —",
+            rf"(@Image1 \({re.escape(display)}\))\s+(?:{re.escape(speaker)}|{re.escape(display)})\s+—",
+            rf"\1 {display} —",
             out,
             count=1,
+            flags=re.I,
         )
     spoken_for_voice = spoken_only or dialogue
     if vm and spoken_for_voice and not _prompt_spoken_matches_dialogue(out, spoken_for_voice):
@@ -564,6 +747,7 @@ def postprocess_kling_author_row(plan_row: dict, prompt: str) -> dict[str, str]:
 
     out = humanize_kling_body_parts(out, speaker=speaker)
     scene_notes = humanize_kling_body_parts(scene_notes, speaker=speaker)
+    scene_notes = kling_face_scene_notes(speaker, scene_notes)
 
     out = normalize_kling_o3_prompt_event1_quality(
         out.strip(),
@@ -573,6 +757,18 @@ def postprocess_kling_author_row(plan_row: dict, prompt: str) -> dict[str, str]:
         scene_notes=scene_notes,
     )
 
+    staging = _staging_paragraph(speaker, scene_notes, emotion)
+    if staging and not _prompt_contains_staging(out, scene_notes):
+        vm = _VOICE_LINE_RE.search(out)
+        if vm:
+            out = out[: vm.start()].rstrip() + f"\n\n{staging}\n\n" + out[vm.start() :].lstrip()
+        else:
+            out = out.rstrip() + f"\n\n{staging}\n"
+
+    from tools import kling_o3_prompt as o3p
+
+    out = o3p.normalize_kling_speaker_names_in_prompt(out, speaker)
+
     return {
         "kling_o3_prompt": out.strip(),
         "emotion": emotion,
@@ -580,22 +776,55 @@ def postprocess_kling_author_row(plan_row: dict, prompt: str) -> dict[str, str]:
     }
 
 
+def synthesize_kling_author_prompt_for_plan_row(row: dict) -> str:
+    """Build a Kling O3 prompt from an approved plan row when Claude omits one."""
+    beat_type = str(row.get("beat_type") or "dialogue").lower()
+    if beat_type == "stage_still":
+        return build_still_insert_prompt(row)
+    merged = postprocess_kling_author_row(row, "")
+    prompt = (merged.get("kling_o3_prompt") or "").strip()
+    if prompt:
+        return prompt
+    import beat_generator as bg
+
+    speaker_raw = str(row.get("speaker") or "Character").strip()
+    if speaker_raw.lower() in ("[stage direction]", "stage direction"):
+        speaker = "[Stage Direction]"
+    else:
+        speaker = speaker_raw or "Character"
+    return bg.build_kling_o3_prompt({
+        "speaker": speaker,
+        "dialogue_text": str(row.get("dialogue_text") or "").strip(),
+        "emotion": str(row.get("emotion") or "neutral").strip() or "neutral",
+        "scene_notes": str(row.get("scene_notes") or "").strip(),
+        "beat_type": beat_type,
+    })
+
+
 def postprocess_kling_author_results(
     beats_plan: list[dict],
     prompt_by_index: dict[int, str],
-) -> tuple[dict[int, str], list[dict]]:
+) -> tuple[dict[int, str], list[dict], list[str]]:
     """Apply cast/staging/emotion enrichment for every plan row after Claude author."""
     enriched_prompts: dict[int, str] = dict(prompt_by_index)
     enriched_plan: list[dict] = []
+    author_warnings: list[str] = []
     for row in beats_plan:
         idx = int(row.get("beat_index") or 0)
         if not idx:
             continue
         merged = postprocess_kling_author_row(row, prompt_by_index.get(idx, ""))
+        if not (merged.get("kling_o3_prompt") or "").strip():
+            synthesized = synthesize_kling_author_prompt_for_plan_row(row)
+            if synthesized:
+                merged["kling_o3_prompt"] = synthesized
+                author_warnings.append(
+                    f"beat_index {idx}: Claude prompt missing — used local Kling prompt builder",
+                )
         if merged.get("kling_o3_prompt"):
             enriched_prompts[idx] = merged["kling_o3_prompt"]
         enriched_plan.append({**row, **merged})
-    return enriched_prompts, enriched_plan
+    return enriched_prompts, enriched_plan, author_warnings
 
 
 def _kling_o3_normalize_spoken(spoken: str) -> str:
@@ -610,12 +839,13 @@ def _kling_o3_normalize_spoken(spoken: str) -> str:
 def kling_staging_policy_block() -> str:
     return (
         "KLING O3 STAGING (mandatory for scene_notes on dialogue beats):\n"
-        "- Static medium shot; micro-expression only (eyes widen, smile, hand flutter, shrug).\n"
+        "- Default Camera: static locked torso-up close-up on @Image1; micro-expression only "
+        "(eyes widen, smile, hand flutter, shrug). Use medium/wide only when scene_notes say so.\n"
         "- Gesture vocabulary: use human body-part names (hand, arm) — not flipper/paw/talon.\n"
         "- Keep non-human-only parts as-is (tail, shell, horns, beak on birds, etc.).\n"
         "- NO: camera zoom/cut/pan, walks across room, enters frame, second character on screen.\n"
         "- One speaker per beat; back-and-forth = separate beats.\n"
-        "- beat_type stage_still for inscription/runestone/MindfulNest close-ups (GPT stills).\n"
+        "- beat_type stage_still for inscription/rune-stone/MindfulNest close-ups (GPT stills).\n"
         "- Preserve {childName} placeholders; never 'the child'.\n"
         "CAST (mandatory): Lorelai (raccoon), Arlo (guide), Tessa. Never Luna or Chipper.\n"
         "- Raccoon Peace Prize / Lemur Peace Prize is intentional humor.\n"
@@ -623,6 +853,7 @@ def kling_staging_policy_block() -> str:
         "- Arlo explains Magic Hands via dialogue; module spell name optional on handoff.\n"
         "KLING O3 CANONICAL PROMPT SHAPE V2 (tooling enforces on approve + submit):\n"
         "1) @Image1 ({Speaker}). Scene from @Image2. — NO arc/event/beat labels in header.\n"
+        "1b) Composite paragraph — character in @Image2 environment from frame 1; never gold/studio plate.\n"
         "2) Screen direction paragraph from scene_notes (one sentence, e.g. Tessa stands near the MindfulNest).\n"
         "3) Voice line: {Name} speaks in a {delivery}: [emotion] \"dialogue with [pause] inside quotes\".\n"
         "   Emotion tags OUTSIDE quotes (Kling speaks bracket words aloud if inside quotes).\n"
@@ -692,7 +923,7 @@ def normalize_kling_o3_prompt_event1_quality(
     scene_notes: str = "",
 ) -> str:
     """Strip author species taxonomy; enforce Event-1 @Image1-trust prompt shape."""
-    out = (prompt or "").strip()
+    out = strip_o3_element_composite_redundant_tail((prompt or "").strip())
     if not out:
         return out
 
@@ -722,28 +953,226 @@ def normalize_kling_o3_prompt_event1_quality(
         "scene_notes": scene_notes,
         "kling_o3_prompt": out,
     }
-    return bg.prepare_kling_o3_prompt_for_submit(beat_stub, out)
+    if bg._speaker_has_element_bound_voice(speaker):
+        out = bg.normalize_o3_element_bound_prompt(beat_stub, out)
+    else:
+        spoken = bg.extract_spoken_dialogue_from_kling_prompt(out) or dialogue
+        out = bg._append_kling_o3_submit_locks(
+            out,
+            speaker=speaker,
+            spoken=spoken or dialogue,
+        )
+    return out
+
+
+BEAT_CONTINUITY_V1 = "BEAT_CONTINUITY_V1"
+
+# Auto-injected reaction-first block (BEAT_CONTINUITY_V1) — not operator scene continuity.
+_AUTO_CONTINUITY_ACTION_RE = re.compile(
+    r"^Continuity:\s+Before speaking,.+?then delivers the line\.\s*$",
+    re.IGNORECASE | re.MULTILINE | re.DOTALL,
+)
+# Legacy BEAT_CONTINUITY_V1 (quoted prior line) — strip on heal/re-inject.
+_AUTO_CONTINUITY_HEARD_RE = re.compile(
+    r"^Continuity:\s+.+?\s+has just heard\s+.+?\s+say:\s*.+?"
+    r"Before speaking,.+?then delivers the line\.\s*$",
+    re.IGNORECASE | re.MULTILINE | re.DOTALL,
+)
+
+
+def _truncate_dialogue_snippet(text: str, *, max_len: int = 120) -> str:
+    cleaned = re.sub(r"\[[^\]]+\]", " ", (text or "").strip())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return ""
+    if len(cleaned) <= max_len:
+        return cleaned
+    return cleaned[: max_len - 1].rsplit(" ", 1)[0] + "…"
+
+
+def derive_reaction_emotion_from_prior(prior: dict, current: dict) -> str | None:
+    """Predict listener emotion from what the prior beat just did."""
+    prior_dlg = (prior.get("dialogue_text") or "").strip().lower()
+    prior_emo = (prior.get("emotion") or "").strip().lower()
+    if "?" in prior_dlg:
+        return "curious, attentive"
+    if any(w in prior_emo for w in ("angry", "upset", "frustrated", "worried")):
+        return "calm, reassuring"
+    if any(w in prior_emo for w in ("excited", "happy", "joy", "delighted")):
+        return "warm, engaged"
+    if any(w in prior_dlg for w in ("hello", "hi ", "who are", "meet")):
+        return "friendly, surprised"
+    cur_emo = (current.get("emotion") or "").strip().lower()
+    if cur_emo and cur_emo not in ("neutral", ""):
+        return None
+    return "attentive, listening"
+
+
+def prior_spoken_snippet_for_continuity(prior: dict) -> str:
+    """Quoted speech from prior prompt box; fallback to dialogue_text when absent."""
+    prompt = (prior.get("kling_o3_prompt") or "").strip()
+    if prompt:
+        try:
+            import beat_generator as bg
+
+            spoken = bg.extract_spoken_dialogue_from_kling_prompt(prompt)
+            if spoken:
+                return _truncate_dialogue_snippet(spoken)
+        except Exception:
+            pass
+    return _truncate_dialogue_snippet(prior.get("dialogue_text") or "")
+
+
+def strip_auto_injected_continuity_blocks(prompt: str) -> str:
+    """Remove BEAT_CONTINUITY_V1 reaction-first paragraphs (replace-before-inject)."""
+    text = (prompt or "").strip()
+    if not text:
+        return text
+    cleaned = _AUTO_CONTINUITY_HEARD_RE.sub("", text)
+    cleaned = _AUTO_CONTINUITY_ACTION_RE.sub("", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
+
+
+def prompt_has_operator_continuity(prompt: str) -> bool:
+    """True when operator-authored continuity is present (not auto heard-X-say blocks)."""
+    text = (prompt or "").strip()
+    if not text or "continuity:" not in text.lower():
+        return False
+    if re.search(r"@Image1\s*\([^)]*\)[^\n]*Continuity:", text, re.I):
+        return True
+    for para in re.split(r"\n\s*\n", text):
+        block = para.strip()
+        if not block.lower().startswith("continuity:"):
+            continue
+        if _AUTO_CONTINUITY_HEARD_RE.match(block) or _AUTO_CONTINUITY_ACTION_RE.match(block):
+            continue
+        if (
+            "has just heard" in block.lower()
+            and " say:" in block.lower()
+            and "then delivers the line" in block.lower()
+        ):
+            continue
+        if block.lower().startswith("continuity:") and "before speaking," in block.lower():
+            if "then delivers the line" in block.lower():
+                continue
+        return True
+    return False
+
+
+def beat_continuity_skip_prompt_inject(beat: dict, prompt: str) -> bool:
+    """Operator prompt box or scene continuity owns the beat — no auto inject."""
+    try:
+        import beat_generator as bg
+
+        if bg.o3_prompt_box_law_active(beat):
+            return True
+    except Exception:
+        if beat.get("o3_prompt_box_law"):
+            return True
+    return prompt_has_operator_continuity(prompt)
+
+
+def derive_reaction_action_phrase(prior: dict, current: dict) -> str:
+    """Short physical beat for the listener — never repeat the prior spoken line."""
+    reaction = derive_reaction_emotion_from_prior(prior, current) or "attentive"
+    if "curious" in reaction:
+        return "nods thoughtfully"
+    if "surprised" in reaction or "friendly" in reaction:
+        return "reacts briefly"
+    if "calm" in reaction or "reassuring" in reaction:
+        return "offers a calm nod"
+    if "warm" in reaction or "engaged" in reaction:
+        return "smiles and nods"
+    return "nods"
+
+
+def build_reaction_first_context_block(prior: dict, current: dict) -> str:
+    """Reaction-first staging paragraph from the prior beat (extract / Beat Gen parser)."""
+    prior_speaker = (prior.get("speaker") or "Character").strip()
+    current_speaker = (current.get("speaker") or "Character").strip()
+    if prior_speaker.lower() in ("[stage direction]", "stage direction"):
+        return ""
+    if current_speaker.lower() in ("[stage direction]", "stage direction"):
+        return ""
+    if prior_speaker == current_speaker:
+        return ""
+    if not (prior.get("dialogue_text") or prior.get("kling_o3_prompt") or "").strip():
+        return ""
+    label = _kling_staging_speaker_label(current_speaker)
+    action = derive_reaction_action_phrase(prior, current)
+    return f"Continuity: Before speaking, {label} {action}, then delivers the line."
+
+
+def inject_prior_beat_context_into_prompt(prompt: str, context_block: str) -> str:
+    """Insert one continuity block after Scene-from-@Image2 (strip stale auto blocks first)."""
+    block = (context_block or "").strip()
+    text = strip_auto_injected_continuity_blocks(prompt)
+    if not block or not text:
+        return text
+    if block in text:
+        return text
+    marker = "Scene from @Image2."
+    if marker in text:
+        return text.replace(marker, f"{marker}\n\n{block}", 1)
+    return f"{block}\n\n{text}"
+
+
+def _prior_dialogue_beat_for_continuity(beats: list[dict], index: int) -> dict | None:
+    """Nearest preceding non-stage_still beat (skips stage stills in the chain)."""
+    for j in range(index - 1, -1, -1):
+        candidate = beats[j]
+        if (candidate.get("beat_type") or "dialogue") == "stage_still":
+            continue
+        return candidate
+    return None
+
+
+def apply_beat_continuity_chain(beats: list[dict]) -> None:
+    """BEAT_CONTINUITY_V1 — reaction-first + aligned emotion across extract/parser beats."""
+    for i in range(1, len(beats)):
+        cur = beats[i]
+        if (cur.get("beat_type") or "dialogue") == "stage_still":
+            continue
+        prior = _prior_dialogue_beat_for_continuity(beats, i)
+        if prior is None:
+            continue
+        ctx = build_reaction_first_context_block(prior, cur)
+        if ctx:
+            prompt = (cur.get("kling_o3_prompt") or "").strip()
+            skip_inject = beat_continuity_skip_prompt_inject(cur, prompt) if prompt else False
+            if skip_inject:
+                cur.pop("kling_o3_prior_beat_context", None)
+                cur.pop("beat_continuity_v1", None)
+                if prompt:
+                    stripped = strip_auto_injected_continuity_blocks(prompt)
+                    if stripped != prompt:
+                        cur["kling_o3_prompt"] = stripped
+            else:
+                cur["kling_o3_prior_beat_context"] = ctx
+                cur["beat_continuity_v1"] = BEAT_CONTINUITY_V1
+                if prompt:
+                    try:
+                        import beat_generator as bg
+
+                        poisoned = bg.o3_prompt_is_avatar_pro_poisoned(prompt, beat=cur)
+                    except Exception:
+                        poisoned = "TRIPOD LOCK" in prompt or (
+                            prompt.startswith("Continuity:") and "@Image1" not in prompt[:200]
+                        )
+                    if not poisoned:
+                        cur["kling_o3_prompt"] = inject_prior_beat_context_into_prompt(
+                            prompt, ctx,
+                        )
+                    else:
+                        stripped = strip_auto_injected_continuity_blocks(prompt)
+                        if stripped != prompt:
+                            cur["kling_o3_prompt"] = stripped
+        reaction_emo = derive_reaction_emotion_from_prior(prior, cur)
+        if reaction_emo and (cur.get("emotion") or "neutral").strip().lower() in ("neutral", ""):
+            cur["emotion"] = reaction_emo
 
 
 def heal_beat_kling_o3_prompt_event1_shape(beat: dict) -> bool:
-    """Migrate-sidecar heal: rewrite stored prompts to Event-1 quality shape."""
-    if not isinstance(beat, dict):
-        return False
-    import beat_generator as bg
-
-    if bg.beat_is_still_insert(beat) or bg.beat_is_canonical_mirror_protected(beat):
-        return False
-    prompt = (beat.get("kling_o3_prompt") or "").strip()
-    if not prompt or len(prompt) < 40:
-        return False
-    new = normalize_kling_o3_prompt_event1_quality(
-        prompt,
-        speaker=str(beat.get("speaker") or ""),
-        dialogue=str(beat.get("dialogue_text") or ""),
-        emotion=str(beat.get("emotion") or ""),
-        scene_notes=str(beat.get("scene_notes") or ""),
-    )
-    if new != prompt:
-        beat["kling_o3_prompt"] = new
-        return True
+    """Disabled — prompt shaping runs only during extract/materialize, not migrate."""
     return False

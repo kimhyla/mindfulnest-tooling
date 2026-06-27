@@ -79,6 +79,7 @@ SERVER_ONLY_ALLOWLIST = {
     "/api/bg/delete-group",
     "/api/bg/groups",
     "/api/bg/poll-assemble-status",
+    "/api/bg/poll-export-to-stitcher",
     "/api/bg/poll-flux-status",
     "/api/bg/run-local-animation",
     "/api/bg/submit-flux-batch",

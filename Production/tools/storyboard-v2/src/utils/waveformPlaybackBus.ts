@@ -1,3 +1,5 @@
+import { isStitchComposerPlaybackOwner } from './stitchConstants';
+
 /** Coordinates Phase A/B waveform players (only one should play at a time).
  *  PHASE_WAVEFORM_PLAY + PHASE_PRODUCER_AB — keep-alive mounts both panes. */
 export type PlaybackControl = {
@@ -47,6 +49,7 @@ function pauseAppMediaElements(resetTime: boolean): void {
     )
     .forEach((el) => {
       if (!(el instanceof HTMLMediaElement)) return;
+      if (isStitchComposerPlaybackOwner(el)) return;
       el.pause();
       if (!resetTime) return;
       try {

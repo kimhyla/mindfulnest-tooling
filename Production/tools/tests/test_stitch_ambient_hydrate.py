@@ -26,6 +26,9 @@ class _MockStitchState:
     def __init__(self, initial=None):
         self.state = initial or {"jobs": {}}
 
+    def read_state(self):
+        return self.state
+
     def mutate_state(self, fn):
         fn(self.state)
 
@@ -112,6 +115,7 @@ class StitchSlotAudioMixTests(unittest.TestCase):
 
     def test_default_ambient_presets_match_canonical_map(self):
         self.assertEqual(STITCH_DEFAULT_AMBIENT_BEDS["intro"], "Intro video ambient bed")
+        self.assertEqual(STITCH_DEFAULT_AMBIENT_BEDS["standalone"], "Intro video ambient bed")
         self.assertEqual(STITCH_DEFAULT_AMBIENT_BEDS["phase_a"], "ambient bed pretty option2")
         self.assertEqual(STITCH_DEFAULT_AMBIENT_BEDS["phase_b"], "ambient bed pretty option")
         self.assertEqual(STITCH_DEFAULT_AMBIENT_BEDS["resolution"], "ambien bed pretty option4")

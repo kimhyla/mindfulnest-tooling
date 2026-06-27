@@ -12,7 +12,7 @@ fail() { echo "[event-library-scope] FAIL: $1" >&2; exit 1; }
 [[ -f "$HANDLER" ]] || fail "missing event_video.py"
 
 grep -q 'def handle_event_load' "$HANDLER" || fail "handle_event_load missing"
-grep -q 'init_bg_paths(new_event_dir)' "$HANDLER" \
+grep -qE 'init_bg_paths\(new_event_dir(, clear_milestone_scope=True)?\)' "$HANDLER" \
   || fail "handle_event_load must call init_bg_paths(new_event_dir) after event swap"
 grep -q 'library/images' "${REPO_ROOT}/Production/lib/paths.py" \
   || fail "bg_paths must scope stills_dir to Event_N/library/images"

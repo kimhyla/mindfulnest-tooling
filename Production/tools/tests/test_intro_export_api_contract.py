@@ -29,4 +29,9 @@ def test_intro_export_applies_penultimate_fades_only() -> None:
 
 
 def test_job_store_module_present_for_export() -> None:
-    assert (TOOLS / "kling_o3_job_store.py").is_file()
+    assert (TOOLS / "bg_export_stitcher_job_store.py").is_file()
+
+
+def test_poll_export_to_stitcher_route_registered() -> None:
+    src = (TOOLS / "production_server.py").read_text(encoding="utf-8")
+    assert 'path == "/api/bg/poll-export-to-stitcher"' in src

@@ -18,7 +18,7 @@
 //
 // S4 SCOPE (this file): real producer UX — script editor, audio player
 // (priority lipsync > mixed > stem), Send for Lipsync, lipsync video
-// player, Mix Audio (Phase A only — auto-fires stitch), Export to
+// player, Export to Stitcher. Phase A: dry lipsync only — ambient in Stitcher.
 // Stitcher, watercolor library + Animate-this. All wired through
 // pathappPatch (snapshot + scope-guard + 409/423 handling).
 //
@@ -29,14 +29,37 @@
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { apiGet, pathappPatch } from '../../api/client';
-import { activeScope, activeVideoRole } from '../../state/scope';
+import { activeScope, activeVideoRole, activeProjectType, activeMilestoneId } from '../../state/scope';
 import { SERVER_BASE } from '../../api/endpoints';
 import { stitcherRefreshTick } from '../../app';
+import { writePersistedTrackSlot } from '../../utils/stitchTrackFocus';
+import { stitchJobSessionKey } from '../../state/producerSessionKeys';
+import {
+  notifyStitchSlotExportApplied,
+  stitchExportKeptExistingWarning,
+} from '../../utils/stitchSlotVideoLineage';
 import { serverRehydrateTick } from '../../state/refreshSignals';
 import { SERVER_REHYDRATE_EVENT } from '../../state/serverRehydrate';
 import { WaveformTimeline, type WatercolorCue, type WaveformPlaybackControl } from './WaveformTimeline';
 import { WatercolorAnimOverlay } from './WatercolorAnimOverlay';
 import { CuePopover } from './CuePopover';
+import {
+  phaseLipsyncJobBusy,
+  phaseLipsyncProgressMessage,
+  phaseLipsyncTerminalBanner,
+} from '../../phaseLipsyncJobContract';
+import {
+  coercePhaseBCedricBaseClipId,
+  PHASE_B_CEDRIC_BASE_CLIP_CANONICAL,
+} from '../../phaseBCedricContract';
+import {
+  coercePhaseAArloBaseClipId,
+  PHASE_A_ARLO_AVATAR_STILL_LABEL,
+  PHASE_A_ARLO_BASE_CLIP_CANONICAL,
+} from '../../phaseAArloContract';
+import { phaseWatercolorOverlayCssVars } from './phaseWatercolorOverlayGeometry';
+import { PLAYBACK_VIDEO_ANTI_BANDING_CLASS, linkedMediaSameFilename } from '../../utils/playbackVideoPolicy';
+import { watercolorFileUrl, watercolorOverlaySrc } from '../../utils/watercolorAssets';
 
 // ── Schema translation: frontend ↔ server ───────────────────────────────────
 // Server (bake pipeline) expects: {id, key, timestamp_ms, animation, duration_ms, cue_type, volume}
@@ -110,7 +133,8 @@ interface PhaseStateSlice {
   mixed_audio_mtime?: number;
   lipsync_file?: string;
   lipsync_mtime?: number;
-  lipsync_status?: string;   // "polling" | "done" | "error: ..." from background thread
+  lipsync_status?: string;
+  lipsync_task_id?: string;
   lipsync_requires_regen?: boolean;
   voice_stem_cut_start_s?: number;
   voice_stem_cut_end_s?: number;
@@ -160,6 +184,7 @@ function pickPhaseSlice(state: EventStateResponse, phase: 'a' | 'b'): PhaseState
   const ls = get<string>('lipsync_file');              if (ls) slice.lipsync_file = ls;
   const lsm = get<number>('lipsync_mtime');            if (lsm) slice.lipsync_mtime = lsm;
   const lst = get<string>('lipsync_status');           if (lst) slice.lipsync_status = lst;
+  const lstid = get<string>('lipsync_task_id');        if (lstid) slice.lipsync_task_id = lstid;
   const lrr = get<boolean>('lipsync_requires_regen');  if (lrr) slice.lipsync_requires_regen = lrr;
   const tcs = get<number>('voice_stem_cut_start_s'); if (tcs !== undefined) slice.voice_stem_cut_start_s = tcs;
   const tce = get<number>('voice_stem_cut_end_s');   if (tce !== undefined) slice.voice_stem_cut_end_s = tce;
@@ -184,11 +209,13 @@ function pickPhaseSlice(state: EventStateResponse, phase: 'a' | 'b'): PhaseState
   if (cuesArr) slice.watercolor_cues = cuesArr;
   if (phase === 'a') {
     const fi = get<string>('chipper_flyin_clip_id');   if (fi) slice.chipper_flyin_clip_id = fi;
-    const si = get<string>('chipper_sitting_clip_id'); if (si) slice.chipper_sitting_clip_id = si;
+    const si = get<string>('chipper_sitting_clip_id');
+    if (si) slice.chipper_sitting_clip_id = coercePhaseAArloBaseClipId(si);
     const fo = get<string>('chipper_flyout_clip_id');  if (fo) slice.chipper_flyout_clip_id = fo;
   }
   if (phase === 'b') {
-    const bci = get<string>('cedric_base_clip_id'); if (bci) slice.cedric_base_clip_id = bci;
+    const bci = get<string>('cedric_base_clip_id');
+    slice.cedric_base_clip_id = coercePhaseBCedricBaseClipId(bci);
   }
   const ap = get<string>('ambient_preset_id'); if (ap) slice.ambient_preset_id = ap;
   return slice;
@@ -201,19 +228,6 @@ type PhasePreviewFile = {
   label: AudioSourceLabel;
   kind: 'stitched' | 'lipsync';
 };
-
-/** Server statuses while a phase lipsync job is still in flight. */
-const PHASE_LIPSYNC_IN_FLIGHT = new Set(['running', 'polling', 'submitting', 'submitted']);
-
-function isPhaseLipsyncInFlight(status: string | undefined): boolean {
-  return Boolean(status && PHASE_LIPSYNC_IN_FLIGHT.has(status));
-}
-
-function phaseLipsyncProgressMessage(phase: 'a' | 'b'): string {
-  return phase === 'a'
-    ? '⏳ Lipsync processing (~5–20 min). Safe to switch tabs — will auto-update when done.'
-    : '⏳ Lipsync in progress (~8–20 min). Safe to switch tabs — will auto-update when done.';
-}
 
 function priorityAudioFile(
   slice: PhaseStateSlice,
@@ -239,6 +253,13 @@ function priorityAudioFile(
   return null;
 }
 
+/** Waveform audio only — never stitched MP4 (SEEK-5/6; LD-829). */
+function priorityAudioFileForPhase(
+  slice: PhaseStateSlice,
+): { name: string; label: AudioSourceLabel } | null {
+  return priorityAudioFile(slice);
+}
+
 function stitchedPreviewStale(slice: PhaseStateSlice): boolean {
   if (!slice.stitched_file) return false;
   const lm = slice.lipsync_mtime ?? 0;
@@ -255,19 +276,6 @@ function phaseAPreviewFile(slice: PhaseStateSlice): PhasePreviewFile | null {
     return { name: slice.lipsync_file, label: 'lipsync', kind: 'lipsync' };
   }
   return null;
-}
-
-function priorityAudioFileForPhase(
-  phase: 'a' | 'b',
-  slice: PhaseStateSlice,
-): { name: string; label: AudioSourceLabel } | null {
-  if (phase === 'a') {
-    const preview = phaseAPreviewFile(slice);
-    if (preview?.kind === 'stitched') {
-      return { name: preview.name, label: 'stitched' };
-    }
-  }
-  return priorityAudioFile(slice);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -305,11 +313,6 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const [currentTimeMs, setCurrentTimeMs] = useState(0);
   // WaveSurfer play state — drives animated overlay loop + canvas redraw.
   const [waveIsPlaying, setWaveIsPlaying] = useState(false);
-  // True while Kling lipsync is processing in the background (202 submitted).
-  const [lipsyncing, setLipsyncing] = useState(false);
-  // Mtime of lipsync_file at the moment we submitted — used to detect when
-  // a NEW lipsync result lands (mtime changes → job done).
-  const lipsyncMtimeBefore = useRef<number | null>(null);
   // Ref to the lipsync <video> element so WaveformTimeline can sync seek/play/pause.
   // The <video> is muted; WaveSurfer owns the audio output.
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -318,19 +321,6 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   // User toggled "Trim voice stem" — show stem on waveform + amber cut handles even
   // when a lipsync file would otherwise win audio priority.
   const [stemTrimMode, setStemTrimMode] = useState(false);
-
-  const phaseABaseClipOptions = (items: BaseClipItem[]) =>
-    items
-      .filter((c) => {
-        if (phase !== 'a') return c.character === 'cedric';
-        const id = c.id.toLowerCase();
-        return c.character === 'arlo' || c.character === 'chipper' || id.includes('arlo');
-      })
-      .sort((a, b) => {
-        const rank = (c: BaseClipItem) =>
-          c.character === 'arlo' || c.id.toLowerCase().includes('arlo') ? 0 : 1;
-        return rank(a) - rank(b) || a.id.localeCompare(b.id);
-      });
 
   const refreshAll = async (): Promise<boolean> => {
     const [wc, bc, st, ap] = await Promise.all([
@@ -366,10 +356,16 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       setBaseClips(bc.data.items);
       const phaseAChars = new Set(['arlo', 'chipper']);
       const wantedChar = phase === 'a' ? 'arlo' : 'cedric';
-      const sittingId = phase === 'a' ? nextSlice.chipper_sitting_clip_id : undefined;
+      const sittingId = phase === 'a'
+        ? coercePhaseAArloBaseClipId(
+            nextSlice.chipper_sitting_clip_id ?? PHASE_A_ARLO_BASE_CLIP_CANONICAL,
+          )
+        : undefined;
       const savedBaseClipId =
         phase === 'b'
-          ? nextSlice.cedric_base_clip_id
+          ? coercePhaseBCedricBaseClipId(
+              nextSlice.cedric_base_clip_id ?? PHASE_B_CEDRIC_BASE_CLIP_CANONICAL,
+            )
           : sittingId;
       const bySaved = savedBaseClipId
         ? bc.data.items.find((c) => c.id === savedBaseClipId)
@@ -417,29 +413,12 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     };
   }, [activeScope.value.event_id, phase]);
 
-  // Resume polling after hard refresh OR tab switch while server still reports in-flight.
-  useEffect(() => {
-    const status = stateSlice.lipsync_status;
-    if (isPhaseLipsyncInFlight(status)) {
-      if (lipsyncMtimeBefore.current === null) {
-        lipsyncMtimeBefore.current = stateSlice.lipsync_mtime ?? null;
-      }
-      setLipsyncing(true);
-      setStatusMsg(phaseLipsyncProgressMessage(phase));
-      return;
-    }
-    if (
-      (status === 'needs_manual_visual_review' || status === 'done') &&
-      stateSlice.lipsync_file
-    ) {
-      setLipsyncing(false);
-    }
-  }, [phase, stateSlice.lipsync_status, stateSlice.lipsync_file, stateSlice.lipsync_mtime]);
+  const lipsyncInFlight = phaseLipsyncJobBusy(
+    stateSlice.lipsync_status,
+    stateSlice.lipsync_task_id,
+  );
 
-  const serverLipsyncInFlight = isPhaseLipsyncInFlight(stateSlice.lipsync_status);
-  const lipsyncInFlight = lipsyncing || serverLipsyncInFlight;
-
-  // Poll while in-flight — survives tab unmount/remount because status lives in state.json.
+  // Poll while server reports in-flight — survives tab unmount/remount.
   useEffect(() => {
     if (!lipsyncInFlight) return;
     void refreshAll();
@@ -448,37 +427,6 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     }, 15_000);
     return () => clearInterval(id);
   }, [lipsyncInFlight, activeScope.value.event_id, phase]);
-
-  // Terminal transitions: error, or new lipsync file landed (mtime / status).
-  useEffect(() => {
-    if (!lipsyncInFlight && !lipsyncing) return;
-    const status = stateSlice.lipsync_status;
-    if (status && status.startsWith('error:')) {
-      setLipsyncing(false);
-      setStatusMsg(`✗ Lipsync failed: ${status.replace(/^error:\s*/, '')}`);
-      return;
-    }
-    if (status === 'done' || status === 'needs_manual_visual_review') {
-      const currentMtime = stateSlice.lipsync_mtime ?? null;
-      const before = lipsyncMtimeBefore.current;
-      if (
-        stateSlice.lipsync_file &&
-        (before === null || currentMtime === null || currentMtime !== before)
-      ) {
-        setLipsyncing(false);
-        lipsyncMtimeBefore.current = null;
-        setStatusMsg('✓ Lipsync complete — video ready.');
-      }
-      return;
-    }
-    const currentMtime = stateSlice.lipsync_mtime ?? null;
-    const before = lipsyncMtimeBefore.current;
-    if (currentMtime !== null && before !== null && currentMtime !== before) {
-      setLipsyncing(false);
-      lipsyncMtimeBefore.current = null;
-      setStatusMsg('✓ Lipsync complete — video ready.');
-    }
-  }, [stateSlice.lipsync_mtime, stateSlice.lipsync_status, stateSlice.lipsync_file, lipsyncInFlight, lipsyncing]);
 
   // Track latest watercolor cues in a ref so the postMessage handler can read
   // current cue state without stale closure (handler deps = [phase] only).
@@ -566,51 +514,20 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     }
   };
 
-  const onBaseClipChange = (clipId: string) => {
-    setSelectedBaseClip(clipId);
-    if (phase === 'b' && clipId) {
-      setStateSlice((s) => ({ ...s, cedric_base_clip_id: clipId }));
-      void pathappPatch(activeScope.value, 'v2_module_patch', {
-        field: 'phase_b_cedric_base_clip_id',
-        value: clipId,
-      });
-    } else if (phase === 'a' && clipId) {
-      setStateSlice((s) => ({ ...s, chipper_sitting_clip_id: clipId }));
-      void pathappPatch(activeScope.value, 'v2_module_patch', {
-        field: 'phase_a_chipper_sitting_clip_id',
-        value: clipId,
-      });
-    }
-  };
-
   const onSendForLipsync = async () => {
-    // Phase A: single Arlo base clip carries dialogue (no fly-in/fly-out bookends).
-    const lipsyncClipId =
-      phase === 'a'
-        ? stateSlice.chipper_sitting_clip_id ?? selectedBaseClip
-        : selectedBaseClip;
-    if (!lipsyncClipId) {
-      setStatusMsg(
-        phase === 'a'
-          ? 'Pick an Arlo base clip first (Regen base clip or picker below).'
-          : 'Pick a base clip first.',
-      );
+    // Phase A + B: Avatar Pro — canonical still + voice stem (no base-clip loop).
+    if (!stateSlice.voice_stem_file) {
+      setStatusMsg(`Generate a Phase ${phase.toUpperCase()} voice stem first (Regen Audio).`);
       return;
     }
     setBusyAction('lipsync');
-    setStatusMsg('Sending for lipsync…');
+    setStatusMsg('Sending for Avatar Pro lipsync…');
     const lipsyncEp = phase === 'a' ? 'phase_a_lipsync' : 'phase_b_lipsync';
-    const res = await pathappPatch(activeScope.value, lipsyncEp, {
-      phase,
-      base_clip_id: lipsyncClipId,
-    });
+    const res = await pathappPatch(activeScope.value, lipsyncEp, { phase }, { fetchTimeoutMs: 180_000 });
     setBusyAction(null);
     if (res.ok) {
       if (res.status === 202) {
-        // Kling is processing in the background — record mtime before submit
-        // so we can detect when the new file lands, then start polling.
-        lipsyncMtimeBefore.current = stateSlice.lipsync_mtime ?? null;
-        setLipsyncing(true);
+        await refreshAll();
         setStatusMsg(phaseLipsyncProgressMessage(phase));
       } else {
         setStatusMsg('✓ Lipsync complete');
@@ -619,14 +536,18 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     } else if (
       res.status === 409 &&
       (res.error_code === 'PHASE_A_LIPSYNC_RUNNING' ||
+        res.error_code === 'PHASE_LIPSYNC_RUNNING' ||
         res.error_message?.includes('already running') ||
         (res.data as { error_code?: string; error_message?: string } | undefined)?.error_code ===
           'PHASE_A_LIPSYNC_RUNNING' ||
         (res.data as { error_message?: string } | undefined)?.error_message?.includes('already running'))
     ) {
-      lipsyncMtimeBefore.current = stateSlice.lipsync_mtime ?? null;
-      setLipsyncing(true);
+      await refreshAll();
       setStatusMsg(phaseLipsyncProgressMessage(phase));
+    } else if (res.error_code === 'CLIENT_BUNDLE_STALE') {
+      setStatusMsg(
+        `✗ ${res.error ?? 'Storyboard updated — hard refresh (Cmd+Shift+R), then Send for Avatar Pro again.'}`,
+      );
     } else {
       const data = res.data as { hint?: string; error_message?: string } | undefined;
       setStatusMsg(
@@ -713,21 +634,21 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   };
 
   const onMixAudio = async () => {
+    if (phase !== 'b') return;
     const presetId = stateSlice.ambient_preset_id?.trim();
     if (!presetId) {
       setStatusMsg('✗ Pick an ambient bed preset first (dropdown above).');
       return;
     }
     setBusyAction('mix');
-    setStatusMsg('Mix Audio (Phase A auto-fires stitch)…');
-    const mixEp = phase === 'a' ? 'phase_a_mix_audio' : 'phase_b_mix_audio';
-    const res = await pathappPatch(activeScope.value, mixEp, {
-      phase,
+    setStatusMsg('Mix Audio…');
+    const res = await pathappPatch(activeScope.value, 'phase_b_mix_audio', {
+      phase: 'b',
       ambient_preset_id: presetId,
     });
     setBusyAction(null);
     if (res.ok) {
-      setStatusMsg('✓ Mix complete (Phase A stitch auto-fired)');
+      setStatusMsg('✓ Mix complete');
       await refreshAll();
     } else {
       setStatusMsg(`✗ Mix HTTP ${res.status}: ${res.error ?? ''}`);
@@ -736,11 +657,11 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
 
   const onPhaseARestitch = async () => {
     setBusyAction('restitch');
-    setStatusMsg('Re-stitching lipsync + ambient…');
+    setStatusMsg('Normalizing lipsync for export preview…');
     const res = await pathappPatch(activeScope.value, 'phase_a_restitch', {});
     setBusyAction(null);
     if (res.ok) {
-      setStatusMsg('✓ Phase A re-stitched');
+      setStatusMsg('✓ Phase A normalized (dry — ambient added in Stitcher)');
       await refreshAll();
     } else {
       setStatusMsg(`✗ Restitch HTTP ${res.status}: ${res.error ?? ''}`);
@@ -751,11 +672,11 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     setBusyAction('regen_base');
     setStatusMsg('Kling idle base clip (~6 min)…');
     const res = await pathappPatch(activeScope.value, 'phase_a_regen_base_clip', {
-      clip_id: stateSlice.chipper_sitting_clip_id ?? selectedBaseClip ?? 'arlo_idle_wizard_desk_v2',
+      clip_id: stateSlice.chipper_sitting_clip_id ?? selectedBaseClip ?? PHASE_A_ARLO_BASE_CLIP_CANONICAL,
     });
     setBusyAction(null);
     if (res.ok && res.status === 202) {
-      setStatusMsg('⏳ Base clip regenerating — Send for Lipsync when done');
+      setStatusMsg('⏳ Base clip regenerating — Send for Avatar Pro when done');
     } else if (res.ok) {
       setStatusMsg('✓ Base clip regen complete');
       await refreshAll();
@@ -774,7 +695,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           ? { name: lipsyncFile, label: 'lipsync' as const, kind: 'lipsync' as const }
           : null;
     if (!overlayVideo) {
-      setStatusMsg('No preview video yet — run Send for Lipsync first.');
+      setStatusMsg('No preview video yet — run Send for Avatar Pro first.');
       return;
     }
     if (!priorityAudio) {
@@ -802,15 +723,9 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   };
 
   const onExportToStitcher = async () => {
-    if (phase === 'a' && stitchedPreviewStale(stateSlice)) {
-      setStatusMsg(
-        'Stitched preview is stale — run Mix Audio / Re-stitch before Export to Stitcher.',
-      );
-      return;
-    }
-    const srcFile = phase === 'a' ? stateSlice.stitched_file : stateSlice.lipsync_file;
+    const srcFile = phase === 'a' ? (stateSlice.lipsync_file ?? stateSlice.stitched_file) : stateSlice.lipsync_file;
     if (!srcFile) {
-      setStatusMsg(`No ${phase === 'a' ? 'stitched' : 'lipsync'} mp4 yet — finish the producer flow first.`);
+      setStatusMsg(`No ${phase === 'a' ? 'lipsync' : 'lipsync'} mp4 yet — finish the producer flow first.`);
       return;
     }
     setBusyAction('export');
@@ -821,13 +736,31 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     );
     const slotKey = phase === 'a' ? 'phase_a' : 'phase_b';
 
-    const res = await pathappPatch<{ job_name?: string; video_path?: string; overlay_baked?: boolean }>(
+    const res = await pathappPatch<{
+      job_name?: string;
+      video_path?: string;
+      overlay_baked?: boolean;
+      warnings?: string[];
+    }>(
       activeScope.value,
       'phase_export_stitcher',
       { phase },
     );
     setBusyAction(null);
     if (res.ok) {
+      if (stitchExportKeptExistingWarning(res.data?.warnings)) {
+        setStatusMsg('✗ Export did not replace stitch slot — stored video is newer');
+        return;
+      }
+      writePersistedTrackSlot(
+        stitchJobSessionKey(
+          activeScope.value.event_id,
+          activeProjectType.value,
+          activeMilestoneId.value,
+        ),
+        slotKey,
+      );
+      notifyStitchSlotExportApplied(activeScope.value.event_id, slotKey);
       stitcherRefreshTick.value += 1;
       const baked = res.data?.overlay_baked ? ' (overlays baked in)' : '';
       setStatusMsg(`✓ Exported to Stitcher → ${slotKey} slot${baked} (open Stitcher tab to preview/bake)`);
@@ -1125,7 +1058,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     }
   };
 
-  const priorityAudio = priorityAudioFileForPhase(phase, stateSlice);
+  const priorityAudio = priorityAudioFileForPhase(stateSlice);
   const waveformAudio =
     stemTrimMode && stateSlice.voice_stem_file
       ? { name: stateSlice.voice_stem_file, label: 'stem' as const }
@@ -1144,14 +1077,21 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     Boolean(lipsyncFile) &&
     !lipsyncInFlight;
   const hasStemCut = stemCutEndMs > stemCutStartMs + 250;
+  const terminalLipsyncBanner = phaseLipsyncTerminalBanner(stateSlice.lipsync_status);
   const displayStatusMsg =
     lipsyncInFlight && !statusMsg?.startsWith('✗')
       ? phaseLipsyncProgressMessage(phase)
-      : statusMsg;
+      : (statusMsg ?? terminalLipsyncBanner);
   const activeCue =
     activeCueId
       ? (stateSlice.watercolor_cues ?? []).find((c) => c.id === activeCueId) ?? null
       : null;
+  const linkedVideoMatchesWaveformAudio = Boolean(
+    previewVideo &&
+      waveformAudio &&
+      previewVideo.kind === 'lipsync' &&
+      linkedMediaSameFilename(previewVideo.name, waveformAudio.name),
+  );
 
   return (
     <div
@@ -1325,7 +1265,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
         ) : null}
 
         {/* Audio waveform — WaveSurfer v7 timeline (LD-330 / LD-472).
-            Priority: lipsync > mixed > stem (resolved by priorityAudioFile).
+            Priority: lipsync > mixed > stem (resolved by priorityAudioFileForPhase).
             stemTrimMode forces stem for cut editing. */}
         <WaveformTimeline
           audioSrc={waveformAudio ? fileUrl(waveformAudio.name) : null}
@@ -1341,7 +1281,13 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           stemCutEndMs={stemCutEndMs}
           stemCutEditable={canEditStemCut}
           onStemCutChange={onStemCutChange}
-          {...(stemTrimMode ? {} : { linkedVideo: videoRef })}
+          {...(stemTrimMode
+            ? {}
+            : {
+                linkedVideo: videoRef,
+                linkedVideoFilename: previewVideo?.name ?? null,
+              })}
+          {...(linkedVideoMatchesWaveformAudio ? { linkedVideoMatchAudio: true } : {})}
           playbackControl={waveformPlaybackRef}
         />
         {activeCue && popoverAnchor ? (
@@ -1372,6 +1318,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           <span class="mn-dim">writes phase_{phase}_voice_stem_*.mp3</span>
         </div>
 
+        {phase === 'b' ? (
         <div class="mn-phase-ambient-section">
           <label class="mn-dim" for={`phase-${phase}-ambient`}>Ambient bed:</label>
           <select
@@ -1393,35 +1340,35 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             <span class="mn-dim">no presets in audio_library/ambient/</span>
           ) : null}
         </div>
+        ) : null}
 
-        {/* Action row: Base clip select + Send for Lipsync + Mix Audio + Export */}
+        {/* Action row: Phase A/B Avatar still chip + Send for Avatar Pro */}
         <div class="mn-phase-row">
-          <label class="mn-dim" for={`phase-${phase}-baseclip`}>Base clip:</label>
-          <select
-            id={`phase-${phase}-baseclip`}
-            data-testid={`phase-${phase}-baseclip-select`}
-            value={selectedBaseClip}
-            onChange={(e: Event) => onBaseClipChange((e.target as HTMLSelectElement).value)}
+          <span
+            class="mn-dim mn-phase-avatar-still-chip"
+            data-testid={`phase-${phase}-avatar-still-chip`}
           >
-            <option value="">— select —</option>
-            {phaseABaseClipOptions(baseClips).map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.id} ({c.duration_s ?? '?'}s)
-                </option>
-              ))}
-          </select>
+            {phase === 'a'
+              ? PHASE_A_ARLO_AVATAR_STILL_LABEL
+              : 'Cedric still (Avatar Pro) — canonical Jun 21 PNG'}
+          </span>
           <button
             type="button"
             class="mn-btn"
             data-testid={`phase-${phase}-send-lipsync-btn`}
             onClick={onSendForLipsync}
-            disabled={busyAction !== null || !selectedBaseClip || lipsyncInFlight}
+            disabled={
+              busyAction !== null ||
+              lipsyncInFlight ||
+              !stateSlice.voice_stem_file
+            }
+            title="Single Avatar Pro job on full voice stem (~10–50 min, billed per second). No segmented chunks."
           >
             {busyAction === 'lipsync'
               ? 'Sending…'
               : lipsyncInFlight
                 ? 'Lipsync in progress…'
-                : 'Send for Lipsync'}
+                : 'Send for Avatar Pro'}
           </button>
           {showRejectLipsync ? (
             <button
@@ -1435,7 +1382,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
               {busyAction === 'reject_lipsync' ? 'Rejecting…' : 'Reject lipsync'}
             </button>
           ) : null}
-          {phase === 'a' ? (
+          {phase === 'b' ? (
             <button
               type="button"
               class="mn-btn"
@@ -1443,7 +1390,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
               onClick={onMixAudio}
               disabled={busyAction !== null}
             >
-              {busyAction === 'mix' ? 'Mixing…' : 'Mix Audio (auto-stitch)'}
+              {busyAction === 'mix' ? 'Mixing…' : 'Mix Audio'}
             </button>
           ) : null}
           <button
@@ -1488,18 +1435,21 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             <>
               <strong>
                 {phase === 'a' && previewVideo.kind === 'stitched'
-                  ? 'Preview (canonical stitched — lipsync + ambient bed):'
+                  ? 'Preview (normalized dry lipsync — ambient added in Stitcher):'
                   : phase === 'a'
-                    ? 'Preview (lipsync — Re-stitch to add ambient bed):'
+                    ? 'Preview (lipsync — dry voice only):'
                     : 'Preview (lipsync + overlay cues):'}
               </strong>
-              <div class="mn-lipsync-video-wrapper">
+              <div
+                class="mn-lipsync-video-wrapper"
+                style={phaseWatercolorOverlayCssVars(phase)}
+              >
                 <video
                   ref={videoRef}
-                  muted
+                  muted={!linkedVideoMatchesWaveformAudio}
                   playsInline
                   preload="auto"
-                  class="mn-lipsync-preview-video"
+                  class={`mn-lipsync-preview-video ${PLAYBACK_VIDEO_ANTI_BANDING_CLASS}`}
                   src={fileUrl(previewVideo.name)}
                 />
                 {(stateSlice.watercolor_cues ?? [])
@@ -1517,9 +1467,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                     const opacity = Math.min(1.0, elapsed / 300);
 
                     if (isAnimation) {
-                      const animSrc =
-                        wcItem?.animation_url ??
-                        `${SERVER_BASE}/api/phase_b/watercolor/${encodeURIComponent(cue.watercolor_key)}`;
+                      const animSrc = watercolorOverlaySrc(cue.watercolor_key, wcItem, { animation: true });
                       return (
                         <WatercolorAnimOverlay
                           key={cue.id}
@@ -1531,9 +1479,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                       );
                     }
 
-                    const pngSrc =
-                      wcItem?.thumb_url ??
-                      `${SERVER_BASE}/api/phase_b/watercolor/${encodeURIComponent(cue.watercolor_key)}`;
+                    const pngSrc = watercolorOverlaySrc(cue.watercolor_key, wcItem);
 
                     return (
                       <img
@@ -1550,12 +1496,12 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
               {phase === 'a' && stateSlice.stitched_file && stitchedPreviewStale(stateSlice) ? (
                 <div class="mn-phase-stitched-stale mn-dim" data-testid="phase-a-stitched-stale">
                   Stitched file ({stateSlice.stitched_file}) is older than current lipsync.
-                  Run <strong>Re-stitch</strong> to refresh the canonical preview.
+                  Run <strong>Normalize for export</strong> to refresh the preview.
                 </div>
               ) : null}
               {phase === 'a' && !stateSlice.stitched_file && lipsyncFile ? (
                 <div class="mn-dim" data-testid="phase-a-stitched-placeholder">
-                  Run <strong>Re-stitch</strong> after lipsync to bake the ambient bed into the canonical preview.
+                  Export to Stitcher adds the ambient bed on the Phase A slot.
                 </div>
               ) : null}
             </>
@@ -1564,13 +1510,13 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
               class="mn-phase-lipsync-placeholder mn-dim"
               data-testid={`phase-${phase}-lipsync-placeholder`}
             >
-              Lipsync preview appears here after &quot;Send for Lipsync&quot; completes.
+              Lipsync preview appears here after &quot;Send for Avatar Pro&quot; completes.
             </div>
           )}
         </div>
 
-        {/* Phase A 3-clip section — only when phase==='a' (LD PHASE_A_THREE_CLIP_HANDLING_V1).
-            Phase B is single-clip via the existing baseclip select above. */}
+        {/* Phase A clip section — fly-in/fly-out bookends (LD PHASE_A_THREE_CLIP_HANDLING_V1).
+            Phase A/B lipsync uses Avatar Pro on canonical still + voice stem. */}
         {phase === 'a' ? (
           <div class="mn-phase-a-clip-section" data-testid="phase-a-clip-section">
             <strong>Phase A clips</strong>
@@ -1611,9 +1557,9 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                 data-testid="phase-a-restitch-btn"
                 onClick={onPhaseARestitch}
                 disabled={busyAction !== null}
-                title="Re-stitch raw lipsync + ambient bed into phase_a_stitched_file"
+                title="Normalize dry lipsync into phase_a_stitched_file (no ambient)"
               >
-                {busyAction === 'restitch' ? 'Re-stitching…' : 'Re-stitch (Phase A)'}
+                {busyAction === 'restitch' ? 'Normalizing…' : 'Normalize for export'}
               </button>
               <button
                 type="button"
@@ -1674,7 +1620,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                   {/* thumb_url is always a static PNG image (server resolves base PNG for animations).
                       This avoids the black-first-frame problem with animation MP4s in thumbnails. */}
                   <img
-                    src={wc.thumb_url}
+                    src={watercolorFileUrl(wc.key)}
                     alt={wc.filename}
                     class="mn-phase-watercolor-thumb"
                     loading="lazy"
@@ -1712,7 +1658,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
         </div>
 
         <p class="mn-readonly-banner">
-          S4 wired: Suggest Script · Send for Lipsync · Mix Audio (Phase A) ·
+          S4 wired: Suggest Script · Send for Avatar Pro · Export (Phase A dry → Stitcher ambient) ·
           Export to Stitcher · Animate-this. WaveSurfer waveform + drag-drop
           watercolor onto timeline = S5 polish.
         </p>

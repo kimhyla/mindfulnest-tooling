@@ -85,6 +85,23 @@ except ImportError:
 # Status "draft"    = not yet approved; do not use in production pipeline.
 # Once approved, lock as Directus LD with key MAGIC_STYLE_{NAME}_V{N}.
 
+from magic_render_contract import (
+    BRIGHT_STONE_AMB_BLUR_YX,
+    BRIGHT_STONE_AMB_GAIN_MULT,
+    BRIGHT_STONE_AMB_MIX,
+    BRIGHT_STONE_LUM_THRESHOLD,
+    bright_stone_ambient_from_lums,
+    mixed_path_sparkle_guard_from_lums,
+    sparkle_strength_for_bg_lum,
+)
+
+
+def composite_screen_rgb(bg_arr: np.ndarray, trail: np.ndarray) -> np.ndarray:
+    """LD-469 RGB screen composite — magic shines through without additive clip on bright stone."""
+    bg = bg_arr.astype(np.float32)
+    return np.clip(255.0 - (255.0 - bg) * (255.0 - trail) / 255.0, 0, 255).astype(np.uint8)
+
+
 STYLES = {
     "tessa_ori": {
         # Palette: golden-white Ori spirit-light (same as composite_magic_overlay.py v4)
@@ -247,6 +264,8 @@ class MagicCompositor:
 
         self.path_pts = self._aspect_correct(self.path_pts, self._path_authored_against)
 
+        self._path_bg_lum = 0.0
+        self._bg_lum_sample: np.ndarray | None = np.array(self.bg_img).astype(np.float32)
         self._gain = self._calibrate_brightness()
         self._particles = self._build_particles()
         print(f"  {len(self._particles)} particles placed (seed={seed})", flush=True)
@@ -350,7 +369,103 @@ class MagicCompositor:
         self._maybe_register(output_path, asset_type='magic_clip', kind='video')
         return output_path
 
+    def render_ld469_on_background(self, output_path=None) -> str:
+        """LD-469 on still/image: trail at gain=1.0, RGB screen onto self.bg_img.
+
+        Same trail + composite contract as handle_magic_video (not legacy additive).
+        """
+        if output_path is None:
+            output_path = os.path.join(self.output_dir, f"magic_{self.label}.mp4")
+        bg_arr = np.array(self.bg_img.convert("RGB")).astype(np.float32)
+        saved_gain = self._gain
+        self._gain = 1.0
+        print(
+            f"Rendering {self.n_frames} LD-469 frames (gain=1.0, screen_rgb, path_interp={self.path_interp})...",
+            flush=True,
+        )
+        try:
+            frames = []
+            for i in range(self.n_frames):
+                trail = self._make_trail(i)
+                frames.append(composite_screen_rgb(bg_arr, trail))
+                if i % 12 == 0:
+                    t = i / (self.n_frames - 1) if self.n_frames > 1 else 0
+                    print(f"  frame {i}/{self.n_frames}  t={t:.2f}", flush=True)
+            print("Writing video...", flush=True)
+            iio.imwrite(output_path, frames, plugin="pyav", codec="h264", fps=self.fps)
+            print(f"Done → {output_path}  ({os.path.getsize(output_path):,} bytes)", flush=True)
+        finally:
+            self._gain = saved_gain
+        self._maybe_register(output_path, asset_type='magic_clip', kind='video')
+        return output_path
+
     # ── Internal ────────────────────────────────────────────────────────────
+
+    def _sample_path_luminance(self, bg_source) -> float:
+        """Average Rec.601 luminance along path on PIL image or float32 (H,W,3) array."""
+        lums = []
+        for i in range(20):
+            t = i / 19
+            fx, fy = self._path_at(t)
+            px = min(self.W - 1, max(0, int(fx * self.W)))
+            py = min(self.H - 1, max(0, int(fy * self.H)))
+            if isinstance(bg_source, np.ndarray):
+                r, g, b = bg_source[py, px]
+            else:
+                r, g, b = bg_source.getpixel((px, py))
+            lums.append(0.299 * r + 0.587 * g + 0.114 * b)
+        return float(np.mean(lums))
+
+    def set_path_luminance_from_array(self, bg_arr: np.ndarray) -> None:
+        """Update path luminance from a decoded video frame (magic_video uses black ref at init)."""
+        self._bg_lum_sample = bg_arr.astype(np.float32)
+        lums = []
+        for i in range(20):
+            t = i / 19
+            fx, fy = self._path_at(t)
+            px = min(self.W - 1, max(0, int(fx * self.W)))
+            py = min(self.H - 1, max(0, int(fy * self.H)))
+            r, g, b = self._bg_lum_sample[py, px]
+            lums.append(0.299 * r + 0.587 * g + 0.114 * b)
+        self._path_bg_lum = float(np.mean(lums))
+        bright_frac = sum(1 for x in lums if x > BRIGHT_STONE_LUM_THRESHOLD) / len(lums)
+        mode = "bright_stone" if bright_stone_ambient_from_lums(lums) else "standard"
+        print(
+            f"  Path bg luminosity (video frame): mean={self._path_bg_lum:.0f}/255 "
+            f"bright_frac={bright_frac:.2f} → {mode}",
+            flush=True,
+        )
+
+    def _pixel_luminance(self, px: int, py: int) -> float:
+        if self._bg_lum_sample is None:
+            return 0.0
+        r, g, b = self._bg_lum_sample[py, px]
+        return 0.299 * r + 0.587 * g + 0.114 * b
+
+    def _bright_stone_ambient(self) -> bool:
+        """Widen ambient pool when a meaningful share of the path crosses bright stone."""
+        if self._bg_lum_sample is None:
+            return False
+        lums = []
+        for i in range(20):
+            t = i / 19
+            fx, fy = self._path_at(t)
+            px = min(self.W - 1, max(0, int(fx * self.W)))
+            py = min(self.H - 1, max(0, int(fy * self.H)))
+            lums.append(self._pixel_luminance(px, py))
+        return bright_stone_ambient_from_lums(lums)
+
+    def _mixed_path_sparkle_guard(self) -> bool:
+        if self._bg_lum_sample is None:
+            return False
+        lums = []
+        for i in range(20):
+            t = i / 19
+            fx, fy = self._path_at(t)
+            px = min(self.W - 1, max(0, int(fx * self.W)))
+            py = min(self.H - 1, max(0, int(fy * self.H)))
+            lums.append(self._pixel_luminance(px, py))
+        return mixed_path_sparkle_guard_from_lums(lums)
 
     def _calibrate_brightness(self) -> float:
         """
@@ -359,15 +474,8 @@ class MagicCompositor:
         Dark bg (lum~50) → ~0.85x  (magic shows easily, no boost needed)
         Bright bg (lum~180) → ~1.55x (needs extra push to show on stone floor)
         """
-        lums = []
-        for i in range(20):
-            t = i / 19
-            fx, fy = self._path_at(t)
-            px = min(self.W - 1, int(fx * self.W))
-            py = min(self.H - 1, int(fy * self.H))
-            r, g, b = self.bg_img.getpixel((px, py))
-            lums.append(0.299*r + 0.587*g + 0.114*b)
-        avg = float(np.mean(lums))
+        avg = self._sample_path_luminance(self.bg_img)
+        self._path_bg_lum = avg
         mult = float(np.clip(0.7 + (avg / 128.0) * 0.6, 0.5, 2.0))
         print(f"  Path bg luminosity: {avg:.0f}/255 → gain multiplier {mult:.2f}", flush=True)
         return mult
@@ -406,6 +514,19 @@ class MagicCompositor:
             return np.zeros((H, W, 3), dtype=np.float32)
 
         g = self._gain
+        bright_ambient = self._bright_stone_ambient()
+        mixed_guard = self._mixed_path_sparkle_guard()
+        amb_blur_yx = list(BRIGHT_STONE_AMB_BLUR_YX) if bright_ambient else s["ambient_blur_yx"]
+        amb_mix = BRIGHT_STONE_AMB_MIX if bright_ambient else s["ambient_mix"]
+        amb_gain_mult = BRIGHT_STONE_AMB_GAIN_MULT if bright_ambient else 1.0
+        if mixed_guard and not bright_ambient:
+            # Softer ambient pool on mixed paths (character + ground) — less harsh on fur.
+            amb_blur_yx = list(BRIGHT_STONE_AMB_BLUR_YX)
+            amb_mix = max(s["ambient_mix"], BRIGHT_STONE_AMB_MIX * 0.55)
+            amb_gain_mult = max(1.0, BRIGHT_STONE_AMB_GAIN_MULT * 0.75)
+        # Full bright-stone OR mixed face/stone crossings: ambient river only, no sparkle dots.
+        suppress_all_sparkle = bright_ambient or mixed_guard
+
         sp_acc  = np.zeros((H, W, 3), dtype=np.float32)
         amb_acc = np.zeros((H, W, 3), dtype=np.float32)
 
@@ -426,23 +547,38 @@ class MagicCompositor:
             if not (0 <= px < W and 0 <= py < H):
                 continue
 
-            val = alpha * s["sparkle_gain"] * g
-            r   = dsz
-            y0, y1 = max(0, py-r), min(H, py+r+1)
-            x0, x1 = max(0, px-r), min(W, px+r+1)
-            for c in range(3):
-                sp_acc[y0:y1, x0:x1, c] += col[c] * val / 255.0
+            if not suppress_all_sparkle:
+                px_lum = self._pixel_luminance(px, py)
+                sparkle_scale = sparkle_strength_for_bg_lum(
+                    px_lum,
+                    bright_stone_mode=False,
+                )
+                if sparkle_scale > 0.01:
+                    val = alpha * s["sparkle_gain"] * g * sparkle_scale
+                    r   = dsz
+                    y0, y1 = max(0, py-r), min(H, py+r+1)
+                    x0, x1 = max(0, px-r), min(W, px+r+1)
+                    for c in range(3):
+                        sp_acc[y0:y1, x0:x1, c] += col[c] * val / 255.0
 
-            av = alpha * s["ambient_gain"] * g
+            av = alpha * s["ambient_gain"] * g * amb_gain_mult
+            if bright_ambient or mixed_guard:
+                px_lum = self._pixel_luminance(px, py)
+                if px_lum > BRIGHT_STONE_LUM_THRESHOLD:
+                    amb_scale = max(0.0, min(1.0, (170.0 - px_lum) / 40.0))
+                    av *= amb_scale
             for c in range(3):
                 amb_acc[py, px, c] += col[c] * av / 255.0
 
-        sp_bl = gaussian_filter(sp_acc, sigma=[s["sparkle_blur"], s["sparkle_blur"], 0])
-        sy, sx = s["ambient_blur_yx"]
+        if suppress_all_sparkle:
+            sp_bl = np.zeros((H, W, 3), dtype=np.float32)
+        else:
+            sp_bl = gaussian_filter(sp_acc, sigma=[s["sparkle_blur"], s["sparkle_blur"], 0])
+        sy, sx = amb_blur_yx
         for c in range(3):
             amb_acc[:, :, c] = gaussian_filter(amb_acc[:, :, c], sigma=[sy, sx])
 
-        return np.clip(sp_bl + amb_acc * s["ambient_mix"], 0, 255)
+        return np.clip(sp_bl + amb_acc * amb_mix, 0, 255)
 
     def _composite(self, trail: np.ndarray) -> Image.Image:
         bg = np.array(self.bg_img).astype(np.float32)

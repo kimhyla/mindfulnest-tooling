@@ -3,33 +3,24 @@
 // CLIENT-SIDE half of the scope guard. The server-side half (HTTP 409 on
 // mismatched event_id) lands in Session 1.5.
 //
-// EVENT_PIN_DURABILITY_V1 + SCOPE_URL_AUTHORITY_V1 + SCOPE_DEEP_LINK_DURABILITY_V1 (2026-06):
-//   - When ?event=<id> is present, the URL is authoritative — never silently
-//     fall back to Event_1 or the server's stale startup pin (avoids scope_mismatch 409).
-//   - Tabs do not mount until POST /api/event/load confirms the server pin
-//     matches the resolved target event_id.
-//   - Server persists last-loaded event in Production/server_event_pin.json so
-//     restarts reopen the same event without drift.
+// SCOPE_DEEP_LINK_DURABILITY_V1 + SCOPE_RESTART_RECONCILE_V1: boot pin delegates
+// to reconcileClientScope (shared with ServerRehydrateWatcher) — POST event/load
+// before tabs fetch scoped state; avoids scope_mismatch 409 on URL ?event= drift.
 
 import { useEffect, useState } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
 import {
   activeScope,
-  activeVideoRole,
   activeProjectType,
   activeMilestoneId,
   makeScope,
+  readUrlMilestoneId,
   scopeKey,
 } from '../state/scope';
-import { READ_ENDPOINTS } from '../api/endpoints';
-import {
-  pathappPatch,
-  loadEvent,
-  emitScopeEventChanged,
-  emitScopeHealed,
-  ensureServerPinnedTo,
-  noteClientPinnedEvent,
-} from '../api/client';
+import { noteClientPinnedEvent } from '../api/client';
+import { reconcileClientScope } from '../state/scopeReconcile';
+import { confirmServerMilestoneScope } from '../state/milestoneScopeGate';
+import { setScopeReady } from '../state/scopeReady';
 
 export interface ScopeBoundaryProps {
   children: ComponentChildren;
@@ -43,41 +34,6 @@ declare global {
   }
 }
 
-function readUrlEventId(): string | null {
-  try {
-    return new URLSearchParams(window.location.search).get('event');
-  } catch {
-    return null;
-  }
-}
-
-function resolveLocalFallbackWithoutUrl(): string {
-  const fromBody = document.body.getAttribute('data-event-id');
-  if (fromBody) return fromBody;
-  if (window.__MN_EVENT_ID__) return window.__MN_EVENT_ID__;
-  return 'Event_1';
-}
-
-interface EventCurrentResponse {
-  ok?: boolean;
-  event_id?: string | null;
-  event_generation?: number;
-  active_video?: string | null;
-  partition_keys?: string[];
-  scope_type?: string;
-  active_milestone_id?: string | null;
-}
-
-async function fetchEventCurrent(): Promise<EventCurrentResponse | null> {
-  try {
-    const res = await fetch(READ_ENDPOINTS.event_current);
-    if (!res.ok) return null;
-    return (await res.json()) as EventCurrentResponse;
-  } catch {
-    return null;
-  }
-}
-
 export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
   const [resolved, setResolved] = useState(false);
   const [pinError, setPinError] = useState<string | null>(null);
@@ -86,6 +42,7 @@ export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
     let cancelled = false;
     (async () => {
       setPinError(null);
+      setScopeReady(false, 'scope-boundary-boot');
 
       if (forceEventId) {
         if (!cancelled) {
@@ -94,158 +51,61 @@ export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
           activeMilestoneId.value = null;
           document.body.setAttribute('data-resolved-scope', scopeKey(activeScope.value));
           document.body.setAttribute('data-active-project-type', 'event');
+          noteClientPinnedEvent(forceEventId);
+          setScopeReady(true, 'scope-boundary-force');
           setResolved(true);
         }
         return;
       }
 
-      const urlEventId = readUrlEventId();
-      const current = await fetchEventCurrent();
+      const result = await reconcileClientScope({ source: 'scope-boundary-boot' });
       if (cancelled) return;
 
-      let serverEventId = (
-        current && typeof current.event_id === 'string' && current.event_id
-      ) ? current.event_id : null;
-      let resolvedGeneration = (
-        typeof current?.event_generation === 'number'
-      ) ? current.event_generation : 1;
-      let serverActiveVideo = current?.active_video ?? null;
-      let serverScopeType = current?.scope_type;
-      let serverMilestoneId = current?.active_milestone_id;
-
-      // Target: URL wins when present (SCOPE_URL_AUTHORITY_V1).
-      let targetEventId = urlEventId ?? serverEventId ?? resolveLocalFallbackWithoutUrl();
-
-      const pinTarget = async (eventId: string): Promise<boolean> => {
-        if (serverEventId === eventId) {
-          return ensureServerPinnedTo(eventId);
+      if (!result.ok) {
+        if (result.pinError) {
+          setPinError(result.pinError);
         }
-        const loadRes = urlEventId
-          ? await loadEvent(urlEventId)
-          : await loadEvent(eventId);
-        if (!loadRes.ok || !loadRes.data?.event_id) {
-          return false;
-        }
-        serverEventId = loadRes.data.event_id;
-        resolvedGeneration = loadRes.data.event_generation;
-        noteClientPinnedEvent(loadRes.data.event_id);
-        emitScopeEventChanged({
-          event_id: loadRes.data.event_id,
-          event_generation: loadRes.data.event_generation,
-          scope_key: scopeKey(makeScope(loadRes.data.event_id, null, loadRes.data.event_generation)),
-          source: urlEventId ? 'scope-boundary-url-bootstrap' : 'scope-boundary-pin',
-        });
-        const refreshed = await fetchEventCurrent();
-        if (refreshed) {
-          serverActiveVideo = refreshed.active_video ?? null;
-          serverScopeType = refreshed.scope_type;
-          serverMilestoneId = refreshed.active_milestone_id;
-          if (typeof refreshed.event_generation === 'number') {
-            resolvedGeneration = refreshed.event_generation;
-          }
-        }
-        return ensureServerPinnedTo(eventId);
-      };
-
-      let pinOk = await pinTarget(targetEventId);
-      if (!pinOk && urlEventId) {
-        // One retry — server may have been mid-restart.
-        pinOk = await pinTarget(urlEventId);
-        targetEventId = urlEventId;
-      }
-
-      if (!pinOk) {
-        if (urlEventId) {
-          if (!cancelled) {
-            setPinError(
-              `Could not pin server to ${urlEventId}. `
-              + 'Hard-refresh or pick the event again from the Project menu.',
-            );
-            document.body.setAttribute('data-scope-pin-failed', urlEventId);
-          }
-          return;
-        }
-        if (serverEventId) {
-          targetEventId = serverEventId;
-          pinOk = await ensureServerPinnedTo(targetEventId);
-        }
-      }
-
-      if (!pinOk) {
-        if (!cancelled) {
-          setPinError(
-            `Could not confirm server scope for ${targetEventId}. `
-            + 'Hard-refresh and try again.',
-          );
-        }
+        setScopeReady(false, 'scope-boundary-pin-fail');
         return;
       }
 
-      if (cancelled) return;
-
-      activeScope.value = makeScope(targetEventId, null, resolvedGeneration);
-
-      let milestoneId: string | null = null;
-      if (serverScopeType === 'milestone' && typeof serverMilestoneId === 'string' && serverMilestoneId) {
-        milestoneId = serverMilestoneId;
-      } else {
-        try {
-          const urlMs = new URLSearchParams(window.location.search).get('milestone');
-          if (urlMs) {
-            const loadRes = await pathappPatch<{ ok?: boolean }>(
-              activeScope.value,
-              'milestone_load',
-              { milestone_id: urlMs },
-            );
-            if (loadRes.ok && loadRes.data?.ok) {
-              milestoneId = urlMs;
-              if (typeof loadRes.data === 'object' && loadRes.data !== null) {
-                const eg = (loadRes.data as { event_generation?: number }).event_generation;
-                if (typeof eg === 'number') {
-                  activeScope.value = makeScope(targetEventId, null, eg);
-                }
-              }
-            }
-          }
-        } catch (err) {
-          // eslint-disable-next-line no-console
-          console.warn('[ScopeBoundary] milestone URL bootstrap failed (event scope fallback):', err);
+      const needsMilestoneConfirm =
+        activeProjectType.value === 'milestone'
+        || Boolean(readUrlMilestoneId());
+      if (needsMilestoneConfirm) {
+        const confirmed = await confirmServerMilestoneScope(activeScope.value);
+        if (cancelled) return;
+        if (!confirmed.ok) {
+          setPinError(
+            'Milestone scope not loaded on server — wait a moment and reload, '
+            + 'or pick the milestone again from Project.',
+          );
+          setScopeReady(false, 'scope-boundary-milestone-fail');
           if (typeof window !== 'undefined') {
             window.dispatchEvent(
               new CustomEvent('mn:milestone-bootstrap-failed', {
                 detail: {
-                  url_milestone_id: new URLSearchParams(window.location.search).get('milestone'),
-                  error: String(err),
+                  url_milestone_id: readUrlMilestoneId(),
+                  error: confirmed.lastError,
                 },
               }),
             );
           }
+          return;
         }
       }
 
-      if (milestoneId) {
-        activeProjectType.value = 'milestone';
-        activeMilestoneId.value = milestoneId;
-        document.body.setAttribute('data-active-project-type', 'milestone');
-      } else {
-        activeProjectType.value = 'event';
-        activeMilestoneId.value = null;
-        document.body.setAttribute('data-active-project-type', 'event');
-      }
+      if (cancelled) return;
 
-      if (serverActiveVideo && typeof serverActiveVideo === 'string') {
-        activeVideoRole.value = serverActiveVideo;
-      }
+      setScopeReady(true, 'scope-boundary-pin-ok');
       document.body.setAttribute('data-resolved-scope', scopeKey(activeScope.value));
-      document.body.removeAttribute('data-scope-pin-failed');
-      noteClientPinnedEvent(targetEventId);
-      emitScopeHealed({ event_id: targetEventId, source: 'scope-boundary-pin-ok' });
       setResolved(true);
     })();
     return () => { cancelled = true; };
   }, [forceEventId]);
 
   if (pinError) {
+    const correctUrl = document.body.getAttribute('data-scope-correct-url');
     return (
       <div
         class="scope-boundary-error"
@@ -253,6 +113,13 @@ export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
         data-scope-pin-error={pinError}
       >
         {pinError}
+        {correctUrl ? (
+          <p style={{ marginTop: '0.75rem' }}>
+            <a href={correctUrl} class="mn-scope-boundary-open-correct-url">
+              Open {correctUrl}
+            </a>
+          </p>
+        ) : null}
       </div>
     );
   }

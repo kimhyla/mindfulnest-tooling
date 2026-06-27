@@ -30,6 +30,8 @@ def test_upload_to_hosting_prefers_filebin_and_requires_preflight(monkeypatch, t
             "sha256": "abc",
         }
 
+    monkeypatch.setattr(lipsync_sender, "_upload_via_production_staging", lambda path: None)
+    monkeypatch.setattr(lipsync_sender, "_upload_to_r2_staging", lambda path, token: None)
     monkeypatch.setattr(lipsync_sender, "_upload_to_filebin", fake_filebin)
     monkeypatch.setattr(lipsync_sender, "_upload_to_catbox", lambda path: calls.append("catbox-upload") or None)
     monkeypatch.setattr(lipsync_sender, "_upload_to_uguu", lambda path: calls.append("uguu-upload") or None)
@@ -46,6 +48,8 @@ def test_upload_to_hosting_fails_closed_when_preflight_rejects_all(monkeypatch, 
     sample = tmp_path / "sample.mp4"
     sample.write_bytes(b"video-bytes")
 
+    monkeypatch.setattr(lipsync_sender, "_upload_via_production_staging", lambda path: None)
+    monkeypatch.setattr(lipsync_sender, "_upload_to_r2_staging", lambda path, token: None)
     monkeypatch.setattr(lipsync_sender, "_upload_to_filebin", lambda path: "https://filebin.net/bin/sample.mp4")
     monkeypatch.setattr(lipsync_sender, "_upload_to_catbox", lambda path: "https://files.catbox.moe/sample.mp4")
     monkeypatch.setattr(lipsync_sender, "_upload_to_uguu", lambda path: None)
@@ -106,16 +110,28 @@ def test_wavespeed_lipsync_contract_records_no_resolution_parameter() -> None:
 
 
 def test_ui_failure_copy_does_not_promise_low_quality_fallback() -> None:
-    src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
-    assert "Data-URI fallback is disabled because it returns sub-720p output" in src
+    src = (TOOLS / "storyboard-v2" / "src" / "utils" / "bgPollHelpers.ts").read_text(encoding="utf-8")
+    assert "data-URI fallback did not complete" in src
     assert "We retry with embedded data when possible" not in src
 
 
 def test_ui_active_o3_jobs_reconciles_from_server_truth() -> None:
-    src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
-    assert "setActiveO3Jobs(collectActiveO3JobsFromBeats(initialBeats));" in src
-    assert "setActiveO3Jobs(collectActiveO3JobsFromBeats(nextBeats));" in src
-    assert "...collectActiveO3JobsFromBeats(initialBeats), ...prev" not in src
-    assert "...collectActiveO3JobsFromBeats(nextBeats), ...prev" not in src
-    assert "'o3_running'" in src
-    assert "function beatO3JobLooksRunning" in src
+    store_src = (TOOLS / "storyboard-v2" / "src" / "state" / "bgSessionStore.ts").read_text(encoding="utf-8")
+    tab_src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
+    assert "activeO3PollJobsFromBeats(row.beats" in store_src
+    assert "applyO3SubmitPollLatch" in tab_src
+    assert "tryReattachO3JobFromSession" in tab_src
+    assert "o3JobStatusContract" in tab_src
+    contract = (TOOLS / "storyboard-v2" / "src" / "o3JobStatusContract.ts").read_text(encoding="utf-8")
+    assert "activeO3PollJobsFromBeats" in contract
+    assert "beatO3GenerateInFlight" in contract
+    assert "'o3_running'" in contract
+
+
+def test_ui_o3_submit_audit_hidden_when_job_not_active() -> None:
+    tab_src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
+    poll_src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgPollCoordinator.tsx").read_text(encoding="utf-8")
+    assert "bgO3SubmitAuditByBeat" in tab_src
+    assert "delete next[beatId]" in poll_src
+    assert "{busy && !stillInsert && (o3SubmitAudit || o3IntentSnapshot)" in tab_src
+    assert "o3SubmitPending" in tab_src

@@ -7,7 +7,11 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from beat_generator import _ffmpeg_concat_kling_clips_reencode  # noqa: E402
+from beat_generator import (  # noqa: E402
+    KLING_EXPORT_AUDIO_JOIN_FADE_MS,
+    KLING_EXPORT_AUDIO_JOIN_V1,
+    _ffmpeg_concat_kling_clips_reencode,
+)
 
 
 def test_concat_single_clip_is_copy(tmp_path):
@@ -115,3 +119,15 @@ def test_concat_reencode_mixed_silent_and_audio_clips(tmp_path):
     )
     types = {ln.strip() for ln in probe.stdout.strip().splitlines() if ln.strip()}
     assert types == {"video", "audio"}
+
+
+def test_kling_export_audio_join_uses_pcm_micro_fade() -> None:
+    import beat_generator as bg
+
+    src = Path(bg.__file__).read_text(encoding="utf-8")
+    assert KLING_EXPORT_AUDIO_JOIN_V1 in src
+    assert KLING_EXPORT_AUDIO_JOIN_FADE_MS >= 20
+    lane = src.split("def _kling_export_audio_lane_filter", 1)[1].split("\ndef ", 1)[0]
+    assert "sample_fmts=s16" in lane
+    assert "afade=t=in" in lane
+    assert "afade=t=out" in lane

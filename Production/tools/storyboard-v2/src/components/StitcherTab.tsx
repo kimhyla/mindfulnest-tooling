@@ -16,24 +16,55 @@
 //
 // All actions go through pathappPatch so scope guards + snapshot fire.
 
-import { useEffect, useRef, useState } from 'preact/hooks';
-import { activeScope, activeProjectType, scopeKey } from '../state/scope';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { effect } from '@preact/signals';
+import { activeScope, activeProjectType, activeMilestoneId, producerScopeChipLabel, activeTargetVideo } from '../state/scope';
+import { pushToast } from './ui/Toast';
 import { stitcherRefreshTick } from '../app';
-import { serverRehydrateTick } from '../state/refreshSignals';
+import { serverRehydrateTick, activeTab } from '../state/refreshSignals';
+import {
+  stitchCachedJob,
+  stitchJobSessionHasCache,
+  stitchJobLoading,
+} from '../state/stitchJobSessionStore';
+import { stitchJobNameForScope, stitchJobSessionKey } from '../state/producerSessionKeys';
 import { apiGet, pathappPatch } from '../api/client';
+import { READ_ENDPOINTS } from '../api/endpoints';
 import { StitcherSlotWaveform } from './StitcherSlotWaveform';
 import { StitcherTransitionSelector, type Transition } from './StitcherTransitionSelector';
 import { SfxCuePopover, type SfxCue } from './phase/SfxCuePopover';
-import type { WaveformPlaybackControl } from './phase/WaveformTimeline';
 import { acceptDragForTarget, makeDropTarget, type DragPayload } from '../utils/dragdrop';
-import { resolveStitchSlotSourceVideoUrl } from '../utils/stitchSlotVideo';
+import { resolveServerMediaUrl } from '../utils/stitchSlotVideo';
+import { PLAYBACK_VIDEO_ANTI_BANDING_CLASS } from '../utils/playbackVideoPolicy';
+import {
+  StitchComposerVideoPool,
+  STITCH_COMPOSER_VIDEO_POOL_V1,
+  type StitchComposerVideoPoolHandle,
+} from './StitchComposerVideoPool';
+import {
+  pickTrackSlotForLayout,
+  resolveStitchViewerSlot,
+  resolveTrackSlotForInteraction,
+  slotHasStitchVideo,
+  STITCH_EMPTY_SEGMENT_MS,
+  STITCH_VIEWER_SLOT_LAYOUT_V1,
+  writePersistedTrackSlot,
+  type StitchTrackSlotKey,
+} from '../utils/stitchTrackFocus';
+import {
+  mergeStitchJobSlotsClientPatch,
+  STITCH_SAVE_SLOT_DURABLE_MERGE_V1,
+} from '../utils/stitchSlotDurableMerge';
 import {
   STITCH_AMBIENT_BED_VOLUME,
+  STITCH_AMBIENT_SELECT_HYDRATE_V1,
   STITCH_AMBIENT_VOLUME_PERSIST_V1,
+  STITCH_CANONICAL_DEFAULTS_PERSIST_V1,
   STITCH_DEFAULT_AMBIENT_BEDS_V1,
   STITCH_SFX_CUE_DEFAULT_FADEIN_MS,
   STITCH_SFX_CUE_DEFAULT_FADEOUT_MS,
   STITCH_SFX_CUE_DEFAULT_VOLUME,
+  STITCH_SLOT_CANONICAL_DEFAULTS_V1,
   defaultAmbientBedForSlot,
 } from '../utils/stitchConstants';
 import { stopAllPhasePlayback } from '../utils/waveformPlaybackBus';
@@ -41,15 +72,117 @@ import {
   defaultStitchTransitions,
   resolveStitchTransitions,
 } from '../utils/stitchModulePreview';
+import {
+  STITCH_SLOT_LIVE_GEOMETRY_SIG_V1,
+  STITCH_SLOT_MUX_AUDIO_SIG_V1,
+  stitchSlotGeometryChanged,
+  stitchSlotLiveGeometrySig,
+  stitchSlotMuxAudioSig,
+  stitchSlotRequiresMuxedPreview,
+  stitchSlotRequiresAmbientMix,
+  stitchSlotLiveAmbientSig,
+  STITCH_AMBIENT_BAKE_ON_SAVE_V1,
+  stripStaleStitchSlotArtifacts,
+} from '../utils/stitchSlotMuxAudioSig';
+import {
+  inferStitchEditKind,
+  STITCH_SLOT_EDIT_DISPATCH_V1,
+} from '../utils/stitchSlotEditDispatch';
+import {
+  hydrateAllSlotMediaFromJob,
+  isStitchMuxPlaybackUrl,
+  resolveDrySlotSourceVideoUrl,
+  resolvePersistedPlaybackFromArtifacts,
+  resolveSlotPlaybackPreviewUrl,
+  selectSlotsForMuxRebuild,
+  stitchSlotTimelineDurMs,
+  STITCH_MUX_REBUILD_QUEUE_V1,
+  STITCH_SFX_PLAYBACK_TRUTH_V1,
+} from '../utils/stitchJobMediaHydrate';
+import { syncActiveVideoRoleFromUrl } from '../state/videoRole';
+import {
+  clearStitchComposerPreviewUrls,
+  isStitchComposerUrlLoaded,
+  markStitchComposerUrlLoaded,
+  restoreStitchComposerPreviewUrls,
+  setStitchComposerPreviewUrl,
+} from '../utils/stitchComposerSessionStore';
+import {
+  STITCH_MUX_SRC_IDENTITY_V1,
+  type MuxSrcUpdateIntent,
+  shouldUpdateComposerMuxSrc,
+} from '../utils/stitchMuxPreviewIdentity';
+import {
+  isStitchBakeStatusActive,
+  isStitchBakeStatusTerminal,
+  readStitchBakeBusyLatch,
+  shouldToastStitchBakeRefreshFailure,
+  stitchBakeStatusMessage,
+  stitchBakeSuccessPaths,
+  STITCH_BAKE_POLL_INTERVAL_MS,
+  writeStitchBakeBusyLatch,
+  type StitchBakeJobSummary,
+  type StitchBakePollResult,
+} from '../utils/stitchBakeJobTruth';
+import {
+  STITCH_MUX_VIDEO_LINEAGE_V1,
+  stitchSlotMuxPreviewLineageMatches,
+} from '../utils/stitchMuxVideoLineage';
+import {
+  STITCH_SLOT_VIDEO_LINEAGE_V1,
+  invalidateStitchSlotPlaybackCaches,
+  mergeHydratedPreviewUrlsAfterLineage,
+  slotsWithVideoPathChanges,
+} from '../utils/stitchSlotVideoLineage';
+import {
+  singleFlightMuxPreview,
+  stitchMediaFlightKey,
+} from '../utils/stitchMediaBuildFlight';
+import {
+  clearAllCachedStitcherPreviewsLs,
+  clearCachedStitcherPreviewLs,
+  clearStitchSlotSessionEvent,
+  commitMuxSession,
+  getStitchSlotSession,
+  hydrateMuxFromLocalStorage,
+  isMuxSessionFresh,
+  readCachedStitcherPreviewLs,
+  reconcileStitchSlotSession,
+  stitchSlotSessionExpectedSig,
+  STITCH_PREVIEW_LS_HYDRATE_V1,
+  writeCachedStitcherPreviewLs,
+  type StitchSessionSlotKey,
+} from '../utils/stitchSlotSessionCache';
 
-type SlotKey = 'intro' | 'phase_a' | 'phase_b' | 'resolution';
+type StandaloneSlotKey = 'standalone';
+type StitchUiSlotKey = StitchTrackSlotKey | StandaloneSlotKey;
+type SlotKey = StitchUiSlotKey;
 
-const SLOT_DEFS: Array<{ key: SlotKey; label: string }> = [
+const SLOT_DEFS: Array<{ key: StitchTrackSlotKey; label: string }> = [
   { key: 'intro', label: 'Intro' },
   { key: 'phase_a', label: 'Phase A' },
   { key: 'phase_b', label: 'Phase B' },
   { key: 'resolution', label: 'Resolution' },
 ];
+
+const STANDALONE_SLOT_DEFS: Array<{ key: StandaloneSlotKey; label: string }> = [
+  { key: 'standalone', label: 'Standalone' },
+];
+
+function stitchJobSlotsAsRecord(
+  raw: Record<string, StitchSlot> | StitchSlot[] | undefined,
+): Record<string, StitchSlot> {
+  if (!raw || typeof raw !== 'object') return {};
+  if (Array.isArray(raw)) {
+    return raw.length > 0 && typeof raw[0] === 'object' ? { standalone: raw[0] } : {};
+  }
+  return { ...(raw as Record<string, StitchSlot>) };
+}
+
+function milestoneStandaloneNeedsExport(slots: Record<string, StitchSlot> | undefined): boolean {
+  const slot = slots?.['standalone'];
+  return !Boolean((slot?.video_path ?? '').trim());
+}
 
 interface StitchSlot {
   video_path?: string;
@@ -60,9 +193,28 @@ interface StitchSlot {
   ambient_volume?: number;
   loudnorm_already_applied?: boolean;
   intro_whoosh_default_dismissed?: boolean;
+  phase_a_tail_sfx_default_dismissed?: boolean;
+  phase_b_tail_sfx_default_dismissed?: boolean;
+  resolution_head_sfx_default_dismissed?: boolean;
+  resolution_tail_sfx_default_dismissed?: boolean;
   sfx_cues?: SfxCue[];
   trim_in_ms?: number;
   trim_out_ms?: number | null;
+  mix_sig?: string;
+  ambient_mix_sig?: string;
+  ambient_mix_hash?: string;
+  ambient_mix_duration_ms?: number;
+  ambient_mix_video_path?: string;
+  ambient_mix_video_mtime_ms?: number;
+  mux_preview_hash?: string;
+  mux_preview_duration_ms?: number;
+  mux_video_path?: string;
+  mux_video_mtime_ms?: number;
+  waveform_peaks_hash?: string;
+  waveform_peaks_duration_s?: number;
+  _mux_preview_url?: string;
+  _waveform_peaks_url?: string;
+  _ambient_mix_url?: string;
 }
 
 interface StitchJob {
@@ -71,11 +223,29 @@ interface StitchJob {
   transitions?: Transition[];
   bake_path?: string;
   bake_mtime?: number;
+  active_bake_job_id?: string;
+  module_final_cache_key?: string;
 }
 
 interface StitchLibraryResponse {
   ok?: boolean;
   jobs?: StitchJob[];
+}
+
+/** Footer final-MP4 fields from load_job (job dict + payload root fallback). */
+function stitchJobFooterPlaybackFields(
+  job?: Pick<StitchJob, 'bake_path' | 'module_final_cache_key'> | null,
+  loadPayload?: { module_final_cache_key?: string },
+): Pick<StitchJob, 'bake_path' | 'module_final_cache_key'> {
+  const cacheKey = (
+    job?.module_final_cache_key
+    ?? loadPayload?.module_final_cache_key
+    ?? ''
+  ).trim();
+  return {
+    ...(job?.bake_path ? { bake_path: job.bake_path } : {}),
+    ...(cacheKey ? { module_final_cache_key: cacheKey } : {}),
+  };
 }
 
 // F-AMBIENT-001 (prod_blockers id=118) — ambient bed catalog. Pre-fix this
@@ -105,102 +275,97 @@ const SFX_DEFAULTS = {
   fadeout_ms: STITCH_SFX_CUE_DEFAULT_FADEOUT_MS,
 };
 
-// Slot duration fallback when the server-provided video_dur_ms is missing.
+const STITCH_MUX_PAUSE_ON_GEOMETRY_V1 = 'STITCH_MUX_PAUSE_ON_GEOMETRY_V1';
+const STITCH_SLOT_TIMELINE_ATOMIC_V1 = 'STITCH_SLOT_TIMELINE_ATOMIC_V1';
 // Stitcher slots are typically short; 30s is a safe default that keeps drop
 // math sane until the real duration loads. Tests inject explicit video_dur_ms.
 const DEFAULT_SLOT_DUR_MS = 30000;
-const STITCHER_TRACK_SLOT_LS_PREFIX = 'storyboard_v2_stitcher_track_slot';
-const STITCHER_PREVIEW_LS_PREFIX = 'storyboard_v2_stitcher_preview';
+
+const STITCH_SLOT_TAIL_SFX_DISMISS: Partial<Record<SlotKey, keyof StitchSlot>> = {
+  intro: 'intro_whoosh_default_dismissed',
+  phase_a: 'phase_a_tail_sfx_default_dismissed',
+  phase_b: 'phase_b_tail_sfx_default_dismissed',
+};
+
+const STITCH_SLOT_CANONICAL_SFX_FILE_DISMISS: Partial<
+  Record<SlotKey, Record<string, keyof StitchSlot>>
+> = {
+  resolution: {
+    'whoosh sound.mp3': 'resolution_head_sfx_default_dismissed',
+    'exit resolution video sfx.mp3': 'resolution_tail_sfx_default_dismissed',
+  },
+};
+
+function canonicalSfxDismissKey(
+  slotKey: SlotKey,
+  cue?: { name?: string; auto_default?: boolean },
+): keyof StitchSlot | undefined {
+  if (!cue?.auto_default) return undefined;
+  const name = (cue.name ?? '').trim().toLowerCase();
+  const perFile = STITCH_SLOT_CANONICAL_SFX_FILE_DISMISS[slotKey];
+  if (perFile) {
+    for (const [filename, key] of Object.entries(perFile)) {
+      if (name.includes(filename.toLowerCase()) || name.includes(filename.replace('.mp3', '').toLowerCase())) {
+        return key;
+      }
+    }
+  }
+  return STITCH_SLOT_TAIL_SFX_DISMISS[slotKey];
+}
+
+/** Persist only default-field deltas — never re-send full slot blobs that can wipe SFX. */
+function stitchDefaultFieldsPatch(
+  slots: Record<string, StitchSlot>,
+): Record<string, StitchSlot> {
+  const out: Record<string, StitchSlot> = {};
+  for (const [key, slot] of Object.entries(slots)) {
+    if (!slot?.video_path) continue;
+    out[key] = {
+      video_path: slot.video_path,
+      ...(slot.video_dur_ms != null ? { video_dur_ms: slot.video_dur_ms } : {}),
+      ...(slot.ambient_bed ? { ambient_bed: slot.ambient_bed } : {}),
+      ...(slot.ambient_volume != null ? { ambient_volume: slot.ambient_volume } : {}),
+    };
+  }
+  return out;
+}
+
+/** Refuse save when snapshot would wipe persisted slot media (STITCH_SFX_PLAYBACK_TRUTH_V1). */
+function stitchSnapshotReadyForSave(
+  slots: Record<string, StitchSlot>,
+  projectType: string,
+): boolean {
+  if (!Object.keys(slots).length) return false;
+  if (projectType === 'milestone') {
+    const standalone = slots['standalone'];
+    return Boolean((standalone?.video_path ?? '').trim());
+  }
+  return SLOT_DEFS.some(({ key }) => Boolean((slots[key]?.video_path ?? '').trim()));
+}
 
 /** Backfill canonical ambient presets on slots that have video but no bed yet. */
-function applyDefaultAmbientPresetsToSlots(slots: Record<string, StitchSlot>): void {
-  for (const { key } of SLOT_DEFS) {
+function applyDefaultAmbientPresetsToSlots(slots: Record<string, StitchSlot>): boolean {
+  let changed = false;
+  const defs = activeProjectType.value === 'milestone' ? STANDALONE_SLOT_DEFS : SLOT_DEFS;
+  for (const { key } of defs) {
     const slot = slots[key];
     if (!slot?.video_path || (slot.ambient_bed ?? '').trim()) continue;
     slot.ambient_bed = defaultAmbientBedForSlot(key);
     slot.ambient_volume = STITCH_AMBIENT_BED_VOLUME;
     delete slot.ambient_bed_path;
+    changed = true;
   }
+  return changed;
 }
 
 /** Force canonical 0.15 under-speech volume on every slot that has an ambient bed. */
 function normalizeStitchSlotAmbientVolumesInPlace(slots: Record<string, StitchSlot>): void {
-  for (const { key } of SLOT_DEFS) {
+  const defs = activeProjectType.value === 'milestone' ? STANDALONE_SLOT_DEFS : SLOT_DEFS;
+  for (const { key } of defs) {
     const slot = slots[key];
     if (!slot || !(slot.ambient_bed ?? '').trim()) continue;
     slot.ambient_volume = STITCH_AMBIENT_BED_VOLUME;
     delete slot.ambient_bed_path;
-  }
-}
-
-interface CachedStitcherPreview {
-  video_path: string;
-  preview_url: string;
-}
-
-function readCachedStitcherPreview(eventId: string, slot: SlotKey): CachedStitcherPreview | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    const raw = window.localStorage.getItem(`${STITCHER_PREVIEW_LS_PREFIX}:${eventId}:${slot}`);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as CachedStitcherPreview;
-    if (parsed?.video_path && parsed?.preview_url) return parsed;
-  } catch {
-    // ignore corrupt cache
-  }
-  return null;
-}
-
-function writeCachedStitcherPreview(
-  eventId: string,
-  slot: SlotKey,
-  cache: CachedStitcherPreview,
-): void {
-  if (typeof window === 'undefined') return;
-  try {
-    window.localStorage.setItem(
-      `${STITCHER_PREVIEW_LS_PREFIX}:${eventId}:${slot}`,
-      JSON.stringify(cache),
-    );
-  } catch {
-    // localStorage may be unavailable in tests
-  }
-}
-
-function clearCachedStitcherPreview(eventId: string, slot: SlotKey): void {
-  if (typeof window === 'undefined') return;
-  try {
-    window.localStorage.removeItem(`${STITCHER_PREVIEW_LS_PREFIX}:${eventId}:${slot}`);
-  } catch {
-    // ignore
-  }
-}
-
-function isSlotKey(value: string): value is SlotKey {
-  return value === 'intro' || value === 'phase_a' || value === 'phase_b' || value === 'resolution';
-}
-
-function readPersistedTrackSlot(eventId: string): SlotKey | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    const raw = window.localStorage.getItem(`${STITCHER_TRACK_SLOT_LS_PREFIX}:${eventId}`);
-    return raw && isSlotKey(raw) ? raw : null;
-  } catch {
-    return null;
-  }
-}
-
-function writePersistedTrackSlot(eventId: string, slot: SlotKey | null): void {
-  if (typeof window === 'undefined') return;
-  try {
-    const key = `${STITCHER_TRACK_SLOT_LS_PREFIX}:${eventId}`;
-    if (slot) {
-      window.localStorage.setItem(key, slot);
-    } else {
-      window.localStorage.removeItem(key);
-    }
-  } catch {
-    // localStorage may be unavailable in some test contexts.
   }
 }
 
@@ -279,88 +444,301 @@ export function StitcherTab() {
   // Per-slot preview URL — set after a successful Preview call. Renders as a
   // visible "▶ Watch" link directly in the slot so popup-blocker doesn't swallow it.
   const [previewUrls, setPreviewUrls] = useState<Partial<Record<SlotKey, string>>>({});
-  /** Raw /files fallback when processed preview MP4 fails browser decode (black video). */
-  const [previewVideoFallback, setPreviewVideoFallback] = useState<Partial<Record<SlotKey, boolean>>>({});
   const [previewLoadingSlot, setPreviewLoadingSlot] = useState<SlotKey | null>(null);
   /** Full module reel: intro → phase_a → phase_b → resolution with dissolve transitions. */
-  const slotPreviewGenRef = useRef(0);
-  const [refreshTick, setRefreshTick] = useState(0);
+  const slotPreviewGenRef = useRef<Partial<Record<SlotKey, number>>>({});
+  const stitchEventRef = useRef<string | null>(null);
+  /** Triggers mux preview builds without re-fetching the full stitch job. */
+  const [muxBuildTick, setMuxBuildTick] = useState(0);
   // ST-14: derive standaloneMode from canonical activeProjectType signal —
   // reactive on signal change. Milestone scope is always 1-slot standalone
   // by definition; event scope is 4-slot. (Was: inferred from slot count.)
   const standaloneMode = activeProjectType.value === 'milestone';
+  const stitchSessionKey = stitchJobSessionKey(
+    activeScope.value.event_id,
+    activeProjectType.value,
+    activeMilestoneId.value,
+  );
   const [popover, setPopover] = useState<PopoverState | null>(null);
   // F-AMBIENT-001 — fetched ambient catalog (replaces hardcoded constant).
   // Pattern lifted from PhaseProducer.tsx:154-176 so Phase A, Phase B, and
   // Stitcher all consume the same catalog via the same single endpoint.
   const [ambientPresets, setAmbientPresets] = useState<AmbientPreset[]>([]);
+  const [activeBakeJobId, setActiveBakeJobId] = useState<string | null>(null);
+  const bakeTerminalToastRef = useRef<string | null>(null);
+  /** Bust module-final <video> src after each successful bake (cache-safe URL). */
+  const [moduleFinalRevision, setModuleFinalRevision] = useState(0);
+
+  const persistJobSlotsByName = async (
+    jobName: string,
+    nextSlots: Record<string, StitchSlot>,
+    transitions: Transition[],
+  ): Promise<boolean> => {
+    const res = await pathappPatch(activeScope.value, 'stitch_save_job', {
+      name: jobName,
+      slots: nextSlots,
+      transitions,
+      merge_slots: true,
+    });
+    return res.ok;
+  };
+
+  const ambientSelectOptions = useMemo(() => {
+    const ids = new Set<string>();
+    for (const p of ambientPresets) ids.add(p.preset_id);
+    for (const sd of SLOT_DEFS) {
+      const bed = (job?.slots?.[sd.key]?.ambient_bed ?? '').trim();
+      if (bed) ids.add(bed);
+    }
+    return [...ids].sort().map((preset_id) => ({
+      preset_id,
+      file_size_bytes: ambientPresets.find((p) => p.preset_id === preset_id)?.file_size_bytes ?? 0,
+    }));
+  }, [ambientPresets, job?.slots]);
+
+  const moduleFinalVideoSrc = useMemo(() => {
+    if (!job?.bake_path) return null;
+    const base = READ_ENDPOINTS.stitch_module_final;
+    const cacheKey = (job.module_final_cache_key || '').trim();
+    if (cacheKey) {
+      return `${base}?v=${encodeURIComponent(cacheKey.slice(0, 16))}`;
+    }
+    return moduleFinalRevision > 0 ? `${base}?v=${moduleFinalRevision}` : base;
+  }, [job?.bake_path, job?.module_final_cache_key, moduleFinalRevision]);
+
+  // STITCH_COMPOSER_DRY_PLAYBACK_V1 — one playback path; video_path always resolves to a URL.
+  const composerSlotUrls = useMemo(() => {
+    const out: Partial<Record<SlotKey, string>> = {};
+    if (!job?.slots) return out;
+    const defs = standaloneMode ? STANDALONE_SLOT_DEFS : SLOT_DEFS;
+    for (const sd of defs) {
+      const slotData = job.slots[sd.key];
+      if (!slotData?.video_path) continue;
+      const url = resolveSlotPlaybackPreviewUrl(
+        stitchSessionKey,
+        sd.key as StitchSessionSlotKey,
+        slotData,
+        previewUrls as Partial<Record<StitchSessionSlotKey, string>>,
+      );
+      if (url) out[sd.key] = url;
+    }
+    return out;
+  }, [
+    job?.slots,
+    previewUrls,
+    stitchSessionKey,
+    standaloneMode,
+    job?.slots?.['intro']?.video_path,
+    job?.slots?.['phase_a']?.video_path,
+    job?.slots?.['phase_b']?.video_path,
+    job?.slots?.['resolution']?.video_path,
+    job?.slots?.['standalone']?.video_path,
+    job?.slots?.['intro']?.mux_preview_hash,
+    job?.slots?.['phase_a']?.mux_preview_hash,
+    job?.slots?.['phase_b']?.mux_preview_hash,
+    job?.slots?.['resolution']?.mux_preview_hash,
+    job?.slots?.['standalone']?.mux_preview_hash,
+    job?.slots?.['intro']?.ambient_mix_hash,
+    job?.slots?.['phase_a']?.ambient_mix_hash,
+    job?.slots?.['phase_b']?.ambient_mix_hash,
+    job?.slots?.['resolution']?.ambient_mix_hash,
+    job?.slots?.['standalone']?.ambient_mix_hash,
+  ]);
 
   // Inline preview player state
-  const [activePreviewSlot, setActivePreviewSlot] = useState<SlotKey | null>(null);
-  const [trackFocusedSlot, setTrackFocusedSlot] = useState<SlotKey | null>(null);
+  const [trackFocusedSlot, setTrackFocusedSlot] = useState<StitchUiSlotKey | null>(null);
   const [beatBoundaries, setBeatBoundaries] = useState<BeatBoundary[]>([]);
   const [beatBoundariesLoading, setBeatBoundariesLoading] = useState(false);
   const composerVideoRef = useRef<HTMLVideoElement | null>(null);
-  const composerPlaybackRef = useRef<WaveformPlaybackControl | null>(null);
-  const composerVideoSyncSuppressRef = useRef(false);
+  const composerPoolRef = useRef<StitchComposerVideoPoolHandle | null>(null);
+  const [composerVideoLoading, setComposerVideoLoading] = useState(false);
+  const [composerVideoError, setComposerVideoError] = useState<string | null>(null);
+
+  const jobLoadedForEventRef = useRef<string | null>(null);
+  const slotPreviewPrewarmJobRef = useRef<string | null>(null);
+  const pendingMuxBuildsRef = useRef<SlotKey[]>([]);
+  /** Slots queued for mux rebuild on job refresh — suppress duplicate viewer triggers. */
+  const scheduledMuxSlotsRef = useRef<Set<SlotKey>>(new Set());
+  const slotsNeedingAmbientBakeRef = useRef<StitchSessionSlotKey[]>([]);
+  const [ambientBakeTick, setAmbientBakeTick] = useState(0);
+  const viewerSlotRef = useRef<SlotKey>('intro');
+  const lastViewerVideoPathRef = useRef<string | null>(null);
+  const jobSlotsSnapshotRef = useRef<Record<string, StitchSlot>>({});
+  /** Ignore stale stitch_save_job refresh merges when a newer save is in flight. */
+  const stitchSaveSeqRef = useRef(0);
+
+  const bindSlotPreviewUrl = (slot: SlotKey, url: string, intent: MuxSrcUpdateIntent): boolean => {
+    setPreviewUrls((prev) => {
+      if (!shouldUpdateComposerMuxSrc(prev[slot], url, intent)) return prev;
+      return prev[slot] === url ? prev : { ...prev, [slot]: url };
+    });
+    setStitchComposerPreviewUrl(stitchSessionKey, slot, url);
+    return true;
+  };
+
+  // Leaving Stitcher tab (keepalive hides pane): pause pool without unmounting.
+  useEffect(() => {
+    const dispose = effect(() => {
+      if (activeTab.value === 'stitcher') return;
+      composerPoolRef.current?.pauseAllExcept(null);
+    });
+    return dispose;
+  }, []);
 
   // Leaving Stitcher / fresh mount: never auto-play module preview or slot waveforms.
   useEffect(() => {
     stopAllPhasePlayback();
-    composerPlaybackRef.current?.pause();
-    const composerVideo = composerVideoRef.current;
-    if (composerVideo) {
-      composerVideo.pause();
-      try {
-        composerVideo.currentTime = 0;
-      } catch {
-        // ignore
-      }
-    }
+    composerPoolRef.current?.pauseAllExcept(null);
     return () => {
       stopAllPhasePlayback();
     };
   }, []);
 
-  // Re-fetch whenever SendOutButton completes a scene_assemble (cross-tab signal).
-  // This ensures the intro slot auto-populated by scene_assemble becomes visible
-  // without requiring Kim to manually refresh the Stitcher tab.
+  // PSL stitch job cache updates (e.g. Beat Gen export) must apply while Stitcher is mounted.
   useEffect(() => {
-    setRefreshTick((n) => n + 1);
-  }, [stitcherRefreshTick.value]);
+    return effect(() => {
+      const cached = stitchCachedJob.value;
+      const eventName = activeScope.value.event_id;
+      const projectType = activeProjectType.value;
+      const milestoneId = activeMilestoneId.value;
+      const sessionKey = stitchJobSessionKey(eventName, projectType, milestoneId);
+      if (!cached || jobLoadedForEventRef.current !== sessionKey) return;
+
+      const canonicalSlots = (cached.slots as Record<string, StitchSlot>) ?? {};
+      if (!Object.keys(canonicalSlots).length) return;
+
+      const canonicalName = stitchJobNameForScope(eventName, projectType, milestoneId);
+      const lineageChanged = slotsWithVideoPathChanges(
+        jobSlotsSnapshotRef.current,
+        canonicalSlots,
+      );
+      if (lineageChanged.length > 0) {
+        invalidateStitchSlotPlaybackCaches(stitchSessionKey, lineageChanged);
+      }
+      const mergedSlots = mergeStitchJobSlotsClientPatch(
+        jobSlotsSnapshotRef.current,
+        canonicalSlots,
+      );
+      const hydrated = hydrateAllSlotMediaFromJob(sessionKey, mergedSlots);
+      setJob({
+        name: canonicalName,
+        slots: mergedSlots,
+        transitions: (cached.transitions as Transition[]) ?? [],
+        ...(cached['bake_path'] || cached['module_final_cache_key']
+          ? stitchJobFooterPlaybackFields(cached as StitchJob)
+          : {}),
+      });
+      jobSlotsSnapshotRef.current = mergedSlots;
+      setPreviewUrls((prev) => mergeHydratedPreviewUrlsAfterLineage(
+        prev,
+        hydrated.previewUrls,
+        lineageChanged,
+      ));
+      slotPreviewPrewarmJobRef.current = canonicalName;
+      const muxQueue = selectSlotsForMuxRebuild(lineageChanged, hydrated.slotsNeedingMux);
+      scheduledMuxSlotsRef.current = new Set(muxQueue);
+      pendingMuxBuildsRef.current = muxQueue;
+      if (hydrated.slotsNeedingAmbientMix.length > 0) {
+        slotsNeedingAmbientBakeRef.current = hydrated.slotsNeedingAmbientMix;
+        setAmbientBakeTick((n) => n + 1);
+      }
+      setMuxBuildTick((n) => n + 1);
+      setLoading(false);
+      setError(null);
+    });
+  }, []);
+
+  // Drop in-memory slot previews when leaving a stitch session; cache is per session key.
+  useEffect(() => {
+    const prev = stitchEventRef.current;
+    if (prev && prev !== stitchSessionKey) {
+      clearStitchSlotSessionEvent(prev);
+      clearStitchComposerPreviewUrls(prev);
+      setPreviewUrls({});
+    }
+    stitchEventRef.current = stitchSessionKey;
+    const restored = restoreStitchComposerPreviewUrls(stitchSessionKey);
+    if (Object.keys(restored).length > 0) {
+      setPreviewUrls((prev) => ({ ...restored, ...prev }));
+    }
+  }, [stitchSessionKey]);
 
   useEffect(() => {
     if (!job?.slots) return;
-    const eventId = activeScope.value.event_id;
-    setPreviewUrls((prev) => {
-      const next = { ...prev };
-      let changed = false;
-      for (const sd of SLOT_DEFS) {
-        const path = job.slots?.[sd.key]?.video_path;
-        const cached = readCachedStitcherPreview(eventId, sd.key);
-        if (cached && cached.video_path !== path) {
-          clearCachedStitcherPreview(eventId, sd.key);
-        }
-        if (next[sd.key] && cached?.video_path !== path) {
-          delete next[sd.key];
-          changed = true;
-        }
+    for (const sd of SLOT_DEFS) {
+      const slotData = job.slots?.[sd.key];
+      const path = slotData?.video_path;
+      const audioSig = stitchSlotSessionExpectedSig(slotData);
+      const cached = readCachedStitcherPreviewLs(stitchSessionKey, sd.key);
+      const cacheStale = cached && (
+        cached.video_path !== path
+        || (cached.audio_sig ?? '') !== audioSig
+      );
+      if (cacheStale) {
+        clearCachedStitcherPreviewLs(stitchSessionKey, sd.key);
       }
-      return changed ? next : prev;
-    });
+      // STITCH_MUX_STALE_WHILE_REVALIDATE_V1 — drop persisted cache only.
+      // In-memory previewUrls stay until buildSlotPreview succeeds with new mux.
+      reconcileStitchSlotSession(stitchSessionKey, sd.key, slotData);
+    }
   }, [
     job?.slots?.['intro']?.video_path,
     job?.slots?.['phase_a']?.video_path,
     job?.slots?.['phase_b']?.video_path,
     job?.slots?.['resolution']?.video_path,
-    activeScope.value.event_id,
+    stitchSlotMuxAudioSig(job?.slots?.['intro']),
+    stitchSlotMuxAudioSig(job?.slots?.['phase_a']),
+    stitchSlotMuxAudioSig(job?.slots?.['phase_b']),
+    stitchSlotMuxAudioSig(job?.slots?.['resolution']),
+    stitchSlotMuxAudioSig(job?.slots?.['standalone']),
+    stitchSessionKey,
   ]);
 
+  const prevStitchSessionKeyRef = useRef<string | null>(null);
+
   useEffect(() => {
-    if (trackFocusedSlot) return;
-    const persisted = readPersistedTrackSlot(activeScope.value.event_id);
-    setTrackFocusedSlot(persisted ?? SLOT_DEFS[0].key);
-  }, [trackFocusedSlot, activeScope.value.event_id]);
+    syncActiveVideoRoleFromUrl();
+  }, [activeScope.value.event_id]);
+
+  /** STITCH_VIEWER_SLOT_LAYOUT_V1 — scope boundary hygiene (event ↔ milestone). */
+  useEffect(() => {
+    const prev = prevStitchSessionKeyRef.current;
+    if (prev && prev !== stitchSessionKey) {
+      stopAllPhasePlayback();
+      composerPoolRef.current?.pauseAllExcept(null);
+      setPreviewLoadingSlot(null);
+      setPreviewUrls({});
+      setTrackFocusedSlot(null);
+    }
+    prevStitchSessionKeyRef.current = stitchSessionKey;
+  }, [stitchSessionKey]);
+
+  useEffect(() => {
+    if (!job?.slots) return;
+    const layoutKeys = (standaloneMode ? STANDALONE_SLOT_DEFS : SLOT_DEFS).map((sd) => sd.key);
+    const best = pickTrackSlotForLayout(
+      job.slots,
+      layoutKeys,
+      stitchSessionKey,
+      activeTargetVideo.value,
+    );
+    setTrackFocusedSlot((prev) => {
+      if (prev && layoutKeys.includes(prev) && slotHasStitchVideo(job.slots, prev)) return prev;
+      if (best !== prev) writePersistedTrackSlot(stitchSessionKey, best);
+      return best;
+    });
+  }, [
+    job?.name,
+    job?.slots?.['intro']?.video_path,
+    job?.slots?.['phase_a']?.video_path,
+    job?.slots?.['phase_b']?.video_path,
+    job?.slots?.['resolution']?.video_path,
+    job?.slots?.['standalone']?.video_path,
+    stitcherRefreshTick.value,
+    stitchSessionKey,
+    activeTargetVideo.value,
+    standaloneMode,
+  ]);
 
   // One-shot fetch of the ambient catalog. The catalog is module-level static
   // (filesystem inventory of Production/assets/sound_library/ambient/), not
@@ -378,134 +756,330 @@ export function StitcherTab() {
 
   useEffect(() => {
     let cancelled = false;
+    const eventName = activeScope.value.event_id;
+    const projectType = activeProjectType.value;
+    const milestoneId = activeMilestoneId.value;
+    const sessionKey = stitchJobSessionKey(eventName, projectType, milestoneId);
+    const canonicalName = stitchJobNameForScope(eventName, projectType, milestoneId);
+
+    if (
+      stitchJobSessionHasCache()
+      && stitchCachedJob.value
+      && jobLoadedForEventRef.current !== sessionKey
+    ) {
+      const cached = stitchCachedJob.value;
+      jobLoadedForEventRef.current = sessionKey;
+      setJob({
+        name: canonicalName,
+        slots: (cached.slots as Record<string, StitchSlot>) ?? {},
+        transitions: (cached.transitions as Transition[]) ?? [],
+        ...(cached['bake_path'] || cached['module_final_cache_key']
+          ? stitchJobFooterPlaybackFields(cached as StitchJob)
+          : {}),
+      });
+      setLoading(false);
+      setError(null);
+    }
+
+    const softRefresh = jobLoadedForEventRef.current === sessionKey;
+
+    if (jobLoadedForEventRef.current !== sessionKey) {
+      lastViewerVideoPathRef.current = null;
+    }
+
+    if (!softRefresh) {
+      setLoading(true);
+    }
+
+    const slotHasVideo = (slot?: StitchSlot) => Boolean((slot?.video_path ?? '').trim());
+
+    const mergeSlotsFromJob = (
+      merged: Record<string, StitchSlot>,
+      jobSlots: Record<string, StitchSlot> | StitchSlot[] | undefined,
+      onlyEmpty = false,
+    ) => {
+      if (!jobSlots || typeof jobSlots !== 'object' || Array.isArray(jobSlots)) return;
+      for (const [key, slot] of Object.entries(jobSlots)) {
+        if (!slot?.video_path) continue;
+        if (onlyEmpty && slotHasVideo(merged[key])) continue;
+        merged[key] = { ...(merged[key] ?? {}), ...slot };
+      }
+    };
+
     (async () => {
       try {
-        // S5.5b Bug 2 fix: was /library (returns sound library: ambient/sfx/transitions);
-        // correct endpoint is /jobs which returns {jobs: [{name, created_at, updated_at, slot_count}]}.
-        // After picking active summary, fetch full job via /api/stitch_editor/job/<name> for slots.
-        const res = await apiGet<StitchLibraryResponse>('stitch_editor_jobs');
-        if (cancelled) return;
-        if (!res.ok) {
-          setError(res.error ?? `HTTP ${res.status}`);
-          setLoading(false);
-          return;
-        }
-        const data = res.data;
-        const eventName = activeScope.value.event_id;
-        const jobs = data?.jobs ?? [];
-        const canonicalName = `${eventName}_stitch`;
-
-        const mergeSlotsFromJob = (
-          merged: Record<string, StitchSlot>,
-          jobSlots: Record<string, StitchSlot> | StitchSlot[] | undefined,
-        ) => {
-          if (!jobSlots || typeof jobSlots !== 'object' || Array.isArray(jobSlots)) return;
-          for (const [key, slot] of Object.entries(jobSlots)) {
-            if (!slot?.video_path) continue;
-            merged[key] = { ...(merged[key] ?? {}), ...slot };
-          }
-        };
-
-        // Prefer canonical per-event job (server upserts preserve all slots).
         const canonicalDetailRes = await apiGet<{
           job?: StitchJob;
           name?: string;
           slot_warnings?: Record<string, string[]>;
+          defaults_applied?: boolean;
+          bake_job?: StitchBakeJobSummary;
+          module_final_cache_key?: string;
         }>(
           'stitch_editor_job',
           { job_name: canonicalName },
+          { fetchTimeoutMs: 120000 },
         );
-        if (!cancelled && canonicalDetailRes.ok && canonicalDetailRes.data?.job) {
-          const canonicalJob = canonicalDetailRes.data.job;
-          const canonicalSlots: Record<string, StitchSlot> = {};
-          mergeSlotsFromJob(canonicalSlots, canonicalJob.slots as Record<string, StitchSlot>);
-          applyDefaultAmbientPresetsToSlots(canonicalSlots);
-          normalizeStitchSlotAmbientVolumesInPlace(canonicalSlots);
-          if (Object.keys(canonicalSlots).length > 0) {
-            setJob({
-              name: canonicalName,
-              slots: canonicalSlots,
-              transitions: canonicalJob.transitions ?? [],
-            });
-            const warns = canonicalDetailRes.data.slot_warnings;
-            if (warns && Object.keys(warns).length > 0) {
-              const flat = Object.entries(warns).flatMap(([k, list]) =>
-                list.map((w) => `${k}: ${w}`),
-              );
-              setStatusMsg(`⚠ ${flat.join(' · ')}`);
+        if (cancelled) return;
+
+        const hadBakeLatch = Boolean(readStitchBakeBusyLatch(eventName, canonicalName));
+        const bakeJob = canonicalDetailRes.data?.bake_job;
+        const canonicalJob = canonicalDetailRes.data?.job;
+        const reattachJobId = (
+          bakeJob?.job_id
+          ?? canonicalJob?.active_bake_job_id
+          ?? (hadBakeLatch ? readStitchBakeBusyLatch(eventName, canonicalName) : null)
+        );
+        if (reattachJobId && isStitchBakeStatusActive(bakeJob?.status ?? 'running')) {
+          setActiveBakeJobId(reattachJobId);
+          writeStitchBakeBusyLatch(eventName, canonicalName, reattachJobId);
+          setStatusMsg(stitchBakeStatusMessage(bakeJob ?? { status: 'running' }));
+        } else if (bakeJob && isStitchBakeStatusTerminal(bakeJob.status) && hadBakeLatch) {
+          writeStitchBakeBusyLatch(eventName, canonicalName, null);
+          const toastKey = `${bakeJob.job_id}:${bakeJob.status}`;
+          if (bakeTerminalToastRef.current !== toastKey) {
+            bakeTerminalToastRef.current = toastKey;
+            if (bakeJob.status === 'interrupted') {
+              pushToast({
+                kind: 'error',
+                message: `Bake interrupted: ${bakeJob.error ?? bakeJob.message ?? 'worker lost'}`,
+                source: 'stitch-bake-interrupted',
+              });
+              setStatusMsg(`✗ Bake interrupted: ${bakeJob.error ?? bakeJob.message ?? 'worker lost'}`);
+            } else if (bakeJob.status === 'failed') {
+              pushToast({
+                kind: 'error',
+                message: `Bake failed: ${bakeJob.error ?? bakeJob.message ?? 'unknown'}`,
+                source: 'stitch-bake-error',
+              });
+              setStatusMsg(`✗ Bake: ${bakeJob.error ?? bakeJob.message ?? 'unknown'}`);
+            } else if (bakeJob.status === 'done') {
+              const { canonical, assetId } = stitchBakeSuccessPaths(bakeJob);
+              const label = canonical?.split('/').pop() ?? canonicalName;
+              setStatusMsg(`✓ Baked + pinned: ${label}`);
+              pushToast({
+                kind: 'success',
+                message: assetId && assetId > 0
+                  ? `Final MP4 → ${label} (Directus #${assetId})`
+                  : `Final MP4 → ${label}`,
+                source: 'stitch-bake-done',
+              });
+              setModuleFinalRevision((n) => n + 1);
             }
-            setError(null);
-            setLoading(false);
-            return;
+          }
+        } else if (shouldToastStitchBakeRefreshFailure(
+          hadBakeLatch,
+          canonicalDetailRes.ok,
+          Boolean(bakeJob),
+        )) {
+          pushToast({
+            kind: 'error',
+            message: 'Could not confirm bake job after refresh',
+            source: 'stitch-bake-refresh-failure',
+          });
+          writeStitchBakeBusyLatch(eventName, canonicalName, null);
+        }
+
+        const canonicalSlots: Record<string, StitchSlot> = {};
+        let mergedTransitions: Transition[] = [];
+        if (canonicalDetailRes.ok && canonicalJob) {
+          mergeSlotsFromJob(canonicalSlots, canonicalJob.slots as Record<string, StitchSlot>);
+          mergedTransitions = canonicalJob.transitions ?? [];
+        }
+
+        // Fill only empty canonical slots from legacy jobs — never overwrite persisted slots.
+        if (!standaloneMode && Object.keys(canonicalSlots).length < SLOT_DEFS.length) {
+          const jobsRes = await apiGet<StitchLibraryResponse>('stitch_editor_jobs');
+          if (!cancelled && jobsRes.ok) {
+            const jobs = jobsRes.data?.jobs ?? [];
+            const relevantSummaries = jobs.filter(
+              (j) => j.name?.startsWith('auto_') || j.name?.includes(eventName),
+            );
+            for (const summary of relevantSummaries) {
+              if (!summary.name || summary.name === canonicalName) continue;
+              const mergeDetailRes = await apiGet<{ job?: StitchJob; name?: string }>(
+                'stitch_editor_job',
+                { job_name: summary.name },
+                { fetchTimeoutMs: 120000 },
+              );
+              if (cancelled || !mergeDetailRes.ok || !mergeDetailRes.data?.job) continue;
+              mergeSlotsFromJob(
+                canonicalSlots,
+                mergeDetailRes.data.job.slots as Record<string, StitchSlot>,
+                true,
+              );
+              if (mergeDetailRes.data.job.transitions?.length && !mergedTransitions.length) {
+                mergedTransitions = mergeDetailRes.data.job.transitions ?? [];
+              }
+            }
           }
         }
 
-        // Legacy fallback: merge auto_* + phase_* jobs (skip empty slots).
+        if (!cancelled && Object.keys(canonicalSlots).length > 0) {
+          const mergedSlots = mergeStitchJobSlotsClientPatch(
+            jobSlotsSnapshotRef.current,
+            canonicalSlots,
+          );
+          const clientAmbientChanged = applyDefaultAmbientPresetsToSlots(mergedSlots);
+          normalizeStitchSlotAmbientVolumesInPlace(mergedSlots);
+          const serverDefaultsApplied = canonicalDetailRes.data?.defaults_applied === true;
+          if (serverDefaultsApplied || clientAmbientChanged) {
+            clearAllCachedStitcherPreviewsLs(sessionKey);
+            await persistJobSlotsByName(
+              canonicalName,
+              stitchDefaultFieldsPatch(mergedSlots),
+              mergedTransitions,
+            );
+          }
+          const clearedDefaults = serverDefaultsApplied || clientAmbientChanged;
+          const lineageChanged = slotsWithVideoPathChanges(
+            jobSlotsSnapshotRef.current,
+            mergedSlots,
+          );
+          if (lineageChanged.length > 0) {
+            invalidateStitchSlotPlaybackCaches(stitchSessionKey, lineageChanged);
+          }
+          const hydrated = hydrateAllSlotMediaFromJob(sessionKey, mergedSlots);
+          setJob({
+            name: canonicalName,
+            slots: mergedSlots,
+            transitions: mergedTransitions,
+            ...stitchJobFooterPlaybackFields(canonicalJob, canonicalDetailRes.data),
+          });
+          jobSlotsSnapshotRef.current = mergedSlots;
+          if (clearedDefaults) {
+            setPreviewUrls({});
+            slotPreviewPrewarmJobRef.current = null;
+          } else {
+            setPreviewUrls((prev) => mergeHydratedPreviewUrlsAfterLineage(
+              prev,
+              hydrated.previewUrls,
+              lineageChanged,
+            ));
+          }
+          jobLoadedForEventRef.current = sessionKey;
+          slotPreviewPrewarmJobRef.current = canonicalName;
+          const muxQueue = selectSlotsForMuxRebuild(
+            lineageChanged,
+            hydrated.slotsNeedingMux,
+          );
+          scheduledMuxSlotsRef.current = new Set(muxQueue);
+          pendingMuxBuildsRef.current = muxQueue;
+          if (hydrated.slotsNeedingAmbientMix.length > 0) {
+            slotsNeedingAmbientBakeRef.current = hydrated.slotsNeedingAmbientMix;
+            setAmbientBakeTick((n) => n + 1);
+          }
+          setMuxBuildTick((n) => n + 1);
+          const warns = canonicalDetailRes.data?.slot_warnings;
+          if (warns && Object.keys(warns).length > 0) {
+            const flat = Object.entries(warns).flatMap(([k, list]) =>
+              list.map((w) => `${k}: ${w}`),
+            );
+            setStatusMsg(`⚠ ${flat.join(' · ')}`);
+          }
+          setError(null);
+          setLoading(false);
+          return;
+        }
+
+        // Milestone: keep job shell even when standalone has no video yet (composer + export CTA).
+        if (!cancelled && standaloneMode && canonicalJob) {
+          const slotsFromJob = stitchJobSlotsAsRecord(
+            canonicalJob.slots as Record<string, StitchSlot> | StitchSlot[] | undefined,
+          );
+          if (!slotsFromJob['standalone']) slotsFromJob['standalone'] = {};
+          const mergedSlots = mergeStitchJobSlotsClientPatch(
+            jobSlotsSnapshotRef.current,
+            slotsFromJob,
+          );
+          setJob({
+            name: canonicalName,
+            slots: mergedSlots,
+            transitions: mergedTransitions,
+            ...stitchJobFooterPlaybackFields(canonicalJob, canonicalDetailRes.data),
+          });
+          jobSlotsSnapshotRef.current = mergedSlots;
+          jobLoadedForEventRef.current = sessionKey;
+          setError(null);
+          setLoading(false);
+          return;
+        }
+
+        // Bootstrap: merge from saved job summaries when canonical slots are still empty.
+        if (standaloneMode) {
+          if (!cancelled) {
+            setJob({
+              name: canonicalName,
+              slots: { standalone: {} },
+              transitions: mergedTransitions,
+            });
+            jobLoadedForEventRef.current = sessionKey;
+            setError(null);
+            setLoading(false);
+          }
+          return;
+        }
+        const jobsRes = await apiGet<StitchLibraryResponse>('stitch_editor_jobs');
+        if (cancelled) return;
+        if (!jobsRes.ok) {
+          setError(jobsRes.error ?? `HTTP ${jobsRes.status}`);
+          setLoading(false);
+          return;
+        }
+        const jobs = jobsRes.data?.jobs ?? [];
         const relevantSummaries = jobs.filter(
           (j) => j.name?.startsWith('auto_') || j.name?.includes(eventName),
         );
         const mergedSlots: Record<string, StitchSlot> = {};
-        let mergedTransitions: Transition[] = [];
+        mergedTransitions = [];
         for (const summary of relevantSummaries) {
-          if (!summary.name || summary.name === canonicalName) continue;
+          if (!summary.name) continue;
+          // Canonical job already fetched above (success or failure) — never duplicate GET.
+          if (summary.name === canonicalName) continue;
           const mergeDetailRes = await apiGet<{ job?: StitchJob; name?: string }>(
             'stitch_editor_job',
             { job_name: summary.name },
+            { fetchTimeoutMs: 120000 },
           );
           if (cancelled || !mergeDetailRes.ok || !mergeDetailRes.data?.job) continue;
-          const j = mergeDetailRes.data.job;
-          mergeSlotsFromJob(mergedSlots, j.slots as Record<string, StitchSlot>);
-          if (j.transitions?.length && !mergedTransitions.length) {
-            mergedTransitions = j.transitions;
+          mergeSlotsFromJob(mergedSlots, mergeDetailRes.data.job.slots as Record<string, StitchSlot>);
+          if (mergeDetailRes.data.job.transitions?.length && !mergedTransitions.length) {
+            mergedTransitions = mergeDetailRes.data.job.transitions ?? [];
           }
         }
         if (Object.keys(mergedSlots).length > 0) {
+          const clientAmbientChanged = applyDefaultAmbientPresetsToSlots(mergedSlots);
+          normalizeStitchSlotAmbientVolumesInPlace(mergedSlots);
+          if (clientAmbientChanged) {
+            await persistJobSlotsByName(canonicalName, mergedSlots, mergedTransitions);
+          }
+          const lsPreviews = hydrateMuxFromLocalStorage(sessionKey, mergedSlots);
+          jobSlotsSnapshotRef.current = mergedSlots;
           setJob({
             name: canonicalName,
             slots: mergedSlots,
             transitions: mergedTransitions,
           });
+          if (Object.keys(lsPreviews).length > 0) {
+            setPreviewUrls((prev) => ({ ...prev, ...lsPreviews }));
+          }
+          jobLoadedForEventRef.current = sessionKey;
           setError(null);
           setLoading(false);
           return;
         }
-        // Fallback: legacy single-job pick.
-        const eventJobSummary =
-          jobs.find((j) => j.name?.startsWith('auto_')) ??
-          jobs.find((j) => j.name?.includes(eventName)) ??
-          (jobs.length > 1
-            ? jobs.reduce((a, b) =>
-                ((a as any).updated_at ?? '') >= ((b as any).updated_at ?? '') ? a : b
-              )
-            : null) ??
-          jobs[0] ?? null;
-        if (!eventJobSummary?.name) {
-          setJob(null);
+
+        if (!cancelled) {
+          // STITCH_JOB_SOFT_REFRESH_V1 — never wipe a loaded job when a background
+          // reload fails or times out (e.g. load_job contends with final MP4 bake).
+          if (!softRefresh) {
+            setJob(null);
+          } else if (!canonicalDetailRes.ok) {
+            setStatusMsg('⚠ Stitch job refresh delayed — showing last loaded compilation');
+          }
+          jobLoadedForEventRef.current = sessionKey;
           setError(null);
-          return;
         }
-        // 2nd fetch: full job detail (with slots).
-        const detailRes = await apiGet<{ job?: StitchJob; name?: string }>(
-          'stitch_editor_job',
-          { job_name: eventJobSummary.name },
-        );
-        if (cancelled) return;
-        if (!detailRes.ok) {
-          setError(detailRes.error ?? `HTTP ${detailRes.status} loading job detail`);
-          return;
-        }
-        const detailData = detailRes.data;
-        if (!detailData) {
-          setError('job detail response had no body');
-          return;
-        }
-        const fullJob: StitchJob | null = detailData.job
-          ? { ...detailData.job, name: detailData.name ?? eventJobSummary.name }
-          : null;
-        setJob(fullJob);
-        // standaloneMode is now a derived value (see component top); no need
-        // to set it here. ST-14 fix removed the slot-count inference path.
-        setError(null);
       } catch (e) {
         if (!cancelled) setError(String(e));
       } finally {
@@ -513,66 +1087,271 @@ export function StitcherTab() {
       }
     })();
     return () => { cancelled = true; };
-  }, [refreshTick, activeScope.value.event_id, serverRehydrateTick.value]);
+  }, [
+    stitcherRefreshTick.value,
+    activeScope.value.event_id,
+    activeProjectType.value,
+    activeMilestoneId.value,
+    serverRehydrateTick.value,
+    standaloneMode,
+  ]);
 
-  const slotsToShow = standaloneMode && job?.slots
-    ? SLOT_DEFS.filter((s) => job.slots && s.key in job.slots)
+  const slotsToShow = standaloneMode
+    ? STANDALONE_SLOT_DEFS
     : SLOT_DEFS;
   const multiPhaseSlots = standaloneMode ? slotsToShow : SLOT_DEFS;
   const multiPhaseTotalMs = Math.max(
     1,
     multiPhaseSlots.reduce((acc, sd) => {
-      const dur = job?.slots?.[sd.key]?.video_dur_ms ?? DEFAULT_SLOT_DUR_MS;
+      const slot = job?.slots?.[sd.key];
+      const dur = slot?.video_path
+        ? stitchSlotTimelineDurMs(slot, DEFAULT_SLOT_DUR_MS)
+        : STITCH_EMPTY_SEGMENT_MS;
       return acc + dur;
     }, 0),
   );
-  const viewerSlot: SlotKey = trackFocusedSlot ?? multiPhaseSlots[0]?.key ?? 'intro';
+  const layoutSlotKeys = useMemo(
+    () => multiPhaseSlots.map((sd) => sd.key),
+    [multiPhaseSlots],
+  );
+  const viewerSlot: SlotKey = resolveStitchViewerSlot({
+    layoutSlotKeys,
+    trackFocusedSlot,
+  });
+  viewerSlotRef.current = viewerSlot;
   const viewerSlotData = job?.slots?.[viewerSlot];
-  const viewerSourceUrl = resolveStitchSlotSourceVideoUrl(viewerSlotData?.video_path);
-  /** Processed slot preview (ambient + SFX baked) when ready; raw /files while building. */
-  const composerVideoUrl = previewVideoFallback[viewerSlot]
-    ? viewerSourceUrl
-    : (previewUrls[viewerSlot] ?? viewerSourceUrl);
-  const composerLoading =
-    previewLoadingSlot === viewerSlot
-    || (busySlot?.slot === viewerSlot && busySlot.action === 'preview');
+  const viewerSlotNeedsMux = stitchSlotRequiresMuxedPreview(viewerSlotData);
+  const viewerSlotNeedsAmbientMix = stitchSlotRequiresAmbientMix(viewerSlotData);
+  const composerVideoUrl = composerSlotUrls[viewerSlot];
+  const resolvedComposerUrl = composerVideoUrl;
+  const composerUsingMux = Boolean(
+    resolvedComposerUrl
+    && viewerSlotNeedsMux
+    && isStitchMuxPlaybackUrl(resolvedComposerUrl),
+  );
+  const composerUsingAmbientMix = Boolean(
+    resolvedComposerUrl
+    && viewerSlotNeedsAmbientMix
+    && isStitchMuxPlaybackUrl(resolvedComposerUrl),
+  );
+  const composerMuxRefreshing = previewLoadingSlot === viewerSlot && composerUsingMux;
+  const composerPreviewBuilding = previewLoadingSlot === viewerSlot && !resolvedComposerUrl;
+  const composerAmbientBuilding = busySlot?.slot === viewerSlot && busySlot.action === 'ambient';
 
-  // Waveforms mount async after job/audio extract — re-silence once they appear.
+  useLayoutEffect(() => {
+    composerVideoRef.current = composerPoolRef.current?.getVideo(viewerSlot) ?? null;
+  }, [viewerSlot, composerSlotUrls, previewUrls]);
+
+  useEffect(() => {
+    setComposerVideoError(null);
+    const url = composerSlotUrls[viewerSlot];
+    const video = composerPoolRef.current?.getVideo(viewerSlot);
+    const alreadyLoaded = Boolean(
+      url
+      && (isStitchComposerUrlLoaded(url) || (video && video.readyState >= 2)),
+    );
+    setComposerVideoLoading(Boolean(url) && !alreadyLoaded);
+  }, [viewerSlot, composerSlotUrls]);
+
+  // Pin resolved playback URL into previewUrls when composer resolved it outside previewUrls state.
+  useEffect(() => {
+    const url = composerSlotUrls[viewerSlot];
+    if (!url || previewUrls[viewerSlot]) return;
+    if (
+      stitchSlotRequiresMuxedPreview(viewerSlotData)
+      && !isStitchMuxPlaybackUrl(url)
+    ) return;
+    bindSlotPreviewUrl(viewerSlot, url, 'hydrate');
+  }, [viewerSlot, composerSlotUrls, previewUrls, viewerSlotData]);
+
+  useEffect(() => {
+    setComposerVideoError(null);
+  }, [viewerSlot]);
+
+  // Stop stray phase playback when switching stitch slots (pool pauses inactive).
   useEffect(() => {
     if (!job?.name) return;
     stopAllPhasePlayback();
-    const video = composerVideoRef.current;
-    if (video) {
-      video.pause();
-      video.muted = true;
-    }
+    composerPoolRef.current?.pauseAllExcept(viewerSlot);
     const t = window.setTimeout(() => stopAllPhasePlayback(), 800);
     return () => clearTimeout(t);
   }, [job?.name, viewerSlot]);
 
   /**
+   * STITCH_SLOT_MEDIA_ARTIFACTS_V1 — build missing mux only for slots without server artifacts.
+   */
+  useEffect(() => {
+    if (!job?.name) return;
+    const pending = pendingMuxBuildsRef.current;
+    if (!pending.length) return;
+    pendingMuxBuildsRef.current = [];
+    void (async () => {
+      for (const slotKey of pending) {
+        if (standaloneMode && slotKey !== 'standalone') continue;
+        if (!job?.slots?.[slotKey]?.video_path) continue;
+        await buildSlotPreview(slotKey, { quiet: true });
+        scheduledMuxSlotsRef.current.delete(slotKey);
+      }
+    })();
+  }, [job?.name, muxBuildTick, standaloneMode]);
+
+  /** STITCH_AMBIENT_PREVIEW_V1 — preview build for ambient mix; never saveJobSlots auto-bake. */
+  useEffect(() => {
+    if (!job?.name) return;
+    const pending = [...slotsNeedingAmbientBakeRef.current];
+    if (!pending.length) return;
+    slotsNeedingAmbientBakeRef.current = [];
+    void (async () => {
+      for (const slotKey of pending) {
+        if (standaloneMode && slotKey !== 'standalone') continue;
+        const slot = jobSlotsSnapshotRef.current[slotKey];
+        if (!slot?.video_path) continue;
+        if ((slot.ambient_mix_hash ?? '').trim()) continue;
+        await buildSlotPreview(slotKey as SlotKey, { quiet: true });
+      }
+    })();
+  }, [job?.name, ambientBakeTick, standaloneMode]);
+
+  /**
    * Persist the entire job slots dict via stitch_save_job. Used when sfx_cues
    * change (add/edit/delete) on any slot — the slot.sfx_cues array is the
    * source of truth for per-slot cues per audit doc §3.
+   *
+   * STITCH_INSTANT_GEOMETRY_BASELINE_V1 — instant drop/range paths update
+   * jobSlotsSnapshotRef before calling save; pass geometryBaseline so mux pause
+   * + edit_kind still compare pre-edit vs post-edit geometry.
    */
   const saveJobSlots = async (
     nextSlots: Record<string, StitchSlot>,
     transitions?: Transition[],
+    opts?: { geometryBaseline?: Record<string, StitchSlot> },
   ): Promise<boolean> => {
     if (!job?.name) return false;
+    const jobName = job.name as string;
+    if (!stitchSnapshotReadyForSave(nextSlots, activeProjectType.value)) {
+      return false;
+    }
+    const saveSeq = ++stitchSaveSeqRef.current;
+    const diffBaseline = opts?.geometryBaseline ?? jobSlotsSnapshotRef.current ?? job.slots ?? {};
+    const prevSlots = jobSlotsSnapshotRef.current ?? job.slots ?? {};
+    const sanitized: Record<string, StitchSlot> = { ...nextSlots };
+    const geometryChangedSlots: StitchSessionSlotKey[] = [];
+    for (const [key, slot] of Object.entries(sanitized)) {
+      const slotKey = key as StitchSessionSlotKey;
+      const prev = diffBaseline[slotKey];
+      if (stitchSlotGeometryChanged(prev, slot)) {
+        sanitized[slotKey] = stripStaleStitchSlotArtifacts(slot);
+        // STITCH_MUX_STALE_WHILE_REVALIDATE_V1 — drop persisted LS only; keep in-memory
+        // previewUrls + session mux URL until buildSlotPreview succeeds with new hash.
+        clearCachedStitcherPreviewLs(stitchSessionKey, slotKey);
+        geometryChangedSlots.push(slotKey);
+      }
+    }
+    if (geometryChangedSlots.length > 0) {
+      composerPoolRef.current?.pauseAllExcept(null);
+      stopAllPhasePlayback();
+      setStatusMsg('Paused — updating SFX preview (video stays loaded)');
+    }
+    const editKind = inferStitchEditKind(diffBaseline, sanitized);
     const res = await pathappPatch(activeScope.value, 'stitch_save_job', {
-      name: job.name,
-      slots: nextSlots,
+      name: jobName,
+      slots: sanitized,
       transitions: transitions ?? job.transitions ?? [],
       merge_slots: true,
+      edit_kind: editKind,
+      dispatch_code: STITCH_SLOT_EDIT_DISPATCH_V1,
     });
     if (res.ok) {
-      // Update local state mirror immediately so the UI reflects the write.
-      setJob({
-        ...job,
-        slots: nextSlots,
-        ...(transitions ? { transitions } : {}),
-      });
+      if (saveSeq !== stitchSaveSeqRef.current) {
+        return true;
+      }
+      const data = res.data as {
+        built_slots?: Record<string, {
+          ok?: boolean;
+          ambient_mix_hash?: string;
+          _ambient_mix_url?: string;
+          ambient_mix_sig?: string;
+          ambient_mix_duration_ms?: number;
+          cleared?: boolean;
+        }>;
+      } | undefined;
+      let mergedSlots = mergeStitchJobSlotsClientPatch(prevSlots, sanitized);
+      if (data?.built_slots) {
+        for (const [key, built] of Object.entries(data.built_slots)) {
+          const slotKey = key as StitchSessionSlotKey;
+          if (!built?.ok) continue;
+          const slot = mergedSlots[slotKey];
+          if (!slot) continue;
+          if (built.cleared) {
+            delete slot.ambient_mix_hash;
+            delete slot._ambient_mix_url;
+          } else if (built.ambient_mix_hash) {
+            slot.ambient_mix_hash = built.ambient_mix_hash;
+            if (built.ambient_mix_sig) slot.ambient_mix_sig = built.ambient_mix_sig;
+            if (built.ambient_mix_duration_ms) {
+              slot.ambient_mix_duration_ms = built.ambient_mix_duration_ms;
+            }
+            if (built._ambient_mix_url) {
+              slot._ambient_mix_url = built._ambient_mix_url;
+              // STITCH_SFX_PLAYBACK_TRUTH_V1 — never swap composer to ambient-only
+              // URL when slot has SFX; mux preview owns playback until rebuild lands.
+              if (!stitchSlotRequiresMuxedPreview(slot)) {
+                const url = resolveServerMediaUrl(built._ambient_mix_url);
+                bindSlotPreviewUrl(slotKey, url, 'ambient_bake');
+                commitMuxSession(stitchSessionKey, slotKey, {
+                  previewUrl: url,
+                  videoPath: slot.video_path!,
+                  audioSig: stitchSlotLiveAmbientSig(slot),
+                });
+              }
+            }
+          }
+        }
+      }
+      // STITCH_SAVE_OPTIMISTIC_SLOTS_V1 — refresh merges in background (drop already painted).
+      jobSlotsSnapshotRef.current = mergedSlots;
+      setJob((prev) => (
+        prev
+          ? {
+              ...prev,
+              slots: mergedSlots,
+              ...(transitions ? { transitions } : {}),
+            }
+          : prev
+      ));
+      void (async () => {
+        const refreshRes = await apiGet<{ job?: StitchJob }>(
+          'stitch_editor_job',
+          { job_name: jobName },
+          { fetchTimeoutMs: 120000 },
+        );
+        if (saveSeq !== stitchSaveSeqRef.current) return;
+        if (!refreshRes.ok || !refreshRes.data?.job?.slots) return;
+        // STITCH_SAVE_REFRESH_LOCAL_CUES_V1 — server GET is for durable fields; local
+        // snapshot owns sfx_cues geometry the operator just dragged (avoid stale revert).
+        const refreshed = mergeStitchJobSlotsClientPatch(
+          refreshRes.data.job.slots as Record<string, StitchSlot>,
+          jobSlotsSnapshotRef.current,
+        );
+        if (saveSeq !== stitchSaveSeqRef.current) return;
+        jobSlotsSnapshotRef.current = refreshed;
+        setJob((prev) => (prev ? { ...prev, slots: refreshed } : prev));
+      })();
+      if (geometryChangedSlots.length > 0) {
+        const slotsNeedingMux = geometryChangedSlots.filter((slotKey) =>
+          stitchSlotRequiresMuxedPreview(mergedSlots[slotKey]),
+        );
+        if (slotsNeedingMux.length > 0) {
+          scheduledMuxSlotsRef.current = new Set([
+            ...scheduledMuxSlotsRef.current,
+            ...slotsNeedingMux,
+          ]);
+          pendingMuxBuildsRef.current = [
+            ...new Set([...pendingMuxBuildsRef.current, ...slotsNeedingMux]),
+          ];
+          setMuxBuildTick((n) => n + 1);
+        }
+      }
       return true;
     }
     setStatusMsg(`✗ Save HTTP ${res.status}: ${res.error ?? ''}`);
@@ -648,67 +1427,157 @@ export function StitcherTab() {
 
   const buildSlotPreview = async (slot: SlotKey, opts?: { quiet?: boolean }): Promise<boolean> => {
     if (!job?.name) return false;
-    const slotData = job?.slots?.[slot];
+    const slotData = jobSlotsSnapshotRef.current[slot as string] ?? job?.slots?.[slot];
     if (!slotData?.video_path) {
       if (!opts?.quiet) setStatusMsg(`Slot ${slot} has no video assigned.`);
       return false;
     }
-    const eventId = activeScope.value.event_id;
-    const cached = readCachedStitcherPreview(eventId, slot);
-    if (cached?.video_path === slotData.video_path && cached.preview_url) {
-      setPreviewUrls((prev) => ({ ...prev, [slot]: cached.preview_url }));
+    const audioSig = stitchSlotSessionExpectedSig(slotData);
+    const persistedArtifactUrl = resolvePersistedPlaybackFromArtifacts(slotData);
+    if (persistedArtifactUrl && isMuxSessionFresh(stitchSessionKey, slot, slotData)) {
+      bindSlotPreviewUrl(slot, persistedArtifactUrl, 'hydrate');
       return true;
     }
+    if (
+      persistedArtifactUrl
+      && (slotData.mix_sig ?? '').trim() === stitchSlotLiveGeometrySig(slotData)
+    ) {
+      bindSlotPreviewUrl(slot, persistedArtifactUrl, 'hydrate');
+      commitMuxSession(stitchSessionKey, slot, {
+        previewUrl: persistedArtifactUrl,
+        videoPath: slotData.video_path!,
+        audioSig,
+      });
+      return true;
+    }
+    if (
+      slotData.mux_preview_hash
+      && slotData._mux_preview_url
+      && stitchSlotMuxPreviewLineageMatches(slotData)
+      && isMuxSessionFresh(stitchSessionKey, slot, slotData)
+    ) {
+      const url = resolveServerMediaUrl(slotData._mux_preview_url);
+      bindSlotPreviewUrl(slot, url, 'hydrate');
+      commitMuxSession(stitchSessionKey, slot, {
+        previewUrl: url,
+        videoPath: slotData.video_path!,
+        audioSig,
+      });
+      return true;
+    }
+    if (isMuxSessionFresh(stitchSessionKey, slot, slotData)) {
+      const url = getStitchSlotSession(stitchSessionKey, slot)!.muxPreviewUrl!;
+      bindSlotPreviewUrl(slot, url, 'hydrate');
+      return true;
+    }
+    if (opts?.quiet && previewUrls[slot] && isMuxSessionFresh(stitchSessionKey, slot, slotData)) {
+      commitMuxSession(stitchSessionKey, slot, {
+        previewUrl: previewUrls[slot]!,
+        videoPath: slotData.video_path!,
+        audioSig,
+      });
+      return true;
+    }
+    const cached = readCachedStitcherPreviewLs(stitchSessionKey, slot);
+    if (
+      !stitchSlotRequiresMuxedPreview(slotData)
+      && cached?.video_path === slotData.video_path
+      && (cached.audio_sig ?? '') === audioSig
+      && cached.preview_url
+    ) {
+      bindSlotPreviewUrl(slot, cached.preview_url, 'hydrate');
+      commitMuxSession(stitchSessionKey, slot, {
+        previewUrl: cached.preview_url,
+        videoPath: slotData.video_path,
+        audioSig,
+      });
+      return true;
+    }
+    // STITCH_MUX_STALE_WHILE_REVALIDATE_V1 — never blank an already-playing mux while
+    // ffmpeg rebuilds after SFX/ambient geometry change; swap src only on success.
 
-    const gen = ++slotPreviewGenRef.current;
+    const gen = (slotPreviewGenRef.current[slot] ?? 0) + 1;
+    slotPreviewGenRef.current[slot] = gen;
     setPreviewLoadingSlot(slot);
     if (!opts?.quiet) {
       setBusySlot({ slot, action: 'preview' });
       setStatusMsg(null);
     }
-    const res = await pathappPatch(activeScope.value, 'stitch_preview', {
+  const flightKey = stitchMediaFlightKey(stitchSessionKey, slot, audioSig);
+  const slotScopeRole =
+    slot === 'resolution' ? 'resolution' : slot === 'standalone' ? 'standalone' : 'intro';
+  const res = await singleFlightMuxPreview(flightKey, () => pathappPatch(
+    activeScope.value,
+    'stitch_preview',
+    {
       name: job.name,
       slot,
+      slot_preview: true,
+      transitions: [],
       slots: [slotData],
-    });
-    if (gen !== slotPreviewGenRef.current) return false;
+      scope_video_role: slotScopeRole,
+      scope_target_video: slotScopeRole,
+    },
+      { fetchTimeoutMs: 300_000 },
+    ));
+    if (gen !== slotPreviewGenRef.current[slot]) return false;
     setPreviewLoadingSlot(null);
     if (!opts?.quiet) setBusySlot(null);
 
     if (res.ok) {
-      const data = res.data as { preview_url?: string } | undefined;
-      if (data?.preview_url) {
-        setPreviewUrls((prev) => ({ ...prev, [slot]: data.preview_url! }));
-        setPreviewVideoFallback((prev) => {
-          const next = { ...prev };
-          delete next[slot];
-          return next;
-        });
-        writeCachedStitcherPreview(eventId, slot, {
+      const data = res.data as { preview_url?: string; video_playable?: boolean } | undefined;
+      if (data?.preview_url && data.video_playable !== false) {
+        const muxCommit = {
+          previewUrl: data.preview_url!,
+          videoPath: slotData.video_path!,
+          audioSig,
+        };
+        bindSlotPreviewUrl(
+          slot,
+          data.preview_url!,
+          opts?.quiet ? 'quiet_rebuild' : 'explicit_preview',
+        );
+        writeCachedStitcherPreviewLs(stitchSessionKey, slot, {
           video_path: slotData.video_path,
           preview_url: data.preview_url,
+          audio_sig: audioSig,
         });
+        commitMuxSession(stitchSessionKey, slot, muxCommit);
       }
       if (!opts?.quiet) setStatusMsg(`✓ Preview ${slot} ready`);
-      return true;
+      return Boolean(data?.preview_url && data.video_playable !== false);
+    }
+    const sigSlot = { ...slotData, sfx_cues: slotData.sfx_cues ?? [] };
+    const mayBindDry = !stitchSlotRequiresMuxedPreview(sigSlot)
+      && !stitchSlotRequiresAmbientMix(sigSlot);
+    const dryUrl = mayBindDry ? resolveDrySlotSourceVideoUrl(slotData.video_path) : undefined;
+    if (dryUrl) {
+      bindSlotPreviewUrl(slot, dryUrl, 'hydrate');
+      commitMuxSession(stitchSessionKey, slot, {
+        previewUrl: dryUrl,
+        videoPath: slotData.video_path!,
+        audioSig,
+      });
     }
     const data = res.data as { error?: string } | undefined;
     if (!opts?.quiet) {
-      setStatusMsg(`✗ Preview HTTP ${res.status}: ${data?.error ?? res.error ?? ''}`);
+      setStatusMsg(`✗ Preview HTTP ${res.status}: ${data?.error ?? res.error ?? ''} — playing dry slot video`);
     }
     return false;
   };
 
-  const seekComposerTo = (offsetMs: number, opts?: { play?: boolean }) => {
-    const video = composerVideoRef.current;
+  const seekComposerTo = (offsetMs: number, opts?: { play?: boolean }, slotKey?: SlotKey) => {
+    const slot = slotKey ?? viewerSlotRef.current;
+    const sessionSlot = slot as StitchSessionSlotKey;
+    const video = composerPoolRef.current?.getVideo(sessionSlot) ?? composerVideoRef.current;
     if (!video) return;
     const shouldPlay = opts?.play === true;
-    video.muted = !shouldPlay;
+    const shouldPause = opts?.play === false;
     const apply = () => {
       video.currentTime = Math.max(0, offsetMs / 1000);
       if (shouldPlay) {
         void video.play().catch(() => {});
-      } else {
+      } else if (shouldPause) {
         video.pause();
       }
     };
@@ -719,47 +1588,179 @@ export function StitcherTab() {
     video.addEventListener('loadedmetadata', apply, { once: true });
   };
 
-  const onComposerVideoError = () => {
-    const eventId = activeScope.value.event_id;
-    clearCachedStitcherPreview(eventId, viewerSlot);
-    setPreviewUrls((prev) => {
-      const next = { ...prev };
-      delete next[viewerSlot];
-      return next;
-    });
-    setPreviewVideoFallback((prev) => ({ ...prev, [viewerSlot]: true }));
-    void buildSlotPreview(viewerSlot, { quiet: true }).then((ok) => {
-      if (ok) {
-        setPreviewVideoFallback((prev) => {
-          const next = { ...prev };
-          delete next[viewerSlot];
-          return next;
-        });
-      }
-    });
+  const onPoolSlotCanPlay = (slot: SlotKey, url: string) => {
+    markStitchComposerUrlLoaded(url);
+    if (slot === viewerSlotRef.current) {
+      setComposerVideoLoading(false);
+      setComposerVideoError(null);
+    }
+  };
+
+  const onPoolSlotError = (slot: StitchSessionSlotKey) => {
+    if (slot !== viewerSlotRef.current) return;
+    const video = composerPoolRef.current?.getVideo(slot);
+    const code = video?.error?.code;
+    const msg = video?.error?.message || `MEDIA_ERR code=${code ?? '?'}`;
+    setComposerVideoLoading(false);
+    const slotData = job?.slots?.[slot];
+    const usingMux = stitchSlotRequiresMuxedPreview(slotData);
+    const dryUrl = slotData?.video_path
+      ? resolveDrySlotSourceVideoUrl(slotData.video_path)
+      : undefined;
+    if (usingMux && dryUrl) {
+      bindSlotPreviewUrl(slot, dryUrl, 'hydrate');
+      setComposerVideoError(
+        `SFX mix preview failed (${msg}) — playing speech-only. Click Review to rebuild the mix.`,
+      );
+    } else {
+      setComposerVideoError(`Video load failed: ${msg}`);
+    }
   };
 
   const onPreviewSlot = async (slot: SlotKey, opts?: { quiet?: boolean }) => {
     const built = await buildSlotPreview(slot, opts);
     if (built) {
-      setActivePreviewSlot(slot);
-      setTrackFocusedSlot(slot);
-      writePersistedTrackSlot(activeScope.value.event_id, slot);
+      if (layoutSlotKeys.includes(slot)) {
+        setTrackFocusedSlot(slot);
+        writePersistedTrackSlot(stitchSessionKey, slot);
+      }
       void fetchBeatBoundaries(slot);
-      seekComposerTo(0, { play: opts?.quiet !== true });
+      seekComposerTo(0, { play: opts?.quiet !== true }, slot);
     }
     return built;
   };
 
   const onMultiPhaseSegmentClick = (slot: SlotKey, opts?: { playModulePreview?: boolean }) => {
-    setTrackFocusedSlot(slot);
-    setActivePreviewSlot(slot);
-    writePersistedTrackSlot(activeScope.value.event_id, slot);
-    void fetchBeatBoundaries(slot);
-    void buildSlotPreview(slot, { quiet: true }).then(() => {
-      seekComposerTo(0, { play: opts?.playModulePreview === true });
+    if (!layoutSlotKeys.includes(slot)) return;
+    const target: StitchUiSlotKey = slot === 'standalone'
+      ? 'standalone'
+      : resolveTrackSlotForInteraction(
+        job?.slots,
+        stitchSessionKey,
+        slot as StitchTrackSlotKey,
+        activeTargetVideo.value,
+      );
+    setTrackFocusedSlot(target);
+    if (slotHasStitchVideo(job?.slots, target)) {
+      writePersistedTrackSlot(stitchSessionKey, target);
+    }
+    void fetchBeatBoundaries(target);
+    if (!slotHasStitchVideo(job?.slots, target)) return;
+    const slotData = job?.slots?.[target];
+    const instantUrl = slotData
+      ? resolveSlotPlaybackPreviewUrl(stitchSessionKey, target, slotData, previewUrls)
+      : undefined;
+    if (instantUrl) {
+      bindSlotPreviewUrl(target, instantUrl, 'hydrate');
+      seekComposerTo(0, { play: opts?.playModulePreview === true }, target);
+      return;
+    }
+    // STITCH_SLOT_SESSION_CACHE_V1 — phase switch is navigation, not a reload.
+    if (slotData && isMuxSessionFresh(stitchSessionKey, target, slotData)) {
+      const url = getStitchSlotSession(stitchSessionKey, target)!.muxPreviewUrl!;
+      bindSlotPreviewUrl(target, url, 'hydrate');
+      seekComposerTo(0, { play: opts?.playModulePreview === true }, target);
+      return;
+    }
+    if (previewUrls[target]) {
+      seekComposerTo(0, { play: opts?.playModulePreview === true }, target);
+      return;
+    }
+    void buildSlotPreview(target, { quiet: true }).then(() => {
+      seekComposerTo(0, { play: opts?.playModulePreview === true }, target);
     });
   };
+
+  const viewerMuxAudioSig = useMemo(
+    () => stitchSlotLiveGeometrySig(viewerSlotData),
+    [viewerSlotData],
+  );
+
+  useEffect(() => {
+    if (!job?.name || !viewerSlotData?.video_path) return;
+    const sessionSlot = viewerSlot as StitchSessionSlotKey;
+    if (!stitchSlotRequiresMuxedPreview(viewerSlotData)) return;
+    if (scheduledMuxSlotsRef.current.has(sessionSlot)) return;
+    if (previewLoadingSlot === sessionSlot) return;
+    const instantUrl = resolveSlotPlaybackPreviewUrl(
+      stitchSessionKey,
+      sessionSlot,
+      viewerSlotData,
+      previewUrls,
+    );
+    if (instantUrl) {
+      bindSlotPreviewUrl(sessionSlot, instantUrl, 'hydrate');
+      return;
+    }
+    if (isMuxSessionFresh(stitchSessionKey, sessionSlot, viewerSlotData)) {
+      const url = getStitchSlotSession(stitchSessionKey, sessionSlot)?.muxPreviewUrl;
+      if (url) {
+        bindSlotPreviewUrl(sessionSlot, url, 'hydrate');
+      }
+      return;
+    }
+    const hydrated = hydrateMuxFromLocalStorage(stitchSessionKey, { [sessionSlot]: viewerSlotData });
+    if (hydrated[sessionSlot]) {
+      bindSlotPreviewUrl(sessionSlot, hydrated[sessionSlot]!, 'hydrate');
+      return;
+    }
+    if (previewUrls[sessionSlot] && isMuxSessionFresh(stitchSessionKey, sessionSlot, viewerSlotData)) {
+      return;
+    }
+    const t = window.setTimeout(() => {
+      void buildSlotPreview(sessionSlot, { quiet: true });
+    }, 400);
+    return () => clearTimeout(t);
+  }, [
+    standaloneMode,
+    job?.name,
+    viewerSlot,
+    viewerSlotData?.video_path,
+    viewerMuxAudioSig,
+  ]);
+
+  /** Ambient-only slots: bind playback URL; dry speech video until ambient mix is baked. */
+  useEffect(() => {
+    if (!job?.name || !viewerSlotData?.video_path) return;
+    const sessionSlot = viewerSlot as StitchSessionSlotKey;
+    if (!stitchSlotRequiresAmbientMix(viewerSlotData)) return;
+    if (previewLoadingSlot === sessionSlot) return;
+    const instantUrl = resolveSlotPlaybackPreviewUrl(
+      stitchSessionKey,
+      sessionSlot,
+      viewerSlotData,
+      previewUrls,
+    );
+    if (instantUrl) {
+      bindSlotPreviewUrl(sessionSlot, instantUrl, 'hydrate');
+      return;
+    }
+    if (isMuxSessionFresh(stitchSessionKey, sessionSlot, viewerSlotData)) {
+      const url = getStitchSlotSession(stitchSessionKey, sessionSlot)?.muxPreviewUrl;
+      if (url) {
+        bindSlotPreviewUrl(sessionSlot, url, 'hydrate');
+        return;
+      }
+    }
+    const dryUrl = resolveDrySlotSourceVideoUrl(viewerSlotData.video_path);
+    if (dryUrl) {
+      bindSlotPreviewUrl(sessionSlot, dryUrl, 'hydrate');
+    }
+    if (!(viewerSlotData.ambient_mix_hash ?? '').trim()) {
+      if (!slotsNeedingAmbientBakeRef.current.includes(sessionSlot)) {
+        slotsNeedingAmbientBakeRef.current = [sessionSlot];
+        setAmbientBakeTick((n) => n + 1);
+      }
+    }
+  }, [
+    standaloneMode,
+    job?.name,
+    viewerSlot,
+    viewerSlotData?.video_path,
+    viewerSlotData?.ambient_bed,
+    viewerSlotData?.ambient_volume,
+    activeScope.value.event_id,
+  ]);
 
   useEffect(() => {
     if (standaloneMode || !job?.name) return;
@@ -778,20 +1779,6 @@ export function StitcherTab() {
     void saveJobTransitions(resolveStitchTransitions(job.transitions));
   }, [job?.name, JSON.stringify(job?.transitions)]);
 
-  useEffect(() => {
-    if (standaloneMode || !job?.slots) return;
-    const slotData = job.slots[viewerSlot];
-    if (!slotData?.video_path) return;
-    void buildSlotPreview(viewerSlot, { quiet: true });
-  }, [
-    standaloneMode,
-    viewerSlot,
-    job?.name,
-    viewerSlotData?.video_path,
-    viewerSlotData?.ambient_bed,
-    JSON.stringify(viewerSlotData?.sfx_cues ?? []),
-  ]);
-
   const focusedSlotVideoPath =
     trackFocusedSlot != null ? job?.slots?.[trackFocusedSlot]?.video_path : undefined;
 
@@ -804,46 +1791,8 @@ export function StitcherTab() {
     focusedSlotVideoPath,
   ]);
 
-  // Slot composer: video controls mirror waveform — guarded to avoid seek feedback loops.
+  // Reset composer when switching slots.
   useEffect(() => {
-    const video = composerVideoRef.current;
-    if (!video) return;
-
-    const onVideoPause = () => {
-      if (composerVideoSyncSuppressRef.current) return;
-      composerPlaybackRef.current?.pause();
-    };
-    const onVideoPlay = () => {
-      if (composerVideoSyncSuppressRef.current) return;
-      const ctl = composerPlaybackRef.current;
-      if (!ctl?.isReady) {
-        // Waveform still remixing — muted video alone has no slot audio (SFX + ambient).
-        video.pause();
-        return;
-      }
-      if (ctl.isPlaying) return;
-      ctl.seekToMs(video.currentTime * 1000);
-      ctl.play();
-    };
-    const onVideoSeeked = () => {
-      if (composerVideoSyncSuppressRef.current) return;
-      const ctl = composerPlaybackRef.current;
-      if (!ctl?.isReady || ctl.isPlaying) return;
-      ctl.seekToMs(video.currentTime * 1000);
-    };
-
-    video.addEventListener('pause', onVideoPause);
-    video.addEventListener('play', onVideoPlay);
-    video.addEventListener('seeked', onVideoSeeked);
-    return () => {
-      video.removeEventListener('pause', onVideoPause);
-      video.removeEventListener('play', onVideoPlay);
-      video.removeEventListener('seeked', onVideoSeeked);
-    };
-  }, [viewerSlot, composerVideoUrl]);
-
-  useEffect(() => {
-    composerPlaybackRef.current?.pause();
     const video = composerVideoRef.current;
     if (!video) return;
     video.pause();
@@ -852,27 +1801,140 @@ export function StitcherTab() {
     } catch {
       // ignore seek before metadata
     }
-  }, [viewerSlot, composerVideoUrl]);
+  }, [viewerSlot]);
 
   const onBake = async () => {
     if (!job?.name) {
       setStatusMsg('No active stitch job. Send a producer output to Stitcher first.');
       return;
     }
+    if (activeBakeJobId) {
+      setStatusMsg(stitchBakeStatusMessage({ status: 'running' }));
+      return;
+    }
+    const eventId = activeScope.value.event_id;
     setBusySlot({ slot: 'intro', action: 'bake' });
-    setStatusMsg('Baking final MP4…');
-    // V59 architectural-fix (Wave 1, F-S2-001): mutation via pathappPatch.
-    const res = await pathappPatch<{ bake_path?: string }>(activeScope.value, 'stitch_bake', {
+    setStatusMsg('Submitting bake…');
+    const res = await pathappPatch<StitchBakePollResult>(activeScope.value, 'stitch_bake', {
       name: job.name,
     });
     setBusySlot(null);
-    if (res.ok) {
-      setStatusMsg(`✓ Baked: ${res.data?.bake_path ?? job.name}`);
-      setRefreshTick((n) => n + 1);
-    } else {
-      setStatusMsg(`✗ Bake HTTP ${res.status}`);
+    if (!res.ok) {
+      const detail = res.error_message ?? res.error ?? `HTTP ${res.status}`;
+      setStatusMsg(`✗ Bake: ${detail}`);
+      pushToast({
+        kind: 'error',
+        message: `Bake failed: ${detail}`,
+        source: 'stitch-bake-error',
+      });
+      return;
+    }
+    const jobId = res.data?.job_id;
+    if (!jobId) {
+      setStatusMsg('✗ Bake: server returned no job_id');
+      pushToast({
+        kind: 'error',
+        message: 'Bake failed: server returned no job_id',
+        source: 'stitch-bake-error',
+      });
+      return;
+    }
+    writeStitchBakeBusyLatch(eventId, job.name, jobId);
+    setActiveBakeJobId(jobId);
+    setStatusMsg(stitchBakeStatusMessage(res.data));
+    if (res.data?.reattach) {
+      pushToast({
+        kind: 'info',
+        message: 'Reattached to in-progress bake',
+        source: 'stitch-bake-reattach',
+      });
     }
   };
+
+  // Poll durable bake job until terminal (survives refresh via latch + load_job bake_job).
+  useEffect(() => {
+    if (!activeBakeJobId || !job?.name) return;
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const finishTerminal = (data: StitchBakePollResult) => {
+      const eventId = activeScope.value.event_id;
+      writeStitchBakeBusyLatch(eventId, job.name!, null);
+      setActiveBakeJobId(null);
+      const toastKey = `${data.job_id ?? activeBakeJobId}:${data.status ?? 'unknown'}`;
+      if (bakeTerminalToastRef.current === toastKey) return;
+      bakeTerminalToastRef.current = toastKey;
+
+      if (data.status === 'done') {
+        const { canonical, assetId } = stitchBakeSuccessPaths(data);
+        const label = canonical?.split('/').pop() ?? job.name ?? 'module';
+        setStatusMsg(`✓ Baked + pinned: ${label}`);
+        pushToast({
+          kind: 'success',
+          message: assetId && assetId > 0
+            ? `Final MP4 → ${label} (Directus #${assetId})`
+            : `Final MP4 → ${label}`,
+          source: 'stitch-bake-done',
+        });
+        setModuleFinalRevision((n) => n + 1);
+        stitcherRefreshTick.value += 1;
+        return;
+      }
+      const err = data.error ?? data.message ?? data.result?.error_message ?? 'Bake failed';
+      setStatusMsg(`✗ Bake: ${err}`);
+      pushToast({
+        kind: 'error',
+        message: data.status === 'interrupted'
+          ? `Bake interrupted: ${err}`
+          : `Bake failed: ${err}`,
+        source: data.status === 'interrupted' ? 'stitch-bake-interrupted' : 'stitch-bake-error',
+      });
+    };
+
+    const poll = async () => {
+      const res = await apiGet<StitchBakePollResult>('stitch_bake_status', {
+        job_id: activeBakeJobId,
+      });
+      if (cancelled) return;
+      if (!res.ok || !res.data) {
+        pushToast({
+          kind: 'error',
+          message: `Bake poll error: ${res.error ?? `HTTP ${res.status}`}`,
+          source: 'stitch-bake-poll-error',
+        });
+        writeStitchBakeBusyLatch(activeScope.value.event_id, job.name!, null);
+        setActiveBakeJobId(null);
+        return;
+      }
+      setStatusMsg(stitchBakeStatusMessage(res.data));
+      if (!isStitchBakeStatusTerminal(res.data.status)) {
+        timer = window.setTimeout(poll, STITCH_BAKE_POLL_INTERVAL_MS);
+        return;
+      }
+      finishTerminal(res.data);
+    };
+
+    poll();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [activeBakeJobId, job?.name]);
+
+  // Reconcile bake latch on tab visibility (server restart → interrupted).
+  useEffect(() => {
+    if (!job?.name) return;
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      const eventId = activeScope.value.event_id;
+      const latched = readStitchBakeBusyLatch(eventId, job.name!);
+      if (latched && !activeBakeJobId) {
+        setActiveBakeJobId(latched);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [job?.name, activeBakeJobId]);
 
   const onLoudnormSlot = async (slot: SlotKey) => {
     const slotData = job?.slots?.[slot];
@@ -888,7 +1950,7 @@ export function StitcherTab() {
     setBusySlot(null);
     if (res.ok) {
       setStatusMsg(`✓ Loudnorm applied to ${slot}`);
-      setRefreshTick((n) => n + 1);
+      stitcherRefreshTick.value += 1;
     } else {
       const data = res.data as { error?: string } | undefined;
       setStatusMsg(`✗ Loudnorm HTTP ${res.status}: ${data?.error ?? res.error}`);
@@ -948,7 +2010,7 @@ export function StitcherTab() {
     if (ok) {
       setStatusMsg(
         value
-          ? `✓ ${slot} ambient bed → ${value} (waveform + Review / Bake)`
+          ? `✓ ${slot} ambient bed → ${value} (composer preview updated)`
           : `✓ ${slot} ambient bed cleared`,
       );
     }
@@ -967,7 +2029,11 @@ export function StitcherTab() {
     if (!job?.slots) return;
     const slot = job.slots[slotKey];
     if (!slot) return;
-    const slotDur = slot.video_dur_ms ?? DEFAULT_SLOT_DUR_MS;
+    if (!slot?.video_path) {
+      setStatusMsg('Assign slot video before placing SFX cues.');
+      return;
+    }
+    const slotDur = stitchSlotTimelineDurMs(slot, DEFAULT_SLOT_DUR_MS);
     // Trust timeline drop math (WaveSurfer/extract duration). Only cap when slot
     // duration is known and the cue would extend past the slot end.
     let durMs = Math.max(250, duration_ms);
@@ -987,7 +2053,12 @@ export function StitcherTab() {
       ...job.slots,
       [slotKey]: { ...slot, sfx_cues: nextCues },
     };
-    void saveJobSlots(nextSlots);
+    // STITCH_SFX_DROP_INSTANT_V1 — cue marker immediately; persist async.
+    const geometryBaseline = { ...(jobSlotsSnapshotRef.current ?? job.slots ?? {}) };
+    const merged = mergeStitchJobSlotsClientPatch(job.slots, nextSlots);
+    jobSlotsSnapshotRef.current = merged;
+    setJob((prev) => (prev ? { ...prev, slots: merged } : prev));
+    void saveJobSlots(nextSlots, undefined, { geometryBaseline });
   };
 
   const onSfxCueRangeChangeOnSlot = (slotKey: SlotKey) => (
@@ -995,8 +2066,8 @@ export function StitcherTab() {
     offsetMs: number,
     durationMs: number,
   ) => {
-    if (!job?.slots) return;
-    const slot = job.slots[slotKey];
+    const baseSlots = jobSlotsSnapshotRef.current;
+    const slot = baseSlots[slotKey] ?? job?.slots?.[slotKey];
     if (!slot) return;
     const nextCues = (slot.sfx_cues ?? []).map((c) =>
       c.id === cueId
@@ -1004,10 +2075,16 @@ export function StitcherTab() {
         : c,
     );
     const nextSlots: Record<string, StitchSlot> = {
-      ...job.slots,
+      ...baseSlots,
+      ...(job?.slots ?? {}),
       [slotKey]: { ...slot, sfx_cues: nextCues },
     };
-    void saveJobSlots(nextSlots);
+    // STITCH_SFX_RANGE_INSTANT_V1 — paint cue geometry before save (same as drop path).
+    const geometryBaseline = { ...baseSlots };
+    const merged = mergeStitchJobSlotsClientPatch(baseSlots, nextSlots);
+    jobSlotsSnapshotRef.current = merged;
+    setJob((prev) => (prev ? { ...prev, slots: merged } : prev));
+    void saveJobSlots(nextSlots, undefined, { geometryBaseline });
   };
 
   const onSfxClickOnSlot = (slotKey: SlotKey) => (
@@ -1041,10 +2118,10 @@ export function StitcherTab() {
     if (!slot) return;
     const deletedCue = (slot.sfx_cues ?? []).find((c) => c.id === popover.cueId);
     const nextCues = (slot.sfx_cues ?? []).filter((c) => c.id !== popover.cueId);
-    const whooshLabel = `${deletedCue?.name ?? ''} ${deletedCue?.source_path ?? ''}`.toLowerCase();
-    const nextSlot: StitchSlot = { ...slot, sfx_cues: nextCues };
-    if (slotKey === 'intro' && whooshLabel.includes('whoosh')) {
-      nextSlot.intro_whoosh_default_dismissed = true;
+    let nextSlot: StitchSlot = { ...slot, sfx_cues: nextCues };
+    const dismissKey = canonicalSfxDismissKey(slotKey, deletedCue);
+    if (dismissKey) {
+      nextSlot = { ...nextSlot, [dismissKey]: true };
     }
     const nextSlots: Record<string, StitchSlot> = {
       ...job.slots,
@@ -1071,7 +2148,7 @@ export function StitcherTab() {
     let total = 0;
     for (const sd of SLOT_DEFS) {
       const s = job.slots[sd.key];
-      total += s?.video_dur_ms ?? DEFAULT_SLOT_DUR_MS;
+      total += stitchSlotTimelineDurMs(s, DEFAULT_SLOT_DUR_MS);
     }
     return total > 0 ? total : DEFAULT_SLOT_DUR_MS * 4;
   };
@@ -1138,22 +2215,31 @@ export function StitcherTab() {
     return null;
   })();
 
+  const showStitcherLoading =
+    (loading || stitchJobLoading.value) && !stitchJobSessionHasCache();
+
   return (
     <section
       class="mn-tab-pane mn-stitcher-pane"
       data-testid="pane-stitcher"
       data-stitch-default-ambient-beds={STITCH_DEFAULT_AMBIENT_BEDS_V1}
       data-stitch-ambient-volume-persist={STITCH_AMBIENT_VOLUME_PERSIST_V1}
+      data-stitch-slot-canonical-defaults={STITCH_SLOT_CANONICAL_DEFAULTS_V1}
+      data-stitch-live-geometry-sig={STITCH_SLOT_LIVE_GEOMETRY_SIG_V1}
+      data-stitch-slot-video-lineage={STITCH_SLOT_VIDEO_LINEAGE_V1}
+      data-stitch-mux-video-lineage={STITCH_MUX_VIDEO_LINEAGE_V1}
+      data-stitch-mux-rebuild-queue={STITCH_MUX_REBUILD_QUEUE_V1}
+      data-stitch-canonical-defaults-persist={STITCH_CANONICAL_DEFAULTS_PERSIST_V1}
+      data-stitch-ambient-select-hydrate={STITCH_AMBIENT_SELECT_HYDRATE_V1}
     >
       <header class="mn-pane-header">
         <h2>Stitcher</h2>
         <span class="mn-scope-chip" data-testid="stitcher-scope-chip">
-          scope: {scopeKey(activeScope.value)}
-          {standaloneMode ? ' · standalone' : ''}
+          scope: {producerScopeChipLabel()}
         </span>
       </header>
 
-      {loading ? (
+      {showStitcherLoading ? (
         <p class="mn-loading" data-testid="stitcher-loading">Loading stitch jobs…</p>
       ) : error ? (
         <div class="mn-empty" data-testid="stitcher-error">
@@ -1162,14 +2248,26 @@ export function StitcherTab() {
         </div>
       ) : !job ? (
         <div class="mn-empty" data-testid="stitcher-no-job">
-          <p>No active stitch job for {activeScope.value.event_id}.</p>
+          <p>
+            No active stitch job for{' '}
+            {standaloneMode && activeMilestoneId.value
+              ? `milestone ${activeMilestoneId.value}`
+              : activeScope.value.event_id}
+            .
+          </p>
           <p class="mn-dim">
-            Use Phase A / Phase B "Export to Stitcher" buttons to send producer
-            outputs here, then Bake the final MP4.
+            {standaloneMode
+              ? 'Beat Gen → Send to Stitcher exports the standalone MP4 here, then Bake final MP4.'
+              : 'Use Phase A / Phase B "Export to Stitcher" buttons to send producer outputs here, then Bake the final MP4.'}
           </p>
         </div>
       ) : (
         <>
+          {standaloneMode && milestoneStandaloneNeedsExport(job.slots) ? (
+            <div class="mn-warn" data-testid="stitcher-milestone-export-needed" style={{ marginBottom: '0.75rem' }}>
+              Standalone slot is empty — open Beat Gen and use <strong>Send to Stitcher</strong> before baking.
+            </div>
+          ) : null}
           <div
             class="mn-stitcher-multiphase-track"
             data-testid="stitcher-multiphase-track"
@@ -1182,14 +2280,17 @@ export function StitcherTab() {
             <div class="mn-stitcher-multiphase-track-rail">
               {multiPhaseSlots.map((sd) => {
                 const slot = job.slots?.[sd.key];
-                const durMs = slot?.video_dur_ms ?? DEFAULT_SLOT_DUR_MS;
+                const hasVideo = Boolean(slot?.video_path);
+                const durMs = hasVideo
+                  ? stitchSlotTimelineDurMs(slot, DEFAULT_SLOT_DUR_MS)
+                  : STITCH_EMPTY_SEGMENT_MS;
                 const widthPct = (durMs / multiPhaseTotalMs) * 100;
                 const selected = trackFocusedSlot === sd.key;
                 return (
                   <button
                     type="button"
                     key={`track-${sd.key}`}
-                    class={`mn-stitcher-multiphase-segment${selected ? ' is-active' : ''}${slot?.video_path ? '' : ' is-empty'}`}
+                    class={`mn-stitcher-multiphase-segment${selected ? ' is-active' : ''}${hasVideo ? '' : ' is-empty'}`}
                     style={`width:${widthPct.toFixed(3)}%`}
                     data-testid={`stitcher-multiphase-segment-${sd.key}`}
                     onClick={() => onMultiPhaseSegmentClick(sd.key)}
@@ -1203,45 +2304,110 @@ export function StitcherTab() {
             </div>
           </div>
 
-          {!standaloneMode ? (
-            <div
+          <div
               class="mn-stitcher-slot-composer"
               data-testid="stitcher-slot-composer"
               data-stitcher-slot-composer="STITCHER_SLOT_COMPOSER_V1"
               data-stitch-slot-preview-video-playable="STITCH_SLOT_PREVIEW_VIDEO_PLAYABLE_V1"
+              data-stitch-unified-playback="STITCH_UNIFIED_PLAYBACK_V1"
+              data-stitch-viewer-slot-layout={STITCH_VIEWER_SLOT_LAYOUT_V1}
+              data-stitch-save-slot-durable-merge={STITCH_SAVE_SLOT_DURABLE_MERGE_V1}
+              data-stitch-sfx-playback-truth={STITCH_SFX_PLAYBACK_TRUTH_V1}
+              data-stitch-sfx-drop-instant="STITCH_SFX_DROP_INSTANT_V1"
+              data-stitch-instant-geometry-baseline="STITCH_INSTANT_GEOMETRY_BASELINE_V1"
+              data-stitch-slot-timeline-atomic={STITCH_SLOT_TIMELINE_ATOMIC_V1}
+              data-stitch-mux-pause-on-geometry={STITCH_MUX_PAUSE_ON_GEOMETRY_V1}
+              data-stitch-track-focus-session-key={stitchSessionKey}
+              data-stitch-composer-dry-playback="STITCH_COMPOSER_DRY_PLAYBACK_V1"
+              data-stitch-ambient-preview="STITCH_AMBIENT_PREVIEW_V1"
+              data-stitch-composer-mux-fallback="STITCH_COMPOSER_MUX_FALLBACK_V1"
+              data-stitch-slot-mux-audio-sig={STITCH_SLOT_MUX_AUDIO_SIG_V1}
+              data-stitch-slot-requires-muxed-preview="STITCH_SLOT_REQUIRES_MUXED_PREVIEW_V1"
+              data-stitch-mux-stale-while-revalidate="STITCH_MUX_STALE_WHILE_REVALIDATE_V1"
+              data-stitch-single-owner="STITCH_SINGLE_OWNER_V1"
+              data-stitch-slot-edit-dispatch={STITCH_SLOT_EDIT_DISPATCH_V1}
+              data-stitch-mux-src-identity={STITCH_MUX_SRC_IDENTITY_V1}
+              data-stitch-slot-session-cache="STITCH_SLOT_SESSION_CACHE_V1"
+              data-stitch-composer-video-pool={STITCH_COMPOSER_VIDEO_POOL_V1}
+              data-stitch-ambient-bake-on-save={STITCH_AMBIENT_BAKE_ON_SAVE_V1}
+              data-stitch-preview-ls-hydrate={STITCH_PREVIEW_LS_HYDRATE_V1}
             >
               <div class="mn-stitcher-slot-composer-header">
                 <strong>
-                  {SLOT_DEFS.find((s) => s.key === viewerSlot)?.label ?? viewerSlot}
+                  {slotsToShow.find((s) => s.key === viewerSlot)?.label ?? viewerSlot}
                   {' '}
                   — slot review
                 </strong>
                 <span class="mn-dim">
-                  Video + waveform stay in sync · ▶ Play or drag the red playhead · pause either surface to pause both
-                  {composerLoading ? ' · building processed preview…' : ''}
+                  {composerMuxRefreshing
+                    ? 'Updating SFX preview — video stays loaded'
+                    : composerUsingMux
+                    ? 'SFX preview (speech + ambient + SFX) · drag waveform to seek'
+                    : composerUsingAmbientMix
+                      ? 'Speech + ambient bed · use dropdown below to change ambient'
+                      : composerAmbientBuilding
+                        ? 'Saving ambient bed…'
+                        : composerPreviewBuilding
+                          ? 'Building SFX preview…'
+                          : composerVideoError?.includes('speech-only')
+                            ? 'Speech-only fallback — click Review to rebuild SFX mix'
+                            : 'Slot video · no ambient or SFX'}
                 </span>
               </div>
               <div class="mn-stitcher-slot-composer-body">
-                <video
-                  ref={composerVideoRef}
-                  key={`composer-${viewerSlot}-${composerVideoUrl ?? 'empty'}`}
-                  controls
-                  muted
-                  preload="metadata"
-                  src={composerVideoUrl}
-                  class="mn-stitcher-composer-video"
-                  data-testid="stitcher-composer-video"
-                  onError={onComposerVideoError}
-                />
+                <div class="mn-stitcher-composer-video-wrap">
+                  {composerVideoUrl ? (
+                    <StitchComposerVideoPool
+                      activeSlot={viewerSlot as StitchSessionSlotKey}
+                      slotUrls={composerSlotUrls}
+                      poolRef={composerPoolRef}
+                      onSlotCanPlay={onPoolSlotCanPlay}
+                      onSlotError={onPoolSlotError}
+                    />
+                  ) : (
+                    <div
+                      class="mn-stitcher-composer-video-status mn-stitcher-composer-video-loading"
+                      data-testid="stitcher-composer-video-waiting-mux"
+                    >
+                      {composerPreviewBuilding
+                        ? 'Building muxed preview…'
+                        : 'Assign slot video to preview'}
+                    </div>
+                  )}
+                  {composerVideoLoading ? (
+                    <div
+                      class="mn-stitcher-composer-video-status mn-stitcher-composer-video-loading"
+                      data-testid="stitcher-composer-video-loading"
+                    >
+                      Loading video…
+                    </div>
+                  ) : null}
+                </div>
+                {composerVideoError ? (
+                  <p
+                    class="mn-stitcher-composer-video-error"
+                    data-testid="stitcher-composer-video-error"
+                    role="alert"
+                  >
+                    {composerVideoError}
+                  </p>
+                ) : null}
                 <StitcherSlotWaveform
                   slotKey={viewerSlot}
                   {...(viewerSlotData?.video_path ? { videoPath: viewerSlotData.video_path } : {})}
                   {...(viewerSlotData?.ambient_bed ? { ambientBed: viewerSlotData.ambient_bed } : {})}
-                  videoDurMs={viewerSlotData?.video_dur_ms ?? DEFAULT_SLOT_DUR_MS}
+                  {...(viewerSlotData?.mix_sig ? { mixSig: viewerSlotData.mix_sig } : {})}
+                  {...(viewerSlotData?._waveform_peaks_url ? { artifactPeaksUrl: viewerSlotData._waveform_peaks_url } : {})}
+                  videoDurMs={stitchSlotTimelineDurMs(viewerSlotData, DEFAULT_SLOT_DUR_MS)}
                   cues={viewerSlotData?.sfx_cues ?? []}
-                  linkedVideo={composerVideoRef}
-                  linkedVideoEventSuppressRef={composerVideoSyncSuppressRef}
-                  playbackControl={composerPlaybackRef}
+                  displayOnly
+                  masterVideo={composerVideoRef}
+                  {...(composerVideoUrl ? { masterVideoSrc: composerVideoUrl } : {})}
+                  onMasterSeek={(ms) => {
+                    const v = composerVideoRef.current;
+                    const playing = Boolean(v && !v.paused && !v.ended);
+                    seekComposerTo(ms, { play: playing ? true : false });
+                  }}
                   compact={false}
                   onSfxDrop={onSfxDropOnSlot(viewerSlot)}
                   onCueRangeChange={onSfxCueRangeChangeOnSlot(viewerSlot)}
@@ -1282,13 +2448,12 @@ export function StitcherTab() {
                 )}
               </div>
             </div>
-          ) : null}
 
           <div class="mn-stitcher-strip" data-testid="stitcher-strip">
             {slotsToShow.map((sd) => {
               const slot = job.slots?.[sd.key];
               const busy = busySlot?.slot === sd.key;
-              const slotDurMs = slot?.video_dur_ms ?? DEFAULT_SLOT_DUR_MS;
+              const slotDurMs = stitchSlotTimelineDurMs(slot, DEFAULT_SLOT_DUR_MS);
               const cues = slot?.sfx_cues ?? [];
               return (
                 <div
@@ -1310,7 +2475,7 @@ export function StitcherTab() {
                     videoTitle={slot?.video_path}
                     onImageDrop={onImageDropOnSlot(sd.key)}
                   />
-                  {sd.key === viewerSlot && !standaloneMode ? (
+                  {sd.key === viewerSlot ? (
                     <p class="mn-dim mn-stitcher-slot-composer-hint" data-testid={`stitcher-slot-hint-${sd.key}`}>
                       ↑ Synced playback in slot review above — drop SFX on that waveform
                     </p>
@@ -1318,9 +2483,13 @@ export function StitcherTab() {
                     <StitcherSlotWaveform
                       slotKey={sd.key}
                       {...(slot?.video_path ? { videoPath: slot.video_path } : {})}
+                      {...(slot?.ambient_bed ? { ambientBed: slot.ambient_bed } : {})}
+                      {...(slot?.mix_sig ? { mixSig: slot.mix_sig } : {})}
+                      {...(slot?._waveform_peaks_url ? { artifactPeaksUrl: slot._waveform_peaks_url } : {})}
                       videoDurMs={slotDurMs}
                       cues={cues}
                       compact
+                      displayOnly
                       playbackDisabled
                       onSfxDrop={onSfxDropOnSlot(sd.key)}
                       onCueRangeChange={onSfxCueRangeChangeOnSlot(sd.key)}
@@ -1370,16 +2539,17 @@ export function StitcherTab() {
                     <select
                       id={`stitcher-amb-${sd.key}`}
                       data-testid={`stitcher-amb-${sd.key}`}
+                      data-stitch-ambient-select-hydrate={STITCH_AMBIENT_SELECT_HYDRATE_V1}
                       value={slot?.ambient_bed ?? ''}
                       disabled={busy || !slot?.video_path}
-                      title="Saved per slot — mixed into composer waveform and Review / Bake output"
+                      title="Saved per slot — baked into composer audio on save (not editable on waveform)"
                       onChange={(e: Event) => onAmbientBedChange(sd.key, (e.target as HTMLSelectElement).value)}
                     >
                       {/* F-AMBIENT-001 — empty/no-selection always available so users
                           can clear an existing ambient bed. Real preset_ids follow,
                           fetched from /api/phase_b/ambient_preset_list. */}
                       <option value="">— none —</option>
-                      {ambientPresets.map((p) => (
+                      {ambientSelectOptions.map((p) => (
                         <option key={p.preset_id} value={p.preset_id}>{p.preset_id}</option>
                       ))}
                     </select>
@@ -1408,17 +2578,6 @@ export function StitcherTab() {
               );
             })}
           </div>
-
-          {standaloneMode && activePreviewSlot && previewUrls[activePreviewSlot] ? (
-            <div class="mn-stitcher-preview-area" data-testid="stitcher-preview-area-standalone">
-              <video
-                controls
-                src={previewUrls[activePreviewSlot]}
-                class="mn-stitcher-video-player"
-                data-testid="stitcher-video-player"
-              />
-            </div>
-          ) : null}
 
           {/* Per-boundary transitions (G7-G8). Apply on Bake / slot Preview only. */}
           {!standaloneMode ? (
@@ -1471,18 +2630,35 @@ export function StitcherTab() {
       ) : null}
 
       <footer class="mn-pane-footer">
+        <div class="mn-stitcher-bake-preview-shell" data-testid="stitcher-bake-preview-shell">
+          {moduleFinalVideoSrc ? (
+            <video
+              class={`mn-stitcher-bake-preview-video ${PLAYBACK_VIDEO_ANTI_BANDING_CLASS}`}
+              data-testid="stitcher-bake-preview-video"
+              controls
+              preload="none"
+              src={moduleFinalVideoSrc}
+            />
+          ) : (
+            <div class="mn-stitcher-bake-preview-empty mn-dim" data-testid="stitcher-bake-preview-empty">
+              Final module preview will appear here after Bake.
+            </div>
+          )}
+        </div>
         <div class="mn-stitcher-bake-row">
           <button
             type="button"
             class="mn-btn mn-btn-primary"
             data-testid="stitcher-bake-btn"
             onClick={onBake}
-            disabled={!job?.name || busySlot !== null}
+            disabled={!job?.name || busySlot !== null || Boolean(activeBakeJobId)}
           >
             🔨 Bake final MP4
           </button>
           {job?.bake_path ? (
-            <span class="mn-dim">Last bake: {job.bake_path.split('/').pop()}</span>
+            <span class="mn-dim" data-testid="stitcher-last-bake-label">
+              Last bake: {job.bake_path.split('/').pop()}
+            </span>
           ) : null}
         </div>
         {statusMsg ? (

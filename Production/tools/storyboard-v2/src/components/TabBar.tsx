@@ -16,7 +16,6 @@
 import type { Signal } from '@preact/signals';
 import { useEffect } from 'preact/hooks';
 import { activeProjectType, activeScope, scopeKey } from '../state/scope';
-import { EventSelector } from './EventSelector';
 
 export type TabKey =
   | 'storyboard' | 'bg' | 'cropper' | 'stitcher'
@@ -28,18 +27,23 @@ export interface TabDef {
   testid: string;
   /** When true, the tab is hidden/disabled in milestone scope. */
   eventOnly?: boolean;
+  /** When true, tab stays in code/routing but is not shown in the operator tab bar. */
+  hiddenFromBar?: boolean;
 }
 
 // Production order per v3 spec §3.2.
 export const TABS: ReadonlyArray<TabDef> = [
   { key: 'bg', label: 'Beat Generator', testid: 'tab-bg' },
   { key: 'cropper', label: 'Cropper', testid: 'tab-cropper' },
-  { key: 'storyboard', label: 'Storyboard', testid: 'tab-storyboard' },
+  { key: 'storyboard', label: 'Storyboard', testid: 'tab-storyboard', hiddenFromBar: true },
   { key: 'phase_b', label: 'Phase B', testid: 'tab-phase-b', eventOnly: true },
   { key: 'phase_a', label: 'Phase A', testid: 'tab-phase-a', eventOnly: true },
   { key: 'stitcher', label: 'Stitcher', testid: 'tab-stitcher' },
   { key: 'map', label: 'Production Map', testid: 'tab-map' },
 ];
+
+/** Tabs shown in the operator tab bar (Storyboard etc. may stay routed but hidden). */
+export const VISIBLE_TABS: ReadonlyArray<TabDef> = TABS.filter((t) => !t.hiddenFromBar);
 
 export interface TabBarProps {
   activeTab: Signal<TabKey>;
@@ -55,9 +59,17 @@ export function TabBar({ activeTab }: TabBarProps) {
     const cur = activeTab.value;
     const def = TABS.find((t) => t.key === cur);
     if (isMilestone && def?.eventOnly) {
-      activeTab.value = 'storyboard';
+      activeTab.value = 'bg';
       try {
-        sessionStorage.setItem(ACTIVE_TAB_STORAGE_KEY, 'storyboard');
+        sessionStorage.setItem(ACTIVE_TAB_STORAGE_KEY, 'bg');
+      } catch {
+        // ignore
+      }
+    }
+    if (def?.hiddenFromBar && activeTab.value === def.key) {
+      activeTab.value = 'bg';
+      try {
+        sessionStorage.setItem(ACTIVE_TAB_STORAGE_KEY, 'bg');
       } catch {
         // ignore
       }
@@ -67,7 +79,7 @@ export function TabBar({ activeTab }: TabBarProps) {
   return (
     <div class="mn-tab-bar-row" data-testid="tab-bar-row">
       <nav class="mn-tab-bar" data-testid="tab-bar">
-        {TABS.map((t) => {
+        {VISIBLE_TABS.map((t) => {
           const disabled = isMilestone && t.eventOnly === true;
           return (
             <button
@@ -99,7 +111,6 @@ export function TabBar({ activeTab }: TabBarProps) {
         })}
       </nav>
       <div class="mn-tab-bar-scope" data-testid="tab-bar-scope">
-        <EventSelector />
         <span
           class="mn-scope-chip mn-scope-current-display"
           data-testid="scope-current-display"

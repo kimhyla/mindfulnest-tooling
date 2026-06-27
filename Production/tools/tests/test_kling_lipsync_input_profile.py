@@ -1,9 +1,8 @@
 """Regression gates for Kling LipSync input resolution.
 
 Kling LipSync exposes no output-resolution parameter in the WaveSpeed wrapper.
-Repeated provider smokes returned 832x464 even from 1080p input, so Beat Gen
-must submit the best available 1920x1080 lipsync source and still reject any
-sub-720p output before kid-facing delivery.
+Beat Gen submits 1920x1080 lipsync source; pilot parity waives sub-720 raw on
+data_uri transport and gates kid-facing output on LD-296 delivery encode.
 """
 from __future__ import annotations
 
@@ -36,4 +35,5 @@ def test_arlo_pipeline_records_lipsync_input_profile_metadata() -> None:
     assert "kling_o3_voice_fix_lipsync_input_profile" in pipeline_src
     assert '"resolution": "1920x1080"' in pipeline_src
     assert "Kling LipSync has no resolution parameter" in pipeline_src
-    assert "reject any sub-720p provider output" in pipeline_src
+    assert "sub720_waived" in pipeline_src
+    assert "delivery_min_dimension" in pipeline_src

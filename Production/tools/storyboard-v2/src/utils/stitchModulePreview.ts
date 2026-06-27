@@ -1,4 +1,9 @@
 import type { Transition } from '../components/StitcherTransitionSelector';
+import type { StitchSessionSlotKey } from './stitchSlotSessionCache';
+import {
+  resolveSlotPlaybackPreviewUrl,
+  type StitchSlotMediaArtifactFields,
+} from './stitchJobMediaHydrate';
 
 export type SlotKey = 'intro' | 'phase_a' | 'phase_b' | 'resolution';
 
@@ -115,6 +120,21 @@ export function writeCachedModulePreview(
   } catch {
     // ignore
   }
+}
+
+/** Milestone standalone slot: bind video from slot state without Review/mux gate. */
+export function resolveStandaloneStitchSlotVideoUrl(opts: {
+  eventId: string;
+  slot: StitchSlotMediaArtifactFields | null | undefined;
+  previewUrls?: Partial<Record<StitchSessionSlotKey, string>>;
+}): string | undefined {
+  if (!opts.slot?.video_path) return undefined;
+  return resolveSlotPlaybackPreviewUrl(
+    opts.eventId,
+    'standalone',
+    opts.slot,
+    opts.previewUrls ?? {},
+  );
 }
 
 /** LD-827 — multi-phase viewer must never be blank while module preview bakes. */

@@ -4,6 +4,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { SERVER_BASE } from '../api/endpoints';
+import { PLAYBACK_VIDEO_ANTI_BANDING_CLASS } from '../utils/playbackVideoPolicy';
 
 export interface BeatCompositePreviewBeat {
   _version?: number;
@@ -333,7 +334,7 @@ export function BeatCompositePreview({
         ref={videoRef}
         src={videoSrc}
         poster={posterSrc}
-        class="mn-storyboard-preview-video mn-beat-composite-preview-video"
+        class={`mn-storyboard-preview-video mn-beat-composite-preview-video ${PLAYBACK_VIDEO_ANTI_BANDING_CLASS}`}
         playsInline
         preload="auto"
         muted

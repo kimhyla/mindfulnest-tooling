@@ -85,17 +85,15 @@ CLIENT_WRAPPER_CALLEES: Dict[str, Dict[str, object]] = {
     "pathappPatch": {
         "endpoint_arg_index": 1,
         "body_arg_index": 2,
-        # pathappPatch baseline payload (see src/api/client.ts lines 229-247):
+        # pathappPatch baseline payload (see src/api/pathappPayload.ts):
         #   scope_video_role, scope_target_video, beat_id, ...body,
-        #   scope_event_id|event_id (via scopeKeyFor), scope_version,
-        #   scope_milestone_id (when milestone scope active).
+        #   scope_event_id, scope_version, scope_milestone_id (when milestone scope active).
         "auto_keys": frozenset(
             {
                 "scope_video_role",
                 "scope_target_video",
                 "beat_id",
                 "scope_event_id",
-                "event_id",
                 "scope_version",
                 "scope_milestone_id",
             }
@@ -113,7 +111,6 @@ CLIENT_WRAPPER_CALLEES: Dict[str, Dict[str, object]] = {
                 "scope_target_video",
                 "beat_id",
                 "scope_event_id",
-                "event_id",
                 "scope_version",
                 "scope_milestone_id",
             }
@@ -133,7 +130,6 @@ INFRASTRUCTURE_KEYS: frozenset[str] = frozenset(
         "scope_video_role",
         "scope_target_video",
         "scope_milestone_id",
-        "event_id",          # legacy scope key for non-BG endpoints
         "beat_id",           # auto-injected by runMutation + pathappPatch
     }
 )

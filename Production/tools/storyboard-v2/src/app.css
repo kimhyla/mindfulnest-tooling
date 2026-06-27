@@ -73,6 +73,13 @@
   color: var(--text);
   background: transparent;
 }
+.mn-tab.is-disabled,
+.mn-tab:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 .mn-tab.is-active {
   color: var(--text-strong);
   border-bottom-color: var(--accent);
@@ -97,7 +104,7 @@
   border-radius: 6px;
   padding: 16px;
 }
-/* Phase A/B stay mounted while hidden so lipsync poll intervals survive tab switches. */
+/* Producer tabs stay mounted while hidden so state, polls, and scroll position survive tab switches. */
 .mn-tab-pane-keepalive[hidden] {
   display: none !important;
 }
@@ -141,6 +148,16 @@
   color: var(--text-dim);
   padding: 24px 8px;
   text-align: center;
+}
+.mn-loading-slow-hint {
+  display: block;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-warn);
+  max-width: 420px;
+  margin-left: auto;
+  margin-right: auto;
+  line-height: 1.4;
 }
 
 .mn-readonly-banner {
@@ -643,12 +660,12 @@
 }
 .mn-lipsync-watercolor-overlay {
   position: absolute;
-  /* LD-821 browser preview mirrors server stitch bbox: left inset ~2%, top ~4%,
-     width ~35% of frame, height capped (server frame_max_h=540 in a ~720-tall frame). */
-  left: 2%;
-  top: 4%;
-  width: 35%;
-  max-height: 55%;
+  /* Vars set on .mn-lipsync-video-wrapper via phaseWatercolorOverlayGeometry.ts
+     (mirrors production_server _PHASE_FRAME_* + NORMALIZATION letterbox). */
+  left: var(--wc-overlay-left, 2.2%);
+  top: var(--wc-overlay-top, 4.17%);
+  width: var(--wc-overlay-width, 35.66%);
+  max-height: var(--wc-overlay-max-height, 75%);
   height: auto;
   object-fit: contain;
   object-position: left top;
@@ -734,13 +751,27 @@ canvas.mn-lipsync-watercolor-overlay {
   min-width: 4px;
   background: rgba(204, 51, 51, 0.35);
   border-left: 2px solid #c33;
+  /* Visual-only body — drag-seek passes through to waveform (stem-trim pattern).
+     Handles + popover hit stay interactive. */
+  pointer-events: none;
+  box-sizing: border-box;
+}
+.mn-waveform-cue-popover-hit {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  transform: translateX(-50%);
   pointer-events: auto;
   cursor: pointer;
-  box-sizing: border-box;
+  z-index: 1;
 }
 .mn-waveform-cue-block:hover {
   background: rgba(204, 51, 51, 0.55);
 }
+/* WAVEFORM_CUE_HANDLE_V1 — paired with cue-block pointer-events:none (SEEK-4).
+   Must mirror stem-trim-handle: explicit auto or handles are un-grabbable. */
 .mn-waveform-cue-block-handle {
   position: absolute;
   top: 0;
@@ -751,6 +782,7 @@ canvas.mn-lipsync-watercolor-overlay {
   opacity: 0.85;
   z-index: 2;
   touch-action: none;
+  pointer-events: auto;
 }
 .mn-waveform-cue-block-handle--left {
   left: 0;
@@ -1019,6 +1051,25 @@ canvas.mn-lipsync-watercolor-overlay {
   margin-top: 12px;
   flex-wrap: wrap;
 }
+.mn-stitcher-bake-preview-shell {
+  width: 100%;
+  min-height: 120px;
+  background: var(--bg-elevated, #1a1a1a);
+  border: 1px solid var(--border, #333);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.mn-stitcher-bake-preview-video {
+  display: block;
+  width: 100%;
+  max-height: 220px;
+  background: #000;
+}
+.mn-stitcher-bake-preview-empty {
+  padding: 24px 16px;
+  text-align: center;
+  font-size: 12px;
+}
 .mn-phase-watercolor-anim-tag {
   font-size: 9px;
   color: var(--accent);
@@ -1177,6 +1228,48 @@ canvas.mn-lipsync-watercolor-overlay {
   min-height: 160px;
   display: block;
   background: #000;
+  border-radius: 3px;
+}
+.mn-stitcher-composer-video-wrap {
+  position: relative;
+}
+.mn-stitcher-composer-video-pool {
+  position: relative;
+  width: 100%;
+}
+.mn-stitcher-composer-video-pool .mn-stitcher-composer-video.is-pool-hidden {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  max-height: 280px;
+  min-height: 160px;
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+.mn-stitcher-composer-video-pool .mn-stitcher-composer-video.is-pool-active {
+  position: relative;
+  z-index: 1;
+}
+.mn-stitcher-composer-video-status {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  color: var(--text-strong);
+  font-size: 13px;
+  pointer-events: none;
+  border-radius: 3px;
+}
+.mn-stitcher-composer-video-error {
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--text-warn);
+  background: rgba(245, 176, 66, 0.08);
+  border: 1px solid rgba(245, 176, 66, 0.35);
   border-radius: 3px;
 }
 .mn-stitcher-slot-composer-hint {
@@ -1996,9 +2089,19 @@ canvas.mn-lipsync-watercolor-overlay {
   font-size: 13px;
 }
 /* BG_BEAT_JUMP_NAV_V1 — Word-style jump column */
+.mn-bg-lipsync-host-setup {
+  margin: 12px 0;
+  padding: 10px 12px;
+  background: #422006;
+  border: 1px solid #f59e0b;
+  border-radius: 8px;
+  color: #fcd34d;
+  font-size: 13px;
+  line-height: 1.45;
+}
 .mn-bg-body-layout {
   display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
+  grid-template-columns: 96px minmax(0, 1fr);
   gap: 12px;
   align-items: start;
   margin-top: 12px;
@@ -2020,7 +2123,10 @@ canvas.mn-lipsync-watercolor-overlay {
   padding-right: 8px;
 }
 .mn-bg-beat-nav-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
   width: 100%;
   text-align: left;
   padding: 6px 8px;
@@ -2031,6 +2137,40 @@ canvas.mn-lipsync-watercolor-overlay {
   border: none;
   border-radius: 4px;
   cursor: pointer;
+}
+.mn-bg-beat-nav-label {
+  flex: 1;
+  min-width: 0;
+}
+.mn-bg-beat-nav-badges {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.mn-bg-beat-nav-dot {
+  display: block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ef4444;
+  box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.35);
+  animation: mn-bg-nav-dot-pulse 1.4s ease-in-out infinite;
+}
+@keyframes mn-bg-nav-dot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.65; transform: scale(0.92); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mn-bg-beat-nav-dot {
+    animation: none;
+  }
+}
+.mn-bg-beat-nav-check {
+  font-size: 11px;
+  line-height: 1;
+  color: #22c55e;
+  font-weight: 700;
 }
 .mn-bg-beat-nav-item:hover {
   background: var(--bg-elevated);
@@ -2066,11 +2206,31 @@ canvas.mn-lipsync-watercolor-overlay {
 }
 .mn-bg-beat-meta {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   font-size: 12px;
   color: var(--text-dim);
 }
+.mn-bg-beat-reorder {
+  display: inline-flex;
+  gap: 2px;
+  margin: 0 2px;
+}
+.mn-bg-beat-reorder-btn {
+  min-width: 1.6rem;
+  padding: 0 4px;
+  line-height: 1.2;
+  font-size: 11px;
+}
+
+.mn-bg-pipeline-toggle {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
 .mn-bg-beat-index {
   font-weight: 600;
   color: var(--text-strong);
@@ -2276,6 +2436,87 @@ canvas.mn-lipsync-watercolor-overlay {
   object-fit: cover;
   border-radius: 3px;
   background: #000;
+  display: block;
+}
+.mn-bg-option-video-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.mn-bg-option-video-wrap video {
+  width: 100%;
+  height: 100%;
+  aspect-ratio: auto;
+}
+.mn-bg-o3-cut-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+.mn-bg-o3-cut-overlay--busy .mn-bg-o3-cut-handle {
+  pointer-events: none;
+  opacity: 0.55;
+}
+.mn-bg-o3-cut-block {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(204, 153, 51, 0.42);
+  border-left: 2px solid #c93;
+  border-right: 2px solid #c93;
+  pointer-events: none;
+}
+.mn-bg-o3-cut-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 18px;
+  transform: translateX(-50%);
+  background: #c93;
+  cursor: ew-resize;
+  pointer-events: auto;
+  z-index: 4;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
+  touch-action: none;
+}
+.mn-bg-o3-cut-handle--left {
+  border-radius: 2px 0 0 2px;
+}
+.mn-bg-o3-cut-handle--right {
+  border-radius: 0 2px 2px 0;
+}
+.mn-bg-o3-cut-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 28px;
+  transform: translateX(-50%);
+}
+.mn-bg-o3-cut-handle:hover,
+.mn-bg-o3-cut-handle:active {
+  background: #e6b84d;
+}
+.mn-bg-o3-cut-toolbar,
+.mn-bg-o3-cut-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 2px 0;
+}
+.mn-bg-o3-cut-hint {
+  font-size: 10px;
+  flex: 1 1 120px;
+}
+.mn-bg-o3-cut-toolbar .mn-btn {
+  padding: 3px 7px;
+  font-size: 11px;
 }
 .mn-bg-magic-preview {
   margin-top: 8px;
@@ -2290,6 +2531,24 @@ canvas.mn-lipsync-watercolor-overlay {
 }
 .mn-bg-option.is-approved-video {
   cursor: pointer;
+}
+.mn-bg-still-approve-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--mn-accent, #6b9fff);
+  border-radius: 6px;
+  background: rgba(107, 159, 255, 0.08);
+}
+.mn-bg-still-approve-banner p {
+  margin: 0;
+  flex: 1 1 220px;
+}
+.mn-bg-option.is-still-draft {
+  border-color: var(--mn-accent, #6b9fff);
 }
 .mn-bg-o3-trim-controls {
   display: flex;
@@ -2774,6 +3033,13 @@ canvas.mn-lipsync-watercolor-overlay {
   height: 100%;
   object-fit: contain;
   border-radius: 4px;
+  background: #000;
+}
+
+/* LINKED_VIDEO_MATCH_AUDIO_V1 — Kling / lipsync preview surfaces (Beat Gen + Phase). */
+.mn-playback-video-stable {
+  object-fit: contain;
+  transform: translateZ(0);
   background: #000;
 }
 .mn-storyboard-image-drop-zone.mn-previewing {

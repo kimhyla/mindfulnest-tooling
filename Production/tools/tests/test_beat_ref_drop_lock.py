@@ -599,7 +599,7 @@ def test_align_beat_reference_on_speaker_change_when_unlocked(tmp_path: Path, mo
 def test_bg_align_element_ref_handler_registered():
     text = (TOOLS / "server_handlers" / "background.py").read_text(encoding="utf-8")
     assert "def handle_bg_align_element_ref" in text
-    assert "align_beat_reference_to_element(beat)" in text
+    assert "align_beat_reference_to_element(b)" in text
     server = (TOOLS / "production_server.py").read_text(encoding="utf-8")
     assert "/api/bg/align-element-ref" in server
 

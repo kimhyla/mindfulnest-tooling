@@ -10,7 +10,8 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { effect } from '@preact/signals';
 import { ScopeBoundary } from './components/ScopeBoundary';
 import { ScopeBanner } from './components/ScopeBanner';
-import { ToastHost } from './components/ui/Toast';
+import { BuildShaDriftBanner } from './components/BuildShaDriftBanner';
+import { ToastHost, pushToast } from './components/ui/Toast';
 import { TabBar } from './components/TabBar';
 import { BgTab } from './components/BgTab';
 import { CropperModal } from './components/CropperModal';
@@ -24,16 +25,19 @@ import { ProjectSelector } from './components/ProjectSelector';
 import { VideoSelector } from './components/VideoSelector';
 import { PhaseATab } from './components/tabs/PhaseATab';
 import { PhaseBTab } from './components/tabs/PhaseBTab';
-import { activeScope, activeProjectType, scopeKey } from './state/scope';
+import { activeProjectType, producerScopeChipLabel } from './state/scope';
 import { activeTab } from './state/refreshSignals';
 import { ServerRehydrateWatcher } from './components/ServerRehydrateWatcher';
+import { ProducerSessionCoordinator } from './components/ProducerSessionCoordinator';
 import { StoryboardTab } from './components/StoryboardTab';
 import { stopAllPhasePlayback } from './utils/waveformPlaybackBus';
+import { initBundledBuildSha } from './state/buildShaDrift';
+import { consumePortNavToast } from './state/scopeEventNavigate';
 import './app.css';
 
 export { stitcherRefreshTick, serverRehydrateTick } from './state/refreshSignals';
 
-/** Phase A/B producers stay mounted (hidden) so lipsync polling never dies on tab switch. */
+/** Phase A/B stay mounted — DOM/video lifecycle exception until Phase PSL (see TECH_SPEC). */
 function PhaseTabsKeepAlive({ visibleTab }: { visibleTab: string }) {
   if (activeProjectType.value !== 'event') {
     if (visibleTab === 'phase_a') return <PhaseATab />;
@@ -60,6 +64,19 @@ function PhaseTabsKeepAlive({ visibleTab }: { visibleTab: string }) {
   );
 }
 
+/** Stitcher pool + mux session survive tab switches — same DOM lifecycle exception as Phase. */
+function StitcherKeepAlive({ visibleTab }: { visibleTab: string }) {
+  return (
+    <div
+      class="mn-tab-pane-keepalive"
+      hidden={visibleTab !== 'stitcher'}
+      data-testid="pane-stitcher-keepalive"
+    >
+      <StitcherTab />
+    </div>
+  );
+}
+
 function ActivePane() {
   const tab = activeTab.value;
   const isEvent = activeProjectType.value === 'event';
@@ -82,7 +99,7 @@ function ActivePane() {
         <section class="mn-tab-pane mn-cropper-pane" data-testid="pane-cropper">
           <header class="mn-pane-header">
             <h2>Cropper</h2>
-            <span class="mn-scope-chip">scope: {scopeKey(activeScope.value)}</span>
+            <span class="mn-scope-chip">scope: {producerScopeChipLabel()}</span>
           </header>
           <p class="mn-dim">
             Cropper opens as a modal overlay. Close it to return to whichever tab
@@ -92,7 +109,7 @@ function ActivePane() {
       );
       break;
     case 'stitcher':
-      main = <StitcherTab />;
+      main = null;
       break;
     case 'map':
       main = <ProductionMapTab />;
@@ -110,6 +127,7 @@ function ActivePane() {
       {isEvent ? <PhaseTabsKeepAlive visibleTab={phaseVisible} /> : null}
       {!isEvent && tab === 'phase_a' ? <PhaseATab /> : null}
       {!isEvent && tab === 'phase_b' ? <PhaseBTab /> : null}
+      <StitcherKeepAlive visibleTab={tab} />
       {main}
     </>
   );
@@ -119,14 +137,14 @@ export function App() {
   const [buildSha, setBuildSha] = useState('');
 
   useEffect(() => {
+    initBundledBuildSha();
+    consumePortNavToast(pushToast);
     setBuildSha(
       document.querySelector('meta[name="build-sha"]')?.getAttribute('content') ?? '?',
     );
-    // Page load: silence every keep-alive waveform + preview before tabs mount.
     stopAllPhasePlayback();
   }, []);
 
-  // Stop ghost audio on tab change — never call effect() during render (leaks + stops play).
   const prevTabRef = useRef(activeTab.value);
   useEffect(() => {
     const dispose = effect(() => {
@@ -149,10 +167,9 @@ export function App() {
     return () => document.removeEventListener('visibilitychange', onHidden);
   }, []);
 
-  // S4 — Production Map cell click → switch to Storyboard tab.
   useEffect(() => {
     const onMapNavigate = () => {
-      activeTab.value = 'storyboard';
+      activeTab.value = 'bg';
     };
     window.addEventListener(MAP_CELL_NAVIGATE_EVENT, onMapNavigate);
     return () => window.removeEventListener(MAP_CELL_NAVIGATE_EVENT, onMapNavigate);
@@ -161,7 +178,9 @@ export function App() {
     <ScopeBoundary>
       <div class="mn-app" data-testid="app-root">
         <ServerRehydrateWatcher />
+        <ProducerSessionCoordinator />
         <ScopeBanner />
+        <BuildShaDriftBanner />
         <ToastHost />
         <header class="mn-app-header">
           <h1>Storyboard v2</h1>
@@ -185,9 +204,6 @@ export function App() {
             Stop audio
           </button>
           <ProjectSelector />
-          {/* CC-9: hide VideoSelector in milestone scope — milestones have no
-              per-video-role partitioning; their content is the single
-              'standalone' video. Reactive on activeProjectType signal. */}
           {activeProjectType.value === 'event' ? <VideoSelector /> : null}
         </header>
 
@@ -203,15 +219,11 @@ export function App() {
         <CropperModal
           state={cropperState}
           onClose={() => {
-            // If the modal was opened by clicking the Cropper tab, flip back
-            // to Storyboard so ActivePane's auto-open doesn't re-open it on
-            // the next render.
             if (activeTab.value === 'cropper') {
-              activeTab.value = 'storyboard';
+              activeTab.value = 'bg';
             }
           }}
           onSaved={(_result) => {
-            // Crop saved to library — notify LibraryPanel to refresh.
             window.dispatchEvent(new CustomEvent('mn:library-refresh'));
           }}
         />

@@ -9,7 +9,7 @@ BACKGROUND = Path(__file__).resolve().parent.parent / "server_handlers" / "backg
 
 def test_element_pipeline_uses_resolve_kling_o3_submit_duration():
     text = PIPELINE.read_text(encoding="utf-8")
-    assert "resolve_kling_o3_submit_duration(beat, prepared)" in text
+    assert "resolve_kling_o3_submit_duration(beat, submit_prompt)" in text
     assert "int(beat.get(\"kling_o3_duration\") or 8)" not in text
 
 
@@ -18,8 +18,10 @@ def test_submit_arlo_o3_voice_sets_duration_before_launch():
     start = block.index("def handle_bg_submit_arlo_o3_voice")
     end = block.index("\ndef handle_bg_", start + 1)
     section = block[start:end]
-    assert "resolve_kling_o3_submit_duration" in section
-    assert section.index("resolve_kling_o3_submit_duration") < section.index("subprocess.Popen")
+    assert "build_generation_intent" in section
+    assert section.index("build_generation_intent") < section.index("subprocess.Popen")
+    commit_idx = section.index("update_beat_locked(")
+    assert section.index("build_generation_intent") < commit_idx
 
 
 def test_element_pipeline_uses_sidecar_gen_from_delivery_path():

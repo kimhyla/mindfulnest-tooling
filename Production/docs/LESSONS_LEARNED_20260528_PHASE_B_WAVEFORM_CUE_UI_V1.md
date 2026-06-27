@@ -55,6 +55,8 @@ Server validates dict-keyed slots (same shape as `scene_assemble` auto-populate)
 ## Regression checklist
 
 - [ ] Red cue block has left + right handles (`data-testid="cue-handle-left-*"`)
+- [ ] Handles are grabbable (`pointer-events: auto` on `.mn-waveform-cue-block-handle`)
+- [ ] `CUE-RESIZE-1` / `CUE-RESIZE-2` Playwright tests pass
 - [ ] Dragging handle does NOT POST until mouse release (Network tab: one patch)
 - [ ] Preview first miss completes in <60s for 132s lipsync
 - [ ] Export shows `✓ Exported to Stitcher → phase_b slot`

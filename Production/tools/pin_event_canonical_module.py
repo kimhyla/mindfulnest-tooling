@@ -24,6 +24,7 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(1, str(TOOLS))
 
 from lib.atomic_json_write import atomic_json_write  # noqa: E402
+from lib.paths import runtime_production_root  # noqa: E402
 
 EVENT_1_CANONICAL_MODULE_V1 = "EVENT_1_CANONICAL_MODULE_V1"
 
@@ -56,6 +57,7 @@ def pin_canonical_module(
     m_number: int = 1,
     event_id: str | None = None,
     stitch_state_path: Path | None = None,
+    delivery_profile: str | None = None,
 ) -> dict:
     event_dir = event_dir.resolve()
     source_bake = source_bake.resolve()
@@ -74,6 +76,9 @@ def pin_canonical_module(
         shutil.copy2(canonical_path, backup_dir / f"{canonical_name}.{ts}.bak")
 
     shutil.copy2(source_bake, canonical_path)
+    from video_delivery import ensure_mp4_playback_timestamps  # noqa: PLC0415
+
+    ensure_mp4_playback_timestamps(canonical_path, delivery_profile=delivery_profile)
     dur_ms = _ffprobe_duration_ms(canonical_path)
     digest = _sha256(canonical_path)
     mtime = int(os.path.getmtime(canonical_path))
@@ -102,7 +107,9 @@ def pin_canonical_module(
     state["_module_version"] = int(state.get("_module_version", 0) or 0) + 1
     atomic_json_write(state_path, state)
 
-    stitch_path = stitch_state_path or (event_dir / "tools" / "stitch_editor_state.json")
+    stitch_path = stitch_state_path or (
+        runtime_production_root(event_dir) / "tools" / "stitch_editor_state.json"
+    )
     if stitch_path.is_file():
         stitch = json.loads(stitch_path.read_text(encoding="utf-8"))
         job_name = f"{event_id}_stitch"
