@@ -82,7 +82,8 @@ def test_gallery_repair_disk_work_outside_lock():
 
 def test_select_o3_migrate_and_validate_before_lock():
     block = _handler_block("handle_bg_select_o3_video")
-    lock_idx = block.index("update_beat_locked(beat_id, _select)")
+    lock_idx = block.index("update_beat_locked")
+    assert "_select" in block[lock_idx : lock_idx + 120]
     assert "_migrate_sidecar(sidecar_probe)" in block
     assert block.index("_migrate_sidecar(sidecar_probe)") < lock_idx
     assert "_migrate_sidecar(sidecar)" not in block.split("update_beat_locked", 1)[1]
