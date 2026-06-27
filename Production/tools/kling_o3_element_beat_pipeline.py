@@ -414,6 +414,18 @@ def run_pipeline_from_intent(
         },
     }
     final.update(sidecar_visual_ref_fields_from_intent(intent))
+    from o3_gallery_closure import (
+        assert_gallery_closed_before_terminal,
+        refresh_beat_gallery_fields_for_finalize,
+    )
+
+    gallery_fields = refresh_beat_gallery_fields_for_finalize(
+        beat_id,
+        event_dir,
+        str(delivery),
+    )
+    if gallery_fields.get("kling_o3_options") is not None:
+        final["kling_o3_options"] = gallery_fields["kling_o3_options"]
     final_remove = (
         "kling_o3_voice_fix_ui_job_id",
         "kling_o3_voice_fix_job_pid",
@@ -443,6 +455,7 @@ def run_pipeline_from_intent(
             # Orphan recovery already wrote delivery + approved state to sidecar.
             sidecar_persist_ok = True
 
+    assert_gallery_closed_before_terminal(beat_id, event_dir, str(delivery))
     terminal_status = "done" if sidecar_persist_ok else "done_with_warning"
     terminal_body = {
         "intent_id": intent.get("intent_id"),

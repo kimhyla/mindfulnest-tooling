@@ -165,6 +165,15 @@ def beat_job_busy(
     terminal = load_intent_terminal(terminal_path_for_job(job_id, ev))
     term_status = str((terminal or {}).get("status") or "").strip()
     if term_status in INTENT_TERMINAL_STATUSES:
+        from o3_gallery_closure import beat_gallery_closure_pending
+
+        if term_status in ("done", "done_with_warning") and beat_gallery_closure_pending(
+            beat,
+            ev,
+            terminal=terminal,
+            job_id=job_id,
+        ):
+            return True
         return False
     if term_status == INTENT_RUNNING_STATUS:
         return o3_subprocess_is_live(job_id, beat_id, ev, in_memory_jobs=in_memory_jobs)

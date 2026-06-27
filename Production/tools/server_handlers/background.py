@@ -2357,28 +2357,17 @@ def handle_bg_session_state(h)-> None:
 
     o3_terminal_outcomes: list[dict] = []
     if beats:
-        import threading
-
-        beats_for_reconcile = copy.deepcopy(beats)
-
-        def _terminal_reconcile_bg() -> None:
-            try:
-                _apply_o3_session_terminal_reconcile(
-                    h,
-                    beats_for_reconcile,
-                    sidecar,
-                    scope_arc=scope_arc,
-                    scope_event_id=scope_event_id,
-                    scope_phase=scope_phase,
-                )
-            except Exception as exc:
-                print(f"[BG] session terminal reconcile bg failed: {exc}", flush=True)
-
-        threading.Thread(
-            target=_terminal_reconcile_bg,
-            daemon=True,
-            name=f"session-terminal-reconcile-{scope_event_id or 'unknown'}",
-        ).start()
+        try:
+            o3_terminal_outcomes = _apply_o3_session_terminal_reconcile(
+                h,
+                beats,
+                sidecar,
+                scope_arc=scope_arc,
+                scope_event_id=scope_event_id,
+                scope_phase=scope_phase,
+            )
+        except Exception as exc:
+            print(f"[BG] session terminal reconcile failed: {exc}", flush=True)
 
     all_done = beats and all(b.get("flux_options") for b in beats)
     video_role = scope_video_role or ""
@@ -3467,16 +3456,15 @@ def handle_bg_update_beat(h, body: dict)-> None:
                             thumb_b64=value.get("thumb_b64"),
                             source="ref_slot_drop",
                         )
-                    else:
-                        if field == "speaker" and isinstance(value, str):
-                            old_speaker = str(b.get("speaker") or "").strip()
-                            b[field] = _canonicalize_speaker(value)
-                            if old_speaker != str(b.get("speaker") or "").strip():
-                                bg.realign_beat_char_ref_for_speaker_change(
-                                    b, old_speaker=old_speaker,
-                                )
-                        else:
-                            b[field] = value
+                elif field == "speaker" and isinstance(value, str):
+                    old_speaker = str(b.get("speaker") or "").strip()
+                    b[field] = _canonicalize_speaker(value)
+                    if old_speaker != str(b.get("speaker") or "").strip():
+                        bg.realign_beat_char_ref_for_speaker_change(
+                            b, old_speaker=old_speaker,
+                        )
+                elif field not in ("kling_o3_prompt", "kling_o3_prompt_still"):
+                    b[field] = value
                 written.append(field)
                 if field == "speaker":
                     sp = str(b.get("speaker") or "").strip()
@@ -4916,6 +4904,31 @@ def _enriched_beat_snapshot_for_o3_poll(
     _, beat = bg.find_beat(sidecar, str(beat_id))
     if not beat:
         return None
+    try:
+        from o3_session_terminal_reconcile import reconcile_beat_terminal_disk
+
+        beat_work = dict(beat)
+        if reconcile_beat_terminal_disk(
+            beat_work,
+            sidecar,
+            event_dir,
+            orphan_recovery=_try_orphan_o3_delivery_recovery,
+        ):
+            def _commit(sc: dict) -> None:
+                bg.ensure_sidecar_schema_defaults(sc)
+                _, live = bg.find_beat(sc, str(beat_id))
+                if live:
+                    live.update({k: v for k, v in beat_work.items() if k in beat_work})
+
+            try:
+                bg.mutate_sidecar_locked(_commit, timeout_s=5)
+                sidecar = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=5.0)
+                _, beat = bg.find_beat(sidecar, str(beat_id))
+            except Exception as exc:
+                print(f"[bg_o3_poll] terminal reconcile persist skipped for {beat_id}: {exc}", flush=True)
+                beat = beat_work
+    except Exception as exc:
+        print(f"[bg_o3_poll] terminal reconcile failed for {beat_id}: {exc}", flush=True)
     snap = bg.enrich_beat_kling_o3_pinned(dict(beat), event_dir)
     from o3_job_status_contract import clear_o3_pointer_if_terminal
 

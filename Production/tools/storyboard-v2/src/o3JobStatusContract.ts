@@ -11,7 +11,27 @@ export type O3JobBeatFields = {
   kling_o3_voice_fix_job_log_path?: string | null; kling_o3_voice_fix_error?: string | null;
   job_busy?: boolean | null;
   o3_current_job_id?: string | null;
+  kling_o3_options?: Array<{ video_path?: string | null; source?: string | null } | null> | null;
 };
+
+function isUserSelectableO3Video(path?: string | null, source?: string | null): boolean {
+  if (source === 'still_insert_static_hold' || source === 'still_insert_ken_burns' || source === 'still_insert_kling_idle') {
+    return Boolean(path);
+  }
+  const name = (path ?? '').toLowerCase().split('/').pop() ?? '';
+  return Boolean(path)
+    && !name.includes('_silent_o3_base')
+    && !name.includes('_delivery_input')
+    && !name.includes('_noaudio');
+}
+
+/** Gallery tiles require a selectable option row — video_path alone is not enough. */
+export function beatHasPopulatedO3Slot(
+  beat: { kling_o3_options?: O3JobBeatFields['kling_o3_options'] } | null | undefined,
+): boolean {
+  if (!beat) return false;
+  return (beat.kling_o3_options ?? []).some((o) => isUserSelectableO3Video(o?.video_path, o?.source));
+}
 
 /** Brief latch after Generate click until session GET returns ``job_busy``. */
 export const O3_SUBMIT_PENDING_TTL_MS = 30_000;
@@ -51,7 +71,7 @@ export function o3BeatTerminallyIdleForSubmitLatch(
 ): boolean {
   return (
     beat.kling_o3_status === 'approved'
-    && (beat.kling_o3_video_path ?? '').trim() !== ''
+    && beatHasPopulatedO3Slot(beat)
     && !beatO3JobLooksRunning(beat)
   );
 }

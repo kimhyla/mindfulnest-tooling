@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   activeO3PollJobsFromBeats,
+  beatHasPopulatedO3Slot,
   beatO3GenerateInFlight,
   beatO3JobBusy,
   beatO3ServerJobInFlight,
+  o3BeatTerminallyIdleForSubmitLatch,
   pruneSubmitPollLatch,
 } from '../../o3JobStatusContract.ts';
 
@@ -70,5 +72,32 @@ describe('o3JobStatusContract — submit latch vs stale session', () => {
       }),
       false,
     );
+  });
+
+  it('does not treat approved video_path without options as terminally idle', () => {
+    const beat = {
+      beat_id: 'bg_arc1_event3_pre_beat_09',
+      kling_o3_status: 'approved',
+      kling_o3_video_path: '/Event_3/kling_o3_clips/beat_delivery.mp4',
+      kling_o3_options: [],
+      job_busy: false,
+    };
+    assert.equal(beatHasPopulatedO3Slot(beat), false);
+    assert.equal(o3BeatTerminallyIdleForSubmitLatch(beat), false);
+    const latch = { bg_arc1_event3_pre_beat_09: '7ab3dc40' };
+    assert.equal(activeO3PollJobsFromBeats([beat], latch).bg_arc1_event3_pre_beat_09, '7ab3dc40');
+  });
+
+  it('prunes latch once gallery option row is populated', () => {
+    const beat = {
+      beat_id: 'bg_arc1_event3_pre_beat_09',
+      kling_o3_status: 'approved',
+      kling_o3_video_path: '/Event_3/kling_o3_clips/beat_delivery.mp4',
+      kling_o3_options: [{ video_path: '/Event_3/kling_o3_clips/beat_delivery.mp4', source: 'kling_o3_checkpoint' }],
+      job_busy: false,
+    };
+    assert.equal(o3BeatTerminallyIdleForSubmitLatch(beat), true);
+    const pruned = pruneSubmitPollLatch([beat], { bg_arc1_event3_pre_beat_09: '7ab3dc40' });
+    assert.equal(pruned.bg_arc1_event3_pre_beat_09, undefined);
   });
 });
