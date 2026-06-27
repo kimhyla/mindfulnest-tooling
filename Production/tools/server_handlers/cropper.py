@@ -50,6 +50,7 @@ from lib.event_library import (
     is_canonical_image_path,
     list_baseline_meta,
 )
+from lib.library_panel_contract import attach_panel_tabs_all, row_matches_panel_filter
 from lib.watercolor_assets import list_watercolor_items, upload_watercolor_filename
 from server_handlers._path_security import (
     require_basename_under_dir,
@@ -348,9 +349,26 @@ def _read_image_meta(fp, tier, extra: dict | None = None):
         }
         if extra:
             item.update(extra)
+        attach_panel_tabs_all([item])
         return item
     except OSError:
         return None
+
+
+def _cr_library_panel_query(h) -> str | None:
+    parsed = urllib.parse.urlparse(h.path)
+    params = urllib.parse.parse_qs(parsed.query)
+    panel = (params.get("panel") or [None])[0]
+    if not panel or not isinstance(panel, str):
+        return None
+    panel = panel.strip()
+    return panel or None
+
+
+def _cr_library_response_images(images: list, panel: str | None) -> list:
+    if not panel:
+        return images
+    return [i for i in images if row_matches_panel_filter(i, panel)]
 
 
 def handle_cr_thumb(h) -> None:
@@ -408,6 +426,8 @@ def handle_cr_library(h)-> None:
     Returns tiers: source (accepted BG stills + uploaded sources),
     cropped (crops/ dir), character_master (Character_Assets/; reference-only
     for deletes), element_pose (Kling Element registration poses).
+    Every row includes panel_tabs (LIBRARY_PANEL_CLASSIFICATION_V1).
+    Optional query panel=images|watercolors|… filters server-side.
     Canonical registry images are intentionally excluded — use canonical_images/
     directly, not the event/milestone library panel.
     List rows are metadata-only (thumb_url per item); thumbnails load via
@@ -423,11 +443,16 @@ def handle_cr_library(h)-> None:
     bg = _bg_module()
     library_event_dir = ctx.library_event_dir
     prod_root = ctx.prod_root
+    panel_filter = _cr_library_panel_query(h)
     cache_key = _library_list_cache_key(library_event_dir, str(h.app.event_id))
     fp = _library_list_fingerprint(library_event_dir, prod_root)
     cached = _LIBRARY_LIST_CACHE.get(cache_key)
     if cached and cached[0] == fp:
-        return h._send_json(200, cached[1])
+        payload = dict(cached[1])
+        payload["images"] = _cr_library_response_images(payload.get("images") or [], panel_filter)
+        if panel_filter:
+            payload["panel_filter"] = panel_filter
+        return h._send_json(200, payload)
     skel_arc = (ctx.skeleton_ref or {}).get("arc_number")
     arc_number = int(skel_arc) if skel_arc is not None else arc_number_from_event_id(library_event_dir.name)
     images = []
@@ -574,7 +599,7 @@ def handle_cr_library(h)-> None:
     # --- Tier 4: Phase A/B watercolor overlays (library/watercolors/) ---
     wc_items = list_watercolor_items(event_watercolors_dir(library_event_dir))
     for wc in wc_items:
-        _append({
+        row = {
             "key": wc["key"],
             "filename": wc["filename"],
             "tier": "watercolor",
@@ -584,31 +609,53 @@ def handle_cr_library(h)-> None:
             "asset_type": wc.get("asset_type") or "watercolor_static",
             "display_name": wc["key"],
             "kind": wc.get("kind"),
-        })
+        }
+        attach_panel_tabs_all([row])
+        _append(row)
 
+    attach_panel_tabs_all(images)
     _enrich_library_items_prod_assets(images)
+    attach_panel_tabs_all(images)
+
+    response_images = _cr_library_response_images(images, panel_filter)
 
     print(
         f"[library] scope={ctx.scope_type} library_event={library_event_dir.name} "
-        f"pinned_event={h.app.event_id} arc={arc_number} serving {len(images)} images "
-        f"({sum(1 for i in images if i['tier']=='source')} source, "
-        f"{sum(1 for i in images if i.get('shared_baseline'))} baseline, "
-        f"{sum(1 for i in images if i['tier']=='cropped')} cropped, "
-        f"{sum(1 for i in images if i['tier']=='watercolor')} watercolor)",
+        f"pinned_event={h.app.event_id} arc={arc_number} serving {len(response_images)} images "
+        f"({sum(1 for i in response_images if i['tier']=='source')} source, "
+        f"{sum(1 for i in response_images if i.get('shared_baseline'))} baseline, "
+        f"{sum(1 for i in response_images if i['tier']=='cropped')} cropped, "
+        f"{sum(1 for i in response_images if i['tier']=='watercolor')} watercolor)"
+        f"{f' panel={panel_filter}' if panel_filter else ''}",
         flush=True,
     )
-    return h._send_json(200, _store_cr_library_cache(cache_key, fp, {
+    payload = {
+        "images": response_images,
+        "metadata_only": True,
+        "event_id": h.app.event_id,
+        "library_event_id": library_event_dir.name,
+        "scope_type": ctx.scope_type,
+    }
+    if panel_filter:
+        payload["panel_filter"] = panel_filter
+    cache_payload = {
         "images": images,
         "metadata_only": True,
         "event_id": h.app.event_id,
         "library_event_id": library_event_dir.name,
         "scope_type": ctx.scope_type,
-    }))
+    }
+    return h._send_json(200, _store_cr_library_cache(cache_key, fp, cache_payload, payload))
 
 
-def _store_cr_library_cache(cache_key: str, fingerprint: str, payload: dict) -> dict:
-    _LIBRARY_LIST_CACHE[cache_key] = (fingerprint, payload)
-    return payload
+def _store_cr_library_cache(
+    cache_key: str,
+    fingerprint: str,
+    cache_payload: dict,
+    response_payload: dict | None = None,
+) -> dict:
+    _LIBRARY_LIST_CACHE[cache_key] = (fingerprint, cache_payload)
+    return response_payload if response_payload is not None else cache_payload
 
 
 def handle_cr_full_image(h)-> None:

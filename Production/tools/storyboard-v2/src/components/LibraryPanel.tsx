@@ -32,6 +32,11 @@ import {
   ELEMENT_SPEAKERS,
   libraryItemCanAddToElement,
 } from '../utils/libraryElementPose';
+import {
+  libraryItemMatchesPanelTab,
+  stitchAudioPanelTabs,
+  type LibraryPanelTab,
+} from '../utils/libraryPanelContract';
 
 // ----------------------------------------------------------------
 // Types
@@ -46,6 +51,8 @@ interface LibItem {
   thumb_url?: string;
   display_name?: string;
   mtime?: number;
+  /** LIBRARY_PANEL_CLASSIFICATION_V1 — server authority for tab visibility. */
+  panel_tabs?: string[];
   tier?: string; // server-set: 'source' | 'cropped' | 'character_master' (cr_library current shape)
   width?: number;
   height?: number;
@@ -114,6 +121,7 @@ export function stitchLibraryToLibItems(data: StitchLibraryResponse): LibItem[] 
         asset_type: category === 'ambient' ? 'audio' : category === 'sfx' ? 'sfx' : 'transition',
         tags,
         tier: category,
+        panel_tabs: stitchAudioPanelTabs(category),
         duration_ms: item.duration_ms,
         mtime: 0,
       });
@@ -190,12 +198,12 @@ function libraryTileLabel(it: LibItem): string {
 // rules — file when CC-17/18/19 land in main and the rules are confirmed
 // against runtime cr_library behavior.
 
-export type LibraryTier = 'images' | 'ambient' | 'sfx' | 'transitions' | 'watercolors';
+export type LibraryTier = LibraryPanelTab;
 
 const LIBRARY_TIERS: LibraryTier[] = ['images', 'ambient', 'sfx', 'transitions', 'watercolors'];
 const DEFAULT_LIBRARY_TIER: LibraryTier = 'images';
 const LIBRARY_TIER_LS_KEY = 'mn.library.tier';
-const LIBRARY_ITEMS_SESSION_KEY = 'mn.library.items.v2';
+const LIBRARY_ITEMS_SESSION_KEY = 'mn.library.items.v3';
 
 function libraryItemsStorageKey(eventId: string): string {
   return `${LIBRARY_ITEMS_SESSION_KEY}:${eventId}`;
@@ -209,7 +217,11 @@ function readPersistedLibraryItems(eventId: string): LibItem[] {
     const parsed = JSON.parse(raw) as { items?: LibItem[] };
     const items = Array.isArray(parsed.items) ? parsed.items : [];
     // Drop stale cache rows missing disk-scan tier (pre-fix Directus-only shape).
-    const valid = items.filter((it) => typeof it.tier === 'string' && it.tier.length > 0);
+    const valid = items.filter(
+      (it) =>
+        (Array.isArray(it.panel_tabs) && it.panel_tabs.length > 0)
+        || (typeof it.tier === 'string' && it.tier.length > 0),
+    );
     return valid.length === items.length ? items : valid;
   } catch {
     return [];
@@ -671,10 +683,11 @@ export function LibraryPanel() {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  // CC-17 + CC-18 — combine tier filter + debounced search
+  // CC-17 + CC-18 — panel_tabs authority (LIBRARY_PANEL_CLASSIFICATION_V1) + search
   const filteredItems = useMemo(() => {
-    const tierFilter = TIER_TO_FILTER_MAP[tier];
-    return items.filter((it) => tierFilter(it) && matchesSearch(it, searchQuery));
+    return items.filter(
+      (it) => libraryItemMatchesPanelTab(it, tier) && matchesSearch(it, searchQuery),
+    );
   }, [items, tier, searchQuery]);
 
   const uploadAccept = AUDIO_LIBRARY_TIERS.has(tier)

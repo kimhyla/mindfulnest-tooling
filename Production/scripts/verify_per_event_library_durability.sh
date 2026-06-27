@@ -28,6 +28,8 @@ grep -q 'def event_images_dir' "$EVENT_LIB" \
   || fail "event_library.py missing event_images_dir"
 grep -q 'metadata_only' "$CROPPER" \
   || fail "cropper handle_cr_library must return metadata_only list"
+grep -q 'panel_tabs' "$CROPPER" \
+  || fail "cropper handle_cr_library must emit panel_tabs (LIBRARY_PANEL_CLASSIFICATION_V1)"
 grep -q 'def handle_cr_thumb' "$CROPPER" \
   || fail "cropper must expose on-demand GET /api/cr/thumb"
 grep -q 'Canonical registry images are intentionally excluded' "$CROPPER" \
