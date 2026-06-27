@@ -4759,7 +4759,7 @@ function BgOptionTile({
       lastAutoPreviewRef.current = sig;
       return;
     }
-    if (!trimTruthReady || lastAutoPreviewRef.current === sig) return;
+    if (!trimTruthReady || (lastAutoPreviewRef.current === sig && previewUrl)) return;
     let cancelled = false;
     void (async () => {
       const applied = await onApplyO3Cut(
@@ -4785,8 +4785,16 @@ function BgOptionTile({
     cutBusy,
   ]);
 
-  const persistCut = async (keepStartS: number, keepEndS: number): Promise<boolean> => {
-    if (!selected) return false;
+  const persistCut = async (
+    keepStartS: number,
+    keepEndS: number,
+  ): Promise<{
+    ok: boolean;
+    previewUrl?: string;
+    trimBackS?: number;
+    keepStartS?: number;
+  }> => {
+    if (!selected) return { ok: false };
     const validateDuration = exportDurationS || playbackDurationS;
     if (validateDuration <= 0) {
       pushToast({
@@ -4794,7 +4802,7 @@ function BgOptionTile({
         message: 'Loading clip duration — try again in a moment',
         source: 'bg-o3-cut-duration-loading',
       });
-      return false;
+      return { ok: false };
     }
     const { startS, endS } = normalizeO3KeepWindow(validateDuration, keepStartS, keepEndS);
     if (!isValidO3CutWindow(validateDuration, startS, endS)) {
@@ -4805,7 +4813,7 @@ function BgOptionTile({
           : 'Trim window too small — drag handles farther apart (need ≥0.25s kept)',
         source: 'bg-o3-cut-rejected',
       });
-      return false;
+      return { ok: false };
     }
     const trimBack = Math.max(0, validateDuration - endS);
     setCutBusy(true);
@@ -4816,7 +4824,7 @@ function BgOptionTile({
         trimBack > 0.009 ? trimBack : null,
         cutTargetOpts,
       );
-      if (!applied) return false;
+      if (!applied) return { ok: false };
       if (applied.rawDurationS != null) {
         setSourceDurationS(applied.rawDurationS);
         rawDurationRef.current = applied.rawDurationS;
@@ -4825,9 +4833,47 @@ function BgOptionTile({
       const eff = applied.effectiveDurationS;
       const shortening = startS > 0.05 || trimBack > 0.05;
       if (shortening && eff != null && eff >= raw - 0.05) {
-        return false;
+        return { ok: false };
       }
-      return true;
+      return {
+        ok: true,
+        ...(applied.previewUrl !== undefined ? { previewUrl: applied.previewUrl } : {}),
+        trimBackS: trimBack,
+        keepStartS: startS,
+      };
+    } finally {
+      setCutBusy(false);
+    }
+  };
+
+  const refreshSavedCutPreview = async (
+    startS: number,
+    trimBack: number,
+    previewUrlHint?: string,
+  ) => {
+    if (!selected || !option.video_path) return;
+    lastAutoPreviewRef.current = null;
+    const sig = `${option.video_path}|${startS.toFixed(2)}|${trimBack.toFixed(2)}`;
+    const cached = previewUrlHint
+      ?? recallCutPreviewUrl(beatId, optionIndex, option.video_path, startS, trimBack);
+    if (cached) {
+      rememberCutPreviewUrl(beatId, optionIndex, option.video_path, startS, trimBack, cached);
+      lastAutoPreviewRef.current = sig;
+      await swapVideoToPreview(cached, { autoplay: false });
+      return;
+    }
+    setCutBusy(true);
+    try {
+      const applied = await onApplyO3Cut(
+        optionIndex,
+        startS,
+        trimBack > 0.009 ? trimBack : null,
+        { previewOnly: true, silent: true, ...cutTargetOpts },
+      );
+      if (!applied?.previewUrl) return;
+      rememberCutPreviewUrl(beatId, optionIndex, option.video_path, startS, trimBack, applied.previewUrl);
+      lastAutoPreviewRef.current = sig;
+      await swapVideoToPreview(applied.previewUrl, { autoplay: false });
     } finally {
       setCutBusy(false);
     }
@@ -4887,10 +4933,12 @@ function BgOptionTile({
 
   const applyDraftCut = async () => {
     if (!selected || !hasActiveCut) return;
-    const ok = await persistCut(effectiveKeepStartS, effectiveKeepEndS);
-    if (ok) {
-      setPendingCut(null);
-    }
+    const saved = await persistCut(effectiveKeepStartS, effectiveKeepEndS);
+    if (!saved.ok) return;
+    setPendingCut(null);
+    const trimBack = saved.trimBackS ?? cutPreviewTrimBackS();
+    const startS = saved.keepStartS ?? effectiveKeepStartS;
+    await refreshSavedCutPreview(startS, trimBack, saved.previewUrl);
   };
 
   const clearCut = async () => {
