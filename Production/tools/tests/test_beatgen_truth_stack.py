@@ -67,6 +67,7 @@ def test_wrong_db_path_raises_for_event3_beat(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv("MN_BEATGEN_TEST_ALLOW_DIRECT_WRITE", raising=False)
     monkeypatch.setenv("MN_BEATGEN_DB_PATH", str(tmp_path / "beatgen.db"))
     with pytest.raises(BeatGenScopeError):
         assert_db_path_matches_beat("bg_arc1_event3_pre_beat_10")
