@@ -524,14 +524,19 @@ fi
 echo "[deploy] (g) curl smoke ok — server serving fresh build (sha=$BUILD_SHA, marker_matches=$MARKER_COUNT)"
 
 # (g.4) STITCH_SFX_PLAYBACK_TRUTH live milestone E2E — post-deploy only (needs fresh bundle + mux)
+# Event_2 milestone fixture only — dedicated Event_N ports pin scope; skip on other targets.
 if [[ -x "$SRC_TOOLING/Production/scripts/verify_stitch_sfx_playback_truth_live_e2e.sh" ]]; then
-    echo "[deploy] (g.4-pre) ensure Playwright browsers for live E2E ..."
-    bash "$SRC_TOOLING/Production/scripts/ensure_storyboard_playwright_browsers.sh"
-    echo "[deploy] (g.4) stitch SFX playback truth live E2E on :${SERVER_PORT} ..."
-    MN_SERVER_PORT="$SERVER_PORT" MN_STORYBOARD_BASE="http://127.0.0.1:${SERVER_PORT}" \
-        bash "$SRC_TOOLING/Production/scripts/verify_stitch_sfx_playback_truth_live_e2e.sh" \
-        || exit 1
-    echo "[deploy] (g.4) stitch SFX playback truth live E2E ok"
+    if [[ "$event_id" != "Event_2" ]]; then
+        echo "[deploy] (g.4) SKIP stitch SFX live E2E — milestone fixture is Event_2-only (target=$event_id)"
+    else
+        echo "[deploy] (g.4-pre) ensure Playwright browsers for live E2E ..."
+        bash "$SRC_TOOLING/Production/scripts/ensure_storyboard_playwright_browsers.sh"
+        echo "[deploy] (g.4) stitch SFX playback truth live E2E on :${SERVER_PORT} ..."
+        MN_SERVER_PORT="$SERVER_PORT" MN_STORYBOARD_BASE="http://127.0.0.1:${SERVER_PORT}" \
+            bash "$SRC_TOOLING/Production/scripts/verify_stitch_sfx_playback_truth_live_e2e.sh" \
+            || exit 1
+        echo "[deploy] (g.4) stitch SFX playback truth live E2E ok"
+    fi
 fi
 
 # ----------------------------------------------------------------
@@ -581,9 +586,10 @@ echo "[deploy] (h) O3 capability smoke ok"
 # ----------------------------------------------------------------
 # (h.5) Post-restart Kling canonical prompt shape — migrate heal on session-state
 # ----------------------------------------------------------------
-echo "[deploy] (h.5) Kling canonical prompt shape live smoke (Event_2) ..."
+echo "[deploy] (h.5) Kling canonical prompt shape live smoke ($event_id on :${SERVER_PORT}) ..."
 chmod +x "$SRC_TOOLING/Production/scripts/smoke_kling_canonical_prompt_shape_live.sh"
-if ! bash "$SRC_TOOLING/Production/scripts/smoke_kling_canonical_prompt_shape_live.sh"; then
+if ! MN_SERVER_PORT="$SERVER_PORT" MN_BG_LIVE_SMOKE_EVENT="$event_id" \
+    bash "$SRC_TOOLING/Production/scripts/smoke_kling_canonical_prompt_shape_live.sh"; then
     echo "FATAL: Kling canonical prompt shape live smoke failed after restart" >&2
     tail -30 "$LOG_DIR/server.log" >&2 || true
     exit 1
