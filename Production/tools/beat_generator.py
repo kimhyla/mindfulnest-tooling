@@ -208,9 +208,22 @@ def _compute_bg_scope_key(
 
 
 def reset_bg_paths_activation_for_tests() -> None:
-    """Clear warm-init scope key between unit tests."""
-    global _BG_ACTIVE_SCOPE_KEY
+    """Clear warm-init scope key and restore default tooling prod root between unit tests."""
+    global _BG_ACTIVE_SCOPE_KEY, _MILESTONE_SCOPE_BIND, _MILESTONE_SIDECAR_JSON_ONLY, _BG_EVENT_DIR, _PROD_DIR
     _BG_ACTIVE_SCOPE_KEY = None
+    _MILESTONE_SCOPE_BIND = None
+    _MILESTONE_SIDECAR_JSON_ONLY = False
+    _BG_EVENT_DIR = None
+    default_event = Path(__file__).resolve().parent.parent / "Event_e2e_fixture"
+    if default_event.is_dir():
+        _PROD_DIR = str(default_event.parent)
+        _BG_EVENT_DIR = str(default_event.resolve())
+        try:
+            from tools import kling_character_registry as _reg
+
+            _reg.set_prod_root(_PROD_DIR)
+        except Exception:
+            pass
 
 
 def init_bg_paths(

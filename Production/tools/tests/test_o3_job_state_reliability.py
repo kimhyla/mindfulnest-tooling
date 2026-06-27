@@ -42,6 +42,7 @@ def test_update_beat_locked_patches_only_target_beat(monkeypatch, tmp_path) -> N
     sidecar = tmp_path / "beat_generator_state.json"
     sidecar.write_text(json.dumps(_state()), encoding="utf-8")
     monkeypatch.setattr(bg, "BG_SIDECAR_PATH", str(sidecar))
+    monkeypatch.setattr(bg, "_sidecar_use_sqlite", lambda: False)
 
     ok, _beat = bg.update_beat_locked(
         "beat_a",
@@ -60,6 +61,7 @@ def test_update_beat_locked_rejects_stale_attempt(monkeypatch, tmp_path) -> None
     sidecar = tmp_path / "beat_generator_state.json"
     sidecar.write_text(json.dumps(_state()), encoding="utf-8")
     monkeypatch.setattr(bg, "BG_SIDECAR_PATH", str(sidecar))
+    monkeypatch.setattr(bg, "_sidecar_use_sqlite", lambda: False)
 
     ok, _beat = bg.update_beat_locked(
         "beat_a",

@@ -10,7 +10,8 @@ from lib.beatgen_store import BeatgenStore, beats_equal_by_id, sqlite_authority_
 
 
 @pytest.fixture(autouse=True)
-def _reset_store():
+def _reset_store(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("MN_SIDECAR_SQLITE_AUTHORITY", "1")
     BeatgenStore.reset_singleton_for_tests()
     yield
     BeatgenStore.reset_singleton_for_tests()
@@ -111,6 +112,7 @@ def test_bootstrap_from_json(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("MN_BEATGEN_DB_PATH", str(db))
     monkeypatch.setenv("MN_SIDECAR_SQLITE_AUTHORITY", "1")
     bg.BG_SIDECAR_PATH = str(json_path)
+    monkeypatch.setattr(bg, "_BG_EVENT_DIR", None)
     count = bg.bootstrap_sqlite_sidecar_from_json()
     assert count == 2
     assert bg.sqlite_authority_enabled()
