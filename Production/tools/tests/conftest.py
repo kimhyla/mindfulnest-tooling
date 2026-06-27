@@ -1,5 +1,16 @@
-"""Autouse test gates for Beat Gen Truth Stack."""
+"""Autouse test gates + shared import path for Production/tools/tests."""
 from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+_TESTS = Path(__file__).resolve().parent
+_TOOLS = _TESTS.parent
+_PRODUCTION = _TOOLS.parent
+for _p in (_TOOLS, _TOOLS / "credentials_lib", _PRODUCTION):
+    _s = str(_p)
+    if _s not in sys.path:
+        sys.path.insert(0, _s)
 
 import pytest
 
