@@ -30,6 +30,7 @@ htmlcov/
 # Local QA / pipeline proof artifacts (never commit)
 Production/tmp_diagnostics/
 Production/tools/pilot_scene_option1_autorun.sh
+Production/tools/run_phase_b_avatar_5s_probe.py
 Production/scripts/launchd-backups/
 
 # Rhubarb Lip Sync — built locally via Production/scripts/setup_rhubarb_arm64.sh

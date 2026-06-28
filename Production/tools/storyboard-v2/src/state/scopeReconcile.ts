@@ -116,6 +116,19 @@ export async function reconcileClientScope(
   );
   let targetEventId = forcedId ?? readAuthoritativeEventId(fallbackScope);
 
+  // DEDICATED_PORT vs server truth — port 5111 implies Event_1, but Playwright
+  // and mis-pinned dev tabs may serve Event_e2e_fixture (or another event) on
+  // that port. When ?event= is absent, /api/event/current wins over port math.
+  if (
+    !forcedId
+    && !urlEventId
+    && dedicatedPortEventId
+    && serverEventId
+    && serverEventId !== dedicatedPortEventId
+  ) {
+    targetEventId = serverEventId;
+  }
+
   const syncDedicatedPortPin = async (eventId: string): Promise<boolean> => {
     if (serverEventId === eventId) {
       noteClientPinnedEvent(eventId);
@@ -137,12 +150,17 @@ export async function reconcileClientScope(
   };
 
   const pinTarget = async (eventId: string): Promise<boolean> => {
-    // DEDICATED_PORT_SCOPE_TRUTH_V1 — never POST /api/event/load on 5110+N tabs.
-    if (dedicatedPortEventId) {
-      if (eventId !== dedicatedPortEventId) {
-        return false;
+    // DEDICATED_PORT_SCOPE_TRUTH_V1 — never POST /api/event/load on 5110+N tabs
+    // unless ?event= explicitly selects a non-port event (e2e fixture, etc.).
+    if (dedicatedPortEventId && !urlEventId) {
+      if (eventId === dedicatedPortEventId) {
+        return syncDedicatedPortPin(dedicatedPortEventId);
       }
-      return syncDedicatedPortPin(dedicatedPortEventId);
+      if (serverEventId === eventId) {
+        noteClientPinnedEvent(eventId);
+        return true;
+      }
+      return false;
     }
     if (urlEventId && isDedicatedPortForEvent(urlEventId)) {
       if (eventId !== urlEventId) {
