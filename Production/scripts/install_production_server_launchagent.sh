@@ -7,7 +7,7 @@
 # SERVER_LAUNCHD_SINGLE_OWNER_V1 — launchd is the ONLY supervisor for dedicated ports.
 # Deploy/start scripts must NOT also nohup-spawn production_server.py (dual owner = restart storm).
 #
-# EVENT_SERVER_COLD_BOOT_WAIT_V1 — soft kickstart + 90s wait before hard -k kickstart.
+# EVENT_SERVER_COLD_BOOT_WAIT_V1 — soft kickstart + 180s wait before hard -k kickstart.
 # Hard -k during a slow cold boot caused restart storms (Event_3 :5113).
 #
 # LD-505_TOOLING_CODE_ROOT_V1 — ProgramArguments use mindfulnest-tooling

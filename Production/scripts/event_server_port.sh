@@ -35,11 +35,11 @@ event_storyboard_url() {
   echo "http://localhost:${port}/?event=${event_id}"
 }
 
-# EVENT_SERVER_COLD_BOOT_WAIT_V1 — dedicated Event_N cold start can exceed 15s
-# (Directus lock warmup, sidecar reconcile, ghost scrub). Shared by launchd install,
-# deploy, and event_server_provision.py (keep defaults aligned).
+# EVENT_SERVER_COLD_BOOT_WAIT_V1 — dedicated Event_N cold start can exceed 90s
+# (Event_1 sidecar reconcile ~137s observed; Directus lock, ghost scrub). Shared by
+# launchd install, deploy, and event_server_provision.py (keep defaults aligned).
 : "${EVENT_SERVER_QUICK_HEALTH_ATTEMPTS:=3}"
-: "${EVENT_SERVER_COLD_BOOT_ATTEMPTS:=45}"
+: "${EVENT_SERVER_COLD_BOOT_ATTEMPTS:=90}"
 : "${EVENT_SERVER_WAIT_SLEEP_SECONDS:=2}"
 
 event_server_wait_http() {
