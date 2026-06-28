@@ -570,13 +570,23 @@ function buildFixedO3OptionSlots(
     return true;
   });
   const activeO3Path = isUserSelectableO3Video(beat.kling_o3_video_path) ? beat.kling_o3_video_path! : null;
-  const placed = new Set<string>();
+  const unslotted: GptOption[] = [];
   for (const opt of o3History) {
     const si = opt.slot_index;
-    if (typeof si === 'number' && si >= 0 && si <= 2 && slots[si] == null) {
-      slots[si] = opt;
-      if (opt.video_path) placed.add(opt.video_path);
+    if (typeof si === 'number' && si >= 0 && si <= 2) {
+      if (slots[si] == null) {
+        slots[si] = opt;
+      } else {
+        unslotted.push(opt);
+      }
+      continue;
     }
+    unslotted.push(opt);
+  }
+  for (const opt of unslotted) {
+    const emptyIdx = slots.findIndex((s) => s == null);
+    if (emptyIdx < 0) break;
+    slots[emptyIdx] = { ...opt, slot_index: emptyIdx };
   }
   const activeListed = activeO3Path && slots.some((s) => s?.video_path === activeO3Path);
   if (beatHasActiveO3DeliveryClip(beat) && activeO3Path && !activeListed) {

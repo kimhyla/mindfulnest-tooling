@@ -10,11 +10,12 @@
 // WaveformTimeline.tsx header comment block.
 
 import { test, expect, type Page } from '@playwright/test';
+import { SERVER } from './testServer';
 
 const FIXTURE_EVENT = 'Event_e2e_fixture';
 
 test.beforeEach(async ({ request }) => {
-  await request.post('http://localhost:5111/api/event/load', {
+  await request.post(`${SERVER}/api/event/load`, {
     data: { event_id: FIXTURE_EVENT },
   });
 });
@@ -535,9 +536,9 @@ test.describe('PHASE_WAVEFORM_PLAY — Phase A parity (same WaveformTimeline + b
               filename: 'hands_rubbing_animated_test.mp4',
               ext: 'mp4',
               kind: 'animation',
-              thumb_url: 'http://localhost:5111/api/phase/watercolor_file?key=hands_rubbing',
+              thumb_url: `${SERVER}/api/phase/watercolor_file?key=hands_rubbing`,
               animation_url:
-                'http://localhost:5111/api/phase_b/watercolor/hands_rubbing_animated_test',
+                `${SERVER}/api/phase_b/watercolor/hands_rubbing_animated_test`,
               mtime: 1,
               size_bytes: 1000,
             },

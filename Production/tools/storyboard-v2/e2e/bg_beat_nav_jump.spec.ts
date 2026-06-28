@@ -191,8 +191,8 @@ test.describe('BG_BEAT_JUMP_NAV_V1 — beat jump navigation', () => {
     await mockSessionWithBeats(page, [
       makeBeat('beat_idle', 'Idle beat.'),
       makeBeat('beat_active', 'Generating beat.', {
-        kling_o3_voice_fix_ui_job_id: 'job-nav-active-1',
-        kling_o3_voice_fix_status: 'o3_running',
+        job_busy: true,
+        o3_current_job_id: 'job-nav-active-1',
       }),
       makeBeat('beat_other', 'Other beat.'),
     ]);
@@ -229,8 +229,8 @@ test.describe('BG_BEAT_JUMP_NAV_V1 — beat jump navigation', () => {
     await mockSessionWithBeats(page, [
       makeBeat('beat_redo', 'Approved but regenerating.', {
         kling_o3_status: 'approved',
-        kling_o3_voice_fix_ui_job_id: 'job-nav-redo-1',
-        kling_o3_voice_fix_status: 'o3_running',
+        job_busy: true,
+        o3_current_job_id: 'job-nav-redo-1',
       }),
     ]);
 

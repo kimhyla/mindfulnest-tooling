@@ -18,8 +18,7 @@
 
 import { test, expect, type Page } from '@playwright/test';
 import { openStoryboardPane } from './helpers';
-
-const SERVER = 'http://localhost:5200';
+import { SERVER } from './testServer';
 
 async function gotoApp(page: Page): Promise<void> {
   page.on('pageerror', (err) => {
@@ -95,9 +94,9 @@ test.describe('S4 — magic compositor', () => {
         })),
       });
     });
-    // Capture window.open calls — overload page.evaluate to spy on it before
-    // the button click. context.on('page') misses popups suppressed by browser.
     await gotoApp(page);
+    await openStoryboardPane(page);
+    // Install spy after navigation — openStoryboardPane goto would wipe a pre-nav hook.
     await page.evaluate(() => {
       const w = window as unknown as { __mn_open_calls?: string[]; open: typeof window.open };
       w.__mn_open_calls = [];
@@ -107,7 +106,6 @@ test.describe('S4 — magic compositor', () => {
         return orig.call(window, url ?? '', target, features);
       }) as typeof window.open;
     });
-    await openStoryboardPane(page);
     await page.locator('[data-testid="beat-magic-still-0"]').click();
     const openedUrls = await page.evaluate(() =>
       (window as unknown as { __mn_open_calls?: string[] }).__mn_open_calls,

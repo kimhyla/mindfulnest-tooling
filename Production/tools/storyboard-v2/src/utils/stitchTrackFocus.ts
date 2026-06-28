@@ -103,6 +103,17 @@ export function pickTrackSlotForLayout(
   preferredSlot?: string | null,
 ): StitchUiSlotKey {
   const first = layoutKeys[0] ?? STITCH_TRACK_SLOT_KEYS[0];
+  const persisted = readPersistedTrackSlot(stitchSessionKey);
+
+  // Operator track click memory wins over passive scope/video-role hint on restore.
+  if (
+    persisted
+    && layoutKeys.includes(persisted)
+    && slotHasStitchVideo(slots, persisted)
+  ) {
+    return persisted;
+  }
+
   if (
     preferredSlot
     && isStitchUiSlotKey(preferredSlot)
@@ -110,15 +121,6 @@ export function pickTrackSlotForLayout(
     && slotHasStitchVideo(slots, preferredSlot)
   ) {
     return preferredSlot;
-  }
-
-  const persisted = readPersistedTrackSlot(stitchSessionKey);
-  if (
-    persisted
-    && layoutKeys.includes(persisted)
-    && slotHasStitchVideo(slots, persisted)
-  ) {
-    return persisted;
   }
 
   for (let i = layoutKeys.length - 1; i >= 0; i--) {

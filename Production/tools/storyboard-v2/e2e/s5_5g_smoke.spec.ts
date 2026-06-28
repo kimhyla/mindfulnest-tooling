@@ -20,6 +20,7 @@
 //   verified in Phase G + Phase F shell-level checks.
 
 import { test, expect, type Page, type Request } from '@playwright/test';
+import { SERVER } from './testServer';
 
 const FIXTURE_EVENT = 'Event_e2e_fixture';
 
@@ -32,7 +33,7 @@ const FIXTURE_EVENT = 'Event_e2e_fixture';
 // with. Re-pin server to the fixture event so each test starts from a clean
 // event-scope baseline. Absolute URL per Rule 32.
 test.beforeEach(async ({ request }) => {
-  await request.post('http://localhost:5200/api/event/load', {
+  await request.post(`${SERVER}/api/event/load`, {
     data: { event_id: FIXTURE_EVENT },
   });
 });
@@ -159,8 +160,12 @@ async function mockSnapshot(page: Page): Promise<void> {
  * exact "/job" terminator so it only matches the POST, not the GET.
  */
 async function mockStitchSaveJob(page: Page): Promise<void> {
-  await page.route(/\/api\/stitch_editor\/job$/, async (r) => {
-    await r.fulfill({
+  await page.route(/\/api\/stitch_editor\/job(?:\?|$)/, async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: '{"ok":true}',
@@ -371,7 +376,8 @@ test.describe('G3 — SFX drag onto slot waveform creates per-slot cue', () => {
 
     const saveJobReqs: Request[] = [];
     page.on('request', (req) => {
-      if (req.url().endsWith('/api/stitch_editor/job') && req.method() === 'POST') {
+      const url = req.url();
+      if (url.includes('/api/stitch_editor/job') && req.method() === 'POST' && !url.includes('/jobs')) {
         saveJobReqs.push(req);
       }
     });
@@ -468,7 +474,8 @@ test.describe('G4 — Click cue marker → SfxCuePopover edit', () => {
 
     const saveJobReqs: Request[] = [];
     page.on('request', (req) => {
-      if (req.url().endsWith('/api/stitch_editor/job') && req.method() === 'POST') {
+      const url = req.url();
+      if (url.includes('/api/stitch_editor/job') && req.method() === 'POST' && !url.includes('/jobs')) {
         saveJobReqs.push(req);
       }
     });
@@ -522,7 +529,8 @@ test.describe('G5 — SfxCuePopover Delete removes per-slot cue', () => {
 
     const saveJobReqs: Request[] = [];
     page.on('request', (req) => {
-      if (req.url().endsWith('/api/stitch_editor/job') && req.method() === 'POST') {
+      const url = req.url();
+      if (url.includes('/api/stitch_editor/job') && req.method() === 'POST' && !url.includes('/jobs')) {
         saveJobReqs.push(req);
       }
     });
@@ -635,7 +643,8 @@ test.describe('G8 — Transition kind change saves via stitch_save_job', () => {
 
     const saveJobReqs: Request[] = [];
     page.on('request', (req) => {
-      if (req.url().endsWith('/api/stitch_editor/job') && req.method() === 'POST') {
+      const url = req.url();
+      if (url.includes('/api/stitch_editor/job') && req.method() === 'POST' && !url.includes('/jobs')) {
         saveJobReqs.push(req);
       }
     });
@@ -678,7 +687,8 @@ test.describe('G8 — Transition kind change saves via stitch_save_job', () => {
 
     const saveJobReqs: Request[] = [];
     page.on('request', (req) => {
-      if (req.url().endsWith('/api/stitch_editor/job') && req.method() === 'POST') {
+      const url = req.url();
+      if (url.includes('/api/stitch_editor/job') && req.method() === 'POST' && !url.includes('/jobs')) {
         saveJobReqs.push(req);
       }
     });
@@ -741,7 +751,8 @@ test.describe('G10 — Trim edit saves via stitch_save_job', () => {
 
     const saveJobReqs: Request[] = [];
     page.on('request', (req) => {
-      if (req.url().endsWith('/api/stitch_editor/job') && req.method() === 'POST') {
+      const url = req.url();
+      if (url.includes('/api/stitch_editor/job') && req.method() === 'POST' && !url.includes('/jobs')) {
         saveJobReqs.push(req);
       }
     });
@@ -753,7 +764,7 @@ test.describe('G10 — Trim edit saves via stitch_save_job', () => {
     const trimIn = page.locator('[data-testid="stitcher-slot-trim-in-intro"]');
     await expect(trimIn).toBeVisible();
     await trimIn.fill('2');
-    await trimIn.blur();
+    await trimIn.press('Tab');
 
     await expect.poll(() => saveJobReqs.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
     await expect.poll(() => saveJobReqs
@@ -775,29 +786,26 @@ test.describe('G10 — Trim edit saves via stitch_save_job', () => {
     await mockStitchSaveJob(page);
     await mockSfxLibrary(page);
 
-    const saveJobReqs: Request[] = [];
-    page.on('request', (req) => {
-      if (req.url().endsWith('/api/stitch_editor/job') && req.method() === 'POST') {
-        saveJobReqs.push(req);
-      }
-    });
-
     await gotoApp(page);
     await openStitcher(page);
 
     const trimOut = page.locator('[data-testid="stitcher-slot-trim-out-intro"]');
     await expect(trimOut).toBeVisible();
+    const trimSave = page.waitForRequest((req) => {
+      if (req.method() !== 'POST') return false;
+      const url = req.url();
+      if (!url.includes('/api/stitch_editor/job') || url.includes('/jobs')) return false;
+      try {
+        const body = req.postDataJSON() as Record<string, unknown>;
+        return Number((body['slots'] as Record<string, MockSlot>)?.intro?.trim_out_ms) === 25000;
+      } catch {
+        return false;
+      }
+    }, { timeout: 10_000 });
     await trimOut.fill('25');
-    await trimOut.blur();
-
-    await expect.poll(() => saveJobReqs.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
-    await expect.poll(() => saveJobReqs
-      .map((req) => req.postDataJSON() as Record<string, unknown>)
-      .some((b) => Number((b['slots'] as Record<string, MockSlot>)?.intro?.trim_out_ms) === 25000),
-      { timeout: 5_000 }).toBe(true);
-    const body = saveJobReqs
-      .map((req) => req.postDataJSON() as Record<string, unknown>)
-      .find((b) => Number((b['slots'] as Record<string, MockSlot>)?.intro?.trim_out_ms) === 25000)!;
+    await trimOut.press('Tab');
+    const req = await trimSave;
+    const body = req.postDataJSON() as Record<string, unknown>;
     const slots = body!['slots'] as Record<string, MockSlot>;
     expect(Number(slots.intro!.trim_out_ms)).toBe(25_000);
   });

@@ -6,6 +6,7 @@ import { copyFileSync, existsSync, readdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { APIRequestContext } from '@playwright/test';
+import { SERVER } from './testServer';
 
 const __dirname_restore = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname_restore, '..', '..', '..', '..');
@@ -29,7 +30,7 @@ export function restoreE2eFixtureFilesFromPristine(): void {
 /** Disk restore; optional server reload (use afterAll — not afterEach — to avoid lock storms). */
 export async function restoreE2eFixtureOnServer(
   request: APIRequestContext,
-  server = process.env.STORYBOARD_BASE_URL ?? 'http://localhost:5200',
+  server = SERVER,
   opts?: { reload?: boolean },
 ): Promise<void> {
   restoreE2eFixtureFilesFromPristine();

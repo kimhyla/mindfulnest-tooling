@@ -253,10 +253,14 @@ function priorityAudioFile(
   return null;
 }
 
-/** Waveform audio only — never stitched MP4 (SEEK-5/6; LD-829). */
+/** Phase A LD-829 — fresh stitched is canonical for waveform + player; Phase B stays lipsync-first. */
 function priorityAudioFileForPhase(
   slice: PhaseStateSlice,
+  phase: 'a' | 'b',
 ): { name: string; label: AudioSourceLabel } | null {
+  if (phase === 'a' && slice.stitched_file && !stitchedPreviewStale(slice)) {
+    return { name: slice.stitched_file, label: 'stitched' };
+  }
   return priorityAudioFile(slice);
 }
 
@@ -1058,7 +1062,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     }
   };
 
-  const priorityAudio = priorityAudioFileForPhase(stateSlice);
+  const priorityAudio = priorityAudioFileForPhase(stateSlice, phase);
   const waveformAudio =
     stemTrimMode && stateSlice.voice_stem_file
       ? { name: stateSlice.voice_stem_file, label: 'stem' as const }

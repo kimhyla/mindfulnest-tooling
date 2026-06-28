@@ -2510,6 +2510,9 @@ export function StitcherTab() {
                       step={0.1}
                       value={slot?.trim_in_ms ? (slot.trim_in_ms / 1000).toString() : '0'}
                       disabled={busy || !slot?.video_path}
+                      onInput={(e: Event) =>
+                        onTrimChange(sd.key, 'in', (e.target as HTMLInputElement).value)
+                      }
                       onBlur={(e: Event) =>
                         onTrimChange(sd.key, 'in', (e.target as HTMLInputElement).value)
                       }
@@ -2529,6 +2532,9 @@ export function StitcherTab() {
                       }
                       placeholder="end"
                       disabled={busy || !slot?.video_path}
+                      onInput={(e: Event) =>
+                        onTrimChange(sd.key, 'out', (e.target as HTMLInputElement).value)
+                      }
                       onBlur={(e: Event) =>
                         onTrimChange(sd.key, 'out', (e.target as HTMLInputElement).value)
                       }

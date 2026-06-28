@@ -20,8 +20,9 @@
 //   try { ... } finally { await restore.restore(); }
 
 import { expect, type APIRequestContext, type Page } from '@playwright/test';
+import { SERVER } from './testServer';
 
-export const SERVER = process.env.STORYBOARD_BASE_URL ?? 'http://localhost:5200';
+export { SERVER } from './testServer';
 export const EVENT_ID = 'Event_1';
 export const FIXTURE_EVENT = 'Event_e2e_fixture';
 

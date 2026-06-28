@@ -746,7 +746,22 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     let rafId = 0;
     let boundVideo: HTMLVideoElement | null = null;
 
+    // SEEK-3 / WTA-1: while paused, linked lipsync <video> often reports currentTime 0
+    // until decode catches up — must not clobber applySeek / lastScrubMsRef authority.
     const syncFromVideo = (video: HTMLVideoElement) => {
+      if (isDraggingSeekRef.current) return;
+      const scrubbed = lastScrubMsRef.current;
+      if (!video.paused && !video.ended) {
+        const ms = Math.max(0, video.currentTime * 1000);
+        setCurrentMs(ms);
+        onTimeUpdateRef.current?.(ms);
+        return;
+      }
+      if (scrubbed != null) {
+        setCurrentMs(scrubbed);
+        onTimeUpdateRef.current?.(scrubbed);
+        return;
+      }
       const ms = Math.max(0, video.currentTime * 1000);
       setCurrentMs(ms);
       onTimeUpdateRef.current?.(ms);
