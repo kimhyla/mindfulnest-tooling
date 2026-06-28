@@ -24,6 +24,7 @@
 //   T-9 — Lipsync sentinel (previewOptIdx === 0) plays raw — no synthetic lead-in (per spec §5.4 Kim Q1=α)
 
 import { test, expect, type Page } from '@playwright/test';
+import { openStoryboardPane } from './helpers';
 
 // ---------------------------------------------------------------------------
 // Helpers — pin bootstrap to a nested phase_1.audio_delay shape
@@ -160,7 +161,7 @@ test.describe('Delay durability — T-5..T-9 (spec id=225)', () => {
     await mockBootstrapWithNestedDelay(page, { audioDelay: 2.5, withOptions: true });
     await stubMediaEndpoints(page);
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     const slider = page.locator('[data-testid="beat-0-delay"]');
     await expect(slider).toBeVisible();
     // EXPECTED (post-fix): slider initialized from phase_1.audio_delay = "2.5"
@@ -176,7 +177,7 @@ test.describe('Delay durability — T-5..T-9 (spec id=225)', () => {
     await mockBootstrapWithNestedDelay(page, { audioDelay: 1.7, withOptions: true });
     await stubMediaEndpoints(page);
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     await clearSetTimeoutSpy(page); // discard any mount-time timeouts
     // Click preview on option 1 (sentinel 0 = lipsync; option 1 = first real option).
     await page.click('[data-testid="beat-0-preview-option-1"]');
@@ -246,7 +247,7 @@ test.describe('Delay durability — T-5..T-9 (spec id=225)', () => {
     });
     await stubMediaEndpoints(page);
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     // First preview at delay=1.5 — captures the baseline setTimeout(1500).
     // (Used to confirm the spy mechanism is working before the mutation.)
     await clearSetTimeoutSpy(page);
@@ -287,10 +288,10 @@ test.describe('Delay durability — T-5..T-9 (spec id=225)', () => {
     await mockBootstrapWithNestedDelay(page, { audioDelay: 2.5, withOptions: true });
     await stubMediaEndpoints(page);
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     await expect(page.locator('[data-testid="beat-0-delay"]')).toHaveValue('2.5');
     await page.reload();
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     // EXPECTED (post-fix): slider re-hydrates from nested phase_1.audio_delay = 2.5
     // PRE-FIX: top-level audio_delay undefined → re-defaults to 0.0
     await expect(page.locator('[data-testid="beat-0-delay"]')).toHaveValue('2.5');
@@ -308,7 +309,7 @@ test.describe('Delay durability — T-5..T-9 (spec id=225)', () => {
     });
     await stubMediaEndpoints(page);
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     await clearSetTimeoutSpy(page);
     // Click the lipsync-play button (sets previewOptIdx = 0 = sentinel). The
     // SUT testid is `beat-${index}-lipsync-play` (StoryboardTab.tsx L519),

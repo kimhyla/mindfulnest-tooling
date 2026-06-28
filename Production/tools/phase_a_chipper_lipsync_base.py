@@ -34,7 +34,8 @@ from kling_startend_pipeline import (  # noqa: E402
 ARLO_STILL_PROMPT = (
     "Arlo the red squirrel faces the camera at a wizard desk in a firelit cozy study. "
     "Blue scarf and green vest visible. Both paws resting on the desk — NOT tucked "
-    "behind body. Mouth closed, tooth-free. Camera locked, no zoom. "
+    "behind body. Mouth closed, tooth-free. "
+    "STATIC CAMERA — locked frame, zero zoom, zero dolly, zero pan, zero Ken Burns. "
     "Only soft blinks and tiny breathing. No pacing, no tail swish gesticulation."
 )
 
@@ -46,6 +47,7 @@ NEGATIVE = (
 
 ARLO_ELEMENT_ID = "313106596591323"
 # v2: 15s Kling idle (fewer loop seams when stretched to ~40s Phase A speech).
+# v3 (arlo_idle_wizard_desk_v3) exists on disk for review — not default until approved.
 PHASE_A_BASE_CLIP_DURATION_S = 15
 DEFAULT_CLIP_ID = "arlo_idle_wizard_desk_v2"
 LEGACY_CLIP_ID = "arlo_idle_wizard_desk_v1"
@@ -84,12 +86,21 @@ def _prod_root(event: Path) -> Path:
 
 
 def _normalize(src: Path, dst: Path) -> None:
+    _cred = HERE / "credentials_lib"
+    if str(_cred) not in sys.path:
+        sys.path.insert(0, str(_cred))
+    from video_encode_policy import BASE_CLIP_FFMPEG_VIDEO_ARGS, VIDEO_QUALITY_GRADFUN_VF  # noqa: E402
+
+    vf = (
+        "scale=1280:960:force_original_aspect_ratio=decrease,"
+        "pad=1280:960:(ow-iw)/2:(oh-ih)/2,setsar=1:1,fps=24,"
+        + VIDEO_QUALITY_GRADFUN_VF
+    )
     subprocess.run([
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
         "-i", str(src),
-        "-vf", "scale=1280:960:force_original_aspect_ratio=decrease,"
-               "pad=1280:960:(ow-iw)/2:(oh-ih)/2,setsar=1:1,fps=24",
-        "-c:v", "libx264", "-crf", "20", "-preset", "fast",
+        "-vf", vf,
+        *BASE_CLIP_FFMPEG_VIDEO_ARGS,
         "-c:a", "aac", "-ar", "44100", "-ac", "1", "-movflags", "+faststart",
         str(dst),
     ], check=True, timeout=180)

@@ -35,6 +35,8 @@ if curl -sf "http://localhost:${SERVER_PORT}/api/event/current" >/dev/null 2>&1;
 import json, urllib.error, urllib.request
 
 base = "http://localhost:${SERVER_PORT}"
+port = int("${SERVER_PORT}")
+dedicated_event = f"Event_{port - 5110}" if port >= 5111 else None
 
 def post(path, body):
     req = urllib.request.Request(
@@ -50,34 +52,56 @@ def get(path):
     with urllib.request.urlopen(base + path, timeout=30) as r:
         return r.status, json.loads(r.read().decode())
 
-# Pin Event_1 (simulates server drift while client would still be Event_2).
-post("/api/event/load", {"event_id": "Event_1"})
-_, cur = get("/api/event/current")
-if cur.get("event_id") != "Event_1":
-    raise SystemExit(f"setup failed: expected Event_1 pin, got {cur!r}")
+if dedicated_event:
+    _, cur = get("/api/event/current")
+    if cur.get("event_id") != dedicated_event:
+        raise SystemExit(f"expected {dedicated_event} on :{port}, got {cur!r}")
+    wrong = "Event_1" if dedicated_event != "Event_1" else "Event_99"
+    try:
+        get(f"/api/v2/event/{wrong}/state")
+        raise SystemExit(f"expected 409 for {wrong} v2 state on dedicated port")
+    except urllib.error.HTTPError as e:
+        if e.code != 409:
+            raise SystemExit(f"expected 409, got HTTP {e.code}") from e
+        body = json.loads(e.read().decode())
+        if body.get("error_message") != "scope_mismatch":
+            raise SystemExit(f"expected scope_mismatch, got {body!r}")
+    try:
+        post("/api/event/load", {"event_id": wrong})
+        raise SystemExit(f"expected 409 blocking auto-heal load to {wrong}")
+    except urllib.error.HTTPError as e:
+        if e.code != 409:
+            raise SystemExit(f"expected 409 for heal load, got HTTP {e.code}") from e
+    status, _ = get(f"/api/v2/event/{dedicated_event}/state")
+    if status != 200:
+        raise SystemExit(f"post-check {dedicated_event} v2 state must return 200, got {status}")
+    print(f"  live API: dedicated :{port} wrong-scope 409; event/load heal blocked; pin stable")
+else:
+    post("/api/event/load", {"event_id": "Event_1"})
+    _, cur = get("/api/event/current")
+    if cur.get("event_id") != "Event_1":
+        raise SystemExit(f"setup failed: expected Event_1 pin, got {cur!r}")
 
-# BG mutation with Event_2 scope while pinned Event_1 must 409.
-try:
-    get("/api/v2/event/Event_2/state")
-    raise SystemExit("expected 409 for Event_2 v2 state while pinned Event_1")
-except urllib.error.HTTPError as e:
-    if e.code != 409:
-        raise SystemExit(f"expected 409, got HTTP {e.code}") from e
-    body = json.loads(e.read().decode())
-    if body.get("error_message") != "scope_mismatch":
-        raise SystemExit(f"expected scope_mismatch, got {body!r}")
+    try:
+        get("/api/v2/event/Event_2/state")
+        raise SystemExit("expected 409 for Event_2 v2 state while pinned Event_1")
+    except urllib.error.HTTPError as e:
+        if e.code != 409:
+            raise SystemExit(f"expected 409, got HTTP {e.code}") from e
+        body = json.loads(e.read().decode())
+        if body.get("error_message") != "scope_mismatch":
+            raise SystemExit(f"expected scope_mismatch, got {body!r}")
 
-# Auto-heal path (what apiGet / pathappPatch do): load Event_2 then scoped READ succeeds.
-post("/api/event/load", {"event_id": "Event_2"})
-_, cur2 = get("/api/event/current")
-if cur2.get("event_id") != "Event_2":
-    raise SystemExit(f"heal load failed: {cur2!r}")
+    post("/api/event/load", {"event_id": "Event_2"})
+    _, cur2 = get("/api/event/current")
+    if cur2.get("event_id") != "Event_2":
+        raise SystemExit(f"heal load failed: {cur2!r}")
 
-status, _ = get("/api/v2/event/Event_2/state")
-if status != 200:
-    raise SystemExit(f"post-heal Event_2 v2 state must return 200, got {status}")
+    status, _ = get("/api/v2/event/Event_2/state")
+    if status != 200:
+        raise SystemExit(f"post-heal Event_2 v2 state must return 200, got {status}")
 
-print("  live API: 409 on drift pin, 200 v2 state after event/load heal")
+    print("  live API: 409 on drift pin, 200 v2 state after event/load heal")
 PY
   echo "[scope-mismatch-auto-heal] OK — source + live API smoke passed"
 else

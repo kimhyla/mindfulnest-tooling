@@ -330,9 +330,25 @@ def handle_timeline_open_in_quicktime(h, body: dict)-> None:
                    retry_safe=False,
                )
     p = Path(real_path)
+    open_path = real_path
+    try:
+        from credentials_lib.ffmpeg_stitch import (  # noqa: PLC0415
+            mp4_quicktime_timestamps_safe,
+            remux_mp4_playback_safe,
+        )
+
+        if not mp4_quicktime_timestamps_safe(p):
+            import tempfile  # noqa: PLC0415
+
+            qt_tmp = Path(tempfile.gettempdir()) / f"mn_qt_{p.stem}_{os.getpid()}.mp4"
+            shutil.copy2(p, qt_tmp)
+            remux_mp4_playback_safe(qt_tmp)
+            open_path = str(qt_tmp)
+    except Exception:
+        open_path = real_path
     try:
         subprocess.run(
-            ["open", "-a", "QuickTime Player", real_path],
+            ["open", "-a", "QuickTime Player", open_path],
             check=True, timeout=10,
         )
     except subprocess.CalledProcessError as exc:

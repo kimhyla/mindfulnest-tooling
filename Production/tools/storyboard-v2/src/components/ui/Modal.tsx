@@ -6,9 +6,12 @@
 // any given time. Components opening a Modal inside another Modal must close
 // the parent first OR re-use the modal-id slot. Enforced by data-testid +
 // z-index ladder; no nested-stack management.
+//
+// MODAL_SELECTION_SAFE_BACKDROP_V1 — backdrop closes only when mousedown AND
+// mouseup both land on the backdrop (not when text selection ends outside panel).
 
 import type { ComponentChildren } from 'preact';
-import { useEffect } from 'preact/hooks';
+import { useEffect, useRef } from 'preact/hooks';
 
 export interface ModalProps {
   /** Stable id used for data-testid + a11y. e.g. "cropper" → data-testid="modal-cropper". */
@@ -28,6 +31,8 @@ export interface ModalProps {
 }
 
 export function Modal({ id, title, children, footer, open, onClose, panelClass }: ModalProps) {
+  const backdropMouseDownRef = useRef(false);
+
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -50,11 +55,22 @@ export function Modal({ id, title, children, footer, open, onClose, panelClass }
       role="dialog"
       aria-modal="true"
       aria-labelledby={titleId}
+      onMouseDown={(e: MouseEvent) => {
+        backdropMouseDownRef.current = e.target === e.currentTarget;
+      }}
       onClick={(e: MouseEvent) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget && backdropMouseDownRef.current) {
+          onClose();
+        }
+        backdropMouseDownRef.current = false;
       }}
     >
-      <div class={`mn-modal-panel${panelClass ? ' ' + panelClass : ''}`}>
+      <div
+        class={`mn-modal-panel${panelClass ? ' ' + panelClass : ''}`}
+        onMouseDown={() => {
+          backdropMouseDownRef.current = false;
+        }}
+      >
         <header class="mn-modal-header">
           <h2 id={titleId} class="mn-modal-title">{title}</h2>
           <button

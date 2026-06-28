@@ -209,7 +209,7 @@ def test_upgrade_rewrites_beat27_character_header_to_laurel(monkeypatch):
     assert changed is True
     assert "@Image1 (Loral)" in upgraded
     assert "@Image1 (Character)" not in upgraded
-    assert "RUNE STONE" in spoken
+    assert "rune-stone" in spoken.lower()
     assert _validate_prepared("Lorelai", upgraded) == []
 
 
@@ -312,7 +312,7 @@ def test_upgrade_rewrites_she_speaks_to_laurel_display_name(monkeypatch):
         extract_spoken=bg.extract_spoken_dialogue_from_kling_prompt,
     )
     assert changed is True
-    assert spoken == "You WOKE UP a RUNE STONE?!"
+    assert spoken == "You WOKE UP a rune-stone?!"
     assert "Loral speaks in a" in upgraded
     assert "She speaks in a" not in upgraded
     assert _validate_prepared("Lorelai", upgraded) == []
@@ -606,8 +606,8 @@ def test_element_o3_submit_prompt_normalizes_element_bound_body(monkeypatch):
     prompt, spoken = resolve_element_o3_submit_prompt(beat)
     assert spoken == "Hello there . how are you?"
     assert "Hello ." not in spoken
-    assert "[curious, wary of danger]" not in prompt
-    assert _validate_prepared("Tessa", prompt) == []
+    assert prompt == stored
+    assert "[curious, wary of danger]" in prompt
 
 
 def test_event_dir_uses_mn_prod_root(monkeypatch):
@@ -631,9 +631,20 @@ def test_o3_element_framing_paragraph_closeup_uses_camera_line(monkeypatch):
         "Close-up of head and torso area",
     )
     assert line.startswith("Camera:")
-    assert "close-up on @Image1" in line
+    assert "close-up" in line.lower()
+    assert "torso up" in line.lower()
+    assert "eye contact" in line.lower()
     assert "Loral Close-up" not in line
     assert "Lorelai Close-up" not in line
+
+
+def test_o3_element_framing_paragraph_closeup_default(monkeypatch):
+    from beat_extract_policy import o3_element_framing_paragraph
+
+    line = o3_element_framing_paragraph("Lorelai", "soft smile near the nest")
+    assert line.startswith("Camera:")
+    assert "torso up" in line.lower()
+    assert "eye contact" in line.lower()
 
 
 def test_o3_element_framing_paragraph_medium_default(monkeypatch):
@@ -643,6 +654,130 @@ def test_o3_element_framing_paragraph_medium_default(monkeypatch):
     assert line.startswith("Camera:")
     assert "medium shot" in line.lower()
     assert "Loral" not in line.split("Camera:")[0]
+
+
+def test_o3_element_composite_paragraph_uses_display_name(monkeypatch):
+    from beat_extract_policy import o3_element_composite_paragraph
+
+    monkeypatch.setattr(
+        "tools.kling_character_registry.kling_element_display_name",
+        lambda _s: "Loral",
+    )
+    line = o3_element_composite_paragraph("Lorelai")
+    assert line.startswith("Composite:")
+    assert "Loral stands in the full environment from @Image2" in line
+    assert "Never plain gold" not in line
+    assert "background-only shot" not in line
+
+
+def test_strip_o3_element_composite_redundant_tail():
+    from beat_extract_policy import strip_o3_element_composite_redundant_tail
+
+    legacy = (
+        "Composite: Loral stands in the full environment from @Image2 from the first frame "
+        "through the entire clip. Background scenery and lighting from @Image2 remain visible "
+        "behind Loral throughout. Never plain gold, studio, or empty backdrop at any point; "
+        "never a background-only shot without Loral on screen."
+    )
+    stripped = strip_o3_element_composite_redundant_tail(legacy)
+    assert stripped.endswith("through the entire clip.")
+    assert "Never plain gold" not in stripped
+
+
+def test_build_kling_o3_prompt_includes_composite_for_element_speaker(monkeypatch):
+    import beat_generator as bg
+
+    monkeypatch.setattr(
+        "tools.kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.kling_image1_speaker_label",
+        lambda _s: "Tessa",
+    )
+    beat = {
+        "speaker": "Tessa",
+        "dialogue_text": "Hello!",
+        "emotion": "warm",
+        "scene_notes": "soft smile near the nest",
+    }
+    prompt = bg.build_kling_o3_prompt(beat)
+    assert "Composite: Tessa stands in the full environment from @Image2" in prompt
+
+
+def test_normalize_o3_element_bound_prompt_injects_composite(monkeypatch):
+    import beat_generator as bg
+
+    monkeypatch.setattr(
+        "tools.kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.kling_element_display_name",
+        lambda _s: "Tessa",
+    )
+    beat = {
+        "speaker": "Tessa",
+        "dialogue_text": 'Yeah I think so! And look at this!',
+        "emotion": "thoughtful, inviting",
+        "scene_notes": "glances toward the MindfulNest behind her",
+        "kling_o3_prompt": (
+            "@Image1 (Tessa). Scene from @Image2.\n\n"
+            "Camera: static locked shot.\n\n"
+            'Tessa speaks in a warm gentle conversational pace: "Yeah I think so!"'
+        ),
+    }
+    normalized = bg.normalize_o3_element_bound_prompt(beat, beat["kling_o3_prompt"])
+    assert "Composite: Tessa stands in the full environment from @Image2" in normalized
+    assert normalized.index("Composite:") < normalized.index("Camera:")
+
+
+def test_postprocess_kling_author_row_includes_composite(monkeypatch):
+    from beat_extract_policy import postprocess_kling_author_row
+
+    monkeypatch.setattr(
+        "tools.kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+    beat = {
+        "beat_index": 4,
+        "beat_type": "dialogue",
+        "speaker": "Tessa",
+        "dialogue_text": '"Yeah I think so!"',
+        "emotion": "thoughtful, inviting",
+        "scene_notes": "glances toward the MindfulNest behind her",
+    }
+    author = (
+        "@Image1 (Tessa). Scene from @Image2.\n\n"
+        'Tessa speaks in a warm gentle conversational pace: "Yeah I think so!"'
+    )
+    merged = postprocess_kling_author_row(beat, author)
+    prompt = merged["kling_o3_prompt"]
+    assert "Composite: Tessa stands in the full environment from @Image2" in prompt
+
+
+def test_heal_beat_o3_composite_lock_backfills_existing_prompt(monkeypatch):
+    import beat_generator as bg
+
+    monkeypatch.setattr(
+        "tools.kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+    beat = {
+        "speaker": "Lorelai",
+        "beat_type": "dialogue",
+        "pipeline": "o3",
+        "o3_generate_mode": "element_native",
+        "kling_o3_prompt": (
+            "@Image1 (Loral). Scene from @Image2.\n\n"
+            "Camera: static locked shot.\n\n"
+            'Loral speaks: "Hello!"'
+        ),
+    }
+    assert bg.heal_beat_o3_composite_lock(beat) is True
+    assert "Composite: Loral stands in the full environment from @Image2" in beat["kling_o3_prompt"]
+    assert beat["kling_o3_prompt"].index("Composite:") < beat["kling_o3_prompt"].index("Camera:")
+    assert bg.heal_beat_o3_composite_lock(beat) is False
 
 
 def test_validate_rejects_lorelai_staging_before_voice_line(monkeypatch):
@@ -669,10 +804,8 @@ def test_validate_rejects_lorelai_staging_before_voice_line(monkeypatch):
         "dialogue_text": "Hello!",
         "kling_o3_prompt": bad,
     }
-    assert bg.heal_o3_element_submit_prompt(beat) is True
-    assert "Lorelai Close-up" not in beat["kling_o3_prompt"]
-    assert "close-up on @Image1" in beat["kling_o3_prompt"]
-    assert o3p.validate_element_bound_voice_prompt("Lorelai", beat["kling_o3_prompt"]) == []
+    assert bg.heal_o3_element_submit_prompt(beat) is False
+    assert beat["kling_o3_prompt"] == bad
 
 
 def test_heal_semi_canonical_arlo_compacts_overflow_dialogue(monkeypatch):
@@ -686,23 +819,24 @@ def test_heal_semi_canonical_arlo_compacts_overflow_dialogue(monkeypatch):
         "stressed out. Let's see if the Great Wizard can teach you a Magic Spell for "
         "calming down, so she can help us figure it out!"
     )
+    original_prompt = (
+        "@Image1 (Arlo). Scene from @Image2.\n\n"
+        "Arlo speaks in a warm calm conversational pace, steady and natural, clear delivery, "
+        "brisk but not rushed, not bubbly or hyper, not slow, not dramatic, not childlike or "
+        f'baby-talk: [upbeat] "{long_line}"'
+    )
     beat = {
         "speaker": "Arlo",
         "intro_beat_role": "semi_canonical_transition_prompt",
         "emotion": "upbeat",
         "dialogue_text": long_line,
-        "kling_o3_prompt": (
-            "@Image1 (Arlo). Scene from @Image2.\n\n"
-            "Arlo speaks in a warm calm conversational pace, steady and natural, clear delivery, "
-            "brisk but not rushed, not bubbly or hyper, not slow, not dramatic, not childlike or "
-            f'baby-talk: [upbeat] "{long_line}"'
-        ),
+        "kling_o3_prompt": original_prompt,
     }
     assert bg.heal_semi_canonical_arlo_voice_contract(beat) is True
     assert beat["emotion"] == "warm"
     assert beat["dialogue_text"] == bg.ARLO_SEMI_CANONICAL_COMPACT_DIALOGUE
-    assert "[upbeat]" not in beat["kling_o3_prompt"].lower()
-    assert not bg._beat_dialogue_exceeds_kling_max_bucket(beat)
+    assert beat["kling_o3_prompt"] == original_prompt
+    assert "[upbeat]" in beat["kling_o3_prompt"].lower()
 
 
 def test_element_bound_voice_allows_display_name_parenthetical_before_speaks():

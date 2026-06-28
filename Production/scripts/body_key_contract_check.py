@@ -85,17 +85,15 @@ CLIENT_WRAPPER_CALLEES: Dict[str, Dict[str, object]] = {
     "pathappPatch": {
         "endpoint_arg_index": 1,
         "body_arg_index": 2,
-        # pathappPatch baseline payload (see src/api/client.ts lines 229-247):
+        # pathappPatch baseline payload (see src/api/pathappPayload.ts):
         #   scope_video_role, scope_target_video, beat_id, ...body,
-        #   scope_event_id|event_id (via scopeKeyFor), scope_version,
-        #   scope_milestone_id (when milestone scope active).
+        #   scope_event_id, scope_version, scope_milestone_id (when milestone scope active).
         "auto_keys": frozenset(
             {
                 "scope_video_role",
                 "scope_target_video",
                 "beat_id",
                 "scope_event_id",
-                "event_id",
                 "scope_version",
                 "scope_milestone_id",
             }
@@ -113,7 +111,6 @@ CLIENT_WRAPPER_CALLEES: Dict[str, Dict[str, object]] = {
                 "scope_target_video",
                 "beat_id",
                 "scope_event_id",
-                "event_id",
                 "scope_version",
                 "scope_milestone_id",
             }
@@ -133,7 +130,6 @@ INFRASTRUCTURE_KEYS: frozenset[str] = frozenset(
         "scope_video_role",
         "scope_target_video",
         "scope_milestone_id",
-        "event_id",          # legacy scope key for non-BG endpoints
         "beat_id",           # auto-injected by runMutation + pathappPatch
     }
 )
@@ -254,6 +250,11 @@ PATH_ROUTE_RE_TEMPLATES = [
     re.compile(r'^\s*elif\s+path\s*==\s*"([^"]+)"\s*:', re.MULTILINE),
 ]
 HANDLER_CALL_RE = re.compile(r"self\._handle_([A-Za-z_][\w]*)\s*\(")
+# BEATGEN_SCOPE_LAYER1_V1 — router passes handler ref without call parens:
+#   return self._in_beatgen_scope(self._handle_bg_update_beat, body)
+BEATGEN_SCOPE_HANDLER_RE = re.compile(
+    r"_in_beatgen_scope\(self\._handle_([A-Za-z_][\w]*)\s*,"
+)
 
 
 def parse_server_routes(server_path: Path) -> Dict[str, List[str]]:
@@ -263,9 +264,9 @@ def parse_server_routes(server_path: Path) -> Dict[str, List[str]]:
         if path == "/api/xxx":
             return self._handle_xxx(body)
 
-    We pair each `if path == "..."` with the next `self._handle_*(` call in
-    source order. This is conservative — if the router is restructured, the
-    map degrades to fewer routes (visible) rather than wrong routes (silent).
+    We pair each `if path == "..."` with the next handler reference in its
+    dispatch block — either ``self._handle_xxx(body)`` or
+    ``self._in_beatgen_scope(self._handle_xxx, body)`` (Layer 1 scope wrapper).
     """
     src = server_path.read_text(encoding="utf-8")
     routes: Dict[str, List[str]] = {}
@@ -280,6 +281,9 @@ def parse_server_routes(server_path: Path) -> Dict[str, List[str]]:
     # Collect handler invocations and their line numbers.
     handler_matches: List[Tuple[int, str]] = []
     for m in HANDLER_CALL_RE.finditer(src):
+        line = src.count("\n", 0, m.start()) + 1
+        handler_matches.append((line, "_handle_" + m.group(1)))
+    for m in BEATGEN_SCOPE_HANDLER_RE.finditer(src):
         line = src.count("\n", 0, m.start()) + 1
         handler_matches.append((line, "_handle_" + m.group(1)))
 

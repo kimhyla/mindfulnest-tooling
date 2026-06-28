@@ -1,0 +1,37 @@
+# O3 verbatim prompt (Beat Gen)
+
+## Hard rule
+
+**Never rewrite `kling_o3_prompt` after a beat exists** — on submit, save, migrate, reconcile, session load, or pipeline flip.
+
+Whatever Kim types in the Beat Gen prompt box is what WaveSpeed/Kling receives — byte-for-byte after `.strip()`.
+
+## Only allowed prompt shaping
+
+Prompt normalization (`normalize_kling_o3_prompt_event1_quality`, `postprocess_kling_author_row`, `build_kling_o3_prompt`, voice-line injection, etc.) runs **only during script parsing / extract materialize** — when beats are first created from the plan or insert-beat form. Not on sidecar migrate or operator edits afterward.
+
+## Banned after materialization
+
+- `heal_beat_kling_o3_prompt_event1_shape` / `heal_spoken_staging_in_voice_prompt` / `heal_o3_element_submit_prompt` / `heal_element_bound_voice_prompt`
+- `humanize_kling_body_parts_on_beat` touching `kling_o3_prompt`
+- `normalize_o3_element_bound_prompt` on submit or migrate
+- `inject_locked_voice_line` / `_append_kling_o3_submit_locks` on submit
+- `align_element_bound_kling_display_names` (Lorelai→Loral rewrites)
+- `validate_element_list_alignment` / `validate_element_bound_voice_prompt` **blocking submit**
+- Sidecar writeback from O3 pipeline when submit text differs from stored prompt
+
+## Still allowed (non-prompt)
+
+- Empty-prompt check
+- Char ref / Element gate / voice bind drift (409 with accept)
+- `extract_spoken_dialogue_from_kling_prompt` for duration metadata only — **must not block** submit
+- `sync_beat_dialogue_from_kling_prompt` updating sidecar `dialogue_text` (not the API payload)
+- `prepare_kling_o3_prompt_for_submit` — `.strip()` only
+
+## Migrate guard
+
+`_migrate_sidecar` skips all prompt heals when `beat_has_stored_kling_prompt(beat)` is true (any non-empty `kling_o3_prompt`).
+
+## Tests
+
+`Production/tools/tests/test_o3_prompt_box_law.py` — verbatim submit + migrate skip regressions.

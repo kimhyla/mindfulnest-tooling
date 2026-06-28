@@ -41,14 +41,17 @@ from lib.atomic_json_write import atomic_json_write
 from lib.v3_partition import _iter_v3_beats
 from lib.event_library import (
     arc_number_from_event_id,
-    canonical_images_dir,
-    canonical_meta_for_arc,
+    baseline_images_dir,
     ensure_event_library_dirs,
     event_images_crops_dir,
     event_images_sources_dir,
     event_watercolors_dir,
+    is_baseline_image_path,
     is_canonical_image_path,
+    list_baseline_meta,
 )
+from lib.library_panel_contract import attach_panel_tabs_all, row_matches_panel_filter
+from lib.watercolor_assets import list_watercolor_items, upload_watercolor_filename
 from server_handlers._path_security import (
     require_basename_under_dir,
     require_realpath_under_project,
@@ -56,6 +59,49 @@ from server_handlers._path_security import (
 import scope_router
 from ffmpeg_utils import strip_audio as _strip_clip_audio
 from lipsync_sender import LipSyncClient, COST_PER_LIPSYNC
+
+# In-process library list cache — disk is authority; fingerprint invalidates on upload/delete.
+_LIBRARY_LIST_CACHE: dict[str, tuple[str, dict]] = {}
+
+
+def _library_list_cache_key(library_event_dir: Path, app_event_id: str) -> str:
+    return f"{library_event_dir.name}:{app_event_id}"
+
+
+def _library_list_fingerprint(library_event_dir: Path, prod_root: Path) -> str:
+    parts: list[str] = []
+    for label, path in (
+        ("reg", prod_root / "baseline_image_registry.json"),
+        ("chars", prod_root / "character_subjects.json"),
+        ("sources", Path(event_images_sources_dir(library_event_dir))),
+        ("crops", Path(event_images_crops_dir(library_event_dir))),
+    ):
+        try:
+            if path.is_file():
+                parts.append(f"{label}:{path.stat().st_mtime_ns}")
+            elif path.is_dir():
+                latest = 0
+                for entry in path.iterdir():
+                    if entry.is_file():
+                        latest = max(latest, entry.stat().st_mtime_ns)
+                parts.append(f"{label}:dir:{latest}")
+            else:
+                parts.append(f"{label}:missing")
+        except OSError:
+            parts.append(f"{label}:err")
+    return "|".join(parts)
+
+
+def invalidate_cr_library_cache(library_event_id: str | None = None) -> None:
+    """Drop cached GET /api/cr/library payloads after upload/delete."""
+    if library_event_id is None:
+        _LIBRARY_LIST_CACHE.clear()
+        return
+    prefix = f"{library_event_id}:"
+    for key in list(_LIBRARY_LIST_CACHE):
+        if key.startswith(prefix):
+            _LIBRARY_LIST_CACHE.pop(key, None)
+
 
 # Late-resolvable private helpers from the host module.
 from tools.production_server import (  # noqa: E402
@@ -124,6 +170,29 @@ def _resolve_parent_asset_id_from_source_key(source_key: str) -> int | None:
 
 
 def _enrich_library_items_prod_assets(images: list) -> None:
+    """LD-738 — annotate library items with is_master / has_crop from prod_assets."""
+    import concurrent.futures
+
+    for item in images:
+        item["is_master"] = False
+        item["has_crop"] = False
+    if not images:
+        return
+
+    def _run() -> None:
+        _enrich_library_items_prod_assets_inner(images)
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            fut = pool.submit(_run)
+            fut.result(timeout=3.0)
+    except concurrent.futures.TimeoutError:
+        print("[library] WARN: Directus enrich skipped — timed out after 3s", flush=True)
+    except Exception as e:
+        print(f"[library] WARN: Directus enrich skipped: {e}", flush=True)
+
+
+def _enrich_library_items_prod_assets_inner(images: list) -> None:
     """LD-738 — annotate library items with is_master / has_crop from prod_assets."""
     for item in images:
         item["is_master"] = False
@@ -202,50 +271,192 @@ def _enrich_library_items_prod_assets(images: list) -> None:
         row = path_to_row.get(real_fp)
         if not row:
             continue
+        # Never overwrite disk-scan tier/asset_type — Directus prod_assets types
+        # (e.g. watercolor_static) are not the library panel BS3 filter keys.
         if row.get("asset_type"):
-            item["asset_type"] = row["asset_type"]
+            item["prod_asset_type"] = row["asset_type"]
+            if not item.get("asset_type"):
+                item["asset_type"] = row["asset_type"]
         if row.get("asset_name"):
             item["asset_name"] = row["asset_name"]
-        is_master = row.get("asset_type") == "still_master"
+        is_master = row.get("asset_type") == "still_master" or item.get("asset_type") == "still_master"
         item["is_master"] = is_master
         if is_master:
             mid = row.get("id")
             item["has_crop"] = isinstance(mid, int) and mid in masters_with_crop
 
 
+def _resolve_cr_library_scope(
+    h,
+    body_or_qs: dict | None = None,
+    *,
+    allow_missing: bool = True,
+    allow_missing_video_role: bool = True,
+    repair_sidecar: bool = True,
+):
+    """Activate Beat Gen + return ScopeContext for library CR handlers.
+
+    Milestone Beat Gen uploads land on ``library_event_dir`` (skeleton-linked
+    Event_N), not the server-pinned ``event_dir``. List/upload/delete/crop must
+    use the same roots (``init_bg_paths`` via ``assert_production_scope``).
+    """
+    from server_handlers.milestone_scope import assert_production_scope, parse_scope_query
+
+    scoped = dict(body_or_qs or {})
+    if not body_or_qs:
+        scoped.update(parse_scope_query(h))
+    return assert_production_scope(
+        h,
+        scoped,
+        allow_missing=allow_missing,
+        allow_missing_video_role=allow_missing_video_role,
+        repair_sidecar=repair_sidecar,
+    )
+
+
+def _cr_thumb_url(abs_path: str) -> str:
+    return "/api/cr/thumb?abs_path=" + urllib.parse.quote(abs_path, safe="")
+
+
+def _materialize_cr_thumb_jpeg(safe_path: str) -> bytes | None:
+    """200×150 JPEG for one library tile — used by GET /api/cr/thumb only."""
+    try:
+        from PIL import Image as _PILImage
+        import io as _io2
+
+        with _PILImage.open(safe_path) as im:
+            im.thumbnail((200, 150), _PILImage.LANCZOS)
+            buf = _io2.BytesIO()
+            im.convert("RGB").save(buf, "JPEG", quality=72)
+            return buf.getvalue()
+    except OSError:
+        return None
+
+
+def _read_image_meta(fp, tier, extra: dict | None = None):
+    """Library list row — metadata only; thumbs load via GET /api/cr/thumb."""
+    try:
+        if not os.path.isfile(fp):
+            return None
+        fname = os.path.basename(fp)
+        key = os.path.splitext(fname)[0].replace(" ", "_")
+        item = {
+            "key": key,
+            "filename": fname,
+            "tier": tier,
+            "abs_path": fp,
+            "thumb_url": _cr_thumb_url(fp),
+        }
+        if extra:
+            item.update(extra)
+        attach_panel_tabs_all([item])
+        return item
+    except OSError:
+        return None
+
+
+def _cr_library_panel_query(h) -> str | None:
+    parsed = urllib.parse.urlparse(h.path)
+    params = urllib.parse.parse_qs(parsed.query)
+    panel = (params.get("panel") or [None])[0]
+    if not panel or not isinstance(panel, str):
+        return None
+    panel = panel.strip()
+    return panel or None
+
+
+def _cr_library_response_images(images: list, panel: str | None) -> list:
+    if not panel:
+        return images
+    return [i for i in images if row_matches_panel_filter(i, panel)]
+
+
+def handle_cr_thumb(h) -> None:
+    """GET /api/cr/thumb?abs_path=<encoded_path> — single on-demand library thumbnail."""
+    parsed = urllib.parse.urlparse(h.path)
+    params = urllib.parse.parse_qs(parsed.query)
+    abs_path = params.get("abs_path", [None])[0]
+    if not abs_path:
+        return h._send_error_v59(
+            400,
+            error_code="ABS_PATH_REQUIRED",
+            error_message="abs_path required",
+            retry_safe=False,
+            extra={"ok": False},
+        )
+    try:
+        real_path = require_realpath_under_project(abs_path)
+    except ValueError:
+        return h._send_error_v59(
+            403,
+            error_code="PATH_OUTSIDE_PROJECT",
+            error_message="path outside project",
+            retry_safe=False,
+            extra={"ok": False},
+        )
+    safe_path = os.path.realpath(real_path)
+    if not os.path.isfile(safe_path):
+        return h._send_error_v59(
+            404,
+            error_code="FILE_NOT_FOUND",
+            error_message="file not found",
+            retry_safe=False,
+            extra={"ok": False},
+        )
+    body = _materialize_cr_thumb_jpeg(safe_path)
+    if body is None:
+        return h._send_error_v59(
+            500,
+            error_code="THUMB_GENERATION_FAILED",
+            error_message="could not generate thumbnail",
+            retry_safe=True,
+            extra={"ok": False},
+        )
+    return h._send_bytes(
+        200,
+        body,
+        "image/jpeg",
+        {"Cache-Control": "private, max-age=3600"},
+    )
+
+
 def handle_cr_library(h)-> None:
 
-    """GET /api/cr/library -> { images: [...] }
+    """GET /api/cr/library -> { images: [...], metadata_only: true }
     Returns tiers: source (accepted BG stills + uploaded sources),
     cropped (crops/ dir), character_master (Character_Assets/; reference-only
-    for deletes), canonical (global registry injected per arc).
-    Scoped to the server's active event_dir image library."""
+    for deletes), element_pose (Kling Element registration poses).
+    Every row includes panel_tabs (LIBRARY_PANEL_CLASSIFICATION_V1).
+    Optional query panel=images|watercolors|… filters server-side.
+    Canonical registry images are intentionally excluded — use canonical_images/
+    directly, not the event/milestone library panel.
+    List rows are metadata-only (thumb_url per item); thumbnails load via
+    GET /api/cr/thumb on demand — never inline base64 in the list payload.
+    Scoped to the active scope's library_event_dir (milestone skeleton library
+    or pinned event dir)."""
+    from server_handlers.milestone_scope import production_bg_scope_lock
+
+    with production_bg_scope_lock():
+        ctx = _resolve_cr_library_scope(h, repair_sidecar=False)
+    if ctx is None:
+        return
     bg = _bg_module()
-    prod_root = h.app.event_dir.parent
-    arc_number = arc_number_from_event_id(h.app.event_id)
+    library_event_dir = ctx.library_event_dir
+    prod_root = ctx.prod_root
+    panel_filter = _cr_library_panel_query(h)
+    cache_key = _library_list_cache_key(library_event_dir, str(h.app.event_id))
+    fp = _library_list_fingerprint(library_event_dir, prod_root)
+    cached = _LIBRARY_LIST_CACHE.get(cache_key)
+    if cached and cached[0] == fp:
+        payload = dict(cached[1])
+        payload["images"] = _cr_library_response_images(payload.get("images") or [], panel_filter)
+        if panel_filter:
+            payload["panel_filter"] = panel_filter
+        return h._send_json(200, payload)
+    skel_arc = (ctx.skeleton_ref or {}).get("arc_number")
+    arc_number = int(skel_arc) if skel_arc is not None else arc_number_from_event_id(library_event_dir.name)
     images = []
     seen_keys: set[str] = set()
-
-    def _read_image(fp, tier, extra: dict | None = None):
-        try:
-            from PIL import Image as _PILImage
-            import io as _io2
-            fname = os.path.basename(fp)
-            with _PILImage.open(fp) as im:
-                im.thumbnail((200, 150), _PILImage.LANCZOS)
-                buf = _io2.BytesIO()
-                im.convert("RGB").save(buf, "JPEG", quality=72)
-            thumb_b64 = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
-            key = os.path.splitext(fname)[0].replace(" ", "_")
-            item = {"key": key,
-                    "filename": fname,
-                    "thumb_b64": thumb_b64, "gallery_b64": thumb_b64,
-                    "tier": tier, "abs_path": fp}
-            if extra:
-                item.update(extra)
-            return item
-        except OSError:
-            return None
 
     def _append(item: dict | None) -> None:
         if not item:
@@ -258,7 +469,7 @@ def handle_cr_library(h)-> None:
 
     # --- Tier 1: accepted FLUX stills from BG sidecar (event library) ---
     try:
-        sidecar = bg.read_sidecar()
+        sidecar = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=2.0)
         for arc in sidecar.get("arcs", {}).values():
             for seg in arc.get("segments", {}).values():
                 for beat in seg.get("beats", []):
@@ -267,7 +478,7 @@ def handle_cr_library(h)-> None:
                         continue
                     fp = os.path.join(bg.BG_STILLS_DIR, f"{key}.png")
                     if os.path.exists(fp):
-                        item = _read_image(fp, "source")
+                        item = _read_image_meta(fp, "source")
                         if item:
                             item["beat_id"] = beat.get("beat_id", "")
                             item["speaker"] = beat.get("speaker", "")
@@ -278,26 +489,29 @@ def handle_cr_library(h)-> None:
     # --- Tier 1b: manually uploaded source images (event-scoped) ---
     element_source_hashes: set[str] = set()
     reg = None
-    try:
-        from tools import kling_character_registry as reg
-
-        for char_name in (reg.load_character_subjects().get("characters") or {}):
-            for ep in reg.element_image_paths(char_name):
-                eh = reg.file_sha256(ep)
-                if eh:
-                    element_source_hashes.add(eh)
-    except Exception as e:
-        print(f"[library] element hash scan warning: {e}", flush=True)
-
-    sources_dir = str(event_images_sources_dir(h.app.event_dir))
+    sources_dir = str(event_images_sources_dir(library_event_dir))
+    _src_names: list[str] = []
     if os.path.isdir(sources_dir):
         _src_names = [f for f in os.listdir(sources_dir)
                       if f.lower().endswith((".webp", ".png", ".jpg", ".jpeg"))]
+    if _src_names:
+        try:
+            from tools import kling_character_registry as reg
+
+            for char_name in (reg.load_character_subjects().get("characters") or {}):
+                for ep in reg.element_image_paths(char_name):
+                    eh = reg.file_sha256(ep)
+                    if eh:
+                        element_source_hashes.add(eh)
+        except Exception as e:
+            print(f"[library] element hash scan warning: {e}", flush=True)
+
+    if os.path.isdir(sources_dir):
         _src_names.sort(
             key=lambda f: -os.path.getmtime(os.path.join(sources_dir, f)))
         for fname in _src_names:
             fp = os.path.join(sources_dir, fname)
-            item = _read_image(fp, "source")
+            item = _read_image_meta(fp, "source")
             if item and element_source_hashes and reg is not None:
                 src_hash = reg.file_sha256(fp)
                 if src_hash and src_hash in element_source_hashes:
@@ -308,19 +522,44 @@ def handle_cr_library(h)-> None:
                     )
             _append(item)
 
+    # --- Tier 0: shared baseline BG stills (global, event-local key wins) ---
+    baseline_dir = baseline_images_dir(prod_root)
+    for meta in list_baseline_meta(prod_root):
+        filename = meta.get("filename")
+        if not filename:
+            continue
+        fp = baseline_dir / filename
+        if not fp.is_file():
+            print(f"[library] baseline missing on disk: {fp}", flush=True)
+            continue
+        key = meta.get("key") or os.path.splitext(filename)[0]
+        if key in seen_keys:
+            continue
+        tags = list(meta.get("tags") or ["baseline", "shared"])
+        if "baseline" not in tags:
+            tags.append("baseline")
+        item = _read_image_meta(str(fp), "source", extra={
+            "key": key,
+            "display_name": meta.get("display_name") or key,
+            "tags": tags,
+            "shared_baseline": True,
+            "asset_type": "still_master",
+        })
+        _append(item)
+
     # --- Tier 2: cropped delivery images (event-scoped) ---
-    crops_dir = str(event_images_crops_dir(h.app.event_dir))
+    crops_dir = str(event_images_crops_dir(library_event_dir))
     if os.path.isdir(crops_dir):
         for fname in sorted(os.listdir(crops_dir)):
             if fname.lower().endswith((".webp", ".png", ".jpg", ".jpeg")):
-                _append(_read_image(os.path.join(crops_dir, fname), "cropped"))
+                _append(_read_image_meta(os.path.join(crops_dir, fname), "cropped"))
 
     # --- Tier 3: character reference masters (global reference) ---
     char_dir = str(prod_root / "Character_Assets")
     if os.path.isdir(char_dir):
         for fname in sorted(os.listdir(char_dir)):
             if fname.endswith("_reference_master.png"):
-                item = _read_image(os.path.join(char_dir, fname), "character_master")
+                item = _read_image_meta(os.path.join(char_dir, fname), "character_master")
                 if item:
                     speaker = fname.replace("_reference_master.png", "").capitalize()
                     item["speaker"] = speaker
@@ -347,7 +586,7 @@ def handle_cr_library(h)-> None:
                 if real_fp in seen_pose:
                     continue
                 seen_pose.add(real_fp)
-                item = _read_image(real_fp, "element_pose", extra={
+                item = _read_image_meta(real_fp, "element_pose", extra={
                     "speaker": char_name,
                     "tags": ["element", "char_ref"],
                     "asset_type": "element_pose",
@@ -357,33 +596,66 @@ def handle_cr_library(h)-> None:
     except Exception as e:
         print(f"[library] element pose scan warning: {e}", flush=True)
 
-    # --- Tier 4: canonical images (global, arc-filtered) ---
-    can_dir = canonical_images_dir(prod_root)
-    for meta in canonical_meta_for_arc(prod_root, arc_number):
-        filename = meta.get("filename")
-        if not filename:
-            continue
-        fp = can_dir / filename
-        if not fp.is_file():
-            print(f"[library] canonical missing on disk: {fp}", flush=True)
-            continue
-        item = _read_image(str(fp), "canonical", extra={
-            "display_name": meta.get("display_name"),
-            "tags": meta.get("tags") or ["canonical"],
-            "asset_type": "canonical_image",
-        })
-        _append(item)
+    # --- Tier 4: Phase A/B watercolor overlays (library/watercolors/) ---
+    wc_items = list_watercolor_items(event_watercolors_dir(library_event_dir))
+    for wc in wc_items:
+        row = {
+            "key": wc["key"],
+            "filename": wc["filename"],
+            "tier": "watercolor",
+            "abs_path": wc["abs_path"],
+            "thumb_url": wc["thumb_url"],
+            "tags": wc.get("tags") or ["watercolor"],
+            "asset_type": wc.get("asset_type") or "watercolor_static",
+            "display_name": wc["key"],
+            "kind": wc.get("kind"),
+        }
+        attach_panel_tabs_all([row])
+        _append(row)
 
+    attach_panel_tabs_all(images)
     _enrich_library_items_prod_assets(images)
+    attach_panel_tabs_all(images)
+
+    response_images = _cr_library_response_images(images, panel_filter)
 
     print(
-        f"[library] event={h.app.event_id} arc={arc_number} serving {len(images)} images "
-        f"({sum(1 for i in images if i['tier']=='source')} source, "
-        f"{sum(1 for i in images if i['tier']=='cropped')} cropped, "
-        f"{sum(1 for i in images if i['tier']=='canonical')} canonical)",
+        f"[library] scope={ctx.scope_type} library_event={library_event_dir.name} "
+        f"pinned_event={h.app.event_id} arc={arc_number} serving {len(response_images)} images "
+        f"({sum(1 for i in response_images if i['tier']=='source')} source, "
+        f"{sum(1 for i in response_images if i.get('shared_baseline'))} baseline, "
+        f"{sum(1 for i in response_images if i['tier']=='cropped')} cropped, "
+        f"{sum(1 for i in response_images if i['tier']=='watercolor')} watercolor)"
+        f"{f' panel={panel_filter}' if panel_filter else ''}",
         flush=True,
     )
-    return h._send_json(200, {"images": images, "event_id": h.app.event_id})
+    payload = {
+        "images": response_images,
+        "metadata_only": True,
+        "event_id": h.app.event_id,
+        "library_event_id": library_event_dir.name,
+        "scope_type": ctx.scope_type,
+    }
+    if panel_filter:
+        payload["panel_filter"] = panel_filter
+    cache_payload = {
+        "images": images,
+        "metadata_only": True,
+        "event_id": h.app.event_id,
+        "library_event_id": library_event_dir.name,
+        "scope_type": ctx.scope_type,
+    }
+    return h._send_json(200, _store_cr_library_cache(cache_key, fp, cache_payload, payload))
+
+
+def _store_cr_library_cache(
+    cache_key: str,
+    fingerprint: str,
+    cache_payload: dict,
+    response_payload: dict | None = None,
+) -> dict:
+    _LIBRARY_LIST_CACHE[cache_key] = (fingerprint, cache_payload)
+    return response_payload if response_payload is not None else cache_payload
 
 
 def handle_cr_full_image(h)-> None:
@@ -464,8 +736,8 @@ def handle_cr_library_delete(h, body: dict)-> None:
     LD-pending LIB_DELETE_TIER_PATH_V1 (2026-05-16 crop-tier fix).
     Path safety mirrors _handle_cr_full_image L5195-5198.
     """
-    # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+    ctx = _resolve_cr_library_scope(h, body, allow_missing=False)
+    if ctx is None:
         return
 
     import glob as _glob
@@ -487,13 +759,21 @@ def handle_cr_library_delete(h, body: dict)-> None:
             retry_safe=False,
             extra={"ok": False},
         )
+    if abs_path_hint and is_baseline_image_path(abs_path_hint, h.app.event_dir.parent):
+        return h._send_error_v59(
+            403,
+            error_code="BASELINE_IMAGE_PROTECTED",
+            error_message="shared baseline images cannot be deleted",
+            retry_safe=False,
+            extra={"ok": False},
+        )
 
     # Tier dirs: sources/ AND crops/. Character_Assets/ is NEVER deleted
     # via this handler (reference assets — protected explicitly below).
-    bg = _bg_module()
     prod_root = h.app.event_dir.parent
-    sources_dir = str(event_images_sources_dir(h.app.event_dir))
-    crops_dir = str(event_images_crops_dir(h.app.event_dir))
+    # Scoped library tiers — same roots as handle_cr_library list/upload.
+    sources_dir = str(event_images_sources_dir(ctx.library_event_dir))
+    crops_dir = str(event_images_crops_dir(ctx.library_event_dir))
     if not os.path.isdir(sources_dir):
         return h._send_error_v59(
                    500,
@@ -657,12 +937,14 @@ def handle_cr_library_delete(h, body: dict)-> None:
 
     if file_already_gone:
         print(f"[lib-delete] WARN: target already gone at unlink: {target}", flush=True)
+        invalidate_cr_library_cache(ctx.library_event_dir.name)
         return h._send_json(200, {
             "ok": True,
             "deleted": target,
             "warning": "file_already_gone_at_unlink",
         })
     print(f"[lib-delete] removed {target}", flush=True)
+    invalidate_cr_library_cache(ctx.library_event_dir.name)
     return h._send_json(200, {"ok": True, "deleted": target})
 
 
@@ -671,8 +953,8 @@ def handle_cr_save_crop(h, body: dict)-> None:
     """POST /api/cr/save-crop {crop_png_b64, beat_id, source_key, event_id?}
     Rule 6 upscale + Rule 6.2 WebP delivery + registered_write two-write (BG-22).
     Returns { key, filename, thumb_b64, gallery_b64, asset_id }."""
-    # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+    ctx = _resolve_cr_library_scope(h, body, allow_missing=False)
+    if ctx is None:
         return
     crop_b64   = body.get("crop_png_b64", "")
     beat_id    = body.get("beat_id") or ""   # null/absent → "" (library-origin crop)
@@ -723,7 +1005,7 @@ def handle_cr_save_crop(h, body: dict)-> None:
     # Save to disk
     ts = int(time.time())
     filename   = f"crop_{beat_id}_{ts}.webp"
-    crops_dir  = os.path.join(bg.BG_STILLS_DIR, "crops")
+    crops_dir  = str(event_images_crops_dir(ctx.library_event_dir))
     os.makedirs(crops_dir, exist_ok=True)
     delivery_path = os.path.join(crops_dir, filename)
     safe_delivery_path = os.path.realpath(delivery_path)
@@ -779,6 +1061,13 @@ def handle_cr_save_crop(h, body: dict)-> None:
 
 
 def handle_cr_upload(h, body: dict)-> None:
+    from server_handlers.milestone_scope import production_bg_scope_lock
+
+    with production_bg_scope_lock():
+        _handle_cr_upload_body(h, body)
+
+
+def _handle_cr_upload_body(h, body: dict)-> None:
 
     """POST /api/cr/upload {filename, image_b64, tier?}
     Saves a manually-uploaded image to the library.
@@ -786,8 +1075,8 @@ def handle_cr_upload(h, body: dict)-> None:
     tier='watercolor' -> assets/watercolor_library/  (Phase A/B overlay PNGs)
     tier='cropped' or absent -> BG_STILLS_DIR/crops/  (ready images)
     Returns { key, filename, thumb_b64, gallery_b64, tier, abs_path }."""
-    # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
-    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+    ctx = _resolve_cr_library_scope(h, body, allow_missing=False)
+    if ctx is None:
         return
 
     # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; terminal writes assert via _check_event_pin.
@@ -899,13 +1188,13 @@ def handle_cr_upload(h, body: dict)-> None:
                    retry_safe=False,
                )
 
-    bg = _bg_module()
     if tier == "source":
-        dest_dir = os.path.join(bg.BG_STILLS_DIR, "sources")
+        dest_dir = str(event_images_sources_dir(ctx.library_event_dir))
     elif tier == "watercolor":
-        dest_dir = str(event_watercolors_dir(h.app.event_dir))
+        dest_dir = str(event_watercolors_dir(ctx.library_event_dir))
+        filename = upload_watercolor_filename(filename)
     else:
-        dest_dir = os.path.join(bg.BG_STILLS_DIR, "crops")
+        dest_dir = str(event_images_crops_dir(ctx.library_event_dir))
         tier = "cropped"
 
     os.makedirs(dest_dir, exist_ok=True)
@@ -924,7 +1213,14 @@ def handle_cr_upload(h, body: dict)-> None:
         f.write(raw_bytes)
 
     ext = "webp" if filename.lower().endswith(".webp") else "png"
-    gallery_b64 = f"data:image/{ext};base64,{base64.b64encode(raw_bytes).decode()}"
+    # Library panel refreshes via GET /api/cr/library — omit multi-MB base64 echoes
+    # that can stall or reset browser fetch on phone-camera uploads.
+    _SLIM_UPLOAD_B64_MAX = 512 * 1024
+    if len(raw_bytes) <= _SLIM_UPLOAD_B64_MAX:
+        gallery_b64 = f"data:image/{ext};base64,{base64.b64encode(raw_bytes).decode()}"
+    else:
+        gallery_b64 = None
+
     key = os.path.splitext(filename)[0]
 
     print(f"[library] upload saved: {dest_path} tier={tier}")
@@ -948,11 +1244,13 @@ def handle_cr_upload(h, body: dict)-> None:
         )
     except Exception as _reg_exc:
         print(f"[library] register_asset warning (non-fatal): {_reg_exc}")
+    invalidate_cr_library_cache(ctx.library_event_dir.name)
     return h._send_json(200, {
         "ok": True,
         "key": key, "filename": filename,
         "thumb_b64": gallery_b64, "gallery_b64": gallery_b64,
         "tier": tier, "abs_path": dest_path,
+        "slim_response": gallery_b64 is None,
     })
 
 

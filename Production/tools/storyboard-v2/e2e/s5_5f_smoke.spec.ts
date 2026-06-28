@@ -27,7 +27,7 @@ const FIXTURE_EVENT = 'Event_e2e_fixture';
 // F-test in this file expects to click. Re-pin server to the fixture event so
 // each test starts from a clean event-scope baseline. Absolute URL per Rule 32.
 test.beforeEach(async ({ request }) => {
-  await request.post('http://localhost:5111/api/event/load', {
+  await request.post('http://localhost:5200/api/event/load', {
     data: { event_id: FIXTURE_EVENT },
   });
 });
@@ -730,8 +730,9 @@ test.describe('F13 — Phase A vs Phase B branching', () => {
     const phaseBPane = page.locator('[data-testid="pane-phase-b-keepalive"]');
     await expect(phaseBPane.locator('[data-testid="phase-a-clip-section"]')).toHaveCount(0);
     await expect(phaseBPane.locator('[data-testid="phase-a-clip-slot-flyin"]')).toHaveCount(0);
-    // Single base-clip select still present for Phase B (existing behavior).
-    await expect(page.locator('[data-testid="phase-b-baseclip-select"]')).toBeVisible();
+    // Phase B uses Avatar Pro (no legacy base-clip dropdown); producer + watercolors remain.
+    await expect(phaseBPane.locator('[data-testid="phase-producer-b"]')).toBeVisible();
+    await expect(phaseBPane.locator('[data-testid="phase-b-watercolors"]')).toBeVisible();
   });
 });
 

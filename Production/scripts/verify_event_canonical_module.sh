@@ -1,30 +1,37 @@
 #!/usr/bin/env bash
-# verify_event_canonical_module.sh — EVENT_1_CANONICAL_MODULE_V1 pin integrity.
+# verify_event_canonical_module.sh — canonical module pin integrity (per event).
+#
+# When production_state.json declares EVENT_1_CANONICAL_MODULE_V1 (legacy key name,
+# used for any pinned event), verify disk matches state. Events without a pin skip —
+# deploy must not require a stitch bake final on work-in-progress events (e.g. Event_2).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 PIN="${REPO_ROOT}/Production/tools/pin_event_canonical_module.py"
 EVENT_DIR="${MN_EVENT_DIR:-$HOME/Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files/Production/Event_1}"
+EVENT_ID="$(basename "$EVENT_DIR")"
 STATE="${EVENT_DIR}/production_state.json"
 
 fail() { echo "[event-canonical-module] FAIL: $1" >&2; exit 1; }
 
 [[ -f "$PIN" ]] || fail "missing pin_event_canonical_module.py"
-[[ -f "$STATE" ]] || fail "missing production_state.json"
+[[ -f "$STATE" ]] || fail "missing production_state.json at $STATE"
 
-python3 <<PY
+RESULT="$(python3 <<PY
 import json, os, hashlib, subprocess, sys
 from pathlib import Path
 
 event_dir = Path("${EVENT_DIR}")
+event_id = "${EVENT_ID}"
 state_path = event_dir / "production_state.json"
 st = json.loads(state_path.read_text(encoding="utf-8"))
 if not st.get("EVENT_1_CANONICAL_MODULE_V1"):
-    sys.exit("EVENT_1_CANONICAL_MODULE_V1 not set in production_state")
+    print(f"SKIP|{event_id} has no canonical module pin (optional until stitch bake final)")
+    sys.exit(0)
 name = st.get("canonical_module_final_file") or ""
 if not name:
-    sys.exit("canonical_module_final_file missing")
+    sys.exit("canonical_module_final_file missing despite pin flag")
 canonical = event_dir / name
 if not canonical.is_file():
     sys.exit(f"canonical file missing: {canonical}")
@@ -47,7 +54,20 @@ dur_ms = int(float(dur)*1000)
 state_dur = int(st.get("canonical_module_final_duration_ms") or 0)
 if state_dur and abs(dur_ms - state_dur) > 500:
     sys.exit(f"duration drift: disk={dur_ms}ms state={state_dur}ms")
-print(f"OK canonical={name} dur_ms={dur_ms} sha256={expected[:12]}...")
+print(f"OK|canonical={name} dur_ms={dur_ms} sha256={expected[:12]}...")
 PY
+)"
 
-echo "[event-canonical-module] OK — canonical pin matches disk"
+case "${RESULT%%|*}" in
+  SKIP)
+    echo "[event-canonical-module] SKIP — ${RESULT#*|}"
+    exit 0
+    ;;
+  OK)
+    echo "[event-canonical-module] OK — ${RESULT#*|} ($EVENT_ID)"
+    exit 0
+    ;;
+  *)
+    fail "unexpected verifier output: $RESULT"
+    ;;
+esac

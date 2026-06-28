@@ -1,0 +1,70 @@
+{
+  "manifest_version": 1,
+  "created_at": "2026-06-27T19:03:15.024716+00:00",
+  "label": "",
+  "source": "write_hook",
+  "prod_root": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production",
+  "events": [
+    "Event_1",
+    "Event_2"
+  ],
+  "files_copied": 7,
+  "entries": [
+    {
+      "source": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/beat_generator_state.json",
+      "dest": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/.production_snapshots/latest/global/beat_generator_state.json",
+      "bytes": 1254458,
+      "sha256": "74c4ead1e4f72340a6ef3bd10161b2fc3f5b8e373313aca0e588d37b28aeafc9",
+      "kind": "global",
+      "rel": "beat_generator_state.json"
+    },
+    {
+      "source": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/stitch_editor_state.json",
+      "dest": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/.production_snapshots/latest/global/stitch_editor_state.json",
+      "bytes": 584,
+      "sha256": "49f1dbd2593267320622b4a903c0849011f0a7cde92466d0b1be4b6957faa3a8",
+      "kind": "global",
+      "rel": "tools/stitch_editor_state.json"
+    },
+    {
+      "source": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/scene_registry.yaml",
+      "dest": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/.production_snapshots/latest/global/scene_registry.yaml",
+      "bytes": 4117,
+      "sha256": "7fa03e1f76b53bb4f4579e5da90a823a305d1759554d72fe420c4a1d176fefc5",
+      "kind": "global",
+      "rel": "tools/scene_registry.yaml"
+    },
+    {
+      "source": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/canonical_image_registry.json",
+      "dest": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/.production_snapshots/latest/global/canonical_image_registry.json",
+      "bytes": 1900,
+      "sha256": "f5b3fa43921922eb80273ed15e40b170137c69f8f6c340c3990e4a277fb31ecf",
+      "kind": "global",
+      "rel": "canonical_image_registry.json"
+    },
+    {
+      "source": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/baseline_image_registry.json",
+      "dest": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/.production_snapshots/latest/global/baseline_image_registry.json",
+      "bytes": 6613,
+      "sha256": "03c4bb1920d438dbb96cf469d4b3eabcede1e5ffe7ab07c323b2cc47cb8fd8b7",
+      "kind": "global",
+      "rel": "baseline_image_registry.json"
+    },
+    {
+      "source": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/Event_1/production_state.json",
+      "dest": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/.production_snapshots/latest/events/Event_1/production_state.json",
+      "bytes": 26562,
+      "sha256": "c543734eebcb8311583a22504c346f670baf66aed76425e6548b0624be8ad5dc",
+      "kind": "production_state",
+      "event": "Event_1"
+    },
+    {
+      "source": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/Event_2/production_state.json",
+      "dest": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/.production_snapshots/latest/events/Event_2/production_state.json",
+      "bytes": 742,
+      "sha256": "89370ea1b9e8ebe6a8b40fae07fefb81d415547f53ae0c4393e9693eae2aac7d",
+      "kind": "production_state",
+      "event": "Event_2"
+    }
+  ]
+}

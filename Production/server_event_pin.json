@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "event_id": "Event_e2e_fixture",
+  "storyboard": "storyboard_v59_prod.html",
+  "event_dir": "/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/Event_e2e_fixture",
+  "updated_at": "2026-06-20T03:55:57.737723+00:00",
+  "source": "event_load"
+}

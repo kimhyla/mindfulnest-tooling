@@ -1,0 +1,149 @@
+"""Cloud-aware ffmpeg output staging — local encode, durable commit to Dropbox."""
+from __future__ import annotations
+
+import contextlib
+import os
+import subprocess
+import tempfile
+import time
+from pathlib import Path
+from typing import Callable, Sequence
+
+# Dropbox/FUSE transient errno on macOS CloudStorage
+_TRANSIENT_ERRNOS = frozenset({11, 35})
+_MAX_ATTEMPTS = 12
+
+
+def _backoff_s(attempt: int) -> float:
+    return min(4.0, 0.15 * (2 ** attempt))
+
+
+def path_is_cloud_storage_backed(path: str | Path) -> bool:
+    norm = os.path.normpath(os.path.abspath(str(path)))
+    return "CloudStorage" in norm or f"{os.sep}Dropbox{os.sep}" in norm
+
+
+def local_staging_temp_path(*, suffix: str = ".mp4", prefix: str = "mn_ff_") -> Path:
+    staging = Path(tempfile.gettempdir()) / "mn_ffmpeg_scratch"
+    staging.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=str(staging), prefix=prefix, suffix=suffix or ".tmp")
+    os.close(fd)
+    return Path(tmp_path)
+
+
+def _copy_file_chunked(src: str, dst: str, *, chunk_size: int = 1024 * 1024) -> None:
+    with open(src, "rb") as fin, open(dst, "wb") as fout:
+        while True:
+            chunk = fin.read(chunk_size)
+            if not chunk:
+                break
+            fout.write(chunk)
+
+
+def copy_file_durable(src: str | Path, dst: str | Path, *, chunk_size: int = 1024 * 1024) -> None:
+    """Copy bytes onto cloud-backed paths with errno 11/35 retry."""
+    src_path = os.path.abspath(str(src))
+    dst_path = os.path.abspath(str(dst))
+    os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+    tmp_dir: str | None = os.path.dirname(dst_path) or None
+    if path_is_cloud_storage_backed(dst_path):
+        tmp_dir = str(Path(tempfile.gettempdir()) / "mn_ffmpeg_scratch")
+        Path(tmp_dir).mkdir(parents=True, exist_ok=True)
+    last_err: OSError | None = None
+    for attempt in range(_MAX_ATTEMPTS):
+        tmp_path: str | None = None
+        try:
+            fd, tmp_path = tempfile.mkstemp(
+                dir=tmp_dir,
+                prefix=".mn_copy_",
+                suffix=Path(dst_path).suffix or ".tmp",
+            )
+            os.close(fd)
+            _copy_file_chunked(src_path, tmp_path, chunk_size=chunk_size)
+            os.replace(tmp_path, dst_path)
+            return
+        except OSError as exc:
+            last_err = exc
+            if exc.errno not in _TRANSIENT_ERRNOS or attempt >= _MAX_ATTEMPTS - 1:
+                raise
+            time.sleep(_backoff_s(attempt))
+        finally:
+            if tmp_path:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp_path)
+    if last_err:
+        raise last_err
+
+
+def commit_local_file_to_dest(local_path: str | Path, dest: str | Path) -> None:
+    copy_file_durable(local_path, dest)
+    with contextlib.suppress(OSError):
+        os.unlink(str(local_path))
+
+
+def sidecar_io_transient(exc: BaseException) -> bool:
+    return isinstance(exc, OSError) and getattr(exc, "errno", None) in _TRANSIENT_ERRNOS
+
+
+def ffmpeg_failure_transient(stderr: str | None) -> bool:
+    text = str(stderr or "")
+    return (
+        "Resource deadlock avoided" in text
+        or "[Errno 11]" in text
+        or "[Errno 35]" in text
+        or "Resource temporarily unavailable" in text
+    )
+
+
+def run_ffmpeg_to_dest(
+    cmd: Sequence[str],
+    dest: str | Path,
+    *,
+    timeout: int = 240,
+    error_prefix: str = "ffmpeg failed",
+) -> Path:
+    """Run ffmpeg with output path replaced by local staging; commit to dest on success."""
+    dest_path = Path(dest)
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    local_tmp = local_staging_temp_path(suffix=dest_path.suffix or ".mp4", prefix="ff_out_")
+    out_idx = len(cmd) - 1
+    local_cmd = list(cmd)
+    local_cmd[out_idx] = str(local_tmp)
+    last_err: str | None = None
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            r = subprocess.run(local_cmd, capture_output=True, text=True, timeout=timeout)
+            if r.returncode != 0 or not local_tmp.is_file():
+                last_err = (r.stderr or "")[-500:]
+                if ffmpeg_failure_transient(r.stderr) and attempt < _MAX_ATTEMPTS - 1:
+                    time.sleep(_backoff_s(attempt))
+                    continue
+                if local_tmp.is_file():
+                    local_tmp.unlink(missing_ok=True)
+                raise RuntimeError(f"{error_prefix}: {last_err}")
+            commit_local_file_to_dest(local_tmp, dest_path)
+            return dest_path
+        except OSError as exc:
+            if sidecar_io_transient(exc) and attempt < _MAX_ATTEMPTS - 1:
+                time.sleep(_backoff_s(attempt))
+                continue
+            with contextlib.suppress(OSError):
+                local_tmp.unlink(missing_ok=True)
+            raise
+    if local_tmp.is_file():
+        local_tmp.unlink(missing_ok=True)
+    raise RuntimeError(f"{error_prefix}: {last_err or 'unknown'}")
+
+
+def run_ffmpeg_builder_to_dest(
+    build_cmd: Callable[[Path], Sequence[str]],
+    dest: str | Path,
+    *,
+    timeout: int = 240,
+    error_prefix: str = "ffmpeg failed",
+) -> Path:
+    """Build ffmpeg argv with local output path injected by builder."""
+    dest_path = Path(dest)
+    local_tmp = local_staging_temp_path(suffix=dest_path.suffix or ".mp4", prefix="ff_out_")
+    cmd = list(build_cmd(local_tmp))
+    return run_ffmpeg_to_dest(cmd, dest_path, timeout=timeout, error_prefix=error_prefix)

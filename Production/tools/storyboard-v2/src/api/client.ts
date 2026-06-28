@@ -6,12 +6,12 @@
 // Components MUST NOT call fetch() directly for mutations. The function:
 //   1. Calls /api/state/snapshot first (M1) — every mutation is preceded by
 //      a state.json copy in Production/Event_<N>/.backups/state/.
-//   2. Injects scope.event_id under the correct key (`scope_event_id` for BG
-//      endpoints, `event_id` for non-BG) per LD-461.
+//   2. Injects scope pin as `scope_event_id` only (LD-461 category fix —
+//      never auto-inject top-level event_id; body.event_id is caller-owned).
 //   3. POSTs the request as JSON.
 //   4. Handles HTTP 409 (scope_mismatch) by auto-healing server pin via
 //      POST /api/event/load when client/server drift (SCOPE_MISMATCH_AUTO_HEAL_V1),
-//      then retrying once; only surfaces the red banner if heal+retry fails.
+//      or dedicated-port scope sync (SCOPE_CLIENT_AUTHORITY_V1), then retrying once.
 //   5. Handles HTTP 423 (event_changed_mid_job, async-pin reject) by
 //      re-fetching event-state to refresh local generation, then retrying
 //      the mutation ONCE. If retry also fails, surface red banner.
@@ -20,19 +20,28 @@
 import type { Scope } from '../state/scope';
 import {
   activeScope,
-  activeTargetVideo,
-  activeProjectType,
+  effectiveScopeVideoRole,
   activeMilestoneId,
   makeScope,
+  readUrlMilestoneId,
+  shouldInjectMilestoneScope,
 } from '../state/scope';
-import { clientMayPinServerTo, noteClientPinnedEvent } from '../state/scopeAuthority';
+import { confirmServerMilestoneScope } from '../state/milestoneScopeGate';
+import { clientMayPinServerTo, isDedicatedPortForEvent, noteClientPinnedEvent, readUrlEventId, readDedicatedPortEventId } from '../state/scopeAuthority';
+import { syncAuthoritativeClientScope, readAuthoritativeEventId } from '../state/resolveAuthoritativeClientScope';
+import { isClientBundleStale, CLIENT_BUNDLE_STALE_MESSAGE } from '../state/buildShaDrift';
+import { scopeReady } from '../state/scopeReady';
+import {
+  fetchEventCurrentOnce,
+  fetchEventCurrentWithRetry,
+} from '../state/scopeEventCurrent';
 import {
   READ_ENDPOINTS,
   MUTATION_ENDPOINTS,
-  scopeKeyFor,
   type ReadEndpoint,
   type MutationEndpoint,
 } from './endpoints';
+import { buildPathappMutationPayload } from './pathappPayload';
 import { dispatchV59Error, type V59Error } from './errorBoundary';
 
 export interface ApiResult<T = unknown> {
@@ -90,6 +99,8 @@ interface RawPostOptions {
   suppressScopeDispatch?: boolean;
   /** Internal — one retry after server restart blip (NETWORK_RESTART_RETRY_V1). */
   _networkRetry?: boolean;
+  /** Claude author pass on extract-beats/approve can run several minutes. */
+  fetchTimeoutMs?: number;
 }
 
 interface ApiGetOptions {
@@ -99,6 +110,10 @@ interface ApiGetOptions {
   _scopeHealAttempt?: number;
   /** Internal — one retry after server restart blip (NETWORK_RESTART_RETRY_V1). */
   _networkRetry?: boolean;
+  /** Optional fetch timeout (e.g. bg_session_state under sidecar lock contention). */
+  fetchTimeoutMs?: number;
+  /** Internal — one retry after AbortSignal.timeout (SESSION_LOAD_TIMEOUT_RETRY_V1). */
+  _timeoutRetry?: boolean;
 }
 
 export const SCOPE_HEALED_EVENT = 'mn:scope-healed';
@@ -180,7 +195,11 @@ export async function apiGet<T = unknown>(
   for (const [k, v] of Object.entries(remaining)) url.searchParams.set(k, v);
 
   try {
-    const res = await fetch(url.toString());
+    const fetchInit: RequestInit = {};
+    if (opts.fetchTimeoutMs != null && opts.fetchTimeoutMs > 0 && typeof AbortSignal !== 'undefined') {
+      fetchInit.signal = AbortSignal.timeout(opts.fetchTimeoutMs);
+    }
+    const res = await fetch(url.toString(), fetchInit);
     let data: T | undefined;
     try {
       data = (await res.json()) as T;
@@ -191,12 +210,23 @@ export async function apiGet<T = unknown>(
       const isScope409 = res.status === 409
         && typeof (data as Record<string, unknown> | undefined)?.['error_code'] === 'string'
         && (data as Record<string, unknown>)['error_code'] === 'SCOPE_MISMATCH';
+      const isScope503 = res.status === 503
+        && typeof (data as Record<string, unknown> | undefined)?.['error_code'] === 'string'
+        && (data as Record<string, unknown>)['error_code'] === 'SCOPE_NOT_READY';
       const attempt = opts._scopeHealAttempt ?? 0;
+      if (isScope503 && attempt < 3) {
+        await new Promise((resolve) => { setTimeout(resolve, 1000); });
+        return apiGet(endpoint, query, {
+          ...opts,
+          _scopeHealAttempt: attempt + 1,
+        });
+      }
       const result = parseApiError(res.status, data, res.statusText, {
         // Never flash the persistent banner while READ auto-heal is still retrying.
         suppressScopeDispatch: isScope409 && attempt < 2,
       });
       if (isScopeMismatchResult(result) && attempt < 2) {
+        await syncAuthoritativeClientScope(activeScope.value, 'apiGet-pre');
         if (await healServerScopeIfAuthorized(activeScope.value)) {
           emitScopeHealed({ event_id: activeScope.value.event_id, source: 'apiGet-heal' });
           return apiGet(endpoint, query, {
@@ -222,6 +252,12 @@ export async function apiGet<T = unknown>(
     };
   } catch (e) {
     const err = String(e);
+    const timedOut = /timeout|aborted|abort/i.test(err)
+      || (e instanceof DOMException && e.name === 'TimeoutError');
+    if (!opts._timeoutRetry && timedOut) {
+      await new Promise((resolve) => { setTimeout(resolve, 2000); });
+      return apiGet(endpoint, query, { ...opts, _timeoutRetry: true });
+    }
     if (!opts._networkRetry && /failed to fetch|networkerror|load failed/i.test(err)) {
       await new Promise((resolve) => { setTimeout(resolve, 2000); });
       return apiGet(endpoint, query, { ...opts, _networkRetry: true });
@@ -271,14 +307,44 @@ export async function loadEvent(
  */
 /** Re-pin server to scope when this tab has URL/explicit pin authority. Exported for poll heal. */
 export async function healServerScopeIfAuthorized(scope: Scope): Promise<boolean> {
+  const authoritative = readAuthoritativeEventId(scope);
+
+  // SCOPE_CLIENT_AUTHORITY_V1 — dedicated port: URL/port event is truth; sync without event/load.
+  if (authoritative && isDedicatedPortForEvent(authoritative)) {
+    const portEvent = readDedicatedPortEventId();
+    if (portEvent !== authoritative) {
+      return false;
+    }
+    if (await syncAuthoritativeClientScope(scope, 'dedicated-port-heal')) {
+      return true;
+    }
+    return false;
+  }
+
+  const urlEvent = readUrlEventId();
+  const dedicated = isDedicatedPortForEvent(scope.event_id);
+  const useRetry = dedicated || urlEvent === scope.event_id;
   try {
-    const res = await fetch(READ_ENDPOINTS.event_current);
-    if (res.ok) {
-      const data = (await res.json()) as { event_id?: string };
-      if (data?.event_id === scope.event_id) return true;
+    const current = useRetry
+      ? await fetchEventCurrentWithRetry({ forDedicatedPort: dedicated })
+      : await fetchEventCurrentOnce();
+    if (current?.event_id === scope.event_id) {
+      if (typeof current.event_generation === 'number'
+        && current.event_generation !== scope.version) {
+        activeScope.value = makeScope(
+          scope.event_id,
+          scope.beat_id,
+          current.event_generation,
+        );
+      }
+      return true;
     }
   } catch {
     // Fall through to explicit load when authorized.
+  }
+  // Dedicated port servers are CLI-pinned — never POST /api/event/load (ping-pong).
+  if (isDedicatedPortForEvent(scope.event_id)) {
+    return false;
   }
   if (!clientMayPinServerTo(scope.event_id)) {
     return false;
@@ -313,6 +379,12 @@ function isScopeMismatchResult<T>(result: ApiResult<T>): boolean {
   return !result.ok && result.error_code === 'SCOPE_MISMATCH';
 }
 
+/** Milestone Beat Gen must pin server scope before mutating (MILESTONE_SCOPE_GATE_V1). */
+async function ensureServerMilestoneScopeLoaded(scope: Scope): Promise<boolean> {
+  const result = await confirmServerMilestoneScope(scope);
+  return result.ok;
+}
+
 // ============================================================================
 // MUTATE — pathappPatch (single mutation channel)
 // ============================================================================
@@ -327,6 +399,8 @@ export interface PatchOptions {
   _isRetry?: boolean;
   /** Internal — set during 409 scope-mismatch auto-heal retry. */
   _scopeHealRetry?: boolean;
+  /** Long Claude/server work (e.g. extract-beats/approve). Default browser idle. */
+  fetchTimeoutMs?: number;
 }
 
 /**
@@ -347,6 +421,73 @@ export async function pathappPatch<T = unknown>(
 ): Promise<ApiResult<T>> {
   const method = opts.method ?? 'POST';
 
+  // BUILD_SHA_DRIFT_V1 — stale JS after deploy cannot mutate safely.
+  if (
+    isClientBundleStale()
+    && !opts._scopeHealRetry
+    && endpoint !== 'event_load'
+    && endpoint !== 'state_snapshot'
+  ) {
+    return {
+      ok: false,
+      status: 0,
+      error: CLIENT_BUNDLE_STALE_MESSAGE,
+      error_code: 'CLIENT_BUNDLE_STALE',
+      error_message: 'client_bundle_stale',
+      retry_safe: true,
+      hint: 'Hard refresh the browser tab after a deploy.',
+    };
+  }
+
+  // SCOPE_CLIENT_AUTHORITY_V1 — align activeScope to URL/dedicated port before snapshot.
+  if (
+    !opts._scopeHealRetry
+    && endpoint !== 'event_load'
+    && endpoint !== 'state_snapshot'
+  ) {
+    await syncAuthoritativeClientScope(scope, 'pathappPatch-pre');
+  }
+  scope = activeScope.value;
+
+  if (
+    !scopeReady.value
+    && !opts._scopeHealRetry
+    && endpoint !== 'event_load'
+    && endpoint !== 'state_snapshot'
+  ) {
+    return {
+      ok: false,
+      status: 0,
+      error: 'Scope reconcile in progress — wait for server scope to verify.',
+      error_code: 'SCOPE_NOT_READY',
+      error_message: 'scope_not_ready',
+      retry_safe: true,
+      hint: 'Wait for scope to finish resolving or reload the page.',
+    };
+  }
+
+  if (
+    shouldInjectMilestoneScope()
+    && endpoint !== 'milestone_load'
+    && endpoint !== 'event_load'
+    && endpoint !== 'state_snapshot'
+    && !opts._scopeHealRetry
+  ) {
+    const milestoneReady = await ensureServerMilestoneScopeLoaded(scope);
+    if (!milestoneReady) {
+      return {
+        ok: false,
+        status: 0,
+        error: 'Milestone scope not loaded on server — retry in a moment or reload.',
+        error_code: 'MILESTONE_SCOPE_REQUIRED',
+        error_message: 'milestone_scope_required',
+        retry_safe: true,
+        hint: 'Server restarted; milestone project is reloading.',
+      };
+    }
+    scope = activeScope.value;
+  }
+
   // M1 — state snapshot before every v59 write.
   if (!opts.skipSnapshot && endpoint !== 'state_snapshot' && endpoint !== 'event_load') {
     // Fire-and-forget snapshot with explicit scope. Failure is logged but
@@ -361,19 +502,23 @@ export async function pathappPatch<T = unknown>(
     // required on this endpoint (LD-474)"}]. Including scope_video_role +
     // scope_event_id in the body matches the pattern used for the main mutation
     // payload below.
+    const snapBody: Record<string, unknown> = {
+        scope_video_role: effectiveScopeVideoRole(),
+        scope_version: scope.version,
+    };
+    snapBody['event_id'] = scope.event_id;
+    snapBody['scope_event_id'] = scope.event_id;
+    if (shouldInjectMilestoneScope()) {
+      snapBody['scope_milestone_id'] = activeMilestoneId.value || readUrlMilestoneId();
+    }
     const snap = await apiPostRaw(
       MUTATION_ENDPOINTS.state_snapshot,
-      {
-        event_id: scope.event_id,
-        scope_event_id: scope.event_id,
-        scope_video_role: activeTargetVideo.value,
-        scope_version: scope.version,
-      },
+      snapBody,
       'POST',
       { suppressScopeDispatch: !opts._scopeHealRetry },
     );
-    if (isScopeMismatchResult(snap) && !opts._scopeHealRetry) {
-      if (await healServerScopeIfAuthorized(scope)) {
+    if (isScopeMismatchResult(snap)) {
+      if (!opts._scopeHealRetry && await healServerScopeIfAuthorized(scope)) {
         return pathappPatch(activeScope.value, endpoint, body, { ...opts, _scopeHealRetry: true });
       }
       if (typeof window !== 'undefined' && snap.error_code) {
@@ -384,6 +529,17 @@ export async function pathappPatch<T = unknown>(
           hint: snap.hint ?? null,
         });
       }
+      // SCOPE_SNAPSHOT_FAIL_CLOSED_V1 — never mutate when pre-write snapshot scope fails.
+      return {
+        ok: false,
+        status: snap.status,
+        error: snap.error_message ?? snap.error ?? 'scope_mismatch',
+        error_code: 'SCOPE_MISMATCH',
+        error_message: snap.error_message ?? snap.error ?? 'scope_mismatch',
+        retry_safe: snap.retry_safe !== false,
+        hint: snap.hint ?? null,
+        ...(snap.data === undefined ? {} : { data: snap.data }),
+      } as ApiResult<T>;
     }
     if (!snap.ok) {
       // Visible in console for debugging; does NOT abort the mutation.
@@ -395,39 +551,23 @@ export async function pathappPatch<T = unknown>(
     }
   }
 
-  // LD-461 — pick the right scope key per handler convention.
-  // S5.5b: also auto-inject scope_video_role from activeVideoRole signal so
-  // every mutating request carries the partition selector per LD-474. Caller
-  // can override by passing scope_video_role explicitly in `body`.
-  // S5.5d (v3): also auto-inject scope_target_video (canonical name, same
-  // value as scope_video_role) + scope_milestone_id when active. The
-  // dual-key emit lets server handlers transition incrementally.
-  const scopeKey = scopeKeyFor(endpoint);
-  const payload: Record<string, unknown> = {
-    // baseline — body can override.
-    // S5.5c+e proper-fix R2: beat_id MOVED before ...body so drop handlers
-    // can pass the dropped-on beat_id explicitly without scope.beat_id
-    // (typically null) overwriting it. Scope-key + scope_version stay AFTER
-    // body since those identify the request scope and must not be overridden.
-    scope_video_role: activeTargetVideo.value,
-    scope_target_video: activeTargetVideo.value,
-    beat_id: scope.beat_id,
-    ...body,
-    [scopeKey]: scope.event_id,
-    scope_version: scope.version,
-  };
-  // Milestone-scope injection per MILESTONE_STANDALONE_INDEPENDENT_V1.
-  if (activeProjectType.value === 'milestone' && activeMilestoneId.value) {
-    payload['scope_milestone_id'] = activeMilestoneId.value;
-  } else {
-    payload['scope_event_id'] = scope.event_id;
-  }
+  // LD-461 — scope pin via scope_event_id only (TECH_SPEC_PATHAPP_SCOPE_EVENT_ID_ONLY_V1).
+  const scopeVideoRole = effectiveScopeVideoRole();
+  const payload = buildPathappMutationPayload(scope, endpoint, body, {
+    scopeVideoRole,
+    injectMilestoneScope: shouldInjectMilestoneScope(),
+    milestoneId: activeMilestoneId.value || readUrlMilestoneId(),
+  });
 
+  const rawOpts: RawPostOptions = { suppressScopeDispatch: !opts._scopeHealRetry };
+  if (opts.fetchTimeoutMs != null && opts.fetchTimeoutMs > 0) {
+    rawOpts.fetchTimeoutMs = opts.fetchTimeoutMs;
+  }
   const result = await apiPostRaw<T>(
     MUTATION_ENDPOINTS[endpoint],
     payload,
     method,
-    { suppressScopeDispatch: !opts._scopeHealRetry },
+    rawOpts,
   );
 
   // LD-456 — SCOPE_MISMATCH auto-heal (SCOPE_MISMATCH_AUTO_HEAL_V1).
@@ -482,11 +622,15 @@ async function apiPostRaw<T = unknown>(
   opts: RawPostOptions = {},
 ): Promise<ApiResult<T>> {
   try {
-    const res = await fetch(url, {
+    const fetchInit: RequestInit = {
       method,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-    });
+    };
+    if (opts.fetchTimeoutMs && opts.fetchTimeoutMs > 0 && typeof AbortSignal !== 'undefined') {
+      fetchInit.signal = AbortSignal.timeout(opts.fetchTimeoutMs);
+    }
+    const res = await fetch(url, fetchInit);
     let data: T | undefined;
     try {
       data = (await res.json()) as T;

@@ -20,6 +20,8 @@ export interface BeatMagicButtonsProps {
   klingO3Status?: string | null | undefined;
   onPreviewMagicStill?: (() => void) | undefined;
   onPreviewMagicVideo?: (() => void) | undefined;
+  /** Called after server clears magic_still_path (refresh beat state). */
+  onMagicStillCleared?: (() => void) | undefined;
 }
 
 export function BeatMagicButtons({
@@ -36,6 +38,7 @@ export function BeatMagicButtons({
   klingO3Status,
   onPreviewMagicStill,
   onPreviewMagicVideo,
+  onMagicStillCleared,
 }: BeatMagicButtonsProps) {
   const hasMagicStill = !!magicStillPath;
   const hasMagicVideo = !!magicVideoPath;
@@ -44,14 +47,14 @@ export function BeatMagicButtons({
     magic_still_path: magicStillPath,
     magic_video_path: magicVideoPath,
   });
-  const onPreviewCanonical = canonicalKind === 'video'
-    ? onPreviewMagicVideo
-    : canonicalKind === 'still'
-      ? onPreviewMagicStill
-      : undefined;
-  const showCanonicalPreview = !!onPreviewCanonical && (
-    (canonicalKind === 'video' && hasMagicVideo)
-    || (canonicalKind === 'still' && hasMagicStill)
+  const showDualMagicPreview = hasMagicStill && hasMagicVideo;
+  const onPreviewCanonicalStill = onPreviewMagicStill;
+  const onPreviewCanonicalVideo = onPreviewMagicVideo;
+  const showStillPreview = !!onPreviewCanonicalStill && hasMagicStill && (
+    showDualMagicPreview || canonicalKind === 'still' || !hasMagicVideo
+  );
+  const showVideoPreview = !!onPreviewCanonicalVideo && hasMagicVideo && (
+    showDualMagicPreview || canonicalKind === 'video' || !hasMagicStill
   );
 
   const openMagicStill = () => {
@@ -64,6 +67,32 @@ export function BeatMagicButtons({
     u.searchParams.set('scope_event_id', eventId);
     u.searchParams.set('scope_video_role', videoRole);
     window.open(u.toString(), '_blank');
+  };
+
+  const clearMagicStill = async () => {
+    if (!hasMagicStill) return;
+    if (!window.confirm(
+      'Remove magic on still from this beat? (The old MP4 stays on disk; preview and stitch will ignore it.)',
+    )) return;
+    try {
+      const resp = await fetch(`${SERVER_BASE}/api/storyboard/clear_magic_still`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          beat_id: beatId,
+          scope_event_id: eventId,
+          scope_video_role: videoRole,
+        }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || data.ok === false) {
+        window.alert(data.error_message || data.error || `Clear failed (HTTP ${resp.status})`);
+        return;
+      }
+      onMagicStillCleared?.();
+    } catch (err) {
+      window.alert(`Clear failed: ${String(err)}`);
+    }
   };
 
   const openMagicVideo = () => {
@@ -99,15 +128,26 @@ export function BeatMagicButtons({
           >
             {hasMagicStill ? '↻ Redo magic on still' : '🌟 Add magic on still'}
           </button>
-          {showCanonicalPreview && canonicalKind === 'still' && onPreviewCanonical ? (
+          {hasMagicStill ? (
             <button
               type="button"
               class="mn-btn mn-btn-small"
-              data-testid={`beat-magic-preview-${index}`}
-              onClick={onPreviewCanonical}
+              data-testid={`beat-magic-clear-still-${index}`}
+              onClick={() => { void clearMagicStill(); }}
+              title="Remove magic_still_path from this beat (does not delete the MP4 file)"
+            >
+              ✕ Clear magic on still
+            </button>
+          ) : null}
+          {showStillPreview && onPreviewCanonicalStill ? (
+            <button
+              type="button"
+              class="mn-btn mn-btn-small"
+              data-testid={`beat-magic-preview-still-${index}`}
+              onClick={onPreviewCanonicalStill}
               title="Preview magic-on-still composite with ElevenLabs dialogue"
             >
-              ▶ Preview magic
+              {showDualMagicPreview ? '▶ Preview magic (still)' : '▶ Preview magic'}
             </button>
           ) : null}
         </>
@@ -125,15 +165,15 @@ export function BeatMagicButtons({
           >
             {hasMagicVideo ? '↻ Redo magic on video' : '🎬 Add magic on video'}
           </button>
-          {showCanonicalPreview && canonicalKind === 'video' && onPreviewCanonical ? (
+          {showVideoPreview && onPreviewCanonicalVideo ? (
             <button
               type="button"
               class="mn-btn mn-btn-small"
-              data-testid={`beat-magic-preview-${index}`}
-              onClick={onPreviewCanonical}
+              data-testid={`beat-magic-preview-video-${index}`}
+              onClick={onPreviewCanonicalVideo}
               title="Preview magic-on-video composite in the approved O3 player"
             >
-              ▶ Preview magic
+              {showDualMagicPreview ? '▶ Preview magic (video)' : '▶ Preview magic'}
             </button>
           ) : null}
         </>
@@ -160,14 +200,27 @@ export function resolveBgMagicStillSourcePath(
     bg_ref_image?: { abs_path?: string } | null;
     start_frame_image?: { abs_path?: string } | null;
     end_frame_image?: { abs_path?: string } | null;
+    gpt_options?: Array<{ local_path?: string; abs_path?: string } | null> | null;
+    flux_options?: Array<{ local_path?: string; abs_path?: string } | null> | null;
+    accepted_library_ref?: { abs_path?: string } | null;
   },
   eventId: string,
 ): string | null {
+  const libAp = beat.accepted_library_ref?.abs_path;
+  if (libAp) {
+    const rel = toProjectRelativeMediaPath(libAp, eventId);
+    if (rel) return rel;
+  }
+  for (const opt of [...(beat.gpt_options ?? []), ...(beat.flux_options ?? [])]) {
+    if (!opt) continue;
+    const ap = opt.local_path || opt.abs_path;
+    if (ap) return toProjectRelativeMediaPath(ap, eventId);
+  }
   for (const ref of [
     beat.start_frame_image,
-    beat.reference_image,
-    beat.end_frame_image,
     beat.bg_ref_image,
+    beat.end_frame_image,
+    beat.reference_image,
   ]) {
     const ap = ref?.abs_path;
     if (ap) return toProjectRelativeMediaPath(ap, eventId);
@@ -185,17 +238,31 @@ function magicPathToPreviewUrl(
 }
 
 export function resolveBgMagicStillPreviewUrl(
-  beat: { magic_still_path?: string | null; magic_video_path?: string | null },
+  beat: {
+    magic_still_path?: string | null;
+    magic_still_path_exists?: boolean;
+    magic_video_path?: string | null;
+  },
   eventId: string,
 ): string | null {
-  return magicPathToPreviewUrl(beat.magic_still_path, eventId);
+  if (beat.magic_still_path_exists === false) return null;
+  const base = magicPathToPreviewUrl(beat.magic_still_path, eventId);
+  if (!base || !beat.magic_still_path) return base;
+  return `${base}&v=${encodeURIComponent(beat.magic_still_path)}`;
 }
 
 export function resolveBgMagicVideoPreviewUrl(
-  beat: { magic_still_path?: string | null; magic_video_path?: string | null },
+  beat: {
+    magic_still_path?: string | null;
+    magic_video_path?: string | null;
+    magic_video_path_exists?: boolean;
+  },
   eventId: string,
 ): string | null {
-  return magicPathToPreviewUrl(beat.magic_video_path, eventId);
+  if (beat.magic_video_path_exists === false) return null;
+  const base = magicPathToPreviewUrl(beat.magic_video_path, eventId);
+  if (!base || !beat.magic_video_path) return base;
+  return `${base}&v=${encodeURIComponent(beat.magic_video_path)}`;
 }
 
 export function resolveBgMagicCanonicalKind(beat: {
@@ -207,8 +274,29 @@ export function resolveBgMagicCanonicalKind(beat: {
   if (beat.magic_canonical_kind === 'still' || beat.magic_canonical_kind === 'video') {
     return beat.magic_canonical_kind;
   }
-  if (beat.kling_o3_status === 'approved' && beat.magic_video_path) return 'video';
+  // Offline fallback only — server enriches magic_canonical_kind from disk mtimes.
+  if (beat.magic_still_path && !beat.magic_video_path) return 'still';
+  if (beat.magic_video_path && !beat.magic_still_path) return 'video';
   if (beat.magic_still_path) return 'still';
   if (beat.magic_video_path) return 'video';
   return null;
+}
+
+/** When magic-on-video exists, O3 tile must show the composite — any pipeline source. */
+export function resolveO3TileMagicOverrideUrl(
+  beat: {
+    kling_o3_video_path?: string | null;
+    magic_video_path?: string | null;
+    magic_canonical_kind?: 'still' | 'video' | null;
+    magic_video_path_exists?: boolean;
+  },
+  option: { video_path?: string | null } | null | undefined,
+  eventId: string,
+): string | null {
+  if (resolveBgMagicCanonicalKind(beat) !== 'video') return null;
+  if (beat.magic_video_path_exists === false) return null;
+  const active = (beat.kling_o3_video_path ?? '').trim();
+  const optPath = (option?.video_path ?? '').trim();
+  if (!active || !optPath || active !== optPath) return null;
+  return resolveBgMagicVideoPreviewUrl(beat, eventId);
 }

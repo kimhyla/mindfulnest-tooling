@@ -3,8 +3,8 @@
 // so Phase A/B, Stitcher, Storyboard, LibraryPanel refresh without a manual reload.
 
 import { READ_ENDPOINTS } from '../api/endpoints';
-import { emitScopeEventChanged, healServerScopeIfAuthorized } from '../api/client';
-import { clientMayPinServerTo, clientScopeOverridesServerPin } from './scopeAuthority';
+import { emitScopeEventChanged } from '../api/client';
+import { clientScopeOverridesServerPin } from './scopeAuthority';
 import { activeScope, makeScope } from './scope';
 import { serverRehydrateTick, stitcherRefreshTick } from './refreshSignals';
 
@@ -17,10 +17,13 @@ export interface ServerProbeResult {
   eventGeneration?: number;
 }
 
-/** Lightweight health probe — does not mutate. */
+/** Lightweight health probe — does not mutate. 503 scope_not_ready → not ok (retry). */
 export async function probeProductionServer(): Promise<ServerProbeResult> {
   try {
     const res = await fetch(READ_ENDPOINTS.event_current, { cache: 'no-store' });
+    if (res.status === 503) {
+      return { ok: false, status: 503 };
+    }
     if (!res.ok) {
       return { ok: false, status: res.status };
     }
@@ -53,12 +56,12 @@ export function triggerServerRehydrate(reason: string): void {
   }
 }
 
-/** Sync activeScope from server probe — SCOPE_POLL_ADOPT_V1 (never loadEvent from poll).
+/** Sync activeScope from server probe — SCOPE_POLL_ADOPT_V1 + SCOPE_POLL_NO_HEAL_V2.
 
 Polls adopt the server pin only when URL ?event= / explicit tab pin does not override
-(clientScopeOverridesServerPin). When override applies, re-pin server via
-healServerScopeIfAuthorized (never flip client to stale Event_1). Mutation heal
-uses the same helper.
+(clientScopeOverridesServerPin). When override applies, do NOT call event/load from
+background poll — two tabs with different ?event= URLs otherwise ping-pong the pin.
+Scope heal on 409 remains in apiGet / pathappPatch (single-tab + user mutations).
  */
 export async function syncScopeFromProbe(probe: ServerProbeResult): Promise<void> {
   if (!probe.ok || !probe.eventId) return;
@@ -66,9 +69,6 @@ export async function syncScopeFromProbe(probe: ServerProbeResult): Promise<void
   const gen = probe.eventGeneration ?? cur.version;
   if (probe.eventId !== cur.event_id) {
     if (clientScopeOverridesServerPin(probe.eventId)) {
-      if (clientMayPinServerTo(cur.event_id)) {
-        await healServerScopeIfAuthorized(cur);
-      }
       return;
     }
     activeScope.value = makeScope(probe.eventId, cur.beat_id, gen);

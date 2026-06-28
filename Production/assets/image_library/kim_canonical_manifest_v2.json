@@ -1,0 +1,127 @@
+{
+  "version": 2,
+  "id": "kim_canonical_upload_v2",
+  "apply_to_all_events": true,
+  "source_assets_dir": "../../../.cursor/projects/Users-kimberlysmith-Projects-MindfulNest/assets",
+  "images": [
+    {
+      "key": "baseline_heartwood_grove_01",
+      "filename": "baseline_heartwood_grove_01.png",
+      "display_name": "Heartwood grove 01",
+      "tags": ["baseline", "shared", "location", "heartwood"],
+      "source_file": "ChatGPT_Image_Jun_26__2026__09_55_36_PM-1908fba0-c015-449e-9f0a-7775c95d77c2.png"
+    },
+    {
+      "key": "baseline_heartwood_grove_02",
+      "filename": "baseline_heartwood_grove_02.png",
+      "display_name": "Heartwood grove 02",
+      "tags": ["baseline", "shared", "location", "heartwood"],
+      "source_file": "ChatGPT_Image_Jun_26__2026__09_55_24_PM-c4db64f4-4c0e-4b7a-a071-a0a38c6400c8.png"
+    },
+    {
+      "key": "baseline_heartwood_grove_03",
+      "filename": "baseline_heartwood_grove_03.png",
+      "display_name": "Heartwood grove 03",
+      "tags": ["baseline", "shared", "location", "heartwood"],
+      "source_file": "ChatGPT_Image_Jun_26__2026__09_55_00_PM-19476478-fbee-4502-ab87-1eb24a299453.png"
+    },
+    {
+      "key": "baseline_heartwood_grove_04",
+      "filename": "baseline_heartwood_grove_04.png",
+      "display_name": "Heartwood grove 04",
+      "tags": ["baseline", "shared", "location", "heartwood"],
+      "source_file": "ChatGPT_Image_Jun_26__2026__09_55_12_PM-def6a333-9521-477e-885d-2512aed0394d.png"
+    },
+    {
+      "key": "baseline_char_rabbit_gardener",
+      "filename": "baseline_char_rabbit_gardener.png",
+      "display_name": "Rabbit gardener",
+      "tags": ["baseline", "shared", "character"],
+      "source_file": "ChatGPT_Image_Jun_3__2026__05_18_14_PM__3_-59eba9e5-f78e-43b5-945b-5ff66fd54276.png"
+    },
+    {
+      "key": "baseline_char_bee_megaphone",
+      "filename": "baseline_char_bee_megaphone.png",
+      "display_name": "Bee (megaphone)",
+      "tags": ["baseline", "shared", "character"],
+      "source_file": "ChatGPT_Image_Jun_3__2026__02_11_45_PM-84974589-c4ac-46d1-bbe0-ccc4e9137b23.png"
+    },
+    {
+      "key": "baseline_char_bee_portrait",
+      "filename": "baseline_char_bee_portrait.png",
+      "display_name": "Bee (portrait)",
+      "tags": ["baseline", "shared", "character"],
+      "source_file": "ChatGPT_Image_Jun_3__2026__02_11_02_PM__2_-307bbf45-f301-4918-98f5-5b7916905dda.png"
+    },
+    {
+      "key": "baseline_char_bear_outdoors",
+      "filename": "baseline_char_bear_outdoors.png",
+      "display_name": "Bear outdoors",
+      "tags": ["baseline", "shared", "character"],
+      "source_file": "ChatGPT_Image_Jun_3__2026__04_49_48_PM__3_-79fe667a-b76d-426f-8124-3ce2306a92e5.png"
+    },
+    {
+      "key": "baseline_char_arlo_squirrel",
+      "filename": "baseline_char_arlo_squirrel.png",
+      "display_name": "Arlo squirrel",
+      "tags": ["baseline", "shared", "character", "arlo"],
+      "source_file": "40edc382-c44c-4a0b-a9bc-6a6147e60ad3-b0f80ae6-82a7-4b05-a43e-35cd4bebbab9.png"
+    },
+    {
+      "key": "baseline_char_fox_green_tunic",
+      "filename": "baseline_char_fox_green_tunic.png",
+      "display_name": "Fox (green tunic)",
+      "tags": ["baseline", "shared", "character"],
+      "source_file": "ChatGPT_Image_Jun_3__2026__12_03_16_PM__1_-3ee77027-8248-4c5a-bf7e-1b3f0233e707.png"
+    },
+    {
+      "key": "baseline_char_deer_knight_sword",
+      "filename": "baseline_char_deer_knight_sword.png",
+      "display_name": "Deer knight (sword)",
+      "tags": ["baseline", "shared", "character", "cedric"],
+      "source_file": "ChatGPT_Image_Jun_3__2026__02_49_28_PM-f406de4e-637b-46f4-b599-e452d6a46094.png"
+    },
+    {
+      "key": "baseline_char_deer_knight_smirk",
+      "filename": "baseline_char_deer_knight_smirk.png",
+      "display_name": "Deer knight (smirk)",
+      "tags": ["baseline", "shared", "character", "cedric"],
+      "source_file": "ChatGPT_Image_Jun_3__2026__03_05_28_PM-d8011505-b86a-41ca-9a4d-c19aac21a414.png"
+    },
+    {
+      "key": "baseline_char_raccoon_explorer",
+      "filename": "baseline_char_raccoon_explorer.png",
+      "display_name": "Raccoon explorer",
+      "tags": ["baseline", "shared", "character", "bramble"],
+      "source_file": "ChatGPT_Image_Jun_14__2026__04_36_22_AM-94bc03c1-5ebc-4cd0-9577-3bef924f7827.png"
+    },
+    {
+      "key": "baseline_char_deer_king",
+      "filename": "baseline_char_deer_king.png",
+      "display_name": "Deer king",
+      "tags": ["baseline", "shared", "character", "cedric"],
+      "source_file": "ChatGPT_Image_Jun_3__2026__04_30_58_PM__2_-8688c091-4f1c-41d3-a582-27ede92a8ee1.png"
+    },
+    {
+      "key": "baseline_char_deer_druid",
+      "filename": "baseline_char_deer_druid.png",
+      "display_name": "Deer druid",
+      "tags": ["baseline", "shared", "character", "cedric"],
+      "source_file": "ChatGPT_Image_Jun_25__2026__03_05_40_PM__1_-1a5114f5-7bc8-42f3-8590-a94151c051e4.png"
+    },
+    {
+      "key": "baseline_char_turtle_girl",
+      "filename": "baseline_char_turtle_girl.png",
+      "display_name": "Turtle girl",
+      "tags": ["baseline", "shared", "character", "lorelai"],
+      "source_file": "ChatGPT_Image_Jun_2__2026__12_50_43_PM-c5bf2b14-63c3-42e5-85da-0c124ca799bc.png"
+    },
+    {
+      "key": "baseline_char_cat_queen",
+      "filename": "baseline_char_cat_queen.png",
+      "display_name": "Cat queen",
+      "tags": ["baseline", "shared", "character", "tessa"],
+      "source_file": "ChatGPT_Image_Jun_3__2026__01_01_45_PM__5_-8b55f273-2c3f-4ed4-ab23-13840fe5304c.png"
+    }
+  ]
+}

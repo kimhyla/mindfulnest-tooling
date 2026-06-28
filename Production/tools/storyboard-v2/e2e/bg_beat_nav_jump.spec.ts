@@ -5,8 +5,12 @@
 //   M2 — empty beats: no nav, bg-empty shown
 //   M3 — tab switch: Storyboard → Beat Gen restores nav + jump still works
 //   M4 — beat list swap (simulates event/segment reload): nav re-labels, jump works
+//   M5 — active O3 job on beat 2 shows red dot only on that row
+//   M6 — approved beat shows green checkmark
+//   M7 — approved beat with active redo shows both dot and check
 
 import { test, expect, type Page } from '@playwright/test';
+import { openStoryboardPane } from './helpers';
 
 async function gotoApp(page: Page): Promise<void> {
   page.on('pageerror', (err) => {
@@ -39,7 +43,7 @@ async function mockSegments(page: Page): Promise<void> {
   });
 }
 
-function makeBeat(id: string, dialogue: string) {
+function makeBeat(id: string, dialogue: string, extras: Record<string, unknown> = {}) {
   return {
     beat_id: id,
     dialogue_text: dialogue,
@@ -48,6 +52,7 @@ function makeBeat(id: string, dialogue: string) {
     status: 'ready',
     gpt_options: [],
     accepted_image_key: null,
+    ...extras,
   };
 }
 
@@ -86,8 +91,8 @@ test.describe('BG_BEAT_JUMP_NAV_V1 — beat jump navigation', () => {
     await expect(page.getByTestId('pane-bg')).toBeVisible({ timeout: 5_000 });
 
     await expect(page.getByTestId('bg-beat-nav')).toBeVisible();
-    await expect(page.getByTestId('bg-beat-nav-0')).toHaveText('Beat 1');
-    await expect(page.getByTestId('bg-beat-nav-2')).toHaveText('Beat 3');
+    await expect(page.getByTestId('bg-beat-nav-0')).toContainText('Beat 1');
+    await expect(page.getByTestId('bg-beat-nav-2')).toContainText('Beat 3');
 
     await page.getByTestId('bg-beat-nav-2').click();
     const card = page.getByTestId('bg-beat-card-2');
@@ -119,7 +124,7 @@ test.describe('BG_BEAT_JUMP_NAV_V1 — beat jump navigation', () => {
     await page.click('[data-testid="tab-bg"]');
     await expect(page.getByTestId('bg-beat-nav')).toBeVisible({ timeout: 5_000 });
 
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     await expect(page.getByTestId('bg-beat-nav')).toHaveCount(0);
 
     await page.click('[data-testid="tab-bg"]');
@@ -175,8 +180,63 @@ test.describe('BG_BEAT_JUMP_NAV_V1 — beat jump navigation', () => {
 
     await page.getByTestId('select-bg-arc').selectOption('2');
     await expect(page.getByTestId('bg-beat-nav-1')).toHaveCount(0, { timeout: 5_000 });
-    await expect(page.getByTestId('bg-beat-nav-0')).toHaveText('Beat 1');
+    await expect(page.getByTestId('bg-beat-nav-0')).toContainText('Beat 1');
     await page.getByTestId('bg-beat-nav-0').click();
     await expect(page.getByTestId('bg-beat-card-0')).toBeInViewport({ timeout: 5_000 });
+  });
+
+  test('M5 — active O3 job shows dot on that beat only', async ({ page }) => {
+    await mockSnapshot(page);
+    await mockSegments(page);
+    await mockSessionWithBeats(page, [
+      makeBeat('beat_idle', 'Idle beat.'),
+      makeBeat('beat_active', 'Generating beat.', {
+        job_busy: true,
+        o3_current_job_id: 'job-nav-active-1',
+      }),
+      makeBeat('beat_other', 'Other beat.'),
+    ]);
+
+    await gotoApp(page);
+    await page.click('[data-testid="tab-bg"]');
+    await expect(page.getByTestId('bg-beat-nav')).toBeVisible({ timeout: 5_000 });
+
+    await expect(page.getByTestId('bg-beat-nav-dot-0')).toHaveCount(0);
+    await expect(page.getByTestId('bg-beat-nav-dot-1')).toHaveCount(1);
+    await expect(page.getByTestId('bg-beat-nav-dot-2')).toHaveCount(0);
+  });
+
+  test('M6 — approved beat shows checkmark', async ({ page }) => {
+    await mockSnapshot(page);
+    await mockSegments(page);
+    await mockSessionWithBeats(page, [
+      makeBeat('beat_ready', 'Not approved yet.'),
+      makeBeat('beat_approved', 'Approved beat.', { kling_o3_status: 'approved' }),
+    ]);
+
+    await gotoApp(page);
+    await page.click('[data-testid="tab-bg"]');
+    await expect(page.getByTestId('bg-beat-nav')).toBeVisible({ timeout: 5_000 });
+
+    await expect(page.getByTestId('bg-beat-nav-check-0')).toHaveCount(0);
+    await expect(page.getByTestId('bg-beat-nav-check-1')).toHaveCount(1);
+    await expect(page.getByTestId('bg-beat-nav-dot-1')).toHaveCount(0);
+  });
+
+  test('M7 — approved beat with active redo shows dot and check', async ({ page }) => {
+    await mockSnapshot(page);
+    await mockSegments(page);
+    await mockSessionWithBeats(page, [
+      makeBeat('beat_redo', 'Approved but regenerating.', {
+        kling_o3_status: 'approved',
+        job_busy: true,
+        o3_current_job_id: 'job-nav-redo-1',
+      }),
+    ]);
+
+    await gotoApp(page);
+    await page.click('[data-testid="tab-bg"]');
+    await expect(page.getByTestId('bg-beat-nav-dot-0')).toHaveCount(1);
+    await expect(page.getByTestId('bg-beat-nav-check-0')).toHaveCount(1);
   });
 });

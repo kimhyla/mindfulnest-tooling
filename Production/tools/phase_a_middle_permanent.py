@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,7 @@ if str(HERE) not in __import__("sys").path:
 
 from phase_a_av_post import (  # noqa: E402
     av_duration_gap,
+    ensure_stem_duration_floor,
     pad_video_to_match_audio,
     trim_av_lead_in,
     trim_av_trailing_silence,
@@ -170,7 +172,20 @@ def run_phase_a_base_clip_bytedance_lipsync(
     lead_trim_s = 0.0 if bd_meta.get("timeline_gaps_preserved") else preroll_s
     lead_out = work / f"bytedance_lead_{tag}.mp4"
     trim_av_lead_in(padded, lead_out, lead_trim_s)
-    _, trail_trim_s = trim_av_trailing_silence(lead_out, out_path)
+    lead_dur = _ffprobe_duration(lead_out)
+    max_trail_trim = max(0.0, lead_dur - raw_dur)
+    trimmed_tmp = work / f"bytedance_tailed_{tag}.mp4"
+    _, trail_trim_s = trim_av_trailing_silence(
+        lead_out,
+        trimmed_tmp,
+        max_trim_s=max_trail_trim,
+    )
+    _, stem_pad_s = ensure_stem_duration_floor(trimmed_tmp, out_path, raw_dur)
+
+    sys.path.insert(0, str(HERE / "credentials_lib"))
+    from ffmpeg_stitch import rebase_mp4_stream_start_times  # noqa: E402
+
+    rebase_mp4_stream_start_times(out_path)
 
     v_final, a_final, gap_final = av_duration_gap(out_path)
     method_key = METHOD_CHAINED if chain_chunks else METHOD
@@ -179,9 +194,11 @@ def run_phase_a_base_clip_bytedance_lipsync(
         "base_clip": base_video.name,
         "base_md5": md5(base_video),
         "audio_source": audio_raw.name,
+        "stem_duration_s": round(raw_dur, 3),
         "preroll_added_s": round(preroll_s, 3),
         "lead_trim_s": round(lead_trim_s, 3),
         "trailing_trim_s": round(trail_trim_s, 3),
+        "stem_floor_pad_s": round(stem_pad_s, 3),
         "timeline_gaps_preserved": bd_meta.get("timeline_gaps_preserved", False),
         "chained_chunks": bd_meta.get("chained_chunks", chain_chunks),
         "single_pass": bd_meta.get("single_pass", single_pass),

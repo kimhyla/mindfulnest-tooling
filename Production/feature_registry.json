@@ -203,20 +203,20 @@
     },
     {
       "id": "event-selector",
-      "file": "Production/tools/storyboard-v2/src/components/EventSelector.tsx",
-      "line": 97,
+      "file": "Production/tools/storyboard-v2/src/components/ProjectSelector.tsx",
+      "line": 458,
       "tab": "shared"
     },
     {
       "id": "event-select",
-      "file": "Production/tools/storyboard-v2/src/components/EventSelector.tsx",
-      "line": 102,
+      "file": "Production/tools/storyboard-v2/src/components/ProjectSelector.tsx",
+      "line": 460,
       "tab": "shared"
     },
     {
       "id": "event-error",
-      "file": "Production/tools/storyboard-v2/src/components/EventSelector.tsx",
-      "line": 126,
+      "file": "Production/tools/storyboard-v2/src/components/ProjectSelector.tsx",
+      "line": 491,
       "tab": "shared"
     },
     {

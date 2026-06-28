@@ -54,6 +54,36 @@ class StitchCacheValidationTests(unittest.TestCase):
         )
         self.assertTrue(preview_cache_is_valid(src, expected_duration_s=dur))
 
+    def test_preview_cache_is_valid_rejects_av_drift(self):
+        bad = Path("/tmp/stitch_preview_av_drift.mp4")
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-f", "lavfi", "-t", "2", "-i", "anullsrc=r=44100:cl=mono",
+                "-f", "lavfi", "-i", "color=c=black:s=160x120:d=2",
+                "-filter_complex", "[1:v]tpad=stop_mode=clone:stop_duration=2[v]",
+                "-map", "[v]", "-map", "0:a",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-c:a", "aac",
+                str(bad),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        self.addCleanup(lambda: bad.unlink(missing_ok=True))
+        fmt = float(
+            subprocess.check_output(
+                [
+                    "ffprobe", "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "csv=p=0", str(bad),
+                ],
+                text=True,
+            ).strip()
+        )
+        self.assertFalse(preview_cache_is_valid(bad, expected_duration_s=fmt))
+
 
 class BeatBoundaryEnrichmentTests(unittest.TestCase):
     def test_enrich_adds_duration_ms(self):

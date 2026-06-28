@@ -1,0 +1,18 @@
+---
+description: When Kim asks for durability "if appropriate", run durable-if-appropriate skill before adding heals or tests
+alwaysApply: false
+globs:
+  - Production/tools/**
+  - Production/tools/storyboard-v2/**
+---
+
+# Durable if appropriate
+
+When Kim says **"make this durable if appropriate"**, **"durable if appropriate"**, or asks whether a fix should be durable:
+
+1. Read `~/.cursor/skills/durable-if-appropriate/SKILL.md` (or `.cursor/skills/durable-if-appropriate/SKILL.md` in this repo).
+2. Output the **Durability decision** block (category 1/2/3 + appropriate yes/no) **before** coding.
+3. Do **not** add a new heal, reconcile, or grep-only test until the decision says **yes** or **partial**.
+4. Prefer **invariant / authoritative store / wake sync** over stacking patches.
+
+Also read `.cursor/rules/beatgen-durability-invariants.mdc` for the three fix categories and mandatory proof block.

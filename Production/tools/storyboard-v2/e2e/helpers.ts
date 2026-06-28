@@ -19,10 +19,27 @@
 //   const restore = await protectBeatText(request, 'beat_03');
 //   try { ... } finally { await restore.restore(); }
 
-import type { APIRequestContext } from '@playwright/test';
+import { expect, type APIRequestContext, type Page } from '@playwright/test';
+import { SERVER } from './testServer';
 
-export const SERVER = 'http://localhost:5111';
+export { SERVER } from './testServer';
 export const EVENT_ID = 'Event_1';
+export const FIXTURE_EVENT = 'Event_e2e_fixture';
+
+/** App root visible — fixture-agnostic (Playwright webServer pins Event_e2e_fixture). */
+export async function gotoApp(page: Page): Promise<void> {
+  await page.goto('/');
+  await expect(page.locator('[data-testid="app-root"]')).toBeVisible();
+}
+
+/**
+ * Storyboard tab is hiddenFromBar in TabBar — open via ?tab=storyboard URL param
+ * (refreshSignals.readUrlActiveTab maps tab=storyboard → activeTab 'storyboard').
+ */
+export async function openStoryboardPane(page: Page): Promise<void> {
+  await page.goto('/?tab=storyboard');
+  await expect(page.locator('[data-testid="pane-storyboard"]')).toBeVisible({ timeout: 10_000 });
+}
 
 export interface BeatProtector {
   beatId: string;

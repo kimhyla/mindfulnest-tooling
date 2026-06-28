@@ -1,7 +1,7 @@
 """Event / video / milestone handlers — V59 Phase 4 Pass 1 module 2.
 
 Handlers extracted from production_server.py for:
-- /api/event/create, /api/event/load, /api/event/current
+- /api/event/create, /api/event/load, /api/event/current, /api/event/provision_server
 - /api/video/list, /api/video/set_active, /api/video/create
 - /api/milestones/list, /api/milestones/create, /api/milestones/load
 - /api/project/list
@@ -11,9 +11,15 @@ Each function takes the live `ProductionHandler` instance as `h`.
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timezone
 
 from lib.atomic_json_write import atomic_json_write
+from lib.event_server_provision import (
+    provision_dedicated_event_server,
+    provision_dedicated_event_server_background,
+)
+from lib.server_port_guard import dedicated_port_for_event_id
 
 # V59 Phase 4 cross-review fix (CI follow-up):
 # StateManager class referenced by event_create body for fresh state init.
@@ -73,24 +79,84 @@ def handle_event_create(h, body: dict) -> None:
     new_event_dir.mkdir(parents=True, exist_ok=False)
     from lib.event_library import ensure_event_library_dirs
     ensure_event_library_dirs(new_event_dir)
-    # Storyboard template — copy current event's storyboard if possible,
-    # else create minimal placeholder (lets future event_load satisfy
-    # the storyboard_v*_prod.html lookup).
+    # Storyboard template — prefer canonical deploy bundle (covers Event_7+ before
+    # next deploy fanout), else copy the serving event's storyboard HTML.
     try:
-        src_sb = h.app.storyboard_path
-        if src_sb.is_file():
-            import shutil as _shutil
-            _shutil.copy(src_sb, new_event_dir / src_sb.name)
+        import shutil as _shutil
+
+        canonical_sb = (
+            new_event_dir.parent / "tools/storyboard-v2/dist/index.html"
+        )
+        target_name = "storyboard_v59_prod.html"
+        if canonical_sb.is_file():
+            _shutil.copy(canonical_sb, new_event_dir / target_name)
+        else:
+            src_sb = h.app.storyboard_path
+            if src_sb.is_file():
+                _shutil.copy(src_sb, new_event_dir / src_sb.name)
     except Exception as _e:
         print(f"[event_create] storyboard copy skipped: {_e}", flush=True)
     # Init state files (production_state.json + production_spend.json).
+    # Numbered Event_N folders store skeleton-backed M-form (Event_3 → M4E1).
     try:
-        _ = StateManager(new_event_dir, new_event_id)
+        from lib.module_event_id import canonical_module_event_id
+
+        state_event_id = (
+            canonical_module_event_id(new_event_id, production_folder_id=new_event_id)
+            or new_event_id
+        )
+        _ = StateManager(new_event_dir, state_event_id)
     except Exception as _e:
         print(f"[event_create] WARN StateManager init: {_e}", flush=True)
     print(f"[event_create] created {new_event_id} at {new_event_dir}", flush=True)
+    # EVENT_STITCH_JOB_BOOTSTRAP_V1 — register canonical stitch job before first Send to Stitcher.
+    if dedicated_port_for_event_id(new_event_id) is not None:
+        try:
+            from server_handlers.stitch_editor import ensure_event_stitch_job_registered
+
+            boot = ensure_event_stitch_job_registered(
+                h,
+                new_event_id,
+                hydrate_from_disk=False,
+            )
+            if boot.get("changed"):
+                print(f"[event_create] stitch bootstrap {boot}", flush=True)
+        except Exception as _stitch_boot_exc:
+            print(
+                f"[event_create] WARN stitch job bootstrap: {_stitch_boot_exc}",
+                flush=True,
+            )
+    # EVENT_DEDICATED_SERVER_PROVISION_V1 — kickstart launchd (client awaits provision API).
+    if dedicated_port_for_event_id(new_event_id) is not None:
+        threading.Thread(
+            target=provision_dedicated_event_server_background,
+            args=(new_event_id,),
+            daemon=True,
+            name=f"provision-{new_event_id}",
+        ).start()
     return h._send_json(200, {"ok": True, "event_id": new_event_id,
                                   "event_dir": str(new_event_dir)})
+
+
+def handle_event_provision_server(h, body: dict) -> None:
+    """POST /api/event/provision_server — idempotent launchd for Event_N (EVENT_DEDICATED_SERVER_PROVISION_V1)."""
+    event_id = str((body or {}).get("event_id") or "").strip()
+    if not event_id:
+        return h._send_error_v59(
+            400,
+            error_code="EVENT_ID_REQUIRED",
+            error_message="event_id required",
+            retry_safe=False,
+            extra={"ok": False},
+        )
+    result = provision_dedicated_event_server(event_id)
+    status = 200 if result.ok else 503
+    payload = result.to_json()
+    payload["ok"] = result.ok
+    if not result.ok:
+        payload["error_code"] = "EVENT_SERVER_PROVISION_FAILED"
+        payload["error_message"] = result.error or "provision failed"
+    return h._send_json(status, payload)
 
 
 def handle_event_load(h, body: dict) -> None:
@@ -128,6 +194,45 @@ def handle_event_load(h, body: dict) -> None:
                    retry_safe=False,
                    extra={"code": "EVENT_LOAD_GENERATION_LOCK_V1"},
                )
+
+    # DEDICATED_PORT_SCOPE_TRUTH_V1 — reject before path validation so clients get 409 not 404.
+    from lib.server_port_guard import port_to_event_id
+
+    server_port = getattr(h.app, "server_port", None)
+    cli_pin = str(getattr(h.app, "cli_pinned_event_id", "") or h.app.event_id or "").strip()
+    port_event = port_to_event_id(server_port) if server_port is not None else None
+    if port_event and new_event_id != port_event:
+        return h._send_error_v59(
+            409,
+            error_code="DEDICATED_PORT_PIN_IMMUTABLE",
+            error_message=(
+                f"port {server_port} is dedicated to {port_event}; "
+                f"event/load to {new_event_id!r} rejected"
+            ),
+            retry_safe=False,
+            extra={
+                "ok": False,
+                "code": "DEDICATED_PORT_PIN_IMMUTABLE",
+                "server_port": server_port,
+                "expected_event_id": port_event,
+                "got_event_id": new_event_id,
+            },
+        )
+    if cli_pin and port_event and cli_pin == port_event and new_event_id != cli_pin:
+        return h._send_error_v59(
+            409,
+            error_code="DEDICATED_PORT_PIN_IMMUTABLE",
+            error_message=(
+                f"server CLI pin is {cli_pin}; event/load to {new_event_id!r} rejected"
+            ),
+            retry_safe=False,
+            extra={
+                "ok": False,
+                "code": "DEDICATED_PORT_PIN_IMMUTABLE",
+                "expected_event_id": cli_pin,
+                "got_event_id": new_event_id,
+            },
+        )
 
     # event_dir is sibling of current — we do NOT allow arbitrary paths.
     # Pattern: Production/<event_id>/ next to current Production/<current>/.
@@ -223,10 +328,27 @@ def handle_event_load(h, body: dict) -> None:
         h.app._storyboard_list_cache_mtime = 0.0
         # Rebind BG stills/sidecar paths so /api/cr/library and Beat Gen scan
         # the loaded event's beat_generator_stills/, not the startup pin.
-        _bg_module().init_bg_paths(new_event_dir)
         # S5.5d (v3): scope-type signal for milestone-aware code paths.
         h.app.scope_type = "event"
         h.app.active_milestone_id = None
+        h.app.milestone_dir = None
+        h.app.milestone_library_event_dir = None
+        from lib.milestone_scope_persist import clear_persisted_milestone_scope
+        from lib.paths import runtime_production_root
+
+        clear_persisted_milestone_scope(runtime_production_root(new_event_dir))
+        _bg_module().init_bg_paths(new_event_dir, clear_milestone_scope=True)
+        # EVENT_LOAD_SIDECAR_RECONCILE_V1 — milestone beats must not occupy event SQLite;
+        # restore completed event segments from kling_o3_clips/_preserved on disk.
+        try:
+            bg = _bg_module()
+            rep = bg.reconcile_event_sidecar_after_milestone_exit(
+                new_event_dir, new_event_id,
+            )
+            if rep.get("restored_segments") or rep.get("removed_segments"):
+                print(f"[event/load] sidecar reconcile {rep}", flush=True)
+        except Exception as exc:
+            print(f"[event/load] WARN: sidecar reconcile failed: {exc}", flush=True)
         new_gen = h.app.event_generation
         try:
             from lib.event_pin import write_persisted_event_pin
@@ -268,12 +390,41 @@ def handle_event_current(h) -> None:
     is serving (URL/data-attr/window-global fallbacks may be stale after
     EventSelector triggers a `/api/event/load` + `window.location.reload()`).
 
+    SCOPE_RESTART_RECONCILE_V1: HTTP 503 until app.scope_ready (startup pin complete).
+
     Returns:
       {event_id, event_dir, event_generation, active_video, partition_keys}
     on success; {event_id: null} (HTTP 200) on cold-boot when no event
     loaded — null is a valid state, not an error.
     """
+    if not getattr(h.app, "scope_ready", True):
+        return h._send_error_v59(
+            503,
+            error_code="SCOPE_NOT_READY",
+            error_message="scope_not_ready",
+            retry_safe=True,
+            hint="Server is starting — retry event/current shortly.",
+            extra={"ok": False, "event_id": None},
+        )
     try:
+        if getattr(h.app, "scope_type", "event") == "milestone" and getattr(h.app, "active_milestone_id", None):
+            from lib.milestone_store import ensure_milestone_runtime_fields, load_milestone_state
+
+            mdir = h.app.milestone_dir or (h._milestones_root() / h.app.active_milestone_id)
+            state = ensure_milestone_runtime_fields(mdir) if mdir.is_dir() else {}
+            videos = state.get("videos") or {}
+            return h._send_json(200, {
+                "ok": True,
+                "event_id": h.app.event_id,
+                "event_dir": str(h.app.event_dir),
+                "event_generation": h.app.event_generation,
+                "active_video": state.get("active_video") or "standalone",
+                "partition_keys": sorted(videos.keys()) if videos else ["standalone"],
+                "scope_type": "milestone",
+                "active_milestone_id": h.app.active_milestone_id,
+                "milestone_label": state.get("milestone_label"),
+                "milestone_dir": str(mdir),
+            })
         state = h.app.state.read_state()
         videos = state.get("videos") or {}
         return h._send_json(200, {
@@ -491,6 +642,18 @@ def handle_milestones_create(h, body: dict) -> None:
     # Animation clips dir (mirrors Event_<N> layout).
     (target / "animation_clips").mkdir(exist_ok=True)
     (target / "animation_clips_final").mkdir(exist_ok=True)
+    from lib.event_library import ensure_event_library_dirs
+
+    skel = (body or {}).get("skeleton_ref")
+    if not isinstance(skel, dict):
+        from lib.milestone_store import resolve_milestone_skeleton_ref
+
+        skel = resolve_milestone_skeleton_ref({}, milestone_id)
+    lib_event = (body or {}).get("library_event_id") or skel.get("library_event_id")
+    if lib_event:
+        lib_dir = root.parent / str(lib_event)
+        if lib_dir.is_dir():
+            ensure_event_library_dirs(lib_dir)
 
     now_iso = datetime.now(timezone.utc).isoformat()
     state = {
@@ -501,6 +664,12 @@ def handle_milestones_create(h, body: dict) -> None:
         "updated_at": now_iso,
         "active_video": "standalone",
         "scope_type": "milestone",
+        "skeleton_ref": {
+            "arc_number": int(skel.get("arc_number") or 1),
+            "event_id": str(skel.get("event_id")),
+            "phase": str(skel.get("phase") or "full"),
+        },
+        "library_event_id": lib_event,
         "videos": {
             "standalone": {
                 "video_role": "standalone",
@@ -521,6 +690,72 @@ def handle_milestones_create(h, body: dict) -> None:
         "milestone_dir": str(target),
         "state_path": str(state_path),
     })
+
+
+def apply_milestone_scope_to_app(app, milestone_id: str, *, source: str = "milestone_load") -> int:
+    """Switch app to milestone scope (shared by HTTP handler + startup restore)."""
+    target = app.event_dir.parent / "Milestones" / milestone_id
+    if not target.is_dir():
+        raise FileNotFoundError(f"milestone {milestone_id!r} not found at {target}")
+    state_path = target / "state.json"
+    if not state_path.is_file():
+        raise FileNotFoundError(f"milestone state.json missing at {state_path}")
+
+    with app.event_load_lock:
+        app.event_generation = app.event_generation + 1
+        app.scope_type = "milestone"
+        app.active_milestone_id = milestone_id
+        app.milestone_dir = target
+        from lib.milestone_store import ensure_milestone_runtime_fields
+
+        mstate = ensure_milestone_runtime_fields(target)
+        skel = mstate.get("skeleton_ref") or {}
+        lib_name = mstate.get("library_event_id") or f"Event_{skel.get('arc_number', 1)}"
+        lib_dir = app.event_dir.parent / str(lib_name)
+        app.milestone_library_event_dir = lib_dir if lib_dir.is_dir() else app.event_dir
+        _bg_module().init_bg_paths(
+            app.milestone_library_event_dir,
+            milestone_dir=target,
+            library_event_dir=app.milestone_library_event_dir,
+        )
+        bg = _bg_module()
+        try:
+            def _heal_continuity(sidecar: dict) -> None:
+                if bg.heal_sidecar_beat_continuity(sidecar):
+                    print(
+                        f"[milestone/{source}] beat continuity healed for {milestone_id}",
+                        flush=True,
+                    )
+
+            bg.mutate_sidecar_locked(_heal_continuity)
+        except Exception as exc:
+            print(
+                f"[milestone/{source}] beat continuity heal skipped for {milestone_id}: {exc}",
+                flush=True,
+            )
+        try:
+            app._image_overrides = {}
+            app._pending_override_keys = {}
+        except AttributeError:
+            pass
+        try:
+            app.invalidate_beats_cache()
+        except AttributeError:
+            pass
+        app._storyboard_list_cache = None
+        app._storyboard_list_cache_mtime = 0.0
+        new_gen = app.event_generation
+
+    from lib.milestone_scope_persist import write_persisted_milestone_scope
+    from lib.paths import runtime_production_root
+
+    write_persisted_milestone_scope(
+        runtime_production_root(app.event_dir),
+        event_id=app.event_id,
+        milestone_id=milestone_id,
+        source=source,
+    )
+    return new_gen
 
 
 def handle_milestone_load(h, body: dict) -> None:
@@ -566,25 +801,17 @@ def handle_milestone_load(h, body: dict) -> None:
                    extra={"ok": False, "code": "MILESTONE_STATE_MISSING"},
                )
 
-    with h.app.event_load_lock:
-        old_gen = h.app.event_generation
-        h.app.event_generation = old_gen + 1
-        h.app.scope_type = "milestone"
-        h.app.active_milestone_id = milestone_id
-        h.app.milestone_dir = target
-        # Clear cross-scope caches (LD-475 cache invalidation extended).
-        try:
-            h.app._image_overrides = {}
-            h.app._pending_override_keys = {}
-        except AttributeError:
-            pass
-        try:
-            h.app.invalidate_beats_cache()
-        except AttributeError:
-            pass
-        h.app._storyboard_list_cache = None
-        h.app._storyboard_list_cache_mtime = 0.0
-        new_gen = h.app.event_generation
+    old_gen = h.app.event_generation
+    try:
+        new_gen = apply_milestone_scope_to_app(h.app, milestone_id, source="load")
+    except FileNotFoundError as exc:
+        return h._send_error_v59(
+            404,
+            error_code="GENERIC_ERROR",
+            error_message=str(exc),
+            retry_safe=False,
+            extra={"ok": False, "code": "MILESTONE_NOT_FOUND"},
+        )
 
     print(
         f"[milestone/load] -> {milestone_id} (gen={new_gen}, dir={target}). "

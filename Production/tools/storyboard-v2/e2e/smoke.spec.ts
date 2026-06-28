@@ -40,10 +40,9 @@ test.describe('Session 1 smoke — v59 read-only preview', () => {
       'Path C rewrite',
     );
 
-    // Core tabs present (7 total per TabBar.tsx; Phase A/B + Map added after S1 draft).
+    // Core operator tabs (Storyboard is routed but hiddenFromBar — not in tab bar).
     await expect(page.locator('[data-testid="tab-bg"]')).toBeVisible();
     await expect(page.locator('[data-testid="tab-cropper"]')).toBeVisible();
-    await expect(page.locator('[data-testid="tab-storyboard"]')).toBeVisible();
     await expect(page.locator('[data-testid="tab-phase-b"]')).toBeVisible();
     await expect(page.locator('[data-testid="tab-phase-a"]')).toBeVisible();
     await expect(page.locator('[data-testid="tab-stitcher"]')).toBeVisible();
@@ -89,9 +88,6 @@ test.describe('Session 1 smoke — v59 read-only preview', () => {
     // on mount (pathappPatch) — excluded from Session 1 zero-mutation contract.
     await page.click('[data-testid="tab-bg"]');
     await expect(page.locator('[data-testid="pane-bg"]')).toBeVisible();
-
-    await page.click('[data-testid="tab-storyboard"]');
-    await expect(page.locator('[data-testid="pane-storyboard"]')).toBeVisible();
 
     // Cropper tab opens the modal overlay.
     // [CONFIRMED against src/components/ui/Modal.tsx L49+63] Modal renders

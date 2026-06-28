@@ -24,7 +24,7 @@ import { copyFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const SERVER = 'http://localhost:5111';
+const SERVER = 'http://localhost:5200';
 const EVENT_ID = 'Event_e2e_fixture';
 
 // Fixture restoration paths — mirrors globalSetup.ts. This file's GR.1 + GR.6

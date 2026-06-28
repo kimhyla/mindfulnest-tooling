@@ -48,8 +48,8 @@ grep -q 'INSERT_BEAT_FORM_REQUIRED' "$HANDLER" \
   || fail "handle_bg_add_beat must return INSERT_BEAT_FORM_REQUIRED"
 grep -q 'maybe_auto_register_beat_char_ref' "$HANDLER" \
   || fail "handle_bg_insert_beat must call maybe_auto_register_beat_char_ref"
-grep -q 'with bg.sidecar_file_lock():' "$HANDLER" \
-  || fail "insert-beat must use sidecar_file_lock"
+grep -q 'mutate_sidecar_locked' "$HANDLER" \
+  || fail "insert-beat must use mutate_sidecar_locked"
 
 grep -q '"/api/bg/insert-beat"' "$SERVER" \
   || fail "production_server missing /api/bg/insert-beat route"

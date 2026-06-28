@@ -20,6 +20,11 @@ REQUIRED_SYMBOLS: tuple[str, ...] = (
 
 
 def _load_module(path: Path):
+    prod_dir = path.resolve().parent.parent
+    tools_dir = prod_dir / "tools"
+    for entry in (str(prod_dir), str(tools_dir)):
+        if entry not in sys.path:
+            sys.path.insert(0, entry)
     spec = importlib.util.spec_from_file_location("beat_generator_probe", path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load {path}")

@@ -23,8 +23,15 @@ import {
   scopeKey,
 } from '../state/scope';
 import { apiGet, expectField, pathappPatch, type ExpectFieldSpec } from '../api/client';
+import { formatMutationError } from '../api/mutationErrors';
 import { stitcherRefreshTick } from '../app';
-import { serverRehydrateTick } from '../state/refreshSignals';
+import {
+  ensureStoryboardSession,
+  storyboardError,
+  storyboardLoading,
+  storyboardSessionHasCache,
+  storyboardState,
+} from '../state/storyboardSessionStore';
 import { SERVER_BASE, MUTATION_ENDPOINTS as ENDPOINTS } from '../api/endpoints';
 import { makeDropTarget } from '../utils/dragdrop';
 import { Spinner } from './ui/Spinner';
@@ -33,6 +40,7 @@ import { pushToast } from './ui/Toast';
 import { Modal } from './ui/Modal';
 import { BeatAudioPreview } from './BeatAudioPreview';
 import { BeatCompositePreview } from './BeatCompositePreview';
+import { PLAYBACK_VIDEO_ANTI_BANDING_CLASS } from '../utils/playbackVideoPolicy';
 import { SuggestParentheticalDropdown } from './SuggestParentheticalDropdown';
 
 interface BeatState {
@@ -168,6 +176,10 @@ const KNOWN_SPEAKERS: readonly string[] = [
 
 function shadowKey(eventId: string, beatId: string): string {
   return `mn:v59:shadow:${eventId}:${beatId}`;
+}
+
+function endFrameAddendumKey(eventId: string, beatId: string): string {
+  return `mn:v59:endframe-addendum:${eventId}:${beatId}`;
 }
 const SHADOW_TTL_MS = 24 * 3600 * 1000;
 
@@ -324,7 +336,22 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
   // Kim previews/uploads the ChatGPT end frame here BEFORE Regen B+C; the
   // server-side Phase 4 refuses Regen B+C unless an approved end_frame_path
   // exists on disk. Addendum textarea is one-shot per click (auto-clears).
-  const [endFrameAddendum, setEndFrameAddendum] = useState<string>('');
+  const [endFrameAddendum, setEndFrameAddendum] = useState<string>(() => {
+    try {
+      return sessionStorage.getItem(endFrameAddendumKey(eventId, beatId)) ?? '';
+    } catch {
+      return '';
+    }
+  });
+  const endFrameDirtyRef = useRef(false);
+  useEffect(() => {
+    if (endFrameDirtyRef.current) return;
+    try {
+      setEndFrameAddendum(sessionStorage.getItem(endFrameAddendumKey(eventId, beatId)) ?? '');
+    } catch {
+      setEndFrameAddendum('');
+    }
+  }, [eventId, beatId]);
   // pendingEndFrameOp keyed by beat_id per cursor R2 (multiple beats may be
   // in-flight simultaneously; using boolean only-while-this-beat-pending).
   const [pendingEndFrameOp, setPendingEndFrameOp] = useState<boolean>(false);
@@ -363,6 +390,12 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
         source: 'preview-end-frame',
       });
       setEndFrameAddendum('');  // auto-clear per spec §2 T1-Phase 6
+      try {
+        sessionStorage.removeItem(endFrameAddendumKey(eventId, beatId));
+      } catch {
+        // ignore
+      }
+      endFrameDirtyRef.current = false;
       onMutated();
     } catch (e) {
       pushToast({
@@ -636,7 +669,10 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
       pushToast({ kind: 'success', message: `${label} ok`, source: `beat-${label}` });
       onMutated();
     } else {
-      pushToast({ kind: 'error', message: `${label} failed: ${result.error}`, source: `beat-${label}-error` });
+      const msg = formatMutationError(result, `${label} failed`);
+      if (msg) {
+        pushToast({ kind: 'error', message: msg, source: `beat-${label}-error` });
+      }
     }
     return result.ok;
   };
@@ -662,7 +698,10 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
       }
       onMutated();
     } else {
-      pushToast({ kind: 'error', message: `Regen Audio failed: ${result.error}`, source: 'beat-Regen Audio-error' });
+      const msg = formatMutationError(result, 'Regen Audio failed');
+      if (msg) {
+        pushToast({ kind: 'error', message: msg, source: 'beat-Regen Audio-error' });
+      }
     }
     return result.ok;
   };
@@ -673,7 +712,10 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
     );
     setBusy(null);
     if (!result.ok) {
-      pushToast({ kind: 'error', message: `Animate failed: ${result.error}`, source: 'beat-animate-error' });
+      const msg = formatMutationError(result, 'Animate failed');
+      if (msg) {
+        pushToast({ kind: 'error', message: msg, source: 'beat-animate-error' });
+      }
       return;
     }
     // Fix A — inspect submitted/skipped before declaring success + polling.
@@ -1145,7 +1187,16 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
             class="mn-beat-trim-input"
             data-testid={`beat-${index}-end-frame-addendum`}
             value={endFrameAddendum}
-            onInput={(e) => setEndFrameAddendum((e.target as HTMLInputElement).value)}
+            onInput={(e) => {
+              const next = (e.target as HTMLInputElement).value;
+              endFrameDirtyRef.current = true;
+              setEndFrameAddendum(next);
+              try {
+                sessionStorage.setItem(endFrameAddendumKey(eventId, beatId), next);
+              } catch {
+                // ignore
+              }
+            }}
             disabled={pendingEndFrameOp || busy !== null}
             placeholder="e.g. ensure all accessories remain (glasses, backpack)"
             title="One-shot prompt addendum sent to ChatGPT. Clears after each Preview click."
@@ -2132,11 +2183,14 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
       // Trigger parent refresh so the new speaker + stale-TTS badge render.
       onMutated();
     } else {
-      pushToast({
-        kind: 'error',
-        message: `Speaker save failed: ${result.error ?? 'unknown'}`,
-        source: 'speaker-update',
-      });
+      const msg = formatMutationError(result, 'Speaker save failed');
+      if (msg) {
+        pushToast({
+          kind: 'error',
+          message: msg,
+          source: 'speaker-update',
+        });
+      }
     }
   };
 
@@ -2184,11 +2238,14 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
     } else {
       setStatus('error');
       setErrorMsg(result.error ?? `HTTP ${result.status}`);
-      pushToast({
-        kind: 'error',
-        message: `Parenthetical insert failed: ${result.error ?? 'unknown'}`,
-        source: 'parenthetical-insert',
-      });
+      const msg = formatMutationError(result, 'Parenthetical insert failed');
+      if (msg) {
+        pushToast({
+          kind: 'error',
+          message: msg,
+          source: 'parenthetical-insert',
+        });
+      }
     }
   };
 
@@ -2197,11 +2254,14 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
     if (result.ok) {
       onMutated();
     } else {
-      pushToast({
-        kind: 'error',
-        message: `Kim done toggle failed: ${result.error ?? 'unknown'}`,
-        source: 'kim-done-toggle',
-      });
+      const msg = formatMutationError(result, 'Kim done toggle failed');
+      if (msg) {
+        pushToast({
+          kind: 'error',
+          message: msg,
+          source: 'kim-done-toggle',
+        });
+      }
     }
   };
 
@@ -2360,6 +2420,7 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
         magicVideoPath={beat.magic_video_path}
         onPreviewMagicStill={() => handlePreviewOption(-1, 'still')}
         onPreviewMagicVideo={() => handlePreviewOption(-1, 'video')}
+        onMagicStillCleared={() => { onMutated(); }}
       />
       <div class="mn-sb-insert-after" data-testid={`sb-insert-after-${index}`}>
         <button
@@ -2463,11 +2524,14 @@ function BeatImageHolder({ index, beatId, beat, eventId, onMutated, previewVideo
         }));
         onMutated();
       } else {
-        pushToast({
-          kind: 'error',
-          message: `Image assign failed: ${result.error ?? `HTTP ${result.status}`}`,
-          source: 'sb-image-drop-error',
-        });
+        const msg = formatMutationError(result, 'Image assign failed');
+        if (msg) {
+          pushToast({
+            kind: 'error',
+            message: msg,
+            source: 'sb-image-drop-error',
+          });
+        }
       }
     },
     (p) => p.kind === 'lib-image',
@@ -2490,7 +2554,7 @@ function BeatImageHolder({ index, beatId, beat, eventId, onMutated, previewVideo
           <video
             {...(videoRef ? { ref: videoRef } : {})}
             src={previewVideoSrc ?? lipsyncBufferSrc!}
-            class="mn-storyboard-preview-video"
+            class={`mn-storyboard-preview-video ${PLAYBACK_VIDEO_ANTI_BANDING_CLASS}`}
             style={previewVideoSrc ? undefined : { display: 'none' }}
             playsInline
             preload="auto"
@@ -2636,7 +2700,7 @@ function FadeDivider({
       // Scope keys: event_id (legacy alias for scope_event_id per scope_router.py:129) +
       //             scope_video_role / scope_target_video (LD-461 canonical pair).
       // Rule 32: absolute URL required (file:// launch context).
-      await fetch(`http://localhost:5111/api/v2/beat/${encodeURIComponent(beatId)}/patch`, {
+      await fetch(`${SERVER_BASE}/api/v2/beat/${encodeURIComponent(beatId)}/patch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2676,9 +2740,9 @@ function FadeDivider({
 // ----------------------------------------------------------------
 
 export function StoryboardTab() {
-  const [state, setState] = useState<EventState | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const state = storyboardState.value as EventState | null;
+  const error = storyboardError.value;
+  const loading = storyboardLoading.value && !storyboardSessionHasCache();
   const [refreshTick, setRefreshTick] = useState(0);
   const [deleteConfirmBeatId, setDeleteConfirmBeatId] = useState<string | null>(null);
   // Batch end-frame generator state (spec BATCH_END_FRAME_GENERATE_20260520_v1, LD-815)
@@ -2686,52 +2750,16 @@ export function StoryboardTab() {
   const [batchProgress, setBatchProgress] = useState<{ done: number; total: number; failed: number; skipped: number } | null>(null);
   const batchCancelRef = useRef<boolean>(false);
 
-  // R1 fix per spec §5 Phase 3.1 — explicit scope signals in dep array,
-  // first-run-sync via prevDepsRef, 200ms debounce on subsequent runs (Q6).
-  const prevFetchDepsRef = useRef<string | null>(null);
+  // Local mutation refresh — scope/rehydrate handled by ProducerSessionCoordinator.
   useEffect(() => {
-    let cancelled = false;
-    let timer: number | null = null;
-    const fetchState = async () => {
-      const res = await apiGet<EventState>('v2_event_state', {
-        event_id: activeScope.value.event_id,
-      });
-      if (cancelled) return;
-      setLoading(false);
-      if (res.ok && res.data) {
-        setState(res.data);
-        setError(null);
-      } else {
-        setError(res.error ?? 'unknown error');
-      }
-    };
-
-    const depKey = [
-      refreshTick,
-      serverRehydrateTick.value,
+    if (refreshTick <= 0) return;
+    void ensureStoryboardSession(
       activeScope.value.event_id,
       activeProjectType.value,
-      activeMilestoneId.value ?? '',
-    ].join('|');
-
-    if (prevFetchDepsRef.current === null) {
-      prevFetchDepsRef.current = depKey;
-      fetchState();
-    } else if (prevFetchDepsRef.current !== depKey) {
-      prevFetchDepsRef.current = depKey;
-      timer = window.setTimeout(fetchState, 200);
-    }
-
-    return () => {
-      cancelled = true;
-      if (timer !== null) clearTimeout(timer);
-    };
-  }, [
-    refreshTick,
-    activeScope.value.event_id,
-    activeProjectType.value,
-    activeMilestoneId.value,
-  ]);
+      activeMilestoneId.value,
+      { force: true },
+    );
+  }, [refreshTick]);
 
   // S5 — refresh on path_picker submit success.
   // Security (CodeQL js/missing-origin-check alert #1, real source line):
@@ -2919,7 +2947,10 @@ export function StoryboardTab() {
       pushToast({ kind: 'info', message: `Beat ${beatId} deleted`, source: 'sb-delete' });
       setRefreshTick((n) => n + 1);
     } else {
-      pushToast({ kind: 'error', message: `Delete failed: ${result.error}`, source: 'sb-delete-error' });
+      const msg = formatMutationError(result, 'Delete failed');
+      if (msg) {
+        pushToast({ kind: 'error', message: msg, source: 'sb-delete-error' });
+      }
     }
   };
 
@@ -2931,7 +2962,10 @@ export function StoryboardTab() {
       pushToast({ kind: 'info', message: 'Beat added', source: 'sb-add' });
       setRefreshTick((n) => n + 1);
     } else {
-      pushToast({ kind: 'error', message: `Add failed: ${result.error}`, source: 'sb-add-error' });
+      const msg = formatMutationError(result, 'Add failed');
+      if (msg) {
+        pushToast({ kind: 'error', message: msg, source: 'sb-add-error' });
+      }
     }
   };
 

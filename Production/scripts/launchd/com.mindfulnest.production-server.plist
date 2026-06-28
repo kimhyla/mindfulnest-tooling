@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>ANTHROPIC_API_KEY</key>
+		<string>REPLACE_ME</string>
+		<key>HOME</key>
+		<string>/Users/kimberlysmith</string>
+		<key>LANG</key>
+		<string>en_US.UTF-8</string>
+		<key>LC_ALL</key>
+		<string>en_US.UTF-8</string>
+		<key>MN_DROPBOX_ROOT</key>
+		<string>/Users/kimberlysmith/Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files</string>
+		<key>MN_EVENT_PIN_IGNORE</key>
+		<string>1</string>
+		<key>MN_R2_CDN_BASE_URL</key>
+		<string>https://cdn.mindfulnest.app</string>
+		<key>MN_TOOLING_ROOT</key>
+		<string>/Users/kimberlysmith/Projects/mindfulnest-tooling</string>
+		<key>PATH</key>
+		<string>/Users/kimberlysmith/.pyenv/shims:/Users/kimberlysmith/.pyenv/versions/3.12.7/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>PRODUCTION_SERVER_SINGLE_MACHINE</key>
+		<string>1</string>
+		<key>PYENV_VERSION</key>
+		<string>3.12.7</string>
+		<key>R2_ACCESS_KEY_ID</key>
+		<string>REPLACE_ME</string>
+		<key>R2_ACCOUNT_ID</key>
+		<string>REPLACE_ME</string>
+		<key>R2_BUCKET_NAME</key>
+		<string>mindfulnest-lipsync-staging</string>
+		<key>R2_SECRET_ACCESS_KEY</key>
+		<string>REPLACE_ME</string>
+	</dict>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>com.mindfulnest.production-server</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/kimberlysmith/.pyenv/versions/3.12.7/bin/python3</string>
+		<string>/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools/production_server.py</string>
+		<string>--event-dir</string>
+		<string>/Users/kimberlysmith/Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files/Production/Event_2</string>
+		<string>--storyboard</string>
+		<string>storyboard_v59_prod.html</string>
+		<string>--event-id</string>
+		<string>Event_2</string>
+		<string>--port</string>
+		<string>5112</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/tmp/mindfulnest_server_err.log</string>
+	<key>StandardOutPath</key>
+	<string>/tmp/mindfulnest_server.log</string>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>WorkingDirectory</key>
+	<string>/Users/kimberlysmith/Projects/mindfulnest-tooling/Production/tools</string>
+</dict>
+</plist>

@@ -10,11 +10,12 @@
 // WaveformTimeline.tsx header comment block.
 
 import { test, expect, type Page } from '@playwright/test';
+import { SERVER } from './testServer';
 
 const FIXTURE_EVENT = 'Event_e2e_fixture';
 
 test.beforeEach(async ({ request }) => {
-  await request.post('http://localhost:5111/api/event/load', {
+  await request.post(`${SERVER}/api/event/load`, {
     data: { event_id: FIXTURE_EVENT },
   });
 });
@@ -104,6 +105,169 @@ test.describe('PHASE_WAVEFORM_PLAY — keep-alive + playback bus markers', () =>
   });
 });
 
+test.describe('PHASE_WAVEFORM_PLAY — drag-seek must not snap to 0', () => {
+  test('SEEK-DRAG-B1 — Phase B play→pause→drag over cue blocks holds position', async ({
+    page,
+  }) => {
+    await mockAudioFiles(page, 90);
+    await mockPhaseState(page, {
+      phase_b_lipsync_file: 'fix_lipsync.mp4',
+      phase_b_watercolor_cues_json: JSON.stringify([
+        {
+          id: 'cue_drag_block',
+          key: 'spell_title',
+          timestamp_ms: 9000,
+          duration_ms: 8000,
+          cue_type: 'png',
+        },
+        {
+          id: 'cue_drag_block2',
+          key: 'hands_original',
+          timestamp_ms: 35000,
+          duration_ms: 12000,
+          cue_type: 'png',
+        },
+      ]),
+    });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const waveform = await waitForWaveformReady(page, 'b');
+    const playBtn = page.locator(
+      '[data-testid="pane-phase-b-keepalive"] [data-testid="waveform-play-btn"]',
+    );
+    await playBtn.click();
+    await expect(playBtn).toHaveText(/⏸ Pause/, { timeout: 3_000 });
+    await page.waitForTimeout(800);
+    await playBtn.click();
+
+    const box = await waveform.boundingBox();
+    expect(box).not.toBeNull();
+    const y = box!.y + box!.height * 0.72;
+    const x0 = box!.x + box!.width * 0.55;
+    const x1 = box!.x + box!.width * 0.82;
+    await page.mouse.move(x0, y);
+    await page.mouse.down();
+    for (let i = 1; i <= 10; i += 1) {
+      await page.mouse.move(x0 + ((x1 - x0) * i) / 10, y);
+      await page.waitForTimeout(20);
+    }
+    await page.mouse.up();
+    await page.waitForTimeout(400);
+
+    const durMs = Number(await waveform.getAttribute('data-loaded-duration-ms'));
+    const ms = Number(await waveform.getAttribute('data-current-time-ms'));
+    expect(ms).toBeGreaterThan(durMs * 0.5);
+    expect(ms).toBeLessThan(durMs * 0.95);
+  });
+});
+
+test.describe('PHASE_WAVEFORM_PLAY — watercolor cue resize handles (WAVEFORM_CUE_HANDLE_V1)', () => {
+  test('CUE-RESIZE-1 — right handle drag increases cue duration', async ({ page }) => {
+    await mockAudioFiles(page, 90);
+    await page.route('**/api/v2/module/patch**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true }),
+      });
+    });
+    await mockPhaseState(page, {
+      phase_b_lipsync_file: 'fix_lipsync.mp4',
+      phase_b_watercolor_cues_json: JSON.stringify([
+        {
+          id: 'cue_resize_test',
+          key: 'spell_title',
+          timestamp_ms: 15000,
+          duration_ms: 5000,
+          cue_type: 'png',
+        },
+      ]),
+    });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const waveform = await waitForWaveformReady(page, 'b');
+    const cue = page.locator('[data-testid="cue-marker-cue_resize_test"]');
+    await expect(cue).toBeVisible();
+
+    const startDuration = Number(await cue.getAttribute('data-duration-ms'));
+    expect(startDuration).toBe(5000);
+
+    const rightHandle = page.locator('[data-testid="cue-handle-right-cue_resize_test"]');
+    await expect(rightHandle).toBeVisible();
+    const box = await rightHandle.boundingBox();
+    expect(box).not.toBeNull();
+
+    const startX = box!.x + box!.width / 2;
+    const y = box!.y + box!.height / 2;
+    await page.mouse.move(startX, y);
+    await page.mouse.down();
+    await page.mouse.move(startX + 90, y, { steps: 8 });
+    await page.waitForTimeout(80);
+    const midDuration = Number(await cue.getAttribute('data-duration-ms'));
+    await page.mouse.up();
+    await page.waitForTimeout(120);
+    const endDuration = Number(await cue.getAttribute('data-duration-ms'));
+
+    expect(midDuration).toBeGreaterThan(startDuration + 800);
+    expect(endDuration).toBeGreaterThan(startDuration + 800);
+    expect(endDuration).toBeLessThan(90000);
+    await expect(waveform).toHaveAttribute('data-waveform-cue-handle-v1', 'WAVEFORM_CUE_HANDLE_V1');
+  });
+
+  test('CUE-RESIZE-2 — left handle drag decreases cue start offset', async ({ page }) => {
+    await mockAudioFiles(page, 90);
+    await page.route('**/api/v2/module/patch**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true }),
+      });
+    });
+    await mockPhaseState(page, {
+      phase_b_lipsync_file: 'fix_lipsync.mp4',
+      phase_b_watercolor_cues_json: JSON.stringify([
+        {
+          id: 'cue_resize_left',
+          key: 'hands_rubbing',
+          timestamp_ms: 20000,
+          duration_ms: 6000,
+          cue_type: 'png',
+        },
+      ]),
+    });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    await waitForWaveformReady(page, 'b');
+    const cue = page.locator('[data-testid="cue-marker-cue_resize_left"]');
+    await expect(cue).toBeVisible();
+
+    const startOffset = Number(await cue.getAttribute('data-offset-ms'));
+    expect(startOffset).toBe(20000);
+
+    const leftHandle = page.locator('[data-testid="cue-handle-left-cue_resize_left"]');
+    const box = await leftHandle.boundingBox();
+    expect(box).not.toBeNull();
+
+    const startX = box!.x + box!.width / 2;
+    const y = box!.y + box!.height / 2;
+    await page.mouse.move(startX, y);
+    await page.mouse.down();
+    await page.mouse.move(startX - 70, y, { steps: 8 });
+    await page.waitForTimeout(80);
+    const midOffset = Number(await cue.getAttribute('data-offset-ms'));
+    await page.mouse.up();
+    await page.waitForTimeout(120);
+    const endOffset = Number(await cue.getAttribute('data-offset-ms'));
+
+    expect(midOffset).toBeLessThan(startOffset - 500);
+    expect(endOffset).toBeLessThan(startOffset - 500);
+    expect(endOffset).toBeGreaterThanOrEqual(0);
+  });
+});
+
 test.describe('PHASE_WAVEFORM_PLAY — ▶ Play must not seek-collide', () => {
   test('PLAY-1 — ▶ Play toggles to Pause and time advances', async ({ page }) => {
     await mockAudioFiles(page, 30);
@@ -189,6 +353,91 @@ test.describe('PHASE_WAVEFORM_PLAY — ▶ Play must not seek-collide', () => {
   });
 });
 
+test.describe('PHASE_WAVEFORM_PLAY — drag-seek must not snap to 0 (WAVEFORM_DRAG_SEEK_V1)', () => {
+  test('SEEK-DRAG-1 — Phase B drag release holds position', async ({ page }) => {
+    await mockAudioFiles(page, 30);
+    await mockPhaseState(page, { phase_b_lipsync_file: 'fix_lipsync.mp4' });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const waveform = await waitForWaveformReady(page, 'b');
+    const box = await waveform.boundingBox();
+    expect(box).not.toBeNull();
+
+    const startX = box!.x + box!.width * 0.12;
+    const endX = box!.x + box!.width * 0.62;
+    const y = box!.y + box!.height * 0.72;
+
+    await page.mouse.move(startX, y);
+    await page.mouse.down();
+    await page.mouse.move(endX, y, { steps: 10 });
+    await page.waitForTimeout(80);
+    const msDuring = Number(await waveform.getAttribute('data-current-time-ms'));
+
+    await page.mouse.up();
+    await page.waitForTimeout(150);
+    const msAfter = Number(await waveform.getAttribute('data-current-time-ms'));
+
+    expect(msDuring).toBeGreaterThan(8000);
+    expect(msAfter).toBeGreaterThan(8000);
+    expect(msAfter).toBeLessThan(22000);
+  });
+
+  test('SEEK-DRAG-A1 — Phase A drag release holds position', async ({ page }) => {
+    await mockAudioFiles(page, 30);
+    await mockPhaseState(page, { phase_a_lipsync_file: 'fix_phase_a_lipsync.mp4' });
+    await gotoApp(page);
+    await openPhaseA(page);
+
+    const waveform = await waitForWaveformReady(page, 'a');
+    const box = await waveform.boundingBox();
+    expect(box).not.toBeNull();
+
+    const startX = box!.x + box!.width * 0.1;
+    const endX = box!.x + box!.width * 0.55;
+    const y = box!.y + box!.height * 0.72;
+
+    await page.mouse.move(startX, y);
+    await page.mouse.down();
+    await page.mouse.move(endX, y, { steps: 10 });
+    await page.mouse.up();
+    await page.waitForTimeout(150);
+
+    const ms = Number(await waveform.getAttribute('data-current-time-ms'));
+    expect(ms).toBeGreaterThan(7000);
+    expect(ms).toBeLessThan(20000);
+  });
+
+  test('SEEK-DRAG-2 — play → pause → drag holds position (lipsync mp4)', async ({ page }) => {
+    await mockAudioFiles(page, 30);
+    await mockPhaseState(page, { phase_b_lipsync_file: 'fix_lipsync.mp4' });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const waveform = await waitForWaveformReady(page, 'b');
+    const playBtn = page.locator(
+      '[data-testid="pane-phase-b-keepalive"] [data-testid="waveform-play-btn"]',
+    );
+    await playBtn.click();
+    await page.waitForTimeout(800);
+    await playBtn.click();
+    await page.waitForTimeout(200);
+
+    const box = await waveform.boundingBox();
+    expect(box).not.toBeNull();
+    const y = box!.y + box!.height * 0.72;
+    await page.mouse.move(box!.x + box!.width * 0.15, y);
+    await page.mouse.down();
+    await page.mouse.move(box!.x + box!.width * 0.7, y, { steps: 10 });
+    await page.mouse.up();
+    await page.waitForTimeout(200);
+
+    const ms = Number(await waveform.getAttribute('data-current-time-ms'));
+    expect(ms).toBeGreaterThan(8000);
+    expect(ms).toBeLessThan(22000);
+  });
+});
+
 test.describe('PHASE_WAVEFORM_PLAY — Phase A parity (same WaveformTimeline + bus)', () => {
   test('PLAY-A1 — Phase A ▶ Play toggles without seek-jump', async ({ page }) => {
     await mockAudioFiles(page, 30);
@@ -219,6 +468,48 @@ test.describe('PHASE_WAVEFORM_PLAY — Phase A parity (same WaveformTimeline + b
     expect(ms).toBeGreaterThan(50);
   });
 
+  test('SEEK-DRAG-A1 — Phase A play→pause→drag release must not snap to 0', async ({
+    page,
+  }) => {
+    await mockAudioFiles(page, 40);
+    await mockPhaseState(page, {
+      phase_a_voice_stem_file: 'fix_phase_a_stem.mp3',
+      phase_a_lipsync_requires_regen: true,
+      phase_a_stitched_file: 'fix_phase_a_stitched.mp4',
+    });
+    await gotoApp(page);
+    await openPhaseA(page);
+
+    const waveform = await waitForWaveformReady(page, 'a');
+    const playBtn = page.locator(
+      '[data-testid="pane-phase-a-keepalive"] [data-testid="waveform-play-btn"]',
+    );
+    await playBtn.click();
+    await expect(playBtn).toHaveText(/⏸ Pause/, { timeout: 3_000 });
+    await page.waitForTimeout(800);
+    await playBtn.click();
+    await expect(playBtn).toHaveText(/▶ Play/, { timeout: 3_000 });
+
+    const box = await waveform.boundingBox();
+    expect(box).not.toBeNull();
+    const y = box!.y + box!.height * 0.72;
+    const x0 = box!.x + box!.width * 0.2;
+    const x1 = box!.x + box!.width * 0.78;
+    await page.mouse.move(x0, y);
+    await page.mouse.down();
+    for (let i = 1; i <= 10; i += 1) {
+      await page.mouse.move(x0 + ((x1 - x0) * i) / 10, y);
+      await page.waitForTimeout(20);
+    }
+    await page.mouse.up();
+    await page.waitForTimeout(400);
+
+    const durMs = Number(await waveform.getAttribute('data-loaded-duration-ms'));
+    const ms = Number(await waveform.getAttribute('data-current-time-ms'));
+    expect(ms).toBeGreaterThan(durMs * 0.45);
+    expect(ms).toBeLessThan(durMs * 0.95);
+  });
+
   test('PLAY-A2 — Phase A Preview with Overlay starts playback status', async ({ page }) => {
     await mockAudioFiles(page, 30);
     await mockPhaseState(page, {
@@ -245,9 +536,9 @@ test.describe('PHASE_WAVEFORM_PLAY — Phase A parity (same WaveformTimeline + b
               filename: 'hands_rubbing_animated_test.mp4',
               ext: 'mp4',
               kind: 'animation',
-              thumb_url: 'http://localhost:5111/api/phase/watercolor_file?key=hands_rubbing',
+              thumb_url: `${SERVER}/api/phase/watercolor_file?key=hands_rubbing`,
               animation_url:
-                'http://localhost:5111/api/phase_b/watercolor/hands_rubbing_animated_test',
+                `${SERVER}/api/phase_b/watercolor/hands_rubbing_animated_test`,
               mtime: 1,
               size_bytes: 1000,
             },

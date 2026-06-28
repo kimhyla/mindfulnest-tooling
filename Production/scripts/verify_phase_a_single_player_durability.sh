@@ -25,8 +25,10 @@ grep -q 'phaseAPreviewFile' "$PRODUCER" \
   || fail "missing phaseAPreviewFile helper"
 grep -q 'priorityAudioFileForPhase' "$PRODUCER" \
   || fail "missing priorityAudioFileForPhase helper"
-grep -q 'Preview (canonical stitched — lipsync + ambient bed):' "$PRODUCER" \
-  || fail "missing canonical stitched preview label"
+grep -q 'Preview (normalized dry lipsync — ambient added in Stitcher):' "$PRODUCER" \
+  || fail "missing dry lipsync preview label"
+grep -q 'phase-a-mix-btn' "$PRODUCER" \
+  && fail "Phase A Mix Audio button must not exist (ambient in Stitcher)"
 
 # Banned regressions — second stitched-only player block.
 grep -q 'data-testid="phase-a-stitched-preview"' "$PRODUCER" \
@@ -42,15 +44,21 @@ grep -q "'stitched'" "$WAVEFORM" \
 if [[ -f "$DIST" ]]; then
   grep -q 'PHASE_A_SINGLE_PLAYER_V1' "$DIST" \
     || fail "dist missing PHASE_A_SINGLE_PLAYER_V1 (run npm run build)"
-  grep -q 'Preview (canonical stitched' "$DIST" \
-    || fail "dist missing canonical stitched label"
+  grep -q 'Preview (normalized dry lipsync' "$DIST" \
+    || fail "dist missing dry lipsync preview label"
 fi
 
 if [[ -f "$GUARD" ]]; then
   bash "$GUARD" || fail "check_storyboard_critical_features.sh failed"
 fi
 
-python3 -m pytest "$ROOT/Production/tools/tests/test_phase_a_single_player.py" -q \
-  || fail "test_phase_a_single_player.py failed"
+export PYTHONPATH="${ROOT}/Production:${ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
+
+(
+  cd "$ROOT/Production/tools"
+  PYTHONPATH="${ROOT}/Production:${ROOT}" python3 -m pytest \
+    tests/test_phase_a_single_player.py \
+    tests/test_phase_a_stitcher_ambient_only.py -q
+) || fail "Phase A pytest guards failed"
 
 echo "[phase-a-single-player-durability] OK — LD-829 source + dist + pytest guards passed"

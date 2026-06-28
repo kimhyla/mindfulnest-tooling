@@ -29,6 +29,14 @@ import re
 import subprocess
 from pathlib import Path
 
+from video_encode_policy import (
+    AUX_H264_ENCODER_ARGS,
+    VIDEO_QUALITY_CRF,
+    VIDEO_QUALITY_GRADFUN_VF,
+    VIDEO_QUALITY_PRESET_BAKE,
+    VIDEO_QUALITY_PRESET_PREVIEW,
+)
+
 # ---------------------------------------------------------------------------
 # Normalization recipe (LD-284) — single source of truth
 # ---------------------------------------------------------------------------
@@ -48,20 +56,21 @@ from pathlib import Path
 #   prefix + ENCODER_ARGS. Preserved for existing simple call sites.
 NORMALIZATION_VF_EXPR: str = (
     "scale=1280:720:force_original_aspect_ratio=decrease,"
-    "pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1:1,fps=24"
+    "pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1:1,fps=24,"
+    + VIDEO_QUALITY_GRADFUN_VF
 )
 NORMALIZATION_ENCODER_ARGS: tuple[str, ...] = (
     "-c:v", "libx264", "-profile:v", "high", "-pix_fmt", "yuv420p",
-    "-preset", "slow", "-g", "48",
-    "-b:v", "1500k", "-maxrate", "1800k", "-bufsize", "3000k",
+    "-preset", VIDEO_QUALITY_PRESET_BAKE, "-g", "48", "-bf", "0",
+    "-crf", VIDEO_QUALITY_CRF,
     "-c:a", "aac", "-b:a", "128k", "-ac", "1", "-ar", "44100",
     "-movflags", "+faststart",
 )
-# Phase B preview-only: same CRF/profile as LD-284 alignment but veryfast preset.
-# Full-length lipsync (100s+) with -preset slow can take many minutes per cache miss.
+# Stitch slot mux preview — fast CRF encode (operator rebuild; not kid-facing bake).
 PREVIEW_OVERLAY_ENCODER_ARGS: tuple[str, ...] = (
     "-c:v", "libx264", "-profile:v", "high", "-pix_fmt", "yuv420p",
-    "-preset", "veryfast", "-g", "48", "-crf", "20",
+    "-preset", VIDEO_QUALITY_PRESET_PREVIEW, "-g", "48", "-bf", "0",
+    "-crf", VIDEO_QUALITY_CRF,
     "-c:a", "aac", "-b:a", "128k", "-ac", "1", "-ar", "44100",
     "-movflags", "+faststart",
 )
@@ -74,7 +83,7 @@ NORMALIZATION_FFMPEG_ARGS: tuple[str, ...] = (
 # *_normalized.mp4 in normalized_segments/, _normalized_phase_a/, etc.
 # Next /api/scene/assemble + preview-stitched paths re-encode from source.
 # LD-284 itself unchanged; this is a CODE-ALIGNMENT, not a spec change.
-NORMALIZATION_RECIPE_VERSION: str = "v6"  # LD-296: cap delivery bitrate for kid-facing MP4s
+NORMALIZATION_RECIPE_VERSION: str = "v8"  # -bf 0: zero-based video DTS for stitch/browser gates
 NORMALIZATION_RECIPE_HASH: str = hashlib.sha256(
     (f"{NORMALIZATION_RECIPE_VERSION}:" + NORMALIZATION_VF_EXPR + "|"
      + " ".join(NORMALIZATION_ENCODER_ARGS)).encode("utf-8"),
@@ -309,7 +318,7 @@ def mp4_decodes_cleanly(path: Path, *, timeout_s: int = 120) -> bool:
     try:
         proc = subprocess.run(
             [
-                "ffmpeg", "-v", "error",
+                "ffmpeg", "-hide_banner", "-loglevel", "fatal",
                 "-i", str(path.resolve()),
                 "-f", "null", "-",
             ],
@@ -324,6 +333,292 @@ def mp4_decodes_cleanly(path: Path, *, timeout_s: int = 120) -> bool:
     ):
         return False
     return proc.returncode == 0 and not (proc.stderr or "").strip()
+
+
+STITCH_PREVIEW_SKIP_NORMALIZE_V1 = "STITCH_PREVIEW_SKIP_NORMALIZE_V1"
+
+
+def stitch_preview_can_use_source_directly(path: Path) -> bool:
+    """True when slot MP4 is already LD-284-shaped — skip se_norm_* preview re-encode.
+
+    Phase A/B dry exports are normalize_for_concat outputs (1280×720 H.264 + AAC).
+    Re-normalizing into stitch_editor_cache only adds latency and poisoned-cache risk.
+    """
+    path = Path(path)
+    if not path.is_file():
+        return False
+    if not mp4_decodes_cleanly(path, timeout_s=45):
+        return False
+    if not mp4_operator_playback_timestamps_safe(path):
+        return False
+    if not _has_audio_stream(path):
+        return False
+    try:
+        out = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=codec_name,width,height,pix_fmt",
+                "-of", "json", str(path.resolve()),
+            ],
+            capture_output=True, check=True, text=True, timeout=15,
+        )
+        data = json.loads(out.stdout or "{}")
+        streams = data.get("streams") or []
+        if not streams:
+            return False
+        v = streams[0]
+        if (v.get("codec_name") or "").lower() != "h264":
+            return False
+        if int(v.get("width") or 0) != 1280 or int(v.get("height") or 0) != 720:
+            return False
+        if (v.get("pix_fmt") or "").lower() != "yuv420p":
+            return False
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+    ):
+        return False
+    return True
+
+
+# H.264 B-frames place the first displayed frame at DTS ≈ -1/fps (e.g. -0.083s at 24fps).
+# That is normal and browser-safe; gates target concat drift holes (large positive DTS)
+# and deep negative concat offsets — not standard encoder B-frame lead-in.
+H264_BFRAME_DTS_TOLERANCE_S = 0.1
+
+# STITCH_MP4_PLAYBACK_TIMESTAMPS_V1 — QuickTime stalls on negative video DTS at file head.
+STITCH_MP4_PLAYBACK_TIMESTAMPS_V1 = "STITCH_MP4_PLAYBACK_TIMESTAMPS_V1"
+
+
+def mp4_first_video_dts_s(path: Path) -> float | None:
+    """Return DTS (seconds) of the first video packet, or None when unknown."""
+    try:
+        out = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_packets",
+                "-read_intervals", "0%+0.5",
+                "-show_entries", "packet=dts_time",
+                "-of", "csv=p=0",
+                str(path.resolve()),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        )
+        for line in (out.stdout or "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            return float(line)
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+        ValueError,
+    ):
+        return None
+    return None
+
+
+def mp4_quicktime_timestamps_safe(path: Path) -> bool:
+    """True when first video DTS is not a deep-negative concat offset (QuickTime-safe)."""
+    dts = mp4_first_video_dts_s(path)
+    if dts is None:
+        return False
+    return dts >= -H264_BFRAME_DTS_TOLERANCE_S
+
+
+def mp4_first_video_dts_near_zero(
+    path: Path,
+    *,
+    eps_s: float = H264_BFRAME_DTS_TOLERANCE_S,
+) -> bool:
+    """True when the first video packet DTS is at timeline zero (Chrome MSE-safe)."""
+    dts = mp4_first_video_dts_s(path)
+    if dts is None:
+        return False
+    return -eps_s <= dts <= eps_s
+
+
+def ffprobe_audio_start_time(path: Path) -> float:
+    """Return audio stream start_time in seconds, or 0.0 when absent or unknown."""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error",
+             "-select_streams", "a:0",
+             "-show_entries", "stream=start_time",
+             "-of", "default=noprint_wrappers=1:nokey=1",
+             str(path.resolve())],
+            capture_output=True, timeout=10,
+        )
+        raw = out.stdout.decode("utf-8", errors="replace").strip()
+        val = float(raw)
+        return val if val > 0 else 0.0
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+        return 0.0
+
+
+def mp4_operator_playback_timestamps_safe(path: Path, *, start_eps_s: float = 0.001) -> bool:
+    """True when MP4 is safe for Chrome/HTML5 mid-stream playback.
+
+    Requires first video packet DTS near timeline zero *and* zero-based A/V stream
+    start metadata. Chrome stalls on a positive DTS hole (e.g. 1.83s) even when
+    stream start_time is 0.
+    """
+    if not mp4_quicktime_timestamps_safe(path):
+        return False
+    if not mp4_first_video_dts_near_zero(path, eps_s=start_eps_s):
+        return False
+    v_start = ffprobe_video_start_time(path)
+    if v_start > start_eps_s:
+        return False
+    a_start = ffprobe_audio_start_time(path)
+    return a_start <= start_eps_s
+
+
+def _remux_mp4_copy_safe(path: Path, *, timeout_s: int = DEFAULT_FFMPEG_TIMEOUT_S) -> None:
+    """Copy remux with avoid_negative_ts + faststart (no stream rebase)."""
+    path = Path(path)
+    tmp = path.parent / f"{path.stem}.copy_safe.{os.getpid()}{path.suffix}"
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-i", str(path.resolve()),
+                "-c", "copy",
+                "-avoid_negative_ts", "make_zero",
+                "-movflags", "+faststart",
+                str(tmp),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=timeout_s,
+        )
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+def normalize_mp4_browser_playback_timeline(
+    path: Path,
+    *,
+    timeout_s: int = DEFAULT_FFMPEG_TIMEOUT_S,
+) -> Path:
+    """In-place heal: QuickTime-safe DTS + Chrome timeline zero + zero-based A/V start."""
+    path = Path(path)
+    if not path.is_file() or mp4_operator_playback_timestamps_safe(path):
+        return path
+
+    if not mp4_quicktime_timestamps_safe(path):
+        _remux_mp4_copy_safe(path, timeout_s=timeout_s)
+        if mp4_operator_playback_timestamps_safe(path):
+            return path
+
+    if not mp4_operator_playback_timestamps_safe(path):
+        tmp = path.parent / f"{path.stem}.browser_norm.{os.getpid()}{path.suffix}"
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-i", str(path.resolve()),
+                    "-vf", "setpts=PTS-STARTPTS",
+                    "-af", "asetpts=PTS-STARTPTS",
+                    *AUX_H264_ENCODER_ARGS,
+                    "-movflags", "+faststart",
+                    str(tmp),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=timeout_s,
+            )
+            os.replace(tmp, path)
+        except subprocess.CalledProcessError:
+            # Corrupt/truncated cache — caller decode gate will purge; never raise.
+            pass
+        finally:
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+
+    return path
+
+
+def rebase_mp4_stream_start_times(path: Path, *, timeout_s: int = DEFAULT_FFMPEG_TIMEOUT_S) -> Path:
+    """Shift all streams to t=0 via copy remux (fixes post-mix non-zero start_time)."""
+    path = Path(path)
+    offset_s = ffprobe_video_start_time(path)
+    if offset_s <= 0.001:
+        offset_s = ffprobe_audio_start_time(path)
+    if offset_s <= 0.001:
+        return path
+    tmp = path.parent / f"{path.stem}.rebase.{os.getpid()}{path.suffix}"
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-i", str(path.resolve()),
+                "-map", "0:v:0",
+                "-map", "0:a:0?",
+                "-c", "copy",
+                "-output_ts_offset", f"-{offset_s:.6f}",
+                "-movflags", "+faststart",
+                str(tmp),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=timeout_s,
+        )
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+    return path
+
+
+def remux_mp4_playback_safe(path: Path, *, timeout_s: int = DEFAULT_FFMPEG_TIMEOUT_S) -> Path:
+    """In-place remux: non-negative timestamps + faststart for QuickTime parity."""
+    path = Path(path)
+    tmp = path.parent / f"{path.stem}.playback_safe.{os.getpid()}{path.suffix}"
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-i", str(path.resolve()),
+                "-c", "copy",
+                "-avoid_negative_ts", "make_zero",
+                "-movflags", "+faststart",
+                str(tmp),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=timeout_s,
+        )
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+    if not mp4_operator_playback_timestamps_safe(path):
+        rebase_mp4_stream_start_times(path, timeout_s=timeout_s)
+    return path
 
 
 def mp4_is_playable(path: Path, *, min_duration_s: float = 0.05) -> bool:
@@ -407,12 +702,20 @@ def preview_cache_is_valid(
 
     Guards ``stitch_preview_*.mp4`` LRU hits: partial concat writes can produce
     ~1s playable files that pass ``mp4_is_playable`` but freeze the UI player.
+
+    STITCH_MODULE_BAKE_AV_PARITY_V1: also reject when video/audio stream
+    durations diverge (format duration follows the longest stream — usually audio).
     """
     if expected_duration_s <= 0:
         return mp4_is_playable(path)
     if not mp4_is_playable(path):
         return False
-    if not mp4_decodes_cleanly(path):
+    if not mp4_decodes_cleanly(
+        path,
+        timeout_s=stitch_preview_decode_timeout_s(expected_duration_s),
+    ):
+        return False
+    if av_duration_drift_s(path) > STITCH_EXPORT_AV_MAX_DRIFT_S:
         return False
     try:
         out = subprocess.run(
@@ -455,6 +758,43 @@ def _has_audio_stream(src: Path) -> bool:
         return False
 
 
+def _normalize_to_encoder_spec(
+    src: Path,
+    dst: Path,
+    *,
+    encoder_args: tuple[str, ...],
+    timeout_s: int,
+) -> None:
+    """Re-encode src at dst with LD-284 vf + supplied encoder args (atomic tmp+rename)."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.parent / f"{dst.stem}.tmp.{os.getpid()}{dst.suffix}"
+    has_audio = _has_audio_stream(src)
+    video_start_s = ffprobe_video_start_time(src)
+    fuse_ss_args: list[str] = []
+    if video_start_s > 0.005:
+        fuse_ss_args = ["-ss", f"{video_start_s:.3f}"]
+    ffmpeg_args = ("-vf", NORMALIZATION_VF_EXPR, *encoder_args)
+    try:
+        cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            *fuse_ss_args,
+            "-i", str(src.resolve()),
+        ]
+        if not has_audio:
+            cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
+                    "-shortest",
+                    "-map", "0:v:0", "-map", "1:a:0"]
+        cmd += [*ffmpeg_args, str(tmp)]
+        subprocess.run(cmd, check=True, capture_output=True, timeout=timeout_s)
+        os.replace(tmp, dst)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
 def normalize_for_concat(src: Path, dst: Path,
                          timeout_s: int = DEFAULT_FFMPEG_TIMEOUT_S) -> None:
     """Re-encode src to the LD-284 canonical codec spec at dst.
@@ -468,48 +808,30 @@ def normalize_for_concat(src: Path, dst: Path,
     'every normalized clip has a video stream AND an audio stream' for all
     downstream filter graphs (xfade, concat demuxer).
     """
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dst.parent / f"{dst.stem}.tmp.{os.getpid()}{dst.suffix}"
-    has_audio = _has_audio_stream(src)
-    # AV_FUSE_SS_20260525: fuse A/V at the demuxer level.
-    # ByteDance lipsync outputs have video.start_time≈22ms with
-    # audio.start_time=0.000. If we don't account for this, fps=24 snaps the
-    # 22ms video PTS to the nearest 24fps grid point (41ms), producing a 41ms
-    # A/V desync in every finalized clip. Applying setpts=PTS-STARTPTS in the
-    # video filter only makes things worse (shortens video duration relative to
-    # audio, causing catastrophic truncation on beats with trim_start > 0).
-    #
-    # The correct "fuse before importation" fix: detect video.start_time > 5ms
-    # and prepend -ss {video_start_s} BEFORE -i src. This seeks BOTH the video
-    # and audio streams in src to the same start point simultaneously, so both
-    # enter the normalization pipeline already fused. fps=24 then sees a video
-    # stream starting at PTS≈0, snaps to 0, and the desync never forms.
-    # The tiny audio trim (≈22ms) is imperceptible and correct — it aligns
-    # the audio channel to the first actual video frame.
-    video_start_s = ffprobe_video_start_time(src)
-    fuse_ss_args: list[str] = []
-    if video_start_s > 0.005:
-        fuse_ss_args = ["-ss", f"{video_start_s:.3f}"]
-    try:
-        cmd = [
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            *fuse_ss_args,
-            "-i", str(src.resolve()),
-        ]
-        if not has_audio:
-            # Silent audio fallback, shortest drives duration.
-            cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
-                    "-shortest",
-                    "-map", "0:v:0", "-map", "1:a:0"]
-        cmd += [*NORMALIZATION_FFMPEG_ARGS, str(tmp)]
-        subprocess.run(cmd, check=True, capture_output=True, timeout=timeout_s)
-        os.replace(tmp, dst)
-    finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
+    _normalize_to_encoder_spec(
+        src, dst,
+        encoder_args=NORMALIZATION_ENCODER_ARGS,
+        timeout_s=timeout_s,
+    )
+
+
+# Stitch slot preview — fast CRF encode; separate cache key (_pv suffix) at caller.
+STITCH_PREVIEW_NORMALIZE_TIMEOUT_S = 300
+STITCH_PREVIEW_NORMALIZE_V1 = "STITCH_PREVIEW_NORMALIZE_V1"
+
+
+def normalize_for_stitch_preview(
+    src: Path,
+    dst: Path,
+    *,
+    timeout_s: int = STITCH_PREVIEW_NORMALIZE_TIMEOUT_S,
+) -> None:
+    """Preview-only normalize: same 1280×720 vf as LD-284, fast CRF for mux rebuild."""
+    _normalize_to_encoder_spec(
+        src, dst,
+        encoder_args=PREVIEW_OVERLAY_ENCODER_ARGS,
+        timeout_s=timeout_s,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -846,8 +1168,8 @@ def trim_body_with_fade(
             cmd += [
                 "-map", "0:v:0", "-map", "0:a?",
                 "-c:v", "libx264", "-profile:v", "high", "-pix_fmt", "yuv420p",
-                "-preset", "slow", "-g", "48",
-                "-b:v", "1500k", "-maxrate", "1800k", "-bufsize", "3000k",
+                "-preset", VIDEO_QUALITY_PRESET_BAKE, "-g", "48",
+                "-crf", VIDEO_QUALITY_CRF,
                 "-c:a", "copy",
                 "-movflags", "+faststart",
                 str(tmp),
@@ -952,6 +1274,7 @@ def expand_clips_with_black_pause_boundaries(
     *,
     visual_out_ms: int = 600,
     visual_in_ms: int = 600,
+    visual_out_ms_by_pair: list[int] | None = None,
     fade_audio: bool = False,
 ) -> list[Path]:
     """Fade-through-black with inserted black hold — does not eat dialogue time.
@@ -970,10 +1293,19 @@ def expand_clips_with_black_pause_boundaries(
         )
     parts: list[Path] = []
     for i, clip in enumerate(clips):
+
+        def _pair_visual_out(pair_idx: int) -> int:
+            if (
+                visual_out_ms_by_pair is not None
+                and 0 <= pair_idx < len(visual_out_ms_by_pair)
+            ):
+                return int(visual_out_ms_by_pair[pair_idx])
+            return visual_out_ms
+
         fade_in_ms = (
             allocate_pair_fade_budget(
                 pair_fades_ms[i - 1],
-                visual_out_ms=visual_out_ms,
+                visual_out_ms=_pair_visual_out(i - 1),
                 visual_in_ms=visual_in_ms,
             )[1]
             if i > 0 and pair_fades_ms[i - 1] > 0 else 0
@@ -981,7 +1313,7 @@ def expand_clips_with_black_pause_boundaries(
         fade_out_ms = (
             allocate_pair_fade_budget(
                 pair_fades_ms[i],
-                visual_out_ms=visual_out_ms,
+                visual_out_ms=_pair_visual_out(i),
                 visual_in_ms=visual_in_ms,
             )[0]
             if i < n - 1 and pair_fades_ms[i] > 0 else 0
@@ -1007,7 +1339,7 @@ def expand_clips_with_black_pause_boundaries(
         if i < n - 1 and pair_fades_ms[i] > 0:
             _, _, black_ms = allocate_pair_fade_budget(
                 pair_fades_ms[i],
-                visual_out_ms=visual_out_ms,
+                visual_out_ms=_pair_visual_out(i),
                 visual_in_ms=visual_in_ms,
             )
             if black_ms > 0:
@@ -1142,17 +1474,14 @@ def render_xfade_pair(file_a: Path, file_b: Path, fade_ms: int,
 # ---------------------------------------------------------------------------
 # Concat demuxer (absolute escaped paths)
 # ---------------------------------------------------------------------------
-def concat_with_xfade_clips(parts: list[Path], output_path: Path,
-                            timeout_s: int = DEFAULT_FFMPEG_TIMEOUT_S) -> Path:
-    """Concat a list of pre-rendered, codec-identical mp4 parts into output_path.
-
-    Reuses the proven concat-demuxer pattern at production_server.py:1926-1945
-    (absolute paths via Path.resolve(), single-quoted with embedded-quote escape).
-
-    Atomic via tmp+rename on output_path so partial writes never serve.
-    """
-    if not parts:
-        raise ValueError("concat_with_xfade_clips: parts list is empty")
+def _concat_demuxer_mp4(
+    parts: list[Path],
+    output_path: Path,
+    *,
+    copy_streams: bool,
+    timeout_s: int,
+) -> None:
+    """Write ``output_path`` from concat demuxer list (atomic tmp+rename)."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     concat_list = output_path.with_suffix(output_path.suffix + ".concat.txt")
     concat_list.write_text(
@@ -1164,9 +1493,12 @@ def concat_with_xfade_clips(parts: list[Path], output_path: Path,
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
             "-f", "concat", "-safe", "0", "-i", str(concat_list.resolve()),
-            "-c", "copy", "-movflags", "+faststart",
-            str(tmp),
         ]
+        if copy_streams:
+            cmd += ["-c", "copy", "-avoid_negative_ts", "make_zero"]
+        else:
+            cmd += ["-vf", NORMALIZATION_VF_EXPR, *NORMALIZATION_ENCODER_ARGS]
+        cmd += ["-movflags", "+faststart", str(tmp)]
         subprocess.run(cmd, check=True, capture_output=True, timeout=timeout_s)
         os.replace(tmp, output_path)
     finally:
@@ -1176,12 +1508,123 @@ def concat_with_xfade_clips(parts: list[Path], output_path: Path,
                     p.unlink()
                 except OSError:
                     pass
+
+
+def concat_with_xfade_clips(parts: list[Path], output_path: Path,
+                            timeout_s: int = DEFAULT_FFMPEG_TIMEOUT_S) -> Path:
+    """Concat a list of pre-rendered, codec-identical mp4 parts into output_path.
+
+    Reuses the proven concat-demuxer pattern at production_server.py:1926-1945
+    (absolute paths via Path.resolve(), single-quoted with embedded-quote escape).
+
+    Atomic via tmp+rename on output_path so partial writes never serve.
+
+    STITCH_MODULE_BAKE_AV_PARITY_V1: ``-c copy`` can truncate video while audio
+    continues; verify stream parity and fall back to LD-284 re-encode concat.
+    """
+    if not parts:
+        raise ValueError("concat_with_xfade_clips: parts list is empty")
+    _concat_demuxer_mp4(parts, output_path, copy_streams=True, timeout_s=timeout_s)
+
+    # Forward refs — defined below in this module; resolved at call time.
+    drift_s = av_duration_drift_s(output_path)
+    if drift_s <= STITCH_EXPORT_AV_MAX_DRIFT_S:
+        if not mp4_quicktime_timestamps_safe(output_path):
+            remux_mp4_playback_safe(output_path, timeout_s=timeout_s)
+        return output_path
+
+    try:
+        output_path.unlink()
+    except OSError:
+        pass
+
+    reencode_timeout_s = max(timeout_s, 600)
+    _concat_demuxer_mp4(
+        parts,
+        output_path,
+        copy_streams=False,
+        timeout_s=reencode_timeout_s,
+    )
+    drift_s = av_duration_drift_s(output_path)
+    if drift_s > STITCH_EXPORT_AV_MAX_DRIFT_S:
+        try:
+            output_path.unlink()
+        except OSError:
+            pass
+        raise RuntimeError(
+            "stitch concat blocked — module preview audio/video misaligned after "
+            f"copy and re-encode fallback (drift {drift_s:.3f}s, "
+            f"max {STITCH_EXPORT_AV_MAX_DRIFT_S}s)",
+        )
+    if not mp4_quicktime_timestamps_safe(output_path):
+        remux_mp4_playback_safe(output_path, timeout_s=reencode_timeout_s)
     return output_path
 
 
 # ---------------------------------------------------------------------------
 # ffprobe duration (small wrapper)
 # ---------------------------------------------------------------------------
+STITCH_EXPORT_AV_MAX_DRIFT_S = 0.25
+
+
+def stitch_preview_decode_timeout_s(duration_s: float) -> int:
+    """ffmpeg null-decode budget scaled to clip length (module previews exceed 45s)."""
+    if duration_s <= 0:
+        return 45
+    return max(45, min(600, int(duration_s * 0.5) + 30))
+
+
+def ffprobe_stream_duration_s(path: Path, stream: str) -> float:
+    """Return duration seconds for ``v`` (video) or ``a`` (audio); 0 if missing."""
+    selector = "v:0" if stream == "v" else "a:0"
+    try:
+        out = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", selector,
+                "-show_entries", "stream=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(path.resolve()),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if out.returncode != 0:
+            return 0.0
+        raw = (out.stdout or "").strip()
+        return float(raw) if raw else 0.0
+    except (ValueError, subprocess.TimeoutExpired):
+        return 0.0
+
+
+def av_duration_drift_s(path: Path) -> float:
+    """Absolute video vs audio stream duration delta in seconds."""
+    video_s = ffprobe_stream_duration_s(path, "v")
+    audio_s = ffprobe_stream_duration_s(path, "a")
+    if video_s <= 0.0 or audio_s <= 0.0:
+        return 0.0
+    return abs(video_s - audio_s)
+
+
+def assert_stitch_export_clips_av_aligned(
+    clip_paths: list[Path],
+    *,
+    max_drift_s: float = STITCH_EXPORT_AV_MAX_DRIFT_S,
+) -> None:
+    """Raise ValueError when any export clip has misaligned A/V streams."""
+    bad: list[str] = []
+    for clip in clip_paths:
+        drift = av_duration_drift_s(clip)
+        if drift > max_drift_s:
+            bad.append(f"{clip.name} (drift {drift:.3f}s)")
+    if bad:
+        raise ValueError(
+            "stitch export blocked — clip audio/video misaligned: "
+            + "; ".join(bad),
+        )
+
+
 def ffprobe_duration(path: Path) -> float:
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -1235,7 +1678,8 @@ _FULL_MODULE_RE = re.compile(
 
 
 def lru_cleanup(preview_dir: Path, keep: int = DEFAULT_LRU_KEEP,
-                pattern: "re.Pattern | None" = None) -> list[Path]:
+                pattern: "re.Pattern | None" = None,
+                pin_stems: "set[str] | None" = None) -> list[Path]:
     """Evict all but the `keep` most-recently-modified files matching
     `pattern` (defaults to preview_stitched_*.mp4) in preview_dir.
     Excludes .tmp and .lock files entirely.
@@ -1267,8 +1711,17 @@ def lru_cleanup(preview_dir: Path, keep: int = DEFAULT_LRU_KEEP,
     # Sort by st_mtime DESC (newest first); evict the tail.
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     to_evict = candidates[keep:]
+    pinned = pin_stems or set()
     evicted: list[Path] = []
     for victim in to_evict:
+        if pinned:
+            stem = victim.stem
+            for prefix in ("stitch_preview_", "stitch_peaks_", "stitch_audio_"):
+                if stem.startswith(prefix):
+                    stem = stem[len(prefix):]
+                    break
+            if stem in pinned:
+                continue
         try:
             victim.unlink()
             evicted.append(victim)
@@ -1432,15 +1885,7 @@ def compute_fade_clamp_per_pair(durations: list[float],
 def resolve_watercolor_asset(library_dir: Path, key: str, cue_type: str) -> Path:
     """Resolve a watercolor cue key to an existing file on disk.
 
-    Counter HIGH-3 fix (preflight 102): pre-check asset existence BEFORE any
-    ffmpeg invocation so errors surface with an actionable message instead of
-    being swallowed into `CalledProcessError.stderr`.
-
-    cue_type="png"   -> expects <library_dir>/<key>.png
-    cue_type="video" -> expects <library_dir>/<key>.mov or <library_dir>/<key>.mp4
-                        (.mov preferred for true alpha via qtrle)
-
-    Raises FileNotFoundError with a hint-bearing message on any miss.
+    Delegates to lib.watercolor_assets.resolve_watercolor_path (canonical contract).
     """
     if cue_type not in _WC_CUE_TYPES:
         raise ValueError(
@@ -1448,6 +1893,13 @@ def resolve_watercolor_asset(library_dir: Path, key: str, cue_type: str) -> Path
         )
     if not key or not isinstance(key, str):
         raise ValueError(f"key must be non-empty string, got {key!r}")
+    try:
+        from lib.watercolor_assets import resolve_watercolor_path as _resolve_wc
+    except ImportError:
+        _resolve_wc = None
+    prefer_animation = cue_type == "video"
+    if _resolve_wc is not None:
+        return _resolve_wc(library_dir, key, prefer_animation=prefer_animation)
     exts = _WC_PNG_EXTS if cue_type == "png" else _WC_VIDEO_EXTS
     # Accept key with or without extension.
     key_path = Path(key)
@@ -1790,6 +2242,8 @@ def compute_finalize_args_hash(slim_snapshot: dict, beat_id: str,
                       image_override, is_magic_still_source, is_magic_video_source})
 
     Magic source priority (highest):
+      When both magic_still_path and magic_video_path exist on disk, the newer
+      file mtime wins (resolve_active_magic_layer in beat_generator).
       magic_still_path: silent composite — caller MUST mix TTS (is_magic_still_source).
       magic_video_path: lipsync audio is baked in at composite time (handle_magic_video
       maps source lipsync audio). Do NOT re-mix TTS on top (is_magic_video_source).
@@ -1799,29 +2253,31 @@ def compute_finalize_args_hash(slim_snapshot: dict, beat_id: str,
     beat = beats.get(beat_id) or {}
     phase1 = beat.get("phase_1") or {}
 
-    # Priority 0a: magic composite (highest priority).
-    # magic_still_path and magic_video_path live in event_dir (not clips_dir).
-    # Both are SILENT; is_magic_source=True signals the caller to mix TTS in.
+    # Priority 0a: magic composite — newest on-disk layer wins when both exist.
     magic_still = beat.get("magic_still_path")
     magic_video = beat.get("magic_video_path")
     is_magic_still_source = False
     is_magic_video_source = False
     magic_path_used: "str | None" = None
+    path: "Path | None" = None
     if event_dir:
-        if magic_still:
-            candidate = Path(event_dir) / magic_still
-            if candidate.is_file():
-                path: Path = candidate
+        import beat_generator as _bg  # lazy — beat_generator imports ffmpeg_stitch lazily too
+
+        layer = _bg.resolve_active_magic_layer(beat, event_dir)
+        if layer == "still":
+            still_clip = _bg.beat_magic_still_clip_path(beat, event_dir)
+            if still_clip is not None:
+                path = still_clip
                 is_magic_still_source = True
                 magic_path_used = magic_still
-        elif magic_video:
-            candidate = Path(event_dir) / magic_video
-            if candidate.is_file():
-                path = candidate
+        elif layer == "video":
+            video_clip = _bg.beat_magic_video_clip_path(beat, event_dir)
+            if video_clip is not None:
+                path = video_clip
                 is_magic_video_source = True
                 magic_path_used = magic_video
 
-    if not is_magic_still_source and not is_magic_video_source:
+    if path is None and not is_magic_still_source and not is_magic_video_source:
         path = resolve_beat_file(beat_id, slim_snapshot, clips_dir)  # raises FNF
 
     mtime = os.path.getmtime(str(path))

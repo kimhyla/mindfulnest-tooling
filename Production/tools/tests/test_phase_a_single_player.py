@@ -23,7 +23,9 @@ def test_phase_a_single_player_marker_and_no_duplicate_stitched_video() -> None:
     assert 'data-testid="phase-a-stitched-preview"' not in src
     assert "mn-phase-stitched-video" not in src
     assert "Stitched preview (lipsync + ambient bed):" not in src
-    assert "Preview (canonical stitched — lipsync + ambient bed):" in src
+    assert "Preview (canonical stitched — lipsync + ambient bed):" not in src
+    assert "Preview (normalized dry lipsync — ambient added in Stitcher):" in src
+    assert "phase-a-mix-btn" not in src
 
 
 def test_phase_a_single_player_e2e_gates_present() -> None:

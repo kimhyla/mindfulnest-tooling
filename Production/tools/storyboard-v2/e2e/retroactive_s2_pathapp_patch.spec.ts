@@ -19,6 +19,7 @@
 // exist today: bg_accept_option, beat_update_text, beat_use_as_final, select.
 
 import { test, expect, type Page, type Request } from '@playwright/test';
+import { openStoryboardPane } from './helpers';
 
 async function gotoApp(page: Page): Promise<void> {
   page.on('pageerror', (err) => {
@@ -126,7 +127,7 @@ test.describe('S2 — pathappPatch mutation channel', () => {
       if (req.url().includes('/api/beat/update_text')) updateReqs.push(req);
     });
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     // First beat in fixture (beat_01).
     const firstBeat = page.locator('[data-testid="beat-text-0"]');
     await expect(firstBeat).toBeVisible();
@@ -137,8 +138,8 @@ test.describe('S2 — pathappPatch mutation channel', () => {
     await page.locator('[data-testid="app-root"]').click({ position: { x: 1, y: 1 } });
     await expect.poll(() => updateReqs.length, { timeout: 7_000 }).toBeGreaterThanOrEqual(1);
     const body = updateReqs[0]!.postDataJSON() as Record<string, unknown>;
-    // beat_update_text is non-BG → event_id key per LD-461 scopeKeyFor.
-    expect(body['event_id']).toBeDefined();
+    // beat_update_text — scope pin is scope_event_id (LD-461 category fix).
+    expect(body['scope_event_id']).toBeDefined();
     expect(body['beat']).toBe('beat_01');
     expect(typeof body['scope_version']).toBe('number');
     // Restore the fixture text by typing it back.
@@ -293,7 +294,7 @@ test.describe('S2 — pathappPatch mutation channel', () => {
       await r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
     });
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     const baselineCount = snapReqs.length;
     // Trigger a single mutation (beat text edit + blur).
     const firstBeat = page.locator('[data-testid="beat-text-0"]');

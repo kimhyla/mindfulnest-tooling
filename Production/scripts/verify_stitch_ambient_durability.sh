@@ -19,6 +19,11 @@ fail() { echo "FATAL: $1" >&2; exit 1; }
 
 grep -q 'STITCH_DEFAULT_AMBIENT_BEDS' "$EDITOR" || fail "missing STITCH_DEFAULT_AMBIENT_BEDS in stitch_editor.py"
 grep -q 'STITCH_AMBIENT_BED_VOLUME = 0.15' "$EDITOR" || fail "missing STITCH_AMBIENT_BED_VOLUME constant"
+grep -q 'STITCH_AMBIENT_LOOP_XFADE_V1' "$ROOT/Production/tools/server_handlers/stitch_ambient_loop.py" \
+  || fail "missing stitch_ambient_loop.py"
+grep -q 'build_ambient_bed_filter_lane' "$EDITOR" || fail "missing build_ambient_bed_filter_lane in stitch_editor"
+grep -q 'build_ambient_bed_filter_lane' "$ROOT/Production/tools/production_server.py" \
+  || fail "missing build_ambient_bed_filter_lane in production_server"
 grep -q 'normalize_job_slots_audio' "$EDITOR" || fail "missing normalize_job_slots_audio"
 grep -q '_persist_stitch_job_canonical_audio' "$EDITOR" || fail "missing _persist_stitch_job_canonical_audio"
 grep -q '_mix_stitch_waveform_audio' "$EDITOR" || fail "missing _mix_stitch_waveform_audio"
@@ -37,5 +42,6 @@ if [[ -f "$DIST" ]]; then
 fi
 
 python3 -m pytest "$ROOT/Production/tools/tests/test_stitch_ambient_hydrate.py" -q
+python3 -m pytest "$ROOT/Production/tools/tests/test_stitch_ambient_loop.py" -q
 
 echo "[stitch-ambient-durability] OK — source markers + pytest passed"

@@ -15,6 +15,21 @@ export function videoRoleForBgPhase(phase: string): string | null {
   return PHASE_TO_VIDEO_ROLE[phase] ?? null;
 }
 
+const URL_VIDEO_ROLES = new Set(['intro', 'resolution', 'phase_a', 'phase_b', 'standalone']);
+
+/** Honor bookmark ?video=resolution on load (Stitcher + Beat Gen scope). */
+export function syncActiveVideoRoleFromUrl(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const role = new URL(window.location.href).searchParams.get('video');
+    if (role && URL_VIDEO_ROLES.has(role)) {
+      activeTargetVideo.value = role;
+    }
+  } catch {
+    // headless / restricted context
+  }
+}
+
 export interface SetActiveVideoRoleResult {
   ok: boolean;
   status: number;

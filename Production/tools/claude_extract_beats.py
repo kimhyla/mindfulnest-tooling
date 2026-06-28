@@ -261,7 +261,7 @@ def _few_shot_kling_examples() -> str:
     return (
         "@Image1 (Arlo) Arlo — Discovery. Scene from @Image2.\n\n"
         "Camera: static locked shot, no zoom, no dolly, no pan, no camera movement, "
-        "stable eye-level medium shot.\n\n"
+        "stable eye-level close-up — close up view of character, seen from the torso up.\n\n"
         "Arlo speaks in a warm natural conversational pace: \"Hello.... Are you OK...?\"\n\n"
         "Children's illustrated fantasy storybook style, warm golden forest light."
     )
@@ -307,6 +307,9 @@ def claude_plan_beats(
         + "Call submit_beat_plan with story_summary and beats_plan.\n"
         "Use Lorelai (raccoon), Tessa, Arlo, or [Stage Direction]. "
         "Use beat_type stage_still for inscription/runestone still inserts.\n"
+        "beats_plan scene_notes = ONE sentence of on-screen staging only (gesture/expression). "
+        "Put every spoken line in dialogue_text only — never repeat dialogue in scene_notes, "
+        "and never put Voice line:, @Image1, or storybook-style tails in scene_notes.\n"
     )
     user = (
         f"Segment: arc {meta.get('arc_number')} event {meta.get('event_id')} phase {phase}\n"
@@ -371,26 +374,25 @@ def claude_author_kling_prompts(
             dialogue_beats.append(row)
 
     elapsed_ms = 0
-    if dialogue_beats:
-        system = (
-            f"{skill}\n\n"
-            f"{kling_staging_policy_block()}\n\n"
-            "Few-shot approved prompts:\n"
-            f"{few_shot}\n\n"
-            "Call submit_kling_prompts with one entry per dialogue beat_index in THIS batch only.\n"
-            "Every dialogue beat_index in the batch must appear exactly once.\n"
-            "Include emotion and scene_notes on every beat; tooling rebuilds final shape on approve.\n"
-            "Author draft: @Image1 ({Speaker}). Scene from @Image2. + screen direction + voice line.\n"
-            "Emotion tags OUTSIDE quotes: Tessa speaks in a …: [curious] \"Hello. [pause] Hi!\"\n"
-        )
-        expected_indices = {int(b.get("beat_index") or 0) for b in dialogue_beats}
+    author_warnings: list[str] = []
+
+    def _missing_dialogue_rows() -> list[dict]:
+        return [
+            row for row in dialogue_beats
+            if int(row.get("beat_index") or 0) not in prompt_by_index
+        ]
+
+    def _run_author_batches(rows: list[dict], *, label: str) -> None:
+        nonlocal elapsed_ms
+        if not rows:
+            return
         batch_size = AUTHOR_DIALOGUE_BATCH_SIZE
-        total_batches = (len(dialogue_beats) + batch_size - 1) // batch_size
-        for batch_start in range(0, len(dialogue_beats), batch_size):
-            batch = dialogue_beats[batch_start:batch_start + batch_size]
+        total_batches = (len(rows) + batch_size - 1) // batch_size
+        for batch_start in range(0, len(rows), batch_size):
+            batch = rows[batch_start:batch_start + batch_size]
             batch_num = batch_start // batch_size + 1
             print(
-                f"[BG] kling-author batch {batch_num}/{total_batches} "
+                f"[BG] kling-author {label} batch {batch_num}/{total_batches} "
                 f"beats={len(batch)} idx={batch[0].get('beat_index')}..{batch[-1].get('beat_index')}",
                 flush=True,
             )
@@ -402,7 +404,7 @@ def claude_author_kling_prompts(
             user = (
                 f"Segment: arc {meta.get('arc_number')} event {meta.get('event_id')} "
                 f"phase {meta.get('phase')}\n\n"
-                f"Approved dialogue beats only (batch {batch_start // AUTHOR_DIALOGUE_BATCH_SIZE + 1}):\n"
+                f"Approved dialogue beats only ({label} batch {batch_num}):\n"
                 f"{plan_json}\n"
             )
             resp, batch_ms = _call_anthropic(
@@ -418,10 +420,11 @@ def claude_author_kling_prompts(
             parsed = _parse_structured_response(resp, tool_name="submit_kling_prompts")
             beats_out = parsed.get("beats") or []
             if not isinstance(beats_out, list) or not beats_out:
-                raise ValueError(
-                    f"beats array required in author response (batch starting beat_index "
-                    f"{batch[0].get('beat_index')})"
+                author_warnings.append(
+                    f"Claude returned no prompts for {label} batch starting "
+                    f"beat_index {batch[0].get('beat_index')} — tooling will synthesize gaps",
                 )
+                continue
             for row in beats_out:
                 if not isinstance(row, dict):
                     continue
@@ -431,11 +434,34 @@ def claude_author_kling_prompts(
                     prompt_by_index[idx] = prompt
                 if idx:
                     author_fields[idx] = row
-        authored = [i for i in expected_indices if i in prompt_by_index]
-        if len(authored) < len(dialogue_beats):
-            raise ValueError(
-                f"Claude returned incomplete dialogue prompts "
-                f"({len(dialogue_beats)} beats expected, got {len(authored)})"
+
+    if dialogue_beats:
+        system = (
+            f"{skill}\n\n"
+            f"{kling_staging_policy_block()}\n\n"
+            "Few-shot approved prompts:\n"
+            f"{few_shot}\n\n"
+            "Call submit_kling_prompts with one entry per dialogue beat_index in THIS batch.\n"
+            "Include every beat_index you can; tooling fills any gaps from the approved plan.\n"
+            "Include emotion and scene_notes on every beat; tooling rebuilds final shape on approve.\n"
+            "Author draft: @Image1 ({Speaker}). Scene from @Image2. + screen direction + voice line.\n"
+            "Emotion tags OUTSIDE quotes: Tessa speaks in a …: [curious] \"Hello. [pause] Hi!\"\n"
+        )
+        _run_author_batches(dialogue_beats, label="primary")
+        missing_after_primary = _missing_dialogue_rows()
+        if missing_after_primary:
+            print(
+                f"[BG] kling-author retry missing={len(missing_after_primary)} "
+                f"idx={[r.get('beat_index') for r in missing_after_primary]}",
+                flush=True,
+            )
+            _run_author_batches(missing_after_primary, label="retry")
+        still_missing = _missing_dialogue_rows()
+        if still_missing:
+            author_warnings.append(
+                "Claude omitted "
+                f"{len(still_missing)} dialogue prompt(s) after retry — "
+                "tooling will synthesize from the approved plan",
             )
 
     merged_plan: list[dict] = []
@@ -446,17 +472,25 @@ def claude_author_kling_prompts(
         if extra.get("emotion"):
             merged["emotion"] = extra["emotion"]
         if extra.get("scene_notes"):
-            merged["scene_notes"] = extra["scene_notes"]
+            from beat_extract_policy import strip_plan_scene_notes_for_editor
+
+            merged["scene_notes"] = strip_plan_scene_notes_for_editor(
+                str(extra["scene_notes"]),
+                dialogue_text=str(merged.get("dialogue_text") or ""),
+                beat_type=str(merged.get("beat_type") or "dialogue"),
+            )
         merged_plan.append(merged)
 
-    prompt_by_index, enriched_plan = postprocess_kling_author_results(
+    prompt_by_index, enriched_plan, postprocess_warnings = postprocess_kling_author_results(
         merged_plan, prompt_by_index,
     )
+    author_warnings.extend(postprocess_warnings)
     return {
         "prompt_by_index": prompt_by_index,
         "beats_plan_enriched": enriched_plan,
         "model_used": CLAUDE_SONNET_MODEL,
         "generation_time_ms": elapsed_ms,
+        "author_warnings": author_warnings,
     }
 
 

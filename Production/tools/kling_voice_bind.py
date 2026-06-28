@@ -170,6 +170,53 @@ def reconcile_o3_element_quality_for_submit(
     return True
 
 
+def advance_o3_element_quality_for_proven_registry(
+    beat: dict,
+    speaker: str,
+    *,
+    registry_element_id: str | None,
+    registry_voice_id: str | None,
+) -> bool:
+    """Advance stale ``o3_element_quality`` when registry matches proven_o3_bind.
+
+    Event-wide voice stack migrations (e.g. Lorelai Beat 18) are intentional —
+    not ad-hoc drift that requires ``accept_voice_drift`` on every redo.
+    """
+    reg_eid = str(registry_element_id or "").strip()
+    reg_vid = str(registry_voice_id or "").strip()
+    if not reg_eid or not reg_vid:
+        return False
+    try:
+        from tools import kling_character_registry as reg
+
+        proven = reg.resolve_proven_o3_bind(reg.get_character_entry(speaker) or {}) or {}
+    except Exception:
+        proven = {}
+    if (
+        str(proven.get("element_id") or "").strip() != reg_eid
+        or str(proven.get("kling_voice_id") or "").strip() != reg_vid
+    ):
+        return False
+    quality = beat.get("o3_element_quality")
+    if not isinstance(quality, dict):
+        quality = {}
+    if (
+        str(quality.get("speaker") or "").strip() == str(speaker or "").strip()
+        and str(quality.get("element_id") or "").strip() == reg_eid
+        and str(quality.get("kling_voice_id") or "").strip() == reg_vid
+    ):
+        return False
+    updated = dict(quality)
+    updated["speaker"] = str(speaker or "").strip()
+    updated["element_id"] = reg_eid
+    updated["kling_voice_id"] = reg_vid
+    updated["applied_at"] = _now_iso()
+    updated["advanced_from"] = "proven_registry_migration"
+    updated.pop("pinned_from_beat_id", None)
+    beat["o3_element_quality"] = updated
+    return True
+
+
 def detect_voice_bind_drift(beat: dict, speaker: str, registry_voice_id: str | None) -> str | None:
     """Warn when registry voice_id differs from this beat's last approved O3 bind."""
     pin = beat.get("o3_voice_stack_pin")

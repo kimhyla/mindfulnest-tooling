@@ -42,6 +42,7 @@ def test_update_beat_locked_patches_only_target_beat(monkeypatch, tmp_path) -> N
     sidecar = tmp_path / "beat_generator_state.json"
     sidecar.write_text(json.dumps(_state()), encoding="utf-8")
     monkeypatch.setattr(bg, "BG_SIDECAR_PATH", str(sidecar))
+    monkeypatch.setattr(bg, "_sidecar_use_sqlite", lambda: False)
 
     ok, _beat = bg.update_beat_locked(
         "beat_a",
@@ -60,6 +61,7 @@ def test_update_beat_locked_rejects_stale_attempt(monkeypatch, tmp_path) -> None
     sidecar = tmp_path / "beat_generator_state.json"
     sidecar.write_text(json.dumps(_state()), encoding="utf-8")
     monkeypatch.setattr(bg, "BG_SIDECAR_PATH", str(sidecar))
+    monkeypatch.setattr(bg, "_sidecar_use_sqlite", lambda: False)
 
     ok, _beat = bg.update_beat_locked(
         "beat_a",
@@ -90,20 +92,293 @@ def test_background_duplicate_guard_and_terminal_statuses_are_explicit() -> None
 
 
 def test_ui_treats_failed_prefixes_as_terminal() -> None:
-    src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
+    src = (TOOLS / "storyboard-v2" / "src" / "o3JobStatusContract.ts").read_text(encoding="utf-8")
     assert "voiceFix.startsWith('failed')" in src
-    assert "(beat.kling_o3_voice_fix_status ?? '').startsWith('failed')" in src
 
 
-def test_o3_poll_returns_enriched_beat_snapshot_on_terminal() -> None:
+def test_voice_fix_terminal_failure_contract() -> None:
+    from o3_job_status_contract import voice_fix_is_terminal_failure
+
+    assert voice_fix_is_terminal_failure("failed_provider_fetch")
+    assert voice_fix_is_terminal_failure("failed_provider_sub720")
+    assert voice_fix_is_terminal_failure("failed_o3")
+    assert not voice_fix_is_terminal_failure("approved")
+    assert not voice_fix_is_terminal_failure("job_running")
+
+
+def test_bg_failure_banner_hidden_for_stale_pre_r2_hosting_when_clip_kept() -> None:
+    src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
+    assert "isStaleLipsyncHostingFailure" in src
+    assert "resolveO3FailureBanner" in src
+    banner_block = src.split("function resolveO3FailureBanner", 1)[1].split("function beatHasPopulatedO3Slot", 1)[0]
+    assert "isStaleLipsyncHostingFailure(err)" in banner_block
+    assert "return null" in banner_block
+
+
+def test_bg_failure_banner_shows_attempt_error_while_not_running() -> None:
+    src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
+    assert "resolveO3FailureBanner" in src
+    idx = src.find("const o3FailureMessage")
+    assert idx >= 0
+    snippet = src[idx : idx + 220]
+    assert "resolveO3FailureBanner(beat" in snippet
+    assert "kling_o3_status !== 'approved'" not in snippet
+
+
+def test_bg_stale_failure_does_not_toast_on_session_load() -> None:
+    store_src = (TOOLS / "storyboard-v2" / "src" / "state" / "bgSessionStore.ts").read_text(encoding="utf-8")
+    tab_src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
+    assert "seedGenFailureSeenKeys" in store_src
+    hydrate_block = store_src.split("function applySessionPayload", 1)[1][:900]
+    assert "seedGenFailureSeenKeys(row.beats)" in hydrate_block
+    assert "notifyNewGenFailures" not in hydrate_block
+    assert "notifyNewGenFailures(nextBeats" in tab_src
+
+
+def test_ui_o3_submit_audit_lifecycle_wired() -> None:
+    tab_src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
+    poll_src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgPollCoordinator.tsx").read_text(encoding="utf-8")
+    assert "bgO3SubmitAuditByBeat" in tab_src
+    assert "delete next[beatId]" in poll_src
+    assert "{busy && !stillInsert && (o3SubmitAudit || o3IntentSnapshot)" in tab_src
+    assert "o3SubmitPending" in tab_src
+    assert "submitPollLatchRef" in tab_src
+    assert "O3_SUBMIT_PENDING_TTL_MS" in tab_src
+
+
+def test_finalize_respects_sidecar_failed_provider_fetch(monkeypatch, tmp_path) -> None:
+    import importlib
+
+    bg_mod = importlib.import_module("server_handlers.background")
+    beat_id = "bg_arc1_event2_pre_beat_01"
+    sidecar = {
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [{
+                            "beat_id": beat_id,
+                            "kling_o3_status": "approved",
+                            "kling_o3_voice_fix_status": "failed_provider_fetch",
+                            "kling_o3_voice_fix_error": "unsafe url: non-public host",
+                        }],
+                    },
+                },
+            },
+        },
+    }
+
+    class _FakeBg:
+        @staticmethod
+        def sidecar_file_lock(timeout_s=30):
+            import contextlib
+            return contextlib.nullcontext()
+
+        @staticmethod
+        def read_sidecar():
+            return sidecar
+
+        @staticmethod
+        def _migrate_sidecar(data):
+            return data
+
+        @staticmethod
+        def find_beat(data, bid):
+            for beat in data["arcs"]["arc_1"]["segments"]["event_2_pre"]["beats"]:
+                if beat["beat_id"] == bid:
+                    return "event_2_pre", beat
+            return None, None
+
+    class _Proc:
+        def poll(self):
+            return 1
+
+    monkeypatch.setattr(bg_mod, "_bg_module", lambda: _FakeBg())
+    job = {
+        "status": "running",
+        "beat_id": beat_id,
+        "proc": _Proc(),
+        "log_path": str(tmp_path / "job.log"),
+    }
+    (tmp_path / "job.log").write_text("Traceback non-public host\n", encoding="utf-8")
+    bg_mod._finalize_o3_job_after_subprocess_exit(job, tmp_path / "Event_2")
+    assert job["status"] == "failed"
+    assert "non-public" in job["error"].lower() or "localhost" in job["error"].lower()
+
+
+def test_o3_poll_returns_enriched_beat_snapshot_while_running_and_terminal() -> None:
     src = (TOOLS / "server_handlers" / "background.py").read_text(encoding="utf-8")
     assert "_enriched_beat_snapshot_for_o3_poll" in src
     assert "_o3_poll_payload_with_beat_snapshot" in src
     assert 'out["beat"] = snap' in src
+    snap_block = src.split("def _o3_poll_payload_with_beat_snapshot", 1)[1].split("\ndef ", 1)[0]
+    assert '"running"' in snap_block
+    assert '"done"' in snap_block
+    assert '"failed"' in snap_block
 
 
-def test_o3_poll_ui_patches_single_beat_without_full_refresh() -> None:
-    src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(encoding="utf-8")
-    assert "mergeBeatFromO3Poll" in src
-    assert "O3_POLL_INTERVAL_MS" in src
-    assert "res.data.beat" in src
+def test_o3_poll_payload_attaches_beat_snapshot_for_running_status(monkeypatch, tmp_path) -> None:
+    import importlib
+
+    bg_mod = importlib.import_module("server_handlers.background")
+    beat_id = "bg_arc1_event2_pre_beat_03"
+    event_dir = tmp_path / "Event_2"
+    event_dir.mkdir()
+    sidecar = {
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_2_pre": {
+                        "beats": [{
+                            "beat_id": beat_id,
+                            "speaker": "Lorelai",
+                            "kling_o3_voice_fix_status": "visual_running",
+                            "kling_o3_status": "visual_running",
+                        }],
+                    },
+                },
+            },
+        },
+    }
+
+    def _fake_enriched(bid, _event_dir, *, migrate=False):
+        assert bid == beat_id
+        assert migrate is False
+        return {"beat_id": bid, "kling_o3_voice_fix_status": "visual_running"}
+
+    monkeypatch.setattr(bg_mod, "_enriched_beat_snapshot_for_o3_poll", _fake_enriched)
+    payload = {"status": "running", "beat_id": beat_id, "job_id": "abc12345"}
+    out = bg_mod._o3_poll_payload_with_beat_snapshot(payload, event_dir)
+    assert out["beat"]["beat_id"] == beat_id
+    assert out["status"] == "running"
+
+
+def test_o3_poll_ui_patches_beat_while_running_and_on_terminal() -> None:
+    poll_src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgPollCoordinator.tsx").read_text(encoding="utf-8")
+    helpers_src = (TOOLS / "storyboard-v2" / "src" / "utils" / "bgPollHelpers.ts").read_text(encoding="utf-8")
+    store_src = (TOOLS / "storyboard-v2" / "src" / "state" / "bgSessionStore.ts").read_text(encoding="utf-8")
+    assert "mergeBeatFromO3Poll" in poll_src
+    assert "applyO3GalleryFieldsFromPoll" in helpers_src
+    assert "preserveRefBoxesOnServerBeatMerge" in store_src
+    assert "O3_POLL_INTERVAL_MS" in poll_src
+    assert "res.data.beat" in poll_src
+    assert "if (beatPatches.length > 0)" in poll_src
+    assert poll_src.index("if (beatPatches.length > 0)") < poll_src.index(
+        "if (completedBeatIds.length > 0 || failedBeatIds.length > 0 || staleBeatIds.length > 0)"
+    )
+
+
+def test_o3_poll_intent_terminal_recovery_before_sidecar() -> None:
+    src = (TOOLS / "server_handlers" / "background.py").read_text(encoding="utf-8")
+    poll_block = src.split("def handle_bg_poll_arlo_o3_voice_status", 1)[1].split("\ndef ", 1)[0]
+    assert "_recover_o3_job_from_intent_terminal" in src
+    assert poll_block.index("_recover_o3_job_from_intent_terminal") < poll_block.index(
+        "_recover_o3_job_from_sidecar"
+    )
+
+
+def test_o3_poll_stale_job_toast_and_merge() -> None:
+    poll_src = (TOOLS / "storyboard-v2" / "src" / "components" / "BgPollCoordinator.tsx").read_text(encoding="utf-8")
+    assert "bg-o3-poll-stale" in poll_src
+    assert "isStaleO3JobPoll(res)" in poll_src
+
+
+def test_recover_o3_job_from_intent_terminal_done(tmp_path: Path, monkeypatch) -> None:
+    import server_handlers.background as bg_mod
+    from o3_generation_intent import write_generation_intent, write_intent_terminal
+
+    event_dir = tmp_path / "Event_2"
+    jobs_dir = event_dir / "arlo_o3_jobs"
+    jobs_dir.mkdir(parents=True)
+    job_id = "abcd1234"
+    beat_id = "bg_arc1_event2_post_beat_02"
+    clip = event_dir / "delivery.mp4"
+    clip.write_bytes(b"mp4")
+    intent = {
+        "schema_version": 1,
+        "intent_id": "intent-1",
+        "job_id": job_id,
+        "beat_id": beat_id,
+        "committed_at": "2026-06-20T00:00:00+00:00",
+        "prompt": {"verbatim": "test", "sha256": "abc"},
+        "visual": {},
+        "voice": {},
+        "generation": {},
+        "runtime": {},
+    }
+    write_generation_intent(intent, event_dir)
+    write_intent_terminal(job_id, event_dir, {
+        "status": "done",
+        "delivered": {"video_path": str(clip)},
+    })
+    recovered = bg_mod._recover_o3_job_from_intent_terminal(job_id, event_dir)
+    assert recovered is not None
+    assert recovered["status"] == "done"
+    assert recovered["intent_terminal_recovery"] is True
+    assert recovered["result"]["video"] == str(clip)
+
+
+def test_recover_o3_job_from_intent_terminal_promotes_false_failed_when_log_done(
+    tmp_path: Path,
+) -> None:
+    import server_handlers.background as bg_mod
+    from o3_generation_intent import write_generation_intent, write_intent_terminal
+
+    event_dir = tmp_path / "Event_2"
+    jobs_dir = event_dir / "arlo_o3_jobs"
+    jobs_dir.mkdir(parents=True)
+    job_id = "ea1b9c08"
+    beat_id = "bg_arc1_event3b_full_beat_01"
+    clip = event_dir / "delivery.mp4"
+    clip.write_bytes(b"mp4")
+    log_path = jobs_dir / f"{job_id}_{beat_id}.log"
+    log_path.write_text(
+        json.dumps({"ok": True, "beat_id": beat_id, "video": str(clip)}),
+        encoding="utf-8",
+    )
+    intent = {
+        "schema_version": 1,
+        "intent_id": "intent-1",
+        "job_id": job_id,
+        "beat_id": beat_id,
+        "committed_at": "2026-06-20T00:00:00+00:00",
+        "prompt": {"verbatim": "test", "sha256": "abc"},
+        "visual": {},
+        "voice": {},
+        "generation": {},
+        "runtime": {},
+    }
+    write_generation_intent(intent, event_dir)
+    write_intent_terminal(job_id, event_dir, {
+        "status": "failed",
+        "failure": {"message": "O3 job ended without terminal record (subprocess lost or server restart)."},
+    })
+    recovered = bg_mod._recover_o3_job_from_intent_terminal(job_id, event_dir)
+    assert recovered is not None
+    assert recovered["status"] == "done"
+    assert recovered["intent_false_failed_recovery"] is True
+    assert recovered["result"]["video"] == str(clip)
+
+
+def test_resolve_beat_job_busy_accepts_single_path_not_only_list() -> None:
+    """Py3.12+ Path is not iterable — poll snapshot must not pass bare Path."""
+    import importlib
+
+    bg_mod = importlib.import_module("server_handlers.background")
+    event_dir = Path("/tmp/Event_1")
+    beat = {"beat_id": "bg_arc1_event1_pre_beat_01", "speaker": "Lorelai"}
+    # Must not raise TypeError: 'PosixPath' object is not iterable
+    bg_mod._resolve_beat_job_busy_for_session(beat, event_dir)
+    bg_mod._resolve_beat_job_busy_for_session(beat, [event_dir])
+
+
+def test_o3_poll_snapshot_job_busy_uses_event_dir_list_contract() -> None:
+    src = (TOOLS / "server_handlers" / "background.py").read_text(encoding="utf-8")
+    snap_fn = src.split("def _enriched_beat_snapshot_for_o3_poll", 1)[1].split("\ndef ", 1)[0]
+    poll_fn = src.split("def _o3_poll_payload_with_beat_snapshot", 1)[1].split("\ndef ", 1)[0]
+    assert "_normalize_o3_event_dirs" in src
+    assert "beat_event_dirs" in snap_fn
+    assert "_resolve_beat_job_busy_for_session(snap, beat_event_dirs)" in snap_fn
+    assert "_resolve_beat_job_busy_for_session(snap, event_dir)" not in snap_fn
+    assert "_minimal_sidecar_beat_for_o3_poll" in src
+    assert "_minimal_sidecar_beat_for_o3_poll" in poll_fn

@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# audit_authority_duplicates.sh — retroactive scan for competing authority predicates.
+#
+# Usage:
+#   bash audit_authority_duplicates.sh              # report only (exit 0)
+#   bash audit_authority_duplicates.sh --strict-subset  # fail on fixed-class regressions
+set -uo pipefail
+
+ROOT="${MN_TOOLING_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
+TOOLS="$ROOT/Production/tools"
+SB="$TOOLS/storyboard-v2/src"
+STRICT="${1:-}"
+
+report() { echo "[authority-audit] $*"; }
+section() { echo ""; echo "=== $1 ==="; }
+fail_strict() {
+  if [[ "$STRICT" == "--strict-subset" ]]; then
+    echo "[authority-audit] FATAL: $1" >&2
+    exit 1
+  fi
+  report "FINDING: $1"
+}
+
+section "A. Kling stitch export — client must not gate on kling_o3_status alone (export files)"
+FIND_A=$(rg -n "kling_o3_status\s*===?\s*['\"]approved['\"]" "$SB/utils/bgStitchExport.ts" 2>/dev/null || true)
+if [[ -n "$FIND_A" ]]; then
+  echo "$FIND_A"
+  fail_strict "bgStitchExport.ts gates on kling_o3_status"
+else
+  report "bgStitchExport.ts clean"
+fi
+
+section "B. Duplicate job_busy gate in bgStitchExport (must use o3JobBlocksStitchExport)"
+FIND_B=$(rg -n "job_busy\s*\|\||o3_current_job_id" "$SB/utils/bgStitchExport.ts" 2>/dev/null || true)
+if [[ -n "$FIND_B" ]]; then
+  echo "$FIND_B"
+  fail_strict "bgStitchExport.ts duplicates job_busy predicate"
+else
+  report "bgStitchExport.ts uses contract for job busy"
+fi
+
+section "C. auto_pin must delegate to beat_kling_stitch_export_ready"
+if grep -A8 'def auto_pin_approved_kling_o3_delivery' "$TOOLS/beat_generator.py" | grep -q 'kling_o3_status.*!=.*approved'; then
+  fail_strict "auto_pin still uses raw kling_o3_status gate"
+else
+  report "auto_pin delegates to stitch contract"
+fi
+
+section "D. BgTab prompt textarea must prefer _derived.display_prompt"
+if ! grep -q '_derived?.display_prompt' "$SB/components/BgTab.tsx"; then
+  fail_strict "BgTab beatPromptText missing _derived.display_prompt"
+else
+  report "BgTab uses display_prompt authority"
+fi
+
+section "E. Informational — kling_o3_status === approved elsewhere (display/heal, not export gates)"
+rg -n "kling_o3_status\s*===?\s*['\"]approved['\"]" "$SB" \
+  --glob '!**/__tests__/**' \
+  --glob '!**/klingStitchReadiness.ts' \
+  --glob '!**/bgStitchExport.ts' 2>/dev/null || true
+
+section "F. Server direct kling_o3_status=approved writes (must use kling_stitch_readiness)"
+OFFENDERS=$(rg -n 'beat\["kling_o3_status"\]\s*=\s*"approved"' "$TOOLS" \
+  --glob '*.py' \
+  --glob '!**/kling_stitch_readiness.py' \
+  --glob '!**/tests/**' \
+  --glob '!**/install_*.py' 2>/dev/null || true)
+if [[ -n "$OFFENDERS" ]]; then
+  echo "$OFFENDERS"
+  fail_strict "direct kling_o3_status=approved write outside kling_stitch_readiness.py"
+else
+  report "no stray server approved writes"
+fi
+
+section "G. Pipeline dict literals — must use active_delivery_sidecar_fields"
+FIND_G=$(rg -n '"kling_o3_status":\s*"approved"' "$TOOLS" \
+  --glob '*.py' \
+  --glob '!**/kling_stitch_readiness.py' \
+  --glob '!**/tests/**' \
+  --glob '!**/install_*.py' 2>/dev/null || true)
+if [[ -n "$FIND_G" ]]; then
+  echo "$FIND_G"
+  fail_strict "inline kling_o3_status approved dict literal outside contract"
+else
+  report "pipeline finalize uses active_delivery_sidecar_fields"
+fi
+
+section "H. Client O3 submit latch — must use beatHasActiveO3DeliveryClip"
+if grep -q "kling_o3_status === 'approved'" "$SB/o3JobStatusContract.ts" 2>/dev/null; then
+  fail_strict "o3JobStatusContract still gates submit latch on kling_o3_status"
+else
+  report "o3JobStatusContract uses active delivery clip authority"
+fi
+
+section "I. Stitch timeline — StitcherTab DEFAULT_SLOT_DUR fallbacks (review only)"
+rg -n "DEFAULT_SLOT_DUR_MS \*" "$SB/components/StitcherTab.tsx" 2>/dev/null || true
+
+section "J. Truth Stack Layer 1 — HTTP scope wrapper"
+grep -q 'def scope_from_app' "$TOOLS/beatgen_scope.py" \
+  || fail_strict "beatgen_scope missing scope_from_app"
+grep -q '_in_beatgen_scope' "$TOOLS/production_server.py" \
+  || fail_strict "production_server missing _in_beatgen_scope"
+grep -q 'run_in_beatgen_scope' "$TOOLS/beatgen_scope.py" \
+  || fail_strict "beatgen_scope missing run_in_beatgen_scope for async workers"
+report "Layer 1 scope_from_app + HTTP/async wrappers present"
+
+section "K. Magic write authority — write_magic_delivery"
+grep -q 'def write_magic_delivery' "$TOOLS/server_handlers/background.py" \
+  || fail_strict "write_magic_delivery missing"
+grep -q 'write_magic_delivery(' "$TOOLS/server_handlers/background.py" \
+  || fail_strict "magic handlers must call write_magic_delivery"
+if grep -q 'partition verify missed; sidecar confirmed' "$TOOLS/server_handlers/background.py" 2>/dev/null; then
+  fail_strict "sidecar-only magic verify fallback regressed"
+else
+  report "magic writeback uses single authority (no sidecar-only 200)"
+fi
+
+section "L. insert-beat scope guard"
+if grep -A3 'def handle_bg_insert_beat' "$TOOLS/server_handlers/background.py" | grep -q '_assert_event_scope'; then
+  report "handle_bg_insert_beat has scope guard"
+else
+  fail_strict "handle_bg_insert_beat missing _assert_event_scope"
+fi
+
+report "audit complete"
+exit 0

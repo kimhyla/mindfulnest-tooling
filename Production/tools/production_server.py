@@ -72,6 +72,11 @@ if _TOOLS_DIR_FOR_BOOTSTRAP not in sys.path:
 from lib.atomic_json_write import atomic_json_write  # noqa: E402 (Windows/Dropbox retry-safe JSON writes per LD-368)
 from lib.v3_partition import _iter_v3_beats  # noqa: E402 V59 Phase 5: walk all v3 partitions + legacy
 from lib.paths import DROPBOX_ROOT  # noqa: E402 LD-505 Phase B: MN_DROPBOX_ROOT, not __file__ chain
+from lib.server_port_guard import (  # noqa: E402 PRODUCTION_SERVER_PORT_GUARD_V1
+    port_startup_guard,
+    register_server_port,
+    unregister_server_port,
+)
 
 # Checkout root (…/mindfulnest-tooling). Resolves /files?path=Production/… when cwd is not Dropbox.
 _MN_REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -242,25 +247,71 @@ def _resolve_module_id_for_state(state_manager) -> int:
     return int(cached.get('id', meta['m_number']))
 
 
-def _resolve_module_for_event(event_id_str: str):
-    """Resolve event_id like 'M1E1' to module metadata dict.
+def _resolve_module_for_event(
+    event_id_str: str,
+    *,
+    production_folder_id: str | None = None,
+):
+    """Resolve production scope to module metadata for Suggest Script + Directus.
 
-    Returns dict with keys: arc_number, m_number, event_number, creature_name,
-    technique_name. Returns None if event_id_str cannot be parsed.
+    Returns dict with keys: arc_number, m_number, event_number, play_order,
+    creature_name, technique_name. Returns None if unresolvable.
 
-    Queries Directus prod_modules (cached 15min); falls back to convention
-    M(N) -> Arc((N-1)//6 + 1) on Directus failure. The convention assumes the
-    V1 layout (6 modules per arc); production should rely on the Directus
-    lookup which carries the authoritative play-order vs M-number mapping.
+    **Play-order rule (Arc Skeleton):** ``Event_N`` production folders map to
+    skeleton play-order event N, NOT creature M-number N. Event_3 → M4 Ember,
+    not M3 Benson. M-form ids in state use skeleton-backed m_number when the
+    production folder is available (folder wins on conflict).
     """
     global _MODULE_RESOLVE_CACHE, _MODULE_RESOLVE_CACHE_TS
-    if not event_id_str:
+
+    folder_id = (production_folder_id or "").strip() or None
+    if not folder_id and event_id_str:
+        try:
+            sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+            from module_event_id import is_numbered_event_folder_id  # type: ignore
+
+            if is_numbered_event_folder_id(str(event_id_str)):
+                folder_id = str(event_id_str).strip()
+        except Exception:
+            pass
+
+    m_number = None
+    event_number = 1
+    arc_number = 1
+    play_order = None
+
+    if folder_id:
+        try:
+            sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+            from module_event_id import resolve_m_number_from_production_folder  # type: ignore
+
+            resolved = resolve_m_number_from_production_folder(
+                folder_id, bg_module=_bg_module(),
+            )
+            if resolved:
+                arc_number, play_order, m_number = resolved
+        except Exception as exc:
+            print(
+                f"[_resolve_module_for_event] skeleton play-order lookup failed "
+                f"for {folder_id!r}: {exc}",
+                flush=True,
+            )
+
+    if m_number is None and event_id_str:
+        try:
+            sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+            from module_event_id import parse_m_form_event_identity  # type: ignore
+
+            parsed = parse_m_form_event_identity(str(event_id_str))
+        except Exception:
+            parsed = None
+            m = _EVENT_ID_PATTERN.match(str(event_id_str))
+            parsed = (int(m.group(1)), int(m.group(2))) if m else None
+        if parsed:
+            m_number, event_number = parsed
+
+    if m_number is None:
         return None
-    m = _EVENT_ID_PATTERN.match(str(event_id_str))
-    if not m:
-        return None
-    m_number = int(m.group(1))
-    event_number = int(m.group(2))
 
     # Refresh cache if stale
     if time.time() - _MODULE_RESOLVE_CACHE_TS > _MODULE_RESOLVE_CACHE_TTL_S:
@@ -280,20 +331,16 @@ def _resolve_module_for_event(event_id_str: str):
             }
             _MODULE_RESOLVE_CACHE_TS = time.time()
         except Exception as e:
-            # Fail-quiet: log + fall through to convention. Caller still gets useful data.
             print(f'[_resolve_module_for_event] Directus query failed '
                   f'({type(e).__name__}: {e}); using convention fallback')
 
     if m_number in _MODULE_RESOLVE_CACHE:
         meta = _MODULE_RESOLVE_CACHE[m_number]
+        arc_number = int(meta.get('arc_number') or arc_number)
     else:
-        # Convention fallback (V1 layout): M(N) -> Arc((N-1)//6 + 1).
-        # Tessa-Bramble M1-M6=Arc1, M7-M12=Arc2, etc. Returns m_number
-        # as the id since prod_modules.id == m_number for most rows (M3/M4
-        # are the known exceptions; without Directus we can't disambiguate).
         meta = {
             'id': m_number,
-            'arc_number': ((m_number - 1) // 6) + 1,
+            'arc_number': arc_number or (((m_number - 1) // 6) + 1),
             'creature_name': 'Unknown',
             'technique_name': '',
         }
@@ -302,6 +349,7 @@ def _resolve_module_for_event(event_id_str: str):
         'arc_number': meta['arc_number'],
         'm_number': m_number,
         'event_number': event_number,
+        'play_order': play_order,
         'creature_name': meta['creature_name'],
         'technique_name': meta['technique_name'],
     }
@@ -994,14 +1042,20 @@ VALID_EMOTIONS = {"happy_excited", "upset_shocked", "sad_disappointed", "neutral
 
 
 def _canonicalize_speaker(raw: str) -> str:
-    """Route legacy speaker strings to their canonical name via _SPEAKER_ALIAS.
-    Strips surrounding whitespace. Returns "" for empty/whitespace-only input.
-    Unknown speakers are returned stripped but otherwise unchanged."""
+    """Route legacy/display speaker strings to registry key for sidecar + TTS."""
     if not raw:
         return ""
     key = raw.strip()
     if not key:
         return ""
+    try:
+        from tools import kling_character_registry as reg
+
+        normalized = reg.normalize_beat_speaker_for_sidecar(key)
+        if normalized:
+            return normalized
+    except Exception:
+        pass
     return _SPEAKER_ALIAS.get(key.lower(), key)
 
 
@@ -1240,13 +1294,18 @@ class StateManager:
             self.file_lock_path.touch()
 
     @staticmethod
-    def _atomic_write_json(path: Path, obj: dict) -> None:
+    def _atomic_write_json(path: Path, obj: dict, *, prod_root: Path | None = None) -> None:
         """Write JSON atomically via the shared Production/lib/atomic_json_write helper.
         Prevents truncated-JSON windows where a concurrent reader sees a partially-
         written file (Tier 3 C2 CRITICAL fix, April 16 2026), AND adds Windows/Dropbox
         PermissionError retry (LD-368 WINDOWS_DROPBOX_ATOMIC_RENAME_RETRY_V1) since
         the project folder is Dropbox-synced on Kim's Windows workstation."""
         atomic_json_write(str(path), obj)
+        try:
+            from lib.production_snapshot import notify_state_write
+            notify_state_write(path, prod_root=prod_root or path.parent.parent)
+        except Exception:
+            pass
 
     def _acquire_file_lock(self, timeout: float = 10.0):
         """Acquire inter-process exclusive lock. Cross-platform: fcntl on Unix, msvcrt on Windows.
@@ -1753,6 +1812,11 @@ class StitchEditorState:
     @staticmethod
     def _atomic_write_json(path: Path, obj: dict) -> None:
         atomic_json_write(str(path), obj)
+        try:
+            from lib.production_snapshot import notify_state_write
+            notify_state_write(path, prod_root=path.parent.parent)
+        except Exception:
+            pass
 
     def _acquire_lock(self, timeout: float = 10.0):
         fd = os.open(str(self.file_lock_path), os.O_RDWR)
@@ -2143,6 +2207,8 @@ class LipsyncPollingThread(threading.Thread):
         try:
             from server_handlers.phases import sweep_phase_module_lipsync_polls
             sweep_phase_module_lipsync_polls(self.state, self.client)
+            from server_handlers.phases import sweep_phase_a_lipsync_resume
+            sweep_phase_a_lipsync_resume(self.state)
         except Exception as exc:  # noqa: BLE001
             print(f"[lipsync-poller] phase module sweep error: {exc}", flush=True)
             traceback.print_exc()
@@ -3821,6 +3887,8 @@ _SPEAKER_ALIAS = {
     # Lemur archaeologist — Luna retired (2026-06-13).
     "luna": "Lorelai",
     "lorelai": "Lorelai",
+    "loral": "Lorelai",
+    "laurel": "Lorelai",
     # Wizard (Cedric) — canonical + all legacy aliases
     "cedric": "Cedric",
     "myrrhin": "Cedric",         # legacy (pre-2026-04-17)
@@ -3908,6 +3976,14 @@ def _resolve_voice_profile(speaker: str) -> dict | None:
     """Look up voice profile for a speaker string via aliases + substring match."""
     if not speaker:
         return None
+    try:
+        from tools import kling_character_registry as reg
+
+        reg_key = reg.resolve_registry_key(speaker)
+        if reg_key:
+            speaker = reg_key
+    except Exception:
+        pass
     cache = _load_voice_profiles_from_directus()
     key_lc = speaker.lower().strip()
     # Arlo intentionally reuses Chipper's ElevenLabs voice while keeping a
@@ -4005,7 +4081,8 @@ def _tts_regenerate_for_beat(app, beat_id: str, text: str,
                              video_role: str = "intro",
                              *,
                              speaker_override: str | None = None,
-                             storyboard_beat_id: str | None = None) -> dict:
+                             storyboard_beat_id: str | None = None,
+                             voice_profile_override: dict | None = None) -> dict:
     """Synchronously regenerate TTS audio for a beat via ElevenLabs v3.
 
     Rule 11 source fidelity: text preserved verbatim, voice profile locked
@@ -4058,7 +4135,7 @@ def _tts_regenerate_for_beat(app, beat_id: str, text: str,
     if not speaker:
         return {"ok": False, "error": f"could not resolve speaker for {beat_id}"}
 
-    profile = _resolve_voice_profile(speaker)
+    profile = voice_profile_override if voice_profile_override else _resolve_voice_profile(speaker)
     if not profile or not profile.get("voice_id"):
         # Surface all currently-registered + missing speakers so Kim can
         # see the gap shape (not just the one beat's failure).
@@ -4263,14 +4340,67 @@ def _argv_with_runtime_event_pin(argv: list[str], app) -> list[str]:
     return out
 
 
+_restart_lock = threading.Lock()
+_last_api_restart_at: float = 0.0
+_API_RESTART_MIN_INTERVAL_S = 30.0
+
+
 def perform_server_restart(server, app, reason: str = "api") -> None:
-    """Cleanly shut down the HTTP server and re-exec the process.
+    """Cleanly shut down the HTTP server and re-exec or exit for launchd respawn.
 
     Called from the restart HTTP handler (UI button) and from the watchdog
     thread (stuck-poll detection). Must be invoked from a non-daemon thread
     so Python's interpreter-shutdown waits for os.execv to replace the process.
+
+    SERVER_LAUNCHD_SINGLE_OWNER_V1: when MN_LAUNCHD_MANAGED=1, exit once and let
+    launchd KeepAlive respawn — avoids os.execv racing KeepAlive into multi-startup.
     """
+    if not _restart_lock.acquire(blocking=False):
+        print(
+            f"[restart] reason={reason} — duplicate restart ignored (already in progress)",
+            flush=True,
+        )
+        return
+    try:
+        _perform_server_restart_locked(server, app, reason=reason)
+    finally:
+        if _restart_lock.locked():
+            _restart_lock.release()
+
+
+def _wait_sync_inflight_drain(app, *, timeout_s: float = 330.0, poll_s: float = 0.5) -> bool:
+    """Wait for @with_pin_and_drain sync handlers (e.g. magic_video ~300s) before shutdown."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        with app._sync_inflight_lock:
+            pending = sorted(app._sync_inflight)
+        if not pending:
+            return True
+        print(
+            f"[restart] waiting for {len(pending)} sync handler(s): {pending[:4]}",
+            flush=True,
+        )
+        time.sleep(poll_s)
+    with app._sync_inflight_lock:
+        remaining = sorted(app._sync_inflight)
+    print(
+        f"[restart] WARN sync inflight did not drain within {timeout_s:.0f}s: {remaining}",
+        flush=True,
+    )
+    return False
+
+
+def _perform_server_restart_locked(server, app, reason: str = "api") -> None:
     print(f"[restart] reason={reason} — shutting down HTTP server...")
+    app.accept_new_jobs = False
+    _wait_sync_inflight_drain(app)
+    try:
+        import beat_generator as _bg
+
+        if _bg.flush_sidecar_mirror_export():
+            print("[restart] sidecar mirror flushed", flush=True)
+    except Exception as exc:
+        print(f"[restart] sidecar mirror flush skipped: {exc}", flush=True)
     time.sleep(0.3)  # let any in-flight response flush
 
     # 1. Shut down the HTTP server so the socket is released
@@ -4324,6 +4454,13 @@ def perform_server_restart(server, app, reason: str = "api") -> None:
     # 5. Re-exec with updated arguments (process image is replaced; no return)
     #    Preserve runtime event pin (not only launch argv) so Event_2 work survives restart.
     new_argv = _argv_with_runtime_event_pin(new_argv, app)
+    if os.environ.get("MN_LAUNCHD_MANAGED", "").strip() == "1":
+        print(
+            "[restart] launchd-managed — exiting for KeepAlive respawn "
+            "(SERVER_LAUNCHD_SINGLE_OWNER_V1)",
+            flush=True,
+        )
+        os._exit(0)
     print(f"[restart] sys.executable={sys.executable}")
     print(f"[restart] os.execv with argv={new_argv}")
     os.execv(sys.executable, [sys.executable] + new_argv)
@@ -4509,6 +4646,18 @@ def _v2_validate_str(v, max_len: int = 50_000):
     return v
 
 
+def _v2_validate_phase_b_cedric_base_clip_id(v):
+    from phase_b_cedric_contract import coerce_phase_b_cedric_base_clip_id  # noqa: WPS433
+
+    return coerce_phase_b_cedric_base_clip_id(_v2_validate_str(v, max_len=256))
+
+
+def _v2_validate_phase_a_arlo_base_clip_id(v):
+    from phase_a_arlo_contract import coerce_phase_a_arlo_base_clip_id  # noqa: WPS433
+
+    return coerce_phase_a_arlo_base_clip_id(_v2_validate_str(v, max_len=256))
+
+
 def _v2_validate_status(v):
     v = _v2_validate_str(v, max_len=64)
     if v not in _V2_STATUS_VALUES:
@@ -4620,7 +4769,7 @@ _V2_MODULE_FIELD_VALIDATORS = {
     "phase_b_ambient_preset_id": _v2_validate_str,
     "phase_b_mixed_audio_file": _v2_validate_str,
     "phase_b_mixed_audio_mtime": _v2_validate_mtime,
-    "phase_b_cedric_base_clip_id": _v2_validate_str,
+    "phase_b_cedric_base_clip_id": _v2_validate_phase_b_cedric_base_clip_id,
     "phase_b_lipsync_file": _v2_validate_str,
     "phase_b_lipsync_mtime": _v2_validate_mtime,
     "phase_b_voice_stem_trim_start_s": _v2_validate_trim_seconds,
@@ -4639,7 +4788,7 @@ _V2_MODULE_FIELD_VALIDATORS = {
     "phase_a_mixed_audio_mtime": _v2_validate_mtime,
     "phase_a_empty_desk_bg_id": _v2_validate_str,
     "phase_a_chipper_flyin_clip_id": _v2_validate_str,
-    "phase_a_chipper_sitting_clip_id": _v2_validate_str,
+    "phase_a_chipper_sitting_clip_id": _v2_validate_phase_a_arlo_base_clip_id,
     "phase_a_chipper_flyout_clip_id": _v2_validate_str,
     "phase_a_lipsync_file": _v2_validate_str,
     "phase_a_lipsync_mtime": _v2_validate_mtime,
@@ -5312,6 +5461,8 @@ class AppContext:
         # Production/tools/, broken on home Mac vs work PC (audit C1-11).
         from lib.paths import runtime_production_root as _rpr
         self.stitch_state = StitchEditorState(_rpr(event_dir) / "tools" / "stitch_editor_state.json")
+        # Stable event-global store — h.app.stitch_state may swap to milestone-local during saves.
+        self._event_stitch_state = self.stitch_state
         self._beats_cache: list[dict] | None = None
         # Storyboard HTML write lock — serializes concurrent patches to the
         # same file (drag-drop image inject, contenteditable text saves).
@@ -5382,6 +5533,12 @@ class AppContext:
         self.scope_type: str = "event"  # 'event' | 'milestone'
         self.active_milestone_id: str | None = None
         self.milestone_dir: Path | None = None
+        self.milestone_library_event_dir: Path | None = None
+        # SCOPE_RESTART_RECONCILE_V1 — GET /api/event/current returns 503 until True.
+        self.scope_ready: bool = False
+        # DEDICATED_PORT_SCOPE_TRUTH_V1 — immutable CLI pin for Event_N on 5110+N.
+        self.cli_pinned_event_id: str = event_id
+        self.server_port: int | None = None
 
     def beats(self, video_role: str = "intro") -> list[dict]:
         # v59 Vite SPA has no embedded beat data — project from state.
@@ -5660,6 +5817,9 @@ class ProductionHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        tooling_sha = str(getattr(self.app, "tooling_sha", "") or "").strip()
+        if tooling_sha:
+            self.send_header("X-Tooling-Sha", tooling_sha)
         self._cors_headers()
         # LOG_HYGIENE_SUPPRESS_CLIENT_CANCEL_TRACEBACKS (LD 2026-04-18):
         # Chrome cancels preloaded <video> range requests aggressively; the
@@ -5765,6 +5925,22 @@ class ProductionHandler(BaseHTTPRequestHandler):
         post-C-5 default flip closes the silent-default leak that
         previously let scope_event_id-less requests through unchecked.
         """
+        if getattr(self.app, "scope_type", "event") == "milestone":
+            from server_handlers.milestone_scope import assert_production_scope
+
+            scoped = self._scope_body(body or {})
+            merged = dict(body or {})
+            merged.update({k: v for k, v in scoped.items() if v is not None})
+            if not merged.get("scope_milestone_id"):
+                merged["scope_milestone_id"] = getattr(self.app, "active_milestone_id", None)
+            ctx = assert_production_scope(
+                self,
+                merged,
+                allow_missing=allow_missing,
+                allow_missing_video_role=allow_missing_video_role,
+            )
+            return ctx is not None
+
         body_event = (body or {}).get("event_id")
         # Fallback: URL query string (some clients pass it there).
         if body_event is None:
@@ -5836,7 +6012,24 @@ class ProductionHandler(BaseHTTPRequestHandler):
                     "standalone AND exist in current state.videos."},
             )
             return False
+        # P3 Truth Stack — every BG mutation rebinds paths from app pin before handler work.
+        if not allow_missing:
+            from server_handlers.milestone_scope import rebind_bg_paths_from_app
+
+            rebind_bg_paths_from_app(self.app)
         return True
+
+    def _in_beatgen_scope(self, handler, *args, **kwargs):
+        """Truth Stack Layer 1 — bind typed BeatGenScope for BG/magic sidecar mutations."""
+        from beatgen_scope import BeatGenScopeError, beatgen_scope_ctx, scope_from_app, scope_from_current_globals
+
+        bg = _bg_module()
+        try:
+            scope = scope_from_app(self.app)
+        except BeatGenScopeError:
+            scope = scope_from_current_globals(bg)
+        with beatgen_scope_ctx(scope, bg):
+            return handler(*args, **kwargs)
 
     # ---- LD-461 SCOPE_BODY_HELPER_V1 (extended in S5.5a2 with scope_video_role) ----
     def _scope_body(self, body: dict) -> dict:
@@ -5956,12 +6149,14 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._serve_beat_audio(beat_id)
             if path == "/api/lipsync/status":
                 return self._handle_lipsync_status()
+            if path.startswith("/api/lipsync/staging/"):
+                return self._serve_lipsync_staging(path)
             # LD V3 Preview Stitched V3: module-level media + library streams.
             if path.startswith("/api/phase_b/media/"):
                 fname = path[len("/api/phase_b/media/"):]
                 return self._serve_phase_media(fname)
             if path.startswith("/api/phase_b/watercolor/"):
-                fname = path[len("/api/phase_b/watercolor/"):]
+                fname = urllib.parse.unquote(path[len("/api/phase_b/watercolor/"):])
                 return self._serve_watercolor(fname)
             # Phase A panel build (LD PHASE_A_PANEL_VOICE_SLIDERS_V1, 2026-04-20):
             # hydrate persistent voice sliders from prod_voice_profiles by id.
@@ -6004,6 +6199,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_bg_groups()
             if path == "/api/bg/poll-assemble-status":
                 return self._handle_bg_poll_assemble_status()
+            if path == "/api/bg/poll-export-to-stitcher":
+                return self._handle_bg_poll_export_to_stitcher_status()
             if path.startswith("/bg-stills/"):
                 return self._handle_bg_stills(path)
             if path == "/api/bg/crop-preview":
@@ -6014,6 +6211,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_files_serve()
             if path == "/api/cr/library":
                 return self._handle_cr_library()
+            if path == "/api/cr/thumb":
+                return self._handle_cr_thumb()
             if path == "/api/cr/full":
                 return self._handle_cr_full_image()
             if path == "/api/storyboard/video_frame":
@@ -6056,6 +6255,14 @@ class ProductionHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/media/timeline_audio_"):
                 fname = path[len("/api/media/"):]
                 return self._serve_timeline_audio_file(fname)
+            if path.startswith("/api/media/playback/"):
+                parts = path[len("/api/media/playback/"):].strip("/").split("/")
+                if len(parts) == 2:
+                    from server_handlers.media_playback import serve_playback_cache_file
+                    return serve_playback_cache_file(self, parts[0], parts[1])
+            if path.startswith("/api/stitch_editor/peaks_file/"):
+                fname = urllib.parse.unquote(path[len("/api/stitch_editor/peaks_file/"):])
+                return self._serve_stitch_peaks_file(fname)
             # ── Stitch Editor (2026-04-26, STITCH_EDITOR_UNIVERSAL_V1) ──────────
             if path == "/stitch_editor":
                 return self._serve_stitch_editor()
@@ -6069,8 +6276,16 @@ class ProductionHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/stitch_editor/preview_file/"):
                 hash_id = path[len("/api/stitch_editor/preview_file/"):]
                 return self._serve_stitch_preview_file(hash_id)
+            if path.startswith("/api/stitch_editor/slot_mix_file/"):
+                hash_id = path[len("/api/stitch_editor/slot_mix_file/"):]
+                return self._serve_stitch_slot_mix_file(hash_id)
+            if path == "/api/stitch_editor/module_final":
+                from server_handlers.stitch_editor import handle_stitch_serve_module_final  # noqa: PLC0415
+                return handle_stitch_serve_module_final(self)
             if path == "/api/stitch_editor/beat_boundaries":
                 return self._handle_stitch_beat_boundaries()
+            if path == "/api/stitch_editor/bake/status":
+                return self._handle_stitch_bake_status()
             if path.startswith("/api/stitch_editor/audio_file/"):
                 fname = urllib.parse.unquote(
                     path[len("/api/stitch_editor/audio_file/"):],
@@ -6181,7 +6396,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             if path == "/api/inject-image":
                 return self._handle_inject_image(body)
             if path == "/api/assign-image":
-                return self._handle_assign_image(body)
+                return self._in_beatgen_scope(self._handle_assign_image, body)
             # Path A++ v2 endpoint (April 18 2026)
             if path.startswith("/api/v2/beat/") and path.endswith("/patch"):
                 return self._handle_v2_patch(path, body)
@@ -6233,6 +6448,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_phase_a_regen_flyin_flyout(body)
             if path == "/api/phase_a/regen_base_clip":
                 return self._handle_phase_a_regen_base_clip(body)
+            if path == "/api/phase_b/regen_base_clip":
+                return self._handle_phase_b_regen_base_clip(body)
             if path == "/api/phase_a/restitch":
                 return self._handle_phase_a_restitch(body)
             if path == "/api/phase_b/preview":
@@ -6253,55 +6470,63 @@ class ProductionHandler(BaseHTTPRequestHandler):
                        )
             # ── Beat Generator tab routes (POST) ─────────────────────────────────
             if path == "/api/bg/set-active-context":
-                return self._handle_bg_set_active_context(body)
+                return self._in_beatgen_scope(self._handle_bg_set_active_context, body)
             if path == "/api/bg/extract-beats":
-                return self._handle_bg_extract_beats(body)
+                return self._in_beatgen_scope(self._handle_bg_extract_beats, body)
             if path == "/api/bg/extract-beats/plan":
-                return self._handle_bg_extract_beats_plan(body)
+                return self._in_beatgen_scope(self._handle_bg_extract_beats_plan, body)
             if path == "/api/bg/extract-beats/approve":
-                return self._handle_bg_extract_beats_approve(body)
+                return self._in_beatgen_scope(self._handle_bg_extract_beats_approve, body)
+            if path == "/api/bg/extract-beats/draft/save":
+                return self._in_beatgen_scope(self._handle_bg_extract_beats_draft_save, body)
             if path == "/api/bg/generate-kling-prompts":
-                return self._handle_bg_generate_kling_prompts(body)
+                return self._in_beatgen_scope(self._handle_bg_generate_kling_prompts, body)
             if path == "/api/bg/inject-beats":
-                return self._handle_bg_inject_beats(body)
+                return self._in_beatgen_scope(self._handle_bg_inject_beats, body)
             if path == "/api/bg/update-beat":
-                return self._handle_bg_update_beat(body)
+                return self._in_beatgen_scope(self._handle_bg_update_beat, body)
             if path == "/api/bg/align-element-ref":
-                return self._handle_bg_align_element_ref(body)
+                return self._in_beatgen_scope(self._handle_bg_align_element_ref, body)
             if path == "/api/bg/add-element-pose":
-                return self._handle_bg_add_element_pose(body)
+                return self._in_beatgen_scope(self._handle_bg_add_element_pose, body)
             if path == "/api/bg/reorder-beats":
-                return self._handle_bg_reorder_beats(body)
+                return self._in_beatgen_scope(self._handle_bg_reorder_beats, body)
             if path == "/api/bg/delete-beat":
-                return self._handle_bg_delete_beat(body)
+                return self._in_beatgen_scope(self._handle_bg_delete_beat, body)
             if path == "/api/bg/accept-beats":
-                return self._handle_bg_accept_beats(body)
+                return self._in_beatgen_scope(self._handle_bg_accept_beats, body)
             if path == "/api/bg/export-to-stitcher":
-                return self._handle_bg_export_to_stitcher(body)
+                return self._in_beatgen_scope(self._handle_bg_export_to_stitcher, body)
             if path == "/api/bg/submit-flux-batch":
-                return self._handle_bg_submit_flux(body)
+                return self._in_beatgen_scope(self._handle_bg_submit_flux, body)
             if path == "/api/bg/submit-gpt-batch":
-                return self._handle_bg_submit_gpt_batch(body)
+                return self._in_beatgen_scope(self._handle_bg_submit_gpt_batch, body)
             if path == "/api/bg/submit-arlo-o3-voice":
-                return self._handle_bg_submit_arlo_o3_voice(body)
+                return self._in_beatgen_scope(self._handle_bg_submit_arlo_o3_voice, body)
             if path == "/api/bg/submit-kling-native-lipsync-experiment":
-                return self._handle_bg_submit_kling_native_lipsync_experiment(body)
+                return self._in_beatgen_scope(self._handle_bg_submit_kling_native_lipsync_experiment, body)
+            if path == "/api/bg/o3/admin-reconcile":
+                return self._in_beatgen_scope(self._handle_bg_o3_admin_reconcile, body)
+            if path == "/api/bg/import-delivery-clip":
+                return self._in_beatgen_scope(self._handle_bg_import_delivery_clip, body)
             if path == "/api/bg/select-o3-video":
-                return self._handle_bg_select_o3_video(body)
+                return self._in_beatgen_scope(self._handle_bg_select_o3_video, body)
             if path == "/api/bg/render-still-clip":
-                return self._handle_bg_render_still_clip(body)
+                return self._in_beatgen_scope(self._handle_bg_render_still_clip, body)
+            if path == "/api/bg/set-pipeline":
+                return self._in_beatgen_scope(self._handle_bg_set_pipeline, body)
             if path == "/api/bg/kling-o3-trim":
-                return self._handle_bg_kling_o3_trim(body)
+                return self._in_beatgen_scope(self._handle_bg_kling_o3_trim, body)
             if path == "/api/bg/accept-option":
-                return self._handle_bg_accept_option(body)
+                return self._in_beatgen_scope(self._handle_bg_accept_option, body)
             if path == "/api/bg/accept-lib-image":
-                return self._handle_bg_accept_lib_image(body)
+                return self._in_beatgen_scope(self._handle_bg_accept_lib_image, body)
             if path == "/api/bg/add-beat":
-                return self._handle_bg_add_beat(body)
+                return self._in_beatgen_scope(self._handle_bg_add_beat, body)
             if path == "/api/bg/insert-beat":
-                return self._handle_bg_insert_beat(body)
+                return self._in_beatgen_scope(self._handle_bg_insert_beat, body)
             if path == "/api/bg/create-group":
-                return self._handle_bg_create_group(body)
+                return self._in_beatgen_scope(self._handle_bg_create_group, body)
             if path == "/api/bg/delete-group":
                 return self._handle_bg_delete_group(body)
             if path == "/api/bg/update-group":
@@ -6331,6 +6556,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
             # S5.5c+e proper-fix +NewEvent (LD NEW_EVENT_CREATION_UI_V1)
             if path == "/api/event/create":
                 return self._handle_event_create(body)
+            if path == "/api/event/provision_server":
+                return self._handle_event_provision_server(body)
             # S5.5b — VideoSelector POSTs (display-hint write + partition create).
             if path == "/api/video/set_active":
                 return self._handle_video_set_active(body)
@@ -6350,6 +6577,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
             # S5 v3.1 endpoints — LDs 468 + 469.
             if path == "/api/storyboard/magic_still":
                 return self._handle_magic_still(body)
+            if path == "/api/storyboard/clear_magic_still":
+                return self._handle_clear_magic_still(body)
             if path == "/api/storyboard/magic_video":
                 return self._handle_magic_video(body)
             if path == "/api/storyboard/switch":
@@ -6371,6 +6600,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_stitch_save_job(body)
             if path == "/api/stitch_editor/audio_extract":
                 return self._handle_stitch_audio_extract(body)
+            if path == "/api/media/playback_resolve":
+                return self._handle_playback_resolve(body)
             if path == "/api/stitch_editor/preview":
                 return self._handle_stitch_preview(body)
             if path == "/api/stitch_editor/bake":
@@ -6482,6 +6713,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
         from server_handlers.cropper import handle_cr_library
         return handle_cr_library(self)
 
+    def _handle_cr_thumb(self) -> None:
+        from server_handlers.cropper import handle_cr_thumb
+        return handle_cr_thumb(self)
+
     def _handle_cr_full_image(self) -> None:
         from server_handlers.cropper import handle_cr_full_image
         return handle_cr_full_image(self)
@@ -6501,6 +6736,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_event_create(self, body: dict) -> None:
         from server_handlers.event_video import handle_event_create
         return handle_event_create(self, body)
+
+    def _handle_event_provision_server(self, body: dict) -> None:
+        from server_handlers.event_video import handle_event_provision_server
+        return handle_event_provision_server(self, body)
 
     def _handle_event_load(self, body: dict) -> None:
         from server_handlers.event_video import handle_event_load
@@ -7508,6 +7747,11 @@ class ProductionHandler(BaseHTTPRequestHandler):
         from server_handlers.background import handle_magic_still
         return handle_magic_still(self, body)
 
+    @with_pin_and_drain('_handle_clear_magic_still', track_sync=True)
+    def _handle_clear_magic_still(self, body: dict) -> None:
+        from server_handlers.background import handle_clear_magic_still
+        return handle_clear_magic_still(self, body)
+
     @with_pin_and_drain('_handle_magic_video', track_sync=True)
     def _handle_magic_video(self, body: dict) -> None:
         from server_handlers.background import handle_magic_video
@@ -7673,9 +7917,73 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 "videos_by_role": videos_by_role,
             })
 
+        # Milestone nodes — standalone single-video projects (Oliver meet, etc.)
+        from lib.milestone_store import list_milestones  # noqa: PLC0415
+
+        milestone_rows: list[dict] = []
+        for ms in list_milestones(production_root):
+            mid = ms["milestone_id"]
+            mdir = Path(ms["path"])
+            skel = ms.get("skeleton_ref") or {}
+            state_path = mdir / "state.json"
+            state_videos: dict = {}
+            try:
+                with open(state_path, encoding="utf-8") as _mf:
+                    state_videos = (json.load(_mf).get("videos") or {})
+            except (FileNotFoundError, json.JSONDecodeError):
+                state_videos = {}
+            standalone_part = state_videos.get("standalone") if isinstance(state_videos, dict) else {}
+            do = standalone_part.get("display_order") if isinstance(standalone_part, dict) else None
+            beats = standalone_part.get("beats") if isinstance(standalone_part, dict) else {}
+            if not isinstance(standalone_part, dict):
+                role_state = "absent"
+            elif isinstance(do, list) and len(do) == 0:
+                role_state = "empty"
+            elif isinstance(do, list) and len(do) > 0:
+                mp4s = list(mdir.glob("*_final.mp4")) + list(mdir.glob("standalone_*.mp4"))
+                role_state = "complete" if mp4s else "in_progress"
+            elif isinstance(beats, dict) and beats:
+                role_state = "in_progress"
+            else:
+                role_state = "empty"
+            sidecar_path = mdir / "beat_generator_sidecar.json"
+            bg_beats = 0
+            if sidecar_path.is_file():
+                try:
+                    with open(sidecar_path, encoding="utf-8") as _sf:
+                        sc = json.load(_sf)
+                    arc = int(skel.get("arc_number") or 1)
+                    eid = str(skel.get("event_id") or mid)
+                    ph = str(skel.get("phase") or "full")
+                    seg_key = f"event_{eid}_{ph}"
+                    seg_entry = (
+                        (sc.get("arcs") or {})
+                        .get(f"arc_{arc}", {})
+                        .get("segments", {})
+                        .get(seg_key, {})
+                    )
+                    bg_beats = len(seg_entry.get("beats") or [])
+                except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                    bg_beats = 0
+            milestone_rows.append({
+                "milestone_id": mid,
+                "milestone_label": ms.get("milestone_label"),
+                "skeleton_ref": skel,
+                "library_event_id": ms.get("library_event_id"),
+                "path": str(mdir),
+                "scope_type": "milestone",
+                "videos_by_role": {
+                    "standalone": {
+                        "state": role_state,
+                        "bg_beat_count": bg_beats,
+                    },
+                },
+            })
+
         out = {
             "ok": True,
             "modules": rows,
+            "milestones": milestone_rows,
             "cache_ttl_s": 60,
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -7702,6 +8010,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_bg_extract_beats_approve(self, body: dict) -> None:
         from server_handlers.background import handle_bg_extract_beats_approve
         return handle_bg_extract_beats_approve(self, body)
+
+    def _handle_bg_extract_beats_draft_save(self, body: dict) -> None:
+        from server_handlers.background import handle_bg_extract_beats_draft_save
+        return handle_bg_extract_beats_draft_save(self, body)
 
     def _handle_bg_generate_kling_prompts(self, body: dict) -> None:
         from server_handlers.kling_o3 import handle_bg_generate_kling_prompts
@@ -7767,21 +8079,39 @@ class ProductionHandler(BaseHTTPRequestHandler):
         from server_handlers.background import handle_bg_poll_kling_native_lipsync_experiment_status
         return handle_bg_poll_kling_native_lipsync_experiment_status(self)
 
+    @with_pin_and_drain('_handle_bg_o3_admin_reconcile', track_sync=False)
+    def _handle_bg_o3_admin_reconcile(self, body: dict) -> None:
+        from server_handlers.background import handle_bg_o3_admin_reconcile
+        return handle_bg_o3_admin_reconcile(self, body)
+
     def _handle_bg_select_o3_video(self, body: dict) -> None:
         from server_handlers.background import handle_bg_select_o3_video
         return handle_bg_select_o3_video(self, body)
+
+    def _handle_bg_import_delivery_clip(self, body: dict) -> None:
+        from server_handlers.background import handle_bg_import_delivery_clip
+        return handle_bg_import_delivery_clip(self, body)
 
     def _handle_bg_render_still_clip(self, body: dict) -> None:
         from server_handlers.background import handle_bg_render_still_clip
         return handle_bg_render_still_clip(self, body)
 
+    def _handle_bg_set_pipeline(self, body: dict) -> None:
+        from server_handlers.background import handle_bg_set_pipeline
+        return handle_bg_set_pipeline(self, body)
+
     def _handle_bg_kling_o3_trim(self, body: dict) -> None:
         from server_handlers.background import handle_bg_kling_o3_trim
         return handle_bg_kling_o3_trim(self, body)
 
+    @with_pin_and_drain('_handle_bg_export_to_stitcher', track_sync=False)
     def _handle_bg_export_to_stitcher(self, body: dict) -> None:
         from server_handlers.kling_o3 import handle_bg_export_to_stitcher
         return handle_bg_export_to_stitcher(self, body)
+
+    def _handle_bg_poll_export_to_stitcher_status(self) -> None:
+        from server_handlers.kling_o3 import handle_bg_poll_export_to_stitcher_status
+        return handle_bg_poll_export_to_stitcher_status(self)
 
     def _handle_bg_accept_option(self, body: dict) -> None:
         from server_handlers.background import handle_bg_accept_option
@@ -7847,26 +8177,23 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
     def _path_under_allowed_serve_roots(self, cand: str) -> str | None:
         """Realpath containment gate for /files?path= (CodeQL py/path-injection)."""
-        try:
-            drop_root = os.path.realpath(str(DROPBOX_ROOT))
-            repo_root = os.path.realpath(str(_MN_REPO_ROOT))
-            real_path = os.path.realpath(cand)
-            if not os.path.isfile(real_path):
-                return None
-            under_drop = real_path == drop_root or real_path.startswith(drop_root + os.sep)
-            under_repo = real_path == repo_root or real_path.startswith(repo_root + os.sep)
-            if under_drop or under_repo:
-                return real_path
-        except OSError:
-            return None
-        return None
+        from lib.path_serve_security import safe_realpath_under_serve_roots
+
+        return safe_realpath_under_serve_roots(cand)
 
     def _resolve_served_file_path(self, file_path: str) -> str | None:
         """Resolve ?path= to an on-disk file under Dropbox, tooling, or event_dir."""
+        from lib.path_serve_security import reject_path_traversal_segments
+
         if not file_path:
             return None
         if os.path.isabs(file_path):
             return self._path_under_allowed_serve_roots(file_path)
+
+        try:
+            reject_path_traversal_segments(file_path)
+        except ValueError:
+            return None
 
         candidates: list[str] = []
         candidates.append(os.path.join(str(DROPBOX_ROOT), file_path))
@@ -7984,6 +8311,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
             ".webp": "image/webp", ".gif": "image/gif",
             ".mp4": "video/mp4", ".mov": "video/quicktime",
+            ".html": "text/html; charset=utf-8", ".htm": "text/html; charset=utf-8",
         }
         # Video files require byte-range (Accept-Ranges/206) support so that
         # browser <video> elements can seek (e.g. after pause+resume).
@@ -8166,6 +8494,14 @@ class ProductionHandler(BaseHTTPRequestHandler):
                             _beat_state["end_frame_path"] = None
                 return None
             self.app.state.mutate_video_state(video_role, _persist)
+
+            from server_handlers.background import mirror_magic_clear_to_sidecar_after_image_assign
+
+            mirror_magic_clear_to_sidecar_after_image_assign(
+                self,
+                sb_beat_id=str(beat_id),
+                video_role=str(video_role),
+            )
 
             # 3. Patch the storyboard HTML L[] entry's i: field to match
             #    (Tier 5, April 17 2026 — decision 154 ASSIGN_IMAGE_MUST_PATCH_STORYBOARD).
@@ -8447,7 +8783,23 @@ class ProductionHandler(BaseHTTPRequestHandler):
         })
 
     def _handle_restart(self) -> None:
-        """Restart the server process. Shuts down cleanly, then re-execs."""
+        """Restart the server process. Shuts down cleanly, then re-exec."""
+        global _last_api_restart_at
+        now = time.monotonic()
+        if now - _last_api_restart_at < _API_RESTART_MIN_INTERVAL_S:
+            self._send_json(429, {
+                "status": "rejected",
+                "reason": "restart_throttled",
+                "retry_after_s": round(
+                    _API_RESTART_MIN_INTERVAL_S - (now - _last_api_restart_at), 1,
+                ),
+            })
+            print(
+                f"[restart] reason=api — throttled ({now - _last_api_restart_at:.1f}s since last)",
+                flush=True,
+            )
+            return
+        _last_api_restart_at = now
         self._send_json(200, {"status": "restarting"})
         print("\n[SERVER] Restart requested via API — shutting down and re-launching...\n")
         # Non-daemon thread: Python shutdown must wait for it so os.execv runs.
@@ -8626,14 +8978,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
         # 2. Write accepted_video_path to bg sidecar (same pattern as _handle_bg_accept_option)
         try:
             bg = _bg_module()
-            with bg.sidecar_file_lock():
-                sidecar = bg.read_sidecar()
-                sidecar = bg._migrate_sidecar(sidecar)
-                _, b_entry = bg.find_beat(sidecar, beat_id)
-                if b_entry is not None:
-                    b_entry["accepted_video_path"] = abs_path
-                    b_entry["status"] = "accepted"
-                    bg.write_sidecar(sidecar)
+
+            def _accept_sidecar(b: dict, _sc: dict) -> None:
+                b["accepted_video_path"] = abs_path
+                b["status"] = "accepted"
+
+            bg.update_beat_locked(beat_id, _accept_sidecar)
         except Exception as exc:  # noqa: BLE001
             print(f"[use-as-final] sidecar write failed (non-blocking): {exc}")
 
@@ -8918,6 +9268,51 @@ body {{padding-top:44px!important;}}
     def _serve_beat_audio(self, beat_id: str) -> None:
         from server_handlers.beats_legacy import serve_beat_audio
         return serve_beat_audio(self, beat_id)
+
+    def _serve_lipsync_staging(self, path: str) -> None:
+        """GET /api/lipsync/staging/{token}/{filename} — WaveSpeed-fetchable staging bytes."""
+        import mimetypes
+        from pathlib import Path as _Path
+
+        from lipsync_staging import resolve_staged_file
+
+        rest = path[len("/api/lipsync/staging/"):]
+        parts = rest.split("/", 1)
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            return self._send_error_v59(
+                400,
+                error_code="INVALID_STAGING_PATH",
+                error_message="expected /api/lipsync/staging/{token}/{filename}",
+                retry_safe=False,
+            )
+        token, filename = parts
+        try:
+            staged = resolve_staged_file(_Path(self.app.event_dir), token, filename)
+        except ValueError as exc:
+            return self._send_error_v59(
+                400,
+                error_code="INVALID_STAGING_PATH",
+                error_message=str(exc),
+                retry_safe=False,
+            )
+        if staged is None:
+            return self._send_error_v59(
+                404,
+                error_code="STAGING_NOT_FOUND",
+                error_message=f"no staged file for token={token!r} name={filename!r}",
+                retry_safe=False,
+            )
+        from lib.http_response_safety import safe_content_type
+
+        mime, _ = mimetypes.guess_type(str(staged))
+        data = Path(staged).read_bytes()
+        self.send_response(200)
+        self._cors_headers()
+        self.send_header("Content-Type", safe_content_type(mime))
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=3600")
+        self.end_headers()
+        self.wfile.write(data)
 
     def _beat_id(self, line_number: int) -> str:
         return f"beat_{line_number:02d}"
@@ -10224,22 +10619,20 @@ body {{padding-top:44px!important;}}
         )
 
         if not cache_hit:
-            # Render via ffmpeg zoompan. Pre-scale 2x to avoid jitter on
-            # short durations. d = round(dur * 24) frames at 24 fps.
-            # LD STILL_AS_FINAL_HOLD_DURATION_CONTROL_V1: dur is the
-            # user-controlled hold (default 5.0s), NOT audio_duration_s.
-            frames = max(1, int(round(float(hold_duration_s) * 24)))
-            zoom_expr = (
-                f"{kb['zoom_start']:.4f}"
-                f"+({kb['zoom_end']:.4f}-{kb['zoom_start']:.4f})"
-                f"*on/{max(1, frames - 1)}"
-            )
-            vf = (
-                "scale=3840:2160:force_original_aspect_ratio=increase,"
-                "crop=3840:2160,"
-                f"zoompan=z='{zoom_expr}':"
-                "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
-                f"d={frames}:s=1920x1080:fps=24"
+            try:
+                from tools import ken_burns_render as _kb
+            except ImportError:
+                import ken_burns_render as _kb  # type: ignore
+
+            vf = _kb.ken_burns_smooth_vf(
+                pan_x_pct=50.0,
+                pan_y_pct=50.0,
+                zoom_start=float(kb["zoom_start"]),
+                zoom_end=float(kb["zoom_end"]),
+                duration_s=float(hold_duration_s),
+                out_w=1920,
+                out_h=1080,
+                fps=24,
             )
             cmd = [
                 "ffmpeg", "-y",
@@ -10298,14 +10691,12 @@ body {{padding-top:44px!important;}}
         # bg sidecar: same pattern as raw_option final.
         try:
             bg = _bg_module()
-            with bg.sidecar_file_lock():
-                sidecar = bg.read_sidecar()
-                sidecar = bg._migrate_sidecar(sidecar)
-                _, b_entry = bg.find_beat(sidecar, beat_id)
-                if b_entry is not None:
-                    b_entry["accepted_video_path"] = out_abs
-                    b_entry["status"] = "accepted"
-                    bg.write_sidecar(sidecar)
+
+            def _accept_still(b: dict, _sc: dict) -> None:
+                b["accepted_video_path"] = out_abs
+                b["status"] = "accepted"
+
+            bg.update_beat_locked(beat_id, _accept_still)
         except Exception as exc:  # noqa: BLE001
             print(f"[use-still-as-final] sidecar write failed (non-blocking): {exc}")
 
@@ -10814,7 +11205,9 @@ body {{padding-top:44px!important;}}
         },
         "a": {
             "voice_id": "7o9pyvsN0ob5GO6LBQp6",
-            "fallback_settings": {"stability": 0.72, "style": 0.06, "speed": 1.0},
+            # Canonical Arlo Phase A (Kim 2026-06-19) — matches
+            # phase_a_voice_stem_20260613-124825.mp3 + Directus id=2.
+            "fallback_settings": {"stability": 0.25, "style": 0.35, "speed": 1.0},
             "model_id": "eleven_v3",
             "speaker": "Arlo",
         },
@@ -11217,7 +11610,7 @@ body {{padding-top:44px!important;}}
         return d
 
     def _stitch_exports_dir(self) -> Path:
-        d = self._stitch_project_root() / "Production" / "Event_1" / "exports"
+        d = Path(self.app.event_dir) / "exports"
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -11260,6 +11653,38 @@ body {{padding-top:44px!important;}}
     def _handle_stitch_delete_job(self, name: str) -> None:
         from server_handlers.stitch_editor import handle_stitch_delete_job
         return handle_stitch_delete_job(self, name)
+
+    def _handle_playback_resolve(self, body: dict) -> None:
+        from server_handlers.media_playback import handle_playback_resolve
+        return handle_playback_resolve(self, body)
+
+    def _serve_stitch_peaks_file(self, fname: str) -> None:
+        """GET /api/stitch_editor/peaks_file/<fname> — waveform peaks JSON."""
+        safe = Path(fname).name
+        target = self._stitch_cache_dir() / safe
+        if not target.is_file():
+            return self._send_error_v59(
+                404,
+                error_code="PEAKS_NOT_FOUND",
+                error_message=f"Peaks file not found: {safe}",
+                retry_safe=False,
+            )
+        try:
+            body = target.read_bytes()
+        except OSError as exc:
+            return self._send_error_v59(
+                500,
+                error_code="PEAKS_READ_FAILED",
+                error_message=str(exc),
+                retry_safe=True,
+            )
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "public, max-age=86400, immutable")
+        self._cors_headers()
+        self.end_headers()
+        self.wfile.write(body)
 
     def _handle_stitch_audio_extract(self, body: dict) -> None:
         from server_handlers.stitch_editor import handle_stitch_audio_extract
@@ -11424,7 +11849,67 @@ body {{padding-top:44px!important;}}
                        error_message=f"Preview file not found: {safe}",
                        retry_safe=False,
                    )
-        self._serve_mp4_with_range(target)
+        from server_handlers.stitch_editor import (  # noqa: PLC0415
+            STITCH_SLOT_PREVIEW_VIDEO_PLAYABLE_V1,
+            purge_stitch_cache_mp4,
+            stitch_cached_mp4_playable,
+        )
+        from video_delivery import ensure_mp4_playback_timestamps  # noqa: PLC0415
+
+        ensure_mp4_playback_timestamps(target)
+        if not stitch_cached_mp4_playable(target):
+            purge_stitch_cache_mp4(target)
+            return self._send_error_v59(
+                503,
+                error_code="STITCH_PREVIEW_NOT_PLAYABLE",
+                error_message=(
+                    f"Preview file failed browser playback gate ({STITCH_SLOT_PREVIEW_VIDEO_PLAYABLE_V1})"
+                ),
+                retry_safe=True,
+            )
+        self._serve_mp4_with_range(target, cache_immutable=True)
+
+    def _serve_stitch_slot_mix_file(self, hash_id: str) -> None:
+        """GET /api/stitch_editor/slot_mix_file/<hash> — ambient-baked slot MP4 (se_slot_*)."""
+        safe = Path(hash_id).name
+        target = self._stitch_cache_dir() / f"se_slot_{safe}.mp4"
+        if not target.is_file():
+            return self._send_error_v59(
+                404,
+                error_code="GENERIC_ERROR",
+                error_message=f"Slot mix file not found: {safe}",
+                retry_safe=False,
+            )
+        from server_handlers.stitch_editor import (  # noqa: PLC0415
+            STITCH_AMBIENT_BAKE_ON_SAVE_V1,
+            purge_stitch_cache_mp4,
+            stitch_cached_mp4_playable,
+        )
+        from video_delivery import ensure_mp4_playback_timestamps  # noqa: PLC0415
+
+        try:
+            ensure_mp4_playback_timestamps(target)
+        except (subprocess.CalledProcessError, RuntimeError, OSError):
+            purge_stitch_cache_mp4(target)
+            return self._send_error_v59(
+                503,
+                error_code="STITCH_SLOT_MIX_NOT_PLAYABLE",
+                error_message=(
+                    f"Slot mix failed playback gate ({STITCH_AMBIENT_BAKE_ON_SAVE_V1})"
+                ),
+                retry_safe=True,
+            )
+        if not stitch_cached_mp4_playable(target):
+            purge_stitch_cache_mp4(target)
+            return self._send_error_v59(
+                503,
+                error_code="STITCH_SLOT_MIX_NOT_PLAYABLE",
+                error_message=(
+                    f"Slot mix failed playback gate ({STITCH_AMBIENT_BAKE_ON_SAVE_V1})"
+                ),
+                retry_safe=True,
+            )
+        self._serve_mp4_with_range(target, cache_immutable=True)
 
     def _serve_finder_video(self) -> None:
         """GET /api/finder_video?path=...&probe=1 — probe OR serve a Finder-dragged video.
@@ -11473,11 +11958,15 @@ body {{padding-top:44px!important;}}
 
         self._serve_mp4_with_range(Path(abs_path))
 
-    def _serve_mp4_with_range(self, path: Path) -> None:
+    def _serve_mp4_with_range(self, path: Path, *, cache_immutable: bool = False) -> None:
         """Serve an MP4 file with Accept-Ranges support for browser <video> scrubbing."""
+        from lib.http_response_safety import safe_etag_from_basename
+
         file_size = path.stat().st_size
         range_header = self.headers.get("Range", "")
         ctype = "video/mp4"
+        cache_control = "public, max-age=86400, immutable" if cache_immutable else "no-store"
+        etag = safe_etag_from_basename(path.name) if cache_immutable else None
 
         if range_header:
             try:
@@ -11492,10 +11981,12 @@ body {{padding-top:44px!important;}}
                 self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
                 self.send_header("Content-Length", str(length))
                 self.send_header("Accept-Ranges", "bytes")
-                self.send_header("Cache-Control", "no-store")
+                self.send_header("Cache-Control", cache_control)
+                if etag:
+                    self.send_header("ETag", etag)
                 self._cors_headers()
                 self.end_headers()
-                with open(path, "rb") as f:
+                with open(os.path.realpath(str(path)), "rb") as f:
                     f.seek(start)
                     self.wfile.write(f.read(length))
             except Exception:
@@ -11504,7 +11995,9 @@ body {{padding-top:44px!important;}}
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Accept-Ranges", "bytes")
-                self.send_header("Cache-Control", "no-store")
+                self.send_header("Cache-Control", cache_control)
+                if etag:
+                    self.send_header("ETag", etag)
                 self._cors_headers()
                 self.end_headers()
                 self.wfile.write(body)
@@ -11514,7 +12007,9 @@ body {{padding-top:44px!important;}}
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Accept-Ranges", "bytes")
-            self.send_header("Cache-Control", "no-store")
+            self.send_header("Cache-Control", cache_control)
+            if etag:
+                self.send_header("ETag", etag)
             self._cors_headers()
             self.end_headers()
             self.wfile.write(body)
@@ -11524,10 +12019,11 @@ body {{padding-top:44px!important;}}
     def _stitch_normalize_slot(
         self, video_path: str, cache_dir: Path,
         trim_in_ms: int = 0, trim_out_ms: int | None = None,
+        *, preview_only: bool = False,
     ) -> Path:
         """Normalize a slot's video to LD-284 canonical spec.
 
-        Cached by md5+mtime+sha256[:8] + trim fingerprint.
+        Cached by md5+mtime+sha256[:8] + trim fingerprint + preview token.
 
         S5.5g — STITCHER_PER_SLOT_TRIMS_V1 (HARD). Per audit doc §5 LOCKED:
           - trim_in_ms (default 0, inclusive)
@@ -11537,7 +12033,12 @@ body {{padding-top:44px!important;}}
           - Pre-trim via ffmpeg -ss / -to BEFORE normalize_for_concat
         """
         import hashlib as _hl  # noqa: PLC0415
-        from ffmpeg_stitch import normalize_for_concat  # noqa: PLC0415
+        from credentials_lib.stitch_cache_build import run_stitch_cache_build  # noqa: PLC0415
+        from ffmpeg_stitch import (  # noqa: PLC0415
+            STITCH_PREVIEW_NORMALIZE_V1,
+            normalize_for_concat,
+            normalize_for_stitch_preview,
+        )
 
         mtime_ms = int(os.path.getmtime(video_path) * 1000)
         path_md5 = _hl.md5(video_path.encode(), usedforsecurity=False).hexdigest()[:10]
@@ -11553,51 +12054,81 @@ body {{padding-top:44px!important;}}
         # Trim fingerprint (audit doc §5): "<in>-<out|end>" so different trim
         # windows of the same source don't collide in the LRU cache.
         trim_sig = f"{int(trim_in_ms)}-{trim_out_ms if trim_out_ms is not None else 'end'}"
-        norm_name = f"se_norm_{path_md5}_{mtime_ms}_{sha_prefix}_t{trim_sig}.mp4"
+        preview_sig = "_pv" if preview_only else ""
+        norm_name = f"se_norm_{path_md5}_{mtime_ms}_{sha_prefix}_t{trim_sig}{preview_sig}.mp4"
         norm_path = cache_dir / norm_name
-        if norm_path.is_file():
-            from ffmpeg_stitch import mp4_is_playable  # noqa: PLC0415
-            if mp4_is_playable(norm_path):
-                return norm_path
-            try:
-                norm_path.unlink()
-            except OSError:
-                pass
+        from server_handlers.stitch_editor import (  # noqa: PLC0415
+            purge_stitch_cache_mp4,
+            stitch_cached_mp4_playable,
+        )
+        from credentials_lib.stitch_cache_build import sweep_stitch_cache_orphan_temps  # noqa: PLC0415
 
-        # Source for normalization: pre-trimmed mp4 if trim is set, else original.
-        src_for_norm = Path(video_path)
-        if trim_in_ms > 0 or trim_out_ms is not None:
-            trim_in_s = max(0.0, trim_in_ms / 1000.0)
-            trim_path = cache_dir / f"se_pretrim_{path_md5}_{mtime_ms}_{sha_prefix}_t{trim_sig}.mp4"
-            if not trim_path.is_file():
-                cmd = [
-                    "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                    "-ss", f"{trim_in_s:.3f}",
-                    "-i", str(video_path),
-                ]
-                if trim_out_ms is not None and int(trim_out_ms) > int(trim_in_ms):
-                    trim_dur_s = (int(trim_out_ms) - int(trim_in_ms)) / 1000.0
-                    cmd += ["-t", f"{trim_dur_s:.3f}"]
-                cmd += [
-                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-                    "-c:a", "aac", "-b:a", "128k",
-                    "-pix_fmt", "yuv420p",
-                    str(trim_path),
-                ]
-                try:
-                    subprocess.run(cmd, check=True, capture_output=True, timeout=180)
-                except subprocess.CalledProcessError as exc:
-                    stderr = (exc.stderr or b"")[:400].decode("utf-8", errors="replace")
-                    # Per LD-520 fail-loud — bubble out as RuntimeError.
-                    raise RuntimeError(
-                        f"slot pre-trim failed for {video_path}: {stderr}",
-                    ) from exc
-            src_for_norm = trim_path
+        sweep_stitch_cache_orphan_temps(cache_dir)
+
+        if (
+            preview_only
+            and trim_in_ms == 0
+            and trim_out_ms is None
+        ):
+            from ffmpeg_stitch import stitch_preview_can_use_source_directly  # noqa: PLC0415
+
+            if stitch_preview_can_use_source_directly(Path(video_path)):
+                return Path(video_path)
+
+        def _norm_ready() -> bool:
+            if norm_path.is_file() and not stitch_cached_mp4_playable(norm_path):
+                purge_stitch_cache_mp4(norm_path)
+            return norm_path.is_file() and stitch_cached_mp4_playable(norm_path)
+
+        if _norm_ready():
+            return norm_path
+
+        def _build_norm() -> None:
+            src_for_norm = Path(video_path)
+            if trim_in_ms > 0 or trim_out_ms is not None:
+                trim_in_s = max(0.0, trim_in_ms / 1000.0)
+                trim_path = cache_dir / (
+                    f"se_pretrim_{path_md5}_{mtime_ms}_{sha_prefix}_t{trim_sig}.mp4"
+                )
+                if not trim_path.is_file():
+                    cmd = [
+                        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                        "-ss", f"{trim_in_s:.3f}",
+                        "-i", str(video_path),
+                    ]
+                    if trim_out_ms is not None and int(trim_out_ms) > int(trim_in_ms):
+                        trim_dur_s = (int(trim_out_ms) - int(trim_in_ms)) / 1000.0
+                        cmd += ["-t", f"{trim_dur_s:.3f}"]
+                    from video_encode_policy import AUX_H264_ENCODER_ARGS  # noqa: WPS433
+                    cmd += list(AUX_H264_ENCODER_ARGS)
+                    cmd += [str(trim_path)]
+                    try:
+                        subprocess.run(cmd, check=True, capture_output=True, timeout=180)
+                    except subprocess.CalledProcessError as exc:
+                        stderr = (exc.stderr or b"")[:400].decode("utf-8", errors="replace")
+                        raise RuntimeError(
+                            f"slot pre-trim failed for {video_path}: {stderr}",
+                        ) from exc
+                src_for_norm = trim_path
+
+            try:
+                if preview_only:
+                    normalize_for_stitch_preview(src_for_norm, norm_path)
+                else:
+                    # Bake/export: LD-284 slow preset — allow long clips.
+                    normalize_for_concat(src_for_norm, norm_path, timeout_s=600)
+            except Exception as exc:
+                raise RuntimeError(f"Normalize failed for {video_path}: {exc}") from exc
 
         try:
-            normalize_for_concat(src_for_norm, norm_path)
-        except Exception as exc:
-            raise RuntimeError(f"Normalize failed for {video_path}: {exc}") from exc
+            run_stitch_cache_build(cache_dir, ready=_norm_ready, build=_build_norm)
+        except RuntimeError:
+            raise
+
+        if not _norm_ready():
+            raise RuntimeError(
+                f"Normalize cache miss after build for {video_path} ({STITCH_PREVIEW_NORMALIZE_V1})",
+            )
         return norm_path
 
     def _stitch_ensure_audio(self, norm_path: Path, cache_dir: Path) -> Path:
@@ -11692,12 +12223,9 @@ body {{padding-top:44px!important;}}
         if afade_s > 0:
             af = f"afade=t=out:st={start_a:.3f}:d={afade_s:.3f}"
             cmd += ["-af", af]
-        cmd += [
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-            "-c:a", "aac", "-b:a", "128k",
-            "-pix_fmt", "yuv420p",
-            str(out),
-        ]
+        from video_encode_policy import AUX_H264_ENCODER_ARGS  # noqa: WPS433
+        cmd += list(AUX_H264_ENCODER_ARGS)
+        cmd += [str(out)]
         try:
             subprocess.run(cmd, check=True, capture_output=True, timeout=180)
         except subprocess.CalledProcessError as exc:
@@ -11741,12 +12269,9 @@ body {{padding-top:44px!important;}}
         if afade_s > 0:
             af = f"afade=t=in:st=0:d={afade_s:.3f}"
             cmd += ["-af", af]
-        cmd += [
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-            "-c:a", "aac", "-b:a", "128k",
-            "-pix_fmt", "yuv420p",
-            str(out),
-        ]
+        from video_encode_policy import AUX_H264_ENCODER_ARGS  # noqa: WPS433
+        cmd += list(AUX_H264_ENCODER_ARGS)
+        cmd += [str(out)]
         try:
             subprocess.run(cmd, check=True, capture_output=True, timeout=180)
         except subprocess.CalledProcessError as exc:
@@ -11842,6 +12367,8 @@ body {{padding-top:44px!important;}}
         *,
         visual_out_ms: int,
         visual_in_ms: int,
+        visual_out_ms_by_pair: list[int] | None = None,
+        body_slots: list | None = None,
     ) -> list[Path]:
         """STITCH_CANONICAL_TRANSITION_SFX_V1 — span dissolve: pre-roll, black, post-roll."""
         from ffmpeg_stitch import allocate_pair_fade_budget  # noqa: PLC0415
@@ -11856,6 +12383,7 @@ body {{padding-top:44px!important;}}
         if not parts or not pair_fades_ms:
             return parts
         out = list(parts)
+        slots_list = body_slots if isinstance(body_slots, list) else []
         for after_slot, pair_ms in enumerate(pair_fades_ms):
             if pair_ms <= 0:
                 continue
@@ -11871,7 +12399,9 @@ body {{padding-top:44px!important;}}
                 continue
             out_ms, in_ms, black_ms = allocate_pair_fade_budget(
                 pair_ms,
-                visual_out_ms=visual_out_ms,
+                visual_out_ms=visual_out_ms_by_pair[after_slot]
+                if visual_out_ms_by_pair and after_slot < len(visual_out_ms_by_pair)
+                else visual_out_ms,
                 visual_in_ms=visual_in_ms,
             )
             pre = STITCH_TRANSITION_SFX_PRE_ROLL_MS
@@ -11920,36 +12450,37 @@ body {{padding-top:44px!important;}}
             )
         return out
 
-    def _stitch_apply_resolution_finale(
+    def _stitch_apply_finale_outtro(
         self,
         parts: list[Path],
         cache_dir: Path,
         *,
         visual_out_ms: int,
+        outtro_filename: str,
+        fade_out_ms_cap: int,
+        outtro_start_before_end_ms: int,
+        outtro_play_ms: int,
+        black_hold_ms_default: int,
+        cache_tag: str,
     ) -> list[Path]:
-        """STITCH_RESOLUTION_FINALE_V1 — fade tail to black, then outtro3 until EOF."""
+        """Fade last clip to black and span outtro SFX across clip tail + black hold."""
         import hashlib as _hl  # noqa: PLC0415
 
         from ffmpeg_stitch import render_black_pause_clip, trim_body_with_fade  # noqa: PLC0415
         from server_handlers.stitch_editor import (  # noqa: PLC0415
-            STITCH_RESOLUTION_FINALE_FADE_OUT_MS,
-            STITCH_RESOLUTION_FINALE_OUTTRO_FILENAME,
-            STITCH_RESOLUTION_FINALE_OUTTRO_PLAY_MS,
-            STITCH_RESOLUTION_FINALE_OUTTRO_START_BEFORE_END_MS,
             STITCH_TRANSITION_SFX_VOLUME,
-            resolution_finale_black_hold_ms,
+            purge_stitch_cache_mp4,
             resolve_canonical_finale_outtro_path,
+            stitch_cached_mp4_playable,
         )
 
         if not parts:
             return parts
-        outtro_path = resolve_canonical_finale_outtro_path(
-            self, STITCH_RESOLUTION_FINALE_OUTTRO_FILENAME,
-        )
+        outtro_path = resolve_canonical_finale_outtro_path(self, outtro_filename)
         if not outtro_path:
             print(
-                "[stitch] WARN: resolution finale outtro missing: "
-                f"{STITCH_RESOLUTION_FINALE_OUTTRO_FILENAME}",
+                "[stitch] WARN: finale outtro missing: "
+                f"{outtro_filename}",
             )
             return parts
 
@@ -11960,34 +12491,29 @@ body {{padding-top:44px!important;}}
 
         fade_out_ms = min(
             int(visual_out_ms),
-            STITCH_RESOLUTION_FINALE_FADE_OUT_MS,
+            int(fade_out_ms_cap),
             clip_dur_ms,
         )
         if fade_out_ms <= 0:
             return parts
 
-        outtro_start_ms = min(
-            STITCH_RESOLUTION_FINALE_OUTTRO_START_BEFORE_END_MS,
-            clip_dur_ms,
-        )
+        outtro_start_ms = min(int(outtro_start_before_end_ms), clip_dur_ms)
         outtro_on_clip_ms = min(outtro_start_ms, clip_dur_ms)
-        outtro_on_black_ms = max(
-            0,
-            STITCH_RESOLUTION_FINALE_OUTTRO_PLAY_MS - outtro_on_clip_ms,
-        )
-        black_hold_ms = resolution_finale_black_hold_ms()
+        outtro_on_black_ms = max(0, int(outtro_play_ms) - outtro_on_clip_ms)
+        black_hold_ms = int(black_hold_ms_default)
         if outtro_on_black_ms > 0:
             black_hold_ms = max(black_hold_ms, outtro_on_black_ms)
 
         sig = _hl.md5(
             (
                 f"{last.name}:{last.stat().st_mtime_ns}:"
-                f"{fade_out_ms}:{outtro_start_ms}:{black_hold_ms}"
+                f"{fade_out_ms}:{outtro_start_ms}:{black_hold_ms}:{outtro_filename}"
             ).encode(),
             usedforsecurity=False,
         ).hexdigest()[:12]
-        faded_path = cache_dir / f"se_finale_fade_{sig}.mp4"
-        if not faded_path.is_file():
+        faded_path = cache_dir / f"{cache_tag}_fade_{sig}.mp4"
+        if not stitch_cached_mp4_playable(faded_path):
+            purge_stitch_cache_mp4(faded_path)
             trim_body_with_fade(
                 last,
                 faded_path,
@@ -11997,6 +12523,11 @@ body {{padding-top:44px!important;}}
                 fade_out_s=fade_out_ms / 1000.0,
                 fade_audio=False,
             )
+            if not stitch_cached_mp4_playable(faded_path):
+                purge_stitch_cache_mp4(faded_path)
+                raise RuntimeError(
+                    f"finale fade failed decode smoke test ({faded_path.name})",
+                )
 
         clip_offset_ms = max(0, clip_dur_ms - outtro_start_ms)
         faded_with_outtro = self._stitch_overlay_sfx_on_clip(
@@ -12011,8 +12542,9 @@ body {{padding-top:44px!important;}}
 
         out = list(parts[:-1]) + [faded_with_outtro]
         if black_hold_ms > 0:
-            black_path = cache_dir / f"se_finale_black_{black_hold_ms}ms_{sig}.mp4"
-            if not black_path.is_file():
+            black_path = cache_dir / f"{cache_tag}_black_{black_hold_ms}ms_{sig}.mp4"
+            if not stitch_cached_mp4_playable(black_path):
+                purge_stitch_cache_mp4(black_path)
                 render_black_pause_clip(black_hold_ms / 1000.0, black_path)
             if outtro_on_black_ms > 0:
                 black_path = self._stitch_overlay_sfx_on_clip(
@@ -12027,8 +12559,64 @@ body {{padding-top:44px!important;}}
             out.append(black_path)
         return out
 
+    def _stitch_apply_resolution_finale(
+        self,
+        parts: list[Path],
+        cache_dir: Path,
+        *,
+        visual_out_ms: int,
+    ) -> list[Path]:
+        """STITCH_RESOLUTION_FINALE_V1 — fade tail to black, then outtro3 until EOF."""
+        from server_handlers.stitch_editor import (  # noqa: PLC0415
+            STITCH_RESOLUTION_FINALE_FADE_OUT_MS,
+            STITCH_RESOLUTION_FINALE_OUTTRO_FILENAME,
+            STITCH_RESOLUTION_FINALE_OUTTRO_PLAY_MS,
+            STITCH_RESOLUTION_FINALE_OUTTRO_START_BEFORE_END_MS,
+            resolution_finale_black_hold_ms,
+        )
+
+        return self._stitch_apply_finale_outtro(
+            parts,
+            cache_dir,
+            visual_out_ms=visual_out_ms,
+            outtro_filename=STITCH_RESOLUTION_FINALE_OUTTRO_FILENAME,
+            fade_out_ms_cap=STITCH_RESOLUTION_FINALE_FADE_OUT_MS,
+            outtro_start_before_end_ms=STITCH_RESOLUTION_FINALE_OUTTRO_START_BEFORE_END_MS,
+            outtro_play_ms=STITCH_RESOLUTION_FINALE_OUTTRO_PLAY_MS,
+            black_hold_ms_default=resolution_finale_black_hold_ms(),
+            cache_tag="se_finale",
+        )
+
+    def _stitch_apply_milestone_finale(
+        self,
+        parts: list[Path],
+        cache_dir: Path,
+        *,
+        visual_out_ms: int,
+    ) -> list[Path]:
+        """STITCH_MILESTONE_FINALE_V1 — fade tail to black, then outtro3 until EOF."""
+        from server_handlers.stitch_editor import (  # noqa: PLC0415
+            STITCH_MILESTONE_FINALE_FADE_OUT_MS,
+            STITCH_MILESTONE_FINALE_OUTTRO_FILENAME,
+            STITCH_MILESTONE_FINALE_OUTTRO_PLAY_MS,
+            STITCH_MILESTONE_FINALE_OUTTRO_START_BEFORE_END_MS,
+            milestone_finale_black_hold_ms,
+        )
+
+        return self._stitch_apply_finale_outtro(
+            parts,
+            cache_dir,
+            visual_out_ms=visual_out_ms,
+            outtro_filename=STITCH_MILESTONE_FINALE_OUTTRO_FILENAME,
+            fade_out_ms_cap=STITCH_MILESTONE_FINALE_FADE_OUT_MS,
+            outtro_start_before_end_ms=STITCH_MILESTONE_FINALE_OUTTRO_START_BEFORE_END_MS,
+            outtro_play_ms=STITCH_MILESTONE_FINALE_OUTTRO_PLAY_MS,
+            black_hold_ms_default=milestone_finale_black_hold_ms(),
+            cache_tag="se_milestone_finale",
+        )
+
     def _stitch_mix_slot_audio(
-        self, norm_path: Path, slot: dict, cache_dir: Path
+        self, norm_path: Path, slot: dict, cache_dir: Path, *, force_rebuild: bool = False,
     ) -> Path:
         """Mix ambient bed + SFX cues into a normalized slot video.
 
@@ -12039,10 +12627,11 @@ body {{padding-top:44px!important;}}
         import hashlib as _hl  # noqa: PLC0415
         from server_handlers.stitch_editor import (  # noqa: PLC0415
             STITCH_AMBIENT_BED_VOLUME,
+            ensure_slot_ambient_bed_path_hydrated,
             normalize_slot_audio_mix_levels,
         )
 
-        normalize_slot_audio_mix_levels(slot)
+        ensure_slot_ambient_bed_path_hydrated(self, slot)
         ambient_path = slot.get("ambient_bed_path") or ""
         ambient_volume = float(slot.get("ambient_volume", STITCH_AMBIENT_BED_VOLUME))
         sfx_cues = slot.get("sfx_cues") or []
@@ -12064,24 +12653,33 @@ body {{padding-top:44px!important;}}
         for cue in sfx_cues:
             self._stitch_assert_path_in_root(cue.get("source_path", ""), "sfx source_path")
 
-        # Cache key: norm mtime + ambient + sfx cue ids
+        # Cache key: norm mtime + ambient + sfx cue ids + seamless loop token
+        from server_handlers.stitch_ambient_loop import ambient_loop_sig_token  # noqa: PLC0415
+
         sig_parts = [str(norm_path.stat().st_mtime), ambient_path, str(ambient_volume)]
+        sig_parts.append(ambient_loop_sig_token())
         sig_parts += [
             f"{c['id']}:{c['offset_ms']}:{c.get('duration_ms', '')}" for c in sfx_cues
         ]
         mix_hash = _hl.md5("|".join(sig_parts).encode(), usedforsecurity=False).hexdigest()[:12]
         out_path = cache_dir / f"se_slot_{mix_hash}.mp4"
-        if out_path.is_file():
-            from ffmpeg_stitch import mp4_decodes_cleanly, mp4_is_playable  # noqa: PLC0415
-            if mp4_is_playable(out_path) and mp4_decodes_cleanly(out_path):
-                return out_path
-            try:
-                out_path.unlink()
-            except OSError:
-                pass
-
         slot_dur_ms = self._ffprobe_duration_ms(norm_path)
         slot_dur_s = slot_dur_ms / 1000.0
+        from server_handlers.stitch_editor import (  # noqa: PLC0415
+            purge_stitch_cache_mp4,
+            stitch_cached_mp4_playable,
+        )
+        if out_path.is_file() and not stitch_cached_mp4_playable(out_path, expected_s=slot_dur_s):
+            purge_stitch_cache_mp4(out_path)
+        if out_path.is_file() and force_rebuild:
+            purge_stitch_cache_mp4(out_path)
+        if out_path.is_file():
+            return out_path
+
+        from credentials_lib.stitch_cache_build import (  # noqa: PLC0415
+            atomic_ffmpeg_output,
+            run_stitch_cache_build,
+        )
 
         # Build ffmpeg command: video from norm_path, audio sources = ambient + SFX
         input_args: list[str] = ["-i", str(norm_path)]
@@ -12094,12 +12692,14 @@ body {{padding-top:44px!important;}}
             input_args += ["-i", ambient_path]
             aidx = next_input_idx
             next_input_idx += 1
-            # Loop and trim to exact slot duration
+            bed_dur_ms = self._ffprobe_duration_ms(Path(ambient_path))
+            bed_dur_s = bed_dur_ms / 1000.0 if bed_dur_ms else 0.0
+            from server_handlers.stitch_ambient_loop import build_ambient_bed_filter_lane_for_file  # noqa: PLC0415
+
             filter_lanes.append(
-                f"[{aidx}:a]aloop=-1:size=2147483647,"
-                f"atrim=duration={slot_dur_s:.3f},"
-                f"aformat=channel_layouts=mono,"
-                f"volume={ambient_volume:.3f}[bed]"
+                build_ambient_bed_filter_lane_for_file(
+                    aidx, ambient_path, bed_dur_s, slot_dur_s, ambient_volume, out_label="bed",
+                )
             )
 
         for idx, cue in enumerate(sfx_cues):
@@ -12152,11 +12752,33 @@ body {{padding-top:44px!important;}}
                 str(out_path),
             ]
         )
-        try:
-            subprocess.run(cmd, check=True, capture_output=True, timeout=300)
-        except subprocess.CalledProcessError as exc:
-            stderr = (exc.stderr or b"")[:600].decode("utf-8", errors="replace")
-            raise RuntimeError(f"Audio mix failed: {stderr}") from exc
+
+        def _mix_ready() -> bool:
+            if out_path.is_file() and not stitch_cached_mp4_playable(out_path, expected_s=slot_dur_s):
+                purge_stitch_cache_mp4(out_path)
+            return out_path.is_file() and stitch_cached_mp4_playable(out_path, expected_s=slot_dur_s)
+
+        def _build_mix() -> None:
+            try:
+                atomic_ffmpeg_output(
+                    cmd,
+                    out_path,
+                    expected_duration_s=slot_dur_s,
+                    validator=lambda p, exp: stitch_cached_mp4_playable(p, expected_s=exp),
+                    timeout=300,
+                )
+            except subprocess.CalledProcessError as exc:
+                stderr = (exc.stderr or b"")[:600].decode("utf-8", errors="replace")
+                raise RuntimeError(f"Audio mix failed: {stderr}") from exc
+
+        run_stitch_cache_build(cache_dir, ready=_mix_ready, build=_build_mix)
+
+        if not _mix_ready():
+            raise RuntimeError(f"Audio mix cache miss after build ({out_path.name})")
+
+        from video_delivery import ensure_mp4_playback_timestamps  # noqa: PLC0415
+
+        ensure_mp4_playback_timestamps(out_path)
 
         # Assertion: cumulative SFX offset < slot duration (Counter 3 mitigation)
         for cue in sfx_cues:
@@ -12182,6 +12804,7 @@ body {{padding-top:44px!important;}}
 
         project_root_str = str(self._stitch_project_root())
         cache_dir = self._stitch_cache_dir()
+        preview_only = bool(body.get("slot_preview"))
 
         # Validate all paths upfront (Rule 19: no open error paths)
         for i, slot in enumerate(slots):
@@ -12242,6 +12865,7 @@ body {{padding-top:44px!important;}}
                 vp, cache_dir,
                 trim_in_ms=trim_in_ms,
                 trim_out_ms=trim_out_ms,
+                preview_only=preview_only,
             )
 
             # Step 2: Audio parity (CONCAT_AUDIO_PARITY_V1)
@@ -12343,27 +12967,52 @@ body {{padding-top:44px!important;}}
             else:
                 pair_fades_ms.append(0)
         if any(f > 0 for f in pair_fades_ms):
-            slot_finals = expand_clips_with_black_pause_boundaries(
-                slot_finals,
-                pair_fades_ms,
-                cache_dir / "module_boundary_black",
-                visual_out_ms=_VISUAL_OUT_MS,
-                visual_in_ms=_VISUAL_IN_MS,
-                fade_audio=False,
-            )
-            slot_finals = self._stitch_apply_canonical_boundary_sfx(
-                slot_finals,
-                pair_fades_ms,
-                cache_dir,
-                visual_out_ms=_VISUAL_OUT_MS,
-                visual_in_ms=_VISUAL_IN_MS,
+            from server_handlers.stitch_editor import (  # noqa: PLC0415
+                module_boundary_visual_out_ms_by_pair,
+                stitch_pipeline_apply_module_boundaries,
             )
 
-        slot_finals = self._stitch_apply_resolution_finale(
-            slot_finals,
-            cache_dir,
-            visual_out_ms=_VISUAL_OUT_MS,
+            _visual_out_by_pair = module_boundary_visual_out_ms_by_pair(
+                len(pair_fades_ms),
+                _VISUAL_OUT_MS,
+            )
+            if stitch_pipeline_apply_module_boundaries(body):
+                slot_finals = expand_clips_with_black_pause_boundaries(
+                    slot_finals,
+                    pair_fades_ms,
+                    cache_dir / "module_boundary_black",
+                    visual_out_ms=_VISUAL_OUT_MS,
+                    visual_in_ms=_VISUAL_IN_MS,
+                    visual_out_ms_by_pair=_visual_out_by_pair,
+                    fade_audio=False,
+                )
+                slot_finals = self._stitch_apply_canonical_boundary_sfx(
+                    slot_finals,
+                    pair_fades_ms,
+                    cache_dir,
+                    visual_out_ms=_VISUAL_OUT_MS,
+                    visual_in_ms=_VISUAL_IN_MS,
+                    visual_out_ms_by_pair=_visual_out_by_pair,
+                    body_slots=body.get("slots") if isinstance(body.get("slots"), list) else [],
+                )
+
+        from server_handlers.stitch_editor import (  # noqa: PLC0415
+            stitch_pipeline_should_apply_milestone_finale,
+            stitch_pipeline_should_apply_resolution_finale,
         )
+
+        if stitch_pipeline_should_apply_resolution_finale(body):
+            slot_finals = self._stitch_apply_resolution_finale(
+                slot_finals,
+                cache_dir,
+                visual_out_ms=_VISUAL_OUT_MS,
+            )
+        elif stitch_pipeline_should_apply_milestone_finale(body):
+            slot_finals = self._stitch_apply_milestone_finale(
+                slot_finals,
+                cache_dir,
+                visual_out_ms=_VISUAL_OUT_MS,
+            )
 
         from ffmpeg_stitch import module_slot_start_offsets_ms  # noqa: PLC0415
 
@@ -12396,7 +13045,23 @@ body {{padding-top:44px!important;}}
         out_path = cache_dir / f"stitch_preview_{out_hash}.mp4"
         expected_ms = sum(self._ffprobe_duration_ms(p) for p in slot_finals)
         expected_s = expected_ms / 1000.0
-        from ffmpeg_stitch import preview_cache_is_valid  # noqa: PLC0415
+        from ffmpeg_stitch import (  # noqa: PLC0415
+            STITCH_EXPORT_AV_MAX_DRIFT_S,
+            assert_stitch_export_clips_av_aligned,
+            av_duration_drift_s,
+            preview_cache_is_valid,
+        )
+        from server_handlers.stitch_editor import (  # noqa: PLC0415
+            STITCH_SLOT_PREVIEW_VIDEO_PLAYABLE_V1,
+            purge_stitch_cache_mp4,
+            stitch_cached_mp4_playable,
+        )
+
+        # STITCH_MODULE_BAKE_AV_PARITY_V1 — gate slot finals before module concat.
+        try:
+            assert_stitch_export_clips_av_aligned(slot_finals)
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
 
         if out_path.is_file() and not preview_cache_is_valid(out_path, expected_s):
             try:
@@ -12405,28 +13070,78 @@ body {{padding-top:44px!important;}}
                 pass
 
         if not out_path.is_file():
-            if len(slot_finals) == 1:
-                import shutil as _shutil  # noqa: PLC0415
+            import fcntl  # noqa: PLC0415
+            from credentials_lib.stitch_cache_build import stitch_cache_build_lock  # noqa: PLC0415
+            from server_handlers.stitch_media_artifacts import stitch_collect_referenced_cache_stems  # noqa: PLC0415
 
-                tmp = out_path.parent / (
-                    f"{out_path.stem}.tmp.{os.getpid()}{out_path.suffix}"
+            with stitch_cache_build_lock(cache_dir):
+                if out_path.is_file() and preview_cache_is_valid(out_path, expected_s):
+                    pass
+                elif len(slot_finals) == 1:
+                    import shutil as _shutil  # noqa: PLC0415
+
+                    tmp = out_path.parent / (
+                        f"{out_path.stem}.tmp.{os.getpid()}{out_path.suffix}"
+                    )
+                    _shutil.copy(slot_finals[0], tmp)
+                    os.replace(tmp, out_path)
+                    from video_delivery import ensure_mp4_playback_timestamps  # noqa: PLC0415
+
+                    ensure_mp4_playback_timestamps(out_path)
+                else:
+                    concat_with_xfade_clips(slot_finals, out_path)
+
+                pin_stems = stitch_collect_referenced_cache_stems(
+                    self.app.stitch_state.read_state() or {},
                 )
-                # copy (not copy2): fresh mtime so lru_cleanup keeps the new preview.
-                _shutil.copy(slot_finals[0], tmp)
-                os.replace(tmp, out_path)
-            else:
-                concat_with_xfade_clips(slot_finals, out_path)
+                pin_stems.add(out_hash)
+                lru_cleanup(
+                    cache_dir, keep=20, pattern=r"^stitch_preview_.*\.mp4$",
+                    pin_stems=pin_stems,
+                )
+                lru_cleanup(
+                    cache_dir, keep=10, pattern=r"^se_slot_.*\.mp4$",
+                    pin_stems=pin_stems,
+                )
+        else:
+            from server_handlers.stitch_media_artifacts import stitch_collect_referenced_cache_stems  # noqa: PLC0415
+
+            pin_stems = stitch_collect_referenced_cache_stems(
+                self.app.stitch_state.read_state() or {},
+            )
+            pin_stems.add(out_hash)
+            lru_cleanup(
+                cache_dir, keep=20, pattern=r"^stitch_preview_.*\.mp4$",
+                pin_stems=pin_stems,
+            )
+            lru_cleanup(
+                cache_dir, keep=10, pattern=r"^se_slot_.*\.mp4$",
+                pin_stems=pin_stems,
+            )
 
         if not preview_cache_is_valid(out_path, expected_s):
             actual_ms = self._ffprobe_duration_ms(out_path)
+            purge_stitch_cache_mp4(out_path)
             raise RuntimeError(
                 f"stitch preview corrupt or truncated: got {actual_ms}ms, "
                 f"expected ~{expected_ms}ms ({out_path.name})",
             )
 
-        # LRU cleanup (prevent cache accumulation)
-        lru_cleanup(cache_dir, keep=5, pattern=r"^stitch_preview_.*\.mp4$")
-        lru_cleanup(cache_dir, keep=10, pattern=r"^se_slot_.*\.mp4$")
+        preview_av_drift_s = av_duration_drift_s(out_path)
+        if preview_av_drift_s > STITCH_EXPORT_AV_MAX_DRIFT_S:
+            purge_stitch_cache_mp4(out_path)
+            raise RuntimeError(
+                f"stitch preview A/V misaligned: drift {preview_av_drift_s:.3f}s "
+                f"(max {STITCH_EXPORT_AV_MAX_DRIFT_S}s) ({out_path.name}) "
+                "(STITCH_MODULE_BAKE_AV_PARITY_V1)",
+            )
+
+        if not stitch_cached_mp4_playable(out_path, expected_s=expected_s):
+            purge_stitch_cache_mp4(out_path)
+            raise RuntimeError(
+                f"stitch preview failed decode smoke test ({out_path.name}) "
+                f"({STITCH_SLOT_PREVIEW_VIDEO_PLAYABLE_V1})",
+            )
 
         return out_path, slot_durations, slot_start_offsets_ms
 
@@ -12435,10 +13150,14 @@ body {{padding-top:44px!important;}}
         from server_handlers.stitch_editor import handle_stitch_preview
         return handle_stitch_preview(self, body)
 
-    @with_pin_and_drain('_handle_stitch_bake', track_sync=True)
+    @with_pin_and_drain('_handle_stitch_bake', track_sync=False)
     def _handle_stitch_bake(self, body: dict) -> None:
         from server_handlers.stitch_editor import handle_stitch_bake
         return handle_stitch_bake(self, body)
+
+    def _handle_stitch_bake_status(self) -> None:
+        from server_handlers.stitch_editor import handle_stitch_bake_status
+        return handle_stitch_bake_status(self)
 
     # ---- end Stitch Editor handlers ----
 
@@ -12477,70 +13196,33 @@ body {{padding-top:44px!important;}}
         })
 
     def _serve_watercolor(self, filename: str) -> None:
-        """GET /api/phase_b/watercolor/<filename>
-
-        Streams Event_N/library/watercolors/<filename> thumbnails and
-        video cue assets to the timeline widget's library panel.
-
-        Accepts both a bare key (e.g. "hands_rubbing") and a full filename with
-        extension (e.g. "hands_rubbing.png").  When the client sends a bare key
-        (which is how the Phase B cue overlay builds its src URL), the handler
-        resolves the extension via glob — same strategy as handle_watercolor_animate.
-        Prefers .png over .mov/.mp4 when multiple matches exist.
-        """
-        safe = Path(filename).name
-        _ALLOWED_EXTS = (".png", ".mov", ".mp4")
+        """GET /api/phase_b/watercolor/<filename> — canonical resolver (lib/watercolor_assets)."""
         from lib.event_library import event_watercolors_dir
-        from server_handlers._path_security import require_basename_under_dir, require_resolved_under_root
+        from lib.watercolor_assets import resolve_watercolor_path
+        from server_handlers._path_security import require_resolved_under_root
 
+        safe = urllib.parse.unquote(filename)
         wc_dir = event_watercolors_dir(self.app.event_dir)
-        # Bare key path — no valid extension provided by the caller.
-        if not safe.lower().endswith(_ALLOWED_EXTS):
-            matches = [m for m in wc_dir.glob(f"{safe}.*")
-                       if m.suffix.lower() in _ALLOWED_EXTS]
-            if not matches:
-                return self._send_error_v59(
-                           400,
-                           error_code="GENERIC_ERROR",
-                           error_message=f"watercolor not found: {safe!r} (no .png/.mov/.mp4 in library)",
-                           retry_safe=False,
-                           extra={"hint": "Ensure the asset exists in Event library/watercolors/ with a .png, .mov, or .mp4 extension."},
-                       )
-            # RC2 fix: prefer the animated MP4/MOV over a static PNG when multiple
-            # extensions share the same stem (e.g., a thumbnail alongside a video).
-            mp4_match = next((m for m in matches if m.suffix.lower() in (".mp4", ".mov")), None)
-            png_match = next((m for m in matches if m.suffix.lower() == ".png"), None)
-            try:
-                target = require_resolved_under_root(
-                    mp4_match or png_match or matches[0],
-                    wc_dir,
-                )
-            except ValueError:
-                return self._send_error_v59(
-                           403,
-                           error_code="GENERIC_ERROR",
-                           error_message=f"watercolor path outside library: {safe!r}",
-                           retry_safe=False,
-                       )
-        else:
-            try:
-                target = require_basename_under_dir(safe, wc_dir)
-            except ValueError:
-                return self._send_error_v59(
-                           400,
-                           error_code="GENERIC_ERROR",
-                           error_message=f"invalid watercolor filename: {safe!r}",
-                           retry_safe=False,
-                       )
-        if not target.is_file():
+        try:
+            target = resolve_watercolor_path(wc_dir, safe, prefer_animation=True)
+            target = require_resolved_under_root(target, wc_dir)
+        except FileNotFoundError:
             return self._send_error_v59(
-                       404,
-                       error_code="GENERIC_ERROR",
-                       error_message=f"watercolor not found: {safe}",
-                       retry_safe=False,
-                   )
+                400,
+                error_code="GENERIC_ERROR",
+                error_message=f"watercolor not found: {Path(safe).name!r} (no .png/.mov/.mp4 in library)",
+                retry_safe=False,
+                extra={"hint": "Ensure the asset exists in Event library/watercolors/ with a .png, .mov, or .mp4 extension."},
+            )
+        except ValueError:
+            return self._send_error_v59(
+                403,
+                error_code="GENERIC_ERROR",
+                error_message=f"watercolor path outside library: {Path(safe).name!r}",
+                retry_safe=False,
+            )
         suffix = target.suffix.lower()
-        ctype = {".png": "image/png", ".mov": "video/quicktime",
+        ctype = {".png": "image/png", ".webp": "image/webp", ".mov": "video/quicktime",
                  ".mp4": "video/mp4"}.get(suffix, "application/octet-stream")
         body = target.read_bytes()
         self._send_bytes(200, body, ctype, extra_headers={
@@ -12592,6 +13274,10 @@ body {{padding-top:44px!important;}}
         from server_handlers.phases import handle_phase_a_regen_base_clip
         return handle_phase_a_regen_base_clip(self, body)
 
+    def _handle_phase_b_regen_base_clip(self, body: dict) -> None:
+        from server_handlers.phases import handle_phase_b_regen_base_clip
+        return handle_phase_b_regen_base_clip(self, body)
+
     def _handle_phase_a_restitch(self, body: dict) -> None:
         from server_handlers.phases import handle_phase_a_restitch
         return handle_phase_a_restitch(self, body)
@@ -12612,17 +13298,10 @@ body {{padding-top:44px!important;}}
         return handle_phase_apply_stem_cut(self, body)
 
     def _auto_assemble_phase_a_stitched(self, ts: str) -> dict | None:
-        """Stitch raw Phase A lipsync middle only + continuous ambient bed.
+        """Normalize raw Phase A lipsync to LD-284 dry export (no ambient bed).
 
-        Arlo migration (2026-06): fly-in/fly-out bookends removed — Arlo is
-        already on-screen in the wizard desk base; no entrance/exit Kling clips.
-
-        Two-stage ffmpeg:
-          1. Normalize raw lipsync to LD-284 (1280×720)
-          2. Overlay full-length bed from state.phase_a_ambient_preset_id at
-             volume=0.15 -> canonical final
-
-        Uses RAW lipsync (no "withbed" in name) so the bed is never doubled.
+        Ambient beds are applied only in Stitcher at compose time — not in the
+        Phase A producer (v59 spec: ambient moved to Stitcher).
 
         Returns {file, mtime, duration_s} or None if lipsync input missing.
         """
@@ -12637,19 +13316,6 @@ body {{padding-top:44px!important;}}
         if not raw_lipsync_path:
             return None
 
-        # Resolve ambient preset (for the full-length overlay).
-        # S5.5d (v3): phase_a is TOP-LEVEL state.
-        ambient_preset_id = (
-            state.get("phase_a_ambient_preset_id")
-            or (state.get("phase_a") or {}).get("phase_a_ambient_preset_id")
-        )
-        ambient_path: Path | None = None
-        if ambient_preset_id:
-            candidate = self._phase_assets_dir("ambient_library") / f"{ambient_preset_id}.mp3"
-            if candidate.is_file():
-                ambient_path = candidate
-
-        # Normalize each clip (cached: skip if norm is newer than src).
         norm_dir = self.app.event_dir / "_normalized_phase_a"
         norm_dir.mkdir(exist_ok=True)
 
@@ -12660,48 +13326,10 @@ body {{padding-top:44px!important;}}
 
         raw_norm = norm_dir / f"raw_{raw_lipsync_path.stem}.mp4"
         _normalize_cached(raw_lipsync_path, raw_norm)
-        intermediate_path = raw_norm
 
         out_path = self.app.event_dir / f"phase_a_stitched_{ts}.mp4"
-
-        if ambient_path is not None:
-            # Stage 2: overlay continuous ambient bed across the full duration.
-            try:
-                total_dur = _ffprobe_duration(intermediate_path)
-            except Exception:  # noqa: BLE001
-                total_dur = 0.0
-            if total_dur <= 0:
-                # ffprobe failed — fall back to passing intermediate through.
-                import shutil as _shutil
-                _shutil.copy2(intermediate_path, out_path)
-            else:
-                filter_complex = (
-                    f"[1:a]atrim=0:{total_dur:.3f},volume=0.15[bed];"
-                    f"[0:a][bed]amix=inputs=2:duration=first:normalize=0[aout]"
-                )
-                cmd = [
-                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                    "-i", str(intermediate_path.resolve()),
-                    "-stream_loop", "-1", "-i", str(ambient_path.resolve()),
-                    "-filter_complex", filter_complex,
-                    "-map", "0:v",
-                    "-map", "[aout]",
-                    "-c:v", "copy",
-                    "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "1",
-                    "-movflags", "+faststart",
-                    str(out_path),
-                ]
-                try:
-                    subprocess.run(cmd, check=True, capture_output=True, timeout=120)
-                except subprocess.CalledProcessError as exc:
-                    stderr = (exc.stderr or b"")[:300].decode("utf-8", errors="replace")
-                    print(f"[canonical] bed overlay failed: rc={exc.returncode} {stderr}")
-                    import shutil as _shutil
-                    _shutil.copy2(intermediate_path, out_path)
-        else:
-            # No ambient preset selected — ship intermediate as the canonical.
-            import shutil as _shutil
-            _shutil.copy2(intermediate_path, out_path)
+        import shutil as _shutil
+        _shutil.copy2(raw_norm, out_path)
 
         mtime_v = int(os.path.getmtime(str(out_path)))
         try:
@@ -12731,7 +13359,7 @@ body {{padding-top:44px!important;}}
             "duration_s": round(dur, 3),
             "raw_lipsync": raw_lipsync_path.name,
             "bookends": "none",
-            "ambient_preset_id": ambient_preset_id,
+            "ambient_bed": "stitcher_only",
         }
 
     @with_pin_and_drain('_handle_phase_b_lipsync', track_sync=True)
@@ -12915,12 +13543,19 @@ def _check_runtime_capabilities() -> None:
         sys.exit(4)
 
 
-def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_event_dir: Path | None = None) -> int:
+def run_server(
+    event_dir: Path,
+    storyboard_name: str,
+    event_id: str,
+    *,
+    source_event_dir: Path | None = None,
+    port: int = SERVER_PORT,
+) -> int:
     from lib.event_pin import resolve_startup_event
     from lib.paths import normalize_event_dir
 
     event_dir, storyboard_name, event_id, pin_source = resolve_startup_event(
-        event_dir, storyboard_name, event_id,
+        event_dir, storyboard_name, event_id, port=port,
     )
     event_dir = normalize_event_dir(event_dir)
     storyboard_path = event_dir / storyboard_name
@@ -12941,18 +13576,36 @@ def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_e
     # baked at module-import time anchored on the (empty) tooling tree.
     # Closes audit findings C1-5 / C1-6 / C1-7 / C1-8 / C1-9.
     # See Production/lib/paths.py for the canonical helpers.
-    _bg_module().init_bg_paths(event_dir)
+    _bg_module().assert_beatgen_db_path_matches_event(event_id)
+    os.environ["MN_BEATGEN_SERVER_WRITER"] = "1"
+    _bg_module().init_bg_paths(event_dir, clear_milestone_scope=True)
+
+    try:
+        from beatgen_sidecar_health import warn_dropbox_conflict_copies
+
+        for conflict_path in warn_dropbox_conflict_copies(event_dir):
+            print(
+                f"[startup] WARN: Dropbox conflict copy under event dir: {conflict_path}",
+                flush=True,
+            )
+    except Exception as _conflict_exc:
+        print(f"[startup] WARN: conflict copy scan failed: {_conflict_exc}", flush=True)
+
+    # BEATGEN_PER_EVENT_SQLITE_V1 — rehydrate empty segments from disk artifacts +
+    # purge milestone pollution before first session-state GET (refresh-safe).
+    try:
+        _reconcile = _bg_module().reconcile_event_sidecar_after_milestone_exit(
+            event_dir, event_id,
+        )
+        if _reconcile.get("restored_segments") or _reconcile.get("removed_segments"):
+            print(f"[startup] sidecar reconcile {_reconcile}", flush=True)
+    except Exception as _reconcile_exc:
+        print(f"[startup] WARN: sidecar reconcile failed: {_reconcile_exc}", flush=True)
 
     # P2 / LD-505 Phase C: dependency-presence smoke. Hard deps fail-loud
     # with [FATAL]; soft deps degrade with structured [startup:capabilities]
     # line that the UI / log scraper can parse. Audit C4-1/C4-2/C4-3/C4-4.
     _check_runtime_capabilities()
-
-    pid_file = event_dir / "production_server.pid"
-    cleanup_stale(pid_file)
-    if not port_free(SERVER_PORT):
-        print(f"ERROR: port {SERVER_PORT} already in use", file=sys.stderr)
-        return 3
 
     # Parse API keys — LD-505 Phase C (T1-4, 2026-05-19): API_KEYS_MASTER.md
     # is DATA, not code (.gitignored, Dropbox-only). Was anchored on tooling
@@ -13000,6 +13653,22 @@ def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_e
         print("[startup] WARNING: no WaveSpeed key found — /api/animate will 500")
 
     state = StateManager(event_dir, event_id)
+
+    # PB_2 / Suggest Script — heal Event_N → M<n>E1 in production_state.json
+    # (Event_3+ created via +New Event before this fix stored bare folder id).
+    try:
+        from lib.module_event_id import heal_production_state_event_id
+
+        if heal_production_state_event_id(state):
+            print(
+                f"[startup] canonical module event_id healed for {event_dir.name}",
+                flush=True,
+            )
+    except Exception as _event_id_heal_exc:
+        print(
+            f"[startup] WARN: module event_id heal skipped: {_event_id_heal_exc}",
+            flush=True,
+        )
 
     # BS4 (Tier 3 blind-spot fix, April 16 2026): sweep orphan *.tmp files left
     # behind by WaveSpeedClient.download crashes. Atomic tmp+rename leaves .tmp
@@ -13119,6 +13788,16 @@ def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_e
         print(f"[startup:ghost_scrub] WARN: scrub failed (non-fatal): {_gs_exc}", flush=True)
 
     app = AppContext(event_dir, storyboard_path, event_id, state, client)
+    app.server_port = port
+    try:
+        _repo_root = Path(__file__).resolve().parent.parent.parent
+        app.tooling_sha = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=_repo_root,
+            text=True,
+        ).strip()
+    except Exception:
+        app.tooling_sha = "unknown"
 
     # DIRECTUS_LOCK_WARMUP_V1 (2026-05-14): warm the cross-machine lock
     # client singleton + JWT auth at startup so the first user-triggered
@@ -13157,11 +13836,70 @@ def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_e
             f"{source_event_dir} (server still write-pinned to {event_dir.name})"
         )
 
-    httpd = ProductionServer(("127.0.0.1", SERVER_PORT), app)
     try:
-        pid_file.write_text(str(os.getpid()))
-    except PermissionError:
-        print("[startup] WARNING: could not write pid file (permission) — proceeding without it")
+        from lib.milestone_scope_persist import restore_milestone_scope_on_startup
+
+        restore_milestone_scope_on_startup(app)
+    except Exception as _ms_exc:
+        print(f"[startup] milestone scope restore failed (non-fatal): {_ms_exc}", flush=True)
+
+    try:
+        from server_handlers.stitch_editor import (
+            EVENT_STITCH_JOB_BOOTSTRAP_V1,
+            ensure_event_stitch_job_registered,
+            is_numbered_event_id,
+            stitch_bootstrap_shim_for_app,
+        )
+
+        if is_numbered_event_id(event_id):
+            boot = ensure_event_stitch_job_registered(
+                stitch_bootstrap_shim_for_app(app),
+                event_id,
+                hydrate_from_disk=True,
+            )
+            if boot.get("changed"):
+                print(
+                    f"[startup] {EVENT_STITCH_JOB_BOOTSTRAP_V1} {boot}",
+                    flush=True,
+                )
+    except Exception as _stitch_boot_exc:
+        print(
+            f"[startup] WARN: event stitch job bootstrap failed: {_stitch_boot_exc}",
+            flush=True,
+        )
+
+    try:
+        with port_startup_guard(
+            port,
+            event_id=event_id,
+            event_dir=event_dir,
+            exclude_pid=os.getpid(),
+        ):
+            httpd = ProductionServer(("127.0.0.1", port), app)
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 3
+    try:
+        from server_handlers.background import (
+            run_blocking_o3_startup,
+            schedule_o3_gallery_repair_at_startup,
+            schedule_operator_workbench_migrate_at_startup,
+        )
+        run_blocking_o3_startup(app)
+        schedule_o3_gallery_repair_at_startup(app)
+        schedule_operator_workbench_migrate_at_startup(app)
+    except Exception as _gr_exc:
+        print(f"[startup:o3-blocking-reconcile] FATAL: {_gr_exc}", flush=True)
+        raise
+    try:
+        register_server_port(
+            port,
+            pid=os.getpid(),
+            event_id=event_id,
+            event_dir=event_dir,
+        )
+    except OSError as exc:
+        print(f"[startup] WARNING: port registry write failed: {exc}", flush=True)
 
     stop_event = threading.Event()
     poller = None
@@ -13190,22 +13928,44 @@ def run_server(event_dir: Path, storyboard_name: str, event_id: str, *, source_e
 
     def shutdown(*_a):  # noqa: ANN001
         print("[server] shutdown signal — stopping")
+        try:
+            unregister_server_port(port, pid=os.getpid())
+        except Exception as exc:  # noqa: BLE001
+            print(f"[server] port registry cleanup skipped: {exc}", flush=True)
         stop_event.set()
         threading.Thread(target=httpd.shutdown, daemon=True).start()
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
 
-    print(f"[server] listening on http://localhost:{SERVER_PORT}  event={event_id}")
+    print(f"[server] listening on http://localhost:{port}  event={event_id}")
     print(f"[server] storyboard:  {storyboard_path}")
     print(f"[server] clips dir:   {state.clips_dir}")
+    try:
+        from server_handlers.stitch_media_artifacts import sweep_stitch_editor_cache  # noqa: PLC0415
+
+        project_root = app.event_dir.resolve().parent.parent
+        sweep_counts = sweep_stitch_editor_cache(
+            project_root, app.stitch_state.read_state() or {},
+        )
+        if sweep_counts["orphan_temps"] or sweep_counts["unreferenced"]:
+            print(
+                "[startup:stitch-cache-sweep] removed "
+                f"orphan_temps={sweep_counts['orphan_temps']} "
+                f"unreferenced={sweep_counts['unreferenced']}",
+                flush=True,
+            )
+    except Exception as _sweep_exc:
+        print(f"[startup:stitch-cache-sweep] WARNING: {_sweep_exc}", flush=True)
+    app.scope_ready = True
+    print("[startup] scope_ready=True — /api/event/current ready", flush=True)
     try:
         httpd.serve_forever()
     finally:
         stop_event.set()
         try:
-            pid_file.unlink(missing_ok=True)
-        except PermissionError:
-            pass
+            unregister_server_port(port, pid=os.getpid())
+        except Exception as exc:  # noqa: BLE001
+            print(f"[server] port registry cleanup skipped: {exc}", flush=True)
         print("[server] exited")
     return 0
 
@@ -13320,6 +14080,12 @@ def main() -> int:
     # recovery primitive can move beats between events with explicit operator
     # ceremony (one-time CLI restart per cross-event session per DV-1).
     ap.add_argument(
+        "--port",
+        type=int,
+        default=SERVER_PORT,
+        help="HTTP listen port (Event_N dedicated servers use 5110+N, e.g. Event_2 → 5112)",
+    )
+    ap.add_argument(
         "--source-event",
         type=Path,
         default=None,
@@ -13341,6 +14107,7 @@ def main() -> int:
     return run_server(
         Path(args.event_dir), args.storyboard, args.event_id,
         source_event_dir=args.source_event,
+        port=args.port,
     )
 
 

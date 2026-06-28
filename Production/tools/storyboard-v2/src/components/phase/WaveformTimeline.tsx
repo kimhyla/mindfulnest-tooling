@@ -14,6 +14,18 @@
 //           never bare effect() during App render (app.tsx prevTabRef pattern).
 //   PLAY-6  Linked-video audioprocess must not lv_play() after pause (Stitcher ▶/⏸).
 //           togglePlayback calls hardPause() before pauseAllPhasePlayback().
+//   SEEK-1  Drag-seek applySeek MUST use wsRef.current — never close over ws from
+//           effect setup (WS remount deps can recycle instance while handlers linger).
+//   SEEK-3  While paused, onSeeking must not overwrite applySeek when WS clock is
+//           stale (lipsync mp4 — play→pause→drag repro on Event_1 / 5111).
+//   SEEK-5  Phase A waveform must not decode stitched MP4 — stem/lipsync priority
+//           only; stitched stays on preview <video> (drag flash to 0.0 repro).
+//   SEEK-6  isDraggingSeekRef + capture-phase handlers + linkedVideoTimeS from
+//           lastScrubMsRef — onSeeking must not flash stale WS clock to 0.
+//   CUE-HANDLE-1  cue-block body pointer-events:none REQUIRES cue-block-handle
+//           pointer-events:auto (stem-trim pattern). Partial copy regresses resize.
+//   CUE-RESIZE-1  cue handle drag math MUST read timelineDurationMsRef.current —
+//           same stale-duration class as SEEK (ws.getDuration() can be 0).
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // Responsibilities (Phase A + Phase B — same WaveformTimeline instance per tab):
@@ -37,6 +49,15 @@ import {
   registerWaveformPlaybackControl,
   pauseAllPhasePlayback,
 } from '../../utils/waveformPlaybackBus';
+import { isStitchComposerPlaybackOwner } from '../../utils/stitchConstants';
+import { linkedMediaSameFilename } from '../../utils/playbackVideoPolicy';
+
+/** Intentional ws.destroy() during audioSrc / shared-media transitions aborts in-flight load. */
+function isIgnorableWaveformLoadError(err: unknown): boolean {
+  if (err instanceof DOMException && err.name === 'AbortError') return true;
+  const msg = err instanceof Error ? err.message : String(err);
+  return /abort/i.test(msg);
+}
 
 export interface WatercolorCue {
   id: string;
@@ -66,6 +87,8 @@ export interface WaveformTimelineProps {
   ) => void;
   /** When audio is not loaded yet, use this duration for drop + cue block math. */
   fallbackDurationMs?: number;
+  /** Authoritative slot timeline for SFX drop / cue markers (STITCH_SLOT_TIMELINE_CLOCK_V1). */
+  slotTimelineDurMs?: number;
   /** Hide play controls (Stitcher per-slot strip). */
   compact?: boolean;
   /** Override empty-state copy (Stitcher: "Load video…"). */
@@ -103,12 +126,34 @@ export interface WaveformTimelineProps {
    * WaveformTimeline drives the video: play/pause/seek mirror WaveSurfer state.
    */
   linkedVideo?: { current: HTMLVideoElement | null };
+  /** Basename of linked preview file — auto-enables match-audio sync when = sourceFilename. */
+  linkedVideoFilename?: string | null;
+  /**
+   * Seek-only linked video (Stitcher composer): WaveSurfer owns playback; the video
+   * stays paused and currentTime follows the playhead. Avoids decode stalls on long
+   * assembled slot MP4s where parallel play() freezes picture while audio runs.
+   */
+  linkedVideoScrubOnly?: boolean;
+  /**
+   * Preview video decodes the same MP4 as WaveSurfer audio — display-only video +
+   * throttled seeks (PLAY-8). Also auto-enabled when linkedVideoFilename matches
+   * sourceFilename (all events / phases without per-caller wiring).
+   */
+  linkedVideoMatchAudio?: boolean;
   /** Parent ignores linked-video play/seeked while waveform drives the element. */
   linkedVideoEventSuppressRef?: { current: boolean };
   /** Parent can call play()/pause() from Preview with Overlay (same user-gesture stack). */
   playbackControl?: { current: WaveformPlaybackControl | null };
   /** Drop/seek only — no playback bus, no ▶ (Stitcher compact grid strips). */
   playbackDisabled?: boolean;
+  /** Display-only waveform — peaks visualization; master video owns audio (STITCH_UNIFIED_PLAYBACK_V1). */
+  displayOnly?: boolean;
+  displayPeaks?: number[];
+  displayDurationS?: number;
+  masterVideo?: { current: HTMLVideoElement | null };
+  /** When this changes, re-bind master video listeners (video mounts after peaks). */
+  masterVideoSrc?: string;
+  onMasterSeek?: (ms: number) => void;
   /** Server ffmpeg remix in flight — block ▶ until mixed audio_src is loaded. */
   mixExtracting?: boolean;
 }
@@ -134,6 +179,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     onWatercolorDrop,
     onSfxDrop,
     fallbackDurationMs,
+    slotTimelineDurMs,
     compact,
     emptyMessage,
     cueTestIdPrefix,
@@ -145,9 +191,18 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     onCueResize,
     onPlayStateChange,
     linkedVideo,
+    linkedVideoFilename = null,
+    linkedVideoScrubOnly = false,
+    linkedVideoMatchAudio = false,
     linkedVideoEventSuppressRef,
     playbackControl,
     playbackDisabled,
+    displayOnly = false,
+    displayPeaks,
+    displayDurationS,
+    masterVideo,
+    masterVideoSrc,
+    onMasterSeek,
     mixExtracting = false,
     stemCutStartMs,
     stemCutEndMs,
@@ -158,6 +213,16 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     stemTrimEditable,
     onStemTrimChange,
   } = props;
+
+  const effectiveLinkedVideoMatchAudio =
+    linkedVideoMatchAudio ||
+    Boolean(
+      linkedVideo &&
+        sourceFilename &&
+        linkedVideoFilename &&
+        linkedMediaSameFilename(linkedVideoFilename, sourceFilename),
+    );
+  const useSharedLinkedMedia = effectiveLinkedVideoMatchAudio;
 
   const cutStartMs = stemCutStartMs ?? stemTrimStartMs ?? 0;
   const cutEndMs = stemCutEndMs ?? stemTrimBackMs ?? 0;
@@ -170,6 +235,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const wsRef = useRef<WaveSurfer | null>(null);
+  const waveformLoadGenRef = useRef(0);
   const [durationMs, setDurationMs] = useState<number | null>(null);
   const [currentMs, setCurrentMs] = useState<number>(0);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -193,8 +259,21 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   const isReadyRef = useRef<boolean>(false);
   const onWaveformClickRef = useRef(onWaveformClick);
   onWaveformClickRef.current = onWaveformClick;
+  const onTimeUpdateRef = useRef(onTimeUpdate);
+  onTimeUpdateRef.current = onTimeUpdate;
 
-  const timelineDurationMs = durationMs ?? fallbackDurationMs ?? null;
+  const timelineDurationMs = durationMs ?? slotTimelineDurMs ?? fallbackDurationMs ?? null;
+  const timelineDurationMsRef = useRef(timelineDurationMs);
+  timelineDurationMsRef.current = timelineDurationMs;
+
+  const resolveTimelineDurationMs = (): number => {
+    const fromRef = timelineDurationMsRef.current ?? 0;
+    return fromRef > 0 ? fromRef : 0;
+  };
+  /** Authoritative scrub target while paused — WS getCurrentTime() lags on lipsync mp4. */
+  const lastScrubMsRef = useRef<number | null>(null);
+  /** Survives seek-effect rebind — local isDragging was lost mid-drag (flash to 0). */
+  const isDraggingSeekRef = useRef<boolean>(false);
 
   const cuePctLeft = (cue: WatercolorCue): number => {
     if (!timelineDurationMs || timelineDurationMs <= 0) return 0;
@@ -227,6 +306,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     setIsPlaying(false);
     const pane = wrapperRef.current?.closest('.mn-tab-pane-keepalive');
     pane?.querySelectorAll('video, audio').forEach((el) => {
+      if (isStitchComposerPlaybackOwner(el)) return;
       if (el instanceof HTMLMediaElement) el.pause();
     });
   }, [linkedVideo, withLinkedVideoSuppress]);
@@ -240,9 +320,60 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     onPlayStateChange?.(playing);
   }, [onPlayStateChange]);
 
-  // WaveSurfer mount — audioSrc changes only. Seek handlers live in a separate
-  // effect below (LD WAVEFORM_DRAG_SEEK_V1).
+  // WaveSurfer mount — audioSrc or displayOnly peaks.
   useEffect(() => {
+    if (displayOnly) {
+      if (!displayPeaks?.length || !displayDurationS || !containerRef.current) return;
+      setLoadError(null);
+      const slotClockMs = slotTimelineDurMs ?? fallbackDurationMs ?? 0;
+      const authoritativeMs = slotClockMs > 0
+        ? slotClockMs
+        : displayDurationS * 1000;
+      setDurationMs(authoritativeMs);
+      setCurrentMs(0);
+      setIsPlaying(false);
+      setIsReady(false);
+
+      const ws = WaveSurfer.create({
+        container: containerRef.current,
+        waveColor: '#7d6b5d',
+        progressColor: '#3a2e26',
+        cursorColor: '#c33',
+        height: waveformHeight ?? 80,
+        normalize: true,
+        barWidth: 2,
+        barGap: 1,
+        interact: false,
+      });
+      wsRef.current = ws;
+      const onReadyHandler = () => {
+        const slotClockMs = slotTimelineDurMs ?? fallbackDurationMs ?? 0;
+        const authoritativeMs = slotClockMs > 0
+          ? slotClockMs
+          : (ws.getDuration() || displayDurationS) * 1000;
+        setDurationMs(authoritativeMs);
+        setIsReady(true);
+        isReadyRef.current = true;
+      };
+      ws.on('ready', onReadyHandler);
+      const loadGen = ++waveformLoadGenRef.current;
+      void ws.load('', [displayPeaks], displayDurationS).catch((err: unknown) => {
+        if (waveformLoadGenRef.current !== loadGen) return;
+        if (isIgnorableWaveformLoadError(err)) return;
+        const msg = err instanceof Error ? err.message : String(err);
+        setLoadError(msg);
+      });
+      return () => {
+        isReadyRef.current = false;
+        try {
+          ws.destroy();
+        } catch {
+          // non-fatal
+        }
+        if (wsRef.current === ws) wsRef.current = null;
+      };
+    }
+
     if (playbackDisabled || !audioSrc || !containerRef.current) return;
     setLoadError(null);
     setDurationMs(null);
@@ -259,6 +390,9 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       normalize: true,
       barWidth: 2,
       barGap: 1,
+      ...(useSharedLinkedMedia && linkedVideo?.current
+        ? { media: linkedVideo.current }
+        : {}),
       // interact:false disables WaveSurfer's built-in click/drag-to-seek handlers.
       // We own all seek logic below via native pointer events, which lets us do
       // smooth drag-seek without WaveSurfer resetting the playhead on mouseup
@@ -282,18 +416,47 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       }
       onReady?.(d);
     };
+    const msFromWsClock = (wave: WaveSurfer): number | null => {
+      const t = wave.getCurrentTime();
+      const wsDurS = wave.getDuration();
+      if (wsDurS > 0) {
+        if (t <= 0) return null;
+        return t * 1000;
+      }
+      const durMs = timelineDurationMsRef.current ?? 0;
+      if (durMs <= 0) return null;
+      if (t > 0 && t <= 1) return t * durMs;
+      if (t > 1) return t * 1000;
+      return null;
+    };
     const onAudioProcess = () => {
       if (stopPlaybackIfHiddenPane()) return;
-      const ms = ws.getCurrentTime() * 1000;
+      if (!ws.isPlaying()) return;
+      const ms = msFromWsClock(ws);
+      if (ms == null) return;
       setCurrentMs(ms);
       onTimeUpdate?.(ms);
       syncPlayUi();
     };
-    // 'seeking' fires after every ws.seekTo() call with the real committed position.
+    // Paused scrub: applySeek + lastScrubMsRef own the label. WS 'seeking' /
+    // getCurrentTime() often reports 0 on mp4/lipsync until decode catches up —
+    // accepting that clock zeros the red playhead on drag release.
     const onSeeking = () => {
-      const ms = ws.getCurrentTime() * 1000;
+      if (isDraggingSeekRef.current) return;
+      if (!ws.isPlaying()) return;
+      const ms = msFromWsClock(ws);
+      if (ms == null) return;
+      lastScrubMsRef.current = null;
       setCurrentMs(ms);
       onTimeUpdate?.(ms);
+    };
+    const linkedVideoTimeS = (): number => {
+      const scrubbed = lastScrubMsRef.current;
+      if (!ws.isPlaying() && scrubbed != null) {
+        return scrubbed / 1000;
+      }
+      const t = ws.getCurrentTime();
+      return t > 0 ? t : 0;
     };
 
     ws.on('ready', onReadyHandler);
@@ -310,6 +473,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
 
     ws.on('play', () => {
       if (stopPlaybackIfHiddenPane()) return;
+      lastScrubMsRef.current = null;
       setIsPlaying(true);
       onPlayStateChange?.(true);
     });
@@ -334,6 +498,15 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
         });
       }
     };
+    const seekLinkedVideoTo = (lv: HTMLVideoElement, t: number) => {
+      suppressLinkedVideoEvents(() => {
+        lv.muted = true;
+        if (!lv.paused) lv.pause();
+        if (Math.abs(lv.currentTime - t) > 0.02) {
+          lv.currentTime = t;
+        }
+      });
+    };
     const lv_play = (lv: HTMLVideoElement) => {
       suppressLinkedVideoEvents(() => {
         lv.muted = true;
@@ -350,18 +523,83 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       });
     };
 
-    ws.on('play', () => {
-      if (stopPlaybackIfHiddenPane()) return;
-      const lv = linkedVideo?.current;
-      if (!lv) return;
-      lv_play(lv);
-    });
+    if (!useSharedLinkedMedia) {
+    if (linkedVideoScrubOnly) {
+      ws.on('play', () => {
+        if (stopPlaybackIfHiddenPane()) return;
+        const lv = linkedVideo?.current;
+        if (!lv) return;
+        seekLinkedVideoTo(lv, ws.getCurrentTime());
+      });
+      ws.on('seeking', () => {
+        const lv = linkedVideo?.current;
+        if (!lv) return;
+        seekLinkedVideoTo(lv, linkedVideoTimeS());
+      });
+      ws.on('audioprocess', () => {
+        if (stopPlaybackIfHiddenPane()) return;
+        const lv = linkedVideo?.current;
+        if (!lv || !ws.isPlaying()) return;
+        seekLinkedVideoTo(lv, ws.getCurrentTime());
+      });
+    } else {
+      ws.on('play', () => {
+        if (stopPlaybackIfHiddenPane()) return;
+        const lv = linkedVideo?.current;
+        if (!lv) return;
+        lv_play(lv);
+      });
+      ws.on('seeking', () => {
+        const lv = linkedVideo?.current;
+        if (!lv) return;
+        const t = linkedVideoTimeS();
+        suppressLinkedVideoEvents(() => {
+          lv.currentTime = t;
+          if (!ws.isPlaying()) return;
+          lv.muted = true;
+          lv.play().catch(() => {});
+        });
+      });
+      let linkedVideoStallTicks = 0;
+      ws.on('audioprocess', () => {
+        if (stopPlaybackIfHiddenPane()) return;
+        const lv = linkedVideo?.current;
+        if (!lv || !ws.isPlaying()) return;
+        const t = ws.getCurrentTime();
+        // Recover stalled/ended linked video while WaveSurfer still plays (PLAY-6: only
+        // when ws.isPlaying() — user ⏸ Pause stops ws first, so no restart loop).
+        if (lv.paused || lv.ended) {
+          linkedVideoStallTicks += 1;
+          if (linkedVideoStallTicks >= 6) {
+            linkedVideoStallTicks = 0;
+            hardPause();
+            return;
+          }
+          suppressLinkedVideoEvents(() => {
+            lv.currentTime = t;
+            lv.muted = true;
+            lv.play().catch(() => {});
+          });
+          return;
+        }
+        linkedVideoStallTicks = 0;
+        const drift = Math.abs(lv.currentTime - t);
+        if (drift > 0.3) {
+          suppressLinkedVideoEvents(() => {
+            lv.currentTime = t;
+          });
+        }
+      });
+    }
+    }
     ws.on('pause', () => {
+      if (useSharedLinkedMedia) return;
       suppressLinkedVideoEvents(() => {
         linkedVideo?.current?.pause();
       });
     });
     ws.on('finish', () => {
+      if (useSharedLinkedMedia) return;
       const lv = linkedVideo?.current;
       if (!lv) return;
       suppressLinkedVideoEvents(() => {
@@ -369,37 +607,22 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
         lv.currentTime = 0;
       });
     });
-    ws.on('seeking', () => {
-      const lv = linkedVideo?.current;
-      if (!lv) return;
-      suppressLinkedVideoEvents(() => {
-        lv.currentTime = ws.getCurrentTime();
-        if (!ws.isPlaying()) return;
-        lv.muted = true;
-        lv.play().catch(() => {});
-      });
-    });
-    ws.on('audioprocess', () => {
-      if (stopPlaybackIfHiddenPane()) return;
-      const lv = linkedVideo?.current;
-      if (!lv) return;
-      const drift = Math.abs(lv.currentTime - ws.getCurrentTime());
-      if (!lv.paused && drift > 0.3) {
-        suppressLinkedVideoEvents(() => {
-          lv.currentTime = ws.getCurrentTime();
-        });
-      }
-      // Do NOT lv_play() here — ws 'play' handler owns start; audioprocess restart
-      // fought ▶/⏸ Pause (video play → StitcherTab onVideoPlay → ws.play() loop).
-    });
 
-    ws.load(audioSrc).catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      setLoadError(msg);
-    });
+    const sharedLv = useSharedLinkedMedia ? linkedVideo?.current : null;
+    if (sharedLv) sharedLv.muted = false;
+    const loadGen = ++waveformLoadGenRef.current;
+    if (!useSharedLinkedMedia || sharedLv) {
+      void ws.load(audioSrc).catch((err: unknown) => {
+        if (waveformLoadGenRef.current !== loadGen) return;
+        if (isIgnorableWaveformLoadError(err)) return;
+        const msg = err instanceof Error ? err.message : String(err);
+        setLoadError(msg);
+      });
+    }
 
     return () => {
       isReadyRef.current = false;
+      waveformLoadGenRef.current += 1;
       try {
         ws.pause();
         ws.destroy();
@@ -410,7 +633,194 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     };
     // onReady / onWaveformClick are intentionally captured at mount time.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [audioSrc, syncPlayUi, waveformHeight]);
+  }, [audioSrc, syncPlayUi, waveformHeight, linkedVideoScrubOnly, useSharedLinkedMedia, displayOnly, displayPeaks, displayDurationS, slotTimelineDurMs, fallbackDurationMs]);
+
+  // VQ-P1: bind lipsync <video> when it mounts after WaveformTimeline (sibling DOM order).
+  useEffect(() => {
+    if (!useSharedLinkedMedia || !audioSrc) return;
+    let cancelled = false;
+    const bind = () => {
+      if (cancelled) return;
+      const ws = wsRef.current;
+      const lv = linkedVideo?.current;
+      if (!ws || !lv) {
+        requestAnimationFrame(bind);
+        return;
+      }
+      lv.muted = false;
+      ws.setMediaElement(lv);
+      const bindGen = waveformLoadGenRef.current;
+      void ws.load(audioSrc).catch((err: unknown) => {
+        if (cancelled || waveformLoadGenRef.current !== bindGen) return;
+        if (isIgnorableWaveformLoadError(err)) return;
+        const msg = err instanceof Error ? err.message : String(err);
+        setLoadError(msg);
+      });
+    };
+    bind();
+    return () => {
+      cancelled = true;
+    };
+  }, [useSharedLinkedMedia, audioSrc, linkedVideoFilename]);
+
+  useEffect(() => {
+    if (!displayOnly) return;
+    let rafId = 0;
+    let boundVideo: HTMLVideoElement | null = null;
+
+    const syncFromVideo = (video: HTMLVideoElement) => {
+      const ms = Math.max(0, video.currentTime * 1000);
+      setCurrentMs(ms);
+      setIsPlaying(!video.paused && !video.ended);
+      const ws = wsRef.current;
+      const slotClockMs = slotTimelineDurMs ?? fallbackDurationMs ?? 0;
+      const durMs = durationMs ?? (slotClockMs > 0 ? slotClockMs : (displayDurationS ? displayDurationS * 1000 : 0));
+      if (ws && durMs > 0) {
+        ws.seekTo(Math.min(1, ms / durMs));
+      }
+      onTimeUpdate?.(ms);
+    };
+
+    const tick = () => {
+      const video = masterVideo?.current;
+      if (!video || video.paused || video.ended) {
+        rafId = 0;
+        return;
+      }
+      syncFromVideo(video);
+      rafId = requestAnimationFrame(tick);
+    };
+
+    const onVideoPlay = () => {
+      const video = masterVideo?.current;
+      if (!video) return;
+      syncFromVideo(video);
+      if (!rafId) rafId = requestAnimationFrame(tick);
+    };
+    const onVideoPause = () => {
+      cancelAnimationFrame(rafId);
+      rafId = 0;
+      const video = masterVideo?.current;
+      if (video) syncFromVideo(video);
+    };
+    const onVideoTimeUpdate = () => {
+      const video = masterVideo?.current;
+      if (video) syncFromVideo(video);
+    };
+    const onVideoSeeked = () => {
+      const video = masterVideo?.current;
+      if (video) syncFromVideo(video);
+    };
+
+    const detach = () => {
+      cancelAnimationFrame(rafId);
+      rafId = 0;
+      if (!boundVideo) return;
+      boundVideo.removeEventListener('play', onVideoPlay);
+      boundVideo.removeEventListener('pause', onVideoPause);
+      boundVideo.removeEventListener('timeupdate', onVideoTimeUpdate);
+      boundVideo.removeEventListener('seeked', onVideoSeeked);
+      boundVideo = null;
+    };
+
+    const video = masterVideo?.current;
+    if (video) {
+      boundVideo = video;
+      video.addEventListener('play', onVideoPlay);
+      video.addEventListener('pause', onVideoPause);
+      video.addEventListener('timeupdate', onVideoTimeUpdate);
+      video.addEventListener('seeked', onVideoSeeked);
+      syncFromVideo(video);
+      if (!video.paused && !video.ended) {
+        rafId = requestAnimationFrame(tick);
+      }
+    }
+
+    return detach;
+  }, [displayOnly, masterVideo, displayDurationS, durationMs, slotTimelineDurMs, fallbackDurationMs, onTimeUpdate]);
+
+  // Shared lipsync <video> + WaveSurfer media: drive overlay cue timing from the
+  // video clock (audioprocess alone can lag when WS uses the same element).
+  useEffect(() => {
+    if (!useSharedLinkedMedia || displayOnly) return;
+    let rafId = 0;
+    let boundVideo: HTMLVideoElement | null = null;
+
+    // SEEK-3 / WTA-1: while paused, linked lipsync <video> often reports currentTime 0
+    // until decode catches up — must not clobber applySeek / lastScrubMsRef authority.
+    const syncFromVideo = (video: HTMLVideoElement) => {
+      if (isDraggingSeekRef.current) return;
+      const scrubbed = lastScrubMsRef.current;
+      if (!video.paused && !video.ended) {
+        const ms = Math.max(0, video.currentTime * 1000);
+        setCurrentMs(ms);
+        onTimeUpdateRef.current?.(ms);
+        return;
+      }
+      if (scrubbed != null) {
+        setCurrentMs(scrubbed);
+        onTimeUpdateRef.current?.(scrubbed);
+        return;
+      }
+      const ms = Math.max(0, video.currentTime * 1000);
+      setCurrentMs(ms);
+      onTimeUpdateRef.current?.(ms);
+    };
+
+    const tick = () => {
+      const video = linkedVideo?.current;
+      if (!video || video.paused || video.ended) {
+        rafId = 0;
+        return;
+      }
+      syncFromVideo(video);
+      rafId = requestAnimationFrame(tick);
+    };
+
+    const onVideoPlay = () => {
+      const video = linkedVideo?.current;
+      if (!video) return;
+      syncFromVideo(video);
+      if (!rafId) rafId = requestAnimationFrame(tick);
+    };
+    const onVideoPause = () => {
+      cancelAnimationFrame(rafId);
+      rafId = 0;
+      const video = linkedVideo?.current;
+      if (video) syncFromVideo(video);
+    };
+    const onVideoTimeUpdate = () => {
+      const video = linkedVideo?.current;
+      if (video) syncFromVideo(video);
+    };
+
+    const attach = () => {
+      const video = linkedVideo?.current;
+      if (!video) {
+        requestAnimationFrame(attach);
+        return;
+      }
+      boundVideo = video;
+      video.addEventListener('play', onVideoPlay);
+      video.addEventListener('pause', onVideoPause);
+      video.addEventListener('timeupdate', onVideoTimeUpdate);
+      syncFromVideo(video);
+      if (!video.paused && !video.ended) {
+        rafId = requestAnimationFrame(tick);
+      }
+    };
+    attach();
+
+    return () => {
+      cancelAnimationFrame(rafId);
+      rafId = 0;
+      if (!boundVideo) return;
+      boundVideo.removeEventListener('play', onVideoPlay);
+      boundVideo.removeEventListener('pause', onVideoPause);
+      boundVideo.removeEventListener('timeupdate', onVideoTimeUpdate);
+      boundVideo = null;
+    };
+  }, [useSharedLinkedMedia, displayOnly, linkedVideoFilename, audioSrc]);
 
   // Keep-alive: pause when this phase tab is hidden so background WaveSurfer
   // instances do not block playback on the visible tab (Chrome autoplay policy).
@@ -420,15 +830,13 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     const pane = wrapper.closest('.mn-tab-pane-keepalive') as HTMLElement | null;
     if (!pane) return;
 
-    const pauseIfHidden = () => {
+    const pauseIfHiddenAndStopMedia = () => {
+      // STITCH_KEEPALIVE_PAUSE_WHEN_HIDDEN_V1 — never sweep pane media while tab is visible.
+      // Mounting a sibling waveform (peaks ~7s) must not pause the Stitcher composer.
       if (!pane.hidden) return;
       hardPause();
-    };
-
-    const pauseIfHiddenAndStopMedia = () => {
-      pauseIfHidden();
-      // Also pause any HTML media in this pane (lipsync preview, stitched clip).
       pane.querySelectorAll('video, audio').forEach((el) => {
+        if (isStitchComposerPlaybackOwner(el)) return;
         if (el instanceof HTMLMediaElement) {
           el.pause();
         }
@@ -450,13 +858,33 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   //   handlers attached (playhead stuck / snap-to-0).
   // Durable rule: bind on wrapperRef; never early-return before WS cleanup;
   // skip source-label (▶ Play lives there), cue blocks, cut handles; deps include isReady.
+  // applySeek MUST use wsRef.current (not a closed-over ws) — WS mount effect deps
+  // expanded in STITCH_UNIFIED_PLAYBACK_V1 can remount WaveSurfer while isReady stays
+  // true; stale ws.seekTo() is a silent no-op while ▶ Play still works via wsRef.
   useEffect(() => {
     const wrapper = wrapperRef.current;
-    const ws = wsRef.current;
-    if (!wrapper || !ws || !isReady || !audioSrc) return;
+    const canSeek = displayOnly
+      ? Boolean(displayPeaks?.length && displayDurationS)
+      : Boolean(audioSrc);
+    if (!wrapper || !isReady || !canSeek) return;
 
-    let isDragging = false;
     let seekPointerId: number | null = null;
+
+    const applySeek = (rel: number) => {
+      const live = wsRef.current;
+      const durMs = displayOnly
+        ? (slotTimelineDurMs ?? fallbackDurationMs ?? (displayDurationS ?? 0) * 1000)
+        : (timelineDurationMsRef.current ?? 0);
+      if (!live || durMs <= 0) return;
+      const ms = rel * durMs;
+      lastScrubMsRef.current = ms;
+      setCurrentMs(ms);
+      onTimeUpdateRef.current?.(ms);
+      live.seekTo(rel);
+      if (displayOnly) {
+        onMasterSeek?.(ms);
+      }
+    };
 
     const getRelX = (e: PointerEvent): number => {
       const box = wrapper.getBoundingClientRect();
@@ -470,49 +898,76 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       if (!(target instanceof HTMLElement)) return false;
       return Boolean(
         target.closest(
-          '.mn-waveform-source-label, .mn-waveform-cue-block-handle, .mn-waveform-stem-trim-handle, .mn-waveform-cue-block',
+          '.mn-waveform-source-label, .mn-waveform-cue-block-handle, .mn-waveform-cue-popover-hit, .mn-waveform-stem-trim-handle',
         ),
       );
     };
 
     const onPointerDown = (e: PointerEvent) => {
-      if (!isReadyRef.current) return;
       if (shouldSkipSeek(e.target)) return;
-      isDragging = true;
+      const live = wsRef.current;
+      const durMs = displayOnly
+        ? (displayDurationS ?? 0) * 1000
+        : (timelineDurationMsRef.current ?? 0);
+      if (!live || durMs <= 0) return;
+      isDraggingSeekRef.current = true;
       seekPointerId = e.pointerId;
       wrapper.setPointerCapture(e.pointerId);
-      ws.seekTo(getRelX(e));
+      applySeek(getRelX(e));
     };
     const onPointerMove = (e: PointerEvent) => {
-      if (!isDragging || e.pointerId !== seekPointerId) return;
-      ws.seekTo(getRelX(e));
+      if (!isDraggingSeekRef.current || e.pointerId !== seekPointerId) return;
+      applySeek(getRelX(e));
+    };
+    const endDragSeek = (rel: number) => {
+      applySeek(rel);
+      const durMs = displayOnly
+        ? (displayDurationS ?? 0) * 1000
+        : (timelineDurationMsRef.current ?? 0);
+      onWaveformClickRef.current?.(rel * durMs);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          isDraggingSeekRef.current = false;
+        });
+      });
     };
     const onPointerUp = (e: PointerEvent) => {
-      if (!isDragging || e.pointerId !== seekPointerId) return;
-      isDragging = false;
+      if (!isDraggingSeekRef.current || e.pointerId !== seekPointerId) return;
       seekPointerId = null;
-      const rel = getRelX(e);
-      ws.seekTo(rel);
-      onWaveformClickRef.current?.(rel * ws.getDuration() * 1000);
+      endDragSeek(getRelX(e));
     };
     const onPointerCancel = (e: PointerEvent) => {
       if (seekPointerId !== null && e.pointerId !== seekPointerId) return;
-      isDragging = false;
       seekPointerId = null;
+      isDraggingSeekRef.current = false;
     };
 
-    wrapper.addEventListener('pointerdown', onPointerDown);
-    wrapper.addEventListener('pointermove', onPointerMove);
-    wrapper.addEventListener('pointerup', onPointerUp);
-    wrapper.addEventListener('pointercancel', onPointerCancel);
+    wrapper.addEventListener('pointerdown', onPointerDown, true);
+    wrapper.addEventListener('pointermove', onPointerMove, true);
+    wrapper.addEventListener('pointerup', onPointerUp, true);
+    wrapper.addEventListener('pointercancel', onPointerCancel, true);
+    wrapper.setAttribute('data-drag-seek-bound', 'WAVEFORM_DRAG_SEEK_V2');
 
     return () => {
-      wrapper.removeEventListener('pointerdown', onPointerDown);
-      wrapper.removeEventListener('pointermove', onPointerMove);
-      wrapper.removeEventListener('pointerup', onPointerUp);
-      wrapper.removeEventListener('pointercancel', onPointerCancel);
+      wrapper.removeAttribute('data-drag-seek-bound');
+      wrapper.removeEventListener('pointerdown', onPointerDown, true);
+      wrapper.removeEventListener('pointermove', onPointerMove, true);
+      wrapper.removeEventListener('pointerup', onPointerUp, true);
+      wrapper.removeEventListener('pointercancel', onPointerCancel, true);
     };
-  }, [audioSrc, isReady]);
+  }, [
+    audioSrc,
+    isReady,
+    displayOnly,
+    displayPeaks,
+    slotTimelineDurMs,
+    fallbackDurationMs,
+    displayDurationS,
+    onMasterSeek,
+    syncPlayUi,
+    waveformHeight,
+    linkedVideoScrubOnly,
+  ]);
 
   const emitCueRange = (cueId: string, offsetMs: number, durationMs: number) => {
     const clampedDuration = Math.max(MIN_CUE_DURATION_MS, Math.round(durationMs));
@@ -576,7 +1031,8 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   const onRightHandlePointerDown = (e: PointerEvent, cue: WatercolorCue) => {
     e.stopPropagation();
     e.preventDefault();
-    if (!timelineDurationMs || timelineDurationMs <= 0) return;
+    const durMs = resolveTimelineDurationMs();
+    if (durMs <= 0) return;
     const handle = e.currentTarget as HTMLDivElement;
     handle.setPointerCapture(e.pointerId);
     const wrapper = wrapperRef.current;
@@ -585,16 +1041,14 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     const startOffset = cue.offset_ms;
 
     const applyPreview = (evt: PointerEvent) => {
-      const endMs = relXFromPointer(wrapper, evt) * timelineDurationMs;
-      const maxEnd = timelineDurationMs;
-      const clampedEnd = Math.max(startOffset + MIN_CUE_DURATION_MS, Math.min(maxEnd, endMs));
+      const endMs = relXFromPointer(wrapper, evt) * durMs;
+      const clampedEnd = Math.max(startOffset + MIN_CUE_DURATION_MS, Math.min(durMs, endMs));
       previewCueRange(cue.id, startOffset, clampedEnd - startOffset);
     };
 
     const onUp = (upEvt: PointerEvent) => {
-      const endMs = relXFromPointer(wrapper, upEvt) * timelineDurationMs;
-      const maxEnd = timelineDurationMs;
-      const clampedEnd = Math.max(startOffset + MIN_CUE_DURATION_MS, Math.min(maxEnd, endMs));
+      const endMs = relXFromPointer(wrapper, upEvt) * durMs;
+      const clampedEnd = Math.max(startOffset + MIN_CUE_DURATION_MS, Math.min(durMs, endMs));
       setDragDraft(null);
       emitCueRange(cue.id, startOffset, clampedEnd - startOffset);
       handle.removeEventListener('pointermove', applyPreview);
@@ -611,7 +1065,8 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   const onLeftHandlePointerDown = (e: PointerEvent, cue: WatercolorCue) => {
     e.stopPropagation();
     e.preventDefault();
-    if (!timelineDurationMs || timelineDurationMs <= 0) return;
+    const durMs = resolveTimelineDurationMs();
+    if (durMs <= 0) return;
     const handle = e.currentTarget as HTMLDivElement;
     handle.setPointerCapture(e.pointerId);
     const wrapper = wrapperRef.current;
@@ -621,7 +1076,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     const endMs = cue.offset_ms + startDuration;
 
     const applyPreview = (evt: PointerEvent) => {
-      const newOffset = relXFromPointer(wrapper, evt) * timelineDurationMs;
+      const newOffset = relXFromPointer(wrapper, evt) * durMs;
       const clampedOffset = Math.max(
         0,
         Math.min(endMs - MIN_CUE_DURATION_MS, newOffset),
@@ -630,7 +1085,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     };
 
     const onUp = (upEvt: PointerEvent) => {
-      const newOffset = relXFromPointer(wrapper, upEvt) * timelineDurationMs;
+      const newOffset = relXFromPointer(wrapper, upEvt) * durMs;
       const clampedOffset = Math.max(
         0,
         Math.min(endMs - MIN_CUE_DURATION_MS, newOffset),
@@ -722,13 +1177,14 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   // Drop target — lib-watercolor (Phase A/B) or lib-sfx (Stitcher).
   const dropHandlers = makeDropTarget(
     (payload: DragPayload, e: DragEvent) => {
-      if (!timelineDurationMs || timelineDurationMs <= 0) return;
+      const durMs = resolveTimelineDurationMs();
+      if (durMs <= 0) return;
       const wrapper = wrapperRef.current;
       if (!wrapper) return;
       const box = wrapper.getBoundingClientRect();
       const relativeX = (e.clientX - box.left) / box.width;
       const clamped = Math.max(0, Math.min(1, relativeX));
-      const offsetMs = Math.round(clamped * timelineDurationMs);
+      const offsetMs = Math.round(clamped * durMs);
       if (payload.kind === 'lib-watercolor') {
         onWatercolorDrop?.(payload.lib_key, offsetMs);
         return;
@@ -736,7 +1192,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       if (payload.kind === 'lib-sfx' && onSfxDrop) {
         const defaultDur = Math.max(
           MIN_CUE_DURATION_MS,
-          Math.min(3000, timelineDurationMs - offsetMs),
+          Math.min(3000, durMs - offsetMs),
         );
         onSfxDrop(payload.lib_key, payload.source_path, offsetMs, defaultDur);
       }
@@ -780,11 +1236,13 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       pauseOtherWaveformPlayback(playbackControlRef);
 
       if (fromStart) ws.seekTo(0);
+      lastScrubMsRef.current = null;
       const lv = linkedVideo?.current;
-      if (lv) {
+      if (lv && !useSharedLinkedMedia) {
         withLinkedVideoSuppress(() => {
           lv.muted = true;
           lv.currentTime = ws.getCurrentTime();
+          if (linkedVideoScrubOnly && !lv.paused) lv.pause();
         });
       }
 
@@ -806,11 +1264,12 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
           });
         })
         .catch((err: unknown) => {
+          if (isIgnorableWaveformLoadError(err)) return;
           const msg = err instanceof Error ? err.message : String(err);
           setLoadError(`Playback failed: ${msg}`);
           setIsPlaying(false);
         });
-      if (lv && lv.paused) {
+      if (lv && lv.paused && !linkedVideoScrubOnly && !useSharedLinkedMedia) {
         withLinkedVideoSuppress(() => {
           lv.muted = true;
           lv.play().catch(() => {});
@@ -818,7 +1277,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       }
       return true;
     },
-    [linkedVideo, linkedVideoEventSuppressRef, playbackControlRef, onPlayStateChange, withLinkedVideoSuppress, mixExtracting],
+    [linkedVideo, linkedVideoScrubOnly, useSharedLinkedMedia, linkedVideoEventSuppressRef, playbackControlRef, onPlayStateChange, withLinkedVideoSuppress, mixExtracting],
   );
 
   const togglePlayback = useCallback(() => {
@@ -843,8 +1302,12 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     const clamped = Math.max(0, Math.min(durMs, ms));
     ws.seekTo(clamped / durMs);
     setCurrentMs(clamped);
+    if (displayOnly) {
+      onMasterSeek?.(clamped);
+      return;
+    }
     const lv = linkedVideo?.current;
-    if (lv) {
+    if (lv && !useSharedLinkedMedia) {
       withLinkedVideoSuppress(() => {
         lv.muted = true;
         try {
@@ -852,14 +1315,17 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
         } catch {
           // ignore seek on unloaded media
         }
+        if (ws.isPlaying()) {
+          lv.play().catch(() => {});
+        }
       });
     }
   };
 
   useEffect(() => {
-    if (playbackDisabled) {
+    if (playbackDisabled || displayOnly) {
       return () => {
-        hardPause();
+        if (!displayOnly) hardPause();
       };
     }
     const unregister = registerWaveformPlaybackControl(playbackControlRef);
@@ -873,11 +1339,12 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
         playbackControl.current = null;
       }
     };
-  }, [playbackControl, hardPause, playbackDisabled]);
+  }, [playbackControl, hardPause, playbackDisabled, displayOnly]);
 
   const rootTestId = timelineTestId ?? 'waveform-timeline';
+  const hasDisplayWaveform = displayOnly && Boolean(displayPeaks?.length && displayDurationS);
 
-  if (!audioSrc) {
+  if (!audioSrc && !hasDisplayWaveform) {
     if (onSfxDrop && fallbackDurationMs && fallbackDurationMs > 0) {
       return (
         /* eslint-disable-next-line jsx-a11y/no-static-element-interactions */
@@ -913,13 +1380,17 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
                   left: `${cuePctLeft(cue)}%`,
                   width: `${cuePctWidth(cue)}%`,
                 }}
-                onClick={(e: MouseEvent) => {
-                  const target = e.target as HTMLElement;
-                  if (target.closest('.mn-waveform-cue-block-handle')) return;
-                  onCueClick?.(cue.id, { x: e.clientX, y: e.clientY });
-                }}
                 title={`${cue.watercolor_key} @ ${(cue.offset_ms / 1000).toFixed(1)}s · ${((cue.duration_ms ?? 3000) / 1000).toFixed(1)}s`}
               >
+                <div
+                  class="mn-waveform-cue-popover-hit"
+                  data-testid={`cue-popover-hit-${cue.id}`}
+                  title="Click to edit cue"
+                  onClick={(e: MouseEvent) => {
+                    e.stopPropagation();
+                    onCueClick?.(cue.id, { x: e.clientX, y: e.clientY });
+                  }}
+                />
                 <div
                   class="mn-waveform-cue-block-handle mn-waveform-cue-block-handle--left"
                   data-testid={`cue-handle-left-${cue.id}`}
@@ -965,7 +1436,10 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       data-stem-cut-start-ms={Math.round(displayStemCut.start_ms)}
       data-stem-cut-end-ms={Math.round(displayStemCut.end_ms)}
       data-phase-waveform-pause-v1="PHASE_WAVEFORM_PAUSE_V1"
+      data-waveform-cue-handle-v1="WAVEFORM_CUE_HANDLE_V1"
       data-mix-extracting={mixExtracting ? 'true' : 'false'}
+      {...(displayOnly ? { 'data-display-only-waveform': 'STITCH_UNIFIED_PLAYBACK_V1' } : {})}
+      {...(displayOnly && masterVideoSrc ? { 'data-stitch-composer-master-video-sync': 'STITCH_COMPOSER_MASTER_VIDEO_SYNC_V1' } : {})}
       onDragOver={dropHandlers.onDragOver}
       onDragLeave={dropHandlers.onDragLeave}
       onDrop={dropHandlers.onDrop}
@@ -982,23 +1456,29 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
         </div>
       ) : (
         <div class="mn-waveform-source-label">
-          <button
-            type="button"
-            class="mn-btn mn-btn-play"
-            data-testid="waveform-play-btn"
-            disabled={!isReady || mixExtracting}
-            onPointerDown={(e: PointerEvent) => e.stopPropagation()}
-            onClick={togglePlayback}
-            title={
-              mixExtracting
-                ? 'Remixing audio…'
-                : isPlaying
-                  ? 'Pause'
-                  : 'Play'
-            }
-          >
-            {isPlaying ? '⏸ Pause' : '▶ Play'}
-          </button>
+          {!displayOnly ? (
+            <button
+              type="button"
+              class="mn-btn mn-btn-play"
+              data-testid="waveform-play-btn"
+              disabled={!isReady || mixExtracting}
+              onPointerDown={(e: PointerEvent) => e.stopPropagation()}
+              onClick={togglePlayback}
+              title={
+                mixExtracting
+                  ? 'Remixing audio…'
+                  : isPlaying
+                    ? 'Pause'
+                    : 'Play'
+              }
+            >
+              {isPlaying ? '⏸ Pause' : '▶ Play'}
+            </button>
+          ) : (
+            <span class="mn-dim" data-testid="waveform-display-only-label">
+              Waveform (display) — video owns audio
+            </span>
+          )}
           <strong>Audio ({sourceLabel ?? '—'}):</strong>{' '}
           <span class="mn-dim">{sourceFilename ?? ''}</span>
           {durationMs ? (
@@ -1066,14 +1546,17 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
               left: `${cuePctLeft(cue)}%`,
               width: `${cuePctWidth(cue)}%`,
             }}
-            onClick={(e: MouseEvent) => {
-              // Only fire cueClick when clicking the block body, not a resize handle.
-              const target = e.target as HTMLElement;
-              if (target.closest('.mn-waveform-cue-block-handle')) return;
-              onCueClick?.(cue.id, { x: e.clientX, y: e.clientY });
-            }}
             title={`${cue.watercolor_key} @ ${(cue.offset_ms / 1000).toFixed(1)}s · ${((cue.duration_ms ?? 3000) / 1000).toFixed(1)}s`}
           >
+            <div
+              class="mn-waveform-cue-popover-hit"
+              data-testid={`cue-popover-hit-${cue.id}`}
+              title="Click to edit cue"
+              onClick={(e: MouseEvent) => {
+                e.stopPropagation();
+                onCueClick?.(cue.id, { x: e.clientX, y: e.clientY });
+              }}
+            />
             <div
               class="mn-waveform-cue-block-handle mn-waveform-cue-block-handle--left"
               data-testid={`cue-handle-left-${cue.id}`}

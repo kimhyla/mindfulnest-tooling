@@ -17,6 +17,8 @@
 //   See deltas note Δ-C2a for the Array.isArray defensiveness rationale.
 
 import { test, expect, type Route } from '@playwright/test';
+import { openStoryboardPane } from './helpers';
+import { restoreE2eFixtureFilesFromPristine } from './fixtureRestore';
 
 interface BeatStateMin {
   speaker?: string;
@@ -30,6 +32,10 @@ interface EventStateMin {
   event_id?: string;
   videos?: Record<string, PartitionMin>;
 }
+
+test.beforeEach(async () => {
+  restoreE2eFixtureFilesFromPristine();
+});
 
 // Helper: wire a state-shape mock so the StoryboardTab fetch always returns
 // the same payload. The route pattern `**/api/v2/event/*/state` covers the
@@ -56,7 +62,7 @@ async function gotoStoryboard(page: import('@playwright/test').Page): Promise<vo
     { timeout: 10_000 },
   );
   // Default tab is 'storyboard'; force-click for clarity.
-  await page.getByTestId('tab-storyboard').click();
+  await openStoryboardPane(page);
   await expect(page.getByTestId('pane-storyboard')).toBeVisible();
 }
 

@@ -13,6 +13,7 @@
 // mutations today are beat_use_as_final + select + lipsync.
 
 import { test, expect, type Page } from '@playwright/test';
+import { openStoryboardPane } from './helpers';
 
 async function gotoApp(page: Page): Promise<void> {
   page.on('pageerror', (err) => {
@@ -93,7 +94,7 @@ test.describe('S3 — StoryboardTab refresh logic beyond R1', () => {
     });
 
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     const row = page.locator('[data-testid="beat-button-row-0"]');
     await expect(row).toBeVisible();
     await expect(row).toHaveAttribute('data-lifecycle', 'animated');
@@ -160,7 +161,7 @@ test.describe('S3 — StoryboardTab refresh logic beyond R1', () => {
       });
     });
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     const row = page.locator('[data-testid="beat-button-row-0"]');
     await expect(row).toHaveAttribute('data-lifecycle', 'selected');
     const initialFetches = stateGetCount;
@@ -194,7 +195,7 @@ test.describe('S3 — StoryboardTab refresh logic beyond R1', () => {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(stateOf()) });
     });
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     await expect(page.locator('[data-testid="beat-card-0"]')).toBeVisible();
     const initialCount = stateGetCount;
     // Flip phase + post the magic-complete message.
@@ -243,7 +244,7 @@ test.describe('S3 — StoryboardTab refresh logic beyond R1', () => {
     });
     await gotoApp(page);
     // Visit storyboard once to load it (fires initial fetch).
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     await expect(page.locator('[data-testid="pane-storyboard"]')).toBeVisible();
     const baselineFetches = stateGetCount;
     // Switch to BG and trigger a drop.

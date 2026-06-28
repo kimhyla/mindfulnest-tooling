@@ -152,6 +152,25 @@ def bg_paths(event_dir: Path | str) -> BgPaths:
     )
 
 
+def milestone_bg_paths(milestone_dir: Path | str, library_event_dir: Path | str) -> BgPaths:
+    """Beat Gen paths for milestone scope — isolated sidecar + linked event library."""
+    mdir = Path(milestone_dir)
+    lib_ev = Path(library_event_dir)
+    prod = mdir.parent.parent if mdir.parent.name == "Milestones" else runtime_production_root(mdir)
+    project = prod.parent
+    images_root = lib_ev / "library" / "images"
+    return BgPaths(
+        prod_root=prod,
+        stills_dir=images_root,
+        sidecar_path=mdir / "beat_generator_sidecar.json",
+        char_assets=prod / "Character_Assets",
+        skeleton_base=project / "Arc Skeletons",
+        canon_base=project / "Canon",
+        local_stills_dir=images_root / "local_renders",
+        project_root=project,
+    )
+
+
 def character_pose_paths(event_dir: Path | str) -> dict[str, str]:
     """Per-event character master/pose paths, anchored on the runtime root.
 

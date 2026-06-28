@@ -22,7 +22,7 @@
 
 import { test, expect, type Page } from '@playwright/test';
 
-const SERVER = 'http://localhost:5111';
+const SERVER = 'http://localhost:5200';
 
 async function gotoApp(page: Page): Promise<void> {
   page.on('pageerror', (err) => {

@@ -33,7 +33,7 @@ TS
 # Step 2 — run the gate's grep1 check. Must produce a match.
 matches=$(grep -rnE "fetch\(.*MUTATION_ENDPOINTS\." \
   src/components/ src/state/ src/utils/ 2>/dev/null \
-  | grep -vE "(ProjectSelector\.tsx|EventSelector\.tsx|ProductionMapTab\.tsx).*MUTATION_ENDPOINTS\.event_load" \
+  | grep -vE "(ProjectSelector\.tsx|ProductionMapTab\.tsx).*MUTATION_ENDPOINTS\.event_load" \
   || true)
 if [ -n "$matches" ]; then
   echo "[gate-with-temp-violation] correctly RED:"
@@ -50,7 +50,7 @@ rm -f "$SCRATCH"
 # Step 4 — re-run grep1. Must produce no matches.
 matches=$(grep -rnE "fetch\(.*MUTATION_ENDPOINTS\." \
   src/components/ src/state/ src/utils/ 2>/dev/null \
-  | grep -vE "(ProjectSelector\.tsx|EventSelector\.tsx|ProductionMapTab\.tsx).*MUTATION_ENDPOINTS\.event_load" \
+  | grep -vE "(ProjectSelector\.tsx|ProductionMapTab\.tsx).*MUTATION_ENDPOINTS\.event_load" \
   || true)
 if [ -z "$matches" ]; then
   echo "[gate-without-temp-violation] correctly GREEN"

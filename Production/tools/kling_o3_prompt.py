@@ -27,6 +27,69 @@ KLING_O3_LORELAI_VOICE_DELIVERY = (
     "not dragging, not childlike or baby-talk"
 )
 
+# VOICE_ROSTER_LOCKED_v2 — Katie, warm/kind/curious young female (M4 Ember).
+KLING_O3_EMBER_VOICE_DELIVERY = (
+    "warm kind conversational pace, gentle and curious, clear natural delivery, "
+    "expressive and alive, steady rhythm, not flat or monotone, not robotic, "
+    "not bubbly or hyper, not slow or dragging, not childlike or baby-talk"
+)
+
+# VOICE_ROSTER_LOCKED_v2 — Brayden, warm gentle guide (Oliver Meet).
+KLING_O3_OLIVER_VOICE_DELIVERY = (
+    "warm gentle conversational pace, soft and welcoming, clear natural delivery, "
+    "steady and calm, not flat or monotone, not robotic, not rushed, "
+    "not childlike or baby-talk"
+)
+
+# Northern Terry — steady gentle giant (Bramble).
+KLING_O3_BRAMBLE_VOICE_DELIVERY = (
+    "warm steady conversational pace, calm and reassuring, clear natural delivery, "
+    "grounded and patient, not flat or monotone, not robotic, not rushed, "
+    "not childlike or baby-talk"
+)
+
+# Miranda — excitable scholarly owl (Luna; distinct from Lorelai cadence).
+KLING_O3_LUNA_VOICE_DELIVERY = (
+    "warm bright conversational pace, curious and scholarly, clear natural delivery, "
+    "measured enthusiasm, not flat or monotone, not robotic, not hyper or sputtering, "
+    "not childlike or baby-talk"
+)
+
+# Gigi — kind gentle bunny (Benson).
+KLING_O3_BENSON_VOICE_DELIVERY = (
+    "warm gentle conversational pace, soft and nurturing, clear natural delivery, "
+    "steady and calm, not flat or monotone, not robotic, not whispered, "
+    "not childlike or baby-talk"
+)
+
+# Bork2 — formal authoritative firefly (Bork).
+KLING_O3_BORK_VOICE_DELIVERY = (
+    "formal clear conversational pace, authoritative and precise, steady delivery, "
+    "measured cadence, not flat or monotone, not robotic, not comedic, "
+    "not childlike or baby-talk"
+)
+
+# Gotham Boss — shifty King's agent (Grizzle).
+KLING_O3_GRIZZLE_VOICE_DELIVERY = (
+    "cool measured conversational pace, guarded and sly, clear natural delivery, "
+    "steady rhythm, not flat or monotone, not robotic, not bubbly, "
+    "not childlike or baby-talk"
+)
+
+# Alisha — serene mystical (Willow).
+KLING_O3_WILLOW_VOICE_DELIVERY = (
+    "soft serene conversational pace, warm and prophetic, clear natural delivery, "
+    "slow steady rhythm, not flat or monotone, not robotic, not rushed, "
+    "not childlike or baby-talk"
+)
+
+# Carter — regal warm authority (The King).
+KLING_O3_THE_KING_VOICE_DELIVERY = (
+    "regal warm conversational pace, commanding but kind, clear natural delivery, "
+    "steady measured cadence, not flat or monotone, not robotic, not harsh, "
+    "not childlike or baby-talk"
+)
+
 _DELIVERY_BY_SPEAKER: dict[str, str] = {
     "Chipper": KLING_O3_CHIPPER_VOICE_DELIVERY,
     "Arlo": KLING_O3_ARLO_VOICE_DELIVERY,
@@ -34,6 +97,15 @@ _DELIVERY_BY_SPEAKER: dict[str, str] = {
     "Lorelai": KLING_O3_LORELAI_VOICE_DELIVERY,
     "Loral": KLING_O3_LORELAI_VOICE_DELIVERY,
     "Laurel": KLING_O3_LORELAI_VOICE_DELIVERY,
+    "Ember": KLING_O3_EMBER_VOICE_DELIVERY,
+    "Oliver": KLING_O3_OLIVER_VOICE_DELIVERY,
+    "Bramble": KLING_O3_BRAMBLE_VOICE_DELIVERY,
+    "Luna": KLING_O3_LUNA_VOICE_DELIVERY,
+    "Benson": KLING_O3_BENSON_VOICE_DELIVERY,
+    "Bork": KLING_O3_BORK_VOICE_DELIVERY,
+    "Grizzle": KLING_O3_GRIZZLE_VOICE_DELIVERY,
+    "Willow": KLING_O3_WILLOW_VOICE_DELIVERY,
+    "The King": KLING_O3_THE_KING_VOICE_DELIVERY,
 }
 
 _VOICE_SPEAKER_NAMES = "|".join(re.escape(name) for name in _DELIVERY_BY_SPEAKER)
@@ -43,6 +115,22 @@ _BRACKET_PERFORMANCE_TAG_RE = re.compile(
 )
 _SPEAKS_BRACKET_TAG_RE = re.compile(r"\bspeaks\s*\[[^\]]+\]\s*:", re.I)
 _VOICE_LINE_VERB_RE = re.compile(r"\b(speaks|says)\b", re.I)
+
+
+def _import_kling_registry():
+    try:
+        from tools import kling_character_registry as reg
+    except ImportError:
+        import kling_character_registry as reg  # type: ignore
+    return reg
+
+
+def _speaker_kling_display_name(speaker: str) -> str | None:
+    try:
+        reg = _import_kling_registry()
+        return reg.kling_element_display_name(speaker)
+    except Exception:
+        return None
 
 # Performance tags stay inside quoted dialogue; emotion tags go OUTSIDE quotes (Kling reads
 # bracket words aloud when they sit inside "…").
@@ -178,12 +266,7 @@ def _prompt_needs_locked_voice_upgrade(speaker: str, prompt: str) -> bool:
 
 
 def _kling_display_name_for_speaker(speaker: str) -> str | None:
-    try:
-        from tools import kling_character_registry as reg
-
-        return reg.kling_element_display_name(speaker)
-    except Exception:
-        return None
+    return _speaker_kling_display_name(speaker)
 
 
 def _voice_line_matches_kling_display_name(speaker: str, voice_line: str) -> bool:
@@ -213,7 +296,7 @@ def _prompt_needs_kling_name_normalization(speaker: str, prompt: str) -> bool:
         return True
     if re.search(r"@Image1\s*\(\s*Laurel\s*\)", text, re.I):
         return True
-    if re.search(r"\bLorelai\s+(?:speaks|says)\b", text, re.I):
+    if re.search(r"\bLorelai\s+(?:speaks|says|stands|looks|reacts|turns)\b", text, re.I):
         return True
     if display != "Laurel" and re.search(r"\bLaurel\s+(?:speaks|says)\b", text, re.I):
         return True
@@ -224,22 +307,44 @@ def _prompt_needs_kling_name_normalization(speaker: str, prompt: str) -> bool:
     return False
 
 
+_RUNESTONE_VOCAB_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\brune\s+stones\b", re.I), "rune-stones"),
+    (re.compile(r"\brune\s+stone\b", re.I), "rune-stone"),
+    (re.compile(r"\brunestones\b", re.I), "rune-stones"),
+    (re.compile(r"\brunestone\b", re.I), "rune-stone"),
+)
+
+
+def normalize_canonical_prompt_vocabulary(text: str) -> str:
+    """Canonical Everdale spellings — rune-stone / rune-stones always use a dash."""
+    if not text or not str(text).strip():
+        return text
+    out = str(text)
+    for pattern, repl in _RUNESTONE_VOCAB_PATTERNS:
+        out = pattern.sub(repl, out)
+    return out
+
+
 def normalize_kling_speaker_names_in_prompt(prompt: str, speaker: str) -> str:
     """Map registry speaker names to Kling Element display names (Lorelai/Laurel → Loral)."""
-    display = _kling_display_name_for_speaker(speaker)
+    display = _speaker_kling_display_name(speaker)
     if not display:
         return prompt
     out = prompt or ""
     out = re.sub(r"@Image1\s*\(\s*Character\s*\)", f"@Image1 ({display})", out, flags=re.I)
     try:
-        from tools import kling_character_registry as reg
+        reg = _import_kling_registry()
 
         reg_key = reg.resolve_registry_key(speaker) or (speaker or "").strip()
         if reg_key in reg._KLING_ELEMENT_DISPLAY_NAME:
             out = re.sub(r"@Image1\s*\(\s*Lorelai\s*\)", f"@Image1 ({display})", out, flags=re.I)
             out = re.sub(r"@Image1\s*\(\s*Laurel\s*\)", f"@Image1 ({display})", out, flags=re.I)
+            if display != reg_key:
+                out = re.sub(rf"\b{re.escape(reg_key)}\b", display, out, flags=re.I)
+            if display != "Laurel":
+                out = re.sub(r"\bLaurel\b", display, out, flags=re.I)
             out = re.sub(
-                r"\b(?:Lorelai|Laurel)(\s+(?:speaks|says|looks|bursts|cries|whispers|shouts)\b)",
+                r"\b(?:Lorelai|Laurel)(\s+(?:speaks|says|looks|bursts|cries|whispers|shouts|stands|turns|reacts|gestures|points|glances|watches|nods|shrugs)\b)",
                 rf"{display}\1",
                 out,
                 flags=re.I,
@@ -249,16 +354,36 @@ def normalize_kling_speaker_names_in_prompt(prompt: str, speaker: str) -> str:
     return out
 
 
+def scrub_registry_name_from_pre_voice_staging(prompt: str, speaker: str) -> str:
+    """Replace registry speaker name in pre-voice staging only (still-flip header cleanup)."""
+    try:
+        reg = _import_kling_registry()
+        reg_key = reg.resolve_registry_key(speaker) or (speaker or "").strip()
+        display = _speaker_kling_display_name(speaker)
+    except Exception:
+        return prompt
+    if not reg_key or not display or reg_key.casefold() == display.casefold():
+        return prompt
+    text = prompt or ""
+    m = re.search(r"\b(?:speaks|says)\b", text, re.I)
+    if m:
+        head, tail = text[: m.start()], text[m.start() :]
+    else:
+        head, tail = text, ""
+    cleaned = re.sub(rf"\b{re.escape(reg_key)}\b", display, head, flags=re.I)
+    return cleaned + tail
+
+
 def prompt_staging_leaks_registry_speaker_name(speaker: str, prompt: str) -> bool:
     """True when registry key (e.g. Lorelai) appears in pre-voice staging body."""
     try:
-        from tools import kling_character_registry as reg
+        reg = _import_kling_registry()
 
         reg_key = reg.resolve_registry_key(speaker) or (speaker or "").strip()
-        display = _kling_display_name_for_speaker(speaker) or reg_key
+        display = _speaker_kling_display_name(speaker)
     except Exception:
         return False
-    if not reg_key or reg_key == display:
+    if not reg_key or not display or reg_key.casefold() == display.casefold():
         return False
     text = prompt or ""
     m = re.search(r"\b(?:speaks|says)\b", text, re.I)
@@ -382,7 +507,9 @@ def upgrade_element_bound_voice_prompt(
         return text, spoken, False
 
     upgraded = inject_locked_voice_line(text, speaker, spoken)
-    upgraded = normalize_kling_speaker_names_in_prompt(upgraded, speaker)
+    upgraded = normalize_canonical_prompt_vocabulary(
+        normalize_kling_speaker_names_in_prompt(upgraded, speaker),
+    )
     return upgraded, spoken, upgraded != text
 
 
@@ -518,3 +645,24 @@ def validate_element_list_alignment(
         pass
     errors.extend(validate_element_bound_voice_prompt(speaker, prompt))
     return errors
+
+
+def kling_o3_prompt_passes_v2_lint(prompt: str) -> bool:
+    """KLING_O3_CANONICAL_PROMPT_SHAPE_V2 — same rules as deploy live smoke."""
+    text = (prompt or "").strip()
+    if not text:
+        return False
+    lower = text.lower()
+    if " — arc " in lower and "beat " in lower:
+        return False
+    if "rooted in place" in lower:
+        return False
+    if "no locomotion" in lower:
+        return False
+    if not text.startswith("@Image1 ("):
+        return False
+    if "Scene from @Image2" not in text:
+        return False
+    if '"[' in text and "speaks in a" in text:
+        return False
+    return True

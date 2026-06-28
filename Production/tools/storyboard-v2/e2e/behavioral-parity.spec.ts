@@ -13,6 +13,7 @@
 //     workarounds in code).
 
 import { test, expect, request, type Page, type Request } from '@playwright/test';
+import { SERVER } from './testServer';
 import { protectBeatText } from './helpers';
 
 // ----------------------------------------------------------------
@@ -92,7 +93,7 @@ test.describe('parity / dialogue', () => {
     // The endpoint exists in the bundle — assert by probing /api/v2/module/patch
     // returns 400 (missing field) not 404, proving the route is wired.
     const ctx = await request.newContext();
-    const res = await ctx.post('http://localhost:5111/api/v2/module/patch', {
+    const res = await ctx.post(`${SERVER}/api/v2/module/patch`, {
       data: { event_id: 'Event_1' },
     });
     expect([400, 422]).toContain(res.status());
@@ -158,7 +159,7 @@ test.describe('parity / library', () => {
     // Per LD-453 Rule 36 §36.1 + spec §3.4. v59 uses class-only selectors.
     // We assert the BUILT html has no `body > X` selector (the v58 fragility class).
     const ctx = await request.newContext();
-    const html = await (await ctx.get('http://localhost:5111/')).text();
+    const html = await (await ctx.get(`${SERVER}/`)).text();
     // Canonical anti-pattern: `body > X` direct-child selector.
     expect(html).not.toMatch(/body\s*>\s*[a-zA-Z]/);
   });
@@ -178,7 +179,7 @@ test.describe('parity / library', () => {
 
   test('row 29 — library sources tier sorted mtime desc by server', async () => {
     const ctx = await request.newContext();
-    const data = (await (await ctx.get('http://localhost:5111/api/cr/library')).json()) as {
+    const data = (await (await ctx.get(`${SERVER}/api/cr/library`)).json()) as {
       images: Array<{ tier?: string; abs_path?: string }>;
     };
     const sources = (data.images ?? []).filter((it) => it.tier === 'source');
@@ -335,7 +336,7 @@ test.describe('parity / other', () => {
   test('row 31 — runtime healthcheck endpoint exists (continuity of telemetry)', async () => {
     const ctx = await request.newContext();
     // POST a benign healthcheck violation; should 200.
-    const res = await ctx.post('http://localhost:5111/api/patch_health', {
+    const res = await ctx.post(`${SERVER}/api/patch_health`, {
       data: { patch: 'v59-parity-test', msg: 'smoke probe from behavioral-parity.spec.ts' },
     });
     expect(res.status()).toBe(200);
@@ -343,7 +344,7 @@ test.describe('parity / other', () => {
 
   test('row 31b — structural-eliminated: v59 has no `var IN=` v58 marker', async () => {
     const ctx = await request.newContext();
-    const html = await (await ctx.get('http://localhost:5111/')).text();
+    const html = await (await ctx.get(`${SERVER}/`)).text();
     expect(html).not.toContain('var IN=');
   });
 });
@@ -389,7 +390,7 @@ test.describe('parity / scope', () => {
 
   test('scope mismatch on assign-image returns 409', async () => {
     const ctx = await request.newContext();
-    const res = await ctx.post('http://localhost:5111/api/assign-image', {
+    const res = await ctx.post(`${SERVER}/api/assign-image`, {
       data: { event_id: 'Event_2', beat: 'beat_01', image_key: 'fake' },
     });
     expect(res.status()).toBe(409);
@@ -399,7 +400,7 @@ test.describe('parity / scope', () => {
 
   test('legacy compat (no scope key) passes through', async () => {
     const ctx = await request.newContext();
-    const res = await ctx.post('http://localhost:5111/api/bg/accept-beats', {
+    const res = await ctx.post(`${SERVER}/api/bg/accept-beats`, {
       data: { beats: [] },
     });
     expect(res.status()).toBe(200);

@@ -19,6 +19,9 @@ grep -q '_stitch_apply_canonical_boundary_sfx' "$SERVER" || fail "missing bounda
 grep -q '_stitch_apply_resolution_finale' "$SERVER" || fail "missing resolution finale in pipeline"
 grep -q 'STITCH_RESOLUTION_FINALE_V1' "$STITCH" || fail "missing STITCH_RESOLUTION_FINALE_V1"
 grep -q 'outtro3.mp3' "$STITCH" || fail "missing outtro3 finale map"
+grep -q 'STITCH_MILESTONE_FINALE_V1' "$STITCH" || fail "missing STITCH_MILESTONE_FINALE_V1"
+grep -q 'outtro3.mp3' "$STITCH" || fail "missing outtro3 milestone/resolution finale map"
+grep -q '_stitch_apply_milestone_finale' "$SERVER" || fail "missing milestone finale in pipeline"
 grep -q 'return defaultStitchTransitions()' "$MOD" || fail "client must always resolve canonical transitions"
 
 python3 -m pytest "$ROOT/Production/tools/tests/test_stitch_canonical_transition_sfx.py" -q
