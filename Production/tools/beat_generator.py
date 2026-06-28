@@ -4938,6 +4938,46 @@ def is_still_insert_prompt_text(text: str) -> bool:
     return any(marker in lower for marker in _STILL_INSERT_PROMPT_MARKERS)
 
 
+_KLING_O3_FLOWER_POSITIVE_RE = re.compile(
+    r"\b(?:"
+    r"sweet\s*[- ]?roses?|sweetroses?|blooming(?:\s+\w+){0,3}\s+(?:in\s+)?background|"
+    r"rose\s+wreath|sweetrose\s+wreath|flowers?\s+in\s+(?:the\s+)?background|"
+    r"full\s+garden\s+of\s+sweet"
+    r")\b",
+    re.IGNORECASE,
+)
+_KLING_O3_ADDITION_POSITIVE_RE = re.compile(
+    r"\b(?:blooming|(?:sweet\s*[- ]?)?rose\s+wreath|wreath|sprouts?|blooms?\s+(?:in|around|on))\b",
+    re.IGNORECASE,
+)
+
+
+def lint_kling_o3_prompt_contradictions(prompt: str) -> list[str]:
+    """Detect self-contradictory operator prompts before verbatim O3 submit."""
+    text = (prompt or "").strip()
+    if not text:
+        return []
+    lower = text.lower()
+    warnings: list[str] = []
+
+    no_flowers = bool(re.search(r"\bno flowers\b", lower))
+    flower_positive = bool(_KLING_O3_FLOWER_POSITIVE_RE.search(text))
+    if no_flowers and flower_positive:
+        warnings.append(
+            'Prompt says "No flowers" but also describes Sweetroses/flowers/blooming — '
+            "Kling follows positive visuals. Remove all flower lines from style and scene notes."
+        )
+
+    no_additions = bool(re.search(r"\bnothing additional is added\b", lower))
+    if no_additions and (flower_positive or _KLING_O3_ADDITION_POSITIVE_RE.search(text)):
+        warnings.append(
+            'Prompt says "Nothing additional is added" but also describes blooming additions — '
+            "remove conflicting style/scene-notes lines."
+        )
+
+    return warnings
+
+
 def validate_o3_submit_prompt_for_mode(user_prompt: str, generation_mode: str) -> tuple[bool, str, str]:
     """Block still-insert prompt text on voice_first / element_native Generate."""
     mode = str(generation_mode or "").strip().lower()
@@ -4951,6 +4991,13 @@ def validate_o3_submit_prompt_for_mode(user_prompt: str, generation_mode: str) -
                     "Still+TTS prompt cannot be submitted to O3 speak modes — "
                     "switch to Still Insert mode or paste the portrait / motion prompt."
                 ),
+            )
+        contradictions = lint_kling_o3_prompt_contradictions(prompt)
+        if contradictions:
+            return (
+                False,
+                "PROMPT_SELF_CONTRADICTORY",
+                " ".join(contradictions),
             )
     return True, "", ""
 
@@ -7084,6 +7131,21 @@ def beat_has_kling_o3_sidecar_trim(beat: dict) -> bool:
     return False
 
 
+def enrich_beat_magic_video_source_path(beat: dict, event_dir: str | Path) -> None:
+    """API field for magic path picker — trimmed/cut scratch path when trim/cut active."""
+    vp = (beat.get("kling_o3_video_path") or "").strip()
+    if not vp:
+        beat.pop("kling_o3_magic_video_source_path", None)
+        return
+    if beat_has_kling_o3_sidecar_trim(beat):
+        beat_id = str(beat.get("beat_id") or "beat").strip()
+        beat["kling_o3_magic_video_source_path"] = str(
+            kling_o3_ui_trim_preview_path(beat_id, event_dir, beat),
+        )
+    else:
+        beat["kling_o3_magic_video_source_path"] = vp
+
+
 def _kling_o3_trim_scratch_keep_paths(
     beat_id: str,
     event_dir: str | Path,
@@ -7365,6 +7427,38 @@ def _kling_o3_export_clip_path(
             beat, dest, source_path=src, event_dir=event_dir,
         )
     return src.resolve()
+
+
+def resolve_magic_video_source_path(
+    beat: dict,
+    event_dir: str | Path,
+    requested_source: str | Path,
+    *,
+    scratch_dir: Path | None = None,
+) -> Path:
+    """FFmpeg source for magic-on-video — trim/cut when request is the beat O3 clip.
+
+    Same contract as ``_kling_o3_export_clip_path`` / Send to Stitcher: magic must
+    composite on the trimmed/cut window, never the raw Kling delivery file.
+    """
+    requested = Path(requested_source)
+    o3 = Path(beat.get("kling_o3_video_path") or "")
+    if not o3.is_file():
+        try:
+            return requested.resolve()
+        except OSError:
+            return requested
+    try:
+        paths_match = requested.resolve() == o3.resolve()
+    except OSError:
+        paths_match = str(requested) == str(o3)
+    if not paths_match:
+        try:
+            return requested.resolve()
+        except OSError:
+            return requested
+    scratch = scratch_dir or (Path(event_dir) / "assembled" / "_kling_o3_trim_scratch")
+    return _kling_o3_export_clip_path(beat, event_dir, scratch)
 
 
 def materialize_beat_export_clip_with_retry(
@@ -12615,6 +12709,62 @@ def storyboard_beat_id_for_bg_beat(
     return storyboard_beat_id_from_bg_beat(bg_beat_id)
 
 
+def build_storyboard_display_order_for_bg_segment(
+    sidecar: dict,
+    arc_number: int,
+    event_id: str,
+    phase: str,
+) -> list[str]:
+    """Sequential storyboard keys beat_01..beat_N for BG segment row order."""
+    seg = get_seg_entry(sidecar, arc_number, event_id, phase)
+    n = len(seg.get("beats") or [])
+    return [f"beat_{i + 1:02d}" for i in range(n)]
+
+
+def sync_storyboard_partition_display_order_from_bg_segment(
+    state_manager,
+    video_role: str,
+    sidecar: dict,
+    arc_number: int,
+    event_id: str,
+    phase: str,
+) -> list[str]:
+    """BG_PARTITION_DISPLAY_ORDER_SYNC_V1 — align partition display_order with BG segment.
+
+    Beat Gen owns beat rows in sidecar/sqlite; production_state partition display_order
+    was only seeded on accept-beats (beats with image/video). Magic writeback targets
+    partition beats — empty display_order triggers DISPLAY_ORDER_STRICT prune and drops
+    magic_* fields immediately after write.
+    """
+    desired = build_storyboard_display_order_for_bg_segment(sidecar, arc_number, event_id, phase)
+    if not desired:
+        return []
+    seg = get_seg_entry(sidecar, arc_number, event_id, phase)
+    bg_rows = seg.get("beats") or []
+
+    def _sync(partition: dict) -> None:
+        pdo = partition.get("display_order")
+        if not isinstance(pdo, list):
+            return
+        if not pdo:
+            pdo.extend(desired)
+        else:
+            for sb_bid in desired:
+                if sb_bid not in pdo:
+                    pdo.append(sb_bid)
+        pbeats = partition.setdefault("beats", {})
+        for i, sb_bid in enumerate(desired):
+            if sb_bid not in pbeats:
+                row = bg_rows[i] if i < len(bg_rows) else {}
+                pbeats[sb_bid] = {
+                    "speaker": (row.get("speaker") or "").strip(),
+                    "text": (row.get("dialogue_text") or "").strip(),
+                }
+
+    state_manager.mutate_video_state(video_role, _sync)
+    return desired
+
+
 def resolve_magic_style_for_render(
     bg_beat_id: str,
     *,
@@ -13178,6 +13328,7 @@ def enrich_beat_kling_o3_pinned(
                 else:
                     out[key] = val
             out["magic_canonical_kind"] = resolve_bg_magic_canonical_kind(out, event_dir)
+            enrich_beat_magic_video_source_path(out, event_dir)
             return out
     if not session_read:
         o3_video = (beat.get("kling_o3_video_path") or "").strip()
@@ -13216,6 +13367,7 @@ def enrich_beat_kling_o3_pinned(
         out["magic_canonical_kind"] = resolve_bg_magic_canonical_kind(out, None)
     elif not session_read:
         out["magic_canonical_kind"] = resolve_bg_magic_canonical_kind(out, event_dir)
+    enrich_beat_magic_video_source_path(out, event_dir)
     return out
 
 

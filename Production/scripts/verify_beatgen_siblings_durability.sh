@@ -55,12 +55,19 @@ grep -q '_assert_event_scope' "$TOOLS/server_handlers/kling_o3.py" \
 grep -q '_kling_o3_export_clip_path\|materialize_kling_o3_trimmed_clip' "$TOOLS/beat_generator.py" \
   || fail "S8: concat export must route through trim/export clip path helpers"
 
+# Gallery finalize: single beat_generator module — no phantom beat_generator_sidecar import
+if grep -rq 'import beat_generator_sidecar' "$TOOLS" --include='*.py' 2>/dev/null; then
+  fail "gallery closure: beat_generator_sidecar import forbidden — use beat_generator"
+fi
+
 export PYTHONPATH="${ROOT}/Production/tools:${ROOT}/Production:${ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 
 python3 -m pytest \
   "$TOOLS/tests/test_beatgen_sidecar_health.py" \
   "$TOOLS/tests/test_beatgen_truth_stack.py" \
   "$TOOLS/tests/test_beatgen_concurrent_import.py" \
+  "$TOOLS/tests/test_o3_gallery_closure.py" \
+  "$TOOLS/tests/test_prompt_contradiction_lint.py" \
   -q \
   || fail "sibling pytest guards failed"
 

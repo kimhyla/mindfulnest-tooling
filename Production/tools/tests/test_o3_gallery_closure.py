@@ -11,6 +11,7 @@ from o3_gallery_closure import (
     assert_gallery_closed_before_terminal,
     beat_gallery_closure_pending,
     delivery_path_in_gallery,
+    refresh_beat_gallery_fields_for_finalize,
 )
 from o3_job_status_contract import beat_job_busy
 
@@ -101,3 +102,37 @@ def test_assert_gallery_closed_before_terminal_raises(
     monkeypatch.setattr(bg, "BG_SIDECAR_PATH", str(sidecar_path))
     with pytest.raises(RuntimeError, match="gallery not closed"):
         assert_gallery_closed_before_terminal(beat_id, tmp_path, str(delivery))
+
+
+def test_refresh_beat_gallery_fields_for_finalize_uses_beat_generator_module(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """Regression: must not import phantom beat_generator_sidecar module."""
+    beat_id = "bg_arc1_event3_post_beat_03"
+    delivery = tmp_path / "clip_delivery.mp4"
+    delivery.write_bytes(b"v")
+    sidecar = {
+        "schema_version": 1,
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_3_post": {
+                        "beats": [{
+                            "beat_id": beat_id,
+                            "kling_o3_options": [{
+                                "video_path": str(delivery),
+                                "source": "kling_o3_checkpoint",
+                            }],
+                        }],
+                    },
+                },
+            },
+        },
+    }
+    monkeypatch.setattr(bg, "BG_SIDECAR_PATH", str(tmp_path / "sidecar.json"))
+    (tmp_path / "sidecar.json").write_text(json.dumps(sidecar), encoding="utf-8")
+    monkeypatch.setattr(bg, "reconcile_o3_disk_deliveries_for_beat", lambda _b, _d: False)
+    monkeypatch.setattr(bg, "recover_orphan_o3_delivery", lambda *a, **k: None)
+    out = refresh_beat_gallery_fields_for_finalize(beat_id, tmp_path, str(delivery))
+    assert out.get("kling_o3_options")
+    assert delivery_path_in_gallery({"kling_o3_options": out["kling_o3_options"]}, str(delivery))

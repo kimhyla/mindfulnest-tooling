@@ -56,27 +56,26 @@ def refresh_beat_gallery_fields_for_finalize(
 ) -> dict[str, Any]:
     """Reload sidecar options + targeted disk reconcile before finalize persist."""
     import beat_generator as bg
-    import beat_generator_sidecar as bg_sidecar
 
     beat_copy: dict[str, Any] = {}
-    with bg_sidecar._sidecar_lock:
-        sidecar = bg_sidecar.read_sidecar()
+    with bg._sidecar_lock:
+        sidecar = bg.read_sidecar()
         _, found = bg.find_beat(sidecar, beat_id)
         if found:
             beat_copy = dict(found)
     if not beat_copy:
         return {}
-    bg_sidecar.reconcile_o3_disk_deliveries_for_beat(beat_copy, event_dir)
+    bg.reconcile_o3_disk_deliveries_for_beat(beat_copy, event_dir)
     if not delivery_path_in_gallery(beat_copy, delivery_path):
-        bg_sidecar.recover_orphan_o3_delivery(
+        bg.recover_orphan_o3_delivery(
             beat_id,
             event_dir,
             log_path=None,
             delivery_path=delivery_path,
             make_active=True,
         )
-        with bg_sidecar._sidecar_lock:
-            sidecar = bg_sidecar.read_sidecar()
+        with bg._sidecar_lock:
+            sidecar = bg.read_sidecar()
             _, found = bg.find_beat(sidecar, beat_id)
             if found:
                 beat_copy = dict(found)

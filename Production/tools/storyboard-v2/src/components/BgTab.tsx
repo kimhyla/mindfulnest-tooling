@@ -54,7 +54,7 @@ import {
 } from './bg/BgO3TrimNumericControls.deprecated';
 import { writePersistedTrackSlot, isStitchUiSlotKey } from '../utils/stitchTrackFocus';
 import { stitchJobSessionKey } from '../state/producerSessionKeys';
-import { stitcherRefreshTick, serverRehydrateTick } from '../state/refreshSignals';
+import { stitcherRefreshTick } from '../state/refreshSignals';
 import {
   BeatMagicButtons,
   resolveBgMagicStillPreviewUrl,
@@ -66,6 +66,7 @@ import {
   allBeatsStitchExportReady,
   stitchExportBlockTooltip,
 } from '../utils/bgStitchExport';
+import { lintKlingO3PromptContradictions } from '../utils/promptContradictionLint';
 import {
   notifyStitchSlotExportApplied,
   stitchExportKeptExistingWarning,
@@ -201,6 +202,17 @@ function displayPersistedRef(
   derived: RefDisplay | null | undefined,
 ): RefDisplay | null {
   if (stored && (stored.thumb_b64 || stored.abs_path || stored.key)) {
+    // Session refresh often returns abs_path-only stored refs; keep inline thumb from _derived.
+    if (!stored.thumb_b64 && derived?.thumb_b64) {
+      const merged: RefDisplay = { ...stored, thumb_b64: derived.thumb_b64 };
+      const key = stored.key ?? derived.key;
+      if (key) {
+        merged.key = key;
+      } else {
+        delete merged.key;
+      }
+      return merged;
+    }
     return stored;
   }
   return derived ?? stored ?? null;
@@ -2089,6 +2101,15 @@ export function BgTab() {
         });
         return;
       }
+      const promptContradictions = lintKlingO3PromptContradictions(promptToSave);
+      if (mode !== 'still_insert' && promptContradictions.length > 0) {
+        pushToast({
+          kind: 'error',
+          message: promptContradictions.join(' '),
+          source: 'bg-o3-prompt-self-contradictory',
+        });
+        return;
+      }
       const saved = opts?.promptAlreadyPersisted
         ? true
         : await onUpdateBeatText(beatId, promptToSave);
@@ -2681,7 +2702,6 @@ export function BgTab() {
         notifyStitchSlotExportApplied(scopeEventId, slot);
       }
       stitcherRefreshTick.value += 1;
-      serverRehydrateTick.value += 1;
       pushToast({
         kind: 'success',
         message: `Sent to Stitcher → ${slot} slot (canonical tail + intro fades when applicable)`,
@@ -3638,7 +3658,7 @@ function BeatGenCard({
   const showNativeExperimentCard = false;
 
   const magicStillSource = displayStillScenePath(beat) ?? resolveBgMagicStillSourcePath(beat, eventId);
-  const magicVideoSource = beat.kling_o3_video_path ?? null;
+  const magicVideoSource = beat.kling_o3_magic_video_source_path ?? beat.kling_o3_video_path ?? null;
   const magicStillPreviewUrl = resolveBgMagicStillPreviewUrl(beat, eventId);
   const magicVideoPreviewUrl = resolveBgMagicVideoPreviewUrl(beat, eventId);
   const [magicPreviewMode, setMagicPreviewMode] = useState<'still' | 'video' | null>(null);
@@ -4634,11 +4654,11 @@ function BgOptionTile({
   const exportDurationS = resolveO3ExportDurationS(sourceDurationS, playbackDurationS);
   const trimTruthReady = exportDurationS > 0 || playbackDurationS > 0;
   const savedKeepStartS = trimStartS > 0.009 ? trimStartS : 0;
-  const savedKeepEndRaw = exportDurationS > 0
-    ? Math.max(savedKeepStartS + MIN_O3_CUT_S, exportDurationS - (trimBackS > 0.009 ? trimBackS : 0))
-    : playbackDurationS;
+  const savedKeepEndRaw = playbackDurationS > 0
+    ? Math.max(savedKeepStartS + MIN_O3_CUT_S, playbackDurationS - (trimBackS > 0.009 ? trimBackS : 0))
+    : 0;
   const savedKeep = normalizeO3KeepWindow(
-    exportDurationS || playbackDurationS,
+    playbackDurationS,
     savedKeepStartS,
     savedKeepEndRaw,
   );
@@ -4660,8 +4680,11 @@ function BgOptionTile({
   };
   // Magic-on-video override must win over cached Kling playback — same clip the beat exports.
   const activeVideoUrl = previewUrl ?? overrideVideoUrl ?? playbackUrl ?? canonicalVideoUrl;
-  const trimTimelineDurationS = exportDurationS || playbackDurationS;
-  const overlayDurationS = isCutPreviewActive ? 0 : trimTimelineDurationS;
+  // Overlay timeline = video element truth (never stale short server-only duration).
+  const trimTimelineDurationS = playbackDurationS;
+  const overlayDurationS = isCutPreviewActive || loadedDuration == null || loadedDuration <= 0
+    ? 0
+    : trimTimelineDurationS;
 
   useEffect(() => {
     if (!selected || !option.video_path || previewUrl) {
