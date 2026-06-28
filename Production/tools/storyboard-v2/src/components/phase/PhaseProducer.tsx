@@ -335,7 +335,13 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     ]);
     let nextSlice = stateSlice;
     if (st.ok && st.data) {
-      nextSlice = pickPhaseSlice(st.data, phase);
+      const parsed = pickPhaseSlice(st.data, phase);
+      nextSlice = { ...parsed };
+      if (parsed.watercolor_cues) {
+        nextSlice.watercolor_cues = parsed.watercolor_cues;
+      } else if (stateSlice.watercolor_cues?.length) {
+        nextSlice.watercolor_cues = stateSlice.watercolor_cues;
+      }
       setStateSlice(nextSlice);
       if (nextSlice.script) setScriptDraft(nextSlice.script);
     } else if (!st.ok) {
@@ -836,6 +842,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const cueField = `phase_${phase}_watercolor_cues_json`;
 
   const persistCues = async (next: WatercolorCue[]) => {
+    latestCuesRef.current = next;
     setStateSlice((s) => ({ ...s, watercolor_cues: next }));
     // Send raw frontend-schema array. The server validator (_v2_validate_watercolor_cues_json)
     // accepts a list directly, normalises to server schema, and stores as JSON string.
@@ -868,7 +875,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       cue_type: cueType,
       volume: 1.0,
     };
-    const next = [...(stateSlice.watercolor_cues ?? []), newCue];
+    const next = [...latestCuesRef.current, newCue];
     void persistCues(next);
   };
 
@@ -878,14 +885,14 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   };
 
   const onCuePatch = (updated: WatercolorCue) => {
-    const next = (stateSlice.watercolor_cues ?? []).map((c) =>
+    const next = latestCuesRef.current.map((c) =>
       c.id === updated.id ? updated : c,
     );
     void persistCues(next);
   };
 
   const onCueRangeChange = (cueId: string, offsetMs: number, durationMs: number) => {
-    const next = (stateSlice.watercolor_cues ?? []).map((c) =>
+    const next = latestCuesRef.current.map((c) =>
       c.id === cueId ? { ...c, offset_ms: offsetMs, duration_ms: durationMs } : c,
     );
     void persistCues(next);
@@ -922,7 +929,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
 
   const onCueDelete = () => {
     if (!activeCueId) return;
-    const next = (stateSlice.watercolor_cues ?? []).filter((c) => c.id !== activeCueId);
+    const next = latestCuesRef.current.filter((c) => c.id !== activeCueId);
     setActiveCueId(null);
     setPopoverAnchor(null);
     void persistCues(next);
