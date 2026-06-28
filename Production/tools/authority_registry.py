@@ -226,6 +226,20 @@ CONCEPTS: tuple[AuthorityConcept, ...] = (
         client_read="readBgExportBusyLatch",
         notes="Async worker runs inside run_in_beatgen_scope; verify_event_stitch_job_bootstrap durability wired.",
     ),
+    AuthorityConcept(
+        id="phase_watercolor_cue_geometry",
+        status="shipped",
+        marker="PHASE_WATERCOLOR_CUE_AUTHORITY_V1",
+        question="Which cue array drives Phase A/B waveform markers during edit + refresh?",
+        authority_shape="disk",
+        server_module="production_server.py",
+        server_read="_v2_validate_watercolor_cues_json",
+        server_write="v2_module_patch phase_*_watercolor_cues_json",
+        client_module="storyboard-v2/src/hooks/usePhaseWatercolorCues.ts",
+        client_read="mergeWatercolorCuesOnHydrate",
+        spec_doc="Production/docs/TIER_D_OPERATOR_EDIT_SURFACES_v1.md",
+        notes="Client hook owns optimistic geometry; server JSON is durable store. Hydrate merge preserves local when field omitted or patch in flight.",
+    ),
 )
 
 

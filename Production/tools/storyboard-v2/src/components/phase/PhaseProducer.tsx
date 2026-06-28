@@ -40,6 +40,7 @@ import {
 } from '../../utils/stitchSlotVideoLineage';
 import { serverRehydrateTick } from '../../state/refreshSignals';
 import { SERVER_REHYDRATE_EVENT } from '../../state/serverRehydrate';
+import { usePhaseWatercolorCues } from '../../hooks/usePhaseWatercolorCues';
 import { WaveformTimeline, type WatercolorCue, type WaveformPlaybackControl } from './WaveformTimeline';
 import { WatercolorAnimOverlay } from './WatercolorAnimOverlay';
 import { CuePopover } from './CuePopover';
@@ -61,21 +62,8 @@ import { phaseWatercolorOverlayCssVars } from './phaseWatercolorOverlayGeometry'
 import { PLAYBACK_VIDEO_ANTI_BANDING_CLASS, linkedMediaSameFilename } from '../../utils/playbackVideoPolicy';
 import { watercolorFileUrl, watercolorOverlaySrc } from '../../utils/watercolorAssets';
 
-// ── Schema translation: frontend ↔ server ───────────────────────────────────
-// Server (bake pipeline) expects: {id, key, timestamp_ms, animation, duration_ms, cue_type, volume}
-// Frontend uses:                  {id, watercolor_key, offset_ms, duration_ms, animation_type, volume}
-// Schema translation is performed server-side by _v2_validate_watercolor_cues_json so the
-// client sends the raw frontend array and the validator normalises before storage.
-function fromServerSchema(raw: Record<string, unknown>): WatercolorCue {
-  return {
-    id: String(raw['id'] ?? `cue_${Math.random().toString(36).slice(2, 10)}`),
-    watercolor_key: String(raw['key'] ?? raw['watercolor_key'] ?? ''),
-    offset_ms: Number(raw['timestamp_ms'] ?? raw['offset_ms'] ?? 0),
-    duration_ms: Number(raw['duration_ms'] ?? 3000),
-    animation_type: String(raw['animation'] ?? raw['animation_type'] ?? 'fade_in'),
-    volume: Number(raw['volume'] ?? 1.0),
-  };
-}
+// Schema translation for non-cue phase fields lives in pickPhaseSlice.
+// Watercolor cues: PHASE_WATERCOLOR_CUE_AUTHORITY_V1 — usePhaseWatercolorCues hook.
 import { BaseClipPicker } from './BaseClipPicker';
 import { setDragData, type DragPayload } from '../../utils/dragdrop';
 
@@ -145,6 +133,7 @@ interface PhaseStateSlice {
   stitched_file?: string;        // phase A only
   stitched_mtime?: number;
   script?: string;
+  /** @deprecated Cues owned by usePhaseWatercolorCues — not hydrated via pickPhaseSlice. */
   watercolor_cues?: WatercolorCue[];
   // Phase A only — 3-clip handling per PHASE_A_THREE_CLIP_HANDLING_V1.
   chipper_flyin_clip_id?: string;
@@ -194,19 +183,6 @@ function pickPhaseSlice(state: EventStateResponse, phase: 'a' | 'b'): PhaseState
   const st = get<string>('stitched_file');             if (st) slice.stitched_file = st;
   const stm = get<number>('stitched_mtime');           if (stm) slice.stitched_mtime = stm;
   const sc = get<string>('script');                    if (sc) slice.script = sc;
-  // phase_b_watercolor_cues_json is stored on the server as a JSON STRING.
-  // get<> returns it as a string (or sometimes a pre-parsed array if state
-  // was written locally). Parse + translate schema in either case.
-  const rawCues = get<unknown>('watercolor_cues_json');
-  let cuesArr: WatercolorCue[] | undefined;
-  try {
-    const parsed: unknown = typeof rawCues === 'string' ? JSON.parse(rawCues)
-      : Array.isArray(rawCues) ? rawCues : undefined;
-    if (Array.isArray(parsed)) {
-      cuesArr = (parsed as Record<string, unknown>[]).map(fromServerSchema);
-    }
-  } catch { /* malformed JSON — treat as no cues */ }
-  if (cuesArr) slice.watercolor_cues = cuesArr;
   if (phase === 'a') {
     const fi = get<string>('chipper_flyin_clip_id');   if (fi) slice.chipper_flyin_clip_id = fi;
     const si = get<string>('chipper_sitting_clip_id');
@@ -326,6 +302,13 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   // when a lipsync file would otherwise win audio priority.
   const [stemTrimMode, setStemTrimMode] = useState(false);
 
+  const watercolorCues = usePhaseWatercolorCues({
+    phase,
+    scope: activeScope.value,
+    watercolors,
+    onPatchError: setStatusMsg,
+  });
+
   const refreshAll = async (): Promise<boolean> => {
     const [wc, bc, st, ap] = await Promise.all([
       apiGet<WatercolorListResponse>('phase_watercolor_list'),
@@ -335,13 +318,8 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     ]);
     let nextSlice = stateSlice;
     if (st.ok && st.data) {
-      const parsed = pickPhaseSlice(st.data, phase);
-      nextSlice = { ...parsed };
-      if (parsed.watercolor_cues) {
-        nextSlice.watercolor_cues = parsed.watercolor_cues;
-      } else if (stateSlice.watercolor_cues?.length) {
-        nextSlice.watercolor_cues = stateSlice.watercolor_cues;
-      }
+      nextSlice = pickPhaseSlice(st.data, phase);
+      watercolorCues.adoptFromEventState(st.data);
       setStateSlice(nextSlice);
       if (nextSlice.script) setScriptDraft(nextSlice.script);
     } else if (!st.ok) {
@@ -438,13 +416,6 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     return () => clearInterval(id);
   }, [lipsyncInFlight, activeScope.value.event_id, phase]);
 
-  // Track latest watercolor cues in a ref so the postMessage handler can read
-  // current cue state without stale closure (handler deps = [phase] only).
-  const latestCuesRef = useRef<WatercolorCue[]>([]);
-  useEffect(() => {
-    latestCuesRef.current = stateSlice.watercolor_cues ?? [];
-  }, [stateSlice.watercolor_cues]);
-
   // Listen for "magic or animate complete" postMessage from path_picker.html
   // (S5 LD-468/469/470 — supersedes S4 mn:watercolor-animated).
   // Security (CodeQL js/missing-origin-check alert #2, real source line):
@@ -465,23 +436,13 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           animated_path?: string;   // full server path to new MP4
         };
         const originalKey = result.watercolor_key ?? null;
-        // Derive new key: strip directory + extension from server path
         const animatedKey = result.animated_path
           ? result.animated_path.split('/').pop()?.replace(/\.[^.]+$/, '') ?? null
           : null;
         void (async () => {
-          // 1. Update cue keys first so server state is correct before refreshAll reads it back.
-          if (originalKey && animatedKey && animatedKey !== originalKey) {
-            const updatedCues = latestCuesRef.current.map((cue) =>
-              cue.watercolor_key === originalKey
-                ? { ...cue, watercolor_key: animatedKey }
-                : cue,
-            );
-            if (updatedCues.some((c, i) => c !== latestCuesRef.current[i])) {
-              await persistCues(updatedCues);
-            }
+          if (originalKey && animatedKey) {
+            await watercolorCues.remapWatercolorKey(originalKey, animatedKey);
           }
-          // 2. Refresh watercolors library (always).
           await refreshAll();
         })();
       }
@@ -724,7 +685,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       setStatusMsg('Could not start preview — try the ▶ Play button on the waveform.');
       return;
     }
-    const hasCues = (stateSlice.watercolor_cues ?? []).length > 0;
+    const hasCues = watercolorCues.cues.length > 0;
     setStatusMsg(
       hasCues
         ? '▶ Previewing — animated overlays appear on the lipsync frame above.'
@@ -835,67 +796,16 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     window.open(url.toString(), '_blank');
   };
 
-  // ── Watercolor cue authoring (Phase C) ──────────────────────────────────
-  // All cue mutations write the FULL phase_X_watercolor_cues_json array via
-  // v2_module_patch (whitelisted field; server-side _V2_MODULE_FIELD_VALIDATORS
-  // checks shape). Optimistic UI: setStateSlice locally then refresh on success.
-  const cueField = `phase_${phase}_watercolor_cues_json`;
-
-  const persistCues = async (next: WatercolorCue[]) => {
-    latestCuesRef.current = next;
-    setStateSlice((s) => ({ ...s, watercolor_cues: next }));
-    // Send raw frontend-schema array. The server validator (_v2_validate_watercolor_cues_json)
-    // accepts a list directly, normalises to server schema, and stores as JSON string.
-    // Tests F7–F9 assert body['value'] is an array with frontend keys (watercolor_key,
-    // offset_ms, animation_type) — JSON.stringify was breaking that contract.
-    const res = await pathappPatch(activeScope.value, 'v2_module_patch', {
-      field: cueField,
-      value: next,
-    });
-    if (!res.ok) {
-      setStatusMsg(`✗ cue patch HTTP ${res.status}: ${res.error ?? ''}`);
-    }
-  };
-
-  const onWatercolorDrop = (lib_key: string, offset_ms: number) => {
-    // RC3 fix: animated watercolors need a longer default duration so they are
-    // visible for a useful window. Static images keep the 3s default.
-    const wcItem = watercolors.find((w) => w.key === lib_key);
-    const defaultDurationMs = wcItem?.kind === 'animation' ? 10000 : 3000;
-    // cue_type fix: server validator defaults cue_type to "png" when not sent.
-    // Animated files are MP4s — must send cue_type:"video" so resolve_watercolor_asset
-    // tries .mp4/.mov extensions instead of .png (which doesn't exist for animated keys).
-    const cueType: string = wcItem?.kind === 'animation' ? 'video' : 'png';
-    const newCue: WatercolorCue & { cue_type: string } = {
-      id: `cue_${Math.random().toString(36).slice(2, 10)}`,
-      watercolor_key: lib_key,
-      offset_ms,
-      duration_ms: defaultDurationMs,
-      animation_type: 'fade_in',
-      cue_type: cueType,
-      volume: 1.0,
-    };
-    const next = [...latestCuesRef.current, newCue];
-    void persistCues(next);
-  };
-
   const onCueClick = (cueId: string, anchor: { x: number; y: number }) => {
     setActiveCueId(cueId);
     setPopoverAnchor(anchor);
   };
 
-  const onCuePatch = (updated: WatercolorCue) => {
-    const next = latestCuesRef.current.map((c) =>
-      c.id === updated.id ? updated : c,
-    );
-    void persistCues(next);
-  };
-
-  const onCueRangeChange = (cueId: string, offsetMs: number, durationMs: number) => {
-    const next = latestCuesRef.current.map((c) =>
-      c.id === cueId ? { ...c, offset_ms: offsetMs, duration_ms: durationMs } : c,
-    );
-    void persistCues(next);
+  const onCueDelete = () => {
+    if (!activeCueId) return;
+    watercolorCues.onCueDelete(activeCueId);
+    setActiveCueId(null);
+    setPopoverAnchor(null);
   };
 
   const persistStemCut = async (cutStartMs: number, cutEndMs: number) => {
@@ -925,14 +835,6 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
 
   const onStemCutChange = (cutStartMs: number, cutEndMs: number) => {
     void persistStemCut(cutStartMs, cutEndMs);
-  };
-
-  const onCueDelete = () => {
-    if (!activeCueId) return;
-    const next = latestCuesRef.current.filter((c) => c.id !== activeCueId);
-    setActiveCueId(null);
-    setPopoverAnchor(null);
-    void persistCues(next);
   };
 
   const onCuePopoverClose = () => {
@@ -1095,7 +997,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       : (statusMsg ?? terminalLipsyncBanner);
   const activeCue =
     activeCueId
-      ? (stateSlice.watercolor_cues ?? []).find((c) => c.id === activeCueId) ?? null
+      ? watercolorCues.cues.find((c) => c.id === activeCueId) ?? null
       : null;
   const linkedVideoMatchesWaveformAudio = Boolean(
     previewVideo &&
@@ -1109,6 +1011,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       class={`mn-phase-producer mn-phase-${phase}`}
       data-testid={`phase-producer-${phase}`}
       data-phase-producer-ab="PHASE_PRODUCER_AB_V1"
+      data-phase-watercolor-cue-authority="PHASE_WATERCOLOR_CUE_AUTHORITY_V1"
       data-phase-watercolor-overlay="PHASE_WATERCOLOR_OVERLAY_V1"
       {...(phase === 'a' ? { 'data-phase-a-single-player': 'PHASE_A_SINGLE_PLAYER_V1' } : {})}
     >
@@ -1282,12 +1185,12 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           audioSrc={waveformAudio ? fileUrl(waveformAudio.name) : null}
           sourceLabel={waveformAudio?.label ?? null}
           sourceFilename={waveformAudio?.name ?? null}
-          cues={stateSlice.watercolor_cues ?? []}
+          cues={watercolorCues.cues}
           onCueClick={onCueClick}
-          onWatercolorDrop={onWatercolorDrop}
+          onWatercolorDrop={watercolorCues.onWatercolorDrop}
           onTimeUpdate={(ms) => setCurrentTimeMs(ms)}
           onPlayStateChange={setWaveIsPlaying}
-          onCueRangeChange={onCueRangeChange}
+          onCueRangeChange={watercolorCues.onCueRangeChange}
           stemCutStartMs={stemCutStartMs}
           stemCutEndMs={stemCutEndMs}
           stemCutEditable={canEditStemCut}
@@ -1305,7 +1208,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           <CuePopover
             cue={activeCue}
             anchor={popoverAnchor}
-            onPatch={onCuePatch}
+            onPatch={watercolorCues.onCuePatch}
             onDelete={onCueDelete}
             onClose={onCuePopoverClose}
           />
@@ -1463,7 +1366,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                   class={`mn-lipsync-preview-video ${PLAYBACK_VIDEO_ANTI_BANDING_CLASS}`}
                   src={fileUrl(previewVideo.name)}
                 />
-                {(stateSlice.watercolor_cues ?? [])
+                {watercolorCues.cues
                   .filter(
                     (cue) =>
                       currentTimeMs >= cue.offset_ms &&

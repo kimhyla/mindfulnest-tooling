@@ -12,6 +12,7 @@ run() {
 
 run "$SCRIPTS/verify_phase_waveform_play_durability.sh"
 run "$SCRIPTS/verify_phase_producer_durability.sh"
+run "$SCRIPTS/verify_phase_watercolor_cue_authority_durability.sh"
 run "$SCRIPTS/verify_module_event_id_suggest_script_durability.sh"
 run "$SCRIPTS/verify_phase_a_single_player_durability.sh"
 run "$SCRIPTS/verify_stitcher_module_seek_durability.sh"

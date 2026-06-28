@@ -268,6 +268,71 @@ test.describe('PHASE_WAVEFORM_PLAY — watercolor cue resize handles (WAVEFORM_C
   });
 });
 
+test.describe('PHASE_WATERCOLOR_CUE_AUTHORITY_V1 — hydrate merge', () => {
+  test('CUE-HYDRATE-1 — focus refresh with omitted server field keeps local cue marker', async ({
+    page,
+  }) => {
+    await mockAudioFiles(page, 90);
+    await page.route('**/api/v2/module/patch**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true }),
+      });
+    });
+
+    let omitWatercolorField = false;
+    await page.route(`**/api/v2/event/${FIXTURE_EVENT}/state**`, async (route) => {
+      const body: Record<string, unknown> = {
+        ok: true,
+        beats: {},
+        phase_b_lipsync_file: 'fix_lipsync.mp4',
+      };
+      if (!omitWatercolorField) {
+        body.phase_b_watercolor_cues_json = JSON.stringify([
+          {
+            id: 'cue_hydrate_test',
+            key: 'spell_title',
+            timestamp_ms: 12000,
+            duration_ms: 4000,
+            cue_type: 'png',
+          },
+        ]);
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(body),
+      });
+    });
+
+    await gotoApp(page);
+    await openPhaseB(page);
+    await waitForWaveformReady(page, 'b');
+
+    const cue = page.locator('[data-testid="cue-marker-cue_hydrate_test"]');
+    await expect(cue).toBeVisible();
+
+    const rightHandle = page.locator('[data-testid="cue-handle-right-cue_hydrate_test"]');
+    const box = await rightHandle.boundingBox();
+    expect(box).not.toBeNull();
+    const startX = box!.x + box!.width / 2;
+    const y = box!.y + box!.height / 2;
+    await page.mouse.move(startX, y);
+    await page.mouse.down();
+    await page.mouse.move(startX + 60, y, { steps: 6 });
+    await page.mouse.up();
+    await page.waitForTimeout(150);
+
+    omitWatercolorField = true;
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await page.waitForTimeout(300);
+
+    await expect(cue).toBeVisible();
+    await expect(cue).toHaveAttribute('data-duration-ms', /[4-9]\d{3,}/);
+  });
+});
+
 test.describe('PHASE_WAVEFORM_PLAY — ▶ Play must not seek-collide', () => {
   test('PLAY-1 — ▶ Play toggles to Pause and time advances', async ({ page }) => {
     await mockAudioFiles(page, 30);
