@@ -7170,15 +7170,19 @@ def _apply_o3_video_selection(
     """Mutate one beat for select-o3-video — caller uses update_beat_locked."""
     bg = _bg_module()
     now = datetime.now(timezone.utc).isoformat()
-    beat["kling_o3_video_path"] = video_path
-    beat["kling_o3_status"] = "approved"
-    beat["status"] = "approved"
+    from kling_stitch_readiness import finalize_kling_delivery_clip  # noqa: PLC0415
+
+    if bg.beat_is_still_insert(beat):
+        beat["kling_o3_video_path"] = video_path
+        beat["kling_o3_status"] = "approved"
+        beat["status"] = "approved"
+        beat["kling_o3_still_stitch_approved"] = True
+        beat["kling_o3_still_stitch_approved_at"] = now
+    else:
+        finalize_kling_delivery_clip(beat, video_path, still_insert=False)
     beat["kling_o3_selected_option_key"] = option_key
     beat["kling_o3_selected_at"] = now
     bg.heal_invalid_o3_cut_all_options(beat)
-    if bg.beat_is_still_insert(beat):
-        beat["kling_o3_still_stitch_approved"] = True
-        beat["kling_o3_still_stitch_approved_at"] = now
     bg.hydrate_beat_cut_from_active_option(beat)
     bg.hydrate_beat_trim_from_active_option(beat)
     bg.invalidate_kling_o3_trim_scratch(beat_id, event_dir)

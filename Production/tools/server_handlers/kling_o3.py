@@ -45,25 +45,28 @@ def _apply_kling_beat_result(
         beat_obj["kling_o3_prompt_prepared"] = prompt
         beat_obj["kling_o3_duration"] = duration
         if result.get("ok"):
-            beat_obj["kling_o3_status"] = "completed"
+            vp = str(result.get("video_path") or "")
+            from kling_stitch_readiness import finalize_kling_delivery_clip  # noqa: PLC0415
+
             beat_obj["kling_o3_task_id"] = result.get("task_id")
-            beat_obj["kling_o3_video_path"] = result.get("video_path")
             beat_obj["kling_o3_completed_at"] = datetime.now(timezone.utc).isoformat()
             beat_obj["kling_o3_generation"] = generation
             if result.get("mode"):
                 beat_obj["kling_o3_mode"] = result.get("mode")
             elif result.get("submit_mode"):
                 beat_obj["kling_o3_mode"] = result.get("submit_mode")
-            beat_obj["status"] = "video_ready"
-            bg.clear_kling_o3_beat_trim(beat_obj)
-            vp = result.get("video_path") or ""
             if vp and os.path.isfile(vp):
+                finalize_kling_delivery_clip(beat_obj, vp)
+                bg.clear_kling_o3_beat_trim(beat_obj)
                 trim_info = bg.trim_kling_o3_clip_post_speech(Path(vp))
                 if trim_info.get("trimmed"):
                     beat_obj["kling_o3_post_speech_trim"] = trim_info
                 actual = bg._ffprobe_duration(Path(vp))
                 if actual > 0:
                     beat_obj["kling_o3_actual_duration_s"] = round(actual, 3)
+            else:
+                beat_obj["kling_o3_status"] = "failed"
+                beat_obj["kling_o3_error"] = "generation reported ok but video missing on disk"
         else:
             beat_obj["kling_o3_status"] = "failed"
             beat_obj["kling_o3_error"] = str(

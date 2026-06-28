@@ -66,6 +66,10 @@ import {
   allBeatsStitchExportReady,
   stitchExportBlockTooltip,
 } from '../utils/bgStitchExport';
+import {
+  KLING_STITCH_READINESS_V1,
+  stillBeatNeedsStitchApprove as stillBeatNeedsStitchApproveContract,
+} from '../utils/klingStitchReadiness';
 import { lintKlingO3PromptContradictions } from '../utils/promptContradictionLint';
 import {
   notifyStitchSlotExportApplied,
@@ -455,6 +459,14 @@ type BgModalState =
 /** Option key for **Approve still for stitch** — works even when sidecar row lacks ``key``. */
 function resolveStillStitchApproveOptionKey(beat: BgBeat): string | null {
   if (!isStillInsertBeat(beat)) return null;
+  return resolveActiveO3OptionKey(beat);
+}
+
+function stillBeatNeedsStitchApprove(beat: BgBeat): boolean {
+  return stillBeatNeedsStitchApproveContract(beat);
+}
+
+function resolveActiveO3OptionKey(beat: BgBeat): string | null {
   const activePath = (beat.kling_o3_video_path ?? '').trim();
   if (!activePath) return null;
   const opts = beat.kling_o3_options ?? [];
@@ -468,13 +480,6 @@ function resolveStillStitchApproveOptionKey(beat: BgBeat): string | null {
     return resolveO3OptionKey(slot, beat.beat_id, slot.slot_index ?? 0);
   }
   return resolveO3OptionKey({ video_path: activePath }, beat.beat_id, 0);
-}
-
-function stillBeatNeedsStitchApprove(beat: BgBeat): boolean {
-  if (!isStillInsertBeat(beat)) return false;
-  if (beat.kling_o3_still_stitch_approved) return false;
-  if (beat.kling_o3_status === 'approved') return false;
-  return Boolean((beat.kling_o3_video_path ?? '').trim());
 }
 
 interface GptBatchSubmitResponse {
@@ -2338,7 +2343,7 @@ export function BgTab() {
             ? 'Still clip approved for stitch export'
             : stillInsert
               ? 'Selected still clip for preview and trim'
-              : 'Selected preserved O3 video',
+              : 'Kling clip approved for stitch export',
           source: 'bg-select-o3',
         });
       }
@@ -3086,7 +3091,11 @@ export function BgTab() {
               onAbortGenerateSubmit={() => clearO3SubmitPending(b.beat_id)}
               onGenerate={(dialogueText, opts) => onGenerateBatch(b.beat_id, dialogueText, opts)}
               onAccept={(optionKey) => onAcceptOption(b.beat_id, optionKey)}
-              onSelectO3Video={(optionKey) => onSelectO3Video(b.beat_id, optionKey, { draftOnly: true })}
+              onSelectO3Video={(optionKey) => onSelectO3Video(
+                b.beat_id,
+                optionKey,
+                isStillInsertBeat(b) ? { draftOnly: true } : undefined,
+              )}
               onApproveStill={(optionKey) => onSelectO3Video(b.beat_id, optionKey, { stillApprove: true })}
               onApplyO3Cut={(slotIndex, trimStartS, trimBackS, opts) => onApplyO3Cut(b.beat_id, slotIndex, trimStartS, trimBackS, opts)}
               onApplyO3Trim={(trimStart, trimBack, clear) => onApplyO3Trim(b.beat_id, trimStart, trimBack, clear)}
@@ -3685,7 +3694,12 @@ function BeatGenCard({
   const showAddElementPose = elementCharRefApplies(beat, eventId) && charRefHasImage;
 
   return (
-    <li class="mn-bg-beat-card" data-testid={`bg-beat-card-${index}`} data-beat-id={beat.beat_id}>
+    <li
+      class="mn-bg-beat-card"
+      data-testid={`bg-beat-card-${index}`}
+      data-beat-id={beat.beat_id}
+      data-kling-stitch-readiness-v1={KLING_STITCH_READINESS_V1}
+    >
       <div class="mn-bg-beat-meta">
         <span class="mn-bg-beat-index">#{index + 1}</span>
         <span class="mn-bg-beat-reorder" data-testid={`bg-beat-reorder-${index}`}>
@@ -4626,8 +4640,8 @@ function BgOptionTile({
   // bg_accept_option requires option_key on the wire.
   const keyMissing = !option.key;
   const isStitchApproved = klingO3Status === 'approved';
-  const isStillDraft = !!stillInsert && !!option.video_path && !isStitchApproved;
   const hasClipVideo = !!option.video_path;
+  const isStillDraft = !!stillInsert && hasClipVideo && !isStitchApproved;
   const optionLabel = displayO3OptionLabel(option)
     || (isStitchApproved
     ? 'approved O3 video'

@@ -9982,13 +9982,9 @@ def beat_magic_still_clip_path(beat: dict, event_dir: str | Path) -> Path | None
 
 def beat_has_stitch_export_clip(beat: dict, event_dir: str | Path) -> bool:
     """True when beat is ready for segment Send to Stitcher (Kling or magic-on-still)."""
-    if beat_magic_still_clip_path(beat, event_dir):
-        return True
-    st = beat.get("kling_o3_status") or beat.get("status")
-    vp = beat.get("kling_o3_video_path")
-    if st == "approved" and vp and os.path.isfile(vp):
-        return True
-    return False
+    from kling_stitch_readiness import beat_kling_stitch_export_ready  # noqa: PLC0415
+
+    return beat_kling_stitch_export_ready(beat, event_dir)
 
 
 def resolve_kling_o3_submit_mode(beat: dict) -> str:
@@ -13174,13 +13170,12 @@ def import_storyboard_clip_to_kling_o3(
     shutil.copy2(source_path, dest)
 
     beat["kling_o3_generation"] = generation
-    beat["kling_o3_video_path"] = str(dest.resolve())
-    beat["kling_o3_status"] = "completed"
+    from kling_stitch_readiness import finalize_kling_delivery_clip  # noqa: PLC0415
+
+    finalize_kling_delivery_clip(beat, str(dest.resolve()))
     beat["kling_o3_completed_at"] = datetime.now(timezone.utc).isoformat()
     beat.pop("kling_o3_error", None)
     beat.pop("kling_o3_task_id", None)
-    if beat.get("status") not in ("approved",):
-        beat["status"] = "video_ready"
     beat["storyboard_clip_import"] = {
         "source_path": str(source_path.resolve()),
         "storyboard_beat_id": sb_id,
@@ -13489,6 +13484,13 @@ def _kling_o3_video_path_exists(video_path: str | None) -> bool:
         return False
 
 
+def heal_kling_o3_stitch_export_status(beat: dict) -> bool:
+    """Deprecated alias — use ``sync_kling_stitch_status_from_active_clip``."""
+    from kling_stitch_readiness import sync_kling_stitch_status_from_active_clip  # noqa: PLC0415
+
+    return sync_kling_stitch_status_from_active_clip(beat)
+
+
 def reconcile_kling_o3_beat(beat: dict, event_dir: str | Path) -> bool:
     """Sync sidecar Kling status with clips on disk; clear orphaned in-flight flags.
 
@@ -13506,7 +13508,6 @@ def reconcile_kling_o3_beat(beat: dict, event_dir: str | Path) -> bool:
     # Element / delivery clips — never drop an on-disk approved path because gen
     # ran ahead on a failed redo.
     if stored_path and stored_path.is_file():
-        target_status = "approved" if beat.get("status") == "approved" else "completed"
         changed = False
         if beat.get("kling_o3_video_path") != str(stored_path.resolve()):
             beat["kling_o3_video_path"] = str(stored_path.resolve())
@@ -13516,26 +13517,21 @@ def reconcile_kling_o3_beat(beat: dict, event_dir: str | Path) -> bool:
             if beat.get("status") == "approved" or status in ("approved", "completed"):
                 beat["kling_o3_generation"] = path_gen
                 changed = True
-        if status not in ("completed", "approved"):
-            beat["kling_o3_status"] = target_status
-            changed = True
-        if beat.get("status") not in ("approved",) and target_status == "completed":
-            beat["status"] = "video_ready"
+        from kling_stitch_readiness import sync_kling_stitch_status_from_active_clip  # noqa: PLC0415
+
+        if sync_kling_stitch_status_from_active_clip(beat):
             changed = True
         return changed
 
     if clip_path.is_file():
         resolved = str(clip_path.resolve())
-        target_status = "approved" if beat.get("status") == "approved" else "completed"
         changed = False
         if beat.get("kling_o3_video_path") != resolved:
             beat["kling_o3_video_path"] = resolved
             changed = True
-        if status not in ("completed", "approved"):
-            beat["kling_o3_status"] = target_status
-            changed = True
-        if beat.get("status") not in ("approved",) and target_status == "completed":
-            beat["status"] = "video_ready"
+        from kling_stitch_readiness import sync_kling_stitch_status_from_active_clip  # noqa: PLC0415
+
+        if sync_kling_stitch_status_from_active_clip(beat):
             changed = True
         return changed
 
@@ -13564,6 +13560,10 @@ def reconcile_kling_o3_beat(beat: dict, event_dir: str | Path) -> bool:
     elif path_gen is not None and path_gen < gen and not stored_raw:
         beat.pop("kling_o3_completed_at", None)
         beat.pop("kling_o3_task_id", None)
+        changed = True
+    from kling_stitch_readiness import sync_kling_stitch_status_from_active_clip  # noqa: PLC0415
+
+    if sync_kling_stitch_status_from_active_clip(beat):
         changed = True
     return changed
 

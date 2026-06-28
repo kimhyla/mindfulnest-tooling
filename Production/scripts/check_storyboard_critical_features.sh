@@ -169,7 +169,10 @@ MARKERS=(
     # O3 pipeline — gallery selection must not silently cross voice-first / Element (2026-06-18)
     "O3_PIPELINE_MISMATCH|bg-o3-pipeline-mismatch"
     "O3_PIPELINE_MISMATCH|kling_o3_selection_pipeline_mismatch"
-    "O3_PIPELINE_MISMATCH|Pipeline mismatch:"
+    # KLING_STITCH_READINESS_V1 — active delivery clip = stitch-ready (not separate approve enum)
+    "KLING_STITCH_READINESS|KLING_STITCH_READINESS_V1"
+    "KLING_STITCH_READINESS|data-kling-stitch-readiness-v1"
+    "KLING_STITCH_READINESS|Approve still for stitch"
 )
 
 missing_count=0
