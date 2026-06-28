@@ -64,7 +64,7 @@ fi
 wait_intro_session_state() {
   local attempt out
   for attempt in $(seq 1 "${EVENT_SERVER_COLD_BOOT_ATTEMPTS}"); do
-    out="$(curl -sf --max-time 120 \
+    out="$(curl -sf --max-time "${EVENT_SESSION_STATE_CURL_MAX_SECONDS}" \
       "${BASE}/api/bg/session-state?scope_event_id=${EVENT_ID}&scope_video_role=intro" 2>/dev/null || true)"
     if [[ -n "${out}" ]] && python3 -c "import json,sys; json.loads(sys.argv[1])" "${out}" 2>/dev/null; then
       printf '%s' "${out}"
@@ -161,7 +161,7 @@ if [[ "${PORT}" == "5112" ]]; then
   if [[ "${MS_LOAD}" == "200" ]]; then
     STATE=""
     for attempt in $(seq 1 "${EVENT_SERVER_COLD_BOOT_ATTEMPTS}"); do
-      STATE="$(curl -sf --max-time 120 \
+      STATE="$(curl -sf --max-time "${EVENT_SESSION_STATE_CURL_MAX_SECONDS}" \
         "${BASE}/api/bg/session-state?scope_event_id=Event_2&scope_milestone_id=milestone1_arc1&scope_type=milestone&scope_video_role=full&scope_arc_number=1&scope_phase=full" 2>/dev/null || true)"
       if [[ -n "${STATE}" ]] && python3 -c "import json,sys; json.loads(sys.argv[1])" "${STATE}" 2>/dev/null; then
         break

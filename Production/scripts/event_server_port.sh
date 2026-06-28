@@ -41,6 +41,7 @@ event_storyboard_url() {
 : "${EVENT_SERVER_QUICK_HEALTH_ATTEMPTS:=3}"
 : "${EVENT_SERVER_COLD_BOOT_ATTEMPTS:=90}"
 : "${EVENT_SERVER_WAIT_SLEEP_SECONDS:=2}"
+: "${EVENT_SESSION_STATE_CURL_MAX_SECONDS:=180}"
 
 event_server_wait_http() {
   local port="${1:?port required}"
