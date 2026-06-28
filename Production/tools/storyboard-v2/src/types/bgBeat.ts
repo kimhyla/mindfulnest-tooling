@@ -60,6 +60,7 @@ export interface BgBeat {
   kling_o3_prompt_still?: string;
   o3_prompt_box_law?: boolean;
   kling_o3_video_path?: string;
+  kling_o3_magic_video_source_path?: string;
   kling_o3_video_path_exists?: boolean;
   kling_o3_selected_at?: string;
   kling_o3_selection_pipeline_mismatch?: boolean;
